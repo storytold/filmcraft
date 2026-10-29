@@ -326,6 +326,46 @@ fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
     assert_eq!(scale(&s), (0, 100.0));
 }
 
+/// #3386: the out point itself addresses no media, but a keyframe added there must still
+/// be findable, editable and deletable there; deleting (or moving) nothing is an
+/// error, not a silent null.
+#[test]
+fn keyframes_at_the_out_point_round_trip() {
+    let mut s = demo();
+    let (c, end, out) = {
+        let it = &s.active_sequence().unwrap().video_tracks[0].items[0];
+        (it.id.0, it.end(), it.source_out())
+    };
+    let keys = |s: &Session| {
+        s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.effect("motion").unwrap().params["scale"].keyframes.clone()
+    };
+    // add at the out point lands on the last media tick
+    s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": end.0})).unwrap();
+    let k = keys(&s);
+    assert_eq!(k.len(), 1);
+    assert_eq!(k[0].time, out - Tick(1));
+    // set at the out point edits that keyframe
+    s.execute("effects.setKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "mediaTime": out.0, "value": 50.0})).unwrap();
+    assert_eq!(keys(&s)[0].value.as_f64().unwrap(), 50.0);
+    // delete at the out point removes it, and deleting again is an error
+    s.execute("effects.deleteKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "mediaTime": out.0})).unwrap();
+    assert!(keys(&s).is_empty());
+    assert!(
+        s.execute("effects.deleteKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "mediaTime": out.0})).is_err(),
+        "deleting nothing is reported"
+    );
+    assert!(
+        s.execute("effects.moveKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "mediaTime": out.0, "to": out.0})).is_err(),
+        "moving nothing is reported"
+    );
+    // moving past the out point clamps into the clip instead of stranding a key outside it
+    s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": end.0})).unwrap();
+    s.execute("effects.moveKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "mediaTime": (out - Tick(1)).0, "to": (out + Tick(100000)).0}))
+        .unwrap();
+    let k = keys(&s);
+    assert_eq!((k.len(), k[0].time), (1, out - Tick(1)));
+}
+
 /// `effects.setParam` writes a keyframe only on an animated parameter. An agent that sends a value
 /// with a `time` to a parameter that is not animated gets a static value (the result says so:
 /// 0 keyframes); `"keyframe": true` is the stopwatch and the value in one step.

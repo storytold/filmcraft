@@ -207,6 +207,16 @@ pub fn check_candidate(s: &Session, item: ItemId, path: &str, o: &MatchOptions) 
         MediaRef::Generator(_) => return Err(bad("media.relink", "generated media has no file to link")),
     };
     let mut c = Candidate { path: path.to_string(), ..Default::default() };
+    // Every relink path (direct, relinkOthers, autoRelink) funnels through here:
+    // refuse a file an in-progress export is still writing (#3551).
+    if let Some(hit) = crate::export_tools::reserved_hit(s, path) {
+        c.problems.push(format!(
+            "{path}: an export (job {}) is still writing to this file; relink after it finishes",
+            hit.job
+        ));
+        c.ok = false;
+        return Ok(c);
+    }
     let (on, oe) = split_ext(file_name(&old));
     let (nn, ne) = split_ext(file_name(path));
     let name_ok = on.eq_ignore_ascii_case(nn);
@@ -406,6 +416,10 @@ fn others(s: &Session, skip: ItemId, old: &str, new: &str, o: &MatchOptions) -> 
 pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     let item = u64_p(p, "item").map(ItemId).ok_or_else(|| bad("media.relink", "need `item`"))?;
     let path = str_p(p, "path").ok_or_else(|| bad("media.relink", "need `path`"))?.to_string();
+    // An export is still writing there (forced or not, the file is not the original yet).
+    if let Some(hit) = crate::export_tools::active_export_hit(s, &path) {
+        return Err(bad("media.relink", format!("{path}: an export (job {}) is still writing to this file; relink after it finishes", hit.job)));
+    }
     let force = bool_p(p, "force").unwrap_or(false);
     let o = MatchOptions::from_params(p);
     let old = match s.project.item(item).and_then(|i| i.as_media()).map(|m| m.media.clone()) {

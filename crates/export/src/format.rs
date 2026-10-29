@@ -360,6 +360,8 @@ pub struct ExportSettings {
     pub sink: Option<OutputSink>,
     /// An already-created primary output file. Internal callers use this to retain an exclusive
     /// reservation made while choosing an output name, rather than reopening that path later.
+    /// Open it read+write: MP4 exports finish with `finish_faststart` (#3459), which seeks
+    /// and reads back through this handle.
     #[serde(skip)]
     pub output_file: Option<Arc<std::fs::File>>,
 }

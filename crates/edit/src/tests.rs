@@ -605,6 +605,42 @@ fn a_regular_trim_shortens_a_transition_longer_than_its_clips() {
     fx.seq.check().unwrap();
 }
 
+/// #3455: adding a transition longer than its clip(s) is refused — a crossfade can
+/// never be longer than the clip it belongs to — while a fitting one is accepted.
+#[test]
+fn add_transition_refuses_a_span_longer_than_its_clips() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    // a 4-frame clip alone on the track: a 24-frame default fade does not fit it
+    let a = fx.put(v1, 0, 4, 0);
+    let fade = |start: i64, dur: i64, from: Option<ClipId>, to: Option<ClipId>| Transition {
+        id: TransitionId(0),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(start),
+        duration: f(dur),
+        from,
+        to,
+        align: Default::default(),
+        reverse: false,
+    };
+    let mut n = fx.next;
+    let before = fx.seq.clone();
+    assert!(add_transition(&mut fx.seq, v1, fade(0, 24, None, Some(a)), &mut Fx::ctx(&mut n)).is_err(), "a 24-frame fade on a 4-frame clip");
+    assert_eq!(fx.seq, before, "a refused add leaves the sequence as it was");
+    // a fade that fits is accepted
+    let id = add_transition(&mut fx.seq, v1, fade(0, 4, None, Some(a)), &mut Fx::ctx(&mut n)).unwrap();
+    fx.next = n;
+    assert!(fx.seq.track(v1).unwrap().transitions.iter().any(|x| x.id == id));
+    // two 4-frame clips: a centred 24-frame crossfade does not fit, an 8-frame one does
+    let b = fx.put(v1, 4, 4, 4);
+    let mut n = fx.next;
+    let before = fx.seq.clone();
+    assert!(add_transition(&mut fx.seq, v1, fade(-8, 24, Some(a), Some(b)), &mut Fx::ctx(&mut n)).is_err(), "a 24-frame crossfade on two 4-frame clips");
+    assert_eq!(fx.seq, before, "a refused add leaves the sequence as it was");
+    add_transition(&mut fx.seq, v1, fade(0, 8, Some(a), Some(b)), &mut Fx::ctx(&mut n)).unwrap();
+    fx.seq.check().unwrap();
+}
+
 #[test]
 fn transitions_travel_with_moved_clips() {
     // V1: a [0,10) fading in, b [10,20), c [20,30); b→c crossfade, c fading out

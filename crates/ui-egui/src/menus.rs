@@ -550,6 +550,22 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.dialog = Some(crate::Dialog::RevertConfirm);
             return Ok(json!({"dialog": "revert"}));
         }
+        // Keyframe points selected in Effect Controls: Copy / Cut take the points, not the
+        // clips (#2582: Ctrl+C copied the clip instead). Paste falls through to the engine,
+        // which prefers the keyframe clipboard when the clip one is empty.
+        "edit.copy" | "edit.cut"
+            if params.as_object().is_none_or(|m| m.is_empty())
+                && matches!(app.ui.focused, PanelKind::EffectControls)
+                && !app.ui.keyframe_selection.is_empty() =>
+        {
+            let keys: Vec<Value> = app.ui.keyframe_selection.iter().map(|k| k.copy_key_json()).collect();
+            let cmd = if id == "edit.cut" { "keyframes.cut" } else { "keyframes.copy" };
+            let r = app.session.execute(cmd, json!({"keys": keys})).map_err(|e| e.to_string());
+            if let Err(e) = &r {
+                app.ui.status = e.clone();
+            }
+            return r;
+        }
         // Files or an image on the system clipboard paste into the Timeline, or import into the
         // Project panel (#611). Copying clips puts their names there as text, so media copied
         // *after* them still wins; media that was already there when Copy/Cut ran is ignored so
@@ -823,6 +839,13 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
         if it.id.starts_with("view.") {
             it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
             it.enabled &= crate::panels::monitor_view::enabled(app, &it.id);
+        }
+        // points selected in Effect Controls: Copy / Cut take them even with no clip
+        // selection, Paste when the keyframe clipboard holds points (#3562)
+        match it.id.as_str() {
+            "edit.copy" | "edit.cut" => it.enabled |= !app.ui.keyframe_selection.is_empty(),
+            "edit.paste" | "edit.pasteInsert" => it.enabled |= !app.session.state.keyframe_clipboard.is_empty(),
+            _ => {}
         }
     }
     crate::panels::workspaces::menu(app, &mut v);

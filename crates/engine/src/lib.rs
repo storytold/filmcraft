@@ -24,6 +24,7 @@ pub mod graphic_templates;
 pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
+pub mod keyframe_copy;
 mod keyframe_move;
 mod marker_export;
 pub mod masks;
@@ -334,6 +335,9 @@ pub struct EditorState {
     /// Timeline clipboard (serialized track items with their relative track index).
     #[serde(skip)]
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
+    /// Transitions copied with the clipboard clips (#3450), start relative to the copied span.
+    #[serde(skip)]
+    pub clipboard_transitions: Vec<(TrackKind, usize, filmcraft_project::Transition)>,
     pub default_video_transition: String,
     pub default_audio_transition: String,
     /// Selected edit points (trim mode).
@@ -406,6 +410,11 @@ pub struct EditorState {
     /// places whichever was copied last.
     #[serde(skip)]
     pub caption_clipboard: Vec<(usize, filmcraft_project::Caption)>,
+    /// Keyframe points copied from Effect Controls (value, interpolation and ease kept, times
+    /// relative to the earliest point). Mutually exclusive with the clip and caption clipboards,
+    /// so Paste places whichever was copied last (#3562).
+    #[serde(skip)]
+    pub keyframe_clipboard: Vec<keyframe_copy::KeyframeCopy>,
     /// The last Edit ▸ Find… (Find Next continues it).
     #[serde(default)]
     pub find: Option<project_tools::FindState>,
@@ -486,6 +495,9 @@ pub struct Session {
     pub export_presets: export_tools::ExportPresetLibrary,
     /// The export queue (session state, not saved with the project).
     pub export_queue: export_tools::ExportQueue,
+    /// Destinations of exports in progress ([`export_tools::ReservedDestination`]): importing
+    /// one or relinking to one is refused until its export finishes, fails or is cancelled.
+    pub export_reservations: Vec<export_tools::ReservedDestination>,
     /// Exports run a batch at a time by [`Session::pump_jobs`] (hosts without threads: web).
     pub stepped: Vec<SteppedJob>,
     /// Speech recogniser for `transcript.generate` (None = the Whisper model named by the command,
@@ -588,6 +600,7 @@ impl Session {
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
+            export_reservations: Vec::new(),
             stepped: Vec::new(),
             transcriber: None,
             log: Default::default(),
@@ -1343,6 +1356,8 @@ mod project_manager_tests;
 mod project_panel_tests;
 #[cfg(test)]
 mod proxies_tests;
+#[cfg(test)]
+mod keyframe_copy_tests;
 #[cfg(test)]
 mod relink_tests;
 #[cfg(test)]

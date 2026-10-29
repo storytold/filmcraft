@@ -429,6 +429,17 @@ pub struct KeyframeRef {
     pub time: filmcraft_time::Tick,
 }
 
+impl KeyframeRef {
+    /// This point as a `keyframes.copy` key.
+    pub fn copy_key_json(&self) -> serde_json::Value {
+        let mut v = serde_json::json!({"clip": self.clip, "effect": self.effect, "param": self.param, "mediaTime": self.time.0});
+        if let Some(mask) = self.mask {
+            v["mask"] = serde_json::json!(mask);
+        }
+        v
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]

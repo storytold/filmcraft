@@ -3,6 +3,7 @@ use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use filmcraft_engine::{Session, commands::preview_transition};
 use filmcraft_project::TrackKind;
+use filmcraft_time::Tick;
 use filmcraft_ui_egui::FilmcraftApp;
 use serde_json::json;
 
@@ -90,14 +91,20 @@ fn transition_drag_previews_both_edges_of_short_clips_and_commits_that_span() {
                 preview.rect,
                 h.state().ui.timeline.pps
             );
-            assert_eq!(
-                planned.duration,
-                if kind == TrackKind::Video {
-                    h.state().session.prefs.timeline.video_transition_duration(rate)
-                } else {
-                    h.state().session.prefs.timeline.audio_transition_duration(rate)
-                }
-            );
+            // #3455: the default duration is fitted to the joined clips: on this cut the
+            // six-frame clip caps a two-sided transition at twelve frames, so the plan is
+            // the shorter of the preference and that fit.
+            let full = if kind == TrackKind::Video {
+                h.state().session.prefs.timeline.video_transition_duration(rate)
+            } else {
+                h.state().session.prefs.timeline.audio_transition_duration(rate)
+            };
+            let neighbor = &h.state().session.active_sequence().unwrap().tracks(kind)[0].items[0];
+            let fit = match (&planned.from, &planned.to) {
+                (Some(_), Some(_)) => Tick(short.duration.0.min(neighbor.duration.0).saturating_mul(2)),
+                _ => short.duration,
+            };
+            assert_eq!(planned.duration, full.min(fit));
             if let Some(dir) = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR") {
                 let dir = std::path::PathBuf::from(dir);
                 std::fs::create_dir_all(&dir).unwrap();

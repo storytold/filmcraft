@@ -505,12 +505,15 @@ impl Exporter {
         let (bytes, extra_files) = match self.mxf.take() {
             Some(m) => m.finish(&self.settings)?,
             None => {
-                let w = self
-                    .mux
-                    .take()
-                    .ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?
-                    .finish()
-                    .map_err(|e| ExportError::Io(e.to_string()))?;
+                let mux = self.mux.take().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
+                // #3459: MP4 (`moov` after `mdat`) is rejected by some upload targets (WhatsApp web).
+                // `finish_faststart` places `moov` before `mdat`; MOV keeps the classic layout.
+                let faststart = matches!(self.brand, Brand::Mp4);
+                let w = if faststart {
+                    mux.finish_faststart().map_err(|e| ExportError::Io(e.to_string()))?
+                } else {
+                    mux.finish().map_err(|e| ExportError::Io(e.to_string()))?
+                };
                 (w.finish(&self.settings)?, Vec::new())
             }
         };

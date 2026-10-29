@@ -492,6 +492,7 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     // Export always renders full-resolution media, whatever the proxy toggle says.
     let provider = s.media.full_res_provider(project.clone(), s.services.clone()).recording();
     let (prog, res) = (job.progress.clone(), job.result.clone());
+    reserve_export_destination(s, id, &settings);
     let offline = s.export_offline.entry(id).or_default().clone();
     if cfg!(target_arch = "wasm32") && !wait && filmcraft_export::stepped(format) {
         // No threads: the host advances the export between UI frames (`Session::pump_jobs`).
@@ -518,6 +519,142 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
     }
     Ok(id)
+}
+
+// ---------------------------------------------------------------------------------------------
+// in-progress export destinations (#3551)
+// ---------------------------------------------------------------------------------------------
+
+/// A destination an in-progress export is writing: importing it or relinking to it is refused
+/// until its job finishes, fails or is cancelled, so the finished export can't replace the
+/// clip's bytes out from under the project (the media pool may keep serving the old file for
+/// the rest of the session, but reopening the project would read the exported bytes).
+#[derive(Clone, Debug)]
+pub struct ReservedDestination {
+    /// The export job writing it (`jobs.list` / `jobs.cancel`).
+    pub job: u64,
+    /// `ExportSettings::path` as resolved when the export started.
+    pub path: String,
+    pub format: Format,
+}
+
+/// Compare a path against a reserved destination: the canonical path when the file exists,
+/// else the absolute path with `.` / `..` resolved lexically, so `dir/./out.mp4` matches
+/// `dir/out.mp4` even before the export creates it. Lowercased on Windows, whose filesystems
+/// compare names case-insensitively.
+pub fn canonical_dest_path(path: &str) -> String {
+    if let Ok(c) = std::fs::canonicalize(path) {
+        let s = c.to_string_lossy().to_string();
+        return if cfg!(windows) { s.to_lowercase() } else { s };
+    }
+    let abs = if Path::new(path).is_absolute() { PathBuf::from(path) } else { std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(path) };
+    let mut clean = PathBuf::new();
+    for comp in abs.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                clean.pop();
+            }
+            c => clean.push(c.as_os_str()),
+        }
+    }
+    let s = clean.to_string_lossy().to_string();
+    if cfg!(windows) { s.to_lowercase() } else { s }
+}
+
+/// The canonical parent directory of `path` (`.` for a bare file name).
+fn canonical_parent(path: &str) -> String {
+    let parent = Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    canonical_dest_path(&parent.to_string_lossy())
+}
+
+fn file_stem_of(path: &str) -> String {
+    Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+}
+
+fn extension_of(path: &str) -> String {
+    Path::new(path).extension().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+}
+
+/// Split `name` into (stem without trailing digits, trailing digits, extension):
+/// `clip007.png` → (`clip`, `007`, `png`); `atom_A1.mxf` → (`atom_A`, `1`, `mxf`).
+fn split_frame_name(name: &str) -> (String, String, String) {
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (name[..i].to_string(), name[i + 1..].to_string()),
+        _ => (name.to_string(), String::new()),
+    };
+    let digits = stem.len() - stem.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+    (stem[..stem.len() - digits].to_string(), stem[stem.len() - digits..].to_string(), ext)
+}
+
+/// Whether `candidate` names a file an in-progress sequence / OP-Atom export may also be
+/// writing next to its destination: image-sequence frames (`{stem}000.{ext}`…) or OP-Atom
+/// audio (`{stem}_A1.mxf`…). Compares canonical parent directories, so another spelling of
+/// the same folder is caught as well.
+fn extra_file_hit(format: Format, dest: &str, candidate: &str) -> bool {
+    if !format.is_image_sequence() && format != Format::MxfOpAtom {
+        return false;
+    }
+    if canonical_parent(dest) != canonical_parent(candidate) {
+        return false;
+    }
+    let cand_name = Path::new(candidate).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let (c_stem, c_digits, c_ext) = split_frame_name(&cand_name);
+    if c_digits.is_empty() || !c_ext.eq_ignore_ascii_case(&extension_of(dest)) {
+        return false;
+    }
+    // Platform filename rules: Windows compares stems case-insensitively.
+    let same = |a: &str, b: &str| if cfg!(windows) { a.to_lowercase() == b.to_lowercase() } else { a == b };
+    if format.is_image_sequence() {
+        // `{stem}{frame}.{ext}`, where stem is the *complete* destination stem
+        // even when it ends in digits: `Sequence 01.png` writes
+        // `Sequence 01000.png`, which split_frame_name would reduce to
+        // (`Sequence `, `01000`). So match the base (stem + digits) by prefix:
+        // it must be longer than the dest stem and the rest all digits.
+        let dest_stem = file_stem_of(dest);
+        let base = format!("{c_stem}{c_digits}");
+        base.len() > dest_stem.len()
+            && same(&base[..dest_stem.len()], &dest_stem)
+            && base[dest_stem.len()..].chars().all(|c| c.is_ascii_digit())
+    } else {
+        // `atom.mxf` writes `atom_A1.mxf`, `atom_A2.mxf`, …
+        same(&c_stem, &format!("{}_A", file_stem_of(dest)))
+    }
+}
+
+/// Remember an export's destination from when it starts until its job settles, so
+/// `file.import` and `media.relink` can refuse it (#3551). In-memory (web) exports write to
+/// the host's virtual table, not to real files, so there is nothing to clash with.
+pub fn reserve_export_destination(s: &mut Session, job: u64, settings: &ExportSettings) {
+    if settings.path.is_empty() || s.services.export_in_memory() {
+        return;
+    }
+    s.export_reservations.retain(|r| r.job != job);
+    s.export_reservations.push(ReservedDestination { job, path: settings.path.clone(), format: settings.format });
+}
+
+/// Drop reservations whose job finished, failed or was cancelled (a finished job stays listed
+/// in `jobs.list` with its result set; a cancelled export's job stops the same way).
+pub fn prune_export_reservations(s: &mut Session) {
+    let jobs = &s.jobs;
+    let running = |id: u64| jobs.iter().any(|j| j.id == id && j.result.lock().map(|r| r.is_none()).unwrap_or(false));
+    s.export_reservations.retain(|r| running(r.job));
+}
+
+/// The in-progress export writing `path` (directly, as an image-sequence frame or as OP-Atom
+/// audio), if any — comparing canonical paths, so another spelling of the destination or of
+/// its folder is caught too.
+pub fn active_export_hit(s: &mut Session, path: &str) -> Option<ReservedDestination> {
+    prune_export_reservations(s);
+    reserved_hit(s, path)
+}
+
+/// Read-only reservation check (no pruning): for `check_candidate`, which runs on `&Session`
+/// from search and relink-candidate paths. A just-finished job's reservation lingers until the
+/// next mutating call prunes it — safe direction (refuse, then succeed after prune).
+pub fn reserved_hit(s: &Session, path: &str) -> Option<ReservedDestination> {
+    let canon = canonical_dest_path(path);
+    s.export_reservations.iter().find(|r| canonical_dest_path(&r.path) == canon || extra_file_hit(r.format, &r.path, path)).cloned()
 }
 
 /// Last-resort guard for a background job body (export, previews, proxies, …): a panic marks the

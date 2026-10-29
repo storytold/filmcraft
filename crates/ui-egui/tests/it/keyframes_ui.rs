@@ -727,3 +727,35 @@ fn a_line_separates_added_effects_from_the_fixed_ones() {
     );
     assert!(tint[1] > blur[1], "one line, above all the added effects");
 }
+
+/// #3562: the lane-diamond menu copies keyframes, and pasting drops them at the playhead.
+#[test]
+fn lane_diamond_menu_copies_and_pastes_at_the_playhead() {
+    let (mut d, clip) = Driver::demo();
+    d.seek(0.5);
+    d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": "scale"}));
+    d.exec(
+        "effects.setParam",
+        json!({"clip": clip.id, "effect": "motion", "param": "scale", "value": 150.0}),
+    );
+    let (keys, _) = d.scale(&clip);
+    assert_eq!(keys.len(), 1, "one Scale keyframe to copy: {keys:?}");
+    let diamond = format!("effectControls.motion.scale.keyframe.{}", keys[0]);
+    let undo = d.undo_len();
+
+    d.right_click(&diamond);
+    assert_eq!(d.scale(&clip).0.len(), 1, "opening the menu cannot add keyframes");
+    assert_eq!(d.undo_len(), undo, "opening the menu is not undoable");
+    d.click("effectControls.keyframeMenu.copy");
+
+    d.seek(2.5);
+    d.right_click(&diamond);
+    d.click("effectControls.keyframeMenu.paste");
+    let (keys, _) = d.scale(&clip);
+    assert_eq!(keys.len(), 2, "the copied point pastes at the playhead: {keys:?}");
+    d.shot("keyframe-copy-paste");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.scale(&clip).0.len(), 1, "undo removes the pasted point");
+    d.exec("edit.redo", json!({}));
+    assert_eq!(d.scale(&clip).0.len(), 2, "redo pastes it back");
+}

@@ -169,6 +169,56 @@ fn shift_adds_to_the_selection_the_drag_began_with() {
     assert!(d.selected(a) && d.selected(b));
 }
 
+/// #3563: scrolling mid-drag keeps the box anchored to content: the anchor stays on the tick
+/// where the press began instead of moving with the viewport, so clips already in the box
+/// are not deselected as auto-scroll moves the view under the held pointer.
+#[test]
+fn scrolling_mid_drag_keeps_the_box_anchored_to_content() {
+    let mut d = Driver::demo();
+    let (_, b, _, rb, _) = d.setup();
+    d.exec("timeline.select", json!({"clips": []}));
+    // an empty track row above the clip, at the clip's x-span: the press starts the box there
+    let mut anchor = None;
+    let mut y = rb.min.y - 10.0;
+    while y > 60.0 {
+        let p = egui::pos2(rb.center().x, y);
+        if d.ok("ui.timeline.hit", json!({"x": p.x, "y": p.y}))["hit"] == "empty" {
+            anchor = Some(p);
+            break;
+        }
+        y -= 20.0;
+    }
+    let anchor = anchor.expect("an empty track above the clip to press on");
+    d.send(egui::Event::PointerMoved(anchor));
+    d.button(anchor, true);
+    // drag down into the clip's row: the box touches the clip
+    let over_b = egui::pos2(rb.center().x, rb.center().y);
+    d.move_to(anchor, over_b);
+    assert!(d.selected(b), "the box selects the clip it touches");
+    // slide the pointer right until the edge auto-scroll starts; the box spans from the
+    // anchor to the pointer and still covers the clip's right half
+    let mut edge = over_b;
+    for _ in 0..60 {
+        edge = egui::pos2(edge.x + 25.0, edge.y);
+        d.send(egui::Event::PointerMoved(edge));
+        d.frames(1);
+        if d.harness.state().ui.timeline.scroll > 0.0 {
+            break;
+        }
+    }
+    assert!(d.harness.state().ui.timeline.scroll > 0.0, "the pointer reached the auto-scroll zone");
+    assert!(d.selected(b), "the box still covers the clip at the scroll zone");
+    // hold the pointer there: the view scrolls under it for ~30 seconds of content, while
+    // the anchored box only grows; a viewport-anchored box would slide off the clip
+    for _ in 0..120 {
+        d.frames(1);
+        assert!(d.selected(b), "auto-scroll extends the box instead of dropping the clip");
+    }
+    d.button(edge, false);
+    d.frames(2);
+    assert!(d.selected(b), "the release commits the clip the anchored box showed");
+}
+
 #[test]
 fn escape_cancels_the_box_and_restores_the_selection() {
     let mut d = Driver::demo();

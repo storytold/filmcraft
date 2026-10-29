@@ -43,7 +43,11 @@ impl Out {
             let file = file.try_clone().map_err(|e| ExportError::Io(e.to_string()))?;
             return Ok(Out::File(std::io::BufWriter::new(file)));
         }
-        let f = std::fs::File::create(path).map_err(|e| ExportError::Io(format!("{path}: {e}")))?;
+        // #3459: MP4 faststart (`finish_faststart`) seeks and reads back through `Out`,
+        // so the file needs read + write access (`File::create` is write-only and fails
+        // on Windows with "Access is denied").
+        let f =
+            std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path).map_err(|e| ExportError::Io(format!("{path}: {e}")))?;
         Ok(Out::File(std::io::BufWriter::new(f)))
     }
 
@@ -94,6 +98,20 @@ impl std::io::Seek for Out {
         match self {
             Out::File(w) => w.seek(pos),
             Out::Mem(w) => w.seek(pos),
+        }
+    }
+}
+
+// #3459: `Mp4Writer::finish_faststart` needs `Read + Write + Seek` to move `moov`
+// before `mdat`. `BufWriter` buffers writes, so flush before reading through to the file.
+impl std::io::Read for Out {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Out::File(w) => {
+                w.flush()?;
+                w.get_mut().read(buf)
+            }
+            Out::Mem(c) => c.read(buf),
         }
     }
 }

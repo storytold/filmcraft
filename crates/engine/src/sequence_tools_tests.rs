@@ -744,6 +744,62 @@ fn copy_paste_includes_sequence_markers() {
     assert_ne!(ms[0].id, ms[1].id);
 }
 
+/// #3450: copying clips carries their crossfades; pasting restores them onto the
+/// pasted clips (new ids, same effect and span relative to the cut).
+#[test]
+fn copy_paste_carries_transitions() {
+    let mut s = demo();
+    // the originals, for span comparison after the paste
+    let (v0, v1, fade_orig, x_orig) = {
+        let q = s.active_sequence().unwrap();
+        let t = &q.video_tracks[0];
+        assert_eq!(t.transitions.len(), 4, "demo fixture: fade-in plus three cuts");
+        assert_eq!(t.items[0].end(), t.items[1].start, "first two shots are adjacent");
+        let fade = t.transitions.iter().find(|x| x.from.is_none()).unwrap().clone();
+        let x = t.transitions.iter().find(|x| x.effect.effect == "cross_dissolve").unwrap().clone();
+        (t.items[0].id, t.items[1].id, fade, x)
+    };
+    s.execute("timeline.select", json!({"clips": [v0.0, v1.0]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    let end = s.active_sequence().unwrap().duration();
+    s.execute("playhead.set", json!({"time": end.0})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+    s.active_sequence().unwrap().check().unwrap();
+    // the pasted clips are the new selection (two video clips and their linked audio)
+    let pasted: Vec<filmcraft_project::ClipId> = s.state.selection.clone();
+    assert_eq!(pasted.len(), 4, "{pasted:?}");
+    let q = s.active_sequence().unwrap();
+    let pasted_video: Vec<filmcraft_project::ClipId> =
+        pasted.iter().copied().filter(|c| q.find_item(*c).is_some_and(|(t, _)| q.track(t).is_some_and(|t| t.kind == TrackKind::Video))).collect();
+    assert_eq!(pasted_video.len(), 2);
+    // both copied transitions are back: the fade-in and the cut cross-dissolve
+    let t = &q.video_tracks[0];
+    assert_eq!(t.transitions.len(), 6, "the two copied crossfades travel with the paste");
+    let fade = t.transitions.iter().find(|x| x.from.is_none() && x.to.is_some_and(|c| pasted_video.contains(&c))).expect("pasted fade-in");
+    assert_eq!(fade.effect.effect, fade_orig.effect.effect);
+    assert_eq!((fade.start, fade.duration), (fade_orig.start + end, fade_orig.duration));
+    assert_ne!(fade.id, fade_orig.id, "pasted transitions get new ids");
+    let x = t
+        .transitions
+        .iter()
+        .find(|x| x.from.is_some_and(|c| pasted_video.contains(&c)) && x.to.is_some_and(|c| pasted_video.contains(&c)))
+        .expect("pasted cut");
+    assert_eq!(x.effect.effect, x_orig.effect.effect);
+    assert_eq!((x.start, x.duration), (x_orig.start + end, x_orig.duration));
+    assert_ne!(x.id, x_orig.id, "pasted transitions get new ids");
+    // and they sit on the pasted clips' cut and edge
+    let (pa, pb) = (q.find_item(pasted_video[0]).unwrap().1.clone(), q.find_item(pasted_video[1]).unwrap().1.clone());
+    let (first, second) = if pa.start < pb.start { (pa, pb) } else { (pb, pa) };
+    assert_eq!(first.end(), second.start, "the pasted pair is adjacent");
+    assert_eq!((x.start, x.end()), (first.end() - x.duration.mul_ratio(1, 2), first.end() + x.duration - x.duration.mul_ratio(1, 2)));
+    assert_eq!((fade.start, fade.end()), (first.start, first.start + fade.duration));
+    // undo removes the pasted clips and their crossfades together
+    s.execute("edit.undo", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].transitions.len(), 4);
+    q.check().unwrap();
+}
+
 #[test]
 fn selection_follows_playhead() {
     let mut s = demo();

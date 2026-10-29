@@ -210,7 +210,9 @@ fn reserve_unique_path(dir: &Path, stem: &str, suffix: &str, ext: &str, taken: &
             n += 1;
             continue;
         }
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        // Read access as well as write: MP4 exports finish with `finish_faststart`,
+        // which seeks and reads back through the reserved handle (#3459).
+        match std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
             Ok(file) => {
                 return Ok(ReservedOutput { path, file: Some(Arc::new(file)), keep: false });
             }

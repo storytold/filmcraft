@@ -48,7 +48,8 @@ impl Sink {
 
     fn finish(self, settings: &ExportSettings) -> Result<u64> {
         match self {
-            Sink::Mp4 { mux, .. } => mux.finish().map_err(|e| ExportError::Io(e.to_string()))?.finish(settings),
+            // #3459: `.m4a` is an MP4 brand; write `moov` before `mdat` (faststart) for upload compat.
+            Sink::Mp4 { mux, .. } => mux.finish_faststart().map_err(|e| ExportError::Io(e.to_string()))?.finish(settings),
             Sink::Adts { out, .. } => out.finish(settings),
         }
     }

@@ -29,7 +29,7 @@ fn project(w: u32, h: u32, frames: i64) -> (Arc<Project>, filmcraft_project::Ite
     let clip = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -39,7 +39,7 @@ fn project(w: u32, h: u32, frames: i64) -> (Arc<Project>, filmcraft_project::Ite
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 1, None);
@@ -225,14 +225,10 @@ fn sizes_that_are_not_multiples_of_the_coding_block_are_cropped_back() {
     }
 }
 
-#[test]
-fn what_nvenc_cannot_do_is_an_error_that_says_why() {
-    let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    filmcraft_platform::register();
-    let rate = FrameRate::FPS_24;
-    let base = hevc(tmp("declined.mp4"));
-    // (what, settings, size): each declined by the configuration alone, so even a machine without
-    // NVENC counts and explains it
+/// Each configuration NVENC declines on its own: an error that names NVENC, counted, with no
+/// session started, so even a machine without NVENC counts and explains it.
+fn declined_configurations_are_counted_errors(rate: FrameRate, base: &ExportSettings) {
+    // (what, settings, size)
     let cases: Vec<(&str, ExportSettings, (u32, u32))> = vec![
         // HDR is Main 10 since the HDR round (see nvenc_hevc_hdr_export.rs); what stays declined is a colour description
         // this backend does not write
@@ -253,6 +249,36 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
         assert!(e.to_string().contains("NVENC"), "{what}: {e}");
         assert_eq!(delta(before), (0, 0, 1), "{what}: counted as declined, no session");
     }
+}
+
+/// Sizes outside what the GPU's HEVC encoder takes, through the real export: declined with the
+/// reason, or a good file on a GPU that does take the size.
+fn odd_sizes_are_declined_or_exported(p: &Arc<Project>, seq: filmcraft_project::ItemId, m: &SourceMap) {
+    for (w, h) in [(64u32, 64u32), (16, 16), (10_000, 64)] {
+        let path = tmp(&format!("small-{w}x{h}.mp4"));
+        let s = ExportSettings { frame_size: Some((w, h)), ..hevc(path.clone()) };
+        let before = hw_encode_stats();
+        let r = export(p, seq, &s, m, &Progress::default());
+        match r {
+            Err(e) => {
+                let e = e.to_string();
+                eprintln!("{w}x{h}: {e}");
+                assert!(e.contains("NVENC"), "{w}x{h}: {e}");
+                assert_eq!(delta(before), (0, 0, 1), "{w}x{h}");
+            }
+            // a GPU that does take the size: a good file
+            Ok(_) => assert_eq!(delta(before).1, 1, "{w}x{h}"),
+        }
+    }
+}
+
+#[test]
+fn what_nvenc_cannot_do_is_an_error_that_says_why() {
+    let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    filmcraft_platform::register();
+    let rate = FrameRate::FPS_24;
+    let base = hevc(tmp("declined.mp4"));
+    declined_configurations_are_counted_errors(rate, &base);
     // HDR (PQ / HLG) is taken as Main 10 where the GPU has 10-bit HEVC, declined (counted, with the reason) where it has not
     for signal in [ColorSignal::PQ, ColorSignal::HLG] {
         let before = hw_encode_stats();
@@ -280,24 +306,7 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
         eprintln!("SKIPPED the NVENC-limit cases: no NVENC HEVC here");
         return;
     }
-    // sizes outside what the GPU's HEVC encoder takes, through the real export
-    let (p, seq, m) = project(640, 360, 6);
-    for (w, h) in [(64u32, 64u32), (16, 16), (10_000, 64)] {
-        let path = tmp(&format!("small-{w}x{h}.mp4"));
-        let s = ExportSettings { frame_size: Some((w, h)), ..hevc(path.clone()) };
-        let before = hw_encode_stats();
-        let r = export(&p, seq, &s, &m, &Progress::default());
-        match r {
-            Err(e) => {
-                let e = e.to_string();
-                eprintln!("{w}x{h}: {e}");
-                assert!(e.contains("NVENC"), "{w}x{h}: {e}");
-                assert_eq!(delta(before), (0, 0, 1), "{w}x{h}");
-            }
-            // a GPU that does take the size: a good file
-            Ok(_) => assert_eq!(delta(before).1, 1, "{w}x{h}"),
-        }
-    }
+    odd_sizes_are_declined_or_exported(&p, seq, &m);
     // the factory itself: an odd size and a size outside the limits are declined, a good one is taken
     let before = hw_encode_stats();
     assert!(matches!(factory(Format::Hevc, 641, 360, rate, &base), Some(Err(_))));

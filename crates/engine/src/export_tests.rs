@@ -911,6 +911,139 @@ fn caption_sidecars_keep_only_the_exported_interval() {
     }
 }
 
+/// #3551: importing or relinking to the destination of an export in progress is refused
+/// (also via another spelling of the path); after the export settles, the path works again.
+/// A running job is faked so the in-progress window is deterministic; the reservation and
+/// its release are the machinery under test.
+#[test]
+fn import_refuses_an_active_export_destination() {
+    use crate::media_test_util::{make_movie, tmp_dir};
+    use filmcraft_export::{ExportSettings, Format};
+    use filmcraft_media::DemoScene;
+
+    let root = tmp_dir("export-reserve-import");
+    let dest = root.join("out.mov");
+    make_movie(&dest, DemoScene::Aurora, 64, 36, 6);
+    let dest_s = dest.to_string_lossy().into_owned();
+
+    let mut s = demo();
+    s.jobs.push(crate::Job { id: 7, label: "Export out.mov".into(), progress: Default::default(), result: Default::default() });
+    crate::export_tools::reserve_export_destination(&mut s, 7, &ExportSettings { format: Format::ProRes, path: dest_s.clone(), ..Default::default() });
+
+    let e = s.execute("file.import", json!({"paths": [dest_s]})).unwrap_err().to_string();
+    assert!(e.contains("job 7") && e.contains("export"), "{e}");
+    // another spelling of the same path is caught too
+    let alt = root.join(".").join("out.mov").to_string_lossy().into_owned();
+    assert_ne!(alt, dest_s, "the test needs a different spelling");
+    let e = s.execute("file.import", json!({"paths": [alt]})).unwrap_err().to_string();
+    assert!(e.contains("job 7"), "{e}");
+
+    // the export is cancelled: its job settles, and the path imports again
+    *s.jobs[0].result.lock().unwrap() = Some(Err("cancelled".into()));
+    let r = s.execute("file.import", json!({"paths": [dest_s]})).unwrap();
+    assert_eq!(r["items"].as_array().map(Vec::len), Some(1), "{r}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// #3551: `media.relink` refuses an active destination even forced; unrelated paths still
+/// relink, and the refused path relinks once the export settles.
+#[test]
+fn relink_refuses_an_active_export_destination() {
+    use crate::media_test_util::{make_movie, session_with, tmp_dir};
+    use filmcraft_export::{ExportSettings, Format};
+    use filmcraft_media::DemoScene;
+
+    let root = tmp_dir("export-reserve-relink");
+    let (a, b) = (root.join("a.mov"), root.join("b.mov"));
+    make_movie(&a, DemoScene::Aurora, 64, 36, 6);
+    make_movie(&b, DemoScene::CityNight, 64, 36, 6);
+    let (mut s, items, _) = session_with(&[&a, &b]);
+    let dest = root.join("fresh.mov");
+    make_movie(&dest, DemoScene::CityNight, 64, 36, 6);
+    let dest_s = dest.to_string_lossy().into_owned();
+
+    s.jobs.push(crate::Job { id: 7, label: "Export fresh.mov".into(), progress: Default::default(), result: Default::default() });
+    crate::export_tools::reserve_export_destination(&mut s, 7, &ExportSettings { format: Format::ProRes, path: dest_s.clone(), ..Default::default() });
+
+    let e = s.execute("media.relink", json!({"item": items[0].0, "path": dest_s, "force": true})).unwrap_err().to_string();
+    assert!(e.contains("job 7") && e.contains("export"), "{e}");
+    // an unrelated path is not affected
+    let r = s.execute("media.relink", json!({"item": items[0].0, "path": b.to_string_lossy(), "force": true, "relinkOthers": false})).unwrap();
+    assert_eq!(r["relinked"].as_array().map(Vec::len), Some(1), "{r}");
+
+    // the export fails: its job settles, and the refused path relinks
+    *s.jobs[0].result.lock().unwrap() = Some(Err("failed".into()));
+    let r = s.execute("media.relink", json!({"item": items[0].0, "path": dest_s, "force": true, "relinkOthers": false})).unwrap();
+    assert_eq!(r["relinked"].as_array().map(Vec::len), Some(1), "{r}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// #3551: image-sequence frames (`clip000.png`…) and OP-Atom audio (`atom_A1.mxf`…) next to
+/// the destination are reserved too; unrelated files in the same folder are not.
+#[test]
+fn sequence_frames_and_opatom_audio_are_reserved_too() {
+    use crate::media_test_util::{make_movie, tmp_dir};
+    use filmcraft_export::{ExportSettings, Format};
+    use filmcraft_media::DemoScene;
+
+    let root = tmp_dir("export-reserve-frames");
+    std::fs::write(root.join("clip000.png"), b"half-written frame").unwrap();
+    std::fs::write(root.join("atom_A2.mxf"), b"half-written audio").unwrap();
+    std::fs::write(root.join("clipvault.png"), b"an unrelated still").unwrap();
+    let other = root.join("other.mov");
+    make_movie(&other, DemoScene::Aurora, 64, 36, 6);
+
+    let mut s = demo();
+    s.jobs.push(crate::Job { id: 7, label: "Export clip".into(), progress: Default::default(), result: Default::default() });
+    s.jobs.push(crate::Job { id: 8, label: "Export atom".into(), progress: Default::default(), result: Default::default() });
+    crate::export_tools::reserve_export_destination(
+        &mut s,
+        7,
+        &ExportSettings { format: Format::PngSequence, path: root.join("clip.png").to_string_lossy().into_owned(), ..Default::default() },
+    );
+    crate::export_tools::reserve_export_destination(
+        &mut s,
+        8,
+        &ExportSettings { format: Format::MxfOpAtom, path: root.join("atom.mxf").to_string_lossy().into_owned(), ..Default::default() },
+    );
+
+    for (name, job) in [("clip000.png", 7), ("atom_A2.mxf", 8), ("atom.mxf", 8)] {
+        let p = root.join(name).to_string_lossy().into_owned();
+        let e = s.execute("file.import", json!({"paths": [p]})).unwrap_err().to_string();
+        assert!(e.contains(&format!("job {job}")), "{name}: {e}");
+    }
+    // same folder, but not a file this export writes: refused for another reason, if at all
+    let e = s.execute("file.import", json!({"paths": [root.join("clipvault.png").to_string_lossy()]})).unwrap_err().to_string();
+    assert!(!e.contains("job 7"), "{e}");
+    // and a real movie next to them imports
+    let r = s.execute("file.import", json!({"paths": [other.to_string_lossy()]})).unwrap();
+    assert_eq!(r["items"].as_array().map(Vec::len), Some(1), "{r}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// #3551 end to end: a real export reserves its destination while it runs and releases it
+/// when it finishes, so the output can be imported afterwards.
+#[test]
+fn a_finished_export_releases_its_destination() {
+    let mut s = demo();
+    let dir = Scratch::new("release");
+    let dest = dir.path("Demo.wav");
+    // the whole demo sequence, so the encode outlasts the check below
+    let r = s.execute("file.exportMedia", json!({"path": dest, "format": "wav", "wait": false})).unwrap();
+    let job = r["job"].as_u64().unwrap();
+    assert!(s.export_reservations.iter().any(|x| x.job == job), "the running export reserves its destination");
+    for _ in 0..1200 {
+        let done = s.jobs.iter().find(|j| j.id == job).is_some_and(|j| j.result.lock().unwrap().is_some());
+        if done {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(s.jobs.iter().find(|j| j.id == job).is_some_and(|j| j.result.lock().unwrap().is_some()), "the export finished");
+    let r = s.execute("file.import", json!({"paths": [dest]})).unwrap();
+    assert_eq!(r["items"].as_array().map(Vec::len), Some(1), "{r}");
+}
+
 /// #1216: `maxThreads` reaches the export settings from the command parameters (CLI, MCP, control
 /// channel), as a flat parameter or inside `settings`.
 #[test]

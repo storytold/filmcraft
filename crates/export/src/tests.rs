@@ -559,3 +559,40 @@ fn h264_input_converted_ahead_encodes_to_the_same_packets() {
     assert!(!plain.is_empty());
     assert!(plain == encode_all(true), "converting ahead changed the packets");
 }
+
+/// #3459: H.264 MP4 exports must place `moov` before `mdat` (faststart) so upload targets
+/// like WhatsApp web accept them without a `+faststart` remux. MOV keeps classic layout.
+#[test]
+fn mp4_exports_are_faststart_mov_keeps_classic_layout() {
+    let (p, seq, m) = project();
+    // MP4: H.264 defaults to the MP4 multiplexer.
+    let mp4_path = tmp("faststart.mp4");
+    let s = ExportSettings {
+        format: Format::H264,
+        path: mp4_path.clone(),
+        range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(6))),
+        include_audio: false,
+        ..Default::default()
+    };
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    let d = std::fs::read(&mp4_path).unwrap();
+    let moov = d.windows(4).position(|w| w == b"moov").expect("mp4 has moov");
+    let mdat = d.windows(4).position(|w| w == b"mdat").expect("mp4 has mdat");
+    assert!(moov < mdat, "#3459: moov ({moov}) should precede mdat ({mdat})");
+
+    // MOV: same codec via the MOV multiplexer keeps `mdat` before `moov`.
+    let mov_path = tmp("classic.mov");
+    let s = ExportSettings {
+        format: Format::H264,
+        multiplexer: crate::Multiplexer::Mov,
+        path: mov_path.clone(),
+        range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(6))),
+        include_audio: false,
+        ..Default::default()
+    };
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    let d = std::fs::read(&mov_path).unwrap();
+    let moov = d.windows(4).position(|w| w == b"moov").expect("mov has moov");
+    let mdat = d.windows(4).position(|w| w == b"mdat").expect("mov has mdat");
+    assert!(mdat < moov, "MOV keeps classic layout: mdat ({mdat}) before moov ({moov})");
+}

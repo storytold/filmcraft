@@ -456,6 +456,85 @@ fn the_text_panels_graphics_tab_lists_and_edits_graphic_text() {
     d.shot("text-panel-graphics");
 }
 
+/// #3539: Effect Controls' Font field is a dropdown like the Properties panel's, and typing a
+/// valid installed family name applies it (clicking the plain text field opened no list, and
+/// type + Enter left the layer on Inter).
+#[test]
+fn effect_controls_font_field_picks_and_types_families() {
+    // the default workspace: Effect Controls is clickable there (in "Captions and Graphics"
+    // the Project panel occludes its rows, so clicks land on the wrong panel)
+    let mut d = Driver::demo();
+    let clip = d.exec("graphics.newText", json!({"text": "Night Drive"}))["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
+    d.frames(4);
+
+    let elements = d.ok("ui.elements", json!({"prefix": "effectControls.text."}));
+    let ids: Vec<String> = elements.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect();
+    let font_id = ids.iter().find(|id| id.ends_with(".font")).expect("a Font field").clone();
+    let style_id = ids.iter().find(|id| id.ends_with(".font_style")).expect("a Font Style field").clone();
+
+    // families installed in this environment (the engine and the UI read the same registry)
+    let fonts = d.exec("fonts.list", json!({"system": true}));
+    let families: Vec<String> = fonts.as_array().unwrap().iter().filter_map(|f| f["family"].as_str().map(str::to_string)).collect();
+    assert!(families.len() > 1, "needs a non-default family to pick: {families:?}");
+    let current = match text_param(&mut d, clip, "font") {
+        Some(filmcraft_project::ParamValue::Text(f)) => f,
+        other => panic!("a font value: {other:?}"),
+    };
+    let target = families.iter().find(|f| !f.eq_ignore_ascii_case(&current)).unwrap().clone();
+
+    // typing a valid family name and pressing Enter applies it
+    eprintln!("DEBUG families head: {:?}", &families[..families.len().min(8)]);
+    // a dock tab bar can overlap the row where it initially lays out: scroll it into the
+    // clear (as the stroke-width test does) before clicking
+    // the font rows start below the fold: scroll the panel on a visible row until the
+    // Font field is in view (the buried field's own rect can't receive the wheel)
+    let name_id = ids.iter().find(|id| id.ends_with(".name")).expect("a name field").clone();
+    for _ in 0..30 {
+        let y = d.rect(&font_id)[1];
+        if (180.0..460.0).contains(&y) {
+            break;
+        }
+        d.ok("ui.scroll", json!({"id": name_id, "dy": -300.0}));
+        d.frames(2);
+    }
+    d.ok("ui.click", json!({"id": font_id}));
+    d.frames(2);
+    d.ok("ui.type", json!({"text": target}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert_eq!(text_param(&mut d, clip, "font"), Some(filmcraft_project::ParamValue::Text(target.clone())), "the typed family applies");
+
+    // the field also opens a list: picking another family there applies it too (any family
+    // but the typed one, so the test also passes with exactly two families installed)
+    let other = families.iter().find(|f| *f != &target).unwrap().clone();
+    d.ok("ui.click", json!({"id": format!("{font_id}.menu")}));
+    d.frames(2);
+    d.shot("effect-controls-font-dropdown");
+    d.ok("ui.click", json!({"id": format!("{font_id}.option.{other}")}));
+    d.frames(3);
+    assert_eq!(text_param(&mut d, clip, "font"), Some(filmcraft_project::ParamValue::Text(other.clone())), "the picked family applies");
+
+    // and Font Style opens its own list for the new family
+    let before = text_param(&mut d, clip, "font_style");
+    d.ok("ui.click", json!({"id": format!("{style_id}.menu")}));
+    d.frames(2);
+    let options = d.ok("ui.elements", json!({"prefix": format!("{style_id}.option.")}));
+    let names: Vec<String> = options.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect();
+    assert!(!names.is_empty(), "the style list opens: {names:?}");
+    // pick the first style that is not the current one (option ids end with the style name)
+    let current_suffix = match &before {
+        Some(filmcraft_project::ParamValue::Text(s)) => format!(".{s}"),
+        _ => String::new(),
+    };
+    if let Some(pick) = names.into_iter().find(|n| !n.ends_with(&current_suffix)) {
+        d.ok("ui.click", json!({"id": pick}));
+        d.frames(3);
+        assert_ne!(text_param(&mut d, clip, "font_style"), before, "the picked style applies");
+    }
+}
+
 /// Keyframed text: the Graphics tab shows a clip's text at the clip's start when the playhead is
 /// past the clip, and an edit is written there (not at the clip's last frame), so the value shown
 /// is the one that changes.

@@ -652,6 +652,112 @@ pub(crate) fn param_row(
     }
 }
 
+/// Graphic text layers' `font` / `font_style`: the same family/style list as the Properties
+/// panel, next to a typeable field, so a typed valid name applies too (#3539). Masks keep the
+/// plain text field below.
+fn is_gfx_font_param(e: &EffectInstance, pd: &filmcraft_project::ParamDef, mask: Option<usize>) -> bool {
+    mask.is_none() && e.effect == filmcraft_project::graphic::TEXT_LAYER && (pd.id == "font" || pd.id == "font_style")
+}
+
+/// Value editor for graphic text `font` / `font_style`: a typeable field plus the dropdown.
+/// Returns the edited value, if any.
+#[allow(clippy::too_many_arguments)]
+fn font_value_widget(
+    app: &mut FilmcraftApp,
+    vui: &mut egui::Ui,
+    e: &EffectInstance,
+    pd: &filmcraft_project::ParamDef,
+    current: &str,
+    idx: usize,
+    id: egui::Id,
+    t: Tokens,
+) -> Option<Value> {
+    if !filmcraft_text::fonts::system_scanned() {
+        filmcraft_text::fonts::scan_system();
+    }
+    let fams = filmcraft_text::families();
+    // the list this row offers: families, or the current family's styles (plus the faux
+    // styles, like the Properties panel)
+    let options: Vec<String> = if pd.id == "font" {
+        fams.iter().map(|(f, _)| f.clone()).collect()
+    } else {
+        let family = match e.params.get("font").map(|p| &p.value) {
+            Some(ParamValue::Text(f)) => f.clone(),
+            _ => String::new(),
+        };
+        let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
+        let mut seen = Vec::new();
+        styles
+            .iter()
+            .map(String::as_str)
+            .chain(["Bold", "Italic", "Bold Italic"])
+            .filter(|x| {
+                if seen.contains(x) {
+                    false
+                } else {
+                    seen.push(*x);
+                    true
+                }
+            })
+            .map(str::to_string)
+            .collect()
+    };
+    let base = format!("effectControls.text.{idx}.{}", pd.id);
+    // the typeable field, full value width (keeps the row's automation id, so click + type +
+    // Enter keeps working)
+    let mut buf = vui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| current.to_string());
+    let r =
+        crate::widgets::accessible_name(vui.add(egui::TextEdit::singleline(&mut buf).desired_width(vui.available_width()).id(id)), crate::i18n::t(pd.label));
+    app.auto.add(&base, r.rect, pd.label);
+    // the dropdown chevron, overlaid on the field's right edge like a combo box (a separate
+    // button after the field would collide with the row's reset button)
+    let br = Rect::from_min_max(pos2(r.rect.max.x - 19.0, r.rect.min.y + 2.0), pos2(r.rect.max.x - 3.0, r.rect.max.y - 2.0));
+    let menu = vui.interact(br, id.with("menu"), Sense::click()).on_hover_text(crate::i18n::t(pd.label));
+    icons::paint(vui.painter(), br.shrink(3.0), Icon::ChevronDown, if menu.hovered() { t.text } else { t.text_dim });
+    app.auto.add(&format!("{base}.menu"), menu.rect, pd.label);
+    let mut picked: Option<String> = None;
+    egui::Popup::menu(&menu).show(|ui| {
+        egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+            ui.set_min_width(170.0);
+            for name in &options {
+                let or_ = ui.selectable_label(*name == current, name);
+                app.auto.add(&format!("{base}.option.{name}"), or_.rect, name);
+                if or_.clicked() {
+                    picked = Some(name.clone());
+                }
+            }
+        });
+    });
+    if r.gained_focus() {
+        // typing replaces the current name, so click + type + Enter applies it (#3539)
+        if let Some(mut state) = egui::TextEdit::load_state(vui.ctx(), id) {
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::select_all_str(&buf)));
+            state.store(vui.ctx(), id);
+        }
+    }
+    let mut set = None;
+    if let Some(name) = picked {
+        if name != current {
+            set = Some(json!(name));
+        }
+        vui.data_mut(|d| d.remove::<String>(id));
+    } else if r.lost_focus() {
+        if buf.as_str() != current
+            && let Some(canonical) = options.iter().find(|o| o.eq_ignore_ascii_case(&buf))
+        {
+            // a typed name applies when it names a listed family/style; anything else
+            // reverts to the current value
+            set = Some(json!(canonical));
+        }
+        vui.data_mut(|d| d.remove::<String>(id));
+    } else if r.has_focus() {
+        vui.data_mut(|d| d.insert_temp(id, buf));
+    } else {
+        vui.data_mut(|d| d.remove::<String>(id));
+    }
+    set
+}
+
 /// The value editor of one parameter row: number, point, checkbox, choice, colour (with the
 /// eyedropper), path or text field. Returns the edited value, if any.
 #[allow(clippy::too_many_arguments)]
@@ -742,6 +848,9 @@ fn param_value_widget(
         (ParamKind::Path, _) => {
             crate::panels::masks::path_value(app, vui, clip, idx, mask, actions);
         }
+        (ParamKind::Text, ParamValue::Text(s)) if is_gfx_font_param(e, pd, mask) => {
+            set = font_value_widget(app, vui, e, pd, s, idx, id, t);
+        }
         (ParamKind::Text, ParamValue::Text(s)) if !pd.id.ends_with("_lut") => {
             // edited in a buffer; committed (one undo step) when the field loses focus
             let mut buf = vui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| s.clone());
@@ -791,6 +900,27 @@ fn keyframe_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, target: KeyframeRef,
         }
     }
     ui.separator();
+    // Copy the selected points (or this one when nothing is selected), paste the clipboard at
+    // the playhead — the right-click half of #3319; Ctrl+C / Ctrl+V route here too when points
+    // are selected (see `menus::invoke`).
+    let keys: Vec<Value> = if app.ui.keyframe_selection.is_empty() {
+        vec![params.clone()]
+    } else {
+        app.ui.keyframe_selection.iter().map(|k| k.copy_key_json()).collect()
+    };
+    let copy = ui.button(tl!("Copy"));
+    app.auto.add("effectControls.keyframeMenu.copy", copy.rect, "Copy");
+    if copy.clicked() {
+        actions.push(("keyframes.copy".into(), json!({"keys": keys})));
+        ui.close();
+    }
+    let paste = ui.add_enabled(!app.session.state.keyframe_clipboard.is_empty(), egui::Button::new(tl!("Paste")));
+    app.auto.add("effectControls.keyframeMenu.paste", paste.rect, "Paste");
+    if paste.clicked() {
+        actions.push(("keyframes.paste".into(), json!({})));
+        ui.close();
+    }
+    ui.separator();
     let response = ui.button(tl!("Clear"));
     app.auto.add("effectControls.keyframeMenu.clear", response.rect, "Clear");
     if response.clicked() {
@@ -798,6 +928,7 @@ fn keyframe_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, target: KeyframeRef,
         ui.close();
     }
 }
+
 
 /// Lumetri Color panel: edits (or adds) the Lumetri effect on the selected clip, grouped by section.
 pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {

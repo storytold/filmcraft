@@ -20,12 +20,14 @@ const RAMP_S: f64 = 0.004;
 /// How long the stream stays open after the last move once the button is up.
 const LINGER_S: f64 = 0.25;
 
-/// What the audio callback plays next: `left` of `total` frames from `cursor`.
+/// What the audio callback plays next: `left` of `total` frames from `cursor` — forward
+/// from it, or backward ending at it when the playhead is scrubbed in reverse (#3482).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Grain {
     cursor: i64,
     left: i64,
     total: i64,
+    reverse: bool,
 }
 
 #[derive(Default)]
@@ -70,7 +72,7 @@ impl FilmcraftApp {
         }
         let on = self.session.prefs.audio.scrub_audio;
         if on && down && prev.is_some_and(|p| p != ph) {
-            self.scrub_grain(ph, now);
+            self.scrub_grain(ph, now, prev.is_some_and(|p| p > ph));
         }
         if self.scrub.open && (!on || (!down && now - self.scrub.last_move >= LINGER_S)) {
             if let Some(a) = self.audio.as_mut() {
@@ -81,8 +83,11 @@ impl FilmcraftApp {
         self.scrub.open
     }
 
-    /// Aim the scrub stream at `at` (opening it if needed) and play one grain.
-    fn scrub_grain(&mut self, at: Tick, now: f64) {
+    /// Aim the scrub stream at `at` (opening it if needed) and play one grain: forward from
+    /// `at` when scrubbing forward, backward ending at `at` when scrubbing in reverse, so
+    /// reverse scrubbing replays what was just dragged over instead of stuttering forward
+    /// attacks over already-heard audio (#3482).
+    fn scrub_grain(&mut self, at: Tick, now: f64, reverse: bool) {
         let Some(seq_id) = self.session.state.active_sequence else { return };
         let Some(a) = self.audio.as_ref() else { return };
         let sr = a.sample_rate();
@@ -92,7 +97,7 @@ impl FilmcraftApp {
         let total = ((GRAIN_S * sr as f64) as i64).max(1);
         {
             let mut g = self.scrub.grain.lock().unwrap_or_else(PoisonError::into_inner);
-            *g = Grain { cursor: at.to_units_floor(sr as i64), left: total, total };
+            *g = Grain { cursor: at.to_units_floor(sr as i64), left: total, total, reverse };
         }
         self.scrub.last_move = now;
         if self.scrub.open {
@@ -110,6 +115,8 @@ impl FilmcraftApp {
 }
 
 /// The scrub stream's callback: the rest of the current grain (faded at its ends), then silence.
+/// A reverse grain renders its window forward and flips it, so the first frame heard is the
+/// one at the playhead and the grain runs backward through what was dragged over (#3482).
 fn grain_fill(mut mix: impl FnMut(i64, &mut [f32], usize) + Send + 'static, grain: Arc<Mutex<Grain>>, ramp: i64) -> Box<dyn FnMut(&mut [f32], usize) + Send> {
     Box::new(move |buf: &mut [f32], ch: usize| {
         let ch = ch.max(1);
@@ -118,7 +125,7 @@ fn grain_fill(mut mix: impl FnMut(i64, &mut [f32], usize) + Send + 'static, grai
             let mut g = grain.lock().unwrap_or_else(PoisonError::into_inner);
             let now = *g;
             let take = g.left.clamp(0, n);
-            g.cursor = g.cursor.saturating_add(take);
+            g.cursor = if g.reverse { g.cursor.saturating_sub(take) } else { g.cursor.saturating_add(take) };
             g.left -= take;
             (now, take)
         };
@@ -127,7 +134,19 @@ fn grain_fill(mut mix: impl FnMut(i64, &mut [f32], usize) + Send + 'static, grai
         if part.is_empty() {
             return;
         }
-        mix(g.cursor, part, ch);
+        if g.reverse {
+            mix(g.cursor - take, part, ch);
+            // flip whole frames in place: no extra allocation in the audio callback
+            let frames = take as usize;
+            for i in 0..frames / 2 {
+                let j = frames - 1 - i;
+                for c in 0..ch {
+                    part.swap(i * ch + c, j * ch + c);
+                }
+            }
+        } else {
+            mix(g.cursor, part, ch);
+        }
         let done = g.total - g.left;
         for (i, frame) in part.chunks_mut(ch).enumerate() {
             let pos = done + i as i64;
@@ -149,7 +168,7 @@ mod tests {
 
     #[test]
     fn a_grain_plays_once_from_its_cursor_then_silence() {
-        let grain = Arc::new(Mutex::new(Grain { cursor: 1000, left: 300, total: 300 }));
+        let grain = Arc::new(Mutex::new(Grain { cursor: 1000, left: 300, total: 300, reverse: false }));
         let starts = Arc::new(Mutex::new(Vec::new()));
         let seen = starts.clone();
         let mix = move |c: i64, b: &mut [f32], _: usize| {
@@ -167,9 +186,34 @@ mod tests {
         assert!(b[44 * 2..].iter().all(|s| *s == 0.0), "then silence");
         assert!(c.iter().all(|s| *s == 0.0));
         // a new move re-aims it
-        *grain.lock().unwrap() = Grain { cursor: 5000, left: 300, total: 300 };
+        *grain.lock().unwrap() = Grain { cursor: 5000, left: 300, total: 300, reverse: false };
         run(&mut fill, 256);
         assert_eq!(starts.lock().unwrap().last(), Some(&5000));
+    }
+
+    /// #3482: a reverse grain plays the window ending at its cursor backward, so reverse
+    /// scrubbing replays what was dragged over instead of stuttering forward attacks.
+    #[test]
+    fn a_reverse_grain_plays_its_window_backward() {
+        let grain = Arc::new(Mutex::new(Grain { cursor: 1000, left: 300, total: 300, reverse: true }));
+        let mix = move |c: i64, b: &mut [f32], _: usize| {
+            // the mixer always renders forward from the asked position
+            for (i, s) in b.iter_mut().enumerate() {
+                *s = (c + i as i64 / 2) as f32;
+            }
+        };
+        let mut fill = grain_fill(mix, grain.clone(), 10);
+        let out = run(&mut fill, 300);
+        // frames heard first are the ones nearest the cursor, running backward
+        let heard: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
+        assert_eq!(heard.len(), 300);
+        assert_eq!(heard[0], 0.0, "fades in");
+        assert_eq!(heard[50], 949.0, "full volume in the middle, newest first");
+        assert_eq!(heard[200], 799.0);
+        assert!(heard[10..290].windows(2).all(|w| w[0] - w[1] == 1.0), "strictly backward");
+        assert_eq!(heard[299], 0.0, "fades out at its end");
+        let rest = run(&mut fill, 256);
+        assert!(rest.iter().all(|s| *s == 0.0), "then silence");
     }
 
     type Fill = Box<dyn FnMut(&mut [f32], usize) + Send>;

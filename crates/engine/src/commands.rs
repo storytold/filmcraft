@@ -128,7 +128,11 @@ pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), Stri
 }
 fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
-    if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
+    if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() && s.state.keyframe_clipboard.is_empty() {
+        Err("clipboard is empty".into())
+    } else {
+        Ok(())
+    }
 }
 
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
@@ -1441,6 +1445,12 @@ fn build() -> Vec<CommandSpec> {
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
+                // An export is still writing there: adopting it now would point the clip at
+                // the exported bytes once the export replaces the file (#3551).
+                if let Some(hit) = crate::export_tools::active_export_hit(s, &path) {
+                    errors.push(format!("{path}: an export (job {}) is still writing to this file; import it again when the export finishes", hit.job));
+                    continue;
+                }
                 if as_sequence || (detect && detect_image_sequence(s, &path)) {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
@@ -3416,9 +3426,36 @@ fn build() -> Vec<CommandSpec> {
             "Keyframe Interpolation",
             [],
             None,
-            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks,"interpolation":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"}"#,
+            r#"{"clip":id,"effect":str|index,"param":str,"mask":n?,"mediaTime":ticks,"interpolation":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"}"#,
             has_seq,
             |s, p| keyframe_op(s, p, "interp")
+        ),
+        cmd!(
+            "keyframes.copy",
+            "Copy Keyframes",
+            ["Edit"],
+            None,
+            r#"{"keys":[{"clip":id,"effect":index|str,"param":str,"mask":n?,"mediaTime":ticks|"time":ticks}]}"#,
+            has_seq,
+            crate::keyframe_copy::copy
+        ),
+        cmd!(
+            "keyframes.cut",
+            "Cut Keyframes",
+            ["Edit"],
+            None,
+            r#"{"keys":[{"clip":id,"effect":index|str,"param":str,"mask":n?,"mediaTime":ticks|"time":ticks}]}"#,
+            has_seq,
+            crate::keyframe_copy::cut
+        ),
+        cmd!(
+            "keyframes.paste",
+            "Paste Keyframes",
+            ["Edit"],
+            None,
+            r#"{"time":mediaTicks? (default: the playhead, pinned to each clip)}"#,
+            has_seq,
+            crate::keyframe_copy::paste
         ),
         cmd!(
             "effects.setKeyframe",
@@ -3698,6 +3735,9 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     s.edit_sequence_as(label, merge.as_deref(), |q, _, _| {
         let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
         let mt_now = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+        // #3386: keyframe media times live in `[source_in, source_out)`; the out point
+        // itself addresses no media. Read the range before the mutable borrow below.
+        let (mlo, mhi) = (it.source_in, (it.source_out() - Tick(1)).max(it.source_in));
         let e = match &eff {
             Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
             Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -3705,6 +3745,17 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
         }
         .ok_or_else(|| bad("keyframe", "no such effect"))?;
         let prm = crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("keyframe", "no such param"))?;
+        // #3386: `add` lands inside the range via the timeline clamp, but `mediaTime`
+        // lookups did not, so a key added at the out point could never be found or
+        // deleted there. Resolve the exact time first (keys orphaned by an earlier
+        // trim stay reachable), then the range-clamped time.
+        let pin = |t: Tick| t.clamp(mlo, mhi);
+        let find_at = |ks: &[filmcraft_project::Keyframe], t: Tick| {
+            ks.iter().position(|k| k.time == t).or_else(|| {
+                let clamped = pin(t);
+                (clamped != t).then(|| ks.iter().position(|k| k.time == clamped)).flatten()
+            })
+        };
         match op {
             "add" => {
                 // toggle: remove if a keyframe sits at the playhead, else add
@@ -3713,12 +3764,16 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                 }
             }
             "delete" => {
-                prm.remove_keyframe_at(mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?);
+                let at = mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?;
+                let removed = prm.remove_keyframe_at(at) || (pin(at) != at && prm.remove_keyframe_at(pin(at)));
+                if !removed {
+                    return Err(bad("keyframe", "no keyframe at that time"));
+                }
             }
             "move" => {
                 let from = mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?;
-                let to = to.ok_or_else(|| bad("keyframe", "need `to`"))?;
-                if let Some(i) = prm.keyframes.iter().position(|k| k.time == from) {
+                let to = pin(to.ok_or_else(|| bad("keyframe", "need `to`"))?);
+                if let Some(i) = find_at(&prm.keyframes, from) {
                     let mut k = prm.keyframes.remove(i);
                     k.time = to;
                     if let Some(v) = p.get("value") {
@@ -3727,11 +3782,14 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                     prm.keyframes.retain(|x| x.time != to);
                     let at = prm.keyframes.partition_point(|x| x.time < to);
                     prm.keyframes.insert(at, k);
+                } else {
+                    return Err(bad("keyframe", "no keyframe at that time"));
                 }
             }
             "set" => {
                 let at = mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?;
-                let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
+                let i = find_at(&prm.keyframes, at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
+                let k = &mut prm.keyframes[i];
                 if let Some(v) = p.get("value") {
                     k.value = json_to_param(&k.value, v).ok_or_else(|| bad("keyframe", "value has the wrong type"))?;
                 }
@@ -3753,8 +3811,8 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                     "easeout" => filmcraft_project::Interpolation::EaseOut,
                     _ => filmcraft_project::Interpolation::Linear,
                 };
-                let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
-                k.interp = kind;
+                let i = find_at(&prm.keyframes, at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
+                prm.keyframes[i].interp = kind;
             }
         }
         Ok(())
@@ -3892,16 +3950,36 @@ fn copy_selection(s: &mut Session) {
             }
         }
     }
-    set_clipboard(&mut s.state, (clip, markers));
+    // #3450: transitions travel with their clips (a fade on a copied clip, or the cut
+    // between two copied clips), like Nest and Option-drag already do. One whose partner
+    // is not copied is dropped, as in Premiere.
+    let mut transitions = Vec::new();
+    for (kind, tracks) in [(TrackKind::Video, &q.video_tracks), (TrackKind::Audio, &q.audio_tracks)] {
+        for (ti, t) in tracks.iter().enumerate() {
+            for tr in t
+                .transitions
+                .iter()
+                .filter(|x| (x.from.is_some() || x.to.is_some()) && x.from.is_none_or(|c| sel.contains(&c)) && x.to.is_none_or(|c| sel.contains(&c)))
+            {
+                let mut c = tr.clone();
+                c.start -= min;
+                transitions.push((kind, ti, c));
+            }
+        }
+    }
+    set_clipboard(&mut s.state, (clip, transitions, markers));
 }
 
-/// Timeline clips (track kind, track index, item) and the sequence markers that go with them.
-type Clipboard = (Vec<(TrackKind, usize, filmcraft_project::TrackItem)>, Vec<Marker>);
+/// Timeline clips (track kind, track index, item), the transitions that go with them, and the
+/// sequence markers that go with them.
+type Clipboard = (Vec<(TrackKind, usize, filmcraft_project::TrackItem)>, Vec<(TrackKind, usize, filmcraft_project::Transition)>, Vec<Marker>);
 
-fn set_clipboard(st: &mut crate::EditorState, (clips, markers): Clipboard) {
+fn set_clipboard(st: &mut crate::EditorState, (clips, transitions, markers): Clipboard) {
     st.clipboard = clips;
+    st.clipboard_transitions = transitions;
     st.clipboard_markers = markers;
     st.caption_clipboard.clear();
+    st.keyframe_clipboard.clear();
 }
 
 /// Put a Lift or Extract cut on the clipboard; returns how many clips it holds (0 leaves the
@@ -3920,12 +3998,24 @@ fn store_cut(s: &mut Session, cut: Option<Clipboard>) -> usize {
 fn cut_range(q: &filmcraft_project::Sequence, tracks: &[TrackId], range: TimeRange, ctx: &mut edit::EditCtx, with_markers: bool) -> Option<Clipboard> {
     let mut links = std::collections::HashMap::new();
     let mut clips = Vec::new();
+    // #3450: transitions travel with their clips; collected from the same split clones
+    // so edge pieces already point at the copied ids. One whose partner stays outside
+    // the range is dropped, as in Premiere.
+    let mut transitions = Vec::new();
     for (kind, list) in [(TrackKind::Video, &q.video_tracks), (TrackKind::Audio, &q.audio_tracks)] {
         for (ti, t) in list.iter().enumerate().filter(|(_, t)| !t.locked && tracks.contains(&t.id)) {
             let mut t = t.clone();
             edit::split_track_at(&mut t, range.start, ctx, &mut links);
             edit::split_track_at(&mut t, range.end(), ctx, &mut links);
-            clips.extend(t.items.into_iter().filter(|i| i.start >= range.start && i.end() <= range.end()).map(|i| (kind, ti, i)));
+            let inside: Vec<ClipId> = t.items.iter().filter(|i| i.start >= range.start && i.end() <= range.end()).map(|i| i.id).collect();
+            for tr in t
+                .transitions
+                .iter()
+                .filter(|x| (x.from.is_some() || x.to.is_some()) && x.from.is_none_or(|c| inside.contains(&c)) && x.to.is_none_or(|c| inside.contains(&c)))
+            {
+                transitions.push((kind, ti, tr.clone()));
+            }
+            clips.extend(t.items.into_iter().filter(|i| inside.contains(&i.id)).map(|i| (kind, ti, i)));
         }
     }
     let min = clips.iter().map(|c| c.2.start).min()?;
@@ -3933,29 +4023,43 @@ fn cut_range(q: &filmcraft_project::Sequence, tracks: &[TrackId], range: TimeRan
     for c in &mut clips {
         c.2.start -= min;
     }
+    for t in &mut transitions {
+        t.2.start -= min;
+    }
     let markers = if with_markers {
         q.markers.iter().filter(|m| m.start >= min && m.start < max).map(|m| Marker { start: m.start - min, ..m.clone() }).collect()
     } else {
         Vec::new()
     };
-    Some((clips, markers))
+    Some((clips, transitions, markers))
 }
 
 fn paste(s: &mut Session, insert: bool) -> Result<Value> {
     if !s.state.caption_clipboard.is_empty() {
         return crate::captions::paste(s, insert);
     }
+    // the keyframe clipboard is mutually exclusive with the clip clipboard (copying either
+    // clears the other), so reaching here with clips means keyframes were copied earlier and
+    // superseded: only an empty clip clipboard falls through to the keyframes (#3562)
+    if s.state.clipboard.is_empty() && !s.state.keyframe_clipboard.is_empty() {
+        return crate::keyframe_copy::paste(s, &Value::Null);
+    }
     let at = s.playhead();
     let clip = s.state.clipboard.clone();
+    let transitions = s.state.clipboard_transitions.clone();
     let markers = if s.state.copy_paste_sequence_markers { s.state.clipboard_markers.clone() } else { Vec::new() };
     let end = s.edit_sequence(if insert { "Paste Insert" } else { "Paste" }, |q, ctx, st| {
         let mut placements = Vec::new();
         let mut links = std::collections::HashMap::new();
+        // old clip id -> pasted clip id: transitions are re-pointed through this (#3450)
+        let mut remap = std::collections::HashMap::new();
         for (kind, ti, item) in clip {
             let tracks = q.tracks(kind);
             let Some(t) = tracks.get(ti).or(tracks.last()) else { continue };
             let mut it = item.clone();
-            it.id = ClipId(ctx.alloc());
+            let new_id = ClipId(ctx.alloc());
+            remap.insert(it.id, new_id);
+            it.id = new_id;
             it.start += at;
             if let Some(l) = it.link {
                 it.link = Some(*links.entry(l).or_insert_with(|| ctx.alloc()));
@@ -3964,6 +4068,26 @@ fn paste(s: &mut Session, insert: bool) -> Result<Value> {
         }
         let end = placements.iter().map(|p| p.1.end()).max().unwrap_or(at);
         let ids = if insert { edit::insert(q, placements, ctx)? } else { edit::overwrite(q, placements, ctx)? };
+        // the copied crossfades go back onto the pasted clips (new ids, shifted to the
+        // playhead); one whose clips did not land on the same track is dropped.
+        for (kind, ti, tr) in transitions {
+            let tracks = q.tracks(kind);
+            let Some(t) = tracks.get(ti).or(tracks.last()) else { continue };
+            let mut c = tr.clone();
+            c.id = TransitionId(ctx.alloc());
+            c.start += at;
+            c.from = c.from.and_then(|x| remap.get(&x).copied());
+            c.to = c.to.and_then(|x| remap.get(&x).copied());
+            if c.from.is_none() && c.to.is_none() {
+                continue;
+            }
+            if let Some(t) = q.track_mut(t.id)
+                && [c.from, c.to].into_iter().flatten().all(|x| t.item(x).is_some())
+            {
+                t.transitions.push(c);
+                t.sort();
+            }
+        }
         if insert && st.ripple_sequence_markers {
             crate::sequence_tools::ripple_markers(&mut q.markers, at, end - at);
         }
@@ -4544,14 +4668,43 @@ pub fn preview_transition(s: &Session, p: &Value, kind: TrackKind) -> Result<(Tr
     if q.track(track).is_some_and(|tr| tr.locked) {
         return Err(edit::EditError::Locked.into());
     }
+    // #3455: a crossfade must never be longer than the clip(s) it sits on. Clamp the
+    // default duration to what the clips support; an explicit `frames` duration that
+    // does not fit is refused instead of being silently shortened.
+    let trk = q.track(track).ok_or_else(|| EngineError::Other("no edit point at the playhead on targeted tracks".into()))?;
+    let len_of = |c: ClipId| trk.items.iter().find(|i| i.id == c).map(|i| i.duration);
+    let max_dur = match (from.and_then(len_of), to.and_then(len_of)) {
+        (Some(a), Some(b)) => Tick(a.0.min(b.0).saturating_mul(2)),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => dur,
+    };
+    let frame = rate.frame_duration().max(Tick(1));
+    if max_dur < frame {
+        return Err(EngineError::Other("the clip is too short for a transition".into()));
+    }
+    let explicit = p.get("frames").and_then(Value::as_i64).is_some();
+    let dur = if dur > max_dur {
+        if explicit {
+            return Err(EngineError::Other(format!(
+                "transition duration {} frames does not fit the clip (at most {})",
+                rate.frame_at(dur),
+                rate.frame_at(max_dur)
+            )));
+        }
+        rate.snap(max_dur).max(frame)
+    } else {
+        dur
+    };
+    // Snap the centered two-sided start to the frame grid; one-sided starts stay exact
+    // so their edge remains aligned with the cut.
     let start = if from.is_some() && to.is_some() {
-        cut - dur.mul_ratio(1, 2)
+        rate.snap(cut - dur.mul_ratio(1, 2))
     } else if to.is_some() {
         cut
     } else {
         cut - dur
     };
-    let tr = Transition { id: TransitionId(0), effect: instance, start: rate.snap(start), duration: dur, from, to, align: Default::default(), reverse };
+    let tr = Transition { id: TransitionId(0), effect: instance, start, duration: dur, from, to, align: Default::default(), reverse };
     Ok((track, tr))
 }
 

@@ -128,6 +128,82 @@ fn event_time(ti: &TrackItem, start: i64, m: i64) -> Tick {
     ti.start + (media - ti.source_in)
 }
 
+/// A source whose bulk reads fail past a small cap, like the decoder's 512 MB buffer cap does
+/// for one giant `audio()` call on a long clip (#3554).
+struct CappedAudio {
+    info: filmcraft_media::MediaInfo,
+    cap: usize,
+}
+
+impl filmcraft_media::MediaSource for CappedAudio {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        &self.info
+    }
+    fn video_frame(&self, _req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<std::sync::Arc<filmcraft_frame::VideoFrame>> {
+        Err(filmcraft_media::MediaError::NoStream("video"))
+    }
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        if frames > self.cap {
+            return Err(filmcraft_media::MediaError::Decode("decoder buffer cap".into()));
+        }
+        // a ramp, so chunk order and completeness are verifiable after concatenation
+        Ok(filmcraft_frame::AudioBuffer { sample_rate, channels: vec![(0..frames).map(|i| (start + i as i64) as f32).collect()] })
+    }
+}
+
+/// #3554: audio sync reads long clips in bounded windows, so a clip longer than the
+/// decoder's single-call buffer cap still yields its whole range (one call used to fail
+/// the sync with "has no audio to synchronize by").
+#[test]
+fn sync_audio_reads_long_clips_in_windows() {
+    use filmcraft_media::{Generator, MediaSource, generators::GeneratorSource};
+    use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef};
+    use filmcraft_time::TimeRange;
+
+    let rate = FrameRate::FPS_24;
+    let g = GeneratorSource::new(Generator::Tone { hz: 440.0, db: -6.0 }, 320, 180, rate, rate.tick_of(48));
+    let info = g.info().clone();
+    assert!(info.has_audio(), "the tone fixture carries audio");
+    let mut p = filmcraft_project::Project::new("sync-cap");
+    let item = p.add_item(
+        "tone",
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info: info.clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    let s = Session { project: std::sync::Arc::new(p), ..Default::default() };
+    // 25 windows of 10 s at 48 kHz: any single call for the whole range exceeds the cap
+    let window_samples = 48_000usize * 10;
+    let total_samples = window_samples * 25;
+    let ticks_per_sample = TICKS_PER_SECOND / 48_000;
+    s.media.insert(item, std::sync::Arc::new(CappedAudio { info, cap: window_samples }));
+    let clip = crate::sync::SyncClip {
+        item,
+        name: "tone".into(),
+        range: TimeRange::new(Tick::ZERO, Tick(total_samples as i64 * ticks_per_sample)),
+        in_point: Tick::ZERO,
+        out_point: Tick::ZERO,
+        timecode: Tick::ZERO,
+        markers: vec![],
+    };
+    let mono = crate::sync::clip_audio(&s, &clip).expect("chunked reads stay under the cap");
+    assert_eq!(mono.len(), total_samples);
+    for (i, v) in mono.iter().enumerate().step_by(1_000_003) {
+        assert_eq!(*v, i as f32, "chunk {i} lands in order");
+    }
+    assert_eq!(*mono.last().unwrap(), (total_samples - 1) as f32);
+}
+
 fn find_clip(q: &Sequence, item: ItemId, video: bool) -> &TrackItem {
     let tracks = if video { &q.video_tracks } else { &q.audio_tracks };
     tracks.iter().flat_map(|t| t.items.iter()).find(|i| i.item == item).unwrap_or_else(|| panic!("no clip of {item:?}"))

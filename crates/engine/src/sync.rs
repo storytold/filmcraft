@@ -14,7 +14,7 @@
 //!
 //! `offset` (frames) shifts every clip but the reference by that much (a known delay to correct).
 
-use filmcraft_audio_dsp::sync::{SyncOptions, SyncResult, find_offset, mixdown};
+use filmcraft_audio_dsp::sync::{SyncOptions, SyncResult, find_offset};
 use filmcraft_project::{ItemId, Project, TrackItem};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde_json::{Value, json};
@@ -130,10 +130,32 @@ pub fn clip_audio(s: &Session, c: &SyncClip) -> Option<Vec<f32>> {
     }
     let sr = ANALYSIS_RATE as i64;
     let start = c.range.start.to_units_floor(sr);
-    let len = c.range.duration.min(MAX_ANALYSIS).to_units_floor(sr).max(0) as usize;
-    let buf = src.audio(start, len, ANALYSIS_RATE).ok()?;
-    let chans: Vec<&[f32]> = buf.channels.iter().map(|c| c.as_slice()).collect();
-    Some(mixdown(&chans))
+    let total = c.range.duration.min(MAX_ANALYSIS).to_units_floor(sr).max(0) as usize;
+    // #3554: one `audio()` call for a long clip exceeds the decoder's buffer cap
+    // (512 MB: ~22 min of stereo) and fails the whole sync with "no audio". Read in
+    // bounded windows instead; peak allocation stays flat however long the clip is.
+    const WINDOW: usize = ANALYSIS_RATE as usize * 10; // 10 s
+    // Mix each window down before retaining it: holding every channel of a 30-min
+    // stereo clip reserves ~692 MB plus ~346 MB more for the final mixdown.
+    let mut mono: Vec<f32> = Vec::with_capacity(total);
+    let mut nch = 0usize;
+    let mut got = 0;
+    while got < total {
+        let n = (total - got).min(WINDOW);
+        let buf = src.audio(start + got as i64, n, ANALYSIS_RATE).ok()?;
+        if nch == 0 {
+            nch = buf.channels.len();
+        }
+        if buf.channels.len() != nch || buf.channels.iter().any(|b| b.len() != n) {
+            return None;
+        }
+        let k = buf.channels.len().max(1) as f32;
+        for i in 0..n {
+            mono.push(buf.channels.iter().map(|b| b[i]).sum::<f32>() / k);
+        }
+        got += n;
+    }
+    Some(mono)
 }
 
 /// The outcome for one clip: its anchor, and for audio the correlation figures.

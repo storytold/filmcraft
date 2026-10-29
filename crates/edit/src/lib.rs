@@ -1230,10 +1230,34 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
 }
 
 /// Add a transition at the cut between `from` and `to` (or at a single clip edge).
+/// Refused when the span would run past the clips it joins or off its cut: a
+/// crossfade can never be longer than the clip(s) it sits on (#3455).
 pub fn add_transition(seq: &mut Sequence, track: TrackId, mut tr: Transition, ctx: &mut EditCtx) -> Result<TransitionId> {
     let t = seq.track_mut(track).ok_or(EditError::NoTrack(track))?;
     if t.locked {
         return Err(EditError::Locked);
+    }
+    if tr.duration < Tick(1) {
+        return Err(EditError::Other("a transition lasts at least one frame".into()));
+    }
+    // Same span rules as resizing one: inside the joined clips, over the cut, with a
+    // one-sided transition keeping its clip-edge end.
+    let (lo, cut, hi) = transitions::bounds(t, &tr).ok_or_else(|| EditError::Other("the transition's clips are gone".into()))?;
+    let end = tr.start.0.checked_add(tr.duration.0).map(Tick).ok_or_else(|| EditError::Other("transition out of range".into()))?;
+    if tr.start < lo || end > hi {
+        return Err(EditError::Other("a transition can't extend past the clips it joins".into()));
+    }
+    let on_cut = match (tr.from, tr.to) {
+        (None, Some(_)) => tr.start == cut,
+        (Some(_), None) => end == cut,
+        _ => tr.start <= cut && cut <= end,
+    };
+    if !on_cut {
+        return Err(EditError::Other(if tr.from.is_some() && tr.to.is_some() {
+            "a transition between two clips must stay over their cut".into()
+        } else {
+            "a one-sided transition stays on its clip's edge".into()
+        }));
     }
     tr.id = TransitionId(ctx.alloc());
     // Replace an existing transition at the same place.
