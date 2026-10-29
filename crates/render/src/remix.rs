@@ -85,7 +85,16 @@ impl Remix {
         params.insert("variations".to_string(), Param::new(ParamValue::Float(self.variations)));
         params.insert("original".to_string(), Param::new(ParamValue::Float(self.original.0 as f64)));
         params.insert("plan".to_string(), Param::new(ParamValue::Text(if self.pieces.is_empty() { String::new() } else { plan.to_text() })));
-        EffectInstance { effect: EFFECT.to_string(), enabled: true, params, masks: Vec::new(), post_fader: false, essential: false, layer: None }
+        EffectInstance {
+            effect: EFFECT.to_string(),
+            enabled: true,
+            params,
+            masks: Vec::new(),
+            post_fader: false,
+            essential: false,
+            layer: None,
+            analysis: None,
+        }
     }
 
     /// Store this remix on `item` (replacing an earlier one).

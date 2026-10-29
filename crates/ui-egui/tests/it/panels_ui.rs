@@ -200,6 +200,20 @@ fn panel_menu_maximize_restores_and_an_empty_dock_reopens() {
     assert_eq!(d.app().ui.dock, layout, "the layout survives maximize / restore");
     assert!(d.has("panel.Timeline"));
 
+    // Full Screen on Monitor floats the preview; the Program panel's wrench menu offers Restore
+    // Program Monitor right below it (the same result as the View menu item).
+    d.ok("ui.menu.invoke", json!({"id": "view.monitorFullScreen", "params": {"display": 1}}));
+    assert_ne!(d.app().ui.dock, layout, "the Program monitor floats for full screen");
+    d.click("panel.menu.Program");
+    assert!(!d.has("panel.menu.Program.restoreProgramMonitor"), "the ≡ menu no longer offers it");
+    d.ok("ui.key", json!({"key": "Escape"}));
+    d.frames(1);
+    d.click("program.settings");
+    assert!(d.has("program.settings.monitorFullScreen"));
+    assert!(d.has("program.settings.restoreProgramMonitor"), "the wrench menu offers Restore Program Monitor");
+    d.click("program.settings.restoreProgramMonitor");
+    assert_eq!(d.app().ui.dock, layout, "Restore Program Monitor re-docks the preview");
+
     for p in layout.panels() {
         d.ok("ui.panel.close", json!({"panel": p.id()}));
     }
@@ -894,5 +908,90 @@ fn menu_bar_menus_use_the_13pt_menu_text() {
             .find(|(text, pos, ..)| *text == label && rect.contains(*pos))
             .unwrap_or_else(|| panic!("`{label}` is not drawn in {rect:?}"));
         assert_eq!(font.size, 13.0, "`{label}` in the File menu");
+    }
+}
+
+#[test]
+fn view_full_screen_on_monitor_opens_the_display_chooser() {
+    // The View menu item asks which connected display to use; it must never be a silent no-op.
+    // A machine that cannot list displays (the web build, a headless test host) falls back to
+    // full screening the window's own monitor instead.
+    let mut d = Driver::demo();
+    let r = d.ok("ui.menu.invoke", json!({"id": "view.monitorFullScreen"}));
+    if d.app().ui.monitor_fullscreen.is_some() {
+        assert_eq!(r["dialog"], "monitorFullScreen");
+        let displays = r["displays"].as_array().map(Vec::len).unwrap_or(0);
+        assert!(displays > 0, "the chooser offers the displays that were connected");
+        d.frames(2);
+        assert_eq!(d.ids("monitorFullScreen.display.").len(), displays, "every display has a choice");
+        assert!(d.has("monitorFullScreen.cancel"));
+        d.click("monitorFullScreen.cancel");
+        assert!(d.app().ui.monitor_fullscreen.is_none(), "Cancel closes the chooser");
+        assert!(d.app().ui.dock.floating.is_empty(), "Cancel leaves the monitor docked");
+    } else {
+        assert_eq!(r["fullScreen"], true, "without a display list the window's monitor is used");
+        assert!(!d.app().ui.dock.floating.is_empty(), "the monitor floats for full screen");
+        assert!(d.ok("ui.menu.invoke", json!({"id": "view.restoreProgramMonitor"})).is_object());
+        assert!(d.app().ui.dock.floating.is_empty(), "Restore Program Monitor docks it again");
+    }
+}
+
+#[test]
+fn full_screen_on_monitor_reopens_a_closed_monitor() {
+    // Full Screen on Monitor must work even when the Program panel was closed: it comes back,
+    // floats and can be restored, instead of failing with "could not be floated".
+    let mut d = Driver::demo();
+    let startup = d.app().ui.dock.clone();
+    d.ok("ui.panel.close", json!({"panel": "Program"}));
+    assert!(!d.app().ui.dock.contains(&filmcraft_ui_egui::dock::PanelKind::Program));
+    let r = d.ok("ui.menu.invoke", json!({"id": "view.monitorFullScreen", "params": {"display": 1}}));
+    assert_eq!(r["fullScreen"], true);
+    assert_eq!(d.app().ui.dock.floating.len(), 1, "the reopened Program monitor floats");
+    d.ok("ui.menu.invoke", json!({"id": "view.restoreProgramMonitor"}));
+    assert!(d.app().ui.dock.floating.is_empty(), "Restore docks the reopened monitor again");
+    assert_eq!(d.app().ui.dock, startup, "Restore puts the reopened monitor back top-right");
+}
+
+#[test]
+fn restore_program_monitor_returns_the_preview_top_right_like_startup() {
+    // Restore Program Monitor means the startup position (top right, beside the Source monitor),
+    // not whichever spot Full Screen on Monitor happened to float the preview from.
+    let mut d = Driver::demo();
+    let startup = d.app().ui.dock.clone();
+    // Closed: the View menu item brings it back at the startup position.
+    d.ok("ui.panel.close", json!({"panel": "Program"}));
+    let r = d.ok("ui.menu.invoke", json!({"id": "view.restoreProgramMonitor"}));
+    assert_eq!(r["restored"], "Program");
+    assert_eq!(d.app().ui.dock, startup, "a closed preview comes back top-right");
+    // Docked elsewhere: it moves back instead of staying at the bottom left.
+    d.ok(
+        "ui.menu.invoke",
+        json!({"id": "window.dockAction", "params": {"action": {"Move": {"panel": "Program", "anchor": "Project", "placement": {"Split": "Bottom"}}}}}),
+    );
+    assert_ne!(d.app().ui.dock, startup, "the preview moves away from the startup position");
+    d.ok("ui.menu.invoke", json!({"id": "view.restoreProgramMonitor"}));
+    assert_eq!(d.app().ui.dock, startup, "a docked preview moves back top-right");
+}
+
+#[test]
+fn restore_program_monitor_rebuilds_each_workspace_startup_slot() {
+    // The preview does not always start merely right of the Source: in All Panels it shares a
+    // nested split with the Lumetri Color column, and the Color/Captions workspaces use their
+    // own split size. Restore must reproduce the workspace's startup frame, not a generic one.
+    use filmcraft_ui_egui::dock::{WORKSPACES, slug};
+    for name in WORKSPACES {
+        let mut d = Driver::demo();
+        d.ok("ui.menu.invoke", json!({"id": format!("window.workspace.{}", slug(name))}));
+        d.frames(2);
+        let startup = d.app().ui.dock.clone();
+        d.ok("ui.panel.close", json!({"panel": "Program"}));
+        d.ok("ui.menu.invoke", json!({"id": "view.restoreProgramMonitor"}));
+        assert_eq!(d.app().ui.dock, startup, "{name}: a closed preview comes back where it starts");
+        d.ok(
+            "ui.menu.invoke",
+            json!({"id": "window.dockAction", "params": {"action": {"Move": {"panel": "Program", "anchor": "Project", "placement": {"Split": "Bottom"}}}}}),
+        );
+        d.ok("ui.menu.invoke", json!({"id": "view.restoreProgramMonitor"}));
+        assert_eq!(d.app().ui.dock, startup, "{name}: a moved preview returns to its startup frame");
     }
 }

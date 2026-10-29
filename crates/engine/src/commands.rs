@@ -1706,8 +1706,11 @@ fn build() -> Vec<CommandSpec> {
         query!("perf.stats", "Performance Statistics", "{}", |s, _| Ok(crate::perf::stats(s))),
         cmd!("jobs.cancel", "Cancel Job", [], None, r#"{"job":id}"#, always, |s, p| {
             let id = u64_p(p, "job").ok_or_else(|| bad("jobs.cancel", "need `job`"))?;
-            let j = s.jobs.iter().find(|j| j.id == id).ok_or_else(|| bad("jobs.cancel", "no such job"))?;
-            j.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            {
+                let j = s.jobs.iter().find(|j| j.id == id).ok_or_else(|| bad("jobs.cancel", "no such job"))?;
+                j.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            crate::stabilizer::cancel_job(s, id);
             Ok(Value::Null)
         }),
         // ================= Edit =================
@@ -3227,6 +3230,14 @@ fn build() -> Vec<CommandSpec> {
                 if bool_p(p, "begin").unwrap_or(false) {
                     s.history.merge_key = None;
                 }
+                // where the effect is, to stop a running Warp Stabilizer analysis if another of its
+                // parameters changes (the analysis flag itself was cleared by the edit)
+                let effect_at = match &eff {
+                    Value::Number(n) => n.as_u64().map(|n| n as usize),
+                    Value::String(sid) => s.active_sequence().and_then(|q| q.find_item(c)).and_then(|(_, it)| it.effects.iter().position(|e| &e.effect == sid)),
+                    _ => None,
+                };
+                let stops_stabilizer = pid != "stabilize" && p.get("mask").is_none_or(Value::is_null);
                 let (keyframes, value) = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                     let mt = it.source_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
@@ -3236,6 +3247,20 @@ fn build() -> Vec<CommandSpec> {
                         _ => None,
                     }
                     .ok_or_else(|| bad("effects.setParam", "no such effect on clip"))?;
+                    // Warp Stabilizer runs only while its Stabilize flag is set: changing any other
+                    // parameter stops the analysis (the caller cancels the job) and needs the
+                    // Stabilize button again, as Premiere does.
+                    if e.effect == "warp_stabilizer"
+                        && pid != "stabilize"
+                        && pq.get("mask").is_none_or(Value::is_null)
+                        && let Some(sp) = e.param_mut("stabilize")
+                    {
+                        sp.value = filmcraft_project::ParamValue::Bool(false);
+                        sp.keyframes.clear();
+                        // the old analysis belongs to the parameters that were stabilised; a new
+                        // Stabilize press analyses again
+                        e.analysis = None;
+                    }
                     // the parameter's definition (a mask's own parameters have none)
                     let def = if pq.get("mask").is_none_or(Value::is_null) { e.def().and_then(|d| d.param(&pid)) } else { None };
                     // a choice takes its option name as well as its index, as transition parameters do
@@ -3299,6 +3324,9 @@ fn build() -> Vec<CommandSpec> {
                     }
                     Ok((keyframes, accepted_value))
                 })?;
+                if stops_stabilizer && let Some(idx) = effect_at {
+                    crate::stabilizer::cancel(s, c, idx);
+                }
                 // 0 keyframes: the value is static (`time` was not used)
                 Ok(json!({"keyframes": keyframes, "param": pid, "value": value}))
             }
@@ -3356,12 +3384,18 @@ fn build() -> Vec<CommandSpec> {
                 }
                 Ok(())
             })?;
+            crate::stabilizer::cancel(s, c, idx);
             Ok(Value::Null)
         }),
         cmd!("effects.resetParam", "Reset Parameter", [], None, r#"{"clip":id,"effect":str|index,"param":str}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.resetParam", "need `clip`"))?;
             let pid = str_p(p, "param").ok_or_else(|| bad("effects.resetParam", "need `param`"))?.to_string();
             let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
+            let effect_at = match &eff {
+                Value::Number(n) => n.as_u64().map(|n| n as usize),
+                Value::String(sid) => s.active_sequence().and_then(|q| q.find_item(c)).and_then(|(_, it)| it.effects.iter().position(|e| &e.effect == sid)),
+                _ => None,
+            };
             let frame = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
             let source = s.active_sequence().and_then(|q| q.find_item(c)).and_then(|(_, i)| s.project.source_size(i.item)).unwrap_or(frame);
             let ph = s.playhead();
@@ -3379,6 +3413,9 @@ fn build() -> Vec<CommandSpec> {
                 }
                 Ok(())
             })?;
+            if let Some(idx) = effect_at {
+                crate::stabilizer::cancel(s, c, idx);
+            }
             Ok(Value::Null)
         }),
         cmd!(
@@ -3629,6 +3666,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::proxies::commands());
     v.extend(crate::project_manager::commands());
     v.extend(crate::masks::commands());
+    v.extend(crate::stabilizer::commands());
     v.extend(crate::presets::commands());
     v.extend(crate::export_tools::commands());
     v.extend(crate::transcript::commands());
@@ -3671,6 +3709,10 @@ fn reset_params(e: &mut filmcraft_project::EffectInstance, only: Option<&str>, f
                 e.params.insert(id, prm);
             }
         }
+    }
+    // resetting the Stabilize parameter (or the whole effect) drops the stored analysis with it
+    if e.effect == "warp_stabilizer" && only.is_none_or(|o| o == "stabilize") {
+        e.analysis = None;
     }
     any
 }

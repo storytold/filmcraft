@@ -131,6 +131,33 @@ impl Tool {
     }
 }
 
+/// Centering Grid pattern: the lines drawn over the picture to help place a subject.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CenterGridPattern {
+    /// Rule of thirds plus the centre cross.
+    #[default]
+    Thirds,
+    /// Only the centre cross.
+    Cross,
+    /// Golden-ratio lines plus the centre cross.
+    GoldenRatio,
+    /// Both corner-to-corner diagonals plus the centre cross.
+    Diagonals,
+}
+
+impl CenterGridPattern {
+    pub const ALL: [CenterGridPattern; 4] = [CenterGridPattern::Thirds, CenterGridPattern::Cross, CenterGridPattern::GoldenRatio, CenterGridPattern::Diagonals];
+    pub fn label(self) -> &'static str {
+        match self {
+            CenterGridPattern::Thirds => "Rule of Thirds",
+            CenterGridPattern::Cross => "Centre Cross",
+            CenterGridPattern::GoldenRatio => "Golden Ratio",
+            CenterGridPattern::Diagonals => "Diagonals",
+        }
+    }
+}
+
 /// Playback resolution (Premiere's Full / 1/2 / 1/4 / 1/8 / 1/16).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlaybackRes {
@@ -316,6 +343,11 @@ pub struct MonitorView {
     /// length (start, end), set with the zoom bar under the ruler; None = all of it.
     pub time_zoom: Option<[f64; 2]>,
     pub safe_margins: bool,
+    /// Centering Grid: rule-of-thirds lines and a centre cross over the picture help place a
+    /// subject in the middle (or on a third) of the frame.
+    pub center_grid: bool,
+    /// Centering Grid pattern (rule of thirds, centre cross, golden ratio or diagonals).
+    pub center_grid_pattern: CenterGridPattern,
     /// Transparency Grid: a checkerboard behind the picture shows its transparent areas.
     pub transparency_grid: bool,
     pub show_transport: bool,
@@ -344,6 +376,8 @@ impl Default for MonitorView {
             pan: [0.0, 0.0],
             time_zoom: None,
             safe_margins: false,
+            center_grid: false,
+            center_grid_pattern: CenterGridPattern::Thirds,
             transparency_grid: false,
             show_transport: true,
             // The optional Loop button is available from the editor without altering default layouts.
@@ -370,6 +404,28 @@ impl MonitorView {
     pub fn display_mode(&self) -> Option<DisplayMode> {
         (!self.multicam).then_some(self.display)
     }
+}
+
+/// One connected display offered by Full Screen on Monitor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MonitorChoice {
+    /// The display's index in the connected-monitors order (`ViewportCommand::SetMonitor`).
+    pub index: usize,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub primary: bool,
+}
+
+/// Full Screen on Monitor's display chooser (open when Some).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MonitorFullScreenDialog {
+    /// The Source Monitor (else the Program Monitor).
+    pub source: bool,
+    /// The displays connected when the command was pressed.
+    pub displays: Vec<MonitorChoice>,
 }
 
 /// Window ▸ Workspaces dialogs: Save as New Workspace… and Edit Workspaces….
@@ -579,6 +635,9 @@ pub struct UiState {
     /// Open guide dialog (Add Guide / Save Guides as Template / Manage Guides).
     #[serde(default)]
     pub guide_dialog: Option<GuideDialog>,
+    /// Open Full Screen on Monitor display chooser.
+    #[serde(default)]
+    pub monitor_fullscreen: Option<MonitorFullScreenDialog>,
     /// Open Text Properties dialog (the wrench in the Properties panel's Text section).
     #[serde(default)]
     pub text_props_dialog: Option<TextPropsDialog>,
@@ -1026,6 +1085,7 @@ impl Default for UiState {
             multicam_record: true,
             edit_cameras: None,
             guide_dialog: None,
+            monitor_fullscreen: None,
             text_props_dialog: None,
             workspace_dialog: None,
             clip_dialog: None,

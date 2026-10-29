@@ -64,4 +64,6 @@ serde_json = { workspace = true }
 toml = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Connected displays, to choose where Full Screen on Monitor opens (Apache-2.0).
+display-info = "0.5.10"
 craft-update = { workspace = true }
