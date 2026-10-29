@@ -603,6 +603,11 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
             let (lw, lh) = ((fw as usize / n).max(1), (fh as usize / n).max(1));
             let px_scale = lw as f32 / size.0.max(1) as f32;
             let tc = "";
+            let m = Affine::scale(opts.scale as f64, opts.scale as f64)
+                .then_apply(&motion)
+                .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
+            // the clip as `item_layer` sees it, for effects that analyse it (Warp Stabilizer)
+            let env = crate::vfx::ItemEnv { project, seq, item, t, opts, sources, want, layer_size: (lw, lh), layer_to_output: m, tc };
             let cx = crate::effects::FxCtx {
                 t: mt,
                 // as the CPU path: effect sizes are capped, mask outlines use the true ratio
@@ -612,7 +617,7 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                 timecode: tc,
                 clip_name: &item.name,
                 project: Some(project),
-                env: None,
+                env: Some(&env),
                 frame_rate: seq.settings.frame_rate.as_f64(),
                 working: seq.settings.color.working,
             };

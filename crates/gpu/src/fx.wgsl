@@ -17,8 +17,11 @@ struct U {
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var dst: texture_storage_2d<rgba32float, write>;
-// Unsharp Mask: the image before blurring.
+// Unsharp Mask: the image before blurring (HSL Secondary: the image the key was made from).
 @group(0) @binding(3) var aux: texture_2d<f32>;
+// Tables of the LUT and Lumetri ops (a LUT block: `lut_apply`; curve tables, four samples per
+// entry); one zero entry for other ops.
+@group(0) @binding(4) var<storage, read> data: array<vec4<f32>>;
 
 const OP_BRIGHTNESS_CONTRAST: u32 = 1u;
 const OP_PROC_AMP: u32 = 2u;
@@ -55,6 +58,16 @@ const OP_BOKEH_BOOST: u32 = 33u;
 const OP_BOKEH: u32 = 34u;
 const OP_BOKEH_UP: u32 = 35u;
 const OP_THREE_WAY: u32 = 36u;
+const OP_LUT: u32 = 37u;
+const OP_LUMETRI_ADV: u32 = 38u;
+const OP_HSL_KEY: u32 = 39u;
+const OP_HSL_MEDIAN: u32 = 40u;
+const OP_HSL_APPLY: u32 = 41u;
+const OP_SYNTH_EDGES: u32 = 42u;
+// `gpufx::HSL_MEDIAN_MAX_RADIUS`: a 7×7 window
+const HSL_MEDIAN_MAX: u32 = 49u;
+// `effects::CURVE_N`
+const CURVE_N: u32 = 1024u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -646,6 +659,292 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
 }
 
 // One output pixel of every op but the running-sum box blur.
+// ---- LUTs (`filmcraft_color::Lut::apply`): a block at `base` holds a header (cube size, shaper
+// length), the shaper's and the cube's domains, the shaper entries, then the cube (red fastest).
+
+fn lut_cube_at(base: u32, n: u32, r: u32, g: u32, b: u32) -> vec3<f32> {
+    return data[base + r + g * n + b * n * n].xyz;
+}
+
+// `Lut3d::apply`: tetrahedral interpolation (the arithmetic of `lut.wgsl`).
+fn lut_tetra(base: u32, n: u32, dmin: vec3<f32>, dmax: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
+    let m = f32(n - 1u);
+    let t = clamp((c - dmin) / (dmax - dmin), vec3(0.0), vec3(1.0)) * m;
+    let i = min(vec3<u32>(t), vec3(n - 2u));
+    let f = t - vec3<f32>(i);
+    let fr = f.x;
+    let fg = f.y;
+    let fb = f.z;
+    let c000 = lut_cube_at(base, n, i.x, i.y, i.z);
+    let c111 = lut_cube_at(base, n, i.x + 1u, i.y + 1u, i.z + 1u);
+    var ca: vec3<f32>;
+    var cb: vec3<f32>;
+    var w: vec4<f32>;
+    if fr > fg {
+        if fg > fb {
+            ca = lut_cube_at(base, n, i.x + 1u, i.y, i.z); cb = lut_cube_at(base, n, i.x + 1u, i.y + 1u, i.z); w = vec4(1.0 - fr, fr - fg, fg - fb, fb);
+        } else if fr > fb {
+            ca = lut_cube_at(base, n, i.x + 1u, i.y, i.z); cb = lut_cube_at(base, n, i.x + 1u, i.y, i.z + 1u); w = vec4(1.0 - fr, fr - fb, fb - fg, fg);
+        } else {
+            ca = lut_cube_at(base, n, i.x, i.y, i.z + 1u); cb = lut_cube_at(base, n, i.x + 1u, i.y, i.z + 1u); w = vec4(1.0 - fb, fb - fr, fr - fg, fg);
+        }
+    } else if fb > fg {
+        ca = lut_cube_at(base, n, i.x, i.y, i.z + 1u); cb = lut_cube_at(base, n, i.x, i.y + 1u, i.z + 1u); w = vec4(1.0 - fb, fb - fg, fg - fr, fr);
+    } else if fb > fr {
+        ca = lut_cube_at(base, n, i.x, i.y + 1u, i.z); cb = lut_cube_at(base, n, i.x, i.y + 1u, i.z + 1u); w = vec4(1.0 - fg, fg - fb, fb - fr, fr);
+    } else {
+        ca = lut_cube_at(base, n, i.x, i.y + 1u, i.z); cb = lut_cube_at(base, n, i.x + 1u, i.y + 1u, i.z); w = vec4(1.0 - fg, fg - fr, fr - fb, fb);
+    }
+    return w.x * c000 + w.y * ca + w.z * cb + w.w * c111;
+}
+
+// `Lut1d::apply`, one channel.
+fn lut_shaper1(base: u32, n1: u32, lo: f32, hi: f32, v: f32, ch: u32) -> f32 {
+    let n = n1 - 1u;
+    let t = clamp((v - lo) / (hi - lo), 0.0, 1.0) * f32(n);
+    let i = min(u32(t), n - 1u);
+    let f = t - f32(i);
+    let a = data[base + i][ch];
+    let b = data[base + min(i + 1u, n)][ch];
+    return a + (b - a) * f;
+}
+
+fn lut_apply(base: u32, c: vec3<f32>) -> vec3<f32> {
+    let hd = data[base];
+    let n3 = u32(hd.x);
+    let n1 = u32(hd.y);
+    var v = c;
+    if n1 >= 2u {
+        let lo = data[base + 1u].xyz;
+        let hi = data[base + 2u].xyz;
+        let sb = base + 5u;
+        v = vec3(lut_shaper1(sb, n1, lo.x, hi.x, v.x, 0u), lut_shaper1(sb, n1, lo.y, hi.y, v.y, 1u), lut_shaper1(sb, n1, lo.z, hi.z, v.z, 2u));
+    }
+    if n3 >= 2u {
+        v = lut_tetra(base + 5u + n1, n3, data[base + 3u].xyz, data[base + 4u].xyz, v);
+    }
+    return v;
+}
+
+// ---- Lumetri ▸ Look, Color Wheels, Curves (`effects::lumetri_advanced_apply`, SDR)
+
+fn s_curve(v: f32, k: f32) -> f32 {
+    let x = clamp(v, 0.0, 1.0);
+    return x + (x * x * (3.0 - 2.0 * x) - x) * k;
+}
+
+fn s_curve3(c: vec3<f32>, k: f32) -> vec3<f32> {
+    return vec3(s_curve(c.x, k), s_curve(c.y, k), s_curve(c.z, k));
+}
+
+// `effects::apply_look`: the procedural looks.
+fn apply_look(look: u32, c: vec3<f32>) -> vec3<f32> {
+    let l = luma709(c);
+    let ll = vec3(l);
+    switch look {
+        case 1u: {
+            let shadow = vec3(0.0, 0.08, 0.1);
+            let high = vec3(0.1, 0.04, -0.06);
+            return s_curve3(c + shadow * (1.0 - l) + high * l, 0.35);
+        }
+        case 2u: {
+            let d = vec3(c.x * 1.06 + 0.02, c.y * 1.0 + 0.01, c.z * 0.9);
+            return (d + (ll - d) * 0.15) * 0.94 + vec3(0.04);
+        }
+        case 3u: {
+            return s_curve3(vec3(c.x * 0.9, c.y * 0.98, c.z * 1.1 + 0.02), 0.2);
+        }
+        case 4u: {
+            return s_curve3(c + (ll - c) * 0.55, 0.6);
+        }
+        case 5u: {
+            return vec3(0.08) + (c + (ll - c) * 0.25) * 0.84;
+        }
+        case 6u: {
+            return s_curve3(ll, 0.3);
+        }
+        case 7u: {
+            return s_curve3(vec3(c.x * 1.1 + 0.03, c.y * 1.02 + 0.01, c.z * 0.82), 0.15);
+        }
+        case 8u: {
+            return vec3(c.x * 0.75, c.y * 0.85, c.z * 1.15) * 0.8;
+        }
+        default: {
+            return c;
+        }
+    }
+}
+
+// Sample `x` of the curve table at entry `base` (CURVE_N samples, four per entry).
+fn curve_sample(base: u32, x: f32) -> f32 {
+    let p = clamp(x, 0.0, 1.0) * f32(CURVE_N - 1u);
+    let i = u32(p);
+    let j = min(i + 1u, CURVE_N - 1u);
+    let a = data[base + i / 4u][i % 4u];
+    let b = data[base + j / 4u][j % 4u];
+    return a + (b - a) * (p - f32(i));
+}
+
+// i1.x look, i1.y bits: 0–3 luma / red / green / blue curves, 4–8 Hue vs Sat, Hue vs Hue, Hue vs
+// Luma, Luma vs Sat, Sat vs Sat, 9 wheels, 10 look LUT (a LUT block at 0); i1.z the first table.
+// p0.x look intensity; p0.yzw, p1.xyz, p1.w p2.xy: shadow, midtone, highlight wheels; p2.zw p3.x
+// their lightness.
+fn lumetri_adv_op(c: vec3<f32>) -> vec3<f32> {
+    let look = u.i1.x;
+    let bits = u.i1.y;
+    let look_k = u.p0.x;
+    let ws = u.p0.yzw;
+    let wm = u.p1.xyz;
+    let wh = vec3(u.p1.w, u.p2.x, u.p2.y);
+    let ls = u.p2.z;
+    let lm = u.p2.w;
+    let lh = u.p3.x;
+    var v = enc(c);
+    if (bits & (1u << 10u)) != 0u {
+        let lk = lut_apply(0u, clamp(v, vec3(0.0), vec3(1.0)));
+        v = v + (lk - v) * look_k;
+    } else if look > 0u {
+        let lk = apply_look(look, v);
+        v = v + (lk - v) * look_k;
+    }
+    if (bits & (1u << 9u)) != 0u {
+        let l = clamp(luma709(v), 0.0, 1.0);
+        let wsh = (1.0 - l) * (1.0 - l);
+        let whi = l * l;
+        let wmid = max(1.0 - wsh - whi, 0.0);
+        v = v + (ws * 0.3 + vec3(ls * 0.3)) * wsh;
+        v = v + (wm * 0.3 + vec3(lm * 0.3)) * wmid;
+        v = v * (vec3(1.0) + (wh * 0.5 + vec3(lh * 0.5)) * whi);
+    }
+    // the tables present, in bit order, CURVE_N / 4 entries each
+    var t = array<u32, 9>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
+    var next = u.i1.z;
+    for (var k = 0u; k < 9u; k++) {
+        if (bits & (1u << k)) != 0u {
+            t[k] = next;
+            next += CURVE_N / 4u;
+        }
+    }
+    if (bits & 1u) != 0u {
+        v = vec3(curve_sample(t[0], v.x), curve_sample(t[0], v.y), curve_sample(t[0], v.z));
+    }
+    if (bits & 2u) != 0u {
+        v.x = curve_sample(t[1], v.x);
+    }
+    if (bits & 4u) != 0u {
+        v.y = curve_sample(t[2], v.y);
+    }
+    if (bits & 8u) != 0u {
+        v.z = curve_sample(t[3], v.z);
+    }
+    if (bits & 0x1f0u) != 0u {
+        var h = rgb_to_hsl(clamp(v, vec3(0.0), vec3(1.0)));
+        let h0 = h.x;
+        let s0 = h.y;
+        let l0 = h.z;
+        if (bits & (1u << 5u)) != 0u {
+            h.x = fract_euclid(h.x + (curve_sample(t[5], h0) - 0.5));
+        }
+        var sm = 1.0;
+        if (bits & (1u << 4u)) != 0u {
+            sm *= curve_sample(t[4], h0) * 2.0;
+        }
+        if (bits & (1u << 7u)) != 0u {
+            sm *= curve_sample(t[7], l0) * 2.0;
+        }
+        if (bits & (1u << 8u)) != 0u {
+            sm *= curve_sample(t[8], s0) * 2.0;
+        }
+        h.y = clamp(h.y * sm, 0.0, 1.0);
+        if (bits & (1u << 6u)) != 0u {
+            h.z = clamp(h.z + (curve_sample(t[6], h0) - 0.5) * 0.5, 0.0, 1.0);
+        }
+        v = hsl_to_rgb(h.x, h.y, h.z);
+    }
+    return dec(v);
+}
+
+// ---- Lumetri ▸ HSL Secondary (`effects::hsl_secondary_apply`, SDR)
+
+// `effects::hsl_key` of a straight colour. p0 = hue centre, range, sat min, luma min; p1.xy =
+// luma max, softness.
+fn hsl_key(c: vec3<f32>) -> f32 {
+    let h = rgb_to_hsl(clamp(enc(c), vec3(0.0), vec3(1.0)));
+    let hc = u.p0.x; let hr = u.p0.y; let smin = u.p0.z; let lmin = u.p0.w;
+    let lmax = u.p1.x; let soft = u.p1.y;
+    let dh = min(abs(h.x - hc), 1.0 - abs(h.x - hc));
+    let mh = 1.0 - clamp((dh - hr / 2.0) / soft, 0.0, 1.0);
+    let ms = clamp((h.y - smin) / soft, 0.0, 1.0);
+    let ml = min(clamp((h.z - lmin) / soft, 0.0, 1.0), clamp((lmax - h.z) / soft, 0.0, 1.0));
+    return mh * ms * ml;
+}
+
+// Denoise: the key mixed towards the median of its (2r+1)² window (truncated at the edges, as
+// `effects::median_filter`). i1.x radius, p0.x amount.
+fn hsl_median(p: vec2<i32>) -> f32 {
+    let s = size();
+    let r = i32(min(u.i1.x, 3u));
+    var win: array<f32, HSL_MEDIAN_MAX>;
+    var n = 0u;
+    for (var y = max(p.y - r, 0); y <= min(p.y + r, s.y - 1); y++) {
+        for (var x = max(p.x - r, 0); x <= min(p.x + r, s.x - 1); x++) {
+            win[n] = ld(vec2(x, y)).x;
+            n++;
+        }
+    }
+    // the (n / 2)-th smallest: a partial selection sort
+    let k = n / 2u;
+    for (var i = 0u; i <= k; i++) {
+        var m = i;
+        for (var j = i + 1u; j < n; j++) {
+            if win[j] < win[m] {
+                m = j;
+            }
+        }
+        let tmp = win[i];
+        win[i] = win[m];
+        win[m] = tmp;
+    }
+    let v = ld(p).x;
+    return v + (win[k] - v) * min(u.p0.x, 1.0);
+}
+
+// The correction inside the key (`src`, the refined key) of the image in `aux`. i1.x show mask;
+// p0 = temperature, tint, saturation, hue shift.
+fn hsl_apply(p: vec2<i32>) -> vec4<f32> {
+    let o = textureLoad(aux, p, 0);
+    let a = o.a;
+    if a <= 1e-6 {
+        return o;
+    }
+    let m = ld(p).x;
+    let uu = clamp(enc(o.rgb / a), vec3(0.0), vec3(1.0));
+    var out: vec3<f32>;
+    switch u.i1.x {
+        case 1u: {
+            let g = rgb_to_hsl(uu).z;
+            out = vec3(g) + (uu - vec3(g)) * m;
+        }
+        case 2u: {
+            out = uu * m;
+        }
+        case 3u: {
+            out = vec3(m);
+        }
+        default: {
+            var hh = rgb_to_hsl(uu);
+            hh.x = fract_euclid(hh.x + u.p0.w);
+            hh.y = clamp(hh.y * u.p0.z, 0.0, 1.0);
+            var c2 = hsl_to_rgb(hh.x, hh.y, hh.z);
+            c2.x *= 1.0 + 0.25 * u.p0.x;
+            c2.z *= 1.0 - 0.25 * u.p0.x;
+            c2.y *= 1.0 - 0.2 * u.p0.y;
+            out = uu + (c2 - uu) * m;
+        }
+    }
+    return vec4(dec(out) * a, a);
+}
+
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
     let pc = vec2<f32>(p) + 0.5;
@@ -821,6 +1120,53 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             }
             let res = vec3(enc_to_linear_limiter(out_enc.x), enc_to_linear_limiter(out_enc.y), enc_to_linear_limiter(out_enc.z));
             return vec4(res * a, a);
+        }
+        case OP_LUT: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            let v = lut_apply(0u, clamp(enc(o.rgb / a), vec3(0.0), vec3(1.0)));
+            return vec4(dec(v) * a, a);
+        }
+        case OP_LUMETRI_ADV: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            return vec4(lumetri_adv_op(o.rgb / a) * a, a);
+        }
+        case OP_HSL_KEY: {
+            let o = ld(p);
+            var m = 0.0;
+            if o.a > 1e-6 {
+                m = hsl_key(o.rgb / o.a);
+            }
+            return vec4(m);
+        }
+        case OP_HSL_MEDIAN: {
+            return vec4(hsl_median(p));
+        }
+        case OP_HSL_APPLY: {
+            return hsl_apply(p);
+        }
+        case OP_SYNTH_EDGES: {
+            // the Resample (inverse map p0 = (a b c d), p1 = (e f opacity valid), rect i1), then
+            // what it leaves uncovered filled from the edge-clamped source
+            var o = vec4(0.0);
+            let m0 = u.p0; let m1 = u.p1;
+            let uu = m0.x * pc.x + m0.z * pc.y + m1.x;
+            let vv = m0.y * pc.x + m0.w * pc.y + m1.y;
+            let inside = u.p1.w != 0.0 && u32(p.x) >= u.i1.x && u32(p.x) < u.i1.y && u32(p.y) >= u.i1.z && u32(p.y) < u.i1.w;
+            if inside && !(uu < -1.0 || vv < -1.0 || uu > f32(s.x) + 1.0 || vv > f32(s.y) + 1.0) {
+                o = sample_bilinear(uu, vv) * m1.z;
+            }
+            if o.a < 0.999 && u.p1.w != 0.0 {
+                o = o + sample_clamped(uu, vv) * (1.0 - o.a);
+            }
+            return o;
         }
         case OP_LUMETRI: {
             let o = ld(p);

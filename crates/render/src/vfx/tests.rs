@@ -1262,6 +1262,33 @@ mod stabilizer_analysis {
     }
 }
 
+/// The GPU form of Warp Stabilizer (resample, crop or edge synthesis ops from the same analysis)
+/// renders what the effect renders, for every framing.
+#[test]
+fn warp_stabilizer_gpu_ops_match_the_effect() {
+    let (w, h) = (96, 64);
+    let now = 9.0 / 24.0;
+    let env = ClipEnv { w, h, fps: 24.0, secs: 1.0, now, key: 0xFACE, seq: (w as u32, h as u32), pic: shaky };
+    let raw = env.render(now, 1.0);
+    let mut e = inst("warp_stabilizer");
+    clear_stabilizer_cache();
+    for (result, framing) in [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 3)] {
+        set(&mut e, "result", ParamValue::Choice(result));
+        set(&mut e, "framing", ParamValue::Choice(framing));
+        let fx = FxCtx { seconds: now, env: Some(&env), ..cx() };
+        let op = crate::gpufx::FxOp::eval(&e, &fx, w, h).unwrap_or_else(|| panic!("framing {framing}: no op"));
+        assert!(op.gpu_ok(), "framing {framing}: {op:?}");
+        let mut via_op = raw.clone();
+        op.apply(&mut via_op);
+        let mut via_effect = raw.clone();
+        crate::effects::apply(&mut via_effect, &e, &fx);
+        let d = max_diff(&via_op, &via_effect);
+        assert!(d < 1e-5, "result {result}, framing {framing}: {d}");
+    }
+    // without the clip there is nothing to analyse: no GPU op (the CPU path runs as before)
+    assert!(crate::gpufx::FxOp::eval(&e, &cx(), w, h).is_none());
+}
+
 #[test]
 fn auto_reframe_follows_the_subject() {
     fn subject(x: f64, y: f64, _t: f64) -> [f32; 3] {
@@ -1367,6 +1394,38 @@ mod pipeline {
         place(&mut p2, seq2, 0, ocean2, vec![echo]);
         let e = render_sequence(&p2, seq2, r.tick_of(30), RenderOptions::default(), &map2);
         assert!(e.px.iter().all(|v| v.is_finite()));
+    }
+
+    /// A stabilised clip graded with an Input LUT, curves and an HSL Secondary goes to the GPU
+    /// effect stage, and the plan's CPU reference renders what the CPU renders.
+    #[test]
+    fn graded_stabilised_clip_plans_for_the_gpu() {
+        use crate::plan::{FramePlan, PlanStep, execute_cpu, plan_frame};
+        let mut p = Project::new("gpu");
+        let mut map = SourceMap::default();
+        let ocean = add(&mut p, &mut map, GeneratorSource::demo(DemoScene::OceanSunset));
+        let seq = p.new_sequence("s", SequenceSettings { width: 64, height: 36, frame_rate: FrameRate::FPS_24, ..Default::default() }, 1, 0, None);
+        let mut lu = inst("lumetri");
+        set(&mut lu, "input_lut", ParamValue::Text("builtin:slog3-sgamut3-to-rec709".into()));
+        setf(&mut lu, "exposure", 0.5);
+        setf(&mut lu, "temperature", 10.0);
+        set(&mut lu, "curve_luma", ParamValue::Curve(vec![[0.0, 0.05], [0.5, 0.55], [1.0, 0.95]]));
+        set(&mut lu, "hsl_on", ParamValue::Bool(true));
+        setf(&mut lu, "hsl_sat", 80.0);
+        setf(&mut lu, "hsl_blur", 30.0);
+        place(&mut p, seq, 0, ocean, vec![inst("warp_stabilizer"), lu]);
+        let t = FrameRate::FPS_24.tick_of(10);
+        let plan = plan_frame(&p, seq, t, RenderOptions::default(), &map);
+        let fx_layer = |ls: &[crate::plan::PlanLayer]| ls.iter().any(|l| l.fx.is_some());
+        let on_gpu = match &plan {
+            FramePlan::Layers { layers, .. } => fx_layer(layers),
+            FramePlan::Composite { steps, .. } => steps.iter().any(|s| matches!(s, PlanStep::Layers(ls) if fx_layer(ls))),
+            FramePlan::Image(_) => false,
+        };
+        assert!(on_gpu, "the clip should use the GPU effect stage");
+        let cpu = render_sequence(&p, seq, t, RenderOptions::default(), &map);
+        let d = max_diff(&cpu, &execute_cpu(&plan));
+        assert!(d < 2e-3, "plan vs CPU render: {d}");
     }
 }
 

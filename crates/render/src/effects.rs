@@ -123,7 +123,11 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         return;
     }
     // effects with a GPU implementation: evaluated parameters + CPU reference (`gpufx`)
-    if let Some(op) = crate::gpufx::FxOp::eval(e, cx, img.w, img.h).filter(|op| e.effect != "lumetri" || op.gpu_ok()) {
+    // (Lumetri's multi-pass GPU form, `FxOp::Seq`, is checked against `lumetri` below, which
+    // stays the CPU reference)
+    if let Some(op) =
+        crate::gpufx::FxOp::eval(e, cx, img.w, img.h).filter(|op| e.effect != "lumetri" || matches!(op, crate::gpufx::FxOp::Lumetri { .. }) && op.gpu_ok())
+    {
         op.apply(img);
         return;
     }
@@ -1335,8 +1339,31 @@ pub fn apply_look(look: u32, c: [f32; 3]) -> [f32; 3] {
     }
 }
 
-fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    const N: usize = 1024;
+/// Samples per Lumetri curve table.
+pub const CURVE_N: usize = 1024;
+
+/// Lumetri's Creative ▸ Look, Color Wheels and Curves, evaluated at a time. The CPU pass
+/// ([`lumetri_advanced_apply`]) and the GPU op (`FxOp::LumetriAdvanced`) share it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LumetriAdvanced {
+    pub look_lut: Option<std::sync::Arc<filmcraft_color::Lut>>,
+    /// Procedural look (0: none; ignored when `look_lut` is set).
+    pub look: u32,
+    pub look_k: f32,
+    pub wheels: bool,
+    /// Shadows, midtones, highlights wheel offsets.
+    pub wheel_rgb: [[f32; 3]; 3],
+    /// Shadows, midtones, highlights wheel lightness.
+    pub wheel_l: [f32; 3],
+    /// Luma, red, green, blue curve tables ([`CURVE_N`] samples).
+    pub curves: [Option<Vec<f32>>; 4],
+    /// Hue vs Sat, Hue vs Hue, Hue vs Luma, Luma vs Sat, Sat vs Sat tables.
+    pub hue: [Option<Vec<f32>>; 5],
+}
+
+/// [`LumetriAdvanced`] of `e` at `cx.t`; None when every part is a no-op.
+pub(crate) fn lumetri_advanced_params(e: &EffectInstance, cx: &FxCtx) -> Option<LumetriAdvanced> {
+    const N: usize = CURVE_N;
     let (creative_on, curves_on, wheels_on) = (on(e, "creative_on"), on(e, "curves_on"), on(e, "wheels_on"));
     let lut = |id: &str| curve_param(e, id).filter(|c| curves_on && !is_identity_curve(c)).map(|c| curve_lut(&c, N));
     let (luma_c, red_c, green_c, blue_c) = (lut("curve_luma"), lut("curve_red"), lut("curve_green"), lut("curve_blue"));
@@ -1364,10 +1391,35 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         || look_lut.is_some()
         || wheels;
     if !any {
-        return;
+        return None;
     }
-    // HDR: curves, wheels and looks span 0 … the curves' HDR Range (cd/m²)
-    let gs = grade_space(e, cx, "curves_hdr_range");
+    Some(LumetriAdvanced {
+        look_lut,
+        look,
+        look_k,
+        wheels,
+        wheel_rgb: [ws, wm, wh],
+        wheel_l: [ls, lm, lh],
+        curves: [luma_c, red_c, green_c, blue_c],
+        hue: [hvs, hvh, hvl, lvs, svs],
+    })
+}
+
+fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+    if let Some(a) = lumetri_advanced_params(e, cx) {
+        // HDR: curves, wheels and looks span 0 … the curves' HDR Range (cd/m²)
+        lumetri_advanced_apply(img, &a, grade_space(e, cx, "curves_hdr_range"));
+    }
+}
+
+/// Apply the evaluated Look, Color Wheels and Curves on the grading signal of `gs`.
+pub fn lumetri_advanced_apply(img: &mut Image, a: &LumetriAdvanced, gs: GradeSpace) {
+    const N: usize = CURVE_N;
+    let (look_lut, look, look_k, wheels) = (&a.look_lut, a.look, a.look_k, a.wheels);
+    let [ws, wm, wh] = a.wheel_rgb;
+    let [ls, lm, lh] = a.wheel_l;
+    let [luma_c, red_c, green_c, blue_c] = &a.curves;
+    let [hvs, hvh, hvl, lvs, svs] = &a.hue;
     let hdr = gs.is_hdr();
     let sample = |l: &Vec<f32>, x: f32| {
         // above HDR White a curve continues with slope 1 from its end point
@@ -1459,18 +1511,69 @@ fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft:
 /// - **Blur** softens the key's edges: a Gaussian (σ up to 20 px at full resolution, three box
 ///   passes) on the key.
 fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    if !b(e, "hsl_on") {
-        return;
+    if let Some(p) = hsl_secondary_params(e, cx) {
+        hsl_secondary_apply(img, &p, grade_space(e, cx, "curves_hdr_range"));
     }
-    let gs = grade_space(e, cx, "curves_hdr_range");
-    let hdr = gs.is_hdr();
-    let (hc, hr) = (f(e, "hsl_hue", cx) / 360.0, (f(e, "hsl_hue_range", cx) / 360.0).max(1e-3));
-    let (smin, lmin, lmax) = (f(e, "hsl_sat_min", cx) / 100.0, f(e, "hsl_luma_min", cx) / 100.0, f(e, "hsl_luma_max", cx) / 100.0);
-    let soft = (f(e, "hsl_soft", cx) / 100.0 * 0.3).max(0.01);
-    let show_mask = choice(e, "hsl_show_mask");
-    let (htemp, htint, hsat, hshift) =
-        (f(e, "hsl_temp", cx) / 100.0, f(e, "hsl_tint", cx) / 100.0, f(e, "hsl_sat", cx) / 100.0, f(e, "hsl_hue_shift", cx) / 360.0);
+}
+
+/// Lumetri ▸ HSL Secondary evaluated at a time for a working image of `cx.px_scale`. The CPU
+/// pass ([`hsl_secondary_apply`]) and the GPU op (`FxOp::HslSecondary`) share it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HslSecondary {
+    /// Key: hue centre and range (turns), saturation minimum, lightness range, softness.
+    pub hc: f32,
+    pub hr: f32,
+    pub smin: f32,
+    pub lmin: f32,
+    pub lmax: f32,
+    pub soft: f32,
+    /// 0: correction, 1: colour / grey, 2: colour / black, 3: white / black.
+    pub show_mask: u32,
+    pub temp: f32,
+    pub tint: f32,
+    pub sat: f32,
+    pub hue_shift: f32,
+    /// Refine ▸ Denoise amount (0…1) and median radius in working pixels.
+    pub denoise: f32,
+    pub denoise_r: usize,
+    /// Refine ▸ Blur: box radii of the key's Gaussian (empty: none).
+    pub blur_radii: Vec<usize>,
+}
+
+/// [`HslSecondary`] of `e` at `cx.t`; None when the section is off.
+pub(crate) fn hsl_secondary_params(e: &EffectInstance, cx: &FxCtx) -> Option<HslSecondary> {
+    if !b(e, "hsl_on") {
+        return None;
+    }
     let (denoise, blur) = (f(e, "hsl_denoise", cx).clamp(0.0, 100.0) / 100.0, f(e, "hsl_blur", cx).clamp(0.0, 100.0) / 100.0);
+    let denoise_r = if denoise > 0.0 { ((1.0 + 2.0 * denoise) * cx.px_scale).round().max(1.0) as usize } else { 0 };
+    let sigma = blur * 20.0 * cx.px_scale;
+    let blur_radii = if blur > 0.0 && sigma >= 0.3 { boxes_for_gauss(sigma, 3) } else { Vec::new() };
+    Some(HslSecondary {
+        hc: f(e, "hsl_hue", cx) / 360.0,
+        hr: (f(e, "hsl_hue_range", cx) / 360.0).max(1e-3),
+        smin: f(e, "hsl_sat_min", cx) / 100.0,
+        lmin: f(e, "hsl_luma_min", cx) / 100.0,
+        lmax: f(e, "hsl_luma_max", cx) / 100.0,
+        soft: (f(e, "hsl_soft", cx) / 100.0 * 0.3).max(0.01),
+        show_mask: choice(e, "hsl_show_mask"),
+        temp: f(e, "hsl_temp", cx) / 100.0,
+        tint: f(e, "hsl_tint", cx) / 100.0,
+        sat: f(e, "hsl_sat", cx) / 100.0,
+        hue_shift: f(e, "hsl_hue_shift", cx) / 360.0,
+        denoise,
+        denoise_r,
+        blur_radii,
+    })
+}
+
+/// Key, refine and correct the HSL Secondary of `p` on the grading signal of `gs`.
+pub fn hsl_secondary_apply(img: &mut Image, p: &HslSecondary, gs: GradeSpace) {
+    let hdr = gs.is_hdr();
+    let (hc, hr, smin, lmin, lmax, soft) = (p.hc, p.hr, p.smin, p.lmin, p.lmax, p.soft);
+    let show_mask = p.show_mask;
+    let (htemp, htint, hsat, hshift) = (p.temp, p.tint, p.sat, p.hue_shift);
+    let denoise = p.denoise;
     let (w, h) = (img.w, img.h);
     let unit = |c: [f32; 3]| {
         let v = gs.encode(c);
@@ -1487,16 +1590,12 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         .par_chunks(4)
         .map(|p| if p[3] <= 1e-6 { 0.0 } else { hsl_key(unit(Image::unpremul([p[0], p[1], p[2], p[3]])), hc, hr, smin, lmin, lmax, soft) })
         .collect();
-    if denoise > 0.0 {
-        let r = ((1.0 + 2.0 * denoise) * cx.px_scale).round().max(1.0) as usize;
-        let med = median_filter(&mask, w, h, r);
+    if denoise > 0.0 && p.denoise_r > 0 {
+        let med = median_filter(&mask, w, h, p.denoise_r);
         mask.iter_mut().zip(med).for_each(|(m, d)| *m += (d - *m) * denoise.min(1.0));
     }
-    if blur > 0.0 {
-        let sigma = blur * 20.0 * cx.px_scale;
-        if sigma >= 0.3 {
-            blur_plane(&mut mask, w, h, sigma);
-        }
+    if !p.blur_radii.is_empty() {
+        blur_plane(&mut mask, w, h, &p.blur_radii);
     }
     let mask = &mask;
     img.map_rgb(|c, x, y| {
@@ -1547,9 +1646,8 @@ fn median_filter(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     out
 }
 
-/// Gaussian blur of a single-channel plane (three box passes per axis, edges clamped).
-fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
-    let radii = boxes_for_gauss(sigma, 3);
+/// Gaussian blur of a single-channel plane (box passes of `radii` per axis, edges clamped).
+fn blur_plane(p: &mut [f32], w: usize, h: usize, radii: &[usize]) {
     let pass = |p: &mut [f32], w: usize, h: usize, r: usize| {
         if r == 0 {
             return;
@@ -1575,11 +1673,11 @@ fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
         }
         t
     };
-    for &r in &radii {
+    for &r in radii {
         pass(p, w, h, r);
     }
     let mut t = transpose(p, w, h);
-    for &r in &radii {
+    for &r in radii {
         pass(&mut t, h, w, r);
     }
     p.copy_from_slice(&transpose(&t, h, w));
@@ -1803,6 +1901,108 @@ mod lumetri_cpu_parity_tests {
                 assert!(diff <= 1e-6, "{name}: sample {i} differed: orig={orig}, copy={copy}, diff={diff:.2e} > 1e-6");
             }
             eprintln!("{name}: max sample diff vs fn lumetri: {max_diff:.2e}");
+        }
+    }
+
+    /// Lumetri sections run as GPU passes (`FxOp::Seq`): the passes, applied on the CPU, render
+    /// what `fn lumetri` renders, at full and reduced working resolution.
+    #[test]
+    fn lumetri_gpu_passes_match_fn_lumetri() {
+        let lut = || ParamValue::Text("builtin:slog3-sgamut3-to-rec709".into());
+        let curve = |pts: &[[f32; 2]]| ParamValue::Curve(pts.to_vec());
+        let pt = |x: f64, y: f64| ParamValue::Vec2(filmcraft_geom::Vec2::new(x, y));
+        let on = ParamValue::Bool(true);
+        let mut cases: Vec<(String, Vec<(&str, ParamValue)>)> = vec![
+            ("input lut".into(), vec![("input_lut", lut())]),
+            (
+                "input lut + basic".into(),
+                vec![("input_lut", lut()), ("exposure", fl(0.5)), ("temperature", fl(6.8)), ("contrast", fl(20.0)), ("blacks", fl(-10.0))],
+            ),
+            ("look lut".into(), vec![("look_lut", ParamValue::Text("builtin:look-teal-orange".into())), ("look_intensity", fl(70.0))]),
+            (
+                "wheels".into(),
+                vec![("wheel_shadows", pt(0.3, -0.2)), ("wheel_midtones", pt(-0.1, 0.4)), ("wheel_highlights", pt(0.2, 0.1)), ("wheel_midtones_l", fl(15.0))],
+            ),
+            (
+                "curves".into(),
+                vec![
+                    ("curve_luma", curve(&[[0.0, 0.05], [0.5, 0.58], [1.0, 0.95]])),
+                    ("curve_red", curve(&[[0.0, 0.0], [0.6, 0.65], [1.0, 1.0]])),
+                    ("curve_blue", curve(&[[0.0, 0.1], [1.0, 0.9]])),
+                ],
+            ),
+            (
+                "hue curves".into(),
+                vec![
+                    ("hue_vs_sat", curve(&[[0.0, 0.5], [0.3, 0.8], [0.7, 0.3]])),
+                    ("hue_vs_hue", curve(&[[0.1, 0.5], [0.5, 0.6]])),
+                    ("hue_vs_luma", curve(&[[0.2, 0.4], [0.8, 0.6]])),
+                    ("luma_vs_sat", curve(&[[0.0, 0.3], [1.0, 0.6]])),
+                    ("sat_vs_sat", curve(&[[0.0, 0.5], [1.0, 0.7]])),
+                ],
+            ),
+            (
+                "hsl".into(),
+                vec![
+                    ("hsl_on", on.clone()),
+                    ("hsl_hue", fl(30.0)),
+                    ("hsl_hue_range", fl(60.0)),
+                    ("hsl_sat", fl(70.0)),
+                    ("hsl_temp", fl(20.0)),
+                    ("hsl_tint", fl(-10.0)),
+                    ("hsl_hue_shift", fl(10.0)),
+                ],
+            ),
+            (
+                "hsl refine".into(),
+                vec![("hsl_on", on.clone()), ("hsl_hue", fl(200.0)), ("hsl_denoise", fl(60.0)), ("hsl_blur", fl(40.0)), ("hsl_sat", fl(140.0))],
+            ),
+            ("sharpen".into(), vec![("sharpen", fl(40.0))]),
+            (
+                "everything".into(),
+                vec![
+                    ("input_lut", lut()),
+                    ("exposure", fl(0.3)),
+                    ("look", ParamValue::Choice(2)),
+                    ("wheel_highlights_l", fl(-10.0)),
+                    ("curve_green", curve(&[[0.0, 0.02], [1.0, 0.98]])),
+                    ("hsl_on", on.clone()),
+                    ("hsl_blur", fl(20.0)),
+                    ("sharpen", fl(25.0)),
+                ],
+            ),
+        ];
+        for look in 1..=8 {
+            cases.push((format!("look {look}"), vec![("look", ParamValue::Choice(look)), ("look_intensity", fl(80.0))]));
+        }
+        for mask in 1..=3 {
+            cases.push((format!("hsl mask {mask}"), vec![("hsl_on", on.clone()), ("hsl_show_mask", ParamValue::Choice(mask)), ("hsl_denoise", fl(30.0))]));
+        }
+        let (w, h) = (67usize, 41usize);
+        for px_scale in [1.0, 0.5] {
+            let cx = FxCtx {
+                t: Tick::ZERO,
+                px_scale,
+                mask_scale: 1.0,
+                seconds: 0.0,
+                timecode: "",
+                clip_name: "",
+                project: None,
+                env: None,
+                frame_rate: 24.0,
+                working: filmcraft_color::WorkingSpace::Rec709,
+            };
+            for (name, params) in &cases {
+                let e = effect(params);
+                let mut reference = test_picture(w, h);
+                let mut passes = reference.clone();
+                lumetri(&mut reference, &e, &cx);
+                let op = FxOp::eval(&e, &cx, w, h).unwrap_or_else(|| panic!("{name}: no op"));
+                assert!(matches!(op, FxOp::Seq(_)) && op.gpu_ok(), "{name}: {op:?}");
+                op.apply(&mut passes);
+                let d = reference.px.iter().zip(&passes.px).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+                assert!(d <= 1e-5, "{name} at {px_scale}: {d:.2e}");
+            }
         }
     }
 

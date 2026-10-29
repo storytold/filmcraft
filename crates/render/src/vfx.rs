@@ -20,7 +20,7 @@ mod distort;
 mod immersive;
 mod lights;
 mod stylize;
-mod temporal;
+pub(crate) mod temporal;
 mod text;
 
 #[cfg(test)]

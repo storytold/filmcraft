@@ -13,7 +13,10 @@
 //! radius costs O(1) per pixel like on the CPU (radii are capped by `gaussian_boxes`).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use filmcraft_color::Lut;
+use filmcraft_render::effects::{CURVE_N, LumetriAdvanced};
 use filmcraft_render::gpufx::FxOp;
 use filmcraft_render::plan::LayerFx;
 
@@ -57,6 +60,12 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
+const OP_LUT: u32 = 37;
+const OP_LUMETRI_ADV: u32 = 38;
+const OP_HSL_KEY: u32 = 39;
+const OP_HSL_MEDIAN: u32 = 40;
+const OP_HSL_APPLY: u32 = 41;
+const OP_SYNTH_EDGES: u32 = 42;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -72,6 +81,103 @@ pub(crate) struct FxStage {
     frames: u32,
     /// Working textures created so far (a steady stream of frames creates none).
     created: u64,
+    /// Uploaded tables (LUTs, curves) by [`Data::key`], with the source they were made from
+    /// (kept alive, so a key made from its address is never reused while cached).
+    data: HashMap<u64, (Data, wgpu::Buffer)>,
+    data_used: HashSet<u64>,
+    /// Bound for passes without tables.
+    no_data: wgpu::Buffer,
+}
+
+/// The tables of a pass: built and uploaded once, then reused while frames keep using them.
+#[derive(Clone)]
+enum Data {
+    Lut(Arc<Lut>),
+    Advanced(Arc<LumetriAdvanced>),
+}
+
+impl Data {
+    fn key(&self) -> u64 {
+        // FNV-1a over the identity of the LUT and the curve samples
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        let mut eat = |v: u64| {
+            h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+        };
+        match self {
+            Data::Lut(l) => {
+                eat(1);
+                eat(Arc::as_ptr(l) as usize as u64);
+            }
+            Data::Advanced(a) => {
+                eat(2);
+                eat(a.look_lut.as_ref().map_or(0, |l| Arc::as_ptr(l) as usize as u64));
+                for t in a.curves.iter().chain(&a.hue) {
+                    match t {
+                        Some(t) => t.iter().for_each(|v| eat(v.to_bits() as u64)),
+                        None => eat(u64::MAX),
+                    }
+                }
+            }
+        }
+        h
+    }
+
+    /// Whether the uploaded tables of `self` serve `other` (same LUT object, same samples).
+    fn same(&self, other: &Data) -> bool {
+        match (self, other) {
+            (Data::Lut(a), Data::Lut(b)) => Arc::ptr_eq(a, b),
+            (Data::Advanced(a), Data::Advanced(b)) => {
+                let lut = match (&a.look_lut, &b.look_lut) {
+                    (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+                    (None, None) => true,
+                    _ => false,
+                };
+                lut && a.curves == b.curves && a.hue == b.hue
+            }
+            _ => false,
+        }
+    }
+
+    fn build(&self) -> Vec<[f32; 4]> {
+        let mut out = Vec::new();
+        match self {
+            Data::Lut(l) => lut_block(l, &mut out),
+            Data::Advanced(a) => {
+                if let Some(l) = &a.look_lut {
+                    lut_block(l, &mut out);
+                }
+                for t in a.curves.iter().chain(&a.hue).flatten() {
+                    out.extend(t.chunks(4).map(|c| [0, 1, 2, 3].map(|k| c.get(k).copied().unwrap_or(0.0))));
+                }
+            }
+        }
+        if out.is_empty() {
+            out.push([0.0; 4]);
+        }
+        out
+    }
+}
+
+/// A LUT block (`lut_apply` in `fx.wgsl`): header (cube size, shaper length), shaper domain,
+/// cube domain, shaper entries, cube entries.
+fn lut_block(l: &Lut, out: &mut Vec<[f32; 4]>) {
+    let v4 = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
+    let (n3, n1) = (l.cube.as_ref().map_or(0, |c| c.size), l.shaper.as_ref().map_or(0, |s| s.data.len()));
+    out.push([n3 as f32, n1 as f32, 0.0, 0.0]);
+    let (smin, smax) = l.shaper.as_ref().map_or(([0.0; 3], [1.0; 3]), |s| (s.domain_min, s.domain_max));
+    let (cmin, cmax) = l.cube.as_ref().map_or(([0.0; 3], [1.0; 3]), |c| (c.domain_min, c.domain_max));
+    out.extend([v4(smin), v4(smax), v4(cmin), v4(cmax)]);
+    if let Some(s) = &l.shaper {
+        out.extend(s.data.iter().copied().map(v4));
+    }
+    if let Some(c) = &l.cube {
+        out.extend(c.data.iter().copied().map(v4));
+    }
+}
+
+/// Entries of a LUT block (the offset of what follows it).
+fn lut_block_len(l: &Lut) -> usize {
+    5 + l.shaper.as_ref().map_or(0, |s| s.data.len()) + l.cube.as_ref().map_or(0, |c| c.data.len())
 }
 
 /// One compute pass of a job.
@@ -100,11 +206,14 @@ struct Step {
     p: [f32; 24],
     /// Unsharp combine: reads the blurred image and the original.
     combine: bool,
-    /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
+    /// A blur pass of Unsharp Mask (the original stays untouched until the combine); also the
+    /// key passes of HSL Secondary, whose combine reads the image they started from.
     unsharp_blur: bool,
     /// Bokeh Blur's gather: its kernel (`filmcraft_render::vfx::bokeh_kernel`), read as the aux
     /// texture.
     kernel: Vec<(i32, i32, f32)>,
+    /// Tables bound at binding 4.
+    data: Option<Data>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -112,7 +221,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new() }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new(), data: None }
 }
 
 /// Texels a row of a kernel texture holds.
@@ -145,6 +254,16 @@ fn kernel_texture(device: &wgpu::Device, queue: &wgpu::Queue, kernel: &[(i32, i3
         size,
     );
     t.create_view(&Default::default())
+}
+
+
+/// Resample parameters (`OP_RESAMPLE`, `OP_SYNTH_EDGES`): rect, inverse map, opacity, valid.
+fn resample_step(code: u32, r: &filmcraft_render::gpufx::Resample) -> Step {
+    let op = if (r.opacity - 1.0).abs() < 1e-6 { 1.0 } else { r.opacity };
+    match &r.inv {
+        Some(m) => step(code, r.rect, &[m.a as f32, m.b as f32, m.c as f32, m.d as f32, m.e as f32, m.f as f32, op, 1.0]),
+        None => step(code, [0; 4], &[0.0; 8]),
+    }
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -230,12 +349,56 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
             out.push(s);
         }
         FxOp::Crop { x0, x1, y0, y1, feather } => out.push(step(OP_CROP, [0; 4], &[*x0, *x1, *y0, *y1, *feather])),
-        FxOp::Resample(r) => {
-            let op = if (r.opacity - 1.0).abs() < 1e-6 { 1.0 } else { r.opacity };
-            match &r.inv {
-                Some(m) => out.push(step(OP_RESAMPLE, r.rect, &[m.a as f32, m.b as f32, m.c as f32, m.d as f32, m.e as f32, m.f as f32, op, 1.0])),
-                None => out.push(step(OP_RESAMPLE, [0; 4], &[0.0; 8])),
+        FxOp::Resample(r) => out.push(resample_step(OP_RESAMPLE, r)),
+        FxOp::SynthEdges(r) => out.push(resample_step(OP_SYNTH_EDGES, r)),
+        FxOp::Seq(ops) => out.extend(ops.iter().flat_map(steps)),
+        FxOp::Lut(l) => {
+            let mut s = step(OP_LUT, [0; 4], &[]);
+            s.data = Some(Data::Lut(l.clone()));
+            out.push(s);
+        }
+        FxOp::LumetriAdvanced(a) => {
+            let mut bits = 0u32;
+            for (k, t) in a.curves.iter().chain(&a.hue).enumerate() {
+                if t.as_ref().is_some_and(|t| t.len() == CURVE_N) {
+                    bits |= 1 << k;
+                }
             }
+            if a.wheels {
+                bits |= 1 << 9;
+            }
+            let tables = match &a.look_lut {
+                Some(l) => {
+                    bits |= 1 << 10;
+                    lut_block_len(l) as u32
+                }
+                None => 0,
+            };
+            let [ws, wm, wh] = a.wheel_rgb;
+            let [ls, lm, lh] = a.wheel_l;
+            let look = if a.look_lut.is_some() { 0 } else { a.look };
+            let p = [a.look_k, ws[0], ws[1], ws[2], wm[0], wm[1], wm[2], wh[0], wh[1], wh[2], ls, lm, lh];
+            let mut s = step(OP_LUMETRI_ADV, [look, bits, tables, 0], &p);
+            s.data = Some(Data::Advanced(a.clone()));
+            out.push(s);
+        }
+        FxOp::HslSecondary(h) => {
+            // key → (denoise) → (blur) → correction; the passes before the combine work on the
+            // key while the image waits, as Unsharp Mask's blur passes do
+            let mut key = vec![step(OP_HSL_KEY, [0; 4], &[h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft])];
+            if h.denoise > 0.0 && h.denoise_r > 0 {
+                key.push(step(OP_HSL_MEDIAN, [h.denoise_r as u32, 0, 0, 0], &[h.denoise]));
+            }
+            let radii: Vec<u32> = h.blur_radii.iter().map(|r| *r as u32).collect();
+            boxes(&radii, false, true, &mut key);
+            boxes(&radii, true, true, &mut key);
+            for s in &mut key {
+                s.unsharp_blur = true;
+            }
+            out.extend(key);
+            let mut s = step(OP_HSL_APPLY, [h.show_mask, 0, 0, 0], &[h.temp, h.tint, h.sat, h.hue_shift]);
+            s.combine = true;
+            out.push(s);
         }
         FxOp::HFlip => out.push(step(OP_HFLIP, [0; 4], &[])),
         FxOp::VFlip => out.push(step(OP_VFLIP, [0; 4], &[])),
@@ -331,6 +494,7 @@ impl FxStage {
     pub(crate) fn supported(device: &wgpu::Device) -> bool {
         let l = device.limits();
         l.max_storage_textures_per_shader_stage >= 1
+            && l.max_storage_buffers_per_shader_stage >= 1
             && l.max_compute_invocations_per_workgroup >= 256
             && l.max_compute_workgroup_size_x >= 64
             && l.max_compute_workgroup_size_y >= 16
@@ -373,6 +537,16 @@ impl FxStage {
                     count: None,
                 },
                 tex(3),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fx"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
@@ -407,7 +581,56 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new(), frames: 0, created: 0 }
+        let no_data = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fx-no-data"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        Self {
+            px: compute("fx_px"),
+            run: compute("fx_run"),
+            bgl,
+            source,
+            pool: HashMap::new(),
+            used: HashSet::new(),
+            frames: 0,
+            created: 0,
+            data: HashMap::new(),
+            data_used: HashSet::new(),
+            no_data,
+        }
+    }
+
+    /// The uploaded tables of `d` (built and uploaded on first use). None when they exceed the
+    /// device's storage-buffer limit.
+    fn data_buffer(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, d: &Data) -> Option<wgpu::Buffer> {
+        let key = d.key();
+        self.data_used.insert(key);
+        if let Some((src, buf)) = self.data.get(&key)
+            && src.same(d)
+        {
+            return Some(buf.clone());
+        }
+        let entries = d.build();
+        let size = (entries.len() as u64).checked_mul(16)?;
+        let limits = device.limits();
+        if size > limits.max_storage_buffer_binding_size || size > limits.max_buffer_size {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(size as usize);
+        for v in entries.iter().flatten() {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fx-data"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buf, 0, &bytes);
+        self.data.insert(key, (d.clone(), buf.clone()));
+        Some(buf)
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -416,6 +639,7 @@ impl FxStage {
     pub(crate) fn begin_frame(&mut self) {
         if self.frames == 0 {
             self.used.clear();
+            self.data_used.clear();
         }
         self.frames = self.frames.saturating_add(1);
     }
@@ -425,6 +649,8 @@ impl FxStage {
         if self.frames == 0 {
             let used = &self.used;
             self.pool.retain(|k, _| used.contains(k));
+            let used = &self.data_used;
+            self.data.retain(|k, _| used.contains(k));
         }
     }
 
@@ -437,6 +663,12 @@ impl FxStage {
     #[cfg(test)]
     pub(crate) fn is_idle(&self) -> bool {
         self.pool.is_empty()
+    }
+
+    /// Tables held on the GPU.
+    #[cfg(test)]
+    pub(crate) fn data_entries(&self) -> usize {
+        self.data.len()
     }
 
     fn targets(&mut self, device: &wgpu::Device, size: (u32, u32), n: usize) -> Vec<Target> {
@@ -515,6 +747,10 @@ impl FxStage {
                 mapped_at_creation: false,
             });
             queue.write_buffer(&buf, 0, &bytes);
+            let data = match &s.data {
+                Some(d) => self.data_buffer(device, queue, d)?,
+                None => self.no_data.clone(),
+            };
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fx"),
                 layout: &self.bgl,
@@ -523,6 +759,7 @@ impl FxStage {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(views.get(cur)?) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
+                    wgpu::BindGroupEntry { binding: 4, resource: data.as_entire_binding() },
                 ],
             });
             let groups = if s.run {
