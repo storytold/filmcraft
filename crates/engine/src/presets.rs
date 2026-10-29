@@ -14,7 +14,8 @@
 //!   in `<data dir>/effect-presets.json`. Preset files (export/import) are JSON:
 //!   `{"format": "filmcraft.effect-presets", "version": 1, "presets": [EffectPreset…]}`.
 //!
-//! Commands: `presets.list`, `presets.save`, `presets.apply` (undoable), `presets.delete`,
+//! Commands: `presets.list`, `presets.save`, `presets.apply` (undoable), `presets.applyEffect`
+//! (undoable; applies a preset onto one effect already on a clip), `presets.delete`,
 //! `presets.rename`, `presets.export`, `presets.import`.
 
 use std::path::{Path, PathBuf};
@@ -25,7 +26,7 @@ use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, clip_p, has_seq, str_p};
+use crate::commands::{CommandSpec, always, bad, clip_p, has_seq, str_p, u64_p};
 use crate::{EngineError, Result, Session};
 
 pub const FILE_FORMAT: &str = "filmcraft.effect-presets";
@@ -162,6 +163,7 @@ pub(crate) fn effect_instance(id: &str) -> EffectInstance {
         post_fader: false,
         essential: false,
         layer: None,
+        analysis: None,
     })
 }
 
@@ -419,6 +421,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             true,
         ),
         spec("presets.apply", "Apply Preset", r#"{"preset":str,"clips":[id]?}"#, has_seq, apply, true),
+        spec("presets.applyEffect", "Apply Preset to Effect", r#"{"preset":str,"clip":id,"index":n}"#, has_seq, apply_effect, true),
         spec("presets.delete", "Delete Preset", r#"{"name":str}"#, always, delete, true),
         spec("presets.rename", "Rename Preset", r#"{"name":str,"to":str}"#, always, rename, true),
         spec("presets.export", "Export Presets", r#"{"path":str,"names":[str]?}"#, always, export, false),
@@ -517,6 +520,56 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(n)
     })?;
     Ok(json!({"applied": n}))
+}
+
+/// Apply a preset to one effect already on a clip (Effect Controls ▸ right-click ▸ Apply Preset):
+/// the preset's effect of the same type takes the place of the one clicked (same index, same
+/// enabled state), so it configures that effect instead of adding a duplicate; any other effects
+/// the preset carries are added to the clip like [`apply`]. One undo step.
+///
+/// A preset without an effect of that type is refused instead of applying half of it.
+fn apply_effect(s: &mut Session, p: &Value) -> Result<Value> {
+    let name = str_p(p, "preset").or_else(|| str_p(p, "name")).ok_or_else(|| bad("presets.applyEffect", "need `preset`"))?;
+    let clip = clip_p(p, "clip").ok_or_else(|| bad("presets.applyEffect", "need `clip`"))?;
+    let index = u64_p(p, "index").ok_or_else(|| bad("presets.applyEffect", "need `index`"))? as usize;
+    let preset = s.presets.find(name).ok_or_else(|| bad("presets.applyEffect", format!("no preset `{name}`")))?;
+    let target = {
+        let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        seq.find_item(clip).map(|(_, it)| it.clone()).ok_or_else(|| bad("presets.applyEffect", "no such clip"))?
+    };
+    let current = target.effects.get(index).ok_or_else(|| bad("presets.applyEffect", "no such effect on the clip"))?;
+    let effect = current.effect.clone();
+    let effect_name = current.def().map(|d| d.name).unwrap_or(effect.as_str()).to_string();
+    let size = clip_size(s, &target);
+    // prepare the preset for this clip (keyframes re-timed, geometry scaled), then use the effect of
+    // the type clicked and let the rest be added like `presets.apply`
+    let mut effects = instantiate(&preset, &target, size);
+    let Some(pos) = effects.iter().position(|e| e.effect == effect) else {
+        return Err(bad("presets.applyEffect", format!("the preset `{name}` has no {effect_name} effect")));
+    };
+    let replacement = effects.remove(pos);
+    let extra = effects.len();
+    let label = format!("Apply Preset {}", preset.name);
+    s.edit_sequence(&label, |q, _, _| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        let Some(slot) = it.effects.get_mut(index) else { return Err(bad("presets.applyEffect", "the effect is gone")) };
+        if slot.effect != effect {
+            return Err(bad("presets.applyEffect", "the effect changed while applying the preset"));
+        }
+        // keep where it is and whether it is on: the preset brings the settings, not the row
+        let enabled = slot.enabled;
+        *slot = replacement;
+        slot.enabled = enabled;
+        // the preset brings its own parameters, so a stored analysis belongs to the old ones
+        slot.analysis = None;
+        if !effects.is_empty() {
+            put_effects(it, effects);
+        }
+        Ok(())
+    })?;
+    // a running analysis was watching the old parameters
+    crate::stabilizer::cancel(s, clip, index);
+    Ok(json!({"applied": 1, "added": extra}))
 }
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {

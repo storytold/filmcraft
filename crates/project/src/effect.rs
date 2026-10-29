@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::keyframe::{Param, ParamValue};
 
 mod audio;
-use crate::mask::Mask;
+use crate::mask::{Mask, TrackMethod};
 pub use audio::{GEQ10_LABELS, GEQ20_LABELS, GEQ30_LABELS, PREMIERE_AUDIO_EFFECTS};
 
 mod vfx;
@@ -97,6 +97,7 @@ impl EffectDef {
             post_fader: false,
             essential: false,
             layer: None,
+            analysis: None,
         }
     }
 }
@@ -118,6 +119,70 @@ pub struct EffectInstance {
     /// ([`crate::graphic_design::LayerExtra`]). Schema v12.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<Box<crate::graphic_design::LayerExtra>>,
+    /// Warp Stabilizer only: the frame analysis, stored in the project so a stabilised clip stays
+    /// stabilised after reopening the project (or on another computer) without pressing Stabilize
+    /// again. Schema v16; a parameter change clears it with the `stabilize` flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<StabilizerAnalysis>,
+}
+
+/// A stored Warp Stabilizer analysis (see [`EffectInstance::analysis`]).
+///
+/// The per-frame camera motion is packed into a base64 string — four little-endian `f32` per step
+/// (translation x/y, rotation, log scale), sixteen bytes per analysed frame — so a long clip adds
+/// a few hundred kilobytes to the project file instead of megabytes of JSON numbers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StabilizerAnalysis {
+    /// FNV-1a key of the clip instance and the analysed source range (media item, timeline start
+    /// and duration, source in-point, speed and reverse). Rendering uses the analysis only while
+    /// this still matches the clip, so moving, trimming, slipping or changing speed invalidates it.
+    pub clip: u64,
+    /// Frame rate the analysis was taken at (the sequence frame rate).
+    pub fps: f64,
+    /// Analysis frame size in pixels (the small size the clip was tracked at).
+    pub width: u32,
+    pub height: u32,
+    /// Tracking method and whether the detailed (960 px) analysis was used.
+    #[serde(default)]
+    pub method: TrackMethod,
+    #[serde(default)]
+    pub detailed: bool,
+    /// [`pack_steps`] output.
+    pub steps: String,
+}
+
+/// Pack per-frame similarity parameters (tx, ty, angle, log scale) into [`StabilizerAnalysis::steps`].
+pub fn pack_steps(steps: &[[f32; 4]]) -> String {
+    let mut bytes = Vec::with_capacity(steps.len() * 16);
+    for p in steps {
+        for v in p {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    crate::gtemplate::base64_encode(&bytes)
+}
+
+/// Unpack [`StabilizerAnalysis::steps`]. A damaged string yields `None` instead of a panic or a
+/// truncated path.
+pub fn unpack_steps(s: &str) -> Option<Vec<[f32; 4]>> {
+    let bytes = crate::gtemplate::base64_decode(s)?;
+    let (chunks, rest) = bytes.as_chunks::<16>();
+    if !rest.is_empty() {
+        return None;
+    }
+    Some(
+        chunks
+            .iter()
+            .map(|c| {
+                [
+                    f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                    f32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                    f32::from_le_bytes([c[8], c[9], c[10], c[11]]),
+                    f32::from_le_bytes([c[12], c[13], c[14], c[15]]),
+                ]
+            })
+            .collect(),
+    )
 }
 
 impl EffectInstance {
@@ -891,5 +956,21 @@ mod tests {
         assert!(effect_defs().len() > 90);
         assert_eq!(find_effect_by_name("Gaussian Blur").unwrap().id, "gaussian_blur");
         assert_eq!(intrinsic_video().len(), 3);
+    }
+
+    #[test]
+    fn stabilizer_steps_pack_round_trip_and_reject_damage() {
+        let steps = [[1.0f32, -2.5, 0.1, 0.02], [0.0, 3.25, -0.2, -0.01]];
+        let packed = pack_steps(&steps);
+        assert_eq!(unpack_steps(&packed).unwrap(), steps.to_vec());
+        // a damaged string or a partial step is refused, never a panic or a truncated path
+        assert!(unpack_steps("not base64!!").is_none());
+        assert!(unpack_steps(&packed[..packed.len() - 4]).is_none());
+        assert!(unpack_steps("").unwrap().is_empty());
+        // an empty analysis round-trips (a still clip has no steps)
+        let a = StabilizerAnalysis { clip: 7, fps: 24.0, width: 480, height: 270, method: TrackMethod::Position, detailed: false, steps: pack_steps(&[]) };
+        assert!(unpack_steps(&a.steps).unwrap().is_empty());
+        let json = serde_json::to_string(&a).unwrap();
+        assert_eq!(serde_json::from_str::<StabilizerAnalysis>(&json).unwrap(), a);
     }
 }

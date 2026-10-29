@@ -19,6 +19,7 @@ mod aac_out;
 mod audio_out;
 mod deflate;
 mod job;
+mod mkv_out;
 mod mxf_out;
 mod pace;
 mod pcm;

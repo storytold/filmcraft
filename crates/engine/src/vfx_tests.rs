@@ -1,7 +1,7 @@
 //! M5.11: every video effect is listed with its folder and badges, applies by id or name through
 //! `effects.apply` (undoable), takes parameters through `effects.setParam`, and renders.
 
-use filmcraft_project::{EffectKind, effect_defs};
+use filmcraft_project::{ClipId, EffectKind, ParamValue, effect_defs};
 use serde_json::{Value, json};
 
 use crate::Session;
@@ -186,4 +186,54 @@ fn set_param_refuses_values_outside_the_range() {
     s.execute("effects.setParam", json!({"clip": clip, "effect": "levels", "param": "gamma", "value": 110})).unwrap();
     s.execute("effects.setParam", json!({"clip": clip, "effect": "opacity", "param": "opacity", "value": 100})).unwrap();
     s.execute("effects.setParam", json!({"clip": clip, "effect": "opacity", "param": "opacity", "value": 0})).unwrap();
+}
+
+/// Warp Stabilizer is button-driven: applying it analyse nothing, the Stabilize command runs the
+/// analysis, and touching any other parameter stops it and clears the flag (the button is needed
+/// again). Stop clears the flag in one step.
+#[test]
+fn warp_stabilizer_is_button_driven_and_parameter_changes_stop_it() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "warp_stabilizer"})).unwrap();
+    let idx = s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.effects.iter().position(|e| e.effect == "warp_stabilizer").unwrap();
+    let flag = |s: &Session| {
+        s.active_sequence()
+            .and_then(|q| q.find_item(ClipId(clip)))
+            .and_then(|(_, it)| it.effects[idx].params.get("stabilize").map(|p| matches!(p.value, ParamValue::Bool(true))))
+            .unwrap_or(false)
+    };
+    let analysis = |s: &Session| s.active_sequence().and_then(|q| q.find_item(ClipId(clip))).and_then(|(_, it)| it.effects[idx].analysis.clone());
+    assert!(!flag(&s), "applying the effect does not analyse anything");
+    assert!(analysis(&s).is_none());
+    // the Stabilize button (wait: the test needs the result now) analyses and keeps the flag on
+    let r = s.execute("effects.stabilize", json!({"clip": clip, "effect": idx, "wait": true})).unwrap();
+    assert_eq!(r["effect"], idx);
+    assert!(r["frames"].as_u64().unwrap() > 0);
+    assert!(flag(&s));
+    // the finished analysis is saved in the effect, tied to the clip it describes
+    let saved = analysis(&s).expect("the analysis is stored in the project");
+    assert!(!saved.steps.is_empty());
+    assert!(saved.width > 0 && saved.height > 0);
+    let item = s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.clone();
+    assert_eq!(saved.clip, filmcraft_render::vfx::clip_key(&item));
+    // it survives a project round trip (reopening on this or another computer)
+    let bytes = filmcraft_format::encode(&s.project, false);
+    let back = filmcraft_format::decode(&bytes).unwrap().project;
+    let reopened = back.sequence(s.state.active_sequence.unwrap()).unwrap().find_item(ClipId(clip)).unwrap().1.effects[idx].analysis.clone();
+    assert_eq!(reopened, Some(saved), "the saved analysis is written to the project file");
+    // touching any other parameter stops it, clears the flag and drops the analysis
+    s.execute("effects.setParam", json!({"clip": clip, "effect": idx, "param": "smoothness", "value": 60.0})).unwrap();
+    assert!(!flag(&s));
+    assert!(analysis(&s).is_none());
+    // the button can start it again; Stop clears the flag and the analysis
+    s.execute("effects.stabilize", json!({"clip": clip, "effect": idx, "wait": true})).unwrap();
+    assert!(flag(&s));
+    assert!(analysis(&s).is_some());
+    s.execute("effects.stopStabilize", json!({"clip": clip, "effect": idx})).unwrap();
+    assert!(!flag(&s));
+    assert!(analysis(&s).is_none());
+    // not a Warp Stabilizer effect
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"})).unwrap();
+    assert!(s.execute("effects.stabilize", json!({"clip": clip, "effect": "gaussian_blur", "wait": true})).is_err());
 }

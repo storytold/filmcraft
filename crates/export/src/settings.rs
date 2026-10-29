@@ -126,6 +126,31 @@ pub enum Multiplexer {
     Mp4,
     /// QuickTime.
     Mov,
+    /// Matroska (`.mkv`). Video is H.264, H.265, AV1, ProRes or Motion-JPEG; audio is AAC, FLAC or
+    /// uncompressed PCM.
+    Mkv,
+}
+
+impl Multiplexer {
+    pub const ALL: [Multiplexer; 3] = [Multiplexer::Mp4, Multiplexer::Mov, Multiplexer::Mkv];
+    pub fn id(self) -> &'static str {
+        match self {
+            Multiplexer::Mp4 => "mp4",
+            Multiplexer::Mov => "mov",
+            Multiplexer::Mkv => "mkv",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Multiplexer::Mp4 => "MP4",
+            Multiplexer::Mov => "QuickTime",
+            Multiplexer::Mkv => "Matroska (MKV)",
+        }
+    }
+    /// Whether this is the Matroska container.
+    pub fn is_mkv(self) -> bool {
+        self == Multiplexer::Mkv
+    }
 }
 
 /// Video codec of an MXF export.
@@ -200,8 +225,8 @@ impl ExrCompression {
     }
 }
 
-/// Audio codec. `Auto` = AAC in MP4 and AAC Audio, PCM in QuickTime / WAV / AIFF, FLAC in FLAC.
-/// MP4 and QuickTime can also carry FLAC; MXF is always PCM.
+/// Audio codec. `Auto` = AAC in MP4, Matroska and AAC Audio, PCM in QuickTime / WAV / AIFF, FLAC
+/// in FLAC. MP4, QuickTime and Matroska can also carry FLAC; MXF is always PCM.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AudioCodec {
@@ -507,6 +532,10 @@ impl ExportSettings {
     /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): PNG, TIFF,
     /// Targa and OpenEXR sequences and ProRes 4444 / 4444 XQ QuickTime movies.
     pub fn supports_alpha(&self) -> bool {
+        if self.multiplexer == Multiplexer::Mkv {
+            // Matroska's ProRes mapping here does not signal an alpha channel.
+            return false;
+        }
         match self.format {
             Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence => true,
             Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
@@ -566,6 +595,13 @@ impl ExportSettings {
 
     /// The audio codec actually used.
     pub fn audio_codec(&self) -> AudioCodec {
+        if self.multiplexer == Multiplexer::Mkv {
+            // Matroska carries AAC, FLAC and PCM: Auto picks AAC like MP4 does.
+            return match self.audio.codec {
+                AudioCodec::Auto => AudioCodec::Aac,
+                codec => codec,
+            };
+        }
         match (self.format, self.audio.codec) {
             (Format::Flac, _) => AudioCodec::Flac,
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
@@ -591,7 +627,13 @@ impl ExportSettings {
 
     /// File extension of the output.
     pub fn extension(&self) -> &'static str {
-        if self.format.is_h26x() && self.multiplexer == Multiplexer::Mov { "mov" } else { self.format.extension() }
+        if self.multiplexer == Multiplexer::Mkv && self.has_video() && !self.format.is_mxf() && !self.format.is_image_sequence() && self.format != Format::Gif {
+            "mkv"
+        } else if self.format.is_h26x() && self.multiplexer == Multiplexer::Mov {
+            "mov"
+        } else {
+            self.format.extension()
+        }
     }
 
     /// Estimated output size in bytes for `duration` of a sequence (`seq_w`×`seq_h` at `seq_rate`).
@@ -752,6 +794,7 @@ impl ExportSettings {
             "No audio".to_string()
         };
         let container = match self.format {
+            _ if self.multiplexer == Multiplexer::Mkv => "Matroska",
             Format::H264 | Format::Hevc if self.multiplexer == Multiplexer::Mov => "QuickTime",
             Format::H264 | Format::Hevc | Format::Av1 => "MP4",
             Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "QuickTime",

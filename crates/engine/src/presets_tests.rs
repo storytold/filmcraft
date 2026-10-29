@@ -97,6 +97,89 @@ fn keyframe_modes_retime_onto_the_target() {
 }
 
 #[test]
+fn apply_effect_replaces_that_effect_in_place() {
+    let (mut s, clips) = demo();
+    let (a, b) = (clips[0], clips[2]);
+    s.state.selection = vec![a];
+    s.execute("effects.apply", json!({"effect": "gaussian_blur"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": a.0, "effect": "gaussian_blur", "param": "blurriness", "value": 35.0})).unwrap();
+    let ai = item(&s, a).effects.iter().position(|e| e.effect == "gaussian_blur").unwrap();
+    s.execute("presets.save", json!({"clip": a.0, "name": "soft blur", "keyframes": "none", "effects": [ai]})).unwrap();
+
+    s.state.selection = vec![b];
+    s.execute("effects.apply", json!({"effect": "gaussian_blur"})).unwrap();
+    let bi = item(&s, b).effects.iter().position(|e| e.effect == "gaussian_blur").unwrap();
+    s.execute("effects.toggleEnabled", json!({"clip": b.0, "index": bi})).unwrap();
+    let before = item(&s, b);
+    assert!(!before.effects[bi].enabled);
+
+    s.execute("presets.applyEffect", json!({"clip": b.0, "index": bi, "preset": "soft blur"})).unwrap();
+    let after = item(&s, b);
+    assert_eq!(after.effects.len(), before.effects.len(), "the effect is configured, not duplicated");
+    assert_eq!(after.effects[bi].effect, "gaussian_blur", "same row");
+    assert!(!after.effects[bi].enabled, "the row keeps its enabled state");
+    assert_eq!(after.effects[bi].param("blurriness").unwrap().value, ParamValue::Float(35.0));
+
+    s.undo();
+    let undone = item(&s, b);
+    assert_eq!(undone.effects.len(), before.effects.len(), "apply is one undo step");
+    assert_ne!(undone.effects[bi].param("blurriness").unwrap().value, ParamValue::Float(35.0));
+}
+
+#[test]
+fn apply_effect_adds_the_other_effects_of_the_preset_once() {
+    let (mut s, clips) = demo();
+    let (a, b) = (clips[0], clips[1]);
+    s.state.selection = vec![a];
+    s.execute("effects.apply", json!({"effect": "gaussian_blur"})).unwrap();
+    s.execute("effects.apply", json!({"effect": "brightness_contrast"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": a.0, "effect": "gaussian_blur", "param": "blurriness", "value": 12.0})).unwrap();
+    let ia = item(&s, a);
+    let blur = ia.effects.iter().position(|e| e.effect == "gaussian_blur").unwrap();
+    let bc = ia.effects.iter().position(|e| e.effect == "brightness_contrast").unwrap();
+    s.execute("presets.save", json!({"clip": a.0, "name": "blur and contrast", "keyframes": "none", "effects": [blur, bc]})).unwrap();
+
+    s.state.selection = vec![b];
+    s.execute("effects.apply", json!({"effect": "gaussian_blur"})).unwrap();
+    let bi = item(&s, b).effects.iter().position(|e| e.effect == "gaussian_blur").unwrap();
+    let r = s.execute("presets.applyEffect", json!({"clip": b.0, "index": bi, "preset": "blur and contrast"})).unwrap();
+    assert_eq!(r["applied"], 1);
+    assert_eq!(r["added"], 1);
+    let it = item(&s, b);
+    assert_eq!(it.effects.iter().filter(|e| e.effect == "gaussian_blur").count(), 1);
+    assert_eq!(it.effects.iter().filter(|e| e.effect == "brightness_contrast").count(), 1);
+    assert_eq!(it.effects[bi].param("blurriness").unwrap().value, ParamValue::Float(12.0));
+    // standard effects stay before the intrinsic ones
+    let bc = it.effects.iter().position(|e| e.effect == "brightness_contrast").unwrap();
+    assert!(bc < it.effects.iter().position(|e| e.effect == "motion").unwrap());
+    s.undo();
+    let undone = item(&s, b);
+    assert_eq!(undone.effects.len(), 2 + 2, "one undo step removed both the replacement and the added effect");
+}
+
+#[test]
+fn apply_effect_refuses_a_preset_without_that_effect() {
+    let (mut s, clips) = demo();
+    let b = clips[1];
+    s.state.selection = vec![b];
+    s.execute("effects.apply", json!({"effect": "gaussian_blur"})).unwrap();
+    let bi = item(&s, b).effects.iter().position(|e| e.effect == "gaussian_blur").unwrap();
+    let before = item(&s, b);
+    // Fade In only carries opacity
+    let e = s.execute("presets.applyEffect", json!({"clip": b.0, "index": bi, "preset": "Fade In"})).unwrap_err();
+    assert!(e.to_string().contains("Fade In"), "{e}");
+    let after = item(&s, b);
+    assert_eq!(after.effects.len(), before.effects.len());
+    assert_eq!(after.effects[bi].effect, "gaussian_blur");
+    assert!(!after.effect("opacity").unwrap().param("opacity").unwrap().is_animated(), "nothing was applied");
+    // hostile parameters: a missing effect index and an unknown preset are errors, not panics
+    assert!(s.execute("presets.applyEffect", json!({"clip": b.0, "index": 999, "preset": "Fade In"})).is_err());
+    assert!(s.execute("presets.applyEffect", json!({"clip": b.0, "index": bi, "preset": "nope"})).is_err());
+    assert!(s.execute("presets.applyEffect", json!({"clip": 9999, "index": 0, "preset": "Fade In"})).is_err());
+    assert!(s.execute("presets.applyEffect", json!({"preset": "Fade In"})).is_err());
+}
+
+#[test]
 fn save_without_keyframes_keeps_the_value_at_the_playhead() {
     let (mut s, clips) = demo();
     let a = clips[0];

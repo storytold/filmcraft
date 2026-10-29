@@ -40,6 +40,22 @@ struct PictureCtx {
     prefix: &'static str,
 }
 
+/// Safe margins and the Centering Grid over the picture.
+fn draw_guides(ui: &egui::Ui, mv: &crate::state::MonitorView, pic: Rect) {
+    if mv.safe_margins {
+        for (f, c) in [(0.9, Color32::from_white_alpha(120)), (0.8, Color32::from_white_alpha(90))] {
+            let r = Rect::from_center_size(pic.center(), pic.size() * f);
+            ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, c), StrokeKind::Middle);
+        }
+        let c = pic.center();
+        ui.painter().line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
+        ui.painter().line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
+    }
+    if mv.center_grid {
+        monitor_view::center_grid(ui.painter(), pic, mv.center_grid_pattern);
+    }
+}
+
 /// The picture block: schedules this frame's render request (GPU or CPU), shows the texture
 /// that is ready, and draws the safe margins, comparison reference and display-mode label.
 fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &crate::state::MonitorView, pc: PictureCtx) {
@@ -160,14 +176,8 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         let bar = Rect::from_min_max(pos2(ra.min.x, ra.max.y + 2.0), pos2(video_area.max.x, ra.max.y + 22.0));
         monitor_view::compare_bar(app, ui, bar, rate, drop_frame);
     }
-    if mv.safe_margins {
-        for (f, c) in [(0.9, Color32::from_white_alpha(120)), (0.8, Color32::from_white_alpha(90))] {
-            let r = Rect::from_center_size(pic.center(), pic.size() * f);
-            ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, c), StrokeKind::Middle);
-        }
-        let c = pic.center();
-        ui.painter().line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
-        ui.painter().line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
+    if mv.safe_margins || mv.center_grid {
+        draw_guides(ui, mv, pic);
     }
     if display != DisplayMode::Composite && !compare {
         let label = match display {
