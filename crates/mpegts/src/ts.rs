@@ -287,6 +287,41 @@ fn resync(block: &[u8], from: usize, packet_size: usize, sync_offset: usize, at_
     (i, true)
 }
 
+/// Register the elementary streams a (CRC-checked) PMT section announces and that are not yet known.
+fn add_pmt_streams(sec: &[u8], packet_size: usize, es: &mut HashMap<u16, EsState>, order: &mut Vec<u16>) {
+    let pinfo = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
+    let prog_desc = sec.get(12..12 + pinfo).unwrap_or(&[]);
+    let hdmv = packet_size == 192 || prog_desc.windows(4).any(|w| w == b"HDMV");
+    let mut i = 12 + pinfo;
+    let end = sec.len() - 4;
+    while i + 5 <= end {
+        let st = sec[i];
+        let pid = (((sec[i + 1] & 0x1F) as u16) << 8) | sec[i + 2] as u16;
+        let ilen = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
+        let desc = sec.get(i + 5..(i + 5 + ilen).min(end)).unwrap_or(&[]);
+        i += 5 + ilen;
+        if es.contains_key(&pid) {
+            continue;
+        }
+        let mut codec = codec_of(st, desc, hdmv);
+        if codec == Codec::Unknown(6) && prog_desc.windows(4).any(|w| w == b"AC-3") {
+            codec = Codec::Ac3;
+        }
+        let stream = Stream {
+            id: StreamId::Pid(pid),
+            stream_type: st,
+            codec: codec.clone(),
+            language: language(desc),
+            units: Vec::new(),
+            lpcm: None,
+            pes_packets: 0,
+            skipped_bytes: 0,
+        };
+        es.insert(pid, EsState { stream, split: Splitter::new(&codec), asm: PesAsm::default(), cc: None });
+        order.push(pid);
+    }
+}
+
 pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_offset: usize) -> Result<File> {
     let len = src.len();
     let mut head = vec![0u8; packet_size * 8];
@@ -384,37 +419,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                     }
                     pmt_version = Some(version);
                     pcr_pid = Some((((sec[8] & 0x1F) as u16) << 8) | sec[9] as u16);
-                    let pinfo = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
-                    let prog_desc = sec.get(12..12 + pinfo).unwrap_or(&[]);
-                    let hdmv = packet_size == 192 || prog_desc.windows(4).any(|w| w == b"HDMV");
-                    let mut i = 12 + pinfo;
-                    let end = sec.len() - 4;
-                    while i + 5 <= end {
-                        let st = sec[i];
-                        let pid = (((sec[i + 1] & 0x1F) as u16) << 8) | sec[i + 2] as u16;
-                        let ilen = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
-                        let desc = sec.get(i + 5..(i + 5 + ilen).min(end)).unwrap_or(&[]);
-                        i += 5 + ilen;
-                        if es.contains_key(&pid) {
-                            continue;
-                        }
-                        let mut codec = codec_of(st, desc, hdmv);
-                        if codec == Codec::Unknown(6) && prog_desc.windows(4).any(|w| w == b"AC-3") {
-                            codec = Codec::Ac3;
-                        }
-                        let stream = Stream {
-                            id: StreamId::Pid(pid),
-                            stream_type: st,
-                            codec: codec.clone(),
-                            language: language(desc),
-                            units: Vec::new(),
-                            lpcm: None,
-                            pes_packets: 0,
-                            skipped_bytes: 0,
-                        };
-                        es.insert(pid, EsState { stream, split: Splitter::new(&codec), asm: PesAsm::default(), cc: None });
-                        order.push(pid);
-                    }
+                    add_pmt_streams(&sec, packet_size, &mut es, &mut order);
                 }
                 continue;
             }

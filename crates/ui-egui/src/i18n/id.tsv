@@ -326,6 +326,7 @@
 	Show Active Caption Tracks Only	Tampilkan Hanya Trek Takarir Aktif
 	Show All Caption Tracks	Tampilkan Semua Trek Takarir
 	Show All Marker Colors	Tampilkan Semua Warna Penanda
+	Show Duplicate Frame Markers	Tampilkan Penanda Bingkai Duplikat
 	Show Guides	Tampilkan Garis Bantu
 	Show Rulers	Tampilkan Penggaris
 	Show Through Edits	Tampilkan Edit Tembus
@@ -1271,6 +1272,7 @@
 	59.94 fps Non Drop-Frame	59,94 fps Non Drop-Frame
 	ASC CDL	ASC CDL
 	Accessible color contrast	Kontras warna yang aksesibel
+	Animate zoom, scrolling and menus	Animasikan zoom, gulir, dan menu
 	Action-Safe Margin	Margin Aman Aksi
 	Active Monitor	Monitor Aktif
 	Add	Tambah
@@ -3453,8 +3455,8 @@
 	Commits	Commit
 	% of all commits	% dari semua commit
 	Lines +/−	Baris +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Output audio gagal: memutar tanpa suara (periksa Pengaturan ▸ Perangkat Keras Audio)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Output audio tidak merespons: memutar tanpa suara (periksa Pengaturan ▸ Perangkat Keras Audio)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	Output audio gagal: memutar tanpa suara (periksa Pengaturan > Perangkat Keras Audio)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	Output audio tidak merespons: memutar tanpa suara (periksa Pengaturan > Perangkat Keras Audio)
 	Clip Speed / Duration	Kecepatan / Durasi Klip
 	Speed:	Kecepatan:
 	Reverse Speed	Balik Kecepatan
@@ -3575,3 +3577,9 @@
 	Appearance Settings…	Pengaturan Tampilan…
 	Add to favorites	Tambahkan ke favorit
 	Remove from favorites	Hapus dari favorit
+# View > Reset Interface Zoom (#2253).
+	Reset Interface Zoom	Atur Ulang Zoom Antarmuka
+	Track Color	Warna Trek
+	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
+	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
+	No matching text.	Tidak ada teks yang cocok.

@@ -29,6 +29,34 @@ pub struct StreamDecoder {
     gain_q8: i16,
 }
 
+struct SilkFrame {
+    mode: Mode,
+    bandwidth: Option<Bandwidth>,
+    has_packet: bool,
+    fec: bool,
+    frame_size: usize,
+    audio_size: usize,
+    rate: usize,
+    channels: usize,
+}
+
+struct Redundancy {
+    present: bool,
+    celt_to_silk: bool,
+    bytes: usize,
+    packet_len: usize,
+}
+
+fn apply_output_gain(pcm: &mut [f32], samples: usize, channels: usize, gain_q8: i16) {
+    if gain_q8 == 0 {
+        return;
+    }
+    let gain = (6.488_141e-4f32 * gain_q8 as f32).exp2();
+    for sample in pcm.iter_mut().take(samples * channels) {
+        *sample *= gain;
+    }
+}
+
 impl StreamDecoder {
     /// Creates a decoder producing `channels` (1 or 2) at `rate` (8/12/16/24/48 kHz).
     pub fn new(rate: u32, channels: usize) -> Result<StreamDecoder> {
@@ -168,6 +196,87 @@ impl StreamDecoder {
         Ok(nb)
     }
 
+    fn decode_silk_frame(&mut self, frame: SilkFrame, dec: &mut Option<&mut RangeDecoder>) -> Result<Vec<f32>> {
+        let SilkFrame { mode, bandwidth, has_packet, fec, frame_size, audio_size, rate, channels } = frame;
+        let mut pcm = Vec::new();
+        if mode == Mode::CeltOnly {
+            return Ok(pcm);
+        }
+        pcm.resize(frame_size.max(rate / 100) * channels, 0.0);
+        if self.prev_mode == Some(Mode::CeltOnly) {
+            self.silk.reset();
+        }
+        let internal_rate = if mode == Mode::SilkOnly {
+            match bandwidth {
+                Some(Bandwidth::Narrowband) => 8000,
+                Some(Bandwidth::Mediumband) => 12000,
+                _ => 16000,
+            }
+        } else {
+            16000
+        };
+        if has_packet {
+            self.silk.set_stream(self.stream_channels, internal_rate);
+        }
+        let lost = if !has_packet {
+            LostFlag::Lost
+        } else if fec {
+            LostFlag::Lbrr
+        } else {
+            LostFlag::Normal
+        };
+        let payload_ms = (1000 * audio_size / rate).max(10);
+        let mut decoded = 0;
+        while decoded < frame_size {
+            let first = decoded == 0;
+            let count = match self.silk.decode(dec.as_deref_mut(), lost, first, payload_ms, &mut pcm[decoded * channels..]) {
+                Ok(count) => count,
+                Err(_error) if lost != LostFlag::Normal => {
+                    let remaining = frame_size - decoded;
+                    pcm[decoded * channels..(decoded + remaining) * channels].fill(0.0);
+                    remaining
+                }
+                Err(error) => return Err(error),
+            };
+            if count == 0 {
+                break;
+            }
+            decoded += count;
+        }
+        Ok(pcm)
+    }
+
+    fn read_redundancy(&self, mode: Mode, fec: bool, packet_len: usize, dec: &mut Option<&mut RangeDecoder>) -> Redundancy {
+        let mut state = Redundancy { present: false, celt_to_silk: false, bytes: 0, packet_len };
+        let Some(decoder) = dec.as_deref_mut() else { return state };
+        let hybrid = self.mode == Some(Mode::Hybrid);
+        if fec || mode == Mode::CeltOnly || decoder.tell() + 17 + 20 * i32::from(hybrid) > 8 * state.packet_len as i32 {
+            return state;
+        }
+        state.present = if mode == Mode::Hybrid { decoder.bit_logp(12) } else { true };
+        if !state.present {
+            return state;
+        }
+        state.celt_to_silk = decoder.bit_logp(1);
+        state.bytes = if mode == Mode::Hybrid { decoder.uint(256) as usize + 2 } else { state.packet_len - ((decoder.tell() as usize + 7) >> 3) };
+        if state.bytes > state.packet_len || (state.packet_len - state.bytes) * 8 < decoder.tell() as usize {
+            state.packet_len = 0;
+            state.bytes = 0;
+            state.present = false;
+        } else {
+            state.packet_len -= state.bytes;
+        }
+        decoder.shrink_storage(state.bytes);
+        state
+    }
+
+    fn is_mode_transition(&self, has_packet: bool, mode: Mode) -> bool {
+        has_packet
+            && self.prev_mode.is_some()
+            && ((mode == Mode::CeltOnly && self.prev_mode != Some(Mode::CeltOnly) && !self.prev_redundancy)
+                || (mode != Mode::CeltOnly && self.prev_mode == Some(Mode::CeltOnly)))
+    }
+
     /// `opus_decode_frame`: decodes one frame (or conceals when `data` is `None`/≤1 byte).
     fn decode_frame(&mut self, data: Option<&[u8]>, pcm: &mut [f32], frame_size: usize, fec: bool) -> Result<usize> {
         let ch = self.channels;
@@ -226,14 +335,7 @@ impl StreamDecoder {
             }
             None => None,
         };
-        let mut transition = false;
-        if data.is_some()
-            && self.prev_mode.is_some()
-            && ((mode == Mode::CeltOnly && self.prev_mode != Some(Mode::CeltOnly) && !self.prev_redundancy)
-                || (mode != Mode::CeltOnly && self.prev_mode == Some(Mode::CeltOnly)))
-        {
-            transition = true;
-        }
+        let mut transition = self.is_mode_transition(data.is_some(), mode);
         let mut pcm_transition = Vec::new();
         if transition && mode == Mode::CeltOnly {
             pcm_transition.resize(f5 * ch, 0.0);
@@ -246,78 +348,13 @@ impl StreamDecoder {
         frame_size = audiosize;
 
         // SILK.
-        let mut pcm_silk: Vec<f32> = Vec::new();
-        if mode != Mode::CeltOnly {
-            pcm_silk.resize(frame_size.max(f10) * ch, 0.0);
-            if self.prev_mode == Some(Mode::CeltOnly) {
-                self.silk.reset();
-            }
-            let payload_ms = (1000 * audiosize / fs).max(10);
-            let internal_rate = if mode == Mode::SilkOnly {
-                match bandwidth {
-                    Some(Bandwidth::Narrowband) => 8000,
-                    Some(Bandwidth::Mediumband) => 12000,
-                    _ => 16000,
-                }
-            } else {
-                16000
-            };
-            if data.is_some() {
-                self.silk.set_stream(self.stream_channels, internal_rate);
-            }
-            let lost = if data.is_none() {
-                LostFlag::Lost
-            } else if fec {
-                LostFlag::Lbrr
-            } else {
-                LostFlag::Normal
-            };
-            let mut decoded = 0;
-            while decoded < frame_size {
-                let first = decoded == 0;
-                let n = match self.silk.decode(dec.as_deref_mut(), lost, first, payload_ms, &mut pcm_silk[decoded * ch..]) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        if lost != LostFlag::Normal {
-                            let n = frame_size - decoded;
-                            pcm_silk[decoded * ch..(decoded + n) * ch].fill(0.0);
-                            n
-                        } else {
-                            return Err(e);
-                        }
-                    }
-                };
-                if n == 0 {
-                    break;
-                }
-                decoded += n;
-            }
-        }
+        let pcm_silk = self.decode_silk_frame(
+            SilkFrame { mode, bandwidth, has_packet: data.is_some(), fec, frame_size, audio_size: audiosize, rate: fs, channels: ch },
+            &mut dec,
+        )?;
 
+        let Redundancy { present: redundancy, celt_to_silk, bytes: redundancy_bytes, packet_len: len } = self.read_redundancy(mode, fec, data_len, &mut dec);
         let mut start_band = 0;
-        let mut redundancy = false;
-        let mut celt_to_silk = false;
-        let mut redundancy_bytes = 0usize;
-        let mut len = data_len;
-        if !fec
-            && mode != Mode::CeltOnly
-            && let Some(d) = dec.as_deref_mut()
-            && d.tell() + 17 + 20 * (self.mode == Some(Mode::Hybrid)) as i32 <= 8 * len as i32
-        {
-            redundancy = if mode == Mode::Hybrid { d.bit_logp(12) } else { true };
-            if redundancy {
-                celt_to_silk = d.bit_logp(1);
-                redundancy_bytes = if mode == Mode::Hybrid { d.uint(256) as usize + 2 } else { len - ((d.tell() as usize + 7) >> 3) };
-                if redundancy_bytes > len || (len - redundancy_bytes) * 8 < d.tell() as usize {
-                    len = 0;
-                    redundancy_bytes = 0;
-                    redundancy = false;
-                } else {
-                    len -= redundancy_bytes;
-                }
-                d.shrink_storage(redundancy_bytes);
-            }
-        }
         if mode != Mode::CeltOnly {
             start_band = 17;
         }
@@ -389,12 +426,7 @@ impl StreamDecoder {
                 smooth_fade(&pcm_transition, &cur, pcm, f2_5, ch, window, self.rate);
             }
         }
-        if self.gain_q8 != 0 {
-            let g = (6.488_141e-4f32 * self.gain_q8 as f32).exp2();
-            for v in pcm[..frame_size * ch].iter_mut() {
-                *v *= g;
-            }
-        }
+        apply_output_gain(pcm, frame_size, ch, self.gain_q8);
         self.range_final = match dec.as_deref() {
             Some(d) if data_len > 1 => d.rng() ^ redundant_rng,
             _ => 0,

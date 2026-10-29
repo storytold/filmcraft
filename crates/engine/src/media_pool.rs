@@ -11,10 +11,13 @@
 //!   from it. Proxy frames are smaller; the source still reports the full-resolution size, and the
 //!   compositor derives its pixel scale from the frame it gets, so effects and Motion render the
 //!   same picture at lower resolution. Export asks for [`MediaPool::full_res_provider`].
+//! - Paths that came from a document (the project file, a template, an interchange file) are
+//!   opened through [`crate::doc_path`] ([`MediaPool::follow`]); a refused one renders as missing.
 
 use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_media::generators::GeneratorSource;
@@ -53,6 +56,9 @@ pub struct MediaPool {
     failures: Arc<Mutex<HashMap<ItemId, u32>>>,
     /// Openers tried before the built-in ones (MP4/MOV + codecs register here).
     pub openers: RwLock<Vec<Opener>>,
+    /// Media and proxy paths that came from a document, with that document's path (see
+    /// [`Self::follow`]).
+    stored: RwLock<HashMap<String, Option<PathBuf>>>,
 }
 
 impl Default for MediaPool {
@@ -65,6 +71,7 @@ impl Default for MediaPool {
             use_proxies: AtomicBool::new(false),
             failures: Arc::default(),
             openers: RwLock::new(filmcraft_codecs::openers()),
+            stored: RwLock::default(),
         }
     }
 }
@@ -140,24 +147,24 @@ fn file_name(path: &str) -> String {
 
 impl MediaPool {
     pub fn register_opener(&self, o: Opener) {
-        self.openers.write().unwrap_or_else(|e| e.into_inner()).push(o);
+        self.openers.write().unwrap_or_else(PoisonError::into_inner).push(o);
     }
 
     /// Cache a source for an item, valid whatever the item's reference (generators).
     pub fn insert(&self, item: ItemId, src: SharedSource) {
-        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (String::new(), src));
+        self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (String::new(), src));
     }
 
     /// Cache a source for an item under its [`media_key`].
     pub fn insert_keyed(&self, item: ItemId, key: String, src: SharedSource) {
-        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src));
+        self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (key, src));
     }
 
     /// Cache a source opened from `path` for an item.
     pub fn insert_file(&self, item: ItemId, path: &str, src: SharedSource) {
-        self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+        self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
         let src = self.unsupported_as_slate(item, path, src);
-        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (format!("file:{path}"), src));
+        self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (format!("file:{path}"), src));
     }
 
     /// `src` (opened from `path` for `item`) showing the unreadable slate for the frames it
@@ -168,25 +175,73 @@ impl MediaPool {
     }
 
     pub fn remove(&self, item: ItemId) {
-        self.sources.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
-        self.proxies.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
-        self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+        self.sources.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
+        self.proxies.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
+        self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
+    }
+
+    /// Record the media and proxy paths of `p`, loaded from the document at `document` (None: one
+    /// without a file), as stored paths: they are opened only as [`crate::doc_path::resolve`]
+    /// allows. A path already recorded keeps the document it came from first.
+    pub fn add_stored(&self, p: &Project, document: Option<&str>) {
+        let paths = p.items.values().filter_map(|i| i.as_media()).flat_map(|m| [Some(&m.media), m.proxy.as_ref()]).filter_map(|r| match r {
+            Some(MediaRef::File { path }) => Some(path.clone()),
+            _ => None,
+        });
+        self.add_stored_paths(paths, document);
+    }
+
+    /// [`Self::add_stored`] for single paths.
+    pub fn add_stored_paths(&self, paths: impl IntoIterator<Item = String>, document: Option<&str>) {
+        let document = document.filter(|d| !d.is_empty()).map(PathBuf::from);
+        let mut stored = self.stored.write().unwrap_or_else(PoisonError::into_inner);
+        for p in paths {
+            stored.entry(p).or_insert_with(|| document.clone());
+        }
+    }
+
+    /// Forget the stored paths (a new project).
+    pub fn clear_stored(&self) {
+        self.stored.write().unwrap_or_else(PoisonError::into_inner).clear();
+    }
+
+    /// The user picked `path` in this session (import, Link Media): open it as given.
+    pub fn allow(&self, path: &str) {
+        self.stored.write().unwrap_or_else(PoisonError::into_inner).remove(path);
+    }
+
+    /// The file to open for `path`, a media or proxy path of the project: a stored path as
+    /// [`crate::doc_path::resolve`] resolves it, any other path as given.
+    pub fn follow(&self, path: &str) -> Result<String, crate::doc_path::NotFollowed> {
+        // The web host reads only the files the user gave it, under its own virtual paths.
+        if cfg!(target_arch = "wasm32") {
+            return Ok(path.to_string());
+        }
+        match self.stored.read().unwrap_or_else(PoisonError::into_inner).get(path) {
+            Some(document) => crate::doc_path::resolve(path, document.as_deref()),
+            None => Ok(path.to_string()),
+        }
+    }
+
+    /// [`Self::follow`] as a media error (a refused path is a missing file).
+    fn follow_media(&self, path: &str) -> Result<String, MediaError> {
+        self.follow(path).map_err(|why| MediaError::Offline(format!("{path} is not opened: {why}")))
     }
 
     /// Forget every opened source (files are re-read on next use).
     pub fn clear(&self) {
-        self.sources.write().unwrap_or_else(|e| e.into_inner()).clear();
-        self.proxies.write().unwrap_or_else(|e| e.into_inner()).clear();
-        self.offline.write().unwrap_or_else(|e| e.into_inner()).clear();
+        self.sources.write().unwrap_or_else(PoisonError::into_inner).clear();
+        self.proxies.write().unwrap_or_else(PoisonError::into_inner).clear();
+        self.offline.write().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
     pub fn cached(&self, item: ItemId) -> Option<SharedSource> {
-        self.sources.read().unwrap_or_else(|e| e.into_inner()).get(&item).map(|(_, s)| s.clone())
+        self.sources.read().unwrap_or_else(PoisonError::into_inner).get(&item).map(|(_, s)| s.clone())
     }
 
     /// Sources opened so far (originals and proxies; `perf.stats`).
     pub fn open_sources(&self) -> usize {
-        self.sources.read().unwrap_or_else(|e| e.into_inner()).len() + self.proxies.read().unwrap_or_else(|e| e.into_inner()).len()
+        self.sources.read().unwrap_or_else(PoisonError::into_inner).len() + self.proxies.read().unwrap_or_else(PoisonError::into_inner).len()
     }
 
     pub fn use_proxies(&self) -> bool {
@@ -212,12 +267,12 @@ impl MediaPool {
 
     /// Why an item last rendered offline (None = online or not opened yet).
     pub fn offline_status(&self, item: ItemId) -> Option<OfflineStatus> {
-        self.offline.read().unwrap_or_else(|e| e.into_inner()).get(&item).cloned()
+        self.offline.read().unwrap_or_else(PoisonError::into_inner).get(&item).cloned()
     }
 
     /// Open a file through the registered openers.
     pub fn open_bytes(&self, name: &str, bytes: Arc<[u8]>) -> Result<SharedSource, MediaError> {
-        let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
         filmcraft_media::open_bytes(name, bytes, &openers)
     }
 
@@ -226,7 +281,7 @@ impl MediaPool {
     pub fn open_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
         let io = |e: std::io::Error| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) };
         if let Some(r) = services.reader(path) {
-            let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
+            let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
             return filmcraft_media::reader::open_reader(&file_name(path), r.map_err(io)?, &filmcraft_codecs::reader_openers(), &openers);
         }
         let bytes = services.read_file(path).map_err(io)?;
@@ -239,7 +294,7 @@ impl MediaPool {
     pub fn probe_file(&self, path: &str, services: &dyn Services) -> Result<SharedSource, MediaError> {
         let Some(r) = services.reader(path) else { return self.open_file(path, services) };
         let r = r.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(e.to_string()) } else { MediaError::Io(e.to_string()) })?;
-        let openers = self.openers.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let openers = self.openers.read().unwrap_or_else(PoisonError::into_inner).clone();
         filmcraft_media::reader::open_reader_within(&file_name(path), r, &filmcraft_codecs::reader_openers(), &openers, PROBE_WHOLE_FILE_MAX)
     }
 
@@ -264,7 +319,7 @@ impl MediaPool {
             return Some(s);
         }
         let key = media_key(m);
-        if let Some((k, s)) = self.sources.read().unwrap_or_else(|e| e.into_inner()).get(&item)
+        if let Some((k, s)) = self.sources.read().unwrap_or_else(PoisonError::into_inner).get(&item)
             && (k.is_empty() || *k == key)
         {
             return Some(s.clone());
@@ -279,13 +334,15 @@ impl MediaPool {
                 self.set_offline(item, OfflineReason::MadeOffline, path, "made offline");
                 Arc::new(SlateSource::new(m.info.clone(), &file_name(path), OfflineReason::MadeOffline))
             }
-            MediaRef::File { path } => match if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
-                open_image_sequence(path, services, m.info.frame_rate(), &it.name)
-            } else {
-                self.open_file(path, services)
-            } {
+            MediaRef::File { path } => match self.follow_media(path).and_then(|file| {
+                if m.info.kind == filmcraft_media::MediaKind::ImageSequence {
+                    open_image_sequence(&file, services, m.info.frame_rate(), &it.name)
+                } else {
+                    self.open_file(&file, services)
+                }
+            }) {
                 Ok(s) => {
-                    self.offline.write().unwrap_or_else(|e| e.into_inner()).remove(&item);
+                    self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
                     self.unsupported_as_slate(item, path, s)
                 }
                 Err(_) if filmcraft_media::pending::is_set() => {
@@ -300,22 +357,22 @@ impl MediaPool {
                 }
             },
         };
-        self.sources.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src.clone()));
+        self.sources.write().unwrap_or_else(PoisonError::into_inner).insert(item, (key, src.clone()));
         Some(src)
     }
 
     fn set_offline(&self, item: ItemId, reason: OfflineReason, path: &str, error: &str) {
-        self.offline.write().unwrap_or_else(|e| e.into_inner()).insert(item, OfflineStatus { reason, path: path.to_string(), error: error.to_string() });
+        self.offline.write().unwrap_or_else(PoisonError::into_inner).insert(item, OfflineStatus { reason, path: path.to_string(), error: error.to_string() });
     }
 
     fn proxy_source(&self, item: ItemId, path: &str, m: &MediaClip, services: &dyn Services) -> Option<SharedSource> {
         let key = format!("proxy:{path}");
-        if let Some((k, s)) = self.proxies.read().unwrap_or_else(|e| e.into_inner()).get(&item)
+        if let Some((k, s)) = self.proxies.read().unwrap_or_else(PoisonError::into_inner).get(&item)
             && *k == key
         {
             return Some(s.clone());
         }
-        match self.open_file(path, services) {
+        match self.follow_media(path).and_then(|file| self.open_file(&file, services)) {
             Ok(s) => {
                 // a proxy with fewer audio streams than the original (say one track of an OBS
                 // recording's seven) still stands in for the picture; the audio comes from the
@@ -323,14 +380,14 @@ impl MediaPool {
                 let audio_from = if s.info().audio_streams.len() < m.info.audio_streams.len() {
                     log::warn!("proxy has fewer audio streams than the original: {path}; audio from full-resolution media");
                     match &m.media {
-                        MediaRef::File { path: original } if !m.offline => self.open_file(original, services).ok(),
+                        MediaRef::File { path: original } if !m.offline => self.follow_media(original).and_then(|file| self.open_file(&file, services)).ok(),
                         _ => None,
                     }
                 } else {
                     None
                 };
                 let src: SharedSource = Arc::new(ProxySource { proxy: s, info: m.info.clone(), audio_from });
-                self.proxies.write().unwrap_or_else(|e| e.into_inner()).insert(item, (key, src.clone()));
+                self.proxies.write().unwrap_or_else(PoisonError::into_inner).insert(item, (key, src.clone()));
                 Some(src)
             }
             Err(e) => {
@@ -375,7 +432,7 @@ impl PoolProvider {
     /// item order (subclips count as their media). Empty when not recording.
     pub fn offline_used(&self) -> Vec<OfflineMedia> {
         let Some(used) = &self.used else { return Vec::new() };
-        let used = used.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let used = used.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let media: BTreeSet<ItemId> = used.into_iter().filter_map(|i| self.project.resolve_media(i).map(|(id, _, _)| id)).collect();
         media
             .into_iter()
@@ -396,7 +453,7 @@ impl PoolProvider {
 impl filmcraft_render::SourceProvider for PoolProvider {
     fn source(&self, item: ItemId) -> Option<SharedSource> {
         if let Some(used) = &self.used {
-            used.lock().unwrap_or_else(|e| e.into_inner()).insert(item);
+            used.lock().unwrap_or_else(PoisonError::into_inner).insert(item);
         }
         if self.full_res { self.pool.full_res_source(&self.project, item, &*self.services) } else { self.pool.source_for(&self.project, item, &*self.services) }
     }
@@ -428,7 +485,7 @@ impl MediaSource for SlateSource {
         let v = self.info.video.as_ref().ok_or(MediaError::NoStream("video"))?;
         let s = req.scale.clamp(1.0 / 64.0, 1.0);
         let (w, h) = (((v.width as f32 * s).round() as u32).max(2), ((v.height as f32 * s).round() as u32).max(2));
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(f) = last.as_ref()
             && f.width == w
             && f.height == h
@@ -464,7 +521,7 @@ impl MediaSource for UnsupportedAsSlate {
     fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
         match self.inner.video_frame(req) {
             Err(MediaError::Unsupported(why)) => {
-                self.offline.write().unwrap_or_else(|e| e.into_inner()).entry(self.item).or_insert_with(|| {
+                self.offline.write().unwrap_or_else(PoisonError::into_inner).entry(self.item).or_insert_with(|| {
                     log::warn!("media unreadable: {}: {why}", self.path);
                     OfflineStatus { reason: OfflineReason::Unreadable, path: self.path.clone(), error: why }
                 });
@@ -503,7 +560,7 @@ impl MediaSource for DamagedAsSlate {
     }
     fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
         let r = self.inner.video_frame(req);
-        let mut failures = self.failures.lock().unwrap_or_else(|e| e.into_inner());
+        let mut failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
         match r {
             Ok(f) => {
                 failures.remove(&self.item);

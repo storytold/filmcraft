@@ -3,7 +3,7 @@
 
 use crate::cabac::Cabac;
 use crate::error::{Result, ensure, invalid};
-use crate::mbtypes::*;
+use crate::mbtypes::{MbTypeInfo, Part, SubMbInfo, b_mb_type, b_sub_mb_type, intra_mb_type, p_mb_type, p_sub_mb_type};
 use crate::picture::MbKind;
 use crate::slice::SliceType;
 use crate::slicedec::{MbCur, SliceDecoder};

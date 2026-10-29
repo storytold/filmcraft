@@ -8,12 +8,16 @@ use crate::frame::{BAND_PAD, Band, Frame, FrameInfo, MiGrid, MiInfo, Pools};
 use crate::header::{FrameHeader, HeaderState, KEY_FRAME, RefInfo, parse_compressed, parse_uncompressed, split_superframe};
 use crate::loopfilter::{LfFrame, PlaneView, filter_superblock};
 use crate::probs::{Counts, adapt_coef_probs, adapt_noncoef_probs};
-use crate::tables::*;
+use crate::tables::{AC_QLOOKUP, DC_QLOOKUP, SEG_LVL_ALT_Q, SWITCHABLE, TX_MODE_SELECT};
 use crate::tile::{FrameShared, RefUse, Strip, TileDecoder};
 use crate::{ColorInfo, Picture, Plane};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
+
+/// Maximum luma samples accepted for one decoded reference frame: 8192x8192, above level 6.2's
+/// 8192x4352 (35 651 584 samples).
+const MAX_LUMA_SAMPLES: u64 = 1 << 26;
 
 /// Counters describing what the decoder has seen (useful to check test coverage).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -257,6 +261,12 @@ impl Decoder {
             return Ok(());
         }
         ensure!(h.width <= 16384 && h.height <= 16384, "frame size {}x{} too large", h.width, h.height);
+        ensure!(
+            u64::from(h.width).checked_mul(u64::from(h.height)).is_some_and(|n| n <= MAX_LUMA_SAMPLES),
+            "frame size {}x{} exceeds the decoder memory limit",
+            h.width,
+            h.height
+        );
         let (mi_rows, mi_cols) = (h.mi_rows as usize, h.mi_cols as usize);
         // compute_image_size semantics (7.2.6).
         let size = (h.width, h.height);
@@ -279,6 +289,7 @@ impl Decoder {
         let off = h.uncompressed_size;
         let hs = h.header_size_in_bytes as usize;
         ensure!(off + hs <= data.len(), "compressed header exceeds frame data");
+        ensure!(off + hs < data.len(), "frame has no tile data");
         let mut fc = self.st.contexts[h.frame_context_idx as usize].clone();
         parse_compressed(&data[off..off + hs], &mut h, &mut fc)?;
         self.count_frame(&h);
@@ -341,6 +352,7 @@ impl Decoder {
                     ensure!(s <= data.len() - pos, "tile size {s} beyond frame data");
                     s
                 };
+                ensure!(sz > 0, "empty tile payload");
                 td.push(&data[pos..pos + sz]);
                 pos += sz;
             }
@@ -817,7 +829,7 @@ impl Wave {
         let Some(row) = self.rows.get(r) else { return };
         let mut bottom = lock(&row.bottom);
         for (p, dst) in bottom.iter_mut().enumerate() {
-            copy_column(&self.frame, p, c, self.sb_cols, &band.planes[p], self.frame.band_h[p], dst, 0);
+            copy_column(&self.frame, Column { p, c, sb_cols: self.sb_cols }, (&band.planes[p], self.frame.band_h[p]), (dst, 0));
         }
     }
 
@@ -836,7 +848,7 @@ impl Wave {
                 }
                 let bottom = lock(&above.bottom);
                 for (p, src) in bottom.iter().enumerate() {
-                    copy_column(f, p, c, sb_cols, src, 0, &mut band.planes[p], 0);
+                    copy_column(f, Column { p, c, sb_cols }, (src, 0), (&mut band.planes[p], 0));
                 }
             }
             let [a, b, d] = &mut band.planes;
@@ -888,10 +900,18 @@ impl Drop for Wave {
     }
 }
 
+/// Superblock column `c` of plane `p` in a frame `sb_cols` superblocks wide.
+#[derive(Clone, Copy)]
+struct Column {
+    p: usize,
+    c: usize,
+    sb_cols: usize,
+}
+
 /// Copy `BAND_PAD` rows of superblock column `c` of plane `p` (the last column takes the rest of
-/// the stride) from row `src_row` of `src` to row `dst_row` of `dst`, both `strides[p]` wide.
-#[allow(clippy::too_many_arguments)]
-fn copy_column(f: &Frame, p: usize, c: usize, sb_cols: usize, src: &[u16], src_row: usize, dst: &mut [u16], dst_row: usize) {
+/// the stride) from row `src_row` of `src` to row `dst_row` of `dst` (each given as `(buffer, row)`), both `strides[p]` wide.
+fn copy_column(f: &Frame, col: Column, (src, src_row): (&[u16], usize), (dst, dst_row): (&mut [u16], usize)) {
+    let Column { p, c, sb_cols } = col;
     let fs = f.strides[p];
     let cw = fs / sb_cols.max(1);
     let x0 = c * cw;

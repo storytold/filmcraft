@@ -267,3 +267,18 @@ fn opendml_standard_indexes() {
         }
     }
 }
+
+#[test]
+fn opendml_repeated_index_offsets_are_read_once() {
+    let (_, at) = avi_odml([0, 0]);
+    let (file, _) = avi_odml(at);
+    let mut streams = open(&file).unwrap().streams;
+    // A malicious super index repeats each valid standard-index address. It must not multiply
+    // its chunks, allocations, or traversal work.
+    for (stream, &index) in streams.iter_mut().zip(&at) {
+        stream.super_index = vec![index; 100];
+    }
+    assert!(read_odml(&file, &mut streams));
+    assert_eq!(streams[0].chunks.len(), 3);
+    assert_eq!(streams[1].chunks.len(), 2);
+}

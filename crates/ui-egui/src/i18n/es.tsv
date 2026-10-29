@@ -169,6 +169,9 @@
 	Hide All Caption Tracks	Ocultar todas las pistas de subtítulos
 	High Quality Playback	Reproducción de alta calidad
 	History	Historial
+	Delete Redoable Actions	Eliminar acciones que se pueden rehacer
+	Clear History	Borrar historial
+	Delete the dimmed actions after the current state? They cannot be redone.	¿Eliminar las acciones atenuadas posteriores al estado actual? No se podrán rehacer.
 	Import From	Importar desde
 	Import Image Sequence…	Importar secuencia de imágenes…
 	Import from Media Browser	Importar desde el navegador de medios
@@ -319,6 +322,7 @@
 	Show Active Caption Tracks Only	Mostrar solo pistas de subtítulos activas
 	Show All Caption Tracks	Mostrar todas las pistas de subtítulos
 	Show All Marker Colors	Mostrar todos los colores de marcador
+	Show Duplicate Frame Markers	Mostrar marcadores de fotogramas duplicados
 	Show Guides	Mostrar guías
 	Show Rulers	Mostrar reglas
 	Show Through Edits	Mostrar cortes continuos
@@ -344,6 +348,7 @@
 	Transcribe Sequence…	Transcribir secuencia…
 	Transcribe…	Transcribir…
 	Transcript	Transcripción
+	Transparency Grid	Cuadrícula de transparencia
 	Transparent Video…	Video transparente…
 	Trim Edit	Edición de recorte
 	Trim…	Recorte…
@@ -508,6 +513,10 @@
 	Reveal Sequence in Project	Mostrar secuencia en el proyecto
 	Video Thumbnails	Miniaturas de video
 	Audio Waveforms	Formas de onda de audio
+	Work Area Bar	Barra de área de trabajo
+	Start: {tc}	Inicio: {tc}
+	End: {tc}	Fin: {tc}
+	Duration: {tc}	Duración: {tc}
 	Delete Preset	Eliminar ajuste preestablecido
 	Export Preset…	Exportar ajuste preestablecido…
 	Import Presets…	Importar ajustes preestablecidos…
@@ -1266,6 +1275,7 @@
 	59.94 fps Non Drop-Frame	59,94 fps sin eliminación de fotogramas
 	ASC CDL	ASC CDL
 	Accessible color contrast	Contraste de color accesible
+	Animate zoom, scrolling and menus	Animar el zoom, el desplazamiento y los menús
 	Action-Safe Margin	Margen seguro de acción
 	Active Monitor	Monitor activo
 	Add	Añadir
@@ -3457,8 +3467,8 @@
 	Commits	Commits
 	% of all commits	% de todos los commits
 	Lines +/−	Líneas +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	La salida de audio ha fallado: se reproduce sin sonido (revisa Ajustes ▸ Hardware de audio)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	La salida de audio no responde: se reproduce sin sonido (revisa Ajustes ▸ Hardware de audio)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	La salida de audio ha fallado: se reproduce sin sonido (revisa Ajustes > Hardware de audio)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	La salida de audio no responde: se reproduce sin sonido (revisa Ajustes > Hardware de audio)
 	Clip Speed / Duration	Velocidad/duración del clip
 	Speed:	Velocidad:
 	Reverse Speed	Invertir velocidad
@@ -3610,3 +3620,11 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
+# View > Reset Interface Zoom (#2253).
+	Reset Interface Zoom	Restablecer zoom de la interfaz
+	Track Color	Color de pista
+	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
+	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
+	No matching text.	Ningún texto coincide.
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.

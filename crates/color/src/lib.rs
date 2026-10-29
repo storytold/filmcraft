@@ -243,8 +243,15 @@ pub fn linear_to_srgb_u8_table() -> &'static [u8; 4096] {
 
 #[inline]
 pub fn linear_to_srgb_u8(v: f32) -> u8 {
+    linear_to_srgb_u8_in(linear_to_srgb_u8_table(), v)
+}
+
+/// [`linear_to_srgb_u8`] through a table fetched once ([`linear_to_srgb_u8_table`]), for
+/// per-pixel loops.
+#[inline]
+pub fn linear_to_srgb_u8_in(table: &[u8; 4096], v: f32) -> u8 {
     let i = (v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize;
-    linear_to_srgb_u8_table()[i]
+    table[i.min(4095)]
 }
 
 /// Rec.709 luma of a linear or encoded RGB triple.
@@ -296,7 +303,11 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
 
 /// Parse `#rrggbb` / `#rrggbbaa` into 0..1 floats.
 pub fn parse_hex(s: &str) -> Option<[f32; 4]> {
-    let s = s.trim().trim_start_matches('#');
+    let s = s.trim();
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     let b = |i: usize| u8::from_str_radix(s.get(i..i + 2)?, 16).ok().map(|v| v as f32 / 255.0);
     match s.len() {
         6 => Some([b(0)?, b(2)?, b(4)?, 1.0]),
@@ -317,6 +328,16 @@ pub fn to_hex(c: [f32; 4]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_hex_rejects_signs() {
+        assert_eq!(parse_hex("#+f+f+f"), None);
+        assert_eq!(parse_hex("#-f-f-f"), None);
+        assert_eq!(parse_hex("##0f0f0f"), None);
+        assert_eq!(parse_hex("#0f0f0"), None);
+        assert!(parse_hex("#0f0f0f").is_some());
+        assert!(parse_hex("0f0f0f80").is_some());
+    }
 
     #[test]
     fn ycbcr_roundtrip() {

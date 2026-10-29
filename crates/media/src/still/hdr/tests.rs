@@ -112,6 +112,9 @@ fn hostile_input_is_an_error_not_a_panic() {
     }
     assert!(decode("a.hdr", &file("-Y 2 +X 2", &[0; 8])).is_err());
     assert!(decode("a.hdr", &file("-Y 99999999 +X 99999999", &[0; 16])).is_err());
+    // Pass the coarse compressed-size check but fail scanline validation. This must be rejected
+    // before a 1 GiB float image is initialized.
+    assert!(decode("a.hdr", &file("-Y 67108864 +X 1", &[0; 16_384])).is_err());
     assert!(decode("a.hdr", &file("-Y 0 +X 4", &[])).is_err());
     assert!(decode("a.hdr", &file("-Y 2 -Y 2", &[0; 16])).is_err());
     assert!(decode("a.hdr", &file("junk", &[0; 16])).is_err());

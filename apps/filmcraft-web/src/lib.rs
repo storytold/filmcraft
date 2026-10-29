@@ -94,12 +94,13 @@ impl eframe::App for WebApp {
         self.app.raw_input_hook(ctx, raw_input);
     }
 
-    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    /// Hidden logic pass: host actions, app logic, API replies, jobs, audio, autosave, then IME reset; it does not draw UI.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let actions = ACTIONS.with(|a| std::mem::take(&mut *a.borrow_mut()));
         for f in actions {
             f(self, ctx);
         }
-        self.app.logic(ctx, frame);
+        self.app.logic_inner(ctx);
         api::poll_replies();
         // exports advance between frames (no threads)
         if self.app.session.pump_jobs(std::time::Duration::from_millis(30)) {
@@ -109,6 +110,7 @@ impl eframe::App for WebApp {
             a.pump();
         }
         self.autosave.tick(&self.app.session, ctx);
+        self.app.finish_ime_reset_logic(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -159,6 +161,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
             canvas,
             web_options,
             Box::new(move |cc| {
+                filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
                 set_context(cc.egui_ctx.clone());
                 let ctx = cc.egui_ctx.clone();
                 fs::set_on_data(move || ctx.request_repaint());

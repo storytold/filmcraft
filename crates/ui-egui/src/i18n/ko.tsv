@@ -76,6 +76,7 @@
 	About FilmCraft	FilmCraft 정보
 	Accent Color	강조 색상
 	Accessible color contrast	접근성 색상 대비
+	Animate zoom, scrolling and menus	확대/축소, 스크롤 및 메뉴 애니메이션
 	Action and Title Safe Areas	액션 및 제목 안전 영역
 	Action Safe Area	액션 안전 영역
 	Action-Safe Margin	액션 세이프 여백
@@ -271,8 +272,8 @@
 	Audio Options	오디오 옵션
 	Audio Out	오디오 출력
 	Audio Out Point	오디오 끝 표시(Out)
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	오디오 출력 실패: 소리 없이 재생 중 (설정 ▸ 오디오 하드웨어 확인)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	오디오 출력 응답 없음: 소리 없이 재생 중 (설정 ▸ 오디오 하드웨어 확인)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	오디오 출력 실패: 소리 없이 재생 중 (설정 > 오디오 하드웨어 확인)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	오디오 출력 응답 없음: 소리 없이 재생 중 (설정 > 오디오 하드웨어 확인)
 	Audio Previews:	오디오 미리 보기:
 	Audio Samples	오디오 샘플
 	Audio Time Units	오디오 시간 단위
@@ -2819,6 +2820,7 @@
 	Show Audio Waveform	오디오 파형 표시
 	Show Clip Mismatch Warning dialog	클립 불일치 경고 대화 상자 표시
 	Show clip names	클립 이름 표시
+	Show Duplicate Frame Markers	중복 프레임 마커 표시
 	Show Dot	점 표시
 	Show durations	길이 표시
 	Show Event Indicator	이벤트 표시기 표시
@@ -3596,3 +3598,9 @@
 	Shows the version, community links and credits in a FilmCraft window.	FilmCraft 창에 버전, 커뮤니티 링크, 제작진을 보여 줍니다.
 	Couldn't open your web browser	웹 브라우저를 열 수 없습니다
 	Open this address in your browser yourself:	이 주소를 브라우저에서 직접 여세요:
+# View > Reset Interface Zoom (#2253).
+	Reset Interface Zoom	인터페이스 확대/축소 재설정
+	Track Color	트랙 색상
+	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
+	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
+	No matching text.	일치하는 텍스트가 없습니다.

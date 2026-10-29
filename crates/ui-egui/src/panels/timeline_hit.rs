@@ -51,6 +51,11 @@ pub(crate) fn edge_geometry(seq: &Sequence, layout: &Layout, track: TrackId, cli
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hit {
     Ruler,
+    /// The work area bar on the ruler; `edge` is its start (`In`) or end (`Out`) when the press is
+    /// on one of its ends (dragging it moves that end), `None` on its middle (dragging moves it).
+    WorkArea {
+        edge: Option<Edge>,
+    },
     Clip {
         track: TrackId,
         clip: ClipId,
@@ -96,8 +101,35 @@ pub fn marker_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Tick> {
     marker_under_pointer(seq, layout, pos).map(|m| m.start)
 }
 
+/// Where the Timeline ruler draws (and hit-tests) the work area bar, between the markers row and
+/// the time labels.
+pub fn work_area_rect(layout: &Layout, area: filmcraft_time::TimeRange) -> Rect {
+    let y = layout.ruler.min.y + 14.0;
+    Rect::from_min_max(pos2(layout.x_of(area.start), y), pos2(layout.x_of(area.end()), y + 6.0))
+}
+
+/// The part of the work area bar under the pointer: an end (an edge zone, narrower on a short
+/// bar so its middle stays grabbable) or its middle.
+pub fn work_area_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Option<Edge>> {
+    let r = work_area_rect(layout, seq.work_area?);
+    let zone = zone(r.width())?;
+    if !r.expand2(vec2(zone, 1.0)).contains(pos) || !layout.ruler.contains(pos) {
+        return None;
+    }
+    Some(if (pos.x - r.min.x).abs() <= zone {
+        Some(Edge::In)
+    } else if (r.max.x - pos.x).abs() <= zone {
+        Some(Edge::Out)
+    } else {
+        None
+    })
+}
+
 pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     if layout.ruler.contains(pos) {
+        if let Some(edge) = work_area_at(seq, layout, pos) {
+            return Hit::WorkArea { edge };
+        }
         return Hit::Ruler;
     }
     if !layout.content.contains(pos) {
@@ -475,6 +507,32 @@ mod tests {
         seq.markers[1].duration = Tick(-1);
         assert!(marker_range_rect(&layout, &seq.markers[1]).is_none());
         assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 9);
+    }
+
+    #[test]
+    fn the_work_area_bar_has_two_ends_and_a_middle() {
+        let (mut seq, l, _) = fixture(clips());
+        // hidden, the bar's row is plain ruler
+        assert_eq!(hit(&seq, &l, pos2(300.0, 17.0)), Hit::Ruler);
+        seq.work_area = Some(filmcraft_time::TimeRange::from_bounds(Tick::from_seconds_f64(2.0), Tick::from_seconds_f64(5.0)));
+        let y = work_area_rect(&l, seq.work_area.unwrap()).center().y;
+        assert_eq!(hit(&seq, &l, pos2(197.0, y)), Hit::WorkArea { edge: Some(Edge::In) });
+        assert_eq!(hit(&seq, &l, pos2(204.0, y)), Hit::WorkArea { edge: Some(Edge::In) });
+        assert_eq!(hit(&seq, &l, pos2(350.0, y)), Hit::WorkArea { edge: None });
+        assert_eq!(hit(&seq, &l, pos2(503.0, y)), Hit::WorkArea { edge: Some(Edge::Out) });
+        assert_eq!(hit(&seq, &l, pos2(510.0, y)), Hit::Ruler, "past its end zone");
+        // the markers row and the time labels stay ruler
+        assert_eq!(hit(&seq, &l, pos2(350.0, 8.0)), Hit::Ruler);
+        assert_eq!(hit(&seq, &l, pos2(350.0, 30.0)), Hit::Ruler);
+        assert_eq!(grab_at(&seq, &l, pos2(350.0, y), Tool::Selection, Modifiers::NONE, false), Grab::Other(Hit::WorkArea { edge: None }));
+        // a bar a few px wide keeps its middle third; hostile points grab nothing
+        seq.work_area = Some(filmcraft_time::TimeRange::from_bounds(Tick::from_seconds_f64(2.0), Tick::from_seconds_f64(2.09)));
+        assert_eq!(hit(&seq, &l, pos2(204.5, y)), Hit::WorkArea { edge: None });
+        assert_eq!(hit(&seq, &l, pos2(f32::NAN, y)), Hit::None);
+        for pps in [0.0, f64::NAN, f64::INFINITY] {
+            let broken = Layout { pps, ..l.clone() };
+            assert!(!matches!(hit(&seq, &broken, pos2(204.5, y)), Hit::WorkArea { edge: Some(_) }), "pps {pps}");
+        }
     }
 
     use egui::Modifiers;

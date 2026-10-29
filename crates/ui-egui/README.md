@@ -3,6 +3,16 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Control input limits
+
+The control channel bounds `ui.click` to 10 clicks and `ui.drag` to 1024 movement steps (#2784).
+The MCP bridge sends null for omitted counts/steps, so the validator treats null like an absent
+field: one click or 12 drag steps. Negative, fractional, non-numeric and over-limit values still
+return errors before queuing any input. Zero clicks emit no button events; 0–1 drag steps use 2.
+`control::input_bounds_tests` covers defaults, rejection, unchanged pending input and valid
+gestures; `keyboard_ui` verifies that rejected requests leave the UI usable. See the
+[control protocol](../../docs/control-protocol.md).
+
 ## Transition drop previews
 
 Dragging a video or audio transition over a compatible clip shows its actual time span, the
@@ -18,7 +28,8 @@ the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to render screensho
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified
-Chinese, German, Russian, French, Indonesian, Korean and Italian (which cover the whole interface). The language is stored in the engine's `general.interfaceLanguage` preference,
+Chinese, German, Russian, French, Indonesian, Korean and Italian (all but Ukrainian and Russian cover
+the whole interface; those two cover the core menus). The language is stored in the engine's `general.interfaceLanguage` preference,
 restored on startup, and also available in Settings > General.
 Its default, System Language (`system`), follows the operating system: the first of the user's
 preferred languages that the interface has (the host supplies them through
@@ -32,15 +43,20 @@ fills translated templates, and `i18n::t` translates names from registries. Plac
 (including user filenames containing braces) are inserted literally. Catalog translations are
 original work using ordinary language, without proprietary localisation resources.
 
-Spanish, Japanese, Simplified Chinese, French and Brazilian Portuguese cover menus, panels, dialogs, settings and registry labels. Searches accept both the
+Spanish, Japanese, Simplified Chinese, French, Brazilian Portuguese and German cover menus, panels, dialogs, settings and registry labels. Searches accept both the
 translated label and its English source, including Unicode capitals. Project content, command ids
 and preference values retain their original values. Engine errors, CLI and MCP messages remain
-English. Ukrainian and Russian currently cover the core menus, German every menu; they fall back
-to English elsewhere.
+English. Ukrainian and Russian currently cover the core menus; they fall back to English elsewhere.
 
-Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders,
-literal/menu/registry coverage and UI behaviour; `cargo xtask ci` runs the workspace gates. Visual
-checks use the control channel to switch language and capture the resulting panels.
+A string a catalog lacks shows in English, so a missing translation never fails a test or a
+build. `cargo xtask i18n-report` prints each language's missing strings (menus, `tl!` literals and
+registry names) and its entries whose source the interface no longer has; `cargo xtask ci` prints
+the same report in its log.
+
+Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders
+and UI behaviour in other languages (switching, search, font coverage); `cargo xtask ci` runs the
+workspace gates. Visual checks use the control channel to switch language and capture the resulting
+panels.
 
 ## Source playback
 
@@ -62,15 +78,33 @@ keeps Source navigation, markers and marked-range playback separate from Program
 
 ## Pane layout controls
 
-Dock transactions and pointer targets use `craft-ui::docking`; bounded split geometry and
-keyboard-accessible resize handles use `craft-ui::layout`. FilmCraft adapts its existing saved
-dock tree and panel identities to the shared model. Panel tabs or their header grip can move
-between tab groups, split at an edge, reorder, or float when released with Cmd/Ctrl. Floating
-panels move by their empty header and resize from the bottom-right corner. Timeline sequence
-tabs retain their sequence-opening, closing and horizontal reorder behavior; the header grip
-moves the Timeline panel. Workspace saves retain floating groups alongside the legacy layout
-JSON, and workspaces without floating data still load. Automation IDs and workspace commands
-remain the integration boundary.
+The panels use `craft-ui::docking` with its split-tree settings: craft-ui draws the frames, tab
+strips, floating windows and drag previews and owns the gestures; `dock_ui.rs` draws the panel
+bodies, the ≡ panel menu and the Timeline's sequence tabs. Bounded split geometry and
+keyboard-accessible resize handles use `craft-ui::layout`. Panel tabs or their group's drag bar
+move between tab groups, split at a group's or the window's edge, reorder, or float when released
+with Cmd/Ctrl; a release over no target cancels. Tools and the Audio Meters keep their widths
+as the window resizes (fixed split sizes, which a divider drag keeps fixed); the other groups
+resize with the window. Every group resizes down to the same minimum and has no maximum.
+Timeline sequence tabs retain their sequence-opening, closing and horizontal reorder behavior.
+
+On desktop each floating panel opens in its own OS window. Tool panels are palettes: they stay
+above other windows and hide while another application is active. The video viewers (Program,
+Source, Reference Monitor, Lumetri Scopes) are normal windows, say on a second display: they
+stack with the main window and stay shown in the background. A floating window moves by its
+title bar, resizes from every edge and splits like the main window. While a modal dialog is open
+(Settings, Recovery, Revert, a file dialog), the native windows are dimmed and take no input.
+The main window's input rewrite (macOS Control+Click as a secondary click,
+`--control-input-only`) also runs in each native window, and files dropped on one are imported
+like files dropped on the main window; on the Timeline they land at the drop point. A drag from
+a panel (a clip from the Source Monitor or the Project panel, an effect, a template) drops on a
+panel in any of the app's windows. On Wayland
+floating windows stay inside the main window. Where egui embeds viewports (tests), floating
+windows stay inside the main window too.
+
+Named workspaces save the layout, floating windows included; workspaces saved in the earlier
+layout format still load. While every floating window is one tab group, a save also writes the
+earlier format, so earlier versions still open the workspace. Automation IDs and workspace commands remain the integration boundary.
 
 Tools and dock tabs expose their actual egui widget IDs, paint keyboard focus, and support
 Tab/Shift-Tab traversal and Space/Enter activation. Control-injected keys can reach focused
