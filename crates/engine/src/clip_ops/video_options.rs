@@ -1,12 +1,19 @@
 use super::common::{item_rate, media_root};
 use super::{
     BTreeMap, ClipId, EngineError, FieldOptions, FieldProcessing, FrameRate, ParamValue, Result, Session, TICKS_PER_SECOND, Tick, TimeInterpolation, TrackItem,
-    Value, bad, bool_p, clips_p, edit, f64_p, json, parse_timecode, str_p, time_p,
+    Value, bad, bool_p, clips_p, edit, f64_p, has_selection, json, parse_timecode, str_p, time_p,
 };
 
 // ---------------------------------------------------------------------------------------------
 // Clip: Video Options
 // ---------------------------------------------------------------------------------------------
+
+/// Clip ▸ Video Options items act on the selected clips of video tracks ([`video_clips`]): with
+/// only audio clips selected they are greyed out instead of failing with "select a video clip".
+pub(super) fn has_video_clip_selection(s: &Session) -> std::result::Result<(), String> {
+    has_selection(s)?;
+    if video_clips(s, &Value::Null).is_empty() { Err("select a video clip".into()) } else { Ok(()) }
+}
 
 fn video_clips(s: &Session, p: &Value) -> Vec<ClipId> {
     let Some(q) = s.active_sequence() else { return Vec::new() };
