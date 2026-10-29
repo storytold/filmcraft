@@ -130,6 +130,15 @@ pub(super) fn consolidate_duplicates(s: &mut Session, _: &Value) -> Result<Value
                         *parent = *k;
                     }
                 }
+                ItemKind::Script(doc)
+                    if doc.slates.iter().flat_map(|slate| &slate.takes).any(|take| take.source.is_some_and(|source| map.contains_key(&source))) =>
+                {
+                    for take in std::sync::Arc::make_mut(doc).slates.iter_mut().flat_map(|slate| &mut slate.takes) {
+                        if let Some(kept) = take.source.and_then(|source| map.get(&source)) {
+                            take.source = Some(*kept);
+                        }
+                    }
+                }
                 _ => {}
             }
         }

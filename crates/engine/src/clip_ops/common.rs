@@ -83,6 +83,7 @@ pub fn source_view(s: &Session, item: ItemId) -> Option<SourceView> {
                 if *restrict_trims { (range.start, range.end(), None, None) } else { (Tick::ZERO, full, Some(range.start), Some(range.end() - fd)) };
             SourceView { item, media: root, start, end, rate, mark_in: mi, mark_out: mo, markers, subclip: Some((*range, *restrict_trims)) }
         }
+        ItemKind::Script(_) => return None,
         _ => SourceView {
             item,
             media: item,
@@ -126,6 +127,9 @@ pub(crate) fn collapse_history(s: &mut Session, n0: usize, label: &str) {
 pub(super) fn used_items(p: &Project) -> BTreeSet<ItemId> {
     let mut used = BTreeSet::new();
     for it in p.items.values() {
+        if let ItemKind::Script(doc) = &it.kind {
+            used.extend(doc.slates.iter().flat_map(|slate| &slate.takes).filter_map(|take| take.source));
+        }
         if let ItemKind::Sequence(q) = &it.kind {
             for t in q.all_tracks() {
                 for i in &t.items {

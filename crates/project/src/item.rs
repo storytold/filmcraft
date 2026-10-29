@@ -1,3 +1,4 @@
+use super::ScriptDocument;
 use super::label::Label;
 use super::sequence::{Sequence, SplitMarks, checked_par};
 use super::track::{AudioChannels, Marker};
@@ -114,6 +115,8 @@ pub enum ItemKind {
     /// Shared so project snapshots used by undo and background readers do not deep-copy every
     /// timeline. Mutators detach with `Arc::make_mut`.
     Sequence(std::sync::Arc<Sequence>),
+    /// Editable lined script with linked takes and source-frame dialogue marks.
+    Script(std::sync::Arc<ScriptDocument>),
     /// A subclip: a media item restricted to a range.
     Subclip {
         parent: ItemId,
@@ -182,11 +185,24 @@ impl ProjectItem {
             _ => None,
         }
     }
+    pub fn as_script(&self) -> Option<&ScriptDocument> {
+        match &self.kind {
+            ItemKind::Script(doc) => Some(doc),
+            _ => None,
+        }
+    }
+    pub fn as_script_mut(&mut self) -> Option<&mut ScriptDocument> {
+        match &mut self.kind {
+            ItemKind::Script(doc) => Some(std::sync::Arc::make_mut(doc)),
+            _ => None,
+        }
+    }
     pub fn has_video(&self) -> bool {
         match &self.kind {
             ItemKind::Media(m) => m.info.has_video(),
             ItemKind::Sequence(_) | ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => true,
             ItemKind::Subclip { .. } => true,
+            ItemKind::Script(_) => false,
         }
     }
     pub fn has_audio(&self) -> bool {
@@ -203,6 +219,7 @@ impl ProjectItem {
             ItemKind::Subclip { range, .. } => range.duration,
             ItemKind::AdjustmentLayer { duration, .. } => *duration,
             ItemKind::Graphic { .. } => Tick(3600 * TICKS_PER_SECOND),
+            ItemKind::Script(_) => Tick::ZERO,
         }
     }
     pub fn frame_rate(&self) -> FrameRate {
@@ -211,6 +228,7 @@ impl ProjectItem {
             ItemKind::Sequence(s) => s.settings.frame_rate,
             ItemKind::AdjustmentLayer { rate, .. } | ItemKind::Graphic { rate, .. } => *rate,
             ItemKind::Subclip { .. } => FrameRate::default(),
+            ItemKind::Script(_) => FrameRate::default(),
         }
     }
     /// Human-readable media type for the Project panel "Media Type" column.
@@ -229,6 +247,7 @@ impl ProjectItem {
             ItemKind::Subclip { .. } => "Subclip",
             ItemKind::AdjustmentLayer { .. } => "Adjustment Layer",
             ItemKind::Graphic { .. } => "Graphic",
+            ItemKind::Script(_) => "Script",
         }
     }
 }

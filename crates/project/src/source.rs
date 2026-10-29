@@ -98,6 +98,7 @@ impl Project {
                 ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)),
                 ItemKind::Sequence(q) => Some((q.settings.width, q.settings.height)),
                 ItemKind::AdjustmentLayer { width, height, .. } | ItemKind::Graphic { width, height, .. } => Some((*width, *height)),
+                ItemKind::Script(_) => None,
                 ItemKind::Subclip { parent, .. } => {
                     id = *parent;
                     continue;
@@ -118,7 +119,7 @@ impl Project {
             return match &self.item(id)?.kind {
                 ItemKind::Media(m) => Some(m.pixel_aspect()),
                 ItemKind::Sequence(q) => Some(sane_par(q.settings.par)),
-                ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => None,
+                ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } | ItemKind::Script(_) => None,
                 ItemKind::Subclip { parent, .. } => {
                     id = *parent;
                     continue;

@@ -442,7 +442,9 @@ fn offline_badges_proxy_toggle_and_dialogs() {
     d.snapshot("media-create-proxies");
     d.click("proxies.preset.prores_proxy_quarter");
     d.click("proxies.ok");
-    for _ in 0..400 {
+    // Other UI tests can encode media concurrently in the shared test binary.
+    let proxy_wait = std::time::Instant::now();
+    while proxy_wait.elapsed() < std::time::Duration::from_secs(60) {
         d.frames(1);
         let attached = d.app().session.project.items.values().filter(|i| i.as_media().is_some_and(|m| m.proxy.is_some())).count();
         if attached == 2 {

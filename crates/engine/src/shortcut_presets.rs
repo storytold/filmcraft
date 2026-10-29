@@ -18,6 +18,10 @@ pub const FILMCRAFT_PANEL: &[Entry] = &[
     ("edit.undo", "Left", "History"),
     ("edit.redo", "Right", "History"),
     ("sequence.close", "Cmd+W", "Timeline"),
+    ("script.thumbnailBack", "Shift+Left", "Script"),
+    ("script.thumbnailForward", "Shift+Right", "Script"),
+    ("edit.clear", "Backspace", "Script"),
+    ("edit.clear", "Delete", "Script"),
 ];
 
 /// Premiere Pro's default keyboard (macOS) mapped onto FilmCraft commands. FilmCraft Default takes

@@ -475,6 +475,13 @@ pub fn merge_into(target: &mut Project, fragment: Imported, bin: Option<BinId>) 
                     mk.id = MarkerId(target.alloc_id());
                 }
             }
+            ItemKind::Script(doc) => {
+                for slate in &mut std::sync::Arc::make_mut(doc).slates {
+                    for take in &mut slate.takes {
+                        take.source = take.source.and_then(|source| items.get(&source).copied());
+                    }
+                }
+            }
             ItemKind::AdjustmentLayer { .. } | ItemKind::Graphic { .. } => {}
         }
         new_items.insert(it.id, it);

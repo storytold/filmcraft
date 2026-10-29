@@ -12,6 +12,38 @@ impl FilmcraftApp {
             self.bindings = menus::bindings(self);
             self.bindings_rev = self.session.shortcuts.revision;
         }
+        if self.ui.focused == PanelKind::Script
+            && panels::script::has_text_paste_undo(self)
+            && ctx.text_edit_focused()
+            && ctx.input_mut(|input| !input.modifiers.shift && !input.modifiers.alt && input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z))
+        {
+            if let Err(error) = panels::script::undo_text_paste(self, ctx) {
+                self.ui.status = error;
+            }
+            return;
+        }
+        if self.ui.focused == PanelKind::Script && !ctx.text_edit_focused() && self.dialog.is_none() {
+            let pasted = ctx.input_mut(|input| {
+                let mut pasted = Vec::new();
+                input.events.retain(|event| {
+                    if let egui::Event::Paste(text) = event {
+                        pasted.push(text.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                pasted
+            });
+            if !pasted.is_empty() {
+                for text in pasted {
+                    if let Err(error) = panels::script::paste_plain_text(self, &text) {
+                        self.ui.status = error;
+                    }
+                }
+                return;
+            }
+        }
         // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
         // other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = self.divider_focused(ctx);

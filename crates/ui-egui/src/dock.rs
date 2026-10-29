@@ -36,6 +36,7 @@ pub enum PanelKind {
     TextToSpeech,
     Properties,
     Text,
+    Script,
     Events,
     Progress,
     ReferenceMonitor,
@@ -44,7 +45,7 @@ pub enum PanelKind {
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 28] = [
+    pub const ALL: [PanelKind; 29] = [
         PanelKind::Project,
         PanelKind::MediaBrowser,
         PanelKind::Libraries,
@@ -68,6 +69,7 @@ impl PanelKind {
         PanelKind::TextToSpeech,
         PanelKind::Properties,
         PanelKind::Text,
+        PanelKind::Script,
         PanelKind::Events,
         PanelKind::Progress,
         PanelKind::ReferenceMonitor,
@@ -99,6 +101,7 @@ impl PanelKind {
             PanelKind::TextToSpeech => "Text to Speech",
             PanelKind::Properties => "Properties",
             PanelKind::Text => "Text",
+            PanelKind::Script => "Script",
             PanelKind::Events => "Events",
             PanelKind::Progress => "Progress",
             PanelKind::ReferenceMonitor => "Reference Monitor",
@@ -145,7 +148,7 @@ fn vsplit(size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<Panel
     Node::Split { axis: SplitAxis::Vertical, size, first: Box::new(a), second: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 9] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels"];
+pub const WORKSPACES: [&str; 10] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Script", "Learning", "Review", "All Panels"];
 
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
@@ -476,6 +479,11 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
                 hsplit(Ratio(0.3), tabs(&[Project, MediaBrowser, Libraries], 0), bottom_editing()),
             ),
             tabs(&[EssentialGraphics, Properties], 0),
+        ),
+        "Script" => vsplit(
+            Ratio(0.76),
+            hsplit(Ratio(0.67), tabs(&[Script], 0), vsplit(Ratio(0.58), tabs(&[Source, Program, Text], 0), tabs(&[Project, MediaBrowser], 0))),
+            bottom_editing(),
         ),
         "All Panels" => vsplit(
             Ratio(0.5),

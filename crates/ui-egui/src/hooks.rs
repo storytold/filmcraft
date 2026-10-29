@@ -94,6 +94,8 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// Plain text for native menu Paste; web/keyboard hosts can supply Event::Paste directly.
+    pub clipboard_text: Option<Box<dyn FnMut() -> Option<String>>>,
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.

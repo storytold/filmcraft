@@ -73,6 +73,27 @@ fn collect_files_copies_used_media_and_opens() {
 }
 
 #[test]
+fn project_manager_keeps_media_used_only_by_script_takes() {
+    let root = tmp_dir("pm-script-only-media");
+    let (mut s, _, _) = project(&root);
+    let unused = s.project.items.values().find(|item| item.name == "unused.mov").unwrap().id;
+    let script = s.execute("script.importText", json!({"name":"Coverage","text":"Line"})).unwrap()["item"].as_u64().unwrap();
+    let line = s.project.item(ItemId(script)).unwrap().as_script().unwrap().lines[0].id.0;
+    s.execute("script.addTake", json!({"item":script,"source":unused.0,"startLine":line,"endLine":line})).unwrap();
+
+    let destination = root.join("Collected");
+    let result = s.execute("file.projectManager", json!({"destination":destination.to_string_lossy(),"wait":true})).unwrap();
+    assert!(result["files"].as_array().unwrap().iter().any(|file| file["item"] == unused.0));
+    let opened = opened(result["project"].as_str().unwrap());
+    let source = opened.project.item(ItemId(script)).unwrap().as_script().unwrap().slates[0].takes[0].source;
+    assert_eq!(source, Some(unused));
+    assert!(opened.project.item(unused).is_some());
+    drop(opened);
+    drop(s);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn consolidate_trims_to_used_ranges_with_handles() {
     let root = tmp_dir("pm-consolidate");
     let (mut s, items, _) = project(&root);
