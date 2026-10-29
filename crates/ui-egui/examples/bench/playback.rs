@@ -435,17 +435,8 @@ impl Bench {
     /// - `drags` playhead drags: the playhead moves `drag_frames` frames, one step per display
     ///   refresh (each refresh asks for the frame under the playhead, superseding the previous
     ///   request), then stops; time from the stop until the frame under it is on screen.
-    pub fn scrub(
-        &self,
-        s: &Session,
-        seq: ItemId,
-        display: &mut Display,
-        scale: f32,
-        seeks: usize,
-        drags: usize,
-        drag_frames: i64,
-        timeout: Duration,
-    ) -> ScrubReport {
+    pub fn scrub(&self, s: &Session, seq: ItemId, display: &mut Display, scale: f32, plan: ScrubPlan) -> ScrubReport {
+        let ScrubPlan { seeks, drags, drag_frames, timeout } = plan;
         let q = s.project.sequence(seq).expect("seq");
         let rate = q.settings.frame_rate;
         let frames = rate.frame_at(q.duration()).max(1);
@@ -506,6 +497,15 @@ impl Bench {
         rep.gop = filmcraft_codecs::gop_stats() - gop0;
         rep
     }
+}
+
+/// What [`Bench::scrub`] does: seek and drag counts, drag length in frames, per-request timeout.
+#[derive(Clone, Copy)]
+pub struct ScrubPlan {
+    pub seeks: usize,
+    pub drags: usize,
+    pub drag_frames: i64,
+    pub timeout: Duration,
 }
 
 /// Result of [`Bench::scrub`].

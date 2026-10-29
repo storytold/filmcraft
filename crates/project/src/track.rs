@@ -1,6 +1,9 @@
 use super::label::Label;
 use super::sequence::bounded_time_range;
-use super::*;
+use super::{
+    ClipId, Deserialize, EffectInstance, EssentialSound, GraphicMeta, ItemId, MarkerId, MixerStrip, MulticamSel, ParamValue, Serialize, Tick, TimeRange,
+    TrackId, TransitionId, graphic, mask,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MarkerKind {

@@ -22,7 +22,7 @@ fn project_with_media_marker(rate: FrameRate) -> (filmcraft_project::Project, fi
         });
     }
     let s = sequence(&mut p, "Cut", rate, false);
-    clip(&mut p, s, TrackKind::Video, 0, a, 0, 48, 0);
+    clip(&mut p, s, TrackKind::Video, 0, a, 0..48, 0);
     (p, s)
 }
 

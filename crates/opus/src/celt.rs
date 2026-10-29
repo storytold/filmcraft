@@ -8,11 +8,11 @@ pub(crate) mod tables;
 
 use std::sync::OnceLock;
 
-use bands::{anti_collapse, denormalise_bands, quant_all_bands, renormalise_vector};
-use energy::{unquant_coarse_energy, unquant_energy_finalise, unquant_fine_energy};
+use bands::{AntiCollapseInput, DenormaliseBandsInput, QuantAllBandsInput, anti_collapse, denormalise_bands, quant_all_bands, renormalise_vector};
+use energy::{EnergyFinalise, unquant_coarse_energy, unquant_energy_finalise, unquant_fine_energy};
 use mdct::ImdctScratch;
-use rate::{Mode, compute_allocation};
-use tables::*;
+use rate::{AllocationInput, Mode, compute_allocation};
+use tables::{COMB_GAINS, EBANDS, MAX_LM, NB_EBANDS, OVERLAP, PREEMPH, SHORT_MDCT, SPREAD_ICDF, TAPSET_ICDF, TF_SELECT_TABLE, TRIM_ICDF};
 
 use crate::range::{BITRES, RangeDecoder};
 
@@ -21,9 +21,56 @@ const COMBFILTER_MINPERIOD: i32 = 15;
 const PLC_PITCH_LAG_MAX: usize = 720;
 const PLC_PITCH_LAG_MIN: usize = 100;
 
+struct SynthesisFrame<'a> {
+    bands: &'a [f32],
+    samples: usize,
+    start_band: usize,
+    end_band: usize,
+    coded_channels: usize,
+    transient: bool,
+    lm: usize,
+    silence: bool,
+}
+
 pub(crate) fn mode() -> &'static Mode {
     static MODE: OnceLock<Mode> = OnceLock::new();
     MODE.get_or_init(Mode::new)
+}
+
+fn packet_silence(dec: &mut RangeDecoder, total_bits: i32) -> (bool, i32) {
+    let mut tell = dec.tell();
+    let silence = if tell >= total_bits {
+        true
+    } else if tell == 1 {
+        dec.bit_logp(15)
+    } else {
+        false
+    };
+    if silence {
+        // Pretend we've read all the remaining bits.
+        dec.skip_to_end(total_bits);
+        tell = total_bits;
+    }
+    (silence, tell)
+}
+
+fn read_postfilter(dec: &mut RangeDecoder, start: usize, mut tell: i32, total_bits: i32) -> (f32, i32, usize, i32) {
+    let mut gain = 0.0;
+    let mut pitch = 0;
+    let mut tapset = 0;
+    if start == 0 && tell + 16 <= total_bits {
+        if dec.bit_logp(1) {
+            let octave = dec.uint(6);
+            pitch = ((16 << octave) + dec.bits(4 + octave)) as i32 - 1;
+            let qg = dec.bits(3);
+            if dec.tell() + 2 <= total_bits {
+                tapset = dec.icdf(&TAPSET_ICDF, 2);
+            }
+            gain = 0.09375 * (qg + 1) as f32;
+        }
+        tell = dec.tell();
+    }
+    (gain, pitch, tapset, tell)
 }
 
 /// CELT decoder state for one (mono or stereo) stream.
@@ -176,34 +223,8 @@ impl CeltDecoder {
             }
         }
         let total_bits_raw = len as i32 * 8;
-        let mut tell = dec.tell();
-        let silence = if tell >= total_bits_raw {
-            true
-        } else if tell == 1 {
-            dec.bit_logp(15)
-        } else {
-            false
-        };
-        if silence {
-            // Pretend we've read all the remaining bits.
-            dec.skip_to_end(total_bits_raw);
-            tell = total_bits_raw;
-        }
-        let mut postfilter_gain = 0.0f32;
-        let mut postfilter_pitch = 0i32;
-        let mut postfilter_tapset = 0usize;
-        if start == 0 && tell + 16 <= total_bits_raw {
-            if dec.bit_logp(1) {
-                let octave = dec.uint(6);
-                postfilter_pitch = ((16 << octave) + dec.bits(4 + octave)) as i32 - 1;
-                let qg = dec.bits(3);
-                if dec.tell() + 2 <= total_bits_raw {
-                    postfilter_tapset = dec.icdf(&TAPSET_ICDF, 2);
-                }
-                postfilter_gain = 0.09375 * (qg + 1) as f32;
-            }
-            tell = dec.tell();
-        }
+        let (silence, tell) = packet_silence(dec, total_bits_raw);
+        let (postfilter_gain, postfilter_pitch, postfilter_tapset, mut tell) = read_postfilter(dec, start, tell, total_bits_raw);
         let is_transient = if lm > 0 && tell + 3 <= total_bits_raw {
             let t = dec.bit_logp(3);
             tell = dec.tell();
@@ -250,7 +271,18 @@ impl CeltDecoder {
         let mut bits = ((len as i32 * 8) << BITRES) - dec.tell_frac() as i32 - 1;
         let anti_collapse_rsv = if is_transient && lm >= 2 && bits >= ((lm as i32 + 2) << BITRES) { 1 << BITRES } else { 0 };
         bits -= anti_collapse_rsv;
-        let alloc = compute_allocation(m, start, end, &offsets, &cap, alloc_trim, bits, c, lm, dec);
+        let alloc = compute_allocation(AllocationInput {
+            mode: m,
+            start,
+            end,
+            offsets: &offsets,
+            cap: &cap,
+            trim: alloc_trim,
+            total: bits,
+            channels: c,
+            lm,
+            decoder: dec,
+        });
         unquant_fine_energy(start, end, &mut self.old_band_e, &alloc.fine_quant, dec, c);
 
         // Shift the decode memory by one frame.
@@ -268,27 +300,27 @@ impl CeltDecoder {
             let (xa, xb) = x.split_at_mut(n);
             let yb = if c == 2 { Some(xb) } else { None };
             let mut seed = self.rng;
-            quant_all_bands(
-                m,
+            quant_all_bands(QuantAllBandsInput {
+                mode: m,
                 start,
                 end,
-                xa,
-                yb,
-                &mut collapse_masks,
-                &alloc.pulses,
+                x_buf: xa,
+                y_buf: yb,
+                collapse_masks: &mut collapse_masks,
+                pulses: &alloc.pulses,
                 short_blocks,
                 spread,
-                alloc.dual_stereo,
-                alloc.intensity,
-                &tf_res,
-                ((len as i32) * (8 << BITRES)) - anti_collapse_rsv,
-                alloc.balance,
-                dec,
+                dual_stereo: alloc.dual_stereo,
+                intensity: alloc.intensity,
+                tf_res: &tf_res,
+                total_bits: ((len as i32) * (8 << BITRES)) - anti_collapse_rsv,
+                balance: alloc.balance,
+                decoder: dec,
                 lm,
-                alloc.coded_bands,
-                &mut seed,
-                self.disable_inv,
-            );
+                coded_bands: alloc.coded_bands,
+                seed: &mut seed,
+                disable_inv: self.disable_inv,
+            });
             self.rng = seed;
         }
         let mut anti_collapse_on = false;
@@ -296,16 +328,38 @@ impl CeltDecoder {
             anti_collapse_on = dec.bits(1) != 0;
         }
         let bits_left = len as i32 * 8 - dec.tell();
-        unquant_energy_finalise(start, end, &mut self.old_band_e, &alloc.fine_quant, &alloc.fine_priority, bits_left, dec, c);
+        unquant_energy_finalise(EnergyFinalise {
+            start,
+            end,
+            old_e: &mut self.old_band_e,
+            fine_quant: &alloc.fine_quant,
+            fine_priority: &alloc.fine_priority,
+            bits_left,
+            decoder: dec,
+            channels: c,
+        });
         if anti_collapse_on {
-            anti_collapse(&mut x, &collapse_masks, lm, c, n, start, end, &self.old_band_e, &self.old_log_e, &self.old_log_e2, &alloc.pulses, self.rng);
+            anti_collapse(AntiCollapseInput {
+                x_buf: &mut x,
+                collapse_masks: &collapse_masks,
+                lm,
+                channels: c,
+                size: n,
+                start,
+                end,
+                log_e: &self.old_band_e,
+                prev1: &self.old_log_e,
+                prev2: &self.old_log_e2,
+                pulses: &alloc.pulses,
+                seed: self.rng,
+            });
         }
         if silence {
             for v in self.old_band_e[..c * NB_EBANDS].iter_mut() {
                 *v = -28.0;
             }
         }
-        self.synthesis(&x, n, start, eff_end, c, is_transient, lm, silence);
+        self.synthesis(SynthesisFrame { bands: &x, samples: n, start_band: start, end_band: eff_end, coded_channels: c, transient: is_transient, lm, silence });
         self.x = x;
 
         // Post-filter.
@@ -316,28 +370,32 @@ impl CeltDecoder {
             let off = DECODE_BUFFER_SIZE - n;
             comb_filter(
                 mem,
-                off,
-                self.postfilter_period_old,
-                self.postfilter_period,
-                SHORT_MDCT,
-                self.postfilter_gain_old,
-                self.postfilter_gain,
-                self.postfilter_tapset_old,
-                self.postfilter_tapset,
-                &m.window,
+                CombFilterParams {
+                    offset: off,
+                    old_period: self.postfilter_period_old,
+                    new_period: self.postfilter_period,
+                    samples: SHORT_MDCT,
+                    old_gain: self.postfilter_gain_old,
+                    new_gain: self.postfilter_gain,
+                    old_tapset: self.postfilter_tapset_old,
+                    new_tapset: self.postfilter_tapset,
+                    window: &m.window,
+                },
             );
             if lm != 0 {
                 comb_filter(
                     mem,
-                    off + SHORT_MDCT,
-                    self.postfilter_period,
-                    postfilter_pitch,
-                    n - SHORT_MDCT,
-                    self.postfilter_gain,
-                    postfilter_gain,
-                    self.postfilter_tapset,
-                    postfilter_tapset,
-                    &m.window,
+                    CombFilterParams {
+                        offset: off + SHORT_MDCT,
+                        old_period: self.postfilter_period,
+                        new_period: postfilter_pitch,
+                        samples: n - SHORT_MDCT,
+                        old_gain: self.postfilter_gain,
+                        new_gain: postfilter_gain,
+                        old_tapset: self.postfilter_tapset,
+                        new_tapset: postfilter_tapset,
+                        window: &m.window,
+                    },
                 );
             }
         }
@@ -380,8 +438,8 @@ impl CeltDecoder {
     }
 
     /// Denormalisation + IMDCT into the decode memory (`celt_synthesis`).
-    #[allow(clippy::too_many_arguments)]
-    fn synthesis(&mut self, x: &[f32], n: usize, start: usize, eff_end: usize, c: usize, is_transient: bool, lm: usize, silence: bool) {
+    fn synthesis(&mut self, frame: SynthesisFrame<'_>) {
+        let SynthesisFrame { bands: x, samples: n, start_band: start, end_band: eff_end, coded_channels: c, transient: is_transient, lm, silence } = frame;
         let cc = self.channels;
         let m = self.m;
         let mm = 1usize << lm;
@@ -393,7 +451,16 @@ impl CeltDecoder {
         let (f0, f1) = freq.split_at_mut(n);
         let out_off = DECODE_BUFFER_SIZE - n;
         if cc == 2 && c == 1 {
-            denormalise_bands(x, f0, &self.old_band_e, start, eff_end, mm, self.downsample, silence);
+            denormalise_bands(DenormaliseBandsInput {
+                x,
+                freq: f0,
+                band_log_e: &self.old_band_e,
+                start,
+                end: eff_end,
+                mm,
+                downsample: self.downsample,
+                silence,
+            });
             f1.copy_from_slice(f0);
             for (ch, f) in [(0usize, &*f1), (1usize, &*f0)] {
                 let mem = &mut self.decode_mem[ch * ml..(ch + 1) * ml];
@@ -402,8 +469,26 @@ impl CeltDecoder {
                 }
             }
         } else if cc == 1 && c == 2 {
-            denormalise_bands(x, f0, &self.old_band_e, start, eff_end, mm, self.downsample, silence);
-            denormalise_bands(&x[n..], f1, &self.old_band_e[NB_EBANDS..], start, eff_end, mm, self.downsample, silence);
+            denormalise_bands(DenormaliseBandsInput {
+                x,
+                freq: f0,
+                band_log_e: &self.old_band_e,
+                start,
+                end: eff_end,
+                mm,
+                downsample: self.downsample,
+                silence,
+            });
+            denormalise_bands(DenormaliseBandsInput {
+                x: &x[n..],
+                freq: f1,
+                band_log_e: &self.old_band_e[NB_EBANDS..],
+                start,
+                end: eff_end,
+                mm,
+                downsample: self.downsample,
+                silence,
+            });
             for i in 0..n {
                 f0[i] = 0.5 * (f0[i] + f1[i]);
             }
@@ -413,7 +498,16 @@ impl CeltDecoder {
             }
         } else {
             for ch in 0..cc {
-                denormalise_bands(&x[ch * n..], f0, &self.old_band_e[ch * NB_EBANDS..], start, eff_end, mm, self.downsample, silence);
+                denormalise_bands(DenormaliseBandsInput {
+                    x: &x[ch * n..],
+                    freq: f0,
+                    band_log_e: &self.old_band_e[ch * NB_EBANDS..],
+                    start,
+                    end: eff_end,
+                    mm,
+                    downsample: self.downsample,
+                    silence,
+                });
                 let mem = &mut self.decode_mem[ch * ml..(ch + 1) * ml];
                 for b in 0..bcount {
                     m.mdct[shift].backward(&f0[b..], bcount, &mut mem[out_off + nb * b..], &m.window, OVERLAP, &mut self.imdct);
@@ -490,7 +584,16 @@ impl CeltDecoder {
             }
             let saved_sc = self.stream_channels;
             self.stream_channels = cc;
-            self.synthesis(&x, n, self.start, eff_end, cc, false, lm, false);
+            self.synthesis(SynthesisFrame {
+                bands: &x,
+                samples: n,
+                start_band: self.start,
+                end_band: eff_end,
+                coded_channels: cc,
+                transient: false,
+                lm,
+                silence: false,
+            });
             self.stream_channels = saved_sc;
             self.x = x;
         } else {
@@ -565,7 +668,7 @@ fn tf_decode(start: usize, end: usize, is_transient: bool, tf_res: &mut [i32; NB
     let mut budget = dec.storage() as i32 * 8;
     let mut tell = dec.tell();
     let mut logp: u32 = if is_transient { 2 } else { 4 };
-    let tf_select_rsv = lm > 0 && tell + logp as i32 + 1 <= budget;
+    let tf_select_rsv = lm > 0 && tell + (logp as i32) < budget;
     budget -= tf_select_rsv as i32;
     let mut tf_changed = 0;
     let mut curr = 0;
@@ -589,8 +692,30 @@ fn tf_decode(start: usize, end: usize, is_transient: bool, tf_res: &mut [i32; NB
 }
 
 /// Pitch post-filter (in place on `buf[off .. off + n]`, reading history before `off`).
-#[allow(clippy::too_many_arguments)]
-fn comb_filter(buf: &mut [f32], off: usize, t0: i32, t1: i32, n: usize, g0: f32, g1: f32, tapset0: usize, tapset1: usize, window: &[f32; OVERLAP]) {
+struct CombFilterParams<'a> {
+    offset: usize,
+    old_period: i32,
+    new_period: i32,
+    samples: usize,
+    old_gain: f32,
+    new_gain: f32,
+    old_tapset: usize,
+    new_tapset: usize,
+    window: &'a [f32; OVERLAP],
+}
+
+fn comb_filter(buf: &mut [f32], params: CombFilterParams<'_>) {
+    let CombFilterParams {
+        offset: off,
+        old_period: t0,
+        new_period: t1,
+        samples: n,
+        old_gain: g0,
+        new_gain: g1,
+        old_tapset: tapset0,
+        new_tapset: tapset1,
+        window,
+    } = params;
     if g0 == 0.0 && g1 == 0.0 {
         return;
     }

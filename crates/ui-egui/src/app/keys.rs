@@ -1,4 +1,4 @@
-use super::*;
+use super::{Dialog, FilmcraftApp, PanelKind, dock, dock_ui, json, menus, panels};
 
 impl FilmcraftApp {
     /// Per-pass shortcut handling: reset the pasted image, rebuild bindings only when the shortcut revision or workspace set changes, and leave unmodified keys

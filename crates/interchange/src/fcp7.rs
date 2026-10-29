@@ -38,6 +38,19 @@ use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Resul
 // Shared vocabulary
 // ---------------------------------------------------------------------------------------------
 
+struct ClipRemap {
+    speed: f64,
+    reverse: bool,
+    hold: bool,
+    has_remap: bool,
+}
+
+impl Default for ClipRemap {
+    fn default() -> Self {
+        Self { speed: 1.0, reverse: false, hold: false, has_remap: false }
+    }
+}
+
 const BLEND_XML: &[(&str, u32)] = &[
     ("normal", 0),
     ("darken", 2),
@@ -347,7 +360,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                     self.report.warn(format!("FCP7 {kind:?} tracks beyond {MAX_IMPORTED_TRACKS} were skipped"));
                     break;
                 }
-                self.track(&mut seq, id, kind, ti, tn, rate, (w, h));
+                self.track(&mut seq, id, kind, ti, tn, TrackFormat { rate, frame: (w, h) });
             }
         }
         if seq.video_tracks.is_empty() {
@@ -361,8 +374,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         Some(id)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn track(&mut self, seq: &mut Sequence, seq_id: ItemId, kind: TrackKind, ti: usize, tn: Node<'a, 'i>, rate: FrameRate, frame: (u32, u32)) {
+    fn track(&mut self, seq: &mut Sequence, seq_id: ItemId, kind: TrackKind, ti: usize, tn: Node<'a, 'i>, fmt: TrackFormat) {
+        let TrackFormat { rate, frame } = fmt;
         {
             let t = &mut seq.tracks_mut(kind)[ti];
             t.enabled = child_bool(tn, "enabled").unwrap_or(true);
@@ -402,45 +415,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
     fn clip_item(&mut self, c: Node<'a, 'i>, kind: TrackKind, seq_rate: FrameRate, frame: (u32, u32)) -> Option<(TrackItem, Vec<String>)> {
         let name = child_text(c, "name").unwrap_or("").to_string();
         let rate = read_rate(c).unwrap_or(seq_rate);
-        let item = if c.has_tag_name("generatoritem") {
-            let eff = child(c, "effect");
-            let gname = eff.and_then(|e| child_text(e, "name")).unwrap_or(&name).to_string();
-            let gid = eff.and_then(|e| child_text(e, "effectid")).unwrap_or("").to_string();
-            let mut g = generator_from(&gname, &gid, self.report);
-            if let (Generator::ColorMatte { color }, Some(e)) = (&mut g, eff)
-                && let Some(v) = e.descendants().find(|d| d.has_tag_name("value") && child(*d, "red").is_some())
-            {
-                *color = read_color(v);
-            }
-            let spec = MediaSpec { video: Some((frame.0, frame.1, seq_rate)), ..Default::default() };
-            let key = format!("gen:{}", serde_json::to_string(&g).unwrap_or_default());
-            let label = if name.is_empty() { g.label() } else { name.clone() };
-            self.b.generator_media(&key, &label, g, &spec, None)
-        } else if let Some(f) = child(c, "file") {
-            match self.file(f, Some(&name), None) {
-                Some(item) => item,
-                None => {
-                    self.report.warn(format!("clip \"{name}\" refers to a file the document does not define; skipped"));
-                    return None;
-                }
-            }
-        } else if let Some(s) = child(c, "sequence") {
-            self.sequence(s, None)?
-        } else {
-            self.report.warn(format!("clip \"{name}\" has no media reference; imported offline"));
-            let spec = MediaSpec {
-                video: (kind == TrackKind::Video).then_some((frame.0, frame.1, seq_rate)),
-                audio: (kind == TrackKind::Audio).then_some((48_000, 2)),
-                ..Default::default()
-            };
-            let key = format!("offline:{name}");
-            let p = resolve_path(&name, self.opts.base_dir.as_deref());
-            let id = self.b.file_media(&key, &name, &p, &spec, None);
-            if let Some(m) = self.b.p.item_mut(id).and_then(|i| i.as_media_mut()) {
-                m.offline = true;
-            }
-            id
-        };
+        let item = self.clip_media(c, kind, seq_rate, frame, &name)?;
 
         let start = child_i64(c, "start").unwrap_or(-1);
         let end = child_i64(c, "end").unwrap_or(-1);
@@ -448,36 +423,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let out_f = child_i64(c, "out").unwrap_or(in_f);
         let src_in = child_i64(c, "pproTicksIn").map(Tick).unwrap_or_else(|| rate.tick_of(in_f));
         let src_out = child_i64(c, "pproTicksOut").map(Tick).unwrap_or_else(|| rate.tick_of(out_f));
-
-        // Speed from the Time Remap filter (or the in/out vs start/end ratio).
-        let mut speed = 1.0;
-        let mut reverse = false;
-        let mut hold = false;
-        for eff in c.children().filter(|x| x.has_tag_name("filter")).filter_map(|f| child(f, "effect")) {
-            if child_text(eff, "effectid") == Some("timeremap") {
-                for p in children(eff, "parameter") {
-                    match child_text(p, "parameterid") {
-                        Some("speed") => {
-                            let v = child_f64(p, "value").unwrap_or(100.0);
-                            if v == 0.0 {
-                                hold = true;
-                            } else {
-                                speed = v.abs() / 100.0;
-                                reverse |= v < 0.0;
-                            }
-                            if child(p, "keyframe").is_some() {
-                                self.report.warn("variable speed (time remap keyframes) is not supported; a constant speed was used");
-                            }
-                        }
-                        Some("reverse") => reverse |= child_bool(p, "value").unwrap_or(false),
-                        Some("variablespeed") if child_bool(p, "value") == Some(true) || child_f64(p, "value").is_some_and(|v| v != 0.0) => {
-                            self.report.warn("variable speed (time remap keyframes) is not supported; a constant speed was used");
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
+        let remap = self.time_remap(c);
+        let (mut speed, reverse, hold) = (remap.speed, remap.reverse, remap.hold);
         let src_len = (src_out - src_in).abs();
         let (start_t, dur) = match (start >= 0, end >= 0) {
             (true, true) => (seq_rate.tick_of(start), seq_rate.tick_of(end) - seq_rate.tick_of(start)),
@@ -497,9 +444,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         if dur <= Tick::ZERO {
             return None;
         }
-        let has_remap =
-            c.children().filter(|x| x.has_tag_name("filter")).filter_map(|f| child(f, "effect")).any(|e| child_text(e, "effectid") == Some("timeremap"));
-        if !has_remap && !hold && src_len != dur && src_len > Tick::ZERO {
+        if !remap.has_remap && !hold && src_len != dur && src_len > Tick::ZERO {
             speed = (src_len.0 as f64 / dur.0 as f64 * 10_000.0).round() / 10_000.0;
         }
         let mut ti = self.b.clip(item, kind, if name.is_empty() { "Clip" } else { &name }, start_t, dur, src_in.min(src_out));
@@ -512,6 +457,97 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         if let Some(l) = path_text(c, &["labels", "label2"]).and_then(label_from) {
             ti.label = l;
         }
+        self.apply_clip_channels(&mut ti, c, item, kind);
+        if let Some(mode) = child_text(c, "compositemode") {
+            match BLEND_XML.iter().find(|(n, _)| n.eq_ignore_ascii_case(mode)) {
+                Some((_, v)) if *v != 0 => set_param(&mut ti, "opacity", "blend", Param::new(ParamValue::Choice(*v))),
+                Some(_) => {}
+                None => self.report.warn(format!("composite mode \"{mode}\" is not supported")),
+            }
+        }
+        ti.markers = read_markers(c, rate, &mut self.b);
+        let src_frame = self.source_frame(item).unwrap_or(frame);
+        for f in c.children().filter(|x| x.has_tag_name("filter")) {
+            self.filter(&mut ti, f, rate, frame, src_frame);
+        }
+        let refs: Vec<String> = children(c, "link").filter_map(|l| child_text(l, "linkclipref")).map(str::to_string).collect();
+        Some((ti, refs))
+    }
+
+    fn clip_media(&mut self, c: Node<'a, 'i>, kind: TrackKind, seq_rate: FrameRate, frame: (u32, u32), name: &str) -> Option<ItemId> {
+        if c.has_tag_name("generatoritem") {
+            let eff = child(c, "effect");
+            let gname = eff.and_then(|e| child_text(e, "name")).unwrap_or(name).to_string();
+            let gid = eff.and_then(|e| child_text(e, "effectid")).unwrap_or("").to_string();
+            let mut g = generator_from(&gname, &gid, self.report);
+            if let (Generator::ColorMatte { color }, Some(e)) = (&mut g, eff)
+                && let Some(v) = e.descendants().find(|d| d.has_tag_name("value") && child(*d, "red").is_some())
+            {
+                *color = read_color(v);
+            }
+            let spec = MediaSpec { video: Some((frame.0, frame.1, seq_rate)), ..Default::default() };
+            let key = format!("gen:{}", serde_json::to_string(&g).unwrap_or_default());
+            let label = if name.is_empty() { g.label() } else { name.to_string() };
+            Some(self.b.generator_media(&key, &label, g, &spec, None))
+        } else if let Some(f) = child(c, "file") {
+            match self.file(f, Some(name), None) {
+                Some(item) => Some(item),
+                None => {
+                    self.report.warn(format!("clip \"{name}\" refers to a file the document does not define; skipped"));
+                    None
+                }
+            }
+        } else if let Some(s) = child(c, "sequence") {
+            self.sequence(s, None)
+        } else {
+            self.report.warn(format!("clip \"{name}\" has no media reference; imported offline"));
+            let spec = MediaSpec {
+                video: (kind == TrackKind::Video).then_some((frame.0, frame.1, seq_rate)),
+                audio: (kind == TrackKind::Audio).then_some((48_000, 2)),
+                ..Default::default()
+            };
+            let key = format!("offline:{name}");
+            let p = resolve_path(name, self.opts.base_dir.as_deref());
+            let id = self.b.file_media(&key, name, &p, &spec, None);
+            if let Some(m) = self.b.p.item_mut(id).and_then(|i| i.as_media_mut()) {
+                m.offline = true;
+            }
+            Some(id)
+        }
+    }
+
+    fn time_remap(&mut self, c: Node<'a, 'i>) -> ClipRemap {
+        let mut remap = ClipRemap::default();
+        for eff in c.children().filter(|x| x.has_tag_name("filter")).filter_map(|f| child(f, "effect")) {
+            if child_text(eff, "effectid") == Some("timeremap") {
+                remap.has_remap = true;
+                for p in children(eff, "parameter") {
+                    match child_text(p, "parameterid") {
+                        Some("speed") => {
+                            let v = child_f64(p, "value").unwrap_or(100.0);
+                            if v == 0.0 {
+                                remap.hold = true;
+                            } else {
+                                remap.speed = v.abs() / 100.0;
+                                remap.reverse |= v < 0.0;
+                            }
+                            if child(p, "keyframe").is_some() {
+                                self.report.warn("variable speed (time remap keyframes) is not supported; a constant speed was used");
+                            }
+                        }
+                        Some("reverse") => remap.reverse |= child_bool(p, "value").unwrap_or(false),
+                        Some("variablespeed") if child_bool(p, "value") == Some(true) || child_f64(p, "value").is_some_and(|v| v != 0.0) => {
+                            self.report.warn("variable speed (time remap keyframes) is not supported; a constant speed was used");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        remap
+    }
+
+    fn apply_clip_channels(&self, ti: &mut TrackItem, c: Node<'a, 'i>, item: ItemId, kind: TrackKind) {
         // `sourcetrack/trackindex` (1-based) picks the source channel of a mono track split off a multichannel file (#463).
         // Index 1 is also what a stereo clip on a stereo track carries, so it means channel 0 only when another clip
         // item of the same file in this sequence uses a higher index (the file is split); otherwise it keeps the
@@ -528,23 +564,9 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             // (read below) still overrides this.
             let stereo = matches!(&self.b.p.item(item).map(|i| &i.kind), Some(ItemKind::Media(m)) if m.info.audio().is_some_and(|a| a.channels == 2));
             if stereo && ch <= 1 {
-                set_param(&mut ti, "panner", "balance", Param::new(ParamValue::Float(if ch == 0 { -100.0 } else { 100.0 })));
+                set_param(ti, "panner", "balance", Param::new(ParamValue::Float(if ch == 0 { -100.0 } else { 100.0 })));
             }
         }
-        if let Some(mode) = child_text(c, "compositemode") {
-            match BLEND_XML.iter().find(|(n, _)| n.eq_ignore_ascii_case(mode)) {
-                Some((_, v)) if *v != 0 => set_param(&mut ti, "opacity", "blend", Param::new(ParamValue::Choice(*v))),
-                Some(_) => {}
-                None => self.report.warn(format!("composite mode \"{mode}\" is not supported")),
-            }
-        }
-        ti.markers = read_markers(c, rate, &mut self.b);
-        let src_frame = self.source_frame(item).unwrap_or(frame);
-        for f in c.children().filter(|x| x.has_tag_name("filter")) {
-            self.filter(&mut ti, f, rate, frame, src_frame);
-        }
-        let refs: Vec<String> = children(c, "link").filter_map(|l| child_text(l, "linkclipref")).map(str::to_string).collect();
-        Some((ti, refs))
     }
 
     fn source_frame(&self, item: ItemId) -> Option<(u32, u32)> {
@@ -1189,18 +1211,32 @@ impl Exp<'_, '_> {
                 }
                 let enabled = c.effect("motion").is_none_or(|e| e.enabled);
                 self.open_effect("Basic Motion", "basic", "motion", "motion", "video", enabled);
-                self.float_param(c, "motion", "scale", "Scale", 0.0, 1000.0, rate, |v| v, "scale");
-                self.float_param(c, "motion", "rotation", "Rotation", -8640.0, 8640.0, rate, |v| v, "rotation");
-                self.point_param(c, "motion", "position", "Center", rate, "center", (fw, fh), |v| ((v.x - fw / 2.0) / fw, (v.y - fh / 2.0) / fh));
-                self.point_param(c, "motion", "anchor", "Anchor Point", rate, "centerOffset", (sw, sh), |v| ((v.x - sw / 2.0) / sw, (v.y - sh / 2.0) / sh));
+                self.float_param(c, FloatParam { effect: "motion", pid: "scale", label: "Scale", min: 0.0, max: 1000.0, xml_id: "scale" }, rate, |v| v);
+                self.float_param(
+                    c,
+                    FloatParam { effect: "motion", pid: "rotation", label: "Rotation", min: -8640.0, max: 8640.0, xml_id: "rotation" },
+                    rate,
+                    |v| v,
+                );
+                self.point_param(c, PointParam { effect: "motion", pid: "position", label: "Center", xml_id: "center", size: (fw, fh) }, rate, |v| {
+                    ((v.x - fw / 2.0) / fw, (v.y - fh / 2.0) / fh)
+                });
+                self.point_param(c, PointParam { effect: "motion", pid: "anchor", label: "Anchor Point", xml_id: "centerOffset", size: (sw, sh) }, rate, |v| {
+                    ((v.x - sw / 2.0) / sw, (v.y - sh / 2.0) / sh)
+                });
                 if param_modified(c, "motion", "anti_flicker") {
-                    self.float_param(c, "motion", "anti_flicker", "Anti-flicker Filter", 0.0, 1.0, rate, |v| v, "antiflicker");
+                    self.float_param(
+                        c,
+                        FloatParam { effect: "motion", pid: "anti_flicker", label: "Anti-flicker Filter", min: 0.0, max: 1.0, xml_id: "antiflicker" },
+                        rate,
+                        |v| v,
+                    );
                 }
                 self.close_effect();
             }
             if param_modified(c, "opacity", "opacity") {
                 self.open_effect("Opacity", "opacity", "motion", "motion", "video", true);
-                self.float_param(c, "opacity", "opacity", "opacity", 0.0, 100.0, rate, |v| v, "opacity");
+                self.float_param(c, FloatParam { effect: "opacity", pid: "opacity", label: "opacity", min: 0.0, max: 100.0, xml_id: "opacity" }, rate, |v| v);
                 self.close_effect();
             }
             if c.speed != 1.0 || c.reverse || c.frame_hold.is_some() {
@@ -1222,14 +1258,16 @@ impl Exp<'_, '_> {
             if param_modified(c, "volume", "level") || c.gain_db != 0.0 {
                 let g = c.gain_db;
                 self.open_effect("Audio Levels", "audiolevels", "audiolevels", "audiolevels", "audio", true);
-                self.float_param(c, "volume", "level", "Level", 0.0, 3.98109, rate, move |v| db_to_gain(v + g), "level");
+                self.float_param(c, FloatParam { effect: "volume", pid: "level", label: "Level", min: 0.0, max: 3.98109, xml_id: "level" }, rate, move |v| {
+                    db_to_gain(v + g)
+                });
                 self.close_effect();
             }
             // A one-channel clip says where it is panned even when centred: without Audio Pan the
             // importer pans the halves of a split stereo file to their sides (#371).
             if param_modified(c, "panner", "balance") || c.source_channels.len() == 1 {
                 self.open_effect("Audio Pan", "audiopan", "audiopan", "audiopan", "audio", true);
-                self.float_param(c, "panner", "balance", "Pan", -1.0, 1.0, rate, |v| v / 100.0, "pan");
+                self.float_param(c, FloatParam { effect: "panner", pid: "balance", label: "Pan", min: -1.0, max: 1.0, xml_id: "pan" }, rate, |v| v / 100.0);
                 self.close_effect();
             }
             if param_modified(c, "channel_volume", "left") || param_modified(c, "channel_volume", "right") {
@@ -1267,19 +1305,8 @@ impl Exp<'_, '_> {
         self.w.close();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn float_param(
-        &mut self,
-        c: &TrackItem,
-        effect: &str,
-        pid: &str,
-        label: &str,
-        min: f64,
-        max: f64,
-        rate: FrameRate,
-        map: impl Fn(f64) -> f64,
-        xml_id: &str,
-    ) {
+    fn float_param(&mut self, c: &TrackItem, spec: FloatParam, rate: FrameRate, map: impl Fn(f64) -> f64) {
+        let FloatParam { effect, pid, label, min, max, xml_id } = spec;
         let default = find_effect(effect).and_then(|d| d.param(pid)).and_then(|p| p.default.as_f64()).unwrap_or(0.0);
         let p = param(c, effect, pid).cloned().unwrap_or_else(|| Param::new(ParamValue::Float(default)));
         self.w.open("parameter", &[]);
@@ -1292,18 +1319,8 @@ impl Exp<'_, '_> {
         self.w.close();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn point_param(
-        &mut self,
-        c: &TrackItem,
-        effect: &str,
-        pid: &str,
-        label: &str,
-        rate: FrameRate,
-        xml_id: &str,
-        size: (f64, f64),
-        map: impl Fn(Vec2) -> (f64, f64),
-    ) {
+    fn point_param(&mut self, c: &TrackItem, spec: PointParam, rate: FrameRate, map: impl Fn(Vec2) -> (f64, f64)) {
+        let PointParam { effect, pid, label, xml_id, size } = spec;
         let centre = Vec2::new(size.0 / 2.0, size.1 / 2.0);
         let fix = |v: Vec2| Vec2::new(if v.x.is_nan() { centre.x } else { v.x }, if v.y.is_nan() { centre.y } else { v.y });
         let p = param(c, effect, pid).cloned().unwrap_or_else(|| Param::new(ParamValue::Vec2(centre)));
@@ -1431,4 +1448,30 @@ fn write_markers(w: &mut XmlWriter, markers: &[Marker], rate: FrameRate) {
         w.text("color", m.color.name());
         w.close();
     }
+}
+
+/// Frame rate and frame size an imported track's clips are read against.
+#[derive(Clone, Copy)]
+struct TrackFormat {
+    rate: FrameRate,
+    frame: (u32, u32),
+}
+
+/// Identity, label and range of a float effect parameter in the exported XML.
+struct FloatParam<'a> {
+    effect: &'a str,
+    pid: &'a str,
+    label: &'a str,
+    min: f64,
+    max: f64,
+    xml_id: &'a str,
+}
+
+/// Identity, label and frame size of a point effect parameter in the exported XML.
+struct PointParam<'a> {
+    effect: &'a str,
+    pid: &'a str,
+    label: &'a str,
+    xml_id: &'a str,
+    size: (f64, f64),
 }

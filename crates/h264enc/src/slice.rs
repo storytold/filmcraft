@@ -311,7 +311,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
 
     /// Neighbouring partition data at 4x4 offset (bx, by) relative to the MB (range -1..=4).
     /// None = not available; Some((ref, mv)) with ref = -1 for intra / list unused.
-    fn nb_part(&self, cur: &MbInfo, mask: u16, mx: usize, my: usize, bx: i32, by: i32, list: usize) -> Option<(i8, Mv)> {
+    fn nb_part(&self, nb: MvNb, bx: i32, by: i32, list: usize) -> Option<(i8, Mv)> {
+        let MvNb { cur, mask, mx, my } = nb;
         if (0..4).contains(&bx) && (0..4).contains(&by) {
             let r = (by * 4 + bx) as usize;
             if mask & (1 << r) != 0 {
@@ -345,12 +346,13 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Motion vector predictor (§8.4.1.3) for a partition at 4x4 coords (x, y) of size (w, h) (in 4x4 units).
-    fn mvp(&self, cur: &MbInfo, mask: u16, mx: usize, my: usize, x: i32, y: i32, w: i32, list: usize, rf: i8, shape: Shape) -> Mv {
-        let a = self.nb_part(cur, mask, mx, my, x - 1, y, list);
-        let b = self.nb_part(cur, mask, mx, my, x, y - 1, list);
-        let mut c = self.nb_part(cur, mask, mx, my, x + w, y - 1, list);
+    fn mvp(&self, nb: MvNb, geom: PartGeom, list: usize, rf: i8) -> Mv {
+        let PartGeom { x, y, w, shape } = geom;
+        let a = self.nb_part(nb, x - 1, y, list);
+        let b = self.nb_part(nb, x, y - 1, list);
+        let mut c = self.nb_part(nb, x + w, y - 1, list);
         if c.is_none() {
-            c = self.nb_part(cur, mask, mx, my, x - 1, y - 1, list);
+            c = self.nb_part(nb, x - 1, y - 1, list);
         }
         let (mut b, mut c) = (b, c);
         if b.is_none() && c.is_none() && a.is_some() {
@@ -382,13 +384,14 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
 
     fn pskip_mv(&self, mx: usize, my: usize) -> Mv {
         let cur = MbInfo::default();
-        let a = self.nb_part(&cur, 0, mx, my, -1, 0, 0);
-        let b = self.nb_part(&cur, 0, mx, my, 0, -1, 0);
+        let nb = MvNb { cur: &cur, mask: 0, mx, my };
+        let a = self.nb_part(nb, -1, 0, 0);
+        let b = self.nb_part(nb, 0, -1, 0);
         match (a, b) {
             (None, _) | (_, None) => Mv::ZERO,
             (Some((0, m)), _) if m == Mv::ZERO => Mv::ZERO,
             (_, Some((0, m))) if m == Mv::ZERO => Mv::ZERO,
-            _ => self.mvp(&cur, 0, mx, my, 0, 0, 4, 0, 0, Shape::Normal),
+            _ => self.mvp(nb, PartGeom { x: 0, y: 0, w: 4, shape: Shape::Normal }, 0, 0),
         }
     }
 
@@ -401,6 +404,65 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let y0 = y as i32 + (mv.y as i32 >> 2);
         mv.x.unsigned_abs() < 2000 && mv.y.unsigned_abs() < 2000 && x0 >= -m && y0 >= -m && x0 + w as i32 <= pw + m && y0 + h as i32 <= ph + m
     }
+}
+
+/// The macroblock (`mx`, `my`) being analysed: quantiser, neighbour availability and edge samples, and source.
+#[derive(Clone, Copy)]
+struct MbCtx<'x> {
+    mx: usize,
+    my: usize,
+    qp: u8,
+    av: Avail,
+    e: &'x MbEdges,
+    src: &'x Src,
+}
+
+/// Where a motion-vector-predictor neighbour lookup happens: the macroblock (`mx`, `my`) whose already
+/// decided partitions (`mask` over the 4x4 blocks of `cur`) are visible.
+#[derive(Clone, Copy)]
+struct MvNb<'c> {
+    cur: &'c MbInfo,
+    mask: u16,
+    mx: usize,
+    my: usize,
+}
+
+/// A partition for motion-vector prediction: 4x4-block origin (`x`, `y`), width `w` (in 4x4 units), and shape.
+#[derive(Clone, Copy)]
+struct PartGeom {
+    x: i32,
+    y: i32,
+    w: i32,
+    shape: Shape,
+}
+
+/// A luma block to motion-search at picture position (`x`, `y`) against `src` (row stride `sstride`).
+#[derive(Clone, Copy)]
+struct SearchBlock<'s> {
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    src: &'s [u8],
+    sstride: usize,
+}
+
+/// Parameters of a sequential per-partition search of macroblock (`mx`, `my`) for one reference list.
+#[derive(Clone, Copy)]
+struct PartSearch {
+    mx: usize,
+    my: usize,
+    part: Part,
+    list: usize,
+    lam: u32,
+    seed: Mv,
+}
+
+/// Destination buffers (luma 16x16, chroma 8x8 each) of a motion-compensated prediction.
+struct PredOut<'p> {
+    y: &'p mut [u8; 256],
+    u: &'p mut [u8; 64],
+    v: &'p mut [u8; 64],
 }
 
 struct Src {

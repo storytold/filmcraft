@@ -390,11 +390,16 @@ fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &st
     });
 }
 
-fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, range: std::ops::RangeInclusive<f64>, suffix: &str) {
+struct NumberOptions {
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &'static str,
+}
+
+fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, options: NumberOptions) {
     ui.horizontal(|ui| {
         ui.label(label);
         let mut v = p.get(key).and_then(Value::as_f64).unwrap_or(0.0);
-        let r = ui.add(crate::widgets::number_drag(&mut v).range(range).suffix(suffix));
+        let r = ui.add(crate::widgets::number_drag(&mut v).range(options.range).suffix(options.suffix));
         push(elems, format!("{pre}.{key}"), &r, label);
         if r.changed() {
             p[key] = json!(v);
@@ -706,8 +711,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     &[("sequentially", tl!("Sequentially")), ("unnumberedMarkers", tl!("At Unnumbered Markers"))],
                 );
                 radios(ui, &mut elems, pre, p, "method", tl!("Method:"), &[("insert", tl!("Insert Edit")), ("overwrite", tl!("Overwrite Edit"))]);
-                number(ui, &mut elems, pre, p, "overlapFrames", tl!("Clip Overlap:"), 0.0..=600.0, " frames");
-                number(ui, &mut elems, pre, p, "stillFrames", tl!("Frames per Still:"), 1.0..=100_000.0, " frames");
+                number(ui, &mut elems, pre, p, "overlapFrames", tl!("Clip Overlap:"), NumberOptions { range: 0.0..=600.0, suffix: " frames" });
+                number(ui, &mut elems, pre, p, "stillFrames", tl!("Frames per Still:"), NumberOptions { range: 1.0..=100_000.0, suffix: " frames" });
                 ui.label(RichText::new(tl!("Transitions")).strong());
                 check(ui, &mut elems, pre, p, "audioTransition", tl!("Apply Default Audio Transition"));
                 check(ui, &mut elems, pre, p, "videoTransition", tl!("Apply Default Video Transition"));
@@ -727,7 +732,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     p["sensitivity"] = json!(v);
                 });
             }
-            "sequence.normalizeMixTrack" => number(ui, &mut elems, pre, p, "db", tl!("Normalize Mix Track to:"), -96.0..=24.0, " dB"),
+            "sequence.normalizeMixTrack" => {
+                number(ui, &mut elems, pre, p, "db", tl!("Normalize Mix Track to:"), NumberOptions { range: -96.0..=24.0, suffix: " dB" })
+            }
             "sequence.simplify" => {
                 text(ui, &mut elems, pre, p, "name", tl!("Sequence Name:"), 240.0);
                 ui.label(RichText::new(tl!("Remove")).strong());
@@ -769,9 +776,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             "file.newColorMatte" => {
                 color(ui, &mut elems, pre, p, "color", tl!("Color:"));
                 text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
-                number(ui, &mut elems, pre, p, "width", tl!("Width:"), 1.0..=16384.0, " px");
-                number(ui, &mut elems, pre, p, "height", tl!("Height:"), 1.0..=16384.0, " px");
-                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), 0.04..=36000.0, " s");
+                number(ui, &mut elems, pre, p, "width", tl!("Width:"), NumberOptions { range: 1.0..=16384.0, suffix: " px" });
+                number(ui, &mut elems, pre, p, "height", tl!("Height:"), NumberOptions { range: 1.0..=16384.0, suffix: " px" });
+                number(ui, &mut elems, pre, p, "seconds", tl!("Duration:"), NumberOptions { range: 0.04..=36000.0, suffix: " s" });
             }
             "project.matteColor" => color(ui, &mut elems, pre, p, "color", tl!("Color:")),
             "markers.addFlashCue" => {

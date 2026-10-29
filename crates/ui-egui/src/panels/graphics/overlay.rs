@@ -5,7 +5,10 @@ use super::handles::{
 use super::ime::{current_graphics_ime_target, draw_preedit, graphics_ime_target, note_graphics_ime_editor, reconcile_gfx_edit};
 use super::layer_identity::{current_layer_text, current_layer_uid, layer_display_name_view};
 use super::text_edit::{char_boundary_floor, text_edit, text_of};
-use super::*;
+use super::{
+    Affine, ClipId, Color32, FilmcraftApp, GfxEdit, ImeTarget, ItemKind, LayerView, Pos2, Rect, Sense, Stroke, StrokeKind, Tool, Value, Vec2, eval_layer, json,
+    layer_indices, pos2, selected_graphic, text_layout, vec2,
+};
 
 /// `graphics.newText` for the Type tool: point text at `at`, or paragraph text in the box from
 /// `at` to `corner`.
@@ -103,6 +106,53 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     let editing = app.ui.gfx_edit.clone();
     // ---- boxes and handles
     let graphics_tool = matches!(tool, Tool::Selection | Tool::Type | Tool::VerticalType | Tool::Rectangle | Tool::Ellipse | Tool::Pen);
+    draw_boxes(app, &painter, &views, sel_clip, &sel_layers, &editing, graphics_tool);
+    let id = egui::Id::unique("gfx-overlay");
+    let resp = ui.interact(pic, id, if graphics_tool { Sense::click_and_drag() } else { Sense::hover() });
+    let hover = resp.hover_pos();
+    let mut actions: Vec<(String, Value)> = Vec::new();
+    let drag_id = id.with("drag");
+    let mut drag: Option<DragState> = ui.data(|d| d.get_temp(drag_id));
+
+    // cursors
+    set_hover_cursor(ui, hover, tool, &views, sel_clip, &sel_layers, &editing);
+
+    // ---- text editing
+    if let Some(ed) = editing.clone() {
+        match views.iter().find(|v| v.clip.0 == ed.clip && v.layer == ed.layer && v.is_text()) {
+            Some(v) => text_edit(app, ui, v, ed, &resp),
+            None => end_edit(app, ui),
+        }
+    }
+    let editing = app.ui.gfx_edit.clone();
+    let edit_view = editing.as_ref().and_then(|e| views.iter().find(|v| v.clip.0 == e.clip && v.layer == e.layer));
+
+    // ---- presses (the left button only: a middle or right drag leaves the layers alone)
+    press(app, ui, &resp, graphics_tool, pic, tool, &views, sel_clip, &sel_layers, &editing, edit_view, drag_id, &mut drag, &mut actions);
+    // ---- drag feedback / commit
+    drag_step(app, ui, &painter, &resp, hover, pic, frame, tool, &views, drag, drag_id, &mut actions);
+    // ---- clicks
+    click(app, ui, &resp, graphics_tool, drag, pic, frame, tool, &views, &editing, edit_view, &mut actions);
+    // ---- pen path in progress
+    pen_path(app, ui, &painter, pic, frame, tool, hover, accent, &mut actions);
+    // ---- run accepted actions before drawing the caret
+    run_actions(app, actions);
+    draw_caret(app, ui, &painter, pic, frame);
+}
+/// The selection boxes, resize/scale handles, corner-radius handles and anchor points of the
+/// selected (or being-edited) graphic layers.
+#[allow(clippy::too_many_arguments)]
+fn draw_boxes(
+    app: &mut FilmcraftApp,
+    painter: &egui::Painter,
+    views: &[LayerView],
+    sel_clip: Option<ClipId>,
+    sel_layers: &[usize],
+    editing: &Option<GfxEdit>,
+    graphics_tool: bool,
+) {
+    let t = app.tokens;
+    let accent = t.accent;
     if graphics_tool {
         for v in views.iter().filter(|v| Some(v.clip) == sel_clip) {
             let q = v.quad();
@@ -150,13 +200,19 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             }
         }
     }
-    let id = egui::Id::unique("gfx-overlay");
-    let resp = ui.interact(pic, id, if graphics_tool { Sense::click_and_drag() } else { Sense::hover() });
-    let hover = resp.hover_pos();
-    let mut actions: Vec<(String, Value)> = Vec::new();
-    let drag_id = id.with("drag");
-    let mut drag: Option<DragState> = ui.data(|d| d.get_temp(drag_id));
+}
 
+/// The cursor over the picture: text, crosshair, a resize/scale handle, or the move icon.
+#[allow(clippy::too_many_arguments)]
+fn set_hover_cursor(
+    ui: &egui::Ui,
+    hover: Option<Pos2>,
+    tool: Tool,
+    views: &[LayerView],
+    sel_clip: Option<ClipId>,
+    sel_layers: &[usize],
+    editing: &Option<GfxEdit>,
+) {
     // cursors
     if let Some(p) = hover {
         match tool {
@@ -182,24 +238,35 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             _ => {}
         }
     }
+}
 
-    // ---- text editing
-    if let Some(ed) = editing.clone() {
-        match views.iter().find(|v| v.clip.0 == ed.clip && v.layer == ed.layer && v.is_text()) {
-            Some(v) => text_edit(app, ui, v, ed, &resp),
-            None => end_edit(app, ui),
-        }
-    }
-    let editing = app.ui.gfx_edit.clone();
-    let edit_view = editing.as_ref().and_then(|e| views.iter().find(|v| v.clip.0 == e.clip && v.layer == e.layer));
-
+/// Where the left button went down: start dragging a handle, an anchor or a layer, or put the
+/// caret into the text under the pointer. Presses only (a middle or right drag leaves the
+/// layers alone).
+#[allow(clippy::too_many_arguments)]
+fn press(
+    app: &mut FilmcraftApp,
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    graphics_tool: bool,
+    pic: Rect,
+    tool: Tool,
+    views: &[LayerView],
+    sel_clip: Option<ClipId>,
+    sel_layers: &[usize],
+    editing: &Option<GfxEdit>,
+    edit_view: Option<&LayerView>,
+    drag_id: egui::Id,
+    drag: &mut Option<DragState>,
+    actions: &mut Vec<(String, Value)>,
+) {
     // ---- presses (the left button only: a middle or right drag leaves the layers alone)
     if graphics_tool && resp.drag_started_by(egui::PointerButton::Primary) {
         // where the button went down (a drag starts only after the pointer has moved a little)
         let p = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()).unwrap_or(pic.center());
         let shift = ui.input(|i| i.modifiers.shift);
         let in_edit = edit_view.is_some_and(|v| v.hit(p));
-        drag = None;
+        *drag = None;
         if in_edit {
             if let (Some(v), Some(mut ed)) = (edit_view, editing.clone())
                 && let Some(tp) = text_of(&v.spec)
@@ -216,7 +283,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     }
                     app.ui.gfx_edit = Some(ed);
                 }
-                drag = Some(DragState { kind: DragKind::TextSelect, clip: v.clip, layer: v.layer, start: p });
+                *drag = Some(DragState { kind: DragKind::TextSelect, clip: v.clip, layer: v.layer, start: p });
             }
         } else {
             match tool {
@@ -228,13 +295,13 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                     let corner = selected()
                         .find_map(|v| corner_handles(v).and_then(|(_, pts)| pts.iter().position(|c| (*c - p).length() <= 6.0)).map(|n| (v.clip, v.layer, n)));
                     if let Some(v) = anchor {
-                        drag = Some(DragState { kind: DragKind::Anchor, clip: v.clip, layer: v.layer, start: p });
+                        *drag = Some(DragState { kind: DragKind::Anchor, clip: v.clip, layer: v.layer, start: p });
                     } else if let Some((c, l, n)) = handle {
-                        drag = Some(DragState { kind: DragKind::Handle(n), clip: c, layer: l, start: p });
+                        *drag = Some(DragState { kind: DragKind::Handle(n), clip: c, layer: l, start: p });
                     } else if let Some((c, l, n)) = corner {
-                        drag = Some(DragState { kind: DragKind::Corner(n), clip: c, layer: l, start: p });
+                        *drag = Some(DragState { kind: DragKind::Corner(n), clip: c, layer: l, start: p });
                     } else if tool == Tool::Type && !views.iter().any(|v| v.is_text() && v.hit(p)) {
-                        drag = Some(DragState { kind: DragKind::NewTextBox, clip: ClipId(0), layer: 0, start: p });
+                        *drag = Some(DragState { kind: DragKind::NewTextBox, clip: ClipId(0), layer: 0, start: p });
                     } else if tool == Tool::Selection
                         && let Some(v) = views.iter().find(|v| v.hit(p))
                     {
@@ -244,23 +311,43 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                         if !(Some(v.clip) == sel_clip && sel_layers.contains(&v.layer)) {
                             actions.push(("graphics.selectLayer".into(), json!({"clip": v.clip.0, "layers": [v.layer]})));
                         }
-                        drag = Some(DragState { kind: DragKind::Move, clip: v.clip, layer: v.layer, start: p });
+                        *drag = Some(DragState { kind: DragKind::Move, clip: v.clip, layer: v.layer, start: p });
                     }
                 }
                 Tool::Rectangle | Tool::Ellipse => {
-                    drag = Some(DragState { kind: DragKind::NewShape, clip: ClipId(0), layer: 0, start: p });
+                    *drag = Some(DragState { kind: DragKind::NewShape, clip: ClipId(0), layer: 0, start: p });
                 }
                 _ => {}
             }
         }
         ui.data_mut(|dd| {
-            if let Some(d) = drag {
+            if let Some(d) = *drag {
                 dd.insert_temp(drag_id, d);
             } else {
                 dd.remove::<DragState>(drag_id);
             }
         });
     }
+}
+
+/// Draw the in-flight drag (a ghost box, the moved outline, snap lines) and, when the button
+/// comes up, commit it as actions.
+#[allow(clippy::too_many_arguments)]
+fn drag_step(
+    app: &mut FilmcraftApp,
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    resp: &egui::Response,
+    hover: Option<Pos2>,
+    pic: Rect,
+    frame: (u32, u32),
+    tool: Tool,
+    views: &[LayerView],
+    drag: Option<DragState>,
+    drag_id: egui::Id,
+    actions: &mut Vec<(String, Value)>,
+) {
+    let t = app.tokens;
     // ---- drag feedback / commit
     if let Some(d) = drag {
         let cur = resp.interact_pointer_pos().or(hover).unwrap_or(d.start);
@@ -277,7 +364,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                 if let Some(v) = v {
                     let off = snap_off.0;
                     painter.add(egui::Shape::closed_line(v.quad().iter().map(|q| *q + off).collect(), Stroke::new(1.0, Color32::WHITE)));
-                    crate::panels::monitor_view::draw_snap_lines(&painter, pic, &snap_off.1);
+                    crate::panels::monitor_view::draw_snap_lines(painter, pic, &snap_off.1);
                 }
             }
             DragKind::Handle(n) => {
@@ -396,6 +483,24 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             }
         }
     }
+}
+
+/// A click of the graphics tools on the picture: edit text, select a layer, add a pen point.
+#[allow(clippy::too_many_arguments)]
+fn click(
+    app: &mut FilmcraftApp,
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    graphics_tool: bool,
+    drag: Option<DragState>,
+    pic: Rect,
+    frame: (u32, u32),
+    tool: Tool,
+    views: &[LayerView],
+    editing: &Option<GfxEdit>,
+    edit_view: Option<&LayerView>,
+    actions: &mut Vec<(String, Value)>,
+) {
     // ---- clicks
     if graphics_tool && resp.clicked() && drag.is_none_or(|d| !matches!(d.kind, DragKind::TextSelect)) {
         let p = resp.interact_pointer_pos().unwrap_or(pic.center());
@@ -421,7 +526,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             }
             Tool::Type | Tool::VerticalType => {
                 if let Some(v) = views.iter().find(|v| v.is_text() && v.hit(p)) {
-                    start_edit_at(app, ui, v, p, &mut actions);
+                    start_edit_at(app, ui, v, p, actions);
                 } else {
                     end_edit(app, ui);
                     let (command, prm) = new_text_action(app, pic, frame, p, None);
@@ -433,7 +538,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             Tool::Selection => {
                 if resp.double_clicked() {
                     if let Some(v) = views.iter().find(|v| v.is_text() && v.hit(p)) {
-                        start_edit_at(app, ui, v, p, &mut actions);
+                        start_edit_at(app, ui, v, p, actions);
                         // double-click selects all the text so typing replaces it, as in Premiere
                         if let (Some(tp), Some(e)) = (text_of(&v.spec), app.ui.gfx_edit.as_mut()) {
                             (e.anchor, e.caret) = (0, tp.text.len());
@@ -457,7 +562,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                         (pos2(fs.x as f32, fs.y as f32) - p).length() <= 8.0
                     });
                 if close {
-                    finish_pen(app, pic, frame, &mut actions);
+                    finish_pen(app, pic, frame, actions);
                 } else {
                     app.ui.pen_points.push([c.x, c.y]);
                 }
@@ -465,6 +570,21 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             _ => {}
         }
     }
+}
+
+/// Draw the pen path being traced, and finish it on Enter (Escape drops it).
+#[allow(clippy::too_many_arguments)]
+fn pen_path(
+    app: &mut FilmcraftApp,
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    pic: Rect,
+    frame: (u32, u32),
+    tool: Tool,
+    hover: Option<Pos2>,
+    accent: Color32,
+    actions: &mut Vec<(String, Value)>,
+) {
     // ---- pen path in progress
     if tool == Tool::Pen && !app.ui.pen_points.is_empty() {
         let (_, m) = canvas_target(app, pic, frame);
@@ -478,13 +598,18 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         }
         let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
         if enter && app.ui.pen_points.len() >= 3 {
-            finish_pen(app, pic, frame, &mut actions);
+            finish_pen(app, pic, frame, actions);
         } else if esc {
             app.ui.pen_points.clear();
         }
     } else if tool != Tool::Pen && !app.ui.pen_points.is_empty() {
         app.ui.pen_points.clear();
     }
+}
+
+/// Run the overlay's accepted `graphics.*` commands in order; `#edit` opens the text edit on
+/// the layer the command created or selected.
+fn run_actions(app: &mut FilmcraftApp, actions: Vec<(String, Value)>) {
     // ---- run accepted actions before drawing the caret
     for (cmd, p) in actions {
         let (cmd, then_edit) = match cmd.strip_suffix("#edit") {
@@ -503,6 +628,11 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             Err(e) => app.ui.status = e.to_string(),
         }
     }
+}
+
+/// Draw the post-action caret, selection highlight and IME preedit of the text being edited
+/// (the model may already have changed), and note the editor's IME target.
+fn draw_caret(app: &mut FilmcraftApp, ui: &egui::Ui, painter: &egui::Painter, pic: Rect, frame: (u32, u32)) {
     // The model may have changed above; draw the post-action caret and committed text.
     let views = visible_layers(app, pic, frame);
     if let Some(ed) = app.ui.gfx_edit.clone()
@@ -523,7 +653,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let sequence = app.session.state.active_sequence.map_or(0, |sequence| sequence.0);
         let target = graphics_ime_target(sequence, v.clip.0, v.layer, v.spec.uid, app.ime_replacement_epoch);
         let live = composing_live(app, ui.ctx(), target);
-        match app.ime_composer.preedit().filter(|_| live).map(|preedit| draw_preedit(&painter, a, b, preedit)) {
+        match app.ime_composer.preedit().filter(|_| live).map(|preedit| draw_preedit(painter, a, b, preedit)) {
             Some(drawn) => {
                 app.auto.add("program.textEdit.preedit", drawn.plate, &drawn.text);
                 if let Some((rect, clause)) = drawn.clause {

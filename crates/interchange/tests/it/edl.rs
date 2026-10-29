@@ -3,7 +3,7 @@
 use crate::support;
 
 use filmcraft_interchange::{ExportOptions, Format, ImportOptions, ReelMode, detect, export, export_edl_per_track, import, import_with};
-use filmcraft_project::{ItemKind, MediaRef, TrackKind, TransitionAlign};
+use filmcraft_project::{ItemKind, MediaRef, Project, Sequence, TrackKind, TransitionAlign};
 use filmcraft_time::{FrameRate, Tick, fields_to_frames};
 use proptest::prelude::*;
 use support::*;
@@ -54,6 +54,11 @@ fn golden_drop_frame_dissolves() {
     assert_eq!(p.item(sid).unwrap().name, "Harbour Cut");
     assert_eq!(s.start_timecode, 107_892); // 01:00:00;00 DF
 
+    assert_drop_frame_video(p, s, r);
+    assert_drop_frame_audio_and_markers(s, r);
+}
+
+fn assert_drop_frame_video(p: &Project, s: &Sequence, r: FrameRate) {
     let v1 = &s.video_tracks[0];
     assert_eq!(v1.items.len(), 4, "{:#?}", v1.items);
     let [a, b, g, c] = [&v1.items[0], &v1.items[1], &v1.items[2], &v1.items[3]];
@@ -81,11 +86,19 @@ fn golden_drop_frame_dissolves() {
     assert_eq!((ts[2].from, ts[2].to, ts[2].start, ts[2].duration), (Some(c.id), None, f(r, 390), f(r, 10)));
     assert_eq!(ts[2].align, TransitionAlign::EndAtCut);
 
+    // media without a source file is offline with its reel as tape name
+    let gm = p.item(g.item).unwrap();
+    assert_eq!(gm.metadata.get("Tape Name").map(String::as_str), Some("GULLS"));
+    assert!(gm.as_media().unwrap().offline);
+}
+
+fn assert_drop_frame_audio_and_markers(s: &Sequence, r: FrameRate) {
+    let video_link = s.video_tracks[0].items[0].link;
     // B = V + A1, linked; A2 music.
     let a1 = &s.audio_tracks[0].items;
     assert_eq!(a1.len(), 1);
-    assert_eq!(a1[0].link, a.link);
-    assert!(a.link.is_some());
+    assert_eq!(a1[0].link, video_link);
+    assert!(video_link.is_some());
     let a2 = &s.audio_tracks[1].items;
     assert_eq!((a2[0].start, a2[0].duration), (f(r, 0), f(r, 330)));
     // LOC marker
@@ -93,10 +106,6 @@ fn golden_drop_frame_dissolves() {
     assert_eq!(s.markers[0].name, "gull lands");
     assert_eq!(s.markers[0].start, f(r, 285));
     assert_eq!(s.markers[0].color, filmcraft_project::Label::Rose);
-    // media without a source file is offline with its reel as tape name
-    let gm = p.item(g.item).unwrap();
-    assert_eq!(gm.metadata.get("Tape Name").map(String::as_str), Some("GULLS"));
-    assert!(gm.as_media().unwrap().offline);
 }
 
 #[test]
@@ -178,15 +187,15 @@ fn demo_project(rate: FrameRate, df: bool) -> (filmcraft_project::Project, filmc
     let b = media(&mut p, "/media/city.mp4", true, true, rate);
     let m = media(&mut p, "/media/score.wav", false, true, rate);
     let s = sequence(&mut p, "Edit 1", rate, df);
-    let va = clip(&mut p, s, TrackKind::Video, 0, a, 0, 100, 10);
-    let aa = clip(&mut p, s, TrackKind::Audio, 0, a, 0, 100, 10);
+    let va = clip(&mut p, s, TrackKind::Video, 0, a, 0..100, 10);
+    let aa = clip(&mut p, s, TrackKind::Audio, 0, a, 0..100, 10);
     link(&mut p, s, &[va, aa]);
-    let vb = clip(&mut p, s, TrackKind::Video, 0, b, 100, 60, 200);
-    transition(&mut p, s, TrackKind::Video, 0, "cross_dissolve", Some(va), Some(vb), 100, 20, TransitionAlign::StartAtCut);
-    let vc = clip(&mut p, s, TrackKind::Video, 0, a, 200, 50, 500);
-    transition(&mut p, s, TrackKind::Video, 0, "dip_to_black", None, Some(vc), 200, 10, TransitionAlign::StartAtCut);
+    let vb = clip(&mut p, s, TrackKind::Video, 0, b, 100..100 + (60), 200);
+    transition(&mut p, s, (TrackKind::Video, 0), "cross_dissolve", (Some(va), Some(vb)), 100..100 + (20), TransitionAlign::StartAtCut);
+    let vc = clip(&mut p, s, TrackKind::Video, 0, a, 200..200 + (50), 500);
+    transition(&mut p, s, (TrackKind::Video, 0), "dip_to_black", (None, Some(vc)), 200..200 + (10), TransitionAlign::StartAtCut);
     p.sequence_mut(s).unwrap().find_item_mut(vc).unwrap().1.speed = 2.0;
-    clip(&mut p, s, TrackKind::Audio, 1, m, 0, 250, 0);
+    clip(&mut p, s, TrackKind::Audio, 1, m, 0..250, 0);
     (p, s)
 }
 
@@ -237,7 +246,7 @@ M2   BEACH_DA       050.0                00:00:20:00
 fn reel_modes_and_per_track() {
     let (mut p, s) = demo_project(FrameRate::FPS_24, false);
     let a = p.items.values().find(|i| i.name == "city.mp4").unwrap().id;
-    clip(&mut p, s, TrackKind::Video, 1, a, 10, 20, 0);
+    clip(&mut p, s, TrackKind::Video, 1, a, 10..10 + (20), 0);
     let mut o = ExportOptions::default();
     o.edl.reel_mode = ReelMode::Ax;
     o.edl.reel_len = 32;
@@ -256,8 +265,8 @@ fn reel_modes_and_per_track() {
     let m1 = media(&mut q, "/x/interview_cam_a.mov", true, false, FrameRate::FPS_24);
     let m2 = media(&mut q, "/x/interview_cam_b.mov", true, false, FrameRate::FPS_24);
     let sq = sequence(&mut q, "S", FrameRate::FPS_24, false);
-    clip(&mut q, sq, TrackKind::Video, 0, m1, 0, 10, 0);
-    clip(&mut q, sq, TrackKind::Video, 0, m2, 10, 10, 0);
+    clip(&mut q, sq, TrackKind::Video, 0, m1, 0..10, 0);
+    clip(&mut q, sq, TrackKind::Video, 0, m2, 10..10 + (10), 0);
     let (bytes, _) = export(&q, sq, Format::Edl, &ExportOptions::default()).unwrap();
     let t = String::from_utf8(bytes).unwrap();
     assert!(t.contains("001  INTERVIE V"), "{t}");
@@ -271,8 +280,8 @@ fn drop_frame_roundtrip_59_94() {
     let a = media(&mut p, "/m/a.mov", true, false, r);
     let s = sequence(&mut p, "S", r, true);
     p.sequence_mut(s).unwrap().start_timecode = fields_to_frames(1, 0, 0, 0, r, true);
-    clip(&mut p, s, TrackKind::Video, 0, a, 3590, 30, 3590);
-    clip(&mut p, s, TrackKind::Video, 0, a, 36_000, 7200, 0);
+    clip(&mut p, s, TrackKind::Video, 0, a, 3590..3590 + (30), 3590);
+    clip(&mut p, s, TrackKind::Video, 0, a, 36_000..36_000 + (7200), 0);
     let (imp, text, _) = roundtrip(&p, s, Format::Edl, &ExportOptions::default());
     assert!(text.contains("FCM: DROP FRAME"));
     assert!(text.contains("01;00;59;50 01;01;00;24"), "{text}");
@@ -292,15 +301,15 @@ fn freeze_reverse_and_fade_out() {
     let mut p = filmcraft_project::Project::new("P");
     let a = media(&mut p, "/m/a.mov", true, false, r);
     let s = sequence(&mut p, "S", r, false);
-    let c1 = clip(&mut p, s, TrackKind::Video, 0, a, 0, 48, 100);
-    let c2 = clip(&mut p, s, TrackKind::Video, 0, a, 48, 24, 300);
-    let c3 = clip(&mut p, s, TrackKind::Video, 0, a, 72, 24, 400);
+    let c1 = clip(&mut p, s, TrackKind::Video, 0, a, 0..48, 100);
+    let c2 = clip(&mut p, s, TrackKind::Video, 0, a, 48..48 + (24), 300);
+    let c3 = clip(&mut p, s, TrackKind::Video, 0, a, 72..72 + (24), 400);
     {
         let q = p.sequence_mut(s).unwrap();
         q.find_item_mut(c1).unwrap().1.reverse = true;
         q.find_item_mut(c2).unwrap().1.frame_hold = Some(r.tick_of(310));
     }
-    transition(&mut p, s, TrackKind::Video, 0, "cross_dissolve", Some(c3), None, 84, 12, TransitionAlign::EndAtCut);
+    transition(&mut p, s, (TrackKind::Video, 0), "cross_dissolve", (Some(c3), None), 84..84 + (12), TransitionAlign::EndAtCut);
     let (imp, text, _) = roundtrip(&p, s, Format::Edl, &ExportOptions::default());
     assert!(text.contains("-024.0"), "{text}");
     assert!(text.contains("000.0"), "{text}");
@@ -371,7 +380,7 @@ proptest! {
         let mut prev: Option<(filmcraft_project::ClipId, i64)> = None;
         for g in &clips {
             t += g.gap;
-            let v = clip(&mut p, s, TrackKind::Video, 0, ms[g.media], t, g.dur, g.src);
+            let v = clip(&mut p, s, TrackKind::Video, 0, ms[g.media], t..t + (g.dur), g.src);
             if g.speed == 1 {
                 p.sequence_mut(s).unwrap().find_item_mut(v).unwrap().1.speed = 2.0;
             }
@@ -380,12 +389,12 @@ proptest! {
                 let d = d.min(g.dur - 1);
                 let from = prev.filter(|(_, end)| *end == t).map(|(c, _)| c);
                 if g.src >= d * 2 {
-                    transition(&mut p, s, TrackKind::Video, 0, "cross_dissolve", from, Some(v), t, d, TransitionAlign::StartAtCut);
+                    transition(&mut p, s, (TrackKind::Video, 0), "cross_dissolve", (from, Some(v)), t..t + (d), TransitionAlign::StartAtCut);
                     has_tr = true;
                 }
             }
             if g.with_audio && g.speed != 1 && !has_tr {
-                let a = clip(&mut p, s, TrackKind::Audio, 0, ms[g.media], t, g.dur, g.src);
+                let a = clip(&mut p, s, TrackKind::Audio, 0, ms[g.media], t..t + (g.dur), g.src);
                 link(&mut p, s, &[v, a]);
             }
             t += g.dur;
@@ -415,12 +424,12 @@ fn a_nested_sequence_is_one_event_from_reel_ax() {
     let mut p = filmcraft_project::Project::new("n");
     let a = media(&mut p, "/media/a.mov", true, true, rate);
     let inner = sequence(&mut p, "Nested Sequence 02", rate, false);
-    clip(&mut p, inner, TrackKind::Video, 0, a, 0, 144, 0);
-    clip(&mut p, inner, TrackKind::Audio, 0, a, 0, 144, 0);
+    clip(&mut p, inner, TrackKind::Video, 0, a, 0..144, 0);
+    clip(&mut p, inner, TrackKind::Audio, 0, a, 0..144, 0);
     let outer = sequence(&mut p, "clipHD", rate, false);
     // two seconds of the nest from its second 1, at second 3 of the sequence
-    let v = clip(&mut p, outer, TrackKind::Video, 0, inner, 72, 48, 24);
-    let s = clip(&mut p, outer, TrackKind::Audio, 0, inner, 72, 48, 24);
+    let v = clip(&mut p, outer, TrackKind::Video, 0, inner, 72..72 + (48), 24);
+    let s = clip(&mut p, outer, TrackKind::Audio, 0, inner, 72..72 + (48), 24);
     link(&mut p, outer, &[v, s]);
     let (bytes, rep) = export(&p, outer, Format::Edl, &ExportOptions::default()).unwrap();
     let text = String::from_utf8(bytes.clone()).unwrap();
