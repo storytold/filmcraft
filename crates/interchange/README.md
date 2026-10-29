@@ -1,8 +1,9 @@
 # filmcraft-interchange
 
 Timeline interchange for FilmCraft: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), FCPXML,
-OpenTimelineIO, AAF and OMF import and export, plus Avid ALE. Layer L2: no file I/O; media
-references are strings and audio essence is supplied by the caller (the engine).
+OpenTimelineIO, AAF and OMF import and export, plus Avid ALE, and DaVinci Resolve project import.
+Layer L2: no file I/O; media references are strings and audio essence is supplied by the caller
+(the engine).
 
 ## Specifications
 
@@ -27,6 +28,29 @@ The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxm
 **Invariant — Unicode media URLs:** file URL prefix probes must not panic when their byte boundary
 falls inside a UTF-8 character. Timeline importers use the shared converter; `tests/it/file_urls.rs`
 checks expected Unicode paths through the public converter, resolver and EDL importer.
+
+## DaVinci Resolve projects
+
+`resolve::import` reads a project straight from a Resolve project library: each project is a
+folder holding a `Project.db` SQLite database (read with [`filmcraft-sqlite`](../sqlite/README.md);
+its clip records are zstd-compressed, decoded with the `ruzstd` crate, MIT). Resolve does not
+document the database: the tables and fields used were worked out from projects made in Resolve
+(no Resolve code or file was read beyond the user's own project databases), and the module docs
+list every assumption. Imported: Media Pool bins and clips (file paths, frame size and rate,
+frame count, sample rate, channels), timelines in the project's order with their frame rate, size
+and start timecode, compound clips, nested timelines, video and audio tracks with their names,
+linked picture and sound, and transitions. Video clips get Scale to Frame Size, matching Resolve's
+default of fitting a picture of another size to the timeline frame. Reported and skipped: generators and titles, Fusion
+clips, subtitle tracks, speed changes, effects, grades, transforms, audio levels and markers.
+The engine's `file.listResolveProjects` finds projects in the standard library locations on
+Windows, macOS and Linux, and warns when a `Project.db-wal` holds changes Resolve has not yet
+written into the database. `file.importResolve {path, background: true}` reads the project and
+opens its media on a worker thread (the app shows "Linking media n of N" and can cancel);
+`file.resolveImportStatus` reports progress and merges the result once it is ready, into the
+project it was started in only: if that project is closed or replaced meanwhile, the import is
+cancelled. A relative media path is taken from the project folder and kept as that absolute
+path. Frame counts
+whose ticks would leave the range a project can hold are reported and skipped, never clamped.
 
 ## AAF and OMF
 
@@ -106,5 +130,10 @@ OMF carries no video at all.
   transition rules and sequence length arithmetic; every stored form round-trips through the
   container; a file rewritten into Premiere Pro's layout (video tracks as layers of one slot,
   nested compositions tagged top-level) reads back as the same edit.
+- `src/resolve/tests.rs`: a synthetic Resolve database (built with the `filmcraft-sqlite` writer):
+  bins, Media Pool paths from compressed clip records and from timeline clips, media shape from the
+  Qt-serialised maps, timeline order and origin, track order and names, links, a dissolve and a
+  crossfade, a nested timeline and a compound clip, reported titles, subtitle tracks and Fusion
+  clips, a timeline nesting itself; truncated and bit-flipped databases never panic.
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.

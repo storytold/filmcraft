@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-interchange"
-description = "FilmCraft interchange: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), FCPXML and OpenTimelineIO import/export"
+description = "FilmCraft interchange: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), FCPXML, OpenTimelineIO, AAF and OMF import/export; DaVinci Resolve project import"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,10 +16,12 @@ filmcraft-color = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-cfb = { workspace = true }
+filmcraft-sqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 roxmltree = { workspace = true }
+ruzstd = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

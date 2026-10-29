@@ -44,6 +44,7 @@ pub mod project_tools;
 pub mod proxies;
 pub mod relink;
 pub mod remix;
+pub mod resolve;
 pub mod scene_detect;
 pub mod scopes;
 pub mod sequence_extras;
@@ -502,6 +503,8 @@ pub struct Session {
     pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
     /// The stamps being taken on a worker thread ([`Session::start_media_scan`]).
     pub media_scan: Option<media_watch::MediaScan>,
+    /// A DaVinci Resolve project being read on a worker thread ([`resolve::start`]).
+    pub resolve_import: Option<resolve::Running>,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -595,6 +598,7 @@ impl Session {
             exec_depth: 0,
             media_stamps: Default::default(),
             media_scan: None,
+            resolve_import: None,
         }
     }
 
@@ -1347,6 +1351,8 @@ mod proxies_tests;
 mod relink_tests;
 #[cfg(test)]
 mod remix_tests;
+#[cfg(test)]
+mod resolve_tests;
 #[cfg(test)]
 mod ripple_delete_tests;
 #[cfg(test)]

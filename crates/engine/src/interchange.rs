@@ -75,13 +75,82 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
         }
         _ => filmcraft_interchange::import_with(bytes, format, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?,
     };
+    let kind = Kind { format_name: format.name(), name: opts.name.clone(), rebase_timecode: format == Format::Edl };
+    merge_fragment(s, path, fragment, report, kind, &mut std::collections::HashMap::new())
+}
+
+/// A media file of an imported document, opened ahead of [`merge_fragment`] (on a worker
+/// thread, for an import that runs in the background).
+pub(crate) enum Probe {
+    /// The stored path leads nowhere usable (why).
+    NotFollowed(String),
+    /// `file`, the path `stored` led to, is there but cannot be read as media.
+    Unreadable { file: String },
+    /// `file` is the path `stored` led to.
+    Opened { file: String, src: filmcraft_media::SharedSource, identity: Option<filmcraft_project::MediaIdentity> },
+}
+
+impl Probe {
+    /// Whether this is still what opening `stored` would give: it led to the same file (or, for
+    /// a path that led nowhere, still does). Only then may a merge use it as it is.
+    fn still_holds(&self, media: &crate::media_pool::MediaPool, stored: &str) -> bool {
+        match (self, media.follow(stored)) {
+            (Probe::NotFollowed(_), Err(_)) => true,
+            (Probe::Unreadable { file } | Probe::Opened { file, .. }, Ok(now)) => *file == now,
+            _ => false,
+        }
+    }
+}
+
+/// Open the media file a document stores as `stored`. With `document`, the path is resolved as
+/// a stored path of that document without recording it (an import that may still be dropped);
+/// without, it must be recorded already ([`crate::media_pool::MediaPool::add_stored_paths`]).
+pub(crate) fn probe(media: &crate::media_pool::MediaPool, services: &dyn crate::Services, stored: &str, document: Option<&str>) -> Probe {
+    let followed = match document {
+        Some(d) => media.follow_as(stored, d),
+        None => media.follow(stored),
+    };
+    let file = match followed {
+        Ok(file) => file,
+        Err(why) => return Probe::NotFollowed(why.to_string()),
+    };
+    match media.open_file(&file, services) {
+        Ok(src) => {
+            let identity = crate::relink::identity_of(services, &file).ok();
+            Probe::Opened { file, src, identity }
+        }
+        Err(_) => Probe::Unreadable { file },
+    }
+}
+
+/// What kind of document [`merge_fragment`] merges.
+pub(crate) struct Kind<'a> {
+    pub format_name: &'a str,
+    /// For the undo step (`Import <name>`); the format's name when `None`.
+    pub name: Option<String>,
+    /// Source positions count from the media's start timecode (EDL), so they are rebased once
+    /// the file is probed.
+    pub rebase_timecode: bool,
+}
+
+/// Merge an imported fragment into the project (one undo step), link each media file that
+/// exists on disk (using `probed` for files opened already), and open the first new sequence.
+pub(crate) fn merge_fragment(
+    s: &mut Session,
+    path: &str,
+    fragment: filmcraft_interchange::Imported,
+    report: filmcraft_interchange::Report,
+    kind: Kind,
+    probed: &mut std::collections::HashMap<String, Probe>,
+) -> Result<Value> {
+    let Kind { format_name, name, rebase_timecode } = kind;
     for item in fragment.project.items.values() {
         if let ItemKind::Sequence(sequence) = &item.kind {
             sequence.settings.validate().map_err(|e| EngineError::Other(format!("{path}: invalid imported sequence settings: {e}")))?;
         }
     }
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
-    let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
+    let name = name.unwrap_or_else(|| format_name.to_string());
     let seqs = s.edit(&format!("Import {name}"), |proj, _| {
         let seqs = filmcraft_interchange::merge_into(proj, fragment, None);
         // A document that sets only some Motion parameters leaves the others at their "auto"
@@ -111,19 +180,21 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
     let mut linked = 0;
     let mut offline = Vec::new();
     for (id, mpath) in new_media {
-        let file = match s.media.follow(&mpath) {
-            Ok(file) => file,
-            Err(why) => {
+        // Opened already (in the background, failures included, so a slow or damaged file is
+        // not read again here) while the path still leads where it did; else now.
+        let opened = match probed.remove(&mpath) {
+            Some(p) if p.still_holds(&s.media, &mpath) => p,
+            _ => probe(&s.media, &*s.services, &mpath, None),
+        };
+        match opened {
+            Probe::NotFollowed(why) => {
                 log::warn!("{mpath} is not opened: {why}");
                 offline.push(mpath);
-                continue;
             }
-        };
-        match s.media.open_file(&file, &*s.services).ok() {
-            Some(src) => {
+            Probe::Unreadable { .. } => offline.push(mpath),
+            Probe::Opened { file: _, src, identity } => {
                 let info = src.info().clone();
-                let identity = crate::relink::identity_of(&*s.services, &file).ok();
-                let rebase = (format == Format::Edl).then_some(info.start_timecode).flatten();
+                let rebase = rebase_timecode.then_some(info.start_timecode).flatten();
                 s.edit("Link Media", |proj, _| {
                     if let Some(item) = proj.items.get_mut(&id)
                         && let ItemKind::Media(m) = &mut item.kind
@@ -143,7 +214,6 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
                 s.media.insert_file(id, &mpath, src);
                 linked += 1;
             }
-            None => offline.push(mpath),
         }
     }
     if let Some(&first) = seqs.first() {
@@ -153,7 +223,7 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
         }
     }
     Ok(json!({
-        "format": format.name(),
+        "format": format_name,
         "sequences": seqs.iter().map(|i| i.0).collect::<Vec<_>>(),
         "linkedMedia": linked,
         "offlineMedia": offline,

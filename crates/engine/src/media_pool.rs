@@ -223,6 +223,26 @@ impl MediaPool {
         }
     }
 
+    /// [`Self::follow`] for `path` as a stored path of `document`, without recording it: an import
+    /// that may still be dropped opens its media this way, and records the paths only once it is
+    /// merged. A path some document recorded already resolves as [`Self::follow`] does.
+    pub fn follow_as(&self, path: &str, document: &str) -> Result<String, crate::doc_path::NotFollowed> {
+        if cfg!(target_arch = "wasm32") {
+            return Ok(path.to_string());
+        }
+        let recorded = self.stored.read().unwrap_or_else(PoisonError::into_inner).get(path).cloned();
+        match recorded {
+            Some(document) => crate::doc_path::resolve(path, document.as_deref()),
+            None => crate::doc_path::resolve(path, Some(std::path::Path::new(document)).filter(|d| !d.as_os_str().is_empty())),
+        }
+    }
+
+    /// The document a stored path came from (`Some(None)`: a document without a file; `None`:
+    /// not a stored path).
+    pub fn stored_document(&self, path: &str) -> Option<Option<PathBuf>> {
+        self.stored.read().unwrap_or_else(PoisonError::into_inner).get(path).cloned()
+    }
+
     /// [`Self::follow`] as a media error (a refused path is a missing file).
     fn follow_media(&self, path: &str) -> Result<String, MediaError> {
         self.follow(path).map_err(|why| MediaError::Offline(format!("{path} is not opened: {why}")))

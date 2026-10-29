@@ -109,6 +109,8 @@ pub enum Dialog {
     Recovery,
     /// "Are you sure you want to discard your changes?" (File ▸ Revert).
     RevertConfirm,
+    /// File ▸ Import From ▸ DaVinci Resolve Project….
+    ImportResolve,
     /// Clip ▸ Audio Gain… (G).
     AudioGain,
     /// Sequence ▸ Delete Tracks….

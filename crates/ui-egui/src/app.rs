@@ -263,6 +263,7 @@ impl FilmcraftApp {
         }
         self.sync_pool();
         updates_ui::tick(self, ctx);
+        panels::file_dialogs::poll_resolve_import(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_media_refresh(ctx, now);
     }

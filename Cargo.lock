@@ -2081,6 +2081,7 @@ dependencies = [
  "filmcraft-render",
  "filmcraft-scopes",
  "filmcraft-speech",
+ "filmcraft-sqlite",
  "filmcraft-testkit",
  "filmcraft-text",
  "filmcraft-time",
@@ -2241,9 +2242,11 @@ dependencies = [
  "filmcraft-geom",
  "filmcraft-media",
  "filmcraft-project",
+ "filmcraft-sqlite",
  "filmcraft-time",
  "proptest",
  "roxmltree",
+ "ruzstd",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2429,6 +2432,10 @@ dependencies = [
  "thiserror 2.0.21",
  "ureq",
 ]
+
+[[package]]
+name = "filmcraft-sqlite"
+version = "0.14.0"
 
 [[package]]
 name = "filmcraft-testkit"
@@ -4713,7 +4720,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5807,6 +5814,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruzstd"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
+
+[[package]]
 name = "safetensors"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6511,7 +6524,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",

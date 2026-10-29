@@ -21,6 +21,7 @@ filmcraft-avi = { path = "crates/avi" }
 filmcraft-matroska = { path = "crates/matroska" }
 filmcraft-mxf = { path = "crates/mxf" }
 filmcraft-cfb = { path = "crates/cfb" }
+filmcraft-sqlite = { path = "crates/sqlite" }
 filmcraft-mpegts = { path = "crates/mpegts" }
 filmcraft-mpeg2v = { path = "crates/mpeg2v" }
 filmcraft-ac3 = { path = "crates/ac3" }
@@ -64,6 +65,7 @@ filmcraft-testkit = { path = "crates/testkit" }
 
 # foundation
 thiserror = "2"
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 log = "0.4"

@@ -561,6 +561,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
                 return r;
             }
         }
+        // File ▸ Import From ▸ DaVinci Resolve Project…: pick from the Resolve project library
+        "file.importResolve" if params.get("path").is_none() => {
+            app.file_dialogs.resolve_projects = None;
+            app.dialog = Some(crate::Dialog::ImportResolve);
+            return Ok(json!({"dialog": "importResolve"}));
+        }
         "file.recover" if params.as_object().is_none_or(|m| m.is_empty()) => {
             if app.session.recovery_candidates().is_empty() {
                 return Err("there are no unsaved changes to recover".into());

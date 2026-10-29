@@ -7,7 +7,9 @@
 //! - **FCPXML** 1.9–1.11 ([`fcpxml`]);
 //! - **OpenTimelineIO** JSON (`.otio`) ([`otio`]);
 //! - **AAF** (`.aaf`, Edit Protocol, structured storage) ([`aaf`]);
-//! - **OMF Interchange 2.0** (`.omf`, Bento) for audio post ([`omf`]).
+//! - **OMF Interchange 2.0** (`.omf`, Bento) for audio post ([`omf`]);
+//! - **DaVinci Resolve** projects, import only, read from a project library's `Project.db`
+//!   ([`resolve`]).
 //!
 //! AAF and OMF can embed or consolidate audio: [`essence::audio_needs`] lists what the caller
 //! (the engine) has to render, and [`essence::MediaOptions`] passes the result back in.
@@ -33,6 +35,7 @@ pub mod fcp7;
 pub mod fcpxml;
 pub mod omf;
 pub mod otio;
+pub mod resolve;
 
 mod common;
 mod comp;

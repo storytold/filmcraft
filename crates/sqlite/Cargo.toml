@@ -1,0 +1,12 @@
+[package]
+name = "filmcraft-sqlite"
+description = "Clean-room read-only SQLite database file reader (and a minimal writer for fixtures): the container of DaVinci Resolve project libraries"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
