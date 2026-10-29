@@ -311,6 +311,99 @@ fn preset_manager_search_favourite_save_apply() {
 }
 
 #[test]
+fn bulk_sequence_picker_queues_current_settings_without_switching_sequences() {
+    let mut d = Driver::new("bulk-sequences");
+    let first = d.app().session.state.active_sequence.unwrap();
+    let second = d.exec("file.newSequence", json!({"name": "Second Cut"}))["sequence"].as_u64().unwrap();
+    let all_sequences: std::collections::BTreeSet<_> = d.app().session.project.sequences().map(|item| item.id.0).collect();
+    d.app().session.state.project_selection = vec![first];
+    let location = d.path("new-output-folder");
+    d.ok(
+        "ui.set",
+        json!({"mode": "export", "export": {
+            "preset": "Custom", "location": location, "settings": {"format": "wav", "audio": {"sample_rate": 44100}},
+            "range": "custom", "customStart": 0.25, "customEnd": 0.75
+        }}),
+    );
+    d.frames(4);
+    let expected = d.app().ui.export.settings.clone();
+    assert_eq!(expected.audio.sample_rate, Some(44100), "the requested setting must reach the Export panel before queuing");
+    let active = d.app().session.state.active_sequence;
+    let project = serde_json::to_value(&d.app().session.project).unwrap();
+    let history = d.exec("history.list", json!({}));
+    d.click("export.queue.sequences");
+    assert_eq!(d.app().ui.export.batch.as_ref().unwrap().sequences, vec![first.0], "seed from the Project selection");
+    d.click("export.batch.none");
+    d.click("export.batch.add");
+    assert!(d.queue().is_empty(), "an empty selection cannot queue anything");
+    d.click(&format!("export.batch.sequence.{}", first.0));
+    d.click(&format!("export.batch.sequence.{second}"));
+    d.click("export.batch.add");
+    assert!(d.app().ui.export.batch.is_none());
+    let items = d.queue();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["sequence"], first.0);
+    assert_eq!(items[1]["sequence"], second);
+    for item in &d.app().session.export_queue.items {
+        assert_eq!(item.settings.audio.sample_rate, Some(44100));
+        assert_eq!(item.settings.audio, expected.audio);
+        assert_eq!(item.settings.format, expected.format);
+        assert_eq!(item.settings.frame_size, expected.frame_size);
+        assert_eq!(item.settings.range.unwrap().start, filmcraft_engine::time::Tick::from_seconds_f64(0.25));
+        assert_eq!(item.settings.range.unwrap().duration, filmcraft_engine::time::Tick::from_seconds_f64(0.5));
+        assert_eq!(Path::new(&item.settings.path).parent().unwrap(), Path::new(&location));
+        assert_eq!(item.status, filmcraft_engine::export_tools::QueueStatus::Ready);
+    }
+    assert!(!d.app().session.export_queue.running);
+    assert_eq!(d.app().session.state.active_sequence, active);
+    assert_eq!(serde_json::to_value(&d.app().session.project).unwrap(), project);
+    assert_eq!(d.exec("history.list", json!({})), history);
+    d.click("export.queue.sequences");
+    d.click("export.batch.all");
+    let selected: std::collections::BTreeSet<_> = d.app().ui.export.batch.as_ref().unwrap().sequences.iter().copied().collect();
+    assert_eq!(selected, all_sequences, "Select All includes the demo's Rough Cut as well as the active and newly created sequences");
+    d.click("export.batch.cancel");
+    assert!(d.app().ui.export.batch.is_none());
+    assert_eq!(d.queue().len(), 2, "Cancel leaves the queue alone");
+}
+
+#[test]
+fn bulk_sequence_picker_is_disabled_without_an_active_sequence() {
+    let mut d = Driver::new("bulk-disabled");
+    d.app().session.state.active_sequence = None;
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(4);
+    d.click("export.queue.sequences");
+    assert!(d.app().ui.export.batch.is_none());
+    assert!(d.queue().is_empty());
+}
+
+#[test]
+fn bulk_sequence_picker_keeps_selection_and_reports_range_errors() {
+    let mut d = Driver::new("bulk-error");
+    d.exec("file.newSequence", json!({"name": "No Work Area"}));
+    let all_sequences: std::collections::BTreeSet<_> = d.app().session.project.sequences().map(|item| item.id.0).collect();
+    d.ok("ui.set", json!({"mode": "export", "export": {"range": "workArea"}}));
+    d.frames(4);
+    d.click("export.queue.sequences");
+    d.click("export.batch.all");
+    d.click("export.batch.add");
+    let batch = d.app().ui.export.batch.as_ref().unwrap();
+    assert_eq!(batch.sequences.len(), all_sequences.len());
+    assert_eq!(batch.sequences.iter().copied().collect::<std::collections::BTreeSet<_>>(), all_sequences);
+    assert!(batch.error.as_ref().unwrap().contains("work area"));
+    assert!(d.queue().is_empty(), "a failed batch adds no entries");
+    d.ok("ui.set", json!({"export": {"range": "entire"}}));
+    d.frames(2);
+    d.click("export.batch.add");
+    assert!(d.app().ui.export.batch.is_none());
+    let queued = d.queue();
+    assert_eq!(queued.len(), all_sequences.len());
+    let queued_sequences: std::collections::BTreeSet<_> = queued.iter().map(|item| item["sequence"].as_u64().unwrap()).collect();
+    assert_eq!(queued_sequences, all_sequences, "retry must queue every selected sequence exactly once");
+}
+
+#[test]
 fn queue_panel_send_reorder_cancel_start_retry() {
     let mut d = Driver::new("queue");
     d.ok("ui.set", json!({"mode": "export"}));

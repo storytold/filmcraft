@@ -13,6 +13,8 @@
 //! `export.video.*`, `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
 //! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
 //! `export.queue.start|stop|clear`, `export.queue.item.<id>` and `….<id>.<up|down|cancel|retry|remove>`;
+//! `export.queue.sequences` opens the bulk picker: `export.batch.sequence.<id>`,
+//! `export.batch.all|none|add|cancel`;
 //! Preset Manager: `presetManager.search`, `presetManager.favoritesOnly`,
 //! `presetManager.item.<name>`, `presetManager.favorite.<name>`, `presetManager.saveName`,
 //! `presetManager.save`, `presetManager.delete`, `presetManager.import`, `presetManager.export`,
@@ -35,6 +37,7 @@ use crate::frames::{FrameKey, Target};
 use crate::native_dialogs::FileDialog;
 use crate::theme::Tokens;
 
+mod batch;
 mod presets;
 mod preview;
 mod queue;
@@ -73,6 +76,8 @@ pub struct ExportUi {
     pub for_sequence: Option<u64>,
     /// Preset Manager (None = closed).
     pub manager: Option<PresetManager>,
+    /// Bulk sequence picker (None = closed).
+    pub batch: Option<batch::BatchExport>,
     /// Quick Export popup.
     pub quick_open: bool,
     pub quick_path: String,
@@ -93,6 +98,7 @@ impl Default for ExportUi {
             open_sections: vec!["video".into(), "audio".into()],
             for_sequence: None,
             manager: None,
+            batch: None,
             quick_open: false,
             quick_path: String::new(),
             quick_preset: String::new(),
@@ -202,6 +208,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         app.ui.export.preset = CUSTOM.into();
     }
     preset_manager(app, ui.ctx());
+    batch::show(app, ui.ctx());
     if app.session.export_queue.is_active() || app.session.jobs.iter().any(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     }

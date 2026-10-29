@@ -669,6 +669,120 @@ fn exr_compression_param_is_parsed_and_defaults_to_none() {
 }
 
 #[test]
+fn bulk_queue_names_are_unique_and_settings_are_shared() {
+    let mut s = demo();
+    let dir = Scratch::new("bulk-names");
+    let mut sequences = Vec::new();
+    for name in ["Cut/One", "Cut?One", "cut_one", "Cut_One_2"] {
+        sequences.push(s.execute("file.newSequence", json!({"name": name})).unwrap()["sequence"].as_u64().unwrap());
+    }
+    std::fs::write(dir.path("Cut_One.wav"), b"existing export").unwrap();
+    let active = s.state.active_sequence;
+    let project = serde_json::to_value(&s.project).unwrap();
+    let history = s.execute("history.list", json!({})).unwrap();
+    let params = json!({
+        "sequences": sequences, "path": format!("{}/", dir.0.display()),
+        "preset": "Waveform Audio 48 kHz 16-bit", "settings": {"audio": {"sample_rate": 44100}},
+        "range": "custom", "startSeconds": 0, "endSeconds": 0.5
+    });
+    s.execute("export.queue.add", params.clone()).unwrap();
+    s.execute("export.queue.add", params).unwrap();
+    let items = &s.export_queue.items;
+    assert_eq!(items.len(), 8);
+    let paths: std::collections::BTreeSet<_> = items.iter().map(|item| item.settings.path.to_lowercase()).collect();
+    assert_eq!(paths.len(), 8, "names must be unique within the batch and against the queue");
+    assert!(items.iter().all(|item| item.settings.path != dir.path("Cut_One.wav")));
+    assert_eq!(std::fs::read(dir.path("Cut_One.wav")).unwrap(), b"existing export");
+    for (index, item) in items.iter().enumerate() {
+        assert_eq!(item.sequence.0, sequences[index % sequences.len()]);
+        assert_eq!(item.settings.audio.sample_rate, Some(44100));
+        assert_eq!(item.settings.range.unwrap().duration, filmcraft_time::Tick::from_seconds_f64(0.5));
+        assert_eq!(item.status, crate::export_tools::QueueStatus::Ready);
+        assert!(std::sync::Arc::ptr_eq(&item.project, &s.project));
+    }
+    assert!(!s.export_queue.running);
+    assert_eq!(s.state.active_sequence, active);
+    assert_eq!(serde_json::to_value(&s.project).unwrap(), project);
+    assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+}
+
+#[test]
+fn bulk_queue_null_fields_use_single_export_fallbacks() {
+    let mut s = demo();
+    let first = s.state.active_sequence.unwrap();
+    s.execute("file.newSequence", json!({"name": "Active Cut"})).unwrap();
+    let active = s.state.active_sequence.unwrap();
+    assert_ne!(first, active);
+    for sequence in [None, Some(first.0)] {
+        for optional in [
+            json!({}),
+            json!({"sequences": null}),
+            json!({"ranges": null}),
+            json!({"sequences": null, "ranges": null}),
+            json!({"sequences": null, "ranges": []}),
+        ] {
+            let mut params = json!({"format": "wav", "path": "fallback.wav", "range": "custom", "startSeconds": 0.25, "endSeconds": 0.75});
+            params.as_object_mut().unwrap().extend(optional.as_object().unwrap().clone());
+            if let Some(id) = sequence {
+                params["sequence"] = json!(id);
+            }
+            let before = s.export_queue.items.len();
+            s.execute("export.queue.add", params.clone()).unwrap_or_else(|error| panic!("{params}: {error}"));
+            assert_eq!(s.export_queue.items.len(), before + 1, "{params}");
+            let item = s.export_queue.items.last().unwrap();
+            assert_eq!(item.sequence.0, sequence.unwrap_or(active.0), "{params}");
+            let range = item.settings.range.unwrap();
+            assert_eq!(range.start, filmcraft_time::Tick::from_seconds_f64(0.25), "{params}");
+            assert_eq!(range.duration, filmcraft_time::Tick::from_seconds_f64(0.5), "{params}");
+        }
+    }
+}
+
+#[test]
+fn bulk_queue_rejects_hostile_batches_atomically() {
+    use crate::export_tools::MAX_QUEUE_ITEMS;
+    let mut s = demo();
+    let first = s.state.active_sequence.unwrap().0;
+    let second = s.execute("file.newSequence", json!({"name": "Second"})).unwrap()["sequence"].as_u64().unwrap();
+    let initial = s.execute("export.queue.add", json!({"path": "initial.wav", "format": "wav"})).unwrap();
+    let before = serde_json::to_value(&s.export_queue.items).unwrap();
+    let project = serde_json::to_value(&s.project).unwrap();
+    let history = s.execute("history.list", json!({})).unwrap();
+    for params in [
+        json!({"sequences": []}),
+        json!({"sequences": "all"}),
+        json!({"sequences": false}),
+        json!({"sequences": 1}),
+        json!({"sequences": {}}),
+        json!({"sequences": [first, "bad"]}),
+        json!({"sequences": [first, -1]}),
+        json!({"sequences": [first, 1.5]}),
+        json!({"sequences": [first, null]}),
+        json!({"sequences": [first, first]}),
+        json!({"sequences": [first, u64::MAX]}),
+        json!({"sequences": vec![first; MAX_QUEUE_ITEMS + 1]}),
+        json!({"sequences": [first], "ranges": "entire"}),
+        json!({"sequences": [first], "ranges": false}),
+        json!({"sequences": [first], "ranges": 1}),
+        json!({"sequences": [first], "ranges": {}}),
+        json!({"sequences": [first], "ranges": vec!["entire"; MAX_QUEUE_ITEMS + 1]}),
+        json!({"sequences": [first, second], "ranges": vec!["entire"; MAX_QUEUE_ITEMS]}),
+        json!({"sequences": [first], "ranges": vec!["entire"; MAX_QUEUE_ITEMS]}),
+        json!({"sequences": [first, second], "ranges": ["entire", "invalid"], "start": true}),
+    ] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("export.queue.add", params.clone())));
+        assert!(result.is_ok(), "must not panic: {params}");
+        assert!(result.unwrap().is_err(), "must reject: {params}");
+        assert_eq!(serde_json::to_value(&s.export_queue.items).unwrap(), before, "queue changed: {params}");
+        assert!(!s.export_queue.running);
+    }
+    assert_eq!(serde_json::to_value(&s.project).unwrap(), project);
+    assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+    let added = s.execute("export.queue.add", json!({"path": "after.wav", "format": "wav"})).unwrap();
+    assert_eq!(added["added"][0].as_u64().unwrap(), initial["added"][0].as_u64().unwrap() + 1, "rejections must not consume ids");
+}
+
+#[test]
 fn queue_exports_several_sequences_and_ranges() {
     let mut s = demo();
     let dir = Scratch::new("queue-many");

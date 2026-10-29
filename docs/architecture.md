@@ -697,7 +697,12 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
   or ranges add several items); `export.queue.start` encodes ready items one after another as
   ordinary jobs, advanced by `Session::poll_persistence` / `pump_jobs` (or synchronously with
   `wait`). Cancel, retry, reorder, remove and clear work per item. The queue is session state, not
-  part of the project file.
+  part of the project file. Export ▸ Queue Sequences… exposes batch selection with the current
+  settings and range (#3033), without changing the active sequence. A batch is validated before
+  adding anything; the queue is capped at 1024 entries. Directory/default output names are made
+  unique against the batch, queue and existing files using numbered suffixes (case-only differences
+  between queued names count as collisions). Explicit output file paths keep their existing naming
+  behavior. The bounded name search reports an error if it cannot find a free name.
 
 Video encoders implement `export::VideoEncoder`. Codec crates plug in with `register_encoder` and
 `register_audio_encoder`.
