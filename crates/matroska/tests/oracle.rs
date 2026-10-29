@@ -316,11 +316,26 @@ fn laced_remux() {
                 .map(|(ti, t)| {
                     let mut s = TrackSpec::new(t.kind, t.codec_id.clone());
                     s.codec_private = t.codec_private.clone();
-                    // audio without a DefaultDuration gets its mean packet spacing, so it can lace
-                    s.default_duration_ns = t.default_duration_ns.or_else(|| {
-                        let pts: Vec<i64> = packets.iter().filter(|p| p.track == ti).map(|p| p.pts_ns).collect();
-                        (t.kind == TrackKind::Audio && pts.len() > 1).then(|| ((pts[pts.len() - 1] - pts[0]) / (pts.len() as i64 - 1)) as u64)
-                    });
+                    // BlockDuration can override DefaultDuration: recent ffmpeg Vorbis
+                    // fixtures declare a short default but store longer durations per block.
+                    // Pick a representative packet duration so those frames can actually lace.
+                    // If durations are absent, use observed spacing rather than a skewed mean.
+                    s.default_duration_ns = if t.kind == TrackKind::Audio {
+                        let audio: Vec<&Packet> = packets.iter().filter(|p| p.track == ti).collect();
+                        let mut durations: Vec<u64> = audio.iter().map(|p| p.duration_ns).filter(|&d| d > 0).collect();
+                        if durations.is_empty() {
+                            durations = audio
+                                .windows(2)
+                                .filter_map(|pair| pair[1].pts_ns.checked_sub(pair[0].pts_ns))
+                                .filter_map(|delta| u64::try_from(delta).ok())
+                                .filter(|&delta| delta > 0)
+                                .collect();
+                        }
+                        durations.sort_unstable();
+                        durations.get(durations.len() / 2).copied().or(t.default_duration_ns)
+                    } else {
+                        t.default_duration_ns
+                    };
                     s.video_size = t.video.as_ref().map(|v| (v.pixel_width, v.pixel_height));
                     s.audio = t.audio.as_ref().map(|a| (a.sampling_frequency, a.channels, a.bit_depth));
                     s.codec_delay_ns = t.codec_delay_ns;
@@ -330,7 +345,10 @@ fn laced_remux() {
             let opts = MuxOptions { lacing: mode, ..Default::default() };
             let mut w = MkvWriter::new(std::io::Cursor::new(Vec::new()), specs, opts).unwrap();
             for p in &packets {
-                w.write_frame(p.track, p.pts_ns, p.keyframe, &p.data, None).unwrap();
+                // Preserve explicit durations, including short final packets; a duration that
+                // differs from the selected default correctly ends the current lace.
+                let duration = (p.duration_ns > 0).then_some(p.duration_ns);
+                w.write_frame(p.track, p.pts_ns, p.keyframe, &p.data, duration).unwrap();
             }
             let out = w.finish().unwrap().into_inner();
             let laced = {
