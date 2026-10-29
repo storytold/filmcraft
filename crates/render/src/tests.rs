@@ -13,7 +13,7 @@ fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {
         let id = p.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(generator),
                 info,
                 interpret: Default::default(),
@@ -23,7 +23,7 @@ fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         map.0.insert(id, Arc::new(g) as SharedSource);
@@ -79,6 +79,19 @@ fn half_resolution_matches_full_downsampled() {
     }
 }
 
+/// The monitor conversion with alpha has the color of the opaque one and the image's alpha.
+#[test]
+fn over_black_with_alpha_keeps_the_color_and_the_alpha() {
+    let img = Image { w: 3, h: 1, px: vec![1.0, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.25, 0.0, 0.5] };
+    let opaque = img.over_black_rgba8();
+    let with_alpha = img.over_black_with_alpha_rgba8();
+    for i in 0..3 {
+        assert_eq!(with_alpha[i * 4..i * 4 + 3], opaque[i * 4..i * 4 + 3], "pixel {i}");
+    }
+    assert_eq!([with_alpha[3], with_alpha[7], with_alpha[11]], [255, 0, 128]);
+    assert_eq!([opaque[3], opaque[7], opaque[11]], [255, 255, 255]);
+}
+
 #[test]
 fn motion_scale_and_position() {
     let (mut p, red, _o, seq, map) = setup();
@@ -103,7 +116,7 @@ fn cross_dissolve_midpoint() {
     let blue = p.add_item(
         "blue",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(blue_src.generator.clone()),
             info,
             interpret: Default::default(),
@@ -113,7 +126,7 @@ fn cross_dissolve_midpoint() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let mut map = map;
@@ -155,7 +168,7 @@ fn audio_mix_bars_tone() {
     let id = p.add_item(
         "bars",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(Generator::BarsAndTone),
             info,
             interpret: Default::default(),
@@ -165,7 +178,7 @@ fn audio_mix_bars_tone() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let mut map = SourceMap::default();
@@ -284,7 +297,7 @@ fn tone_with(effects: &[(&str, &[(&str, f64)])]) -> (Project, ItemId, SourceMap)
     let id = p.add_item(
         "bars",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(Generator::BarsAndTone),
             info,
             interpret: Default::default(),
@@ -294,7 +307,7 @@ fn tone_with(effects: &[(&str, &[(&str, f64)])]) -> (Project, ItemId, SourceMap)
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let mut map = SourceMap::default();
@@ -473,7 +486,7 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
     let item = p.add_item(
         "ids",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -483,7 +496,7 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let src = Arc::new(NearestUnitSource { inner: g, asked: Default::default() });

@@ -151,7 +151,8 @@ fn gpu_blend_modes_match_cpu() {
         1.0,
         24,
         filmcraft_time::FrameRate::FPS_24,
-    );
+    )
+    .unwrap();
     let demo = Arc::new(VideoFrame::rgba8(320, 180, pixels));
     let base = ramp_layer(200, 180, 3);
     let top = ramp_layer(160, 120, 0);

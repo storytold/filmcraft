@@ -2,6 +2,27 @@
 
 ## Desktop control channel
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT`) listens on `127.0.0.1:<port>` (loopback only).
+The listener requires `FILMCRAFT_CONTROL_TOKEN`: 64 random hex characters shared with authorized
+clients through their inherited environment. Generate a fresh token for each desktop session, then
+start the desktop and bridge from that environment:
+
+```sh
+export FILMCRAFT_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+filmcraft --control 9876 &
+filmcraft-cli mcp --bridge 127.0.0.1:9876
+```
+
+The CLI / MCP bridge reads this variable automatically. Keep it private: don't put the value in
+command-line arguments, logs, checked-in MCP configuration, or shared files. Without a valid value,
+the desktop leaves the listener closed. Every raw JSON request must include the same top-level
+`token` string; missing or incorrect credentials get an error and close the connection before any
+request is dispatched. Loopback alone does not restrict clients to the desktop owner's OS account.
+
+Socket reads and writes time out after two minutes without progress, releasing the connection slot.
+Expiration closes the connection without an unsolicited reply; reconnect before the next request
+(the CLI / MCP bridge does this automatically). Waiting for a UI reply has its separate 60-second
+limit. A partial request that times out is not dispatched.
+
 One JSON request per line → one JSON reply per line. The app opts out of macOS App Nap
 (`apps/filmcraft/src/app_nap.rs`): a hidden window would otherwise drop the whole process to
 background priority, and on a busy machine it would stop answering.
@@ -13,11 +34,11 @@ nothing sent after it on that connection runs. That covers text that isn't JSON,
 an object without `method`, invalid UTF-8, and a line longer than 4 MiB. An HTTP request (for example a
 web page's cross-origin `fetch` to `127.0.0.1:<port>`) therefore can't smuggle a command in its body:
 its request line is rejected first. At most 16 connections are served at once; further ones get an error
-line and are closed. Clients that get an error reply should reconnect. The port has no authentication,
-so only enable it while you use it. Transport: `apps/filmcraft/src/control_server.rs`.
+line and are closed. Clients that get an error reply should reconnect. Transport:
+`apps/filmcraft/src/control_server.rs`.
 
 ```json
-{"id": 1, "method": "engine.execute", "params": {"command": "sequence.addEdit", "params": {"seconds": 3}}}
+{"id": 1, "token": "<FILMCRAFT_CONTROL_TOKEN>", "method": "engine.execute", "params": {"command": "sequence.addEdit", "params": {"seconds": 3}}}
 {"id": 1, "ok": true, "result": {"cuts": 2}}
 ```
 
@@ -28,19 +49,24 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id |
 | `engine.commands` / `ui.menu.list` | – | command registry / menu tree |
 | `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…) |
-| `ui.elements` | `{prefix?}` | every on-screen interactive element: id, label, rect |
+| `ui.docking` | – | the panel layout (craft-ui `Layout`), the focused and maximized panel, and `hitRects`: each docking gesture source drawn last frame (`{hit, rect}`) |
+| `ui.elements` | `{prefix?}` | every on-screen interactive element: id, label, rect; `window` (the `n` of `panel.float.<n>`) marks an element drawn in a floating panel's own OS window, whose rect is in that window's coordinates |
 | `ui.set` | `{tool, workspace, mode, theme, focused, playbackRes, timeline:{pps,scroll,fit}, program:{…}, source:{…}, clipDialog:{param: value}, menuDialog:{param: value}, panels:{scopes, timecode, reference, events, progress}, export:{…}, keyframeSelection:[…]}` | `keyframeSelection` replaces the Effect Controls keyframe selection (`[{clip, effect, param, mask?, time}]`, `time` in media ticks; read back as `ui.inspect` → `ui.keyframe_selection`; a click on a lane keyframe selects just that one); `program` / `source` merge fields into the monitor view state (`res`, `paused_res`, `high_quality`, `display`, `zoom`, `pan`, `show_rulers`, `show_guides`, `lock_guides`, `snap`, `guides`, `compare_ref`, …; see [monitors.md](monitors.md)); `clipDialog` sets fields of the open Edit / Clip / File dialog (Paste Attributes, Make Subclip, Frame Hold Options, …); `menuDialog` those of the M3.11 dialogs (Find, Create Search Bin, Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence…; see `panels::menu_dialogs`); `panels` merges into the panel settings (`ui.inspect` → `ui.panels`; see `panels::panel_state`): Lumetri Scopes `{shown: ["vectorscopeYuv"|"vectorscopeHls"|"histogram"|"parade"|"waveform"], waveformType, paradeType, colorSpace, brightness, scale, clamp, targets}`, Timecode `{rows: [{source, mode, display}], showName}`, Reference Monitor `{ganged, time, display: "composite"|"scopes", scopes}`, Events `{level, selected}`, Progress `{showFinished}` `export` deep-merges into Export mode state (`preset` — applied first —, `settings` (ExportSettings JSON), `fileName`, `location`, `range`, `customStart`, `customEnd`, `openSections`, `manager` (Preset Manager: `query`, `favoritesOnly`, `selected`, `saveName`), `quickOpen`, `quickPath`, `quickPreset`); `program` / `source` merge fields into the monitor view state (`res`, `paused_res`, `high_quality`, `display`, `zoom`, `pan`, `show_rulers`, `show_guides`, `lock_guides`, `snap`, `guides`, `compare_ref`, …; see [monitors.md](monitors.md)); `clipDialog` sets fields of the open Edit / Clip / File dialog (Paste Attributes, Make Subclip, Frame Hold Options, …); `menuDialog` those of the M3.11 dialogs (Find, Create Search Bin, Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence…; see `panels::menu_dialogs`); `projectPanel` merges into the Project panel's view state (`bin` shown in place, `tabs` (bins in a tab or window: `{bin, floating, view, iconSize, nav}`), `activeTab`, `selectedBin`, `rename: {item|bin, text}`, `dialog` (`{"metadataDisplay": {columns, filter}}`, `{"savePresetAs": {name}}`, `{"managePresets": {selected, name}}`, `{"freeformOptions": {options}}`, `{"saveArrangement": {name, bin}}`)); `mediaBrowser` into the Media Browser's (`expanded`, `pathEdit`, `editColumns`, `treeWidth`). View settings, columns and presets are engine commands (`project.view.set`, `project.columns.set`, `project.viewPreset.*`, `mediaBrowser.settings`) |
 | `ui.panel.show` / `ui.panel.close` | `{panel}` | |
-| `ui.click` / `ui.move` | `{id}` or `{x,y}`, `button`, `count`, `modifiers` | synthetic pointer input |
-| `ui.drag` | `{from, to, steps, modifiers}` | press–move–release |
+| `ui.click` / `ui.move` | `{id}` or `{x,y}`, `button`, `count`, `modifiers` | synthetic pointer input; click `count` is an integer 0–10 (default 1); `ui.move` ignores it |
+| `ui.drag` | `{from, to, steps, modifiers}` | press–move–release; `steps` is an integer 0–1024 (default 12; 0 or 1 uses 2 steps) |
 | `ui.scroll` | `{id|x,y, dx, dy, modifiers}` | wheel / trackpad |
 | `ui.key` / `ui.type` | `{key}` (`Cmd+K`, `Space`…; off macOS `Ctrl+K` is the same key) / `{text}` | keyboard |
-| `ui.timeline.hit` / `ui.timeline.locate` | `{x,y,modifiers?}` / `{clip, edge?}` | timeline hit-testing. `hit` reports a clip's `edge` (`In`/`Out`) within 7 px of it (a third of a narrow clip); just left of a cut that is the left clip's Out, from the cut rightwards the right clip's In. `kind` is the trim a press of the current tool with `modifiers` starts there (`trim`, `ripple`, `roll`, `rateStretch`, `remix`), `volume` on an audio clip's Volume line (Selection and Pen tools), or null |
+| `ui.timeline.hit` / `ui.timeline.locate` | `{x,y,modifiers?}` / `{clip, edge?}` | timeline hit-testing. `hit` reports a clip's `edge` (`In`/`Out`) within 7 px of it (a third of a narrow clip); just left of a cut that is the left clip's Out, from the cut rightwards the right clip's In. `kind` is the trim a press of the current tool with `modifiers` starts there (`trim`, `ripple`, `roll`, `rateStretch`, `remix`), `volume` on an audio clip's Volume line (Selection and Pen tools), or null. On the ruler it reports `ruler`, or `workArea` with the bar's `edge` on the work area bar |
 | `ui.playback` | `{action: play|stop|toggle, speed?}` | |
 | `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
 | `ui.resize`, `app.quit` | `{width,height}` / `{}` | resize or close the native window; `app.quit` quits without the save prompt (unsaved changes stay in the recovery journal), while the command `app.quit` asks first |
 | `ui.focus` | `{}` / `{id}` | empty parameters activate the native window; a widget ID requests egui focus without OS activation |
 | `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), `liveDecoders` (sources holding a decoder now), `cacheMB` / `cacheBudgetMB` (decoded frames all sources hold, and the shared budget), `planePoolMB` / `planesReused` (idle buffers of the frame pool, the planes of evicted frames and the compositor's float images, which a standalone export frees when it ends; and buffers taken from it instead of allocated), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding), `audio` (desktop: sound is mixed 200 ms ahead of the device; device `callbacks`, `underruns` and `missingFrames` played as silence because the mixer fell behind, `minLeadMs` the least sound left buffered); `frames`: frame-worker jobs, cancelled, `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `monitor`: the `frame` and `revision` of the picture the Program monitor shows against `playheadFrame` and `projectRevision` (how far a drag or a scrub is ahead of the picture); `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
+
+For `ui.click` and `ui.drag`, omitted or null counts/steps use the defaults. Out-of-range or
+non-integer values return `{"ok": false, "error": "…"}` before queuing any pointer input.
+These limits also apply to the MCP bridge's `ui_click`, `ui_drag` and `ui_control` tools.
 
 **Timeline thumbnails.** `ui.set {timeline: {thumbnails}}` sets the Timeline wrench menu's Show Video
 Thumbnails: `off`, `head`, `headAndTail` or `continuous`.
@@ -125,7 +151,12 @@ the new clips as `copied`, they are selected, and copies of linked clips are lin
 
 **Trim mode** (`crates/engine/src/trim.rs`): `trim.selectEditPoint` / `trim.selectNearest` enter trim
 mode (the Program monitor becomes the Trim Monitor, ids `trimMonitor.*`); `trim.monitor` returns what
-it shows. Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim.shuttle
+it shows. With Linked Selection on, selecting an edge includes its unlocked linked partners, even
+on untargeted tracks; `add: true` (Shift-click) toggles the group. Regular/ripple trims select the
+corresponding In/Out edges. Rolls include only matching linked cuts at the same time, leaving split
+audio cuts separate. Each linked group moves once and shares its tightest trim limit; turning
+Linked Selection off allows individual edges to be selected and edited.
+Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim.shuttle
 {direction, slow?, clock}` (J/L), `trim.tick {clock}`, `trim.shuttleStop {clock?}` (K, one undo step),
 `trim.cancelDynamic` (Esc), `trim.playAround {clock, loop?}` (Space / Shift+K).
 
@@ -176,18 +207,28 @@ Time is in ticks (254 016 000 000 per second); commands also accept `seconds`, `
 
 | Command | Parameters | Result |
 | --- | --- | --- |
-| `window.floatPanel` | `{panel?, rect?: [x,y,width,height]}` | Move an existing panel into a floating group. Omitted panel uses the focused panel; omitted rect uses a centered 420×320 group. |
+| `window.floatPanel` | `{panel?, rect?: [x,y,width,height]}` | Move an existing panel into a floating group. Omitted panel uses the focused panel; without a rect it floats inside the dock area, 24 points from its top-left corner, at the size a drag floats it at. |
 | `window.dockPanel` | `{panel?, anchor?, zone?: "center"\|"left"\|"right"\|"top"\|"bottom", before?}` | Move into the anchor's tab group or a side split; `before` names an existing destination tab for precise ordering. Floating destinations accept tabs only. Without `anchor`, a side `zone` docks the panel along that edge of the whole workspace, at a quarter of its width or height. |
 | `window.closePanel` | `{panel?}` | Close a docked or floating panel without closing its project documents. |
 
 Invalid source/target identities and non-finite or out-of-range geometry return an error with
-the layout unchanged. `ui.inspect.ui.floating` reports floating groups and their logical-point
-rectangles. `panel.drag.<Panel>` locates each panel's header grip; `panel.float.<index>.move`
-and `.resize` locate floating geometry handles. Named workspace saves include these groups.
+the layout unchanged. `ui.inspect.ui.dock.floating` reports floating windows and their
+logical-point rectangles. `panel.drag.<Panel>` locates the drag bar of each panel's group;
+`panel.float.<index>.move`, `.resize` (bottom-right corner) and `.resize.<Edge>` locate floating
+geometry handles; `dock.gutter.<path>`
+locates a split divider (`a`/`b` per split level), `dock.corner.<outer path>.<inner path>` the
+four-way handle where two dividers meet, `panel.float.<index>.gutter.<path>` and
+`panel.float.<index>.corner.<outer path>.<inner path>` the same inside a floating window;
+`ui.docking` lists every docking gesture source. Named workspace saves include floating windows.
+
+The panels use craft-ui's shared docking with its split-tree settings. Its control commands
+(`window.panel.move`, `.float`, `.dock`, `.activate`, `.close`, `.closeGroup`, `.closeOthers`,
+`.minimize`, `.layout`; see craft-libs `docs/ui-docking.md`) route here too; the three
+commands above are FilmCraft's names for `window.panel.float`, `.dock` and `.close`.
 
 `window.dockAction` accepts `{action}` using the shared docking action's JSON form. It
 covers tab moves and ordering, split and floating geometry, activation, and closing.
-For example, `{"action":{"ResizeSplit":{"path":[],"size":{"FixedFirst":360}}}}`
+For example, `{"action":{"ResizeSplit":{"path":[],"size":{"Ratio":0.3}}}}`
 resizes the root split; path entries use `false` for the first child and `true` for
 the second. `{"action":{"MoveFloating":{"panel":"Info","rect":[45,65,420,320]}}}`
 repositions and resizes the floating group containing Info. Invalid actions leave the

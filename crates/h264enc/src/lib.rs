@@ -528,6 +528,13 @@ impl Encoder {
         &self.cfg
     }
 
+    /// Run `f` on the encoder's worker threads (the calling thread without the `threads`
+    /// feature). The pool is idle between pictures, so input preparation such as colour
+    /// conversion that runs here does not queue behind work on the global rayon pool.
+    pub fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
+        self.pool.install(f)
+    }
+
     /// The SPS and PPS NAL units (without start codes).
     pub fn sps_pps(&self) -> (Vec<u8>, Vec<u8>) {
         (self.sps_nal.clone(), self.pps_nal.clone())
@@ -573,12 +580,18 @@ impl Encoder {
         let use_aq = self.cfg.aq_strength > 0.0 && !matches!(self.cfg.rate, RateControl::Qp(_));
         let (mbw, mbh, strength) = (self.params.mbw, self.params.mbh, self.cfg.aq_strength);
         let prev = self.prev_lowres.take();
-        let (lowres, cplx, aq) = self.pool.install(|| {
+        let analyse = || {
             let lowres = LowRes::new(&src);
             let cplx = lookahead::complexity(&lowres, prev.as_ref());
-            let aq = if use_aq { lookahead::aq_offsets(&src, mbw, mbh, strength) } else { Vec::new() };
-            (lowres, cplx, aq)
-        });
+            (lowres, cplx)
+        };
+        let aq_of = || if use_aq { lookahead::aq_offsets(&src, mbw, mbh, strength) } else { Vec::new() };
+        // the two analyses are independent: side by side, the pool's threads are not left idle
+        // at the end of each
+        #[cfg(feature = "threads")]
+        let ((lowres, cplx), aq) = self.pool.install(|| rayon::join(analyse, aq_of));
+        #[cfg(not(feature = "threads"))]
+        let ((lowres, cplx), aq) = (analyse(), aq_of());
         self.prev_lowres = Some(lowres);
         let display = self.display_count;
         self.display_count += 1;
@@ -686,92 +699,91 @@ impl Encoder {
     /// Encode a batch of pictures that do not reference each other (a single I/P picture, or the B-frames of a
     /// mini-GOP). Slices of all pictures in the batch are encoded in parallel.
     fn encode_batch(&mut self, pics: Vec<(Input, SliceType, bool)>, out: &mut Vec<Packet>) {
-        struct Job {
-            input: Input,
-            st: SliceType,
-            idr: bool,
-            qpf: f64,
-            qp: u8,
-            cplx: f64,
-            aq: Vec<i8>,
-            hdr: SliceHeader,
-            nal_ref_idc: u8,
-            l0: Option<usize>,
-            l1: Option<usize>,
-            poc: i32,
-            rec: Option<Frame>,
-            mbs: Vec<MbInfo>,
-            results: Vec<SliceOut>,
-        }
         let mut jobs: Vec<Job> = Vec::with_capacity(pics.len());
-        for (input, mut st, idr) in pics {
-            if idr {
-                let old: Vec<RefPic> = std::mem::take(&mut self.dpb);
-                for r in old {
-                    self.recycle_ref(r);
-                }
-                self.next_frame_num = 0;
-            }
-            let poc = 2 * (input.display as i64 - self.last_idr as i64) as i32;
-            let by_id = self.dpb.iter().enumerate().max_by_key(|(_, r)| r.id).map(|(i, _)| i);
-            let (mut l0, mut l1) = match st {
-                SliceType::I => (None, None),
-                SliceType::P => (by_id, None),
-                SliceType::B => (
-                    self.dpb.iter().enumerate().filter(|(_, r)| r.poc < poc).max_by_key(|(_, r)| r.poc).map(|(i, _)| i),
-                    self.dpb.iter().enumerate().filter(|(_, r)| r.poc > poc).min_by_key(|(_, r)| r.poc).map(|(i, _)| i),
-                ),
-            };
-            if st == SliceType::B && (l0.is_none() || l1.is_none()) {
-                st = SliceType::P;
-                l0 = by_id;
-                l1 = None;
-            }
-            if st == SliceType::P && l0.is_none() {
-                st = SliceType::I;
-            }
-            let is_ref = st != SliceType::B;
-            let cplx = match st {
-                SliceType::I => input.cplx.intra,
-                _ => input.cplx.inter,
-            } as f64;
-            let qpf = self.rc.frame_qp(st, cplx, self.coded_count as usize + jobs.len());
-            let qp = qpf.round().clamp(0.0, 51.0) as u8;
-            let aq: Vec<i8> = if input.aq.is_empty() {
-                Vec::new()
-            } else {
-                input.aq.iter().map(|&o| ((qpf + o as f64).round().clamp(0.0, 51.0) as i32 - qp as i32) as i8).collect()
-            };
-            let nal_ref_idc = if idr {
-                3
-            } else if is_ref {
-                2
-            } else {
-                0
-            };
-            let hdr = SliceHeader {
-                first_mb: 0,
-                slice_type: st,
-                nal_ref_idc,
-                idr,
-                idr_pic_id: self.idr_count % 2,
-                frame_num: self.next_frame_num % (1 << LOG2_MAX_FRAME_NUM),
-                log2_max_frame_num: LOG2_MAX_FRAME_NUM,
-                poc_lsb: (poc as u32) % (1 << LOG2_MAX_POC_LSB),
-                log2_max_poc_lsb: LOG2_MAX_POC_LSB,
-                l0_modification: None,
-                cabac: self.params.cabac,
-                slice_qp: qp as i32,
-                pic_init_qp: 26,
-                disable_deblocking: if self.slices > 1 { 2 } else { 0 },
-                alpha_offset_div2: 0,
-                beta_offset_div2: 0,
-            };
-            let rec = self.new_frame();
-            let mbs = vec![MbInfo::default(); self.params.mbw * self.params.mbh];
-            jobs.push(Job { input, st, idr, qpf, qp, cplx, aq, hdr, nal_ref_idc, l0, l1, poc, rec: Some(rec), mbs, results: Vec::new() });
+        for (input, st, idr) in pics {
+            let job = self.plan_job(input, st, idr, jobs.len());
+            jobs.push(job);
         }
+        self.encode_slices(&mut jobs);
+        // ---- finalise each picture in coding order
+        for job in jobs {
+            self.finalise_job(job, out);
+        }
+    }
 
+    /// Choose the final slice type and references of one picture, derive its quantiser and slice header,
+    /// and allocate its reconstruction buffers. `queued` is the number of pictures already planned in the batch.
+    fn plan_job(&mut self, input: Input, mut st: SliceType, idr: bool, queued: usize) -> Job {
+        if idr {
+            let old: Vec<RefPic> = std::mem::take(&mut self.dpb);
+            for r in old {
+                self.recycle_ref(r);
+            }
+            self.next_frame_num = 0;
+        }
+        let poc = 2 * (input.display as i64 - self.last_idr as i64) as i32;
+        let by_id = self.dpb.iter().enumerate().max_by_key(|(_, r)| r.id).map(|(i, _)| i);
+        let (mut l0, mut l1) = match st {
+            SliceType::I => (None, None),
+            SliceType::P => (by_id, None),
+            SliceType::B => (
+                self.dpb.iter().enumerate().filter(|(_, r)| r.poc < poc).max_by_key(|(_, r)| r.poc).map(|(i, _)| i),
+                self.dpb.iter().enumerate().filter(|(_, r)| r.poc > poc).min_by_key(|(_, r)| r.poc).map(|(i, _)| i),
+            ),
+        };
+        if st == SliceType::B && (l0.is_none() || l1.is_none()) {
+            st = SliceType::P;
+            l0 = by_id;
+            l1 = None;
+        }
+        if st == SliceType::P && l0.is_none() {
+            st = SliceType::I;
+        }
+        let is_ref = st != SliceType::B;
+        let cplx = match st {
+            SliceType::I => input.cplx.intra,
+            _ => input.cplx.inter,
+        } as f64;
+        let qpf = self.rc.frame_qp(st, cplx, self.coded_count as usize + queued);
+        let qp = qpf.round().clamp(0.0, 51.0) as u8;
+        let aq: Vec<i8> = if input.aq.is_empty() {
+            Vec::new()
+        } else {
+            input.aq.iter().map(|&o| ((qpf + o as f64).round().clamp(0.0, 51.0) as i32 - qp as i32) as i8).collect()
+        };
+        let nal_ref_idc = if idr {
+            3
+        } else if is_ref {
+            2
+        } else {
+            0
+        };
+        let hdr = SliceHeader {
+            first_mb: 0,
+            slice_type: st,
+            nal_ref_idc,
+            idr,
+            idr_pic_id: self.idr_count % 2,
+            frame_num: self.next_frame_num % (1 << LOG2_MAX_FRAME_NUM),
+            log2_max_frame_num: LOG2_MAX_FRAME_NUM,
+            poc_lsb: (poc as u32) % (1 << LOG2_MAX_POC_LSB),
+            log2_max_poc_lsb: LOG2_MAX_POC_LSB,
+            l0_modification: None,
+            cabac: self.params.cabac,
+            slice_qp: qp as i32,
+            pic_init_qp: 26,
+            disable_deblocking: if self.slices > 1 { 2 } else { 0 },
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
+        };
+        let rec = self.new_frame();
+        let mbs = vec![MbInfo::default(); self.params.mbw * self.params.mbh];
+        Job { input, st, idr, qpf, qp, cplx, aq, hdr, nal_ref_idc, l0, l1, poc, rec: Some(rec), mbs, results: Vec::new() }
+    }
+
+    /// Encode all slices of the batch's pictures in parallel (with deblocking of each slice band), storing
+    /// the results and reconstructions back into `jobs`.
+    fn encode_slices(&self, jobs: &mut [Job]) {
         // ---- parallel slice encoding (+ deblocking of each slice band)
         let (mbw, mbh) = (self.params.mbw, self.params.mbh);
         let n = self.slices;
@@ -781,7 +793,7 @@ impl Encoder {
         // Every job carries its reconstruction buffer (`rec: Some(..)` above).
         let mut bufs: Vec<(Frame, Vec<MbInfo>)> = jobs.iter_mut().filter_map(|j| Some((j.rec.take()?, std::mem::take(&mut j.mbs)))).collect();
         {
-            let this = &*self;
+            let this = self;
             let fencs: Vec<FrameEnc> = jobs
                 .iter()
                 .map(|j| FrameEnc {
@@ -863,101 +875,101 @@ impl Encoder {
             j.mbs = mbs;
             j.results = res;
         }
+    }
 
-        // ---- finalise each picture in coding order
-        for job in jobs {
-            let Job { input, st, idr, qpf, qp, cplx, hdr: _, nal_ref_idc: _, l0: _, l1: _, poc, rec, mbs, results, aq: _ } = job;
-            let Some(mut rec) = rec else { continue };
-            let is_ref = st != SliceType::B;
-            let annexb = self.cfg.format == PacketFormat::AnnexB;
-            let mut nals: Vec<Vec<u8>> = Vec::new();
-            if annexb && self.cfg.aud {
-                let t = match st {
-                    SliceType::I => 0,
-                    SliceType::P => 1,
-                    SliceType::B => 2,
-                };
-                nals.push(nal::nal(0, NAL_AUD, &nal::aud_rbsp(t)));
-            }
-            if idr && annexb {
-                nals.push(self.sps_nal.clone());
-                nals.push(self.pps_nal.clone());
-            }
-            if !self.sei_sent {
-                self.sei_sent = true;
-                let text = format!("filmcraft-h264enc {} - clean-room H.264 encoder - options: {}", env!("CARGO_PKG_VERSION"), self.options());
-                nals.push(nal::nal(0, NAL_SEI, &nal::sei_user_data_rbsp(&text)));
-                if self.cfg.mastering_display.is_some() || self.cfg.content_light.is_some() {
-                    nals.push(nal::nal(0, NAL_SEI, &nal::sei_hdr_rbsp(self.cfg.mastering_display.as_ref(), self.cfg.content_light)));
-                }
-            }
-            for r in results {
-                nals.push(r.nal);
-            }
-            let mut data = Vec::with_capacity(nals.iter().map(|n| n.len() + 4).sum());
-            for n in &nals {
-                if annexb {
-                    data.extend_from_slice(&[0, 0, 0, 1]);
-                } else {
-                    data.extend_from_slice(&(n.len() as u32).to_be_bytes());
-                }
-                data.extend_from_slice(n);
-            }
-            let total_bits = data.len() as u64 * 8;
-            self.rc.update(st, qpf, cplx, total_bits);
-            if self.record_pass1 {
-                self.rc.record_pass1(st, qpf, cplx, total_bits);
-            }
-            if let Some(rv) = self.recon.as_mut() {
-                let (w, h) = (self.cfg.width as usize, self.cfg.height as usize);
-                let mut y = Vec::with_capacity(w * h);
-                let mut u = Vec::with_capacity(w * h / 4);
-                let mut v = Vec::with_capacity(w * h / 4);
-                rec.y.copy_out(w, h, &mut y);
-                rec.u.copy_out(w / 2, h / 2, &mut u);
-                rec.v.copy_out(w / 2, h / 2, &mut v);
-                rv.push(ReconFrame { pts: input.pts, y, u, v });
-            }
-            if is_ref {
-                let hp = self.hpel_pool.pop();
-                let hpel = self.pool.install(|| {
-                    rec.extend_edges();
-                    build_hpel(&rec.y, hp)
-                });
-                self.ref_uid += 1;
-                let rp = RefPic { frame: rec, hpel, mbs, poc, id: self.ref_uid };
-                if self.dpb.len() >= self.max_refs {
-                    // sliding window: drop the oldest
-                    if let Some(oldest) = self.dpb.iter().enumerate().min_by_key(|(_, r)| r.id).map(|(i, _)| i) {
-                        let r = self.dpb.remove(oldest);
-                        self.recycle_ref(r);
-                    }
-                }
-                self.dpb.push(rp);
-                self.next_frame_num = (self.next_frame_num + 1) % (1 << LOG2_MAX_FRAME_NUM);
-            } else {
-                self.recycle(rec);
-            }
-            if idr {
-                self.idr_count += 1;
-            }
-            // decoding timestamp base: the k-th smallest presentation time (offset applied in `release`)
-            // One display time is queued per input picture, so the queue is never empty here.
-            let pos = self.display_pts.iter().enumerate().min_by_key(|(_, p)| **p).map(|(i, _)| i);
-            let dts_base = pos.and_then(|p| self.display_pts.remove(p)).unwrap_or(input.pts);
-            self.coded_count += 1;
-            let frame_type = if idr {
-                FrameType::Idr
-            } else {
-                match st {
-                    SliceType::I => FrameType::I,
-                    SliceType::P => FrameType::P,
-                    SliceType::B => FrameType::B,
-                }
+    /// Assemble the packet of one coded picture, update rate control and the reference state.
+    fn finalise_job(&mut self, job: Job, out: &mut Vec<Packet>) {
+        let Job { input, st, idr, qpf, qp, cplx, hdr: _, nal_ref_idc: _, l0: _, l1: _, poc, rec, mbs, results, aq: _ } = job;
+        let Some(mut rec) = rec else { return };
+        let is_ref = st != SliceType::B;
+        let annexb = self.cfg.format == PacketFormat::AnnexB;
+        let mut nals: Vec<Vec<u8>> = Vec::new();
+        if annexb && self.cfg.aud {
+            let t = match st {
+                SliceType::I => 0,
+                SliceType::P => 1,
+                SliceType::B => 2,
             };
-            self.recycle(input.frame);
-            out.push(Packet { data, pts: input.pts, dts: dts_base, keyframe: idr, frame_type, qp });
+            nals.push(nal::nal(0, NAL_AUD, &nal::aud_rbsp(t)));
         }
+        if idr && annexb {
+            nals.push(self.sps_nal.clone());
+            nals.push(self.pps_nal.clone());
+        }
+        if !self.sei_sent {
+            self.sei_sent = true;
+            let text = format!("filmcraft-h264enc {} - clean-room H.264 encoder - options: {}", env!("CARGO_PKG_VERSION"), self.options());
+            nals.push(nal::nal(0, NAL_SEI, &nal::sei_user_data_rbsp(&text)));
+            if self.cfg.mastering_display.is_some() || self.cfg.content_light.is_some() {
+                nals.push(nal::nal(0, NAL_SEI, &nal::sei_hdr_rbsp(self.cfg.mastering_display.as_ref(), self.cfg.content_light)));
+            }
+        }
+        for r in results {
+            nals.push(r.nal);
+        }
+        let mut data = Vec::with_capacity(nals.iter().map(|n| n.len() + 4).sum());
+        for n in &nals {
+            if annexb {
+                data.extend_from_slice(&[0, 0, 0, 1]);
+            } else {
+                data.extend_from_slice(&(n.len() as u32).to_be_bytes());
+            }
+            data.extend_from_slice(n);
+        }
+        let total_bits = data.len() as u64 * 8;
+        self.rc.update(st, qpf, cplx, total_bits);
+        if self.record_pass1 {
+            self.rc.record_pass1(st, qpf, cplx, total_bits);
+        }
+        if let Some(rv) = self.recon.as_mut() {
+            let (w, h) = (self.cfg.width as usize, self.cfg.height as usize);
+            let mut y = Vec::with_capacity(w * h);
+            let mut u = Vec::with_capacity(w * h / 4);
+            let mut v = Vec::with_capacity(w * h / 4);
+            rec.y.copy_out(w, h, &mut y);
+            rec.u.copy_out(w / 2, h / 2, &mut u);
+            rec.v.copy_out(w / 2, h / 2, &mut v);
+            rv.push(ReconFrame { pts: input.pts, y, u, v });
+        }
+        if is_ref {
+            let hp = self.hpel_pool.pop();
+            let hpel = self.pool.install(|| {
+                rec.extend_edges();
+                build_hpel(&rec.y, hp)
+            });
+            self.ref_uid += 1;
+            let rp = RefPic { frame: rec, hpel, mbs, poc, id: self.ref_uid };
+            if self.dpb.len() >= self.max_refs {
+                // sliding window: drop the oldest
+                if let Some(oldest) = self.dpb.iter().enumerate().min_by_key(|(_, r)| r.id).map(|(i, _)| i) {
+                    let r = self.dpb.remove(oldest);
+                    self.recycle_ref(r);
+                }
+            }
+            self.dpb.push(rp);
+            self.next_frame_num = (self.next_frame_num + 1) % (1 << LOG2_MAX_FRAME_NUM);
+        } else {
+            self.recycle(rec);
+        }
+        if idr {
+            self.idr_count += 1;
+        }
+        // decoding timestamp base: the k-th smallest presentation time (offset applied in `release`)
+        // One display time is queued per input picture, so the queue is never empty here.
+        let pos = self.display_pts.iter().enumerate().min_by_key(|(_, p)| **p).map(|(i, _)| i);
+        let dts_base = pos.and_then(|p| self.display_pts.remove(p)).unwrap_or(input.pts);
+        self.coded_count += 1;
+        let frame_type = if idr {
+            FrameType::Idr
+        } else {
+            match st {
+                SliceType::I => FrameType::I,
+                SliceType::P => FrameType::P,
+                SliceType::B => FrameType::B,
+            }
+        };
+        self.recycle(input.frame);
+        out.push(Packet { data, pts: input.pts, dts: dts_base, keyframe: idr, frame_type, qp });
     }
 
     fn recycle_ref(&mut self, r: RefPic) {
@@ -966,6 +978,25 @@ impl Encoder {
             self.hpel_pool.push(r.hpel);
         }
     }
+}
+
+/// One picture of a batch while it is planned, sliced and finalised.
+struct Job {
+    input: Input,
+    st: SliceType,
+    idr: bool,
+    qpf: f64,
+    qp: u8,
+    cplx: f64,
+    aq: Vec<i8>,
+    hdr: SliceHeader,
+    nal_ref_idc: u8,
+    l0: Option<usize>,
+    l1: Option<usize>,
+    poc: i32,
+    rec: Option<Frame>,
+    mbs: Vec<MbInfo>,
+    results: Vec<SliceOut>,
 }
 
 fn jobs_stride_y(mbw: usize) -> usize {

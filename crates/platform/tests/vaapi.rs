@@ -8,9 +8,11 @@
 //! continue in software with the software decoder's exact output; what the hardware path does not
 //! take (interlaced and 10-bit H.264, 4:2:2 HEVC) is declined; damaged samples and parameter sets give
 //! errors or fall back, never crash or hang. Skips without ffmpeg (fixture generator) or without a
-//! VA-API driver.
+//! VA-API driver. Its own test binary: one test turns the process-wide Hardware decoding switch off
+//! and on.
 #![cfg(target_os = "linux")]
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use std::time::Duration;

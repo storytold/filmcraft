@@ -13,7 +13,10 @@ kerning and ligatures, bidi, line breaking, all drawn as vectors in linear light
 - Its **layers** are effect instances `graphic_text` / `graphic_shape` in the clip's effect list,
   in paint order (first = back). They are hidden from the Effects panel. Because they are effect
   instances they save with the project, take keyframes on every animatable property (Source Text
-  keyframes hold), appear in Effect Controls and copy with the clip. Standard effects on a graphic
+  keyframes hold), appear in Effect Controls and copy with the clip. The Essential Graphics
+  panel's number and point properties (Tracking, Leading, Font Size, Position, Opacity…) carry
+  the same stopwatch as Effect Controls (`graphics.prop.<id>.stopwatch`, #2358): once a property
+  animates, changing it in the panel adds or updates a keyframe at the playhead. Standard effects on a graphic
   clip apply to the composed graphic; Motion and Opacity apply last.
 - `filmcraft_project::graphic::eval_layer` evaluates a layer at a time into a `LayerSpec`.
 - Projects with graphics need no schema migration: everything is additive (new item kind, new
