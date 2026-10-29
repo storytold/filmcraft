@@ -484,7 +484,7 @@ impl Decoder {
         let meta = Arc::new(OutputMeta { draft, ..output_meta(&sps, pts, key) });
         let mut outs = Vec::new();
         let fpoc = frame.poc;
-        self.dpb.store_picture(&first, frame, fpoc, sps.max_frame_num(), sps.max_num_ref_frames as usize, meta, &mut outs)?;
+        self.dpb.store_picture(&first, frame, fpoc, (sps.max_frame_num(), sps.max_num_ref_frames as usize), meta, &mut outs)?;
         self.emit(outs);
         Ok(())
     }

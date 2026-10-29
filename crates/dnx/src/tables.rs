@@ -1,7 +1,10 @@
 //! Compression-ID parameters (Annex C), zig-zag order (Figure 48) and VLC lookup tables built from
 //! the Annex E codeword lists in [`crate::spec_tables`].
 
-use crate::spec_tables::*;
+use crate::spec_tables::{
+    AMP_E_1, AMP_E_4, AMP_E_7, AMP_E_10, AMP_E_13, AMP_E_16, DC_E_1, DC_E_4, DC_E_7, DC_E_10, DC_E_13, DC_E_16, RUN_E_1, RUN_E_4, RUN_E_7, RUN_E_10, RUN_E_13,
+    RUN_E_16, W_D_1, W_D_2, W_D_3, W_D_4, W_D_5, W_D_6, W_D_7, W_D_8, W_D_9, W_D_10, W_D_11,
+};
 use std::sync::OnceLock;
 
 /// Bitstream coefficient index `r` → raster position `v*8 + u` (Figure 48).
@@ -53,9 +56,9 @@ pub(crate) struct CidInfo {
     pub p: u32,
 }
 
-const fn hd(cid: u32, width: u16, height: u16, interlaced: bool, depth: u8, frame_size: u32, weights: &'static [[u8; 63]; 2], vlc: usize) -> CidInfo {
+const fn hd(cid: u32, kind: Kind, weights: &'static [[u8; 63]; 2], vlc: usize) -> CidInfo {
     let p = if cid == 1235 || cid == 1241 || cid == 1250 { 8 } else { 32 };
-    CidInfo { cid, kind: Kind::Hd { width, height, interlaced, depth, frame_size }, weights, vlc, p }
+    CidInfo { cid, kind, weights, vlc, p }
 }
 
 const fn ri(cid: u32, c0: u32, weights: &'static [[u8; 63]; 2], vlc: usize) -> CidInfo {
@@ -64,21 +67,21 @@ const fn ri(cid: u32, c0: u32, weights: &'static [[u8; 63]; 2], vlc: usize) -> C
 
 /// Every compression ID of SMPTE ST 2019-1:2016 (Tables C.1 and C.2).
 pub(crate) const CIDS: [CidInfo; 20] = [
-    hd(1235, 1920, 1080, false, 10, 917504, &W_D_1, 0),
-    hd(1237, 1920, 1080, false, 8, 606208, &W_D_2, 1),
-    hd(1238, 1920, 1080, false, 8, 917504, &W_D_3, 2),
-    hd(1241, 1920, 1080, true, 10, 917504, &W_D_4, 0),
-    hd(1242, 1920, 1080, true, 8, 606208, &W_D_5, 1),
-    hd(1243, 1920, 1080, true, 8, 917504, &W_D_6, 2),
-    hd(1244, 1440, 1080, true, 8, 606208, &W_D_7, 1),
-    hd(1250, 1280, 720, false, 10, 458752, &W_D_8, 3),
-    hd(1251, 1280, 720, false, 8, 458752, &W_D_9, 4),
-    hd(1252, 1280, 720, false, 8, 303104, &W_D_10, 5),
-    hd(1253, 1920, 1080, false, 8, 188416, &W_D_2, 1),
-    hd(1256, 1920, 1080, false, 10, 1835008, &W_D_11, 0),
-    hd(1258, 960, 720, false, 8, 212992, &W_D_10, 5),
-    hd(1259, 1440, 1080, false, 8, 417792, &W_D_2, 1),
-    hd(1260, 1440, 1080, true, 8, 417792, &W_D_7, 1),
+    hd(1235, Kind::Hd { width: 1920, height: 1080, interlaced: false, depth: 10, frame_size: 917504 }, &W_D_1, 0),
+    hd(1237, Kind::Hd { width: 1920, height: 1080, interlaced: false, depth: 8, frame_size: 606208 }, &W_D_2, 1),
+    hd(1238, Kind::Hd { width: 1920, height: 1080, interlaced: false, depth: 8, frame_size: 917504 }, &W_D_3, 2),
+    hd(1241, Kind::Hd { width: 1920, height: 1080, interlaced: true, depth: 10, frame_size: 917504 }, &W_D_4, 0),
+    hd(1242, Kind::Hd { width: 1920, height: 1080, interlaced: true, depth: 8, frame_size: 606208 }, &W_D_5, 1),
+    hd(1243, Kind::Hd { width: 1920, height: 1080, interlaced: true, depth: 8, frame_size: 917504 }, &W_D_6, 2),
+    hd(1244, Kind::Hd { width: 1440, height: 1080, interlaced: true, depth: 8, frame_size: 606208 }, &W_D_7, 1),
+    hd(1250, Kind::Hd { width: 1280, height: 720, interlaced: false, depth: 10, frame_size: 458752 }, &W_D_8, 3),
+    hd(1251, Kind::Hd { width: 1280, height: 720, interlaced: false, depth: 8, frame_size: 458752 }, &W_D_9, 4),
+    hd(1252, Kind::Hd { width: 1280, height: 720, interlaced: false, depth: 8, frame_size: 303104 }, &W_D_10, 5),
+    hd(1253, Kind::Hd { width: 1920, height: 1080, interlaced: false, depth: 8, frame_size: 188416 }, &W_D_2, 1),
+    hd(1256, Kind::Hd { width: 1920, height: 1080, interlaced: false, depth: 10, frame_size: 1835008 }, &W_D_11, 0),
+    hd(1258, Kind::Hd { width: 960, height: 720, interlaced: false, depth: 8, frame_size: 212992 }, &W_D_10, 5),
+    hd(1259, Kind::Hd { width: 1440, height: 1080, interlaced: false, depth: 8, frame_size: 417792 }, &W_D_2, 1),
+    hd(1260, Kind::Hd { width: 1440, height: 1080, interlaced: true, depth: 8, frame_size: 417792 }, &W_D_7, 1),
     ri(1270, 1835008, &W_D_11, 0),
     ri(1271, 917504, &W_D_4, 0),
     ri(1272, 917504, &W_D_3, 2),

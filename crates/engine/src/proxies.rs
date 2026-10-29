@@ -97,7 +97,13 @@ pub fn transcode(
     preset: &Preset,
     progress: &Progress,
 ) -> std::result::Result<Report, String> {
-    transcode_with_file(clip, name, src, range, out, None, preset, progress)
+    transcode_with_file(clip, name, src, range, Dest { path: out, file: None }, preset, progress)
+}
+
+/// Output path, plus the already-open file to write into when the caller holds one.
+struct Dest<'a> {
+    path: &'a str,
+    file: Option<Arc<std::fs::File>>,
 }
 
 fn transcode_with_file(
@@ -105,11 +111,11 @@ fn transcode_with_file(
     name: &str,
     src: SharedSource,
     range: Option<TimeRange>,
-    out: &str,
-    output_file: Option<Arc<std::fs::File>>,
+    dest: Dest<'_>,
     preset: &Preset,
     progress: &Progress,
 ) -> std::result::Result<Report, String> {
+    let Dest { path: out, file: output_file } = dest;
     let info = &clip.info;
     let rate = clip.frame_rate();
     let mut st = SequenceSettings::default();
@@ -125,7 +131,7 @@ fn transcode_with_file(
     let mut c = clip.clone();
     c.offline = false;
     c.proxy = None;
-    let item = p.add_item(name, filmcraft_project::Label::Iris, ItemKind::Media(c), None);
+    let item = p.add_item(name, filmcraft_project::Label::Iris, ItemKind::Media(Box::new(c)), None);
     let has_v = info.video.is_some();
     let has_a = info.has_audio();
     let seq = p.new_sequence("transcode", st, usize::from(has_v), usize::from(has_a), None);
@@ -280,7 +286,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
             }
             *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("{name} ({} of {n})", k + 1);
             let out = output.path().to_string_lossy().into_owned();
-            match transcode_with_file(&clip, &name, src, None, &out, output.file(), pr, &prog) {
+            match transcode_with_file(&clip, &name, src, None, Dest { path: &out, file: output.file() }, pr, &prog) {
                 Ok(r) => {
                     bytes += r.bytes;
                     output.preserve();
