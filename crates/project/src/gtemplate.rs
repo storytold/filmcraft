@@ -322,6 +322,15 @@ impl GraphicsTemplate {
         let mut layers = self.layers.clone();
         if (s - 1.0).abs() > 1e-9 || off.x.abs() > 1e-9 || off.y.abs() > 1e-9 {
             for l in &mut layers {
+                // Imported layers can omit parameters and rely on definition defaults. Make
+                // both scale axes explicit before fitting so those defaults are scaled too.
+                if let Some(def) = l.def() {
+                    for key in ["scale", "scale_width"] {
+                        if let Some(param) = def.param(key) {
+                            l.params.entry(key.to_string()).or_insert_with(|| Param::new(param.default.clone()));
+                        }
+                    }
+                }
                 if let Some(p) = l.params.get_mut("position") {
                     p.map_values(|v| match v {
                         ParamValue::Vec2(q) if !q.x.is_nan() => ParamValue::Vec2(Vec2::new(q.x * s + off.x, q.y * s + off.y)),
@@ -786,6 +795,53 @@ mod tests {
                 }
             }
             assert_eq!(t, original);
+        }
+    }
+
+    #[test]
+    fn instantiates_imported_layers_with_omitted_scale_defaults() {
+        for omitted in [&["scale"][..], &["scale_width"][..], &["scale", "scale_width"][..]] {
+            for uniform in [false, true] {
+                let position = Vec2::new(1920.0, 1080.0);
+                let mut t = GraphicsTemplate {
+                    name: "Imported defaults".into(),
+                    canvas: [3840, 2160],
+                    layers: vec![new_text_layer("Reveal", position, 100.0), new_shape_layer(0, position, Vec2::new(400.0, 100.0), Vec::new())],
+                    ..Default::default()
+                };
+                ensure_uids(&mut t.layers);
+                for layer in &mut t.layers {
+                    set(layer, "uniform_scale", ParamValue::Bool(uniform));
+                    for (key, start, end) in [("scale", 50.0, 100.0), ("scale_width", 150.0, 200.0)] {
+                        if omitted.contains(&key) {
+                            layer.params.remove(key);
+                        } else {
+                            let mut param = Param::new(ParamValue::Float(start));
+                            param.put_keyframe(Tick::ZERO, ParamValue::Float(start));
+                            param.put_keyframe(Tick(TICKS_PER_SECOND), ParamValue::Float(end));
+                            layer.params.insert(key.into(), param);
+                        }
+                    }
+                }
+                let imported = GraphicsTemplate::from_bytes(t.to_json().as_bytes()).unwrap();
+                assert_eq!(imported, t);
+                for (canvas, fit) in [((1920, 1080), 0.5), ((1080, 1920), 0.28125), ((7680, 4320), 2.0)] {
+                    let (layers, _) = imported.instantiate(canvas);
+                    for (placed, original) in layers.iter().zip(&imported.layers) {
+                        for key in omitted {
+                            assert!(!original.params.contains_key(*key));
+                            assert_eq!(placed.params[*key].value, ParamValue::Float(100.0 * fit));
+                            assert!(placed.params[*key].keyframes.is_empty());
+                        }
+                        for time in [Tick::ZERO, Tick(TICKS_PER_SECOND / 2), Tick(TICKS_PER_SECOND)] {
+                            let before = graphic::eval_layer(original, time, (3840, 2160)).unwrap();
+                            let after = graphic::eval_layer(placed, time, canvas).unwrap();
+                            assert_eq!(after.transform.scale, Vec2::new(before.transform.scale.x * fit, before.transform.scale.y * fit));
+                        }
+                    }
+                }
+                assert_eq!(imported, t);
+            }
         }
     }
 
