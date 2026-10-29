@@ -1016,7 +1016,11 @@ fn warp_stabilizer_removes_camera_jitter() {
     let mut e = inst("warp_stabilizer");
     set(&mut e, "result", ParamValue::Choice(1)); // No Motion
     set(&mut e, "framing", ParamValue::Choice(0)); // Stabilize Only
+    set(&mut e, "stabilize", ParamValue::Bool(true));
     clear_stabilizer_cache();
+    // the Stabilize button analyses the clip; rendering then reads the cache
+    let env0 = mk(0.0);
+    assert!(stabilizer_path(&env0, 0.0, filmcraft_project::TrackMethod::PositionScaleRotation, false).is_some());
     let frames: Vec<(Image, Image)> = [3usize, 9, 15, 21]
         .iter()
         .map(|&f| {
@@ -1052,8 +1056,34 @@ fn warp_stabilizer_removes_camera_jitter() {
     let mut st = env.render(9.0 / 24.0, 1.0);
     crate::effects::apply(&mut st, &e, &FxCtx { seconds: 9.0 / 24.0, env: Some(&env), ..cx() });
     assert!(st.px.as_chunks::<4>().0.iter().all(|p| p[3] > 0.99), "auto-scale leaves no border");
-    // the path cache is reused
-    assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
+    // the path cache is reused by rendering, and rendering alone never analyses
+    assert!(cached_stabilizer_path(&env, filmcraft_project::TrackMethod::PositionScaleRotation, false).is_some());
+}
+
+#[test]
+fn warp_stabilizer_only_reads_a_cached_analysis() {
+    let (w, h) = (96, 64);
+    let mk = |now: f64| ClipEnv { w, h, fps: 24.0, secs: 1.0, now, key: 0x5A17_AB1E, seq: (w as u32, h as u32), pic: shaky };
+    clear_stabilizer_cache();
+    // the flag is on but nothing was analysed: the picture is unchanged and no analysis starts
+    let mut e = inst("warp_stabilizer");
+    set(&mut e, "stabilize", ParamValue::Bool(true));
+    let env = mk(0.2);
+    let raw = env.render(0.2, 1.0);
+    let mut img = raw.clone();
+    crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.2, env: Some(&env), ..cx() });
+    assert_eq!(img.px, raw.px, "rendering must not analyse or warp without a cached path");
+    assert!(cached_stabilizer_path(&env, filmcraft_project::TrackMethod::PositionScaleRotation, false).is_none());
+    // an analysis fills the cache; the same effect then stabilises
+    assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::PositionScaleRotation, false).is_some());
+    let mut img = raw.clone();
+    crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.2, env: Some(&env), ..cx() });
+    assert_ne!(img.px, raw.px, "a cached analysis is applied");
+    // without the Stabilize flag the effect leaves the picture alone, even with the cache
+    set(&mut e, "stabilize", ParamValue::Bool(false));
+    let mut img = raw.clone();
+    crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.2, env: Some(&env), ..cx() });
+    assert_eq!(img.px, raw.px);
 }
 
 #[test]

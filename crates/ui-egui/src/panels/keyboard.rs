@@ -7,6 +7,8 @@
 //! |---|---|---|
 //! | `window.maximizeFrame` / `window.maximizeFrameUnderCursor` | Maximize or Restore Active Frame / Frame Under Cursor | Shift+` / ` |
 //! | `window.toggleFullScreen` | Toggle Full Screen | Ctrl+` |
+//! | `view.monitorFullScreen` | Full Screen on a Monitor (asks which connected display) | |
+//! | `view.restoreProgramMonitor` | Restore Program Monitor to its docked position | |
 //! | `window.nextPanel` / `window.prevPanel` | Select Next / Previous Panel | Ctrl+Shift+. / Ctrl+Shift+, |
 //! | `window.toggleMonitorFocus` | Toggle Source/Program Monitor Focus | |
 //! | `window.openSearch` / `panel.selectFindBox` | Open Search / Select Find Box | Cmd+Shift+F / Shift+F |
@@ -61,6 +63,8 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("window.maximizeFrame", "Maximize or Restore Active Frame", [], Some("Shift+`")),
     uic!("window.maximizeFrameUnderCursor", "Maximize or Restore Frame Under Cursor", [], Some("`")),
     uic!("window.toggleFullScreen", "Toggle Full Screen", [], Some("Ctrl+`")),
+    uic!("view.monitorFullScreen", "Full Screen on Monitor", ["View"], None),
+    uic!("view.restoreProgramMonitor", "Restore Program Monitor", ["View"], None),
     uic!("window.nextPanel", "Select Next Panel", [], Some("Ctrl+Shift+.")),
     uic!("window.prevPanel", "Select Previous Panel", [], Some("Ctrl+Shift+,")),
     uic!("window.toggleMonitorFocus", "Toggle Source/Program Monitor Focus", [], None),
@@ -159,6 +163,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fs));
             Ok(json!({"fullScreen": fs}))
         }
+        "view.monitorFullScreen" => toggle_monitor_fullscreen(app, ctx, params),
+        "view.restoreProgramMonitor" => restore_program_monitor(app, ctx),
         "window.nextPanel" | "window.prevPanel" => Ok(cycle_panel(app, id == "window.nextPanel")),
         "window.toggleMonitorFocus" => {
             let p = if app.ui.focused == PanelKind::Program { PanelKind::Source } else { PanelKind::Program };
@@ -236,6 +242,270 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
 }
 
 // ------------------------------------------------------------------ frames and panels
+
+/// Temp-data key of a monitor fullscreen request waiting for its native window to exist.
+fn fullscreen_pending_key() -> egui::Id {
+    egui::Id::unique("monitor.fullscreen.pending")
+}
+
+/// View ▸ Full Screen on Monitor: ask which connected display shows the Program or Source
+/// Monitor, then float the panel into its own window and full screen it there. A command with
+/// `display` set (the chooser, or automation) skips the question; `enabled: false` leaves full
+/// screen.
+fn toggle_monitor_fullscreen(app: &mut FilmcraftApp, ctx: &egui::Context, params: &Value) -> Result<Value, String> {
+    let which = crate::panels::monitor_view::which_of(app, params);
+    if params.get("enabled").and_then(Value::as_bool) == Some(false) {
+        return leave_monitor_fullscreen(app, ctx, which);
+    }
+    if let Some(index) = params.get("display").and_then(Value::as_u64).and_then(|i| usize::try_from(i).ok()) {
+        return show_monitor_fullscreen(app, ctx, which, index);
+    }
+    let displays = connected_displays();
+    if displays.is_empty() {
+        // No display list (web build, or the OS refused): full screen the window's own monitor.
+        return show_monitor_fullscreen(app, ctx, which, 0);
+    }
+    let source = which == crate::panels::monitor::Which::Source;
+    app.ui.monitor_fullscreen = Some(crate::state::MonitorFullScreenDialog { source, displays: displays.clone() });
+    Ok(json!({"dialog": "monitorFullScreen", "monitor": crate::panels::monitor_view::prefix(which), "displays": displays}))
+}
+
+/// The connected displays, in the operating system's order. Empty when the platform cannot tell
+/// (the web build) or listing fails.
+#[cfg(not(target_arch = "wasm32"))]
+fn connected_displays() -> Vec<crate::state::MonitorChoice> {
+    display_info::DisplayInfo::all()
+        .map(|displays| {
+            displays
+                .into_iter()
+                .enumerate()
+                .map(|(index, d)| crate::state::MonitorChoice {
+                    index,
+                    name: if d.name.is_empty() { d.friendly_name } else { d.name },
+                    width: d.width,
+                    height: d.height,
+                    x: d.x,
+                    y: d.y,
+                    primary: d.is_primary,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn connected_displays() -> Vec<crate::state::MonitorChoice> {
+    Vec::new()
+}
+
+/// Float the monitor and full screen its window on `display`'s index.
+fn show_monitor_fullscreen(app: &mut FilmcraftApp, ctx: &egui::Context, which: crate::panels::monitor::Which, display: usize) -> Result<Value, String> {
+    use crate::dock::LayoutExt as _;
+    use craft_ui::docking::{Action, Placement, Zone};
+    let panel = if which == crate::panels::monitor::Which::Program { PanelKind::Program } else { PanelKind::Source };
+    // A closed monitor comes back first: Full Screen on Monitor must always have a panel to float,
+    // not fail with "could not be floated" because the user closed it earlier.
+    if !app.ui.dock.contains(&panel) {
+        // The Program Monitor comes back in its startup spot (top right, beside the Source), not
+        // as a tab beside the Project that would leave the Project's tab selection changed.
+        let use_show_panel = panel != PanelKind::Program
+            || app.apply_dock(Action::OpenAt { panel, anchor: PanelKind::Source, placement: Placement::Split(Zone::Right) }).is_err();
+        if use_show_panel {
+            app.show_panel(panel);
+        }
+        app.ui.focused = panel;
+    }
+    if app.ui.dock.is_docked(panel) {
+        // Float where the panel is now, so the window opens where the user expects.
+        let bounds = ctx.content_rect();
+        let rect = app
+            .auto
+            .find(&format!("panel.{}", panel.id()))
+            .map(|e| egui::Rect::from_min_size(egui::pos2(e.rect[0], e.rect[1]), egui::vec2(e.rect[2], e.rect[3])))
+            .filter(|r| r.is_positive() && r.min.is_finite())
+            .unwrap_or_else(|| egui::Rect::from_center_size(bounds.center(), bounds.size() * 0.5));
+        app.apply_dock(Action::Float { panel, rect: [rect.min.x, rect.min.y, rect.width(), rect.height()] })?;
+    }
+    let Some(window) = app.ui.dock.floating.iter().find(|window| window.contains(&panel)) else {
+        return Err("the monitor could not be floated into its own window".into());
+    };
+    let viewport = craft_ui::docking::DockArea::<PanelKind>::window_viewport(crate::dock_ui::area_id(), window.id);
+    ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::SetMonitor(display));
+    // The native window may be created on the next frame: keep asking until it reports the state.
+    ctx.data_mut(|d| d.insert_temp(fullscreen_pending_key(), (viewport, FullscreenRequest::On(display), 0_u8)));
+    ctx.request_repaint();
+    Ok(json!({"monitor": crate::panels::monitor_view::prefix(which), "fullScreen": true, "floating": true, "display": display}))
+}
+
+/// The display chooser picked a monitor: continue the request it was opened for.
+pub(crate) fn choose_monitor_fullscreen(app: &mut FilmcraftApp, ctx: &egui::Context, source: bool, display: usize) -> Result<Value, String> {
+    let which = if source { crate::panels::monitor::Which::Source } else { crate::panels::monitor::Which::Program };
+    show_monitor_fullscreen(app, ctx, which, display)
+}
+
+/// Take a monitor out of full screen, leaving its window where it is.
+fn leave_monitor_fullscreen(app: &mut FilmcraftApp, ctx: &egui::Context, which: crate::panels::monitor::Which) -> Result<Value, String> {
+    let panel = if which == crate::panels::monitor::Which::Program { PanelKind::Program } else { PanelKind::Source };
+    let Some(window) = app.ui.dock.floating.iter().find(|window| window.contains(&panel)) else {
+        return Ok(json!({"monitor": crate::panels::monitor_view::prefix(which), "fullScreen": false, "floating": false}));
+    };
+    let viewport = craft_ui::docking::DockArea::<PanelKind>::window_viewport(crate::dock_ui::area_id(), window.id);
+    ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Fullscreen(false));
+    ctx.data_mut(|d| d.insert_temp(fullscreen_pending_key(), (viewport, FullscreenRequest::Off, 0_u8)));
+    ctx.request_repaint();
+    Ok(json!({"monitor": crate::panels::monitor_view::prefix(which), "fullScreen": false, "floating": true}))
+}
+
+/// View ▸ Restore Program Monitor: dock the Program Monitor where FilmCraft shows it at startup.
+/// Like Premiere's command it works from any state: a closed or floating preview comes back, and
+/// one docked elsewhere moves to its startup frame, with the workspace's own split size (in some
+/// workspaces the preview is not merely right of the Source but sits left of the Lumetri Color
+/// column, or shares a nested split with it).
+pub(crate) fn restore_program_monitor(app: &mut FilmcraftApp, ctx: &egui::Context) -> Result<Value, String> {
+    use craft_ui::docking::{Action, Placement, Zone};
+    let panel = PanelKind::Program;
+    if let Some(window) = app.ui.dock.floating.iter().find(|window| window.contains(&panel)) {
+        let viewport = craft_ui::docking::DockArea::<PanelKind>::window_viewport(crate::dock_ui::area_id(), window.id);
+        ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Fullscreen(false));
+        // A floating preview has to be closed before it can be docked again; it is reopened below.
+        app.apply_dock(Action::Close { panel })?;
+    }
+    // Closing then restoring should not bring back a refloating panel from the closed-floating list.
+    app.ui.closed_floating.retain(|(p, _)| *p != panel);
+    // Where this workspace starts the preview, from its saved (or built-in) layout. Restoring an
+    // already correct layout stays a no-op because Move and the resize below change nothing.
+    let template = crate::dock::saved_docking(&app.workspaces, &app.ui.workspace);
+    let (mut anchor, zone, size) = startup_program_slot(&template).unwrap_or((PanelKind::Source, Zone::Right, craft_ui::layout::SplitSize::Ratio(0.5)));
+    if !app.ui.dock.contains(&anchor) {
+        // The panel the preview is docked against went away: use the Source, else bring the
+        // anchor back, so the startup relationship can be rebuilt.
+        if app.ui.dock.contains(&PanelKind::Source) && anchor != PanelKind::Source {
+            anchor = PanelKind::Source;
+        } else {
+            app.show_panel(anchor);
+        }
+    }
+    let place = |app: &mut FilmcraftApp, anchor: PanelKind| -> Result<(), String> {
+        if app.ui.dock.contains(&panel) {
+            match app.apply_dock(Action::Move { panel, anchor, placement: Placement::Split(zone) }) {
+                Ok(()) => Ok(()),
+                Err(_) => {
+                    // A preview tabbed into the anchor's own group cannot move relative to it:
+                    // take it out first and put it back beside the group.
+                    app.apply_dock(Action::Close { panel })?;
+                    app.apply_dock(Action::OpenAt { panel, anchor, placement: Placement::Split(zone) })
+                }
+            }
+        } else {
+            app.apply_dock(Action::OpenAt { panel, anchor, placement: Placement::Split(zone) })
+        }
+    };
+    if let Err(e) = place(app, anchor) {
+        // The chosen anchor's frame may not accept splits in the user's edited layout: fall back
+        // to the Source monitor rather than leaving the preview where it was.
+        if anchor == PanelKind::Source {
+            return Err(e);
+        }
+        anchor = PanelKind::Source;
+        if !app.ui.dock.contains(&anchor) {
+            app.show_panel(anchor);
+        }
+        place(app, anchor)?;
+    }
+    // The startup split size, not the half-and-half a fresh split uses.
+    if let Some(path) = program_split_path(app.ui.dock.root.as_ref()) {
+        app.apply_dock(Action::ResizeSplit { path, size })?;
+    }
+    app.ui.focused = panel;
+    app.pending_panel_raise = Some(panel);
+    ctx.request_repaint();
+    Ok(json!({"restored": "Program", "docked": true}))
+}
+
+/// The Program Monitor's slot in a startup layout: the panel to dock beside (a shown tab of the
+/// group on the other side), the side the preview takes, and the split's size.
+fn startup_program_slot(layout: &crate::dock::Layout) -> Option<(PanelKind, craft_ui::docking::Zone, craft_ui::layout::SplitSize)> {
+    use craft_ui::docking::{Node, Zone};
+    fn shown(node: &Node<PanelKind>) -> Option<PanelKind> {
+        match node {
+            Node::Tabs { panels, active } => panels.get(*active).or_else(|| panels.first()).copied(),
+            Node::Split { first, second, .. } => shown(first).or_else(|| shown(second)),
+            _ => None,
+        }
+    }
+    fn walk(node: &Node<PanelKind>) -> Option<(PanelKind, Zone, craft_ui::layout::SplitSize)> {
+        let Node::Split { size, first, second, .. } = node else { return None };
+        // Walk down to the split whose child *is* the preview's group, so a split higher up (a
+        // whole canvas row) does not donate its own size and sibling.
+        if is_program_group(first) {
+            return Some((shown(second)?, Zone::Left, *size));
+        }
+        if is_program_group(second) {
+            return Some((shown(first)?, Zone::Right, *size));
+        }
+        walk(first).or_else(|| walk(second))
+    }
+    walk(layout.root.as_ref()?)
+}
+
+fn is_program_group(node: &craft_ui::docking::Node<PanelKind>) -> bool {
+    matches!(node, craft_ui::docking::Node::Tabs { panels, .. } if panels.contains(&PanelKind::Program))
+}
+
+/// The path from the root to the split whose child is the Program Monitor's group, if any.
+fn program_split_path(root: Option<&craft_ui::docking::Node<PanelKind>>) -> Option<Vec<bool>> {
+    use craft_ui::docking::Node;
+    fn walk(node: &Node<PanelKind>, path: &mut Vec<bool>) -> Option<Vec<bool>> {
+        let Node::Split { first, second, .. } = node else { return None };
+        if is_program_group(first) || is_program_group(second) {
+            return Some(path.clone());
+        }
+        path.push(false);
+        if let Some(found) = walk(first, path) {
+            return Some(found);
+        }
+        path.pop();
+        path.push(true);
+        let found = walk(second, path);
+        path.pop();
+        found
+    }
+    walk(root?, &mut Vec::new())
+}
+
+/// What a pending fullscreen request asks the monitor's native window for.
+#[derive(Clone, Copy)]
+enum FullscreenRequest {
+    /// Full screen on the display at this index.
+    On(usize),
+    Off,
+}
+
+/// Re-send a pending monitor fullscreen request for a few frames until its native window reports
+/// the requested state (or the platform refuses it).
+pub fn apply_pending_monitor_fullscreen(ctx: &egui::Context) {
+    let key = fullscreen_pending_key();
+    let Some((viewport, want, tries)) = ctx.data(|d| d.get_temp::<(egui::ViewportId, FullscreenRequest, u8)>(key)) else { return };
+    let now = ctx.input_for(viewport, |i| i.viewport().fullscreen.unwrap_or(false));
+    let done = match want {
+        FullscreenRequest::On(display) => {
+            if tries == 0 {
+                ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::SetMonitor(display));
+            }
+            now && tries > 0
+        }
+        FullscreenRequest::Off => !now,
+    };
+    if done || tries >= 30 {
+        ctx.data_mut(|d| d.remove::<(egui::ViewportId, FullscreenRequest, u8)>(key));
+        return;
+    }
+    if matches!(want, FullscreenRequest::Off) {
+        ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Fullscreen(false));
+    }
+    ctx.data_mut(|d| d.insert_temp(key, (viewport, want, tries.saturating_add(1))));
+    ctx.request_repaint();
+}
 
 /// Maximize `p`, or restore the layout when a panel is maximized (also the panel menu's Maximize /
 /// Restore Frame). Only a docked panel maximizes; a maximized panel that has since been closed or

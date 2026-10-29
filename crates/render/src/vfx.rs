@@ -24,8 +24,10 @@ mod text;
 #[cfg(test)]
 mod tests;
 
+use std::sync::Arc;
+
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::{EffectInstance, ParamValue, Project, Sequence, TrackItem};
+use filmcraft_project::{EffectInstance, ParamValue, Project, Sequence, TrackItem, TrackMethod};
 use filmcraft_time::{Tick, TimeDisplay, format_time};
 use rayon::prelude::*;
 
@@ -33,7 +35,7 @@ use crate::effects::FxCtx;
 use crate::image::Image;
 use crate::{RenderOptions, SourceProvider};
 
-pub use temporal::{StabilizerPath, clear_stabilizer_cache, stabilizer_path};
+pub use temporal::{StabilizerPath, cached_stabilizer_path, clear_stabilizer_cache, stabilizer_path};
 
 /// What an effect may know about the clip beyond its own pixels.
 pub trait FxEnv: Sync {
@@ -174,6 +176,36 @@ impl FxEnv for ItemEnv<'_> {
         }
         h
     }
+}
+
+/// Analyse `item` for Warp Stabilizer without rendering it: the clip's frames are decoded small
+/// and tracked, and the result is cached for the renderer. This is what the Stabilize button runs
+/// in the background; it returns `None` when the clip has no picture or was cancelled.
+///
+/// `on_frame` is called with the frame number as each analysed frame is decoded (the caller's
+/// progress accounting), and the analysis honours [`filmcraft_media::cancel`].
+pub fn analyze_stabilizer(
+    project: &Project,
+    seq: &Sequence,
+    item: &TrackItem,
+    sources: &dyn SourceProvider,
+    method: TrackMethod,
+    detailed: bool,
+    on_frame: Option<&(dyn Fn(usize) + Sync)>,
+) -> Option<Arc<StabilizerPath>> {
+    let env = ItemEnv {
+        project,
+        seq,
+        item,
+        t: item.start,
+        opts: RenderOptions { effects: false, ..RenderOptions::default() },
+        sources,
+        want: 1.0,
+        layer_size: crate::output_size(seq, 1.0),
+        layer_to_output: Affine::IDENTITY,
+        tc: "",
+    };
+    temporal::stabilizer_path_with(&env, 0.0, method, detailed, on_frame)
 }
 
 // ------------------------------------------------------------------ parameters

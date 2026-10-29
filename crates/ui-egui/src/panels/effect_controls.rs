@@ -591,7 +591,9 @@ pub(crate) fn param_row(
     }
     x += 14.0;
     let vx = r.min.x + (r.width() * 0.5).max(150.0);
-    row_label(ui, pos2(x, r.center().y), crate::i18n::t(pd.label), vx - 6.0 - x, Tokens::ui(12.0), t.text);
+    // the Stabilize row's button carries its own name, so the row does not repeat it
+    let row_name = if mask.is_none() && e.effect == "warp_stabilizer" && pd.id == "stabilize" { "" } else { crate::i18n::t(pd.label) };
+    row_label(ui, pos2(x, r.center().y), row_name, vx - 6.0 - x, Tokens::ui(12.0), t.text);
     let value = param.value_at(mt);
     let mut vui = ui.new_child(
         egui::UiBuilder::new()
@@ -599,6 +601,20 @@ pub(crate) fn param_row(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     let id = egui::Id::unique(("pv", clip.0, idx, pkey));
+    // Warp Stabilizer: its first parameter is a button, not a value — Stabilize analyses the clip
+    // in the background; while it runs the button reads Stop and stops it.
+    if mask.is_none() && e.effect == "warp_stabilizer" && pd.id == "stabilize" {
+        let running = filmcraft_engine::stabilizer::running(&app.session, clip, idx);
+        let label = if running { tl!("Stop") } else { tl!("Stabilize") };
+        fit_to_row(&mut vui);
+        let btn = vui.add_sized([120.0, ROW_H - 6.0], egui::Button::new(label));
+        app.auto.add(&format!("effectControls.{}.stabilize", e.effect), btn.rect, label);
+        if btn.clicked() {
+            let cmd = if running { "effects.stopStabilize" } else { "effects.stabilize" };
+            actions.push((cmd.into(), json!({"clip": clip.0, "effect": idx})));
+        }
+        return;
+    }
     let set = param_value_widget(app, &mut vui, e, pd, &value, clip, idx, mask, pkey, id, t, actions);
     if let Some(v) = set {
         actions.push(("effects.setParam".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v}))));

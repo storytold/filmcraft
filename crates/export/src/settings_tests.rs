@@ -1361,3 +1361,80 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
         }
     }
 }
+
+/// Matroska export with uncompressed PCM audio, read back by FilmCraft's own demuxer and by
+/// ffprobe. MKV has no DNxHR/APV.
+#[test]
+fn matroska_export_muxes_pcm_audio() {
+    let (p, seq, m) = matte([0.2, 0.4, 0.8, 1.0], 320, 180, Some(-6.0));
+    let dir = Scratch::new("mkv-export");
+    let path = dir.path("out.mkv");
+    let range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(24)));
+    let audio = AudioSettings { codec: AudioCodec::Pcm, ..Default::default() };
+    let s = ExportSettings { format: Format::H264, multiplexer: Multiplexer::Mkv, audio, path: path.clone(), range, ..Default::default() };
+    assert_eq!((s.extension(), s.audio_codec()), ("mkv", AudioCodec::Pcm));
+    let summary = s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND));
+    assert!(summary.format.contains("Matroska"), "{}", summary.format);
+    assert!(summary.audio.contains("PCM") && !summary.audio.contains("AAC"), "{}", summary.audio);
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(&bytes[..4], &[0x1A, 0x45, 0xDF, 0xA3], "an EBML header");
+    // the project's own reader finds both tracks and exactly one second of samples
+    let src = filmcraft_codecs::open_bytes("out.mkv", bytes.into()).unwrap();
+    let a = src.audio(0, 48_000, 48_000).unwrap();
+    assert!(a.channels.iter().all(|c| c.len() == 48_000), "48 kHz of PCM");
+    assert!(a.channels[0].iter().any(|v| v.abs() > 0.1), "the tone is there");
+    if let Some(j) = ffprobe_json(&["-show_format", "-show_streams"], &path) {
+        let streams = j["streams"].as_array().unwrap();
+        let v = streams.iter().find(|s| s["codec_type"] == "video").unwrap();
+        let au = streams.iter().find(|s| s["codec_type"] == "audio").unwrap();
+        assert_eq!((v["codec_name"].as_str(), v["width"].as_u64(), v["height"].as_u64()), (Some("h264"), Some(320), Some(180)));
+        assert_eq!((au["codec_name"].as_str(), au["sample_rate"].as_str(), au["channels"].as_u64()), (Some("pcm_s16le"), Some("48000"), Some(2)));
+        assert_eq!(j["format"]["format_name"].as_str(), Some("matroska,webm"));
+    }
+}
+
+/// Matroska's audio is not fixed to PCM: Auto picks AAC (like MP4) and FLAC is selectable, each
+/// encoded and read back by the project's demuxer and ffprobe.
+#[test]
+fn matroska_audio_selects_aac_flac_and_pcm() {
+    let (p, seq, m) = matte([0.2, 0.4, 0.8, 1.0], 320, 180, Some(-6.0));
+    let range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(24)));
+    for (label, codec, want) in [("auto", AudioCodec::Auto, "aac"), ("aac", AudioCodec::Aac, "aac"), ("flac", AudioCodec::Flac, "flac")] {
+        let dir = Scratch::new(&format!("mkv-audio-{label}"));
+        let path = dir.path("out.mkv");
+        let audio = AudioSettings { codec, ..Default::default() };
+        let s = ExportSettings { format: Format::H264, multiplexer: Multiplexer::Mkv, audio, path: path.clone(), range, ..Default::default() };
+        assert_eq!(s.audio_codec(), if codec == AudioCodec::Flac { AudioCodec::Flac } else { AudioCodec::Aac }, "{label}");
+        let summary = s.summary(320, 180, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND));
+        assert_eq!(summary.audio.contains("AAC"), want == "aac", "{label}: {}", summary.audio);
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..4], &[0x1A, 0x45, 0xDF, 0xA3], "{label}: an EBML header");
+        let src = filmcraft_codecs::open_bytes("out.mkv", bytes.into()).unwrap();
+        let a = src.audio(0, 48_000, 48_000).unwrap();
+        assert_eq!(a.channels.len(), 2, "{label}");
+        assert!(a.channels[0].len() >= 46_000 && a.channels[0].len() <= 51_000, "{label}: one second of samples, got {}", a.channels[0].len());
+        assert!(a.channels[0].iter().any(|v| v.abs() > 0.05), "{label}: the tone is there");
+        if let Some(j) = ffprobe_json(&["-show_streams"], &path) {
+            let au = j["streams"].as_array().unwrap().iter().find(|s| s["codec_type"] == "audio").unwrap();
+            assert_eq!(au["codec_name"].as_str(), Some(want), "{label}");
+        }
+    }
+}
+
+/// What Matroska cannot carry is refused before any frame is rendered; every audio codec it can
+/// carry is accepted.
+#[test]
+fn matroska_rejects_unsupported_video_and_accepts_compatible_audio() {
+    let mkv = |format, audio| ExportSettings { format, multiplexer: Multiplexer::Mkv, audio, ..Default::default() };
+    let e = mkv(Format::DnxHr, AudioSettings::default()).validate().unwrap_err().to_string();
+    assert!(e.contains("Matroska") && e.contains("DNxHR"), "{e}");
+    let e = mkv(Format::Apv, AudioSettings::default()).validate().unwrap_err().to_string();
+    assert!(e.contains("Matroska"), "{e}");
+    assert!(mkv(Format::H264, AudioSettings::default()).validate().is_ok());
+    assert!(mkv(Format::H264, AudioSettings { codec: AudioCodec::Aac, ..Default::default() }).validate().is_ok());
+    assert!(mkv(Format::H264, AudioSettings { codec: AudioCodec::Flac, ..Default::default() }).validate().is_ok());
+    assert!(mkv(Format::ProRes, AudioSettings { codec: AudioCodec::Pcm, ..Default::default() }).validate().is_ok());
+    assert!(mkv(Format::Mjpeg, AudioSettings { codec: AudioCodec::Pcm, ..Default::default() }).validate().is_ok());
+}
