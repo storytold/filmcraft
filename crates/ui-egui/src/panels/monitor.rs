@@ -25,6 +25,165 @@ pub enum Which {
     Program,
 }
 
+/// What the monitor's picture block draws this frame.
+struct PictureCtx {
+    target: Target,
+    frame_size: (u32, u32),
+    rate: filmcraft_time::FrameRate,
+    time: Tick,
+    duration: Tick,
+    drop_frame: bool,
+    compare: bool,
+    ref_area: Option<Rect>,
+    pic: Rect,
+    video_area: Rect,
+    prefix: &'static str,
+}
+
+/// The picture block: schedules this frame's render request (GPU or CPU), shows the texture
+/// that is ready, and draws the safe margins, comparison reference and display-mode label.
+fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &crate::state::MonitorView, pc: PictureCtx) {
+    let PictureCtx { target, frame_size, rate, time, duration, drop_frame, compare, ref_area, pic, video_area, prefix } = pc;
+    let t = app.tokens;
+    let ctx = ui.ctx().clone();
+    let display = mv.display_mode().unwrap_or(DisplayMode::Composite);
+    let display_w = (frame_size.0 as f64 * monitor_view::pixel_aspect(app, which)) as f32;
+    let ppp = ctx.pixels_per_point();
+    if mv.transparency_grid {
+        monitor_view::transparency_grid(ui.painter(), pic, ui.clip_rect());
+    } else {
+        ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
+    }
+    let playing = if which == Which::Program { app.playback.playing } else { app.source_playback.clock.playing };
+    let res = mv.effective_res(playing);
+    // frame pixels per screen pixel along the axis that needs the most of them
+    let screen_scale = (pic.width() * ppp / frame_size.0.max(1) as f32).max(pic.height() * ppp / frame_size.1.max(1) as f32).min(1.0);
+    let scale = quantize_scale(res.scale().min(screen_scale.max(1.0 / 32.0)));
+    let frame = rate.frame_at(time);
+    let rev = match target {
+        Target::Item(i) => app.item_revision(i),
+        _ => app.session.revision,
+    };
+    let size_key = (scale * 1000.0) as u32;
+    let channel = display.is_channel();
+    // the GPU compositor's output is opaque, so the Transparency Grid takes the CPU frames
+    let grid = mv.transparency_grid && !channel;
+    let use_gpu = which == Which::Program && app.gpu.is_some() && !channel && !grid && !crate::panels::menu_dialogs::software_renderer(app);
+    // render previews are opaque, so the grid and Display Mode ▸ Alpha take live renders
+    let live = grid || display == DisplayMode::Alpha;
+    let cpu_target = target;
+    let target = match (use_gpu, target) {
+        (true, Target::Sequence(s)) => Target::SequencePlan(s),
+        (false, Target::Sequence(s)) if live => Target::SequenceLive(s),
+        (_, t) => t,
+    };
+    // Draft decoding (opt-in): only while playing at 1/2 resolution or lower.
+    let draft = crate::frames::draft_playback(playing, scale, app.session.prefs.playback.draft_decode);
+    let key = FrameKey { target, frame, size: size_key, revision: rev, draft };
+    let project = app.session.project.clone();
+    if playing {
+        let preroll = which == Which::Program && app.playback.preroll.is_some();
+        let speed = if which == Which::Program { app.playback.speed } else { app.source_playback.clock.speed };
+        app.frames.schedule_playback(key, rate, scale, &project, speed, preroll);
+        if preroll {
+            app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, rate.frame_at(duration) - 1);
+        }
+    } else {
+        app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
+    }
+    let asked = asked_before(app, prefix, key, playing);
+    let tex_name = if channel {
+        format!("monitor-{prefix}-{display:?}")
+    } else if grid {
+        format!("monitor-{prefix}-grid")
+    } else {
+        format!("monitor-{prefix}")
+    };
+    let (shown, on_screen) = if use_gpu {
+        let found = app
+            .frames
+            .get_plan(&key)
+            .map(|p| (key, p))
+            .or_else(|| app.frames.nearest_plan(key, 6))
+            .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))));
+        match found {
+            Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
+            None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
+        }
+    } else if grid {
+        cpu_texture_as(app, &ctx, &tex_name, key, &asked, display, true)
+    } else {
+        cpu_texture(app, &ctx, &tex_name, key, &asked, display)
+    };
+    let exact = on_screen == Some(key);
+    if which == Which::Program {
+        app.program_shown = on_screen;
+    }
+    if !playing && !exact {
+        app.monitor_inexact = true;
+    }
+    if playing {
+        let clock = if which == Which::Program { &mut app.playback } else { &mut app.source_playback.clock };
+        if std::mem::take(&mut clock.hidden) {
+            clock.meter.resync(frame, exact);
+        } else {
+            clock.meter.refresh(frame, exact);
+        }
+    }
+    if let Some(tex) = shown {
+        ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    if let Some(ra) = ref_area {
+        // the reference frame (CPU path)
+        let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
+        let rtarget = match cpu_target {
+            Target::Sequence(s) if mv.transparency_grid => Target::SequenceLive(s),
+            t => t,
+        };
+        let rkey = FrameKey { target: rtarget, frame: rf, size: size_key, revision: rev, draft: false };
+        app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
+        let rpic = fit(ra, display_w, frame_size.1 as f32);
+        if mv.transparency_grid {
+            monitor_view::transparency_grid(ui.painter(), rpic, ui.clip_rect());
+        } else {
+            ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
+        }
+        let (reference, _) = if mv.transparency_grid {
+            cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], DisplayMode::Composite, true)
+        } else {
+            cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite)
+        };
+        if let Some(tex) = reference {
+            ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        }
+        app.auto.add("program.compare.reference", rpic, "reference frame");
+        let bar = Rect::from_min_max(pos2(ra.min.x, ra.max.y + 2.0), pos2(video_area.max.x, ra.max.y + 22.0));
+        monitor_view::compare_bar(app, ui, bar, rate, drop_frame);
+    }
+    if mv.safe_margins {
+        for (f, c) in [(0.9, Color32::from_white_alpha(120)), (0.8, Color32::from_white_alpha(90))] {
+            let r = Rect::from_center_size(pic.center(), pic.size() * f);
+            ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, c), StrokeKind::Middle);
+        }
+        let c = pic.center();
+        ui.painter().line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
+        ui.painter().line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
+    }
+    if display != DisplayMode::Composite && !compare {
+        let label = match display {
+            DisplayMode::Composite => tl!("Composite"),
+            DisplayMode::Alpha => tl!("Alpha"),
+            DisplayMode::Red => tl!("Red"),
+            DisplayMode::Green => tl!("Green"),
+            DisplayMode::Blue => tl!("Blue"),
+            DisplayMode::AudioWaveform => tl!("Audio Waveform"),
+            DisplayMode::Comparison => tl!("Comparison"),
+            DisplayMode::VideoAndWaveform => tl!("Video and Waveform"),
+        };
+        ui.painter().text(pos2(video_area.max.x - 8.0, video_area.min.y + 6.0), Align2::RIGHT_TOP, label, Tokens::ui(10.0), t.text_dim);
+    }
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
@@ -174,139 +333,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let saved_clip = ui.clip_rect();
     ui.set_clip_rect(saved_clip.intersect(if mv.zoom.is_some() && !compare { video_area } else { picture_area.expand(12.0) }));
     if show_picture {
-        if mv.transparency_grid {
-            monitor_view::transparency_grid(ui.painter(), pic, ui.clip_rect());
-        } else {
-            ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
-        }
-        let playing = if which == Which::Program { app.playback.playing } else { app.source_playback.clock.playing };
-        let res = mv.effective_res(playing);
-        // frame pixels per screen pixel along the axis that needs the most of them
-        let screen_scale = (pic.width() * ppp / frame_size.0.max(1) as f32).max(pic.height() * ppp / frame_size.1.max(1) as f32).min(1.0);
-        let scale = quantize_scale(res.scale().min(screen_scale.max(1.0 / 32.0)));
-        let frame = rate.frame_at(time);
-        let rev = match target {
-            Target::Item(i) => app.item_revision(i),
-            _ => app.session.revision,
-        };
-        let size_key = (scale * 1000.0) as u32;
-        let channel = display.is_channel();
-        // the GPU compositor's output is opaque, so the Transparency Grid takes the CPU frames
-        let grid = mv.transparency_grid && !channel;
-        let use_gpu = which == Which::Program && app.gpu.is_some() && !channel && !grid && !crate::panels::menu_dialogs::software_renderer(app);
-        // render previews are opaque, so the grid and Display Mode ▸ Alpha take live renders
-        let live = grid || display == DisplayMode::Alpha;
-        let cpu_target = target;
-        let target = match (use_gpu, target) {
-            (true, Target::Sequence(s)) => Target::SequencePlan(s),
-            (false, Target::Sequence(s)) if live => Target::SequenceLive(s),
-            (_, t) => t,
-        };
-        // Draft decoding (opt-in): only while playing at 1/2 resolution or lower.
-        let draft = crate::frames::draft_playback(playing, scale, app.session.prefs.playback.draft_decode);
-        let key = FrameKey { target, frame, size: size_key, revision: rev, draft };
-        let project = app.session.project.clone();
-        if playing {
-            let preroll = which == Which::Program && app.playback.preroll.is_some();
-            let speed = if which == Which::Program { app.playback.speed } else { app.source_playback.clock.speed };
-            app.frames.schedule_playback(key, rate, scale, &project, speed, preroll);
-            if preroll {
-                app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, rate.frame_at(duration) - 1);
-            }
-        } else {
-            app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
-        }
-        let asked = asked_before(app, prefix, key, playing);
-        let tex_name = if channel {
-            format!("monitor-{prefix}-{display:?}")
-        } else if grid {
-            format!("monitor-{prefix}-grid")
-        } else {
-            format!("monitor-{prefix}")
-        };
-        let (shown, on_screen) = if use_gpu {
-            let found = app
-                .frames
-                .get_plan(&key)
-                .map(|p| (key, p))
-                .or_else(|| app.frames.nearest_plan(key, 6))
-                .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))));
-            match found {
-                Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
-                None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
-            }
-        } else if grid {
-            cpu_texture_as(app, &ctx, &tex_name, key, &asked, display, true)
-        } else {
-            cpu_texture(app, &ctx, &tex_name, key, &asked, display)
-        };
-        let exact = on_screen == Some(key);
-        if which == Which::Program {
-            app.program_shown = on_screen;
-        }
-        if !playing && !exact {
-            app.monitor_inexact = true;
-        }
-        if playing {
-            let clock = if which == Which::Program { &mut app.playback } else { &mut app.source_playback.clock };
-            if std::mem::take(&mut clock.hidden) {
-                clock.meter.resync(frame, exact);
-            } else {
-                clock.meter.refresh(frame, exact);
-            }
-        }
-        if let Some(tex) = shown {
-            ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-        }
-        if let Some(ra) = ref_area {
-            // the reference frame (CPU path)
-            let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
-            let rtarget = match cpu_target {
-                Target::Sequence(s) if mv.transparency_grid => Target::SequenceLive(s),
-                t => t,
-            };
-            let rkey = FrameKey { target: rtarget, frame: rf, size: size_key, revision: rev, draft: false };
-            app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
-            let rpic = fit(ra, display_w, frame_size.1 as f32);
-            if mv.transparency_grid {
-                monitor_view::transparency_grid(ui.painter(), rpic, ui.clip_rect());
-            } else {
-                ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
-            }
-            let (reference, _) = if mv.transparency_grid {
-                cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], DisplayMode::Composite, true)
-            } else {
-                cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite)
-            };
-            if let Some(tex) = reference {
-                ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-            }
-            app.auto.add("program.compare.reference", rpic, "reference frame");
-            let bar = Rect::from_min_max(pos2(ra.min.x, ra.max.y + 2.0), pos2(video_area.max.x, ra.max.y + 22.0));
-            monitor_view::compare_bar(app, ui, bar, rate, drop_frame);
-        }
-        if mv.safe_margins {
-            for (f, c) in [(0.9, Color32::from_white_alpha(120)), (0.8, Color32::from_white_alpha(90))] {
-                let r = Rect::from_center_size(pic.center(), pic.size() * f);
-                ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, c), StrokeKind::Middle);
-            }
-            let c = pic.center();
-            ui.painter().line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
-            ui.painter().line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
-        }
-        if display != DisplayMode::Composite && !compare {
-            let label = match display {
-                DisplayMode::Composite => tl!("Composite"),
-                DisplayMode::Alpha => tl!("Alpha"),
-                DisplayMode::Red => tl!("Red"),
-                DisplayMode::Green => tl!("Green"),
-                DisplayMode::Blue => tl!("Blue"),
-                DisplayMode::AudioWaveform => tl!("Audio Waveform"),
-                DisplayMode::Comparison => tl!("Comparison"),
-                DisplayMode::VideoAndWaveform => tl!("Video and Waveform"),
-            };
-            ui.painter().text(pos2(video_area.max.x - 8.0, video_area.min.y + 6.0), Align2::RIGHT_TOP, label, Tokens::ui(10.0), t.text_dim);
-        }
+        draw_picture(app, ui, which, &mv, PictureCtx { target, frame_size, rate, time, duration, drop_frame, compare, ref_area, pic, video_area, prefix });
     }
     // Dropped-frame indicator (Program only)
     if which == Which::Program && app.playback.playing {
@@ -352,6 +379,42 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     }
 
     // ---- controls row: timecode | zoom | res | wrench | duration
+    let dur_tc = format_time(mark_out.map(|o| o + rate.frame_duration()).unwrap_or(duration) - range_start, rate, drop_frame, TimeDisplay::Timecode, 48000);
+    let (bar, zoom_bar) = controls_row(app, ui, rect, which, time, rate, drop_frame, origin, &dur_tc);
+
+    // ---- mini timeline / scrub bar
+    follow_playhead(app, which, origin, duration, time);
+    time_zoom_bar(app, ui, zoom_bar, which, origin, duration, rate);
+    mini_timeline(app, ui, bar, which, origin, time, duration, rate, mark_in, mark_out);
+
+    // ---- transport buttons
+    let row3 = Rect::from_min_size(pos2(rect.min.x, zoom_bar.max.y + 4.0), vec2(rect.width(), 32.0));
+    transport(app, ui, row3, which);
+}
+
+/// The controls row under the picture: timecode, duration, zoom, resolution, the wrench menu
+/// and the source-drag controls. Returns the mini-timeline and zoom bars below it.
+#[allow(clippy::too_many_arguments)]
+fn controls_row(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    rect: Rect,
+    which: Which,
+    time: Tick,
+    rate: filmcraft_time::FrameRate,
+    drop_frame: bool,
+    origin: Tick,
+    dur_tc: &str,
+) -> (Rect, Rect) {
+    let t = app.tokens;
+    let ctx = ui.ctx().clone();
+    let mv = monitor_view::view(app, which).clone();
+    let prefix = if which == Which::Program { "program" } else { "source" };
+    let stacked_controls = rect.width() < 540.0;
+    let separate_source_drag = which == Which::Source && stacked_controls && rect.width() < 310.0;
+    let source_drag_h = if separate_source_drag { 26.0 } else { 0.0 };
+    let controls_h = 28.0 + 24.0 + 15.0 + 36.0 + if stacked_controls { 26.0 } else { 0.0 } + source_drag_h;
+    // ---- controls row: timecode | zoom | res | wrench | duration
     let row1 = Rect::from_min_size(pos2(rect.min.x + 14.0, rect.max.y - controls_h + 2.0), vec2(rect.width() - 28.0, 26.0));
     let tc = format_time(time, rate, drop_frame, TimeDisplay::Timecode, 48000);
     let tc_rect = Rect::from_min_size(row1.min, vec2(110.0, row1.height()));
@@ -367,8 +430,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         None => {}
     }
     app.auto.add(&format!("{prefix}.timecode"), tc_rect, &tc);
-    let dur_tc = format_time(mark_out.map(|o| o + rate.frame_duration()).unwrap_or(duration) - range_start, rate, drop_frame, TimeDisplay::Timecode, 48000);
-    ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, &dur_tc, Tokens::timecode(), t.text_dim);
+    ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, dur_tc, Tokens::timecode(), t.text_dim);
     // At compact widths, timecodes and view settings need separate rows.
     let settings_y = row1.min.y + if stacked_controls { 26.0 } else { 0.0 };
     let zoom_x = if stacked_controls && which == Which::Source && !separate_source_drag {
@@ -465,16 +527,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             }
         }
     });
-    // ---- mini timeline / scrub bar
     let bar = Rect::from_min_size(pos2(rect.min.x + 14.0, settings_y + 28.0 + source_drag_h), vec2(rect.width() - 28.0, 22.0));
     let zoom_bar = Rect::from_min_size(pos2(bar.min.x, bar.max.y + 2.0), vec2(bar.width(), 13.0));
-    follow_playhead(app, which, origin, duration, time);
-    time_zoom_bar(app, ui, zoom_bar, which, origin, duration, rate);
-    mini_timeline(app, ui, bar, which, origin, time, duration, rate, mark_in, mark_out);
-
-    // ---- transport buttons
-    let row3 = Rect::from_min_size(pos2(rect.min.x, zoom_bar.max.y + 4.0), vec2(rect.width(), 32.0));
-    transport(app, ui, row3, which);
+    (bar, zoom_bar)
 }
 
 /// How many of a paused monitor's latest requests are remembered ([`asked_before`]): about a

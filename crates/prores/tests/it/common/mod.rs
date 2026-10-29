@@ -246,7 +246,18 @@ pub fn ffmpeg_decode(ff: &Path, mov: &Path, pix_fmt: &str) -> (Vec<u16>, String)
 }
 
 /// Render a lavfi source to raw 10-bit planar frames with ffmpeg and load them as [`Frame`]s.
-pub fn source_frames(ff: &Path, name: &str, lavfi: &str, frames: u32, w: u32, h: u32, chroma: ChromaFormat, alpha: bool) -> Vec<Frame> {
+pub struct SourceFrameSpec<'a> {
+    pub name: &'a str,
+    pub lavfi: &'a str,
+    pub frames: u32,
+    pub width: u32,
+    pub height: u32,
+    pub chroma: ChromaFormat,
+    pub alpha: bool,
+}
+
+pub fn source_frames(ff: &Path, spec: SourceFrameSpec<'_>) -> Vec<Frame> {
+    let SourceFrameSpec { name, lavfi, frames, width, height, chroma, alpha } = spec;
     let path = fixture_dir().join(format!("{name}.raw"));
     if !path.exists() {
         let pix = match (chroma, alpha) {
@@ -261,7 +272,7 @@ pub fn source_frames(ff: &Path, name: &str, lavfi: &str, frames: u32, w: u32, h:
     }
     let bytes = std::fs::read(&path).unwrap();
     let s: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-    let (w, h) = (w as usize, h as usize);
+    let (w, h) = (width as usize, height as usize);
     let per = frame_samples(w, h, chroma, alpha);
     assert_eq!(s.len(), per * frames as usize);
     s.chunks_exact(per).map(|p| frame_from_raw(p, w as u32, h as u32, chroma, 10, alpha)).collect()

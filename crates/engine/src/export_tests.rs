@@ -161,177 +161,225 @@ fn files_in(dir: &Path) -> Vec<String> {
 /// all of these, and each extra frame costs a 4K H.264 encode in five presets.
 #[test]
 fn every_builtin_preset_exports_and_ffprobe_confirms() {
-    let (start, end) = (1.0, 1.08);
-    let mut s = demo();
-    let presets = s.execute("export.presets.list", json!({})).unwrap()["presets"].as_array().unwrap().clone();
+    let mut session = demo();
+    let presets = session.execute("export.presets.list", json!({})).unwrap()["presets"].as_array().unwrap().clone();
     assert!(presets.len() >= 24);
-    let dir = Scratch::new("presets");
-    for pr in &presets {
-        let name = pr["name"].as_str().unwrap();
-        let sub = dir.0.join(format!("p{}", filmcraft_export::presets::preset_key(name)));
-        std::fs::create_dir_all(&sub).unwrap();
-        let path = sub.join("Demo").to_string_lossy().to_string();
-        let params = json!({"preset": name, "path": path, "range": "custom", "startSeconds": start, "endSeconds": end, "wait": true});
-        let frames = s.execute("export.resolve", params.clone()).unwrap()["frames"].as_u64().unwrap();
-        let r = s.execute("file.exportMedia", params).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let out = r["path"].as_str().unwrap().to_string();
-        let settings = s.execute("export.presets.get", json!({"name": name})).unwrap()["settings"].clone();
-        let fmt = settings["format"].as_str().unwrap().to_string();
-        let (w, h) = match settings["frameSize"].as_array() {
-            Some(a) => (a[0].as_u64().unwrap(), a[1].as_u64().unwrap()),
-            None => (1920, 1080),
-        };
-        if matches!(fmt.as_str(), "png" | "tiff" | "bmp" | "jpg" | "tga" | "dpx" | "exr") {
-            let files = files_in(&sub);
-            let ext = Path::new(&out).extension().unwrap().to_string_lossy().to_string();
-            assert_eq!(frames, 3, "frames 23..=25 at 23.976 fps");
-            let want: Vec<String> = (0..frames).map(|i| format!("Demo{i:03}.{ext}")).collect();
-            assert_eq!(files, want, "{name}");
-            if let Some(j) = probe(&sub.join(&want[0]).to_string_lossy()) {
-                let v = stream(&j, "video").unwrap();
-                let codec = match fmt.as_str() {
-                    "png" => "png",
-                    "tiff" => "tiff",
-                    "jpg" => "mjpeg",
-                    "tga" => "targa",
-                    "dpx" => "dpx",
-                    "exr" => "exr",
-                    _ => "bmp",
-                };
-                assert_eq!(v["codec_name"], codec, "{name}");
-                assert_eq!((v["width"].as_u64().unwrap(), v["height"].as_u64().unwrap()), (w, h), "{name}");
-            }
-            continue;
-        }
-        assert!(Path::new(&out).exists(), "{name}: {out}");
-        let Some(j) = probe(&out) else { continue };
-        let fmt_name = j["format"]["format_name"].as_str().unwrap();
-        match fmt.as_str() {
-            "wav" | "aiff" | "flac" => {
-                let a = stream(&j, "audio").unwrap();
-                let bits = settings["audio"]["bits"].as_u64().unwrap();
-                let codec = match (fmt.as_str(), bits) {
-                    ("flac", _) => "flac",
-                    ("wav", 24) => "pcm_s24le",
-                    ("wav", _) => "pcm_s16le",
-                    (_, 24) => "pcm_s24be",
-                    _ => "pcm_s16be",
-                };
-                assert_eq!(a["codec_name"], codec, "{name}");
-                assert_eq!(a["sample_rate"], "48000", "{name}");
-                assert_eq!(a["channels"], 2, "{name}");
-                assert!((num(&j["format"]["duration"]) - (end - start)).abs() < 0.01, "{name}: {}", j["format"]["duration"]);
-                continue;
-            }
-            "aac" => {
-                // AAC Audio: an MPEG-4 audio file, sound only
-                assert!(out.ends_with(".m4a"), "{name}: {out}");
-                assert!(fmt_name.contains("m4a"), "{name}: {fmt_name}");
-                assert_eq!(j["streams"].as_array().unwrap().len(), 1, "{name}");
-                let a = stream(&j, "audio").unwrap();
-                assert_eq!((a["codec_name"].as_str(), a["sample_rate"].as_str(), a["channels"].as_u64()), (Some("aac"), Some("48000"), Some(2)), "{name}");
-                assert!((num(&j["format"]["duration"]) - (end - start)).abs() < 0.03, "{name}: {}", j["format"]["duration"]);
-                continue;
-            }
-            "gif" => {
-                let v = stream(&j, "video").unwrap();
-                assert_eq!(v["codec_name"], "gif");
-                assert_eq!((v["width"].as_u64().unwrap(), v["height"].as_u64().unwrap()), (640, 360));
-                continue;
-            }
-            "mxf-opatom" => {
-                // Avid style: picture only in Demo.mxf, one mono PCM file per channel
-                assert_eq!(fmt_name, "mxf", "{name}");
-                assert_eq!(j["streams"].as_array().unwrap().len(), 1, "{name}");
-                assert_eq!(stream(&j, "video").unwrap()["codec_name"], "dnxhd", "{name}");
-                for k in 1..=2 {
-                    let a = probe(&format!("{}_A{k}.mxf", out.trim_end_matches(".mxf"))).unwrap();
-                    let a = stream(&a, "audio").unwrap();
-                    assert_eq!((a["codec_name"].as_str(), a["channels"].as_u64()), (Some("pcm_s24le"), Some(1)), "{name} A{k}");
-                }
-                continue;
-            }
-            _ => {}
-        }
-        let v = stream(&j, "video").unwrap_or_else(|| panic!("{name}: no video"));
-        assert_eq!((v["width"].as_u64().unwrap(), v["height"].as_u64().unwrap()), (w, h), "{name}");
-        assert_eq!(v["r_frame_rate"], "24000/1001", "{name}");
-        let a = stream(&j, "audio").unwrap_or_else(|| panic!("{name}: no audio"));
-        assert_eq!(a["sample_rate"], "48000", "{name}");
-        assert_eq!(a["channels"], 2, "{name}");
-        let vbr = num(&v["bit_rate"]) / 1e6;
-        let px = (w * h) as f64 / (1920.0 * 1080.0) * (24000.0 / 1001.0) / 29.97;
-        match fmt.as_str() {
-            "h264" => {
-                assert!(fmt_name.contains("mp4"), "{name}: {fmt_name}");
-                assert_eq!(v["codec_name"], "h264", "{name}");
-                assert_eq!(v["profile"], "High", "{name}");
-                assert_eq!(a["codec_name"], "aac", "{name}");
-                assert!((num(&a["bit_rate"]) / 1000.0 - 320.0).abs() < 80.0, "{name}: AAC {}", a["bit_rate"]);
-            }
-            "prores" => {
-                assert!(fmt_name.contains("mov"), "{name}: {fmt_name}");
-                assert_eq!(v["codec_name"], "prores", "{name}");
-                let (profile, mbps) = match settings["proresProfile"].as_str().unwrap() {
-                    "proxy" => ("Proxy", 45.0),
-                    "lt" => ("LT", 102.0),
-                    "standard" => ("Standard", 147.0),
-                    "4444" => ("4444", 330.0),
-                    "4444xq" => ("XQ", 500.0),
-                    _ => ("HQ", 220.0),
-                };
-                assert_eq!(v["profile"], profile, "{name}");
-                if matches!(profile, "4444" | "XQ") {
-                    let pix = v["pix_fmt"].as_str().unwrap_or_default();
-                    let alpha = settings["alpha"].as_bool().unwrap_or(false);
-                    assert!(pix.contains("444") && pix.starts_with("yuva") == alpha, "{name}: {pix}");
-                }
-                assert!(vbr <= mbps * px * 1.5, "{name}: {vbr:.1} Mb/s vs nominal {:.1}", mbps * px);
-                assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
-            }
-            "dnxhr" => {
-                assert_eq!(v["codec_name"], "dnxhd", "{name}");
-                let p = settings["dnxProfile"].as_str().unwrap().to_ascii_uppercase();
-                assert_eq!(v["profile"], format!("DNXHR {p}"), "{name}");
-                let mbps = match p.as_str() {
-                    "LB" => 45.0,
-                    "SQ" => 145.0,
-                    _ => 220.0,
-                };
-                assert!((vbr / (mbps * px) - 1.0).abs() < 0.25, "{name}: {vbr:.1} Mb/s vs nominal {:.1}", mbps * px);
-                assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
-            }
-            "apv" => {
-                assert!(fmt_name.contains("mov"), "{name}: {fmt_name}");
-                assert_eq!(v["codec_name"], "apv", "{name}");
-                let p = settings["apvProfile"].as_str().unwrap();
-                let idc = match p {
-                    "422-10" => "33",
-                    "422-12" => "44",
-                    "444-10" => "55",
-                    "444-12" => "66",
-                    "4444-10" => "77",
-                    "4444-12" => "88",
-                    "400-10" => "99",
-                    other => other,
-                };
-                let got_profile = v["profile"].as_str().unwrap_or("");
-                assert!(got_profile == p || got_profile == idc, "{name}: profile {got_profile} != {p} ({idc})");
-                assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
-            }
-            "mxf-op1a" => {
-                assert_eq!(fmt_name, "mxf", "{name}");
-                let codec = match settings["mxfVideoCodec"].as_str().unwrap() {
-                    "proRes" => "prores",
-                    "h264" => "h264",
-                    _ => "dnxhd",
-                };
-                assert_eq!(v["codec_name"], codec, "{name}");
-                assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
-            }
-            other => panic!("{name}: unexpected format {other}"),
-        }
+    let directory = Scratch::new("presets");
+    for preset in &presets {
+        verify_builtin_preset(&mut session, &directory, preset, 1.0, 1.08);
     }
+}
+
+fn verify_builtin_preset(session: &mut Session, directory: &Scratch, preset: &Value, start: f64, end: f64) {
+    let name = preset["name"].as_str().unwrap();
+    let subdirectory = directory.0.join(format!("p{}", filmcraft_export::presets::preset_key(name)));
+    std::fs::create_dir_all(&subdirectory).unwrap();
+    let path = subdirectory.join("Demo").to_string_lossy().to_string();
+    let params = json!({"preset": name, "path": path, "range": "custom", "startSeconds": start, "endSeconds": end, "wait": true});
+    let frames = session.execute("export.resolve", params.clone()).unwrap()["frames"].as_u64().unwrap();
+    let result = session.execute("file.exportMedia", params).unwrap_or_else(|error| panic!("{name}: {error}"));
+    let output = result["path"].as_str().unwrap().to_string();
+    let settings = session.execute("export.presets.get", json!({"name": name})).unwrap()["settings"].clone();
+    let format = settings["format"].as_str().unwrap();
+    let (width, height) = frame_size(&settings);
+
+    if is_image_sequence(format) {
+        verify_image_sequence(name, format, &output, &subdirectory, frames, width, height);
+        return;
+    }
+    assert!(Path::new(&output).exists(), "{name}: {output}");
+    let Some(probe_result) = probe(&output) else { return };
+    let format_name = probe_result["format"]["format_name"].as_str().unwrap();
+    if verify_audio_preset(name, format, &settings, &probe_result, start, end)
+        || verify_special_preset(name, format, format_name, &output, &probe_result, start, end)
+    {
+        return;
+    }
+    verify_video_preset(name, format, format_name, &settings, &probe_result, width, height);
+}
+
+fn frame_size(settings: &Value) -> (u64, u64) {
+    match settings["frameSize"].as_array() {
+        Some(size) => (size[0].as_u64().unwrap(), size[1].as_u64().unwrap()),
+        None => (1920, 1080),
+    }
+}
+
+fn is_image_sequence(format: &str) -> bool {
+    matches!(format, "png" | "tiff" | "bmp" | "jpg" | "tga" | "dpx" | "exr")
+}
+
+fn verify_image_sequence(name: &str, format: &str, output: &str, directory: &Path, frames: u64, width: u64, height: u64) {
+    let files = files_in(directory);
+    let extension = Path::new(output).extension().unwrap().to_string_lossy().to_string();
+    assert_eq!(frames, 3, "frames 23..=25 at 23.976 fps");
+    let wanted: Vec<String> = (0..frames).map(|index| format!("Demo{index:03}.{extension}")).collect();
+    assert_eq!(files, wanted, "{name}");
+    if let Some(probe_result) = probe(&directory.join(&wanted[0]).to_string_lossy()) {
+        let video = stream(&probe_result, "video").unwrap();
+        let codec = match format {
+            "png" => "png",
+            "tiff" => "tiff",
+            "jpg" => "mjpeg",
+            "tga" => "targa",
+            "dpx" => "dpx",
+            "exr" => "exr",
+            _ => "bmp",
+        };
+        assert_eq!(video["codec_name"], codec, "{name}");
+        assert_eq!((video["width"].as_u64().unwrap(), video["height"].as_u64().unwrap()), (width, height), "{name}");
+    }
+}
+
+fn verify_audio_preset(name: &str, format: &str, settings: &Value, probe_result: &Value, start: f64, end: f64) -> bool {
+    match format {
+        "wav" | "aiff" | "flac" => {
+            let audio = stream(probe_result, "audio").unwrap();
+            let bits = settings["audio"]["bits"].as_u64().unwrap();
+            let codec = match (format, bits) {
+                ("flac", _) => "flac",
+                ("wav", 24) => "pcm_s24le",
+                ("wav", _) => "pcm_s16le",
+                (_, 24) => "pcm_s24be",
+                _ => "pcm_s16be",
+            };
+            assert_eq!(audio["codec_name"], codec, "{name}");
+            assert_eq!(audio["sample_rate"], "48000", "{name}");
+            assert_eq!(audio["channels"], 2, "{name}");
+            assert!((num(&probe_result["format"]["duration"]) - (end - start)).abs() < 0.01, "{name}: {}", probe_result["format"]["duration"]);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn verify_special_preset(name: &str, format: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
+    match format {
+        "aac" => verify_aac_preset(name, format_name, output, probe_result, start, end),
+        "gif" => verify_gif_preset(probe_result),
+        "mxf-opatom" => verify_opatom_preset(name, format_name, output, probe_result),
+        _ => false,
+    }
+}
+
+fn verify_aac_preset(name: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
+    assert!(output.ends_with(".m4a"), "{name}: {output}");
+    assert!(format_name.contains("m4a"), "{name}: {format_name}");
+    assert_eq!(probe_result["streams"].as_array().unwrap().len(), 1, "{name}");
+    let audio = stream(probe_result, "audio").unwrap();
+    assert_eq!((audio["codec_name"].as_str(), audio["sample_rate"].as_str(), audio["channels"].as_u64()), (Some("aac"), Some("48000"), Some(2)), "{name}");
+    assert!((num(&probe_result["format"]["duration"]) - (end - start)).abs() < 0.03, "{name}: {}", probe_result["format"]["duration"]);
+    true
+}
+
+fn verify_gif_preset(probe_result: &Value) -> bool {
+    let video = stream(probe_result, "video").unwrap();
+    assert_eq!(video["codec_name"], "gif");
+    assert_eq!((video["width"].as_u64().unwrap(), video["height"].as_u64().unwrap()), (640, 360));
+    true
+}
+
+fn verify_opatom_preset(name: &str, format_name: &str, output: &str, probe_result: &Value) -> bool {
+    assert_eq!(format_name, "mxf", "{name}");
+    assert_eq!(probe_result["streams"].as_array().unwrap().len(), 1, "{name}");
+    assert_eq!(stream(probe_result, "video").unwrap()["codec_name"], "dnxhd", "{name}");
+    for channel in 1..=2 {
+        let audio_probe = probe(&format!("{}_A{channel}.mxf", output.trim_end_matches(".mxf"))).unwrap();
+        let audio = stream(&audio_probe, "audio").unwrap();
+        assert_eq!((audio["codec_name"].as_str(), audio["channels"].as_u64()), (Some("pcm_s24le"), Some(1)), "{name} A{channel}");
+    }
+    true
+}
+
+fn verify_video_preset(name: &str, format: &str, format_name: &str, settings: &Value, probe_result: &Value, width: u64, height: u64) {
+    let video = stream(probe_result, "video").unwrap_or_else(|| panic!("{name}: no video"));
+    assert_eq!((video["width"].as_u64().unwrap(), video["height"].as_u64().unwrap()), (width, height), "{name}");
+    assert_eq!(video["r_frame_rate"], "24000/1001", "{name}");
+    let audio = stream(probe_result, "audio").unwrap_or_else(|| panic!("{name}: no audio"));
+    assert_eq!(audio["sample_rate"], "48000", "{name}");
+    assert_eq!(audio["channels"], 2, "{name}");
+    let video_bitrate = num(&video["bit_rate"]) / 1e6;
+    let pixel_rate = (width * height) as f64 / (1920.0 * 1080.0) * (24000.0 / 1001.0) / 29.97;
+    match format {
+        "h264" => verify_h264_preset(name, format_name, video, audio),
+        "prores" => verify_prores_preset(name, settings, video, audio, video_bitrate, pixel_rate, format_name),
+        "dnxhr" => verify_dnx_preset(name, settings, video, audio, video_bitrate, pixel_rate),
+        "apv" => verify_apv_preset(name, settings, video, audio, format_name),
+        "mxf-op1a" => verify_op1a_preset(name, settings, video, audio, format_name),
+        other => panic!("{name}: unexpected format {other}"),
+    }
+}
+
+fn verify_h264_preset(name: &str, format_name: &str, video: &Value, audio: &Value) {
+    assert!(format_name.contains("mp4"), "{name}: {format_name}");
+    assert_eq!(video["codec_name"], "h264", "{name}");
+    assert_eq!(video["profile"], "High", "{name}");
+    assert_eq!(audio["codec_name"], "aac", "{name}");
+    assert!((num(&audio["bit_rate"]) / 1000.0 - 320.0).abs() < 80.0, "{name}: AAC {}", audio["bit_rate"]);
+}
+
+fn verify_prores_preset(name: &str, settings: &Value, video: &Value, audio: &Value, bitrate: f64, pixel_rate: f64, format_name: &str) {
+    assert!(format_name.contains("mov"), "{name}: {format_name}");
+    assert_eq!(video["codec_name"], "prores", "{name}");
+    let (profile, nominal_mbps) = match settings["proresProfile"].as_str().unwrap() {
+        "proxy" => ("Proxy", 45.0),
+        "lt" => ("LT", 102.0),
+        "standard" => ("Standard", 147.0),
+        "4444" => ("4444", 330.0),
+        "4444xq" => ("XQ", 500.0),
+        _ => ("HQ", 220.0),
+    };
+    assert_eq!(video["profile"], profile, "{name}");
+    if matches!(profile, "4444" | "XQ") {
+        let pixel_format = video["pix_fmt"].as_str().unwrap_or_default();
+        let alpha = settings["alpha"].as_bool().unwrap_or(false);
+        assert!(pixel_format.contains("444") && pixel_format.starts_with("yuva") == alpha, "{name}: {pixel_format}");
+    }
+    assert!(bitrate <= nominal_mbps * pixel_rate * 1.5, "{name}: {bitrate:.1} Mb/s vs nominal {:.1}", nominal_mbps * pixel_rate);
+    assert_eq!(audio["codec_name"], "pcm_s24le", "{name}");
+}
+
+fn verify_dnx_preset(name: &str, settings: &Value, video: &Value, audio: &Value, bitrate: f64, pixel_rate: f64) {
+    assert_eq!(video["codec_name"], "dnxhd", "{name}");
+    let profile = settings["dnxProfile"].as_str().unwrap().to_ascii_uppercase();
+    assert_eq!(video["profile"], format!("DNXHR {profile}"), "{name}");
+    let nominal_mbps = match profile.as_str() {
+        "LB" => 45.0,
+        "SQ" => 145.0,
+        _ => 220.0,
+    };
+    assert!((bitrate / (nominal_mbps * pixel_rate) - 1.0).abs() < 0.25, "{name}: {bitrate:.1} Mb/s vs nominal {:.1}", nominal_mbps * pixel_rate);
+    assert_eq!(audio["codec_name"], "pcm_s24le", "{name}");
+}
+
+fn verify_apv_preset(name: &str, settings: &Value, video: &Value, audio: &Value, format_name: &str) {
+    assert!(format_name.contains("mov"), "{name}: {format_name}");
+    assert_eq!(video["codec_name"], "apv", "{name}");
+    let profile = settings["apvProfile"].as_str().unwrap();
+    let expected = match profile {
+        "422-10" => "33",
+        "422-12" => "44",
+        "444-10" => "55",
+        "444-12" => "66",
+        "4444-10" => "77",
+        "4444-12" => "88",
+        "400-10" => "99",
+        other => other,
+    };
+    let actual = video["profile"].as_str().unwrap_or("");
+    assert!(actual == profile || actual == expected, "{name}: profile {actual} != {profile} ({expected})");
+    assert_eq!(audio["codec_name"], "pcm_s24le", "{name}");
+}
+
+fn verify_op1a_preset(name: &str, settings: &Value, video: &Value, audio: &Value, format_name: &str) {
+    assert_eq!(format_name, "mxf", "{name}");
+    let codec = match settings["mxfVideoCodec"].as_str().unwrap() {
+        "proRes" => "prores",
+        "h264" => "h264",
+        _ => "dnxhd",
+    };
+    assert_eq!(video["codec_name"], codec, "{name}");
+    assert_eq!(audio["codec_name"], "pcm_s24le", "{name}");
 }
 
 #[test]

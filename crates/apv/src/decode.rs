@@ -250,26 +250,48 @@ fn decode_pbu_planes(hdr: &FrameHeader, payload: &[u8], out_depth: u8, threads: 
     let sub_h = hdr.chroma.sub_height_c() as usize;
 
     for tile in &decoded_tiles {
-        copy_tile_comp(&tile.comps[0], tile.w_luma as usize, tile.h_luma as usize, tile.x0 as usize, tile.y0 as usize, &mut out.y, w, h);
+        copy_tile_comp(
+            &tile.comps[0],
+            &TilePlacement { w: tile.w_luma as usize, h: tile.h_luma as usize, x: tile.x0 as usize, y: tile.y0 as usize },
+            &mut out.y,
+            w,
+            h,
+        );
         if hdr.chroma.num_comps() >= 3 {
             let tw_c = (tile.w_luma as usize) / sub_w;
             let th_c = (tile.h_luma as usize) / sub_h;
             let tx_c = (tile.x0 as usize) / sub_w;
             let ty_c = (tile.y0 as usize) / sub_h;
-            copy_tile_comp(&tile.comps[1], tw_c, th_c, tx_c, ty_c, &mut out.cb, cw, ch);
-            copy_tile_comp(&tile.comps[2], tw_c, th_c, tx_c, ty_c, &mut out.cr, cw, ch);
+            let chroma = TilePlacement { w: tw_c, h: th_c, x: tx_c, y: ty_c };
+            copy_tile_comp(&tile.comps[1], &chroma, &mut out.cb, cw, ch);
+            copy_tile_comp(&tile.comps[2], &chroma, &mut out.cr, cw, ch);
         }
         if hdr.chroma == ChromaFormat::Yuv4444
             && let Some(alpha) = out.alpha.as_mut()
         {
-            copy_tile_comp(&tile.comps[3], tile.w_luma as usize, tile.h_luma as usize, tile.x0 as usize, tile.y0 as usize, alpha, w, h);
+            copy_tile_comp(
+                &tile.comps[3],
+                &TilePlacement { w: tile.w_luma as usize, h: tile.h_luma as usize, x: tile.x0 as usize, y: tile.y0 as usize },
+                alpha,
+                w,
+                h,
+            );
         }
     }
 
     Ok(())
 }
 
-fn copy_tile_comp(src: &[u16], tw: usize, th: usize, tx: usize, ty: usize, dst: &mut [u16], fw: usize, fh: usize) {
+/// Placement of a tile plane (`w` x `h` samples at `x`, `y`) within a frame plane.
+struct TilePlacement {
+    w: usize,
+    h: usize,
+    x: usize,
+    y: usize,
+}
+
+fn copy_tile_comp(src: &[u16], tile: &TilePlacement, dst: &mut [u16], fw: usize, fh: usize) {
+    let TilePlacement { w: tw, h: th, x: tx, y: ty } = *tile;
     if tx >= fw || ty >= fh {
         return;
     }
@@ -342,18 +364,19 @@ fn decode_single_tile(hdr: &FrameHeader, tile_idx: usize, tile_bytes: &[u8], out
         comp_slices.push((c, comp_bytes));
     }
 
+    let geom = TileGeom { w_luma, h_luma, out_depth };
     #[cfg(feature = "threads")]
     let decoded_comps: Result<Vec<Vec<u16>>> = if par_comps && comp_slices.len() > 1 {
         use rayon::prelude::*;
-        comp_slices.into_par_iter().map(|(c, comp_bytes)| decode_tile_comp(hdr, tile_idx, c, comp_bytes, tile_qp[c], w_luma, h_luma, out_depth)).collect()
+        comp_slices.into_par_iter().map(|(c, comp_bytes)| decode_tile_comp(hdr, tile_idx, c, comp_bytes, tile_qp[c], geom)).collect()
     } else {
-        comp_slices.into_iter().map(|(c, comp_bytes)| decode_tile_comp(hdr, tile_idx, c, comp_bytes, tile_qp[c], w_luma, h_luma, out_depth)).collect()
+        comp_slices.into_iter().map(|(c, comp_bytes)| decode_tile_comp(hdr, tile_idx, c, comp_bytes, tile_qp[c], geom)).collect()
     };
 
     #[cfg(not(feature = "threads"))]
     let decoded_comps: Result<Vec<Vec<u16>>> = {
         let _ = par_comps;
-        comp_slices.into_iter().map(|(c, comp_bytes)| decode_tile_comp(hdr, tile_idx, c, comp_bytes, tile_qp[c], w_luma, h_luma, out_depth)).collect()
+        comp_slices.into_iter().map(|(c, comp_bytes)| decode_tile_comp(hdr, tile_idx, c, comp_bytes, tile_qp[c], geom)).collect()
     };
 
     let mut comps: [Vec<u16>; 4] = Default::default();
@@ -364,8 +387,16 @@ fn decode_single_tile(hdr: &FrameHeader, tile_idx: usize, tile_bytes: &[u8], out
     Ok(DecodedTile { x0, y0, w_luma, h_luma, comps })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn decode_tile_comp(hdr: &FrameHeader, tile_idx: usize, c: usize, comp_bytes: &[u8], qp: u8, w_luma: u32, h_luma: u32, out_depth: u8) -> Result<Vec<u16>> {
+/// Luma size of a tile and the output sample bit depth.
+#[derive(Clone, Copy)]
+struct TileGeom {
+    w_luma: u32,
+    h_luma: u32,
+    out_depth: u8,
+}
+
+fn decode_tile_comp(hdr: &FrameHeader, tile_idx: usize, c: usize, comp_bytes: &[u8], qp: u8, geom: TileGeom) -> Result<Vec<u16>> {
+    let TileGeom { w_luma, h_luma, out_depth } = geom;
     let num_mb_cols = w_luma / 16;
     let num_mb_rows = h_luma / 16;
     let sub_w = if c == 0 { 1 } else { hdr.chroma.sub_width_c() };

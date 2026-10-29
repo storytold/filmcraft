@@ -374,7 +374,7 @@ impl Builder {
             return *id;
         }
         let info = media_info(name, spec);
-        let id = self.p.add_item(name, Label::Iris, ItemKind::Media(media_clip(MediaRef::File { path: path.to_string() }, info)), bin);
+        let id = self.p.add_item(name, Label::Iris, ItemKind::Media(Box::new(media_clip(MediaRef::File { path: path.to_string() }, info))), bin);
         self.media.insert(key.to_string(), id);
         id
     }
@@ -386,7 +386,7 @@ impl Builder {
         let mut spec = spec.clone();
         spec.kind = Some(MediaKind::Synthetic);
         let info = media_info(name, &spec);
-        let id = self.p.add_item(name, Label::Lavender, ItemKind::Media(media_clip(MediaRef::Generator(g), info)), bin);
+        let id = self.p.add_item(name, Label::Lavender, ItemKind::Media(Box::new(media_clip(MediaRef::Generator(g), info))), bin);
         self.media.insert(key.to_string(), id);
         id
     }

@@ -54,7 +54,7 @@ fn point_roundtrips_through_the_one_frame_convention() {
     let mut p = Project::new("Lib");
     let a = media(&mut p, "/m/a.mov", true, true, r);
     let s = sequence(&mut p, "Cut", r, false);
-    clip(&mut p, s, TrackKind::Video, 0, a, 0, 240, 0);
+    clip(&mut p, s, TrackKind::Video, 0, a, 0..240, 0);
     {
         let q = p.sequence_mut(s).unwrap();
         q.markers.push(Marker {

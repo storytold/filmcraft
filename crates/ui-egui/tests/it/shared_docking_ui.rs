@@ -187,6 +187,46 @@ fn drag(h: &mut Harness<'_, FilmcraftApp>, from: egui::Pos2, to: egui::Pos2, mod
     }
 }
 
+fn keyboard_resize(h: &mut Harness<'_, FilmcraftApp>, grip_id: egui::Id) {
+    let before_keys = h.state().ui.dock.floating[0].rect;
+    for key in [egui::Key::ArrowRight, egui::Key::ArrowDown] {
+        for pressed in [true, false] {
+            h.event(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+            step(h);
+        }
+    }
+    assert_eq!(h.state().ui.dock.floating[0].rect[2], before_keys[2] + 8.0);
+    assert_eq!(h.state().ui.dock.floating[0].rect[3], before_keys[3] + 8.0);
+    h.event(Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    step(h);
+    h.event(Event::Key { key: egui::Key::Tab, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
+    for _ in 0..3 {
+        step(h);
+    }
+    assert_ne!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
+}
+
+fn maximize_frame_round_trip(h: &mut Harness<'_, FilmcraftApp>, action_log: &mut Vec<serde_json::Value>) {
+    let saved_root = h.state().ui.dock.clone();
+    let saved_floating = h.state().ui.dock.floating.clone();
+    let ctx = h.ctx.clone();
+    // Maximize Frame fills the area with a docked frame
+    h.state_mut().ui.focused = PanelKind::Program;
+    menus::invoke(h.state_mut(), &ctx, "window.maximizeFrame", json!({})).unwrap();
+    for _ in 0..3 {
+        step(h);
+    }
+    assert!(rect(h, "panel.Program").width() > 1000.0);
+    action_log.push(action_state(h, "maximized"));
+    assert_eq!(h.state().ui.dock, saved_root);
+    assert_eq!(h.state().ui.dock.floating, saved_floating);
+    menus::invoke(h.state_mut(), &ctx, "window.maximizeFrame", json!({})).unwrap();
+    for _ in 0..3 {
+        step(h);
+    }
+    assert_eq!(h.state().ui.dock.floating, saved_floating);
+}
+
 #[test]
 fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() {
     let mut session = Session::default();
@@ -249,22 +289,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     h.ctx.memory_mut(|memory| memory.request_focus(grip_id));
     step(&mut h);
     assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
-    let before_keys = h.state().ui.dock.floating[0].rect;
-    for key in [egui::Key::ArrowRight, egui::Key::ArrowDown] {
-        for pressed in [true, false] {
-            h.event(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
-            step(&mut h);
-        }
-    }
-    assert_eq!(h.state().ui.dock.floating[0].rect[2], before_keys[2] + 8.0);
-    assert_eq!(h.state().ui.dock.floating[0].rect[3], before_keys[3] + 8.0);
-    h.event(Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
-    step(&mut h);
-    h.event(Event::Key { key: egui::Key::Tab, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
-    for _ in 0..3 {
-        step(&mut h);
-    }
-    assert_ne!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
+    keyboard_resize(&mut h, grip_id);
     action_log.push(action_state(&h, "keyboard-resized"));
     let resized = h.state().ui.dock.floating[0].rect;
     let header = rect(&h, "panel.float.0.move");
@@ -273,24 +298,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     assert!(h.state().ui.dock.floating[0].rect[0] < resized[0] - 15.0);
     assert!(h.state().ui.dock.floating[0].rect[1] < resized[1] - 10.0);
     action_log.push(action_state(&h, "moved"));
-    let saved_root = h.state().ui.dock.clone();
-    let saved_floating = h.state().ui.dock.floating.clone();
-    let ctx = h.ctx.clone();
-    // Maximize Frame fills the area with a docked frame
-    h.state_mut().ui.focused = PanelKind::Program;
-    menus::invoke(h.state_mut(), &ctx, "window.maximizeFrame", json!({})).unwrap();
-    for _ in 0..3 {
-        step(&mut h);
-    }
-    assert!(rect(&h, "panel.Program").width() > 1000.0);
-    action_log.push(action_state(&h, "maximized"));
-    assert_eq!(h.state().ui.dock, saved_root);
-    assert_eq!(h.state().ui.dock.floating, saved_floating);
-    menus::invoke(h.state_mut(), &ctx, "window.maximizeFrame", json!({})).unwrap();
-    for _ in 0..3 {
-        step(&mut h);
-    }
-    assert_eq!(h.state().ui.dock.floating, saved_floating);
+    maximize_frame_round_trip(&mut h, &mut action_log);
 
     if let Some(directory) = &snapshots {
         std::fs::create_dir_all(directory).unwrap();

@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
+    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, pos2, vec2,
+};
 
 // ---------------------------------------------------------------------------------------------
 // middle: settings
@@ -77,18 +80,16 @@ fn section(ui: &mut egui::Ui, reg: &mut Reg, open: &mut Vec<String>, key: &str, 
     now
 }
 
-pub(super) fn drag(
-    ui: &mut egui::Ui,
-    reg: &mut Reg,
-    id: &str,
-    v: &mut f64,
-    range: std::ops::RangeInclusive<f64>,
-    speed: f64,
-    suffix: &str,
-    decimals: usize,
-) -> bool {
+pub(super) struct DragOptions {
+    pub(super) range: std::ops::RangeInclusive<f64>,
+    pub(super) speed: f64,
+    pub(super) suffix: &'static str,
+    pub(super) decimals: usize,
+}
+
+pub(super) fn drag(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut f64, options: DragOptions) -> bool {
     let before = *v;
-    let r = ui.add(crate::widgets::number_drag(v).range(range).speed(speed).suffix(suffix).max_decimals(decimals));
+    let r = ui.add(crate::widgets::number_drag(v).range(options.range).speed(options.speed).suffix(options.suffix).max_decimals(options.decimals));
     reg.add(id, r.rect, format!("{v}"));
     // a drag ended by Escape goes back to the value it started from (egui ends the drag, #580)
     let home = r.id.with("before-drag");
@@ -416,9 +417,9 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     if let Some((w, h)) = s.frame_size.as_mut() {
         row(ui, t, "", |ui| {
             let (mut fw, mut fh) = (*w as f64, *h as f64);
-            drag(ui, reg, "export.video.width", &mut fw, 16.0..=8192.0, 1.0, "", 0);
+            drag(ui, reg, "export.video.width", &mut fw, DragOptions { range: 16.0..=8192.0, speed: 1.0, suffix: "", decimals: 0 });
             ui.label("×");
-            drag(ui, reg, "export.video.height", &mut fh, 16.0..=8192.0, 1.0, "", 0);
+            drag(ui, reg, "export.video.height", &mut fh, DragOptions { range: 16.0..=8192.0, speed: 1.0, suffix: "", decimals: 0 });
             (*w, *h) = (fw as u32, fh as u32);
         });
     }
@@ -511,7 +512,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             if s.bitrate_mode == BitrateMode::Crf {
                 row(ui, t, tl!("Quality (CRF)"), |ui| {
                     let mut crf = if s.crf.is_finite() { f64::from(s.crf) } else { f64::from(filmcraft_engine::export::DEFAULT_CRF) };
-                    if drag(ui, reg, "export.video.crf", &mut crf, 0.0..=51.0, 0.1, "", 0) {
+                    if drag(ui, reg, "export.video.crf", &mut crf, DragOptions { range: 0.0..=51.0, speed: 0.1, suffix: "", decimals: 0 }) {
                         s.crf = crf.round() as f32;
                     }
                 });
@@ -527,14 +528,14 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             } else {
                 row(ui, t, tl!("Target Bitrate"), |ui| {
                     let mut mbps = s.bitrate_kbps as f64 / 1000.0;
-                    if drag(ui, reg, "export.video.target", &mut mbps, 0.1..=800.0, 0.1, " Mbps", 1) {
+                    if drag(ui, reg, "export.video.target", &mut mbps, DragOptions { range: 0.1..=800.0, speed: 0.1, suffix: " Mbps", decimals: 1 }) {
                         s.bitrate_kbps = (mbps * 1000.0).round() as u32;
                     }
                 });
                 if s.bitrate_mode != BitrateMode::Cbr {
                     row(ui, t, tl!("Maximum Bitrate"), |ui| {
                         let mut mbps = s.max_bitrate_kbps.unwrap_or(s.bitrate_kbps * 3 / 2) as f64 / 1000.0;
-                        if drag(ui, reg, "export.video.max", &mut mbps, 0.1..=1000.0, 0.1, " Mbps", 1) {
+                        if drag(ui, reg, "export.video.max", &mut mbps, DragOptions { range: 0.1..=1000.0, speed: 0.1, suffix: " Mbps", decimals: 1 }) {
                             s.max_bitrate_kbps = Some((mbps * 1000.0).round() as u32);
                         }
                     });
@@ -547,7 +548,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                 }
                 if let Some(k) = s.keyframe_distance.as_mut() {
                     let mut v = *k as f64;
-                    drag(ui, reg, "export.video.keyframe", &mut v, 1.0..=600.0, 1.0, " frames", 0);
+                    drag(ui, reg, "export.video.keyframe", &mut v, DragOptions { range: 1.0..=600.0, speed: 1.0, suffix: " frames", decimals: 0 });
                     *k = v as u32;
                 }
             });
@@ -613,7 +614,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         Format::Mjpeg | Format::JpegSequence => {
             row(ui, t, tl!("Quality"), |ui| {
                 let mut q = s.quality as f64;
-                drag(ui, reg, "export.video.quality", &mut q, 1.0..=100.0, 1.0, "", 0);
+                drag(ui, reg, "export.video.quality", &mut q, DragOptions { range: 1.0..=100.0, speed: 1.0, suffix: "", decimals: 0 });
                 s.quality = q as u8;
             });
         }
@@ -710,7 +711,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         // every level is lossless: higher levels take longer for smaller files
         row(ui, t, tl!("Compression Level"), |ui| {
             let mut level = f64::from(s.audio.flac_level.min(8));
-            if drag(ui, reg, "export.audio.flacLevel", &mut level, 0.0..=8.0, 0.05, "", 0) {
+            if drag(ui, reg, "export.audio.flacLevel", &mut level, DragOptions { range: 0.0..=8.0, speed: 0.05, suffix: "", decimals: 0 }) {
                 s.audio.flac_level = level.round() as u8;
             }
             ui.label(egui::RichText::new(tl!("0 fastest, 8 smallest")).size(12.0));
@@ -730,8 +731,8 @@ fn text_overlay(ui: &mut egui::Ui, reg: &mut Reg, key: &str, o: &mut TextOverlay
     row(ui, t, tl!("Position"), |ui| placement_combo(ui, reg, &format!("export.effects.{key}.position"), &mut o.placement));
     row(ui, t, tl!("Size / Opacity"), |ui| {
         let (mut sz, mut op) = (o.size_percent as f64, o.opacity as f64);
-        drag(ui, reg, &format!("export.effects.{key}.size"), &mut sz, 1.0..=50.0, 0.2, " %", 1);
-        drag(ui, reg, &format!("export.effects.{key}.opacity"), &mut op, 0.0..=100.0, 1.0, " %", 0);
+        drag(ui, reg, &format!("export.effects.{key}.size"), &mut sz, DragOptions { range: 1.0..=50.0, speed: 0.2, suffix: " %", decimals: 1 });
+        drag(ui, reg, &format!("export.effects.{key}.opacity"), &mut op, DragOptions { range: 0.0..=100.0, speed: 1.0, suffix: " %", decimals: 0 });
         (o.size_percent, o.opacity) = (sz as f32, op as f32);
     });
 }
@@ -755,8 +756,8 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
             row(ui, t, tl!("Position"), |ui| placement_combo(ui, reg, "export.effects.imageOverlay.position", &mut o.placement));
             row(ui, t, tl!("Size / Opacity"), |ui| {
                 let (mut sz, mut op) = (o.size_percent as f64, o.opacity as f64);
-                drag(ui, reg, "export.effects.imageOverlay.size", &mut sz, 1.0..=100.0, 0.5, " %", 1);
-                drag(ui, reg, "export.effects.imageOverlay.opacity", &mut op, 0.0..=100.0, 1.0, " %", 0);
+                drag(ui, reg, "export.effects.imageOverlay.size", &mut sz, DragOptions { range: 1.0..=100.0, speed: 0.5, suffix: " %", decimals: 1 });
+                drag(ui, reg, "export.effects.imageOverlay.opacity", &mut op, DragOptions { range: 0.0..=100.0, speed: 1.0, suffix: " %", decimals: 0 });
                 (o.size_percent, o.opacity) = (sz as f32, op as f32);
             });
         }
@@ -772,8 +773,8 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
         if fx.video_limiter.enabled {
             row(ui, t, tl!("Luma Min / Max"), |ui| {
                 let (mut lo, mut hi) = (fx.video_limiter.min_percent as f64, fx.video_limiter.max_percent as f64);
-                drag(ui, reg, "export.effects.videoLimiter.min", &mut lo, 0.0..=50.0, 0.5, " %", 1);
-                drag(ui, reg, "export.effects.videoLimiter.max", &mut hi, 50.0..=100.0, 0.5, " %", 1);
+                drag(ui, reg, "export.effects.videoLimiter.min", &mut lo, DragOptions { range: 0.0..=50.0, speed: 0.5, suffix: " %", decimals: 1 });
+                drag(ui, reg, "export.effects.videoLimiter.max", &mut hi, DragOptions { range: 50.0..=100.0, speed: 0.5, suffix: " %", decimals: 1 });
                 (fx.video_limiter.min_percent, fx.video_limiter.max_percent) = (lo as f32, hi as f32);
             });
         }
@@ -782,10 +783,22 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
         check(ui, reg, "export.effects.loudness", &mut fx.loudness.enabled, tl!("Loudness Normalization"));
         if fx.loudness.enabled {
             row(ui, t, tl!("Target Loudness"), |ui| {
-                drag(ui, reg, "export.effects.loudness.target", &mut fx.loudness.target_lufs, -40.0..=-5.0, 0.1, " LUFS", 1);
+                drag(
+                    ui,
+                    reg,
+                    "export.effects.loudness.target",
+                    &mut fx.loudness.target_lufs,
+                    DragOptions { range: -40.0..=-5.0, speed: 0.1, suffix: " LUFS", decimals: 1 },
+                );
             });
             row(ui, t, tl!("True Peak Limit"), |ui| {
-                drag(ui, reg, "export.effects.loudness.truePeak", &mut fx.loudness.true_peak_dbtp, -9.0..=0.0, 0.1, " dBTP", 1);
+                drag(
+                    ui,
+                    reg,
+                    "export.effects.loudness.truePeak",
+                    &mut fx.loudness.true_peak_dbtp,
+                    DragOptions { range: -9.0..=0.0, speed: 0.1, suffix: " dBTP", decimals: 1 },
+                );
             });
         }
     }

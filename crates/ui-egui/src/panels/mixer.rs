@@ -418,21 +418,18 @@ fn run_actions(app: &mut FilmcraftApp, ctx: &egui::Context, acts: Vec<(String, V
     }
 }
 
-/// Draw one mixer strip. A missing track is a no-op; automation ids use `mixer.<label>`; the master strip has `MASTER_STRIP` handling.
-fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, sr: Rect, meter: &[[f32; 2]]) {
+/// The effect and send slots at the top of a mixer strip: their popups (bypass, post-fader,
+/// level, routing, submixes) and the double-click that opens the effect editor. Returns the
+/// `y` below them.
+#[allow(clippy::too_many_arguments)]
+fn mixer_slots(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, x: f32, w: f32, mut y: f32) -> f32 {
     let t = cx.t;
     let seq = cx.seq;
-    let Some(tr) = seq.strip(id).map(|c| c.into_owned()) else { return };
+    let Some(tr) = seq.strip(id).map(|c| c.into_owned()) else { return y };
     let label = strip_label(seq, id);
     let ap = format!("mixer.{label}");
     let is_master = id == MASTER_STRIP;
     let sid = json!(id.0);
-    ui.painter().rect_filled(sr, 3.0, t.control_surface);
-    ui.painter().line_segment([pos2(sr.max.x + 1.0, sr.min.y), pos2(sr.max.x + 1.0, sr.max.y)], Stroke::new(1.0, t.separator));
-    let x = sr.min.x;
-    let w = sr.width();
-    let mut y = sr.min.y + 4.0;
-
     // ---- effect and send slots
     if app.ui.mixer_fx_open {
         let mut open_editor = None;
@@ -594,6 +591,26 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
         y += 6.0;
     }
 
+    y
+}
+
+/// Draw one mixer strip. A missing track is a no-op; automation ids use `mixer.<label>`; the master strip has `MASTER_STRIP` handling.
+fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, sr: Rect, meter: &[[f32; 2]]) {
+    let t = cx.t;
+    let seq = cx.seq;
+    let Some(tr) = seq.strip(id).map(|c| c.into_owned()) else { return };
+    let label = strip_label(seq, id);
+    let ap = format!("mixer.{label}");
+    let is_master = id == MASTER_STRIP;
+    let sid = json!(id.0);
+    ui.painter().rect_filled(sr, 3.0, t.control_surface);
+    ui.painter().line_segment([pos2(sr.max.x + 1.0, sr.min.y), pos2(sr.max.x + 1.0, sr.max.y)], Stroke::new(1.0, t.separator));
+    let x = sr.min.x;
+    let w = sr.width();
+    let mut y = sr.min.y + 4.0;
+
+    y = mixer_slots(app, ui, cx, id, x, w, y);
+
     // ---- input / output
     if !is_master {
         let ir = Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 8.0, 20.0));
@@ -634,45 +651,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
             pan51_panner(app, ui, cx, &tr, &ap, &sid, Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 8.0, 62.0)));
             y += 62.0;
         } else {
-            // ---- pan knob
-            let pan = shown(app, &tr, LANE_PAN, cx.now);
-            let kc = pos2(sr.center().x, y + 20.0);
-            let kr = Rect::from_center_size(kc, vec2(38.0, 38.0));
-            let kresp =
-                ui.interact(kr, egui::Id::unique((&ap, "pan")), Sense::click_and_drag()).on_hover_text(tl!("Pan / balance (drag; double-click: centre)"));
-            let ring = if kresp.hovered() || kresp.dragged() { t.tab_text_active } else { t.control_handle_dim };
-            ui.painter().circle_stroke(kc, 16.0, Stroke::new(2.0, ring));
-            let ang = (pan / 100.0) as f32 * 135f32.to_radians();
-            ui.painter().line_segment([kc, kc + vec2(ang.sin(), -ang.cos()) * 14.0], Stroke::new(2.0, ring));
-            small_text(ui, pos2(kc.x - 22.0, kc.y + 17.0), Align2::CENTER_CENTER, "L", 11.0, t.hot_text);
-            small_text(ui, pos2(kc.x + 22.0, kc.y + 17.0), Align2::CENTER_CENTER, "R", 11.0, t.hot_text);
-            app.auto.add(&format!("{ap}.pan"), kr, "Pan");
-            if kresp.dragged() {
-                let d = kresp.drag_delta();
-                let np = (pan + (d.x - d.y) as f64).clamp(-100.0, 100.0);
-                if np != pan {
-                    cx.cmd("mixer.touch", json!({"strip": sid, "lane": LANE_PAN, "value": np, "time": cx.now.0}));
-                }
-            }
-            if kresp.drag_stopped() {
-                cx.cmd("mixer.release", json!({"strip": sid, "lane": LANE_PAN, "time": cx.now.0}));
-            }
-            if kresp.double_clicked() {
-                cx.cmd("mixer.setValue", json!({"strip": sid, "lane": LANE_PAN, "value": 0.0}));
-            }
-            let vr = Rect::from_center_size(pos2(kc.x, y + 48.0), vec2(56.0, 16.0));
-            let mut vui = ui.new_child(egui::UiBuilder::new().max_rect(vr).layout(egui::Layout::top_down(egui::Align::Center)));
-            let (vresp, nv) = crate::widgets::hot_number(
-                &mut vui,
-                tl!("Pan"),
-                egui::Id::unique((&ap, "panValue")),
-                pan,
-                HotNumberOptions::new(1.0, (-100.0, 100.0), 1, "", &t),
-            );
-            app.auto.add(&format!("{ap}.panValue"), vresp.rect, &format!("{pan:.1}"));
-            if let Some(v) = nv {
-                cx.cmd("mixer.setValue", json!({"strip": sid, "lane": LANE_PAN, "value": v}));
-            }
+            pan_knob(app, ui, cx, id, sr, y);
             y += 62.0;
         }
     } else {
@@ -827,6 +806,50 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
         name.text(pos2(nr.min.x + 30.0, nr.center().y), Align2::LEFT_CENTER, &tr.name, Tokens::ui(12.0), t.text);
     }
     app.auto.add(&format!("{ap}.name"), nr, &tr.name);
+}
+
+/// The pan knob under a strip's output row: drag to pan (heard live), double-click to centre,
+/// with the numeric pan value below it.
+fn pan_knob(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, sr: Rect, y: f32) {
+    let seq = cx.seq;
+    let Some(tr) = seq.strip(id).map(|c| c.into_owned()) else { return };
+    let label = strip_label(seq, id);
+    let ap = format!("mixer.{label}");
+    let sid = json!(id.0);
+    let t = cx.t;
+    // ---- pan knob
+    let pan = shown(app, &tr, LANE_PAN, cx.now);
+    let kc = pos2(sr.center().x, y + 20.0);
+    let kr = Rect::from_center_size(kc, vec2(38.0, 38.0));
+    let kresp = ui.interact(kr, egui::Id::unique((&ap, "pan")), Sense::click_and_drag()).on_hover_text(tl!("Pan / balance (drag; double-click: centre)"));
+    let ring = if kresp.hovered() || kresp.dragged() { t.tab_text_active } else { t.control_handle_dim };
+    ui.painter().circle_stroke(kc, 16.0, Stroke::new(2.0, ring));
+    let ang = (pan / 100.0) as f32 * 135f32.to_radians();
+    ui.painter().line_segment([kc, kc + vec2(ang.sin(), -ang.cos()) * 14.0], Stroke::new(2.0, ring));
+    small_text(ui, pos2(kc.x - 22.0, kc.y + 17.0), Align2::CENTER_CENTER, "L", 11.0, t.hot_text);
+    small_text(ui, pos2(kc.x + 22.0, kc.y + 17.0), Align2::CENTER_CENTER, "R", 11.0, t.hot_text);
+    app.auto.add(&format!("{ap}.pan"), kr, "Pan");
+    if kresp.dragged() {
+        let d = kresp.drag_delta();
+        let np = (pan + (d.x - d.y) as f64).clamp(-100.0, 100.0);
+        if np != pan {
+            cx.cmd("mixer.touch", json!({"strip": sid, "lane": LANE_PAN, "value": np, "time": cx.now.0}));
+        }
+    }
+    if kresp.drag_stopped() {
+        cx.cmd("mixer.release", json!({"strip": sid, "lane": LANE_PAN, "time": cx.now.0}));
+    }
+    if kresp.double_clicked() {
+        cx.cmd("mixer.setValue", json!({"strip": sid, "lane": LANE_PAN, "value": 0.0}));
+    }
+    let vr = Rect::from_center_size(pos2(kc.x, y + 48.0), vec2(56.0, 16.0));
+    let mut vui = ui.new_child(egui::UiBuilder::new().max_rect(vr).layout(egui::Layout::top_down(egui::Align::Center)));
+    let (vresp, nv) =
+        crate::widgets::hot_number(&mut vui, tl!("Pan"), egui::Id::unique((&ap, "panValue")), pan, HotNumberOptions::new(1.0, (-100.0, 100.0), 1, "", &t));
+    app.auto.add(&format!("{ap}.panValue"), vresp.rect, &format!("{pan:.1}"));
+    if let Some(v) = nv {
+        cx.cmd("mixer.setValue", json!({"strip": sid, "lane": LANE_PAN, "value": v}));
+    }
 }
 
 /// The 5.1 panner: a puck in the listening square (x left … right, y rear … front; speakers drawn

@@ -27,29 +27,30 @@ impl RefPlane<'_> {
     }
 }
 
+/// Geometry and filtering parameters of one motion-compensated block.
+#[derive(Clone, Copy, Debug)]
+pub struct McBlock {
+    /// Top-left sample position in 1/16 sample units of the reference.
+    pub x: i32,
+    pub y: i32,
+    /// Step per output sample in 1/16 units (16 = unscaled).
+    pub step_x: i32,
+    pub step_y: i32,
+    pub w: usize,
+    pub h: usize,
+    pub filter: u8,
+    pub bit_depth: u8,
+}
+
 /// Predict a `w` x `h` block whose top-left sample is at (`x`, `y`) in 1/16 sample units of the
 /// reference, stepping `step_x` / `step_y` (16 = unscaled). Output samples go to `out` (stride
 /// `w`). `tmp` must hold at least `(h * step_y / 16 + 8) * w` entries, `win` at least
 /// `(w + 7) * (h + 7)` (edge-clamped source window).
-#[allow(clippy::too_many_arguments)]
-pub fn predict(
-    r: &RefPlane,
-    x: i32,
-    y: i32,
-    step_x: i32,
-    step_y: i32,
-    w: usize,
-    h: usize,
-    filter: u8,
-    bit_depth: u8,
-    out: &mut [u16],
-    tmp: &mut [u16],
-    win: &mut [u16],
-) {
-    if step_x == 16 && step_y == 16 {
-        predict_unscaled(r, x, y, w, h, filter, bit_depth, out, tmp, win);
+pub fn predict(r: &RefPlane, blk: &McBlock, out: &mut [u16], tmp: &mut [u16], win: &mut [u16]) {
+    if blk.step_x == 16 && blk.step_y == 16 {
+        predict_unscaled(r, blk, out, tmp, win);
     } else {
-        predict_scaled(r, x, y, step_x, step_y, w, h, filter, bit_depth, out, tmp);
+        predict_scaled(r, blk, out, tmp);
     }
 }
 
@@ -72,8 +73,8 @@ fn fetch_window(r: &RefPlane, x0: i32, y0: i32, w: usize, h: usize, win: &mut [u
     ws
 }
 
-#[allow(clippy::too_many_arguments)]
-fn predict_unscaled(r: &RefPlane, x: i32, y: i32, w: usize, h: usize, filter: u8, bit_depth: u8, out: &mut [u16], tmp: &mut [u16], win: &mut [u16]) {
+fn predict_unscaled(r: &RefPlane, blk: &McBlock, out: &mut [u16], tmp: &mut [u16], win: &mut [u16]) {
+    let McBlock { x, y, w, h, filter, bit_depth, .. } = *blk;
     let (x0, y0) = (x >> 4, y >> 4);
     let (fx, fy) = ((x & 15) as usize, (y & 15) as usize);
     let max = (1i32 << bit_depth) - 1;
@@ -238,8 +239,8 @@ fn filter_v_n<const W: usize>(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut
 }
 
 /// General process of 8.5.2.4 (any step).
-#[allow(clippy::too_many_arguments)]
-fn predict_scaled(r: &RefPlane, x: i32, y: i32, step_x: i32, step_y: i32, w: usize, h: usize, filter: u8, bit_depth: u8, out: &mut [u16], tmp: &mut [u16]) {
+fn predict_scaled(r: &RefPlane, blk: &McBlock, out: &mut [u16], tmp: &mut [u16]) {
+    let McBlock { x, y, step_x, step_y, w, h, filter, bit_depth } = *blk;
     let max = (1i32 << bit_depth) - 1;
     let ih = ((((h as i32 - 1) * step_y + 15) >> 4) + 8) as usize;
     for row in 0..ih {
@@ -304,8 +305,8 @@ mod tests {
                 for &(bw, bh) in &[(4usize, 4usize), (8, 8), (16, 8)] {
                     let mut a = vec![0u16; bw * bh];
                     let mut b = vec![0u16; bw * bh];
-                    predict_unscaled(&r, x, y, bw, bh, filter, 8, &mut a, &mut tmp, &mut [0u16; 71 * 71]);
-                    predict_scaled(&r, x, y, 16, 16, bw, bh, filter, 8, &mut b, &mut tmp);
+                    predict_unscaled(&r, &McBlock { x, y, step_x: 16, step_y: 16, w: bw, h: bh, filter, bit_depth: 8 }, &mut a, &mut tmp, &mut [0u16; 71 * 71]);
+                    predict_scaled(&r, &McBlock { x, y, step_x: 16, step_y: 16, w: bw, h: bh, filter, bit_depth: 8 }, &mut b, &mut tmp);
                     assert_eq!(a, b, "filter {filter} pos ({x},{y}) {bw}x{bh}");
                 }
             }

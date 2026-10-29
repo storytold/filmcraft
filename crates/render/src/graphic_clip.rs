@@ -259,19 +259,22 @@ fn paint_solid(px: &mut [f32], cover: &Mask, color: [f32; 4], text: Option<&Layo
 }
 
 /// Gradient for runs that have no fill of their own; runs with a fill stay that solid colour.
-fn paint_mixed_gradient(
-    px: &mut [f32],
-    cover: &Mask,
-    grad: &LinearGradient,
-    lb: [f32; 4],
-    inv: &Xform,
+struct MixedGradient<'a> {
+    px: &'a mut [f32],
+    cover: &'a Mask,
+    grad: &'a LinearGradient,
+    bounds: [f32; 4],
+    inverse: &'a Xform,
     origin: (i32, i32),
-    layout: &Layout,
-    m: &Xform,
-    run_fills: &[Option<[f32; 4]>],
-) {
+    layout: &'a Layout,
+    transform: &'a Xform,
+    run_fills: &'a [Option<[f32; 4]>],
+}
+
+fn paint_mixed_gradient(input: MixedGradient<'_>) {
+    let MixedGradient { px, cover, grad, bounds, inverse, origin, layout, transform, run_fills } = input;
     let mut grad_mask = Mask::new(cover.w, cover.h);
-    render::draw_run(layout, m, &mut grad_mask, origin, Some(0));
+    render::draw_run(layout, transform, &mut grad_mask, origin, Some(0));
     let mut solids: Vec<([f32; 4], Vec<u16>)> = Vec::new();
     for (i, fill) in run_fills.iter().enumerate() {
         let run = (i + 1) as u16;
@@ -281,14 +284,14 @@ fn paint_mixed_gradient(
                 None => solids.push((*col, vec![run])),
             }
         } else {
-            render::draw_run(layout, m, &mut grad_mask, origin, Some(run));
+            render::draw_run(layout, transform, &mut grad_mask, origin, Some(run));
         }
     }
-    over_linear_gradient(px, &grad_mask, grad, lb, inv, origin);
+    over_linear_gradient(px, &grad_mask, grad, bounds, inverse, origin);
     for (col, runs) in solids {
         let mut m_run = Mask::new(cover.w, cover.h);
         for r in runs {
-            render::draw_run(layout, m, &mut m_run, origin, Some(r));
+            render::draw_run(layout, transform, &mut m_run, origin, Some(r));
         }
         over_mask(px, &m_run, premul_linear(col));
     }
@@ -416,7 +419,17 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
         if run_fills.iter().any(Option::is_some)
             && let Some(layout) = &text
         {
-            paint_mixed_gradient(&mut px, &cover, grad, lb, &inv, (x0, y0), layout, m, &run_fills);
+            paint_mixed_gradient(MixedGradient {
+                px: &mut px,
+                cover: &cover,
+                grad,
+                bounds: lb,
+                inverse: &inv,
+                origin: (x0, y0),
+                layout,
+                transform: m,
+                run_fills: &run_fills,
+            });
         } else {
             over_linear_gradient(&mut px, &cover, grad, lb, &inv, (x0, y0));
         }

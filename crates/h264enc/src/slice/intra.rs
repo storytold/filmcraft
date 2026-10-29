@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Avail, BLK4_XY, Cand, Deadzone, Edge4, Edge8, MbCtx, MbEdges, MbKind, RASTER_TO_BLK4, SliceEnc, Src, ZIGZAG4, ZIGZAG8, cavlc, dequant_luma_dc, dequant4,
+    dequant8, fdct4, fdct8, filter8, idct4, idct8, mode_available, pred_chroma, pred4x4, pred8x8, pred16x16, quant_luma_dc, quant4, quant8, satd,
+};
 
 impl<'a, 'b> SliceEnc<'a, 'b> {
     // ------------------------------------------------------------------ intra
@@ -210,7 +213,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Intra 4x4 analysis + coding. Returns cost (SATD domain) or None if it exceeded `limit`.
-    fn intra4x4(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src, c: &mut Cand, limit: u64) -> Option<u64> {
+    fn intra4x4(&self, m: &MbCtx, c: &mut Cand, limit: u64) -> Option<u64> {
+        let MbCtx { mx, my, qp, av, e, src } = *m;
         let qt = self.f.qt;
         let lam = self.f.lam.sad[qp as usize];
         let mut modes = [-1i8; 16];
@@ -297,7 +301,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Intra 8x8 analysis + coding.
-    fn intra8x8(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src, c: &mut Cand, limit: u64) -> Option<u64> {
+    fn intra8x8(&self, m: &MbCtx, c: &mut Cand, limit: u64) -> Option<u64> {
+        let MbCtx { mx, my, qp, av, e, src } = *m;
         let qt = self.f.qt;
         let lam = self.f.lam.sad[qp as usize];
         let mut modes = [-1i8; 16];
@@ -383,7 +388,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     }
 
     /// Full intra analysis; returns the best coded intra candidate. `inter_cost` lets P/B skip expensive modes.
-    pub(super) fn analyse_intra(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src, inter_cost: u64) -> Box<Cand> {
+    pub(super) fn analyse_intra(&self, m: &MbCtx, inter_cost: u64) -> Box<Cand> {
+        let MbCtx { mx, my, qp, av, e, src } = *m;
         let lam = self.f.lam.sad[qp as usize];
         let p = self.f.p;
         // I16x16 mode
@@ -431,7 +437,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let mut limit = if p.rd { cost16 + cost16 / 4 } else { limit };
         if p.i8x8 && p.t8x8 {
             let mut c = Cand::new();
-            if let Some(cost) = self.intra8x8(mx, my, qp, av, e, src, &mut c, limit) {
+            if let Some(cost) = self.intra8x8(m, &mut c, limit) {
                 c.cost = cost;
                 limit = limit.min(cost);
                 best = Some(c);
@@ -439,7 +445,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         }
         {
             let mut c = Cand::new();
-            if let Some(cost) = self.intra4x4(mx, my, qp, av, e, src, &mut c, limit) {
+            if let Some(cost) = self.intra4x4(m, &mut c, limit) {
                 c.cost = cost;
                 if best.as_ref().is_none_or(|b| cost < b.cost) {
                     best = Some(c);

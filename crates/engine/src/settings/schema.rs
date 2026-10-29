@@ -1,6 +1,6 @@
 use super::labels::parse_hex;
 use super::prefs::AppearancePrefs;
-use super::*;
+use super::{CACHE_MGMT, LANGUAGES, SPEAKERS, Value, json};
 
 // ------------------------------------------------------------------ schema
 

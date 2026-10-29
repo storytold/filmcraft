@@ -1,4 +1,7 @@
 use super::*;
+use crate::{AudioOut, shuttle_mix_rate};
+use filmcraft_engine::Session;
+use serde_json::json;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},

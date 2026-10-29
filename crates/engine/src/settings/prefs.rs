@@ -1,5 +1,5 @@
 use super::schema::{DARK_THEMES, LIGHT_THEMES, UI_SCALES};
-use super::*;
+use super::{Deserialize, FrameRate, Serialize, Tick};
 
 // ------------------------------------------------------------------ category values
 

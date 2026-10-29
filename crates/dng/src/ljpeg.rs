@@ -313,7 +313,8 @@ pub fn decode(data: &[u8], max_samples: usize) -> Result<Decoded> {
                 for c in &comps {
                     hufs.push(tables.get(c.table).and_then(Option::as_ref).ok_or(Error::Malformed("lossless JPEG: missing Huffman table"))?);
                 }
-                let samples = scan(data, pos + len, &hufs, width, height, precision, predictor, pt, restart_interval)?;
+                let params = ScanParams { width, height, precision, predictor, pt, restart: restart_interval };
+                let samples = scan(data, pos + len, &hufs, &params)?;
                 return Ok(Decoded { width, height, components: comps.len(), precision, predictor, samples });
             }
             0xC0..=0xC2 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => {
@@ -325,8 +326,33 @@ pub fn decode(data: &[u8], max_samples: usize) -> Result<Decoded> {
     }
 }
 
+/// Frame and scan parameters needed to decode one scan.
+struct ScanParams {
+    width: usize,
+    height: usize,
+    precision: u8,
+    predictor: u8,
+    pt: u8,
+    /// Restart interval in samples per component (0 = none).
+    restart: usize,
+}
+
+/// Read one difference value: a Huffman-coded category followed by its extra bits.
+fn read_diff(bits: &mut Bits, h: &Huffman) -> Result<i32> {
+    let ssss = u32::from(bits.decode(h)?);
+    Ok(match ssss {
+        0 => 0,
+        16 => 32768,
+        s => {
+            let v = bits.bits(s) as i32;
+            if v < (1 << (s - 1)) { v - (1 << s) + 1 } else { v }
+        }
+    })
+}
+
 /// Decode the entropy-coded data of one scan (H.1.2).
-fn scan(data: &[u8], start: usize, hufs: &[&Huffman], width: usize, height: usize, precision: u8, predictor: u8, pt: u8, restart: usize) -> Result<Vec<u16>> {
+fn scan(data: &[u8], start: usize, hufs: &[&Huffman], params: &ScanParams) -> Result<Vec<u16>> {
+    let ScanParams { width, height, precision, predictor, pt, restart } = *params;
     let nc = hufs.len();
     let row_len = width * nc;
     if restart != 0 && !restart.is_multiple_of(width) {
@@ -352,15 +378,7 @@ fn scan(data: &[u8], start: usize, hufs: &[&Huffman], width: usize, height: usiz
         for x in 0..width {
             for (c, h) in hufs.iter().enumerate() {
                 let i = x * nc + c;
-                let ssss = u32::from(bits.decode(h)?);
-                let diff = match ssss {
-                    0 => 0,
-                    16 => 32768,
-                    s => {
-                        let v = bits.bits(s) as i32;
-                        if v < (1 << (s - 1)) { v - (1 << s) + 1 } else { v }
-                    }
-                };
+                let diff = read_diff(&mut bits, h)?;
                 let px = match above {
                     _ if first_line && x == 0 => initial,
                     _ if first_line => i32::from(cur[i - nc]),
