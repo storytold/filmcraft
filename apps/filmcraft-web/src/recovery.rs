@@ -129,3 +129,13 @@ pub async fn restore_media() -> usize {
     }
     n
 }
+
+/// Before a recovered snapshot opens: fetch the sizes of the remote media it refers to, so they
+/// are found (or reported offline) when the project opens. Startup waits at most
+/// [`RESTAT_BUDGET`] for it; media not resolved by then stay offline.
+pub async fn restat_remote_media(snapshot: &[u8]) {
+    crate::remote_import::prefetch_media_until(snapshot, Some(web_time::Instant::now() + RESTAT_BUDGET)).await;
+}
+
+/// Longest startup waits for the sizes of a recovered project's remote media.
+const RESTAT_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);

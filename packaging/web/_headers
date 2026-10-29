@@ -11,3 +11,6 @@
 
 /index.html
   Cache-Control: no-cache
+
+/filmcraft-config.json
+  Cache-Control: no-cache

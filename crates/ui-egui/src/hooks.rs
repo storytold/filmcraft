@@ -43,6 +43,12 @@ pub struct AudioDevices {
     pub output_channels: u16,
 }
 
+/// What the host's remote storage is called.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemoteInfo {
+    pub name: String,
+}
+
 /// Host hooks for native file dialogs etc.
 #[derive(Default)]
 pub struct HostHooks {
@@ -51,6 +57,19 @@ pub struct HostHooks {
     pub cursor_screen_position: Option<Box<dyn Fn() -> Option<(i32, i32)>>>,
     pub pick_save: Option<Box<dyn FnMut(&str) -> Option<String>>>,
     pub pick_open_project: Option<Box<dyn FnMut() -> Option<String>>>,
+    /// Open the project at a path the host has to prepare first (the web build fetches a project
+    /// from remote storage, with the sizes of its media, before `file.open`). Called by
+    /// [`FilmcraftApp::open_project_path`]; without it the path opens with `file.open` directly.
+    pub open_project: Option<Box<dyn FnMut(&str)>>,
+    /// Run an import command (`mediaBrowser.import`, `mediaBrowser.openInSource`, `file.import`
+    /// with its params, `paths` resolved) the host has to prepare for first (the web build fetches
+    /// remote files, and retries the import while their bytes load). Returns whether the host
+    /// took the command over and runs it itself later; `false` runs it as usual.
+    pub import_command: Option<Box<dyn FnMut(&str, &Value) -> bool>>,
+    /// The host has remote storage (the web build with a `filmcraft-config.json`): File ▸ Open
+    /// Remote Project…, Import from Remote… and the remote dialog appear, and the local entries
+    /// say "Local". `None` (desktop): the menus are unchanged.
+    pub remote: Option<RemoteInfo>,
     /// Save dialog with a filter: (filter name, extensions, suggested file name) → path. The
     /// suggestion may be a full path, and the dialog then starts in its folder.
     pub pick_save_as: Option<Box<dyn FnMut(&str, &[&str], &str) -> Option<String>>>,

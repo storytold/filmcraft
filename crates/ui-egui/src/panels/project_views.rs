@@ -658,14 +658,20 @@ fn marquee(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bg: &egui::Response,
     }
 }
 
+/// The context menu of the empty area of a bin or the project panel.
 fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, actions: &mut Actions) {
-    for (label, cmd) in [
+    let remote = app.hooks.remote.is_some();
+    let mut entries = vec![
         (tl!("New Bin"), "file.newBin"),
         (tl!("New Search Bin"), "file.newSearchBin"),
         (tl!("Find…"), "edit.find"),
         (tl!("Automate to Sequence…"), "clip.automateToSequence"),
-        (tl!("Import…"), "file.import"),
-    ] {
+        (if remote { tl!("Import Local…") } else { tl!("Import…") }, "file.import"),
+    ];
+    if remote {
+        entries.push((tl!("Import from Remote…"), "file.importRemote"));
+    }
+    for (label, cmd) in entries {
         if ui.button(label).clicked() {
             let p = if cmd == "file.newBin" { json!({"parent": bin, "panel": v.prefix}) } else { json!({}) };
             actions.push((cmd.into(), p));

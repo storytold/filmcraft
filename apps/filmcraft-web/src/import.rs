@@ -9,7 +9,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use filmcraft_engine::Services;
 use filmcraft_ui_egui::{FilmcraftApp, RelinkHint};
 use serde_json::{Value, json};
 use wasm_bindgen::JsCast;
@@ -31,40 +30,32 @@ pub async fn on_ui<T: 'static>(f: impl FnOnce(&mut crate::WebApp, &egui::Context
     }
 }
 
-fn be32(b: &[u8]) -> u64 {
-    u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as u64
-}
+/// Largest `moov` a prewarm fetches; a bigger one is left to the demuxer's own reads.
+const MOOV_MAX: u64 = 128 << 20;
 
-/// Load what opening the file will read first: the container index.
-async fn prewarm(path: &str, size: u64) {
+/// Load what opening the file will read first: the container index. An MP4/MOV is not scanned:
+/// each top-level atom header is read from the cache (the head chunk, then one chunk per hop) and
+/// the atom skipped by its size, so only the headers and the `moov` itself are fetched, wherever
+/// the `moov` sits in the file.
+pub(crate) async fn prewarm(path: &str, size: u64) {
     let head_len = size.min(64 << 10);
     fs::prefetch(path, 0, head_len).await;
-    let Ok(head) = fs::WebServices.read_range(path, 0, head_len as usize) else { return };
+    let Some(head) = fs::cached_range(path, 0, head_len as usize) else { return };
     if filmcraft_codecs::mp4::sniff(&head) {
-        // walk the top-level boxes to the `moov`
         let mut off = 0u64;
-        for _ in 0..256 {
-            if off + 8 > size {
-                break;
+        for _ in 0..crate::atomwalk::MAX_HOPS {
+            fs::prefetch(path, off, off.saturating_add(crate::atomwalk::HEADER_LEN)).await;
+            let Some(h) = fs::cached_range(path, off, crate::atomwalk::HEADER_LEN as usize) else { break };
+            match crate::atomwalk::step(&h, off, size) {
+                crate::atomwalk::Step::Moov { off, len } => {
+                    if len <= MOOV_MAX {
+                        fs::prefetch(path, off, off + len).await;
+                    }
+                    break;
+                }
+                crate::atomwalk::Step::Next(n) => off = n,
+                crate::atomwalk::Step::Stop => break,
             }
-            fs::prefetch(path, off, off + 16).await;
-            let Ok(h) = fs::WebServices.read_range(path, off, 16) else { break };
-            if h.len() < 8 {
-                break;
-            }
-            let len = match be32(&h) {
-                1 if h.len() >= 16 => (be32(&h[8..]) << 32) | be32(&h[12..]),
-                0 => size - off,
-                n => n,
-            };
-            if &h[4..8] == b"moov" {
-                fs::prefetch(path, off, off + len).await;
-                break;
-            }
-            if len < 8 {
-                break;
-            }
-            off += len;
         }
     } else if head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
         // Matroska: opening scans every cluster header

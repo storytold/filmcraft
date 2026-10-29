@@ -8,6 +8,55 @@ impl FilmcraftApp {
         panels::project::view_of(self, panels::project::shown_inst(self)).bin
     }
 
+    /// Open the project at `path`: through [`crate::HostHooks::open_project`] when the host has one
+    /// (it opens the project itself, later), else with the `file.open` command. Every open-by-path
+    /// goes through here (picker result, Open Recent, Home, Media Browser).
+    pub fn open_project_path(&mut self, path: &str) -> Result<Value, String> {
+        if let Some(open) = self.hooks.open_project.as_mut() {
+            open(path);
+            return Ok(json!({"path": path, "pending": true}));
+        }
+        let r = self.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string());
+        if let Err(e) = &r {
+            self.ui.status = e.clone();
+        }
+        r
+    }
+
+    /// Offer an import command to [`HostHooks::import_command`]; `Some` when the host took it.
+    pub(crate) fn host_import(&mut self, id: &str, params: &Value) -> Option<Value> {
+        let mut resolved = params.clone();
+        if resolved.get("paths").is_none() {
+            let paths = match params.get("path").and_then(Value::as_str) {
+                Some(p) => vec![p.to_string()],
+                None => self.session.browser.selection.clone(),
+            };
+            resolved["paths"] = json!(paths);
+        }
+        let taken = self.hooks.import_command.as_mut().is_some_and(|hook| hook(id, &resolved));
+        taken.then(|| json!({"pending": true}))
+    }
+
+    /// Import the files a picker (local or remote) returned into `bin` (default: the shown bin).
+    pub(crate) fn import_picked(&mut self, bin: Option<Value>, paths: Vec<String>) -> Result<Value, String> {
+        if paths.is_empty() {
+            return Ok(Value::Null);
+        }
+        let bin = bin.unwrap_or_else(|| json!(self.import_bin().0));
+        if let Some(r) = self.host_import("file.import", &json!({"paths": paths, "bin": bin})) {
+            return Ok(r);
+        }
+        let r = self.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
+        if let Ok(v) = &r
+            && let Some(errs) = v.get("errors").and_then(Value::as_array)
+            && !errs.is_empty()
+        {
+            self.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+        }
+        r
+    }
+
+    /// Open the file dialog `id` with the given parameters, or report why it cannot open.
     pub fn file_dialog(&mut self, id: &str, params: &Value) -> Result<Value, String> {
         match id {
             "file.import" => {
@@ -19,20 +68,7 @@ impl FilmcraftApp {
                     .copied()
                     .collect();
                 let bin = params.get("bin").cloned();
-                self.pick(FileDialog::open_files(&exts), move |app, paths| {
-                    if paths.is_empty() {
-                        return Ok(Value::Null);
-                    }
-                    let bin = bin.unwrap_or_else(|| json!(app.import_bin().0));
-                    let r = app.session.execute("file.import", json!({"paths": paths, "bin": bin})).map_err(|e| e.to_string());
-                    if let Ok(v) = &r
-                        && let Some(errs) = v.get("errors").and_then(Value::as_array)
-                        && !errs.is_empty()
-                    {
-                        app.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
-                    }
-                    r
-                })
+                self.pick(FileDialog::open_files(&exts), move |app, paths| app.import_picked(bin, paths))
             }
             // File ▸ Import with Image Sequence: choose the first numbered still
             "file.importImageSequence" => self.pick(FileDialog::open_files(filmcraft_media::STILL_EXTENSIONS), |app, paths| {
@@ -54,7 +90,7 @@ impl FilmcraftApp {
             }
             "file.open" => self.pick(FileDialog::OpenProject, |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+                app.open_project_path(&path)
             }),
             "graphics.newFromFile" => {
                 let exts: Vec<&str> = filmcraft_media::STILL_EXTENSIONS.iter().chain(filmcraft_media::VIDEO_EXTENSIONS).copied().collect();

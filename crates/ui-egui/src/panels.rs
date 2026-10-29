@@ -37,6 +37,7 @@ pub mod project_dialogs;
 pub mod project_views;
 pub mod reference;
 pub mod remix;
+pub mod remote_dialog;
 pub mod scopes;
 pub mod sequence_settings;
 pub mod settings;

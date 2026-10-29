@@ -7,6 +7,7 @@ use serde_json::json;
 use crate::FilmcraftApp;
 use crate::theme::Tokens;
 
+/// Draw the import view in `rect`.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().rect_filled(rect, t.radius, t.panel_bg);
@@ -19,32 +20,38 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         t.text_dim,
     );
     let ctx = ui.ctx().clone();
-    let cards = [
-        (tl!("Browse files…"), "file.import", tl!("Movies, audio and stills from disk")),
-        (tl!("Demo footage"), "file.importDemoFootage", tl!("Six procedural 1080p clips with sound")),
-        (tl!("Demo project"), "file.openDemoProject", tl!("A cut sequence with transitions, effects and music")),
-        (tl!("Bars and Tone"), "file.newBarsAndTone", tl!("SMPTE HD bars with 1 kHz reference tone")),
+    use crate::icons::Icon;
+    let mut cards = vec![
+        (tl!("Browse files…"), "file.import", tl!("Movies, audio and stills from disk"), Icon::Folder),
+        (tl!("Demo footage"), "file.importDemoFootage", tl!("Six procedural 1080p clips with sound"), Icon::Film),
+        (tl!("Demo project"), "file.openDemoProject", tl!("A cut sequence with transitions, effects and music"), Icon::Sequence),
+        (tl!("Bars and Tone"), "file.newBarsAndTone", tl!("SMPTE HD bars with 1 kHz reference tone"), Icon::Grid),
     ];
+    let remote = app.hooks.remote.is_some();
+    if remote {
+        cards[0].0 = tl!("Browse local files…");
+        cards.insert(1, (tl!("Browse remote…"), "file.importRemote", tl!("Movies, audio and stills from remote storage"), Icon::Folder));
+        cards.insert(2, (tl!("Open remote project…"), "file.openRemote", tl!("A project saved on remote storage"), Icon::Sequence));
+    }
     let cw = 260.0;
-    for (i, (title, cmd, sub)) in cards.iter().enumerate() {
-        let r = Rect::from_min_size(rect.min + vec2(24.0 + i as f32 * (cw + 16.0), 90.0), vec2(cw, 150.0));
+    // four cards in a row; with remote storage there are six, so they wrap to the width
+    let per_row = if remote { (((rect.width() - 24.0) / (cw + 16.0)).floor() as usize).clamp(1, cards.len()) } else { cards.len() };
+    let rows = cards.len().div_ceil(per_row);
+    for (i, (title, cmd, sub, icon)) in cards.iter().enumerate() {
+        let (col, row) = (i % per_row, i / per_row);
+        let r = Rect::from_min_size(rect.min + vec2(24.0 + col as f32 * (cw + 16.0), 90.0 + row as f32 * 166.0), vec2(cw, 150.0));
         let resp = ui.interact(r, egui::Id::unique(("imp", *cmd)), Sense::click());
         app.auto.add(&format!("import.{cmd}"), r, title);
         ui.painter().rect_filled(r, 8.0, if resp.hovered() { t.hover } else { t.tl_header_bg });
         ui.painter().text(r.min + vec2(16.0, 110.0), Align2::LEFT_CENTER, *title, Tokens::semibold(14.0), t.text);
         ui.painter().text(r.min + vec2(16.0, 132.0), Align2::LEFT_CENTER, *sub, Tokens::ui(11.5), t.text_dim);
-        crate::icons::paint(
-            ui.painter(),
-            Rect::from_min_size(r.min + vec2(16.0, 18.0), vec2(56.0, 56.0)),
-            [crate::icons::Icon::Folder, crate::icons::Icon::Film, crate::icons::Icon::Sequence, crate::icons::Icon::Grid][i],
-            Color32::from_rgb(140, 150, 255),
-        );
+        crate::icons::paint(ui.painter(), Rect::from_min_size(r.min + vec2(16.0, 18.0), vec2(56.0, 56.0)), *icon, Color32::from_rgb(140, 150, 255));
         if resp.clicked() {
             let _ = crate::menus::invoke(app, &ctx, cmd, json!({}));
             app.ui.mode = crate::state::Mode::Edit;
         }
     }
-    let y = recent(app, ui, rect, 90.0 + 150.0 + 36.0);
+    let y = recent(app, ui, rect, 90.0 + (rows - 1) as f32 * 166.0 + 150.0 + 36.0);
     // Community and project links.
     // ArtCraft wordmark (first-party trademark, docs/brand/), then the section title.
     let logo = crate::brand::paint_wordmark(ui, rect.min + vec2(24.0, y), 15.0, app.ui.dark);
@@ -107,11 +114,10 @@ fn recent(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, y: f32) -> f32 
             open = Some(path.clone());
         }
     }
-    if let Some(path) = open {
-        let ctx = ui.ctx().clone();
-        if crate::menus::invoke(app, &ctx, "file.open", json!({"path": path})).is_ok() {
-            app.ui.mode = crate::state::Mode::Edit;
-        }
+    if let Some(path) = open
+        && app.open_project_path(&path).is_ok()
+    {
+        app.ui.mode = crate::state::Mode::Edit;
     }
     y + 16.0 + paths.len() as f32 * RECENT_ROW_H + 36.0
 }

@@ -14,13 +14,17 @@ use crate::{Dialog, FilmcraftApp};
 #[derive(Default)]
 pub struct FileDialogState {
     pub recovery_choice: usize,
+    /// The remote storage dialog, while it is open.
+    pub remote: Option<crate::panels::remote_dialog::RemoteDialog>,
 }
 
-fn modal_frame(t: &Tokens) -> Frame {
+/// The frame of a modal dialog in the current theme.
+pub(crate) fn modal_frame(t: &Tokens) -> Frame {
     Frame::new().fill(t.panel_bg).stroke(Stroke::new(1.0, t.separator)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(0))
 }
 
-fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: bool) -> bool {
+/// A dialog button registered under its automation id; true when clicked.
+pub(crate) fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: bool) -> bool {
     let t = app.tokens;
     let text = RichText::new(label).size(13.0).color(if primary { Color32::WHITE } else { t.text });
     let b = egui::Button::new(text)

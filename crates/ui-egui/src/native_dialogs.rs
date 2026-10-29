@@ -129,6 +129,16 @@ impl FilmcraftApp {
         then(self, paths)
     }
 
+    /// Show the remote storage dialog (an error without [`HostHooks::remote`]), then call `then` with
+    /// the chosen paths; a cancelled dialog calls nothing.
+    pub fn pick_remote(
+        &mut self,
+        mode: crate::panels::remote_dialog::RemoteMode,
+        then: impl FnOnce(&mut FilmcraftApp, Vec<String>) -> Result<Value, String> + 'static,
+    ) -> Result<Value, String> {
+        crate::panels::remote_dialog::open(self, mode, Box::new(then))
+    }
+
     /// [`Self::pick`] for a panel's button: `then` returns nothing, and a refusal (another dialog is
     /// open) goes to the status line. `then` always runs at the start of a later frame, also with
     /// the host's synchronous pickers: a panel works on a copy of its state and writes it back at

@@ -3,7 +3,7 @@
 //! - Media the user opens (`<input type=file>`, drag-and-drop, File System Access pickers, files
 //!   kept in OPFS) are registered as `File`/`Blob` entries under a virtual path (`/files/<name>`).
 //!   They are never copied whole: [`BlobReader`] serves the demuxers' range reads from a cache of
-//!   1 MiB chunks (LRU, [`CACHE_BUDGET`]), fetched asynchronously with `Blob.slice().arrayBuffer()`.
+//!   chunks (1 MiB for Blobs, `remote.chunkBytes` for remote files; LRU, [`CACHE_BUDGET`]), fetched asynchronously with `Blob.slice().arrayBuffer()`.
 //!   A read whose chunks are not cached yet starts the fetch (plus read-ahead) and fails with
 //!   `WouldBlock`, marking [`filmcraft_media::pending`]: the frame server and imports retry once
 //!   the bytes have arrived (the repaint hook wakes the UI).
@@ -24,15 +24,23 @@ use wasm_bindgen_futures::JsFuture;
 
 /// Chunk size of Blob range reads.
 pub const CHUNK: u64 = 1 << 20;
-/// Chunks fetched past the end of a read (sequential playback, demuxer scans).
-const READ_AHEAD: u64 = 3;
+/// Fetches of a Blob kept in flight while its container index is prefetched.
+const BLOB_PARALLEL: u64 = 8;
 /// Bytes of cached chunks kept (least recently used evicted).
 pub const CACHE_BUDGET: usize = 384 << 20;
 /// Largest Blob `read_file` will load whole (captions, interchange documents, projects).
 const WHOLE_FILE_MAX: u64 = 256 << 20;
 
 enum Entry {
-    Blob { id: u32, size: u64 },
+    Blob {
+        id: u32,
+        size: u64,
+    },
+    /// A file on a remote mount ([`crate::remote`]): read in chunks with `Range` requests.
+    Remote {
+        id: u32,
+        size: u64,
+    },
     Mem(Arc<[u8]>),
 }
 
@@ -40,6 +48,16 @@ enum Entry {
 struct Fs {
     entries: HashMap<String, Entry>,
     blobs: HashMap<u32, web_sys::Blob>,
+    /// Remote files by chunk-cache id: (virtual path, size).
+    remote: HashMap<u32, (String, u64)>,
+    /// Chunk size of remote files by chunk-cache id (a Blob has [`CHUNK`]).
+    chunk_of: HashMap<u32, u64>,
+    /// Misses of each file, to tell a sequential scan from random reads.
+    scans: HashMap<u32, crate::readahead::Scan>,
+    /// The files of the active sequence, fetched with priority while a project loads.
+    focus: crate::focus::Focus,
+    /// Resolvers of [`next_data`] waits, called when a chunk arrives or fails.
+    waiters: Vec<js_sys::Function>,
     next_id: u32,
     chunks: HashMap<(u32, u64), (Arc<[u8]>, u64)>,
     bytes: usize,
@@ -99,6 +117,42 @@ pub fn register_blob(name: &str, blob: web_sys::Blob) -> String {
     })
 }
 
+/// The chunk-cache id of the remote file at `path`; a new one when its size changed.
+fn register_remote(path: &str, size: u64, chunk: u64) -> u32 {
+    FS.with(|fs| {
+        let mut fs = fs.borrow_mut();
+        if let Some(Entry::Remote { id, size: s }) = fs.entries.get(path)
+            && *s == size
+        {
+            return *id;
+        }
+        let id = fs.next_id;
+        fs.next_id += 1;
+        fs.remote.insert(id, (path.to_string(), size));
+        fs.chunk_of.insert(id, chunk);
+        fs.entries.insert(path.to_string(), Entry::Remote { id, size });
+        id
+    })
+}
+
+/// Make `files` (the active sequence's media) the focus; `loading` of them are being warmed up
+/// ([`focus_done`] ends that). Other files fetch only a little while a focus file loads.
+pub fn set_focus(files: &[String], loading: &[String]) {
+    FS.with(|fs| fs.borrow_mut().focus.set(files, loading));
+}
+
+/// A focus file finished warming up.
+pub fn focus_done(path: &str) {
+    FS.with(|fs| fs.borrow_mut().focus.finish(path));
+}
+
+/// How the cache treats file `id` now: see [`crate::focus`]. A Blob is never throttled.
+fn class_of(fs: &Fs, id: u32) -> crate::focus::Class {
+    let Some((path, _)) = fs.remote.get(&id) else { return crate::focus::Class::Normal };
+    let busy = fs.inflight.iter().any(|(i, _)| fs.remote.get(i).is_some_and(|(p, _)| fs.focus.contains(p)));
+    fs.focus.class(path, busy)
+}
+
 /// Put bytes at a path (no download).
 pub fn put(path: &str, data: Vec<u8>) {
     FS.with(|fs| fs.borrow_mut().entries.insert(path.to_string(), Entry::Mem(data.into())));
@@ -113,6 +167,7 @@ pub fn list() -> Vec<(String, u64, &'static str)> {
             .iter()
             .map(|(p, e)| match e {
                 Entry::Blob { size, .. } => (p.clone(), *size, "blob"),
+                Entry::Remote { size, .. } => (p.clone(), *size, "remote"),
                 Entry::Mem(b) => (p.clone(), b.len() as u64, "memory"),
             })
             .collect();
@@ -127,6 +182,7 @@ pub fn blob(path: &str) -> Option<web_sys::Blob> {
         let fs = fs.borrow();
         match fs.entries.get(path)? {
             Entry::Blob { id, .. } => fs.blobs.get(id).cloned(),
+            Entry::Remote { .. } => None,
             Entry::Mem(b) => bytes_to_blob(b, "application/octet-stream").ok(),
         }
     })
@@ -152,6 +208,17 @@ pub async fn idle() {
     }
 }
 
+/// Resolve when a chunk next arrives (or fails), or after `ms` milliseconds.
+pub async fn next_data(ms: i32) {
+    let p = js_sys::Promise::new(&mut |resolve, _| {
+        FS.with(|fs| fs.borrow_mut().waiters.push(resolve.clone()));
+        if let Some(w) = web_sys::window() {
+            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        }
+    });
+    let _ = JsFuture::from(p).await;
+}
+
 /// Resolve after `ms` milliseconds.
 pub async fn sleep(ms: i32) {
     let p = js_sys::Promise::new(&mut |resolve, _| {
@@ -162,23 +229,70 @@ pub async fn sleep(ms: i32) {
     let _ = JsFuture::from(p).await;
 }
 
-/// Load `[a, b)` of a registered Blob into the chunk cache (import prewarm: container index).
+/// Load `[a, b)` of a registered Blob or remote file into the chunk cache (import prewarm: container index).
 pub async fn prefetch(path: &str, a: u64, b: u64) {
-    let Some((id, size)) = FS.with(|fs| match fs.borrow().entries.get(path) {
-        Some(Entry::Blob { id, size }) => Some((*id, *size)),
-        _ => None,
+    let Some((id, size, chunk, limit)) = FS.with(|fs| {
+        let fs = fs.borrow();
+        match fs.entries.get(path) {
+            Some(Entry::Blob { id, size }) => Some((*id, *size, CHUNK, BLOB_PARALLEL)),
+            // a remote file: `remote.parallel` reads at once
+            Some(Entry::Remote { id, size }) => Some((*id, *size, fs.chunk_of.get(id).copied().unwrap_or(CHUNK), crate::remote::transfer().1)),
+            _ => None,
+        }
     }) else {
         return;
     };
-    let (c0, c1) = (a / CHUNK, b.min(size).div_ceil(CHUNK));
+    let (c0, c1) = (a / chunk, b.min(size).div_ceil(chunk));
     for c in c0..c1 {
-        request(id, c);
+        // a throttled request (another file while a focus file loads) is retried
+        while !request(id, c) {
+            sleep(4).await;
+        }
         // keep a bounded number of reads in flight
-        while inflight() >= 8 {
+        while inflight() as u64 >= FS.with(|fs| class_of(&fs.borrow(), id)).parallel(limit) {
             sleep(2).await;
         }
     }
-    idle().await;
+    // Wait for these chunks only: read-ahead of other reads (or other files) must not hold a
+    // header hop back. A chunk that is neither cached nor on its way (failed, evicted) ends the wait.
+    loop {
+        let done = FS.with(|fs| {
+            let fs = fs.borrow();
+            (c0..c1).all(|c| fs.chunks.contains_key(&(id, c)) || !fs.inflight.contains(&(id, c)))
+        });
+        if done {
+            return;
+        }
+        sleep(4).await;
+    }
+}
+
+/// The bytes `[offset, offset + len)` of a registered file when every chunk covering them is
+/// already cached, else `None`. Unlike a [`BlobReader`] read this starts no fetch and no
+/// read-ahead, so container walks (atom headers) cost exactly the chunks they prefetched.
+pub fn cached_range(path: &str, offset: u64, len: usize) -> Option<Vec<u8>> {
+    FS.with(|fs| {
+        let fs = fs.borrow();
+        let (id, size, chunk) = match fs.entries.get(path)? {
+            Entry::Blob { id, size } => (*id, *size, CHUNK),
+            Entry::Remote { id, size } => (*id, *size, fs.chunk_of.get(id).copied().unwrap_or(CHUNK)),
+            Entry::Mem(b) => return b.get(usize::try_from(offset).ok()?..).map(|t| t[..len.min(t.len())].to_vec()),
+        };
+        let end = offset.checked_add(len as u64)?.min(size);
+        let mut out = Vec::with_capacity(len.min(1 << 20));
+        let mut pos = offset;
+        while pos < end {
+            let (d, _) = fs.chunks.get(&(id, pos / chunk))?;
+            let a = usize::try_from(pos - pos / chunk * chunk).ok()?;
+            let n = usize::try_from(end - pos).ok()?.min(d.len().checked_sub(a)?);
+            if n == 0 {
+                return None;
+            }
+            out.extend_from_slice(&d[a..a + n]);
+            pos += n as u64;
+        }
+        Some(out)
+    })
 }
 
 impl Fs {
@@ -202,32 +316,55 @@ impl Fs {
     }
 }
 
-/// Start fetching chunk `c` of blob `id` unless it is cached or already on its way.
-fn request(id: u32, c: u64) {
-    let blob = FS.with(|fs| {
+/// Where a chunk comes from.
+enum Source {
+    Blob(web_sys::Blob),
+    Remote(String, u64),
+}
+
+/// Start fetching chunk `c` of file `id` (a Blob or a remote file) unless it is cached or already
+/// on its way. `false` when it was not started because other files may fetch only a little while a
+/// focus file loads: the caller asks again later.
+fn request(id: u32, c: u64) -> bool {
+    let mut throttled = false;
+    let source = FS.with(|fs| {
         let mut fs = fs.borrow_mut();
         if fs.chunks.contains_key(&(id, c)) || fs.inflight.contains(&(id, c)) {
             return None;
         }
-        let blob = fs.blobs.get(&id)?.clone();
+        let others = fs.inflight.iter().filter(|(i, _)| *i != id && fs.remote.get(i).is_some_and(|(p, _)| !fs.focus.contains(p))).count();
+        if !class_of(&fs, id).may_start(others) {
+            throttled = true;
+            return None;
+        }
+        let source = match (fs.blobs.get(&id), fs.remote.get(&id)) {
+            (Some(b), _) => (Source::Blob(b.clone()), CHUNK),
+            (None, Some((p, s))) => (Source::Remote(p.clone(), *s), fs.chunk_of.get(&id).copied().unwrap_or(CHUNK)),
+            (None, None) => return None,
+        };
         fs.failed.remove(&(id, c));
         fs.inflight.insert((id, c));
-        Some(blob)
+        Some(source)
     });
-    let Some(blob) = blob else { return };
-    let size = blob.size() as u64;
-    let (a, b) = (c * CHUNK, ((c + 1) * CHUNK).min(size));
-    let fut = blob.slice_with_f64_and_f64(a as f64, b as f64).map(|s| JsFuture::from(s.array_buffer()));
+    let Some((source, chunk)) = source else { return !throttled };
+    let size = match &source {
+        Source::Blob(b) => b.size() as u64,
+        Source::Remote(_, s) => *s,
+    };
+    let (a, b) = (c * chunk, ((c + 1) * chunk).min(size));
     wasm_bindgen_futures::spawn_local(async move {
-        let r = match fut {
-            Ok(f) => f.await.map(|buf| js_sys::Uint8Array::new(&buf).to_vec()),
-            Err(e) => Err(e),
+        let r: Result<Vec<u8>, String> = match source {
+            Source::Blob(blob) => match blob.slice_with_f64_and_f64(a as f64, b as f64) {
+                Ok(s) => JsFuture::from(s.array_buffer()).await.map(|buf| js_sys::Uint8Array::new(&buf).to_vec()).map_err(|e| format!("{e:?}")),
+                Err(e) => Err(format!("{e:?}")),
+            },
+            Source::Remote(path, size) => crate::remote::fetch_range(&path, a, b.saturating_sub(a), size).await,
         };
         let wake = FS.with(|fs| {
             let mut fs = fs.borrow_mut();
             fs.inflight.remove(&(id, c));
-            // a blob replaced or dropped meanwhile: discard
-            if fs.blobs.contains_key(&id) {
+            // a file replaced or dropped meanwhile: discard
+            if fs.blobs.contains_key(&id) || fs.remote.contains_key(&id) {
                 match r {
                     Ok(v) => {
                         fs.clock += 1;
@@ -237,22 +374,32 @@ fn request(id: u32, c: u64) {
                         fs.evict();
                     }
                     Err(e) => {
-                        fs.failed.insert((id, c), format!("{e:?}"));
+                        fs.failed.insert((id, c), e);
                     }
                 }
             }
-            fs.on_data.clone()
+            (fs.on_data.clone(), std::mem::take(&mut fs.waiters))
         });
+        let (wake, waiters) = wake;
+        // retries waiting for data run now, not after the slowest chunk or a fixed sleep
+        for resolve in waiters {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        }
         if let Some(w) = wake {
             w();
         }
     });
+    true
 }
 
 /// Random-access reads of a registered Blob through the chunk cache.
 pub struct BlobReader {
     id: u32,
     size: u64,
+    /// Chunk size of this file's cache entries.
+    chunk: u64,
+    /// Chunks a sequential scan of this file fetches at once.
+    parallel: u64,
 }
 
 impl ByteReader for BlobReader {
@@ -267,8 +414,8 @@ impl ByteReader for BlobReader {
             .checked_add(buf.len() as u64)
             .filter(|e| *e <= self.size)
             .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "read past end of file"))?;
-        let (c0, c1) = (offset / CHUNK, (end - 1) / CHUNK);
-        let last = (self.size.max(1) - 1) / CHUNK;
+        let (c0, c1) = (offset / self.chunk, (end - 1) / self.chunk);
+        let last = (self.size.max(1) - 1) / self.chunk;
         let missing: Vec<u64> = FS.with(|fs| {
             let fs = fs.borrow();
             (c0..=c1).filter(|c| !fs.chunks.contains_key(&(self.id, *c))).collect()
@@ -277,7 +424,16 @@ impl ByteReader for BlobReader {
             return Err(io::Error::other(format!("file read failed: {e}")));
         }
         if !missing.is_empty() {
-            for c in missing.iter().copied().chain(c1 + 1..=(c1 + READ_AHEAD).min(last)) {
+            // misses at a frontier that moves forward are a sequential scan (a demuxer opening the
+            // file, retried from its start): fetch many chunks at once
+            let ahead = FS.with(|fs| {
+                let mut fs = fs.borrow_mut();
+                let class = class_of(&fs, self.id);
+                let scan = fs.scans.entry(self.id).or_default();
+                scan.note_miss(missing[0], self.parallel);
+                class.ahead(scan, self.parallel, self.chunk, CACHE_BUDGET)
+            });
+            for c in missing.iter().copied().chain(c1 + 1..=(c1 + ahead).min(last)) {
                 request(self.id, c);
             }
             return Err(filmcraft_media::pending::would_block());
@@ -291,7 +447,7 @@ impl ByteReader for BlobReader {
                 // Present (checked above); evicted in between would be a bug, reported as an error.
                 let Some((d, used)) = fs.chunks.get_mut(&(self.id, c)) else { return false };
                 *used = t;
-                let a = if c == c0 { (offset - c * CHUNK) as usize } else { 0 };
+                let a = if c == c0 { (offset - c * self.chunk) as usize } else { 0 };
                 let n = (d.len() - a).min(buf.len() - pos);
                 buf[pos..pos + n].copy_from_slice(&d[a..a + n]);
                 pos += n;
@@ -301,8 +457,13 @@ impl ByteReader for BlobReader {
         if !complete {
             return Err(filmcraft_media::pending::would_block());
         }
-        // read-ahead for sequential access
-        for c in c1 + 1..=(c1 + READ_AHEAD).min(last) {
+        // read-ahead for sequential access (as wide as the scan that was seen on this file)
+        let ahead = FS.with(|fs| {
+            let fs = fs.borrow();
+            let class = class_of(&fs, self.id);
+            fs.scans.get(&self.id).map_or(crate::readahead::BASE_AHEAD, |s| class.ahead(s, self.parallel, self.chunk, CACHE_BUDGET))
+        });
+        for c in c1 + 1..=(c1 + ahead).min(last) {
             request(self.id, c);
         }
         Ok(())
@@ -317,12 +478,30 @@ fn not_found(path: &str) -> io::Error {
 pub struct WebServices;
 
 impl WebServices {
+    /// Open a reader over the in-memory entry at `path`, or the error the engine shows.
     fn entry_reader(path: &str) -> io::Result<SharedReader> {
-        FS.with(|fs| match fs.borrow().entries.get(path) {
-            Some(Entry::Blob { id, size }) => Ok(Arc::new(BlobReader { id: *id, size: *size }) as SharedReader),
-            Some(Entry::Mem(b)) => Ok(Arc::new(MemReader(b.clone())) as SharedReader),
-            None => Err(not_found(path)),
-        })
+        let local = FS.with(|fs| match fs.borrow().entries.get(path) {
+            Some(Entry::Blob { id, size }) => {
+                Some(Ok(Arc::new(BlobReader { id: *id, size: *size, chunk: CHUNK, parallel: crate::readahead::BASE_AHEAD }) as SharedReader))
+            }
+            Some(Entry::Mem(b)) => Some(Ok(Arc::new(MemReader(b.clone())) as SharedReader)),
+            Some(Entry::Remote { .. }) | None => None,
+        });
+        if let Some(r) = local {
+            return r;
+        }
+        // A remote file: its size comes from the listing/HEAD cache (a changed size is a new file).
+        // A path the cache does not know yet starts a fetch and reads as "loading" (the caller
+        // retries on the repaint); one the server does not have is not found.
+        match crate::remote::lookup(path) {
+            Some(crate::remote::Lookup::Found(st)) if st.is_dir => Err(io::Error::other(format!("{path}: is a directory"))),
+            Some(crate::remote::Lookup::Found(st)) => {
+                let (chunk, parallel) = crate::remote::transfer();
+                Ok(Arc::new(BlobReader { id: register_remote(path, st.size, chunk), size: st.size, chunk, parallel }) as SharedReader)
+            }
+            Some(crate::remote::Lookup::Loading) => Err(filmcraft_media::pending::would_block()),
+            Some(crate::remote::Lookup::Missing) | None => Err(not_found(path)),
+        }
     }
 }
 
@@ -335,7 +514,12 @@ impl Services for WebServices {
         filmcraft_media::reader::read_range(&*r, 0, r.len() as usize)
     }
 
+    /// Write `data` at `path`: a remote mount uploads in the background, OPFS persists it, anything else stays in memory.
     fn write_file(&self, path: &str, data: &[u8]) -> io::Result<()> {
+        // a path on a remote mount: uploaded to the server (writable mounts) or refused (read-only)
+        if let Some(r) = crate::remote_upload::write(path, data) {
+            return r;
+        }
         if let Some(rel) = path.strip_prefix("/opfs/") {
             crate::opfs::write(rel.to_string(), data.to_vec());
         }
@@ -352,7 +536,11 @@ impl Services for WebServices {
         Ok(())
     }
 
+    /// Create `path` with `data` in memory; fails when it exists. Not available on remote mounts or OPFS.
     fn write_file_new(&self, path: &str, data: &[u8]) -> io::Result<()> {
+        if crate::remote::is_remote(path) {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "exclusive creation on remote storage is unavailable"));
+        }
         if path.starts_with("/opfs/") {
             return Err(io::Error::new(io::ErrorKind::Unsupported, "exclusive OPFS writes are unavailable"));
         }
@@ -389,6 +577,9 @@ impl Services for WebServices {
     /// The Media Browser lists the virtual file table: picked and dropped files under `/files`.
     fn list_entries(&self, dir: &str) -> Option<io::Result<Vec<filmcraft_engine::media_browser::DirEntry>>> {
         use filmcraft_engine::media_browser::DirEntry;
+        if let Some(r) = crate::remote::list(dir) {
+            return Some(r);
+        }
         let prefix = if dir.ends_with('/') { dir.to_string() } else { format!("{dir}/") };
         let out = FS.with(|fs| {
             let fs = fs.borrow();
@@ -405,7 +596,7 @@ impl Services for WebServices {
                     Some(_) => {}
                     None => {
                         let size = match e {
-                            Entry::Blob { size, .. } => *size,
+                            Entry::Blob { size, .. } | Entry::Remote { size, .. } => *size,
                             Entry::Mem(b) => b.len() as u64,
                         };
                         files.push(DirEntry { name: rest.to_string(), is_dir: false, size: Some(size), modified: None });
@@ -417,6 +608,11 @@ impl Services for WebServices {
             v
         });
         Some(Ok(out))
+    }
+
+    /// Each remote mount is a Network location.
+    fn volumes(&self) -> Vec<filmcraft_engine::media_browser::Volume> {
+        crate::remote::volumes()
     }
 
     fn home_dir(&self) -> Option<String> {

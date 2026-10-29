@@ -421,6 +421,16 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
             exec(app, &ctx, "mediaBrowser.import", json!({"paths": paths, "imageSequence": false}));
             ui.close();
         }
+        if e.kind == "project" && !e.is_dir {
+            let b = ui.button(tl!("Open Project…"));
+            app.auto.add("mediaBrowser.entryMenu.openProject", b.rect, "Open Project");
+            if b.clicked() {
+                if let Err(err) = app.open_project_path(&e.path) {
+                    app.ui.status = err;
+                }
+                ui.close();
+            }
+        }
         if !e.is_dir {
             let b = ui.button(tl!("Open In Source Monitor"));
             app.auto.add("mediaBrowser.entryMenu.openInSource", b.rect, "Open In Source Monitor");

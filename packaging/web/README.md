@@ -52,6 +52,20 @@ location /filmcraft/ {
 
 Local test: `python3 -m http.server 8765` inside the folder, then open http://localhost:8765/.
 
+## Remote storage (optional)
+
+To let the app open, import and save through a WebDAV server on the same origin, add a
+`filmcraft-config.json` next to `index.html`:
+
+```json
+{"remote":{"mounts":[{"path":"/data","url":"dav/","name":"Server","writable":false}]}}
+```
+
+Set `"writable": true` to allow saving. Without the file the feature is off. Serve the file with
+`Cache-Control: no-cache`. The server must support `PROPFIND` and `Range` (and `PUT`, `MOVE` and
+ETags for saving). Details and examples (`rclone serve webdav`, Apache `mod_dav`, nginx) are in
+[docs/web.md](../../docs/web.md#remote-storage).
+
 ## Embedding in a page (iframe)
 
 ```html

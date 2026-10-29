@@ -3,6 +3,7 @@
 
 use crate::{Dialog, FilmcraftApp};
 
+/// Draw the open dialogs.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::media_dialogs::show(app, ctx);
     crate::panels::color_dialogs::show(app, ctx);
@@ -18,6 +19,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::workspaces::dialogs(app, ctx);
     crate::panels::voiceover::show(app, ctx);
     crate::panels::remix::show(app, ctx);
+    crate::panels::remote_dialog::show(app, ctx);
     crate::links::show_failed(app, ctx);
     crate::panels::interchange_export::show(app, ctx);
     crate::panels::frame_export::show(app, ctx);

@@ -23,16 +23,21 @@ filmcraft-frame = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-format = { workspace = true }
+filmcraft-project = { workspace = true }
 filmcraft-time = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
 serde_json = { workspace = true }
+roxmltree = { workspace = true }
+chrono = { workspace = true }
 log = { workspace = true }
 wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-time = "1"
 web-sys = { version = "0.3", features = [
+    "AbortController",
+    "AbortSignal",
     "AudioContext",
     "AudioContextOptions",
     "AudioContextState",
@@ -65,6 +70,7 @@ web-sys = { version = "0.3", features = [
     "HtmlElement",
     "HtmlInputElement",
     "ImageData",
+    "Headers",
     "Location",
     "MessageEvent",
     "MessagePort",
@@ -72,6 +78,12 @@ web-sys = { version = "0.3", features = [
     "OffscreenCanvas",
     "OffscreenCanvasRenderingContext2d",
     "Performance",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "Request",
+    "RequestCache",
+    "RequestInit",
+    "RequestMode",
     "Response",
     "StorageManager",
     "Url",
@@ -79,3 +91,13 @@ web-sys = { version = "0.3", features = [
     "Window",
     "WritableStream",
 ] }
+
+# The pure remote-storage modules are tested natively (`tests/it`).
+[dev-dependencies]
+filmcraft-project = { workspace = true }
+filmcraft-format = { workspace = true }
+filmcraft-media = { workspace = true }
+filmcraft-time = { workspace = true }
+serde_json = { workspace = true }
+roxmltree = { workspace = true }
+chrono = { workspace = true }

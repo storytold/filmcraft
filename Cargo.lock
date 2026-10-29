@@ -2546,6 +2546,7 @@ dependencies = [
 name = "filmcraft-web"
 version = "0.14.0"
 dependencies = [
+ "chrono",
  "eframe",
  "egui",
  "filmcraft-codecs",
@@ -2555,10 +2556,12 @@ dependencies = [
  "filmcraft-frame",
  "filmcraft-isobmff",
  "filmcraft-media",
+ "filmcraft-project",
  "filmcraft-time",
  "filmcraft-ui-egui",
  "js-sys",
  "log",
+ "roxmltree",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",

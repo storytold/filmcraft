@@ -10,7 +10,7 @@
 //! const {pngBase64} = await filmcraft.screenshot()         // the canvas as PNG (base64)
 //! await filmcraft.importUrl("/clip.mp4")                   // fetch + import (tests)
 //! await filmcraft.importFiles(input.files)                 // File / FileList / File[]
-//! await filmcraft.openProject(file)                        // .fcproj File or URL
+//! await filmcraft.openProject(file)                        // .fcproj File, URL, or a path on a remote mount
 //! filmcraft.files(); await filmcraft.readFile("/exports/a.mp4"); filmcraft.info()
 //! ```
 //!
@@ -203,6 +203,10 @@ pub fn install() -> Result<(), JsValue> {
         "openProject",
         Closure::<dyn Fn(JsValue) -> js_sys::Promise>::new(|src: JsValue| {
             future_to_promise(caught(async move {
+                // a path on a remote mount opens from the server (with the sizes of its media)
+                if let Some(path) = src.as_string().filter(|p| crate::remote::is_remote(p)) {
+                    return crate::remote::open_project(&path).await.map(|v| to_js(&v)).map_err(|e| JsValue::from(js_sys::Error::new(&e)));
+                }
                 let file = match src.as_string() {
                     Some(url) => fetch_file(&url, None).await?,
                     None => files_of(&src).into_iter().next().ok_or("need a File or URL")?,
