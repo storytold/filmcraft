@@ -161,7 +161,7 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             let qpl = (p.qp as i32 + q.qp as i32 + 1) >> 1;
             let (tc, beta) = tc_beta(qpl, bs, tc_off, beta_off, bd);
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
-            filter_luma(&mut pic.planes[0], y * w + x, 1, w, tc, beta, nfp, nfq, bd);
+            filter_luma(&mut pic.planes[0], EdgeSeg { o: y * w + x, step: 1, along: w }, beta, EdgeFilter { tc, nfp, nfq, bd });
         }
     }
     // chroma vertical edges (8x8 chroma grid = 16 luma samples), bS == 2 only
@@ -180,7 +180,7 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
                 let qpi = ((p.qp as i32 + q.qp as i32 + 1) >> 1) + off;
                 let qt = (qpc_420(qpi) + 2 + tc_off).clamp(0, 53);
                 let tc = (TC_TABLE[qt as usize] as i32) << (bdc - 8);
-                filter_chroma(&mut pic.planes[c], (y / 2) * cw + x / 2, 1, cw, tc, nfp, nfq, bdc);
+                filter_chroma(&mut pic.planes[c], EdgeSeg { o: (y / 2) * cw + x / 2, step: 1, along: cw }, EdgeFilter { tc, nfp, nfq, bd: bdc });
             }
         }
     }
@@ -205,7 +205,7 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             let qpl = (p.qp as i32 + q.qp as i32 + 1) >> 1;
             let (tc, beta) = tc_beta(qpl, bs, tc_off, beta_off, bd);
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
-            filter_luma(&mut pic.planes[0], y * w + x, w, 1, tc, beta, nfp, nfq, bd);
+            filter_luma(&mut pic.planes[0], EdgeSeg { o: y * w + x, step: w, along: 1 }, beta, EdgeFilter { tc, nfp, nfq, bd });
         }
     }
     for by in (y0 / 4..y1 / 4).filter(|b| b % 4 == 0 && *b > 0) {
@@ -222,21 +222,40 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
                 let qpi = ((p.qp as i32 + q.qp as i32 + 1) >> 1) + off;
                 let qt = (qpc_420(qpi) + 2 + tc_off).clamp(0, 53);
                 let tc = (TC_TABLE[qt as usize] as i32) << (bdc - 8);
-                filter_chroma(&mut pic.planes[c], (y / 2) * cw + x / 2, cw, 1, tc, nfp, nfq, bdc);
+                filter_chroma(&mut pic.planes[c], EdgeSeg { o: (y / 2) * cw + x / 2, step: cw, along: 1 }, EdgeFilter { tc, nfp, nfq, bd: bdc });
             }
         }
     }
 }
 
-/// Filter one 4-sample luma edge segment. `o` = offset of q0 of the first line, `step` = distance
-/// between p/q samples across the edge, `along` = distance between lines.
+/// Where a 4-line edge segment lies in a plane: `o` = offset of q0 of the first line, `step` =
+/// distance between p/q samples across the edge, `along` = distance between lines.
+#[derive(Clone, Copy)]
+struct EdgeSeg {
+    o: usize,
+    step: usize,
+    along: usize,
+}
+
+/// How an edge segment is filtered: the clipping threshold `tc`, the no-filter flags of the p and
+/// q sides and the bit depth.
+#[derive(Clone, Copy)]
+struct EdgeFilter {
+    tc: i32,
+    nfp: bool,
+    nfq: bool,
+    bd: u32,
+}
+
+/// Filter one 4-sample luma edge segment.
 ///
 /// The 4 x 8 samples (p3..p0, q0..q3 of each line) are read once into an array, filtered there
 /// and written back, a whole line at a time for vertical edges (`step` = 1) and a whole row of
 /// the 4 lines at a time for horizontal ones (`along` = 1): no per-sample index arithmetic or
 /// bounds checks in the filter itself.
-#[allow(clippy::too_many_arguments)]
-fn filter_luma<S: Sample>(s: &mut [S], o: usize, step: usize, along: usize, tc: i32, beta: i32, nfp: bool, nfq: bool, bd: u32) {
+fn filter_luma<S: Sample>(s: &mut [S], seg: EdgeSeg, beta: i32, ef: EdgeFilter) {
+    let EdgeSeg { o, step, along } = seg;
+    let EdgeFilter { tc, nfp, nfq, bd } = ef;
     // l[k][i]: line k, i = 0..4 -> p3, p2, p1, p0 and i = 4..8 -> q0, q1, q2, q3
     let mut l = [[0i32; 8]; 4];
     let Some(start) = o.checked_sub(4 * step) else { return };
@@ -339,8 +358,9 @@ fn filter_luma_lines(l: &mut [[i32; 8]; 4], tc: i32, beta: i32, nfp: bool, nfq: 
 }
 
 /// Filter one 4-sample chroma edge segment.
-#[allow(clippy::too_many_arguments)]
-fn filter_chroma<S: Sample>(s: &mut [S], o: usize, step: usize, along: usize, tc: i32, nfp: bool, nfq: bool, bd: u32) {
+fn filter_chroma<S: Sample>(s: &mut [S], seg: EdgeSeg, ef: EdgeFilter) {
+    let EdgeSeg { o, step, along } = seg;
+    let EdgeFilter { tc, nfp, nfq, bd } = ef;
     let max = (1i32 << bd) - 1;
     for k in 0..4 {
         let base = o + k * along;
@@ -381,15 +401,16 @@ fn sao_row<S: Sample>(pic: &PicState<S>, r: usize) -> [Vec<S>; 3] {
             }
             let x0 = rx * cs;
             let x1 = (x0 + cs).min(w);
-            sao_ctb(pic, c, rs, x0, x1, y0, y1, w, h, &p, &mut out[c]);
+            sao_ctb(pic, &SaoBlock { c, rs, x0, x1, y0, y1, w, h }, &p, &mut out[c]);
         }
     }
     out
 }
 
-#[allow(clippy::too_many_arguments)]
-fn sao_ctb<S: Sample>(
-    pic: &PicState<S>,
+/// A CTB of plane `c` (CTB raster address `rs`) to apply SAO to: columns `x0..x1` and rows
+/// `y0..y1` of a plane `w` x `h` samples.
+#[derive(Clone, Copy)]
+struct SaoBlock {
     c: usize,
     rs: usize,
     x0: usize,
@@ -398,9 +419,10 @@ fn sao_ctb<S: Sample>(
     y1: usize,
     w: usize,
     h: usize,
-    p: &crate::slicedec::SaoParams,
-    dst: &mut [S],
-) {
+}
+
+fn sao_ctb<S: Sample>(pic: &PicState<S>, blk: &SaoBlock, p: &crate::slicedec::SaoParams, dst: &mut [S]) {
+    let SaoBlock { c, rs, x0, x1, y0, y1, w, h } = *blk;
     let bd = if c == 0 { pic.bd_y } else { pic.bd_c };
     let max = (1i32 << bd) - 1;
     let sc = if c == 0 { 0 } else { 1 };
@@ -649,8 +671,9 @@ mod luma_filter_tests {
 
     /// The luma edge filter as it was before reading the samples into an array (indexing the
     /// picture sample by sample), as the reference.
-    #[allow(clippy::too_many_arguments)]
-    fn reference(s: &mut [u16], o: usize, step: usize, along: usize, tc: i32, beta: i32, nfp: bool, nfq: bool, bd: u32) {
+    fn reference(s: &mut [u16], seg: EdgeSeg, beta: i32, ef: EdgeFilter) {
+        let EdgeSeg { o, step, along } = seg;
+        let EdgeFilter { tc, nfp, nfq, bd } = ef;
         let px = |s: &[u16], k: usize, i: usize| s[o + k * along - (i + 1) * step] as i32;
         let qx = |s: &[u16], k: usize, i: usize| s[o + k * along + i * step] as i32;
         let dp0 = (px(s, 0, 2) - 2 * px(s, 0, 1) + px(s, 0, 0)).abs();
@@ -740,8 +763,9 @@ mod luma_filter_tests {
             for vertical in [true, false] {
                 let (o, step, along) = if vertical { (4 * w + 8, 1, w) } else { (8 * w + 4, w, 1) };
                 let (mut a, mut b) = (plane.clone(), plane.clone());
-                filter_luma(&mut a, o, step, along, tc, beta, nfp, nfq, bd);
-                reference(&mut b, o, step, along, tc, beta, nfp, nfq, bd);
+                let (seg, ef) = (EdgeSeg { o, step, along }, EdgeFilter { tc, nfp, nfq, bd });
+                filter_luma(&mut a, seg, beta, ef);
+                reference(&mut b, seg, beta, ef);
                 assert_eq!(a, b, "case {case} vertical {vertical}");
                 filtered += (a != plane) as usize;
             }

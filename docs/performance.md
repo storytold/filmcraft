@@ -344,6 +344,26 @@ the encoder's hand-off). Only NVENC, whose encode is light on the CPU, comes clo
 encoder waits for the renderer), as expected. 1080p exports use 70-160 MB more (the second batch of 16
 frames); 4K exports use less than before because the batch is smaller (8 for SDR, 2 for HDR instead of 16).
 
+## Results (CPU H.264 export: encoder work and colour conversion, before → after)
+
+`cargo run --release -p filmcraft-engine --example bench_export -- --runs 1`: 10 s of 1080p23.976
+H.264 + AAC (ffmpeg `testsrc2` with noise) exported to H.264 + AAC MP4 on the CPU (software
+encoder, no GPU renderer). Ryzen, 16 threads, Linux, 2026-10-27; 7 rounds with the builds in
+rotating order, one export per run, wall time in seconds:
+
+| build | median | min |
+|---|---|---|
+| before | 7.86 | 7.78 |
+| after | 6.14 | 6.02 |
+
+Every build writes the same file (same MD5), and so does a ProRes export of the same clip.
+The H.264 encoder now keeps the winning 4x4/8x8 transform trial instead of coding it again, skips motion
+search points it has already costed, codes the residual of an inter candidate only once it can
+still be chosen, and computes 8- and 4-wide SATD lane by lane. The export converts the H.264
+input on the render threads, which are idle while a batch is encoded, instead of on the encoding
+thread; the conversions themselves (Y'CbCr → linear for decoded video, linear → sRGB, RGBA → 4:2:0)
+use per-code tables built from the same expressions.
+
 ## Results (HW3: VideoToolbox hardware H.265 (HEVC) encoding, against hardware H.264)
 
 Apple M1 (8 cores, 16 GB), 2026-10-07, single runs on an otherwise idle machine, release build. Both

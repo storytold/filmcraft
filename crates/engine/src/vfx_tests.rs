@@ -96,6 +96,41 @@ fn every_video_effect_applies_by_id_and_name_and_renders() {
     }
 }
 
+/// #1545: `effects.apply` reports each instance it added (clip, index, effect id), like
+/// `timeline.place` reports its clips, so agents need no `sequence_inspect` round trip.
+#[test]
+fn effects_apply_reports_where_each_instance_landed() {
+    let mut s = demo();
+    let clip = first_v1_clip(&s);
+    let r = s.execute("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"})).unwrap();
+    let applied = r["applied"].as_array().unwrap();
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0]["clip"].as_u64(), Some(clip));
+    assert_eq!(applied[0]["effect"], "gaussian_blur");
+    let idx = applied[0]["index"].as_u64().unwrap() as usize;
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.clone();
+    assert_eq!(it.effects.get(idx).map(|e| e.effect.as_str()), Some("gaussian_blur"), "index addresses the new instance");
+    // the index is usable straight away
+    s.execute("effects.remove", json!({"clip": clip, "index": idx})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1.effects.iter().all(|e| e.effect != "gaussian_blur"));
+
+    // several clips: one entry per instance, each with its own clip id
+    let clips: Vec<u64> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|c| c.id.0).collect();
+    assert!(clips.len() >= 2, "demo project has several V1 clips");
+    let r = s.execute("effects.apply", json!({"clips": clips, "effect": "invert"})).unwrap();
+    let got: Vec<u64> = r["applied"].as_array().unwrap().iter().map(|a| a["clip"].as_u64().unwrap()).collect();
+    assert_eq!(got, clips);
+
+    // audio effects report the (retargeted) audio clip, not the video clip that was passed
+    let video = first_v1_clip(&s);
+    let r = s.execute("effects.apply", json!({"clips": [video], "effect": "parametric_eq"})).unwrap();
+    let a = &r["applied"].as_array().unwrap()[0];
+    let target = a["clip"].as_u64().unwrap();
+    let (track, item) = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(target)).unwrap();
+    assert_eq!(s.active_sequence().unwrap().track(track).unwrap().kind, filmcraft_project::TrackKind::Audio);
+    assert_eq!(item.effects.get(a["index"].as_u64().unwrap() as usize).map(|e| e.effect.as_str()), Some("parametric_eq"));
+}
+
 #[test]
 fn new_effect_params_are_settable_and_keyframable() {
     let mut s = demo();

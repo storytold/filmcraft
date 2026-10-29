@@ -1,7 +1,7 @@
 //! Sequence and picture parameter sets (7.3.2.1, 7.3.2.2) including VUI and scaling lists.
 
 use crate::error::{Result, ensure, unsupported};
-use crate::tables::*;
+use crate::tables::{DEFAULT_4X4_INTER, DEFAULT_4X4_INTRA, DEFAULT_8X8_INTER, DEFAULT_8X8_INTRA, ZIGZAG4, ZIGZAG8};
 use filmcraft_bitstream::BitReader;
 
 /// Maximum supported reconstructed luma area. 8K UHD fits comfortably while

@@ -310,7 +310,7 @@ fn tab_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, strip: Rect, docked: &[u
             _ => false,
         };
         let id = k.map_or("project.tab.project".to_string(), |k| format!("project.tab.{k}"));
-        let resp = ui.interact(r, egui::Id::new(&id), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique(&id), Sense::click());
         app.auto.add(&id, r, &label);
         if is_active || resp.hovered() {
             ui.painter().rect_filled(r, 3.0, if is_active { t.pressed } else { t.hover });
@@ -321,7 +321,7 @@ fn tab_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, strip: Rect, docked: &[u
         }
         if let Some(k) = k {
             let cr = Rect::from_center_size(pos2(r.max.x - 11.0, r.center().y), vec2(12.0, 12.0));
-            let cresp = ui.interact(cr, egui::Id::new(("ptab-close", k)), Sense::click()).on_hover_text(tl!("Close"));
+            let cresp = ui.interact(cr, egui::Id::unique(("ptab-close", k)), Sense::click()).on_hover_text(tl!("Close"));
             app.auto.add(&format!("project.tab.{k}.close"), cr, "Close");
             icons::paint(ui.painter(), cr.shrink(2.0), Icon::Close, if cresp.hovered() { t.text } else { t.text_dim });
             if cresp.clicked() || resp.middle_clicked() {
@@ -352,7 +352,7 @@ pub fn floating(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let mut open = true;
         let root = app.ui.project_panel.tabs[k].bin == app.session.project.root.id.0;
         egui::Window::new(if root { tlf!("Project: {name}", name = app.session.project.name) } else { tlf!("Bin: {name}", name) })
-            .id(egui::Id::new(("bin-window", k)))
+            .id(egui::Id::unique(("bin-window", k)))
             .open(&mut open)
             .default_size(vec2(520.0, 360.0))
             .min_size(vec2(320.0, 220.0))
@@ -397,7 +397,7 @@ fn body(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, actions
         Inst::Tab(k) => BinId(app.ui.project_panel.tabs[k].bin),
     };
     let up = Rect::from_min_size(pos2(head.min.x, head.center().y - 9.0), vec2(22.0, 18.0));
-    let up_resp = ui.interact(up, egui::Id::new((&pre, "up")), Sense::click()).on_hover_text(tl!("Up one level"));
+    let up_resp = ui.interact(up, egui::Id::unique((&pre, "up")), Sense::click()).on_hover_text(tl!("Up one level"));
     app.auto.add(&format!("{pre}.up"), up, "Up one level");
     let can_up = v.bin != top;
     if up_resp.hovered() && can_up {
@@ -429,7 +429,7 @@ fn body(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, actions
     app.ui.project_search = q;
     app.auto.add(&format!("{pre}.search"), search_rect, "Search");
     let find = Rect::from_min_size(pos2(search_rect.max.x + 8.0, row.min.y), vec2(24.0, 22.0));
-    let fr = ui.interact(find, egui::Id::new((&pre, "find")), Sense::click()).on_hover_text(tl!("Find…"));
+    let fr = ui.interact(find, egui::Id::unique((&pre, "find")), Sense::click()).on_hover_text(tl!("Find…"));
     app.auto.add(&format!("{pre}.find"), find, "Find…");
     if fr.hovered() {
         ui.painter().rect_filled(find, 3.0, t.hover);
@@ -562,7 +562,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         (Icon::Freeform, ViewMode::Freeform, tl!("Freeform View")),
     ] {
         let r = Rect::from_min_size(pos2(x, bar.min.y + 5.0), vec2(26.0, 22.0));
-        let resp = ui.interact(r, egui::Id::new((pre, "pv", tip)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique((pre, "pv", tip)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("{pre}.view.{mode:?}"), r, tip);
         if v.mode == mode {
             ui.painter().rect_filled(r, 4.0, t.pressed);
@@ -579,10 +579,10 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     let sw = (bar.width() - 300.0).clamp(40.0, 120.0);
     let sr = Rect::from_min_size(pos2(x + 8.0, bar.min.y + 8.0), vec2(sw, 16.0));
     let mut sz = v.icon_size;
-    let resp = ui.put(sr, egui::Slider::new(&mut sz, 48.0..=400.0).show_value(false));
+    let resp = crate::widgets::accessible_name(ui.put(sr, egui::Slider::new(&mut sz, 48.0..=400.0).show_value(false)), tl!("Zoom"));
     app.auto.add(&format!("{pre}.iconSize"), sr, "Zoom");
     // a drag ended by Escape goes back to the size it started from (#580)
-    let orig_id = egui::Id::new((pre, "icon-size-before-drag"));
+    let orig_id = egui::Id::unique((pre, "icon-size-before-drag"));
     if resp.drag_started() {
         ui.data_mut(|d| d.insert_temp(orig_id, v.icon_size));
     }
@@ -606,7 +606,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     // Sort Icons (Icon view)
     if v.mode == ViewMode::Icon {
         let r = Rect::from_min_size(pos2(x, bar.min.y + 5.0), vec2(24.0, 22.0));
-        let resp = ui.interact(r, egui::Id::new((pre, "sortIcons")), Sense::click()).on_hover_text(tl!("Sort Icons"));
+        let resp = ui.interact(r, egui::Id::unique((pre, "sortIcons")), Sense::click()).on_hover_text(tl!("Sort Icons"));
         app.auto.add(&format!("{pre}.sortIcons"), r, "Sort Icons");
         if resp.hovered() {
             ui.painter().rect_filled(r, 3.0, t.hover);
@@ -623,7 +623,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         (Icon::Automate, "clip.automateToSequence", tl!("Automate to Sequence")),
     ] {
         let r = Rect::from_min_size(pos2(rx - 24.0, bar.min.y + 5.0), vec2(24.0, 22.0));
-        let resp = ui.interact(r, egui::Id::new((pre, "pb", id)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique((pre, "pb", id)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("{pre}.button.{id}"), r, tip);
         if resp.hovered() {
             ui.painter().rect_filled(r, 3.0, t.hover);

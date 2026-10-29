@@ -353,6 +353,8 @@ pub const PREMIERE_PANEL: &[Entry] = &[
     ("captions.merge", "Alt+M", "Text"),
     ("captions.split", "Alt+S", "Text"),
     ("playback.loop", "Cmd+L", "Audio Track Mixer"),
+    ("mixer.showHideTracks", "Cmd+Alt+T", "Audio Track Mixer"),
+    ("mixer.meterInputOnly", "Ctrl+Shift+I", "Audio Track Mixer"),
     ("playback.toggle", "Space", "Metadata"),
     ("playback.loop", "Cmd+L", "Metadata"),
     ("mediaBrowser.openInSource", "Shift+O", "Media Browser"),

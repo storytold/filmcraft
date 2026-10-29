@@ -385,6 +385,10 @@ pub struct EditorState {
     /// Sequence ▸ Show Through Edits: the timeline marks cuts between continuous pieces of a clip.
     #[serde(default)]
     pub show_through_edits: bool,
+    /// Timeline Display Settings ▸ Show Duplicate Frame Markers: a stripe along the bottom of a
+    /// clip under the media frames another clip also shows.
+    #[serde(default)]
+    pub show_duplicate_frame_markers: bool,
     /// Markers ▸ Ripple Sequence Markers: ripple edits move (and delete) sequence markers too.
     #[serde(default)]
     pub ripple_sequence_markers: bool,
@@ -427,6 +431,10 @@ pub struct Session {
     pub project: Arc<Project>,
     pub history: History,
     pub revision: u64,
+    /// Bumped whenever the session installs a different project document (`file.newProject`,
+    /// open/import/recovery/template). Frontends use it to discard UI state (text edits, IME
+    /// owners) that belongs to the replaced document even if item ids are reused.
+    pub document_epoch: u64,
     pub saved_revision: u64,
     pub path: Option<String>,
     pub state: EditorState,
@@ -545,6 +553,7 @@ impl Session {
             project: Arc::new(Project::new("Untitled")),
             history: History { limit: 200, ..Default::default() },
             revision: 1,
+            document_epoch: 0,
             saved_revision: 1,
             path: None,
             state: EditorState {
@@ -1292,6 +1301,8 @@ mod interchange_auto_points_tests;
 mod keyboard_tests;
 #[cfg(test)]
 mod linked_speed_tests;
+#[cfg(test)]
+mod linked_trim_tests;
 #[cfg(test)]
 mod locked_clip_edits_tests;
 #[cfg(test)]

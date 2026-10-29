@@ -39,6 +39,8 @@ mod mixer_ui;
 mod monitor_geometry;
 mod multicam_ui;
 mod native_dialogs_ui;
+mod native_menu_text_keys;
+mod native_windows_ui;
 mod nest_editing_ui;
 mod nest_rendering_ui;
 mod nested_ui;
