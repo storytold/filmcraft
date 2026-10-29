@@ -1,4 +1,4 @@
-use super::*;
+use super::{BitWriter, CabacEstimator, Cand, MbCtx, MbKind, NbCtx, SliceEnc, SliceType, Src, cabac_mb, cavlc, ssd};
 
 impl<'a, 'b> SliceEnc<'a, 'b> {
     // ------------------------------------------------------------------ macroblock
@@ -29,7 +29,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let src = Src { y: src_y, u: src_u, v: src_v };
         let edges = self.edges(mx, my, av);
         let best = match f.st {
-            SliceType::I => self.analyse_intra(mx, my, qp, av, &edges, &src, u64::MAX),
+            SliceType::I => self.analyse_intra(&MbCtx { mx, my, qp, av, e: &edges, src: &src }, u64::MAX),
             SliceType::P => self.analyse_p(mx, my, qp, av, &edges, &src),
             SliceType::B => self.analyse_b(mx, my, qp, av, &edges, &src),
         };

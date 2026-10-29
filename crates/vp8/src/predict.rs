@@ -244,21 +244,27 @@ impl RefPlane<'_> {
     }
 }
 
-/// Predict the `w`x`h` block at `(bx, by)` of a plane from `reference` displaced by the motion
-/// vector `(mvx, mvy)` in eighth pixels, using `filters` (8 x 6 taps: the six-tap or bilinear
-/// set, 18.3), writing into `dst` (same layout as the block's plane).
-pub fn predict_inter(
-    reference: &RefPlane,
-    dst: &mut [u8],
-    dst_stride: usize,
-    bx: usize,
-    by: usize,
-    w: usize,
-    h: usize,
-    mvx: i32,
-    mvy: i32,
-    filters: &[i32; 48],
-) {
+/// Destination plane of an inter prediction (same layout as the block's plane).
+pub struct DstPlane<'a> {
+    pub data: &'a mut [u8],
+    pub stride: usize,
+}
+
+/// A `w`x`h` block at `(x, y)` of a plane.
+#[derive(Clone, Copy)]
+pub struct BlockRect {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+}
+
+/// Predict the block `rect` of a plane from `reference` displaced by the motion vector
+/// `(mvx, mvy)` in eighth pixels, using `filters` (8 x 6 taps: the six-tap or bilinear set,
+/// 18.3), writing into `dst`.
+pub fn predict_inter(reference: &RefPlane, dst: DstPlane, rect: BlockRect, (mvx, mvy): (i32, i32), filters: &[i32; 48]) {
+    let DstPlane { data: dst, stride: dst_stride } = dst;
+    let BlockRect { x: bx, y: by, w, h } = rect;
     let x0 = bx as isize + (mvx >> 3) as isize;
     let y0 = by as isize + (mvy >> 3) as isize;
     let (fx, fy) = ((mvx & 7) as usize, (mvy & 7) as usize);

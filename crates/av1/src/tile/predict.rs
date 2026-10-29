@@ -1,5 +1,10 @@
 use super::tx_size::find_tx_size;
-use super::*;
+use super::{
+    BLOCK_64X64, DC_PRED, H_PRED, II_DC_PRED, II_H_PRED, II_V_PRED, INTRA_FRAME, IntraParams, MAX_TX_SIZE_RECT, MI_HEIGHT_LOG2, MI_WIDTH_LOG2,
+    NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, Result, SMOOTH_H_PRED, SMOOTH_PRED, SMOOTH_V_PRED, TX_4X4, TX_16X32, TX_32X16, TX_32X32, TX_HEIGHT,
+    TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2, TileDecoder, UV_CFL_PRED, V_PRED, block_height, block_width, is_directional_mode, predict_intra, round2_signed,
+};
+use crate::inter::PredBlock;
 
 impl<'a, 'f> TileDecoder<'a, 'f> {
     // ---- prediction and residual ----------------------------------------------------------
@@ -82,7 +87,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 let mut c = 0;
                 let mut x = 0;
                 while x < n4w * 4 {
-                    self.predict_inter(plane, base_x + x, base_y + y, pred_w, pred_h, cand_row + r, cand_col + c);
+                    self.predict_inter(PredBlock { plane, x: base_x + x, y: base_y + y, w: pred_w, h: pred_h }, cand_row + r, cand_col + c);
                     x += pred_w;
                     c += 1;
                 }

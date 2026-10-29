@@ -1,6 +1,6 @@
 use super::ime::{graphics_ime_target, ime_event_is_stale, local_reset_destination};
 use super::overlay::{TEXT_EDIT_ID, end_edit};
-use super::*;
+use super::{FilmcraftApp, GfxEdit, ImeTarget, LayerContent, LayerSpec, LayerView, Rect, Sense, json, text_layout};
 
 pub(super) fn text_of(spec: &LayerSpec) -> Option<&filmcraft_project::graphic::TextProps> {
     match &spec.content {

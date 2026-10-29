@@ -1,5 +1,8 @@
 use super::layout::Layout;
-use super::*;
+use super::{
+    Align2, Color32, Drag, EDGE_PX, FilmcraftApp, Icon, ItemId, Rect, Sense, Sequence, Stroke, ThumbnailMode, Tick, TimeDisplay, TimeRange, Tokens, Value,
+    format_time, icons, json, marker_range_rect, marker_rect, pos2, vec2, work_area_rect,
+};
 
 /// The Ruler's two strides, in frames: `(tick, label)`.
 ///
@@ -70,51 +73,12 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
             };
         }
         if key == "settings" {
-            egui::Popup::menu(&resp).show(|ui| {
-                let c = ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Show Video Thumbnails"));
-                app.auto.add("timeline.settings.showThumbnails", c.rect, "Show Video Thumbnails");
-                let on = app.ui.timeline.show_thumbnails;
-                ui.indent("timeline.settings.thumbnails", |ui| {
-                    for (mode, label) in
-                        [(ThumbnailMode::Head, tl!("Head")), (ThumbnailMode::HeadAndTail, tl!("Head and Tail")), (ThumbnailMode::Continuous, tl!("Continuous"))]
-                    {
-                        let r = ui.add_enabled(on, egui::RadioButton::new(app.ui.timeline.thumbnail_mode == mode, label));
-                        app.auto.add(&format!("timeline.settings.thumbnails.{}", mode.name()), r.rect, label);
-                        if r.clicked() {
-                            app.ui.timeline.thumbnail_mode = mode;
-                        }
-                    }
-                });
-                ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
-                ui.separator();
-                let mut te = app.session.state.show_through_edits;
-                let c = ui.checkbox(&mut te, tl!("Show Through Edits"));
-                app.auto.add("timeline.settings.showThroughEdits", c.rect, "Show Through Edits");
-                if c.changed() {
-                    let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));
-                }
-                let mut df = app.session.state.show_duplicate_frame_markers;
-                let c = ui.checkbox(&mut df, tl!("Show Duplicate Frame Markers"));
-                app.auto.add("timeline.settings.showDuplicateFrameMarkers", c.rect, "Show Duplicate Frame Markers");
-                if c.changed() {
-                    let _ = app.session.execute("sequence.showDuplicateFrameMarkers", json!({"on": df}));
-                }
-                ui.separator();
-                if ui.button(tl!("Expand All Tracks")).clicked() {
-                    app.ui.timeline.video_track_h = 64.0;
-                    app.ui.timeline.audio_track_h = 64.0;
-                }
-                if ui.button(tl!("Minimize All Tracks")).clicked() {
-                    app.ui.timeline.video_track_h = 26.0;
-                    app.ui.timeline.audio_track_h = 26.0;
-                }
-            });
+            egui::Popup::menu(&resp).show(|ui| timeline_settings(app, ui));
         }
         x += 30.0;
     }
     // ----- ruler: markers row · labels · ticks · 2 pt render bar
     let clip = p.with_clip_rect(ruler);
-    let marker_y = ruler.min.y + 2.0;
     let label_y = ruler.min.y + 24.0;
     let tick_base = ruler.max.y - 3.0;
     let (minor, label_step) = ruler_steps(layout.pps / rate.as_f64(), rate.timecode_base());
@@ -203,6 +167,14 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
         }
     }
     // markers: 8 × 12 pt pentagons in the marker colour, on the top row
+    draw_markers(app, ui, &clip, layout, seq);
+    app.auto.add("timeline.ruler", ruler, "time ruler");
+}
+
+/// The ruler's marker row: one pentagon per marker in its colour, its range band behind it and,
+/// on hover, its name.
+fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, layout: &Layout, seq: &Sequence) {
+    let marker_y = layout.ruler.min.y + 2.0;
     for m in &seq.markers {
         let x = layout.x_of(m.start);
         let c = m.color.marker_rgb();
@@ -222,5 +194,46 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
             });
         }
     }
-    app.auto.add("timeline.ruler", ruler, "time ruler");
+}
+
+/// The Timeline Display Settings popup from the ruler toolbar: thumbnails, waveforms, edit
+/// markers and the track-height presets.
+fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+    let c = ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Show Video Thumbnails"));
+    app.auto.add("timeline.settings.showThumbnails", c.rect, "Show Video Thumbnails");
+    let on = app.ui.timeline.show_thumbnails;
+    ui.indent("timeline.settings.thumbnails", |ui| {
+        for (mode, label) in
+            [(ThumbnailMode::Head, tl!("Head")), (ThumbnailMode::HeadAndTail, tl!("Head and Tail")), (ThumbnailMode::Continuous, tl!("Continuous"))]
+        {
+            let r = ui.add_enabled(on, egui::RadioButton::new(app.ui.timeline.thumbnail_mode == mode, label));
+            app.auto.add(&format!("timeline.settings.thumbnails.{}", mode.name()), r.rect, label);
+            if r.clicked() {
+                app.ui.timeline.thumbnail_mode = mode;
+            }
+        }
+    });
+    ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
+    ui.separator();
+    let mut te = app.session.state.show_through_edits;
+    let c = ui.checkbox(&mut te, tl!("Show Through Edits"));
+    app.auto.add("timeline.settings.showThroughEdits", c.rect, "Show Through Edits");
+    if c.changed() {
+        let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));
+    }
+    let mut df = app.session.state.show_duplicate_frame_markers;
+    let c = ui.checkbox(&mut df, tl!("Show Duplicate Frame Markers"));
+    app.auto.add("timeline.settings.showDuplicateFrameMarkers", c.rect, "Show Duplicate Frame Markers");
+    if c.changed() {
+        let _ = app.session.execute("sequence.showDuplicateFrameMarkers", json!({"on": df}));
+    }
+    ui.separator();
+    if ui.button(tl!("Expand All Tracks")).clicked() {
+        app.ui.timeline.video_track_h = 64.0;
+        app.ui.timeline.audio_track_h = 64.0;
+    }
+    if ui.button(tl!("Minimize All Tracks")).clicked() {
+        app.ui.timeline.video_track_h = 26.0;
+        app.ui.timeline.audio_track_h = 26.0;
+    }
 }

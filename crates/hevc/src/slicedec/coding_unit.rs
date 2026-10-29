@@ -1,4 +1,9 @@
-use super::*;
+use super::transform_tree::TtNode;
+use super::{
+    Blk, CU_SKIP, CU_TRANSQUANT_BYPASS, E_PU_H, E_PU_V, E_TU_H, E_TU_V, F_CODED, F_INTRA, F_NOFILTER, F_SKIP, INTRA_CHROMA, PART_MODE, PRED_MODE,
+    PREV_INTRA_LUMA, PartMode, RQT_ROOT_CBF, Result, SPLIT_CU, Sample, SliceDecoder, ensure, qpc_420,
+};
+use crate::mvpred::PredBlock;
 
 impl<'a, S: Sample> SliceDecoder<'a, S> {
     pub(super) fn coding_quadtree(&mut self, x0: i32, y0: i32, log2: u32, depth: u32) -> Result<()> {
@@ -113,7 +118,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         self.mark_edges(x0, y0, n, n, E_TU_V | E_PU_V, E_TU_H | E_PU_H);
         if skip {
             self.cu_intra = false;
-            self.prediction_unit(x0, y0, n, x0, y0, n, n, 0, PartMode::P2Nx2N, true)?;
+            self.prediction_unit(&PredBlock { xc: x0, yc: y0, ncb: n, xp: x0, yp: y0, w: n, h: n, part_idx: 0, part: PartMode::P2Nx2N }, true)?;
             self.finish_cu(x0, y0, n);
             return Ok(());
         }
@@ -139,7 +144,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             }
             self.parse_intra_modes(x0, y0, n, part)?;
             self.max_trafo_depth = self.sps.max_th_depth_intra + self.intra_split as u32;
-            self.transform_tree(x0, y0, x0, y0, log2, 0, 0, [true, true])?;
+            self.transform_tree(TtNode { x0, y0, xb: x0, yb: y0, log2, blk_idx: 0 }, 0, [true, true])?;
         } else {
             self.intra_split = false;
             let mut merge2nx2n = false;
@@ -156,7 +161,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 PartMode::PNxN => &[(0, 0, h, h), (h, 0, h, h), (0, h, h, h), (h, h, h, h)],
             };
             for (i, &(px, py, pw, ph)) in parts.iter().enumerate() {
-                let merge = self.prediction_unit(x0, y0, n, x0 + px, y0 + py, pw, ph, i, part, false)?;
+                let merge = self.prediction_unit(&PredBlock { xc: x0, yc: y0, ncb: n, xp: x0 + px, yp: y0 + py, w: pw, h: ph, part_idx: i, part }, false)?;
                 if part == PartMode::P2Nx2N {
                     merge2nx2n = merge;
                 }
@@ -170,7 +175,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             let root_cbf = if !merge2nx2n { self.dd(RQT_ROOT_CBF) == 1 } else { true };
             if root_cbf {
                 self.max_trafo_depth = self.sps.max_th_depth_inter;
-                self.transform_tree(x0, y0, x0, y0, log2, 0, 0, [true, true])?;
+                self.transform_tree(TtNode { x0, y0, xb: x0, yb: y0, log2, blk_idx: 0 }, 0, [true, true])?;
             }
         }
         self.finish_cu(x0, y0, n);

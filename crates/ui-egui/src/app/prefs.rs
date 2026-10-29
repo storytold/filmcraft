@@ -1,4 +1,4 @@
-use super::*;
+use super::{FilmcraftApp, ThemeKind, Tokens, dock, i18n, state, theme};
 
 impl FilmcraftApp {
     /// Show theme `k` with the Settings ▸ Appearance highlight colour and contrast.

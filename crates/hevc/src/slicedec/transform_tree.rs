@@ -1,7 +1,113 @@
-use super::*;
+use super::{
+    CBF_CHROMA, CBF_LUMA, CODED_SUB_BLOCK, CTX_IDX_MAP, CU_QP_DELTA_ABS, E_TU_H, E_TU_V, F_CBF, F_INTRA, GT1, GT2, LAST_X_PREFIX, LAST_Y_PREFIX, LEVEL_SCALE,
+    PartMode, PicState, Result, SCAN_4, SIG_COEFF, SPLIT_TRANSFORM, Sample, SliceDecoder, TRANSFORM_SKIP, ensure, intra, scan_order, transform,
+};
+
+/// Significant scan positions of one sub-block, in decoding (descending) order.
+#[derive(Default)]
+struct SigList {
+    pos: [u8; 16],
+    n: usize,
+}
+
+impl SigList {
+    fn push(&mut self, p: u8) {
+        self.pos[self.n] = p;
+        self.n += 1;
+    }
+}
+
+/// Context of the significance map of one coded sub-block.
+struct SigMapParams {
+    log2: u32,
+    c: usize,
+    scan_idx: usize,
+    /// Sub-block position.
+    xs: usize,
+    ys: usize,
+    /// coded_sub_block_flag of the right neighbour plus twice that of the one below.
+    prev_csbf: u8,
+    /// inferSbDcSigCoeffFlag.
+    infer_dc: bool,
+    /// First scan position to decode (descending).
+    start: i32,
+}
+
+/// coeff_abs_level_greater1_flag / greater2_flag results of one sub-block.
+#[derive(Default)]
+struct GreaterFlags {
+    gt1: [u8; 16],
+    first_g1: Option<usize>,
+    gt2: u8,
+    /// Final greater1 context state, which selects the next sub-block's context set.
+    g1ctx: u32,
+}
+
+/// sigCtx increment of sig_coeff_flag (9.3.4.2.5) for the position `(xp, yp)` inside the sub-block.
+fn sig_ctx_inc(p: &SigMapParams, (xp, yp): (usize, usize)) -> usize {
+    let (xc, yc) = (p.xs * 4 + xp, p.ys * 4 + yp);
+    if p.log2 == 2 {
+        return CTX_IDX_MAP[(yc << 2) + xc] as usize;
+    }
+    if xc + yc == 0 {
+        return 0;
+    }
+    let mut s = match p.prev_csbf {
+        0 => {
+            if xp + yp == 0 {
+                2
+            } else if xp + yp < 3 {
+                1
+            } else {
+                0
+            }
+        }
+        1 => {
+            if yp == 0 {
+                2
+            } else if yp == 1 {
+                1
+            } else {
+                0
+            }
+        }
+        2 => {
+            if xp == 0 {
+                2
+            } else if xp == 1 {
+                1
+            } else {
+                0
+            }
+        }
+        _ => 2,
+    };
+    if p.c == 0 {
+        if p.xs + p.ys > 0 {
+            s += 3;
+        }
+        s += if p.log2 == 3 { if p.scan_idx == 0 { 9 } else { 15 } } else { 21 };
+    } else {
+        s += if p.log2 == 3 { 9 } else { 12 };
+    }
+    s
+}
+
+/// A node of the transform tree: the block at (`x0`, `y0`) of size 2^`log2`, its parent's origin
+/// (`xb`, `yb`) and its index `blk_idx` among the parent's four children.
+#[derive(Clone, Copy)]
+pub(super) struct TtNode {
+    pub x0: i32,
+    pub y0: i32,
+    pub xb: i32,
+    pub yb: i32,
+    pub log2: u32,
+    pub blk_idx: u32,
+}
 
 impl<'a, S: Sample> SliceDecoder<'a, S> {
-    pub(super) fn transform_tree(&mut self, x0: i32, y0: i32, xb: i32, yb: i32, log2: u32, depth: u32, blk_idx: u32, parent_cbf_c: [bool; 2]) -> Result<()> {
+    pub(super) fn transform_tree(&mut self, node: TtNode, depth: u32, parent_cbf_c: [bool; 2]) -> Result<()> {
+        let TtNode { x0, y0, log2, .. } = node;
         let split = if log2 <= self.sps.log2_max_tb && log2 > self.sps.log2_min_tb && depth < self.max_trafo_depth && !(self.intra_split && depth == 0) {
             self.dd(SPLIT_TRANSFORM + (5 - log2 as usize)) == 1
         } else {
@@ -25,10 +131,10 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
         if split {
             let h = 1 << (log2 - 1);
-            self.transform_tree(x0, y0, x0, y0, log2 - 1, depth + 1, 0, cbf_c)?;
-            self.transform_tree(x0 + h, y0, x0, y0, log2 - 1, depth + 1, 1, cbf_c)?;
-            self.transform_tree(x0, y0 + h, x0, y0, log2 - 1, depth + 1, 2, cbf_c)?;
-            self.transform_tree(x0 + h, y0 + h, x0, y0, log2 - 1, depth + 1, 3, cbf_c)?;
+            for (blk_idx, (dx, dy)) in [(0, 0), (h, 0), (0, h), (h, h)].into_iter().enumerate() {
+                let child = TtNode { x0: x0 + dx, y0: y0 + dy, xb: x0, yb: y0, log2: log2 - 1, blk_idx: blk_idx as u32 };
+                self.transform_tree(child, depth + 1, cbf_c)?;
+            }
             return Ok(());
         }
         let cbf_luma = if self.cu_intra || depth != 0 || cbf_c[0] || cbf_c[1] { self.dd(CBF_LUMA + if depth == 0 { 1 } else { 0 }) == 1 } else { true };
@@ -36,10 +142,11 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         if depth > 0 {
             self.mark_edges(x0, y0, n, n, E_TU_V, E_TU_H);
         }
-        self.transform_unit(x0, y0, xb, yb, log2, blk_idx, cbf_luma, cbf_c)
+        self.transform_unit(node, cbf_luma, cbf_c)
     }
 
-    fn transform_unit(&mut self, x0: i32, y0: i32, xb: i32, yb: i32, log2: u32, blk_idx: u32, cbf_luma: bool, cbf_c: [bool; 2]) -> Result<()> {
+    fn transform_unit(&mut self, node: TtNode, cbf_luma: bool, cbf_c: [bool; 2]) -> Result<()> {
+        let TtNode { x0, y0, xb, yb, log2, blk_idx } = node;
         let n = 1i32 << log2;
         let chroma_here = log2 > 2 || blk_idx == 3;
         let cbf_chroma = cbf_c[0] || cbf_c[1];
@@ -146,12 +253,9 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         intra::predict(r, mode, n, c == 0, bd, &mut self.pic.planes[c][off..], stride);
     }
 
-    /// residual_coding() + scaling + transform + reconstruction for one transform block.
-    fn residual(&mut self, x0: i32, y0: i32, log2: u32, c: usize, qp: i32) -> Result<()> {
-        let n = 1usize << log2;
-        let bypass = self.cu_transquant_bypass;
-        let ts = if self.pps.transform_skip && !bypass && log2 == 2 { self.dd(TRANSFORM_SKIP + (c > 0) as usize) == 1 } else { false };
-        // last significant coefficient
+    /// last_sig_coeff_{x,y}_{prefix,suffix}: the position of the last significant coefficient
+    /// (before the vertical-scan swap).
+    fn last_sig_coeff_pos(&mut self, log2: u32, c: usize) -> (u32, u32) {
         let cmax = (log2 << 1) - 1;
         let (off, shift) = if c == 0 { (3 * (log2 - 2) + ((log2 - 1) >> 2), (log2 + 1) >> 2) } else { (15, log2 - 2) };
         let mut px = 0;
@@ -172,19 +276,124 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             let nb = (py >> 1) - 1;
             ly = (1 << nb) * (2 + (py & 1)) + self.bypass_bits(nb);
         }
-        // scanIdx (7.4.9.11)
-        let scan_idx = if self.cu_intra && (log2 == 2 || (log2 == 3 && c == 0)) {
-            let m = if c == 0 { self.pic.blk_at(x0, y0).ipm as u32 } else { self.intra_chroma_mode };
-            if (6..=14).contains(&m) {
-                2
-            } else if (22..=30).contains(&m) {
-                1
-            } else {
-                0
-            }
+        (lx, ly)
+    }
+
+    /// scanIdx (7.4.9.11): 0 diagonal, 1 horizontal, 2 vertical.
+    fn scan_idx(&self, x0: i32, y0: i32, log2: u32, c: usize) -> usize {
+        if !(self.cu_intra && (log2 == 2 || (log2 == 3 && c == 0))) {
+            return 0;
+        }
+        let m = if c == 0 { self.pic.blk_at(x0, y0).ipm as u32 } else { self.intra_chroma_mode };
+        if (6..=14).contains(&m) {
+            2
+        } else if (22..=30).contains(&m) {
+            1
         } else {
             0
-        };
+        }
+    }
+
+    /// sig_coeff_flag decoding of one coded sub-block, appending the significant scan positions
+    /// (descending) to `list`.
+    fn read_sig_map(&mut self, p: &SigMapParams, list: &mut SigList) {
+        let pos_scan = &SCAN_4[p.scan_idx];
+        let c_off_sig = if p.c == 0 { 0 } else { 27 };
+        let mut infer_dc = p.infer_dc;
+        let mut np = p.start;
+        while np >= 0 {
+            let (xp, yp) = (pos_scan[np as usize].0 as usize, pos_scan[np as usize].1 as usize);
+            if np > 0 || !infer_dc {
+                let sig_ctx = sig_ctx_inc(p, (xp, yp));
+                if self.c.decode_decision(SIG_COEFF + c_off_sig + sig_ctx) == 1 {
+                    list.push(np as u8);
+                    infer_dc = false;
+                }
+            } else {
+                // np == 0 with inferSbDcSigCoeffFlag
+                list.push(0);
+            }
+            np -= 1;
+        }
+    }
+
+    /// coeff_abs_level_greater1_flag / greater2_flag of one sub-block with `nsig` significant
+    /// coefficients; `ctx_set` as derived in 9.3.4.2.6.
+    fn read_greater_flags(&mut self, c: usize, ctx_set: usize, nsig: usize) -> GreaterFlags {
+        let mut g1ctx = 1u32;
+        let mut f = GreaterFlags::default();
+        let c_off_g1 = if c > 0 { 16 } else { 0 };
+        for k in 0..nsig.min(8) {
+            let inc = ctx_set * 4 + g1ctx.min(3) as usize + c_off_g1;
+            let flag = self.c.decode_decision(GT1 + inc);
+            f.gt1[k] = flag as u8;
+            if flag == 1 {
+                g1ctx = 0;
+                if f.first_g1.is_none() {
+                    f.first_g1 = Some(k);
+                }
+            } else if g1ctx > 0 {
+                g1ctx += 1;
+            }
+        }
+        f.g1ctx = g1ctx;
+        if f.first_g1.is_some() {
+            f.gt2 = self.c.decode_decision(GT2 + ctx_set + if c > 0 { 4 } else { 0 }) as u8;
+        }
+        f
+    }
+
+    /// Signs and remaining levels of one sub-block: the signed coefficient value of each
+    /// significant position, in the order of `list`.
+    fn read_levels(&mut self, list: &SigList, flags: &GreaterFlags, sdh: bool) -> Result<[i32; 16]> {
+        let nsig = list.n;
+        let last_sig_pos = list.pos[0] as i32;
+        let first_sig_pos = list.pos[nsig - 1] as i32;
+        let sign_hidden = sdh && last_sig_pos - first_sig_pos > 3;
+        let nsigns = if sign_hidden { nsig - 1 } else { nsig };
+        let mut signs = if nsigns > 0 { self.bypass_bits(nsigns as u32) << (32 - nsigns) } else { 0 };
+        let mut values = [0i32; 16];
+        let mut rice = 0u32;
+        let mut sum_abs = 0i32;
+        for k in 0..nsig {
+            let mut base = 1 + flags.gt1[k] as i32;
+            if Some(k) == flags.first_g1 {
+                base += flags.gt2 as i32;
+            }
+            let thresh = if k < 8 { if Some(k) == flags.first_g1 { 3 } else { 2 } } else { 1 };
+            let mut level = base;
+            if base == thresh {
+                let rem = self.coeff_abs_level_remaining(rice)?;
+                level = base + rem;
+                if level > 3 * (1 << rice) {
+                    rice = (rice + 1).min(4);
+                }
+            }
+            let mut v = level;
+            if !(sign_hidden && k == nsig - 1) {
+                if signs & 0x8000_0000 != 0 {
+                    v = -v;
+                }
+                signs <<= 1;
+            }
+            if sign_hidden {
+                sum_abs += level;
+                if k == nsig - 1 && sum_abs & 1 == 1 {
+                    v = -v;
+                }
+            }
+            values[k] = v;
+        }
+        Ok(values)
+    }
+
+    /// residual_coding() + scaling + transform + reconstruction for one transform block.
+    fn residual(&mut self, x0: i32, y0: i32, log2: u32, c: usize, qp: i32) -> Result<()> {
+        let n = 1usize << log2;
+        let bypass = self.cu_transquant_bypass;
+        let ts = if self.pps.transform_skip && !bypass && log2 == 2 { self.dd(TRANSFORM_SKIP + (c > 0) as usize) == 1 } else { false };
+        let (mut lx, mut ly) = self.last_sig_coeff_pos(log2, c);
+        let scan_idx = self.scan_idx(x0, y0, log2, c);
         if scan_idx == 2 {
             std::mem::swap(&mut lx, &mut ly);
         }
@@ -200,7 +409,6 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let mut prev_g1: Option<u32> = None;
         let sdh = self.pps.sign_data_hiding && !bypass;
         let (mut max_x, mut max_y) = (0usize, 0usize);
-        let c_off_sig = if c == 0 { 0 } else { 27 };
         for i in (0..=last_sb).rev() {
             let (xs, ys) = (sb_scan[i].0 as usize, sb_scan[i].1 as usize);
             let mut infer_dc = false;
@@ -214,81 +422,18 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 csbf[ys * 8 + xs] = 1;
             }
             // significance map
-            let mut sig = [0u8; 16]; // scan positions n of significant coefficients, descending
-            let mut nsig = 0;
+            let mut list = SigList::default();
             let start: i32 = if i == last_sb {
-                sig[0] = last_pos as u8;
-                nsig = 1;
+                list.push(last_pos as u8);
                 last_pos as i32 - 1
             } else {
                 15
             };
             if csbf[ys * 8 + xs] != 0 {
-                let prev_csbf = right + (below << 1);
-                let mut np = start;
-                while np >= 0 {
-                    let (xp, yp) = (pos_scan[np as usize].0 as usize, pos_scan[np as usize].1 as usize);
-                    let (xc, yc) = (xs * 4 + xp, ys * 4 + yp);
-                    if np > 0 || !infer_dc {
-                        let sig_ctx = if log2 == 2 {
-                            CTX_IDX_MAP[(yc << 2) + xc] as usize
-                        } else if xc + yc == 0 {
-                            0
-                        } else {
-                            let mut s = match prev_csbf {
-                                0 => {
-                                    if xp + yp == 0 {
-                                        2
-                                    } else if xp + yp < 3 {
-                                        1
-                                    } else {
-                                        0
-                                    }
-                                }
-                                1 => {
-                                    if yp == 0 {
-                                        2
-                                    } else if yp == 1 {
-                                        1
-                                    } else {
-                                        0
-                                    }
-                                }
-                                2 => {
-                                    if xp == 0 {
-                                        2
-                                    } else if xp == 1 {
-                                        1
-                                    } else {
-                                        0
-                                    }
-                                }
-                                _ => 2,
-                            };
-                            if c == 0 {
-                                if xs + ys > 0 {
-                                    s += 3;
-                                }
-                                s += if log2 == 3 { if scan_idx == 0 { 9 } else { 15 } } else { 21 };
-                            } else {
-                                s += if log2 == 3 { 9 } else { 12 };
-                            }
-                            s
-                        };
-                        if self.c.decode_decision(SIG_COEFF + c_off_sig + sig_ctx) == 1 {
-                            sig[nsig] = np as u8;
-                            nsig += 1;
-                            infer_dc = false;
-                        }
-                    } else {
-                        // np == 0 with inferSbDcSigCoeffFlag
-                        sig[nsig] = 0;
-                        nsig += 1;
-                    }
-                    np -= 1;
-                }
+                let params = SigMapParams { log2, c, scan_idx, xs, ys, prev_csbf: right + (below << 1), infer_dc, start };
+                self.read_sig_map(&params, &mut list);
             }
-            if nsig == 0 {
+            if list.n == 0 {
                 continue;
             }
             // greater1 / greater2 flags
@@ -298,73 +443,18 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             {
                 ctx_set += 1;
             }
-            let mut g1ctx = 1u32;
-            let mut gt1 = [0u8; 16];
-            let mut first_g1: Option<usize> = None;
-            let c_off_g1 = if c > 0 { 16 } else { 0 };
-            for k in 0..nsig.min(8) {
-                let inc = ctx_set * 4 + g1ctx.min(3) as usize + c_off_g1;
-                let f = self.c.decode_decision(GT1 + inc);
-                gt1[k] = f as u8;
-                if f == 1 {
-                    g1ctx = 0;
-                    if first_g1.is_none() {
-                        first_g1 = Some(k);
-                    }
-                } else if g1ctx > 0 {
-                    g1ctx += 1;
-                }
-            }
-            prev_g1 = Some(g1ctx);
-            let mut gt2 = 0u8;
-            if let Some(k) = first_g1 {
-                gt2 = self.c.decode_decision(GT2 + ctx_set + if c > 0 { 4 } else { 0 }) as u8;
-                let _ = k;
-            }
-            // signs
-            let last_sig_pos = sig[0] as i32;
-            let first_sig_pos = sig[nsig - 1] as i32;
-            let sign_hidden = sdh && last_sig_pos - first_sig_pos > 3;
-            let nsigns = if sign_hidden { nsig - 1 } else { nsig };
-            let mut signs = if nsigns > 0 { self.bypass_bits(nsigns as u32) << (32 - nsigns) } else { 0 };
-            // remaining levels
-            let mut rice = 0u32;
-            let mut sum_abs = 0i32;
-            for k in 0..nsig {
-                let mut base = 1 + gt1[k] as i32;
-                if Some(k) == first_g1 {
-                    base += gt2 as i32;
-                }
-                let thresh = if k < 8 { if Some(k) == first_g1 { 3 } else { 2 } } else { 1 };
-                let mut level = base;
-                if base == thresh {
-                    let rem = self.coeff_abs_level_remaining(rice)?;
-                    level = base + rem;
-                    if level > 3 * (1 << rice) {
-                        rice = (rice + 1).min(4);
-                    }
-                }
-                let np = sig[k] as usize;
+            let flags = self.read_greater_flags(c, ctx_set, list.n);
+            prev_g1 = Some(flags.g1ctx);
+            let values = self.read_levels(&list, &flags, sdh)?;
+            for k in 0..list.n {
+                let np = list.pos[k] as usize;
                 let (xc, yc) = (xs * 4 + pos_scan[np].0 as usize, ys * 4 + pos_scan[np].1 as usize);
-                let mut v = level;
-                if !(sign_hidden && k == nsig - 1) {
-                    if signs & 0x8000_0000 != 0 {
-                        v = -v;
-                    }
-                    signs <<= 1;
-                }
-                if sign_hidden {
-                    sum_abs += level;
-                    if k == nsig - 1 && sum_abs & 1 == 1 {
-                        v = -v;
-                    }
-                }
-                self.coeffs[yc * n + xc] = v;
+                self.coeffs[yc * n + xc] = values[k];
                 max_x = max_x.max(xc);
                 max_y = max_y.max(yc);
             }
         }
-        self.reconstruct(x0, y0, log2, c, qp, ts, max_x, max_y)
+        self.reconstruct((x0, y0), log2, c, qp, ts, (max_x, max_y))
     }
 
     fn coeff_abs_level_remaining(&mut self, rice: u32) -> Result<i32> {
@@ -383,7 +473,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
     }
 
     /// Scaling, transform and addition to the prediction.
-    fn reconstruct(&mut self, x0: i32, y0: i32, log2: u32, c: usize, qp: i32, ts: bool, max_x: usize, max_y: usize) -> Result<()> {
+    fn reconstruct(&mut self, (x0, y0): (i32, i32), log2: u32, c: usize, qp: i32, ts: bool, (max_x, max_y): (usize, usize)) -> Result<()> {
         let n = 1usize << log2;
         let bd = if c == 0 { self.pic.bd_y } else { self.pic.bd_c };
         let coeffs = &mut self.coeffs[..n * n];

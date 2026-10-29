@@ -8,7 +8,7 @@ fn demo_project() -> (Project, ItemId, ItemId) {
     let clip = p.add_item(
         "Ocean_Sunset.mp4",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(Generator::Demo(DemoScene::OceanSunset)),
             info,
             interpret: Default::default(),
@@ -18,7 +18,7 @@ fn demo_project() -> (Project, ItemId, ItemId) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let seq = p.new_sequence("Sequence 01", SequenceSettings::default(), 3, 3, None);

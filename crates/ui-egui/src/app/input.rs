@@ -1,4 +1,4 @@
-use super::*;
+use super::{FilmcraftApp, PanelKind, dock_ui, json};
 
 impl FilmcraftApp {
     /// Import dropped files, on the main window and on dock panels in their own OS windows.

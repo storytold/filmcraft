@@ -4,7 +4,7 @@
 use crate::support;
 
 use filmcraft_interchange::{ExportOptions, FcpxmlVersion, Format, detect, import};
-use filmcraft_project::{ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, MediaRef, Param, ParamValue, Project, TrackKind, TransitionAlign};
+use filmcraft_project::{ItemKind, Keyframe, Label, Marker, MarkerId, MarkerKind, MediaRef, Param, ParamValue, Project, Sequence, TrackKind, TransitionAlign};
 use filmcraft_time::FrameRate;
 use proptest::prelude::*;
 use support::*;
@@ -14,9 +14,10 @@ fn ft(n: i64) -> String {
     format!("{}/24000s", n * 1001)
 }
 
-#[allow(clippy::format_in_format_args)]
 fn doc() -> String {
     let tc = 86_400; // 01:00:00:00 at 23.976 NDF
+    let tm_t = format!("{}/24000s", 3610 * 24000 + 48 * 1001);
+    let tm_v = format!("{}/24000s", 3610 * 24000 + 96 * 1001);
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE fcpxml>
@@ -93,8 +94,6 @@ fn doc() -> String {
         d72 = ft(72),
         d96 = ft(96),
         d240 = ft(240),
-        tm_t = format!("{}/24000s", 3610 * 24000 + 48 * 1001),
-        tm_v = format!("{}/24000s", 3610 * 24000 + 96 * 1001),
     )
 }
 
@@ -129,6 +128,12 @@ fn golden_connected_clips() {
     assert_eq!(s.settings.frame_rate, r);
     assert_eq!(s.start_timecode, 86_400);
 
+    assert_connected_primary_video(p, s, r);
+    assert_connected_secondary_video(p, s, r);
+    assert_connected_audio_markers_and_bins(p, s, r, &rep);
+}
+
+fn assert_connected_primary_video(p: &Project, s: &Sequence, r: FrameRate) {
     let v1 = &s.video_tracks[0];
     assert_eq!(v1.items.len(), 2);
     let (pier, boats) = (&v1.items[0], &v1.items[1]);
@@ -144,7 +149,9 @@ fn golden_connected_clips() {
     assert_eq!(media_key(p, boats.item), "/proj/boats.mov");
     let t = &v1.transitions[0];
     assert_eq!((t.start, t.duration, t.from, t.to, t.align), (r.tick_of(60), r.tick_of(24), Some(pier.id), Some(boats.id), TransitionAlign::CenterAtCut));
+}
 
+fn assert_connected_secondary_video(p: &Project, s: &Sequence, r: FrameRate) {
     // connected video on lane 1 (V2) with keyframed opacity; compound clip in a gap
     let v2 = &s.video_tracks[1];
     assert_eq!(v2.items.len(), 2);
@@ -156,18 +163,22 @@ fn golden_connected_clips() {
     assert_eq!(v2.items[1].start, r.tick_of(120));
     assert!(matches!(p.item(v2.items[1].item).unwrap().kind, ItemKind::Sequence(_)));
     assert_eq!(p.item(v2.items[1].item).unwrap().name, "Compound");
+}
 
+fn assert_connected_audio_markers_and_bins(p: &Project, s: &Sequence, r: FrameRate, rep: &filmcraft_interchange::Report) {
     // audio: pier's own audio on A1 (linked), the lane -1 music pushed to A2 by the overlap
     let a1 = &s.audio_tracks[0].items;
+    let pier_link = s.video_tracks[0].items[0].link;
     assert_eq!(a1.len(), 1);
-    assert_eq!(a1[0].link, pier.link);
-    assert!(pier.link.is_some());
+    assert_eq!(a1[0].link, pier_link);
+    assert!(pier_link.is_some());
     let theme = &s.audio_tracks[1].items[0];
     assert_eq!((theme.start, theme.duration), (r.tick_of(24), r.tick_of(96)));
     assert_eq!(theme.effect("volume").unwrap().param("level").unwrap().value, ParamValue::Float(-6.0));
     assert!(p.item(theme.item).unwrap().as_media().unwrap().info.video.is_none());
     // the boats asset has no audio: nothing on audio from it
-    assert!(s.audio_tracks.iter().flat_map(|t| &t.items).all(|i| i.item != boats.item));
+    let boats = s.video_tracks[0].items[1].item;
+    assert!(s.audio_tracks.iter().flat_map(|t| &t.items).all(|i| i.item != boats));
     // marker on a primary element is a timeline marker
     assert_eq!(s.markers.len(), 1);
     assert_eq!(
@@ -198,20 +209,20 @@ fn project() -> (Project, filmcraft_project::ItemId) {
     let b = media(&mut p, "/m/b.mov", true, false, r);
     let mus = media(&mut p, "/m/mus.wav", false, true, r);
     let nest = sequence(&mut p, "Nest", r, false);
-    clip(&mut p, nest, TrackKind::Video, 0, b, 0, 60, 0);
+    clip(&mut p, nest, TrackKind::Video, 0, b, 0..60, 0);
     let s = sequence(&mut p, "Cut", r, true);
     p.sequence_mut(s).unwrap().start_timecode = 107_892;
-    let v1 = clip(&mut p, s, TrackKind::Video, 0, a, 0, 90, 30);
-    let a1 = clip(&mut p, s, TrackKind::Audio, 0, a, 0, 90, 30);
+    let v1 = clip(&mut p, s, TrackKind::Video, 0, a, 0..90, 30);
+    let a1 = clip(&mut p, s, TrackKind::Audio, 0, a, 0..90, 30);
     link(&mut p, s, &[v1, a1]);
-    let v2 = clip(&mut p, s, TrackKind::Video, 0, b, 90, 60, 0);
-    transition(&mut p, s, TrackKind::Video, 0, "cross_dissolve", Some(v1), Some(v2), 80, 20, TransitionAlign::CenterAtCut);
-    let v3 = clip(&mut p, s, TrackKind::Video, 0, a, 200, 40, 500);
-    transition(&mut p, s, TrackKind::Video, 0, "dip_to_black", None, Some(v3), 200, 10, TransitionAlign::StartAtCut);
-    transition(&mut p, s, TrackKind::Video, 0, "dip_to_black", Some(v3), None, 230, 10, TransitionAlign::EndAtCut);
-    let up = clip(&mut p, s, TrackKind::Video, 1, nest, 30, 60, 0);
-    clip(&mut p, s, TrackKind::Video, 2, b, 160, 30, 10);
-    clip(&mut p, s, TrackKind::Audio, 2, mus, 0, 260, 0);
+    let v2 = clip(&mut p, s, TrackKind::Video, 0, b, 90..90 + (60), 0);
+    transition(&mut p, s, (TrackKind::Video, 0), "cross_dissolve", (Some(v1), Some(v2)), 80..80 + (20), TransitionAlign::CenterAtCut);
+    let v3 = clip(&mut p, s, TrackKind::Video, 0, a, 200..200 + (40), 500);
+    transition(&mut p, s, (TrackKind::Video, 0), "dip_to_black", (None, Some(v3)), 200..200 + (10), TransitionAlign::StartAtCut);
+    transition(&mut p, s, (TrackKind::Video, 0), "dip_to_black", (Some(v3), None), 230..230 + (10), TransitionAlign::EndAtCut);
+    let up = clip(&mut p, s, TrackKind::Video, 1, nest, 30..30 + (60), 0);
+    clip(&mut p, s, TrackKind::Video, 2, b, 160..160 + (30), 10);
+    clip(&mut p, s, TrackKind::Audio, 2, mus, 0..260, 0);
     {
         let q = p.sequence_mut(s).unwrap();
         let (_, it) = q.find_item_mut(v2).unwrap();
@@ -316,7 +327,7 @@ proptest! {
         let mut aends = [0i64; 3];
         for g in &clips {
             let t = ends[g.track] + g.gap;
-            let v = clip(&mut p, s, TrackKind::Video, g.track, ms[g.media], t, g.dur, g.src);
+            let v = clip(&mut p, s, TrackKind::Video, g.track, ms[g.media], t..t + (g.dur), g.src);
             {
                 let q = p.sequence_mut(s).unwrap();
                 let (_, it) = q.find_item_mut(v).unwrap();
@@ -332,10 +343,10 @@ proptest! {
             let adjacent = g.gap == 0 && prev[g.track].is_some();
             if g.track == 0 {
                 match g.tr {
-                    0 if adjacent && d >= 2 => transition(&mut p, s, TrackKind::Video, 0, "cross_dissolve", prev[0], Some(v), t - d / 2, d, TransitionAlign::CenterAtCut),
-                    1 if adjacent => transition(&mut p, s, TrackKind::Video, 0, "dip_to_white", prev[0], Some(v), t, d, TransitionAlign::StartAtCut),
-                    2 if adjacent => transition(&mut p, s, TrackKind::Video, 0, "push", prev[0], Some(v), t - d, d, TransitionAlign::EndAtCut),
-                    3 if !adjacent => transition(&mut p, s, TrackKind::Video, 0, "cross_dissolve", None, Some(v), t, d, TransitionAlign::StartAtCut),
+                    0 if adjacent && d >= 2 => transition(&mut p, s, (TrackKind::Video, 0), "cross_dissolve", (prev[0], Some(v)), t - d / 2..t - d / 2 + (d), TransitionAlign::CenterAtCut),
+                    1 if adjacent => transition(&mut p, s, (TrackKind::Video, 0), "dip_to_white", (prev[0], Some(v)), t..t + (d), TransitionAlign::StartAtCut),
+                    2 if adjacent => transition(&mut p, s, (TrackKind::Video, 0), "push", (prev[0], Some(v)), t - d..t - d + (d), TransitionAlign::EndAtCut),
+                    3 if !adjacent => transition(&mut p, s, (TrackKind::Video, 0), "cross_dissolve", (None, Some(v)), t..t + (d), TransitionAlign::StartAtCut),
                     _ => {}
                 }
             }
@@ -343,7 +354,7 @@ proptest! {
                 match g.audio {
                     // linked, same-numbered audio track, identical timing
                     1 => {
-                        let a = clip(&mut p, s, TrackKind::Audio, g.track, ms[g.media], t, g.dur, g.src);
+                        let a = clip(&mut p, s, TrackKind::Audio, g.track, ms[g.media], t..t + (g.dur), g.src);
                         {
                             let q = p.sequence_mut(s).unwrap();
                             let (sp, rv, en) = { let (_, it) = q.find_item(v).unwrap(); (it.speed, it.reverse, it.enabled) };
@@ -357,7 +368,7 @@ proptest! {
                     }
                     // independent audio-only clip
                     2 => {
-                        clip(&mut p, s, TrackKind::Audio, g.track, wav, t, g.dur, g.src);
+                        clip(&mut p, s, TrackKind::Audio, g.track, wav, t..t + (g.dur), g.src);
                         aends[g.track] = t + g.dur;
                     }
                     _ => {}
