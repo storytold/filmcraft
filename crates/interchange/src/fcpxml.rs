@@ -137,6 +137,23 @@ struct Imp<'a, 'i, 'r> {
     effects: HashMap<String, String>,
 }
 
+/// Where an element's keyframe times start, the media time it starts at and its playback speed.
+#[derive(Clone, Copy)]
+struct LocalTiming {
+    local_start: Tick,
+    src_in: Tick,
+    speed: f64,
+}
+
+/// Where a written clip element sits: offset in its parent's local time, connected lane, and
+/// whether it is on the primary storyline.
+#[derive(Clone, Copy)]
+struct ClipPlacement {
+    offset: Tick,
+    lane: Option<i32>,
+    primary: bool,
+}
+
 /// Placement context of a storyline element.
 struct Ctx {
     seq_rate: FrameRate,
@@ -438,7 +455,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 if let Some(l) = el.attribute("label").and_then(Label::from_name) {
                     ti.label = l;
                 }
-                self.adjustments(&mut ti, el, local_start, src_in, speed, ctx, kind);
+                self.adjustments(&mut ti, el, LocalTiming { local_start, src_in, speed }, ctx, kind);
                 if !primary || kind == TrackKind::Audio {
                     ti.markers = self.markers(el, local_start, src_in, speed, ctx.seq_rate);
                 }
@@ -508,8 +525,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         out
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn adjustments(&mut self, ti: &mut TrackItem, el: Node, local_start: Tick, src_in: Tick, speed: f64, ctx: &Ctx, kind: TrackKind) {
+    fn adjustments(&mut self, ti: &mut TrackItem, el: Node, timing: LocalTiming, ctx: &Ctx, kind: TrackKind) {
+        let LocalTiming { local_start, src_in, speed } = timing;
         // keyframe time (element-local) -> media time
         let kt = |t: Tick| src_in + scaled(t - local_start, speed);
         let (fw, fh) = (ctx.frame.0 as f64, ctx.frame.1 as f64);
@@ -861,7 +878,7 @@ impl Exp<'_, '_> {
                     trans_after.push((els.len(), self.transition_xml(tr, tc0, rate)));
                 }
                 let audio = merged.get(&it.id).and_then(|a| seq.audio_tracks[0].item(*a));
-                let el = self.clip_el(it, audio, TrackKind::Video, tc0 + it.start, None, seq, true);
+                let el = self.clip_el(it, audio, TrackKind::Video, ClipPlacement { offset: tc0 + it.start, lane: None, primary: true }, seq);
                 els.push(el);
                 for tr in v1.transitions.iter().filter(|tr| tr.from == Some(it.id) && tr.to.is_none()) {
                     trans_after.push((els.len(), self.transition_xml(tr, tc0, rate)));
@@ -887,6 +904,10 @@ impl Exp<'_, '_> {
                     if merged_audio.contains(&it.id) {
                         continue;
                     }
+                    if let Some(what) = self.unsupported(it, rate) {
+                        self.report.warn(format!("{what}: it is left out and is not read back on import"));
+                        continue;
+                    }
                     let Some(pi) = els.iter().position(|e| e.start <= it.start && it.start < e.end) else {
                         self.report.warn("a connected clip could not be attached and was dropped");
                         continue;
@@ -894,7 +915,7 @@ impl Exp<'_, '_> {
                     let local = els[pi].local + (it.start - els[pi].start);
                     let audio =
                         if kind == TrackKind::Video { merged.get(&it.id).and_then(|a| seq.audio_tracks.get(ti).and_then(|t| t.item(*a))) } else { None };
-                    let el = self.clip_el(it, audio, kind, local, Some(lane), seq, false);
+                    let el = self.clip_el(it, audio, kind, ClipPlacement { offset: local, lane: Some(lane), primary: false }, seq);
                     let s = self.render_el(&el, 0);
                     els[pi].children.push(s);
                 }
@@ -954,30 +975,29 @@ impl Exp<'_, '_> {
         )
     }
 
+    /// How the report names a clip FCPXML cannot carry (a generator, a title, an adjustment layer); `None` for any
+    /// other clip. Such a clip has no asset to reference, and an empty `ref` is not a valid IDREF: Final Cut Pro
+    /// rejects the whole file. A `<gap>` exists only in a spine, so a connected one is left out instead.
+    fn unsupported(&self, it: &TrackItem, rate: FrameRate) -> Option<String> {
+        if let Some(g) = generator_of(self.p, base_item(self.p, it.item)) {
+            return Some(format!("generator \"{}\" is not supported in FCPXML", g.label()));
+        }
+        crate::common::uncarried_clip(self.p, it, rate).map(|clip| format!("{clip} is not supported in FCPXML"))
+    }
+
     /// A clip element at `offset` (in its parent's local time).
-    #[allow(clippy::too_many_arguments)]
-    fn clip_el(&mut self, it: &TrackItem, audio: Option<&TrackItem>, kind: TrackKind, offset: Tick, lane: Option<i32>, seq: &Sequence, primary: bool) -> El {
+    fn clip_el(&mut self, it: &TrackItem, audio: Option<&TrackItem>, kind: TrackKind, at: ClipPlacement, seq: &Sequence) -> El {
+        let ClipPlacement { offset, lane, primary } = at;
         let rate = seq.settings.frame_rate;
         let base = base_item(self.p, it.item);
         let is_seq = matches!(self.p.item(base).map(|i| &i.kind), Some(ItemKind::Sequence(_)));
-        let generator = generator_of(self.p, base).cloned();
         let lane_attr = lane.map(|l| format!(" lane=\"{l}\"")).unwrap_or_default();
         let name = crate::xml::escape_attr(&it.name);
-        if let Some(g) = generator {
-            self.report.warn(format!("generator \"{}\" is not supported in FCPXML; written as a gap", g.label()));
-            return El {
-                start: it.start,
-                end: it.end(),
-                local: offset,
-                xml_open: format!(
-                    "<gap name=\"{name}\"{lane_attr} offset=\"{}\" start=\"{}\" duration=\"{}\"",
-                    fmt_time(offset, rate),
-                    fmt_time(offset, rate),
-                    fmt_time(it.duration, rate)
-                ),
-                children: vec![],
-                close: "gap".into(),
-            };
+        // In the primary storyline, a clip FCPXML cannot carry becomes a gap that keeps the timing
+        // (connected ones never get here: see `unsupported`).
+        if let Some(what) = self.unsupported(it, rate) {
+            self.report.warn(format!("{what}: it is written as a gap and is not read back on import"));
+            return gap_el(it, &name, offset, rate);
         }
         // Local timeline of the element: origin + source time (retimed clips use a timeMap).
         let (tag, r, origin) = if is_seq {
@@ -990,13 +1010,7 @@ impl Exp<'_, '_> {
             let origin = self.p.sequence(base).map(|s| s.settings.frame_rate.tick_of(s.start_timecode)).unwrap_or(Tick::ZERO);
             ("ref-clip", r, origin)
         } else {
-            let r = match crate::common::uncarried_clip(self.p, it, rate) {
-                Some(clip) => {
-                    self.report.warn(format!("{clip} is not supported in FCPXML: it is written as a clip without media and is not read back on import"));
-                    String::new()
-                }
-                None => self.asset(base, rate),
-            };
+            let r = self.asset(base, rate);
             let m = item_media(self.p, base);
             let mrate = m.and_then(|m| m.info.video.as_ref().map(|v| v.frame_rate)).unwrap_or(rate);
             let st = m.and_then(|m| m.info.start_timecode).map(|f| mrate.tick_of(f)).unwrap_or(Tick::ZERO);
@@ -1151,6 +1165,23 @@ impl Exp<'_, '_> {
             self.report.warn("blend modes are not exported to FCPXML");
         }
         let _ = (db_to_gain(0.0), gain_to_db(1.0));
+    }
+}
+
+/// A primary-storyline `<gap>` standing in for a clip FCPXML cannot carry; it keeps the clip's place and length.
+fn gap_el(it: &TrackItem, name: &str, offset: Tick, rate: FrameRate) -> El {
+    El {
+        start: it.start,
+        end: it.end(),
+        local: offset,
+        xml_open: format!(
+            "<gap name=\"{name}\" offset=\"{}\" start=\"{}\" duration=\"{}\"",
+            fmt_time(offset, rate),
+            fmt_time(offset, rate),
+            fmt_time(it.duration, rate)
+        ),
+        children: vec![],
+        close: "gap".into(),
     }
 }
 

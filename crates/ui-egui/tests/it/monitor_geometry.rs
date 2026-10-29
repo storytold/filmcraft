@@ -6,7 +6,6 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::{
     FilmcraftApp,
-    dock::{self, DockNode, PanelKind, SeqTabs},
     panels::monitor::{self, Which},
     theme::{self, ThemeKind},
 };
@@ -24,17 +23,14 @@ fn harness_at_scale(width: f32, kind: ThemeKind, which: Which, scale: f32) -> Ha
         move |ui, app: &mut FilmcraftApp| {
             app.set_theme(ui.ctx(), kind);
             app.auto.begin_frame();
-            let panel = if which == Which::Source { PanelKind::Source } else { PanelKind::Program };
-            let mut node = DockNode::Tabs { panels: vec![panel], active: 0 };
-            let mut groups = Vec::new();
-            dock::layout(ui, &mut node, ui.max_rect(), &app.tokens, "monitor", &mut groups, &mut app.auto);
-            for group in groups {
-                // Exercise the actual parent chrome, including its themed panel background.
-                dock::draw_group_chrome(ui, &group, panel, &SeqTabs::default(), &app.tokens, &mut app.auto);
-                monitor::show(app, ui, group.content, which);
-            }
+            // A stand-in for the docked frame: the themed panel background, with the body below
+            // a tab strip's height.
+            let frame = ui.max_rect();
+            ui.painter().rect_filled(frame, 0.0, app.tokens.panel_bg);
+            let content = egui::Rect::from_min_max(egui::pos2(frame.min.x, frame.min.y + app.tokens.tab_h), frame.max);
+            monitor::show(app, ui, content, which);
             let source = filmcraft_ui_egui::panels::dragged_source(ui);
-            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("observed-source-drag"), source));
+            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::unique("observed-source-drag"), source));
         },
         FilmcraftApp::new(session),
     );
@@ -175,6 +171,7 @@ fn transport_editor_keeps_its_own_space_and_customizes_compact_controls() {
             h.event(Event::PointerMoved(scroll.center()));
             h.event(Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Point,
+                source: egui::MouseWheelSource::Wheel,
                 delta: vec2(0.0, -1200.0),
                 modifiers: Modifiers::NONE,
                 phase: egui::TouchPhase::Move,
@@ -232,7 +229,7 @@ fn source_drag_choices(width: f32) {
         h.run_steps(2);
         let source = h
             .ctx
-            .data(|data| data.get_temp::<Option<filmcraft_ui_egui::panels::source_drag::SourceDrag>>(egui::Id::new("observed-source-drag")))
+            .data(|data| data.get_temp::<Option<filmcraft_ui_egui::panels::source_drag::SourceDrag>>(egui::Id::unique("observed-source-drag")))
             .flatten()
             .expect("drag must create the production Source payload");
         assert_eq!((source.video, source.audio), (video, audio));
