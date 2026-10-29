@@ -5,7 +5,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-29 · **Change:** minor (bulk sequence export picker; regressions passed, visual verification pending) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -106,6 +106,11 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 8. **Plugin hosting** (VST3 / AU, then OpenFX). Owner decision needed. 200–400 h.
 
 ## Progress log
+
+- **2026-10-29 (regressions passed, visual verification pending):** Export mode adds a sequence picker for
+  queuing multiple sequences with shared settings (#3033). Batch validation and unique automatic
+  filenames accompany it. Engine/UI regression tests passed; manual visual verification is pending. No
+  readiness estimate changes.
 
 - **2026-10-22:** ProRes 4444 / XQ alpha slices include the final singleton run code required by RDD 36:2022. Six HD fixtures rejected by native macOS decoding now pass; syntax regression tests cover final runs and slice widths ([details](crates/prores/README.md#alpha-bitstream-conformance), EffectCraft #293).
 

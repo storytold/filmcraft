@@ -13,9 +13,15 @@ pub(super) fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect
     p.rect_filled(mf, 4.0, t.row_selected);
     p.text(pos2(mf.min.x + 10.0, mf.center().y), Align2::LEFT_CENTER, tl!("Media File"), Tokens::ui(12.5), t.text);
     reg.add("export.destination.mediaFile", mf, "Media File");
-    let qtop = mf.max.y + 18.0;
+    let batch_rect = Rect::from_min_size(pos2(rect.min.x + 14.0, mf.max.y + 8.0), vec2(rect.width() - 28.0, 26.0));
+    let batch = ui.add_enabled_ui(app.session.active_sequence().is_some(), |ui| ui.put(batch_rect, egui::Button::new(tl!("Queue Sequences…")))).inner;
+    reg.add("export.queue.sequences", batch.rect, "Queue Sequences…");
+    if batch.clicked() {
+        super::batch::open(app);
+    }
+    let qtop = batch_rect.max.y + 18.0;
     let n = app.session.export_queue.items.len();
-    p.text(pos2(rect.min.x + 14.0, qtop), Align2::LEFT_CENTER, tlf!("Queue ({n})", n), Tokens::semibold(13.0), t.text);
+    ui.painter().text(pos2(rect.min.x + 14.0, qtop), Align2::LEFT_CENTER, tlf!("Queue ({n})", n), Tokens::semibold(13.0), t.text);
     let body = Rect::from_min_max(pos2(rect.min.x + 8.0, qtop + 14.0), pos2(rect.max.x - 8.0, rect.max.y - 40.0));
     let items: Vec<Value> = app.session.execute("export.queue.list", json!({})).ok().and_then(|v| v["items"].as_array().cloned()).unwrap_or_default();
     let mut action: Option<(&'static str, Value)> = None;

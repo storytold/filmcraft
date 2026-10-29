@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: tools, handles, panels, keyboard and feel against Premiere Pro 26.5.2, with the open UI issues) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-29 · **Change:** minor (bulk sequence export regressions passed; visual verification pending) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 How FilmCraft looks, feels and responds compared with Premiere: tools, on-screen handles, snapping,
 nudging, modifier keys, shortcuts, drag behaviour, numeric entry, panels, context menus. Keyboard
@@ -35,4 +35,5 @@ open interaction reports (about 40 of the 188 open issues).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Export ▸ Queue Sequences… selects multiple sequences with shared settings (#3033). Engine/UI regressions passed; visual verification pending and readiness unchanged |
 | 2026-10-10 | major | Created: UI areas against Premiere 26.5.2, menu label diff, keyboard parity from keyboard.md, open UI issues itemized |

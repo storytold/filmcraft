@@ -14,6 +14,10 @@
 //!   project and resolves the settings; `export.queue.start` encodes the ready items one after
 //!   another as ordinary background jobs ([`crate::Job`], visible in `jobs.list`); the frontend's
 //!   per-frame [`Session::poll_persistence`] (or `export.queue.list`) advances it.
+//!   A batch is validated before any entry or id is committed (1024 total queue entries max).
+//!   Directory/default paths use sequence names with numbered suffixes to avoid other queue
+//!   entries, other members of the batch and existing files. Explicit file paths retain their
+//!   existing naming behavior. Adding entries does not start a stopped queue.
 //! - **Quick Export** (`export.quick`): the active sequence with a preset (the last one used,
 //!   initially Match Source – Adaptive High Bitrate) to a default path next to the project.
 //!
@@ -37,6 +41,8 @@ use crate::{EngineError, Event, Result, Session};
 
 pub const FILE_FORMAT: &str = "filmcraft.export-presets";
 const LIBRARY_FILE: &str = "export-presets.json";
+/// Bound the queue and the sequence/range cross product before allocating batch entries.
+pub const MAX_QUEUE_ITEMS: usize = 1024;
 
 // ---------------------------------------------------------------------------------------------
 // preset library
@@ -733,8 +739,20 @@ fn queue_item_p(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
 fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "export.queue.add";
     let (preset, settings) = settings_from_params(s, p, cmd)?;
-    let seqs: Vec<ItemId> = match p.get("sequences").and_then(Value::as_array) {
-        Some(a) => a.iter().filter_map(Value::as_u64).map(ItemId).collect(),
+    let seqs: Vec<ItemId> = match p.get("sequences") {
+        Some(Value::Array(a)) if a.len() <= MAX_QUEUE_ITEMS => {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut seqs = Vec::new();
+            for value in a {
+                let id = ItemId(value.as_u64().ok_or_else(|| bad(cmd, "sequences must contain unsigned integer ids"))?);
+                if !seen.insert(id) {
+                    return Err(bad(cmd, format!("sequence {} is repeated", id.0)));
+                }
+                seqs.push(id);
+            }
+            seqs
+        }
+        Some(_) => return Err(bad(cmd, format!("sequences must be an array of at most {MAX_QUEUE_ITEMS} ids"))),
         None => vec![sequence_param(s, p, cmd)?],
     };
     if seqs.is_empty() {
@@ -745,12 +763,24 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad(cmd, format!("{} is not a sequence", q.0)));
         }
     }
-    let ranges: Vec<Option<&Value>> = match p.get("ranges").and_then(Value::as_array) {
-        Some(a) if !a.is_empty() => a.iter().map(Some).collect(),
-        _ => vec![p.get("range")],
+    let ranges: Vec<Option<&Value>> = match p.get("ranges") {
+        Some(Value::Array(a)) if a.is_empty() => vec![p.get("range")],
+        Some(Value::Array(a)) if a.len() <= MAX_QUEUE_ITEMS => a.iter().map(Some).collect(),
+        Some(_) => return Err(bad(cmd, format!("ranges must be an array of at most {MAX_QUEUE_ITEMS} ranges"))),
+        None => vec![p.get("range")],
     };
+    let count = seqs.len().checked_mul(ranges.len()).ok_or_else(|| bad(cmd, "too many queued exports"))?;
+    if s.export_queue.items.len().checked_add(count).is_none_or(|total| total > MAX_QUEUE_ITEMS) {
+        return Err(bad(cmd, format!("the queue holds at most {MAX_QUEUE_ITEMS} exports; remove items before adding more")));
+    }
+    let count_u64 = u64::try_from(count).map_err(|_| bad(cmd, "too many queued exports"))?;
+    let next_id = s.export_queue.next_id.checked_add(count_u64).ok_or_else(|| bad(cmd, "export queue ids exhausted"))?;
     let project = s.project.clone();
-    let many = seqs.len() * ranges.len() > 1;
+    let many = count > 1;
+    let generated_names = str_p(p, "path").is_none_or(|path| is_folder(&expand_home(path)));
+    // Treat case-only names as collisions even on a case-sensitive host, so a batch is portable.
+    let path_key = |path: &str| path.replace('\\', "/").to_lowercase();
+    let mut reserved: std::collections::BTreeSet<String> = s.export_queue.items.iter().map(|item| path_key(&item.settings.path)).collect();
     let mut ids = Vec::new();
     let mut n = 0usize;
     let mut items = Vec::new();
@@ -765,13 +795,30 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             // several ranges of one sequence get numbered names; several sequences their own names
             let suffix = if many && (ranges.len() > 1 || str_p(p, "path").is_some_and(|x| !is_folder(&expand_home(x)))) { Some(n) } else { None };
             st.path = output_path(s, p, seq, &st, suffix);
+            if generated_names {
+                let mut available = false;
+                // Also avoid existing files when assigning automatic names. The bounded search
+                // fails before mutation if a folder already contains too many numbered exports.
+                for attempt in 0..=MAX_QUEUE_ITEMS {
+                    let candidate = if attempt == 0 { st.path.clone() } else { output_path(s, p, seq, &st, Some(attempt)) };
+                    if !reserved.contains(&path_key(&candidate)) && !Path::new(&candidate).exists() {
+                        reserved.insert(path_key(&candidate));
+                        st.path = candidate;
+                        available = true;
+                        break;
+                    }
+                }
+                if !available {
+                    return Err(bad(cmd, "could not choose a unique output name; choose another export folder"));
+                }
+            }
             n += 1;
             items.push((seq, st));
         }
     }
-    for (seq, st) in items {
-        s.export_queue.next_id += 1;
-        let id = s.export_queue.next_id;
+    for (offset, (seq, st)) in (1..=count_u64).zip(items) {
+        // The full id range was checked before preparing or committing any item.
+        let id = s.export_queue.next_id.saturating_add(offset);
         let name = s.project.item(seq).map(|i| i.name.clone()).unwrap_or_default();
         s.export_queue.items.push(QueueItem {
             id,
@@ -786,6 +833,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
         });
         ids.push(id);
     }
+    s.export_queue.next_id = next_id;
     if bool_p(p, "start").unwrap_or(false) {
         s.export_queue.running = true;
         pump_queue(s, bool_p(p, "wait").unwrap_or(false));
@@ -1187,6 +1235,18 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod guard_tests {
     use super::*;
+
+    #[test]
+    fn bulk_queue_id_exhaustion_is_rejected_before_mutation() {
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        s.export_queue.next_id = u64::MAX;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| queue_add(&mut s, &json!({"path": "last.wav", "format": "wav"}))));
+        assert!(result.is_ok(), "the queue must not panic when its id counter is exhausted");
+        assert!(result.unwrap().unwrap_err().to_string().contains("ids exhausted"));
+        assert!(s.export_queue.items.is_empty());
+        assert_eq!(s.export_queue.next_id, u64::MAX);
+    }
 
     /// A panicking job body must leave the job finished with an error, not "running" forever.
     #[test]

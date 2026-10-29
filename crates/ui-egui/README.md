@@ -3,6 +3,30 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Bulk sequence export
+
+Export ▸ **Queue Sequences…** opens a picker for the project's sequences (#3033). It initially
+selects sequences selected in the Project panel, or the active sequence when none are selected.
+Choose individual sequences or Select All, then Send to Queue. The current Export settings and
+range apply to every selected sequence; Match Source resolves separately for each sequence.
+The active timeline, project and undo history stay unchanged. Start Queue begins a stopped queue;
+an already running queue continues normally.
+
+Files use sequence names in the current export Location, rather than the single-export File Name.
+Automatic names receive numbered suffixes when they collide with other queued outputs or existing
+files. The queue holds at most 1024 entries. Invalid ranges (for example Work Area on a sequence
+without one) reject the whole batch and leave the picker open with the error and selection intact.
+The queue remains session-only; it is not saved in the project.
+
+Automation: `export.queue.sequences`, `export.batch.sequence.<sequence-id>`,
+`export.batch.all`, `export.batch.none`, `export.batch.add`, `export.batch.cancel`.
+`ui.set {"export":{"batch":{"sequences":[1,2]}}}` opens/seeds the picker; `batch:null` closes it.
+Headless clients use `export.queue.add` with `sequences`, a directory `path` ending in `/`,
+and the same `settings` / `preset` / `range` parameters as individual exports.
+
+Coverage is in `export_tests::bulk_queue_*` (engine) and `export_ui::bulk_sequence_*` (UI).
+The engine and UI regressions passed on 2026-10-29. Manual visual verification is still pending.
+
 ## Control input limits
 
 The control channel bounds `ui.click` to 10 clicks and `ui.drag` to 1024 movement steps (#2784).
