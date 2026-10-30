@@ -615,6 +615,9 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         egui::Popup::menu(&resp).show(|ui| sort_icons_menu(app, ui, pre, actions));
     }
     let mut rx = bar.max.x - 6.0;
+    // "Clear" is enabled when either items are selected or a non-root bin is selected (#issue4).
+    let has_clearable = !app.session.state.project_selection.is_empty()
+        || app.ui.project_panel.selected_bin.is_some();
     for (icon, id, tip) in [
         (Icon::Trash, "project.delete", tl!("Clear (Delete)")),
         (Icon::NewItem, "new-item", tl!("New Item")),
@@ -622,13 +625,17 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         (Icon::Search, "find", tl!("Find")),
         (Icon::Automate, "clip.automateToSequence", tl!("Automate to Sequence")),
     ] {
+        // Clear and Automate only make sense when something is selected (#2129 companion).
+        let needs_selection = matches!(id, "project.delete" | "clip.automateToSequence");
+        let enabled = !(needs_selection && !has_clearable);
         let r = Rect::from_min_size(pos2(rx - 24.0, bar.min.y + 5.0), vec2(24.0, 22.0));
         let resp = ui.interact(r, egui::Id::unique((pre, "pb", id)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("{pre}.button.{id}"), r, tip);
-        if resp.hovered() {
+        if enabled && resp.hovered() {
             ui.painter().rect_filled(r, 3.0, t.hover);
         }
-        icons::paint(ui.painter(), r.shrink(5.0), icon, t.icon);
+        let icon_color = if enabled { t.icon } else { t.text_faint };
+        icons::paint(ui.painter(), r.shrink(5.0), icon, icon_color);
         if id == "new-item" {
             // a clip dropped here makes a sequence that matches it, as in Premiere (#2855)
             if let Some(item) = crate::panels::dragged_panel_item(ui)
@@ -642,7 +649,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
                 }
             }
             egui::Popup::menu(&resp).show(|ui| new_item_menu(app, ui, pre, actions));
-        } else if resp.clicked() {
+        } else if enabled && resp.clicked() {
             match id {
                 "find" => actions.push(("edit.find".into(), json!({}))),
                 "file.newBin" => {
