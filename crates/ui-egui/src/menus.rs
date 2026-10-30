@@ -42,6 +42,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
+    uic!("playback.shuttle", "Shuttle at Speed", [], None),
+    uic!("speedEditor.status", "Speed Editor Status", [], None),
+    uic!("speedEditor.input", "Speed Editor Input", [], None),
+    uic!("devices.speedEditor", "DaVinci Speed Editor", ["Devices"], None),
+    uic!("speedEditor.debugger.clear", "Clear Speed Editor History", [], None),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
     uic!("playback.reverse", "Shuttle Left", [], Some("J")),
@@ -182,6 +187,9 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    if let Some(result) = crate::speed_editor::route(app, ctx, id, &params) {
+        return result;
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
@@ -331,6 +339,25 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         "playback.slowForward" | "playback.slowReverse" => {
             app.play(if id == "playback.slowForward" { 0.25 } else { -0.25 });
             return Ok(json!({"speed": app.playback.speed}));
+        }
+        "playback.shuttle" => {
+            let speed = params
+                .get("speed")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && v.abs() <= 8.0)
+                .ok_or("shuttle speed must be a number between -8 and 8")?;
+            if targets_source(app, &params) {
+                if speed == 0.0 {
+                    app.stop_source();
+                } else {
+                    app.shuttle_source(speed)?;
+                }
+            } else if speed == 0.0 {
+                app.stop();
+            } else {
+                app.shuttle_program(ctx, speed);
+            }
+            return Ok(json!({"speed": speed}));
         }
         "source.playback.toggle" => {
             app.toggle_source_play()?;
@@ -794,7 +821,7 @@ pub struct MenuItem {
     pub checked: Option<bool>,
 }
 
-pub const MENUS: [&str; 9] = ["File", "Edit", "Clip", "Sequence", "Markers", "Graphics and Titles", "View", "Window", "Help"];
+pub const MENUS: [&str; 10] = ["File", "Edit", "Clip", "Sequence", "Markers", "Graphics and Titles", "View", "Window", "Devices", "Help"];
 
 /// Labels only the native macOS app menu shows, with no command in the menu tree behind them: the
 /// Settings submenu and the predefined Hide, Hide Others and Quit items. They are translated through

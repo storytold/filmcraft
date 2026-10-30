@@ -62,6 +62,10 @@ winit = { version = "0.30", default-features = false, features = ["x11"] }
 # portal file dialogs (rfd) and accesskit already use.
 zbus = "5.19"
 
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+# MIT. Native Rust HID backends: no bundled C HID library or libudev development package.
+hidapi = { version = "2.6.7", default-features = false, features = ["linux-native-basic-udev", "windows-native"] }
+
 # Icon + VERSIONINFO for filmcraft.exe (build.rs); only needed when building on Windows.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

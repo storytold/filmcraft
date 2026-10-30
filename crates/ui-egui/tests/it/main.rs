@@ -58,6 +58,7 @@ mod settings_ui;
 mod shared_docking_ui;
 mod source_drag_ui;
 mod source_playback_ui;
+mod speed_editor_ui;
 mod timecode_ui;
 mod timeline_drop_ui;
 mod timeline_escape_ui;

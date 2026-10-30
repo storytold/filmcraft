@@ -36,6 +36,8 @@ mod graphics;
 mod logging;
 #[cfg(target_os = "macos")]
 mod native_menu;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod speed_editor;
 mod window_raise;
 
 use args::{Cli, Launch};
@@ -345,6 +347,11 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             app.command_inbox = Some(rx);
             app.hooks.menu_changed = Some(update);
             app.ui.show_menu_bar = false;
+        }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        match speed_editor::start(cc.egui_ctx.clone()) {
+            Ok(poll) => app.hooks.speed_editor = poll,
+            Err(e) => app.status(format!("Speed Editor: {e}")),
         }
         if let Some(port) = control_port {
             let rx = control_server::start(port, cc.egui_ctx.clone());

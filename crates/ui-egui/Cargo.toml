@@ -35,8 +35,8 @@ rayon = { workspace = true }
 web-time = "1"
 # Unicode Bidirectional Algorithm for Arabic and Hebrew captions in reading order (MIT OR Apache-2.0).
 unicode-bidi = "0.3.18"
-# ArtCraft wordmark (PNG) for the About dialog and Home screen.
-image = { version = "0.25", default-features = false, features = ["png"] }
+# ArtCraft wordmark (PNG) and the licensed Speed Editor diagnostics photograph (WebP).
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 
 # Thread/process CPU clocks for frame-job profiling (safe wrappers; see frames.rs).
 [target.'cfg(unix)'.dependencies]

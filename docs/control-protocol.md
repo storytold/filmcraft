@@ -1,5 +1,19 @@
 # Control protocol & MCP
 
+USB Speed Editor status and input are available through `speedEditor.status` and
+`speedEditor.input` with `engine.execute`; `ui.inspect.speedEditor` includes the current
+controller state. See [parameters and button bindings](speed-editor.md#automation-and-validation).
+`devices.speedEditor {open?, monitorOnly?, sensitivity?}` opens or configures the Devices → DaVinci Speed Editor
+debugger; `speedEditor.debugger.clear {}` clears its bounded event history. Raw activity is in
+`speedEditor.status.telemetry`, including inputs suppressed by the ordinary editing/focus guards.
+`sensitivity` is an integer percentage from 1 to 200, saved as `general.speedEditorSensitivity`;
+100 preserves the original dial response.
+Secondary button functions use two `speedEditor.input` press/release cycles within 350 ms;
+hold the second press for Move/Slide/Y Position dial edits. Conflicting single actions wait
+for this interval before running. `speedEditor.status.secondaryHeld` identifies an active
+second press; `telemetry.doubleTaps` and `telemetry.lastGesture` expose recognition, including
+in monitor-only mode. See [secondary bindings](speed-editor.md#double-taps-and-secondary-labels).
+
 ## Desktop control channel
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT`) listens on `127.0.0.1:<port>` (loopback only).
 The listener requires `FILMCRAFT_CONTROL_TOKEN`: 64 random hex characters shared with authorized

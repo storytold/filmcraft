@@ -3,6 +3,43 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## USB Speed Editor
+
+`speed_editor.rs` maps Blackmagic Design Speed Editor snapshots and wheel reports to normal
+engine/UI commands. The desktop host owns HID discovery, authentication, LEDs and reconnection;
+the frontend owns monitor choice, Jog/Scroll/Shuttle, held trim modifiers and status. Preferences
+→ General and `ui.inspect.speedEditor` show connection status. `speedEditor.input` exercises the
+same path from the control channel. See [controls, setup and limitations](../../docs/speed-editor.md).
+The module's tests cover cuts and undo/redo, key repeats, fractional/signed wheel movement,
+Source/Timeline marks, trims, source placement and hostile parameters.
+
+Program Shuttle reports retain pending preroll readiness and deadlines. While playing, a new
+speed re-anchors the clock at the current playhead and rebuilds the audio mix at that rate;
+unchanged reports keep the stream running. Direction changes use the normal preroll. Regression
+tests cover continuous dial input, audio restarts, silent speeds and returning to audible playback.
+
+Devices → DaVinci Speed Editor opens `speed_editor/debugger.rs`: a nonmodal photo overlay
+with held/recent key highlights, dial movement, USB/battery status and a bounded input log.
+Telemetry is collected before focus and editing guards, including for unsupported keys.
+The default Monitor only mode suppresses editing while the window is open. Window state is
+serde data and every control has a `speedEditor.debugger.*` automation id. The photograph's
+user-confirmed open licence is recorded beside the asset; no device artwork is generated.
+
+The Knob sensitivity slider (`speedEditor.debugger.sensitivity`) sets the persisted engine
+preference `general.speedEditorSensitivity` (1–200%, default 100%). `devices.speedEditor`
+also accepts `sensitivity`. Jog, Scroll and held-wheel edits accumulate integer raw units
+times percentage; even 1% retains small movements. Shuttle gain uses the same percentage
+and stays within ±8×. Raw diagnostics remain unscaled. Preference validation/persistence,
+fractional motion, direction changes, source/trim/shuttle response and the actual slider
+drag are covered by the Speed Editor tests.
+
+`speed_editor/gestures.rs` recognizes secondary legends within 350 ms, with a release
+between presses. It defers conflicting single actions, cancels stale input, and dispatches
+Undo, Move/Slide, Mark, Set default duration, clear marks, whole-clip placement, Title,
+Review, Y position and viewer zoom through existing commands. Native key edges retain
+capture timestamps so queued reports preserve their timing. The debugger also recognizes
+double taps in monitor-only mode and shows a purple pulse, count and secondary-action log.
+
 ## Control input limits
 
 The control channel bounds `ui.click` to 10 clicks and `ui.drag` to 1024 movement steps (#2784).

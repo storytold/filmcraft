@@ -23,6 +23,31 @@ fn set(s: &mut Session, key: &str, value: Value) {
 }
 
 #[test]
+fn speed_editor_sensitivity_persists_and_migrates_old_preferences() {
+    let dir = tmp_dir("speed-editor-sensitivity");
+    let path = dir.join("preferences.json");
+    let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+    let before = s.project.to_json();
+    assert_eq!(s.prefs.general.speed_editor_sensitivity, 100);
+    for percent in [1, 25, 100, 200] {
+        set(&mut s, "general.speedEditorSensitivity", json!(percent));
+        assert_eq!(Preferences::load(&path).general.speed_editor_sensitivity, percent);
+        assert_eq!(s.project.to_json(), before);
+    }
+    for value in [json!(null), json!({}), json!([]), json!(true), json!("fast"), json!(-1)] {
+        assert!(s.execute("prefs.set", json!({"key":"general.speedEditorSensitivity","value":value})).is_err());
+        assert_eq!(Preferences::load(&path).general.speed_editor_sensitivity, 200);
+    }
+    for (value, expected) in [(json!(0), 1), (json!(999999), 200), (json!(null), 100), (json!("bad"), 100)] {
+        let prefs = Preferences::from_value(json!({"general":{"interfaceLanguage":"en","speedEditorSensitivity":value}}));
+        assert_eq!(prefs.general.speed_editor_sensitivity, expected);
+        assert_eq!(prefs.general.interface_language, "en");
+    }
+    assert_eq!(Preferences::from_value(json!({"general":{"interfaceLanguage":"en"}})).general.speed_editor_sensitivity, 100);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn interface_language_persists_and_rejects_hostile_values() {
     let dir = tmp_dir("interface-language");
     let path = dir.join("preferences.json");

@@ -10,7 +10,7 @@ of the crate you will change.
 |---|---|
 | Rust | stable ≥ 1.95 (edition 2024; egui 0.37 requires it), via [rustup](https://rustup.rs) |
 | wasm target | `rustup target add wasm32-unknown-unknown` (for `cargo xtask wasm`) |
-| Components | `rustup component add rustfmt clippy` |
+| Components | `rustup component add rustfmt clippy rust-src` (`rust-src` lets rust-analyzer resolve the standard library) |
 | ffmpeg + ffprobe (optional) | test oracle and fixture generator only; tests skip without it |
 
 | OS | Extra |

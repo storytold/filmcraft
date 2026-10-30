@@ -431,6 +431,9 @@ pub struct KeyframeRef {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
+    /// Nonmodal USB control-surface diagnostics (Devices ▸ DaVinci Speed Editor).
+    #[serde(default)]
+    pub speed_editor_debugger: crate::speed_editor::debugger::WindowState,
     #[serde(default)]
     pub language: crate::i18n::Language,
     pub tool: Tool,
@@ -986,6 +989,7 @@ impl Default for UiState {
             lumetri_grid_folder: None,
             collapsed_fx: vec![],
             effect_controls_split: 0.0,
+            speed_editor_debugger: Default::default(),
             show_menu_bar: true,
             show_header: true,
             show_status_bar: true,
