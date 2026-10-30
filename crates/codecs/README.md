@@ -42,7 +42,3 @@ cargo test -p filmcraft-codecs --lib audio::panic_tests
 FILMCRAFT_REQUIRE_ORACLES=1 cargo test -p filmcraft-codecs
 cargo xtask ci
 ```
-
-Validation on macOS: all seven focused tests pass; disabling the guards makes the four
-panic regressions fail. `FILMCRAFT_REQUIRE_ORACLES=1 cargo test -p filmcraft-codecs` passes
-204 tests (three existing ignored tests), including the existing audio oracle coverage.
