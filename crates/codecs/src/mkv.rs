@@ -483,20 +483,20 @@ impl MkvSource {
     }
 
     fn audio_decoder(&self, c: &Codec, rate: u32) -> crate::Result<PacketDecoder> {
-        use symphonia::core::codecs::{CODEC_TYPE_FLAC, CODEC_TYPE_MP3, CODEC_TYPE_VORBIS};
+        use symphonia::core::codecs::audio::well_known::{CODEC_ID_FLAC, CODEC_ID_MP3, CODEC_ID_VORBIS};
         match c {
             Codec::Aac { asc } => PacketDecoder::aac(asc, rate),
             Codec::Opus { head } => PacketDecoder::opus(filmcraft_opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
-            Codec::Mp3 => PacketDecoder::new(CODEC_TYPE_MP3, rate, None),
+            Codec::Mp3 => PacketDecoder::new(CODEC_ID_MP3, rate, None),
             Codec::Mp2 => PacketDecoder::mpeg_audio(2, rate),
             Codec::Mp1 => PacketDecoder::mpeg_audio(1, rate),
             Codec::Ac3 | Codec::Eac3 => PacketDecoder::ac3(),
             // symphonia wants the STREAMINFO block body: skip `fLaC` + the 4-byte block header.
-            Codec::Flac { private } => PacketDecoder::new(CODEC_TYPE_FLAC, rate, private.get(8..42).map(<[u8]>::to_vec)),
+            Codec::Flac { private } => PacketDecoder::new(CODEC_ID_FLAC, rate, private.get(8..42).map(<[u8]>::to_vec)),
             Codec::Vorbis { headers } if headers.len() == 3 => {
                 let mut extra = headers[0].clone();
                 extra.extend_from_slice(&headers[2]);
-                PacketDecoder::new(CODEC_TYPE_VORBIS, rate, Some(extra))
+                PacketDecoder::new(CODEC_ID_VORBIS, rate, Some(extra))
             }
             other => Err(CodecError::Unsupported(format!("{} audio", codec_label(other)))),
         }

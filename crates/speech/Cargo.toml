@@ -27,7 +27,8 @@ candle-nn = { version = "0.9", default-features = false, optional = true }
 rayon = { workspace = true }
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"], optional = true }
 rustls = { version = "0.23", default-features = false, optional = true }
-rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
+# Pinned to a master commit: the 0.0.2-alpha release depends on rustls-webpki 0.102 (CVE-2026-93599 and others); master uses 0.103 via rustls 0.23. Back to crates.io once a release ships.
+rustls-rustcrypto = { git = "https://github.com/RustCrypto/rustls-rustcrypto", rev = "70f76c039e587192688af18a80d5d6435dedaf22", optional = true }
 sha2 = "0.10"
 
 [[example]]
