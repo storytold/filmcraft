@@ -76,7 +76,15 @@ fn paint_badges(ui: &egui::Ui, b: &Badge, at: egui::Pos2, t: &Tokens) {
 }
 
 fn matches_filter(app: &FilmcraftApp, id: ItemId, filter: &str) -> bool {
-    app.session.project.item(id).is_some_and(|i| pp::listed(&app.session.project, i) && (filter.is_empty() || i.name.to_ascii_lowercase().contains(filter)))
+    app.session.project.item(id).is_some_and(|i| pp::listed(&app.session.project, i) && name_matches(&i.name, filter))
+}
+
+/// The search finds a name holding every word typed, in any order: "comedy manager smiling" finds
+/// "Comedy manager · medium · smiling", where the typed text as one run of letters would not.
+/// `filter` is already lowercase.
+fn name_matches(name: &str, filter: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    filter.split_whitespace().all(|word| name.contains(word))
 }
 
 fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
@@ -185,17 +193,17 @@ fn click_selection(current: &[ItemId], order: &[ItemId], anchor: Option<ItemId>,
 }
 
 /// Click / double-click / drag / context menu of an item (row, card).
-pub fn item_interactions(
-    app: &mut FilmcraftApp,
-    ui: &egui::Ui,
-    v: &View,
-    resp: &egui::Response,
-    id: ItemId,
-    kind: &ItemKind,
-    actions: &mut Actions,
-    drag: bool,
-    menu: bool,
-) {
+pub(super) struct ItemInteraction<'a> {
+    view: &'a View,
+    response: &'a egui::Response,
+    item: ItemId,
+    kind: &'a ItemKind,
+    allow_drag: bool,
+    allow_menu: bool,
+}
+
+pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: &mut Actions, interaction: ItemInteraction<'_>) {
+    let ItemInteraction { view: v, response: resp, item: id, kind, allow_drag: drag, allow_menu: menu } = interaction;
     if resp.clicked() {
         let mods = click_modifiers(ui);
         let order = if mods.shift { items_in_view(app, v, &app.ui.project_search.to_ascii_lowercase()) } else { Vec::new() };
@@ -414,11 +422,14 @@ fn rename_field(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, item: Option
         return false;
     }
     let mut text = rn.text;
-    let id = egui::Id::new(("rename-field", pre, item, bin));
-    let resp = ui.put(r, egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(font(app))).margin(vec2(3.0, 1.0)));
+    let id = egui::Id::unique(("rename-field", pre, item, bin));
+    let resp = crate::widgets::accessible_name(
+        ui.put(r, egui::TextEdit::singleline(&mut text).id(id).font(egui::FontId::proportional(font(app))).margin(vec2(3.0, 1.0))),
+        "Rename",
+    );
     app.auto.add(&format!("{pre}.rename"), r, "Rename");
     // take keyboard focus the first frame the field is shown
-    let shown = egui::Id::new("project-rename-shown");
+    let shown = egui::Id::unique("project-rename-shown");
     if ui.ctx().data(|d| d.get_temp::<egui::Id>(shown)) != Some(id) {
         ui.ctx().data_mut(|d| d.insert_temp(shown, id));
         resp.request_focus();
@@ -444,7 +455,7 @@ fn rename_field(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, item: Option
 /// A second click on the name of the only selected item starts renaming it (after the
 /// double-click interval, so a double-click still opens it).
 fn slow_click_rename(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, name_rect: Rect, id: ItemId, was_selected: bool) {
-    let key = egui::Id::new("project-rename-pending");
+    let key = egui::Id::unique("project-rename-pending");
     let now = ui.input(|i| i.time);
     if resp.double_clicked() {
         ui.ctx().data_mut(|d| d.remove::<(u64, f64)>(key));
@@ -513,13 +524,13 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
     let hp = ui.painter().with_clip_rect(hr.intersect(ui.clip_rect()));
     hp.rect_filled(hr, 0.0, t.panel_bg);
     hp.line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, t.separator));
-    let mut x = rect.min.x + LEAD - out.state.offset.x;
+    let mut x = rect.min.x + LEAD - out.state.clamped_offset().x;
     let sort = app.session.prefs.project_panel.view.sort.clone();
     for (i, c) in lc.cols.iter().enumerate() {
         let cr = Rect::from_min_size(pos2(x, hr.min.y), vec2(c.width, header_h));
         let vis = cr.intersect(hr);
         if vis.width() > 1.0 {
-            let id = egui::Id::new((&v.prefix, "col", &c.name));
+            let id = egui::Id::unique((&v.prefix, "col", &c.name));
             let resp = ui.interact(vis, id, Sense::click()).on_hover_text(crate::i18n::t(&c.name));
             app.auto.add(&format!("{}.list.header.{}", v.prefix, c.name), vis, &c.name);
             if resp.hovered() {
@@ -551,7 +562,7 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
         // resize handle on the column's right edge
         let hr2 = Rect::from_center_size(pos2(cr.max.x, hr.center().y), vec2(8.0, header_h));
         if hr2.intersects(hr) {
-            let id = egui::Id::new((&v.prefix, "colsize", &c.name));
+            let id = egui::Id::unique((&v.prefix, "colsize", &c.name));
             let resp = ui.interact(hr2.intersect(hr), id, Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeColumn);
             app.auto.add(&format!("{}.list.resize.{}", v.prefix, c.name), hr2.intersect(hr), "Resize column");
             hp.line_segment([pos2(cr.max.x, hr.min.y + 4.0), pos2(cr.max.x, hr.max.y - 4.0)], Stroke::new(1.0, t.separator));
@@ -574,7 +585,7 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
 /// sit on top). Starts the frame's [`note_hit`] list.
 fn background(ui: &egui::Ui, v: &View) -> egui::Response {
     ui.data_mut(|d| d.remove::<Vec<(u64, Rect)>>(hits_id(v)));
-    ui.interact(ui.clip_rect(), egui::Id::new((&v.prefix, "background")), Sense::click_and_drag())
+    ui.interact(ui.clip_rect(), egui::Id::unique((&v.prefix, "background")), Sense::click_and_drag())
 }
 
 /// Empty space under the rows / cards, and the gaps between them (`bg`): click deselects,
@@ -598,7 +609,7 @@ fn empty_space(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bg: &egui::R
 }
 
 fn hits_id(v: &View) -> egui::Id {
-    egui::Id::new((&v.prefix, "marquee-hits"))
+    egui::Id::unique((&v.prefix, "marquee-hits"))
 }
 
 /// Remember where an item's row or card was drawn this frame, for [`marquee`].
@@ -612,7 +623,7 @@ fn note_hit(ui: &egui::Ui, v: &View, id: ItemId, r: Rect) {
 fn marquee(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bg: &egui::Response, origin: egui::Pos2, actions: &mut Actions) {
     // (press point relative to `origin`, selection when the drag began, adds to it)
     type Drag = (egui::Vec2, Vec<u64>, bool);
-    let key = egui::Id::new((&v.prefix, "marquee"));
+    let key = egui::Id::unique((&v.prefix, "marquee"));
     let hits: Vec<(u64, Rect)> = ui.data_mut(|d| d.remove_temp(hits_id(v))).unwrap_or_default();
     let current: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
     // the left button only: right-click opens the menu, the middle button is not a selection
@@ -782,7 +793,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         }
         app.auto.add(&format!("{}.item.{}", v.prefix, id.0), r.intersect(ui.clip_rect()), &it.name);
         slow_click_rename(app, ui, &resp, name_r, id, selected);
-        item_interactions(app, ui, v, &resp, id, &it.kind, actions, true, true);
+        item_interactions(app, ui, actions, ItemInteraction { view: v, response: &resp, item: id, kind: &it.kind, allow_drag: true, allow_menu: true });
     }
 }
 
@@ -824,7 +835,7 @@ fn hover_time(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, r: R
 fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &str, show_name: bool, show_dur: bool, sense: Sense) -> Option<egui::Response> {
     let t = app.tokens;
     let it = app.session.project.item(id).cloned()?;
-    let resp = ui.interact(r.expand(2.0), egui::Id::new((pre, "card", id.0)), sense);
+    let resp = ui.interact(r.expand(2.0), egui::Id::unique((pre, "card", id.0)), sense);
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
     let selected = app.session.state.project_selection.contains(&id);
     let card_bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
@@ -912,7 +923,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
 fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &View, actions: &mut Actions) {
     let t = app.tokens;
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
-    let resp = ui.interact(r.expand(2.0), egui::Id::new((&v.prefix, "bincard", b.id.0)), Sense::click_and_drag());
+    let resp = ui.interact(r.expand(2.0), egui::Id::unique((&v.prefix, "bincard", b.id.0)), Sense::click_and_drag());
     let selected = app.ui.project_panel.selected_bin == Some(b.id.0);
     let bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
     ui.painter().rect_filled(bg, 4.0, if selected { t.tl_header_bg } else { t.panel_bg });
@@ -985,7 +996,12 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
                     note_hit(ui, v, id, r);
                     let name_r = Rect::from_min_max(pos2(r.min.x, r.min.y + th_h), r.max);
                     slow_click_rename(app, ui, &resp, name_r, id, was_selected);
-                    item_interactions(app, ui, v, &resp, id, &kind, actions, true, true);
+                    item_interactions(
+                        app,
+                        ui,
+                        actions,
+                        ItemInteraction { view: v, response: &resp, item: id, kind: &kind, allow_drag: true, allow_menu: true },
+                    );
                 }
             }
         }
@@ -1000,7 +1016,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
     let opts = app.session.prefs.project_panel.freeform.clone();
     let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, rect.width());
     cards.retain(|c| matches_filter(app, ItemId(c.item), filter));
-    let drag_key = egui::Id::new((&v.prefix, "ff-drag"));
+    let drag_key = egui::Id::unique((&v.prefix, "ff-drag"));
     // (dragged item, offset so far)
     let dragging: Option<(u64, egui::Vec2)> = ui.ctx().data(|d| d.get_temp(drag_key));
     let sel: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
@@ -1055,7 +1071,12 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                 ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("×{n}"), Tokens::ui(10.0), Color32::WHITE);
                 app.auto.add(&format!("{}.stack.{s}", v.prefix), br, &format!("Stack of {n}"));
             }
-            item_interactions(app, ui, v, &resp, ItemId(c.item), &kind, actions, false, false);
+            item_interactions(
+                app,
+                ui,
+                actions,
+                ItemInteraction { view: v, response: &resp, item: ItemId(c.item), kind: &kind, allow_drag: false, allow_menu: false },
+            );
             // Escape puts the cards back and drops nothing until the button comes up (#580); egui
             // also ends the drag on Escape, so it arrives as a stop as often as during the drag
             let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -1157,7 +1178,7 @@ fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, act
 }
 
 fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, actions: &mut Actions) {
-    fn entry(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, actions: &mut Actions, id: &str, label: &str, cmd: &str, p: serde_json::Value) {
+    fn entry(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, actions: &mut Actions, id: &str, label: &str, (cmd, p): (&str, serde_json::Value)) {
         let b = ui.button(label);
         app.auto.add(&format!("{}.canvasMenu.{id}", v.prefix), b.rect, label);
         if b.clicked() {
@@ -1165,10 +1186,10 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
             ui.close();
         }
     }
-    entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), "project.freeform.alignToGrid", json!({"bin": bin}));
-    entry(app, ui, v, actions, "resetToGrid", tl!("Reset to Grid"), "project.freeform.reset", json!({"bin": bin}));
+    entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), ("project.freeform.alignToGrid", json!({"bin": bin})));
+    entry(app, ui, v, actions, "resetToGrid", tl!("Reset to Grid"), ("project.freeform.reset", json!({"bin": bin})));
     ui.separator();
-    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), "projectPanel.saveArrangement", json!({}));
+    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), ("projectPanel.saveArrangement", json!({})));
     let names: Vec<String> = app
         .session
         .execute("project.freeform.arrangements", json!({"bin": bin}))
@@ -1194,7 +1215,7 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
         });
     });
     ui.separator();
-    entry(app, ui, v, actions, "options", "Freeform View Options…", "projectPanel.freeformOptions", json!({}));
+    entry(app, ui, v, actions, "options", "Freeform View Options…", ("projectPanel.freeformOptions", json!({})));
     ui.separator();
     background_menu(app, ui, v, bin.filter(|b| *b != app.session.project.root.id.0), actions);
 }
@@ -1237,5 +1258,22 @@ mod clear_tests {
         assert_eq!(click_selection(&ids(&[1]), &order, None, ItemId(3), false, true), ids(&[1, 3]));
         assert_eq!(click_selection(&ids(&[1, 3]), &order, None, ItemId(3), false, true), ids(&[1]));
         assert_eq!(click_selection(&ids(&[1, 3]), &order, None, ItemId(2), false, false), ids(&[2]));
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::name_matches;
+
+    #[test]
+    fn every_typed_word_must_appear_in_any_order() {
+        let name = "Comedy manager · medium · smiling · enjoys the show · img385 · A";
+        assert!(name_matches(name, ""));
+        assert!(name_matches(name, "comedy manager"));
+        assert!(name_matches(name, "comedy manager s"));
+        assert!(name_matches(name, "comedy manager smiling"));
+        assert!(name_matches(name, "smiling  comedy "));
+        assert!(!name_matches(name, "comedy manager laughing"));
+        assert!(!name_matches("Comedy club", "comedy manager"));
     }
 }

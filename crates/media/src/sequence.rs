@@ -46,7 +46,7 @@ impl Numbered {
         }
         let stem = &name[..ext_at];
         let end = stem.rfind(|c: char| c.is_ascii_digit())? + 1;
-        let start = stem[..end].rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
+        let start = stem[..end].trim_end_matches(|c: char| c.is_ascii_digit()).len();
         let digits = &stem[start..end];
         if digits.len() > 18 {
             return None;
@@ -269,6 +269,24 @@ mod tests {
         assert_eq!(Numbered::parse("nodigits.png"), None);
         let w = Numbered::parse("C:\\renders\\out.0010.exr.png").unwrap();
         assert_eq!((w.dir.as_str(), w.prefix.as_str(), w.number), ("C:\\renders\\", "out.", 10));
+    }
+
+    #[test]
+    fn numbered_unicode_prefix() {
+        for prefix in ["é", "图", "🎞️", "é1a_", "1é", "e\u{301}"] {
+            let path = format!("/shots/{prefix}0001.png");
+            let numbered = Numbered::parse(&path).unwrap();
+            assert_eq!(numbered.prefix, prefix);
+            assert_eq!(numbered.number, 1);
+            assert_eq!(numbered.digits, 4);
+            assert_eq!(numbered.path(2), format!("/shots/{prefix}0002.png"));
+            assert_eq!(numbered.number_of(&format!("{prefix}0002.png")), Some(2));
+        }
+        let numbered = Numbered::parse("/shots/é0001.png").unwrap();
+        assert_eq!(numbered.number_of("e\u{301}0002.png"), None, "prefixes must match exactly");
+        for name in ["é١٠٠١.png", "图０００１.png"] {
+            assert_eq!(Numbered::parse(name), None, "frame numbers require ASCII digits");
+        }
     }
 
     #[test]

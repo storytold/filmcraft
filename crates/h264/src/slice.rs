@@ -150,6 +150,95 @@ impl SliceHeader {
         self.mmcos.iter().any(|m| m.op == 5)
     }
 
+    /// ref_pic_list_modification() for both lists (7.3.3.1).
+    fn parse_ref_pic_list_mods(r: &mut BitReader, slice_type: SliceType) -> Result<[Vec<RefPicListMod>; 2]> {
+        let mut ref_pic_list_mod = [Vec::new(), Vec::new()];
+        for (list, mods) in ref_pic_list_mod.iter_mut().enumerate() {
+            let present = if list == 0 { !slice_type.is_intra() } else { slice_type.is_b() };
+            if present && r.read_flag()? {
+                loop {
+                    let idc = r.read_ue()?;
+                    ensure!(idc <= 5, "modification_of_pic_nums_idc out of range");
+                    if idc == 3 {
+                        break;
+                    }
+                    let value = r.read_ue()?;
+                    mods.push(RefPicListMod { idc, value });
+                    ensure!(mods.len() <= 66, "too many ref_pic_list_modification entries");
+                }
+            }
+        }
+        Ok(ref_pic_list_mod)
+    }
+
+    /// One pred_weight_table() entry (7.3.3.2).
+    fn parse_weight_entry(r: &mut BitReader, has_chroma: bool, luma_log2_denom: u32, chroma_log2_denom: u32) -> Result<WeightEntry> {
+        let mut e = WeightEntry { luma_weight: 1 << luma_log2_denom, chroma_weight: [1 << chroma_log2_denom; 2], ..Default::default() };
+        if r.read_flag()? {
+            e.luma_flag = true;
+            e.luma_weight = r.read_se()?;
+            e.luma_offset = r.read_se()?;
+            ensure!((-128..=127).contains(&e.luma_weight) && (-128..=127).contains(&e.luma_offset), "luma weight out of range");
+        }
+        if has_chroma && r.read_flag()? {
+            e.chroma_flag = true;
+            for j in 0..2 {
+                e.chroma_weight[j] = r.read_se()?;
+                e.chroma_offset[j] = r.read_se()?;
+                ensure!((-128..=127).contains(&e.chroma_weight[j]) && (-128..=127).contains(&e.chroma_offset[j]), "chroma weight out of range");
+            }
+        }
+        Ok(e)
+    }
+
+    /// pred_weight_table() (7.3.3.2).
+    fn parse_pred_weight_table(r: &mut BitReader, sps: &Sps, slice_type: SliceType, num_ref_idx_active: [u32; 2]) -> Result<PredWeightTable> {
+        let luma_log2_denom = r.read_ue()?;
+        ensure!(luma_log2_denom <= 7, "luma_log2_weight_denom out of range");
+        let has_chroma = sps.chroma_array_type() != 0;
+        let mut chroma_log2_denom = 0;
+        if has_chroma {
+            chroma_log2_denom = r.read_ue()?;
+            ensure!(chroma_log2_denom <= 7, "chroma_log2_weight_denom out of range");
+        }
+        let mut lists = [Vec::new(), Vec::new()];
+        let nlists = if slice_type.is_b() { 2 } else { 1 };
+        for (l, entries) in lists.iter_mut().enumerate().take(nlists) {
+            for _ in 0..num_ref_idx_active[l] {
+                entries.push(Self::parse_weight_entry(r, has_chroma, luma_log2_denom, chroma_log2_denom)?);
+            }
+        }
+        let [l0, l1] = lists;
+        Ok(PredWeightTable { luma_log2_denom, chroma_log2_denom, l0, l1 })
+    }
+
+    /// The memory_management_control_operation list of dec_ref_pic_marking() (7.3.3.3).
+    fn parse_mmcos(r: &mut BitReader) -> Result<Vec<Mmco>> {
+        let mut mmcos = Vec::new();
+        loop {
+            let op = r.read_ue()?;
+            ensure!(op <= 6, "memory_management_control_operation out of range");
+            if op == 0 {
+                return Ok(mmcos);
+            }
+            let mut m = Mmco { op, difference_of_pic_nums_minus1: 0, long_term_pic_num: 0, long_term_frame_idx: 0, max_long_term_frame_idx_plus1: 0 };
+            if op == 1 || op == 3 {
+                m.difference_of_pic_nums_minus1 = r.read_ue()?;
+            }
+            if op == 2 {
+                m.long_term_pic_num = r.read_ue()?;
+            }
+            if op == 3 || op == 6 {
+                m.long_term_frame_idx = r.read_ue()?;
+            }
+            if op == 4 {
+                m.max_long_term_frame_idx_plus1 = r.read_ue()?;
+            }
+            mmcos.push(m);
+            ensure!(mmcos.len() <= 66, "too many MMCOs");
+        }
+    }
+
     /// Parse the slice header. `pps_lookup` resolves pic_parameter_set_id to (PPS, SPS).
     pub fn parse<'a>(rbsp: &[u8], nal: NalHeader, pps_lookup: impl FnOnce(u32) -> Result<(&'a Pps, &'a Sps)>) -> Result<(SliceHeader, &'a Pps, &'a Sps)> {
         let mut r = BitReader::new(rbsp);
@@ -210,55 +299,10 @@ impl SliceHeader {
             num_ref_idx_active[0] = 0;
         }
         ensure!(nal.nal_unit_type != 20 && nal.nal_unit_type != 21, "MVC slices are not supported");
-        let mut ref_pic_list_mod = [Vec::new(), Vec::new()];
-        for (list, mods) in ref_pic_list_mod.iter_mut().enumerate() {
-            let present = if list == 0 { !slice_type.is_intra() } else { slice_type.is_b() };
-            if present && r.read_flag()? {
-                loop {
-                    let idc = r.read_ue()?;
-                    ensure!(idc <= 5, "modification_of_pic_nums_idc out of range");
-                    if idc == 3 {
-                        break;
-                    }
-                    let value = r.read_ue()?;
-                    mods.push(RefPicListMod { idc, value });
-                    ensure!(mods.len() <= 66, "too many ref_pic_list_modification entries");
-                }
-            }
-        }
+        let ref_pic_list_mod = Self::parse_ref_pic_list_mods(&mut r, slice_type)?;
         let mut pred_weight_table = None;
         if (pps.weighted_pred && slice_type.is_p()) || (pps.weighted_bipred_idc == 1 && slice_type.is_b()) {
-            let luma_log2_denom = r.read_ue()?;
-            ensure!(luma_log2_denom <= 7, "luma_log2_weight_denom out of range");
-            let mut chroma_log2_denom = 0;
-            if sps.chroma_array_type() != 0 {
-                chroma_log2_denom = r.read_ue()?;
-                ensure!(chroma_log2_denom <= 7, "chroma_log2_weight_denom out of range");
-            }
-            let mut lists = [Vec::new(), Vec::new()];
-            let nlists = if slice_type.is_b() { 2 } else { 1 };
-            for (l, entries) in lists.iter_mut().enumerate().take(nlists) {
-                for _ in 0..num_ref_idx_active[l] {
-                    let mut e = WeightEntry { luma_weight: 1 << luma_log2_denom, chroma_weight: [1 << chroma_log2_denom; 2], ..Default::default() };
-                    if r.read_flag()? {
-                        e.luma_flag = true;
-                        e.luma_weight = r.read_se()?;
-                        e.luma_offset = r.read_se()?;
-                        ensure!((-128..=127).contains(&e.luma_weight) && (-128..=127).contains(&e.luma_offset), "luma weight out of range");
-                    }
-                    if sps.chroma_array_type() != 0 && r.read_flag()? {
-                        e.chroma_flag = true;
-                        for j in 0..2 {
-                            e.chroma_weight[j] = r.read_se()?;
-                            e.chroma_offset[j] = r.read_se()?;
-                            ensure!((-128..=127).contains(&e.chroma_weight[j]) && (-128..=127).contains(&e.chroma_offset[j]), "chroma weight out of range");
-                        }
-                    }
-                    entries.push(e);
-                }
-            }
-            let [l0, l1] = lists;
-            pred_weight_table = Some(PredWeightTable { luma_log2_denom, chroma_log2_denom, l0, l1 });
+            pred_weight_table = Some(Self::parse_pred_weight_table(&mut r, sps, slice_type, num_ref_idx_active)?);
         }
         let mut no_output_of_prior_pics = false;
         let mut long_term_reference = false;
@@ -271,29 +315,7 @@ impl SliceHeader {
             } else {
                 adaptive_ref_pic_marking = r.read_flag()?;
                 if adaptive_ref_pic_marking {
-                    loop {
-                        let op = r.read_ue()?;
-                        ensure!(op <= 6, "memory_management_control_operation out of range");
-                        if op == 0 {
-                            break;
-                        }
-                        let mut m =
-                            Mmco { op, difference_of_pic_nums_minus1: 0, long_term_pic_num: 0, long_term_frame_idx: 0, max_long_term_frame_idx_plus1: 0 };
-                        if op == 1 || op == 3 {
-                            m.difference_of_pic_nums_minus1 = r.read_ue()?;
-                        }
-                        if op == 2 {
-                            m.long_term_pic_num = r.read_ue()?;
-                        }
-                        if op == 3 || op == 6 {
-                            m.long_term_frame_idx = r.read_ue()?;
-                        }
-                        if op == 4 {
-                            m.max_long_term_frame_idx_plus1 = r.read_ue()?;
-                        }
-                        mmcos.push(m);
-                        ensure!(mmcos.len() <= 66, "too many MMCOs");
-                    }
+                    mmcos = Self::parse_mmcos(&mut r)?;
                 }
             }
         }

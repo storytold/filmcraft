@@ -14,6 +14,69 @@ use symphonia::core::probe::Hint;
 
 use crate::{CodecError, Result};
 
+#[cfg(test)]
+#[path = "audio_panic_tests.rs"]
+mod panic_tests;
+
+/// A decoder that unwound may have partially changed its state. Keep it quarantined, including
+/// across seeks, until its owner creates a fresh decoder. Ordinary decode errors remain retryable.
+struct SymphoniaDecoder {
+    decoder: Box<dyn Decoder>,
+    failed: bool,
+}
+
+fn audio_panic(operation: &str) -> CodecError {
+    CodecError::Decode(format!("audio decoder panicked while {operation}; reopen the media to retry"))
+}
+
+/// Converts decoder panics to `CodecError::Decode` only when built with `panic = "unwind"`.
+/// The default `wasm32-unknown-unknown` target uses `panic = "abort"`, so decoder panics cannot
+/// be caught or converted. Process aborts and allocation failures that abort remain unrecoverable.
+fn guard_audio<T>(operation: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| audio_panic(operation))?
+}
+
+impl SymphoniaDecoder {
+    fn new(params: &CodecParameters) -> Result<Self> {
+        guard_audio("initializing Symphonia", || {
+            let decoder = symphonia::default::get_codecs().make(params, &DecoderOptions::default()).map_err(|e| CodecError::Unsupported(e.to_string()))?;
+            Ok(Self { decoder, failed: false })
+        })
+    }
+
+    fn call<T>(&mut self, operation: &str, f: impl FnOnce(&mut dyn Decoder) -> T) -> Result<T> {
+        if self.failed {
+            return Err(CodecError::Decode("audio decoder is unavailable after a panic; reopen the media to retry".into()));
+        }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self.decoder.as_mut()))) {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                self.failed = true;
+                Err(audio_panic(operation))
+            }
+        }
+    }
+
+    // Keep the two errors distinct: standalone imports skip ordinary corrupt packets, but must
+    // stop on a panic rather than report partially decoded audio as a successful import.
+    fn decode(&mut self, packet: &Packet) -> Result<symphonia::core::errors::Result<Vec<Vec<f32>>>> {
+        self.call("decoding a Symphonia packet", |decoder| {
+            let buf = decoder.decode(packet)?;
+            let spec = *buf.spec();
+            let ch = spec.channels.count().max(1);
+            let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
+            sb.copy_interleaved_ref(buf);
+            let mut out = vec![Vec::with_capacity(sb.samples().len() / ch); ch];
+            for frame in sb.samples().chunks_exact(ch) {
+                for (channel, sample) in out.iter_mut().zip(frame) {
+                    channel.push(*sample);
+                }
+            }
+            Ok(out)
+        })
+    }
+}
+
 enum Inner {
     /// Our own AAC-LC decoder. `up` interpolates HE-AAC's core to the output rate (see [`Upsample2x`]).
     /// Surround output is reordered to WAV/SMPTE order (see [`aac_to_wav_order`]).
@@ -27,7 +90,7 @@ enum Inner {
     /// `order` maps output channel → decoded channel (Vorbis → WAV/SMPTE order for surround).
     Opus { dec: Box<filmcraft_opus::Decoder>, order: Option<&'static [usize]> },
     /// Bootstrap decoders (MP3, ALAC, FLAC, HE-AAC…) via symphonia.
-    Symphonia(Box<dyn Decoder>),
+    Symphonia(SymphoniaDecoder),
     /// Our AC-3 and E-AC-3 decoder (ATSC A/52, Annex E).
     Ac3(Box<filmcraft_ac3::Decoder>),
     /// Our MPEG-1/2 audio Layer I and II decoder (ISO/IEC 11172-3, 13818-3).
@@ -111,7 +174,7 @@ impl PacketDecoder {
         if let Some(x) = extra {
             p.with_extra_data(x.into_boxed_slice());
         }
-        let dec = symphonia::default::get_codecs().make(&p, &DecoderOptions::default()).map_err(|e| CodecError::Unsupported(e.to_string()))?;
+        let dec = SymphoniaDecoder::new(&p)?;
         Ok(Self { inner: Inner::Symphonia(dec), channels: 0 })
     }
     /// AAC: our decoder for AAC-LC and the AAC-LC core of HE-AAC (v1/v2); symphonia for other
@@ -262,20 +325,8 @@ impl PacketDecoder {
             }
         };
         let pkt = Packet::new_from_slice(0, ts, 0, data);
-        let buf = dec.decode(&pkt).map_err(|e| CodecError::Decode(e.to_string()))?;
-        let spec = *buf.spec();
-        let ch = spec.channels.count().max(1);
-        self.channels = ch;
-        let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
-        sb.copy_interleaved_ref(buf);
-        let s = sb.samples();
-        let n = s.len() / ch;
-        let mut out = vec![Vec::with_capacity(n); ch];
-        for i in 0..n {
-            for (c, o) in out.iter_mut().enumerate() {
-                o.push(s[i * ch + c]);
-            }
-        }
+        let out = dec.decode(&pkt)?.map_err(|e| CodecError::Decode(e.to_string()))?;
+        self.channels = out.len();
         Ok(out)
     }
     pub fn reset(&mut self) {
@@ -290,7 +341,15 @@ impl PacketDecoder {
             }
             Inner::Mpa(d) => d.reset(),
             Inner::Opus { dec, .. } => dec.reset(),
-            Inner::Symphonia(d) => d.reset(),
+            Inner::Symphonia(d) => {
+                // The legacy reset API cannot return an error. Log it now and keep the failure
+                // latched so the next decode reports it to the caller as well.
+                if !d.failed
+                    && let Err(error) = d.call("resetting Symphonia", |decoder| decoder.reset())
+                {
+                    log::error!("{error}");
+                }
+            }
             Inner::Ac3(d) => d.reset(),
             Inner::AacPending | Inner::MpegPending(_) => {}
         }
@@ -797,6 +856,16 @@ pub struct AudioFileSource {
 
 impl AudioFileSource {
     pub fn decode(name: &str, bytes: Arc<[u8]>) -> Result<Self> {
+        Self::decode_with(name, bytes, SymphoniaDecoder::new)
+    }
+
+    fn decode_with(name: &str, bytes: Arc<[u8]>, make_decoder: impl FnOnce(&CodecParameters) -> Result<SymphoniaDecoder>) -> Result<Self> {
+        // Probing, demuxing, decoder construction and sample conversion can all see hostile input.
+        // Everything owned by this attempt is discarded if it unwinds; no partial source escapes.
+        guard_audio(&format!("opening {name}"), || Self::decode_inner(name, bytes, make_decoder))
+    }
+
+    fn decode_inner(name: &str, bytes: Arc<[u8]>, make_decoder: impl FnOnce(&CodecParameters) -> Result<SymphoniaDecoder>) -> Result<Self> {
         let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         if matches!(ext.as_str(), "mp2" | "mp3")
             && let Some((layer, rate, samples)) = decode_mpeg_layer12(&bytes)
@@ -840,25 +909,18 @@ impl AudioFileSource {
         let mut format = probed.format;
         let track = format.default_track().ok_or_else(|| CodecError::Unsupported("no audio track".into()))?.clone();
         let rate = track.codec_params.sample_rate.unwrap_or(48_000);
-        let mut dec =
-            symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()).map_err(|e| CodecError::Unsupported(e.to_string()))?;
+        let mut dec = make_decoder(&track.codec_params)?;
         let mut samples: Vec<Vec<f32>> = Vec::new();
         while let Ok(pkt) = format.next_packet() {
             if pkt.track_id() != track.id {
                 continue;
             }
-            let Ok(buf) = dec.decode(&pkt) else { continue };
-            let spec = *buf.spec();
-            let ch = spec.channels.count().max(1);
+            let Ok(channels) = dec.decode(&pkt)? else { continue };
             if samples.is_empty() {
-                samples = vec![Vec::new(); ch];
+                samples = vec![Vec::new(); channels.len()];
             }
-            let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
-            sb.copy_interleaved_ref(buf);
-            for (i, v) in sb.samples().iter().enumerate() {
-                if let Some(c) = samples.get_mut(i % ch) {
-                    c.push(*v);
-                }
+            for (out, channel) in samples.iter_mut().zip(channels) {
+                out.extend(channel);
             }
         }
         if samples.is_empty() {

@@ -47,6 +47,15 @@ fn op1a_config(rate: Rational, coding: PictureCoding) -> WriterConfig {
     cfg
 }
 
+#[test]
+fn op1a_rejects_an_unbounded_pcm_edit_unit_before_padding() {
+    let mut cfg = WriterConfig::new(Pattern::Op1a, Rational::new(1, 36_000), PackageIds::from_seed("low-rate", "Low Rate"));
+    cfg.picture = Some(PictureDesc::new(PictureCoding::ProRes { profile: 3 }, 64, 36));
+    cfg.sound = vec![SoundDesc { sample_rate: 48_000, channels: 2, bits: 16 }];
+    let err = MxfWriter::new(Cursor::new(Vec::new()), cfg).err().unwrap();
+    assert!(err.to_string().contains("PCM edit unit"));
+}
+
 /// 10 ProRes-like pictures at 25 fps with stereo 16-bit and mono 24-bit sound pushed in uneven chunks.
 fn build_op1a() -> Vec<u8> {
     let cfg = op1a_config(Rational::new(25, 1), PictureCoding::ProRes { profile: 3 });
@@ -68,10 +77,8 @@ fn build_op1a() -> Vec<u8> {
     w.finish().unwrap().into_inner()
 }
 
-#[test]
-fn op1a_reads_back() {
-    let f = build_op1a();
-    let m = open(&f).unwrap();
+/// The OP1a file's partitions, names, timecode and operational pattern.
+fn assert_op1a_metadata(m: &crate::MxfFile) {
     assert!(m.warnings.is_empty(), "{:?}", m.warnings);
     assert_eq!(m.operational_pattern, OperationalPattern::Generalized { item: 1, package: 1 });
     assert_eq!(m.material_package_name.as_deref(), Some("Test Clip"));
@@ -82,7 +89,10 @@ fn op1a_reads_back() {
     let kinds: Vec<(PartitionKind, u8)> = m.partitions.iter().map(|p| (p.kind, p.status)).collect();
     assert_eq!(kinds, vec![(PartitionKind::Header, 4), (PartitionKind::Body, 4), (PartitionKind::Footer, 4)]);
     assert!(m.partitions.iter().all(|p| p.footer_partition == m.partitions[2].offset));
-    assert_eq!(m.tracks.len(), 3);
+}
+
+/// The picture track's parameters and every frame's bytes.
+fn assert_op1a_picture(m: &crate::MxfFile, f: &[u8]) {
     let v = m.track_of_kind(TrackKind::Picture).unwrap();
     let t = &m.tracks[v];
     assert_eq!(t.codec, Codec::ProRes { profile: Some(3) });
@@ -96,6 +106,10 @@ fn op1a_reads_back() {
     for i in 0..10 {
         assert_eq!(m.read_sample(&f, v, i).unwrap(), prores_like(i));
     }
+}
+
+/// Both sound tracks' layout and samples.
+fn assert_op1a_sound(m: &crate::MxfFile, f: &[u8]) {
     let sounds: Vec<usize> = (0..m.tracks.len()).filter(|&i| m.tracks[i].kind == TrackKind::Sound).collect();
     assert_eq!(sounds.len(), 2);
     let s0 = &m.tracks[sounds[0]];
@@ -114,11 +128,26 @@ fn op1a_reads_back() {
         let want = ((k as i64 * 1000) % 8_000_000) as i32 - 4_000_000;
         assert_eq!(pcm[0][k], want as f32 / 8_388_608.0, "sample {k}");
     }
+}
+
+/// The index has one entry per content package with two sound slices.
+fn assert_op1a_index(m: &crate::MxfFile) {
     // index: one entry per content package, two sound slices
     let entries: usize = m.index_segments.iter().map(|s| s.entries.len()).sum();
     assert_eq!(entries, 10);
     assert_eq!(m.index_segments[0].slice_count, 2);
     assert_eq!(m.index_segments[0].delta_entries.len(), 3);
+}
+
+#[test]
+fn op1a_reads_back() {
+    let f = build_op1a();
+    let m = open(&f).unwrap();
+    assert_op1a_metadata(&m);
+    assert_eq!(m.tracks.len(), 3);
+    assert_op1a_picture(&m, &f);
+    assert_op1a_sound(&m, &f);
+    assert_op1a_index(&m);
 }
 
 #[test]
@@ -267,6 +296,22 @@ fn timestamps() {
     assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (2023, 11, 14, 22, 13, 20));
     let t = Timestamp::from_unix(951_782_400); // 2000-02-29
     assert_eq!((t.year, t.month, t.day), (2000, 2, 29));
+    // Years far outside chrono's own range are preserved with month/day/time intact and only the
+    // year clamped to the MXF `u16`, exactly as the old hand-rolled conversion did (not collapsed
+    // to the epoch — reviewer FredApps). `10_000_000_000_000` s → 318857-05-20 17:46:40.
+    let t = Timestamp::from_unix(10_000_000_000_000);
+    assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (65535, 5, 20, 17, 46, 40));
+    // Year 10000 (just past chrono's range) still fits the u16 field.
+    let t = Timestamp::from_unix(253_402_300_800);
+    assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (10000, 1, 1, 0, 0, 0));
+    // A negative year clamps to 0 but keeps its month/day/time.
+    let t = Timestamp::from_unix(-10_000_000_000_000);
+    assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (0, 8, 13, 6, 13, 20));
+    // The `i64` extremes the old code accepted.
+    let t = Timestamp::from_unix(i64::MAX);
+    assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (65535, 12, 4, 15, 30, 7));
+    let t = Timestamp::from_unix(i64::MIN);
+    assert_eq!((t.year, t.month, t.day, t.hour, t.minute, t.second), (0, 1, 27, 8, 29, 52));
 }
 
 #[test]

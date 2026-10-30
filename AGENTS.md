@@ -127,8 +127,18 @@ See [§0](#0-never-crash). It outranks every other engineering rule.
 
 ### 3.2 The rest
 
+**Invariant — move identity uniqueness:** A move plan lists each clip identity at most once.
+The core move operation rejects repeated ids before mutation or id allocation; placing one identity
+on multiple tracks makes selection and later identity-based editing ambiguous. Copies receive new ids
+and retain each entry's requested destination. Destination track creation and the edit commit together.
+In an idle session, a rejected duplicate move retains the project and its undo and redo history.
+Selection-derived edit plans keep each identity once in first-occurrence order before expanding
+linked partners; explicit move requests with repeated identities are still rejected.
+
 See `CLAUDE.md`: pure Rust, dependency layering (`cargo xtask layers`), exact `Tick` time, everything is
 a command, everything is agent-drivable, and the quality gates (`cargo xtask ci`) before every commit.
+
+- **Time goes through `chrono`** (workspace dependency). Never hand-roll UTC/calendar conversion (days-to-date algorithms, leap-year math); a crate owns only its output format string. The one exception is range extension: past the years chrono can represent, shift the date by whole 400-year Gregorian cycles (146,097 days, after which the calendar repeats), let chrono compute the month and day, and add the cycles back to the year (splitting seconds into hours, minutes and seconds is plain arithmetic).
 
 
 Shared real-file test corpora (Photoshop-authored PSDs, etc.) live in
@@ -164,3 +174,8 @@ as PhotoCraft does with `cargo xtask corpus`.
   GitHub profiles). Never hand-edit `contributors.json`.
 - Maintainers refresh the stats with `python3 ../../craftrules/scripts/contributors.py .` (it also
   re-verifies who wrote each `people.toml` entry; `--check` only verifies).
+
+## CI workflows
+- Workflows in `.github/workflows/` call the shared workflows in [`storytold/craft-common-actions`](https://github.com/storytold/craft-common-actions) at `@main`, with their inputs and secrets. No other jobs: if no shared workflow does what's needed, it doesn't go here.
+- Don't add or change CI in a feature or fix PR. If the existing workflows can't build or test a change, link an existing craft-common-actions issue or PR, or open a new issue, or a PR only for a small fix that is safe for every app and does not increase CI time.
+- Some workflow files here still run their own jobs. Don't add to them. Moving a job into craft-common-actions is its own task, never part of another PR, and the job stays here until a shared workflow runs it.

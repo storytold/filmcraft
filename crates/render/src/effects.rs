@@ -277,7 +277,8 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         "basic_3d" => {
             let sw = (f(e, "swivel", cx) as f64).to_radians();
             let tl = (f(e, "tilt", cx) as f64).to_radians();
-            let dist = f(e, "distance", cx) as f64;
+            // authored in full-resolution pixels; the focal length follows the working image (#1920)
+            let dist = f(e, "distance", cx) as f64 * cx.px_scale as f64;
             let (w, h) = (img.w as f64, img.h as f64);
             let focal = w.max(h) * 1.2;
             // inverse perspective mapping: ray through (x,y) intersected with rotated plane

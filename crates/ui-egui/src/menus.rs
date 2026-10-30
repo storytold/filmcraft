@@ -53,6 +53,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.zoomIn", "Zoom In", ["View"], Some("=")),
     uic!("view.zoomOut", "Zoom Out", ["View"], Some("-")),
     uic!("view.zoomToSequence", "Zoom to Sequence", ["View"], Some("\\")),
+    uic!("view.resetInterfaceZoom", "Reset Interface Zoom", ["View"], None),
     uic!("view.playbackRes.full", "Full", ["View", "Playback Resolution"], None),
     uic!("view.playbackRes.half", "1/2", ["View", "Playback Resolution"], None),
     uic!("view.playbackRes.quarter", "1/4", ["View", "Playback Resolution"], None),
@@ -90,6 +91,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("view.addGuide", "Add Guide…", ["View"], None),
     uic!("view.clearGuides", "Clear Guides", ["View"], None),
     uic!("view.snapInProgramMonitor", "Snap in Program Monitor", ["View"], None),
+    // the monitors' wrench menus only, as in the reference app
+    uic!("view.transparencyGrid", "Transparency Grid", [], None),
     uic!("view.safeMargins", "Safe Margins", ["View", "Guide Templates"], None),
     uic!("view.guideTemplates.save", "Save Guides as Template…", ["View", "Guide Templates"], None),
     uic!("view.guideTemplates.manage", "Manage Guides…", ["View", "Guide Templates"], None),
@@ -143,6 +146,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("help.reportIssue", "Report an Issue…", ["Help"], None),
     uic!("help.revealLogFiles", "Reveal Log Files…", ["Help"], None),
     uic!("help.systemCompatibilityReport", "System Compatibility Report…", ["Help"], None),
+    uic!("app.checkForUpdates", "Check for Updates…", ["Help"], None),
     uic!("app.about", "About FilmCraft", ["Help"], None),
     uic!("app.keyboardShortcuts", "Keyboard Shortcuts…", ["Edit"], Some("Cmd+Alt+K")),
     uic!("app.settings.general", "General…", ["Edit", "Preferences"], Some("Cmd+,")),
@@ -286,6 +290,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
         return r;
     }
+    if let Some(r) = crate::panels::misc::route_history(app, ctx, id, &params) {
+        if let Err(e) = &r {
+            app.ui.status = e.clone();
+        }
+        return r;
+    }
     if let Some(r) = crate::panels::settings::route(app, id) {
         return r;
     }
@@ -417,6 +427,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.ui.timeline.fit_pending = true;
             return Ok(Value::Null);
         }
+        // the whole interface back to Settings ▸ Appearance ▸ UI Scale, after Ctrl+Plus or a mouse
+        // mapped to page zoom scaled it (#2253)
+        "view.resetInterfaceZoom" => {
+            let zoom = app.reset_ui_zoom(ctx);
+            return Ok(json!({"zoom": zoom}));
+        }
         "mode.import" => {
             app.ui.mode = Mode::Import;
             return Ok(Value::Null);
@@ -428,6 +444,10 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         "mode.export" => {
             app.ui.mode = Mode::Export;
             return Ok(Value::Null);
+        }
+        "app.checkForUpdates" => {
+            let _ = crate::updates_ui::check(app);
+            return Ok(serde_json::Value::Null);
         }
         "app.about" => {
             app.dialog = Some(crate::Dialog::About);
@@ -447,6 +467,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::interchange_export::open(app, ctx, id);
+        }
+        // File ▸ Export ▸ Captions… (and the Text panel's Export captions…) opens the caption export
+        // settings (#3365); with a path it exports directly.
+        "captions.export" if params.get("path").is_none() => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            return crate::panels::caption_export::open(app, ctx, &params);
         }
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
         "file.exportMedia" if params.get("path").is_none() => {
@@ -578,7 +604,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         || (id == "file.saveCopy" && params.get("path").is_none())
         || (id == "file.open" && params.get("path").is_none())
         || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
-        || (matches!(id, "captions.import" | "captions.export") && params.get("path").is_none())
+        || (id == "captions.import" && params.get("path").is_none())
         || (id == "graphics.newFromFile" && params.get("path").is_none())
         || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none())
     {
@@ -591,11 +617,72 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if r.is_ok() && matches!(id, "playhead.start" | "playhead.end") {
         crate::panels::timeline::reveal_playhead(app, ctx);
     }
-    if r.is_ok() && matches!(id, "edit.copy" | "edit.cut") {
+    let filled_clipboard = match id {
+        "edit.copy" | "edit.cut" => r.is_ok(),
+        // over a range with no clips on the targeted tracks they leave the clipboard (and the OS one) as it was
+        "sequence.lift" | "sequence.extract" => r.as_ref().is_ok_and(|v| v["copied"].as_u64().is_some_and(|n| n > 0)),
+        _ => false,
+    };
+    if filled_clipboard {
         remember_stale_clipboard_media(app);
         put_clip_names_on_system_clipboard(app, ctx);
     }
     r
+}
+
+/// Run the command `id` chosen in the native menu bar, which takes the Edit menu's key
+/// equivalents (⌘C, ⌘X, ⌘V, ⌘A, ⌘Z, ⇧⌘Z) before any window sees them: while a text field has
+/// the keyboard, in the main window or a floating panel's own window, the field gets the key
+/// and the project command does not run.
+pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Result<Value, String> {
+    let (Some(window), Some(text)) = (text_field_window(ctx), text_command(id, ctx.os().is_mac())) else {
+        return invoke(app, ctx, id, json!({}));
+    };
+    match text {
+        TextCommand::Paste => ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste),
+        TextCommand::Events(events) if window == egui::ViewportId::ROOT => {
+            app.synthetic.extend(events);
+            ctx.request_repaint();
+        }
+        TextCommand::Events(events) => craft_ui::docking::send_keys(ctx, window, events),
+    }
+    Ok(Value::Null)
+}
+
+/// The window whose text field has the keyboard: a floating panel's own OS window, or the main
+/// window.
+pub fn text_field_window(ctx: &egui::Context) -> Option<egui::ViewportId> {
+    craft_ui::docking::typing_window(ctx).or_else(|| ctx.text_edit_focused().then_some(egui::ViewportId::ROOT))
+}
+
+/// Whether a focused text field takes the menu command `id` ([`activate_native`]): the native
+/// menu keeps such items enabled while one has the keyboard, whatever the project allows.
+pub fn edits_text(id: &str) -> bool {
+    text_command(id, false).is_some()
+}
+
+/// What a focused text field does for an Edit menu command.
+#[derive(Debug, PartialEq)]
+enum TextCommand {
+    /// The clipboard text, which the window asks for and receives as `Paste`.
+    Paste,
+    Events(Vec<egui::Event>),
+}
+
+fn text_command(id: &str, mac: bool) -> Option<TextCommand> {
+    let key = |key, shift| {
+        let modifiers = egui::Modifiers { mac_cmd: mac, ctrl: !mac, command: true, shift, alt: false };
+        TextCommand::Events([true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers }).into())
+    };
+    Some(match id {
+        "edit.copy" => TextCommand::Events(vec![egui::Event::Copy]),
+        "edit.cut" => TextCommand::Events(vec![egui::Event::Cut]),
+        "edit.paste" => TextCommand::Paste,
+        "edit.undo" => key(egui::Key::Z, false),
+        "edit.redo" => key(egui::Key::Z, true),
+        "edit.selectAll" => key(egui::Key::A, false),
+        _ => return None,
+    })
 }
 
 /// Snapshot OS files/image present at Copy/Cut. Many platforms keep a previous file list after
@@ -634,8 +721,20 @@ fn put_clip_names_on_system_clipboard(app: &FilmcraftApp, ctx: &egui::Context) {
 /// Paste the files or the image on the system clipboard: placed on the Timeline when it has focus,
 /// imported into the shown bin in the Project panel. None when the clipboard holds neither.
 fn paste_clipboard_media(app: &mut FilmcraftApp, insert: bool) -> Option<Result<Value, String>> {
-    let media = (app.hooks.clipboard_media.as_mut()?)()?;
-    if app.stale_clipboard_media.as_ref() == Some(&clipboard_media_key(&media)) {
+    // The paste event already carries the image bytes. Prefer them: re-reading the OS clipboard
+    // is racy (it may have changed) and the web host installs no clipboard-media hook.
+    let event_media = match app.pasted_image.take() {
+        Some(image) => match paste_image_media(&image) {
+            Ok(media) => Some(media),
+            Err(error) => return Some(Err(error)),
+        },
+        None => None,
+    };
+    let (media, from_event) = match event_media {
+        Some(media) => (media, true),
+        None => ((app.hooks.clipboard_media.as_mut()?)()?, false),
+    };
+    if !from_event && app.stale_clipboard_media.as_ref() == Some(&clipboard_media_key(&media)) {
         return None;
     }
     let paths = match media {
@@ -649,6 +748,34 @@ fn paste_clipboard_media(app: &mut FilmcraftApp, insert: bool) -> Option<Result<
     };
     let params = json!({"paths": paths, "insert": insert, "place": app.ui.focused == PanelKind::Timeline, "bin": app.import_bin().0});
     Some(app.session.execute("edit.pasteMedia", params).map_err(|e| e.to_string()))
+}
+
+/// Upper bound on the RGBA copy made from a clipboard image, matching the screenshot per-image
+/// bound. The event's own `ColorImage` is still alive while this copy is encoded, so reject before
+/// allocating it rather than only checking for integer overflow.
+const MAX_CLIPBOARD_IMAGE_BYTES: usize = 128 * 1024 * 1024;
+
+/// The RGBA bytes of an image delivered by `egui::Event::PasteImage`.
+fn paste_image_media(image: &egui::ColorImage) -> Result<crate::ClipboardMedia, String> {
+    let [width, height] = image.size;
+    let len =
+        width.checked_mul(height).and_then(|pixels| pixels.checked_mul(4)).ok_or_else(|| "the pasted image size overflows the clipboard buffer".to_string())?;
+    if len > MAX_CLIPBOARD_IMAGE_BYTES {
+        return Err(format!(
+            "the pasted image is too large: {width}×{height} needs {len} RGBA bytes, over the {MAX_CLIPBOARD_IMAGE_BYTES}-byte clipboard image limit"
+        ));
+    }
+    let mut rgba = Vec::with_capacity(len);
+    for c in &image.pixels {
+        // `Color32` is premultiplied internally; PNG/RgbaImage expect straight alpha. Round-trip
+        // through the straight sRGB form so a semi-transparent clipboard pixel keeps its colour.
+        let [r, g, b, a] = c.to_srgba_unmultiplied();
+        rgba.extend_from_slice(&[r, g, b, a]);
+    }
+    if rgba.len() != len {
+        return Err("the pasted image does not match its reported size".into());
+    }
+    Ok(crate::ClipboardMedia::Image { width, height, rgba })
 }
 
 /// A compressed PNG of a clipboard image; an error when its size and pixels disagree.
@@ -842,6 +969,16 @@ pub fn bindings(app: &FilmcraftApp) -> Vec<KeyBinding> {
     let shifted: Vec<KeyBinding> =
         v.iter().filter(|b| b.0.shift).filter_map(|(m, k, id, p)| shifted_key(*k).map(|k2| (*m, k2, id.clone(), p.clone()))).collect();
     v.extend(shifted);
+    // `+` is the `=` key with Shift on US layouts and its own key on others and the keypad: a chord
+    // on `=` takes it too, unless something is bound to `+` itself. Otherwise Ctrl+Plus fell
+    // through to egui's interface zoom while Ctrl+- and Ctrl+0 were taken by FilmCraft
+    // shortcuts, so the interface grew and could not shrink back (#2253).
+    let plus: Vec<KeyBinding> = v
+        .iter()
+        .filter(|(m, k, _, p)| *k == egui::Key::Equals && !v.iter().any(|(m2, k2, _, p2)| *k2 == egui::Key::Plus && m2 == m && p2 == p))
+        .map(|(m, _, id, p)| (*m, egui::Key::Plus, id.clone(), p.clone()))
+        .collect();
+    v.extend(plus);
     v.sort_by_key(|(m, ..)| std::cmp::Reverse(specificity(*m)));
     v
 }
@@ -881,13 +1018,14 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
 
 /// Draw the in-window menu bar.
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
-    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("interface-language"), app.ui.language));
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("interface-language"), app.ui.language));
     let items = menu_items(app);
     // Draw Edit ▸ Label with the user's live palette, not the baked-in label colours.
     let labels = app.session.prefs.labels.clone();
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
-    egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
+    // The bar's titles and their menus share one size and colour, as in a native menu bar.
+    egui::MenuBar::new().style(crate::theme::menu_style).config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
         let mut titles = Vec::with_capacity(MENUS.len());
         for top in MENUS {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
@@ -941,7 +1079,7 @@ fn menu_level(
             }
             subs.push(sub);
             let inner: Vec<&MenuItem> = items.iter().copied().filter(|x| x.path.get(depth).map(String::as_str) == Some(sub)).collect();
-            let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::new("interface-language"))).unwrap_or_default();
+            let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::unique("interface-language"))).unwrap_or_default();
             ui.menu_button(language.tr(sub), |ui| {
                 ui.set_min_width(220.0);
                 menu_level(ui, &inner, depth + 1, clicked, auto, labels);
@@ -1066,6 +1204,30 @@ mod parse_shortcut_tests {
 mod tests {
     use super::*;
 
+    /// A clipboard image is premultiplied inside `Color32`. The PNG writer expects straight
+    /// alpha, so a semi-transparent pixel must come back with its colour, not darkened.
+    #[test]
+    fn pasted_images_keep_straight_alpha_colour() {
+        // Red at 50% opacity: premultiplied storage is about (128, 0, 0, 128).
+        let image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[255, 0, 0, 128]);
+        let media = paste_image_media(&image).expect("a 1×1 clipboard image");
+        let crate::ClipboardMedia::Image { width, height, rgba } = media else { panic!("not an image") };
+        assert_eq!((width, height), (1, 1));
+        assert_eq!(rgba, vec![255, 0, 0, 128], "straight RGBA, not the premultiplied bytes");
+        let png = encode_png(width, height, rgba).expect("a PNG");
+        let decoded = image::load_from_memory(&png).expect("decode the pasted PNG").to_rgba8();
+        assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 128]);
+    }
+
+    /// An image whose RGBA size exceeds the 128 MiB cap is rejected before any RGBA copy is allocated.
+    #[test]
+    fn oversized_clipboard_images_are_rejected_before_allocating_rgba() {
+        let side = 100_000;
+        let image = egui::ColorImage { size: [side, side], source_size: egui::vec2(100_000.0, 100_000.0), pixels: Vec::new() };
+        let Err(error) = paste_image_media(&image) else { panic!("an oversized clipboard image was accepted") };
+        assert!(error.contains("too large"), "{error}");
+    }
+
     /// What `cargo xtask parity` measures: every item sits under a top-level menu, and Window ▸
     /// Workspaces lists the built-in workspaces before the layout commands, none checked.
     #[test]
@@ -1090,6 +1252,8 @@ mod tests {
 
         let app = FilmcraftApp::new(filmcraft_engine::Session::default());
         let mut harness = Harness::builder().with_size(egui::vec2(1200.0, 700.0)).build_ui_state(|ui, app| menu_bar(app, ui), app);
+        // the app's fonts, which draw the macOS shortcut symbols (⇧⌘S) egui's default fonts lack
+        crate::theme::install(&harness.ctx, &harness.state().tokens);
         harness.run_steps(3);
         // Nothing open: hovering a title does not open it.
         harness.get_by_label("Edit").hover();

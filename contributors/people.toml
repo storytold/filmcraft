@@ -88,3 +88,23 @@ sync_github_name = false
 
 [people.webdevtodayjason]
 display_name = "Jason Brashear"
+
+[people.marshiyar]
+display_name = "Arshiya"
+real_name = "Arshiya Rahgozar"
+sync_github_name = false
+
+[people.ARYAN007H]
+real_name = "Aryan Chaudhary"
+display_name = "Aryan"
+sync_github_name = true
+
+[people.thecyberbutler]
+display_name = "@thecyberbutler"
+sync_github_name = false
+
+[people.alexanderalber]
+real_name = "Alexander Alber"
+
+[people.dylanmtaylor]
+sync_github_name = true
