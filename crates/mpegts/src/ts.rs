@@ -286,6 +286,65 @@ fn resync(block: &[u8], from: usize, packet_size: usize, sync_offset: usize, at_
     (i, true)
 }
 
+/// PCR values unwrapped across the 33-bit base wrap, with the range seen.
+#[derive(Default)]
+struct PcrTrack {
+    unwrap: i64,
+    last: Option<i64>,
+    range: Option<(i64, i64)>,
+}
+
+impl PcrTrack {
+    fn update(&mut self, pcr: i64) {
+        // 33-bit base × 300 wraps at 2^33·300
+        let wrap = (1i64 << 33) * 300;
+        let mut v = pcr + self.unwrap;
+        if let Some(l) = self.last
+            && v < l - wrap / 2
+        {
+            self.unwrap += wrap;
+            v += wrap;
+        }
+        self.last = Some(v);
+        self.range = Some(self.range.map_or((v, v), |(a, b)| (a.min(v), b.max(v))));
+    }
+}
+
+/// Register the elementary streams a (CRC-checked) PMT section announces and that are not yet known.
+fn add_pmt_streams(sec: &[u8], packet_size: usize, es: &mut HashMap<u16, EsState>, order: &mut Vec<u16>) {
+    let pinfo = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
+    let prog_desc = sec.get(12..12 + pinfo).unwrap_or(&[]);
+    let hdmv = packet_size == 192 || prog_desc.windows(4).any(|w| w == b"HDMV");
+    let mut i = 12 + pinfo;
+    let end = sec.len() - 4;
+    while i + 5 <= end {
+        let st = sec[i];
+        let pid = (((sec[i + 1] & 0x1F) as u16) << 8) | sec[i + 2] as u16;
+        let ilen = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
+        let desc = sec.get(i + 5..(i + 5 + ilen).min(end)).unwrap_or(&[]);
+        i += 5 + ilen;
+        if es.contains_key(&pid) {
+            continue;
+        }
+        let mut codec = codec_of(st, desc, hdmv);
+        if codec == Codec::Unknown(6) && prog_desc.windows(4).any(|w| w == b"AC-3") {
+            codec = Codec::Ac3;
+        }
+        let stream = Stream {
+            id: StreamId::Pid(pid),
+            stream_type: st,
+            codec: codec.clone(),
+            language: language(desc),
+            units: Vec::new(),
+            lpcm: None,
+            pes_packets: 0,
+            skipped_bytes: 0,
+        };
+        es.insert(pid, EsState { stream, split: Splitter::new(&codec), asm: PesAsm::default(), cc: None });
+        order.push(pid);
+    }
+}
+
 pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_offset: usize) -> Result<File> {
     let len = src.len();
     let mut head = vec![0u8; packet_size * 8];
@@ -300,9 +359,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
     let mut order: Vec<u16> = Vec::new();
     let mut pmt_version: Option<u8> = None;
     let mut unwrap = Unwrap::default();
-    let mut pcr_unwrap = 0i64;
-    let mut last_pcr: Option<i64> = None;
-    let mut pcr_range: Option<(i64, i64)> = None;
+    let mut pcr_track = PcrTrack::default();
     let (mut lost_sync, mut cc_errors, mut crc_errors) = (0u64, 0u64, 0u64);
     const BLOCK: usize = 4096;
     let mut block = vec![0u8; BLOCK * packet_size];
@@ -340,17 +397,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
             };
             p += packet_size;
             if let Some(pcr) = pk.pcr {
-                // 33-bit base × 300 wraps at 2^33·300
-                let wrap = (1i64 << 33) * 300;
-                let mut v = pcr + pcr_unwrap;
-                if let Some(l) = last_pcr
-                    && v < l - wrap / 2
-                {
-                    pcr_unwrap += wrap;
-                    v += wrap;
-                }
-                last_pcr = Some(v);
-                pcr_range = Some(pcr_range.map_or((v, v), |(a, b)| (a.min(v), b.max(v))));
+                pcr_track.update(pcr);
             }
             if pk.pid == 0 {
                 for sec in pat.feed(pk.pusi, pk.payload) {
@@ -387,37 +434,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                         continue;
                     }
                     pmt_version = Some(version);
-                    let pinfo = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
-                    let prog_desc = sec.get(12..12 + pinfo).unwrap_or(&[]);
-                    let hdmv = packet_size == 192 || prog_desc.windows(4).any(|w| w == b"HDMV");
-                    let mut i = 12 + pinfo;
-                    let end = sec.len() - 4;
-                    while i + 5 <= end {
-                        let st = sec[i];
-                        let pid = (((sec[i + 1] & 0x1F) as u16) << 8) | sec[i + 2] as u16;
-                        let ilen = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
-                        let desc = sec.get(i + 5..(i + 5 + ilen).min(end)).unwrap_or(&[]);
-                        i += 5 + ilen;
-                        if es.contains_key(&pid) {
-                            continue;
-                        }
-                        let mut codec = codec_of(st, desc, hdmv);
-                        if codec == Codec::Unknown(6) && prog_desc.windows(4).any(|w| w == b"AC-3") {
-                            codec = Codec::Ac3;
-                        }
-                        let stream = Stream {
-                            id: StreamId::Pid(pid),
-                            stream_type: st,
-                            codec: codec.clone(),
-                            language: language(desc),
-                            units: Vec::new(),
-                            lpcm: None,
-                            pes_packets: 0,
-                            skipped_bytes: 0,
-                        };
-                        es.insert(pid, EsState { stream, split: Splitter::new(&codec), asm: PesAsm::default(), cc: None });
-                        order.push(pid);
-                    }
+                    add_pmt_streams(&sec, packet_size, &mut es, &mut order);
                 }
                 continue;
             }
@@ -470,7 +487,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         }
         streams.push(e.stream);
     }
-    Ok(File { format: Format::Ts { packet_size, sync_offset }, streams, program, pcr_range, warnings })
+    Ok(File { format: Format::Ts { packet_size, sync_offset }, streams, program, pcr_range: pcr_track.range, warnings })
 }
 
 /// Collect unit `u` of stream `st`: from the packet at `u.pos`, the PID's elementary-stream bytes.

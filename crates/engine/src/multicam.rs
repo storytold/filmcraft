@@ -45,7 +45,6 @@ use crate::{EngineError, MediaPool, Result, Session};
 type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
-#[allow(clippy::too_many_arguments)]
 fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], params: &'static str, enabled: Enabled, run: Run, journal: bool) -> CommandSpec {
     CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal }
 }
@@ -498,7 +497,7 @@ fn sync_items(s: &Session, items: &[ItemId], cmd: &str) -> Result<Vec<SyncClip>>
 
 fn settings_for(s: &Session, item: ItemId) -> SequenceSettings {
     let media = match s.project.item(item).map(|i| &i.kind) {
-        Some(ItemKind::Media(m)) => Some(m),
+        Some(ItemKind::Media(m)) => Some(m.as_ref()),
         Some(ItemKind::Subclip { parent, .. }) => s.project.item(*parent).and_then(|i| i.as_media()),
         _ => None,
     };

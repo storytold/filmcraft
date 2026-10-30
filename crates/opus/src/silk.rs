@@ -9,9 +9,14 @@ mod resampler;
 #[allow(dead_code)]
 pub(crate) mod tables;
 
-use lpc::*;
+use lpc::{MAX_LPC_ORDER, bwexpander, div32_varq, inverse32_varq, nlsf_decode, nlsf2a, rshift_round, sat16, smlawb, smulwb, smulww};
 use resampler::Resampler;
-use tables::*;
+use tables::{
+    CB_NB_10, CB_NB_20, CB_WB_10, CB_WB_20, DELTA_GAIN, EXC_LSB, EXC_SIGN, GAIN_MSB, LBRR_FLAGS, LTP_FILTER, LTP_PERIODICITY, LTP_SCALE, LTP_TAPS_0,
+    LTP_TAPS_1, LTP_TAPS_2, MID_ONLY, NLSF_EXT, NLSF_INTERP, NLSF_SEL_NBMB, NLSF_SEL_WB, NLSF_STAGE1, NLSF_STAGE2, PITCH_CONTOUR, PITCH_DELTA, PITCH_HIGH,
+    PITCH_LOW, PULSE_COUNT, RATE_LEVEL, SHELL_2, SHELL_4, SHELL_8, SHELL_16, STEREO_PRED_JOINT, STEREO_WEIGHTS_Q13, TYPE_ACTIVE, TYPE_INACTIVE, UNIFORM3,
+    UNIFORM4, UNIFORM5, UNIFORM8,
+};
 
 use crate::range::RangeDecoder;
 use crate::{Error, Result};
@@ -687,12 +692,11 @@ impl SilkDecoder {
         self.internal_rate = internal_rate;
     }
 
-    /// Decodes one SILK frame (10 or 20 ms) into interleaved `out` at the API rate.
-    pub fn decode(&mut self, mut dec: Option<&mut RangeDecoder>, lost: LostFlag, new_packet: bool, payload_ms: usize, out: &mut [f32]) -> Result<usize> {
+    fn prepare_frame(&mut self, new_packet: bool, payload_ms: usize) -> Result<bool> {
         let nci = self.channels_internal;
         if new_packet {
-            for c in self.ch.iter_mut() {
-                c.n_frames_decoded = 0;
+            for channel in &mut self.ch {
+                channel.n_frames_decoded = 0;
             }
         }
         if nci > self.channels_internal_prev && self.channels_internal_prev != 0 {
@@ -700,18 +704,18 @@ impl SilkDecoder {
         }
         let stereo_to_mono = nci == 1 && self.channels_internal_prev == 2 && self.internal_rate == 1000 * self.ch[0].fs_khz as u32;
         if self.ch[0].n_frames_decoded == 0 {
-            for c in self.ch.iter_mut().take(nci) {
-                let (nfpp, nb) = match payload_ms {
-                    10 => (1, 2),
-                    20 => (1, 4),
-                    40 => (2, 4),
-                    60 => (3, 4),
-                    _ => return Err(Error::InvalidPacket("bad SILK frame size")),
-                };
-                c.n_frames_per_packet = nfpp;
-                c.nb_subfr = nb;
-                let fs_khz = ((self.internal_rate >> 10) + 1) as usize;
-                c.set_fs(fs_khz, self.api_rate);
+            let (frames, subframes) = match payload_ms {
+                10 => (1, 2),
+                20 => (1, 4),
+                40 => (2, 4),
+                60 => (3, 4),
+                _ => return Err(Error::InvalidPacket("bad SILK frame size")),
+            };
+            let fs_khz = ((self.internal_rate >> 10) + 1) as usize;
+            for channel in self.ch.iter_mut().take(nci) {
+                channel.n_frames_per_packet = frames;
+                channel.nb_subfr = subframes;
+                channel.set_fs(fs_khz, self.api_rate);
             }
         }
         if self.api_channels == 2 && nci == 2 && self.channels_internal_prev == 1 {
@@ -720,49 +724,66 @@ impl SilkDecoder {
             self.ch[1].resampler = self.ch[0].resampler.clone();
         }
         self.channels_internal_prev = nci;
+        Ok(stereo_to_mono)
+    }
 
-        if lost != LostFlag::Lost && self.ch[0].n_frames_decoded == 0 {
-            let d = dec.as_deref_mut().ok_or(Error::InvalidPacket("missing SILK data"))?;
-            for c in self.ch.iter_mut().take(nci) {
-                for i in 0..c.n_frames_per_packet {
-                    c.vad_flags[i] = d.bit_logp(1);
-                }
-                c.lbrr_flag = d.bit_logp(1);
+    fn decode_packet_header(&mut self, dec: &mut Option<&mut RangeDecoder>, lost: LostFlag) -> Result<()> {
+        let nci = self.channels_internal;
+        if lost == LostFlag::Lost || self.ch[0].n_frames_decoded != 0 {
+            return Ok(());
+        }
+        let decoder = dec.as_deref_mut().ok_or(Error::InvalidPacket("missing SILK data"))?;
+        for channel in self.ch.iter_mut().take(nci) {
+            for index in 0..channel.n_frames_per_packet {
+                channel.vad_flags[index] = decoder.bit_logp(1);
             }
-            for c in self.ch.iter_mut().take(nci) {
-                c.lbrr_flags = [false; 3];
-                if c.lbrr_flag {
-                    if c.n_frames_per_packet == 1 {
-                        c.lbrr_flags[0] = true;
-                    } else {
-                        let sym = d.icdf(LBRR_FLAGS[c.n_frames_per_packet - 2], 8) + 1;
-                        for i in 0..c.n_frames_per_packet {
-                            c.lbrr_flags[i] = (sym >> i) & 1 != 0;
-                        }
-                    }
-                }
-            }
-            if lost == LostFlag::Normal {
-                // Skip LBRR data.
-                for i in 0..self.ch[0].n_frames_per_packet {
-                    for n in 0..nci {
-                        if self.ch[n].lbrr_flags[i] {
-                            if nci == 2 && n == 0 {
-                                stereo_decode_pred(d);
-                                if !self.ch[1].lbrr_flags[i] {
-                                    d.icdf(&MID_ONLY, 8);
-                                }
-                            }
-                            let cond = if i > 0 && self.ch[n].lbrr_flags[i - 1] { Cond::Conditionally } else { Cond::Independently };
-                            let c = &mut self.ch[n];
-                            c.decode_indices(d, i, true, cond);
-                            let mut pulses = [0i32; MAX_FRAME + 16];
-                            decode_pulses(d, &mut pulses, c.indices.signal_type, c.indices.quant_offset_type, c.frame_length);
-                        }
+            channel.lbrr_flag = decoder.bit_logp(1);
+        }
+        for channel in self.ch.iter_mut().take(nci) {
+            channel.lbrr_flags = [false; 3];
+            if channel.lbrr_flag {
+                if channel.n_frames_per_packet == 1 {
+                    channel.lbrr_flags[0] = true;
+                } else {
+                    let sym = decoder.icdf(LBRR_FLAGS[channel.n_frames_per_packet - 2], 8) + 1;
+                    for index in 0..channel.n_frames_per_packet {
+                        channel.lbrr_flags[index] = (sym >> index) & 1 != 0;
                     }
                 }
             }
         }
+        if lost == LostFlag::Normal {
+            self.skip_lbrr_data(decoder, nci);
+        }
+        Ok(())
+    }
+
+    fn skip_lbrr_data(&mut self, decoder: &mut RangeDecoder, nci: usize) {
+        for frame in 0..self.ch[0].n_frames_per_packet {
+            for channel in 0..nci {
+                if !self.ch[channel].lbrr_flags[frame] {
+                    continue;
+                }
+                if nci == 2 && channel == 0 {
+                    stereo_decode_pred(decoder);
+                    if !self.ch[1].lbrr_flags[frame] {
+                        decoder.icdf(&MID_ONLY, 8);
+                    }
+                }
+                let condition = if frame > 0 && self.ch[channel].lbrr_flags[frame - 1] { Cond::Conditionally } else { Cond::Independently };
+                let state = &mut self.ch[channel];
+                state.decode_indices(decoder, frame, true, condition);
+                let mut pulses = [0i32; MAX_FRAME + 16];
+                decode_pulses(decoder, &mut pulses, state.indices.signal_type, state.indices.quant_offset_type, state.frame_length);
+            }
+        }
+    }
+
+    /// Decodes one SILK frame (10 or 20 ms) into interleaved `out` at the API rate.
+    pub fn decode(&mut self, mut dec: Option<&mut RangeDecoder>, lost: LostFlag, new_packet: bool, payload_ms: usize, out: &mut [f32]) -> Result<usize> {
+        let nci = self.channels_internal;
+        let stereo_to_mono = self.prepare_frame(new_packet, payload_ms)?;
+        self.decode_packet_header(&mut dec, lost)?;
         // Stereo prediction.
         if nci == 2 {
             let fi = self.ch[0].n_frames_decoded;

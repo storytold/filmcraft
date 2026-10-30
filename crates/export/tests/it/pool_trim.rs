@@ -30,7 +30,7 @@ fn project() -> (Arc<Project>, ItemId, SourceMap) {
         proxy: None,
         identity: None,
     };
-    let red = p.add_item(&info.name, Label::Iris, ItemKind::Media(clip), None);
+    let red = p.add_item(&info.name, Label::Iris, ItemKind::Media(Box::new(clip)), None);
     let seq = p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 1, None);
     let item = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
     p.sequence_mut(seq).unwrap().video_tracks[0].items.push(item);
