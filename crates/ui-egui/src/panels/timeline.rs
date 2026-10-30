@@ -668,8 +668,9 @@ fn draw_clips(
                 app.auto.add(&format!("timeline.clip.{}.copy", cid.0), body.intersect(content), &it.name);
             }
         }
-        paint_track_edits(app, painter, seq, rows, layout, content, vclip, aclip, t, copying);
     }
+    // once, over every row's clips: it walks the rows itself
+    paint_track_edits(app, painter, seq, rows, layout, content, vclip, aclip, t, copying);
 }
 
 /// Per-track details over the clips: through-edit bow-ties, the selected edit points, the
@@ -956,6 +957,53 @@ mod waveform_tests {
         assert!(waveform_display_gain(0.0, 0.0).is_finite());
         // clip gain still applies
         assert!((db(waveform_display_gain(1.0, -6.0)) - (-6.0)).abs() < 0.1);
+    }
+}
+#[cfg(test)]
+mod crossfade_curve_tests {
+    use super::clips::{MAX_CURVE_POINTS, crossfade_samples};
+    use egui::{Rect, pos2};
+
+    fn rect(x0: f32, x1: f32) -> Rect {
+        Rect::from_min_max(pos2(x0, 0.0), pos2(x1, 40.0))
+    }
+
+    #[test]
+    fn curves_follow_the_mixers_fade_law_end_to_end() {
+        for kind in ["constant_power", "constant_gain", "exponential_fade"] {
+            let s = crossfade_samples(rect(100.0, 300.0), (0.0, 800.0), kind);
+            // one segment every 2 pt
+            assert_eq!(s.len(), 101, "{kind}");
+            assert_eq!(s.first(), Some(&(100.0, filmcraft_render::transitions::audio_gains(kind, 0.0))), "{kind}");
+            assert_eq!(s.last(), Some(&(300.0, filmcraft_render::transitions::audio_gains(kind, 1.0))), "{kind}");
+        }
+        // the shapes differ: halfway, constant gain is at 50 %, exponential fade's outgoing at 1/8
+        let mid = |kind| crossfade_samples(rect(0.0, 200.0), (0.0, 800.0), kind).get(50).map(|s| s.1);
+        assert_eq!(mid("constant_gain"), Some((0.5, 0.5)));
+        assert_eq!(mid("exponential_fade").map(|g| g.0), Some(0.125));
+        assert!(mid("constant_power").is_some_and(|(a, b)| (a * a + b * b - 1.0).abs() < 1e-5));
+    }
+
+    #[test]
+    fn a_zoomed_in_crossfade_is_sampled_only_where_it_shows() {
+        // 100 000 pt wide, the panel showing x 0..800: 400 segments, all on screen
+        let s = crossfade_samples(rect(0.0, 100_000.0), (0.0, 800.0), "constant_power");
+        assert_eq!(s.len(), 401);
+        assert!(s.iter().all(|(x, _)| (0.0..=800.0).contains(x)));
+        // a very wide panel is capped
+        assert_eq!(crossfade_samples(rect(0.0, 100_000.0), (0.0, 5000.0), "constant_power").len(), MAX_CURVE_POINTS + 1);
+        // a tiny one still gets a curve
+        assert_eq!(crossfade_samples(rect(10.0, 11.0), (0.0, 800.0), "constant_power").len(), 5);
+    }
+
+    #[test]
+    fn degenerate_crossfades_draw_nothing() {
+        assert!(crossfade_samples(rect(100.0, 100.0), (0.0, 800.0), "constant_power").is_empty());
+        assert!(crossfade_samples(rect(900.0, 1000.0), (0.0, 800.0), "constant_power").is_empty());
+        assert!(crossfade_samples(rect(f32::NAN, 100.0), (0.0, 800.0), "constant_power").is_empty());
+        assert!(crossfade_samples(rect(0.0, f32::INFINITY), (0.0, 800.0), "constant_power").is_empty());
+        // an unknown visible range falls back to the whole crossfade, still bounded
+        assert_eq!(crossfade_samples(rect(0.0, 100.0), (f32::NAN, f32::NAN), "constant_power").len(), 51);
     }
 }
 #[cfg(test)]

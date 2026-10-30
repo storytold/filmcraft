@@ -422,3 +422,17 @@ fn the_cut_is_grabbed_over_the_clips_and_stops_at_the_rolls_limit() {
     drag_cut(&mut d, limit.0 as f64 / moved as f64 * 20.0 + 200.0);
     assert_eq!(cut_of(&mut d), cut1 + limit.0, "stopped at the limit");
 }
+
+/// Each transition is painted (and registered) once a frame, not once per visible track: its
+/// translucent bar stacked over itself turned near-opaque.
+#[test]
+fn each_transition_is_painted_once_a_frame() {
+    let mut d = Driver::demo();
+    d.frames(2);
+    let v = d.ok("ui.elements", json!({"prefix": "timeline.transition."}));
+    let ids: Vec<&str> = v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str()).filter(|id| id.matches('.').count() == 2).collect();
+    assert!(ids.len() >= 2, "the demo shows video and audio transitions: {ids:?}");
+    for id in &ids {
+        assert_eq!(ids.iter().filter(|i| *i == id).count(), 1, "{id} registered more than once: {ids:?}");
+    }
+}

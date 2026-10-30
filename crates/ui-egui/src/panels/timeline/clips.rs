@@ -301,7 +301,7 @@ pub(super) fn draw_clip(
     }
 }
 
-/// 45° hatching over `r` (transitions, and the empty end of a nested sequence clip).
+/// 45° hatching over `r` (the empty end of a nested sequence clip).
 pub(super) fn paint_hatch(p: &egui::Painter, r: Rect) {
     let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
     let step = 4.0;
@@ -312,35 +312,76 @@ pub(super) fn paint_hatch(p: &egui::Painter, r: Rect) {
     }
 }
 
+/// Most points one crossfade curve takes: one every 2 points of the part on screen, so it stays
+/// smooth zoomed in while a transition far wider than the panel costs no more than this.
+pub(super) const MAX_CURVE_POINTS: usize = 512;
+
+/// A transition on the timeline: a flat, lighter translucent bar over the cut with a thin soft
+/// edge, tinted with the accent when selected. An audio crossfade shows its two gain curves, a
+/// video transition its name when the whole name fits.
 pub(super) fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transition, selected: bool, t: &Tokens) {
     let cp = p.with_clip_rect(r.intersect(p.clip_rect()));
-    cp.rect_filled(r, 0.0, Color32::from_black_alpha(90));
-    paint_hatch(p, r);
-    let audio = matches!(trn.effect.def().map(|d| d.kind), Some(filmcraft_project::EffectKind::AudioTransition));
-    if audio {
-        // crossing fade curves
-        let n = 16;
-        let a: Vec<Pos2> = (0..=n)
-            .map(|i| {
-                pos2(r.min.x + r.width() * i as f32 / n as f32, r.min.y + r.height() * (1.0 - ((i as f32 / n as f32) * std::f32::consts::FRAC_PI_2).sin()))
-            })
-            .collect();
-        let b: Vec<Pos2> = (0..=n)
-            .map(|i| {
-                pos2(r.min.x + r.width() * i as f32 / n as f32, r.min.y + r.height() * (1.0 - ((i as f32 / n as f32) * std::f32::consts::FRAC_PI_2).cos()))
-            })
-            .collect();
-        cp.add(egui::Shape::line(a, Stroke::new(1.0, Color32::WHITE)));
-        cp.add(egui::Shape::line(b, Stroke::new(1.0, Color32::WHITE)));
-    }
-    cp.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_rgb(0xeb, 0xeb, 0xeb)), StrokeKind::Inside);
+    cp.rect_filled(r, 2.0, Color32::from_white_alpha(34));
     if selected {
-        cp.rect_stroke(r, 0.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+        cp.rect_filled(r, 2.0, t.accent.gamma_multiply(0.22));
     }
-    if r.width() > 34.0 && !audio {
-        let name = trn.effect.def().map(|d| d.name).unwrap_or(&trn.effect.effect);
-        let tr = Rect::from_min_size(r.min + vec2(2.0, 2.0), vec2((r.width() - 4.0).min(80.0), 13.0));
-        cp.rect_filled(tr, 0.0, Color32::from_black_alpha(170));
-        cp.text(pos2(tr.min.x + 3.0, tr.center().y), Align2::LEFT_CENTER, name, Tokens::ui(10.5), Color32::from_rgb(0xd9, 0xd9, 0xd9));
+    let def = trn.effect.def();
+    if matches!(def.map(|d| d.kind), Some(filmcraft_project::EffectKind::AudioTransition)) {
+        paint_crossfade(&cp, r, &trn.effect.effect);
+    } else {
+        paint_transition_label(&cp, r, def.map(|d| crate::i18n::t(d.name)).unwrap_or(&trn.effect.effect));
     }
+    let edge = if selected { Stroke::new(1.5, t.accent) } else { Stroke::new(1.0, Color32::from_white_alpha(72)) };
+    cp.rect_stroke(r, 2.0, edge, StrokeKind::Inside);
+}
+
+/// The x positions and (outgoing, incoming) gains an audio crossfade's curves are drawn through
+/// over `r`, `kind` being its effect id: the mixer's own fade law, sampled every 2 points across
+/// the part between `visible` (at least 4 and at most [`MAX_CURVE_POINTS`] segments).
+pub(super) fn crossfade_samples(r: Rect, visible: (f32, f32), kind: &str) -> Vec<(f32, (f32, f32))> {
+    let (x0, x1) = (r.min.x.max(visible.0), r.max.x.min(visible.1));
+    if !(x1 > x0 && r.width() > 0.0 && r.width().is_finite()) {
+        return Vec::new();
+    }
+    let n = ((x1 - x0) / 2.0).ceil().clamp(4.0, MAX_CURVE_POINTS as f32) as usize;
+    (0..=n)
+        .map(|i| x0 + (x1 - x0) * i as f32 / n as f32)
+        .map(|x| (x, filmcraft_render::transitions::audio_gains(kind, ((x - r.min.x) / r.width()).clamp(0.0, 1.0))))
+        .collect()
+}
+
+/// An audio crossfade's curves over `r`, each with a faint fill below it: the outgoing clip's
+/// level falling from the top left, the incoming clip's rising to the top right.
+fn paint_crossfade(p: &egui::Painter, r: Rect, kind: &str) {
+    let samples = crossfade_samples(r, (p.clip_rect().min.x, p.clip_rect().max.x), kind);
+    let y = |g: f32| r.max.y - r.height() * g.clamp(0.0, 1.0);
+    for incoming in [false, true] {
+        let pts: Vec<Pos2> = samples.iter().map(|(x, (a, b))| pos2(*x, y(if incoming { *b } else { *a }))).collect();
+        // the area under the curve as a strip of quads down to the bottom edge (any curve shape)
+        let mut fill = egui::Mesh::default();
+        for (i, q) in pts.iter().enumerate() {
+            fill.colored_vertex(*q, Color32::from_white_alpha(20));
+            fill.colored_vertex(pos2(q.x, r.max.y), Color32::from_white_alpha(20));
+            if i > 0 {
+                let v = 2 * i as u32;
+                fill.add_triangle(v - 2, v - 1, v);
+                fill.add_triangle(v - 1, v + 1, v);
+            }
+        }
+        p.add(fill);
+        p.add(egui::Shape::line(pts, Stroke::new(1.0, Color32::from_white_alpha(210))));
+    }
+}
+
+/// A video transition's name at the top left of `r`: plain text with a soft shadow, left out when
+/// the whole name does not fit.
+fn paint_transition_label(p: &egui::Painter, r: Rect, name: &str) {
+    let font = Tokens::ui(10.5);
+    let width = p.layout_no_wrap(name.to_owned(), font.clone(), Color32::WHITE).size().x;
+    if width + 10.0 > r.width() || r.height() < 14.0 {
+        return;
+    }
+    let at = pos2(r.min.x + 5.0, r.min.y + 8.0);
+    p.text(at + vec2(0.0, 1.0), Align2::LEFT_CENTER, name, font.clone(), Color32::from_black_alpha(170));
+    p.text(at, Align2::LEFT_CENTER, name, font, Color32::from_rgb(0xe6, 0xe6, 0xe6));
 }

@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: tools, handles, panels, keyboard and feel against Premiere Pro 26.5.2, with the open UI issues) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-29 · **Change:** minor (Transitions: timeline look) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 How FilmCraft looks, feels and responds compared with Premiere: tools, on-screen handles, snapping,
 nudging, modifier keys, shortcuts, drag behaviour, numeric entry, panels, context menus. Keyboard
@@ -24,7 +24,7 @@ open interaction reports (about 40 of the 188 open issues).
 | Panels and docking | 17 workspaces, dock / undock / float, drop zones | 11 workspaces, docking; rearranging windows reported missing (#493); multi-monitor floating windows (#466) | 60% | #493, #466 | 20–35 h |
 | Project panel | List / Icon / Freeform, hover scrub, marquee | all three views, hover scrub, view presets; no marquee (#578), Freeform bins and pan (#579), bins can't be left on Windows (#587), duplicate imports allowed (#356) | 75% | #578, #579, #587, #456 | 10–20 h |
 | Timeline display | filmstrip thumbnails, waveforms, track heights, renaming, duplicate frame markers | clip thumbnails, waveforms, heights, duplicate frame markers; no continuous filmstrip (#614), no track rename (#654), wheel scroll in audio area (#400) | 70% | #614, #654, #400 | 8–15 h |
-| Transitions | drag, resize, alignment, edit in Effect Controls | drag / select / resize (#503); settings and the transition's own timeline in Effect Controls, drag to slide or resize (#577), drag the cut to move it with the transition; no A/B previews with Start / End sliders | 70% | #577 | 5–10 h |
+| Transitions | drag, resize, alignment, edit in Effect Controls | drag / select / resize (#503); settings and the transition's own timeline in Effect Controls, drag to slide or resize (#577), drag the cut to move it with the transition; drawn as a flat translucent bar with a soft edge, the name when it fits, and audio crossfades as smooth filled curves in the mixer's own fade law (Constant Power / Gain, Exponential Fade); no A/B previews with Start / End sliders | 70% | #577 | 5–10 h |
 | Numeric entry and scrubbing | scrubbable hot text, typed values | scrubbable values, timecode scrub-edit (#576); audio clip mixer values cannot be typed (#481) | 80% | #481 | 3–6 h |
 | Drag and drop | OS files into Project / Timeline, clipboard paste | OS drops into the timeline (#517); no clipboard paste of images / files (#611) | 70% | #519, #611 | 5–10 h |
 | Theme and appearance | dark / light, brightness | dark / light / system (#505, #555) | 85% | macOS window controls (#637), Wayland title bar (#433), X11 scale (#457) | 5–10 h |
@@ -35,4 +35,5 @@ open interaction reports (about 40 of the 188 open issues).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | Transitions: flat translucent timeline bar instead of hatching, label only when it fits, crossfade curves follow each audio transition's fade law |
 | 2026-10-10 | major | Created: UI areas against Premiere 26.5.2, menu label diff, keyboard parity from keyboard.md, open UI issues itemized |

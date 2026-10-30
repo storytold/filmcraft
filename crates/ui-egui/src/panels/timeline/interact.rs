@@ -1,4 +1,3 @@
-use super::clips::paint_hatch;
 use super::layout::{Layout, max_scroll, new_track_at};
 use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu};
 use super::snap::{snap, snap_playhead};
@@ -941,7 +940,6 @@ fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                     let r = Rect::from_min_max(pos2(layout.x_of(tr.start), row.rect.min.y + 1.0), pos2(layout.x_of(tr.end()), row.rect.max.y - 1.0));
                     let painter = ui.painter().with_clip_rect(layout.content);
                     painter.rect_filled(r, 2.0, app.tokens.accent.gamma_multiply(0.35));
-                    paint_hatch(&painter, r.intersect(layout.content));
                     painter.rect_stroke(r, 2.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
                     let cut = if edge == "in" { it.start } else { it.end() };
                     let x = layout.x_of(cut);
