@@ -26,6 +26,7 @@ mod pipeline;
 pub mod presets;
 mod raster;
 pub mod settings;
+pub mod export_settings;
 pub mod still;
 pub use audio_out::LoudnessReport;
 pub use job::{Exporter, Step, stepped};

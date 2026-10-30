@@ -33,6 +33,7 @@ serde_json = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
 web-time = "1"
+indexmap = { workspace = true }
 # Unicode Bidirectional Algorithm for Arabic and Hebrew captions in reading order (MIT OR Apache-2.0).
 unicode-bidi = "0.3.18"
 # ArtCraft wordmark (PNG) for the About dialog and Home screen.

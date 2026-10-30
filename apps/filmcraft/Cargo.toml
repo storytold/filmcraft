@@ -33,7 +33,7 @@ serde_json = { workspace = true }
 subtle = "2.6"
 log = { workspace = true }
 rfd = { workspace = true }
-cpal = "0.16"
+cpal = { version = "0.15", features = ["jack"] }
 # Files and images on the system clipboard for Paste (#611); egui already uses it for text.
 arboard = "3"
 chrono = { workspace = true, features = ["clock"] }

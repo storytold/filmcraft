@@ -74,6 +74,11 @@ proptest = "1"
 roxmltree = "0.21"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }
 craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0", default-features = false }
+indexmap = "2.0"
+hound = "3.5"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+whisper-rs = { version = "0.5", features = ["simd"] }
+cpal = { version = "0.15", features = ["jack"] }
 
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
