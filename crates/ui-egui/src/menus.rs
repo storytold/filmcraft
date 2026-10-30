@@ -610,6 +610,18 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     {
         return app.file_dialog(id, &params);
     }
+    // Attach the current dock layout to save commands so it is embedded in the project (#2258).
+    let params = if matches!(id, "file.save" | "file.saveAs" | "file.saveCopy") {
+        if let Ok(wl) = serde_json::to_value(&app.ui.dock) {
+            let mut p = params;
+            p["workspaceLayout"] = wl;
+            p
+        } else {
+            params
+        }
+    } else {
+        params
+    };
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
         app.ui.status = e.clone();

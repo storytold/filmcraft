@@ -285,7 +285,14 @@ impl FilmcraftApp {
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, now)),
-                filmcraft_engine::Event::ProjectChanged { .. } => {}
+                filmcraft_engine::Event::ProjectChanged { .. } => {
+                    // Restore workspace layout if the project carries one (#2258).
+                    if let Some(wl) = self.session.project.workspace_layout.as_ref().cloned() {
+                        if let Ok(layout) = serde_json::from_value::<crate::dock::Layout>(wl) {
+                            self.ui.dock = layout;
+                        }
+                    }
+                }
             }
         }
     }

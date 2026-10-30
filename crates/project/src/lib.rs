@@ -111,6 +111,10 @@ pub struct Project {
     /// instructions for whoever opens it next, frame numbers and the like. Schema v15.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
+    /// Saved workspace layout (dock/panel positions). Serialized by the UI crate as JSON;
+    /// `None` means "use the user-level workspace preference". Schema v16. (#2258)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_layout: Option<serde_json::Value>,
 }
 
 impl Default for Project {
@@ -138,6 +142,7 @@ impl Project {
             source_graphics: BTreeMap::new(),
             narrations: BTreeMap::new(),
             notes: String::new(),
+            workspace_layout: None,
         }
     }
 

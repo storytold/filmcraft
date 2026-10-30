@@ -1617,7 +1617,11 @@ fn build() -> Vec<CommandSpec> {
             |s, p| crate::aaf_omf::export_omf(s, p)
         ),
         cmd!("file.importAaf", "Import AAF…", [], None, r#"{"path":str}"#, always, |s, p| crate::aaf_omf::import_document(s, p, "file.importAaf")),
-        cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?}"#, always, |s, p| {
+        cmd!("file.save", "Save", ["File"], Some("Cmd+S"), r#"{"path":str?,"workspaceLayout":any?}"#, always, |s, p| {
+            // Accept an optional dock/panel layout to embed in the project (#2258).
+            if let Some(wl) = p.get("workspaceLayout").cloned().filter(|v| !v.is_null()) {
+                std::sync::Arc::make_mut(&mut s.project).workspace_layout = Some(wl);
+            }
             let path = str_p(p, "path").map(str::to_string).or_else(|| s.path.clone()).ok_or_else(|| bad("file.save", "no path (use Save As)"))?;
             write_project(s, &path, true)
         }),
@@ -1772,6 +1776,18 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{}", has_clips_or_captions, |s, _| {
             if s.state.selection.is_empty() {
+                // Copy a selected transition if nothing else is selected (#2350).
+                if !s.state.transition_selection.is_empty() {
+                    let tid = s.state.transition_selection[0];
+                    let found = {
+                        let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+                        seq.all_tracks().flat_map(|tr| tr.transitions.iter()).find(|t| t.id == tid).cloned()
+                    };
+                    if let Some(t) = found {
+                        s.state.transition_clipboard = Some(t);
+                        return Ok(json!({"copied": 1, "kind": "transition"}));
+                    }
+                }
                 return Ok(json!({"copied": crate::captions::copy(s)}));
             }
             copy_selection(s);
@@ -4005,6 +4021,48 @@ fn cut_range(q: &filmcraft_project::Sequence, tracks: &[TrackId], range: TimeRan
 /// overwriting). Caption clipboards go to the caption track. Pasted clips get fresh ids, links
 /// and groups of their own, are selected, and the playhead moves to their end.
 fn paste(s: &mut Session, insert: bool) -> Result<Value> {
+    // Paste a copied transition at the nearest cut to the playhead (#2350).
+    if let Some(tmpl) = s.state.transition_clipboard.clone() {
+        if s.state.caption_clipboard.is_empty() && s.state.clipboard.is_empty() {
+            let at = s.playhead();
+            s.edit_sequence("Paste Transition", |q, ctx, _st| {
+                // Find the track and cut point nearest the playhead.
+                let track_cut: Option<(filmcraft_project::TrackId, filmcraft_time::Tick)> = q.all_tracks()
+                    .flat_map(|tr| {
+                        let tid = tr.id;
+                        tr.items.iter().flat_map(move |it| {
+                            [Some((tid, it.start)), Some((tid, it.end()))].into_iter().flatten()
+                        })
+                    })
+                    .min_by_key(|(_, t)| { let d = (*t - at).0; if d < 0 { -d } else { d } });
+                let (track_id, cut) = track_cut.ok_or(EngineError::NoSequence)?;
+                let from = q.all_tracks().flat_map(|tr| tr.items.iter()).find(|it| it.end() == cut).map(|it| it.id);
+                let to   = q.all_tracks().flat_map(|tr| tr.items.iter()).find(|it| it.start == cut).map(|it| it.id);
+                let new_id = filmcraft_project::TransitionId(ctx.alloc());
+                let mut t = tmpl.clone();
+                t.id = new_id;
+                t.start = cut - filmcraft_time::Tick(t.duration.0 / 2);
+                t.from = from;
+                t.to = to;
+                // Add to the track that owns the cut point.
+                let added = q.all_tracks_mut().any(|tr| {
+                    if tr.id == track_id {
+                        tr.transitions.push(t.clone());
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if !added {
+                    if let Some(first) = q.tracks_mut(filmcraft_project::TrackKind::Video).first_mut() {
+                        first.transitions.push(t);
+                    }
+                }
+                Ok(())
+            })?;
+            return Ok(serde_json::json!({"pasted": "transition"}));
+        }
+    }
     if !s.state.caption_clipboard.is_empty() {
         return crate::captions::paste(s, insert);
     }
