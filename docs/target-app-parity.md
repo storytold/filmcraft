@@ -1,6 +1,6 @@
 # Parity with Adobe Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (full re-measure against Premiere Pro 2026 26.5.2; replaces the scorecard and estimate that lived in ROADMAP.md) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-28 · **Change:** minor (plugins note: EffectCraft link) · was: major (full re-measure against Premiere Pro 2026 26.5.2; replaces the scorecard and estimate that lived in ROADMAP.md) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 The authoritative assessment of how close FilmCraft is to Premiere Pro, and how much work is left.
 [ROADMAP.md](../ROADMAP.md) summarizes it; [gaps.md](gaps.md) lists every shortfall one at a time.
@@ -159,7 +159,8 @@ Evidence for the cross-cutting rows:
   mostly macOS; Windows and Linux reports dominate the issue list. The web build runs but its shell
   is incomplete. No mobile.
 - **Plugins ~5%.** No VST3 / Audio Units, no OpenFX, no Premiere / After Effects plug-in API, no
-  UXP panels (#325). Needs an owner decision (FFI). MCP, CLI and the control channel are ahead of
+  UXP panels (#325). Replace With After Effects Composition has an equivalent through EffectCraft
+  (docs/effectcraft-link.md). Needs an owner decision (FFI). MCP, CLI and the control channel are ahead of
   Premiere's scripting.
 - **AI ~25%.** Speech to text exists (local Whisper) but is off in release builds; text-to-speech
   narration with Kokoro-82M landed 10-10 (#278, beyond Premiere); scene edit detection; Enhance
@@ -354,6 +355,7 @@ control surfaces), and validation in Avid Media Composer / Pro Tools.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-28 | minor | Plugins: Replace With After Effects Composition covered through the EffectCraft link (docs/effectcraft-link.md); percentages unchanged |
 | 2026-10-10 | minor | Readiness table: hours to ~95% for each audience (full ~1,450–2,600, mainstream ~500–850, essentials ~180–350); full number confirmed as an additive weighted sum (no change) |
 | 2026-10-10 | minor | Added the three readiness numbers: full ready-for-real-work formula written out (~55% -> ~56%, same inputs, now computed rather than rounded down), mainstream practitioner ~55% and essentials user ~60% with written weights and discounts, and counted user evidence (31 people praising, 0 switch reports, ~64 core-path vs ~29 niche open bugs) |
 | 2026-10-10 | minor | Stage checked against the new core-workflow gate (docs/roadmap.md#alpha-gate): passes, stays alpha |

@@ -8,6 +8,7 @@ cargo test --release -p filmcraft-hevc          # codec tests are much faster in
 cargo xtask ci                                  # all gates (fmt, clippy, tests, layers, assets, wasm)
 cargo xtask fixtures                            # pre-generate the ffmpeg fixture matrix
 FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails instead of skipping
+EFFECTCRAFT_CLI=<path> cargo test -p filmcraft-engine effectcraft_link   # the EffectCraft link tests that render; they return at once without a real effectcraft-cli
 ```
 
 Integration tests build one binary per crate: a crate with several test files keeps them in

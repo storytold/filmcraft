@@ -9,6 +9,40 @@ impl FilmcraftApp {
     /// ([`filmcraft_engine::media_watch`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn tick_media_refresh(&mut self, ctx: &egui::Context, now: f64) {
+        crate::menus::show_effectcraft_prompt(self, ctx);
+        // EffectCraft compositions saved in EffectCraft are rendered again; the clips then switch to
+        // the new movies.
+        match self.session.poll_effectcraft_sync() {
+            Some(Ok(n)) if n > 0 => self.toast = Some((format!("Rendered {n} EffectCraft composition(s)"), now)),
+            Some(Err(e)) => self.toast = Some((e, now)),
+            _ => {}
+        }
+        for r in self.session.poll_effectcraft_jobs() {
+            match r {
+                Ok(v) => {
+                    let done = if v["imported"].is_null() {
+                        tl!("Replaced the clip with the EffectCraft composition")
+                    } else {
+                        tl!("Imported the EffectCraft composition")
+                    };
+                    self.toast = Some((v["openError"].as_str().map_or_else(|| done.to_string(), str::to_string), now));
+                    // the new movie and project are in the Media Browser's folder now
+                    panels::media_browser::refresh(ctx);
+                }
+                Err(e) => {
+                    self.ui.status = e.clone();
+                    self.toast = Some((e, now));
+                }
+            }
+        }
+        if let Some(text) = self.session.effectcraft_progress() {
+            self.ui.status = text;
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+        if !self.session.ec_links.is_empty() {
+            self.session.start_effectcraft_sync();
+            ctx.request_repaint_after(std::time::Duration::from_secs(2));
+        }
         if let Some(r) = self.session.poll_media_scan() {
             match r {
                 Ok(r) => {

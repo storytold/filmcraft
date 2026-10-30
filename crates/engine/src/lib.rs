@@ -18,6 +18,7 @@ pub mod color;
 pub mod commands;
 pub mod demo;
 pub mod doc_path;
+pub mod effectcraft_link;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
@@ -502,6 +503,21 @@ pub struct Session {
     pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
     /// The stamps being taken on a worker thread ([`Session::start_media_scan`]).
     pub media_scan: Option<media_watch::MediaScan>,
+    /// Clips whose footage is the render of an EffectCraft composition ([`effectcraft_link`]).
+    pub ec_links: Vec<effectcraft_link::EcLink>,
+    /// Renders of changed EffectCraft projects running on a worker thread.
+    pub ec_sync: Option<effectcraft_link::EcSync>,
+    /// Clip replacements rendering on worker threads.
+    pub ec_jobs: Vec<effectcraft_link::EcJob>,
+    /// EffectCraft projects imported as items whose composition is still rendering.
+    pub ec_imports: Vec<effectcraft_link::EcImport>,
+    /// Movies still being rendered for imported projects (their items aren't "missing").
+    pub ec_pending: std::collections::BTreeSet<String>,
+    /// The host polls [`Session::poll_effectcraft_jobs`]: importing an EffectCraft project then
+    /// renders in the background. Off (the default), it finishes the render before returning.
+    pub ec_background: bool,
+    /// The progress of the projects being rendered again, by project file (for the clip overlay).
+    pub ec_progress: Vec<(String, Arc<filmcraft_export::Progress>)>,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -595,6 +611,13 @@ impl Session {
             exec_depth: 0,
             media_stamps: Default::default(),
             media_scan: None,
+            ec_links: Vec::new(),
+            ec_sync: None,
+            ec_jobs: Vec::new(),
+            ec_imports: Vec::new(),
+            ec_pending: Default::default(),
+            ec_background: false,
+            ec_progress: Vec::new(),
         }
     }
 

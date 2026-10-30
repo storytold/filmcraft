@@ -25,6 +25,43 @@ pub enum Which {
     Program,
 }
 
+/// What the overlays on a clip being rendered by EffectCraft say (the timeline's and the monitors').
+pub(crate) fn effectcraft_overlay_text(fraction: f32, frames_flow: bool) -> String {
+    if frames_flow {
+        tlf!("EffectCraft: rendering {pct}%", pct = (fraction.clamp(0.0, 1.0) * 100.0).round() as u32)
+    } else {
+        tl!("EffectCraft: preparing…").to_string()
+    }
+}
+
+/// While EffectCraft renders a clip the monitor shows (the topmost one under the Program playhead,
+/// or the Source monitor's clip), a dim layer over the picture with what is happening and a wide
+/// progress bar: on a short clip the mark on the timeline is easy to miss.
+fn draw_effectcraft_progress(app: &FilmcraftApp, ui: &egui::Ui, pic: Rect, which: Which, time: Tick) {
+    let shown = match which {
+        Which::Program => app.session.active_sequence().and_then(|q| {
+            // the last video track is the topmost
+            q.video_tracks.iter().rev().filter_map(|tr| tr.item_at(time)).find_map(|it| app.session.effectcraft_clip_overlay(it.id, it.item))
+        }),
+        Which::Source => app.session.state.source_item.and_then(|item| app.session.effectcraft_clip_overlay(filmcraft_project::ClipId(u64::MAX), item)),
+    };
+    let Some((fraction, frames_flow)) = shown else { return };
+    let text = effectcraft_overlay_text(fraction, frames_flow);
+    if pic.width() < 40.0 || pic.height() < 24.0 {
+        return;
+    }
+    let p = ui.painter().with_clip_rect(pic.intersect(ui.clip_rect()));
+    p.rect_filled(pic, 0.0, Color32::from_black_alpha(150));
+    let bar_w = (pic.width() * 0.6).clamp(60.0, 560.0).min(pic.width() - 16.0);
+    let bar = Rect::from_center_size(pic.center() + vec2(0.0, 14.0), vec2(bar_w, 8.0));
+    // a solid panel, so the text reads over whatever is under it (the offline slate, a frame)
+    let panel = Rect::from_center_size(pic.center() + vec2(0.0, -2.0), vec2(bar_w + 48.0, 62.0)).intersect(pic);
+    p.rect_filled(panel, 8.0, Color32::from_black_alpha(232));
+    p.rect_filled(bar, 4.0, Color32::from_white_alpha(40));
+    p.rect_filled(Rect::from_min_max(bar.min, pos2(bar.min.x + bar.width() * fraction.clamp(0.0, 1.0), bar.max.y)), 4.0, app.tokens.accent);
+    p.text(pos2(pic.center().x, bar.min.y - 8.0), Align2::CENTER_BOTTOM, text, Tokens::ui(14.0), Color32::WHITE);
+}
+
 /// What the monitor's picture block draws this frame.
 struct PictureCtx {
     target: Target,
@@ -169,6 +206,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         ui.painter().line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
         ui.painter().line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
     }
+    draw_effectcraft_progress(app, ui, pic, which, time);
     if display != DisplayMode::Composite && !compare {
         let label = match display {
             DisplayMode::Composite => tl!("Composite"),
