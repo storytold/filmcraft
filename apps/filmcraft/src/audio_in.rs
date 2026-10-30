@@ -16,11 +16,13 @@ pub struct CpalIn {
     stop: Option<mpsc::Sender<()>>,
     worker: Option<std::thread::JoinHandle<()>>,
     error: Arc<Mutex<Option<String>>>,
+    /// The capture's error has been logged (by `stop`).
+    logged: bool,
 }
 
 impl CpalIn {
     pub fn new(host: &str) -> Self {
-        Self { host: host.to_string(), buf: Arc::default(), stop: None, worker: None, error: Arc::default() }
+        Self { host: host.to_string(), buf: Arc::default(), stop: None, worker: None, error: Arc::default(), logged: false }
     }
 }
 
@@ -48,10 +50,11 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Keep the first error of a capture. It is logged by [`CpalIn::stop`], not here: this runs on the
+/// capture callback, which must not wait on the logger's stderr and file writes.
 fn report_error(error: &Mutex<Option<String>>, message: String) {
     let mut error = lock(error);
     if error.is_none() {
-        eprintln!("filmcraft: audio input error: {message}");
         *error = Some(message);
     }
 }
@@ -115,6 +118,7 @@ impl AudioInput for CpalIn {
         self.stop();
         lock(&self.buf).clear();
         *lock(&self.error) = None;
+        self.logged = false;
         let (host_name, name) = (self.host.clone(), name.to_string());
         let buf = self.buf.clone();
         let error = self.error.clone();
@@ -209,6 +213,12 @@ impl AudioInput for CpalIn {
             && worker.join().is_err()
         {
             report_error(&self.error, "audio input worker panicked".into());
+        }
+        // the stream has stopped: log its first error once (`error()` keeps reporting it)
+        if !std::mem::replace(&mut self.logged, true)
+            && let Some(message) = lock(&self.error).clone()
+        {
+            log::warn!("audio input error: {message}");
         }
     }
 }

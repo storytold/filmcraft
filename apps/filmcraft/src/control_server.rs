@@ -36,17 +36,19 @@ fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> Rec
     // An inherited environment variable shares the credential with the owner's bridge process
     // without exposing it in command-line arguments, logs, or a shared discovery file.
     let Some(token) = token.filter(|t| t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit())) else {
-        eprintln!("filmcraft: control server disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)");
+        log::error!("control server disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)");
         return rx;
     };
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("filmcraft: control server failed to bind 127.0.0.1:{port}: {e}");
+            log::error!("control server failed to bind 127.0.0.1:{port}: {e}");
             return rx;
         }
     };
-    eprintln!("filmcraft: control server listening on 127.0.0.1:{port}");
+    // Through the logger (stderr + log file), never `eprintln!`: an agent that launched the app
+    // with a pipe on stderr and went away must not turn this line into a panic.
+    log::info!("control server listening on 127.0.0.1:{port}");
     std::thread::spawn(move || accept_loop(listener, tx, ctx, token));
     rx
 }
@@ -70,7 +72,7 @@ fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Con
             serve(stream, &tx, &ctx, &token);
         });
         if let Err(e) = spawned {
-            eprintln!("filmcraft: control server could not start a connection thread: {e}");
+            log::error!("control server could not start a connection thread: {e}");
         }
     }
 }
