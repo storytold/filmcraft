@@ -129,6 +129,14 @@ impl OggSource {
         &self.file
     }
 
+    /// The cache key for decoded Vorbis PCM, if this source holds Vorbis audio.
+    pub fn pcm_key(&self) -> Option<u64> {
+        match &self.kind {
+            Kind::Pcm { pcm_key, .. } => Some(*pcm_key),
+            _ => None,
+        }
+    }
+
     fn opus_packet(&self, st: &mut OpusState, head: &filmcraft_opus::OpusHead, timing: &OpusTiming, i: usize) -> crate::Result<Arc<Vec<Vec<f32>>>> {
         if let Some(p) = st.packets.get(&i) {
             return Ok(p.clone());
@@ -274,6 +282,14 @@ impl MediaSource for OggSource {
             }
         }
         Ok(out)
+    }
+}
+
+impl Drop for OggSource {
+    fn drop(&mut self) {
+        if let Kind::Pcm { pcm_key, .. } = &self.kind {
+            crate::audio::audio_cache().remove(pcm_key);
+        }
     }
 }
 

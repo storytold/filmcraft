@@ -182,6 +182,31 @@ fn vorbis_matches_ffmpeg() {
 }
 
 #[test]
+fn vorbis_drop_removes_pcm_cache_entry_without_invalidating_live_source() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let f = make(&ff, "ogg_vorbis.ogg");
+    let src1 = OggSource::open("s1.ogg", bytes(&f)).unwrap();
+    let src2 = OggSource::open("s2.ogg", bytes(&f)).unwrap();
+    let key1 = src1.pcm_key().expect("Vorbis source has pcm_key");
+    let key2 = src2.pcm_key().expect("Vorbis source has pcm_key");
+    assert_ne!(key1, key2);
+
+    assert!(filmcraft_codecs::audio_cache().get(&key1).is_some());
+    assert!(filmcraft_codecs::audio_cache().get(&key2).is_some());
+
+    drop(src1);
+    assert!(filmcraft_codecs::audio_cache().get(&key1).is_none());
+    assert!(filmcraft_codecs::audio_cache().get(&key2).is_some());
+
+    // src2 remains functional and cached
+    let buf = src2.audio(0, 100, 44_100).unwrap();
+    assert_eq!(buf.frames(), 100);
+
+    drop(src2);
+    assert!(filmcraft_codecs::audio_cache().get(&key2).is_none());
+}
+
+#[test]
 fn opened_through_open_bytes_and_robust_to_damage() {
     let ff = filmcraft_testkit::require_ffmpeg!();
     let f = make(&ff, "ogg_opus_music.opus");

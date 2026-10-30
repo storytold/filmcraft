@@ -1,9 +1,9 @@
 //! A byte-budgeted LRU cache of decoded/rendered frames, shared by monitors, thumbnails and export,
 //! and of decoded audio PCM, shared by every standalone audio source.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use filmcraft_frame::VideoFrame;
 
@@ -116,6 +116,7 @@ struct PcmEntry {
 
 struct AudioInner<K> {
     map: HashMap<K, PcmEntry>,
+    in_flight: HashSet<K>,
     bytes: usize,
     clock: u64,
     hits: u64,
@@ -128,12 +129,33 @@ struct AudioInner<K> {
 /// whose samples were evicted decodes its file again on the next read.
 pub struct AudioCache<K: Eq + Hash + Clone = u64> {
     inner: Mutex<AudioInner<K>>,
+    cvar: Condvar,
     budget: usize,
+}
+
+struct InFlightGuard<'a, K: Eq + Hash + Clone> {
+    cache: &'a AudioCache<K>,
+    key: K,
+    active: bool,
+}
+
+impl<'a, K: Eq + Hash + Clone> Drop for InFlightGuard<'a, K> {
+    fn drop(&mut self) {
+        if self.active {
+            let mut g = self.cache.inner.lock().unwrap_or_else(|e| e.into_inner());
+            g.in_flight.remove(&self.key);
+            self.cache.cvar.notify_all();
+        }
+    }
 }
 
 impl<K: Eq + Hash + Clone> AudioCache<K> {
     pub fn new(budget_bytes: usize) -> Self {
-        Self { inner: Mutex::new(AudioInner { map: HashMap::new(), bytes: 0, clock: 0, hits: 0, misses: 0 }), budget: budget_bytes }
+        Self {
+            inner: Mutex::new(AudioInner { map: HashMap::new(), in_flight: HashSet::new(), bytes: 0, clock: 0, hits: 0, misses: 0 }),
+            cvar: Condvar::new(),
+            budget: budget_bytes,
+        }
     }
 
     pub fn get(&self, k: &K) -> Option<Arc<Vec<Vec<f32>>>> {
@@ -154,9 +176,8 @@ impl<K: Eq + Hash + Clone> AudioCache<K> {
         }
     }
 
-    pub fn insert(&self, k: K, samples: Arc<Vec<Vec<f32>>>) {
+    fn insert_locked(&self, g: &mut AudioInner<K>, k: K, samples: Arc<Vec<Vec<f32>>>) {
         let bytes = samples.iter().map(Vec::len).sum::<usize>().saturating_mul(core::mem::size_of::<f32>());
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.clock += 1;
         let stamp = g.clock;
         if let Some(old) = g.map.insert(k.clone(), PcmEntry { samples, bytes, stamp }) {
@@ -181,19 +202,50 @@ impl<K: Eq + Hash + Clone> AudioCache<K> {
         }
     }
 
+    pub fn insert(&self, k: K, samples: Arc<Vec<Vec<f32>>>) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.in_flight.remove(&k);
+        self.insert_locked(&mut g, k, samples);
+        self.cvar.notify_all();
+    }
+
     pub fn get_or_insert_with<E>(&self, k: K, f: impl FnOnce() -> Result<Arc<Vec<Vec<f32>>>, E>) -> Result<Arc<Vec<Vec<f32>>>, E> {
-        if let Some(v) = self.get(&k) {
-            return Ok(v);
+        loop {
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            g.clock += 1;
+            let c = g.clock;
+            if let Some(e) = g.map.get_mut(&k) {
+                e.stamp = c;
+                let s = e.samples.clone();
+                g.hits += 1;
+                return Ok(s);
+            }
+            if g.in_flight.contains(&k) {
+                g = self.cvar.wait(g).unwrap_or_else(|e| e.into_inner());
+                continue;
+            }
+            g.misses += 1;
+            g.in_flight.insert(k.clone());
+            break;
         }
-        let v = f()?;
-        self.insert(k, v.clone());
-        Ok(v)
+
+        let mut guard = InFlightGuard { cache: self, key: k.clone(), active: true };
+        let samples = f()?;
+        guard.active = false;
+
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.in_flight.remove(&k);
+        self.insert_locked(&mut g, k, samples.clone());
+        self.cvar.notify_all();
+        Ok(samples)
     }
 
     pub fn clear(&self) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.map.clear();
+        g.in_flight.clear();
         g.bytes = 0;
+        self.cvar.notify_all();
     }
 
     /// (entries, bytes, hits, misses)
@@ -208,6 +260,8 @@ impl<K: Eq + Hash + Clone> AudioCache<K> {
         if let Some(e) = g.map.remove(k) {
             g.bytes = g.bytes.saturating_sub(e.bytes);
         }
+        g.in_flight.remove(k);
+        self.cvar.notify_all();
     }
 }
 
@@ -289,5 +343,103 @@ mod tests {
         assert!(c.get(&0).is_none());
         assert!(c.get(&1).is_some());
         assert_eq!(c.stats().1, 32);
+    }
+
+    #[test]
+    fn audio_get_or_insert_coalesces_concurrent_misses() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        let c = Arc::new(AudioCache::<u64>::new(1 << 20));
+        let decode_count = Arc::new(AtomicUsize::new(0));
+        let num_threads = 8;
+        let barrier = Arc::new(Barrier::new(num_threads));
+
+        let mut handles = Vec::new();
+        for _ in 0..num_threads {
+            let c = Arc::clone(&c);
+            let decode_count = Arc::clone(&decode_count);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                c.get_or_insert_with(42, || {
+                    decode_count.fetch_add(1, Ordering::SeqCst);
+                    thread::sleep(std::time::Duration::from_millis(20));
+                    Ok::<_, ()>(pcm(16))
+                })
+                .unwrap()
+            }));
+        }
+
+        let results: Vec<Arc<Vec<Vec<f32>>>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // Exactly one thread decoded
+        assert_eq!(decode_count.load(Ordering::SeqCst), 1);
+        // All threads received the identical Arc pointer
+        for res in &results[1..] {
+            assert!(Arc::ptr_eq(&results[0], res));
+        }
+
+        // Stats: 1 miss, 7 hits
+        let (entries, _bytes, hits, misses) = c.stats();
+        assert_eq!(entries, 1);
+        assert_eq!(misses, 1);
+        assert_eq!(hits, (num_threads - 1) as u64);
+    }
+
+    #[test]
+    fn audio_get_or_insert_failure_retries_on_waiters() {
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        #[allow(dead_code)]
+        #[derive(Debug)]
+        struct NonCloneError(usize);
+
+        let c = Arc::new(AudioCache::<u64>::new(1 << 20));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(2));
+
+        let mut handles = Vec::new();
+
+        // Thread 1 fails
+        {
+            let c = Arc::clone(&c);
+            let attempts = Arc::clone(&attempts);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                c.get_or_insert_with(99, || {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    thread::sleep(std::time::Duration::from_millis(20));
+                    Err::<Arc<Vec<Vec<f32>>>, _>(NonCloneError(1))
+                })
+            }));
+        }
+
+        // Thread 2 waits, then retries and succeeds
+        {
+            let c = Arc::clone(&c);
+            let attempts = Arc::clone(&attempts);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                // brief delay so thread 1 becomes in-flight leader
+                thread::sleep(std::time::Duration::from_millis(5));
+                c.get_or_insert_with(99, || {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, NonCloneError>(pcm(16))
+                })
+            }));
+        }
+
+        let res1 = handles.remove(0).join().unwrap();
+        let res2 = handles.remove(0).join().unwrap();
+
+        assert!(res1.is_err());
+        assert!(res2.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 }

@@ -1048,6 +1048,12 @@ impl MediaSource for AudioFileSource {
     }
 }
 
+impl Drop for AudioFileSource {
+    fn drop(&mut self) {
+        audio_cache().remove(&self.key);
+    }
+}
+
 pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<std::result::Result<SharedSource, MediaError>> {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     if !matches!(ext.as_str(), "mp3" | "mp2" | "aac" | "flac" | "ogg" | "oga" | "aif" | "aiff" | "aifc") {
@@ -1402,5 +1408,26 @@ mod gapless_tests {
         let src = AudioFileSource::decode("tagged.mp3", Arc::from(tagged_mp3())).unwrap();
         let pcm = audio_cache().get(&src.key).expect("open inserted the PCM into the audio cache");
         assert_eq!(pcm[0].len(), AUDIO_FRAMES * 1152 - (576 + 529));
+    }
+
+    #[test]
+    fn audio_file_source_drop_removes_cache_entry_without_invalidating_live_source() {
+        let src1 = AudioFileSource::decode("tagged1.mp3", Arc::from(tagged_mp3())).unwrap();
+        let src2 = AudioFileSource::decode("tagged2.mp3", Arc::from(tagged_mp3())).unwrap();
+        let key1 = src1.key;
+        let key2 = src2.key;
+        assert_ne!(key1, key2);
+        assert!(audio_cache().get(&key1).is_some());
+        assert!(audio_cache().get(&key2).is_some());
+
+        // Dropping src1 removes its entry, but src2 remains cached and playable
+        drop(src1);
+        assert!(audio_cache().get(&key1).is_none());
+        assert!(audio_cache().get(&key2).is_some());
+        let buf = src2.audio(0, 100, 48_000).unwrap();
+        assert_eq!(buf.frames(), 100);
+
+        drop(src2);
+        assert!(audio_cache().get(&key2).is_none());
     }
 }

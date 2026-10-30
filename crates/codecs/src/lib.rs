@@ -40,7 +40,7 @@ pub mod y4m;
 use std::sync::{Arc, RwLock};
 
 pub use apv::ApvSource;
-pub use audio::AudioFileSource;
+pub use audio::{AudioFileSource, audio_cache};
 pub use avi::AviSource;
 pub use gop::{FRAME_BUDGET, GopStats, cached_bytes, gop_stats, live_decoders};
 pub use mkv::MkvSource;
