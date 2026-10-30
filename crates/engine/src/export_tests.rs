@@ -923,3 +923,13 @@ fn max_threads_reaches_the_export_settings() {
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": -1})).is_err(), "a negative count is refused");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
 }
+
+#[test]
+fn common_aliases_count_as_the_format_extension() {
+    use crate::export_tools::extension_matches;
+    for (ext, alias) in [("tif", "tiff"), ("jpg", "jpeg"), ("aif", "aiff"), ("m4a", "aac")] {
+        assert!(extension_matches(ext, alias) && extension_matches(ext, &alias.to_uppercase()), "{alias} is {ext}");
+    }
+    assert!(extension_matches("mp4", "MP4"));
+    assert!(!extension_matches("mp4", "mov") && !extension_matches("tif", "jpeg") && !extension_matches("tiff", "tif"));
+}

@@ -1,18 +1,37 @@
 use super::{
-    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
-    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, pos2, vec2,
+    Align2, AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
+    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, output_path,
+    pos2, set_output_path, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
 // middle: settings
 // ---------------------------------------------------------------------------------------------
 
-const LABEL_W: f32 = 132.0;
+const LABEL_W: f32 = 140.0;
+/// Height of the fields, dropdowns and checkboxes in Export mode.
+const ROW_H: f32 = 28.0;
+
+/// Taller click targets and even row spacing for the controls added to `ui`.
+pub(super) fn roomy(ui: &mut egui::Ui) {
+    let s = ui.spacing_mut();
+    s.interact_size.y = ROW_H;
+    s.item_spacing = vec2(8.0, 6.0);
+    s.button_padding = vec2(8.0, 3.0);
+}
 
 /// A labelled settings row.
 fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    labelled(ui, t, label, LABEL_W, add)
+}
+
+/// A row with its label in a column `width` wide.
+pub(super) fn labelled<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(LABEL_W, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim).size(12.0)).truncate());
+        ui.allocate_ui_with_layout(vec2(width, ROW_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_size(vec2(width, ROW_H));
+            ui.add(egui::Label::new(egui::RichText::new(label).color(t.text_dim).size(12.5)).truncate());
+        });
         add(ui)
     })
     .inner
@@ -66,10 +85,42 @@ fn opts(labels: &[&str]) -> Vec<(String, bool)> {
     labels.iter().map(|l| (l.to_string(), true)).collect()
 }
 
-fn section(ui: &mut egui::Ui, reg: &mut Reg, open: &mut Vec<String>, key: &str, title: &str, t: &Tokens) -> bool {
+/// A collapsible section header (chevron and title on a raised bar). `switch` is the section's own
+/// on/off where the settings have one (automation id, label, value): a labelled switch at the bar's
+/// right end.
+fn section(ui: &mut egui::Ui, reg: &mut Reg, open: &mut Vec<String>, key: &str, title: &str, t: &Tokens, switch: Option<(&str, &str, &mut bool)>) -> bool {
     let is_open = open.iter().any(|k| k == key);
-    let (r, now) = crate::widgets::section_header(ui, egui::Id::unique(("export-sec", key)), title, is_open, t, true);
-    reg.add(format!("export.section.{key}"), r.rect, title);
+    ui.add_space(4.0);
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
+    let p = ui.painter();
+    p.rect_filled(r, 5.0, if resp.hovered() { t.hover } else { t.row_alt });
+    let chev = Rect::from_center_size(pos2(r.min.x + 14.0, r.center().y), vec2(12.0, 12.0));
+    crate::icons::paint(p, chev, if is_open { crate::icons::Icon::ChevronDown } else { crate::icons::Icon::ChevronRight }, t.text_dim);
+    p.text(pos2(r.min.x + 28.0, r.center().y), Align2::LEFT_CENTER, title, Tokens::semibold(13.5), t.text);
+    reg.add(format!("export.section.{key}"), r, title);
+    if let Some((id, label, on)) = switch {
+        let sw = Rect::from_min_size(pos2(r.max.x - 42.0, r.center().y - 8.0), vec2(30.0, 16.0));
+        let sresp = ui.interact(sw.expand(4.0), egui::Id::unique(("export-switch", key)), Sense::click());
+        let p = ui.painter();
+        let rad = sw.height() / 2.0;
+        if *on {
+            p.rect_filled(sw, rad, t.switch_fill);
+            p.circle_filled(pos2(sw.max.x - rad, sw.center().y), rad - 3.0, t.switch_knob);
+        } else {
+            p.rect_stroke(sw, rad, egui::Stroke::new(1.5, if sresp.hovered() { t.control_handle_dim } else { t.switch_border }), egui::StrokeKind::Inside);
+            p.circle_stroke(pos2(sw.min.x + rad, sw.center().y), rad - 3.0, egui::Stroke::new(1.5, t.switch_fill));
+        }
+        p.text(pos2(sw.min.x - 8.0, sw.center().y), Align2::RIGHT_CENTER, label, Tokens::ui(12.0), t.text_dim);
+        reg.add(id, sw, label);
+        if sresp.clicked() {
+            *on = !*on;
+        }
+        sresp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Switch, sresp.enabled(), *on, label));
+    }
+    let now = if resp.clicked() { !is_open } else { is_open };
+    if now {
+        ui.add_space(2.0);
+    }
     if now != is_open {
         if now {
             open.push(key.into());
@@ -113,8 +164,17 @@ pub(super) fn check(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut bool, la
 }
 
 fn text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut String, hint: &str) {
-    let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(v).hint_text(hint).desired_width(f32::INFINITY)), hint);
+    let r = crate::widgets::accessible_name(ui.add(field(v, hint, ui)), hint);
     reg.add(id, r.rect, hint);
+}
+
+/// A full-width single-line field as tall as the other controls around it.
+fn field<'a>(v: &'a mut String, hint: &str, ui: &egui::Ui) -> egui::TextEdit<'a> {
+    egui::TextEdit::singleline(v)
+        .hint_text(hint)
+        .desired_width(f32::INFINITY)
+        .min_size(vec2(0.0, ui.spacing().interact_size.y))
+        .align(egui::Align2::LEFT_CENTER)
 }
 
 /// A text field over a value the caller fills in again every frame (a file name taken from a path,
@@ -124,7 +184,7 @@ fn text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut String, hint: &str) 
 pub(super) fn draft_text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, stored: &str, hint: &str) -> Option<String> {
     let draft_id = egui::Id::unique(("export-draft", id));
     let mut v = ui.data(|m| m.get_temp::<String>(draft_id)).unwrap_or_else(|| stored.to_string());
-    let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut v).hint_text(hint).desired_width(f32::INFINITY)), hint);
+    let r = crate::widgets::accessible_name(ui.add(field(&mut v, hint, ui)), hint);
     reg.add(id, r.rect, hint);
     if r.has_focus() {
         ui.data_mut(|m| m.insert_temp(draft_id, v.clone()));
@@ -153,8 +213,8 @@ pub(super) fn location_tail(s: &str) -> (&str, bool) {
 
 /// The output folder as a link (folder icon, accent colour, underlined); the caller opens the save
 /// dialog on a click. A path too long for the row loses its start, so the folder's name stays.
-pub(super) fn location_link(ui: &mut egui::Ui, t: &Tokens, folder: &str) -> egui::Response {
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+pub(crate) fn location_link(ui: &mut egui::Ui, t: &Tokens, folder: &str) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ui.spacing().interact_size.y.max(22.0)), Sense::click());
     let col = if resp.hovered() { t.accent_hover } else { t.accent };
     crate::icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 8.0, r.center().y), vec2(14.0, 14.0)), crate::icons::Icon::Folder, col);
     let room = (r.width() - 22.0).max(0.0);
@@ -226,25 +286,21 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     let seq_hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
     let all_presets = app.session.export_presets.all();
     let favs: Vec<String> = all_presets.iter().filter(|p| app.session.export_presets.is_favorite(&p.name)).map(|p| p.name.clone()).collect();
-    let mut pick_folder = false;
+    let mut browse = false;
+    let mut typed_name: Option<String> = None;
     let mut pick_overlay = false;
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 10.0))).id_salt("export-settings"));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(16.0, 12.0))).id_salt("export-settings"));
     let ex = &mut app.ui.export;
     egui::ScrollArea::vertical().id_salt("export-settings-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
-        ui.label(egui::RichText::new(tl!("Media File")).strong().size(14.0));
-        ui.add_space(6.0);
-        row(ui, &t, tl!("File Name"), |ui| {
-            if let Some(v) = draft_text(ui, &mut reg, "export.fileName", &ex.file_name, tl!("Sequence name")) {
-                ex.file_name = v;
-            }
-        });
+        roomy(ui);
+        ui.label(egui::RichText::new(tl!("Media File")).font(Tokens::semibold(16.0)).color(t.text));
+        ui.add_space(8.0);
+        row(ui, &t, tl!("File Name"), |ui| typed_name = draft_text(ui, &mut reg, "export.fileName", &ex.file_name, tl!("Sequence name")));
         row(ui, &t, tl!("Location"), |ui| {
-            let r = ui.small_button("…");
-            reg.add("export.location.browse", r.rect, "Choose folder");
-            pick_folder = r.clicked();
-            if let Some(v) = draft_text(ui, &mut reg, "export.location", &ex.location, tl!("Folder")) {
-                ex.location = v;
-            }
+            let r = location_link(ui, &t, &ex.location);
+            reg.add("export.location", r.rect, ex.location.clone());
+            reg.add("export.location.browse", r.rect, "Choose location");
+            browse = r.clicked();
         });
         // Preset: favourites, then every preset by category, then More presets…
         row(ui, &t, tl!("Preset"), |ui| {
@@ -313,7 +369,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
         }
         ui.add_space(8.0);
         let s = &mut ex.settings;
-        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
+        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t, None) {
             video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
         }
         if (s.has_audio()
@@ -323,11 +379,12 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
             || s.format.is_mxf())
             && !s.is_image_sequence()
             && s.format != Format::Gif
-            && section(ui, &mut reg, &mut ex.open_sections, "audio", tl!("Audio"), &t)
+            // the section's switch is Export Audio; audio-only formats always have audio
+            && section(ui, &mut reg, &mut ex.open_sections, "audio", tl!("Audio"), &t, s.has_video().then_some(("export.audio.include", tl!("Export Audio"), &mut s.include_audio)))
         {
             audio_section(ui, &mut reg, s, &t, seq_sr);
         }
-        if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t) {
+        if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t, None) {
             row(ui, &t, tl!("Multiplexer"), |ui| {
                 let cur = if s.multiplexer == Multiplexer::Mp4 { "MP4" } else { "QuickTime" };
                 if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), 160.0) {
@@ -335,7 +392,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                 }
             });
         }
-        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "captions", tl!("Captions"), &t) {
+        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "captions", tl!("Captions"), &t, None) {
             if !has_captions {
                 ui.label(egui::RichText::new(tl!("The sequence has no caption track.")).color(t.text_dim).size(11.5));
             }
@@ -363,11 +420,11 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                 });
             }
         }
-        if section(ui, &mut reg, &mut ex.open_sections, "effects", tl!("Effects"), &t) {
+        if section(ui, &mut reg, &mut ex.open_sections, "effects", tl!("Effects"), &t, None) {
             pick_overlay = effects_section(ui, &mut reg, s, &t);
         }
         if matches!(s.format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
-            && section(ui, &mut reg, &mut ex.open_sections, "metadata", tl!("Metadata"), &t)
+            && section(ui, &mut reg, &mut ex.open_sections, "metadata", tl!("Metadata"), &t, None)
         {
             let m = &mut s.metadata;
             for (key, label, v) in [
@@ -388,10 +445,19 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     if open_manager {
         app.ui.export.manager = Some(PresetManager { selected: app.ui.export.preset.clone(), ..Default::default() });
     }
-    if pick_folder {
-        app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {
-            if let Some(d) = paths.into_iter().next() {
-                app.ui.export.location = d;
+    if let Some(v) = typed_name {
+        if v.contains(['/', '\\']) {
+            set_output_path(app, &v);
+        } else {
+            app.ui.export.file_name = v;
+        }
+    }
+    if browse {
+        let ext = app.ui.export.settings.extension();
+        let seed = output_path(&app.ui.export);
+        app.pick_ui(FileDialog::save_as(app.ui.export.settings.format.label(), &[ext], &seed), |app, paths| {
+            if let Some(p) = paths.into_iter().next() {
+                set_output_path(app, &p);
             }
         });
     }
@@ -519,7 +585,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             } else if let Some(bpp) = s.adaptive_bitrate {
                 row(ui, t, tl!("Target Bitrate"), |ui| {
                     ui.label(egui::RichText::new(tlf!("Adaptive ({bpp} bits per pixel)", bpp)).size(12.0));
-                    let r = ui.small_button(tl!("Set"));
+                    let r = ui.button(tl!("Set"));
                     reg.add("export.video.fixedBitrate", r.rect, "Set a fixed bitrate");
                     if r.clicked() {
                         s.adaptive_bitrate = None;
@@ -634,11 +700,8 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
 
 fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_sr: u32) {
     let audio_only = !s.has_video();
-    if !audio_only {
-        row(ui, t, "", |ui| check(ui, reg, "export.audio.include", &mut s.include_audio, tl!("Export Audio")));
-        if !s.include_audio {
-            return;
-        }
+    if !audio_only && !s.include_audio {
+        return;
     }
     row(ui, t, tl!("Audio Format"), |ui| {
         let fixed = audio_only || s.format.is_mxf();
@@ -744,11 +807,11 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
     let video = s.has_video();
     let fx = &mut s.effects;
     if video {
-        check(ui, reg, "export.effects.imageOverlay", &mut fx.image_overlay.enabled, tl!("Image Overlay"));
+        row(ui, t, "", |ui| check(ui, reg, "export.effects.imageOverlay", &mut fx.image_overlay.enabled, tl!("Image Overlay")));
         if fx.image_overlay.enabled {
             let o = &mut fx.image_overlay;
             row(ui, t, tl!("Image"), |ui| {
-                let r = ui.small_button(tl!("Browse…"));
+                let r = ui.button(tl!("Browse…"));
                 reg.add("export.effects.imageOverlay.browse", r.rect, "Browse…");
                 browse = r.clicked();
                 text(ui, reg, "export.effects.imageOverlay.path", &mut o.path, tl!("PNG or JPEG file"));
@@ -761,15 +824,15 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
                 (o.size_percent, o.opacity) = (sz as f32, op as f32);
             });
         }
-        check(ui, reg, "export.effects.nameOverlay", &mut fx.name_overlay.enabled, tl!("Name Overlay"));
+        row(ui, t, "", |ui| check(ui, reg, "export.effects.nameOverlay", &mut fx.name_overlay.enabled, tl!("Name Overlay")));
         if fx.name_overlay.enabled {
             text_overlay(ui, reg, "nameOverlay", &mut fx.name_overlay, t, tl!("Name"));
         }
-        check(ui, reg, "export.effects.timecodeOverlay", &mut fx.timecode_overlay.enabled, tl!("Timecode Overlay"));
+        row(ui, t, "", |ui| check(ui, reg, "export.effects.timecodeOverlay", &mut fx.timecode_overlay.enabled, tl!("Timecode Overlay")));
         if fx.timecode_overlay.enabled {
             text_overlay(ui, reg, "timecodeOverlay", &mut fx.timecode_overlay, t, tl!("Prefix"));
         }
-        check(ui, reg, "export.effects.videoLimiter", &mut fx.video_limiter.enabled, tl!("Video Limiter"));
+        row(ui, t, "", |ui| check(ui, reg, "export.effects.videoLimiter", &mut fx.video_limiter.enabled, tl!("Video Limiter")));
         if fx.video_limiter.enabled {
             row(ui, t, tl!("Luma Min / Max"), |ui| {
                 let (mut lo, mut hi) = (fx.video_limiter.min_percent as f64, fx.video_limiter.max_percent as f64);
@@ -780,7 +843,7 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
         }
     }
     if audio {
-        check(ui, reg, "export.effects.loudness", &mut fx.loudness.enabled, tl!("Loudness Normalization"));
+        row(ui, t, "", |ui| check(ui, reg, "export.effects.loudness", &mut fx.loudness.enabled, tl!("Loudness Normalization")));
         if fx.loudness.enabled {
             row(ui, t, tl!("Target Loudness"), |ui| {
                 drag(

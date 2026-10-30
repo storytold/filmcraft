@@ -200,22 +200,25 @@ fn a_panel_folder_arrives_in_its_open_dialog_and_nowhere_once_it_is_closed() {
 
 #[test]
 fn export_location_browse_works_with_the_runner_and_with_synchronous_pickers() {
-    // runner: the folder arrives later
+    // runner: the save dialog's path arrives later and sets the folder and the file name
     let mut d = Driver::new(true);
     d.ok("ui.set", json!({"mode": "export"}));
     d.frames(3);
     d.click("export.location.browse");
-    let (_, answer) = d.asked();
-    answer.send(vec!["/tmp/exports-a".into()]).unwrap();
+    let (dialog, answer) = d.asked();
+    assert!(matches!(dialog, FileDialog::SaveAs { .. }), "{dialog:?}");
+    answer.send(vec!["/tmp/exports-a/Cut A.mp4".into()]).unwrap();
     d.frames(2);
     assert_eq!(d.app().ui.export.location, "/tmp/exports-a");
+    assert_eq!(d.app().ui.export.file_name, "Cut A");
 
     // synchronous picker (no runner, as on macOS / Windows / other hosts): still filled in
     let mut d = Driver::new(false);
-    d.app().hooks.pick_folder = Some(Box::new(|| Some("/tmp/exports-b".into())));
+    d.app().hooks.pick_save_as = Some(Box::new(|_, _, _| Some("/tmp/exports-b/Cut B.mp4".into())));
     d.ok("ui.set", json!({"mode": "export"}));
     d.frames(3);
     d.click("export.location.browse");
     assert_eq!(d.app().ui.export.location, "/tmp/exports-b");
+    assert_eq!(d.app().ui.export.file_name, "Cut B");
     assert!(!d.app().native_dialog_open());
 }

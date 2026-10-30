@@ -1,5 +1,5 @@
 use super::settings::{draft_text, location_link};
-use super::{Align2, Color32, DEFAULT_PRESET, FilmcraftApp, Reg, Sense, Tokens, builtin_presets, json, pos2, preset_key, vec2};
+use super::{Align2, Color32, DEFAULT_PRESET, FilmcraftApp, Reg, Sense, Tokens, builtin_presets, json, known_ext, pos2, preset_key, vec2};
 
 // ---------------------------------------------------------------------------------------------
 // Quick Export (header)
@@ -26,17 +26,15 @@ fn quick_file(app: &FilmcraftApp, path: &str, seq_name: &str, ext: &str) -> Opti
     let dir = if folder { Some(p) } else { p.parent() }.filter(|d| !d.as_os_str().is_empty());
     let name = if folder { None } else { p.file_name().and_then(std::ffi::OsStr::to_str) }.filter(|n| !n.trim().is_empty());
     let cur = name.and_then(|n| std::path::Path::new(n).extension()).and_then(std::ffi::OsStr::to_str).unwrap_or("");
-    if dir.is_some() && name.is_some() && cur.eq_ignore_ascii_case(ext) {
+    if dir.is_some() && name.is_some() && filmcraft_engine::export_tools::extension_matches(ext, cur) {
         return None;
     }
     let file = match name {
         // Sequence names come from the project, not from this Quick Export interaction. Keep
         // metadata in one filename component before joining it to the selected/default folder.
         None => format!("{}.{}", filmcraft_engine::export_tools::file_safe(seq_name), ext),
-        Some(n) if cur.eq_ignore_ascii_case(ext) => n.to_string(),
-        Some(n) if !cur.is_empty() && app.session.export_presets.all().iter().any(|x| x.settings.extension().eq_ignore_ascii_case(cur)) => {
-            std::path::Path::new(n).with_extension(ext).to_string_lossy().to_string()
-        }
+        Some(n) if filmcraft_engine::export_tools::extension_matches(ext, cur) => n.to_string(),
+        Some(n) if known_ext(app, cur) => std::path::Path::new(n).with_extension(ext).to_string_lossy().to_string(),
         Some(n) => format!("{n}.{ext}"),
     };
     let dir = dir.map(std::path::Path::to_path_buf).unwrap_or_else(|| filmcraft_engine::export_tools::default_export_dir(&app.session));
