@@ -65,6 +65,76 @@ fn export_without_wait_says_where_to_poll() {
     assert!(r.get("poll").is_none() && r["result"].is_object(), "{r}");
 }
 
+/// #2793: an export over a file the project uses as media is refused, however its path is
+/// spelled, and the file is left as it was (the export would read the footage it overwrites).
+#[test]
+fn an_export_over_the_projects_own_media_is_refused() {
+    let mut s = demo();
+    let dir = Scratch::new("own-media");
+    let clip = dir.path("clip.wav");
+    let range = json!({"format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.25, "wait": true});
+    let with_path = |path: &str| {
+        let mut p = range.clone();
+        p["path"] = json!(path);
+        p
+    };
+    s.execute("file.exportMedia", with_path(&clip)).unwrap();
+    s.execute("file.import", json!({"paths": [clip]})).unwrap();
+    let before = std::fs::read(&clip).unwrap();
+    let respelled = Path::new(&dir.path(".")).join("clip.wav").to_string_lossy().to_string();
+    for path in [clip.as_str(), respelled.as_str()] {
+        let e = s.execute("file.exportMedia", with_path(path)).unwrap_err().to_string();
+        assert!(e.contains("media of “clip.wav”"), "{path}: {e}");
+    }
+    assert!(std::fs::read(&clip).unwrap() == before, "the media file changed");
+    // another file in the same folder still exports
+    s.execute("file.exportMedia", with_path(&dir.path("other.wav"))).unwrap();
+
+    // a queued export is checked against the project as it is when the item starts, not only
+    // against the snapshot it renders
+    let later = dir.path("later.wav");
+    s.execute("file.exportMedia", with_path(&later)).unwrap();
+    let mut queued = with_path(&later);
+    queued.as_object_mut().unwrap().remove("wait");
+    s.execute("export.queue.add", queued).unwrap();
+    s.execute("file.import", json!({"paths": [later]})).unwrap();
+    let before = std::fs::read(&later).unwrap();
+    s.execute("export.queue.start", json!({"wait": true})).unwrap();
+    let item = queue(&mut s).into_iter().next().unwrap();
+    assert_eq!(item["status"], json!("failed"), "{item}");
+    assert!(item["error"].as_str().unwrap().contains("media of"), "{item}");
+    assert!(std::fs::read(&later).unwrap() == before, "the queued export changed the media file");
+
+    // an image sequence is refused when one of the frames it would write is media
+    let mut frames = range.clone();
+    frames["format"] = json!("png");
+    frames["path"] = json!(dir.path("shot.png"));
+    s.execute("file.exportMedia", frames.clone()).unwrap();
+    let frame = dir.path("shot001.png");
+    s.execute("file.import", json!({"paths": [frame]})).unwrap();
+    let before = std::fs::read(&frame).unwrap();
+    let e = s.execute("file.exportMedia", frames.clone()).unwrap_err().to_string();
+    assert!(e.contains("media of"), "{e}");
+    assert!(std::fs::read(&frame).unwrap() == before, "the frame changed");
+    // the same name in other case is the same file only where the file system says so
+    // (macOS, Windows), and is refused exactly there
+    let case_blind = Path::new(&dir.path("SHOT001.PNG")).exists();
+    frames["path"] = json!(dir.path("Shot.png"));
+    let r = s.execute("file.exportMedia", frames.clone());
+    assert_eq!(r.is_err(), case_blind, "{r:?}");
+    assert!(std::fs::read(&frame).unwrap() == before, "the frame changed");
+    // so is a frame name that leads to the media another way: here a link the export would
+    // write through
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&frame, dir.path("Take001.png")).unwrap();
+        frames["path"] = json!(dir.path("Take.png"));
+        let e = s.execute("file.exportMedia", frames).unwrap_err().to_string();
+        assert!(e.contains("media of"), "{e}");
+        assert!(std::fs::read(&frame).unwrap() == before, "the frame changed");
+    }
+}
+
 /// A scratch directory under the workspace `target/`, removed when dropped.
 struct Scratch(PathBuf);
 

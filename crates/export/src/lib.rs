@@ -109,6 +109,9 @@ pub struct Progress {
     pub loudness: Mutex<Option<LoudnessReport>>,
     /// Readings of `done` over time, for [`Progress::eta`].
     pace: Mutex<pace::Pace>,
+    /// The export is rendered to a staging file: it is finished once that file has the
+    /// destination's name, not when the encoder is done ([`export`]).
+    staged: AtomicBool,
 }
 
 impl Progress {
@@ -136,6 +139,15 @@ impl Progress {
     }
     fn set_status(&self, s: impl Into<String>) {
         *self.status.lock().unwrap_or_else(PoisonError::into_inner) = s.into();
+    }
+
+    /// The export is done: finished, with how long it took (held back while the output is still
+    /// a staging file).
+    fn set_done(&self, secs: f64) {
+        if !self.staged.load(Ordering::Relaxed) {
+            self.finished.store(true, Ordering::Relaxed);
+            self.set_status(format!("Done in {secs:.1}s"));
+        }
     }
 }
 

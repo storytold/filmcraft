@@ -27,7 +27,7 @@ use std::sync::atomic::Ordering;
 
 use filmcraft_export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_export::{BitrateMode, ExportPreset, ExportSettings, Format, GpuRendering, HardwareEncoding};
-use filmcraft_project::{ItemId, Project};
+use filmcraft_project::{ItemId, ItemKind, MediaRef, Project};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -501,6 +501,15 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         let services = s.services.clone();
         settings.sink = Some(filmcraft_export::OutputSink(Arc::new(move |path: &str, data: Vec<u8>| services.write_file(path, &data))));
     }
+    // A queued item renders a snapshot of the project: media imported since then counts too.
+    if !s.services.export_in_memory()
+        && let Some(name) = media_at(&project, &settings).or_else(|| media_at(&s.project, &settings))
+    {
+        return Err(EngineError::Other(format!(
+            "exporting to {} would write over the media of “{name}” in this project, footage the export reads. Choose another file.",
+            settings.path
+        )));
+    }
     if let Some(dir) = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty() && !s.services.export_in_memory()) {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -536,6 +545,43 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         std::thread::Builder::new().name("filmcraft-export".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
     }
     Ok(id)
+}
+
+/// The name of the project item whose media or proxy file the export would write over, if any
+/// (#2793): the destination itself, or for image sequences and MXF OP-Atom the numbered frames and
+/// `_A<n>` audio files written beside it ([`filmcraft_export::image_sequence_path`],
+/// [`filmcraft_export::opatom_audio_paths`]). Paths are compared canonically.
+fn media_at(project: &Project, settings: &ExportSettings) -> Option<String> {
+    let dest = Path::new(&settings.path);
+    let dir = std::fs::canonicalize(dest.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."))).ok()?;
+    let target = std::fs::canonicalize(dest).ok();
+    let stem = dest.file_stem()?.to_str()?;
+    let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("png");
+    // A media file named like an output (a number, then `suffix`, any case) stands for the path the
+    // export gives that number; the two are compared canonically, so a case-insensitive file system
+    // matches `Shot001.png` to `shot001.png` and a case-sensitive one keeps them apart.
+    let generated = |name: &str, file: &Path, infix: &str, suffix: &str, min: usize| {
+        let cut = name.len().saturating_sub(suffix.len());
+        let (Some(head), Some(tail)) = (name.get(..cut), name.get(cut..)) else { return false };
+        let Some(n) = head.get(head.trim_end_matches(|c: char| c.is_ascii_digit()).len()..) else { return false };
+        tail.eq_ignore_ascii_case(suffix) && n.len() >= min && std::fs::canonicalize(dir.join(format!("{stem}{infix}{n}{suffix}"))).is_ok_and(|c| c == file)
+    };
+    let written = |file: &Path| {
+        if target.as_deref() == Some(file) {
+            return true;
+        }
+        let Some(name) = file.file_name().and_then(|n| n.to_str()).filter(|_| file.parent() == Some(dir.as_path())) else { return false };
+        match settings.format {
+            f if f.is_image_sequence() => generated(name, file, "", &format!(".{ext}"), 3),
+            Format::MxfOpAtom => generated(name, file, "_A", ".mxf", 1),
+            _ => false,
+        }
+    };
+    project.items.values().find_map(|item| {
+        let ItemKind::Media(m) = &item.kind else { return None };
+        let mut files = std::iter::once(&m.media).chain(m.proxy.as_ref());
+        files.any(|f| matches!(f, MediaRef::File { path } if std::fs::canonicalize(path).is_ok_and(|p| written(&p)))).then(|| item.name.clone())
+    })
 }
 
 /// Last-resort guard for a background job body (export, previews, proxies, …): a panic marks the

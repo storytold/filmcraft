@@ -518,8 +518,7 @@ impl Exporter {
         let secs = self.t0.elapsed().as_secs_f64();
         let nframes = self.frames();
         if !self.settings.part_of_batch {
-            progress.finished.store(true, Ordering::Relaxed);
-            progress.set_status(format!("Done in {secs:.1}s"));
+            progress.set_done(secs);
         }
         Ok(Step::Done(Report {
             path: self.settings.path.clone(),
