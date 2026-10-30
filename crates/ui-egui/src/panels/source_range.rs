@@ -98,13 +98,12 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
         (ids[1], "Drag In point", RangeEdge::In, inside),
         (ids[2], "Drag Out point", RangeEdge::Out, outside),
     ] {
-        if which == Which::Program
-            && match edge {
-                RangeEdge::In => view.mark_in.is_none(),
-                RangeEdge::Out => view.mark_out.is_none(),
-                RangeEdge::Move => view.mark_in.is_none() || view.mark_out.is_none(),
-            }
-        {
+        // Source keeps its In/Out handles at the clip ends, but no monitor has a movable band until both marks exist
+        if match edge {
+            RangeEdge::In => which == Which::Program && view.mark_in.is_none(),
+            RangeEdge::Out => which == Which::Program && view.mark_out.is_none(),
+            RangeEdge::Move => view.mark_in.is_none() || view.mark_out.is_none(),
+        } {
             continue;
         }
         if (edge == RangeEdge::In && !shows(selected.start)) || (edge == RangeEdge::Out && !shows(selected.end())) {
