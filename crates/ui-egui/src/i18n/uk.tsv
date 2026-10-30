@@ -311,6 +311,7 @@
 	Show Active Caption Tracks Only	Показати лише активні доріжки субтитрів
 	Show All Caption Tracks	Показати всі доріжки субтитрів
 	Show All Marker Colors	Показати всі кольори маркерів
+	Show Duplicate Frame Markers	Показати маркери повторюваних кадрів
 	Show Guides	Показати напрямні
 	Show Rulers	Показати лінійки
 	Show Through Edits	Показати розрізи без зміни кадру
@@ -320,6 +321,7 @@
 	Source	Джерело
 	Source Settings…	Налаштування джерела…
 	Speed/Duration…	Швидкість/тривалість…
+	Maintain Audio Pitch	Зберігати висоту звуку
 	Synchronize…	Синхронізувати…
 	System Compatibility Report…	Звіт про сумісність системи…
 	Tan	Світло-коричневий

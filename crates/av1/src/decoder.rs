@@ -17,12 +17,26 @@ use crate::cdf::Cdfs;
 use crate::frame::FrameBuf;
 use crate::header::{FilmGrainParams, FrameHeader, HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, SequenceHeader, default_gm_params};
 use crate::par::Pool;
-use crate::spec_tables::*;
+use crate::spec_tables::{
+    ALTREF_FRAME, ALTREF2_FRAME, BWDREF_FRAME, DEFAULT_INTRA_FRAME_Y_MODE_CDF, DIV_MULT, GOLDEN_FRAME, INTRA_FRAME, INTRA_ONLY_FRAME, KEY_FRAME, LAST_FRAME,
+    LAST2_FRAME, MAX_FRAME_DISTANCE, MAX_OFFSET_HEIGHT, MAX_OFFSET_WIDTH, MFMV_STACK_SIZE, NUM_REF_FRAMES, PRIMARY_REF_NONE, REFMVS_LIMIT, REFS_PER_FRAME,
+};
 use crate::state::{FrameShared, FrameState, TileState};
 use crate::stats::{DecodeStats, Stage, Timer};
 use crate::tile::TileDecoder;
 use crate::{Error, Picture, Result};
 
+/// Largest accepted frame: the AV1 level 6.x limits (Annex A: MaxHSize 16384, MaxVSize 8704, MaxPicSize
+/// 35 651 584 luma samples; level 6.3 is the highest defined). The sequence header allows 65536 x 65536
+/// (gigabytes of buffers), so nothing larger than a level 6.3 frame is decoded.
+const MAX_FRAME_WIDTH: u32 = 16384;
+const MAX_FRAME_HEIGHT: u32 = 8704;
+const MAX_FRAME_AREA: u64 = 35_651_584;
+
+/// Whether a frame of `width` x `height` luma samples is within the decoder's resource limits.
+fn frame_size_allowed(width: u32, height: u32) -> bool {
+    width <= MAX_FRAME_WIDTH && height <= MAX_FRAME_HEIGHT && u64::from(width) * u64::from(height) <= MAX_FRAME_AREA
+}
 const OBU_SEQUENCE_HEADER_T: u32 = 1;
 const OBU_TEMPORAL_DELIMITER_T: u32 = 2;
 const OBU_FRAME_HEADER_T: u32 = 3;
@@ -92,6 +106,8 @@ struct FrameJob {
     ref_info: [RefInfo; NUM_REF_FRAMES],
     /// Tile payloads (tile number, data).
     tiles: Vec<(usize, Vec<u8>)>,
+    /// Each tile may be supplied by exactly one tile group.
+    tile_covered: Vec<bool>,
     slot: Arc<FrameSlot>,
     /// The output picture, when the frame is shown.
     picture: Option<Arc<Slot<Arc<Picture>>>>,
@@ -102,33 +118,36 @@ struct FrameJob {
 }
 
 /// A shown picture in output order.
-#[allow(clippy::large_enum_variant)]
 enum Output {
     Decoded(Arc<Slot<Arc<Picture>>>),
     /// show_existing_frame: built from the reference slot when it is finished.
-    Existing {
-        slot: Arc<FrameSlot>,
-        seq: SequenceHeader,
-        width: usize,
-        height: usize,
-        grain: FilmGrainParams,
-        apply_film_grain: bool,
-        pts: i64,
-    },
+    Existing(Box<ExistingOutput>),
+}
+
+/// The parts of a show_existing_frame output, kept behind a box so `Output` stays small.
+struct ExistingOutput {
+    slot: Arc<FrameSlot>,
+    seq: SequenceHeader,
+    width: usize,
+    height: usize,
+    grain: FilmGrainParams,
+    apply_film_grain: bool,
+    pts: i64,
 }
 
 impl Output {
     fn is_ready(&self) -> bool {
         match self {
             Output::Decoded(s) => s.is_set(),
-            Output::Existing { slot, .. } => slot.is_set(),
+            Output::Existing(e) => e.slot.is_set(),
         }
     }
 
     fn take(self) -> Result<Picture> {
         match self {
             Output::Decoded(s) => s.wait().map(|p| Arc::try_unwrap(p).unwrap_or_else(|p| (*p).clone())),
-            Output::Existing { slot, seq, width, height, grain, apply_film_grain, pts } => {
+            Output::Existing(e) => {
+                let ExistingOutput { slot, seq, width, height, grain, apply_film_grain, pts } = *e;
                 let rf = slot.wait()?;
                 Ok(output_picture(&seq, &rf, width, height, &grain, apply_film_grain, pts))
             }
@@ -483,7 +502,7 @@ impl Decoder {
             let idx = fh.frame_to_show_map_idx;
             let slot = self.ref_frames[idx].clone().ok_or(Error::Invalid("show_existing_frame of an empty slot"))?;
             let info = self.refs[idx].clone();
-            let o = Output::Existing {
+            let o = Output::Existing(Box::new(ExistingOutput {
                 slot: slot.clone(),
                 seq: seq.clone(),
                 width: info.upscaled_width as usize,
@@ -491,7 +510,7 @@ impl Decoder {
                 grain: fh.film_grain.clone(),
                 apply_film_grain: self.apply_film_grain,
                 pts: self.pts,
-            };
+            }));
             if fh.frame_type == KEY_FRAME as u8 {
                 // reference frame loading process (7.21) then refresh every slot (7.20)
                 self.lf_deltas = info.lf_deltas;
@@ -505,7 +524,7 @@ impl Decoder {
         }
         // Encoders exist that code frames slightly larger than the sequence maximum (e.g. a
         // 270-line stream coded as 272 lines); like other decoders we accept them.
-        if fh.upscaled_width > 65536 || fh.frame_height > 65536 {
+        if !frame_size_allowed(fh.upscaled_width, fh.frame_height) {
             return Err(Error::Invalid("frame size"));
         }
         if !fh.frame_is_intra {
@@ -520,12 +539,14 @@ impl Decoder {
         }
         let picture = fh.show_frame.then(Slot::new);
         let draft = self.draft && fh.show_frame && fh.refresh_frame_flags == 0;
+        let tile_count = fh.tile_info.cols.checked_mul(fh.tile_info.rows).ok_or(Error::Invalid("tile count overflows"))?;
         self.pending = Some(Box::new(FrameJob {
             seq,
             fh,
             refs: self.ref_frames.clone(),
             ref_info: self.refs.clone(),
             tiles: Vec::new(),
+            tile_covered: vec![false; tile_count],
             slot: Slot::new(),
             picture,
             pts: self.pts,
@@ -568,12 +589,19 @@ impl Decoder {
                 v + 1
             };
             let end = pos.checked_add(size).filter(|&e| e <= data.len()).ok_or(Error::Truncated)?;
+            if job.tile_covered.get(tile_num).copied() != Some(false) {
+                return Err(Error::Invalid("tile is covered by multiple tile groups"));
+            }
             job.tiles.push((tile_num, data[pos..end].to_vec()));
+            job.tile_covered[tile_num] = true;
             pos = end;
         }
         if tg_end != num_tiles - 1 {
             self.pending = Some(job);
             return Ok(None);
+        }
+        if job.tile_covered.iter().any(|&covered| !covered) {
+            return Err(Error::Invalid("frame is missing tile coverage"));
         }
         self.seen_frame_header = false;
         Ok(self.submit(job))
@@ -946,4 +974,27 @@ fn project(fs: &mut FrameState, src: usize, dst_sign: i32) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::frame_size_allowed;
+
+    #[test]
+    fn frames_up_to_the_level_6_3_limits_are_allowed() {
+        assert!(frame_size_allowed(16384, 2176)); // exactly MaxPicSize
+        assert!(frame_size_allowed(4096, 8704)); // exactly MaxVSize
+        assert!(frame_size_allowed(8192, 4352)); // exactly MaxPicSize
+        assert!(frame_size_allowed(7680, 4320)); // 8K UHD
+        assert!(frame_size_allowed(1, 1));
+    }
+
+    #[test]
+    fn frames_beyond_the_limits_are_refused() {
+        assert!(!frame_size_allowed(16384, 2177)); // one row over MaxPicSize
+        assert!(!frame_size_allowed(16384, 8704)); // within both sides, four times MaxPicSize
+        assert!(!frame_size_allowed(4096, 8705)); // one row over MaxVSize
+        assert!(!frame_size_allowed(16385, 1)); // one column over MaxHSize
+        assert!(!frame_size_allowed(65536, 65536));
+    }
 }

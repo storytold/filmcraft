@@ -26,7 +26,8 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
         if resp.hovered() {
             ui.painter().rect_filled(r, 0.0, t.hover);
         }
-        let x = r.min.x + 30.0;
+        // inside the Presets folder: icon and label one level deeper than it (#2329)
+        let x = r.min.x + crate::panels::effects::tree_x(1) + 18.0;
         icons::paint(
             ui.painter(),
             Rect::from_center_size(pos2(x, r.center().y), vec2(13.0, 13.0)),
@@ -102,12 +103,12 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut close = false;
     let mut apply = false;
-    egui::Window::new(tl!("Save Preset")).id(egui::Id::new("Save Preset")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(
+    egui::Window::new(tl!("Save Preset")).id(egui::Id::unique("Save Preset")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(
         ctx,
         |ui| {
             ui.horizontal(|ui| {
                 ui.label(tl!("Name:"));
-                let r = ui.text_edit_singleline(&mut d.name);
+                let r = crate::widgets::accessible_name(ui.text_edit_singleline(&mut d.name), tl!("Name"));
                 app.auto.add("savePreset.name", r.rect, "Name");
             });
             ui.add_space(4.0);
@@ -126,7 +127,7 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.add_space(4.0);
             ui.label(tl!("Description:"));
-            let r = ui.text_edit_multiline(&mut d.description);
+            let r = crate::widgets::accessible_name(ui.text_edit_multiline(&mut d.description), tl!("Description"));
             app.auto.add("savePreset.description", r.rect, "Description");
             ui.add_space(6.0);
             ui.horizontal(|ui| {

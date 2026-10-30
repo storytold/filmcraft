@@ -330,7 +330,7 @@ impl MxfSource {
         if let Some(&a0) = atracks.first() {
             let si0 = file.tracks[a0].sound.clone().unwrap_or_default();
             let rate = si0.sample_rate;
-            let mut channels = 0;
+            let mut channels: u32 = 0;
             for &ai in &atracks {
                 let t = &file.tracks[ai];
                 let Some(si) = t.sound.as_ref() else { continue };
@@ -342,11 +342,18 @@ impl MxfSource {
                 let stored = t.stored_sample_frames().saturating_sub(first);
                 let presented = t.duration.map_or(stored, |du| ((du as i128 * n as i128 / d.max(1) as i128) as u64).min(stored));
                 aframes = aframes.min(presented);
-                channels += si.channels.max(1);
+                let next =
+                    channels.checked_add(si.channels.max(1)).ok_or_else(|| CodecError::Unsupported("MXF: combined audio channel count overflows".into()))?;
+                if next > filmcraft_media::MAX_AUDIO_CHANNELS {
+                    return Err(CodecError::Unsupported(format!("MXF: combined audio exceeds {} channels", filmcraft_media::MAX_AUDIO_CHANNELS)));
+                }
+                channels = next;
                 combined.push((ai, first));
             }
             let sr = if rate.is_valid() { (rate.num as f64 / rate.den as f64).round() as u32 } else { 48_000 };
-            audio = Some(AudioStreamInfo { sample_rate: sr.max(1), channels, codec: file.tracks[a0].codec.name().into(), bits_per_sample: Some(si0.bits) });
+            if let Ok((sr, channels)) = filmcraft_media::bounded_audio_dimensions(sr, channels) {
+                audio = Some(AudioStreamInfo { sample_rate: sr, channels, codec: file.tracks[a0].codec.name().into(), bits_per_sample: Some(si0.bits) });
+            }
         }
         if aframes == u64::MAX {
             aframes = 0;
@@ -408,10 +415,11 @@ impl VideoSamples for MxfVideo<'_> {
         self.src.vpts[i]
     }
     fn sync_before(&self, i: usize) -> usize {
-        let key = self.src.file.tracks[self.track].sync_before(i);
         // a leading picture of an open GOP (stored after its random-access picture, shown
         // before it) is predicted from the previous GOP too
-        if key > 0 && i < self.src.vpts.len() && self.src.vpts[i] < self.src.vpts[key] { self.sync_before(key - 1) } else { key }
+        let track = &self.src.file.tracks[self.track];
+        let pts = &self.src.vpts;
+        crate::gop::open_gop_sync(i, |i| track.sync_before(i), |i, key| matches!((pts.get(i), pts.get(key)), (Some(a), Some(b)) if a < b))
     }
     fn sample_at(&self, t: i64) -> Option<usize> {
         usize::try_from(t).ok().and_then(|t| self.src.vorder.get(t).copied())
@@ -460,15 +468,20 @@ impl MediaSource for MxfSource {
         let ainfo = self.info.audio().ok_or(MediaError::NoStream("audio"))?;
         let src_rate = ainfo.sample_rate;
         let ch = ainfo.channels.max(1) as usize;
+        let exact = src_rate == sample_rate;
+        let source_frames = if exact { frames } else { filmcraft_media::resample_source_frames(frames, src_rate, sample_rate)? };
+        let need =
+            if exact { source_frames } else { source_frames.checked_add(2).ok_or_else(|| MediaError::Decode("audio source window overflows".into()))? };
+        filmcraft_media::validate_audio_buffer_shape(ch, need)?;
+        filmcraft_media::validate_audio_buffer_shape(ch, frames)?;
         let mut out = AudioBuffer::silence(sample_rate, ch, frames);
         let ratio = src_rate as f64 / sample_rate as f64;
-        let exact = src_rate == sample_rate;
         let s0 = if exact { start } else { (start as f64 * ratio).floor() as i64 };
-        let need = if exact { frames as i64 } else { (frames as f64 * ratio).ceil() as i64 + 2 };
+        let need_i64 = i64::try_from(need).unwrap_or(i64::MAX);
         // clip the request to the presented range [0, aframes)
         let a = s0.max(0);
-        let b = (s0 + need).min(self.aframes as i64);
-        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need.max(0) as usize]; ch];
+        let b = s0.saturating_add(need_i64).min(self.aframes as i64);
+        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need]; ch];
         if b > a {
             let mut c0 = 0;
             for &(ti, first) in &self.atracks {
