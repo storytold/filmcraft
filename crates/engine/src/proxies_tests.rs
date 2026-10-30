@@ -128,6 +128,10 @@ fn ingest_copies_and_creates_proxies_on_import() {
 /// that name. Check the saved project with a new media pool so cached decoders cannot hide a
 /// replaced file.
 fn check_ingest_collision(action: &str) {
+    check_ingest_collision_named(action, "A001.mov", "A001.mov");
+}
+
+fn check_ingest_collision_named(action: &str, input_name: &str, existing_name: &str) -> std::collections::BTreeSet<String> {
     use filmcraft_media::FrameRequest;
     use filmcraft_project::{ItemId, MediaRef};
     use filmcraft_time::FrameRate;
@@ -135,16 +139,18 @@ fn check_ingest_collision(action: &str) {
     use std::sync::atomic::Ordering;
 
     let root = tmp_dir(&format!("ingest-collision-{action}"));
-    let paths = [root.join("Card A/A001.mov"), root.join("Card B/A001.mov")];
+    let paths = [root.join("Card A").join(input_name), root.join("Card B").join(input_name)];
     for (path, scene) in paths.iter().zip([DemoScene::Aurora, DemoScene::Plasma]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        make_movie(path, scene, 160, 96, 4);
+        let fixture = path.with_file_name("source.mov");
+        make_movie(&fixture, scene, 160, 96, 4);
+        std::fs::rename(fixture, path).unwrap();
     }
     let original: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
     assert_ne!(original[0], original[1], "different source takes");
     let dest = root.join("Ingest");
     std::fs::create_dir_all(&dest).unwrap();
-    let existing = dest.join("A001.mov");
+    let existing = dest.join(existing_name);
     let existing_bytes = b"existing destination must survive ingest";
     std::fs::write(&existing, existing_bytes).unwrap();
     let mut s = Session::default();
@@ -202,7 +208,37 @@ fn check_ingest_collision(action: &str) {
             assert!(quality(&proxy) > 30.0, "proxy retains the correct picture for take {index}");
         }
     }
+    let outputs = if action == "copyAndCreateProxies" { proxies } else { linked };
+    let names = outputs.iter().map(|p| std::path::Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
     let _ = std::fs::remove_dir_all(root);
+    names
+}
+
+#[cfg(unix)]
+#[test]
+fn ingest_generated_names_accept_unix_input_and_keep_collision_numbering() {
+    let names = check_ingest_collision_named("transcode", "take?:.mov", "take__.mov");
+    assert_eq!(names, ["take__ 2.mov".to_string(), "take__ 3.mov".to_string()].into_iter().collect());
+}
+
+#[cfg(unix)]
+#[test]
+fn proxy_generated_names_accept_unix_input_without_changing_source_or_picture() {
+    let names = check_ingest_collision_named("copyAndCreateProxies", "take?:.mov", "take?:.mov");
+    assert_eq!(names.len(), 2);
+    assert!(names.iter().all(|n| filmcraft_export::validate_output_filename(n).is_ok()), "{names:?}");
+}
+
+#[test]
+fn ingest_generated_names_preserve_unicode_and_collision_numbering() {
+    let names = check_ingest_collision_named("transcode", "cafe\u{301}-हिन्दी%🎬.mov", "cafe\u{301}-हिन्दी%🎬.mov");
+    assert_eq!(names, ["cafe\u{301}-हिन्दी%🎬 2.mov".to_owned(), "cafe\u{301}-हिन्दी%🎬 3.mov".to_owned()].into());
+}
+
+#[test]
+fn proxy_generated_names_preserve_unicode_and_collision_numbering() {
+    let names = check_ingest_collision_named("copyAndCreateProxies", "cafe\u{301}-हिन्दी%🎬.mov", "cafe\u{301}-हिन्दी%🎬.mov");
+    assert_eq!(names, ["cafe\u{301}-हिन्दी%🎬 2_Proxy.mov".to_owned(), "cafe\u{301}-हिन्दी%🎬 3_Proxy.mov".to_owned()].into());
 }
 
 #[test]

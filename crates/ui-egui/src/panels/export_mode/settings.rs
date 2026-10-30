@@ -1,6 +1,7 @@
 use super::{
     AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
-    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, pos2, vec2,
+    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset,
+    filename_warning, pos2, validate_output_filename, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -238,6 +239,12 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                 ex.file_name = v;
             }
         });
+        if let Err(error) = validate_output_filename(&ex.file_name) {
+            ui.horizontal(|ui| {
+                ui.add_space(LABEL_W + 8.0);
+                filename_warning(ui, &mut reg, "export.fileName.error", Some(error));
+            });
+        }
         row(ui, &t, tl!("Location"), |ui| {
             let r = ui.small_button("…");
             reg.add("export.location.browse", r.rect, "Choose folder");

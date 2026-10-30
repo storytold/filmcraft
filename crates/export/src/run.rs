@@ -3,7 +3,7 @@ use super::output::{AudioWriter, Out, SharedBuf, write_output};
 use super::still_encode::encode_still_with;
 use super::{
     Arc, ExportError, Exporter, FrameRate, IntoParallelIterator, ItemId, Ordering, ParallelIterator, PoisonError, Progress, Project, Report, Result,
-    SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, pcm, pipeline, stepped,
+    SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, pcm, pipeline, stepped, validate_output_path,
 };
 
 /// The range to export (settings → In/Out → whole sequence).
@@ -77,6 +77,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
 
 /// [`export`] on the threads it is called from.
 fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
+    validate_output_path(&settings.path).map_err(|message| ExportError::Unsupported(message.into()))?;
     settings.validate()?;
     if stepped(settings.format) {
         let mut ex = Exporter::new(project.clone(), seq, settings, progress)?;

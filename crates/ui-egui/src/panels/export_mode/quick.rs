@@ -1,5 +1,7 @@
 use super::settings::{draft_text, location_link};
-use super::{Align2, Color32, DEFAULT_PRESET, FilmcraftApp, Reg, Sense, Tokens, builtin_presets, json, pos2, preset_key, vec2};
+use super::{
+    Align2, Color32, DEFAULT_PRESET, FilmcraftApp, Reg, Sense, Tokens, builtin_presets, filename_warning, json, pos2, preset_key, validate_output_path, vec2,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Quick Export (header)
@@ -22,7 +24,7 @@ fn quick_presets(app: &FilmcraftApp) -> Vec<String> {
 /// swapped and any other kept, so a typed or chosen name survives a preset change.
 fn quick_file(app: &FilmcraftApp, path: &str, seq_name: &str, ext: &str) -> Option<String> {
     let p = std::path::Path::new(path);
-    let folder = path.ends_with(['/', '\\']);
+    let folder = path.ends_with('/') || (cfg!(windows) && path.ends_with('\\'));
     let dir = if folder { Some(p) } else { p.parent() }.filter(|d| !d.as_os_str().is_empty());
     let name = if folder { None } else { p.file_name().and_then(std::ffi::OsStr::to_str) }.filter(|n| !n.trim().is_empty());
     let cur = name.and_then(|n| std::path::Path::new(n).extension()).and_then(std::ffi::OsStr::to_str).unwrap_or("");
@@ -92,6 +94,9 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
             });
             ui.label(egui::RichText::new(tl!("File Name & Location")).color(t.text_dim).size(11.5));
             typed = draft_text(ui, &mut reg, "quickExport.path", &file_name, tl!("File Name"));
+            // Check a changed draft in this frame, before it replaces the stored path below.
+            let path_error = validate_output_path(typed.as_deref().unwrap_or(&q.quick_path)).err();
+            filename_warning(ui, &mut reg, "quickExport.path.error", path_error);
             let r = location_link(ui, &t, &folder);
             reg.add("quickExport.location", r.rect, folder.clone());
             browse = r.clicked();
@@ -109,10 +114,11 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
             ui.add_space(4.0);
             ui.label(egui::RichText::new(tlf!("Estimated file size: {size}", size = est.as_deref().unwrap_or("–"))).color(t.text_dim).size(11.5));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui.add(
+                let r = ui.add_enabled(
+                    path_error.is_none(),
                     egui::Button::new(egui::RichText::new(tl!("Export")).color(Color32::WHITE)).fill(t.accent).corner_radius(12.0).min_size(vec2(90.0, 26.0)),
                 );
-                reg.add("quickExport.go", r.rect, "Export");
+                reg.add_response("quickExport.go", &r, "Export");
                 go = r.clicked();
             });
         });
@@ -123,7 +129,8 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     reg.flush(app);
     if let Some(v) = typed {
         // a file name goes in the shown folder; a typed or pasted path replaces both
-        app.ui.export.quick_path = if v.contains(['/', '\\']) { v } else { std::path::Path::new(&folder).join(v.trim()).to_string_lossy().to_string() };
+        app.ui.export.quick_path =
+            if v.contains('/') || (cfg!(windows) && v.contains('\\')) { v } else { std::path::Path::new(&folder).join(v.trim()).to_string_lossy().to_string() };
     }
     if browse && let Some(p) = app.hooks.pick_save_as.as_mut().and_then(|f| f(format, &[ext], &app.ui.export.quick_path)) {
         app.ui.export.quick_path = p;

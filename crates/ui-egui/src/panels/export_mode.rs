@@ -24,7 +24,7 @@ use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
     AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, Format, GpuRendering, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec,
-    Placement, SampleFormat, Scaling, TextOverlay, builtin_presets, format_bytes,
+    Placement, SampleFormat, Scaling, TextOverlay, builtin_presets, format_bytes, validate_output_filename, validate_output_path,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -114,16 +114,36 @@ pub const CUSTOM: &str = "Custom";
 
 /// Collected automation ids (registered after drawing, so widgets can borrow the app freely).
 #[derive(Default)]
-struct Reg(Vec<(String, Rect, String)>);
+struct Reg(Vec<(String, Rect, String, Option<egui::Response>)>);
 
 impl Reg {
     fn add(&mut self, id: impl Into<String>, r: Rect, label: impl Into<String>) {
-        self.0.push((id.into(), r, label.into()));
+        self.0.push((id.into(), r, label.into(), None));
+    }
+    fn add_response(&mut self, id: impl Into<String>, response: &egui::Response, label: impl Into<String>) {
+        self.0.push((id.into(), response.rect, label.into(), Some(response.clone())));
     }
     fn flush(self, app: &mut FilmcraftApp) {
-        for (id, r, l) in self.0 {
-            app.auto.add(&id, r, &l);
+        for (id, r, l, response) in self.0 {
+            if let Some(response) = response {
+                app.auto.add_response(&id, &response, &l);
+            } else {
+                app.auto.add(&id, r, &l);
+            }
         }
+    }
+}
+
+fn filename_warning(ui: &mut egui::Ui, reg: &mut Reg, id: &str, error: Option<&str>) {
+    if let Some(error) = error {
+        let text = if error == "Choose an output file name." {
+            tl!("Choose an output file name.")
+        } else {
+            tl!("File name cannot contain < > : \" / \\ | ? * or control characters.")
+        };
+        let color = if ui.visuals().dark_mode { Color32::from_rgb(0xff, 0x80, 0x80) } else { Color32::from_rgb(0xb0, 0x20, 0x20) };
+        let response = ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(color)).wrap());
+        reg.add(id, response.rect, text);
     }
 }
 
@@ -168,7 +188,8 @@ pub fn export_params(app: &FilmcraftApp) -> Value {
 fn sync_sequence(app: &mut FilmcraftApp) {
     let Some(seq) = app.session.state.active_sequence else { return };
     if app.ui.export.for_sequence != Some(seq.0) || app.ui.export.file_name.is_empty() {
-        app.ui.export.file_name = app.session.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
+        app.ui.export.file_name =
+            app.session.project.item(seq).map(|i| filmcraft_engine::export_tools::file_safe(&i.name)).unwrap_or_else(|| "Sequence".into());
         app.ui.export.for_sequence = Some(seq.0);
     }
     if app.ui.export.location.is_empty() {

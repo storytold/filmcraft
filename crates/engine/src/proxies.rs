@@ -201,6 +201,7 @@ impl Drop for ReservedOutput {
 
 /// Reserve a numbered output name without following a later replacement of its pathname.
 fn reserve_unique_path(dir: &Path, stem: &str, suffix: &str, ext: &str, taken: &[String]) -> Result<ReservedOutput> {
+    let stem = crate::export_tools::file_safe(stem);
     std::fs::create_dir_all(dir).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
     let mut n = 1;
     loop {

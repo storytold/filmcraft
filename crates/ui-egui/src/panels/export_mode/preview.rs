@@ -1,7 +1,7 @@
 use super::settings::{DragOptions, combo, drag};
 use super::{
     Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, export_params, format_bytes, json, output_path,
-    pos2, vec2,
+    pos2, validate_output_filename, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -125,14 +125,42 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     // buttons
     let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
     let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
-    let qresp = ui.interact(queue, egui::Id::unique("export-queue-send"), Sense::click());
-    ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, if qresp.hovered() { t.text } else { t.text_dim }), egui::StrokeKind::Inside);
-    ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), t.text);
-    reg.add("export.sendToQueue", queue, "Send to Queue");
-    let resp = ui.interact(go, egui::Id::unique("export-go"), Sense::click());
-    ui.painter().rect_filled(go, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
-    ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), Color32::WHITE);
-    reg.add("export.button", go, "Export");
+    let can_export = validate_output_filename(&ex.file_name).is_ok();
+    let (qresp, resp) = ui
+        .add_enabled_ui(can_export, |ui| {
+            (ui.interact(queue, egui::Id::unique("export-queue-send"), Sense::click()), ui.interact(go, egui::Id::unique("export-go"), Sense::click()))
+        })
+        .inner;
+    ui.painter().rect_stroke(
+        queue,
+        15.0,
+        egui::Stroke::new(
+            1.0,
+            if !can_export {
+                t.text_faint
+            } else if qresp.hovered() {
+                t.text
+            } else {
+                t.text_dim
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(queue.center(), Align2::CENTER_CENTER, tl!("Send to Queue"), Tokens::semibold(12.5), if can_export { t.text } else { t.text_faint });
+    reg.add_response("export.sendToQueue", &qresp, "Send to Queue");
+    ui.painter().rect_filled(
+        go,
+        15.0,
+        if !can_export {
+            t.field_bg
+        } else if resp.hovered() {
+            t.accent_hover
+        } else {
+            t.accent
+        },
+    );
+    ui.painter().text(go.center(), Align2::CENTER_CENTER, tl!("Export"), Tokens::semibold(13.0), if can_export { Color32::WHITE } else { t.text_dim });
+    reg.add_response("export.button", &resp, "Export");
     reg.flush(app);
     if resp.clicked() {
         let r = app.session.execute("file.exportMedia", export_params(app));
