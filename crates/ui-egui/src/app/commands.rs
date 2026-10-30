@@ -1,8 +1,7 @@
-use super::{FilmcraftApp, menus};
+use super::{FilmcraftApp, Value, json, menus};
+use crate::OsEvent;
 #[cfg(test)]
 use filmcraft_engine::Session;
-#[cfg(test)]
-use serde_json::json;
 
 impl FilmcraftApp {
     // ---------------------------------------------------------------- input
@@ -46,6 +45,42 @@ impl FilmcraftApp {
             }
             self.command_inbox = Some(rx);
         }
+    }
+
+    /// Act on the operating system's requests: files to open (a Finder double-click, Open With, a
+    /// drop on the Dock icon) and the Dock's Quit.
+    pub(super) fn logic_os_events(&mut self, ctx: &egui::Context) {
+        let events = self.hooks.os_events.as_mut().map(|poll| poll()).unwrap_or_default();
+        for event in events {
+            match event {
+                // control-only mode takes no files from outside, as it takes no native menu commands (#1943)
+                OsEvent::Open { .. } if self.control_input_only => {}
+                OsEvent::Open { project, media } => self.open_os_files(ctx, project, media),
+                OsEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
+    }
+
+    /// Open the project and import the media the OS asked for, then bring the window forward
+    /// (restored if it was minimized): the request came from another app.
+    fn open_os_files(&mut self, ctx: &egui::Context, project: Option<String>, media: Vec<String>) {
+        // a failure is shown in the status bar
+        if let Some(path) = project {
+            let _ = menus::invoke(self, ctx, "file.open", json!({"path": path}));
+        }
+        if !media.is_empty() {
+            let bin = self.import_bin().0;
+            if let Ok(v) = menus::invoke(self, ctx, "file.import", json!({"paths": media, "bin": bin}))
+                && let Some(errs) = v.get("errors").and_then(Value::as_array)
+                && !errs.is_empty()
+            {
+                self.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+            }
+        }
+        if ctx.input(|i| i.viewport().minimized) == Some(true) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 }
 
