@@ -93,7 +93,20 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Padding around each background box, in pixels at 1080 lines (#3355).
+    #[serde(default = "default_box_padding")]
+    pub box_padding: f32,
+    /// Corner radius of the background box, in pixels at 1080 lines (#3356).
+    #[serde(default)]
+    pub box_corner_radius: f32,
+    /// Font style string: "SemiBold", "Bold", "Regular", "Italic", "BoldItalic" (#3357).
+    /// Empty string falls back to "SemiBold".
+    #[serde(default = "default_font_style")]
+    pub font_style: String,
 }
+
+fn default_box_padding() -> f32 { 0.0 }
+fn default_font_style() -> String { "SemiBold".into() }
 
 impl Default for CaptionStyle {
     fn default() -> Self {
@@ -109,6 +122,9 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            box_padding: 0.0,
+            box_corner_radius: 0.0,
+            font_style: "SemiBold".into(),
         }
     }
 }

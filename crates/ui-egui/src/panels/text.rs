@@ -700,6 +700,38 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
         if resp.changed() {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "background": bg})));
         }
+        if st.background {
+            ui.label(egui::RichText::new(tl!("Padding")).size(11.0).color(app.tokens.text_dim));
+            let mut pad = st.box_padding;
+            let resp = ui.add(crate::widgets::number_drag(&mut pad).range(0.0..=100.0).speed(0.5).suffix(" px"));
+            app.auto.add("text.captions.style.boxPadding", resp.rect, "Box padding");
+            if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "boxPadding": pad})));
+            }
+            ui.label(egui::RichText::new(tl!("Corner")).size(11.0).color(app.tokens.text_dim));
+            let mut cr = st.box_corner_radius;
+            let resp = ui.add(crate::widgets::number_drag(&mut cr).range(0.0..=100.0).speed(0.5).suffix(" px"));
+            app.auto.add("text.captions.style.boxCornerRadius", resp.rect, "Box corner radius");
+            if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "boxCornerRadius": cr})));
+            }
+        }
+        // Font style (#3357): Regular, SemiBold, Bold, Italic, BoldItalic.
+        ui.label(egui::RichText::new(tl!("Style")).size(11.0).color(app.tokens.text_dim));
+        for (style_name, label) in [
+            ("Regular", "Reg"),
+            ("SemiBold", "SemB"),
+            ("Bold", "Bld"),
+            ("Italic", "It"),
+            ("BoldItalic", "BdIt"),
+        ] {
+            let active = st.font_style == style_name || (style_name == "SemiBold" && st.font_style.is_empty());
+            let resp = ui.selectable_label(active, label).on_hover_text(style_name);
+            app.auto.add(&format!("text.captions.style.fontStyle.{style_name}"), resp.rect, style_name);
+            if resp.clicked() {
+                actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "fontStyle": style_name})));
+            }
+        }
         ui.label(egui::RichText::new(tl!("Align")).size(11.0).color(app.tokens.text_dim));
         for (a, icon_txt, name, tip) in [
             (CaptionAlign::Left, "L", "left", tl!("Align left")),
