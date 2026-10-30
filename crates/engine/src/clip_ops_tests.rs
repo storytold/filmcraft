@@ -229,6 +229,37 @@ fn remove_unused_and_consolidate_duplicates() {
 }
 
 #[test]
+fn duplicate_lands_in_the_bin_of_its_source() {
+    let mut s = demo();
+    let ocean = item_named(&s, "Ocean_Sunset.mp4");
+    let sequence = s.state.active_sequence.unwrap();
+    let in_root = |s: &Session, id: ItemId| s.project.root.parent_of(id) == Some(s.project.root.id);
+
+    // a root-level item still duplicates into the root
+    s.execute("project.moveToBin", json!({"items": [ocean.0], "bin": null})).unwrap();
+    assert!(in_root(&s, ocean));
+    s.execute("project.select", json!({"items": [ocean.0]})).unwrap();
+    let copy = ItemId(s.execute("edit.duplicate", json!({})).unwrap()["items"][0].as_u64().unwrap());
+    assert!(in_root(&s, copy), "a root-level item's copy stays in the root");
+
+    // a sequence inside a folder is duplicated into that folder, not the root
+    let bin = filmcraft_project::BinId(s.execute("file.newBin", json!({"name": "Cuts"})).unwrap()["bin"].as_u64().unwrap());
+    s.execute("project.moveToBin", json!({"items": [sequence.0, ocean.0], "bin": bin.0})).unwrap();
+    assert_eq!(s.project.root.parent_of(sequence), Some(bin));
+    s.execute("project.select", json!({"items": [sequence.0, ocean.0]})).unwrap();
+    let r = s.execute("edit.duplicate", json!({})).unwrap();
+    let copies: Vec<ItemId> = r["items"].as_array().unwrap().iter().map(|v| ItemId(v.as_u64().unwrap())).collect();
+    assert_eq!(copies.len(), 2);
+    for c in &copies {
+        assert_eq!(s.project.root.parent_of(*c), Some(bin), "the copy sits beside its source");
+    }
+
+    // one undo step removes the copies; they leave the folder with it
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(copies.iter().all(|c| s.project.item(*c).is_none() && s.project.root.parent_of(*c).is_none()));
+}
+
+#[test]
 fn consolidate_keeps_counting_leaders_with_distinct_source_rates() {
     let mut s = Session::default();
     s.execute("file.newProject", json!({"name": "Leader rates"})).unwrap();
@@ -1160,4 +1191,28 @@ fn applied_transform_centres_its_points_in_the_clip_picture() {
     for m in clip(&s, c).effects.iter().filter(|e| e.effect == "motion") {
         assert_eq!(m.param("position").unwrap().value.as_vec2().unwrap(), frame_centre);
     }
+}
+
+#[test]
+fn set_param_rejects_colour_component_that_overflows_f32() {
+    // 1e300 is a finite JSON number but saturates to an infinite f32, which saved as `null` and could not be reopened
+    let mut s = demo();
+    let a = v1(&s)[0].clone();
+    s.execute("effects.apply", json!({"clips": [a.id.0], "effect": "tint"})).unwrap();
+    let r = s.execute("effects.setParam", json!({"clip": a.id.0, "effect": "tint", "param": "black", "value": [1e300, 0, 0, 1]}));
+    assert!(r.is_err(), "an overflowing colour component must be refused");
+    let bytes = filmcraft_format::encode(&s.project, false);
+    filmcraft_format::decode(&bytes).unwrap();
+}
+
+/// #2326 review: a video effect aimed only at an audio clip applies to nothing, so it is refused
+/// instead of committing an empty undo step that would clear redo.
+#[test]
+fn video_effect_on_only_an_audio_clip_is_refused_without_an_undo_step() {
+    let mut s = demo();
+    let a = s.active_sequence().unwrap().audio_tracks[0].items[0].id.0;
+    let undo0 = s.history.undo.len();
+    let r = s.execute("effects.apply", json!({"clips": [a], "effect": "gaussian_blur"}));
+    assert!(r.is_err(), "{r:?}");
+    assert_eq!(s.history.undo.len(), undo0, "no undo step");
 }

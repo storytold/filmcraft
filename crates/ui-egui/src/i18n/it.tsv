@@ -1037,6 +1037,7 @@
 	All Caps	Tutto maiuscolo
 	Small Caps	Maiuscoletto
 	Underline	Sottolineato
+	Strikethrough	Barrato
 	OpenType	OpenType
 	Kerning	Crenatura
 	Ligatures	Legature
@@ -3609,3 +3610,8 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Il server di controllo è disattivato: FILMCRAFT_CONTROL_TOKEN deve contenere 64 caratteri esadecimali casuali (vedi docs/control-protocol.md)
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).

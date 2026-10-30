@@ -763,6 +763,7 @@ fn char_style_p(v: &Value) -> Result<CharStyle> {
             "bold" | "fauxBold" | "faux_bold" => c.faux_bold = x.as_bool(),
             "italic" | "fauxItalic" | "faux_italic" => c.faux_italic = x.as_bool(),
             "underline" => c.underline = x.as_bool(),
+            "strikethrough" | "strike" => c.strikethrough = x.as_bool(),
             "tracking" => c.tracking = x.as_f64().map(|v| v as f32),
             "baselineShift" | "baseline_shift" => c.baseline_shift = x.as_f64().map(|v| v as f32),
             "caps" => {
@@ -1236,7 +1237,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "graphics.setCharStyle",
             "Character Style",
             &[],
-            r##"{"clip":id?,"layer":n|name?,"start":char=0,"end":char=len,"style":{"font":str,"fontStyle":str,"size":px,"color":"#rrggbb","bold":bool,"italic":bool,"underline":bool,"tracking":n,"baselineShift":px,"caps":"normal|all caps|small caps"},"clear":bool? (remove styles from the range),"merge":bool?,"begin":bool? (start a new undo gesture)}"##,
+            r##"{"clip":id?,"layer":n|name?,"start":char=0,"end":char=len,"style":{"font":str,"fontStyle":str,"size":px,"color":"#rrggbb","bold":bool,"italic":bool,"underline":bool,"strikethrough":bool,"tracking":n,"baselineShift":px,"caps":"normal|all caps|small caps"},"clear":bool? (remove styles from the range),"merge":bool?,"begin":bool? (start a new undo gesture)}"##,
             has_graphic,
             set_char_style,
         ),

@@ -76,7 +76,15 @@ fn paint_badges(ui: &egui::Ui, b: &Badge, at: egui::Pos2, t: &Tokens) {
 }
 
 fn matches_filter(app: &FilmcraftApp, id: ItemId, filter: &str) -> bool {
-    app.session.project.item(id).is_some_and(|i| pp::listed(&app.session.project, i) && (filter.is_empty() || i.name.to_ascii_lowercase().contains(filter)))
+    app.session.project.item(id).is_some_and(|i| pp::listed(&app.session.project, i) && name_matches(&i.name, filter))
+}
+
+/// The search finds a name holding every word typed, in any order: "comedy manager smiling" finds
+/// "Comedy manager · medium · smiling", where the typed text as one run of letters would not.
+/// `filter` is already lowercase.
+fn name_matches(name: &str, filter: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    filter.split_whitespace().all(|word| name.contains(word))
 }
 
 fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
@@ -1250,5 +1258,22 @@ mod clear_tests {
         assert_eq!(click_selection(&ids(&[1]), &order, None, ItemId(3), false, true), ids(&[1, 3]));
         assert_eq!(click_selection(&ids(&[1, 3]), &order, None, ItemId(3), false, true), ids(&[1]));
         assert_eq!(click_selection(&ids(&[1, 3]), &order, None, ItemId(2), false, false), ids(&[2]));
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::name_matches;
+
+    #[test]
+    fn every_typed_word_must_appear_in_any_order() {
+        let name = "Comedy manager · medium · smiling · enjoys the show · img385 · A";
+        assert!(name_matches(name, ""));
+        assert!(name_matches(name, "comedy manager"));
+        assert!(name_matches(name, "comedy manager s"));
+        assert!(name_matches(name, "comedy manager smiling"));
+        assert!(name_matches(name, "smiling  comedy "));
+        assert!(!name_matches(name, "comedy manager laughing"));
+        assert!(!name_matches("Comedy club", "comedy manager"));
     }
 }

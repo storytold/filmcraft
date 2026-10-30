@@ -1036,6 +1036,7 @@
 	All Caps	全大写
 	Small Caps	小型大写
 	Underline	下划线
+	Strikethrough	删除线
 	OpenType	OpenType
 	Kerning	字距调整
 	Ligatures	连字
@@ -3603,3 +3604,8 @@
 	No matching text.	没有匹配的文本。
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) 需要硬件编码器（NVIDIA GPU 上的 NVENC、macOS 上的 VideoToolbox）；本机未找到，且 FilmCraft 尚无软件 H.265 编码器。请改选 H.264 或 ProRes。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	控制服务器已禁用：FILMCRAFT_CONTROL_TOKEN 必须包含 64 个随机十六进制字符（参见 docs/control-protocol.md）
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).

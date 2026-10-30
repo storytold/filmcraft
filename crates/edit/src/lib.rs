@@ -617,12 +617,17 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     let carried = carried_transitions(&work, &placed);
     let mut ids = HashMap::new();
     let mut links = HashMap::new();
+    let mut groups = HashMap::new();
     for (_, it) in &mut placed {
         let id = ClipId(ctx.alloc());
         ids.insert(it.id, id);
         it.id = id;
         if let Some(l) = it.link {
             it.link = Some(*links.entry(l).or_insert_with(|| ctx.alloc()));
+        }
+        // copies of grouped clips form a group of their own, never one with the originals
+        if let Some(g) = it.group {
+            it.group = Some(*groups.entry(g).or_insert_with(|| ctx.alloc()));
         }
     }
     // a copy whose linked partner is not copied is not linked

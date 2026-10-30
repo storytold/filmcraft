@@ -93,6 +93,111 @@ fn demo() -> Session {
 }
 
 #[test]
+fn single_frame_in_out_warning_follows_the_selected_range() {
+    let mut s = demo();
+    for rate in [filmcraft_time::FrameRate::FPS_25, filmcraft_time::FrameRate::FPS_23_976] {
+        let seq = s.state.active_sequence.unwrap();
+        std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().settings.frame_rate = rate;
+        s.execute("markers.markIn", json!({"frame": 12})).unwrap();
+        s.execute("markers.markOut", json!({"frame": 12})).unwrap();
+        std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().work_area =
+            Some(filmcraft_time::TimeRange::new(rate.tick_of(12), rate.frame_duration()));
+        for p in [json!({}), json!({"range":null}), json!({"range":"inOut"}), json!({"range":{"mode":"Sequence In/Out"}})] {
+            let v = s.execute("export.resolve", p.clone()).unwrap();
+            assert_eq!(v["frames"], 1, "{p}: {v}");
+            assert_eq!(v["warnings"].as_array().unwrap().len(), 1, "{p}: {v}");
+            assert!(v["warnings"][0].as_str().unwrap().contains("range: entire"));
+        }
+        let custom = json!({"range":"custom", "startFrame":12, "endFrame":13});
+        for p in [
+            json!({"range":"entire"}),
+            json!({"range":"workArea"}),
+            custom,
+            json!({"startFrame":12, "endFrame":13}),
+            json!({"range":{"startFrame":12, "endFrame":13}}),
+        ] {
+            let v = s.execute("export.resolve", p.clone()).unwrap();
+            assert_eq!(v["warnings"], json!([]), "{p}: {v}");
+        }
+        // Rate conversion does not change the length of the marked sequence range.
+        let v = s.execute("export.resolve", json!({"fps":60})).unwrap();
+        assert_eq!(v["warnings"].as_array().unwrap().len(), 1);
+        s.execute("markers.markOut", json!({"frame":13})).unwrap();
+        let v = s.execute("export.resolve", json!({})).unwrap();
+        assert_eq!(v["frames"], 2);
+        assert_eq!(v["warnings"], json!([]));
+    }
+    // A one-frame sequence without marks is intentional and must stay quiet.
+    let seq = s.state.active_sequence.unwrap();
+    let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+    q.mark_in = None;
+    q.mark_out = None;
+    q.video_tracks.clear();
+    q.audio_tracks.clear();
+    let v = s.execute("export.resolve", json!({})).unwrap();
+    assert_eq!(v["frames"], 1);
+    assert_eq!(v["warnings"], json!([]));
+}
+
+#[test]
+fn single_frame_in_out_queue_add_retains_warnings_and_ranges() {
+    let mut s = demo();
+    let dir = Scratch::new("queue-range-warning");
+    s.execute("markers.markIn", json!({"frame":12})).unwrap();
+    s.execute("markers.markOut", json!({"frame":12})).unwrap();
+    let expected = s.execute("export.resolve", json!({})).unwrap()["warnings"].clone();
+    let v = s.execute("export.queue.add", json!({"path":dir.path("default.wav"),"format":"wav"})).unwrap();
+    assert_eq!(v["warnings"], expected);
+    assert_eq!(v["added"].as_array().unwrap().len(), 1);
+    assert_eq!(v["items"].as_array().unwrap().len(), 1);
+    assert_eq!(v["items"][0]["id"], v["added"][0]);
+    assert_eq!(v["items"][0]["status"], "ready");
+    assert_eq!(v["items"][0]["range"], Value::Null, "default range is still resolved from the snapshot's marks");
+    s.execute("export.queue.clear", json!({"all":true})).unwrap();
+
+    // Each marked range contributes its advisory; later explicit ranges must not overwrite it.
+    let ranges = json!(["inOut", {"mode":"inOut"}, {"startFrame":12,"endFrame":13}, "entire"]);
+    let v = s.execute("export.queue.add", json!({"path":dir.path("ranges.wav"),"format":"wav","ranges":ranges})).unwrap();
+    assert_eq!(v["warnings"], json!([expected[0], expected[0]]));
+    assert_eq!(v["added"].as_array().unwrap().len(), 4);
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 4);
+    for (i, range) in ranges.as_array().unwrap().iter().enumerate() {
+        let resolved = s.execute("export.resolve", json!({"range":range})).unwrap();
+        assert_eq!(items[i]["id"], v["added"][i]);
+        assert_eq!(items[i]["range"]["start"], resolved["range"]["start"]);
+        assert_eq!(items[i]["range"]["duration"], resolved["range"]["duration"]);
+    }
+    let quiet = s.execute("export.queue.add", json!({"path":dir.path("custom.wav"),"format":"wav","startFrame":12,"endFrame":13})).unwrap();
+    assert_eq!(quiet["warnings"], json!([]), "warnings describe this addition, not previously queued items");
+}
+
+#[test]
+fn single_frame_in_out_exports_warn_without_changing_the_output() {
+    let mut s = demo();
+    let dir = Scratch::new("single-frame-warning");
+    s.execute("markers.markIn", json!({"frame":12})).unwrap();
+    s.execute("markers.markOut", json!({"frame":12})).unwrap();
+    for wait in [true, false] {
+        let path = dir.path(&format!("marked-{wait}.wav"));
+        let v = s.execute("file.exportMedia", json!({"path":path,"format":"wav","wait":wait})).unwrap();
+        assert_eq!(v["warnings"].as_array().unwrap().len(), 1);
+        if !wait {
+            let job = s.jobs.iter().find(|j| Some(j.id) == v["job"].as_u64()).unwrap();
+            let start = std::time::Instant::now();
+            while !job.progress.finished.load(std::sync::atomic::Ordering::Relaxed) {
+                assert!(start.elapsed() < std::time::Duration::from_secs(30));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let explicit = dir.path(&format!("explicit-{wait}.wav"));
+        let v = s.execute("file.exportMedia", json!({"path":explicit,"format":"wav","wait":true,"startFrame":12,"endFrame":13})).unwrap();
+        assert_eq!(v["warnings"], json!([]));
+        assert_eq!(std::fs::read(path).unwrap(), std::fs::read(explicit).unwrap());
+    }
+}
+
+#[test]
 fn export_integer_parameters_cannot_wrap_or_overflow() {
     let mut s = demo();
     for name in ["bitrateKbps", "maxBitrateKbps", "keyframeDistance"] {

@@ -251,9 +251,9 @@ fn scale_factors(pl: &Placement, n: usize, start: Pos2, cur: Pos2) -> (f64, f64)
 }
 
 /// The parameter values a drag sets with the pointer at `cur`.
-fn changes(d: &Drag, effect: &str, cur: Pos2) -> Vec<(&'static str, Value)> {
+/// `moved` is the pointer's travel from the press, which Snap in Program Monitor may have adjusted.
+fn changes(d: &Drag, effect: &str, cur: Pos2, moved: egui::Vec2) -> Vec<(&'static str, Value)> {
     let pl = &d.from;
-    let moved = cur - d.start;
     // the ranges Effect Controls' fields take
     let point = |v: Vec2| (v.x.is_finite() && v.y.is_finite()).then(|| json!([v.x.clamp(-100_000.0, 100_000.0), v.y.clamp(-100_000.0, 100_000.0)]));
     let number = |v: f64, max: f64| v.is_finite().then(|| json!(v.clamp(-max, max)));
@@ -434,8 +434,19 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
                 d.angle = a;
                 ui.data_mut(|m| m.insert_temp(drag_id, d));
             }
-            if resp.drag_started_by(left) || resp.drag_delta() != egui::Vec2::ZERO {
-                for (param, value) in changes(&d, def.id, cur) {
+            // Snap in Program Monitor: a Move drag snaps the box to the frame and guides (hold ⌘/Ctrl to move freely)
+            let mut moved = cur - d.start;
+            if d.grab == Grab::Move && !ui.input(|i| i.modifiers.command) {
+                let (snapped, lines) = crate::panels::monitor_view::snap_move(app, pic, frame, Rect::from_points(&d.from.quad), moved);
+                moved = snapped;
+                crate::panels::monitor_view::draw_snap_lines(ui.painter(), pic, &lines);
+            }
+            // (also when only the snapping changed: ⌘/Ctrl pressed or released with the pointer still)
+            let moved_id = id.with("moved");
+            let last: Option<egui::Vec2> = ui.data(|m| m.get_temp(moved_id));
+            if resp.drag_started_by(left) || resp.drag_delta() != egui::Vec2::ZERO || last.is_some_and(|l| l != moved) {
+                ui.data_mut(|m| m.insert_temp(moved_id, moved));
+                for (param, value) in changes(&d, def.id, cur, moved) {
                     actions.push(("effects.setParam".into(), json!({"clip": sel.0.0, "effect": sel.1, "param": param, "value": value, "merge": MERGE})));
                 }
             }
@@ -446,7 +457,10 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
             cursor(ui, &pl, grab, p, pic);
         }
         if resp.drag_stopped() {
-            ui.data_mut(|d| d.remove::<Drag>(drag_id));
+            ui.data_mut(|d| {
+                d.remove::<Drag>(drag_id);
+                d.remove::<egui::Vec2>(id.with("moved"));
+            });
         }
         // a click beside the box (not on it, a handle or a corner's rotate zone) lets go of it
         if resp.clicked() && !double && resp.interact_pointer_pos().is_some_and(|p| grab_at(&pl, p).is_none()) {

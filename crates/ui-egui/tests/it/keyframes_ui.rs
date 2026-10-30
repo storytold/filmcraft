@@ -727,3 +727,25 @@ fn a_line_separates_added_effects_from_the_fixed_ones() {
     );
     assert!(tint[1] > blur[1], "one line, above all the added effects");
 }
+
+/// #2326: an effect dragged from the Effects panel onto Effect Controls is applied to the clip shown
+/// there, not to the clip the Timeline would pick; a drag that ends elsewhere does not touch it.
+#[test]
+fn effect_dropped_on_effect_controls_applies_to_the_selected_clip() {
+    let (mut d, clip) = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.ok("ui.set", json!({"effectsSearch": "Gaussian Blur"}));
+    d.frames(3);
+    let effects_of = |d: &Driver, id: u64| -> Vec<String> {
+        let s = &d.harness.state().session;
+        s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1.effects.iter().map(|e| e.effect.clone()).collect()
+    };
+    assert!(!effects_of(&d, clip.id).contains(&"gaussian_blur".to_string()));
+    let undo = d.undo_len();
+    d.rect("effects.item.gaussian_blur");
+    let to = d.rect("effectControls.lane");
+    d.ok("ui.drag", json!({"from": {"id": "effects.item.gaussian_blur"}, "to": {"x": to[0] + to[2] / 2.0, "y": to[1] + to[3] / 2.0}, "steps": 8}));
+    d.frames(3);
+    assert!(effects_of(&d, clip.id).contains(&"gaussian_blur".to_string()), "applied to the selected clip");
+    assert_eq!(d.undo_len(), undo + 1, "one undo step");
+}

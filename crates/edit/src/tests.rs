@@ -1079,3 +1079,30 @@ fn moving_an_edge_keeps_the_media_under_the_timeline() {
         }
     }
 }
+
+#[test]
+fn trim_caption_shorter_than_min_duration_does_not_cross_bounds() {
+    use filmcraft_project::{Caption, CaptionFormat, CaptionTrack};
+    for edge in [Edge::In, Edge::Out] {
+        let mut fx = Fx::new();
+        let tid = TrackId(900);
+        let mut tr = CaptionTrack::new(tid, "c".into(), CaptionFormat::Subtitle);
+        for (id, start) in [(1, 0), (2, 1000)] {
+            tr.captions.push(Caption {
+                id: ClipId(id),
+                start: Tick(start),
+                duration: Tick(1000),
+                text: "x".into(),
+                speaker: None,
+                cue_id: None,
+                settings: String::new(),
+            });
+        }
+        fx.seq.caption_tracks.push(tr);
+        let ctx = Fx::ctx(&mut fx.next);
+        let _ = crate::captions::trim_caption(&mut fx.seq, ClipId(2), edge, Tick(5), &ctx);
+        let c = fx.seq.find_caption(ClipId(2)).unwrap().1;
+        assert!(c.start >= Tick(1000), "{edge:?}: start moved back into previous caption: {:?}", c.start);
+        assert!(c.duration >= Tick(1000), "{edge:?}: caption shrank: {:?}", c.duration);
+    }
+}

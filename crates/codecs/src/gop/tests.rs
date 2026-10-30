@@ -787,3 +787,38 @@ fn long_gop_continue_does_not_restart_for_the_next_frame() {
     assert_eq!(s.resets.load(Ordering::Relaxed), resets);
     assert!(s.decodes.load(Ordering::Relaxed) - decodes <= 8 + 2);
 }
+
+#[test]
+fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
+    let pool = Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET).tiered(RECENT, HARD_DECODERS));
+    let s: Vec<Samples> = (0..3).map(|_| samples(300, 250, 3, false)).collect();
+    let c: Vec<GopCache> = (0..3).map(|_| GopCache::in_pool(None, pool.clone())).collect();
+    for k in 0..3 {
+        assert_eq!(index_of(&c[k].frame(&s[k], 10_000).expect("frame")), 10);
+    }
+    assert!(pool.bytes.load(Ordering::Relaxed) > 0);
+    assert_eq!(pool.decoders.load(Ordering::Relaxed), 3);
+
+    // a cache another thread holds (it is decoding) keeps its frames and decoder
+    let busy = c[2].shared.state.lock().unwrap();
+    let held_bytes = busy.bytes;
+    pool.release_idle();
+    assert_eq!(busy.bytes, held_bytes);
+    assert!(busy.decoder.is_some() && !busy.frames.is_empty());
+    drop(busy);
+    for k in 0..2 {
+        let st = c[k].shared.state.lock().unwrap();
+        assert!(st.frames.is_empty() && st.drafts.is_empty() && st.bytes == 0 && st.decoder.is_none() && st.spare.is_empty());
+    }
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), held_bytes, "only the busy cache still counts");
+    assert_eq!(pool.decoders.load(Ordering::Relaxed), 1);
+
+    // an emptied cache decodes again from its sync sample, and a second release is harmless
+    assert_eq!(index_of(&c[0].frame(&s[0], 20_000).expect("frame")), 20);
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), held_bytes + c[0].shared.state.lock().unwrap().bytes);
+    // the cache that was in use is idle now: nothing is left, and a second release is harmless
+    pool.release_idle();
+    pool.release_idle();
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), 0);
+    assert_eq!(pool.decoders.load(Ordering::Relaxed), 0);
+}

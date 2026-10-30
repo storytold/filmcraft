@@ -3297,6 +3297,7 @@
 	Ultra Key	울트라 키
 	Uncompressed (PCM)	비압축(PCM)
 	Underline	밑줄
+	Strikethrough	취소선
 	Undo	실행 취소
 	Undock Panel	패널 도킹 해제
 	Ungroup	그룹 해제
@@ -3604,3 +3605,8 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	제어 서버가 비활성화되었습니다: FILMCRAFT_CONTROL_TOKEN에는 64자리 무작위 16진수 문자가 필요합니다(docs/control-protocol.md 참조)
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).

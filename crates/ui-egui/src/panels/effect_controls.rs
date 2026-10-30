@@ -126,6 +126,44 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     out
 }
 
+/// An effect (or preset) dragged from the Effects panel and released over this panel is applied to
+/// the clip shown here, so it need not be aimed at the clip in the Timeline (#2326). Transitions
+/// need an edge, so they stay Timeline drops.
+fn drop_effect(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, clips: &[(ClipId, TrackItem, TrackKind)]) {
+    let Some(effect) = crate::panels::dragged_effect(ui) else { return };
+    let is_transition = filmcraft_project::find_effect(&effect)
+        .is_some_and(|d| matches!(d.kind, filmcraft_project::EffectKind::VideoTransition | filmcraft_project::EffectKind::AudioTransition));
+    let ctx = ui.ctx().clone();
+    let over = ctx.pointer_hover_pos().is_some_and(|p| rect.contains(p) && ctx.layer_id_at(p) == Some(ui.layer_id()));
+    if is_transition || !over {
+        return;
+    }
+    app.auto.add("effectControls.dropTarget", rect, "drop an effect here");
+    ui.painter().rect_stroke(rect.shrink(1.0), 3.0, Stroke::new(2.0, app.tokens.accent), egui::StrokeKind::Inside);
+    if !ctx.input(|i| i.pointer.any_released()) {
+        return;
+    }
+    // the video clip first; its linked audio clip takes audio effects the video clip refuses
+    let mut result = Err(filmcraft_engine::EngineError::NoSequence);
+    for (clip, _, _) in clips {
+        let params_clips = json!([clip.0]);
+        result = if let Some(name) = effect.strip_prefix("preset:") {
+            app.session.execute("presets.apply", json!({"preset": name, "clips": params_clips}))
+        } else if let Some(name) = effect.strip_prefix(crate::panels::LUMETRI_PRESET_PREFIX) {
+            app.session.execute("lumetri.applyPreset", json!({"name": name, "clips": params_clips}))
+        } else {
+            app.session.execute("effects.apply", json!({"effect": effect, "clips": params_clips}))
+        };
+        if result.is_ok() {
+            break;
+        }
+    }
+    if let Err(e) = result {
+        app.ui.status = e.to_string();
+    }
+    crate::panels::clear_drag(ui);
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
@@ -140,6 +178,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         crate::dock::placeholder(ui, rect, &t, tl!("(no clip selected)"));
         return;
     };
+    drop_effect(app, ui, rect, &clips);
     // Keep the immutable project snapshot alive while UI commands mutate the session.
     // Cloning a sequence here copies every clip and effect on every redraw.
     let project = app.session.project.clone();
@@ -741,6 +780,52 @@ fn param_value_widget(
         }
         (ParamKind::Path, _) => {
             crate::panels::masks::path_value(app, vui, clip, idx, mask, actions);
+        }
+        // a text layer's Font and Font Style pick from the installed families and styles, as the
+        // Text panel's drop-downs do (#3539)
+        (ParamKind::Text, ParamValue::Text(current)) if e.effect == filmcraft_project::graphic::TEXT_LAYER && matches!(pd.id, "font" | "font_style") => {
+            if !filmcraft_text::fonts::system_scanned() {
+                filmcraft_text::fonts::scan_system();
+            }
+            let fams = filmcraft_text::families();
+            let salt = ("ec-font", clip.0, idx, pd.id);
+            // the value column can be narrower than the usual drop-down; keep the button inside it
+            let w = 150.0_f32.min(vui.available_width()).max(40.0);
+            let prefix = format!("effectControls.text.{}.{}.option", idx, pd.id);
+            let combo = if pd.id == "font" {
+                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
+                    for (f, _) in &fams {
+                        let r = ui.selectable_label(f == current, f);
+                        app.auto.add(&format!("{prefix}.{f}"), r.rect, f);
+                        if r.clicked() {
+                            set = Some(json!(f));
+                        }
+                    }
+                })
+            } else {
+                let family = match e.param("font").map(|p| &p.value) {
+                    Some(ParamValue::Text(f)) => f.as_str(),
+                    _ => "",
+                };
+                let mut styles: Vec<&str> =
+                    fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(family)).map(|(_, s)| s.iter().map(String::as_str).collect()).unwrap_or_default();
+                for extra in ["Bold", "Italic", "Bold Italic"] {
+                    if !styles.contains(&extra) {
+                        styles.push(extra);
+                    }
+                }
+                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).show_ui(vui, |ui| {
+                    for st in styles {
+                        let r = ui.selectable_label(st == current, st);
+                        app.auto.add(&format!("{prefix}.{st}"), r.rect, st);
+                        if r.clicked() {
+                            set = Some(json!(st));
+                        }
+                    }
+                })
+            };
+            let r = crate::widgets::accessible_name(combo.response, crate::i18n::t(pd.label));
+            app.auto.add(&format!("effectControls.text.{}.{}", idx, pd.id), r.rect, pd.label);
         }
         (ParamKind::Text, ParamValue::Text(s)) if !pd.id.ends_with("_lut") => {
             // edited in a buffer; committed (one undo step) when the field loses focus

@@ -60,6 +60,7 @@ impl FilmcraftApp {
             textures: HashMap::new(),
             thumb_used: HashMap::new(),
             control_rx: None,
+            control_notice: None,
             pending_panel_raise: None,
             control_input_only: false,
             native_window_focused: None,
@@ -136,6 +137,13 @@ impl FilmcraftApp {
     pub fn with_control_input_only(mut self, rx: Receiver<ControlRequest>) -> Self {
         self.control_input_only = true;
         self.with_control(rx)
+    }
+
+    /// `--control` was given but the control server is not serving: keep the reason available to
+    /// the status bar (drawn whenever it is idle), where a user or an agent can see it (#3436).
+    pub fn with_control_notice(mut self, notice: crate::ControlNotice) -> Self {
+        self.control_notice = Some(notice);
+        self
     }
 
     pub fn services(&self) -> Arc<dyn Services> {

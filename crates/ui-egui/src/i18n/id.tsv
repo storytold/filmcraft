@@ -1045,6 +1045,7 @@
 	All Caps	Semua Kapital
 	Small Caps	Kapital Kecil
 	Underline	Garis Bawah
+	Strikethrough	Coret
 	OpenType	OpenType
 	Kerning	Kerning
 	Ligatures	Ligatur
@@ -3583,3 +3584,8 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Server kontrol dinonaktifkan: FILMCRAFT_CONTROL_TOKEN harus berisi 64 karakter heksadesimal acak (lihat docs/control-protocol.md)
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).

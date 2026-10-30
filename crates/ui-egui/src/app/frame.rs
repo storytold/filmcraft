@@ -85,6 +85,21 @@ impl FilmcraftApp {
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
             }
         }
+        // The control server's startup notice (#3436): a session that asked for `--control` must
+        // be able to see that it is not serving, whenever it looks. Any real status replaces it;
+        // it comes back once that clears. Each cause translates as a whole sentence, so the
+        // status bar reads in the interface language throughout.
+        if self.ui.status.is_empty()
+            && let Some(notice) = &self.control_notice
+        {
+            match notice {
+                crate::ControlNotice::Token => {
+                    self.ui.status =
+                        tl!("The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)")
+                            .into()
+                }
+            }
+        }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
         ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
         let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
