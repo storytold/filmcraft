@@ -86,7 +86,20 @@ impl FilmcraftApp {
             }
         }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
-        ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
+        // Render as a selectable Label so the user can click-drag to select and copy the text
+        // (#2295). Reserve the left portion; the right is used by job_status().
+        let text_rect = egui::Rect::from_min_max(
+            egui::pos2(sb.min.x + 10.0, sb.min.y),
+            egui::pos2(sb.max.x - 240.0, sb.max.y),
+        );
+        let mut text_ui = ui.new_child(egui::UiBuilder::new().max_rect(text_rect).id_salt("status-bar-text"));
+        text_ui.add(
+            egui::Label::new(egui::RichText::new(&hint).color(t.text_dim).size(11.0))
+                .selectable(true)
+                .truncate(),
+        );
+        // Click on the non-text area of the status bar (or anywhere in it outside a selection
+        // drag) clears the transient status message.
         let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
         if resp.clicked() {
             self.ui.status.clear();
