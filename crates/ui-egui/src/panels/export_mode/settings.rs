@@ -1,5 +1,5 @@
 use super::{
-    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
+    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Preset, H264Profile,
     HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, pos2, vec2,
 };
 
@@ -495,6 +495,13 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     let labels: Vec<(String, bool)> = o.iter().map(|p| (p.label().to_string(), true)).collect();
                     if let Some(i) = combo(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0) {
                         s.h264_profile = o[i];
+                    }
+                });
+                row(ui, t, tl!("Encoding Speed"), |ui| {
+                    let o = [H264Preset::Speed, H264Preset::Balanced, H264Preset::Quality];
+                    let labels: Vec<(String, bool)> = o.iter().map(|p| (p.label().to_string(), true)).collect();
+                    if let Some(i) = combo(ui, reg, "export.video.encodingSpeed", s.h264_preset.label(), &labels, 120.0) {
+                        s.h264_preset = o[i];
                     }
                 });
                 row(ui, t, tl!("Level"), |ui| {

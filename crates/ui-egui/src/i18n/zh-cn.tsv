@@ -2908,6 +2908,7 @@
 	Maximum Bitrate	最大码率
 	Quality (CRF)	质量 (CRF)
 	Key Frame Distance	关键帧间隔
+	Encoding Speed	编码速度
 	Quality	质量
 	Render at Maximum Depth	以最大深度渲染
 	Use Maximum Render Quality	使用最大渲染质量

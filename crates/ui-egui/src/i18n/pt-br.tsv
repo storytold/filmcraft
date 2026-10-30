@@ -2919,6 +2919,7 @@
 	Maximum Bitrate	Taxa de bits máxima
 	Quality (CRF)	Qualidade (CRF)
 	Key Frame Distance	Distância entre quadros-chave
+	Encoding Speed	Velocidade de codificação
 	Quality	Qualidade
 	Render at Maximum Depth	Renderizar na profundidade máxima
 	Use Maximum Render Quality	Usar a qualidade máxima de renderização

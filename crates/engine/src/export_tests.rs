@@ -745,6 +745,19 @@ fn hardware_encoding_is_off_unless_asked_for() {
 }
 
 #[test]
+fn h264_preset_param_picks_the_encoding_speed() {
+    use filmcraft_export::H264Preset::{Balanced, Quality, Speed};
+    let s = demo();
+    let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| st.h264_preset);
+    assert_eq!(setting(json!({"path": "x.mp4"})).unwrap(), Balanced);
+    assert_eq!(setting(json!({"path": "x.mp4", "h264Preset": "speed"})).unwrap(), Speed);
+    assert_eq!(setting(json!({"path": "x.mp4", "h264Preset": "quality"})).unwrap(), Quality);
+    assert_eq!(setting(json!({"path": "x.mp4", "settings": {"h264Preset": "speed"}})).unwrap(), Speed);
+    let e = setting(json!({"path": "x.mp4", "h264Preset": "turbo"})).unwrap_err().to_string();
+    assert!(e.contains("speed | balanced | quality"), "{e}");
+}
+
+#[test]
 fn crf_param_picks_constant_quality() {
     use filmcraft_export::BitrateMode::{Cbr, Crf, Vbr1Pass};
     let s = demo();

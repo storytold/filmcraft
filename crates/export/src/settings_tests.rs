@@ -1082,6 +1082,30 @@ fn h264_profile_level_and_keyframes() {
 }
 
 #[test]
+fn h264_encoding_speed_reaches_the_encoder() {
+    // the preset is written into the stream's encoder-settings SEI (`preset=…`)
+    let (p, seq, m) = matte([0.5, 0.5, 0.5, 1.0], 320, 180, None);
+    let dir = Scratch::new("encoding-speed");
+    for (preset, tag) in [(H264Preset::Speed, "preset=speed"), (H264Preset::Balanced, "preset=balanced"), (H264Preset::Quality, "preset=quality")] {
+        let path = dir.path(&format!("{tag}.mp4"));
+        let s = ExportSettings { format: Format::H264, path: path.clone(), h264_preset: preset, include_audio: false, ..Default::default() };
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.windows(tag.len()).any(|w| w == tag.as_bytes()), "{preset:?}: no `{tag}` in the stream");
+    }
+}
+
+#[test]
+fn h264_encoding_speed_is_optional_in_settings_json() {
+    let s: ExportSettings = serde_json::from_str(r#"{"format":"h264"}"#).unwrap();
+    assert_eq!(s.h264_preset, H264Preset::Balanced, "older presets and projects keep the old encoder settings");
+    let s: ExportSettings = serde_json::from_str(r#"{"format":"h264","h264Preset":"speed"}"#).unwrap();
+    assert_eq!(s.h264_preset, H264Preset::Speed);
+    let back: ExportSettings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert_eq!(back.h264_preset, H264Preset::Speed);
+}
+
+#[test]
 fn video_limiter_clamps_luma() {
     let (p, seq, m) = matte([1.0, 1.0, 1.0, 1.0], 64, 36, None);
     let dir = Scratch::new("limiter");

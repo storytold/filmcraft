@@ -2914,6 +2914,7 @@
 	Maximum Bitrate	最大ビットレート
 	Quality (CRF)	品質 (CRF)
 	Key Frame Distance	キーフレーム間隔
+	Encoding Speed	エンコード速度
 	Quality	画質
 	Render at Maximum Depth	最大深度でレンダリングする
 	Use Maximum Render Quality	最高レンダリング画質を使用する

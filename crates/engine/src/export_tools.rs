@@ -263,6 +263,9 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
     if let Some(v) = crate::commands::checked_u32_p(p, "keyframeDistance", cmd)? {
         settings.keyframe_distance = Some(v);
     }
+    if let Some(v) = str_p(p, "h264Preset") {
+        settings.h264_preset = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "h264Preset: speed | balanced | quality"))?;
+    }
     if let Some(v) = p.get("hardwareEncoding") {
         settings.hardware_encoding = parse_hardware_encoding(v, cmd)?;
     }

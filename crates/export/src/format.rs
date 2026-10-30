@@ -2,7 +2,7 @@ use super::output::OutputSink;
 use super::run::validate_range;
 use super::{
     Arc, AudioCodec, AudioSettings, BitrateMode, Deserialize, ExportEffects, ExportError, ExportMetadata, ExrCompression, FieldOrder, FrameRate, GpuRendering,
-    H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Result, SampleEntry, Scaling, Serialize, Tick, TimeRange,
+    H264Preset, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Result, SampleEntry, Scaling, Serialize, Tick, TimeRange,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -314,6 +314,9 @@ pub struct ExportSettings {
     pub pixel_aspect: Option<(u32, u32)>,
     pub field_order: FieldOrder,
     pub h264_profile: H264Profile,
+    /// Speed / quality preset of the built-in H.264 encoder (Balanced unless set).
+    #[serde(default)]
+    pub h264_preset: H264Preset,
     /// H.264 level × 10 (41 = 4.1); None = the lowest level that fits. A level below what the
     /// stream needs is raised.
     pub h264_level: Option<u8>,
@@ -442,6 +445,7 @@ impl Default for ExportSettings {
             pixel_aspect: None,
             field_order: FieldOrder::Progressive,
             h264_profile: H264Profile::High,
+            h264_preset: H264Preset::Balanced,
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
             crf: DEFAULT_CRF,

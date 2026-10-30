@@ -2,7 +2,7 @@ use super::convert::{Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv422_10, rgb
 use super::format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PrepareAhead, VideoEncoder};
 use super::stats::{Stage, timed};
-use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat};
+use super::{BitrateMode, ExportError, FrameRate, H264Preset, H264Profile, Result, SampleEntry, SampleFormat};
 use std::sync::{Arc, Mutex, PoisonError};
 
 struct MjpegEncoder {
@@ -476,6 +476,11 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
         H264Profile::Baseline => filmcraft_h264enc::Profile::Baseline,
         H264Profile::Main => filmcraft_h264enc::Profile::Main,
         H264Profile::High => filmcraft_h264enc::Profile::High,
+    };
+    cfg.preset = match s.h264_preset {
+        H264Preset::Speed => filmcraft_h264enc::Preset::Speed,
+        H264Preset::Balanced => filmcraft_h264enc::Preset::Balanced,
+        H264Preset::Quality => filmcraft_h264enc::Preset::Quality,
     };
     cfg.level = s.h264_level;
     if let Some((n, d)) = s.pixel_aspect {

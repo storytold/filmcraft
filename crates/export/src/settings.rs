@@ -61,6 +61,29 @@ impl H264Profile {
     }
 }
 
+/// Speed / quality trade-off of FilmCraft's own H.264 encoder (Export ▸ Encoding Speed). Hardware
+/// encoders ignore it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum H264Preset {
+    /// Smaller motion search, no sub-partitions or 8x8 intra: the fastest software encode.
+    Speed,
+    #[default]
+    Balanced,
+    /// Wider motion search and rate-distortion decisions: slowest, best compression.
+    Quality,
+}
+
+impl H264Preset {
+    pub fn label(self) -> &'static str {
+        match self {
+            H264Preset::Speed => "Fastest",
+            H264Preset::Balanced => "Balanced",
+            H264Preset::Quality => "Best Quality",
+        }
+    }
+}
+
 /// Export ▸ Hardware encoding: whether H.264 may be encoded by the system's hardware video encoder
 /// (VideoToolbox on macOS, NVENC on NVIDIA GPUs on Windows) instead of FilmCraft's own encoder. Off
 /// by default: hardware encoders make different streams, and exports are otherwise byte-identical
@@ -686,6 +709,9 @@ impl ExportSettings {
                         BitrateMode::Crf => format!(" {}", self.crf),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
                     };
+                    if self.h264_preset != H264Preset::Balanced {
+                        v += &format!(", {} encoding", self.h264_preset.label());
+                    }
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::Hevc => {

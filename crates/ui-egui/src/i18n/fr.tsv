@@ -2917,6 +2917,7 @@
 	Maximum Bitrate	Débit maximal
 	Quality (CRF)	Qualité (CRF)
 	Key Frame Distance	Intervalle entre images clés
+	Encoding Speed	Vitesse d'encodage
 	Quality	Qualité
 	Render at Maximum Depth	Rendu à la profondeur maximale
 	Use Maximum Render Quality	Utiliser la qualité de rendu maximale
