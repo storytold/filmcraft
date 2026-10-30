@@ -1,0 +1,28 @@
+[package]
+name = "filmcraft-updater"
+description = "FilmCraft self-update: release discovery over GitHub, checksum-verified download, safe extraction, swap-at-relaunch with a .prev backup and automatic rollback of releases that fail to start"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+semver = "1"
+sha2 = "0.10"
+# Pure-Rust gzip and tar: no C code, no `unsafe` of ours.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = { version = "0.4", default-features = false }
+# Same pure-Rust TLS stack as the speech model downloader (rustls + RustCrypto, OS certificate verifier).
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+rustls = { version = "0.23", default-features = false }
+rustls-rustcrypto = "0.0.2-alpha"
+
+[dev-dependencies]
+tempfile = "3"

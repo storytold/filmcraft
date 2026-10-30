@@ -85,13 +85,65 @@ impl FilmcraftApp {
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
             }
         }
+        // A staging download outlives the status bar's few seconds: keep its hint drawn. Logic sets
+        // it once; this restores it after the timeout above clears it. Only while staging (a long
+        // download) — a check's transient statuses come and go as before.
+        if self.ui.status.is_empty() && matches!(&self.updates.phase, crate::updates::Phase::Staging) {
+            self.ui.status = tl!("Downloading and verifying the FilmCraft update…").into();
+        }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
         ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
         let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
         if resp.clicked() {
             self.ui.status.clear();
         }
+        self.update_badge(ui, sb, &t);
         self.job_status(ui, sb, &t);
+    }
+
+    /// A quiet, persistent restart affordance once a verified build is staged.
+    fn update_badge(&mut self, ui: &mut egui::Ui, status_bar: egui::Rect, t: &Tokens) {
+        use std::sync::atomic::Ordering;
+        if self.session.jobs.iter().any(|j| !j.progress.finished.load(Ordering::Relaxed)) {
+            return;
+        }
+        let Some(version) = self.updates.ready_version().map(str::to_string) else { return };
+        let badge = egui::Rect::from_min_size(
+            egui::pos2((status_bar.right() - 310.0).max(status_bar.left() + 120.0), status_bar.top() + 1.0),
+            egui::vec2(300.0, (status_bar.height() - 2.0).max(1.0)),
+        );
+        let mut restart = false;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(badge), |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.label(egui::RichText::new(tlf!("FilmCraft {version} ready", version)).color(t.text_dim).size(11.0));
+                let response = ui.small_button(tl!("Restart to apply"));
+                self.auto.add("status.update.apply", response.rect, tl!("Restart to apply update"));
+                restart = response.clicked();
+            });
+        });
+        if restart && let Err(error) = self.apply_staged_update(ui.ctx()) {
+            self.ui.status = error;
+        }
+    }
+
+    /// Make recovery durable before handing control to the tiny process that swaps binaries.
+    fn apply_staged_update(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = ctx;
+            return Err("automatic updates are only available in the desktop app".into());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.session.sync_persistence();
+            if let Some(persistence) = self.session.persistence.as_ref() {
+                persistence.flush();
+            }
+            self.updates.spawn_apply_helper()?;
+            self.quit_confirmed = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            Ok(())
+        }
     }
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview

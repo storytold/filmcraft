@@ -1846,6 +1846,7 @@ dependencies = [
  "filmcraft-render",
  "filmcraft-time",
  "filmcraft-ui-egui",
+ "filmcraft-updater",
  "glob",
  "log",
  "muda",
@@ -1855,6 +1856,7 @@ dependencies = [
  "open",
  "pollster 1.0.1",
  "rfd",
+ "semver",
  "serde_json",
  "subtle",
  "sys-locale",
@@ -2511,6 +2513,7 @@ dependencies = [
  "filmcraft-text",
  "filmcraft-time",
  "filmcraft-tts",
+ "filmcraft-updater",
  "image",
  "log",
  "pollster 1.0.1",
@@ -2522,6 +2525,24 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "unicode-bidi",
  "web-time",
+]
+
+[[package]]
+name = "filmcraft-updater"
+version = "0.13.0"
+dependencies = [
+ "flate2",
+ "log",
+ "rustls",
+ "rustls-rustcrypto",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "ureq",
 ]
 
 [[package]]

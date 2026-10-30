@@ -41,6 +41,7 @@ impl FilmcraftApp {
             audio: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
+            updates: Default::default(),
             // Unsaved changes left by a session that died are offered first thing.
             dialog: recovery.then_some(Dialog::Recovery),
             updates_rt: Default::default(),
@@ -299,6 +300,20 @@ impl FilmcraftApp {
         self.ui_clock = self.ui_clock.max(ctx.input(|i| i.time));
         // a native file dialog's answer first, so the panels draw what it chose (#260)
         self.poll_native_dialog(ctx);
+        if self.updates.poll() {
+            self.ui.status = match &self.updates.phase {
+                updates::Phase::Checking => tl!("Checking for FilmCraft updates…").into(),
+                updates::Phase::Staging => tl!("Downloading and verifying the FilmCraft update…").into(),
+                updates::Phase::UpToDate => tl!("FilmCraft is up to date.").into(),
+                updates::Phase::Throttled => tl!("FilmCraft was checked recently.").into(),
+                updates::Phase::Error(error) => tlf!("Update check failed: {error}", error),
+                updates::Phase::Ready { .. } | updates::Phase::Idle => String::new(),
+            };
+            ctx.request_repaint();
+        }
+        if self.updates.working() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.logic_theme(ctx);
         let now = self.logic_clock(ctx);
         self.logic_control(ctx);

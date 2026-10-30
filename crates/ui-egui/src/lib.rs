@@ -63,6 +63,7 @@ pub mod source_playback;
 pub mod state;
 pub mod theme;
 mod theme_favorites;
+pub mod updates;
 pub mod updates_ui;
 pub mod widgets;
 
@@ -177,6 +178,8 @@ pub struct FilmcraftApp {
     /// Audio during scrubbing (#211).
     pub scrub: scrub::ScrubAudio,
     pub hooks: HostHooks,
+    /// Native self-update check/staging state. No project data is ever sent to the updater.
+    pub updates: updates::UpdateState,
     pub dialog: Option<Dialog>,
     pub(crate) updates_rt: updates_ui::Runtime,
     pub file_dialogs: panels::file_dialogs::FileDialogState,
