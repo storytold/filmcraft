@@ -10,8 +10,11 @@ use crate::{Error, Report, Result};
 
 type Uid = [u8; 12];
 
-// One budget for the whole import, including repeated references and source lookups.
-const MAX_REFERENCE_VISITS: usize = 65_536;
+// Discovery walks the stored graph once. Expansion can legitimately do much more
+// work (especially dense gain automation), so it has a separate, 16x larger budget.
+// Both allowances cover the whole document, never reset per track or composition.
+const MAX_DISCOVERY_VISITS: usize = 65_536;
+const MAX_EXPANSION_VISITS: usize = 1_048_576;
 const MAX_SEGMENT_DEPTH: usize = 32;
 
 fn traversal_error(message: &str) -> Error {
@@ -27,7 +30,8 @@ struct R<'a, 'b> {
     media: HashMap<Uid, Vec<u8>>,
     doc: Document,
     sources: HashMap<(Uid, u32, String), usize>,
-    remaining_visits: usize,
+    remaining_discovery_visits: usize,
+    remaining_expansion_visits: usize,
 }
 
 pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
@@ -44,7 +48,8 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
         media: HashMap::new(),
         doc: Document::default(),
         sources: HashMap::new(),
-        remaining_visits: MAX_REFERENCE_VISITS,
+        remaining_discovery_visits: MAX_DISCOVERY_VISITS,
+        remaining_expansion_visits: MAX_EXPANSION_VISITS,
     };
     let mob_list = r.refs(head, "OMFI:HEAD:Mobs");
     let mob_list = if mob_list.is_empty() {
@@ -95,8 +100,10 @@ impl R<'_, '_> {
     }
 
     fn spend_visits(&mut self, count: usize) -> Result<()> {
-        self.remaining_visits =
-            self.remaining_visits.checked_sub(count).ok_or_else(|| traversal_error("reference traversal budget exceeded (65,536 visits)"))?;
+        self.remaining_expansion_visits = self
+            .remaining_expansion_visits
+            .checked_sub(count)
+            .ok_or_else(|| traversal_error("composition/automation expansion budget exceeded (1,048,576 visits)"))?;
         Ok(())
     }
 
@@ -164,7 +171,8 @@ impl R<'_, '_> {
     }
 
     fn collect_refs(&mut self, o: u32, out: &mut HashSet<Uid>, visited: &mut HashSet<u32>, depth: usize) -> Result<()> {
-        self.visit()?;
+        self.remaining_discovery_visits =
+            self.remaining_discovery_visits.checked_sub(1).ok_or_else(|| traversal_error("reference discovery budget exceeded (65,536 visits)"))?;
         if !visited.insert(o) {
             return Ok(());
         }

@@ -66,10 +66,12 @@ The AAF importer likewise reports recursive nested compositions as gaps.
 OMF import rejects cycles in sequence/effect inputs and in master/file-source segment lookups
 with an OMF parse error. Segment nesting is limited to 32 edges (64 during reference discovery).
 Source-mob chains exceeding 16 edges, including cycles, likewise return an error instead of audio gaps.
-Discovery, composition slots, expansion and source-segment lookups share a 65,536-visit budget
-for the whole document. Materialised lists in early-exit source lookups, effect slots and gain
-points also consume that budget.
-Repeated references consume that budget even when they produce no clips. References on the
+Reference discovery has its own 65,536-visit budget. Composition slots, segment expansion,
+source lookups and automation share a separate 1,048,576-visit budget (16 times larger), so
+dense automation does not compete with discovery. Both budgets cover the whole document,
+without resetting between tracks or compositions. Materialised lists in early-exit source
+lookups, effect slots and gain points consume the expansion budget.
+Repeated references consume the relevant budget even when they produce no clips. References on the
 current recursion path detect cycles; reusing a segment elsewhere still preserves every edit
 in its original order. Exceeding a depth or work limit returns an error rather than a partial
 import. These limits bound graph traversal; Bento/AAF value-size amplification is a separate concern.
@@ -120,6 +122,7 @@ OMF carries no video at all.
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.
 - `src/omf/traversal_tests.rs`: synthetic Bento graphs exercise cyclic sequences/effects and
-  source lookups, repeated-reference/automation-point expansion, shared budgets across tracks/compositions,
+  source lookups, repeated-reference/automation-point expansion, independent discovery/expansion budgets,
+  preservation of all 131,072 gain points in a dense-automation import, shared expansion budgets across tracks/compositions,
   the depth boundary, preserved repeated edits, and truncation/bit-flip mutations under
   `catch_unwind`. The master-source cycle regression aborts with stack overflow before the fix.

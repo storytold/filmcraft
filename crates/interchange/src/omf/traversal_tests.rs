@@ -1,6 +1,9 @@
 //! Small synthetic Bento graphs; no external media or binary fixtures.
 use super::{ImportOptions, bento::Writer, import, read};
-use crate::{Error, Report, comp::CItem};
+use crate::{
+    Error, Report,
+    comp::{CItem, Gain},
+};
 use filmcraft_time::Tick;
 
 struct Graph {
@@ -106,8 +109,8 @@ fn repeated_dag_expansion_is_bounded() {
     for empty in [false, true] {
         let mut g = Graph::new();
         let mut seg = if empty { g.sequence(&[]) } else { g.component(b"FILL") };
-        // Only 17 segment objects, but 131,071 visits even with no output items.
-        for _ in 0..16 {
+        // Only 21 segment objects, but 2,097,151 visits even with no output items.
+        for _ in 0..20 {
             seg = g.sequence(&[seg, seg]);
         }
         rejected(&g.finish(seg), "budget");
@@ -186,7 +189,7 @@ fn source_timecode_sequence_cycle_is_rejected() {
 fn source_lookup_expansion_is_bounded() {
     let mut g = Graph::new();
     let mut seg = g.component(b"FILL");
-    for _ in 0..16 {
+    for _ in 0..20 {
         seg = g.sequence(&[seg, seg]);
     }
     let clip = g.source_clip(b"MMOB", seg);
@@ -237,7 +240,7 @@ fn budget_is_shared_across_tracks_and_compositions() {
         let mut g = Graph::new();
         let mut seg = g.component(b"FILL");
         // Each expansion fits individually, but the whole document does not.
-        for _ in 0..14 {
+        for _ in 0..18 {
             seg = g.sequence(&[seg, seg]);
         }
         let slot = g.slot(seg);
@@ -292,35 +295,58 @@ fn mutated_reference_graphs_never_panic() {
 }
 
 #[test]
-fn repeated_discovery_references_consume_the_budget() {
-    let mut g = Graph::new();
-    let filler = g.component(b"FILL");
-    let seq = g.sequence(&vec![filler; u16::MAX as usize]);
-    rejected(&g.finish(seq), "budget");
+fn discovery_budget_is_independent_of_expansion_and_counts_repeated_references() {
+    // Discovery also visits the composition, slot and sequence: the first case
+    // uses exactly 65,536 visits and must leave expansion its own full allowance.
+    for count in [65_533, 65_534] {
+        let mut g = Graph::new();
+        let filler = g.component(b"FILL");
+        let seq = g.sequence(&vec![filler; count]);
+        let bytes = g.finish(seq);
+        if count == 65_533 {
+            let doc = read::read(&bytes, &mut Report::default()).unwrap();
+            assert_eq!(doc.compositions[0].tracks[0].items.len(), count);
+        } else {
+            rejected(&bytes, "reference discovery budget");
+        }
+    }
 }
 
 #[test]
 fn early_source_lookup_still_charges_the_reference_list() {
-    let mut g = Graph::new();
-    let filler = g.component(b"FILL");
-    let source = g.source_clip(b"SMOB", filler);
-    let master_seq = g.sequence(&vec![source; 1024]);
-    let clip = g.source_clip(b"MMOB", master_seq);
-    let top = g.sequence(&vec![clip; 128]);
-    rejected(&g.finish(top), "budget");
+    for count in [128, 1024] {
+        let mut g = Graph::new();
+        let filler = g.component(b"FILL");
+        let source = g.source_clip(b"SMOB", filler);
+        let master_seq = g.sequence(&vec![source; 1024]);
+        let clip = g.source_clip(b"MMOB", master_seq);
+        let top = g.sequence(&vec![clip; count]);
+        let bytes = g.finish(top);
+        if count == 128 {
+            let doc = read::read(&bytes, &mut Report::default()).unwrap();
+            let items = &doc.compositions[0].tracks[0].items;
+            assert_eq!(items.len(), count);
+            assert!(items.iter().all(|i| matches!(i, CItem::Clip(c) if c.source == 0)));
+        } else {
+            rejected(&bytes, "expansion budget");
+        }
+    }
 }
 
-#[test]
-fn repeated_gain_points_consume_the_budget() {
+fn automated_clips(count: usize) -> Vec<u8> {
     let mut g = Graph::new();
     let filler = g.component(b"FILL");
     let clip = g.source_clip(b"SMOB", filler);
-    let point = g.obj(b"CTLP");
-    let rational = [0, 0, 0, 1, 0, 0, 0, 1];
-    g.w.set(point, "OMFI:CTLP:Time", "omfi:Rational", &rational);
-    g.w.set(point, "OMFI:CTLP:Value", "omfi:DataValue", &rational);
+    let mut points = Vec::new();
+    for n in 0..1024i32 {
+        let point = g.obj(b"CTLP");
+        let rational = [n.to_be_bytes(), 1024i32.to_be_bytes()].concat();
+        g.w.set(point, "OMFI:CTLP:Time", "omfi:Rational", &rational);
+        g.w.set(point, "OMFI:CTLP:Value", "omfi:DataValue", &rational);
+        points.push(point);
+    }
     let value = g.component(b"VVAL");
-    g.refs(value, "OMFI:VVAL:PointList", &vec![point; 1024]);
+    g.refs(value, "OMFI:VVAL:PointList", &points);
     let effect = g.component(b"EFFE");
     let kind = g.obj(b"EDEF");
     g.w.set(kind, "OMFI:EDEF:EffectID", "omfi:UniqueName", b"omfi:effect:MonoAudioGain\0");
@@ -333,6 +359,32 @@ fn repeated_gain_points_consume_the_budget() {
         slots.push(slot);
     }
     g.refs(effect, "OMFI:EFFE:EffectSlots", &slots);
-    let top = g.sequence(&vec![effect; 128]);
-    rejected(&g.finish(top), "budget");
+    let top = g.sequence(&vec![effect; count]);
+    g.finish(top)
+}
+
+#[test]
+fn dense_automation_above_the_discovery_budget_preserves_every_point() {
+    // 131,072 expanded gain points, plus composition and source lookup work.
+    let bytes = automated_clips(128);
+    assert!(import(&bytes, &ImportOptions::default()).is_ok());
+    let doc = read::read(&bytes, &mut Report::default()).unwrap();
+    let items = &doc.compositions[0].tracks[0].items;
+    assert_eq!(items.len(), 128);
+    for item in items {
+        let CItem::Clip(c) = item else { panic!("expected clip") };
+        assert_eq!(c.source, 0);
+        let Some(Gain::Varying { linear, points }) = &c.gain else { panic!("expected automation") };
+        assert!(linear);
+        assert_eq!(points.len(), 1024);
+        for (n, &(time, value)) in points.iter().enumerate() {
+            assert_eq!(time, Tick(c.len.0 * n as i64 / 1024));
+            assert_eq!(value, n as f64 / 1024.0);
+        }
+    }
+}
+
+#[test]
+fn repeated_gain_points_consume_the_expansion_budget() {
+    rejected(&automated_clips(1024), "expansion budget");
 }
