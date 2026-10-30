@@ -266,9 +266,13 @@ impl Mp4Source {
             };
             aperture = vp.clean_aperture.and_then(|c| clean_aperture(c, (w, h)));
             let (w, h) = aperture.map_or((w, h), |r| (r.w as u32, r.h as u32));
-            // frame rate from the median sample duration
-            let mut durs: Vec<u32> = t.samples.iter().take(240).map(|s| s.duration).collect();
-            durs.sort_unstable();
+            // frame rate from the median picture duration (sample durations when the pictures
+            // share one time)
+            let mut durs = picture_durations(t.samples.iter().take(240).map(|s| s.pts));
+            if durs.is_empty() {
+                durs = t.samples.iter().take(240).map(|s| s.duration).collect();
+                durs.sort_unstable();
+            }
             let d = durs.get(durs.len() / 2).copied().unwrap_or(1).max(1);
             let rate = FrameRate::from_f64(t.timescale as f64 / d as f64);
             // A rate that rounds to zero (one sample per huge duration) can't be divided by.
@@ -727,6 +731,25 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
         return None;
     }
     Some(Mp4Source::open(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+/// The time from each picture to the next (track units, sorted): the gaps between the sorted
+/// presentation times. A sample's duration steps its decode time instead, and some phones (Android
+/// `VID….mp4`) advance decode times by 9 units of 90 kHz a sample while composition offsets show
+/// the pictures 1/60 s apart: their median sample duration read as 10000 fps. Empty when fewer
+/// than two pictures have distinct times.
+fn picture_durations(pts: impl Iterator<Item = i64>) -> Vec<u32> {
+    let mut pts: Vec<i64> = pts.collect();
+    pts.sort_unstable();
+    let mut d: Vec<u32> = pts
+        .windows(2)
+        .filter_map(|w| match w {
+            [a, b] => u32::try_from(b.saturating_sub(*a)).ok().filter(|&d| d > 0),
+            _ => None,
+        })
+        .collect();
+    d.sort_unstable();
+    d
 }
 
 /// Put the video samples of a constant-rate file whose pictures sit just off its frame grid back

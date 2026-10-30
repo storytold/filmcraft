@@ -420,3 +420,39 @@ fn rtmd_fields_reject_drop_frame_skipped_labels() {
     assert_eq!(df30(1, 0, 0), None);
     assert_eq!(df30(1, 0, 2), Some((0, 1, 0, 2, true)));
 }
+
+/// Android phones (`VID….mp4`, HEVC 4K60) step decode times by 9 units of 90 kHz a sample and
+/// show the pictures 1/60 s apart through composition offsets. The frame rate came from the
+/// sample durations and read 10000 fps, so a 4K60 clip in a 4K60 sequence was never native and
+/// New Sequence From Clip made a 10000 fps sequence.
+#[test]
+fn frame_rate_follows_the_pictures_not_the_decode_steps() {
+    let n = 12u16;
+    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+    let t = mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 90_000)).expect("track");
+    for k in 0..n {
+        let mut fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        fr.y.fill(100 + 60 * k);
+        let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
+        // decode time 9·k, presentation time 1500·k; the last sample runs to the end of the clip
+        let duration = if k + 1 < n { 9 } else { 1500 * u32::from(n) - 9 * u32::from(n - 1) };
+        mux.write_sample(t, WriteSample { data: &data, duration, composition_offset: 1491 * i32::from(k), is_sync: true }).expect("sample");
+    }
+    let src = Mp4Source::open("VID20261022185143.mp4", mux.finish().expect("finish").into_inner().into()).expect("open");
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
+    let luma = |k: i64| {
+        let f = src.video_frame(FrameRequest::full(Tick::from_rational(k, 1, 60))).expect("frame");
+        let l = f.luma8();
+        l.iter().map(|&v| u32::from(v)).sum::<u32>() / l.len().max(1) as u32
+    };
+    let seen: Vec<u32> = (0..i64::from(n)).map(luma).collect();
+    assert!(seen.windows(2).all(|w| w[0] < w[1]), "one picture per frame, in order: {seen:?}");
+}
+
+#[test]
+fn picture_durations_ignore_order_repeats_and_hostile_times() {
+    assert_eq!(picture_durations([0i64, 3000, 1500, 4500].into_iter()), vec![1500, 1500, 1500]);
+    assert!(picture_durations([7i64, 7, 7].into_iter()).is_empty());
+    assert!(picture_durations(std::iter::empty()).is_empty());
+    assert_eq!(picture_durations([i64::MIN, 0, i64::MAX].into_iter()), Vec::<u32>::new(), "gaps past u32 are left out");
+}
