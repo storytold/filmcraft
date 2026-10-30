@@ -428,17 +428,9 @@ fn rtmd_fields_reject_drop_frame_skipped_labels() {
 #[test]
 fn frame_rate_follows_the_pictures_not_the_decode_steps() {
     let n = 12u16;
-    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
-    let t = mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 90_000)).expect("track");
-    for k in 0..n {
-        let mut fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
-        fr.y.fill(100 + 60 * k);
-        let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
-        // decode time 9·k, presentation time 1500·k; the last sample runs to the end of the clip
-        let duration = if k + 1 < n { 9 } else { 1500 * u32::from(n) - 9 * u32::from(n - 1) };
-        mux.write_sample(t, WriteSample { data: &data, duration, composition_offset: 1491 * i32::from(k), is_sync: true }).expect("sample");
-    }
-    let src = Mp4Source::open("VID20261022185143.mp4", mux.finish().expect("finish").into_inner().into()).expect("open");
+    // decode time 9·k, presentation time 1500·k; the last sample runs to the end of the clip
+    let samples: Vec<(u32, i32)> = (0..n).map(|k| (if k + 1 < n { 9 } else { 1500 * u32::from(n) - 9 * u32::from(n - 1) }, 1491 * i32::from(k))).collect();
+    let src = timed_prores("VID20261022185143.mp4", &samples);
     assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
     let luma = |k: i64| {
         let f = src.video_frame(FrameRequest::full(Tick::from_rational(k, 1, 60))).expect("frame");
@@ -455,4 +447,47 @@ fn picture_durations_ignore_order_repeats_and_hostile_times() {
     assert!(picture_durations([7i64, 7, 7].into_iter()).is_empty());
     assert!(picture_durations(std::iter::empty()).is_empty());
     assert_eq!(picture_durations([i64::MIN, 0, i64::MAX].into_iter()), Vec::<u32>::new(), "gaps past u32 are left out");
+}
+
+/// A 64×32 ProRes MOV at 90 kHz with one sample per (duration, composition offset), each picture
+/// brighter than the one before.
+fn timed_prores(name: &str, samples: &[(u32, i32)]) -> Mp4Source {
+    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+    let t = mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 90_000)).expect("track");
+    for (k, &(duration, composition_offset)) in samples.iter().enumerate() {
+        let mut fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        fr.y.fill(100 + (60 * k as u16) % 900);
+        let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
+        mux.write_sample(t, WriteSample { data: &data, duration, composition_offset, is_sync: true }).expect("sample");
+    }
+    Mp4Source::open(name, mux.finish().expect("finish").into_inner().into()).expect("open")
+}
+
+/// 59.94 fps over 90 kHz: a frame lasts 1501.5 units, so the samples alternate 1501 and 1502 and
+/// their median alone reads 59.92 fps.
+#[test]
+fn frame_rate_of_durations_rounded_to_the_timescale() {
+    let src = timed_prores("a.mov", &(0..24).map(|k| (1501 + k % 2, 0)).collect::<Vec<_>>());
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_59_94));
+}
+
+/// #1282: phones stamp pictures just off their grid. 60 fps samples with every other picture 10
+/// units late are 1510 and 1490 apart, whose median alone reads 59.60 fps.
+#[test]
+fn frame_rate_of_pictures_just_off_their_grid() {
+    let src = timed_prores("a.mov", &(0..24).map(|k| (1500, if k % 2 == 1 { 10 } else { 0 })).collect::<Vec<_>>());
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
+}
+
+#[test]
+fn frame_duration_fits_the_grid_of_the_pictures() {
+    let at = |times: &[i64]| frame_duration(times.iter().copied());
+    assert_eq!(at(&[0, 1500, 3000, 4500]), Some(1500.0));
+    assert_eq!(at(&[4500, 0, 3000, 1500, 1500]), Some(1500.0), "order and repeats");
+    assert_eq!(at(&[0, 1500, 4500, 6000]), Some(1500.0), "a dropped frame skips a number");
+    let alternating: Vec<i64> = (0..240).map(|k| (k * 3003 + 1) / 2).collect();
+    assert!(at(&alternating).is_some_and(|d| (d - 1501.5).abs() < 0.01), "{:?}", at(&alternating));
+    assert_eq!(at(&[7, 7, 7]), None);
+    assert_eq!(at(&[]), None);
+    assert!(at(&[i64::MIN, 0, i64::MAX]).is_none_or(f64::is_finite), "hostile times");
 }

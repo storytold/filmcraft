@@ -266,15 +266,14 @@ impl Mp4Source {
             };
             aperture = vp.clean_aperture.and_then(|c| clean_aperture(c, (w, h)));
             let (w, h) = aperture.map_or((w, h), |r| (r.w as u32, r.h as u32));
-            // frame rate from the median picture duration (sample durations when the pictures
-            // share one time)
-            let mut durs = picture_durations(t.samples.iter().take(240).map(|s| s.pts));
-            if durs.is_empty() {
-                durs = t.samples.iter().take(240).map(|s| s.duration).collect();
-                durs.sort_unstable();
-            }
-            let d = durs.get(durs.len() / 2).copied().unwrap_or(1).max(1);
-            let rate = FrameRate::from_f64(t.timescale as f64 / d as f64);
+            // frame rate from the picture times; when the pictures share one time, from the decode
+            // times and the end of the last sample (a single sample has a duration too)
+            let decode_times = std::iter::once(0).chain(t.samples.iter().take(240).scan(0i64, |dts, s| {
+                *dts = dts.saturating_add(i64::from(s.duration));
+                Some(*dts)
+            }));
+            let d = frame_duration(t.samples.iter().take(240).map(|s| s.pts)).or_else(|| frame_duration(decode_times)).unwrap_or(1.0);
+            let rate = FrameRate::from_f64(t.timescale as f64 / d.max(1.0));
             // A rate that rounds to zero (one sample per huge duration) can't be divided by.
             let rate = if rate.num > 0 && rate.den > 0 { rate } else { FrameRate::default() };
             color = color_from(entry, w, h);
@@ -750,6 +749,38 @@ fn picture_durations(pts: impl Iterator<Item = i64>) -> Vec<u32> {
         .collect();
     d.sort_unstable();
     d
+}
+
+/// The frame duration (track units) of pictures at `times` (at most a few hundred): the median of
+/// the slopes between every two pictures of time against frame number, each picture's number
+/// counted in median gaps from the first (a dropped frame skips a number). The median gap alone is
+/// a neighbouring rate when the gaps are the frame duration rounded to the timescale (1501 and 1502
+/// at 59.94 fps over 90 kHz: 59.92 fps) or the pictures sit just off their grid (#1282: 60 fps
+/// pictures alternately 10 units late, 59.60 fps). The median slope also keeps the nominal rate of
+/// a track whose pictures shift once (a short sample in a coarse unit), which a fitted line or a
+/// mean of the gaps would spread over the whole track. None when fewer than two pictures have
+/// distinct times.
+fn frame_duration(times: impl Iterator<Item = i64>) -> Option<f64> {
+    let mut times: Vec<i64> = times.collect();
+    times.sort_unstable();
+    let gaps = picture_durations(times.iter().copied());
+    let median = f64::from(*gaps.get(gaps.len() / 2)?);
+    let first = *times.first()?;
+    let points: Vec<(f64, f64)> = times
+        .iter()
+        .map(|&t| {
+            let x = t.saturating_sub(first) as f64;
+            ((x / median).round(), x)
+        })
+        .collect();
+    let mut slopes: Vec<f64> = points
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| points.iter().skip(i + 1).filter(|b| b.0 != a.0).map(move |b| (b.1 - a.1) / (b.0 - a.0)))
+        .filter(|d| d.is_finite())
+        .collect();
+    slopes.sort_unstable_by(f64::total_cmp);
+    slopes.get(slopes.len() / 2).copied().filter(|&d| d > 0.0)
 }
 
 /// Put the video samples of a constant-rate file whose pictures sit just off its frame grid back
