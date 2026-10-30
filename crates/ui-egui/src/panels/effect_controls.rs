@@ -126,6 +126,32 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     out
 }
 
+/// The selected audio clips a Volume change on `clip` applies to, `clip` first (#3710): the panel
+/// shows one clip of a selection, and its Volume sets every selected audio clip's, as Audio Gain
+/// and the [ and ] keys do. `None` when the change is `clip`'s alone.
+fn volume_clips(app: &FilmcraftApp, clip: ClipId) -> Option<Vec<u64>> {
+    let seq = app.session.active_sequence()?;
+    let selected = filmcraft_engine::commands::with_links(&app.session, &app.session.state.selection);
+    let clips: Vec<u64> = std::iter::once(clip)
+        .chain(selected.into_iter().filter(|c| *c != clip))
+        .filter(|c| {
+            seq.find_item(*c).is_some_and(|(tid, it)| seq.track(tid).is_some_and(|t| t.kind == TrackKind::Audio && !t.locked) && it.effect("volume").is_some())
+        })
+        .map(|c| c.0)
+        .collect();
+    (clips.len() > 1 && clips.first() == Some(&clip.0)).then_some(clips)
+}
+
+/// `effects.setParam` for a parameter of `clip`'s Volume, on every clip of [`volume_clips`].
+fn volume_action(app: &FilmcraftApp, clip: ClipId, param: &str, value: Value) -> (String, Value) {
+    let mut p = json!({"effect": "volume", "param": param, "value": value});
+    match volume_clips(app, clip) {
+        Some(clips) => p["clips"] = json!(clips),
+        None => p["clip"] = json!(clip.0),
+    }
+    ("effects.setParam".into(), p)
+}
+
 /// An effect (or preset) dragged from the Effects panel and released over this panel is applied to
 /// the clip shown here, so it need not be aimed at the clip in the Timeline (#2326). Transitions
 /// need an edge, so they stay Timeline drops.
@@ -640,7 +666,13 @@ pub(crate) fn param_row(
     let id = egui::Id::unique(("pv", clip.0, idx, pkey));
     let set = param_value_widget(app, &mut vui, e, pd, &value, clip, idx, mask, pkey, id, t, actions);
     if let Some(v) = set {
-        actions.push(("effects.setParam".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v}))));
+        // the clip's Volume (its first instance, the fixed effect) changes with the other selected audio clips' (#3710)
+        let volume = mask.is_none() && e.effect == "volume" && it.effects.iter().position(|x| x.effect == "volume") == Some(idx);
+        actions.push(if volume {
+            volume_action(app, clip, pd.id, v)
+        } else {
+            ("effects.setParam".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id, "value": v})))
+        });
     }
     // keyframe navigator ◀ ◆ ▶ (when animated)
     let eff_json = json!(idx);
@@ -1145,7 +1177,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 HotNumberOptions::new(0.1, (-96.0, 15.0), 1, " dB", &t),
             );
             if let Some(nv) = nv {
-                actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "volume", "param": "level", "value": nv})));
+                actions.push(volume_action(app, clip, "level", json!(nv)));
             }
             properties_nav(app, bui, r, clip, it, mt, "volume", "level", &mut actions);
             let r = row(bui, tl!("Pan"));

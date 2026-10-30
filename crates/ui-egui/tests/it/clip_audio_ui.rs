@@ -249,3 +249,29 @@ fn volume_keyframes_on_the_timeline() {
     d.click(&format!("{id}.kf.0.delete"));
     assert_eq!(d.level(pair.audio).1, keys[1..]);
 }
+
+/// #3710: with several audio clips selected, dragging Volume ▸ Level in Effect Controls (which
+/// shows the first of them) sets every selected one, in one undo step; the others keep theirs.
+#[test]
+fn volume_level_changes_every_selected_audio_clip() {
+    let (mut d, _) = Driver::demo(&["EffectControls"]);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let audio: Vec<u64> = seq["audio"][0]["items"].as_array().unwrap().iter().map(|a| a["clip"].as_u64().unwrap()).collect();
+    assert!(audio.len() >= 3, "the demo has several clips on A1");
+    let before: Vec<f64> = audio.iter().map(|c| d.level(*c).0).collect();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    d.exec("timeline.select", json!({"clips": &audio[..2]}));
+    // the Level value sits from the middle of its row (at least 150 points in)
+    let (stopwatch, reset) = (d.rect("effectControls.volume.level.stopwatch"), d.rect("effectControls.volume.level.reset"));
+    let (left, right) = (centre(stopwatch).0 - 26.0, centre(reset).0 + 14.0);
+    let value = (left + ((right - left) / 2.0).max(150.0) + 12.0, centre(stopwatch).1);
+    let steps = d.harness.state().session.history.undo.len();
+    d.drag(value, (-40.0, 0.0));
+    let after: Vec<f64> = audio.iter().map(|c| d.level(*c).0).collect();
+    assert!(after[0] < before[0], "the drag lowers the level: {before:?} -> {after:?}");
+    assert_eq!(after[1], after[0], "the other selected clip gets the same level");
+    assert_eq!(after[2..], before[2..], "clips not selected keep theirs");
+    assert_eq!(d.harness.state().session.history.undo.len(), steps + 1, "one undo step");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(audio.iter().map(|c| d.level(*c).0).collect::<Vec<_>>(), before);
+}

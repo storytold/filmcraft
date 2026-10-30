@@ -127,3 +127,46 @@ fn audio_effect_on_video_clip_applies_to_linked_audio() {
     assert_eq!(a.effects.last().unwrap().effect, "parametric_eq");
     assert!(v.effects.iter().all(|e| e.effect != "parametric_eq"), "EQ stays off the picture clip");
 }
+
+/// #3710: `clips` gives every clip named the value in one undo step (Effect Controls and
+/// Properties set the Volume of every selected audio clip this way), and a drag stays one step.
+#[test]
+fn volume_level_is_set_on_several_clips_in_one_undo_step() {
+    let mut s = demo();
+    let seq = s.active_sequence().unwrap();
+    let audio: Vec<u64> = seq.audio_tracks[0].items.iter().map(|i| i.id.0).collect();
+    let video = seq.video_tracks[0].items[0].id.0;
+    assert!(audio.len() >= 2, "the demo has several audio clips");
+    let level = |s: &Session, c: u64| {
+        let (_, it) = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap();
+        it.effect("volume").unwrap().param("level").unwrap().value.as_f64().unwrap()
+    };
+    let before: Vec<f64> = audio.iter().map(|c| level(&s, *c)).collect();
+    let steps = s.history.undo.len();
+    s.execute("effects.setParam", json!({"clips": audio, "effect": "volume", "param": "level", "value": -6.0})).unwrap();
+    assert!(audio.iter().all(|c| level(&s, *c) == -6.0));
+    assert_eq!(s.history.undo.len(), steps + 1);
+    for v in [-7.0, -8.0, -9.0] {
+        s.execute("effects.setParam", json!({"clips": audio, "effect": "volume", "param": "level", "value": v, "merge": true})).unwrap();
+    }
+    assert!(audio.iter().all(|c| level(&s, *c) == -9.0));
+    assert_eq!(s.history.undo.len(), steps + 2, "a drag over several clips is one step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(audio.iter().all(|c| level(&s, *c) == -6.0));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(audio.iter().map(|c| level(&s, *c)).collect::<Vec<_>>(), before);
+
+    // refused, and nothing changes: a clip without the effect, an effect index, a mask, both keys,
+    // an id of no clip
+    let project = s.project.clone();
+    for p in [
+        json!({"clips": [audio[0], video], "effect": "volume", "param": "level", "value": -3.0}),
+        json!({"clips": audio, "effect": 0, "param": "level", "value": -3.0}),
+        json!({"clips": audio, "effect": "volume", "param": "level", "mask": 0, "value": -3.0}),
+        json!({"clip": audio[0], "clips": audio, "effect": "volume", "param": "level", "value": -3.0}),
+        json!({"clips": [audio[0], 987_654_321u64], "effect": "volume", "param": "level", "value": -3.0}),
+    ] {
+        assert!(s.execute("effects.setParam", p.clone()).is_err(), "{p}");
+        assert!(s.project == project, "{p} changed nothing");
+    }
+}
