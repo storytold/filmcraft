@@ -1,4 +1,5 @@
-//! Crash-safe file replacement.
+//! Crash-safe file replacement. Filesystems that cannot provide a durability sync (some SMB
+//! shares) still get same-directory atomic replacement; all other I/O errors remain failures.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -33,6 +34,38 @@ fn parent_dir(path: &Path) -> PathBuf {
     }
 }
 
+/// Sync a staging file before publication. Rust requests `F_FULLFSYNC` on macOS; SMB shares may
+/// reject that stronger operation while supporting plain POSIX `fsync`, so retry it safely through
+/// rustix. Only a filesystem that supports neither operation may omit the durability guarantee.
+fn sync_if_supported(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    return sync_with_fallback(file.sync_all(), || rustix::fs::fsync(file).map_err(io::Error::from));
+
+    #[cfg(not(target_os = "macos"))]
+    file.sync_all()
+}
+
+/// Run a weaker synchronization fallback only when the primary operation is unsupported. A real
+/// error from either operation remains a failed save.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn sync_with_fallback(primary: io::Result<()>, fallback: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    match primary {
+        Ok(()) => Ok(()),
+        Err(error) if unsupported_sync(&error) => match fallback() {
+            Ok(()) => Ok(()),
+            Err(fallback_error) if unsupported_sync(&fallback_error) => Ok(()),
+            Err(fallback_error) => Err(fallback_error),
+        },
+        Err(error) => Err(error),
+    }
+}
+
+/// Recognize only an explicit unsupported-operation result. Rust currently categorizes macOS
+/// `ENOTSUP` (45) as `Uncategorized`, so retain that platform code as well.
+fn unsupported_sync(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Unsupported || cfg!(target_os = "macos") && error.raw_os_error() == Some(45)
+}
+
 /// Replace `path` with `data` atomically and durably:
 /// write `data` to a temp file in the same directory, `fsync` it, rename it over `path`, then
 /// `fsync` the directory so the rename itself survives a power cut. If anything fails the temp file
@@ -54,7 +87,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
                 f.set_permissions(permissions.clone())?;
             }
             f.write_all(data)?;
-            f.sync_all()?;
+            sync_if_supported(&f)?;
         }
         fs::rename(&tmp, path)
     })();
@@ -62,7 +95,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    sync_dir(&parent_dir(path));
+    sync_dir(&parent_dir(path))?;
     Ok(())
 }
 
@@ -71,7 +104,10 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
 /// A write failure leaves no partial final file; temporary-file cleanup is best effort.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn atomic_write_new(path: &Path, data: &[u8]) -> io::Result<()> {
-    atomic_write_new_with(path, |file| file.write_all(data).and_then(|_| file.sync_all()))
+    atomic_write_new_with(path, |file| {
+        file.write_all(data)?;
+        sync_if_supported(file)
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -93,20 +129,63 @@ fn atomic_write_new_with(path: &Path, write: impl FnOnce(&mut File) -> io::Resul
     let mut staged = tempfile::NamedTempFile::new_in(&dir)?;
     write(staged.as_file_mut())?;
     let _published = staged.persist_noclobber(path).map_err(|e| e.error)?;
-    sync_dir(&dir);
+    sync_dir(&dir)?;
     Ok(())
 }
 
-/// Best-effort directory sync; directory handles are not uniformly readable or syncable.
-fn sync_dir(dir: &Path) {
-    if let Ok(d) = File::open(dir) {
-        let _ = d.sync_all();
+/// Sync the containing directory so publication survives a crash. Opening a directory as a file is
+/// not uniformly available (and write-only directories intentionally reject it), but once opened,
+/// real synchronization errors such as disconnection or device failure are reported.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    sync_opened_dir(File::open(dir))
+}
+
+/// Apply the platform capability exceptions for an attempted directory handle while preserving
+/// every other open error.
+#[cfg(unix)]
+fn sync_opened_dir(opened: io::Result<File>) -> io::Result<()> {
+    match opened {
+        Ok(directory) => sync_if_supported(&directory),
+        Err(error) if matches!(error.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported) => Ok(()),
+        Err(error) => Err(error),
     }
+}
+
+/// Windows does not expose ordinary directories as syncable `File` handles through `std`.
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_primary_sync_uses_a_fallback_and_real_errors_still_fail() {
+        let unsupported = io::Error::new(io::ErrorKind::Unsupported, "network share cannot fsync");
+        let denied = io::Error::new(io::ErrorKind::PermissionDenied, "denied");
+        assert!(sync_with_fallback(Err(unsupported), || Ok(())).is_ok());
+        assert_eq!(sync_with_fallback(Err(denied), || Ok(())).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn unsupported_fallback_is_accepted_but_other_fallback_errors_are_reported() {
+        let unsupported = || io::Error::new(io::ErrorKind::Unsupported, "unsupported");
+        assert!(sync_with_fallback(Err(unsupported()), || Err(unsupported())).is_ok());
+        let error = sync_with_fallback(Err(unsupported()), || Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_open_ignores_only_capability_errors() {
+        let denied = io::Error::new(io::ErrorKind::PermissionDenied, "write-only directory");
+        assert!(sync_opened_dir(Err(denied)).is_ok());
+        let missing = io::Error::new(io::ErrorKind::NotFound, "share disconnected");
+        assert_eq!(sync_opened_dir(Err(missing)).unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
 
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("filmcraft-atomic-{tag}-{}", std::process::id()));

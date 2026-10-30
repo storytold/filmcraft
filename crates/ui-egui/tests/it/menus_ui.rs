@@ -122,6 +122,50 @@ fn menu_items_toggles_and_help() {
 }
 
 #[test]
+fn save_menu_and_shortcut_write_the_current_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("save-command.fcproj");
+    let mut d = Driver::new();
+    d.exec("file.saveAs", json!({"path": path}));
+
+    d.exec("file.newBin", json!({"name": "Saved from menu"}));
+    assert!(d.app().session.is_dirty());
+    d.menu("file.save");
+    assert!(!d.app().session.is_dirty(), "File > Save must mark the written revision as saved");
+    let from_menu = std::fs::read(&path).unwrap();
+
+    d.exec("file.newBin", json!({"name": "Saved from shortcut"}));
+    assert!(d.app().session.is_dirty());
+    d.ok("ui.key", json!({"key": "Cmd+S"}));
+    d.frames(3);
+    assert!(!d.app().session.is_dirty(), "Cmd+S must run the same Save command");
+    let from_shortcut = std::fs::read(&path).unwrap();
+    assert_ne!(from_shortcut, from_menu, "the shortcut must write the newly edited project");
+}
+
+#[test]
+fn first_save_from_menu_and_shortcut_uses_the_project_picker() {
+    for use_shortcut in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(if use_shortcut { "shortcut-first-save.fcproj" } else { "menu-first-save.fcproj" });
+        let chosen = path.to_string_lossy().into_owned();
+        let mut d = Driver::new();
+        d.app().session.path = None;
+        d.app().hooks.pick_save = Some(Box::new(move |_| Some(chosen.clone())));
+        d.exec("file.newBin", json!({"name": "First save"}));
+        if use_shortcut {
+            d.ok("ui.key", json!({"key": "Cmd+S"}));
+            d.frames(3);
+        } else {
+            d.menu("file.save");
+        }
+        assert_eq!(d.app().session.path.as_deref(), Some(path.to_string_lossy().as_ref()));
+        assert!(path.is_file());
+        assert!(!d.app().session.is_dirty());
+    }
+}
+
+#[test]
 fn import_image_sequence_from_the_file_menu_and_media_browser() {
     let dir = std::env::temp_dir().join(format!("fc-ui-imgseq-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
