@@ -70,7 +70,9 @@ Reference discovery has its own 65,536-visit budget. Composition slots, segment 
 source lookups and automation share a separate 1,048,576-visit budget (16 times larger), so
 dense automation does not compete with discovery. Both budgets cover the whole document,
 without resetting between tracks or compositions. Materialised lists in early-exit source
-lookups, effect slots and gain points consume the expansion budget.
+lookups (including locators, file-source slot counts and tape timecode slots), effect slots and
+gain points consume the expansion budget. These lists charge their actual number of complete
+references before resolving keys or allocating the result list, including early-exit lookups.
 Repeated references consume the relevant budget even when they produce no clips. References on the
 current recursion path detect cycles; reusing a segment elsewhere still preserves every edit
 in its original order. Exceeding a depth or work limit returns an error rather than a partial
@@ -126,3 +128,6 @@ OMF carries no video at all.
   preservation of all 131,072 gain points in a dense-automation import, shared expansion budgets across tracks/compositions,
   the depth boundary, preserved repeated edits, and truncation/bit-flip mutations under
   `catch_unwind`. The master-source cycle regression aborts with stack overflow before the fix.
+- `src/omf/read/tests.rs`: source metadata lists exhaust a small expansion budget even when the
+  first entry matches; path, channel and timecode selection stay unchanged, missing metadata
+  stays optional, and truncated reference arrays charge only complete declared entries.

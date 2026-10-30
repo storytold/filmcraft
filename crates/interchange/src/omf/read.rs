@@ -10,6 +10,9 @@ use crate::{Error, Report, Result};
 
 type Uid = [u8; 12];
 
+#[cfg(test)]
+mod tests;
+
 // Discovery walks the stored graph once. Expansion can legitimately do much more
 // work (especially dense gain automation), so it has a separate, 16x larger budget.
 // Both allowances cover the whole document, never reset per track or composition.
@@ -19,6 +22,11 @@ const MAX_SEGMENT_DEPTH: usize = 32;
 
 fn traversal_error(message: &str) -> Error {
     Error::Parse { format: "OMF", message: message.into() }
+}
+
+fn ref_keys(value: &[u8]) -> impl ExactSizeIterator<Item = &[u8; 4]> {
+    let count = value.get(..2).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).unwrap_or(0);
+    value.get(2..).unwrap_or_default().as_chunks::<4>().0.iter().take(count)
 }
 
 struct R<'a, 'b> {
@@ -157,11 +165,15 @@ impl R<'_, '_> {
     }
     fn refs(&self, o: u32, p: &str) -> Vec<u32> {
         let Some(v) = self.c.get(o, p) else { return Vec::new() };
-        if v.len() < 2 {
-            return Vec::new();
-        }
-        let n = u16::from_be_bytes([v[0], v[1]]) as usize;
-        v[2..].as_chunks::<4>().0.iter().take(n).map(|k| self.c.resolve(o, u32::from_be_bytes([k[0], k[1], k[2], k[3]]))).collect()
+        ref_keys(&v).map(|k| self.c.resolve(o, u32::from_be_bytes(*k))).collect()
+    }
+    fn budgeted_refs(&mut self, o: u32, p: &str) -> Result<Vec<u32>> {
+        let Some(v) = self.c.get(o, p) else { return Ok(Vec::new()) };
+        let keys = ref_keys(&v);
+        // Charge complete keys actually present, before resolving or collecting
+        // the list, even if the caller will stop at its first matching entry.
+        self.spend_visits(keys.len())?;
+        Ok(keys.map(|k| self.c.resolve(o, u32::from_be_bytes(*k))).collect())
     }
     fn data_kind(&self, o: u32) -> String {
         self.r#ref(o, "OMFI:CPNT:DataKind").and_then(|d| self.string(d, "OMFI:DDEF:DataKindID")).unwrap_or_default()
@@ -281,8 +293,7 @@ impl R<'_, '_> {
             }
             b"EFFE" => {
                 let kind = self.r#ref(seg, "OMFI:EFFE:EffectKind").and_then(|k| self.string(k, "OMFI:EDEF:EffectID")).unwrap_or_default();
-                let slots = self.refs(seg, "OMFI:EFFE:EffectSlots");
-                self.spend_visits(slots.len())?;
+                let slots = self.budgeted_refs(seg, "OMFI:EFFE:EffectSlots")?;
                 let arg =
                     |r: &Self, id: i64| slots.iter().copied().find(|&s| r.i32(s, "OMFI:ESLT:ArgID") == Some(id)).and_then(|s| r.r#ref(s, "OMFI:ESLT:ArgValue"));
                 let Some(input) = arg(self, -1).or_else(|| arg(self, 1).filter(|_| kind != "omfi:effect:MonoAudioGain")) else {
@@ -319,8 +330,7 @@ impl R<'_, '_> {
             b"CVAL" => self.c.get(v, "OMFI:CVAL:Value").and_then(|d| self.amp(&d)).map(Gain::Constant),
             b"VVAL" => {
                 let linear = self.u16(v, "OMFI:VVAL:Interpolation") != Some(1);
-                let refs = self.refs(v, "OMFI:VVAL:PointList");
-                self.spend_visits(refs.len())?;
+                let refs = self.budgeted_refs(v, "OMFI:VVAL:PointList")?;
                 let points: Vec<(Tick, f64)> = refs
                     .into_iter()
                     .filter_map(|p| {
@@ -350,8 +360,7 @@ impl R<'_, '_> {
     }
 
     fn slot_of(&mut self, mob: u32, track: u32) -> Result<Option<u32>> {
-        let slots = self.refs(mob, "OMFI:MOBJ:Slots");
-        self.spend_visits(slots.len())?;
+        let slots = self.budgeted_refs(mob, "OMFI:MOBJ:Slots")?;
         Ok(slots.into_iter().find(|&s| self.r#ref(s, "OMFI:MSLT:TrackDesc").and_then(|t| self.u32(t, "OMFI:TRKD:TrackID")) == Some(track)))
     }
 
@@ -361,9 +370,7 @@ impl R<'_, '_> {
         match &self.class(seg) {
             b"SCLP" => clip = Some(seg),
             b"SEQU" => {
-                let components = self.refs(seg, "OMFI:SEQU:Components");
-                // The list is materialised even when the first child is a clip.
-                self.spend_visits(components.len())?;
+                let components = self.budgeted_refs(seg, "OMFI:SEQU:Components")?;
                 for c in components {
                     clip = self.first_clip(c, path)?;
                     if clip.is_some() {
@@ -375,6 +382,22 @@ impl R<'_, '_> {
         }
         path.pop();
         Ok(clip)
+    }
+
+    fn source_timecode(&mut self, seg: u32, rate: (i64, i64)) -> Result<Option<(i64, FrameRate)>> {
+        let Some(clip) = self.first_clip(seg, &mut Vec::new())? else { return Ok(None) };
+        let Some(tape) = self.uid(clip, "OMFI:SCLP:SourceID").and_then(|id| self.mobs.get(&id)).copied() else { return Ok(None) };
+        let slots = self.budgeted_refs(tape, "OMFI:MOBJ:Slots")?;
+        let Some((start_tc, fps, trate)) = slots.into_iter().find_map(|s| {
+            let g = self.r#ref(s, "OMFI:MSLT:Segment")?;
+            (self.class(g) == *b"TCCP")
+                .then(|| (self.i32(g, "OMFI:TCCP:Start").unwrap_or(0), self.u16(g, "OMFI:TCCP:FPS").unwrap_or(25), self.rational(s, "OMFI:MSLT:EditRate")))
+        }) else {
+            return Ok(None);
+        };
+        let tcr = trate.filter(|r| r.0 > 0 && r.1 > 0).map(|r| FrameRate::new(r.0, r.1)).unwrap_or_else(|| FrameRate::new(fps.max(1) as i64, 1));
+        let off = units_to_ticks(self.i32(clip, "OMFI:SCLP:StartTime").unwrap_or(0), rate.0, rate.1);
+        Ok(Some((start_tc + tcr.frame_at(off), tcr)))
     }
 
     fn resolve(&mut self, id: Uid, track: u32, start: Tick, master: Option<String>, depth: usize) -> Result<Option<(usize, Tick)>> {
@@ -418,7 +441,7 @@ impl R<'_, '_> {
                 let summary = self.c.get(desc, "OMFI:WAVD:Summary").or_else(|| self.c.get(desc, "OMFI:AIFD:Summary")).unwrap_or_default();
                 let fmt = crate::wav::parse_wav(&summary).or_else(|| crate::wav::parse_aiff(&summary)).map(|(_, ch, sr, bits)| (ch as u32, sr, bits));
                 let mut path = None;
-                for l in self.refs(desc, "OMFI:MDES:Locator") {
+                for l in self.budgeted_refs(desc, "OMFI:MDES:Locator")? {
                     let p = match &self.class(l) {
                         b"UNXL" => self.string(l, "OMFI:UNXL:PathName"),
                         b"DOSL" => self.string(l, "OMFI:DOSL:PathName"),
@@ -432,23 +455,11 @@ impl R<'_, '_> {
                         break;
                     }
                 }
-                let sound_slots = self.refs(mob, "OMFI:MOBJ:Slots").len();
+                let sound_slots = self.budgeted_refs(mob, "OMFI:MOBJ:Slots")?.len();
                 let (file_channels, sample_rate, bits) = fmt.unwrap_or((1, file_rate.0 as u32, 16));
                 let channel = (file_channels > 1 && sound_slots > 1).then(|| track.saturating_sub(1).min(file_channels - 1));
                 // timecode of the physical source
-                let tc = self.first_clip(seg, &mut Vec::new())?.and_then(|clip| {
-                    let tid = self.uid(clip, "OMFI:SCLP:SourceID")?;
-                    let tape = *self.mobs.get(&tid)?;
-                    let (start_tc, fps, trate) = self.refs(tape, "OMFI:MOBJ:Slots").into_iter().find_map(|s| {
-                        let g = self.r#ref(s, "OMFI:MSLT:Segment")?;
-                        (self.class(g) == *b"TCCP").then(|| {
-                            (self.i32(g, "OMFI:TCCP:Start").unwrap_or(0), self.u16(g, "OMFI:TCCP:FPS").unwrap_or(25), self.rational(s, "OMFI:MSLT:EditRate"))
-                        })
-                    })?;
-                    let tcr = trate.filter(|r| r.0 > 0 && r.1 > 0).map(|r| FrameRate::new(r.0, r.1)).unwrap_or_else(|| FrameRate::new(fps.max(1) as i64, 1));
-                    let off = units_to_ticks(self.i32(clip, "OMFI:SCLP:StartTime").unwrap_or(0), rate.0, rate.1);
-                    Some((start_tc + tcr.frame_at(off), tcr))
-                });
+                let tc = self.source_timecode(seg, rate)?;
                 let mut s = Source {
                     key,
                     name: self.string(mob, "OMFI:MOBJ:Name").unwrap_or_default(),
