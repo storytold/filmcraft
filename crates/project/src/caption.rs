@@ -93,7 +93,37 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Padding around each background box, in pixels at 1080 lines (#3355).
+    #[serde(default = "default_box_padding")]
+    pub box_padding: f32,
+    /// Corner radius of the background box, in pixels at 1080 lines (#3356).
+    #[serde(default)]
+    pub box_corner_radius: f32,
+    /// Font style string: "SemiBold", "Bold", "Regular", "Italic", "BoldItalic" (#3357).
+    #[serde(default = "default_font_style")]
+    pub font_style: String,
+    /// Drop shadow (#2322).
+    #[serde(default)]
+    pub drop_shadow: bool,
+    #[serde(default = "default_shadow_color")]
+    pub shadow_color: [u8; 4],
+    /// Shadow distance in pixels at 1080 lines.
+    #[serde(default = "default_shadow_distance")]
+    pub shadow_distance: f32,
+    /// Shadow angle: 0 = right, 90 = down, 315 = top-left (Premiere's default).
+    #[serde(default = "default_shadow_angle_deg")]
+    pub shadow_angle_deg: f32,
+    /// Gaussian blur radius in pixels at 1080 lines.
+    #[serde(default = "default_shadow_blur")]
+    pub shadow_blur: f32,
 }
+
+fn default_box_padding() -> f32 { 0.0 }
+fn default_font_style() -> String { "SemiBold".into() }
+fn default_shadow_color() -> [u8; 4] { [0, 0, 0, 255] }
+fn default_shadow_angle_deg() -> f32 { 315.0 }
+fn default_shadow_distance() -> f32 { 4.0 }
+fn default_shadow_blur() -> f32 { 4.0 }
 
 impl Default for CaptionStyle {
     fn default() -> Self {
@@ -109,6 +139,14 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            box_padding: 0.0,
+            box_corner_radius: 0.0,
+            font_style: "SemiBold".into(),
+            drop_shadow: false,
+            shadow_color: [0, 0, 0, 255],
+            shadow_distance: 4.0,
+            shadow_angle_deg: 315.0,
+            shadow_blur: 4.0,
         }
     }
 }

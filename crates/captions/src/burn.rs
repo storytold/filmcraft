@@ -61,6 +61,16 @@ fn caption_style(font: &str, px: f32) -> TextStyle {
     TextStyle { family: family.into(), style: "SemiBold".into(), size: px, ..Default::default() }
 }
 
+/// Like `caption_style` but also applies an explicit font_style string (#3357).
+fn caption_face(font: &str, font_style: &str, px: f32) -> TextStyle {
+    let mut ts = caption_style(font, px);
+    let s = font_style.trim();
+    if !s.is_empty() {
+        ts.style = s.into();
+    }
+    ts
+}
+
 fn lin(c: [u8; 4]) -> [f32; 4] {
     let a = c[3] as f32 / 255.0;
     [srgb_to_linear(c[0] as f32 / 255.0) * a, srgb_to_linear(c[1] as f32 / 255.0) * a, srgb_to_linear(c[2] as f32 / 255.0) * a, a]
@@ -118,7 +128,7 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let scale = h as f32 / 1080.0;
     let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0, h as f32);
     let max_w = w as f32 * 0.9;
-    let ts = caption_style(&style.font, px);
+    let ts = caption_face(&style.font, &style.font_style, px);
     let mut lines: Vec<String> = Vec::new();
     // (speaker names are metadata; like Premiere, they are not burned in)
     for l in c.plain_lines() {
@@ -131,7 +141,8 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(&ts.family, &ts.style).face).metrics(px);
     let (asc, desc) = (vm.ascent, vm.descent);
     let lh = px * style.line_spacing.clamp(0.8, 4.0);
-    let pad_x = (px * 0.3).round();
+    let pad_x = (px * 0.3 + style.box_padding * scale).round();
+    let pad_y = (style.box_padding * scale).round();
     let block_h = lh * lines.len() as f32;
     let (line_override, align_override) = vtt_overrides(&c.settings);
     let align = align_override.unwrap_or(style.align);
@@ -158,8 +169,8 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let grow = outline.ceil() + 1.0;
     let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
     let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
-    let by0 = (top - grow).floor();
-    let by1 = (top + block_h + grow).ceil();
+    let by0 = (top - grow - pad_y).floor();
+    let by1 = (top + block_h + grow + pad_y).ceil();
     // Text can be wider than the frame (an unbroken imported WebVTT word, for example). Raster
     // only the visible intersection; `draw` receives the original coordinates and clips into it.
     let (left, top) = (bx0.clamp(0.0, w as f32), by0.clamp(0.0, h as f32));
@@ -178,13 +189,30 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         let lt = top + lh * i as f32;
         if style.background && style.background_color[3] > 0 {
             let (x0, x1) = (xs[i] - pad_x, xs[i] + widths[i] + pad_x);
-            let (y0, y1) = (lt, lt + lh);
+            let (y0, y1) = (lt - pad_y, lt + lh + pad_y);
+            // Precompute corner radius clamped to half the box height/width (#3356).
+            let r = (style.box_corner_radius * scale)
+                .min((y1 - y0) * 0.5)
+                .min((x1 - x0) * 0.5)
+                .max(0.0);
             for y in (y0.floor() as i32).max(oy)..(y1.ceil() as i32).min(oy + oh as i32) {
                 let fy = ((y as f32 + 1.0).min(y1) - (y as f32).max(y0)).clamp(0.0, 1.0);
                 for x in (x0.floor() as i32).max(ox)..(x1.ceil() as i32).min(ox + ow as i32) {
                     let fx = ((x as f32 + 1.0).min(x1) - (x as f32).max(x0)).clamp(0.0, 1.0);
+                    // Rounded-corner coverage: outside the corner arc → 0 (#3356).
+                    let cx = (x as f32 + 0.5).clamp(x0 + r, x1 - r);
+                    let cy = (y as f32 + 0.5).clamp(y0 + r, y1 - r);
+                    let corner_cov = if r > 0.0 {
+                        let dx = (x as f32 + 0.5 - cx).abs();
+                        let dy = (y as f32 + 0.5 - cy).abs();
+                        let dist = (dx * dx + dy * dy).sqrt();
+                        // Smooth step over 1 px at the arc edge for anti-aliasing.
+                        (r + 0.5 - dist).clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
                     let j = (y - oy) as usize * ow + (x - ox) as usize;
-                    bg[j] = (bg[j] + fx * fy).min(1.0);
+                    bg[j] = (bg[j] + fx * fy * corner_cov).min(1.0);
                 }
             }
         }
@@ -195,7 +223,33 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         cover = m.a;
     }
     let stroke = if outline > 0.0 { dilate(&cover, ow, oh, outline) } else { Vec::new() };
+    // Drop shadow (#2322): shift the coverage mask by the shadow offset and blur it.
+    let shadow_mask = if style.drop_shadow && style.shadow_color[3] > 0 {
+        let sa = style.shadow_angle_deg.to_radians();
+        let sd = style.shadow_distance * scale;
+        let dx = (sa.cos() * sd).round() as i32;
+        let dy = -(sa.sin() * sd).round() as i32;  // screen Y is down
+        let mut shifted = vec![0.0f32; ow * oh];
+        for y in 0..oh as i32 {
+            for x in 0..ow as i32 {
+                let sx = x - dx;
+                let sy = y - dy;
+                if sx >= 0 && sy >= 0 && sx < ow as i32 && sy < oh as i32 {
+                    shifted[y as usize * ow + x as usize] =
+                        cover[sy as usize * ow + sx as usize];
+                }
+            }
+        }
+        if style.shadow_blur > 0.0 {
+            blur_mask(&shifted, ow, oh, style.shadow_blur * scale)
+        } else {
+            shifted
+        }
+    } else {
+        Vec::new()
+    };
     let (tc, bc, oc) = (lin(style.color), lin(style.background_color), lin(style.outline_color));
+    let sc = lin(style.shadow_color);
     let mut out = vec![0.0f32; ow * oh * 4];
     for j in 0..ow * oh {
         let mut p = [0.0f32; 4];
@@ -207,6 +261,10 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
             }
         };
         over(&mut p, bc, bg[j]);
+        // Shadow goes under the text but above the background box.
+        if !shadow_mask.is_empty() {
+            over(&mut p, sc, shadow_mask[j]);
+        }
         if !stroke.is_empty() {
             over(&mut p, oc, stroke[j]);
         }
@@ -214,6 +272,54 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
         out[j * 4..j * 4 + 4].copy_from_slice(&p);
     }
     Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
+}
+
+/// Fast box-blur approximation of Gaussian blur applied to a single-channel coverage mask (#2322).
+/// Three passes of a box filter converge toward Gaussian (σ ≈ blur / 1.73).
+fn blur_mask(mask: &[f32], w: usize, h: usize, blur: f32) -> Vec<f32> {
+    if blur <= 0.0 || w == 0 || h == 0 { return mask.to_vec(); }
+    let r = (blur / 1.73).ceil() as usize;
+    let len = 2 * r + 1;
+    let mut buf = mask.to_vec();
+    let mut tmp = vec![0.0f32; w * h];
+    for _ in 0..3 {
+        // Horizontal pass
+        for row in 0..h {
+            let mut acc = 0.0f32;
+            let mut cnt = 0u32;
+            for x in 0..w {
+                let src_x = x + r;
+                if src_x < w { acc += buf[row * w + src_x]; cnt += 1; }
+                if x > 0 {
+                    let remove_x = x - 1;
+                    if remove_x + len <= w + r { }  // already out
+                    if x > r { let rx = x - r - 1; if rx < w { acc -= buf[row * w + rx]; cnt -= 1; } }
+                }
+                tmp[row * w + x] = if cnt > 0 { acc / cnt as f32 } else { 0.0 };
+            }
+            // Proper sliding window horizontal
+            let mut a2 = 0.0f32;
+            let mut c2 = 0u32;
+            for x in 0..w {
+                if x + r < w { a2 += buf[row * w + x + r]; c2 += 1; }
+                if x > r + 1 { let rx = x - r - 2; a2 -= buf[row * w + rx]; c2 -= 1; }
+                tmp[row * w + x] = if c2 > 0 { a2 / c2 as f32 } else { 0.0 };
+            }
+        }
+        std::mem::swap(&mut buf, &mut tmp);
+        // Vertical pass
+        for col in 0..w {
+            let mut a2 = 0.0f32;
+            let mut c2 = 0u32;
+            for y in 0..h {
+                if y + r < h { a2 += buf[(y + r) * w + col]; c2 += 1; }
+                if y > r + 1 { let ry = y - r - 2; a2 -= buf[ry * w + col]; c2 -= 1; }
+                tmp[y * w + col] = if c2 > 0 { a2 / c2 as f32 } else { 0.0 };
+            }
+        }
+        std::mem::swap(&mut buf, &mut tmp);
+    }
+    buf
 }
 
 /// Max-filter a coverage mask with a disc of radius `r`.
