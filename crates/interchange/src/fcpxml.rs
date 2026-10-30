@@ -753,13 +753,13 @@ impl Exp<'_, '_> {
         let name = self.p.item(item).map(|i| i.name.clone()).unwrap_or_default();
         let fmt = m.info.video.as_ref().map(|v| self.format(m.interpret.frame_rate.unwrap_or(v.frame_rate), v.width, v.height));
         let id = self.rid();
-        let mrate = m.info.video.as_ref().map(|v| v.frame_rate).unwrap_or(rate);
+        let mrate = m.info.video.as_ref().map(|_| m.frame_rate()).unwrap_or(rate);
         let start = m.info.start_timecode.map(|f| mrate.tick_of(f)).unwrap_or(Tick::ZERO);
         let mut a = format!(
             "    <asset id=\"{id}\" name=\"{}\" start=\"{}\" duration=\"{}\" hasVideo=\"{}\" hasAudio=\"{}\"",
             crate::xml::escape_attr(&name),
             fmt_time(start, mrate),
-            fmt_time(m.info.duration, mrate),
+            fmt_time(m.duration(), mrate),
             m.info.video.is_some() as u8,
             m.info.has_audio() as u8
         );
@@ -1012,7 +1012,7 @@ impl Exp<'_, '_> {
         } else {
             let r = self.asset(base, rate);
             let m = item_media(self.p, base);
-            let mrate = m.and_then(|m| m.info.video.as_ref().map(|v| v.frame_rate)).unwrap_or(rate);
+            let mrate = m.and_then(|m| m.info.video.as_ref().map(|_| m.frame_rate())).unwrap_or(rate);
             let st = m.and_then(|m| m.info.start_timecode).map(|f| mrate.tick_of(f)).unwrap_or(Tick::ZERO);
             ("asset-clip", r, st)
         };

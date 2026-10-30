@@ -226,6 +226,17 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `audio(start, frames, rate)` in media time. Sources are `Send + Sync` and shared by monitors,
   thumbnails, playback and export. The engine's `MediaPool` creates one per project item, lazily,
   through registered openers (`codecs::openers()`: MP4/MOV, MKV/WebM, audio files).
+- **Assumed frame rate.** Interpret Footage ▸ Assume this frame rate (`Interpretation::frame_rate`,
+  `clip.interpretFootage {frameRate}`) conforms footage: every file frame plays once at the assumed
+  rate, so media time is conformed time (`MediaClip::conform`, `MediaClip::duration`). The
+  `MediaPool` wraps the file's source (or proxy) in `InterpretSource`, which maps picture times
+  frame for frame (`project::retime`) and reads sound at a scaled sample rate (it stays in sync and
+  changes pitch). Proxies are made from the unconformed file. Changing the rate runs
+  `Project::retime_media`: marks, markers, subclips and every clip's source In, frame hold, clip
+  markers and keyframes stay on their frames; clips keep their place and length on the timeline and
+  are shortened only if they would run past the new end. The same wrapper applies Alpha Channel ▸
+  Ignore (opaque) / Invert (`clip.interpretFootage {ignoreAlpha, invertAlpha}`) to footage with
+  alpha.
 - **Pixel aspect ratio.** Demuxers report it in `VideoStreamInfo::par` (MP4/MOV `pasp`, Matroska
   display size, MXF aspect ratio, MPEG sequence header / VUI); Interpret Footage's
   `Interpretation::par` overrides it (`clip.interpretFootage {pixelAspect}`), and

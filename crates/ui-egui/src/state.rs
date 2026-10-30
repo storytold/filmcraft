@@ -802,8 +802,29 @@ impl Default for ProjectManagerDraft {
 /// Colour dialogs: drafts are applied with one engine command on OK.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ColorDialog {
-    /// `clip.interpretFootage`: the media items and the chosen colour space id ("auto" = metadata).
-    Interpret { items: Vec<u64>, color_space: String },
+    /// Modify Clip (`clip.interpretFootage`): the media items, the tab shown ("interpret" or
+    /// "color"), the chosen colour space id ("auto" = metadata), the frame rate to assume (None =
+    /// the file's; in frames per second) as typed, and the alpha channel options. The draft starts from the first
+    /// item; `mixed` names the settings (`clip.interpretFootage` parameters) the items differ in,
+    /// and only the settings in `touched` are applied, so the others stay as each item has them.
+    Interpret {
+        items: Vec<u64>,
+        color_space: String,
+        #[serde(default)]
+        assume_rate: Option<f64>,
+        #[serde(default)]
+        tab: String,
+        #[serde(default)]
+        rate_text: String,
+        #[serde(default)]
+        ignore_alpha: bool,
+        #[serde(default)]
+        invert_alpha: bool,
+        #[serde(default)]
+        mixed: Vec<String>,
+        #[serde(default)]
+        touched: Vec<String>,
+    },
     /// `sequence.colorSettings`.
     Sequence { working_space: String, wide_gamut: bool, auto_tone_map: bool },
 }

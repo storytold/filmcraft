@@ -779,9 +779,9 @@ pub(crate) fn default_seq_settings_for(media: &MediaClip) -> SequenceSettings {
     if let Some(v) = &info.video {
         st.width = v.width;
         st.height = v.height;
-        st.frame_rate = v.frame_rate;
+        st.frame_rate = media.frame_rate();
         st.par = media.pixel_aspect();
-        st.preset = format!("{}x{} {}", v.width, v.height, v.frame_rate.label());
+        st.preset = format!("{}x{} {}", v.width, v.height, media.frame_rate().label());
     }
     if let Some(a) = info.audio() {
         st.sample_rate = a.sample_rate.max(8000);

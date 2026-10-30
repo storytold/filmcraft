@@ -1,5 +1,5 @@
 //! Headless UI tests of colour features: the Lumetri Color panel's LUT menus and section
-//! switches, Interpret Footage ▸ Color Management and the sequence colour settings, driven by
+//! switches, Interpret Footage ▸ Frame Rate and Color Management and the sequence colour settings, driven by
 //! automation id through the control channel.
 //!
 //! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render offscreen with wgpu and write `color-*.png`.
@@ -178,6 +178,10 @@ fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     let r = d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
     assert_eq!(r["dialog"], "interpretFootage");
     d.frames(3);
+    // Modify Clip opens on Interpret Footage; the colour space is on the Color tab
+    assert!(d.element("colorDialog.space.list").is_none());
+    d.click("colorDialog.tab.color");
+    d.click("colorDialog.space.list");
     d.click("colorDialog.space.slog3-sgamut3cine");
     d.snapshot("color-interpret-footage", None);
     d.click("colorDialog.ok");
@@ -202,6 +206,147 @@ fn interpret_footage_and_sequence_color_dialogs_and_hdr_scopes() {
     d.exec("edit.undo", json!({}));
     let info = d.exec("media.colorInfo", json!({"item": item}));
     assert_eq!(info["override"], Value::Null, "{info}");
+}
+
+/// The duration in ticks of project item `item`, from the bin tree of `project.inspect`.
+fn item_duration(d: &mut Driver, item: &Value) -> i64 {
+    fn find(v: &Value, item: &Value) -> Option<i64> {
+        if v.get("item") == Some(item) {
+            return v["duration"].as_i64();
+        }
+        match v {
+            Value::Array(a) => a.iter().find_map(|x| find(x, item)),
+            Value::Object(o) => o.values().find_map(|x| find(x, item)),
+            _ => None,
+        }
+    }
+    let p = d.exec("project.inspect", json!({}));
+    find(&p, item).unwrap_or_else(|| panic!("item {item} not in {p}"))
+}
+
+/// Click the text field `id` and replace its text with `text`.
+fn retype(d: &mut Driver, id: &str, text: &str) {
+    d.click(id);
+    d.ok("ui.key", json!({"key": "Ctrl+A"}));
+    d.ok("ui.type", json!({"text": text}));
+    d.frames(2);
+}
+
+#[test]
+fn interpret_footage_assumes_a_frame_rate() {
+    let mut d = Driver::demo();
+    let clip = select_first_clip(&mut d);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let item = seq["video"][0]["items"].as_array().unwrap().iter().find(|i| i["clip"] == clip).unwrap()["item"].clone();
+    let before = item_duration(&mut d, &item);
+    // Modify Clip ▸ Interpret Footage: the file's 23.976 fps is in use
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    let ids = d.ids("colorDialog.");
+    for id in [
+        "colorDialog.tab.color",
+        "colorDialog.tab.interpret",
+        "colorDialog.rate.file",
+        "colorDialog.rate.assume",
+        "colorDialog.rate.value",
+        "colorDialog.rate.list",
+        "colorDialog.duration",
+        "colorDialog.fields.file",
+        "colorDialog.alpha.ignore",
+        "colorDialog.alpha.invert",
+    ] {
+        assert!(ids.iter().any(|i| i == id), "{id} missing: {ids:?}");
+    }
+    d.snapshot("color-interpret-footage-tab", None);
+    // pick 25 fps from the list: the footage plays every frame at 25 fps and gets shorter by 23.976/25
+    d.click("colorDialog.rate.list");
+    d.click("colorDialog.rate.25");
+    d.click("colorDialog.ok");
+    let after = item_duration(&mut d, &item);
+    let want = before as f64 * 24_000.0 / 1001.0 / 25.0;
+    assert!((after as f64 - want).abs() < 254_016_000_000.0 / 25.0, "{before} -> {after}, want ≈{want}");
+    // a typed rate (50)
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    retype(&mut d, "colorDialog.rate.value", "50");
+    d.snapshot("color-interpret-typed", None);
+    d.click("colorDialog.ok");
+    let half = before as f64 * 24_000.0 / 1001.0 / 50.0;
+    assert!((item_duration(&mut d, &item) as f64 - half).abs() < 254_016_000_000.0 / 50.0);
+    let info = d.exec("clip.interpretFootage", json!({"items": [item], "colorSpace": "auto"}));
+    assert_eq!(info["frameRate"], "50", "{info}");
+    // and the file's rate back
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    d.click("colorDialog.rate.file");
+    d.click("colorDialog.ok");
+    assert_eq!(item_duration(&mut d, &item), before);
+}
+
+/// How item `item` is interpreted: (frame rate override, colour space id).
+fn interpretation(d: &mut Driver, item: u64) -> (Option<String>, Option<String>) {
+    let m = d.app().session.project.item(filmcraft_project::ItemId(item)).and_then(|i| i.as_media()).unwrap().interpret.clone();
+    (m.frame_rate.map(|r| r.label()), m.color_space.map(|c| c.id().to_string()))
+}
+
+#[test]
+fn interpret_footage_changes_several_items_in_what_is_changed_only() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let mut items: Vec<u64> = seq["video"][0]["items"].as_array().unwrap().iter().filter_map(|i| i["item"].as_u64()).collect();
+    items.dedup();
+    let (a, b) = (items[0], items[1]);
+    // b already plays at 25 fps in S-Log3; a is as its file says
+    d.exec("clip.interpretFootage", json!({"items": [b], "frameRate": 25, "colorSpace": "slog3-sgamut3cine"}));
+    let before_a = item_duration(&mut d, &json!(a));
+    // both selected in the Project panel: the frame rate differs between them, so the dialog says so
+    d.exec("project.select", json!({"items": [a, b]}));
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    let dialog = serde_json::to_value(&d.app().ui.color_dialog).unwrap();
+    assert_eq!(dialog["Interpret"]["mixed"], json!(["colorSpace", "frameRate"]), "{dialog}");
+    d.snapshot("color-interpret-several", None);
+    // only the colour space is changed: both get it, each keeps its frame rate
+    d.click("colorDialog.tab.color");
+    d.frames(2);
+    d.click("colorDialog.space.list");
+    d.click("colorDialog.space.slog3-sgamut3cine");
+    d.click("colorDialog.ok");
+    assert_eq!(interpretation(&mut d, a), (None, Some("slog3-sgamut3cine".into())));
+    assert_eq!(interpretation(&mut d, b), (Some("25".into()), Some("slog3-sgamut3cine".into())));
+    assert_eq!(item_duration(&mut d, &json!(a)), before_a);
+    // then the frame rate: both play at 50 fps (one undo step), colour spaces untouched
+    d.exec("clip.interpretFootage", json!({"items": [a], "colorSpace": "auto"}));
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    d.click("colorDialog.rate.list");
+    d.click("colorDialog.rate.50");
+    d.click("colorDialog.ok");
+    assert_eq!(interpretation(&mut d, a), (Some("50".into()), None));
+    assert_eq!(interpretation(&mut d, b), (Some("50".into()), Some("slog3-sgamut3cine".into())));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(interpretation(&mut d, a).0, None);
+    assert_eq!(interpretation(&mut d, b).0, Some("25".into()));
+    // OK without changing anything changes nothing
+    let rev = d.app().session.revision;
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    d.click("colorDialog.ok");
+    assert_eq!(d.app().session.revision, rev);
+    // text that is not a rate chooses nothing either
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    retype(&mut d, "colorDialog.rate.value", "abc");
+    d.click("colorDialog.ok");
+    assert_eq!(d.app().session.revision, rev);
+    assert_eq!(interpretation(&mut d, b).0, Some("25".into()));
+    // the dialog starts at a's rate (the file's): choosing it again applies it to b as well
+    d.ok("ui.menu.invoke", json!({"id": "clip.interpretFootage"}));
+    d.frames(3);
+    d.click("colorDialog.rate.file");
+    d.click("colorDialog.ok");
+    assert_eq!(interpretation(&mut d, a).0, None);
+    assert_eq!(interpretation(&mut d, b).0, None);
 }
 
 #[test]

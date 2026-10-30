@@ -3632,4 +3632,20 @@
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Le serveur de contrôle est désactivé : FILMCRAFT_CONTROL_TOKEN doit contenir 64 caractères hexadécimaux aléatoires (voir docs/control-protocol.md)
 
+# Modify Clip ▸ Interpret Footage
+	Assume this frame rate:	Utiliser cette fréquence d'images :
+	Modify Clip	Modifier le clip
+	Use Frame Rate from File:	Utiliser la fréquence d'images du fichier :
+	fps	i/s
+	Conform to:	Conformer à :
+	Use Field Order from File:	Utiliser l'ordre des trames du fichier :
+	Upper Field First	Trame supérieure en premier
+	Lower Field First	Trame inférieure en premier
+	FilmCraft plays every frame as a whole picture; conforming the field order is not supported yet.	FilmCraft lit chaque image comme une image complète ; la conformation de l'ordre des trames n'est pas encore prise en charge.
+	Ignore Alpha Channel	Ignorer la couche alpha
+	Invert Alpha Channel	Inverser la couche alpha
+	(differs between the selected items)	(diffère entre les éléments sélectionnés)
+	Changes apply to all {n} selected items; settings left as they are stay as each item has them.	Les modifications s'appliquent aux {n} éléments sélectionnés ; les réglages non modifiés restent tels qu'ils sont pour chaque élément.
+	Various	Divers
+
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).

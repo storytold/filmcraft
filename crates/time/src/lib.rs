@@ -220,6 +220,17 @@ impl FrameRate {
         self.num as f64 / self.den as f64
     }
 
+    /// A rate a sequence or an interpretation can use: positive, at most 1000 fps, with unsigned
+    /// 32-bit rational components and a frame at least one tick long.
+    pub fn is_usable(self) -> bool {
+        self.num > 0
+            && self.den > 0
+            && self.as_f64() <= 1000.0
+            && self.num <= i64::from(u32::MAX)
+            && self.den <= i64::from(u32::MAX)
+            && (i128::from(TICKS_PER_SECOND) * i128::from(self.den) / i128::from(self.num)) <= i128::from(i64::MAX)
+    }
+
     /// Exact duration of one frame (rounded down only for exotic rates).
     /// Values outside the integer tick range saturate at its limit.
     pub fn frame_duration(self) -> Tick {

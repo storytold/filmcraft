@@ -228,7 +228,7 @@ delete), the queue panel (Send to Queue, Up/Down, Cancel, Start, Retry, Clear) w
 the Export button and the header's Quick Export popup (`export-*.png` snapshots).
 
 `crates/ui-egui/tests/it/color_ui.rs` drives colour features the same way (`color-*.png` snapshots):
-Lumetri Input/Look LUT menus and section switches, the Interpret Footage ▸ Color Management and
+Lumetri Input/Look LUT menus and section switches, the Interpret Footage ▸ Frame Rate and Color Management and
 Sequence Color Management dialogs, and the HDR scopes of a PQ sequence.
 
 Colour science tests: `filmcraft-color` (curve round trips and published reference values per

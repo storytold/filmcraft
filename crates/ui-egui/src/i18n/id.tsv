@@ -3588,4 +3588,20 @@
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Server kontrol dinonaktifkan: FILMCRAFT_CONTROL_TOKEN harus berisi 64 karakter heksadesimal acak (lihat docs/control-protocol.md)
 
+# Modify Clip ▸ Interpret Footage
+	Assume this frame rate:	Anggap kecepatan bingkai ini:
+	Modify Clip	Ubah Klip
+	Use Frame Rate from File:	Gunakan kecepatan bingkai dari file:
+	fps	fps
+	Conform to:	Sesuaikan ke:
+	Use Field Order from File:	Gunakan urutan field dari file:
+	Upper Field First	Field atas dahulu
+	Lower Field First	Field bawah dahulu
+	FilmCraft plays every frame as a whole picture; conforming the field order is not supported yet.	FilmCraft memutar setiap bingkai sebagai gambar utuh; menyesuaikan urutan field belum didukung.
+	Ignore Alpha Channel	Abaikan Saluran Alfa
+	Invert Alpha Channel	Balikkan Saluran Alfa
+	(differs between the selected items)	(berbeda di antara item yang dipilih)
+	Changes apply to all {n} selected items; settings left as they are stay as each item has them.	Perubahan berlaku untuk semua {n} item yang dipilih; pengaturan yang tidak diubah tetap seperti pada masing-masing item.
+	Various	Beragam
+
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).

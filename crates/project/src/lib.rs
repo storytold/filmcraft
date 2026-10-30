@@ -59,6 +59,7 @@ mod source;
 mod track;
 mod view;
 
+pub use item::{AlphaInterpret, Conform, MAX_CONFORM_SAMPLE_RATE, retime};
 pub use item::{AudioChannelMap, Bin, BinEntry, Interpretation, ItemKind, MediaClip, MediaIdentity, MediaRef, ProjectItem};
 pub use label::Label;
 pub(crate) use sequence::bounded_time_range;

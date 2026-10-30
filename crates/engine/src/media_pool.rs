@@ -19,10 +19,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use filmcraft_frame::{AudioBuffer, VideoFrame};
+use filmcraft_frame::{AudioBuffer, PixelData, VideoFrame};
 use filmcraft_media::generators::GeneratorSource;
 use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaSource, Opener, SharedSource};
-use filmcraft_project::{ItemId, MediaClip, MediaRef, Project};
+use filmcraft_project::{AlphaInterpret, Conform, ItemId, MediaClip, MediaRef, Project};
 use filmcraft_render::offline::OfflineReason;
 
 use crate::Services;
@@ -50,6 +50,8 @@ pub struct MediaPool {
     /// item → (reference key, source)
     sources: RwLock<HashMap<ItemId, (String, SharedSource)>>,
     proxies: RwLock<HashMap<ItemId, (String, SharedSource)>>,
+    /// Interpreted sources ([`InterpretSource`]), per item: the source they wrap and how.
+    interpreted: RwLock<HashMap<ItemId, (SharedSource, Interpret, SharedSource)>>,
     offline: Arc<RwLock<HashMap<ItemId, OfflineStatus>>>,
     use_proxies: AtomicBool,
     /// Per item: video frames that failed in a row in the monitors (see [`Self::monitor_source`]).
@@ -67,6 +69,7 @@ impl Default for MediaPool {
         Self {
             sources: RwLock::new(HashMap::new()),
             proxies: RwLock::new(HashMap::new()),
+            interpreted: RwLock::default(),
             offline: Arc::new(RwLock::new(HashMap::new())),
             use_proxies: AtomicBool::new(false),
             failures: Arc::default(),
@@ -178,6 +181,7 @@ impl MediaPool {
         self.sources.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
         self.proxies.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
         self.offline.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
+        self.interpreted.write().unwrap_or_else(PoisonError::into_inner).remove(&item);
     }
 
     /// Record the media and proxy paths of `p`, loaded from the document at `document` (None: one
@@ -228,11 +232,18 @@ impl MediaPool {
         self.follow(path).map_err(|why| MediaError::Offline(format!("{path} is not opened: {why}")))
     }
 
+    /// Number of interpreted (conformed or alpha-changed) sources kept for reuse.
+    #[cfg(test)]
+    pub(crate) fn interpreted_len(&self) -> usize {
+        self.interpreted.read().unwrap_or_else(PoisonError::into_inner).len()
+    }
+
     /// Forget every opened source (files are re-read on next use).
     pub fn clear(&self) {
         self.sources.write().unwrap_or_else(PoisonError::into_inner).clear();
         self.proxies.write().unwrap_or_else(PoisonError::into_inner).clear();
         self.offline.write().unwrap_or_else(PoisonError::into_inner).clear();
+        self.interpreted.write().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
     pub fn cached(&self, item: ItemId) -> Option<SharedSource> {
@@ -308,7 +319,33 @@ impl MediaPool {
         self.resolve(p, item, services, false)
     }
 
+    /// The item's file as it is, at its own frame rate: never a proxy, never conformed to the rate
+    /// Interpret Footage assumes (proxies are made from it, and conformed when read like it).
+    pub fn file_source(&self, p: &Project, item: ItemId, services: &dyn Services) -> Option<SharedSource> {
+        self.resolve_file(p, item, services, false)
+    }
+
+    /// The source for an item as Interpret Footage interprets it: conformed to the frame rate it
+    /// assumes and with its alpha ignored or inverted, if so.
     fn resolve(&self, p: &Project, item: ItemId, services: &dyn Services, proxies: bool) -> Option<SharedSource> {
+        let src = self.resolve_file(p, item, services, proxies)?;
+        let Some((id, m, _)) = p.resolve_media(item) else { return Some(src) };
+        let how = Interpret { conform: m.conform(), alpha: m.alpha() };
+        if how == Interpret::default() {
+            return Some(src);
+        }
+        if let Some((inner, h, s)) = self.interpreted.read().unwrap_or_else(|e| e.into_inner()).get(&id)
+            && Arc::ptr_eq(inner, &src)
+            && *h == how
+        {
+            return Some(s.clone());
+        }
+        let s: SharedSource = Arc::new(InterpretSource::new(src.clone(), how));
+        self.interpreted.write().unwrap_or_else(|e| e.into_inner()).insert(id, (src, how, s.clone()));
+        Some(s)
+    }
+
+    fn resolve_file(&self, p: &Project, item: ItemId, services: &dyn Services, proxies: bool) -> Option<SharedSource> {
         let (item, m, _) = p.resolve_media(item)?;
         let it = p.item(item)?;
         if proxies
@@ -584,6 +621,125 @@ impl MediaSource for DamagedAsSlate {
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.inner.audio_stream(stream, start, frames, sample_rate)
     }
+}
+
+/// How Interpret Footage changes what a file plays: the frame rate it assumes and what it does to
+/// the alpha channel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Interpret {
+    pub conform: Option<Conform>,
+    pub alpha: Option<AlphaInterpret>,
+}
+
+/// Footage as Interpret Footage interprets it.
+///
+/// Conformed to an assumed frame rate ([`Conform`]): asked for media time, it reads the file at
+/// the matching file time, and its audio at the sample rate that makes it last as long as the
+/// conformed picture (so a 50 fps clip assumed at 25 plays picture and sound at half speed, an
+/// octave lower). Its info reports the conformed duration and the assumed rate.
+///
+/// With Ignore Alpha Channel its pictures are opaque; with Invert Alpha Channel their alpha is
+/// inverted ([`interpret_alpha`]).
+pub struct InterpretSource {
+    pub inner: SharedSource,
+    pub how: Interpret,
+    info: MediaInfo,
+}
+
+impl InterpretSource {
+    pub fn new(inner: SharedSource, how: Interpret) -> Self {
+        let mut info = inner.info().clone();
+        if let Some(c) = how.conform {
+            info.duration = c.media_time(info.duration);
+            if let Some(v) = info.video.as_mut() {
+                v.frame_rate = c.assumed;
+            }
+        }
+        if how.alpha == Some(AlphaInterpret::Ignore)
+            && let Some(v) = info.video.as_mut()
+        {
+            v.has_alpha = false;
+        }
+        Self { inner, how, info }
+    }
+
+    fn file_sample_rate(&self, rate: u32) -> u32 {
+        self.how.conform.map_or(rate, |c| c.file_sample_rate(rate))
+    }
+
+    fn conformed(&self, buf: AudioBuffer, sample_rate: u32) -> AudioBuffer {
+        // the samples were read at the file's rate; they play at the one asked for
+        AudioBuffer { sample_rate, ..buf }
+    }
+}
+
+impl MediaSource for InterpretSource {
+    fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        let time = self.how.conform.map_or(req.time, |c| c.file_time(req.time));
+        let frame = self.inner.video_frame(FrameRequest { time, ..req })?;
+        Ok(match self.how.alpha {
+            Some(a) => Arc::new(interpret_alpha(&frame, a)),
+            None => frame,
+        })
+    }
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        let buf = self.inner.audio(start, frames, self.file_sample_rate(sample_rate))?;
+        Ok(self.conformed(buf, sample_rate))
+    }
+    fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        let buf = self.inner.audio_stream(stream, start, frames, self.file_sample_rate(sample_rate))?;
+        Ok(self.conformed(buf, sample_rate))
+    }
+}
+
+/// `frame` with its alpha ignored (opaque) or inverted. Straight alpha (8-bit RGBA, Y'CbCr alpha
+/// planes) changes alone; premultiplied linear RGBA is unpremultiplied, inverted and premultiplied
+/// again, and ignoring its alpha keeps the colours as stored.
+pub fn interpret_alpha(frame: &VideoFrame, how: AlphaInterpret) -> VideoFrame {
+    let ignore = how == AlphaInterpret::Ignore;
+    let data = match &frame.data {
+        PixelData::Rgba8(px) => {
+            let mut px = px.as_ref().clone();
+            for a in px.iter_mut().skip(3).step_by(4) {
+                *a = if ignore { 255 } else { 255 - *a };
+            }
+            PixelData::Rgba8(Arc::new(px))
+        }
+        PixelData::RgbaF32(px) => {
+            let mut px = px.as_ref().clone();
+            for p in px.as_chunks_mut::<4>().0 {
+                let a = if p[3].is_finite() { p[3].clamp(0.0, 1.0) } else { 1.0 };
+                if ignore {
+                    p[3] = 1.0;
+                } else {
+                    let k = if a > 0.0 { (1.0 - a) / a } else { 1.0 };
+                    for c in &mut p[..3] {
+                        *c *= k;
+                    }
+                    p[3] = 1.0 - a;
+                }
+            }
+            PixelData::RgbaF32(Arc::new(px))
+        }
+        PixelData::Yuv8 { planes, chroma, alpha } => PixelData::Yuv8 {
+            planes: planes.clone(),
+            chroma: *chroma,
+            alpha: if ignore { None } else { alpha.as_ref().map(|a| Arc::new(a.iter().map(|v| 255 - v).collect())) },
+        },
+        PixelData::Yuv16 { planes, chroma, bits, alpha } => {
+            let max = u16::try_from((1u32 << (*bits).clamp(1, 16)) - 1).unwrap_or(u16::MAX);
+            PixelData::Yuv16 {
+                planes: planes.clone(),
+                chroma: *chroma,
+                bits: *bits,
+                alpha: if ignore { None } else { alpha.as_ref().map(|a| Arc::new(a.iter().map(|v| max.saturating_sub(*v)).collect())) },
+            }
+        }
+    };
+    VideoFrame { data, ..frame.clone() }
 }
 
 /// A proxy standing in for its full-resolution media: reports the full-resolution info and hands

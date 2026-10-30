@@ -458,7 +458,8 @@ impl Exporter<'_> {
             CKind::Sound if audio.is_none() => return None,
             _ => {}
         }
-        let frame_rate = video.map(|v| v.frame_rate).filter(|r| r.num > 0).unwrap_or(self.seq_rate);
+        // the rate and length the footage plays at (Interpret Footage's, else the file's)
+        let frame_rate = video.map(|_| m.frame_rate()).filter(|r| r.num > 0).unwrap_or(self.seq_rate);
         let mut markers: Vec<CMarker> = m.markers.iter().chain(c.markers.iter()).map(marker_out).collect();
         markers.sort_by(|a, b| (a.start, &a.name).cmp(&(b.start, &b.name)));
         markers.dedup();
@@ -475,7 +476,7 @@ impl Exporter<'_> {
             frame_rate,
             sample_rate: audio.map_or(48_000, |a| a.sample_rate.max(1)),
             bits: audio.and_then(|a| a.bits_per_sample).unwrap_or(16).clamp(8, 32) as u16,
-            length: if still { Tick::ZERO } else { m.info.duration },
+            length: if still { Tick::ZERO } else { m.duration() },
             offset: Tick::ZERO,
             start_tc: m.info.start_timecode,
             tc_rate: frame_rate,

@@ -54,7 +54,7 @@ pub(super) fn extract_audio(s: &mut Session, p: &Value) -> Result<Value> {
     for item in items {
         let (root, m, sub) = media_root(&s.project, item).ok_or_else(|| bad("clip.extractAudio", "not a media clip"))?;
         let a = m.info.audio().cloned().ok_or_else(|| bad("clip.extractAudio", "the clip has no audio"))?;
-        let range = sub.unwrap_or(TimeRange::new(Tick::ZERO, m.info.duration));
+        let range = sub.unwrap_or(TimeRange::new(Tick::ZERO, m.duration()));
         let dir = match str_p(p, "dir") {
             Some(d) => d.to_string(),
             None => s

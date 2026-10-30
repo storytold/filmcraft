@@ -3632,4 +3632,20 @@
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	コントロールサーバーが無効です: FILMCRAFT_CONTROL_TOKEN には 64 文字のランダムな 16 進数文字が必要です (docs/control-protocol.md を参照)
 
+# Modify Clip ▸ Interpret Footage
+	Assume this frame rate:	このフレームレートとみなす：
+	Modify Clip	クリップを変更
+	Use Frame Rate from File:	ファイルのフレームレートを使用：
+	fps	fps
+	Conform to:	適用：
+	Use Field Order from File:	ファイルのフィールドオーダーを使用：
+	Upper Field First	上位フィールドから
+	Lower Field First	下位フィールドから
+	FilmCraft plays every frame as a whole picture; conforming the field order is not supported yet.	FilmCraft は各フレームを 1 枚の画像として再生します。フィールドオーダーの変更にはまだ対応していません。
+	Ignore Alpha Channel	アルファチャンネルを無視
+	Invert Alpha Channel	アルファチャンネルを反転
+	(differs between the selected items)	（選択した項目間で異なります）
+	Changes apply to all {n} selected items; settings left as they are stay as each item has them.	変更は選択した {n} 個の項目すべてに適用されます。変更しない設定は各項目のままです。
+	Various	複数
+
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).

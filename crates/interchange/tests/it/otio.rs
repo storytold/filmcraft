@@ -252,6 +252,34 @@ fn lossless_roundtrip_with_filmcraft_metadata() {
     assert_eq!(structure(&imp2.project, imp2.sequences[0], TrackKind::Video), structure(&p, s, TrackKind::Video));
 }
 
+/// Footage shot at 50 fps and assumed at 25 (Interpret Footage): the media reference is the file
+/// as it is (its own range), the clip's source range is file time and a LinearTimeWarp of 0.5
+/// carries the conform; FilmCraft reads back the assumed rate, source In and speed.
+#[test]
+fn conformed_footage_references_the_file_and_warps_the_clip() {
+    let r = FrameRate::FPS_25;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/fast.mov", true, false, FrameRate::FPS_50);
+    p.item_mut(a).and_then(|i| i.as_media_mut()).unwrap().interpret.frame_rate = Some(r);
+    let s = sequence(&mut p, "S", r, false);
+    let v = clip(&mut p, s, TrackKind::Video, 0, a, 0..50, 10);
+    let (imp, text, rep) = roundtrip(&p, s, Format::Otio, &ExportOptions::default());
+    assert!(!rep.has_warnings(), "{rep}");
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let c = &json["tracks"]["children"][0]["children"][0];
+    let avail = &c["media_references"]["DEFAULT_MEDIA"]["available_range"];
+    assert_eq!(avail["duration"]["value"].as_f64().map(|v| v / avail["duration"]["rate"].as_f64().unwrap()), Some(600.0), "{text}");
+    let start = &c["source_range"]["start_time"];
+    assert_eq!(start["value"].as_f64().map(|v| v / start["rate"].as_f64().unwrap()), Some(0.2), "frame 10 of the footage is 0.2 s into the file");
+    assert_eq!(c["effects"][0]["time_scalar"].as_f64(), Some(0.5), "{text}");
+    let si = only_seq(&imp);
+    let q = &imp.project;
+    let ti = &q.sequence(si).unwrap().video_tracks[0].items[0];
+    let src = &p.sequence(s).unwrap().find_item(v).unwrap().1;
+    assert_eq!((ti.source_in, ti.duration, ti.speed), (src.source_in, src.duration, 1.0));
+    assert_eq!(q.item(ti.item).unwrap().as_media().unwrap().interpret.frame_rate, Some(r));
+}
+
 #[test]
 fn collections_and_bare_tracks() {
     let one = r#"{"OTIO_SCHEMA": "SerializableCollection.1", "name": "Bundle", "children": [

@@ -3608,4 +3608,20 @@
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	控制服务器已禁用：FILMCRAFT_CONTROL_TOKEN 必须包含 64 个随机十六进制字符（参见 docs/control-protocol.md）
 
+# Modify Clip ▸ Interpret Footage
+	Assume this frame rate:	采用此帧速率：
+	Modify Clip	修改剪辑
+	Use Frame Rate from File:	使用文件中的帧速率：
+	fps	fps
+	Conform to:	符合：
+	Use Field Order from File:	使用文件中的场序：
+	Upper Field First	高场优先
+	Lower Field First	低场优先
+	FilmCraft plays every frame as a whole picture; conforming the field order is not supported yet.	FilmCraft 将每一帧作为完整画面播放；暂不支持更改场序。
+	Ignore Alpha Channel	忽略 Alpha 通道
+	Invert Alpha Channel	反转 Alpha 通道
+	(differs between the selected items)	（所选项目之间不同）
+	Changes apply to all {n} selected items; settings left as they are stay as each item has them.	更改将应用于所选的全部 {n} 个项目；未更改的设置保持各项目原样。
+	Various	多种
+
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).

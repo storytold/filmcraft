@@ -3609,4 +3609,20 @@
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	제어 서버가 비활성화되었습니다: FILMCRAFT_CONTROL_TOKEN에는 64자리 무작위 16진수 문자가 필요합니다(docs/control-protocol.md 참조)
 
+# Modify Clip ▸ Interpret Footage
+	Assume this frame rate:	이 프레임 속도로 간주:
+	Modify Clip	클립 수정
+	Use Frame Rate from File:	파일의 프레임 속도 사용:
+	fps	fps
+	Conform to:	적용:
+	Use Field Order from File:	파일의 필드 순서 사용:
+	Upper Field First	위쪽 필드 먼저
+	Lower Field First	아래쪽 필드 먼저
+	FilmCraft plays every frame as a whole picture; conforming the field order is not supported yet.	FilmCraft는 모든 프레임을 하나의 완전한 그림으로 재생합니다. 필드 순서 변경은 아직 지원되지 않습니다.
+	Ignore Alpha Channel	알파 채널 무시
+	Invert Alpha Channel	알파 채널 반전
+	(differs between the selected items)	(선택한 항목마다 다름)
+	Changes apply to all {n} selected items; settings left as they are stay as each item has them.	변경 사항은 선택한 {n}개 항목 모두에 적용됩니다. 변경하지 않은 설정은 각 항목의 설정대로 유지됩니다.
+	Various	여러 값
+
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).

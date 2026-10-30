@@ -1006,7 +1006,7 @@ impl Exp<'_, '_> {
                 .unwrap_or_else(|| self.p.sequence(seq_id).map(|s| s.settings.frame_rate).unwrap_or_default());
             let name = self.p.item(item).map(|i| i.name.clone()).unwrap_or_default();
             let label = self.p.item(item).map(|i| i.label).unwrap_or(Label::Iris);
-            let duration = m.info.duration;
+            let duration = m.duration();
             let markers = m.markers.clone();
             let mid = self.master_id(item);
             self.w.open("clip", &[("id", &mid)]);
@@ -1166,7 +1166,7 @@ impl Exp<'_, '_> {
             self.w.text("pathurl", path);
         }
         write_rate(&mut self.w, frate);
-        self.w.text("duration", frames_round(frate, m.info.duration));
+        self.w.text("duration", frames_round(frate, m.duration()));
         let tc = m.info.start_timecode.unwrap_or(0);
         self.write_timecode(tc, frate, false);
         self.w.open("media", &[]);

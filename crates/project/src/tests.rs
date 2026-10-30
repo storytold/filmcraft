@@ -360,6 +360,42 @@ fn pixel_aspect_ratios_are_reduced_and_hostile_ones_are_square() {
     assert_eq!(conformed_size((1440, 1080), (0, 0), (u32::MAX, 1)), (1440.0, 1080.0));
 }
 
+/// Between any two standard rates, the first tick of every frame lands in the same frame of
+/// the file and back, durations scale exactly, and stills, sound and hostile overrides are
+/// never conformed.
+#[test]
+fn conform_keeps_every_frame_and_skips_what_it_cannot_conform() {
+    for file in FrameRate::COMMON {
+        for assumed in FrameRate::COMMON {
+            let c = Conform { file, assumed };
+            for f in [0, 1, 2, 23, 24, 25, 1001, 1_000_000] {
+                assert_eq!(file.frame_at(c.file_time(assumed.tick_of(f))), f, "{file} as {assumed}: frame {f}");
+                assert_eq!(assumed.frame_at(c.media_time(file.tick_of(f))), f, "{file} as {assumed}: back {f}");
+                // the last tick of a frame stays in it too
+                assert_eq!(file.frame_at(c.file_time(assumed.tick_of(f + 1) - Tick(1))), f, "{file} as {assumed}: end of {f}");
+            }
+            let r = c.file_sample_rate(48_000);
+            assert!((f64::from(r) - 48_000.0 * file.as_f64() / assumed.as_f64()).abs() <= 0.5, "{file} as {assumed}: {r}");
+        }
+    }
+    let (mut p, clip, _) = demo_project();
+    let m = p.item_mut(clip).and_then(|i| i.as_media_mut()).unwrap();
+    let file = m.info.frame_rate();
+    assert_eq!((m.conform(), m.duration()), (None, m.info.duration));
+    m.interpret.frame_rate = Some(FrameRate::new(file.num * 2, file.den));
+    assert_eq!(m.duration(), Conform { file, assumed: FrameRate::new(file.num * 2, file.den) }.media_time(m.info.duration));
+    for hostile in [FrameRate { num: 0, den: 1 }, FrameRate { num: 25, den: 0 }, FrameRate { num: -25, den: 1 }, FrameRate { num: 2001, den: 2 }] {
+        m.interpret.frame_rate = Some(hostile);
+        assert_eq!((m.conform(), m.duration()), (None, m.info.duration), "{hostile:?}");
+    }
+    m.interpret.frame_rate = Some(FrameRate::FPS_25);
+    m.info.kind = filmcraft_media::MediaKind::Still;
+    assert_eq!(m.conform(), None);
+    m.info.kind = filmcraft_media::MediaKind::AudioOnly;
+    m.info.video = None;
+    assert_eq!(m.conform(), None);
+}
+
 #[test]
 fn source_par_follows_interpret_footage_subclips_and_sequences() {
     let (mut p, clip, seq) = demo_project();

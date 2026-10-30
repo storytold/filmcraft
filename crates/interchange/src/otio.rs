@@ -235,8 +235,15 @@ impl Exp<'_, '_> {
         let Some(m) = item_media(self.p, item) else {
             return json!({"OTIO_SCHEMA": "MissingReference.1", "name": name, "available_range": null, "metadata": {}});
         };
-        let avail = tr(m.info.start_timecode.map(|f| m.frame_rate().tick_of(f)).unwrap_or(Tick::ZERO), m.info.duration, rate);
-        let meta = json!({"filmcraft": {"item": item.0, "label": self.p.item(item).map(|i| i.label), "info": m.info, "offline": m.offline}});
+        // The file as it is, at its own rate and length: clips conform it to Interpret Footage's
+        // assumed rate with a LinearTimeWarp, and FilmCraft reads the assumed rate back.
+        let conform = m.conform();
+        let origin_rate = conform.map_or(m.frame_rate(), |c| c.file);
+        let avail = tr(m.info.start_timecode.map(|f| origin_rate.tick_of(f)).unwrap_or(Tick::ZERO), m.info.duration, rate);
+        let mut meta = json!({"filmcraft": {"item": item.0, "label": self.p.item(item).map(|i| i.label), "info": m.info, "offline": m.offline}});
+        if let Some(c) = conform {
+            meta["filmcraft"]["assumed_frame_rate"] = json!(c.assumed);
+        }
         match &m.media {
             MediaRef::Generator(g) => json!({
                 "OTIO_SCHEMA": "GeneratorReference.1",
@@ -261,13 +268,18 @@ impl Exp<'_, '_> {
             self.nested_items = self.nested_items.saturating_add(1);
         }
         let base = base_item(self.p, it.item);
+        // Interpret Footage's assumed rate: source times are the file's, and the clip plays the
+        // file at assumed / file rate on top of its own speed
+        let conform = item_media(self.p, base).and_then(|m| m.conform());
+        let to_file = |t: Tick| conform.map_or(t, |c| c.file_time(t));
+        let factor = conform.map_or(1.0, |c| c.assumed.as_f64() / c.file.as_f64());
         let mut effects = Vec::new();
         if let Some(h) = it.frame_hold {
             effects.push(
                 json!({"OTIO_SCHEMA": "FreezeFrame.1", "name": "", "effect_name": "FreezeFrame", "time_scalar": 0.0, "metadata": {"filmcraft": {"hold": h}}}),
             );
-        } else if it.speed != 1.0 || it.reverse {
-            let s = if it.reverse { -it.speed } else { it.speed };
+        } else if it.speed != 1.0 || it.reverse || conform.is_some() {
+            let s = if it.reverse { -it.speed } else { it.speed } * factor;
             effects.push(json!({"OTIO_SCHEMA": "LinearTimeWarp.1", "name": "", "effect_name": "LinearTimeWarp", "time_scalar": s, "metadata": {}}));
         }
         let meta = json!({"filmcraft": {
@@ -310,12 +322,21 @@ impl Exp<'_, '_> {
         }
         let mref = self.media_ref(base, rate);
         // OTIO source times are in the reference's time (which starts at its available_range start).
-        let origin = item_media(self.p, base).and_then(|m| m.info.start_timecode.map(|f| m.frame_rate().tick_of(f))).unwrap_or(Tick::ZERO);
-        let markers: Vec<Value> = it.markers.iter().map(|m| marker_json(&Marker { start: m.start + origin, ..m.clone() }, rate)).collect();
+        let origin = item_media(self.p, base)
+            .and_then(|m| m.info.start_timecode.map(|f| m.conform().map_or(m.frame_rate(), |c| c.file).tick_of(f)))
+            .unwrap_or(Tick::ZERO);
+        let markers: Vec<Value> = it
+            .markers
+            .iter()
+            .map(|m| {
+                let start = to_file(m.start);
+                marker_json(&Marker { start: origin + start, duration: to_file(m.start + m.duration) - start, ..m.clone() }, rate)
+            })
+            .collect();
         json!({
             "OTIO_SCHEMA": "Clip.2",
             "name": it.name,
-            "source_range": tr(origin + it.source_in, it.duration, rate),
+            "source_range": tr(origin + to_file(it.source_in), it.duration, rate),
             "effects": effects,
             "markers": markers,
             "enabled": it.enabled,
@@ -659,15 +680,30 @@ impl Imp<'_, '_> {
             return None;
         }
         let item = self.media(&mref, &name, kind, avail)?;
-        // Sources are media time: subtract the media's start time (available_range start).
+        // Sources are media time: subtract the media's start time (available_range start), and
+        // conform file times to the assumed rate FilmCraft wrote for the media.
         let origin = avail.map(|a| a.0).unwrap_or(Tick::ZERO);
-        let mut ti = self.b.clip(item, kind, if name.is_empty() { "Clip" } else { &name }, pos, dur, src_in - origin);
+        let conform = self.b.p.item(item).and_then(|i| i.as_media()).and_then(|m| m.conform());
+        let to_media = |t: Tick| conform.map_or(t, |c| c.media_time(t));
+        let mut ti = self.b.clip(item, kind, if name.is_empty() { "Clip" } else { &name }, pos, dur, to_media(src_in - origin));
         ti.markers = self.markers(c);
         for m in &mut ti.markers {
-            m.start -= origin;
+            let (start, end) = (m.start - origin, m.start - origin + m.duration);
+            m.start = to_media(start);
+            m.duration = to_media(end) - m.start;
         }
         let meta = fc(c).cloned();
         self.apply_clip_meta(&mut ti, c, meta.as_ref());
+        // the LinearTimeWarp carries the conform: what is left is the clip's own speed
+        if let Some(c) = conform
+            && ti.frame_hold.is_none()
+        {
+            let factor = c.assumed.as_f64() / c.file.as_f64();
+            ti.speed /= factor;
+            if (ti.speed - 1.0).abs() < 1e-9 {
+                ti.speed = 1.0;
+            }
+        }
         Some(ti)
     }
 
@@ -775,6 +811,7 @@ impl Imp<'_, '_> {
     fn fill_media(&mut self, id: ItemId, info: Option<MediaInfo>, meta: Option<&Value>, kind: TrackKind) {
         let label = meta.and_then(|m| m.get("label")).and_then(|l| serde_json::from_value::<Label>(l.clone()).ok());
         let offline = meta.and_then(|m| m.get("offline")).and_then(Value::as_bool);
+        let assumed = meta.and_then(|m| m.get("assumed_frame_rate")).and_then(|r| serde_json::from_value::<FrameRate>(r.clone()).ok());
         let Some(it) = self.b.p.item_mut(id) else { return };
         if let Some(l) = label {
             it.label = l;
@@ -789,6 +826,10 @@ impl Imp<'_, '_> {
             }
             if let Some(o) = offline {
                 m.offline = o;
+            }
+            // hostile rates are ignored by MediaClip::conform
+            if assumed.is_some() {
+                m.interpret.frame_rate = assumed;
             }
         }
     }

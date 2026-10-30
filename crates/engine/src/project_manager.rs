@@ -145,7 +145,9 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
         let file = Path::new(path);
         let stem = file.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("media-{}", id.0));
         let ext = file.extension().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let transcode = consolidate && matches!(m.info.kind, MediaKind::Movie | MediaKind::AudioOnly) && ranges.contains_key(&id);
+        // footage conformed to an assumed frame rate is copied whole: its clips' times are media
+        // time, which a trimmed copy at the file's rate would not keep
+        let transcode = consolidate && matches!(m.info.kind, MediaKind::Movie | MediaKind::AudioOnly) && ranges.contains_key(&id) && m.conform().is_none();
         let (out, range) = if transcode {
             let rate = m.frame_rate();
             let (lo, hi) = ranges[&id];

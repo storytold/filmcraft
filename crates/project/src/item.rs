@@ -103,9 +103,91 @@ impl MediaClip {
     pub fn pixel_aspect(&self) -> (u32, u32) {
         self.interpret.par.and_then(checked_par).or_else(|| self.info.video.as_ref().and_then(|v| checked_par(v.par))).unwrap_or((1, 1))
     }
+    /// Media duration: the file's, conformed when Interpret Footage assumes another frame rate.
     pub fn duration(&self) -> Tick {
-        self.info.duration
+        self.conform().map_or(self.info.duration, |c| c.media_time(self.info.duration))
     }
+    /// Modify ▸ Interpret Footage ▸ Assume this frame rate: how the footage's media time maps to
+    /// the file's. `None` when it plays at the file's own rate, for stills and footage without
+    /// a picture, and for an override that is not a usable rate.
+    pub fn conform(&self) -> Option<Conform> {
+        let assumed = self.interpret.frame_rate.filter(|r| r.is_usable())?;
+        let file = self.info.video.as_ref().map(|v| v.frame_rate).filter(|r| r.is_usable())?;
+        if matches!(self.info.kind, filmcraft_media::MediaKind::Still) {
+            return None;
+        }
+        let (file, assumed) = (FrameRate::new(file.num, file.den), FrameRate::new(assumed.num, assumed.den));
+        (file != assumed).then_some(Conform { file, assumed })
+    }
+    /// Modify ▸ Interpret Footage ▸ Alpha Channel: what playback does to the picture's alpha.
+    /// `None` when the file has no alpha or neither option is on; Ignore wins over Invert.
+    pub fn alpha(&self) -> Option<AlphaInterpret> {
+        if !self.info.video.as_ref().is_some_and(|v| v.has_alpha) {
+            return None;
+        }
+        if self.interpret.ignore_alpha { Some(AlphaInterpret::Ignore) } else { self.interpret.invert_alpha.then_some(AlphaInterpret::Invert) }
+    }
+}
+
+/// Interpret Footage ▸ Alpha Channel: Ignore Alpha Channel (the picture is opaque) or Invert Alpha
+/// Channel (transparent becomes opaque and the other way round).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlphaInterpret {
+    Ignore,
+    Invert,
+}
+
+/// Footage conformed to an assumed frame rate (Modify ▸ Interpret Footage): frame `n` of the file
+/// is shown at media time `n / assumed`, so footage shot at 50 fps and assumed at 25 plays at half
+/// speed for twice as long. Its audio is conformed with it and stays in sync.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Conform {
+    pub file: FrameRate,
+    pub assumed: FrameRate,
+}
+
+impl Conform {
+    /// File time of media time `t`, in the same frame of the file as `t` is of the footage.
+    pub fn file_time(self, t: Tick) -> Tick {
+        retime(t, self.assumed, self.file)
+    }
+    /// Media time of file time `t` (the inverse of [`Conform::file_time`]).
+    pub fn media_time(self, t: Tick) -> Tick {
+        retime(t, self.file, self.assumed)
+    }
+    /// Sample rate to read the file's audio at so that, played at `rate`, it lasts as long as the
+    /// conformed picture (at least 1 Hz, at most [`MAX_CONFORM_SAMPLE_RATE`]).
+    pub fn file_sample_rate(self, rate: u32) -> u32 {
+        let (a, f) = (self.assumed, self.file);
+        let num = i128::from(rate) * i128::from(a.den) * i128::from(f.num);
+        let den = i128::from(a.num) * i128::from(f.den);
+        if den <= 0 {
+            return rate;
+        }
+        // to nearest
+        let r = (num * 2 + den) / (den * 2);
+        r.clamp(1, i128::from(MAX_CONFORM_SAMPLE_RATE)) as u32
+    }
+}
+
+/// Highest sample rate [`Conform::file_sample_rate`] asks a source for (120 fps footage assumed
+/// at 23.976 reads 48 kHz audio at about 240 kHz).
+pub const MAX_CONFORM_SAMPLE_RATE: u32 = 1_536_000;
+
+/// Time `t` of footage playing at `from` as time of the same footage playing at `to`: scaled by
+/// `from / to` and kept in the same frame (frame `n` at `n / from` goes to `n / to`; rounding
+/// never moves a tick into a neighbouring frame). `t` when either rate is unusable.
+pub fn retime(t: Tick, from: FrameRate, to: FrameRate) -> Tick {
+    if !from.is_usable() || !to.is_usable() {
+        return t;
+    }
+    let num = i128::from(from.num) * i128::from(to.den);
+    let den = i128::from(from.den) * i128::from(to.num);
+    let Some(y) = i128::from(t.0).saturating_mul(num).checked_div_euclid(den) else { return t };
+    let y = Tick(y.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64);
+    // rounding down can land just before the frame's first tick: move it up to that tick
+    let n = from.frame_at(t);
+    if to.frame_at(y) < n { to.tick_of(n) } else { y }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

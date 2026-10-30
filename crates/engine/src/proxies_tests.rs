@@ -375,3 +375,21 @@ fn render_previews_ignore_proxies() {
     assert!(q > 30.0, "preview rendered from full-resolution media, not the (different) proxy: {q:.1} dB");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A proxy stands in for the file, so footage with an assumed frame rate is transcoded at the
+/// file's own rate and length (every file frame once), and attaches.
+#[test]
+fn proxies_of_conformed_footage_use_the_files_rate() {
+    let root = tmp_dir("proxy-conformed");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::Aurora, W / 4, H / 4, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    s.execute("clip.interpretFootage", json!({"items": [items[0].0], "frameRate": 12})).unwrap();
+    let r = s.execute("media.createProxies", json!({"items": [items[0].0], "preset": "prores_proxy_half", "wait": true})).unwrap();
+    let out = r["outputs"][0]["path"].as_str().unwrap().to_string();
+    let job = s.execute("jobs.list", json!({})).unwrap();
+    assert_eq!((job[0]["finished"].as_bool(), job[0]["total"].as_u64()), (Some(true), Some(12)), "{job}");
+    let m = s.project.item(items[0]).unwrap().as_media().unwrap().clone();
+    assert_eq!(m.proxy, Some(filmcraft_project::MediaRef::File { path: out }), "the proxy matches the file and attaches");
+    let _ = std::fs::remove_dir_all(&root);
+}
