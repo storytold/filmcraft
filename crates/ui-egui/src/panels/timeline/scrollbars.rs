@@ -1,5 +1,5 @@
 use super::layout::timeline_extent;
-use super::*;
+use super::{Drag, FilmcraftApp, Rect, Sense, Stroke, Tokens, pos2, vec2};
 
 /// The narrowest the zoom scroll bar's thumb gets: room for its two handles and a part between
 /// them to grab.

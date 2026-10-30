@@ -168,6 +168,13 @@ fn audio_name(hash: &str) -> String {
     format!("{hash}.wav")
 }
 
+/// The speaker layout a mix is rendered for and how a 5.1 Mix is folded down to stereo.
+#[derive(Clone, Copy, Debug)]
+pub struct MixOutput {
+    pub layout: Layout,
+    pub mixdown: Mixdown,
+}
+
 impl PreviewStore {
     /// A store using a fresh per-process temp folder (unsaved projects).
     pub fn temp() -> Self {
@@ -389,14 +396,13 @@ impl PreviewStore {
     /// Sequence audio for playback and meters, as stereo (a 5.1 Mix folded with the BS.775
     /// downmix): rendered audio previews where they are valid, the live mix everywhere else.
     pub fn mix(&self, project: &Arc<Project>, seq: ItemId, start: i64, frames: usize, sources: &dyn filmcraft_render::SourceProvider) -> AudioBuffer {
-        self.mix_layout(project, seq, start, frames, sources, Layout::Stereo, Mixdown::FrontRear)
+        self.mix_layout(project, seq, start, frames, sources, MixOutput { layout: Layout::Stereo, mixdown: Mixdown::FrontRear })
     }
 
     /// [`PreviewStore::mix`] in `layout`: a 5.1 Mix is folded to stereo with `mixdown` (Preferences ▸
     /// Audio ▸ 5.1 Mixdown Type) or played as six channels on a 5.1 device; a stereo Mix is placed
     /// on the front speakers of a 5.1 device. Rendered audio previews are stereo BS.775 folds, so
     /// they are used only for stereo output of a stereo Mix or with the BS.775 mixdown.
-    #[allow(clippy::too_many_arguments)]
     pub fn mix_layout(
         &self,
         project: &Arc<Project>,
@@ -404,9 +410,9 @@ impl PreviewStore {
         start: i64,
         frames: usize,
         sources: &dyn filmcraft_render::SourceProvider,
-        layout: Layout,
-        mixdown: Mixdown,
+        output: MixOutput,
     ) -> AudioBuffer {
+        let MixOutput { layout, mixdown } = output;
         let Some(q) = project.sequence(seq) else { return AudioBuffer::silence(48_000, layout.channels(), frames) };
         let live = Some(&*self.live);
         let has_audio = self.files.read().unwrap_or_else(|e| e.into_inner()).iter().any(|n| n.ends_with(".wav"));

@@ -398,3 +398,64 @@ fn full_size_yuv8_tables_give_the_per_pixel_values_bit_for_bit() {
         }
     }
 }
+
+#[test]
+fn opaque_yuv8_to_srgb_bytes_is_the_linear_picture_in_srgb() {
+    use filmcraft_color::{Primaries, Transfer};
+    let mut seed = 0x9e37_79b9_u32;
+    let mut code = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        (seed >> 24) as u8
+    };
+    // small and odd sizes take the per-pixel loop of the float conversion, 640x480 its pair tables
+    for (w, h) in [(1usize, 1usize), (7, 5), (33, 17), (640, 480)] {
+        for chroma in [Chroma::C420, Chroma::C422, Chroma::C444] {
+            let (sx, sy) = chroma.shifts();
+            let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+            let mut plane = |n: usize| Arc::new((0..n).map(|_| code()).collect::<Vec<u8>>());
+            let planes = [plane(w * h), plane(cw * ch), plane(cw * ch)];
+            for matrix in [Matrix::Bt601, Matrix::Bt709, Matrix::Bt2020Ncl] {
+                for range in [Range::Limited, Range::Full] {
+                    for transfer in [Transfer::Bt709, Transfer::Srgb, Transfer::Linear, Transfer::Pq] {
+                        let f = VideoFrame {
+                            width: w as u32,
+                            height: h as u32,
+                            data: PixelData::Yuv8 { planes: planes.clone(), chroma, alpha: None },
+                            color: ColorInfo { matrix, transfer, primaries: Primaries::Bt709, range },
+                            par: (1, 1),
+                            pts: Tick::ZERO,
+                        };
+                        for n in [1, 2, 3, 4] {
+                            let (dw, dh, lin) = f.to_linear_f32_decimated(n);
+                            let mut want = vec![0u8; dw * dh * 4];
+                            linear_premul_to_srgb8(&lin, &mut want);
+                            assert!(f.to_opaque_srgb8(n) == Some(want), "{w}x{h} /{n} {chroma:?} {matrix:?} {range:?} {transfer:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // frames it leaves to the float path
+    let alpha = VideoFrame {
+        width: 2,
+        height: 2,
+        data: PixelData::Yuv8 {
+            planes: [Arc::new(vec![16; 4]), Arc::new(vec![128]), Arc::new(vec![128])],
+            chroma: Chroma::C420,
+            alpha: Some(Arc::new(vec![255; 4])),
+        },
+        color: Default::default(),
+        par: (1, 1),
+        pts: Tick::ZERO,
+    };
+    assert_eq!(alpha.to_opaque_srgb8(1), None);
+    assert_eq!(VideoFrame::rgba8(2, 2, vec![255; 16]).to_opaque_srgb8(1), None);
+    let short = VideoFrame {
+        data: PixelData::Yuv8 { planes: [Arc::new(vec![16; 3]), Arc::new(vec![128]), Arc::new(vec![128])], chroma: Chroma::C420, alpha: None },
+        ..alpha
+    };
+    assert_eq!(short.to_opaque_srgb8(1), None);
+}

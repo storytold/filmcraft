@@ -3,7 +3,10 @@
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use super::*;
+use super::{
+    Affine, FxCtx, Image, add_light, alpha_of, blend_simple, blur_plane, bv, chv, cv, fbm, fv, generate, hash01, highlights, lerp3, lin, luma, over, pv,
+    smoothstep,
+};
 use crate::effects::gaussian;
 
 fn blurred(src: &Image, sigma: f32) -> Image {

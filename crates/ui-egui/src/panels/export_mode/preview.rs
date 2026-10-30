@@ -1,5 +1,8 @@
-use super::settings::{combo, drag};
-use super::*;
+use super::settings::{DragOptions, combo, drag};
+use super::{
+    Align2, CUSTOM, Color32, ExportUi, FilmcraftApp, FrameKey, Rect, Reg, Scaling, Sense, Target, Tick, Tokens, export_params, format_bytes, json, output_path,
+    pos2, vec2,
+};
 
 // ---------------------------------------------------------------------------------------------
 // right: preview, range, summary, buttons
@@ -47,7 +50,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     );
     let ex = &mut app.ui.export;
     let has_work_area = q.work_area.is_some();
-    child.horizontal(|ui| {
+    child.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(tl!("Range")).color(t.text_dim));
         let cur = RANGES.iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or("Entire Source");
         let labels: Vec<(String, bool)> = RANGES.iter().map(|(k, l)| (l.to_string(), *k != "workArea" || has_work_area)).collect();
@@ -55,10 +58,27 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
             ex.range = RANGES[i].0.into();
         }
         if ex.range == "custom" {
-            drag(ui, &mut reg, "export.range.start", &mut ex.custom_start, 0.0..=86_400.0, 0.04, " s", 2);
-            drag(ui, &mut reg, "export.range.end", &mut ex.custom_end, 0.0..=86_400.0, 0.04, " s", 2);
+            drag(ui, &mut reg, "export.range.start", &mut ex.custom_start, DragOptions { range: 0.0..=86_400.0, speed: 0.04, suffix: " s", decimals: 2 });
+            drag(ui, &mut reg, "export.range.end", &mut ex.custom_end, DragOptions { range: 0.0..=86_400.0, speed: 0.04, suffix: " s", decimals: 2 });
         }
+        let (start, end) = range_ticks(ex, &q);
+        let span = filmcraft_time::TimeRange::from_bounds(start, end);
+        let frames = rate.frame_at(end - Tick(1)).saturating_add(1).saturating_sub(rate.frame_at(start)).max(0);
+        let seconds = format!("{:.3}", span.duration.seconds());
+        let label = if frames == 1 {
+            tlf!("1 frame ({seconds} s)", seconds = seconds)
+        } else {
+            tlf!("{frames} frames ({seconds} s)", frames = frames, seconds = seconds)
+        };
+        let resp = ui.label(egui::RichText::new(&label).color(t.text_dim));
+        reg.add("export.range.duration", resp.rect, label);
     });
+    let (start, end) = range_ticks(ex, &q);
+    if ex.range == "inOut" && filmcraft_engine::export_tools::single_frame_in_out(&q, filmcraft_time::TimeRange::from_bounds(start, end)) {
+        let warning = tl!("Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.");
+        let resp = child.add(egui::Label::new(egui::RichText::new(warning).color(t.danger)).wrap());
+        reg.add("export.range.warning", resp.rect, warning);
+    }
     if ex.settings.has_video() {
         child.horizontal(|ui| {
             ui.label(egui::RichText::new(tl!("Scaling")).color(t.text_dim));

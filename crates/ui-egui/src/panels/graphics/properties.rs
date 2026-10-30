@@ -103,7 +103,8 @@ impl Ctx<'_> {
     }
     /// Draw a labeled hot number for this clip/layer/`id`, register it for automation and emit the changed value through `Ctx::set`; `range` bounds typed and
     /// dragged input.
-    fn number(&mut self, ui: &mut egui::Ui, label: &str, id: &str, speed: f64, range: (f64, f64), dec: usize, unit: &str) {
+    fn number(&mut self, ui: &mut egui::Ui, label: &str, field: NumberField<'_>) {
+        let NumberField { id, speed, range, decimals: dec, unit } = field;
         let v = pv(self.e, id, self.mt).as_f64().unwrap_or(0.0);
         let (r, mut vui) = self.row(ui, label);
         let (resp, nv) = crate::widgets::hot_number(
@@ -322,6 +323,117 @@ fn letter_button(ui: &mut egui::Ui, text: &str, tip: &str, on: bool, t: &Tokens,
 }
 
 /// The graphic editor (Properties panel / Essential Graphics ▸ Edit).
+/// The Layers section of the Essential Graphics panel: new-layer buttons, arrange and delete,
+/// and the front-first list of the clip's layers.
+#[allow(clippy::too_many_arguments)]
+fn layers_section(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    clip: ClipId,
+    it: &TrackItem,
+    sel: Option<usize>,
+    autos: &mut Vec<(String, Rect, String)>,
+    actions: &mut Vec<(String, Value)>,
+) {
+    let t = app.tokens;
+    let idx = layer_indices(&it.effects);
+    // ---- layers (front first)
+    if section(ui, app, "Layers", &t) {
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            for (label, key, tip, cmd, p) in [
+                ("T", "NewTextLayer", tl!("New Text Layer"), "graphics.newText", json!({"clip": clip.0, "text": tl!("New Text")})),
+                ("", "NewRectangle", tl!("New Rectangle"), "graphics.newShape", json!({"clip": clip.0, "shape": "rectangle"})),
+                ("", "NewEllipse", tl!("New Ellipse"), "graphics.newShape", json!({"clip": clip.0, "shape": "ellipse", "size": [200, 200]})),
+            ] {
+                let r = letter_button(ui, label, tip, false, &t, Tokens::semibold(13.0));
+                if label.is_empty() {
+                    let ir = Rect::from_center_size(r.rect.center(), vec2(14.0, 14.0));
+                    icons::paint(ui.painter(), ir, if key == "NewRectangle" { Icon::Rectangle } else { Icon::Ellipse }, t.text_dim);
+                }
+                autos.push((format!("graphics.{key}"), r.rect, tip.into()));
+                if r.clicked() {
+                    actions.push((cmd.into(), p));
+                }
+            }
+            ui.add_space(8.0);
+            if let Some(l) = sel {
+                for (label, tip, to) in [("↑", tl!("Bring Forward"), "forward"), ("↓", tl!("Send Backward"), "backward")] {
+                    let r = letter_button(ui, label, tip, false, &t, Tokens::ui(13.0));
+                    autos.push((format!("graphics.arrange.{to}"), r.rect, tip.into()));
+                    if r.clicked() {
+                        actions.push(("graphics.arrangeLayer".into(), json!({"clip": clip.0, "layer": l, "to": to})));
+                    }
+                }
+                let (dr, dresp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
+                icons::paint(ui.painter(), dr.shrink(4.0), Icon::Trash, if dresp.hovered() { t.text } else { t.text_dim });
+                autos.push(("graphics.deleteLayer".into(), dr, "Delete Layer".into()));
+                if dresp.on_hover_text(tl!("Delete Layer")).clicked() {
+                    actions.push(("graphics.deleteLayer".into(), json!({"clip": clip.0, "layer": l})));
+                }
+            }
+        });
+        for (li, &ei) in idx.iter().enumerate().rev() {
+            let e = &it.effects[ei];
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+            let on = sel == Some(li);
+            if on {
+                ui.painter().rect_filled(r, 2.0, Color32::from_rgb(0x2e, 0x3d, 0x55));
+            } else if resp.hovered() {
+                ui.painter().rect_filled(r, 2.0, t.hover);
+            }
+            let kind = if e.effect == graphic::TEXT_LAYER { "T" } else { "◆" };
+            ui.painter().text(pos2(r.min.x + 22.0, r.center().y), Align2::CENTER_CENTER, kind, Tokens::semibold(12.0), t.text_dim);
+            ui.painter().text(pos2(r.min.x + 38.0, r.center().y), Align2::LEFT_CENTER, layer_display_name(e, li), Tokens::ui(12.0), t.text);
+            // visibility
+            let er = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
+            let eresp = ui.interact(er, egui::Id::unique(("gfx-eye", clip.0, li)), Sense::click());
+            icons::paint(ui.painter(), er.shrink(2.0), if e.enabled { Icon::Eye } else { Icon::EyeOff }, t.text_dim);
+            autos.push((format!("graphics.layers.{li}.visible"), er, "Toggle visibility".into()));
+            autos.push((format!("graphics.layers.{li}"), r, layer_display_name(e, li)));
+            if eresp.clicked() {
+                actions.push(("graphics.set".into(), json!({"clip": clip.0, "layer": li, "props": {"enabled": !e.enabled}})));
+            } else if resp.clicked() {
+                actions.push(("graphics.selectLayer".into(), json!({"clip": clip.0, "layers": [li]})));
+            }
+        }
+    }
+}
+
+/// The Text section header and its wrench: opens the Text Properties dialog and reports
+/// whether the section itself is open.
+#[allow(clippy::too_many_arguments)]
+fn text_section_header(
+    ui: &mut egui::Ui,
+    app: &mut FilmcraftApp,
+    clip: ClipId,
+    l: usize,
+    e: &EffectInstance,
+    mt: Tick,
+    autos: &mut Vec<(String, Rect, String)>,
+) -> bool {
+    let t = app.tokens;
+    let (open, head) = section_header(ui, app, "Text", &t);
+    // Text Properties: the layer type (point / paragraph) and text styling
+    let wr = Rect::from_center_size(pos2(head.max.x - 16.0, head.center().y), vec2(22.0, 22.0));
+    let wresp = ui.interact(wr, egui::Id::unique(("gfx-text-props", clip.0, l)), Sense::click());
+    icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.text } else { t.text_dim });
+    autos.push(("graphics.textProperties".into(), wr, "Text Properties".into()));
+    if wresp.on_hover_text(tl!("Text Properties")).clicked() {
+        let flag = |id: &str| pv(e, id, mt).as_bool().unwrap_or(false);
+        let ligatures = flag("ligatures");
+        app.ui.text_props_dialog = Some(TextPropsDialog {
+            clip: clip.0,
+            layer: l,
+            paragraph: pv(e, "box_width", mt).as_f64().unwrap_or(0.0) > 0.0 && !flag("vertical"),
+            vertical: flag("vertical"),
+            ligatures,
+            ligatures_was: ligatures,
+        });
+    }
+    open
+}
+
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
@@ -351,66 +463,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().rect_filled(Rect::from_center_size(pos2(hr.min.x + 8.0, hr.center().y), vec2(12.0, 12.0)), 2.0, Color32::from_rgb(lc[0], lc[1], lc[2]));
         ui.painter().text(pos2(hr.min.x + 22.0, hr.center().y), Align2::LEFT_CENTER, &it.name, Tokens::semibold(12.5), t.text);
         // ---- layers (front first)
-        if section(ui, app, "Layers", &t) {
-            ui.horizontal(|ui| {
-                ui.add_space(14.0);
-                for (label, key, tip, cmd, p) in [
-                    ("T", "NewTextLayer", tl!("New Text Layer"), "graphics.newText", json!({"clip": clip.0, "text": tl!("New Text")})),
-                    ("", "NewRectangle", tl!("New Rectangle"), "graphics.newShape", json!({"clip": clip.0, "shape": "rectangle"})),
-                    ("", "NewEllipse", tl!("New Ellipse"), "graphics.newShape", json!({"clip": clip.0, "shape": "ellipse", "size": [200, 200]})),
-                ] {
-                    let r = letter_button(ui, label, tip, false, &t, Tokens::semibold(13.0));
-                    if label.is_empty() {
-                        let ir = Rect::from_center_size(r.rect.center(), vec2(14.0, 14.0));
-                        icons::paint(ui.painter(), ir, if key == "NewRectangle" { Icon::Rectangle } else { Icon::Ellipse }, t.text_dim);
-                    }
-                    autos.push((format!("graphics.{key}"), r.rect, tip.into()));
-                    if r.clicked() {
-                        actions.push((cmd.into(), p));
-                    }
-                }
-                ui.add_space(8.0);
-                if let Some(l) = sel {
-                    for (label, tip, to) in [("↑", tl!("Bring Forward"), "forward"), ("↓", tl!("Send Backward"), "backward")] {
-                        let r = letter_button(ui, label, tip, false, &t, Tokens::ui(13.0));
-                        autos.push((format!("graphics.arrange.{to}"), r.rect, tip.into()));
-                        if r.clicked() {
-                            actions.push(("graphics.arrangeLayer".into(), json!({"clip": clip.0, "layer": l, "to": to})));
-                        }
-                    }
-                    let (dr, dresp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
-                    icons::paint(ui.painter(), dr.shrink(4.0), Icon::Trash, if dresp.hovered() { t.text } else { t.text_dim });
-                    autos.push(("graphics.deleteLayer".into(), dr, "Delete Layer".into()));
-                    if dresp.on_hover_text(tl!("Delete Layer")).clicked() {
-                        actions.push(("graphics.deleteLayer".into(), json!({"clip": clip.0, "layer": l})));
-                    }
-                }
-            });
-            for (li, &ei) in idx.iter().enumerate().rev() {
-                let e = &it.effects[ei];
-                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
-                let on = sel == Some(li);
-                if on {
-                    ui.painter().rect_filled(r, 2.0, Color32::from_rgb(0x2e, 0x3d, 0x55));
-                } else if resp.hovered() {
-                    ui.painter().rect_filled(r, 2.0, t.hover);
-                }
-                let kind = if e.effect == graphic::TEXT_LAYER { "T" } else { "◆" };
-                ui.painter().text(pos2(r.min.x + 22.0, r.center().y), Align2::CENTER_CENTER, kind, Tokens::semibold(12.0), t.text_dim);
-                ui.painter().text(pos2(r.min.x + 38.0, r.center().y), Align2::LEFT_CENTER, layer_display_name(e, li), Tokens::ui(12.0), t.text);
-                // visibility
-                let er = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
-                let eresp = ui.interact(er, egui::Id::unique(("gfx-eye", clip.0, li)), Sense::click());
-                icons::paint(ui.painter(), er.shrink(2.0), if e.enabled { Icon::Eye } else { Icon::EyeOff }, t.text_dim);
-                autos.push((format!("graphics.layers.{li}.visible"), er, "Toggle visibility".into()));
-                autos.push((format!("graphics.layers.{li}"), r, layer_display_name(e, li)));
-                if eresp.clicked() {
-                    actions.push(("graphics.set".into(), json!({"clip": clip.0, "layer": li, "props": {"enabled": !e.enabled}})));
-                } else if resp.clicked() {
-                    actions.push(("graphics.selectLayer".into(), json!({"clip": clip.0, "layers": [li]})));
-                }
-            }
-        }
+        layers_section(app, ui, clip, &it, sel, &mut autos, &mut actions);
         // ---- template properties (a graphic made from a graphics template)
         if it.graphic.as_ref().is_some_and(|m| m.template.is_some()) && section(ui, app, "Template Properties", &t) {
             crate::panels::graphics_templates::template_controls(app, ui, clip, &it, mt, &mut autos, &mut actions);
@@ -466,32 +519,12 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             });
             cx.point(ui, tl!("Position"), "position");
             cx.point(ui, tl!("Anchor point"), "anchor");
-            cx.number(ui, tl!("Scale"), "scale", 0.5, (0.0, 100_000.0), 0, " %");
-            cx.number(ui, tl!("Rotation"), "rotation", 0.5, (-36_000.0, 36_000.0), 1, " °");
-            cx.number(ui, tl!("Opacity"), "opacity", 0.5, (0.0, 100.0), 0, " %");
+            cx.number(ui, tl!("Scale"), NumberField { id: "scale", speed: 0.5, range: (0.0, 100_000.0), decimals: 0, unit: " %" });
+            cx.number(ui, tl!("Rotation"), NumberField { id: "rotation", speed: 0.5, range: (-36_000.0, 36_000.0), decimals: 1, unit: " °" });
+            cx.number(ui, tl!("Opacity"), NumberField { id: "opacity", speed: 0.5, range: (0.0, 100.0), decimals: 0, unit: " %" });
         }
         // ---- text
-        let text_open = e.effect == graphic::TEXT_LAYER && {
-            let (open, head) = section_header(ui, app, "Text", &t);
-            // Text Properties: the layer type (point / paragraph) and text styling
-            let wr = Rect::from_center_size(pos2(head.max.x - 16.0, head.center().y), vec2(22.0, 22.0));
-            let wresp = ui.interact(wr, egui::Id::unique(("gfx-text-props", clip.0, l)), Sense::click());
-            icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.text } else { t.text_dim });
-            cx.autos.push(("graphics.textProperties".into(), wr, "Text Properties".into()));
-            if wresp.on_hover_text(tl!("Text Properties")).clicked() {
-                let flag = |id: &str| pv(e, id, mt).as_bool().unwrap_or(false);
-                let ligatures = flag("ligatures");
-                app.ui.text_props_dialog = Some(TextPropsDialog {
-                    clip: clip.0,
-                    layer: l,
-                    paragraph: pv(e, "box_width", mt).as_f64().unwrap_or(0.0) > 0.0 && !flag("vertical"),
-                    vertical: flag("vertical"),
-                    ligatures,
-                    ligatures_was: ligatures,
-                });
-            }
-            open
-        };
+        let text_open = e.effect == graphic::TEXT_LAYER && text_section_header(ui, app, clip, l, e, mt, &mut cx.autos);
         if text_open {
             // source text (multi-line), committed as it is typed
             let mut s = match pv(e, "text", mt) {
@@ -553,7 +586,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             });
             let response = crate::widgets::accessible_name(r.response, "Font Style");
             cx.auto("font_style", response.rect, "Font Style");
-            cx.number(ui, tl!("Font Size"), "size", 0.5, (1.0, 2000.0), 0, "");
+            cx.number(ui, tl!("Font Size"), NumberField { id: "size", speed: 0.5, range: (1.0, 2000.0), decimals: 0, unit: "" });
             let align = match pv(e, "align", mt) {
                 ParamValue::Choice(c) => c,
                 _ => 0,
@@ -568,9 +601,9 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     cx.set("align", json!(i));
                 }
             }
-            cx.number(ui, tl!("Tracking"), "tracking", 1.0, (-1000.0, 10_000.0), 0, "");
-            cx.number(ui, tl!("Leading"), "leading", 0.5, (-5000.0, 5000.0), 0, "");
-            cx.number(ui, tl!("Baseline Shift"), "baseline_shift", 0.5, (-5000.0, 5000.0), 0, "");
+            cx.number(ui, tl!("Tracking"), NumberField { id: "tracking", speed: 1.0, range: (-1000.0, 10_000.0), decimals: 0, unit: "" });
+            cx.number(ui, tl!("Leading"), NumberField { id: "leading", speed: 0.5, range: (-5000.0, 5000.0), decimals: 0, unit: "" });
+            cx.number(ui, tl!("Baseline Shift"), NumberField { id: "baseline_shift", speed: 0.5, range: (-5000.0, 5000.0), decimals: 0, unit: "" });
             let vertical = pv(e, "vertical", mt).as_bool().unwrap_or(false);
             let (_, mut vui) = cx.row(ui, tl!("Orientation"));
             let mut value = vertical;
@@ -579,8 +612,8 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if response.changed() {
                 cx.set("vertical", json!(value));
             }
-            cx.number(ui, tl!("Text Box Width"), "box_width", 2.0, (0.0, 100_000.0), 0, "");
-            cx.number(ui, tl!("Text Box Height"), "box_height", 2.0, (0.0, 100_000.0), 0, "");
+            cx.number(ui, tl!("Text Box Width"), NumberField { id: "box_width", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
+            cx.number(ui, tl!("Text Box Height"), NumberField { id: "box_height", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
             let (_, mut vui) = cx.row(ui, tl!("Style"));
             let flag = |id: &str| pv(e, id, mt).as_bool().unwrap_or(false);
             let caps = match pv(e, "caps", mt) {
@@ -617,8 +650,8 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let (_, mut vui) = cx.row(ui, tl!("Shape"));
             cx.choice(&mut vui, "shape", tl!("Shape"), graphic::SHAPE_OPTS, 120.0);
             cx.point(ui, tl!("Size"), "size");
-            cx.number(ui, tl!("Corner Radius"), "corner_radius", 0.5, (0.0, 10_000.0), 0, "");
-            cx.number(ui, tl!("Polygon Sides"), "sides", 0.05, (3.0, 64.0), 0, "");
+            cx.number(ui, tl!("Corner Radius"), NumberField { id: "corner_radius", speed: 0.5, range: (0.0, 10_000.0), decimals: 0, unit: "" });
+            cx.number(ui, tl!("Polygon Sides"), NumberField { id: "sides", speed: 0.05, range: (3.0, 64.0), decimals: 0, unit: "" });
         }
         // ---- appearance
         if section(ui, app, "Appearance", &t) {
@@ -637,7 +670,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 let (_, mut vui) = cx.row(ui, tl!("Gradient"));
                 cx.color(&mut vui, "gradient_start");
                 cx.color(&mut vui, "gradient_end");
-                cx.number(ui, tl!("   Angle"), "gradient_angle", 0.5, (-3600.0, 3600.0), 0, " °");
+                cx.number(ui, tl!("   Angle"), NumberField { id: "gradient_angle", speed: 0.5, range: (-3600.0, 3600.0), decimals: 0, unit: " °" });
             }
             for (on, col, w, kind, label, width_label, type_label) in [
                 ("stroke", "stroke_color", "stroke_width", "stroke_type", tl!("Stroke"), tl!("Stroke Width"), tl!("Stroke Type")),
@@ -655,19 +688,19 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let bg = cx.check(&mut vui, "background", "");
             cx.color(&mut vui, "background_color");
             if bg {
-                cx.number(ui, tl!("   Opacity"), "background_opacity", 0.5, (0.0, 100.0), 0, " %");
-                cx.number(ui, tl!("   Size"), "background_size", 0.5, (0.0, 1000.0), 0, "");
-                cx.number(ui, tl!("   Corner Radius"), "background_radius", 0.5, (0.0, 1000.0), 0, "");
+                cx.number(ui, tl!("   Opacity"), NumberField { id: "background_opacity", speed: 0.5, range: (0.0, 100.0), decimals: 0, unit: " %" });
+                cx.number(ui, tl!("   Size"), NumberField { id: "background_size", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
+                cx.number(ui, tl!("   Corner Radius"), NumberField { id: "background_radius", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
             }
             let (_, mut vui) = cx.row(ui, tl!("Shadow"));
             let sh = cx.check(&mut vui, "shadow", "");
             cx.color(&mut vui, "shadow_color");
             if sh {
-                cx.number(ui, tl!("   Opacity"), "shadow_opacity", 0.5, (0.0, 100.0), 0, " %");
-                cx.number(ui, tl!("   Angle"), "shadow_angle", 0.5, (-36_000.0, 36_000.0), 0, " °");
-                cx.number(ui, tl!("   Distance"), "shadow_distance", 0.5, (0.0, 1000.0), 0, "");
-                cx.number(ui, tl!("   Size"), "shadow_size", 0.5, (0.0, 1000.0), 0, "");
-                cx.number(ui, tl!("   Blur"), "shadow_blur", 0.5, (0.0, 1000.0), 0, "");
+                cx.number(ui, tl!("   Opacity"), NumberField { id: "shadow_opacity", speed: 0.5, range: (0.0, 100.0), decimals: 0, unit: " %" });
+                cx.number(ui, tl!("   Angle"), NumberField { id: "shadow_angle", speed: 0.5, range: (-36_000.0, 36_000.0), decimals: 0, unit: " °" });
+                cx.number(ui, tl!("   Distance"), NumberField { id: "shadow_distance", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
+                cx.number(ui, tl!("   Size"), NumberField { id: "shadow_size", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
+                cx.number(ui, tl!("   Blur"), NumberField { id: "shadow_blur", speed: 0.5, range: (0.0, 1000.0), decimals: 0, unit: "" });
             }
         }
         actions.append(&mut cx.actions);

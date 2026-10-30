@@ -1,6 +1,9 @@
 use super::output::OutputSink;
 use super::run::validate_range;
-use super::*;
+use super::{
+    Arc, AudioCodec, AudioSettings, BitrateMode, Deserialize, ExportEffects, ExportError, ExportMetadata, ExrCompression, FieldOrder, FrameRate, GpuRendering,
+    H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Result, SampleEntry, Scaling, Serialize, Tick, TimeRange,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Format {
@@ -293,7 +296,8 @@ pub struct ExportSettings {
     pub sdr: bool,
     /// Keep the alpha channel in PNG, TIFF, Targa and OpenEXR sequences and ProRes 4444 / 4444 XQ
     /// QuickTime movies (straight alpha, Premiere's "Include Alpha Channel"; OpenEXR stores it
-    /// premultiplied, as the format defines). Off, every frame is flattened over black (#160).
+    /// premultiplied, as the format defines). GIF keeps binary transparency: RGBA8 alpha below
+    /// 128 becomes transparent, otherwise opaque. Off, every frame is flattened over black (#160).
     /// Other formats ignore it.
     #[serde(default)]
     pub alpha: bool,

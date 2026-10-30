@@ -326,6 +326,133 @@ fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
     assert_eq!(scale(&s), (0, 100.0));
 }
 
+/// #3386: `effects.addKeyframe` with a `time` at the clip's out point used to put the keyframe a
+/// tick earlier, so a script that then looked for it at the out point found nothing (and
+/// `effects.deleteKeyframe` answered `null` either way). An explicit `time` now keeps its place, as
+/// in `effects.setParam` (#1055); only the playhead fallback is pinned to the clip. The replies say
+/// where the keyframe is (`mediaTime`), whether it was added or toggled off (`added`), and whether a
+/// delete removed anything (`removed`).
+#[test]
+fn add_keyframe_at_the_out_point_stays_there_and_the_replies_say_what_happened() {
+    let mut s = demo();
+    let (c, start, end) = {
+        let it = &s.active_sequence().unwrap().video_tracks[0].items[0];
+        (it.id.0, it.start, it.end())
+    };
+    let clip = |s: &Session| s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.clone();
+    let media_at = |s: &Session, t: Tick| clip(s).source_time_at(t);
+    let keys = |s: &Session| clip(s).effect("motion").unwrap().params["scale"].keyframes.iter().map(|k| k.time).collect::<Vec<_>>();
+    let add = |s: &mut Session, time: Tick| s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": time.0})).unwrap();
+    let delete = |s: &mut Session, media: Tick| {
+        s.execute("effects.deleteKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "mediaTime": media.0})).unwrap()
+    };
+    let reply = |r: &Value| (r["added"].clone(), r["mediaTime"].clone());
+
+    let r = add(&mut s, start);
+    assert_eq!(reply(&r), (json!(true), json!(media_at(&s, start).0)), "{r}");
+
+    // at the out point: the keyframe is at the out point, where a script looks for it
+    let out = media_at(&s, end);
+    let r = add(&mut s, end);
+    assert_eq!(reply(&r), (json!(true), json!(out.0)), "{r}");
+    assert_eq!(keys(&s), vec![media_at(&s, start), out]);
+
+    // a delete at a time with no keyframe says so and changes nothing
+    let r = delete(&mut s, out - Tick(1));
+    assert_eq!(r["removed"], json!(false), "{r}");
+    assert_eq!(keys(&s).len(), 2);
+    let r = delete(&mut s, out);
+    assert_eq!(r["removed"], json!(true), "{r}");
+    assert_eq!(keys(&s), vec![media_at(&s, start)]);
+
+    // adding twice at the same time toggles: the second reply says the keyframe was removed
+    assert_eq!(add(&mut s, end)["added"], json!(true));
+    let r = add(&mut s, end);
+    assert_eq!(reply(&r), (json!(false), json!(out.0)), "{r}");
+    assert_eq!(keys(&s), vec![media_at(&s, start)]);
+
+    // past the end it keeps its time too
+    let past = end + (end - start);
+    let r = add(&mut s, past);
+    assert_eq!(reply(&r), (json!(true), json!(media_at(&s, past).0)), "{r}");
+    let past_media = media_at(&s, past);
+    delete(&mut s, past_media);
+
+    // only the playhead fallback is pinned to the clip: a playhead past the end lands on its last tick
+    s.execute("playhead.set", json!({"seconds": past.seconds()})).unwrap();
+    let r = s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale"})).unwrap();
+    assert_eq!(reply(&r), (json!(true), json!(media_at(&s, end - Tick(1)).0)), "{r}");
+
+    // hostile times neither panic nor leave a half-made keyframe; a delete that names no time is an error
+    for t in [i64::MIN, i64::MAX] {
+        let _ = s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": t}));
+    }
+    s.active_sequence().unwrap().check().unwrap();
+    assert!(s.execute("effects.deleteKeyframe", json!({"clip": c, "effect": "motion", "param": "scale"})).is_err());
+}
+
+/// The keyframe replies are for edits that undo and redo like any other, and the commands refuse to
+/// run without an active sequence instead of reporting a keyframe that was never made.
+#[test]
+fn add_and_delete_keyframe_undo_redo_and_need_a_sequence() {
+    let mut s = demo();
+    let (c, end) = {
+        let it = &s.active_sequence().unwrap().video_tracks[0].items[0];
+        (it.id.0, it.end())
+    };
+    let keys = |s: &Session| {
+        let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.clone();
+        it.effect("motion").unwrap().params["scale"].keyframes.iter().map(|k| k.time).collect::<Vec<_>>()
+    };
+    let out = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.source_time_at(end);
+    let key = |extra: Value| {
+        let mut p = json!({"clip": c, "effect": "motion", "param": "scale"});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        p
+    };
+
+    // add at the out point: one undo step that takes the keyframe away and brings it back
+    let r = s.execute("effects.addKeyframe", key(json!({"time": end.0}))).unwrap();
+    assert_eq!(r["added"], json!(true));
+    assert_eq!(keys(&s), vec![out]);
+    s.undo();
+    assert_eq!(keys(&s), Vec::<Tick>::new(), "undo removes the keyframe");
+    s.redo();
+    assert_eq!(keys(&s), vec![out], "redo puts it back at the out point");
+
+    // delete it: the same, the other way round
+    let r = s.execute("effects.deleteKeyframe", key(json!({"mediaTime": out.0}))).unwrap();
+    assert_eq!(r["removed"], json!(true));
+    assert_eq!(keys(&s), Vec::<Tick>::new());
+    s.undo();
+    assert_eq!(keys(&s), vec![out], "undo restores the deleted keyframe");
+    s.redo();
+    assert_eq!(keys(&s), Vec::<Tick>::new(), "redo deletes it again");
+
+    // no active sequence: both commands are refused, nothing panics, and there is no reply to trust
+    let mut empty = Session::default();
+    assert!(empty.active_sequence().is_none());
+    for (command, extra) in [("effects.addKeyframe", json!({"time": 0})), ("effects.deleteKeyframe", json!({"mediaTime": 0}))] {
+        assert!(empty.execute(command, key(extra)).is_err(), "{command} without a sequence");
+    }
+    assert!(empty.history.undo.is_empty(), "and no undo step was recorded");
+}
+
+/// The position half of #3386, read from the project and not from a reply: a keyframe asked for at
+/// the clip's out point is at the out point.
+#[test]
+fn add_keyframe_with_a_time_at_the_out_point_is_not_moved() {
+    let mut s = demo();
+    let (c, end) = {
+        let it = &s.active_sequence().unwrap().video_tracks[0].items[0];
+        (it.id.0, it.end())
+    };
+    s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": end.0})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.clone();
+    let at: Vec<Tick> = it.effect("motion").unwrap().params["scale"].keyframes.iter().map(|k| k.time).collect();
+    assert_eq!(at, vec![it.source_time_at(end)], "the keyframe sits at the out point, not a tick before it");
+}
+
 /// `effects.setParam` writes a keyframe only on an animated parameter. An agent that sends a value
 /// with a `time` to a parameter that is not animated gets a static value (the result says so:
 /// 0 keyframes); `"keyframe": true` is the stopwatch and the value in one step.

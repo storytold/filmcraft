@@ -126,6 +126,30 @@ impl Drop for Driver {
 }
 
 #[test]
+fn single_frame_in_out_warning_updates_with_range_and_marks() {
+    let mut d = Driver::new("single-frame-warning");
+    d.exec("markers.markIn", json!({"frame":12}));
+    d.exec("markers.markOut", json!({"frame":12}));
+    d.ok("ui.set", json!({"mode":"export", "export":{"range":"inOut"}}));
+    d.frames(3);
+    assert!(d.has("export.range.warning"));
+    let duration = d.ok("ui.elements", json!({"prefix":"export.range.duration"}));
+    assert!(duration[0]["label"].as_str().unwrap().starts_with("1 frame ("), "{duration}");
+    d.snapshot("export-single-frame-warning");
+    for range in ["entire", "custom"] {
+        d.ok("ui.set", json!({"export":{"range":range,"customStart":0.0,"customEnd":0.04}}));
+        d.frames(2);
+        assert!(!d.has("export.range.warning"));
+    }
+    d.ok("ui.set", json!({"export":{"range":"inOut"}}));
+    d.exec("markers.markOut", json!({"frame":13}));
+    d.frames(2);
+    assert!(!d.has("export.range.warning"));
+    let duration = d.ok("ui.elements", json!({"prefix":"export.range.duration"}));
+    assert!(duration[0]["label"].as_str().unwrap().starts_with("2 frames ("), "{duration}");
+}
+
+#[test]
 fn export_mode_settings_and_summary() {
     let mut d = Driver::new("settings");
     d.ok("ui.set", json!({"mode": "export"}));
@@ -177,6 +201,24 @@ fn export_mode_settings_and_summary() {
     assert!(d.app().ui.export.settings.effects.loudness.enabled);
     assert!(d.has("export.effects.loudness.target"));
     d.snapshot("export-mode");
+}
+
+#[test]
+fn gif_export_exposes_binary_alpha_option() {
+    use filmcraft_engine::export::Format;
+    let mut d = Driver::new("gif-alpha");
+    d.ok("ui.set", json!({"mode": "export", "export": {"settings": {"format": "gif"}}}));
+    d.frames(4);
+    assert_eq!(d.app().ui.export.settings.format, Format::Gif);
+    assert!(d.has("export.video.alpha"));
+    assert!(!d.app().ui.export.settings.alpha);
+    d.click("export.video.alpha");
+    assert!(d.app().ui.export.settings.keeps_alpha());
+    let hint = d.ok("ui.elements", json!({"prefix": "export.video.alpha.hint"}));
+    assert!(hint[0]["label"].as_str().unwrap().contains("128"), "{hint}");
+    d.snapshot("export-gif-alpha");
+    d.click("export.video.alpha");
+    assert!(!d.app().ui.export.settings.keeps_alpha());
 }
 
 #[test]

@@ -204,7 +204,11 @@ documented, versioned JSON (`filmcraft_project::gtemplate`):
 | `resources.fonts` | optional embedded font files (base64) with their licence; registered on install |
 
 Placing a template on a sequence of another size scales and centres its layers (pin distances
-scale too).
+scale too). Scale and Scale Width, including their keyframes, use the same fit factor. Layers
+with Uniform Scale off therefore keep their authored proportions: a 3840×2160 template placed
+on a 1920×1080 sequence scales both axes by 0.5. Keyframe times and interpolation stay unchanged.
+Imported layers that omit either scale parameter use its definition default before fitting;
+explicit values and keyframes are retained and scaled.
 
 **FilmCraft never reads or imports Adobe `.mogrt` files** (or any other application's template
 packages): Install refuses `.mogrt` paths without opening them, and the reader rejects ZIP

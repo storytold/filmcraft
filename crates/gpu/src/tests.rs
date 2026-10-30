@@ -4,7 +4,7 @@ use filmcraft_render::Blend;
 use filmcraft_render::plan::execute_cpu;
 
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
+    let instance = crate::adapter::native_instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }
@@ -552,5 +552,59 @@ fn hdr_input_gpu_matches_cpu() {
         eprintln!("{name}: max error {error}, unmanaged differs by up to {apart}");
         assert!(error <= 2, "{name}: GPU differs from the CPU by up to {error} codes");
         assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
+    }
+}
+
+/// Regression for #3418: several threads creating instances and devices, using them and dropping
+/// them at once deadlocked inside the NVIDIA driver (Vulkan loader critical section in
+/// `vkDestroyDevice` against other devices' `create_texture`/`submit`, plus WGL threads started by
+/// GL-enabled instances). Each thread makes its own instance and device, as concurrent windows and exports do.
+#[test]
+fn many_threads_create_use_and_drop_devices_at_once() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    const THREADS: usize = 16;
+    const ROUNDS: usize = 4;
+    let (tx, rx) = mpsc::channel();
+    for _ in 0..THREADS {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut used = 0usize;
+            for _ in 0..ROUNDS {
+                let Some((device, queue)) = device() else { break };
+                let tex = device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::RED), store: wgpu::StoreOp::Store },
+                    })],
+                    ..Default::default()
+                }));
+                queue.submit([enc.finish()]);
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                used += 1;
+                drop((view, tex, queue, device));
+            }
+            let _ = tx.send(used);
+        });
+    }
+    drop(tx);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    for i in 0..THREADS {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(rx.recv_timeout(left).is_ok(), "only {i} of {THREADS} threads finished within 120 s: device setup deadlocked");
     }
 }

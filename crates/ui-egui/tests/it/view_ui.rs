@@ -684,6 +684,100 @@ fn snap_in_program_monitor_and_graphics_menu() {
 }
 
 #[test]
+fn snap_in_program_monitor_snaps_video_clip_motion_drags() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let c = &seq["video"][0]["items"][0];
+    let (clip, start, dur) = (c["clip"].as_u64().unwrap(), c["start"].as_i64().unwrap(), c["duration"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + dur / 2}));
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    // half size, centred 80 frame pixels left of the frame centre
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 50.0}));
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "position", "value": [880.0, 540.0]}));
+    d.frames(3);
+    d.exec("effects.select", json!({"clip": clip, "effect": "motion"}));
+    d.frames(3);
+    let pos_x = |d: &mut Driver| {
+        let app = d.harness.state();
+        let it = app.session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1;
+        let mt = it.source_time_at(app.session.playhead());
+        it.effect("motion").unwrap().param("position").unwrap().vec2_at(mt).x
+    };
+    let drag = |d: &mut Driver, frame_dx: f64, extra: f64| {
+        let pic = d.rect("program.picture");
+        let k = pic[2] / 1920.0;
+        let b = d.rect("program.transform.box");
+        // off the anchor point at the centre
+        let (x, y) = (b[0] + b[2] * 0.3, b[1] + b[3] * 0.3);
+        d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + frame_dx * k + extra, "y": y}, "steps": 8}));
+        d.frames(2);
+    };
+    // the box centre goes 80 frame pixels + 3 screen pixels towards the frame centre: it snaps onto it
+    drag(&mut d, 80.0, 3.0);
+    assert!((pos_x(&mut d) - 960.0).abs() < 0.01, "snapped to the frame centre: {}", pos_x(&mut d));
+    // snapping off: the same kind of drag lands off the centre
+    d.menu("view.snapInProgramMonitor");
+    assert_eq!(d.program()["snap"], false);
+    // back to the start, then the same drag towards the centre: it moves as far as the pointer did
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "position", "value": [880.0, 540.0]}));
+    d.frames(3);
+    let k = d.rect("program.picture")[2] / 1920.0;
+    drag(&mut d, 80.0, 3.0);
+    let free = pos_x(&mut d);
+    assert!((free - (960.0 + 3.0 / k)).abs() < 1.5 && (free - 960.0).abs() > 0.5, "free move near the centre: {free}");
+}
+
+#[test]
+fn snap_in_program_monitor_follows_the_modifier_with_the_pointer_still() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let c = &seq["video"][0]["items"][0];
+    let (clip, start, dur) = (c["clip"].as_u64().unwrap(), c["start"].as_i64().unwrap(), c["duration"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + dur / 2}));
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 50.0}));
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "position", "value": [880.0, 540.0]}));
+    d.frames(3);
+    d.exec("effects.select", json!({"clip": clip, "effect": "motion"}));
+    d.frames(3);
+    let pos_x = |d: &mut Driver| {
+        let app = d.harness.state();
+        let it = app.session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1;
+        let mt = it.source_time_at(app.session.playhead());
+        it.effect("motion").unwrap().param("position").unwrap().vec2_at(mt).x
+    };
+    let pic = d.rect("program.picture");
+    let k = pic[2] / 1920.0;
+    let b = d.rect("program.transform.box");
+    let (x, y) = (b[0] + b[2] * 0.3, b[1] + b[3] * 0.3);
+    let at = |dx: f32| egui::pos2(x as f32 + dx, y as f32);
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    let button =
+        |pressed: bool, pos: egui::Pos2| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    push(&mut d, egui::Event::PointerMoved(at(0.0)));
+    d.frames(1);
+    push(&mut d, button(true, at(0.0)));
+    d.frames(1);
+    let end = (80.0 * k + 3.0) as f32;
+    for i in 1..=8 {
+        push(&mut d, egui::Event::PointerMoved(at(end * i as f32 / 8.0)));
+        d.frames(1);
+    }
+    assert!((pos_x(&mut d) - 960.0).abs() < 0.01, "snapped to the centre: {}", pos_x(&mut d));
+    // ⌘/Ctrl goes down with the pointer still: the position is free again
+    push(&mut d, egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    d.frames(2);
+    assert!((pos_x(&mut d) - 960.0).abs() > 0.5, "free with the modifier held: {}", pos_x(&mut d));
+    // and released again: snapped
+    push(&mut d, egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    d.frames(2);
+    assert!((pos_x(&mut d) - 960.0).abs() < 0.01, "snapped again: {}", pos_x(&mut d));
+    push(&mut d, button(false, at(end)));
+    d.frames(3);
+    assert!((pos_x(&mut d) - 960.0).abs() < 0.01, "released snapped: {}", pos_x(&mut d));
+}
+
+#[test]
 fn elements_wait_for_the_timeline_zoom_to_settle() {
     let mut d = Driver::demo();
     let project = d.exec("project.inspect", json!({}));

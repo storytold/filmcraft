@@ -1,4 +1,4 @@
-use super::*;
+use super::{EXPORT_SAVE_DIALOGS, FileDialog, FilmcraftApp, Value, json, panels};
 
 impl FilmcraftApp {
     // ---------------------------------------------------------------- files
@@ -67,21 +67,6 @@ impl FilmcraftApp {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 app.session.execute("captions.import", json!({"path": path})).map_err(|e| e.to_string())
             }),
-            "captions.export" => {
-                let name = self.session.state.active_sequence.and_then(|s| self.session.project.item(s)).map(|i| i.name.clone()).unwrap_or_default();
-                let suggested = format!("{}.srt", name.replace(' ', "_"));
-                let dialog = FileDialog::save_as(
-                    "Captions (SRT, WebVTT, SCC, MCC, EBU STL, TTML, DFXP)",
-                    &["srt", "vtt", "scc", "mcc", "stl", "ttml", "dfxp"],
-                    &suggested,
-                );
-                let mut p = params.clone();
-                self.pick(dialog, move |app, paths| {
-                    let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                    p["path"] = json!(path);
-                    app.session.execute("captions.export", p).map_err(|e| e.to_string())
-                })
-            }
             _ => match EXPORT_SAVE_DIALOGS.iter().find(|(c, ..)| *c == id) {
                 Some(&(_, filter, ext)) => self.export_save_dialog(id, filter, ext, params),
                 None => Err(format!("no dialog for {id}")),

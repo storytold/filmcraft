@@ -45,7 +45,7 @@ fn matte(color: [f32; 4], w: u32, h: u32, tone_db: Option<f32>) -> (Arc<Project>
         let id = p.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(g.generator.clone()),
                 info,
                 interpret: Default::default(),
@@ -55,7 +55,7 @@ fn matte(color: [f32; 4], w: u32, h: u32, tone_db: Option<f32>) -> (Arc<Project>
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         m.0.insert(id, Arc::new(g) as Arc<dyn MediaSource>);
@@ -377,6 +377,180 @@ fn image_sequences_keep_alpha_when_asked() {
     assert_eq!(png(false) * 4, png(true) * 3, "PNG estimate: {} RGB vs {} RGBA", png(false), png(true));
 }
 
+/// Four blue stripes with alpha 0, 127, 128 and 255. Reverse them on frame two, then
+/// clear the whole picture: a decoder must not retain opaque pixels from earlier frames.
+struct GifAlphaSource(filmcraft_media::SharedSource);
+
+impl MediaSource for GifAlphaSource {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        self.0.info()
+    }
+
+    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        let frame = FrameRate::FPS_24.frame_at(req.time);
+        let mut rgba = Vec::with_capacity(64 * 36 * 4);
+        for _ in 0..36 {
+            for x in 0..64 {
+                let stripe = if frame == 1 { 3 - x / 16 } else { x / 16 };
+                let alpha = if frame >= 2 { 0 } else { [0, 127, 128, 255][stripe] };
+                rgba.extend_from_slice(&[0, 0, 255, alpha]);
+            }
+        }
+        Ok(Arc::new(filmcraft_frame::VideoFrame::rgba8(64, 36, rgba)))
+    }
+
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        self.0.audio(start, frames, sample_rate)
+    }
+}
+
+#[test]
+fn gif_alpha_threshold_and_disposal_roundtrip() {
+    use image::AnimationDecoder;
+    let (p, seq, mut sources) = matte([0.0, 0.0, 1.0, 1.0], 64, 36, None);
+    for source in sources.0.values_mut() {
+        *source = Arc::new(GifAlphaSource(source.clone()));
+    }
+    for alpha in [false, true] {
+        let dir = Scratch::new(&format!("gif-alpha-{alpha}"));
+        let settings = ExportSettings {
+            format: Format::Gif,
+            path: dir.path("alpha.gif"),
+            alpha,
+            range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(3))),
+            ..Default::default()
+        };
+        let result = export(&p, seq, &settings, &sources, &Progress::default()).unwrap();
+        assert_eq!(result.frames, 3);
+        let bytes = std::fs::read(&settings.path).unwrap();
+        let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).unwrap();
+        let frames = decoder.into_frames().collect_frames().unwrap();
+        assert_eq!(frames.len(), 3);
+        for (i, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.buffer().dimensions(), (64, 36));
+            assert_eq!(frame.delay().numer_denom_ms(), (u32::from(gif_delay_cs(FrameRate::FPS_24, i as i64)) * 10, 1));
+            for stripe in 0..4 {
+                let source_alpha = if i == 2 { 0 } else { [0, 127, 128, 255][if i == 1 { 3 - stripe } else { stripe }] };
+                let px = frame.buffer().get_pixel(stripe as u32 * 16 + 8, 18).0;
+                let expected_alpha = if alpha && source_alpha < 128 { 0 } else { 255 };
+                assert_eq!(px[3], expected_alpha, "alpha={alpha}, frame={i}, stripe={stripe}: {px:?}");
+                if expected_alpha != 0 {
+                    assert!(px[0] < 15 && px[1] < 15, "blue: {px:?}");
+                    if source_alpha == 0 {
+                        assert!(px[2] < 15, "flattened transparent pixel: {px:?}");
+                    } else if alpha || source_alpha == 255 {
+                        assert!(px[2] > 240, "straight blue survives palette quantization: {px:?}");
+                    } else {
+                        assert!((100..240).contains(&px[2]), "partial alpha flattened over black: {px:?}");
+                    }
+                }
+            }
+        }
+        if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("GIF transparency") {
+            let decoded = std::process::Command::new(ffmpeg)
+                .args(["-v", "error", "-i", &settings.path, "-frames:v", "3", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
+                .output()
+                .unwrap();
+            assert!(decoded.status.success(), "{}", String::from_utf8_lossy(&decoded.stderr));
+            assert_eq!(decoded.stdout.len(), 3 * 64 * 36 * 4);
+            for (actual, expected) in decoded.stdout.as_chunks::<{ 64 * 36 * 4 }>().0.iter().zip(&frames) {
+                for (actual, expected) in actual.as_chunks::<4>().0.iter().zip(expected.buffer().pixels()) {
+                    assert_eq!(actual[3], expected.0[3], "ffmpeg alpha, alpha={alpha}");
+                    if actual[3] == 255 {
+                        assert_eq!(*actual, expected.0, "ffmpeg opaque color, alpha={alpha}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A full grayscale ramp, repeated four times, with one transparent pixel surrounded by
+/// opaque black / near-black pixels. Moving the hole also exercises animated frame disposal.
+struct GifPaletteSource(filmcraft_media::SharedSource);
+
+impl MediaSource for GifPaletteSource {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        self.0.info()
+    }
+
+    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+        let second = FrameRate::FPS_24.frame_at(req.time) != 0;
+        let hole = if second { (17, 17) } else { (16, 16) };
+        let mut rgba = Vec::with_capacity(32 * 32 * 4);
+        for y in 0..32 {
+            for x in 0..32 {
+                let shade = ((y * 32 + x) % 256) as u8;
+                let shade = if second { 255 - shade } else { shade };
+                let px = if (x, y) == hole {
+                    [0, 0, 0, 0]
+                } else if (x, y) == (hole.0 - 1, hole.1) || (x, y) == (hole.0 + 1, hole.1) {
+                    [0, 0, 0, 255]
+                } else if (x, y) == (hole.0, hole.1 - 1) || (x, y) == (hole.0, hole.1 + 1) {
+                    [1, 2, 3, 255]
+                } else {
+                    [shade, shade, shade, 255]
+                };
+                rgba.extend_from_slice(&px);
+            }
+        }
+        Ok(Arc::new(filmcraft_frame::VideoFrame::rgba8(32, 32, rgba)))
+    }
+
+    fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        self.0.audio(start, frames, sample_rate)
+    }
+}
+
+#[test]
+fn gif_palette_quantization_preserves_isolated_transparency_and_dark_pixels() {
+    use image::AnimationDecoder;
+    let (p, seq, mut sources) = matte([0.0, 0.0, 0.0, 1.0], 32, 32, None);
+    for source in sources.0.values_mut() {
+        *source = Arc::new(GifPaletteSource(source.clone()));
+    }
+    let dir = Scratch::new("gif-palette-alpha");
+    let settings = ExportSettings {
+        format: Format::Gif,
+        path: dir.path("palette.gif"),
+        alpha: true,
+        range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2))),
+        ..Default::default()
+    };
+    // Count the actual rendered colors after binary-alpha conversion, not just source colors:
+    // exceeding GIF's 256-entry palette must survive the render pipeline on both frames.
+    let pipe = pipeline::Pipeline::new(p.clone(), seq, &settings, false).unwrap();
+    let expected: Vec<Vec<[u8; 4]>> = (0..2)
+        .map(|i| {
+            let rgba = pipe.frame(i, &sources).0;
+            let pixels: Vec<_> = rgba.as_chunks::<4>().0.iter().map(|&[r, g, b, a]| if a < 128 { [0; 4] } else { [r, g, b, 255] }).collect();
+            let colors: std::collections::HashSet<_> = pixels.iter().copied().collect();
+            assert!(colors.len() >= 257, "frame {i}: only {} post-conversion colors", colors.len());
+            assert_eq!(pixels.iter().filter(|p| p[3] == 0).count(), 1, "frame {i}: an isolated transparent pixel");
+            assert!(colors.contains(&[0, 0, 0, 255]), "frame {i}: opaque black");
+            assert!(colors.contains(&[1, 2, 3, 255]), "frame {i}: opaque near-black");
+            pixels
+        })
+        .collect();
+    assert_eq!(export(&p, seq, &settings, &sources, &Progress::default()).unwrap().frames, 2);
+    let bytes = std::fs::read(&settings.path).unwrap();
+    let frames = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).unwrap().into_frames().collect_frames().unwrap();
+    assert_eq!(frames.len(), 2);
+    for (i, (frame, expected)) in frames.iter().zip(&expected).enumerate() {
+        assert_eq!(frame.buffer().dimensions(), (32, 32));
+        for (at, (actual, expected)) in frame.buffer().pixels().zip(expected).enumerate() {
+            assert_eq!(actual[3], expected[3], "frame {i}, pixel {at}: alpha must be exact, including opaque dark pixels");
+            if expected[3] == 255 {
+                // Palette reduction is lossy. For this grayscale ramp, allow at most 16/255
+                // error per RGB channel (about 6% of the range), never any loss of opacity.
+                for channel in 0..3 {
+                    assert!(actual[channel].abs_diff(expected[channel]) <= 16, "frame {i}, pixel {at}: {:?} vs {expected:?}", actual.0);
+                }
+            }
+        }
+    }
+}
+
 /// Thumbnails (`encode_png`) and an 8-bit PNG Export Frame keep the alpha they are given: only the
 /// sequence's `alpha` switch drops it (#1863).
 #[test]
@@ -435,15 +609,27 @@ fn aac_audio_writes_m4a_and_adts() {
     let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
     let dir = Scratch::new("aac-audio");
     let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)));
-    // .m4a: one AAC track, no video, the encoder delay in an edit list
     let m4a = dir.path("a.m4a");
-    let s = ExportSettings { format: Format::Aac, path: m4a.clone(), range, ..Default::default() };
-    assert!(!s.has_video());
-    assert_eq!(s.audio_codec(), AudioCodec::Aac);
-    assert_eq!(s.extension(), "m4a");
-    let r = export(&p, seq, &s, &m, &Progress::default()).unwrap();
-    assert_eq!(r.frames, 48_000, "one second of samples");
-    let bytes = std::fs::read(&m4a).unwrap();
+    write_and_check_m4a_aac(&p, seq, &m, &m4a, range);
+
+    let adts = dir.path("a.aac");
+    write_and_check_adts_aac(&p, seq, &m, &adts, range);
+    if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("AAC Audio decode") {
+        for path in [&m4a, &adts] {
+            let out = std::process::Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i", path, "-f", "null", "-"]).output().unwrap();
+            assert!(out.status.success() && out.stderr.is_empty(), "{path}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+}
+
+fn write_and_check_m4a_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, path: &str, range: Option<TimeRange>) {
+    let settings = ExportSettings { format: Format::Aac, path: path.to_owned(), range, ..Default::default() };
+    assert!(!settings.has_video());
+    assert_eq!(settings.audio_codec(), AudioCodec::Aac);
+    assert_eq!(settings.extension(), "m4a");
+    let report = export(p, seq, &settings, sources, &Progress::default()).unwrap();
+    assert_eq!(report.frames, 48_000, "one second of samples");
+    let bytes = std::fs::read(path).unwrap();
     let file = filmcraft_isobmff::open(bytes.clone()).unwrap();
     assert_eq!(file.tracks.len(), 1, "audio only");
     let t = &file.tracks[0];
@@ -459,7 +645,7 @@ fn aac_audio_writes_m4a_and_adts() {
     }
     // the -6 dBFS tone (RMS about 0.35) survives the round trip
     assert!((0.2..0.5).contains(&rms(&pcm)), "rms {}", rms(&pcm));
-    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], &m4a) {
+    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], path) {
         assert_eq!(j["streams"].as_array().unwrap().len(), 1);
         let st = &j["streams"][0];
         assert_eq!(st["codec_name"], "aac");
@@ -468,13 +654,13 @@ fn aac_audio_writes_m4a_and_adts() {
         let d: f64 = j["format"]["duration"].as_str().unwrap().parse().unwrap();
         assert!((d - 1.0).abs() < 0.03, "duration {d}");
     }
+}
 
-    // .aac: raw ADTS, mono 44.1 kHz at 128 kbps
-    let adts = dir.path("a.aac");
-    let mut s = ExportSettings { format: Format::Aac, path: adts.clone(), range, ..Default::default() };
-    s.audio = AudioSettings { sample_rate: Some(44_100), channels: 1, bitrate_kbps: 128, ..Default::default() };
-    export(&p, seq, &s, &m, &Progress::default()).unwrap();
-    let b = std::fs::read(&adts).unwrap();
+fn write_and_check_adts_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, path: &str, range: Option<TimeRange>) {
+    let mut settings = ExportSettings { format: Format::Aac, path: path.to_owned(), range, ..Default::default() };
+    settings.audio = AudioSettings { sample_rate: Some(44_100), channels: 1, bitrate_kbps: 128, ..Default::default() };
+    export(p, seq, &settings, sources, &Progress::default()).unwrap();
+    let b = std::fs::read(path).unwrap();
     // AAC-LC 44.1 kHz (index 4) mono: 00010 0100 0001 000
     let mut dec = filmcraft_aac::Decoder::new(&[0x12, 0x08]).unwrap();
     let (mut pos, mut units, mut pcm) = (0usize, 0usize, vec![Vec::new()]);
@@ -491,18 +677,12 @@ fn aac_audio_writes_m4a_and_adts() {
     }
     assert!(units >= 44_100 / 1024, "{units} frames");
     assert!((0.2..0.5).contains(&rms(&pcm)), "rms {}", rms(&pcm));
-    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], &adts) {
+    if let Some(j) = ffprobe_json(&["-show_streams", "-show_format"], path) {
         assert_eq!(j["format"]["format_name"], "aac");
         let st = &j["streams"][0];
         assert_eq!(st["codec_name"], "aac");
         assert_eq!(st["sample_rate"], "44100");
         assert_eq!(st["channels"], 1);
-    }
-    if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("AAC Audio decode") {
-        for f in [&m4a, &adts] {
-            let out = std::process::Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i", f, "-f", "null", "-"]).output().unwrap();
-            assert!(out.status.success() && out.stderr.is_empty(), "{f}: {}", String::from_utf8_lossy(&out.stderr));
-        }
     }
 }
 

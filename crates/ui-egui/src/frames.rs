@@ -415,6 +415,16 @@ pub struct FrameServer {
     repaint: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
 }
 
+struct FrameRequest<'a> {
+    key: FrameKey,
+    time: Tick,
+    scale: f32,
+    project: &'a Arc<Project>,
+    priority: u32,
+    prefetch: bool,
+    catch_up: Option<Tick>,
+}
+
 /// Frames queued ahead of the playhead while playing (and how far ahead a queued job may be
 /// before it is dropped as stale).
 pub fn prefetch_depth(speed: f64) -> i64 {
@@ -574,10 +584,11 @@ impl FrameServer {
     /// non-reference pictures, while nearby frames stay decoded (and cached) for scrubbing back.
     pub fn request(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, prio: u32) {
         let late = (prio == 0).then(|| Tick::from_seconds_f64(SCRUB_KEEP_S));
-        self.request_job(key, time, scale, project, prio, false, late);
+        self.request_job(FrameRequest { key, time, scale, project, priority: prio, prefetch: false, catch_up: late });
     }
 
-    fn request_job(&self, key: FrameKey, time: Tick, scale: f32, project: &Arc<Project>, prio: u32, prefetch: bool, catch_up: Option<Tick>) {
+    fn request_job(&self, request: FrameRequest<'_>) {
+        let FrameRequest { key, time, scale, project, priority: prio, prefetch, catch_up } = request;
         let hit = || self.shared.stats.lock().unwrap_or_else(PoisonError::into_inner).request_hits += 1;
         if self.shared.done.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
             || self.shared.plans.lock().unwrap_or_else(PoisonError::into_inner).map.contains_key(&key)
@@ -639,7 +650,15 @@ impl FrameServer {
         let (lead, stride) = if preroll { (1, 1) } else { playback_plan(self.render_cost(), fps, self.shared.workers) };
         if lead <= 1 {
             // the frame due now; once the clock runs, the frames before it are late
-            self.request_job(key, rate.tick_of(key.frame), scale, project, 0, false, (!preroll && dir > 0).then_some(Tick::ZERO));
+            self.request_job(FrameRequest {
+                key,
+                time: rate.tick_of(key.frame),
+                scale,
+                project,
+                priority: 0,
+                prefetch: false,
+                catch_up: (!preroll && dir > 0).then_some(Tick::ZERO),
+            });
         }
         // During preroll the clock has not started: only the frames that gate start, not a
         // prefetch run that walks the rest of a LongGOP and evicts the playhead pictures.
@@ -649,7 +668,15 @@ impl FrameServer {
             if f >= 0 {
                 // forward play: frames before the playhead are late (reverse play skips nothing)
                 let late = (!preroll && dir > 0).then(|| rate.tick_of(f) - rate.tick_of(key.frame));
-                self.request_job(FrameKey { frame: f, ..key }, rate.tick_of(f), scale, project, i as u32 + 1, true, late);
+                self.request_job(FrameRequest {
+                    key: FrameKey { frame: f, ..key },
+                    time: rate.tick_of(f),
+                    scale,
+                    project,
+                    priority: i as u32 + 1,
+                    prefetch: true,
+                    catch_up: late,
+                });
             }
         }
         let (target, rev, cur) = (key.target, key.revision, key.frame);
@@ -1039,7 +1066,8 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
     let img = match job.key.target {
         Target::Sequence(seq) | Target::SequencePlan(seq) | Target::SequenceLive(seq) => {
-            Some(filmcraft_render::render_sequence(&job.project, seq, job.time, opts, &provider))
+            let (w, h, px) = filmcraft_render::render_sequence_rgba8(&job.project, seq, job.time, opts, &provider);
+            return (Rgba { w, h, px }, false);
         }
         Target::Item(item) => filmcraft_render::render_item(&job.project, item, job.time, job.scale, &provider),
         Target::MulticamGrid(item, side, page) => {

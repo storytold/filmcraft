@@ -276,7 +276,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let rate = seq.settings.frame_rate;
-    let dt = ctx.input(|i| i.stable_dt).min(0.05) as f64;
     let header_w = app.ui.timeline.header_w;
     let content = Rect::from_min_max(pos2(rect.min.x + header_w, rect.min.y + TOP_H), pos2(rect.max.x - SCROLLBAR_H, rect.max.y - SCROLLBAR_H));
     let ruler = Rect::from_min_max(pos2(content.min.x, rect.min.y + TOP_H - RULER_H), pos2(content.max.x, rect.min.y + TOP_H));
@@ -286,94 +285,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- sequence tabs strip (top-left header block)
     // ---- animated zoom / scroll
-    let empty = seq.duration().seconds() <= 0.0;
-    let dur_s = seq.duration().seconds().max(1.0);
-    {
-        let v = &mut app.ui.timeline;
-        if let Some(p) = v.fit_empty
-            && (!empty || v.target_pps != p)
-        {
-            v.fit_pending |= v.target_pps == p;
-            v.fit_empty = None;
-        }
-        if v.fit_pending && content.width() > 50.0 {
-            v.target_pps = (content.width() as f64 * 0.94 / dur_s).clamp(0.05, 24_000.0);
-            v.target_scroll = 0.0;
-            v.fit_pending = false;
-            v.fit_empty = empty.then_some(v.target_pps);
-        }
-        // eased, or in one step with Settings ▸ Appearance ▸ animations off (#2325)
-        let k = if app.session.prefs.appearance.animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
-        let zooming = (v.pps - v.target_pps).abs() / v.target_pps > 0.001;
-        // video thumbnails keep the layout of the zoom a gesture or animation started at (#1094)
-        if zooming || matches!(app.tl.drag, Some(Drag::ZoomBar { mode: 1 | 2, .. })) {
-            app.tl.thumb_pps = Some(app.tl.thumb_pps.unwrap_or(v.pps));
-        } else {
-            app.tl.thumb_pps = None;
-        }
-        v.pps += (v.target_pps - v.pps) * k;
-        if let Some((anchor_t, anchor_x)) = app.tl.zoom_anchor.filter(|_| zooming) {
-            v.scroll = (anchor_t - (anchor_x - content.min.x) as f64 / v.pps).max(0.0);
-            v.target_scroll = (anchor_t - (anchor_x - content.min.x) as f64 / v.target_pps).max(0.0);
-        } else {
-            v.scroll += (v.target_scroll - v.scroll) * k;
-            app.tl.zoom_anchor = None;
-        }
-        if (v.pps - v.target_pps).abs() > 1e-6 || (v.scroll - v.target_scroll).abs() > 1e-6 {
-            ctx.request_repaint();
-        }
-        if (v.pps - v.target_pps).abs() / v.target_pps < 0.0005 {
-            v.pps = v.target_pps;
-        }
-        if (v.scroll - v.target_scroll).abs() * v.pps < 0.05 {
-            v.scroll = v.target_scroll;
-        }
-    }
-    // follow playhead while playing (Settings ▸ Timeline ▸ Timeline Playback Auto-Scrolling)
-    let auto_scroll = app.session.prefs.timeline.auto_scroll.clone();
-    if app.playback.playing && app.ui.timeline.follow && auto_scroll != "noScroll" {
-        let v = &mut app.ui.timeline;
-        let ph = app.session.playhead().seconds();
-        let w = content.width() as f64;
-        let px = (ph - v.scroll) * v.pps;
-        if auto_scroll == "smoothScroll" {
-            // the playhead stays in the middle once it gets there
-            if px > w * 0.5 || px < 0.0 {
-                v.target_scroll = (ph - w * 0.5 / v.pps).max(0.0);
-                v.scroll = v.target_scroll;
-            }
-        } else if px > w * 0.95 || px < 0.0 {
-            v.target_scroll = (ph - w * 0.05 / v.pps).max(0.0);
-            v.scroll = v.target_scroll;
-        }
-    }
-    // A jump while stopped (Home, End, edit points, markers) brings the playhead into view.
-    {
-        let v = &mut app.ui.timeline;
-        let ph = app.session.playhead().seconds();
-        // another sequence's tab has its own playhead and keeps its own view
-        let moved = v.seen_playhead.is_some_and(|(id, seen)| id == seq_id && seen != ph);
-        v.seen_playhead = Some((seq_id, ph));
-        if moved
-            && !app.playback.playing
-            && !v.fit_pending
-            && let Some(s) = scroll_to_reveal(ph, v.target_scroll, v.target_pps, content.width() as f64)
-        {
-            v.target_scroll = s;
-            v.scroll = s;
-        }
-    }
-    // The view stays inside the Timeline's extent, however it was moved (wheel, scroll bar, zoom,
-    // a script): scrolled past it, nothing is in view and the scroll bar has nowhere to show it.
-    {
-        let v = &mut app.ui.timeline;
-        let seconds = seq.duration().seconds();
-        if !v.scroll.is_finite() || !v.target_scroll.is_finite() {
-            (v.scroll, v.target_scroll) = (0.0, 0.0);
-        }
-        v.scroll = v.scroll.clamp(0.0, max_scroll(seconds, content.width(), v.pps));
-        v.target_scroll = v.target_scroll.clamp(0.0, max_scroll(seconds, content.width(), v.target_pps));
-    }
+    animate_view(app, &ctx, content, seq_id, seq);
     let pps = app.ui.timeline.pps;
     let scroll = app.ui.timeline.scroll;
 
@@ -438,154 +350,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 
     // ---- clips
-    let visible = (layout.tick_at(content.min.x - 2.0), layout.tick_at(content.max.x + 2.0));
-    let selection: Vec<ClipId> = app.session.state.selection.clone();
-    let mut previews: HashMap<ClipId, (Tick, Tick, Option<TrackId>)> = HashMap::new(); // live drag preview: (start, dur, track)
-    // clips whose media changes in the preview (a trimmed or rolled edge): drawn from the edited
-    // item, so the waveform and thumbnail stay where the media is instead of squeezing (#374)
-    let mut edited: HashMap<ClipId, TrackItem> = HashMap::new();
-    preview_drag(app, seq, &mut previews, &mut edited);
-    // Option-drag copies: the clips stay where they are and their copies follow the pointer
-    let copying = matches!(app.tl.drag, Some(Drag::Move { copy: true, .. }));
-    let copies: Vec<(ClipId, (Tick, Tick, Option<TrackId>))> = if copying { previews.drain().collect() } else { Vec::new() };
-    if copying {
-        ctx.set_cursor_icon(CursorIcon::Copy);
-    }
-    let duplicates = if app.session.state.show_duplicate_frame_markers { duplicate_markers(app, &ctx, seq_id, seq) } else { Arc::default() };
-    for r in &rows {
-        let Some(tr) = seq.track(r.track) else { continue };
-        let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
-        let row = r.rect.intersect(clip_rect);
-        if row.height() <= 0.0 {
-            continue;
-        }
-        let p = painter.with_clip_rect(Rect::from_min_max(pos2(content.min.x, row.min.y), pos2(content.max.x, row.max.y)));
-        let volume_line = r.kind == TrackKind::Audio && !r.lane;
-        // the selected gap (#648, #668): a light block across the empty time, as in Premiere Pro
-        if let Some(g) = app.session.state.gap_selection.filter(|g| g.track == r.track) {
-            let x0 = layout.x_of(g.range.start).max(content.min.x - 1.0);
-            let x1 = layout.x_of(g.range.end()).min(content.max.x + 1.0);
-            if x1 > x0 {
-                let gap = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1, r.rect.max.y - 1.0));
-                p.rect_filled(gap, 0.0, GAP_FILL);
-                app.auto.add("timeline.gap", gap.intersect(content), "Selected gap");
-            }
-        }
-        for it in &tr.items {
-            let it = edited.get(&it.id).unwrap_or(it);
-            let (start, dur, moved_track) = previews.get(&it.id).copied().unwrap_or((it.start, it.duration, None));
-            if moved_track.is_some_and(|m| m != r.track) {
-                continue;
-            }
-            if start + dur < visible.0 || start > visible.1 {
-                continue;
-            }
-            let x0 = layout.x_of(start);
-            let x1 = layout.x_of(start + dur);
-            let body = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1.max(x0 + 1.0), r.rect.max.y - 1.0));
-            draw_clip(app, &ctx, &p, body, it, r.kind, selection.contains(&it.id), &t, rate);
-            if volume_line {
-                super::timeline_volume::paint(&p, body, it);
-            }
-            // Show Duplicate Frame Markers: a stripe along the bottom under each repeated frame,
-            // in the color of the clip's master clip
-            if let Some(d) = duplicates.get(&it.id) {
-                let col = DUPLICATE_FRAME_COLORS.get(d.color).or(DUPLICATE_FRAME_COLORS.last()).copied().unwrap_or(Color32::WHITE);
-                // kept inside the clip while a trim drag shortens it
-                let inside = p.with_clip_rect(body.intersect(p.clip_rect()));
-                paint_duplicate_stripes(app, &inside, &layout, &d.ranges, start - it.start, (body.max.y - 3.0, body.max.y), visible, col, it.id);
-            }
-            app.auto.add(&format!("timeline.clip.{}", it.id.0), body.intersect(content), &it.name);
-            // a nest that runs past the end of its sequence's contents: that part is empty
-            if !previews.contains_key(&it.id)
-                && let Some(empty) = app.session.project.nest_overhang(it)
-            {
-                let er = Rect::from_min_max(pos2(layout.x_of(empty.start), body.min.y), pos2(layout.x_of(empty.end()), body.max.y)).intersect(body);
-                if er.width() > 0.0 {
-                    p.with_clip_rect(er.intersect(p.clip_rect())).rect_filled(er, 0.0, Color32::from_black_alpha(110));
-                    paint_hatch(&p, er);
-                    app.auto.add(&format!("timeline.clip.{}.empty", it.id.0), er.intersect(content), "past the end of the nested sequence");
-                }
-            }
-        }
-        // items dragged onto this track from another
-        for (cid, (start, dur, mt)) in &previews {
-            if *mt == Some(r.track)
-                && tr.item(*cid).is_none()
-                && let Some((_, it)) = seq.find_item(*cid)
-            {
-                let body = Rect::from_min_max(pos2(layout.x_of(*start), r.rect.min.y + 1.0), pos2(layout.x_of(*start + *dur), r.rect.max.y - 1.0));
-                draw_clip(app, &ctx, &p, body, it, r.kind, true, &t, rate);
-                if volume_line {
-                    super::timeline_volume::paint(&p, body, it);
-                }
-            }
-        }
-        for (cid, (start, dur, mt)) in &copies {
-            if let Some((home, it)) = seq.find_item(*cid)
-                && mt.unwrap_or(home) == r.track
-            {
-                let body = Rect::from_min_max(pos2(layout.x_of(*start), r.rect.min.y + 1.0), pos2(layout.x_of(*start + *dur), r.rect.max.y - 1.0));
-                draw_clip(app, &ctx, &p, body, it, r.kind, true, &t, rate);
-                app.auto.add(&format!("timeline.clip.{}.copy", cid.0), body.intersect(content), &it.name);
-            }
-        }
-        // Show Through Edits: a small bow-tie on cuts between continuous pieces of one clip
-        if app.session.state.show_through_edits {
-            for te in filmcraft_edit::through::track_through_edits(tr) {
-                let x = layout.x_of(te.time);
-                if x < content.min.x - 6.0 || x > content.max.x + 6.0 {
-                    continue;
-                }
-                let r = paint_through_edit(&p, x, r.rect);
-                app.auto.add(&format!("timeline.throughEdit.{}", te.right.0), r, "Through edit");
-            }
-        }
-        // selected edit points (trim mode): red brackets for ripple, yellow for roll / regular trim
-        super::trim_monitor::paint_edit_points(app, &p, seq, tr, r, &layout);
-        // transitions (one being dragged where the drag puts it; the selected ones outlined). A
-        // clip drag also shows where the drop will carry its transitions (those whose clips all
-        // move to one track by one offset): a plain move draws them on their destination track
-        // right away, a copy adds a ghost beside the copies while the originals stay at home.
-        for trn in &tr.transitions {
-            let carried = move_transition_preview(app, seq, trn);
-            // the transition's home span (a transition dragged by an end still takes over)
-            let (start, end) = match &app.tl.drag {
-                Some(Drag::Transition { id, start, duration, .. }) if *id == trn.id => (*start, *start + *duration),
-                _ => (trn.start, trn.end()),
-            };
-            // (start, end, is the copy's ghost)
-            let show: Vec<(Tick, Tick, bool)> = match (carried, copying) {
-                (Some((s, e, dest)), false) if dest == r.track => vec![(s, e, false)],
-                (Some((s, e, dest)), true) if dest == r.track => vec![(start, end, false), (s, e, true)],
-                (Some(_), false) => Vec::new(), // drawn on its destination row
-                _ => vec![(start, end, false)], // at home: not carried, or a copy's original
-            };
-            for (start, end, ghost) in show {
-                let x0 = layout.x_of(start);
-                let x1 = layout.x_of(end);
-                let tr_rect = Rect::from_min_max(pos2(x0, r.rect.min.y + 17.0), pos2(x1, r.rect.max.y - 1.0));
-                let selected = app.session.state.transition_selection.contains(&trn.id);
-                draw_transition(&p, tr_rect, trn, ghost || selected, &t);
-                let suffix = if ghost { ".copy" } else { "" };
-                app.auto.add(&format!("timeline.transition.{}{}", trn.id.0, suffix), tr_rect, &trn.effect.effect);
-                // its ends, for dragging the duration (the same zones as the hit test)
-                let zone = super::timeline_hit::EDGE_PX.min(tr_rect.width() / 3.0);
-                if !ghost {
-                    app.auto.add(&format!("timeline.transition.{}.in", trn.id.0), Rect::from_min_max(tr_rect.min, pos2(x0 + zone, tr_rect.max.y)), "start");
-                    app.auto.add(&format!("timeline.transition.{}.out", trn.id.0), Rect::from_min_max(pos2(x1 - zone, tr_rect.min.y), tr_rect.max), "end");
-                }
-            }
-        }
-        if tr.locked {
-            let color = Color32::from_rgba_unmultiplied(t.text.r(), t.text.g(), t.text.b(), 64);
-            let mut x = content.min.x - row.height();
-            while x < content.max.x {
-                p.line_segment([pos2(x, row.max.y), pos2(x + row.height(), row.min.y)], Stroke::new(1.0, color));
-                x += 8.0;
-            }
-        }
-    }
+    draw_clips(app, &ctx, &painter, seq, seq_id, &rows, &layout, content, vclip, aclip, rate, t);
 
     // An existing clip dragged past the outer row previews its new destination (#1187).
     if let Some(Drag::Move { clips, offset, new_track: Some((kind, band)), .. }) = app.tl.drag.clone() {
@@ -694,7 +459,298 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if cap_n > 0 {
         super::timeline_captions::interact(app, ui, seq, caption_area, &layout);
     }
-    let _ = (visible, TICKS_PER_SECOND);
+    let _ = TICKS_PER_SECOND;
+}
+
+/// The timeline view's animated state: eases zoom and scroll toward their targets (or jumps
+/// with animations off, #2325), follows the playhead while playing, brings it into view after a
+/// jump while stopped, and keeps the view inside the sequence's extent.
+fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_id: ItemId, seq: &Sequence) {
+    let dt = ctx.input(|i| i.stable_dt).min(0.05) as f64;
+    let empty = seq.duration().seconds() <= 0.0;
+    let dur_s = seq.duration().seconds().max(1.0);
+    {
+        let v = &mut app.ui.timeline;
+        if let Some(p) = v.fit_empty
+            && (!empty || v.target_pps != p)
+        {
+            v.fit_pending |= v.target_pps == p;
+            v.fit_empty = None;
+        }
+        if v.fit_pending && content.width() > 50.0 {
+            v.target_pps = (content.width() as f64 * 0.94 / dur_s).clamp(0.05, 24_000.0);
+            v.target_scroll = 0.0;
+            v.fit_pending = false;
+            v.fit_empty = empty.then_some(v.target_pps);
+        }
+        // eased, or in one step with Settings ▸ Appearance ▸ animations off (#2325)
+        let k = if app.session.prefs.appearance.animations { 1.0 - (-dt * 20.0).exp() } else { 1.0 };
+        let zooming = (v.pps - v.target_pps).abs() / v.target_pps > 0.001;
+        // video thumbnails keep the layout of the zoom a gesture or animation started at (#1094)
+        if zooming || matches!(app.tl.drag, Some(Drag::ZoomBar { mode: 1 | 2, .. })) {
+            app.tl.thumb_pps = Some(app.tl.thumb_pps.unwrap_or(v.pps));
+        } else {
+            app.tl.thumb_pps = None;
+        }
+        v.pps += (v.target_pps - v.pps) * k;
+        if let Some((anchor_t, anchor_x)) = app.tl.zoom_anchor.filter(|_| zooming) {
+            v.scroll = (anchor_t - (anchor_x - content.min.x) as f64 / v.pps).max(0.0);
+            v.target_scroll = (anchor_t - (anchor_x - content.min.x) as f64 / v.target_pps).max(0.0);
+        } else {
+            v.scroll += (v.target_scroll - v.scroll) * k;
+            app.tl.zoom_anchor = None;
+        }
+        if (v.pps - v.target_pps).abs() > 1e-6 || (v.scroll - v.target_scroll).abs() > 1e-6 {
+            ctx.request_repaint();
+        }
+        if (v.pps - v.target_pps).abs() / v.target_pps < 0.0005 {
+            v.pps = v.target_pps;
+        }
+        if (v.scroll - v.target_scroll).abs() * v.pps < 0.05 {
+            v.scroll = v.target_scroll;
+        }
+    }
+    // follow playhead while playing (Settings ▸ Timeline ▸ Timeline Playback Auto-Scrolling)
+    let auto_scroll = app.session.prefs.timeline.auto_scroll.clone();
+    if app.playback.playing && app.ui.timeline.follow && auto_scroll != "noScroll" {
+        let v = &mut app.ui.timeline;
+        let ph = app.session.playhead().seconds();
+        let w = content.width() as f64;
+        let px = (ph - v.scroll) * v.pps;
+        if auto_scroll == "smoothScroll" {
+            // the playhead stays in the middle once it gets there
+            if px > w * 0.5 || px < 0.0 {
+                v.target_scroll = (ph - w * 0.5 / v.pps).max(0.0);
+                v.scroll = v.target_scroll;
+            }
+        } else if px > w * 0.95 || px < 0.0 {
+            v.target_scroll = (ph - w * 0.05 / v.pps).max(0.0);
+            v.scroll = v.target_scroll;
+        }
+    }
+    // A jump while stopped (Home, End, edit points, markers) brings the playhead into view.
+    {
+        let v = &mut app.ui.timeline;
+        let ph = app.session.playhead().seconds();
+        // another sequence's tab has its own playhead and keeps its own view
+        let moved = v.seen_playhead.is_some_and(|(id, seen)| id == seq_id && seen != ph);
+        v.seen_playhead = Some((seq_id, ph));
+        if moved
+            && !app.playback.playing
+            && !v.fit_pending
+            && let Some(s) = scroll_to_reveal(ph, v.target_scroll, v.target_pps, content.width() as f64)
+        {
+            v.target_scroll = s;
+            v.scroll = s;
+        }
+    }
+    // The view stays inside the Timeline's extent, however it was moved (wheel, scroll bar, zoom,
+    // a script): scrolled past it, nothing is in view and the scroll bar has nowhere to show it.
+    {
+        let v = &mut app.ui.timeline;
+        let seconds = seq.duration().seconds();
+        if !v.scroll.is_finite() || !v.target_scroll.is_finite() {
+            (v.scroll, v.target_scroll) = (0.0, 0.0);
+        }
+        v.scroll = v.scroll.clamp(0.0, max_scroll(seconds, content.width(), v.pps));
+        v.target_scroll = v.target_scroll.clamp(0.0, max_scroll(seconds, content.width(), v.target_pps));
+    }
+}
+
+/// The clips in the visible rows: each track's items (with their drag previews, copies,
+/// waveforms and thumbnails), duplicate-frame stripes, empty nested-sequence overhangs,
+/// through edits, transitions and the locked-track hatch.
+#[allow(clippy::too_many_arguments)]
+fn draw_clips(
+    app: &mut FilmcraftApp,
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    seq: &Sequence,
+    seq_id: ItemId,
+    rows: &[Row],
+    layout: &Layout,
+    content: Rect,
+    vclip: Rect,
+    aclip: Rect,
+    rate: filmcraft_time::FrameRate,
+    t: Tokens,
+) {
+    // ---- clips
+    let visible = (layout.tick_at(content.min.x - 2.0), layout.tick_at(content.max.x + 2.0));
+    let selection: Vec<ClipId> = app.session.state.selection.clone();
+    let mut previews: HashMap<ClipId, (Tick, Tick, Option<TrackId>)> = HashMap::new(); // live drag preview: (start, dur, track)
+    // clips whose media changes in the preview (a trimmed or rolled edge): drawn from the edited
+    // item, so the waveform and thumbnail stay where the media is instead of squeezing (#374)
+    let mut edited: HashMap<ClipId, TrackItem> = HashMap::new();
+    preview_drag(app, seq, &mut previews, &mut edited);
+    // Option-drag copies: the clips stay where they are and their copies follow the pointer
+    let copying = matches!(app.tl.drag, Some(Drag::Move { copy: true, .. }));
+    let copies: Vec<(ClipId, (Tick, Tick, Option<TrackId>))> = if copying { previews.drain().collect() } else { Vec::new() };
+    if copying {
+        ctx.set_cursor_icon(CursorIcon::Copy);
+    }
+    let duplicates = if app.session.state.show_duplicate_frame_markers { duplicate_markers(app, ctx, seq_id, seq) } else { Arc::default() };
+    for r in rows {
+        let Some(tr) = seq.track(r.track) else { continue };
+        let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
+        let row = r.rect.intersect(clip_rect);
+        if row.height() <= 0.0 {
+            continue;
+        }
+        let p = painter.with_clip_rect(Rect::from_min_max(pos2(content.min.x, row.min.y), pos2(content.max.x, row.max.y)));
+        let volume_line = r.kind == TrackKind::Audio && !r.lane;
+        // the selected gap (#648, #668): a light block across the empty time, as in Premiere Pro
+        if let Some(g) = app.session.state.gap_selection.filter(|g| g.track == r.track) {
+            let x0 = layout.x_of(g.range.start).max(content.min.x - 1.0);
+            let x1 = layout.x_of(g.range.end()).min(content.max.x + 1.0);
+            if x1 > x0 {
+                let gap = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1, r.rect.max.y - 1.0));
+                p.rect_filled(gap, 0.0, GAP_FILL);
+                app.auto.add("timeline.gap", gap.intersect(content), "Selected gap");
+            }
+        }
+        for it in &tr.items {
+            let it = edited.get(&it.id).unwrap_or(it);
+            let (start, dur, moved_track) = previews.get(&it.id).copied().unwrap_or((it.start, it.duration, None));
+            if moved_track.is_some_and(|m| m != r.track) {
+                continue;
+            }
+            if start + dur < visible.0 || start > visible.1 {
+                continue;
+            }
+            let x0 = layout.x_of(start);
+            let x1 = layout.x_of(start + dur);
+            let body = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1.max(x0 + 1.0), r.rect.max.y - 1.0));
+            draw_clip(app, ctx, &p, body, it, r.kind, selection.contains(&it.id), &t, rate);
+            if volume_line {
+                super::timeline_volume::paint(&p, body, it);
+            }
+            // Show Duplicate Frame Markers: a stripe along the bottom under each repeated frame,
+            // in the color of the clip's master clip
+            if let Some(d) = duplicates.get(&it.id) {
+                let col = DUPLICATE_FRAME_COLORS.get(d.color).or(DUPLICATE_FRAME_COLORS.last()).copied().unwrap_or(Color32::WHITE);
+                // kept inside the clip while a trim drag shortens it
+                let inside = p.with_clip_rect(body.intersect(p.clip_rect()));
+                paint_duplicate_stripes(app, &inside, layout, &d.ranges, start - it.start, (body.max.y - 3.0, body.max.y), visible, col, it.id);
+            }
+            app.auto.add(&format!("timeline.clip.{}", it.id.0), body.intersect(content), &it.name);
+            // a nest that runs past the end of its sequence's contents: that part is empty
+            if !previews.contains_key(&it.id)
+                && let Some(empty) = app.session.project.nest_overhang(it)
+            {
+                let er = Rect::from_min_max(pos2(layout.x_of(empty.start), body.min.y), pos2(layout.x_of(empty.end()), body.max.y)).intersect(body);
+                if er.width() > 0.0 {
+                    p.with_clip_rect(er.intersect(p.clip_rect())).rect_filled(er, 0.0, Color32::from_black_alpha(110));
+                    paint_hatch(&p, er);
+                    app.auto.add(&format!("timeline.clip.{}.empty", it.id.0), er.intersect(content), "past the end of the nested sequence");
+                }
+            }
+        }
+        // items dragged onto this track from another
+        for (cid, (start, dur, mt)) in &previews {
+            if *mt == Some(r.track)
+                && tr.item(*cid).is_none()
+                && let Some((_, it)) = seq.find_item(*cid)
+            {
+                let body = Rect::from_min_max(pos2(layout.x_of(*start), r.rect.min.y + 1.0), pos2(layout.x_of(*start + *dur), r.rect.max.y - 1.0));
+                draw_clip(app, ctx, &p, body, it, r.kind, true, &t, rate);
+                if volume_line {
+                    super::timeline_volume::paint(&p, body, it);
+                }
+            }
+        }
+        for (cid, (start, dur, mt)) in &copies {
+            if let Some((home, it)) = seq.find_item(*cid)
+                && mt.unwrap_or(home) == r.track
+            {
+                let body = Rect::from_min_max(pos2(layout.x_of(*start), r.rect.min.y + 1.0), pos2(layout.x_of(*start + *dur), r.rect.max.y - 1.0));
+                draw_clip(app, ctx, &p, body, it, r.kind, true, &t, rate);
+                app.auto.add(&format!("timeline.clip.{}.copy", cid.0), body.intersect(content), &it.name);
+            }
+        }
+        paint_track_edits(app, painter, seq, rows, layout, content, vclip, aclip, t, copying);
+    }
+}
+
+/// Per-track details over the clips: through-edit bow-ties, the selected edit points, the
+/// transitions (including the ones a drag carries) and the locked-track hatch.
+#[allow(clippy::too_many_arguments)]
+fn paint_track_edits(
+    app: &mut FilmcraftApp,
+    painter: &egui::Painter,
+    seq: &Sequence,
+    rows: &[Row],
+    layout: &Layout,
+    content: Rect,
+    vclip: Rect,
+    aclip: Rect,
+    t: Tokens,
+    copying: bool,
+) {
+    for r in rows {
+        let Some(tr) = seq.track(r.track) else { continue };
+        let clip = if r.kind == TrackKind::Video { vclip } else { aclip };
+        let row = r.rect.intersect(clip);
+        if row.height() <= 0.0 {
+            continue;
+        }
+        let p = painter.with_clip_rect(Rect::from_min_max(pos2(content.min.x, row.min.y), pos2(content.max.x, row.max.y)));
+        // Show Through Edits: a small bow-tie on cuts between continuous pieces of one clip
+        if app.session.state.show_through_edits {
+            for te in filmcraft_edit::through::track_through_edits(tr) {
+                let x = layout.x_of(te.time);
+                if x < content.min.x - 6.0 || x > content.max.x + 6.0 {
+                    continue;
+                }
+                let r = paint_through_edit(&p, x, r.rect);
+                app.auto.add(&format!("timeline.throughEdit.{}", te.right.0), r, "Through edit");
+            }
+        }
+        // selected edit points (trim mode): red brackets for ripple, yellow for roll / regular trim
+        super::trim_monitor::paint_edit_points(app, &p, seq, tr, r, layout);
+        // transitions (one being dragged where the drag puts it; the selected ones outlined). A
+        // clip drag also shows where the drop will carry its transitions (those whose clips all
+        // move to one track by one offset): a plain move draws them on their destination track
+        // right away, a copy adds a ghost beside the copies while the originals stay at home.
+        for trn in &tr.transitions {
+            let carried = move_transition_preview(app, seq, trn);
+            // the transition's home span (a transition dragged by an end still takes over)
+            let (start, end) = match &app.tl.drag {
+                Some(Drag::Transition { id, start, duration, .. }) if *id == trn.id => (*start, *start + *duration),
+                _ => (trn.start, trn.end()),
+            };
+            // (start, end, is the copy's ghost)
+            let show: Vec<(Tick, Tick, bool)> = match (carried, copying) {
+                (Some((s, e, dest)), false) if dest == r.track => vec![(s, e, false)],
+                (Some((s, e, dest)), true) if dest == r.track => vec![(start, end, false), (s, e, true)],
+                (Some(_), false) => Vec::new(), // drawn on its destination row
+                _ => vec![(start, end, false)], // at home: not carried, or a copy's original
+            };
+            for (start, end, ghost) in show {
+                let x0 = layout.x_of(start);
+                let x1 = layout.x_of(end);
+                let tr_rect = Rect::from_min_max(pos2(x0, r.rect.min.y + 17.0), pos2(x1, r.rect.max.y - 1.0));
+                let selected = app.session.state.transition_selection.contains(&trn.id);
+                draw_transition(&p, tr_rect, trn, ghost || selected, &t);
+                let suffix = if ghost { ".copy" } else { "" };
+                app.auto.add(&format!("timeline.transition.{}{}", trn.id.0, suffix), tr_rect, &trn.effect.effect);
+                // its ends, for dragging the duration (the same zones as the hit test)
+                let zone = super::timeline_hit::EDGE_PX.min(tr_rect.width() / 3.0);
+                if !ghost {
+                    app.auto.add(&format!("timeline.transition.{}.in", trn.id.0), Rect::from_min_max(tr_rect.min, pos2(x0 + zone, tr_rect.max.y)), "start");
+                    app.auto.add(&format!("timeline.transition.{}.out", trn.id.0), Rect::from_min_max(pos2(x1 - zone, tr_rect.min.y), tr_rect.max), "end");
+                }
+            }
+        }
+        if tr.locked {
+            let color = Color32::from_rgba_unmultiplied(t.text.r(), t.text.g(), t.text.b(), 64);
+            let mut x = content.min.x - row.height();
+            while x < content.max.x {
+                p.line_segment([pos2(x, row.max.y), pos2(x + row.height(), row.min.y)], Stroke::new(1.0, color));
+                x += 8.0;
+            }
+        }
+    }
 }
 
 /// Shown when no sequence is open: offers the demo project and accepts project or OS-file drops to create a sequence.

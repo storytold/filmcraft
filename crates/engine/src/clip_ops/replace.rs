@@ -1,7 +1,7 @@
 use super::common::item_rate;
 use super::enabled::is_clip_item;
 use super::file::item_range;
-use super::*;
+use super::{ClipId, EngineError, ItemKind, Result, Session, Tick, TrackKind, Value, bad, bool_p, clips_p, item_p, json, source_range, with_links};
 
 // ---------------------------------------------------------------------------------------------
 // Clip: Replace With Clip

@@ -27,8 +27,17 @@ version 2; version 1 projects open with no caption tracks).
 
 `File ▸ Import` (or dropping a file) recognises caption files by extension and content and adds a
 new caption track to the open sequence (a sequence is created when none is open). Cue times are
-snapped to the sequence's frames. `File ▸ Export ▸ Captions…` writes the chosen caption track in
-the format given by the file extension (`.srt`, `.vtt`, `.scc`).
+snapped to the sequence's frames. `File ▸ Export ▸ Captions…` (and **Export captions…** in the Text
+panel) opens Caption Export Settings: pick the File Format (SRT, WebVTT, SCC, MCC, EBU STL, TTML or
+DFXP; the last choice is offered next time), then the file name in a save panel that offers only
+that format. A name typed with another caption format's extension (`subs.srt` with WebVTT chosen)
+is written in that format, since that is the file the save panel asked about; any other name gets
+the chosen format's extension (`subs` becomes `subs.vtt`). If a file with that new name already
+exists, nothing is exported, because the save panel only asked about replacing the name as typed.
+For example, with WebVTT chosen, typing `keep` when `keep.vtt` already exists leaves `keep.vtt`
+untouched and the status line says so; choosing `keep.vtt` itself in the save panel, which then asks
+before replacing it, replaces it. Given a `path` (agents, the CLI), `captions.export` takes the
+format from `format` or from the file extension.
 
 Details of each format and the SCC encoder are in [`crates/captions/README.md`](../crates/captions/README.md).
 

@@ -390,3 +390,66 @@ fn deleting_bin_preserves_intermediate_subclip_needed_by_surviving_clip() {
     assert_eq!(s.project.root.parent_of(parent), Some(bin));
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// Point item `id` at `path` the way a project file from someone else could.
+fn set_media_path(s: &mut Session, id: ItemId, path: &str) {
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    let m = p.item_mut(id).and_then(|i| i.as_media_mut()).unwrap();
+    m.media = filmcraft_project::MediaRef::File { path: path.to_string() };
+}
+
+// #2782: Make Offline ▸ delete removed whatever file an item's path named.
+#[test]
+fn make_offline_delete_only_removes_the_media_the_item_was_linked_to() {
+    let root = tmp_dir("relink-delete-guard");
+    let a = root.join("a.mov");
+    make_movie(&a, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&a]);
+    let notes = root.join("notes.txt");
+    std::fs::write(&notes, b"keep me").unwrap();
+    let other = root.join("other.mov");
+    make_movie(&other, DemoScene::CityNight, W, H, 12);
+    let dir = root.join("folder.mov");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // not media, a different take under the same kind of name, and a folder: all survive
+    for victim in [&notes, &other, &dir] {
+        set_media_path(&mut s, items[0], &victim.to_string_lossy());
+        let r = s.execute("media.makeOffline", json!({"items": [items[0].0], "deleteFiles": true})).unwrap();
+        assert_eq!(r["deleted"], json!([]), "{victim:?}");
+        assert!(victim.exists(), "{victim:?} was deleted");
+    }
+    // an item with no recorded identity (a placeholder, an older project) never deletes anything
+    set_media_path(&mut s, items[0], &a.to_string_lossy());
+    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).and_then(|i| i.as_media_mut()).unwrap().identity = None;
+    let r = s.execute("media.makeOffline", json!({"items": [items[0].0], "deleteFiles": true})).unwrap();
+    assert_eq!(r["deleted"], json!([]), "{r}");
+    assert!(a.exists(), "a file with no recorded identity was deleted");
+    // the file the item was imported from is deleted
+    let id_a = crate::relink::identity_of(&*s.services, &a.to_string_lossy()).unwrap();
+    std::sync::Arc::make_mut(&mut s.project).item_mut(items[0]).and_then(|i| i.as_media_mut()).unwrap().identity = Some(id_a);
+    set_media_path(&mut s, items[0], &a.to_string_lossy());
+    let r = s.execute("media.makeOffline", json!({"items": [items[0].0], "deleteFiles": true})).unwrap();
+    assert_eq!(r["deleted"].as_array().map(Vec::len), Some(1), "{r}");
+    assert!(!a.exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn new_offline_file_keeps_only_the_file_name() {
+    let mut s = Session::default();
+    for (given, want) in [
+        ("/etc/passwd", "passwd"),
+        ("..\\..\\x\\y.mov", "y.mov"),
+        ("clip.mov", "clip.mov"),
+        ("C:target.mov", "target.mov"),
+        ("C:", "Offline.mov"),
+        ("/", "Offline.mov"),
+        ("..", "Offline.mov"),
+    ] {
+        let r = s.execute("file.newOfflineFile", json!({"fileName": given})).unwrap();
+        let id = ItemId(r["item"].as_u64().unwrap());
+        let m = s.project.item(id).unwrap().as_media().unwrap();
+        assert_eq!(m.media, filmcraft_project::MediaRef::File { path: want.to_string() }, "{given}");
+    }
+}

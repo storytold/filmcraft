@@ -111,7 +111,7 @@ impl ExportRenderer {
                 if wgpu::Instance::enabled_backend_features().is_empty() {
                     return None;
                 }
-                let instance = wgpu::Instance::default();
+                let instance = crate::adapter::native_instance();
                 let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
@@ -186,7 +186,7 @@ mod tests {
             p.add_item(
                 &info.name.clone(),
                 Label::Iris,
-                ItemKind::Media(MediaClip {
+                ItemKind::Media(Box::new(MediaClip {
                     media: MediaRef::Generator(g.generator.clone()),
                     info,
                     interpret: Default::default(),
@@ -196,7 +196,7 @@ mod tests {
                     offline: false,
                     proxy: None,
                     identity: None,
-                }),
+                })),
                 None,
             )
         };

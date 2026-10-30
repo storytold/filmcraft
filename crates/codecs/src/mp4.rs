@@ -53,6 +53,9 @@ pub struct Mp4Source {
     file: Mp4File,
     vtrack: Option<usize>,
     video: GopCache,
+    /// Look frames up by the start of their frame: the video track's timestamp unit is half a frame
+    /// or longer and its samples sit on the nominal frame grid ([`crate::gop::snap_coarse_units`]).
+    snap: bool,
     /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
     audios: Vec<Mp4Audio>,
 }
@@ -368,7 +371,11 @@ impl Mp4Source {
             .collect();
         snap_to_frame_grid(&mut file, vtrack);
         rebase_unedited_video(&mut file, vtrack, &mut audios);
-        Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture), audios })
+        let snap = vtrack.zip(info.video.as_ref()).is_some_and(|(i, v)| {
+            let t = &file.tracks[i];
+            crate::gop::snap_coarse_units(t.samples.iter().map(|s| s.pts.saturating_add(t.edit_offset)), 1, i64::from(t.timescale), v.frame_rate)
+        });
+        Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture), snap, audios })
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -378,10 +385,10 @@ impl Mp4Source {
     fn video_at(&self, t: Tick) -> crate::Result<Arc<VideoFrame>> {
         let ti = self.vtrack.ok_or_else(|| CodecError::Unsupported("no video".into()))?;
         let ts = self.file.tracks[ti].timescale as i64;
-        // Nearest, not floor: with a coarse timescale (1000) sample times are rounded, and a
-        // floored lookup lands one unit short of every frame whose time was rounded up.
-        let late = filmcraft_media::cancel::catch_up().map(|m| (t - m).to_rational_round(1, ts));
-        self.video.frame_late(&Mp4Video { src: self, track: ti }, t.to_rational_round(1, ts), late)
+        let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
+        let at = |t: Tick| crate::gop::lookup_time(t, 1, ts, rate, self.snap);
+        let late = filmcraft_media::cancel::catch_up().map(|m| at(t - m));
+        self.video.frame_late(&Mp4Video { src: self, track: ti }, at(t), late)
     }
 
     /// Decoded packet `i` of audio stream `a` (`ainfo` is its `AudioStreamInfo`; `st` its decoder state).
