@@ -149,6 +149,21 @@ impl FilmcraftApp {
         self.apply_dock_all(vec![action])
     }
 
+    /// Clicking the Timeline brings the Program monitor to the front of its tab group, as in
+    /// Premiere, so the frame being edited is on show (#3653). The focus stays on the Timeline.
+    /// Only a tab behind another in a docked group: not when Program is floating, closed, already
+    /// in front, collapsed by the user, or shares the Timeline's group (fronting it would hide the
+    /// Timeline).
+    fn raise_program_for_timeline(&mut self) {
+        let dock = &self.ui.dock;
+        if dock.is_visible(PanelKind::Program) || tab_group(dock, PanelKind::Program).is_none_or(|group| group.contains(&PanelKind::Timeline)) {
+            return;
+        }
+        if let Err(error) = self.apply_dock(Action::Activate { panel: PanelKind::Program }) {
+            log::warn!("could not bring the Program monitor to the front: {error}");
+        }
+    }
+
     fn apply_dock_all(&mut self, actions: Vec<Action<PanelKind>>) -> Result<(), String> {
         let mut layout = self.ui.dock.clone();
         let mut relocating = false;
@@ -268,6 +283,9 @@ impl FilmcraftApp {
         ctx.data_mut(|data| data.insert_temp(bodies_id(), bodies));
         if let Some(panel) = output.focused {
             self.ui.focused = panel;
+            if panel == PanelKind::Timeline {
+                self.raise_program_for_timeline();
+            }
         }
         self.handle_forwarded_keys(&ctx, output.forwarded_events);
         self.window_files = output.window_files;
@@ -588,4 +606,24 @@ impl DockContent<PanelKind> for FilmContent<'_> {
             self.menu = Some((*active, rect.left_bottom(), ui.ctx().viewport_id()));
         }
     }
+}
+
+/// The panels of the docked tab group holding `panel`, if that group shows one tab at a time and
+/// is expanded: an accordion, a minimized group or an icon-only dock column gives `None`.
+fn tab_group(layout: &Layout<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
+    fn find(node: &craft_ui::docking::Node<PanelKind>, panel: PanelKind) -> Option<Vec<PanelKind>> {
+        use craft_ui::docking::Node;
+        match node {
+            Node::Tabs { panels, .. } => panels.contains(&panel).then(|| panels.clone()),
+            Node::Dock { columns, .. } => columns
+                .iter()
+                .filter(|column| !column.iconic)
+                .flat_map(|column| column.groups.iter())
+                .find(|group| !group.minimized && group.panels.contains(&panel))
+                .map(|group| group.panels.clone()),
+            Node::Split { first, second, .. } => find(first, panel).or_else(|| find(second, panel)),
+            _ => None,
+        }
+    }
+    layout.root.as_ref().and_then(|root| find(root, panel))
 }
