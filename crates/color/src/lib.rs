@@ -243,8 +243,15 @@ pub fn linear_to_srgb_u8_table() -> &'static [u8; 4096] {
 
 #[inline]
 pub fn linear_to_srgb_u8(v: f32) -> u8 {
+    linear_to_srgb_u8_in(linear_to_srgb_u8_table(), v)
+}
+
+/// [`linear_to_srgb_u8`] through a table fetched once ([`linear_to_srgb_u8_table`]), for
+/// per-pixel loops.
+#[inline]
+pub fn linear_to_srgb_u8_in(table: &[u8; 4096], v: f32) -> u8 {
     let i = (v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize;
-    linear_to_srgb_u8_table()[i]
+    table[i.min(4095)]
 }
 
 /// Rec.709 luma of a linear or encoded RGB triple.

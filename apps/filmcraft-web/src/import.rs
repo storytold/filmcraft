@@ -264,7 +264,7 @@ pub fn install_hooks(app: &mut FilmcraftApp) {
     // Saving writes the file in memory and offers it as a download (`fs::WebServices`).
     app.hooks.pick_save = Some(Box::new(|name: &str| Some(format!("/projects/{name}"))));
     app.hooks.pick_save_as = Some(Box::new(|_filter: &str, _exts: &[&str], name: &str| {
-        let file = std::path::Path::new(name).file_name().map_or(name.into(), |n| n.to_string_lossy());
+        let file = std::path::Path::new(name).file_name().map_or(name.into(), std::ffi::OsStr::to_string_lossy);
         Some(format!("/exports/{file}"))
     }));
     // Link Media ▸ Locate…, Attach Proxies, Reconnect Full Resolution: the picker is async, so the

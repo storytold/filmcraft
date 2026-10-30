@@ -5,7 +5,7 @@
 //! the desktop app on Linux, where the XDG portal call would otherwise hold the UI thread until the
 //! user chooses, and GNOME offers to force-quit the window after about five seconds) gets the
 //! dialog and answers on a channel; the frame loop keeps running, and the continuation runs on the
-//! frame the answer arrives ([`FilmcraftApp::poll_native_dialog`]). Without it the host's
+//! frame the answer arrives (`FilmcraftApp::poll_native_dialog`). Without it the host's
 //! synchronous pickers (`pick_files`, `pick_save_as`, …) are called and the continuation runs at
 //! once, as before: headless tests, the control channel's stand-ins and other hosts are unchanged.
 //!
@@ -179,3 +179,15 @@ impl FilmcraftApp {
         ctx.request_repaint();
     }
 }
+
+/// Export entries that run from the menus through the save panel: command, filter label,
+/// extension.
+pub(crate) const EXPORT_SAVE_DIALOGS: [(&str, &str, &str); 7] = [
+    ("markers.exportCsv", "Marker report (CSV)", "csv"),
+    ("file.exportEdl", "EDL", "edl"),
+    ("file.exportFcp7Xml", "Final Cut Pro XML", "xml"),
+    ("file.exportFcpxml", "FCPXML", "fcpxml"),
+    ("file.exportOtio", "OpenTimelineIO", "otio"),
+    ("file.exportAle", "Avid Log Exchange", "ale"),
+    ("file.exportSelectionProject", "FilmCraft Project", "fcproj"),
+];

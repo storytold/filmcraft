@@ -229,6 +229,37 @@ fn remove_unused_and_consolidate_duplicates() {
 }
 
 #[test]
+fn duplicate_lands_in_the_bin_of_its_source() {
+    let mut s = demo();
+    let ocean = item_named(&s, "Ocean_Sunset.mp4");
+    let sequence = s.state.active_sequence.unwrap();
+    let in_root = |s: &Session, id: ItemId| s.project.root.parent_of(id) == Some(s.project.root.id);
+
+    // a root-level item still duplicates into the root
+    s.execute("project.moveToBin", json!({"items": [ocean.0], "bin": null})).unwrap();
+    assert!(in_root(&s, ocean));
+    s.execute("project.select", json!({"items": [ocean.0]})).unwrap();
+    let copy = ItemId(s.execute("edit.duplicate", json!({})).unwrap()["items"][0].as_u64().unwrap());
+    assert!(in_root(&s, copy), "a root-level item's copy stays in the root");
+
+    // a sequence inside a folder is duplicated into that folder, not the root
+    let bin = filmcraft_project::BinId(s.execute("file.newBin", json!({"name": "Cuts"})).unwrap()["bin"].as_u64().unwrap());
+    s.execute("project.moveToBin", json!({"items": [sequence.0, ocean.0], "bin": bin.0})).unwrap();
+    assert_eq!(s.project.root.parent_of(sequence), Some(bin));
+    s.execute("project.select", json!({"items": [sequence.0, ocean.0]})).unwrap();
+    let r = s.execute("edit.duplicate", json!({})).unwrap();
+    let copies: Vec<ItemId> = r["items"].as_array().unwrap().iter().map(|v| ItemId(v.as_u64().unwrap())).collect();
+    assert_eq!(copies.len(), 2);
+    for c in &copies {
+        assert_eq!(s.project.root.parent_of(*c), Some(bin), "the copy sits beside its source");
+    }
+
+    // one undo step removes the copies; they leave the folder with it
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(copies.iter().all(|c| s.project.item(*c).is_none() && s.project.root.parent_of(*c).is_none()));
+}
+
+#[test]
 fn consolidate_keeps_counting_leaders_with_distinct_source_rates() {
     let mut s = Session::default();
     s.execute("file.newProject", json!({"name": "Leader rates"})).unwrap();

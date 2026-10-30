@@ -38,13 +38,24 @@ pub(crate) struct RefPlane<'a> {
     pub h: usize,
 }
 
+/// A block to predict: integer position, half-sample flags and size.
+#[derive(Clone, Copy)]
+pub(crate) struct Block {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) hx: bool,
+    pub(crate) hy: bool,
+    pub(crate) bw: usize,
+    pub(crate) bh: usize,
+}
+
 /// Form the `bw`×`bh` prediction at integer position (`x`, `y`) with half-sample flags into
 /// `dst` (row `r` at `dst[doff + r·dstride..]`), or average it with what is there (`avg`).
 /// Positions outside the reference are clamped to its edges (not allowed in conforming streams;
 /// this keeps corrupt ones safe).
-#[allow(clippy::too_many_arguments)]
 #[inline]
-pub(crate) fn predict(dst: &mut [u8], doff: usize, dstride: usize, src: RefPlane, x: i32, y: i32, hx: bool, hy: bool, bw: usize, bh: usize, avg: bool) {
+pub(crate) fn predict(dst: &mut [u8], doff: usize, dstride: usize, src: RefPlane, blk: Block, avg: bool) {
+    let Block { x, y, hx, hy, bw, bh } = blk;
     let (ex, ey) = (hx as i32, hy as i32);
     let inside = x >= 0 && y >= 0 && (x + bw as i32 + ex) as usize <= src.w && (y + bh as i32 + ey) as usize <= src.h;
     let mut tmp = [0u8; 16];
@@ -129,10 +140,10 @@ mod tests {
         let f = frame();
         let p = f.plane(0, None);
         let mut d = [0u8; 4];
-        predict(&mut d, 0, 2, p, 1, 1, true, true, 2, 2, false);
+        predict(&mut d, 0, 2, p, Block { x: 1, y: 1, hx: true, hy: true, bw: 2, bh: 2 }, false);
         let s = |x: usize, y: usize| f.planes[0][y * 32 + x] as u16;
         assert_eq!(d[0] as u16, (s(1, 1) + s(2, 1) + s(1, 2) + s(2, 2) + 2) >> 2);
-        predict(&mut d, 0, 2, p, 1, 1, true, false, 2, 2, false);
+        predict(&mut d, 0, 2, p, Block { x: 1, y: 1, hx: true, hy: false, bw: 2, bh: 2 }, false);
         assert_eq!(d[3] as u16, (s(2, 2) + s(3, 2) + 1) >> 1);
     }
 
@@ -141,14 +152,14 @@ mod tests {
         let f = frame();
         let mut d = [0u8; 4];
         // bottom field row 0 = frame row 1
-        predict(&mut d, 0, 2, f.plane(0, Some(1)), 0, 0, false, false, 2, 2, false);
+        predict(&mut d, 0, 2, f.plane(0, Some(1)), Block { x: 0, y: 0, hx: false, hy: false, bw: 2, bh: 2 }, false);
         assert_eq!(d, [f.planes[0][32], f.planes[0][33], f.planes[0][96], f.planes[0][97]]);
         // outside: clamped to the corner
-        predict(&mut d, 0, 2, f.plane(0, None), -10, -10, false, false, 2, 2, false);
+        predict(&mut d, 0, 2, f.plane(0, None), Block { x: -10, y: -10, hx: false, hy: false, bw: 2, bh: 2 }, false);
         assert_eq!(d, [f.planes[0][0]; 4]);
         // averaging
         let mut d = [10u8; 4];
-        predict(&mut d, 0, 2, f.plane(0, None), -10, -10, false, false, 2, 2, true);
+        predict(&mut d, 0, 2, f.plane(0, None), Block { x: -10, y: -10, hx: false, hy: false, bw: 2, bh: 2 }, true);
         assert_eq!(d[0], ((10 + f.planes[0][0] as u16 + 1) >> 1) as u8);
     }
 }

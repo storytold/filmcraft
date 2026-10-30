@@ -3,7 +3,10 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::{
+    Arc,
+    mpsc::{Sender, channel},
+};
 
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
@@ -138,6 +141,46 @@ fn ctrl_v_pastes_an_image_above_the_footage() {
     assert!(d.dir.join("Pasted Image 1.png").is_file(), "saved next to the project");
     d.ok("ui.menu.invoke", json!({"id": "edit.undo"}));
     assert_eq!(d.clips(), before);
+}
+
+/// A paste delivered by `Event::PasteImage` carries the image bytes: paste uses that payload even
+/// with no clipboard-media hook (the web host installs none) and without re-reading the OS.
+#[test]
+fn paste_image_event_imports_its_own_payload_without_a_clipboard_hook() {
+    let mut d = Driver::demo("paste-image-event");
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    assert!(d.app().hooks.clipboard_media.is_none());
+    let before = d.clips();
+    let image = egui::ColorImage::filled([8, 6], egui::Color32::from_rgb(10, 20, 30));
+    d.harness.input_mut().events.extend([egui::Event::ModifiersChanged(egui::Modifiers::COMMAND), egui::Event::PasteImage(Arc::new(image))]);
+    d.frames(1);
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    d.frames(2);
+    let new: Vec<_> = d.clips().into_iter().filter(|c| !before.contains(c)).collect();
+    assert_eq!(new.iter().map(|c| c.3.as_str()).collect::<Vec<_>>(), ["Pasted Image 1.png"]);
+    assert!(d.dir.join("Pasted Image 1.png").is_file(), "the event payload was written, not an empty clipboard");
+}
+
+/// The saved PNG stores straight alpha. `Color32` is premultiplied internally, so a
+/// semi-transparent clipboard pixel must keep its colour through the paste.
+#[test]
+fn paste_image_event_writes_straight_alpha_rgba() {
+    let mut d = Driver::demo("paste-image-alpha");
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let before = d.clips();
+    // Four half-transparent red pixels; premultiplied storage would be (128, 0, 0, 128).
+    let rgba = [255, 0, 0, 128, 255, 0, 0, 128, 255, 0, 0, 128, 255, 0, 0, 128];
+    let image = egui::ColorImage::from_rgba_unmultiplied([2, 2], &rgba);
+    d.harness.input_mut().events.extend([egui::Event::ModifiersChanged(egui::Modifiers::COMMAND), egui::Event::PasteImage(Arc::new(image))]);
+    d.frames(1);
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    d.frames(2);
+    let new: Vec<_> = d.clips().into_iter().filter(|c| !before.contains(c)).collect();
+    assert_eq!(new.iter().map(|c| c.3.as_str()).collect::<Vec<_>>(), ["Pasted Image 1.png"]);
+    let png = std::fs::read(d.dir.join("Pasted Image 1.png")).expect("the pasted PNG");
+    let decoded = image::load_from_memory(&png).expect("decode the pasted PNG").to_rgba8();
+    assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 128], "straight alpha, not the premultiplied colour");
+    assert_eq!(decoded.get_pixel(1, 1).0, [255, 0, 0, 128]);
 }
 
 /// Files copied in the file manager paste the same way, even when the clipboard also holds text

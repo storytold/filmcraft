@@ -207,17 +207,27 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     {
         settings.format = Format::from_name(f).ok_or_else(|| bad(cmd, format!("unknown format `{f}`")))?;
     }
-    if let Some(patch) = p.get("settings").filter(|v| v.is_object()) {
-        let mut v = serde_json::to_value(&settings).map_err(|e| EngineError::Other(e.to_string()))?;
-        merge(&mut v, patch);
-        settings = serde_json::from_value(v).map_err(|e| bad(cmd, format!("settings: {e}")))?;
-        // serde ignores keys it doesn't know, so a misspelt or misplaced key (a flat parameter
-        // such as `loudnessLufs` put inside `settings`) would silently do nothing.
-        let known = serde_json::to_value(&settings).map_err(|e| EngineError::Other(e.to_string()))?;
-        if let Some(path) = unknown_key(&known, patch, "") {
-            return Err(bad(cmd, format!("settings: unknown key `{path}` (see export.presets.get for the settings' keys)")));
-        }
+    apply_nested_settings(&mut settings, p, cmd)?;
+    apply_flat_overrides(&mut settings, p, cmd)?;
+    settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    Ok((preset, settings))
+}
+
+fn apply_nested_settings(settings: &mut ExportSettings, params: &Value, cmd: &str) -> Result<()> {
+    let Some(patch) = params.get("settings").filter(|value| value.is_object()) else { return Ok(()) };
+    let mut value = serde_json::to_value(&*settings).map_err(|error| EngineError::Other(error.to_string()))?;
+    merge(&mut value, patch);
+    *settings = serde_json::from_value(value).map_err(|error| bad(cmd, format!("settings: {error}")))?;
+    // serde ignores unknown keys; detect misspelled or misplaced settings before returning.
+    let known = serde_json::to_value(&*settings).map_err(|error| EngineError::Other(error.to_string()))?;
+    if let Some(path) = unknown_key(&known, patch, "") {
+        return Err(bad(cmd, format!("settings: unknown key `{path}` (see export.presets.get for the settings' keys)")));
     }
+    Ok(())
+}
+
+/// Apply the legacy flat export parameters after preset and nested settings have been resolved.
+fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> Result<()> {
     // flat overrides (the original file.exportMedia parameters and a few common ones)
     if let Some(f) = str_p(p, "format") {
         settings.format = Format::from_name(f).ok_or_else(|| bad(cmd, format!("unknown format `{f}`")))?;
@@ -254,28 +264,10 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         settings.keyframe_distance = Some(v);
     }
     if let Some(v) = p.get("hardwareEncoding") {
-        settings.hardware_encoding = match v {
-            Value::Bool(on) => {
-                if *on {
-                    HardwareEncoding::Auto
-                } else {
-                    HardwareEncoding::Off
-                }
-            }
-            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "hardwareEncoding: off | auto"))?,
-        };
+        settings.hardware_encoding = parse_hardware_encoding(v, cmd)?;
     }
     if let Some(v) = p.get("gpuRendering") {
-        settings.gpu_rendering = match v {
-            Value::Bool(on) => {
-                if *on {
-                    GpuRendering::Auto
-                } else {
-                    GpuRendering::Off
-                }
-            }
-            other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "gpuRendering: off | auto"))?,
-        };
+        settings.gpu_rendering = parse_gpu_rendering(v, cmd)?;
     }
     if let Some(v) = bool_p(p, "burnCaptions") {
         settings.burn_captions = v;
@@ -322,8 +314,23 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
         settings.effects.loudness.enabled = true;
         settings.effects.loudness.target_lufs = v;
     }
-    settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
-    Ok((preset, settings))
+    Ok(())
+}
+
+fn parse_hardware_encoding(value: &Value, cmd: &str) -> Result<HardwareEncoding> {
+    match value {
+        Value::Bool(true) => Ok(HardwareEncoding::Auto),
+        Value::Bool(false) => Ok(HardwareEncoding::Off),
+        other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "hardwareEncoding: off | auto")),
+    }
+}
+
+fn parse_gpu_rendering(value: &Value, cmd: &str) -> Result<GpuRendering> {
+    match value {
+        Value::Bool(true) => Ok(GpuRendering::Auto),
+        Value::Bool(false) => Ok(GpuRendering::Off),
+        other => serde_json::from_value(other.clone()).map_err(|_| bad(cmd, "gpuRendering: off | auto")),
+    }
 }
 
 /// The sequence an export command targets (`sequence` param, else the active one).
@@ -339,17 +346,34 @@ pub fn sequence_param(s: &Session, p: &Value, cmd: &str) -> Result<ItemId> {
 
 /// Export ▸ Range: `entire` | `inOut` | `workArea` | `custom` (`start…` / `end…` times).
 /// None = the default (In/Out when set, else the whole sequence); bare `start…` / `end…` times
-/// without a `range` mean `custom`.
-pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value>, p: &Value, cmd: &str) -> Result<Option<TimeRange>> {
+/// without a `range` mean `custom`. Returns the range and any advisories.
+pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value>, p: &Value, cmd: &str) -> Result<(Option<TimeRange>, Vec<&'static str>)> {
+    range_with_warnings(s, project, seq, v, p, cmd)
+}
+
+/// A marked range of one sequence frame is valid, but easily left behind by accident.
+/// Explicit custom/work-area/entire ranges must not inherit this warning.
+pub fn single_frame_in_out(q: &filmcraft_project::Sequence, range: TimeRange) -> bool {
+    let rate = q.settings.frame_rate;
+    (q.mark_in.is_some() || q.mark_out.is_some()) && range.duration > Tick::ZERO && rate.frame_at(range.start) == rate.frame_at(range.end() - Tick(1))
+}
+
+const SINGLE_FRAME_WARNING: &str = "In/Out range is 1 frame; pass range: entire for the whole sequence";
+
+fn range_with_warnings(s: &Session, project: &Project, seq: ItemId, v: Option<&Value>, p: &Value, cmd: &str) -> Result<(Option<TimeRange>, Vec<&'static str>)> {
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     q.check_bounds().map_err(|e| bad(cmd, e))?;
     let fd = q.settings.frame_rate.frame_duration();
     let whole = TimeRange::from_bounds(Tick::ZERO, q.duration().max(fd));
     let mode = match v {
         None | Some(Value::Null) if time_p(s, p, "start").is_some() || time_p(s, p, "end").is_some() => "custom".to_string(),
-        None | Some(Value::Null) => return Ok(None),
+        None | Some(Value::Null) => {
+            let range = filmcraft_export::export_range(project, seq, &ExportSettings::default()).map_err(|e| bad(cmd, e.to_string()))?;
+            let warnings = if single_frame_in_out(q, range) { vec![SINGLE_FRAME_WARNING] } else { Vec::new() };
+            return Ok((None, warnings));
+        }
         Some(Value::String(m)) => m.to_ascii_lowercase().replace(['-', '_', ' ', '/'], ""),
-        Some(o @ Value::Object(_)) => return range_param(s, project, seq, o.get("mode").or(Some(&json!("custom"))), o, cmd),
+        Some(o @ Value::Object(_)) => return range_with_warnings(s, project, seq, o.get("mode").or(Some(&json!("custom"))), o, cmd),
         Some(other) => return Err(bad(cmd, format!("range: unexpected {other}"))),
     };
     let range = match mode.as_str() {
@@ -368,7 +392,8 @@ pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value
         other => return Err(bad(cmd, format!("range `{other}`: entire | inOut | workArea | custom"))),
     };
     filmcraft_export::validate_range(range).map_err(|e| bad(cmd, e.to_string()))?;
-    Ok(Some(range))
+    let warnings = if matches!(mode.as_str(), "inout" | "sequenceinout") && single_frame_in_out(q, range) { vec![SINGLE_FRAME_WARNING] } else { Vec::new() };
+    Ok((Some(range), warnings))
 }
 
 /// Where exports go when no path is given: next to the saved project, else ~/Movies, else the
@@ -544,12 +569,13 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "need `path`"));
     }
     let project = s.project.clone();
-    settings.range = range_param(s, &project, seq, p.get("range"), p, cmd)?;
+    let (range, warnings) = range_with_warnings(s, &project, seq, p.get("range"), p, cmd)?;
+    settings.range = range;
     settings.path = output_path(s, p, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
     let id = spawn_export(s, project, seq, settings, format!("Export {}", file_name(&path)), wait)?;
-    let mut out = json!({"job": id, "path": path});
+    let mut out = json!({"job": id, "path": path, "warnings": warnings});
     if let Some(pr) = preset {
         out["preset"] = json!(pr.name);
     }
@@ -747,6 +773,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     let mut ids = Vec::new();
     let mut n = 0usize;
     let mut items = Vec::new();
+    let mut warnings = Vec::new();
     for &seq in &seqs {
         for r in &ranges {
             let mut st = settings.clone();
@@ -754,7 +781,9 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
                 Some(v) if v.is_object() => *v,
                 _ => p,
             };
-            st.range = range_param(s, &project, seq, *r, times, cmd)?;
+            let (range, range_warnings) = range_param(s, &project, seq, *r, times, cmd)?;
+            st.range = range;
+            warnings.extend(range_warnings);
             // several ranges of one sequence get numbered names; several sequences their own names
             let suffix = if many && (ranges.len() > 1 || str_p(p, "path").is_some_and(|x| !is_folder(&expand_home(x)))) { Some(n) } else { None };
             st.path = output_path(s, p, seq, &st, suffix);
@@ -783,7 +812,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
         s.export_queue.running = true;
         pump_queue(s, bool_p(p, "wait").unwrap_or(false));
     }
-    Ok(json!({"added": ids, "items": queue_list_json(s)}))
+    Ok(json!({"added": ids, "items": queue_list_json(s), "warnings": warnings}))
 }
 
 fn queue_list_json(s: &Session) -> Value {
@@ -914,14 +943,15 @@ fn quick(s: &mut Session, p: &Value) -> Result<Value> {
     let seq = sequence_param(s, &q, cmd)?;
     let (preset, mut settings) = settings_from_params(s, &q, cmd)?;
     let project = s.project.clone();
-    settings.range = range_param(s, &project, seq, q.get("range"), &q, cmd)?;
+    let (range, warnings) = range_with_warnings(s, &project, seq, q.get("range"), &q, cmd)?;
+    settings.range = range;
     settings.path = output_path(s, &q, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
     let id = spawn_export(s, project, seq, settings, format!("Quick Export {}", file_name(&path)), wait)?;
     let used = preset.map(|x| x.name).unwrap_or(name);
     s.export_queue.quick_preset = Some(used.clone());
-    Ok(json!({"job": id, "path": path, "preset": used}))
+    Ok(json!({"job": id, "path": path, "preset": used, "warnings": warnings}))
 }
 
 fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
@@ -929,7 +959,8 @@ fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
     let seq = sequence_param(s, p, cmd)?;
     let (preset, mut settings) = settings_from_params(s, p, cmd)?;
     let project = s.project.clone();
-    settings.range = range_param(s, &project, seq, p.get("range"), p, cmd)?;
+    let (range, warnings) = range_with_warnings(s, &project, seq, p.get("range"), p, cmd)?;
+    settings.range = range;
     settings.path = output_path(s, p, seq, &settings, None);
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     let range = filmcraft_export::export_range(&project, seq, &settings).map_err(|e| EngineError::Other(e.to_string()))?;
@@ -942,6 +973,7 @@ fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
         "settings": settings,
         "range": {"start": range.start.0, "duration": range.duration.0, "seconds": range.duration.seconds()},
         "frames": f1 - f0,
+        "warnings": warnings,
         "output": {"width": r.width, "height": r.height, "fps": r.rate.label(), "sampleRate": r.sample_rate, "channels": r.channels,
                    "targetKbps": r.target_kbps, "maxKbps": r.max_kbps, "keyframeDistance": r.keyint},
         "summary": summary,

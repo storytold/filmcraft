@@ -442,7 +442,7 @@ mod selected_streams {
         let item = project.add_item(
             "distinct tones",
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::File { path: format!("tone-source-{streams}.wav") },
                 info: source.info.clone(),
                 interpret: Default::default(),
@@ -452,7 +452,7 @@ mod selected_streams {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         s.project = Arc::new(project);

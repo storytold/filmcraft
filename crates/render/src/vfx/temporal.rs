@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use filmcraft_project::{EffectInstance, TrackMethod};
 use rayon::prelude::*;
 
-use super::*;
+use super::{Affine, FxCtx, FxEnv, Image, Vec2, affine_warp, bv, chv, fv, luma, offv, over};
 use crate::track::{Gray, Prepared, track_step};
 
 /// Posterize Time: the clip shows a new frame only at the effect's frame rate.

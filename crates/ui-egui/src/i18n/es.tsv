@@ -3467,8 +3467,8 @@
 	Commits	Commits
 	% of all commits	% de todos los commits
 	Lines +/−	Líneas +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	La salida de audio ha fallado: se reproduce sin sonido (revisa Ajustes ▸ Hardware de audio)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	La salida de audio no responde: se reproduce sin sonido (revisa Ajustes ▸ Hardware de audio)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	La salida de audio ha fallado: se reproduce sin sonido (revisa Ajustes > Hardware de audio)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	La salida de audio no responde: se reproduce sin sonido (revisa Ajustes > Hardware de audio)
 	Clip Speed / Duration	Velocidad/duración del clip
 	Speed:	Velocidad:
 	Reverse Speed	Invertir velocidad
@@ -3620,7 +3620,7 @@
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
 	Couldn't open your web browser	No se pudo abrir el navegador web
 	Open this address in your browser yourself:	Abre esta dirección tú mismo en el navegador:
-# View ▸ Reset Interface Zoom (#2253).
+# View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	Restablecer zoom de la interfaz
 	Track Color	Color de pista
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
