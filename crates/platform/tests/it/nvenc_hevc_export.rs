@@ -29,7 +29,7 @@ fn project(w: u32, h: u32, frames: i64) -> (Arc<Project>, filmcraft_project::Ite
     let clip = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -39,7 +39,7 @@ fn project(w: u32, h: u32, frames: i64) -> (Arc<Project>, filmcraft_project::Ite
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 1, None);
@@ -253,19 +253,7 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
         assert!(e.to_string().contains("NVENC"), "{what}: {e}");
         assert_eq!(delta(before), (0, 0, 1), "{what}: counted as declined, no session");
     }
-    // HDR (PQ / HLG) is taken as Main 10 where the GPU has 10-bit HEVC, declined (counted, with the reason) where it has not
-    for signal in [ColorSignal::PQ, ColorSignal::HLG] {
-        let before = hw_encode_stats();
-        let r = factory(Format::Hevc, 640, 360, rate, &ExportSettings { signal, ..base.clone() });
-        if filmcraft_platform::nvenc::hevc_hdr_available() {
-            assert!(matches!(r, Some(Ok(_))), "{signal:?}");
-            assert_eq!(delta(before), (0, 1, 0), "{signal:?}");
-        } else if hevc_available() {
-            let Some(Err(e)) = r else { panic!("{signal:?}: expected a declined request") };
-            assert!(e.to_string().contains("10-bit"), "{signal:?}: {e}");
-            assert_eq!(delta(before), (0, 0, 1), "{signal:?}");
-        }
-    }
+    hdr_is_main_10_or_declined(rate, &base);
     // interlaced output is refused by the export's own validation, before any encoder is asked
     let (p, seq, m) = project(640, 360, 6);
     let before = hw_encode_stats();
@@ -280,7 +268,43 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
         eprintln!("SKIPPED the NVENC-limit cases: no NVENC HEVC here");
         return;
     }
-    // sizes outside what the GPU's HEVC encoder takes, through the real export
+    sizes_outside_the_limits_through_the_export();
+    // the factory itself: an odd size and a size outside the limits are declined, a good one is taken
+    let before = hw_encode_stats();
+    assert!(matches!(factory(Format::Hevc, 641, 360, rate, &base), Some(Err(_))));
+    assert!(matches!(factory(Format::Hevc, 20_000, 20_000, rate, &base), Some(Err(_))));
+    assert_eq!(delta(before), (0, 0, 2));
+    let before = hw_encode_stats();
+    assert!(matches!(factory(Format::Hevc, 640, 360, rate, &base), Some(Ok(_))));
+    assert_eq!(delta(before), (0, 1, 0));
+    // H.264 with hardware encoding Off is still not NVENC's business, HEVC's toggle does not matter
+    let before = hw_encode_stats();
+    let off = ExportSettings { format: Format::H264, hardware_encoding: HardwareEncoding::Off, ..base.clone() };
+    assert!(factory(Format::H264, 640, 360, rate, &off).is_none());
+    assert!(matches!(factory(Format::Hevc, 640, 360, rate, &ExportSettings { hardware_encoding: HardwareEncoding::Off, ..base }), Some(Ok(_))));
+    assert_eq!(delta(before), (0, 1, 0));
+}
+
+/// HDR (PQ / HLG) is taken as Main 10 where the GPU has 10-bit HEVC, declined (counted, with the
+/// reason) where it has not.
+fn hdr_is_main_10_or_declined(rate: FrameRate, base: &ExportSettings) {
+    for signal in [ColorSignal::PQ, ColorSignal::HLG] {
+        let before = hw_encode_stats();
+        let r = factory(Format::Hevc, 640, 360, rate, &ExportSettings { signal, ..base.clone() });
+        if filmcraft_platform::nvenc::hevc_hdr_available() {
+            assert!(matches!(r, Some(Ok(_))), "{signal:?}");
+            assert_eq!(delta(before), (0, 1, 0), "{signal:?}");
+        } else if hevc_available() {
+            let Some(Err(e)) = r else { panic!("{signal:?}: expected a declined request") };
+            assert!(e.to_string().contains("10-bit"), "{signal:?}: {e}");
+            assert_eq!(delta(before), (0, 0, 1), "{signal:?}");
+        }
+    }
+}
+
+/// Sizes outside what the GPU's HEVC encoder takes, through the real export: declined with the
+/// reason, or a good file from a GPU that does take the size.
+fn sizes_outside_the_limits_through_the_export() {
     let (p, seq, m) = project(640, 360, 6);
     for (w, h) in [(64u32, 64u32), (16, 16), (10_000, 64)] {
         let path = tmp(&format!("small-{w}x{h}.mp4"));
@@ -298,18 +322,4 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
             Ok(_) => assert_eq!(delta(before).1, 1, "{w}x{h}"),
         }
     }
-    // the factory itself: an odd size and a size outside the limits are declined, a good one is taken
-    let before = hw_encode_stats();
-    assert!(matches!(factory(Format::Hevc, 641, 360, rate, &base), Some(Err(_))));
-    assert!(matches!(factory(Format::Hevc, 20_000, 20_000, rate, &base), Some(Err(_))));
-    assert_eq!(delta(before), (0, 0, 2));
-    let before = hw_encode_stats();
-    assert!(matches!(factory(Format::Hevc, 640, 360, rate, &base), Some(Ok(_))));
-    assert_eq!(delta(before), (0, 1, 0));
-    // H.264 with hardware encoding Off is still not NVENC's business, HEVC's toggle does not matter
-    let before = hw_encode_stats();
-    let off = ExportSettings { format: Format::H264, hardware_encoding: HardwareEncoding::Off, ..base.clone() };
-    assert!(factory(Format::H264, 640, 360, rate, &off).is_none());
-    assert!(matches!(factory(Format::Hevc, 640, 360, rate, &ExportSettings { hardware_encoding: HardwareEncoding::Off, ..base }), Some(Ok(_))));
-    assert_eq!(delta(before), (0, 1, 0));
 }
