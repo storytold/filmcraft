@@ -205,6 +205,7 @@ impl Lut {
     }
 
     pub fn parse_cube(text: &str) -> Result<Lut, String> {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let mut size1 = 0usize;
         let mut size3 = 0usize;
         let mut title = String::new();
@@ -681,5 +682,13 @@ mod tests {
         assert_eq!(a.shaper.as_ref().unwrap().domain_max, [1.0, 2.0, 3.0]);
         let b = Lut::parse_cube(&a.to_cube()).unwrap();
         assert_eq!(b.shaper.unwrap().domain_max, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn parse_cube_strips_utf8_bom() {
+        let rows = "0 0 0\n".repeat(8);
+        let a = Lut::parse_cube(&format!("\u{feff}TITLE \"x\"\nLUT_3D_SIZE 2\n{rows}")).unwrap();
+        assert_eq!(a.title, "x");
+        assert!(Lut::parse_cube(&format!("\u{feff}# c\nLUT_3D_SIZE 2\n{rows}")).is_ok());
     }
 }

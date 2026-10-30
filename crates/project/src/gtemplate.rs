@@ -312,7 +312,8 @@ impl GraphicsTemplate {
 
     /// The layers and settings for a graphic clip on a `canvas`-sized frame. When the frame size
     /// differs from the template's, the layers are scaled uniformly (fit) and centred, and pin
-    /// distances scale with them. The result links back to the template.
+    /// distances scale with them. Both scale axes, including keyframes, are fitted even when
+    /// Uniform Scale is off. The result links back to the template.
     pub fn instantiate(&self, canvas: (u32, u32)) -> (Vec<EffectInstance>, GraphicMeta) {
         let (w, h) = (canvas.0 as f64, canvas.1 as f64);
         let (tw, th) = (self.canvas[0] as f64, self.canvas[1] as f64);
@@ -321,17 +322,28 @@ impl GraphicsTemplate {
         let mut layers = self.layers.clone();
         if (s - 1.0).abs() > 1e-9 || off.x.abs() > 1e-9 || off.y.abs() > 1e-9 {
             for l in &mut layers {
+                // Imported layers can omit parameters and rely on definition defaults. Make
+                // both scale axes explicit before fitting so those defaults are scaled too.
+                if let Some(def) = l.def() {
+                    for key in ["scale", "scale_width"] {
+                        if let Some(param) = def.param(key) {
+                            l.params.entry(key.to_string()).or_insert_with(|| Param::new(param.default.clone()));
+                        }
+                    }
+                }
                 if let Some(p) = l.params.get_mut("position") {
                     p.map_values(|v| match v {
                         ParamValue::Vec2(q) if !q.x.is_nan() => ParamValue::Vec2(Vec2::new(q.x * s + off.x, q.y * s + off.y)),
                         o => o,
                     });
                 }
-                if let Some(p) = l.params.get_mut("scale") {
-                    p.map_values(|v| match v {
-                        ParamValue::Float(x) => ParamValue::Float(x * s),
-                        o => o,
-                    });
+                for key in ["scale", "scale_width"] {
+                    if let Some(p) = l.params.get_mut(key) {
+                        p.map_values(|v| match v {
+                            ParamValue::Float(x) => ParamValue::Float(x * s),
+                            o => o,
+                        });
+                    }
                 }
                 if let Some(pin) = l.layer.as_mut().and_then(|x| x.pin.as_mut()) {
                     pin.offsets.iter_mut().for_each(|o| *o *= s);
@@ -754,5 +766,117 @@ mod tests {
         assert_eq!(slug("My Lower Third!"), "my-lower-third");
         assert_eq!(ControlKind::for_param("background_opacity"), ControlKind::Slider);
         assert_eq!(ControlKind::for_param("shadow"), ControlKind::Checkbox);
+    }
+
+    #[test]
+    fn instantiates_nonuniform_layers_with_both_axes_fitted() {
+        let position = Vec2::new(1920.0, 1080.0);
+        let mut t = GraphicsTemplate {
+            canvas: [3840, 2160],
+            layers: vec![new_text_layer("Lower third", position, 100.0), new_shape_layer(0, position, Vec2::new(400.0, 100.0), Vec::new())],
+            ..Default::default()
+        };
+        for uniform in [false, true] {
+            for layer in &mut t.layers {
+                set(layer, "uniform_scale", ParamValue::Bool(uniform));
+                set(layer, "scale", ParamValue::Float(50.0));
+                set(layer, "scale_width", ParamValue::Float(150.0));
+            }
+            let original = t.clone();
+            for (canvas, fit) in [((3840, 2160), 1.0), ((1920, 1080), 0.5), ((1080, 1920), 0.28125), ((7680, 4320), 2.0)] {
+                let (layers, _) = t.instantiate(canvas);
+                for layer in &layers {
+                    let spec = graphic::eval_layer(layer, Tick::ZERO, canvas).unwrap();
+                    let width = if uniform { 0.5 } else { 1.5 };
+                    assert_eq!(spec.transform.scale, Vec2::new(width * fit, 0.5 * fit));
+                    assert_eq!(spec.transform.position, Vec2::new(canvas.0 as f64 / 2.0, canvas.1 as f64 / 2.0));
+                    // Keep the independent width fitted even while Uniform Scale hides it.
+                    assert_eq!(layer.params["scale_width"].value, ParamValue::Float(150.0 * fit));
+                }
+            }
+            assert_eq!(t, original);
+        }
+    }
+
+    #[test]
+    fn instantiates_imported_layers_with_omitted_scale_defaults() {
+        for omitted in [&["scale"][..], &["scale_width"][..], &["scale", "scale_width"][..]] {
+            for uniform in [false, true] {
+                let position = Vec2::new(1920.0, 1080.0);
+                let mut t = GraphicsTemplate {
+                    name: "Imported defaults".into(),
+                    canvas: [3840, 2160],
+                    layers: vec![new_text_layer("Reveal", position, 100.0), new_shape_layer(0, position, Vec2::new(400.0, 100.0), Vec::new())],
+                    ..Default::default()
+                };
+                ensure_uids(&mut t.layers);
+                for layer in &mut t.layers {
+                    set(layer, "uniform_scale", ParamValue::Bool(uniform));
+                    for (key, start, end) in [("scale", 50.0, 100.0), ("scale_width", 150.0, 200.0)] {
+                        if omitted.contains(&key) {
+                            layer.params.remove(key);
+                        } else {
+                            let mut param = Param::new(ParamValue::Float(start));
+                            param.put_keyframe(Tick::ZERO, ParamValue::Float(start));
+                            param.put_keyframe(Tick(TICKS_PER_SECOND), ParamValue::Float(end));
+                            layer.params.insert(key.into(), param);
+                        }
+                    }
+                }
+                let imported = GraphicsTemplate::from_bytes(t.to_json().as_bytes()).unwrap();
+                assert_eq!(imported, t);
+                for (canvas, fit) in [((1920, 1080), 0.5), ((1080, 1920), 0.28125), ((7680, 4320), 2.0)] {
+                    let (layers, _) = imported.instantiate(canvas);
+                    for (placed, original) in layers.iter().zip(&imported.layers) {
+                        for key in omitted {
+                            assert!(!original.params.contains_key(*key));
+                            assert_eq!(placed.params[*key].value, ParamValue::Float(100.0 * fit));
+                            assert!(placed.params[*key].keyframes.is_empty());
+                        }
+                        for time in [Tick::ZERO, Tick(TICKS_PER_SECOND / 2), Tick(TICKS_PER_SECOND)] {
+                            let before = graphic::eval_layer(original, time, (3840, 2160)).unwrap();
+                            let after = graphic::eval_layer(placed, time, canvas).unwrap();
+                            assert_eq!(after.transform.scale, Vec2::new(before.transform.scale.x * fit, before.transform.scale.y * fit));
+                        }
+                    }
+                }
+                assert_eq!(imported, t);
+            }
+        }
+    }
+
+    #[test]
+    fn instantiates_animated_width_with_timing_and_interpolation_preserved() {
+        use crate::keyframe::{Interpolation, Keyframe};
+
+        let mut layer = new_text_layer("Reveal", Vec2::new(1920.0, 1080.0), 100.0);
+        set(&mut layer, "uniform_scale", ParamValue::Bool(false));
+        let end = Tick(TICKS_PER_SECOND);
+        for interp in [Interpolation::Linear, Interpolation::Hold] {
+            let mut first = Keyframe::new(Tick::ZERO, ParamValue::Float(0.0));
+            first.interp = interp;
+            let last = Keyframe::new(end, ParamValue::Float(200.0));
+            let width = Param { value: ParamValue::Float(100.0), keyframes: vec![first, last] };
+            layer.params.insert("scale_width".into(), width.clone());
+            let t = GraphicsTemplate { canvas: [3840, 2160], layers: vec![layer.clone()], ..Default::default() };
+            for (canvas, fit) in [((1920, 1080), 0.5), ((1080, 1920), 0.28125), ((7680, 4320), 2.0)] {
+                let (layers, _) = t.instantiate(canvas);
+                let placed = &layers[0];
+                let scaled = &placed.params["scale_width"];
+                assert_eq!(scaled.value, ParamValue::Float(100.0 * fit));
+                assert_eq!(scaled.keyframes.len(), width.keyframes.len());
+                for (key, original) in scaled.keyframes.iter().zip(&width.keyframes) {
+                    let mut restored = key.clone();
+                    restored.value = original.value.clone();
+                    assert_eq!(&restored, original);
+                }
+                let midpoint = if interp == Interpolation::Hold { 0.0 } else { fit };
+                for (time, expected_width) in [(Tick::ZERO, 0.0), (Tick(TICKS_PER_SECOND / 2), midpoint), (end, 2.0 * fit)] {
+                    let spec = graphic::eval_layer(placed, time, canvas).unwrap();
+                    assert_eq!(spec.transform.scale, Vec2::new(expected_width, fit));
+                }
+            }
+            assert_eq!(t.layers[0].params["scale_width"], width);
+        }
     }
 }

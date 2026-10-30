@@ -48,19 +48,25 @@ edit reports the value written at the requested time, rather than the static fal
 For example, setting opacity `blend` to `"Screen"` returns
 `{"keyframes": 0, "param": "blend", "value": 8}`.
 
+`effects.addKeyframe` toggles: it returns `{"added": true, "mediaTime": t}` when it added a keyframe and
+`{"added": false, "mediaTime": t}` when it removed the one already there; `mediaTime` is where the keyframe
+is, to find it again. An explicit `time` keeps its place, outside the clip too, as in `effects.setParam`;
+only the playhead (when no `time` is given) is held to the clip's last tick. `effects.deleteKeyframe`
+returns `{"removed": true}` or `{"removed": false}` (no keyframe sat exactly at `mediaTime`).
+
 ### From an installed release
 
 The release packages ship `filmcraft-cli` alongside the desktop app, so no build is needed:
 
 | Install | CLI |
 |---|---|
-| Windows (MSI) | `C:\Program Files\FilmCraft\filmcraft-cli.exe` by default (wherever you installed it otherwise), not on `PATH` |
+| Windows (MSI) | `%LOCALAPPDATA%\Programs\ArtCraft\FilmCraft\filmcraft-cli.exe` by default (`C:\Program Files\ArtCraft\FilmCraft\filmcraft-cli.exe` for an all-users install, under `Program Files (x86)` instead for the 32-bit build, or wherever you installed it otherwise), not on `PATH` |
 | Linux (deb, rpm) | `/usr/bin/filmcraft-cli` |
 | macOS | the separate `filmcraft-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
 
 ```sh
-# Windows, default install folder
-claude mcp add filmcraft -- "C:\Program Files\FilmCraft\filmcraft-cli.exe" mcp
+# Windows (PowerShell), default install folder
+claude mcp add filmcraft -- "$env:LOCALAPPDATA\Programs\ArtCraft\FilmCraft\filmcraft-cli.exe" mcp
 # Linux, or macOS with the CLI unzipped onto PATH
 claude mcp add filmcraft -- filmcraft-cli mcp
 ```
@@ -138,6 +144,14 @@ progress and stop it:
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
+- `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
+  strings, empty when none). If the default or explicitly selected In/Out range covers one
+  sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
+  The export still succeeds, including with `wait: true` over MCP or the bridge. Explicit custom,
+  work-area and entire-sequence ranges are unchanged and do not warn. Queue additions collect
+  warnings from the newly added ranges. `filmcraft-cli export` (including `--queue`)
+  also prints the warning on stderr and suggests `--range entire`; the warning does not change
+  the exit status. Frame counts here use the sequence rate, even when the export rate differs.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.

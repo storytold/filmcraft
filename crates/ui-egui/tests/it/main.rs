@@ -1,6 +1,7 @@
 mod audio51_ui;
 mod audio_fx_editor_ui;
 mod caption_copy_paste_ui;
+mod caption_export_ui;
 mod caption_list_follow_ui;
 mod caption_option_drag_ui;
 mod caption_properties_ui;
@@ -39,6 +40,8 @@ mod mixer_ui;
 mod monitor_geometry;
 mod multicam_ui;
 mod native_dialogs_ui;
+mod native_menu_text_keys;
+mod native_windows_ui;
 mod nest_editing_ui;
 mod nest_rendering_ui;
 mod nested_ui;

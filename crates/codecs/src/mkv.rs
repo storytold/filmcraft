@@ -58,6 +58,9 @@ pub struct MkvSource {
     /// Video codec as an ISO-BMFF sample entry (for the decoder factories).
     ventry: Option<SampleEntry>,
     video: GopCache,
+    /// Look frames up by the start of their frame: the video track's timestamp unit is half a frame
+    /// or longer and its samples sit on the nominal frame grid ([`crate::gop::snap_coarse_units`]).
+    snap: bool,
     /// The alpha layer of a VP8 / VP9 track with `AlphaMode` 1 (WebM transparency, #402).
     alpha: Option<Arc<crate::webm_alpha::AlphaLayer>>,
     /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
@@ -221,10 +224,11 @@ fn to_tick(t: &filmcraft_matroska::Track, pts: i64) -> Tick {
 
 /// A time as the track timestamp to look a frame up by: rounded to the nearest tick, as muxers
 /// round frame times to `TimestampScale` (usually 1 ms). Flooring skipped every frame whose
-/// timestamp was rounded up (every third frame at 30 fps).
-fn from_tick(t: &filmcraft_matroska::Track, time: Tick) -> i64 {
+/// timestamp was rounded up (every third frame at 30 fps). See [`crate::gop::lookup_time`] for
+/// `snap`, timestamp units as long as a frame.
+fn from_tick(t: &filmcraft_matroska::Track, rate: FrameRate, time: Tick, snap: bool) -> i64 {
     let (n, d) = tb(t);
-    time.to_rational_round(n, d)
+    crate::gop::lookup_time(time, n, d, rate, snap)
 }
 
 /// VP9 configuration from the Matroska `CodecPrivate` feature list (ID / length / value triples:
@@ -460,7 +464,12 @@ impl MkvSource {
                 && t.samples.iter().any(|s| s.addition.is_some())
         });
         let alpha = alpha.map(|t| Arc::new(crate::webm_alpha::AlphaLayer::new(bytes.clone(), t.samples.iter().map(|s| (s.pts, s.addition)))));
-        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), alpha, audios })
+        let snap = vtrack.zip(info.video.as_ref()).is_some_and(|(i, v)| {
+            let t = &file.tracks[i];
+            let (n, d) = tb(t);
+            crate::gop::snap_coarse_units(t.samples.iter().map(|s| s.pts), n, d, v.frame_rate)
+        });
+        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), snap, alpha, audios })
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -616,8 +625,9 @@ impl MediaSource for MkvSource {
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>, MediaError> {
         let ti = self.vtrack.ok_or(MediaError::NoStream("video"))?;
         let t = req.time.max(Tick::ZERO);
-        let target = from_tick(&self.file.tracks[ti], t);
-        let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], t - m));
+        let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
+        let target = from_tick(&self.file.tracks[ti], rate, t, self.snap);
+        let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], rate, t - m, self.snap));
         Ok(self.video.frame_late(&MkvVideo { src: self, track: ti }, target, late)?)
     }
 

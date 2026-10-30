@@ -40,8 +40,12 @@ the control channel and MCP agents can do the same.
 Recognition goes through the `Transcriber` trait (`crates/speech`). The built-in recogniser is
 OpenAI's Whisper, run in pure Rust on [candle](https://github.com/huggingface/candle) on the CPU,
 with timestamp decoding, language detection and word times from cross-attention alignment (see the
-`filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
-statistics (`filmcraft_speech::diarize`); no model is involved.
+`filmcraft_speech::whisper` module docs). The alignment makes words contiguous (each word ends where
+the next starts) and places a start that follows a pause late, so the word bounds are then measured
+against the audio (`filmcraft_speech::vad`): a pause of 0.2 s or more inside a word's span ends
+the word and starts the next one after the pause, and silence at the edges is trimmed. That is
+what `transcript.removePauses` and the extract / lift cuts see. Speakers are labelled by
+clustering per-chunk MFCC statistics (`filmcraft_speech::diarize`); no model is involved.
 
 Both are **optional features**, off by default and never built for the web:
 

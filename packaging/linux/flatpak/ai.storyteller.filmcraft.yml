@@ -41,9 +41,9 @@ finish-args:
   - --filesystem=/media
   - --filesystem=/run/media
   - --filesystem=/mnt
-  # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
-  # the sandbox; `flatpak override --user --share=network ai.storyteller.filmcraft` exposes it
-  # to host agents) and host-wide filesystem access.
+  # Network: the update check reaches GitHub. The optional --control server still listens on
+  # 127.0.0.1 inside the sandbox. Host-wide filesystem access is still not granted.
+  - --share=network
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
 modules:

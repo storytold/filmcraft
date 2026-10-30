@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::dock::{DockNode, PanelKind};
+use crate::dock::PanelKind;
 use crate::icons::Icon;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -436,9 +436,8 @@ pub struct UiState {
     pub tool: Tool,
     pub mode: Mode,
     pub workspace: String,
-    pub dock: DockNode,
-    #[serde(default)]
-    pub floating: Vec<crate::dock::Floating>,
+    /// The panel arrangement in use: craft-ui's frame tree and floating windows.
+    pub dock: crate::dock::Layout,
     /// Where each panel closed while floating was ([x, y, width, height]): opening it again
     /// brings it back there, floating, instead of docked (#1985).
     #[serde(default)]
@@ -532,6 +531,10 @@ pub struct UiState {
     /// Delete Tracks dialog draft.
     #[serde(default)]
     pub delete_tracks: DeleteTracksDraft,
+    /// File ▸ Export ▸ Captions…: the file format chosen last (its extension, e.g. `vtt`), offered
+    /// first the next time.
+    #[serde(default)]
+    pub caption_export_format: Option<String>,
     /// Sequence Settings dialog draft.
     #[serde(default)]
     pub sequence_settings: SequenceSettingsDraft,
@@ -974,7 +977,6 @@ impl Default for UiState {
             tool: Tool::Selection,
             mode: Mode::Edit,
             workspace: "Editing".into(),
-            floating: vec![],
             closed_floating: vec![],
             dock: crate::dock::workspace("Editing"),
             focused: PanelKind::Timeline,
@@ -1012,6 +1014,7 @@ impl Default for UiState {
             audio_gain: AudioGainDraft::default(),
             add_tracks: AddTracksDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),
+            caption_export_format: None,
             sequence_settings: SequenceSettingsDraft::default(),
             transition_duration: TransitionDurationDraft::default(),
             gfx_edit: None,

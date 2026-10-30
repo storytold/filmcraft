@@ -76,7 +76,15 @@ fn paint_badges(ui: &egui::Ui, b: &Badge, at: egui::Pos2, t: &Tokens) {
 }
 
 fn matches_filter(app: &FilmcraftApp, id: ItemId, filter: &str) -> bool {
-    app.session.project.item(id).is_some_and(|i| pp::listed(&app.session.project, i) && (filter.is_empty() || i.name.to_ascii_lowercase().contains(filter)))
+    app.session.project.item(id).is_some_and(|i| pp::listed(&app.session.project, i) && name_matches(&i.name, filter))
+}
+
+/// The search finds a name holding every word typed, in any order: "comedy manager smiling" finds
+/// "Comedy manager · medium · smiling", where the typed text as one run of letters would not.
+/// `filter` is already lowercase.
+fn name_matches(name: &str, filter: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    filter.split_whitespace().all(|word| name.contains(word))
 }
 
 fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
@@ -185,17 +193,17 @@ fn click_selection(current: &[ItemId], order: &[ItemId], anchor: Option<ItemId>,
 }
 
 /// Click / double-click / drag / context menu of an item (row, card).
-pub fn item_interactions(
-    app: &mut FilmcraftApp,
-    ui: &egui::Ui,
-    v: &View,
-    resp: &egui::Response,
-    id: ItemId,
-    kind: &ItemKind,
-    actions: &mut Actions,
-    drag: bool,
-    menu: bool,
-) {
+pub(super) struct ItemInteraction<'a> {
+    view: &'a View,
+    response: &'a egui::Response,
+    item: ItemId,
+    kind: &'a ItemKind,
+    allow_drag: bool,
+    allow_menu: bool,
+}
+
+pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: &mut Actions, interaction: ItemInteraction<'_>) {
+    let ItemInteraction { view: v, response: resp, item: id, kind, allow_drag: drag, allow_menu: menu } = interaction;
     if resp.clicked() {
         let mods = click_modifiers(ui);
         let order = if mods.shift { items_in_view(app, v, &app.ui.project_search.to_ascii_lowercase()) } else { Vec::new() };
@@ -785,7 +793,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         }
         app.auto.add(&format!("{}.item.{}", v.prefix, id.0), r.intersect(ui.clip_rect()), &it.name);
         slow_click_rename(app, ui, &resp, name_r, id, selected);
-        item_interactions(app, ui, v, &resp, id, &it.kind, actions, true, true);
+        item_interactions(app, ui, actions, ItemInteraction { view: v, response: &resp, item: id, kind: &it.kind, allow_drag: true, allow_menu: true });
     }
 }
 
@@ -988,7 +996,12 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
                     note_hit(ui, v, id, r);
                     let name_r = Rect::from_min_max(pos2(r.min.x, r.min.y + th_h), r.max);
                     slow_click_rename(app, ui, &resp, name_r, id, was_selected);
-                    item_interactions(app, ui, v, &resp, id, &kind, actions, true, true);
+                    item_interactions(
+                        app,
+                        ui,
+                        actions,
+                        ItemInteraction { view: v, response: &resp, item: id, kind: &kind, allow_drag: true, allow_menu: true },
+                    );
                 }
             }
         }
@@ -1058,7 +1071,12 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                 ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("×{n}"), Tokens::ui(10.0), Color32::WHITE);
                 app.auto.add(&format!("{}.stack.{s}", v.prefix), br, &format!("Stack of {n}"));
             }
-            item_interactions(app, ui, v, &resp, ItemId(c.item), &kind, actions, false, false);
+            item_interactions(
+                app,
+                ui,
+                actions,
+                ItemInteraction { view: v, response: &resp, item: ItemId(c.item), kind: &kind, allow_drag: false, allow_menu: false },
+            );
             // Escape puts the cards back and drops nothing until the button comes up (#580); egui
             // also ends the drag on Escape, so it arrives as a stop as often as during the drag
             let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
@@ -1160,7 +1178,7 @@ fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, act
 }
 
 fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, actions: &mut Actions) {
-    fn entry(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, actions: &mut Actions, id: &str, label: &str, cmd: &str, p: serde_json::Value) {
+    fn entry(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, actions: &mut Actions, id: &str, label: &str, (cmd, p): (&str, serde_json::Value)) {
         let b = ui.button(label);
         app.auto.add(&format!("{}.canvasMenu.{id}", v.prefix), b.rect, label);
         if b.clicked() {
@@ -1168,10 +1186,10 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
             ui.close();
         }
     }
-    entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), "project.freeform.alignToGrid", json!({"bin": bin}));
-    entry(app, ui, v, actions, "resetToGrid", tl!("Reset to Grid"), "project.freeform.reset", json!({"bin": bin}));
+    entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), ("project.freeform.alignToGrid", json!({"bin": bin})));
+    entry(app, ui, v, actions, "resetToGrid", tl!("Reset to Grid"), ("project.freeform.reset", json!({"bin": bin})));
     ui.separator();
-    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), "projectPanel.saveArrangement", json!({}));
+    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), ("projectPanel.saveArrangement", json!({})));
     let names: Vec<String> = app
         .session
         .execute("project.freeform.arrangements", json!({"bin": bin}))
@@ -1197,7 +1215,7 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
         });
     });
     ui.separator();
-    entry(app, ui, v, actions, "options", "Freeform View Options…", "projectPanel.freeformOptions", json!({}));
+    entry(app, ui, v, actions, "options", "Freeform View Options…", ("projectPanel.freeformOptions", json!({})));
     ui.separator();
     background_menu(app, ui, v, bin.filter(|b| *b != app.session.project.root.id.0), actions);
 }
@@ -1240,5 +1258,22 @@ mod clear_tests {
         assert_eq!(click_selection(&ids(&[1]), &order, None, ItemId(3), false, true), ids(&[1, 3]));
         assert_eq!(click_selection(&ids(&[1, 3]), &order, None, ItemId(3), false, true), ids(&[1]));
         assert_eq!(click_selection(&ids(&[1, 3]), &order, None, ItemId(2), false, false), ids(&[2]));
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::name_matches;
+
+    #[test]
+    fn every_typed_word_must_appear_in_any_order() {
+        let name = "Comedy manager · medium · smiling · enjoys the show · img385 · A";
+        assert!(name_matches(name, ""));
+        assert!(name_matches(name, "comedy manager"));
+        assert!(name_matches(name, "comedy manager s"));
+        assert!(name_matches(name, "comedy manager smiling"));
+        assert!(name_matches(name, "smiling  comedy "));
+        assert!(!name_matches(name, "comedy manager laughing"));
+        assert!(!name_matches("Comedy club", "comedy manager"));
     }
 }

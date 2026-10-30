@@ -6,7 +6,6 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::{
     FilmcraftApp,
-    dock::{self, DockNode, PanelKind, SeqTabs},
     panels::monitor::{self, Which},
     theme::{self, ThemeKind},
 };
@@ -24,15 +23,12 @@ fn harness_at_scale(width: f32, kind: ThemeKind, which: Which, scale: f32) -> Ha
         move |ui, app: &mut FilmcraftApp| {
             app.set_theme(ui.ctx(), kind);
             app.auto.begin_frame();
-            let panel = if which == Which::Source { PanelKind::Source } else { PanelKind::Program };
-            let mut node = DockNode::Tabs { panels: vec![panel], active: 0 };
-            let mut groups = Vec::new();
-            dock::layout(ui, &mut node, ui.max_rect(), &app.tokens, "monitor", &mut groups, &mut app.auto);
-            for group in groups {
-                // Exercise the actual parent chrome, including its themed panel background.
-                dock::draw_group_chrome(ui, &group, panel, &SeqTabs::default(), &app.tokens, &mut app.auto);
-                monitor::show(app, ui, group.content, which);
-            }
+            // A stand-in for the docked frame: the themed panel background, with the body below
+            // a tab strip's height.
+            let frame = ui.max_rect();
+            ui.painter().rect_filled(frame, 0.0, app.tokens.panel_bg);
+            let content = egui::Rect::from_min_max(egui::pos2(frame.min.x, frame.min.y + app.tokens.tab_h), frame.max);
+            monitor::show(app, ui, content, which);
             let source = filmcraft_ui_egui::panels::dragged_source(ui);
             ui.ctx().data_mut(|data| data.insert_temp(egui::Id::unique("observed-source-drag"), source));
         },

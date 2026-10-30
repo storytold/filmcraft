@@ -50,6 +50,13 @@ pub fn parse_wav(b: &[u8]) -> Option<(Vec<u8>, u16, u32, u16)> {
             if tag != 1 && tag != 0xFFFE {
                 return None;
             }
+            if tag == 0xFFFE {
+                // The first two bytes of the sub-format GUID carry the real format code.
+                let sub = body.get(24..26)?;
+                if u16::from_le_bytes([sub[0], sub[1]]) != 1 {
+                    return None;
+                }
+            }
             fmt = Some((ch, sr, bits));
         } else if id == b"data" {
             let (ch, sr, bits) = fmt?;

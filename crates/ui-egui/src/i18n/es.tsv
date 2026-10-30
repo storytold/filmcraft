@@ -1048,6 +1048,7 @@
 	All Caps	Todo mayúsculas
 	Small Caps	Versalitas
 	Underline	Subrayado
+	Strikethrough	Tachado
 	OpenType	OpenType
 	Kerning	Ajuste entre pares
 	Ligatures	Ligaduras
@@ -3628,3 +3629,8 @@
 	No matching text.	Ningún texto coincide.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	El servidor de control está desactivado: FILMCRAFT_CONTROL_TOKEN debe contener 64 caracteres hexadecimales aleatorios (ver docs/control-protocol.md)
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
