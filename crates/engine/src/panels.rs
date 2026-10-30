@@ -153,9 +153,11 @@ pub const LOG_FIELDS: [&str; 8] = ["Description", "Scene", "Shot", "Log Note", "
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Field {
-    /// "Clip" or "File".
+    /// "Clip", "File" or "Metadata".
     pub section: &'static str,
     pub name: String,
+    /// Stable command selector; distinct from the displayed heading.
+    pub id: String,
     pub value: String,
     pub editable: bool,
 }
@@ -192,7 +194,7 @@ pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
         _ => it.frame_rate(),
     };
     let mut out = Vec::new();
-    let mut add = |section, name: &str, value: String, editable| out.push(Field { section, name: name.to_string(), value, editable });
+    let mut add = |section, name: &str, value: String, editable| out.push(Field { section, name: name.to_string(), id: name.to_string(), value, editable });
     add("Clip", "Name", it.name.clone(), true);
     add("Clip", "Label", it.label.name().to_string(), true);
     add("Clip", "Media Type", it.type_label().to_string(), false);
@@ -236,12 +238,6 @@ pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
     for k in LOG_FIELDS {
         add("Clip", k, it.metadata.get(k).cloned().unwrap_or_default(), true);
     }
-    // other stored fields (from imports, Edit Offline, agents…)
-    for (k, v) in &it.metadata {
-        if !LOG_FIELDS.contains(&k.as_str()) && !crate::project_panel::is_freeform_key(k) {
-            add("Clip", k, v.clone(), true);
-        }
-    }
     if let Some(m) = media {
         let path = match &m.media {
             MediaRef::File { path } => path.clone(),
@@ -258,6 +254,12 @@ pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
             add("File", "Video Bitrate", format!("{:.2} Mbit/s", b as f64 / 1e6), false);
         }
         add("File", "Status", if m.offline { "Offline".into() } else { "Online".into() }, false);
+    }
+    // Stored fields have their own identity even when named Name, Label or File Path.
+    for (k, v) in &it.metadata {
+        if !LOG_FIELDS.contains(&k.as_str()) && !crate::project_panel::is_internal_key(k) {
+            out.push(Field { section: "Metadata", name: k.clone(), id: filmcraft_project::find::metadata_id(k), value: v.clone(), editable: true });
+        }
     }
     out
 }
@@ -280,7 +282,8 @@ fn metadata_get(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// `metadata.set {item?, field, value}` or `{item?, fields: {name: value}}`: one undo step.
 /// Name renames the item, Label sets its label, every other name is a log field (an empty value
-/// removes it).
+/// removes it). An explicit `metadata:<exact key>` edits only stored metadata and preserves
+/// an empty string as a present value. Use `metadata.get` field IDs when editing UI rows.
 fn metadata_set(s: &mut Session, p: &Value) -> Result<Value> {
     let id = metadata_target(s, p).ok_or_else(|| bad("metadata.set", "no item: pass `item` or `clip`, or select one"))?;
     let mut changes: Vec<(String, String)> = Vec::new();
@@ -297,6 +300,12 @@ fn metadata_set(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("metadata.set", "need `field` + `value` or `fields`"));
     }
     for (k, v) in &changes {
+        if let Some(key) = filmcraft_project::find::metadata_key(k) {
+            if key.trim().is_empty() || crate::project_panel::is_internal_key(key) {
+                return Err(bad("metadata.set", "empty or internal metadata key"));
+            }
+            continue;
+        }
         if k.trim().is_empty() {
             return Err(bad("metadata.set", "empty field name"));
         }
@@ -312,16 +321,25 @@ fn metadata_set(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let unchanged = {
         let it = s.project.item(id).ok_or_else(|| bad("metadata.set", "no such item"))?;
-        changes.iter().all(|(k, v)| match k.to_ascii_lowercase().as_str() {
-            "name" => it.name == *v,
-            "label" => Label::from_name(v) == Some(it.label),
-            _ => it.metadata.get(k).map(String::as_str).unwrap_or("") == v.as_str(),
+        changes.iter().all(|(k, v)| {
+            if let Some(key) = filmcraft_project::find::metadata_key(k) {
+                return it.metadata.get(key) == Some(v);
+            }
+            match k.to_ascii_lowercase().as_str() {
+                "name" => it.name == *v,
+                "label" => Label::from_name(v) == Some(it.label),
+                _ => it.metadata.get(k).map(String::as_str).unwrap_or("") == v.as_str(),
+            }
         })
     };
     if !unchanged {
         s.edit("Edit Metadata", |pr, _| {
             let it = pr.item_mut(id).ok_or_else(|| bad("metadata.set", "no such item"))?;
             for (k, v) in &changes {
+                if let Some(key) = filmcraft_project::find::metadata_key(k) {
+                    it.metadata.insert(key.to_string(), v.clone());
+                    continue;
+                }
                 match k.to_ascii_lowercase().as_str() {
                     "name" => it.name = v.trim().to_string(),
                     "label" => it.label = Label::from_name(v).unwrap_or(it.label),
