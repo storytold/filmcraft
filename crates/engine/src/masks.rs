@@ -738,9 +738,20 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Cancel and drop every pending tracking job. Called when the project is replaced, so a job started
+/// on the old project can never write its result into the new one.
+pub fn discard_jobs(s: &mut Session) {
+    use std::sync::atomic::Ordering;
+    for pj in std::mem::take(&mut s.mask_jobs) {
+        if let Some(j) = s.jobs.iter().find(|j| j.id == pj.job) {
+            j.progress.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Write newly tracked paths as Mask Path keyframes (one merged undo step per tracking job) and
-/// drop finished jobs. Called from [`Session::poll_persistence`] (once per UI frame) and after
-/// synchronous runs.
+/// drop finished jobs. Called from [`Session::poll_persistence`] (once per UI frame), before each
+/// top-level [`Session::execute`] (headless sessions) and after synchronous runs.
 pub fn poll(s: &mut Session) {
     use std::sync::atomic::Ordering;
     let mut i = 0;

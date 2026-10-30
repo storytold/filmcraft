@@ -747,6 +747,11 @@ impl Session {
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        // headless sessions (CLI, MCP, control channel) have no UI frame loop calling
+        // `poll_persistence`: apply background mask tracking before each command (#3302)
+        if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
+            masks::poll(self);
+        }
         if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }

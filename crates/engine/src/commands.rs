@@ -1214,6 +1214,7 @@ fn build() -> Vec<CommandSpec> {
         // ================= File =================
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
+            crate::masks::discard_jobs(s);
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
             s.document_epoch = s.document_epoch.wrapping_add(1);
             s.history = Default::default();
@@ -4712,6 +4713,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
+    crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);
