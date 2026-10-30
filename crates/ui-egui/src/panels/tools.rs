@@ -18,10 +18,18 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for group in Tool::groups() {
         let current = if group.contains(&app.ui.tool) { app.ui.tool } else { group[0] };
         let r = Rect::from_min_size(pos2(rect.center().x - size / 2.0, y), vec2(size, size));
-        let tip = if current.shortcut().is_empty() {
+        // Use the live, possibly user-customized shortcut from session.shortcuts (#issue8).
+        // Fall back to the hardcoded default if the command has no binding.
+        let active_key = if current.command_id().is_empty() {
+            current.shortcut().to_owned()
+        } else {
+            app.session.shortcuts.primary(current.command_id())
+                .unwrap_or_else(|| current.shortcut().to_owned())
+        };
+        let tip = if active_key.is_empty() {
             app.ui.language.tr(current.label()).to_owned()
         } else {
-            format!("{} ({})", app.ui.language.tr(current.label()), current.shortcut())
+            format!("{} ({})", app.ui.language.tr(current.label()), active_key)
         };
         let resp = ui.interact(r, egui::Id::unique(("tool", format!("{:?}", group[0]))), Sense::click_and_drag()).on_hover_text(tip);
         resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, resp.enabled(), app.ui.tool == current, current.label()));
