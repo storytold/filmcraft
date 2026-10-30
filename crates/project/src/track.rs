@@ -199,6 +199,17 @@ impl TrackItem {
             self.source_in + scaled
         }
     }
+    /// Timeline time at which media time `m` shows (the inverse of
+    /// [`TrackItem::moving_source_time_at`]); None when the item does not show that media.
+    pub fn timeline_time_of(&self, m: Tick) -> Option<Tick> {
+        let speed = self.speed.abs();
+        if !speed.is_finite() || speed <= 0.0 || m < self.source_in || m >= self.source_out() {
+            return None;
+        }
+        let scaled = if self.reverse { self.source_out().0.saturating_sub(1).saturating_sub(m.0) } else { m.0.saturating_sub(self.source_in.0) };
+        let t = self.start + Tick((scaled as f64 / speed).round() as i64);
+        (t < self.end()).then_some(t)
+    }
     /// Media time consumed by the item (the source out point).
     pub fn source_out(&self) -> Tick {
         self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)

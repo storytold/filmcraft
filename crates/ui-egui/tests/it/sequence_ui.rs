@@ -894,3 +894,38 @@ fn new_sequence_stays_open_on_invalid_frame_size() {
     assert_eq!(d.label("sequenceSettings.width"), "20000");
     assert_eq!(d.label("sequenceSettings.height"), "20000");
 }
+
+/// M with a timeline clip selected marks that clip (#3383): the marker is drawn on the clip, at
+/// the playhead, and not in the ruler.
+#[test]
+fn m_marks_the_selected_clip_and_draws_the_marker_on_it() {
+    let mut d = Driver::demo();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    let (clip, start, duration) = {
+        let c = &d.app().session.active_sequence().unwrap().video_tracks[0].items[1];
+        (c.id.0, c.start, c.duration)
+    };
+    let at = start + d.app().session.sequence_rate().tick_of(6);
+    let ruler_markers = d.ids("timeline.marker.").len();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.exec("playhead.set", json!({"time": at.0}));
+    d.ok("ui.key", json!({"key": "M"}));
+    d.frames(3);
+    let marker = d.app().session.active_sequence().unwrap().video_tracks[0].items[1].markers.first().map(|m| m.id.0).expect("a clip marker");
+    assert_eq!(d.ids("timeline.marker.").len(), ruler_markers, "no sequence marker in the ruler");
+    let rect = |d: &mut Driver, id: &str| -> [f32; 4] {
+        let v = d.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}: {v}")).clone();
+        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
+        [r[0], r[1], r[0] + r[2], r[1] + r[3]]
+    };
+    let mk = rect(&mut d, &format!("timeline.clipMarker.{clip}.{marker}"));
+    let body = rect(&mut d, &format!("timeline.clip.{clip}"));
+    let cx = (mk[0] + mk[2]) / 2.0;
+    assert!(cx > body[0] && cx < body[2] && mk[1] >= body[1] - 0.5 && mk[3] <= body[3] + 0.5, "marker {mk:?} on clip {body:?}");
+    // the clip's right edge is its end (the view starts at 0, so its left edge may be cut off)
+    let pps = d.app().ui.timeline.pps as f32;
+    let x_at = body[2] - (start + duration - at).seconds() as f32 * pps;
+    assert!((cx - x_at).abs() < 2.0, "at the playhead: {mk:?} vs x {x_at}");
+    d.snapshot("clip-marker", &format!("timeline.clip.{clip}"));
+}

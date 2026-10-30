@@ -2701,18 +2701,43 @@ fn build() -> Vec<CommandSpec> {
             "Add Marker",
             ["Markers"],
             Some("M"),
-            r#"{"target":"program|source","time":ticks?,"name":str?,"comment":str?,"color":label?,"durationFrames":i64?}"#,
+            r#"{"target":"program|source","time":ticks?,"name":str?,"comment":str?,"color":label?,"durationFrames":i64?} (with no time given, selected clips under the playhead get the marker instead of the sequence)"#,
             always,
             |s, p| {
                 if let Some(v) = crate::source_monitor::route(s, "markers.add", p)? {
                     return Ok(v);
                 }
                 let (_seq, ph) = marker_list_mut(s)?;
-                let t = sequence_time_p(s, p, "", "markers.add")?.unwrap_or(ph);
+                let given = sequence_time_p(s, p, "", "markers.add")?;
+                let t = given.unwrap_or(ph);
                 let name = str_p(p, "name").unwrap_or("").to_string();
                 let comment = str_p(p, "comment").unwrap_or("").to_string();
                 let color = marker_color_p(p, "markers.add")?.unwrap_or(Label::Green);
                 let dur = p.get("durationFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)).unwrap_or_default();
+                // Premiere: M with clips selected marks those clips (#3383), at the media time shown
+                // under the playhead, so the marker stays on its frame when the clip moves or trims
+                let selected = s.state.selection.clone();
+                let under: Vec<ClipId> = s
+                    .active_sequence()
+                    .map(|q| {
+                        q.all_tracks().flat_map(|tr| tr.items.iter()).filter(|c| selected.contains(&c.id) && c.range().contains(ph)).map(|c| c.id).collect()
+                    })
+                    .unwrap_or_default();
+                if given.is_none() && !under.is_empty() {
+                    let added = s.edit_sequence("Add Marker", |q, ctx, _| {
+                        let mut added = Vec::new();
+                        for c in q.all_tracks_mut().flat_map(|tr| tr.items.iter_mut()).filter(|c| under.contains(&c.id)) {
+                            let id = MarkerId(ctx.alloc());
+                            let duration = Tick((dur.0 as f64 * c.speed.abs()).round() as i64);
+                            let start = c.moving_source_time_at(ph);
+                            c.markers.push(Marker { id, start, duration, name: name.clone(), comment: comment.clone(), kind: MarkerKind::Comment, color });
+                            c.markers.sort_by_key(|m| m.start);
+                            added.push(json!({"clip": c.id.0, "marker": id.0}));
+                        }
+                        Ok(added)
+                    })?;
+                    return Ok(json!({"clipMarkers": added}));
+                }
                 let id = s.edit_sequence("Add Marker", |q, ctx, _| {
                     let id = MarkerId(ctx.alloc());
                     q.markers.push(Marker { id, start: t, duration: dur, name, comment, kind: MarkerKind::Comment, color });

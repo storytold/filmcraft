@@ -441,7 +441,7 @@ fn escape_mid_drag_reverts_the_field_and_keeps_the_dialog() {
 }
 
 #[test]
-fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
+fn clip_context_menu_marks_the_clip_at_the_playhead_with_one_undo() {
     for audio in [false, true] {
         let mut d = Driver::new();
         d.exec("markers.clearAll", json!({}));
@@ -455,9 +455,13 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         d.frames(3);
         assert!(d.has("timeline.clipMenu.markers.add"), "Add Marker is available on video and audio clips");
         d.click("timeline.clipMenu.markers.add");
-        let markers = &d.app().session.active_sequence().unwrap().markers;
-        assert_eq!(markers.len(), 1);
-        assert_eq!(markers[0].start, playhead);
+        // the right click selected the clip under the playhead, so the marker goes on the clip
+        // (#3383), at the media time shown there
+        let seq = d.app().session.active_sequence().unwrap();
+        assert!(seq.markers.is_empty(), "no sequence marker");
+        let c = seq.all_tracks().flat_map(|t| t.items.iter()).find(|c| c.id == clip).unwrap();
+        assert_eq!(c.markers.len(), 1);
+        assert_eq!(c.markers[0].start, c.moving_source_time_at(playhead));
         assert_eq!(d.app().session.history.undo.len(), history + 1);
         let after = d.app().session.project.clone();
         d.exec("edit.undo", json!({}));

@@ -181,6 +181,26 @@ fn item_at_and_source_time() {
 }
 
 #[test]
+fn timeline_time_of_inverts_the_media_time_shown() {
+    let (mut p, clip, _) = demo_project();
+    let rate = FrameRate::FPS_24;
+    let mut a = p.make_track_item(clip, TrackKind::Video, rate.tick_of(100), TimeRange::new(Tick(1000), rate.tick_of(48)), rate).unwrap();
+    a.speed = 2.0;
+    for f in [0, 7, 23] {
+        let t = a.start + rate.tick_of(f);
+        assert_eq!(a.timeline_time_of(a.moving_source_time_at(t)), Some(t), "frame {f} at 200 %");
+    }
+    // media the clip does not show
+    assert_eq!(a.timeline_time_of(Tick(999)), None);
+    assert_eq!(a.timeline_time_of(a.source_out()), None);
+    a.reverse = true;
+    for f in [0, 7, 23] {
+        let t = a.start + rate.tick_of(f);
+        assert_eq!(a.timeline_time_of(a.moving_source_time_at(t)), Some(t), "frame {f} reversed");
+    }
+}
+
+#[test]
 fn projects_without_caption_tracks_load() {
     let (p, _, seq) = demo_project();
     let mut v: serde_json::Value = serde_json::from_str(&p.to_json()).unwrap();

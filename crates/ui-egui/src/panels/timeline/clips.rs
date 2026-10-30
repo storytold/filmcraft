@@ -277,6 +277,29 @@ pub(super) fn draw_clip(
             col,
         );
     }
+    // clip markers (#3383): 6 × 9 pt pentagons in the marker colour at the top of the clip, where
+    // the clip shows the marked media frame, with a band across a marker's duration
+    if it.duration.0 > 0 {
+        let x_of = |tt: Tick| body.min.x + ((tt - it.start).0 as f64 / it.duration.0 as f64) as f32 * w;
+        for m in &it.markers {
+            let Some(at) = it.timeline_time_of(m.start) else { continue };
+            let x = x_of(at);
+            let c = m.color.marker_rgb();
+            let c = Color32::from_rgb(c[0], c[1], c[2]);
+            if m.duration.0 > 0 {
+                let end = it.timeline_time_of(m.start + m.duration).unwrap_or(it.end());
+                let (a, b) = (x.min(x_of(end)), x.max(x_of(end)));
+                clip_p.rect_filled(Rect::from_min_max(pos2(a, body.min.y + 1.0), pos2(b, body.min.y + 3.0)), 0.0, c.gamma_multiply(0.7));
+            }
+            let y = body.min.y + 1.0;
+            let shape = vec![pos2(x - 3.0, y), pos2(x + 3.0, y), pos2(x + 3.0, y + 6.0), pos2(x, y + 9.0), pos2(x - 3.0, y + 6.0)];
+            clip_p.add(egui::Shape::convex_polygon(shape, c, Stroke::new(1.0, Color32::from_black_alpha(160))));
+            let r = Rect::from_min_max(pos2(x - 3.0, y), pos2(x + 3.0, y + 9.0)).intersect(clip_p.clip_rect());
+            if r.is_positive() {
+                app.auto.add(&format!("timeline.clipMarker.{}.{}", it.id.0, m.id.0), r, &m.name);
+            }
+        }
+    }
     // corner triangles where the clip reaches the media's first/last frame (no handles)
     let media_dur = app.session.project.item(it.item).map(|i| i.duration());
     let no_head = it.source_in <= Tick::ZERO;
