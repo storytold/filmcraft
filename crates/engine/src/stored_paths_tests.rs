@@ -7,8 +7,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use filmcraft_media::DemoScene;
-use filmcraft_project::{ItemId, MediaRef};
+use filmcraft_project::{AudioComponent, ItemId, MediaRef, PictureComponent};
 use filmcraft_render::offline::OfflineReason;
+use filmcraft_time::Tick;
 use serde_json::json;
 
 use crate::media_test_util::{make_movie, session_with, tmp_dir};
@@ -125,6 +126,50 @@ fn stored_media_paths_open_only_on_this_computer_or_beside_the_project() {
         assert!(t.media.full_res_source(&t.project, id, &*t.services).is_some());
         assert_eq!(t.media.offline_status(id), None, "a file linked in this session opens");
     }
+}
+
+#[test]
+fn stored_component_paths_use_the_same_policy_for_scan_status_and_playback() {
+    let root = tmp_dir("stored-component-paths");
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("source.mov");
+    make_movie(&source, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[source.as_path()]);
+    let audio_path = r"\\192.0.2.1\share\audio.mxf".to_string();
+    let picture_path = r"\\192.0.2.1\share\picture.mxf".to_string();
+    let m = Arc::make_mut(&mut s.project).item_mut(items[0]).unwrap().as_media_mut().unwrap();
+    let length = m.info.duration;
+    m.media = MediaRef::Components {
+        channels: vec![AudioComponent {
+            track: 1,
+            file_package: [1; 32],
+            path: Some(audio_path.clone()),
+            stream: 0,
+            channel: 0,
+            source_start: Tick::ZERO,
+            length,
+        }],
+        picture: Some(PictureComponent {
+            format_pending: false,
+            track: 1,
+            file_package: [2; 32],
+            path: Some(picture_path.clone()),
+            source_start: Tick::ZERO,
+            length,
+        }),
+    };
+    let document = root.join("project.fcproj").to_string_lossy().into_owned();
+    s.execute("file.save", json!({"path":document})).unwrap();
+
+    let (mut loaded, seen) = recording_session();
+    loaded.execute("file.open", json!({"path":document})).unwrap();
+    assert!(loaded.media.follow(&audio_path).is_err());
+    assert!(loaded.media.follow(&picture_path).is_err());
+    loaded.execute("media.findMissing", json!({})).unwrap();
+    loaded.execute("media.status", json!({"item":items[0].0})).unwrap();
+    loaded.media.full_res_source(&loaded.project, items[0], &*loaded.services);
+    let asked = seen.lock().unwrap().clone();
+    assert!(foreign(&asked).is_empty(), "stored component paths were accessed: {:?}", foreign(&asked));
 }
 
 /// A one-clip FCP7 XML sequence using the file at `pathurl`.

@@ -196,6 +196,11 @@ impl MxfSource {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
     }
 
+    /// Identity/routing evidence for callers assembling external OP-Atom components.
+    pub fn essence_tracks(&self) -> &[filmcraft_mxf::EssenceTrack] {
+        &self.file.tracks
+    }
+
     /// Open from a random-access reader: only the KLV headers, metadata and index are read now.
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);

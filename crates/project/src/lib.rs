@@ -59,7 +59,7 @@ mod source;
 mod track;
 mod view;
 
-pub use item::{AudioChannelMap, Bin, BinEntry, Interpretation, ItemKind, MediaClip, MediaIdentity, MediaRef, ProjectItem};
+pub use item::{AudioChannelMap, AudioComponent, Bin, BinEntry, Interpretation, ItemKind, MediaClip, MediaIdentity, MediaRef, PictureComponent, ProjectItem};
 pub use label::Label;
 pub(crate) use sequence::bounded_time_range;
 pub use sequence::{

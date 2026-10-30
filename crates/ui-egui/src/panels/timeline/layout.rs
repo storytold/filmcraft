@@ -85,7 +85,7 @@ pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
 /// Where the left edge goes so the playhead at `ph` seconds shows in a view `width` points wide
 /// (the page-scroll margin from the left), or `None` when it is in view already.
 pub fn scroll_to_reveal(ph: f64, scroll: f64, pps: f64, width: f64) -> Option<f64> {
-    if !ph.is_finite() || !scroll.is_finite() || !(pps > 0.0 && pps.is_finite()) {
+    if !(ph.is_finite() && scroll.is_finite() && pps > 0.0 && pps.is_finite()) {
         return None;
     }
     let px = (ph - scroll) * pps;

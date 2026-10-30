@@ -112,7 +112,7 @@ pub fn export_items(p: &Project, items: &[ItemId]) -> AleDoc {
         let b = rate.frame_at(tc0 + start + dur);
         let path = match &m.media {
             MediaRef::File { path } => path.clone(),
-            MediaRef::Generator(_) => String::new(),
+            MediaRef::Generator(_) | MediaRef::Components { .. } => String::new(),
         };
         let meta = |k: &str| it.metadata.iter().find(|(x, _)| x.eq_ignore_ascii_case(k)).map(|(_, v)| clean(v)).unwrap_or_default();
         let mut row = vec![

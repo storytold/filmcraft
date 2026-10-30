@@ -394,3 +394,26 @@ fn source_par_follows_interpret_footage_subclips_and_sequences() {
     assert_eq!(p.conformed_source_size(adj, (4, 3)), Some((1440.0, 1080.0)));
     assert_eq!(p.source_par(ItemId(987_654_321)), None);
 }
+
+#[test]
+fn sampled_source_positions_select_repeated_and_skipped_frames() {
+    use crate::keyframe::{Interpolation, Keyframe, Param, ParamValue};
+    let (mut project, source, _) = demo_project();
+    let rate = FrameRate::FPS_24;
+    let mut clip = project.make_track_item(source, TrackKind::Video, rate.tick_of(10), TimeRange::new(rate.tick_of(48), rate.tick_of(2)), rate).unwrap();
+    let mut map = Param::new(ParamValue::Float(0.0));
+    for (frame, source_frame) in [(0, 0), (1, 0), (2, 3)] {
+        let mut key = Keyframe::new(rate.tick_of(frame), ParamValue::Float(rate.tick_of(source_frame).0 as f64));
+        key.interp = Interpolation::Hold;
+        map.keyframes.push(key);
+    }
+    clip.effect_mut("time_remap").unwrap().params.insert("sampled_source_offset_ticks".into(), map);
+    assert_eq!(clip.source_time_at(clip.start), rate.tick_of(48));
+    assert_eq!(clip.source_time_at(clip.start + rate.tick_of(1)), rate.tick_of(48));
+    assert_eq!(clip.source_time_at(clip.start + rate.tick_of(1) + Tick(rate.tick_of(1).0 / 2)), rate.tick_of(48));
+    assert_eq!(clip.source_out(), rate.tick_of(51));
+    let restored: TrackItem = serde_json::from_str(&serde_json::to_string(&clip).unwrap()).unwrap();
+    assert_eq!(restored.source_time_at(restored.start + rate.tick_of(1)), rate.tick_of(48));
+    clip.effect_mut("time_remap").unwrap().enabled = false;
+    assert_eq!(clip.source_time_at(clip.start + rate.tick_of(1)), rate.tick_of(49));
+}

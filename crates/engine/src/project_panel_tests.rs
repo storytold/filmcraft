@@ -271,6 +271,30 @@ fn bins_rename_nest_and_list() {
 }
 
 #[test]
+fn sequence_audio_info_uses_output_settings_without_inventing_a_codec() {
+    use filmcraft_project::AudioChannels;
+
+    let mut s = demo();
+    let id = s.project.sequences().next().unwrap().id;
+    s.execute("project.columns.set", json!({"columns": ["Audio Info", "Audio Codec", "Audio Usage"]})).unwrap();
+    for (layout, rate, expected) in [
+        (AudioChannels::Stereo, 48_000, "48000 Hz - Stereo"),
+        (AudioChannels::Mono, 44_100, "44100 Hz - Mono"),
+        (AudioChannels::Surround51, 96_000, "96000 Hz - 5.1"),
+        (AudioChannels::Adaptive, 48_000, "48000 Hz - Adaptive"),
+    ] {
+        let q = std::sync::Arc::make_mut(&mut s.project).item_mut(id).unwrap().as_sequence_mut().unwrap();
+        q.settings.audio_master = layout;
+        q.settings.sample_rate = rate;
+        let rows = s.execute("project.items", json!({"recursive": true})).unwrap();
+        let row = rows["rows"].as_array().unwrap().iter().find(|r| r["item"] == json!(id.0)).unwrap();
+        assert_eq!(row["cells"]["Audio Info"], expected);
+        assert_eq!(row["cells"]["Audio Codec"], "", "a sequence has no single encoded source codec");
+        assert_eq!(row["cells"]["Audio Usage"], "", "contents do not count as uses of the sequence");
+    }
+}
+
+#[test]
 fn usage_counts_sequence_uses() {
     let s = demo();
     let used = s

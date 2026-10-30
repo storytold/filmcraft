@@ -80,7 +80,7 @@ pub struct HostHooks {
     pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
     /// Show a file dialog without blocking the UI thread and answer on the returned channel with
     /// the chosen paths (none: cancelled). With it, [`FilmcraftApp::pick`] keeps the frame loop
-    /// running while the dialog is open (the desktop app on Linux, #260); without it the
+    /// running while the dialog is open (the desktop app on Linux and macOS); without it the
     /// synchronous pickers above are used.
     pub run_dialog: Option<Box<dyn FnMut(native_dialogs::FileDialog) -> Receiver<Vec<String>>>>,
     /// Open a URL in the system browser (Help menu links, About dialog, Discord button, Import

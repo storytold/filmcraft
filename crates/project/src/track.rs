@@ -167,13 +167,32 @@ pub enum FieldProcessing {
 }
 
 impl TrackItem {
+    /// Internal sampled source-position lane used by imported retimes. The values are
+    /// offsets in project ticks from `source_in`, keyed by timeline time relative to this
+    /// clip. It is kept in the intrinsic effect so older project files need no migration.
+    fn sampled_source_time_at(&self, t: Tick) -> Option<Tick> {
+        let effect = self.effect("time_remap")?;
+        if !effect.enabled {
+            return None;
+        }
+        let lane = effect.params.get("sampled_source_offset_ticks")?;
+        if lane.keyframes.len() < 2 {
+            return None;
+        }
+        let offset = lane.f64_at(t - self.start);
+        if !offset.is_finite() || offset < 0.0 || offset > (1u64 << 53) as f64 {
+            return None;
+        }
+        self.source_in.0.checked_add(offset.round() as i64).map(Tick)
+    }
+
     pub fn end(&self) -> Tick {
         self.start + self.duration
     }
     pub fn range(&self) -> TimeRange {
         TimeRange::new(self.start, self.duration)
     }
-    /// Media time displayed at timeline time `t` (ignores time remapping keyframes).
+    /// Media time displayed at timeline time `t`.
     pub fn source_time_at(&self, t: Tick) -> Tick {
         if let Some(h) = self.frame_hold {
             return h;
@@ -191,6 +210,9 @@ impl TrackItem {
     }
     /// Media time at timeline time `t` ignoring any frame hold.
     pub fn moving_source_time_at(&self, t: Tick) -> Tick {
+        if let Some(sampled) = self.sampled_source_time_at(t) {
+            return sampled;
+        }
         let rel = t - self.start;
         let scaled = Tick((rel.0 as f64 * self.speed.abs()).round() as i64);
         if self.reverse {
@@ -201,6 +223,9 @@ impl TrackItem {
     }
     /// Media time consumed by the item (the source out point).
     pub fn source_out(&self) -> Tick {
+        if let Some(sampled) = self.sampled_source_time_at(self.end()) {
+            return sampled;
+        }
         self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)
     }
     pub fn effect(&self, id: &str) -> Option<&EffectInstance> {

@@ -184,7 +184,7 @@ fn write_and_import(s: &mut Session, p: &Value, samples: &[f32], rate: u32, near
     let beside = near.filter(|_| p.get("dir").is_none()).and_then(|i| match &s.project.items.get(&i)?.kind {
         ItemKind::Media(m) => match &m.media {
             MediaRef::File { path } => std::path::Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_string_lossy().into_owned()),
-            MediaRef::Generator(_) => None,
+            MediaRef::Generator(_) | MediaRef::Components { .. } => None,
         },
         _ => None,
     });
