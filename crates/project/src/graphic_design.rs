@@ -1,7 +1,7 @@
 //! Responsive design and per-character styles of graphic clips (M10.7).
 //!
 //! - **Per-character styles** ([`StyleRun`], [`CharStyle`]): a text layer's runs override font,
-//!   style, size, fill, faux bold / italic, underline, tracking, baseline shift and caps for a
+//!   style, size, fill, faux bold / italic, underline, strikethrough, tracking, baseline shift and caps for a
 //!   range of characters. Ranges are in *characters* (not bytes), sorted and non-overlapping;
 //!   [`apply_char_style`] merges a new style into a range and [`adjust_runs`] keeps runs on the
 //!   right characters when the text is edited (typed characters take the style of the character
@@ -69,6 +69,8 @@ pub struct CharStyle {
     pub faux_italic: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub underline: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strikethrough: Option<bool>,
     /// Tracking in 1/1000 em.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tracking: Option<f32>,
@@ -94,6 +96,7 @@ impl CharStyle {
             faux_bold: over.faux_bold.or(self.faux_bold),
             faux_italic: over.faux_italic.or(self.faux_italic),
             underline: over.underline.or(self.underline),
+            strikethrough: over.strikethrough.or(self.strikethrough),
             tracking: over.tracking.or(self.tracking),
             baseline_shift: over.baseline_shift.or(self.baseline_shift),
             caps: over.caps.or(self.caps),

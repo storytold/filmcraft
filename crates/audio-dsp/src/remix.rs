@@ -37,6 +37,13 @@ pub const CONTEXT: usize = 4;
 pub const MIN_PIECE_BEATS: usize = 4;
 /// Crossfade at each joint (seconds).
 pub const XFADE_S: f64 = 0.02;
+/// Long enough for a complete music cue while bounding the audio decoded and analysed by Remix.
+pub const MAX_ANALYSIS_SECONDS: u64 = 10 * 60;
+/// A dense similarity matrix is useful for planning, but must remain a bounded allocation.
+const MAX_SIMILARITY_CELLS: usize = 4_000_000;
+/// Remix analysis supports ordinary production and high-resolution audio rates, not arbitrary
+/// integers supplied through a public library API.
+pub const MAX_ANALYSIS_SAMPLE_RATE: u32 = 384_000;
 
 /// One piece of the output: `len` samples read from the source at `src`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,6 +146,12 @@ impl Analysis {
 /// Why music cannot be remixed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemixError {
+    /// The source sample rate is zero or above the supported analysis limit.
+    InvalidSampleRate,
+    /// The source would exceed the bounded Remix analysis duration.
+    TooLong,
+    /// The detected beat grid would need too much similarity storage or work.
+    TooComplex,
     /// Not enough rhythmic content to find a beat (silence, noise, speech).
     NoBeat,
     /// The source has fewer beats than a remix needs.
@@ -150,6 +163,9 @@ pub enum RemixError {
 impl std::fmt::Display for RemixError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            RemixError::InvalidSampleRate => "the audio sample rate is not supported for remix analysis",
+            RemixError::TooLong => "the music is too long to remix",
+            RemixError::TooComplex => "the music has too many beats to remix",
             RemixError::NoBeat => "no beat found in the audio",
             RemixError::TooShort => "the music is too short to remix",
             RemixError::TargetTooShort => "the target duration is too short for this music",
@@ -188,7 +204,8 @@ fn stft_mag(x: &[f32], n: usize, hop: usize) -> Vec<Vec<f32>> {
 /// STFT frame for the onset envelope: the power of two nearest to 46 ms (1024 at 22.05 kHz, 2048
 /// at 44.1/48 kHz).
 fn onset_frame(sr: u32) -> usize {
-    let n = (sr as f64 * 0.046).max(256.0);
+    // `onset_envelope` is public on its own, so it must remain bounded even outside `analyze`.
+    let n = (sr.min(MAX_ANALYSIS_SAMPLE_RATE) as f64 * 0.046).max(256.0);
     1usize << n.log2().round() as u32
 }
 
@@ -344,31 +361,34 @@ fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32
         }
         frame_cep.push(cep);
     }
-    let mut chroma = Vec::with_capacity(beats.len());
-    let mut cep = Vec::with_capacity(beats.len());
+    // Frames and beats are both ordered. Assign every frame once instead of scanning the entire
+    // feature timeline for every beat interval.
+    let mut chroma = vec![[0f32; 12]; beats.len()];
+    let mut cep = vec![[0f32; 12]; beats.len()];
+    let mut counts = vec![0f32; beats.len()];
     let end = x.len() as i64;
-    for (i, &b) in beats.iter().enumerate() {
-        let e = beats.get(i + 1).copied().unwrap_or(end);
-        let (mut c, mut q, mut cnt) = ([0f32; 12], [0f32; 12], 0f32);
-        for (t, (fc, fq)) in frame_chroma.iter().zip(&frame_cep).enumerate() {
-            let centre = (t * hop + n / 2) as i64;
-            if centre >= b && centre < e {
-                for k in 0..12 {
-                    c[k] += fc[k];
-                    q[k] += fq[k];
-                }
-                cnt += 1.0;
-            }
+    let mut beat = 0;
+    for (t, (fc, fq)) in frame_chroma.iter().zip(&frame_cep).enumerate() {
+        let centre = (t * hop + n / 2) as i64;
+        while beat + 1 < beats.len() && centre >= beats[beat + 1] {
+            beat += 1;
         }
-        if cnt > 0.0 {
-            q.iter_mut().for_each(|v| *v /= cnt);
+        if centre >= beats[beat] && centre < end {
+            for k in 0..12 {
+                chroma[beat][k] += fc[k];
+                cep[beat][k] += fq[k];
+            }
+            counts[beat] += 1.0;
+        }
+    }
+    for ((c, q), count) in chroma.iter_mut().zip(&mut cep).zip(counts) {
+        if count > 0.0 {
+            q.iter_mut().for_each(|v| *v /= count);
         }
         let norm = c.iter().map(|v| v * v).sum::<f32>().sqrt();
         if norm > 0.0 {
             c.iter_mut().for_each(|v| *v /= norm);
         }
-        chroma.push(c);
-        cep.push(q);
     }
     // z-score the cepstra across beats
     let m = cep.len().max(1) as f32;
@@ -378,6 +398,10 @@ fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32
         cep.iter_mut().for_each(|c| c[k] = (c[k] - mean) / sd);
     }
     (chroma, cep)
+}
+
+fn similarity_cells(beats: usize) -> Result<usize, RemixError> {
+    beats.checked_mul(beats).filter(|&n| n <= MAX_SIMILARITY_CELLS).ok_or(RemixError::TooComplex)
 }
 
 fn cos(a: &[f32; 12], b: &[f32; 12]) -> f32 {
@@ -398,7 +422,13 @@ fn local_max(env: &[f32], t: usize, r: usize) -> f32 {
 
 /// Analyse planar audio (channels are summed to mono).
 pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixError> {
+    if sample_rate == 0 || sample_rate > MAX_ANALYSIS_SAMPLE_RATE {
+        return Err(RemixError::InvalidSampleRate);
+    }
     let len = channels.iter().map(|c| c.len()).max().unwrap_or(0);
+    if (len as u64) > u64::from(sample_rate).saturating_mul(MAX_ANALYSIS_SECONDS) {
+        return Err(RemixError::TooLong);
+    }
     let k = 1.0 / channels.len().max(1) as f32;
     let mono: Vec<f32> = (0..len).map(|i| channels.iter().map(|c| c.get(i).copied().unwrap_or(0.0)).sum::<f32>() * k).collect();
     let (env, n, hop) = onset_envelope(&mono, sample_rate);
@@ -434,7 +464,7 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
     }
     let (chroma, cep) = beat_features(&mono, sample_rate, &beats);
     let m = beats.len();
-    let mut sim = vec![0f32; m * m];
+    let mut sim = vec![0f32; similarity_cells(m)?];
     for i in 0..m {
         for j in 0..m {
             sim[i * m + j] = 0.6 * cos(&chroma[i], &chroma[j]) + 0.4 * (1.0 + cos(&cep[i], &cep[j])) * 0.5;
@@ -794,6 +824,22 @@ mod tests {
             })
             .collect();
         assert!(analyze(&[&noise], SR).is_err());
+    }
+
+    #[test]
+    fn analysis_duration_and_similarity_storage_are_bounded() {
+        let too_long = vec![0.0; MAX_ANALYSIS_SECONDS as usize + 1];
+        assert_eq!(analyze(&[&too_long], 1), Err(RemixError::TooLong));
+        assert_eq!(similarity_cells(2_000), Ok(4_000_000));
+        assert_eq!(similarity_cells(2_001), Err(RemixError::TooComplex));
+    }
+
+    #[test]
+    fn public_analysis_rate_is_bounded_before_fft_planning() {
+        assert_eq!(analyze(&[], 0), Err(RemixError::InvalidSampleRate));
+        assert_eq!(analyze(&[], u32::MAX), Err(RemixError::InvalidSampleRate));
+        let (_, n, _) = onset_envelope(&[], u32::MAX);
+        assert!(n <= onset_frame(MAX_ANALYSIS_SAMPLE_RATE));
     }
 
     #[test]

@@ -10,6 +10,8 @@
 //! | `sequence.showThroughEdits` | Sequence ▸ Show Through Edits | |
 //! | `sequence.joinThroughEdits` | (clip and edit point context menus) Join Through Edits | |
 //! | `sequence.throughEdits` | query: the through edits of the active sequence | |
+//! | `sequence.showDuplicateFrameMarkers` | (Timeline Display Settings) Show Duplicate Frame Markers | |
+//! | `sequence.duplicateFrames` | query: the duplicate frame markers of the active sequence | |
 //! | `sequence.makeSubsequence` | Sequence ▸ Make Subsequence | Shift+U |
 //! | `sequence.deleteTracks` | Sequence ▸ Delete Tracks… | |
 //! | `markers.markSplitVideoIn` … `markers.markSplitAudioOut` | Markers ▸ Mark Split ▸ Video In … Audio Out | |
@@ -26,9 +28,12 @@
 //! that side. Insert / Overwrite from the Source monitor honour source split points: each channel
 //! takes its own range and lands offset by the difference of the In points (J- and L-cuts).
 
+use std::collections::{BTreeMap, HashMap, HashSet};
+
 use filmcraft_edit as edit;
-use filmcraft_project::{AudioChannels, ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, SplitMarks, TrackId, TrackItem, TrackKind};
-use filmcraft_time::{Tick, TimeRange};
+use filmcraft_media::MediaKind;
+use filmcraft_project::{AudioChannels, ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, Project, Sequence, SplitMarks, TrackId, TrackItem, TrackKind};
+use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde_json::{Value, json};
 
 use crate::commands::{
@@ -104,6 +109,22 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                 spec("sequence.showThroughEdits", "Show Through Edits", &["Sequence"], None, r#"{"on":bool?}"#, always, |s, p| {
                     s.state.show_through_edits = bool_p(p, "on").unwrap_or(!s.state.show_through_edits);
                     Ok(json!({"showThroughEdits": s.state.show_through_edits}))
+                }),
+                spec("sequence.showDuplicateFrameMarkers", "Show Duplicate Frame Markers", &[], None, r#"{"on":bool?}"#, always, |s, p| {
+                    s.state.show_duplicate_frame_markers = bool_p(p, "on").unwrap_or(!s.state.show_duplicate_frame_markers);
+                    Ok(json!({"showDuplicateFrameMarkers": s.state.show_duplicate_frame_markers}))
+                }),
+                query("sequence.duplicateFrames", "List Duplicate Frames", "{}", |s, _| {
+                    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+                    Ok(Value::Array(
+                        duplicate_frames(&s.project, q)
+                            .iter()
+                            .map(|d| {
+                                let ranges: Vec<Value> = d.ranges.iter().map(|r| json!({"start": r.start.0, "end": r.end().0})).collect();
+                                json!({"clip": d.clip.0, "color": d.color, "ranges": ranges})
+                            })
+                            .collect(),
+                    ))
                 }),
                 spec(
                     "sequence.joinThroughEdits",
@@ -211,7 +232,18 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                         let t = sequence_time_p(s, p, "", "markers.addChapter")?.unwrap_or(s.playhead());
                         let n = s.active_sequence().map(|q| q.markers.iter().filter(|m| m.kind == MarkerKind::Chapter).count()).unwrap_or(0) + 1;
                         let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Chapter {n}"));
-                        let id = add_marker(s, "markers.addChapter", "Add Chapter Marker", t, Tick::ZERO, MarkerKind::Chapter, name, p)?;
+                        let id = add_marker(
+                            s,
+                            MarkerInput {
+                                cmd: "markers.addChapter",
+                                label: "Add Chapter Marker",
+                                start: t,
+                                duration: Tick::ZERO,
+                                kind: MarkerKind::Chapter,
+                                name,
+                                params: p,
+                            },
+                        )?;
                         Ok(json!({"marker": id.0}))
                     },
                 ),
@@ -376,6 +408,110 @@ fn join_through_edit_at(s: &mut Session, cut: &Value) -> Result<Value> {
     Ok(json!({"joined": n}))
 }
 
+// ---------- duplicate frames ----------
+
+/// How many colors duplicate frame markers use; master clips past the last one share it.
+pub const DUPLICATE_FRAME_COLORS: usize = 10;
+
+/// One clip's duplicate frame markers: where on the timeline it shows media frames that another
+/// video clip of the same sequence also shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DuplicateFrames {
+    pub clip: ClipId,
+    /// The color of the clip's master clip, 0 to [`DUPLICATE_FRAME_COLORS`] - 1: master clips with
+    /// duplicate frames are numbered in the order they first appear in the sequence.
+    pub color: usize,
+    /// Timeline ranges inside the clip, in order and apart from each other.
+    pub ranges: Vec<TimeRange>,
+}
+
+/// The most timeline frames [`duplicate_frames`] compares in one sequence. A clip whose frames
+/// would pass that count, in timeline order, is not compared and gets no markers, and later clips
+/// that still fit are compared.
+pub const MAX_DUPLICATE_FRAME_CHECKS: i64 = 1_000_000;
+
+/// Timeline Display Settings ▸ Show Duplicate Frame Markers: the video clips of `q` that show a
+/// media frame another video clip of `q` also shows. Each frame of the sequence is compared by the
+/// media frame the clip shows there ([`TrackItem::source_time_at`] at the frame's start, counted in
+/// the media's frame rate). A subclip counts as its master clip. Clips of still images,
+/// generators, nested sequences, graphics and adjustment layers, frame holds and clips whose Time
+/// Remapping speed has keyframes get no markers and are not compared.
+pub fn duplicate_frames(project: &Project, q: &Sequence) -> Vec<DuplicateFrames> {
+    let rate = q.settings.frame_rate;
+    // every clip that can be compared, with its master clip and the media frame rate, in timeline
+    // order (track order for clips that start together)
+    let mut clips: Vec<(u64, FrameRate, &TrackItem)> =
+        q.video_tracks.iter().flat_map(|tr| &tr.items).filter_map(|it| comparable_master(project, it).map(|(m, r)| (m.0, r, it))).collect();
+    clips.sort_by_key(|(_, _, it)| it.start);
+    // the sequence frames each clip covers, while the limit allows
+    let mut budget = MAX_DUPLICATE_FRAME_CHECKS;
+    let spans: Vec<Option<(i64, i64)>> = clips
+        .iter()
+        .map(|(_, _, it)| {
+            let first = rate.frame_at(it.start);
+            let first = if rate.tick_of(first) < it.start { first.saturating_add(1) } else { first };
+            let last = rate.frame_at(it.end() - Tick(1));
+            let n = last.saturating_sub(first).saturating_add(1);
+            (n > 0 && n <= budget).then(|| {
+                budget -= n;
+                (first, last)
+            })
+        })
+        .collect();
+    let shows = |media_rate: FrameRate, it: &TrackItem, f: i64| media_rate.frame_at(it.source_time_at(rate.tick_of(f)));
+    // (master clip, media frame) → the first clip that shows it, and whether another clip does too
+    let mut seen: HashMap<(u64, i64), (ClipId, bool)> = HashMap::new();
+    for ((m, media_rate, it), span) in clips.iter().zip(&spans) {
+        let Some((first, last)) = *span else { continue };
+        for f in first..=last {
+            let e = seen.entry((*m, shows(*media_rate, it, f))).or_insert((it.id, false));
+            e.1 |= e.0 != it.id;
+        }
+    }
+    // colors go to the master clips with a repeated frame, in the order they first appear
+    let repeated: HashSet<u64> = seen.iter().filter(|(_, e)| e.1).map(|((m, _), _)| *m).collect();
+    let mut colors: BTreeMap<u64, usize> = BTreeMap::new();
+    for (m, ..) in clips.iter().filter(|(m, ..)| repeated.contains(m)) {
+        let next = colors.len().min(DUPLICATE_FRAME_COLORS - 1);
+        colors.entry(*m).or_insert(next);
+    }
+    let mut out = Vec::new();
+    for ((m, media_rate, it), span) in clips.iter().zip(&spans) {
+        let Some((first, last)) = *span else { continue };
+        let mut ranges: Vec<TimeRange> = Vec::new();
+        let mut run: Option<i64> = None;
+        for f in first..=last.saturating_add(1) {
+            let repeated = f <= last && seen.get(&(*m, shows(*media_rate, it, f))).is_some_and(|e| e.1);
+            match (repeated, run) {
+                (true, None) => run = Some(f),
+                (false, Some(from)) => {
+                    let (a, b) = (rate.tick_of(from).max(it.start), rate.tick_of(f).min(it.end()));
+                    ranges.push(TimeRange::new(a, b - a));
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+        if !ranges.is_empty() {
+            out.push(DuplicateFrames { clip: it.id, color: colors.get(m).copied().unwrap_or(0), ranges });
+        }
+    }
+    out
+}
+
+/// The master clip `it` shows frames of and the master clip's frame rate, when its frames can be
+/// compared.
+fn comparable_master(project: &Project, it: &TrackItem) -> Option<(ItemId, FrameRate)> {
+    if it.frame_hold.is_some() || !(it.speed.is_finite() && it.speed.abs() > 0.0) || it.duration <= Tick::ZERO {
+        return None;
+    }
+    if it.effect("time_remap").and_then(|e| e.param("speed")).is_some_and(|p| p.is_animated()) {
+        return None;
+    }
+    let (master, media, _) = project.resolve_media(it.item)?;
+    (matches!(media.info.kind, MediaKind::Movie | MediaKind::ImageSequence) && media.info.video.is_some()).then(|| (master, media.frame_rate()))
+}
+
 // ---------- subsequence ----------
 
 /// Sequence ▸ Make Subsequence: a new sequence (same settings and track layout) holding copies of the
@@ -393,6 +529,10 @@ pub(crate) fn lay_out_tracks_like(new: &mut filmcraft_project::Sequence, from: &
     }
 }
 
+/// Make Subsequence: copy the selected clips (with linked partners), or everything between In
+/// and Out on the targeted tracks, into a new sequence named `name` or `<seq>_Sub_NN`. Copies
+/// get fresh ids, links and groups and start from zero; the new sequence opens in the Source
+/// Monitor.
 fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?.clone();
@@ -435,6 +575,7 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
         let nid = pr.new_sequence(&name, q.settings.clone(), q.video_tracks.len(), q.audio_tracks.len(), None);
         let mut ids = std::collections::HashMap::new();
         let mut links = std::collections::HashMap::new();
+        let mut groups = std::collections::HashMap::new();
         let mut placed: Vec<(TrackKind, usize, TrackItem)> = Vec::new();
         for (kind, ti, mut it) in items.clone() {
             let new_id = ClipId(pr.alloc_id());
@@ -443,6 +584,9 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
             it.start -= offset;
             if let Some(l) = it.link {
                 it.link = Some(*links.entry(l).or_insert_with(|| pr.alloc_id()));
+            }
+            if let Some(g) = it.group {
+                it.group = Some(*groups.entry(g).or_insert_with(|| pr.alloc_id()));
             }
             placed.push((kind, ti, it));
         }
@@ -495,17 +639,8 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
 /// tracks that hold clips go to consecutive tracks from `vdest` / `adest` up (source V1 and V3
 /// land on the destination track and the one above it), and tracks that are missing are added.
 /// A kind without a destination track is left out.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn place_sequence_clips(
-    s: &mut Session,
-    item: ItemId,
-    range: TimeRange,
-    at: Tick,
-    vdest: Option<TrackId>,
-    adest: Option<TrackId>,
-    insert: bool,
-    label: &str,
-) -> Result<Vec<ClipId>> {
+pub(crate) fn place_sequence_clips(s: &mut Session, placement: crate::commands::ItemPlacement<'_>) -> Result<Vec<ClipId>> {
+    let crate::commands::ItemPlacement { item, range, at, vdest, adest, insert, label, .. } = placement;
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let src = s.project.sequence(item).ok_or_else(|| bad(label, "not a sequence"))?.clone();
     let dst = s.active_sequence().ok_or(EngineError::NoSequence)?;
@@ -538,6 +673,7 @@ pub(crate) fn place_sequence_clips(
         // copies with ids, links and transitions of their own, moved to `at`
         let mut ids = std::collections::HashMap::new();
         let mut links = std::collections::HashMap::new();
+        let mut groups = std::collections::HashMap::new();
         let mut placed: Vec<(TrackKind, usize, TrackItem)> = Vec::new();
         for (kind, lane, mut it) in items.clone() {
             let id = ClipId(p.alloc_id());
@@ -546,6 +682,9 @@ pub(crate) fn place_sequence_clips(
             it.start = at + (it.start - range.start);
             if let Some(l) = it.link {
                 it.link = Some(*links.entry(l).or_insert_with(|| p.alloc_id()));
+            }
+            if let Some(g) = it.group {
+                it.group = Some(*groups.entry(g).or_insert_with(|| p.alloc_id()));
             }
             placed.push((kind, lane, it));
         }
@@ -746,32 +885,19 @@ pub(crate) fn place_on_new_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     if !new_v && !new_a {
         return Err(bad(cmd, "no new track to add: the item has no picture or sound for it"));
     }
-    let added = add_tracks(s, &json!({"video": u64::from(new_v), "audio": u64::from(new_a)}))?;
-    let mark = s.history.undo.len();
-    let mut q = p.clone();
-    for (key, kind) in [("track", "video"), ("audioTrack", "audio")] {
-        if is_new(key) {
-            q[key] = added.get(kind).and_then(|ids| ids.get(0)).cloned().unwrap_or(Value::Null);
-        }
-    }
     let place = crate::commands::find(cmd).ok_or_else(|| EngineError::UnknownCommand(cmd.into()))?.run;
-    match place(s, &q) {
-        Ok(v) => {
-            // the new tracks and the clip are one undo step
-            if mark >= 1
-                && s.history.undo.len() == mark + 1
-                && let (Some((label, _)), Some((_, before))) = (s.history.undo.pop(), s.history.undo.pop())
-            {
-                s.history.undo.push((label, before));
+    // one undo step for the tracks and the clip; when the placement fails the project, its undo
+    // and its redo history are put back as they were
+    s.edit_group("Place Clip", |s| {
+        let added = add_tracks(s, &json!({"video": u64::from(new_v), "audio": u64::from(new_a)}))?;
+        let mut q = p.clone();
+        for (key, kind) in [("track", "video"), ("audioTrack", "audio")] {
+            if is_new(key) {
+                q[key] = added.get(kind).and_then(|ids| ids.get(0)).cloned().unwrap_or(Value::Null);
             }
-            Ok(v)
         }
-        Err(e) => {
-            s.undo();
-            s.history.redo.pop();
-            Err(e)
-        }
-    }
+        place(s, &q)
+    })
 }
 
 fn delete_tracks(s: &mut Session, p: &Value) -> Result<Value> {
@@ -965,12 +1091,23 @@ pub fn ripple_markers(markers: &mut Vec<Marker>, from: Tick, shift: Tick) {
     markers.sort_by_key(|m| m.start);
 }
 
-fn add_marker(s: &mut Session, cmd: &str, label: &str, t: Tick, dur: Tick, kind: MarkerKind, name: String, p: &Value) -> Result<MarkerId> {
-    let comment = str_p(p, "comment").unwrap_or("").to_string();
-    let color = marker_color_p(p, cmd)?.unwrap_or(Label::Green);
+struct MarkerInput<'a> {
+    cmd: &'a str,
+    label: &'a str,
+    start: Tick,
+    duration: Tick,
+    kind: MarkerKind,
+    name: String,
+    params: &'a Value,
+}
+
+fn add_marker(s: &mut Session, input: MarkerInput<'_>) -> Result<MarkerId> {
+    let MarkerInput { cmd, label, start, duration, kind, name, params } = input;
+    let comment = str_p(params, "comment").unwrap_or("").to_string();
+    let color = marker_color_p(params, cmd)?.unwrap_or(Label::Green);
     s.edit_sequence(label, |q, ctx, _| {
         let id = MarkerId(ctx.alloc());
-        q.markers.push(Marker { id, start: t, duration: dur, name, comment, kind, color });
+        q.markers.push(Marker { id, start, duration, name, comment, kind, color });
         q.markers.sort_by_key(|m| m.start);
         Ok(id)
     })
@@ -991,7 +1128,8 @@ fn add_range_marker(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("markers.addRange", "the duration must be positive"));
     }
     let name = str_p(p, "name").unwrap_or("").to_string();
-    let id = add_marker(s, "markers.addRange", "Add Range Marker", t, dur, MarkerKind::Comment, name, p)?;
+    let id =
+        add_marker(s, MarkerInput { cmd: "markers.addRange", label: "Add Range Marker", start: t, duration: dur, kind: MarkerKind::Comment, name, params: p })?;
     Ok(json!({"marker": id.0}))
 }
 
@@ -1001,7 +1139,10 @@ fn add_range_marker_in_out(s: &mut Session, p: &Value) -> Result<Value> {
     let (Some(i), Some(o)) = (q.mark_in, q.mark_out) else { return Err(EngineError::Other("mark an In and an Out point first".into())) };
     let dur = o + q.settings.frame_rate.frame_duration() - i;
     let name = str_p(p, "name").unwrap_or("").to_string();
-    let id = add_marker(s, "markers.addRangeInOut", "Add Range Marker", i, dur, MarkerKind::Comment, name, p)?;
+    let id = add_marker(
+        s,
+        MarkerInput { cmd: "markers.addRangeInOut", label: "Add Range Marker", start: i, duration: dur, kind: MarkerKind::Comment, name, params: p },
+    )?;
     Ok(json!({"marker": id.0}))
 }
 

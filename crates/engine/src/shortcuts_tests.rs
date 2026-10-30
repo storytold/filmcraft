@@ -288,7 +288,7 @@ fn list_searches_labels_and_keys() {
     let v = s.execute("shortcuts.list", json!({"query": "cmd+k", "platform": "windows"})).unwrap();
     assert!(v.as_array().unwrap().iter().any(|c| c["id"] == "sequence.addEdit"), "{v}");
     let v = s.execute("shortcuts.list", json!({"panel": "History", "assigned": true})).unwrap();
-    assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
+    assert_eq!(v.as_array().unwrap().len(), 3, "{v}");
 }
 
 #[test]

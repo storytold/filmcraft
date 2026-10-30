@@ -117,6 +117,15 @@ fn wgpu_choice(candidates: &[Candidate], power: PowerPreference) -> Option<usize
     usable.min_by_key(|(index, c)| (type_order(c.device_type, power), *index)).map(|(index, _)| index)
 }
 
+/// A wgpu instance over the native backends (Vulkan, Metal, DX12), and OpenGL except on Windows.
+/// There GL starts a WGL context thread inside the vendor driver (NVIDIA's `nvoglv64` is both its
+/// GL driver and its Vulkan ICD); instances created and devices dropped concurrently then deadlock
+/// in that driver (#3418). Elsewhere GL stays, for machines where it is the only working backend.
+pub(crate) fn native_instance() -> wgpu::Instance {
+    let backends = if cfg!(windows) { wgpu::Backends::PRIMARY } else { wgpu::Backends::PRIMARY | wgpu::Backends::GL };
+    wgpu::Instance::new(wgpu::InstanceDescriptor { backends, ..wgpu::InstanceDescriptor::new_without_display_handle() })
+}
+
 /// The index of the adapter to draw with: [`wgpu_choice`], or the entry exposing the most
 /// features among those that are the same GPU listed by the same driver (the first of them when
 /// several expose as many). `None` without a usable adapter.

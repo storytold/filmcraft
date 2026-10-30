@@ -326,6 +326,133 @@ fn add_keyframe_toggles_the_keyframe_at_the_playhead() {
     assert_eq!(scale(&s), (0, 100.0));
 }
 
+/// #3386: `effects.addKeyframe` with a `time` at the clip's out point used to put the keyframe a
+/// tick earlier, so a script that then looked for it at the out point found nothing (and
+/// `effects.deleteKeyframe` answered `null` either way). An explicit `time` now keeps its place, as
+/// in `effects.setParam` (#1055); only the playhead fallback is pinned to the clip. The replies say
+/// where the keyframe is (`mediaTime`), whether it was added or toggled off (`added`), and whether a
+/// delete removed anything (`removed`).
+#[test]
+fn add_keyframe_at_the_out_point_stays_there_and_the_replies_say_what_happened() {
+    let mut s = demo();
+    let (c, start, end) = {
+        let it = &s.active_sequence().unwrap().video_tracks[0].items[0];
+        (it.id.0, it.start, it.end())
+    };
+    let clip = |s: &Session| s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.clone();
+    let media_at = |s: &Session, t: Tick| clip(s).source_time_at(t);
+    let keys = |s: &Session| clip(s).effect("motion").unwrap().params["scale"].keyframes.iter().map(|k| k.time).collect::<Vec<_>>();
+    let add = |s: &mut Session, time: Tick| s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": time.0})).unwrap();
+    let delete = |s: &mut Session, media: Tick| {
+        s.execute("effects.deleteKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "mediaTime": media.0})).unwrap()
+    };
+    let reply = |r: &Value| (r["added"].clone(), r["mediaTime"].clone());
+
+    let r = add(&mut s, start);
+    assert_eq!(reply(&r), (json!(true), json!(media_at(&s, start).0)), "{r}");
+
+    // at the out point: the keyframe is at the out point, where a script looks for it
+    let out = media_at(&s, end);
+    let r = add(&mut s, end);
+    assert_eq!(reply(&r), (json!(true), json!(out.0)), "{r}");
+    assert_eq!(keys(&s), vec![media_at(&s, start), out]);
+
+    // a delete at a time with no keyframe says so and changes nothing
+    let r = delete(&mut s, out - Tick(1));
+    assert_eq!(r["removed"], json!(false), "{r}");
+    assert_eq!(keys(&s).len(), 2);
+    let r = delete(&mut s, out);
+    assert_eq!(r["removed"], json!(true), "{r}");
+    assert_eq!(keys(&s), vec![media_at(&s, start)]);
+
+    // adding twice at the same time toggles: the second reply says the keyframe was removed
+    assert_eq!(add(&mut s, end)["added"], json!(true));
+    let r = add(&mut s, end);
+    assert_eq!(reply(&r), (json!(false), json!(out.0)), "{r}");
+    assert_eq!(keys(&s), vec![media_at(&s, start)]);
+
+    // past the end it keeps its time too
+    let past = end + (end - start);
+    let r = add(&mut s, past);
+    assert_eq!(reply(&r), (json!(true), json!(media_at(&s, past).0)), "{r}");
+    let past_media = media_at(&s, past);
+    delete(&mut s, past_media);
+
+    // only the playhead fallback is pinned to the clip: a playhead past the end lands on its last tick
+    s.execute("playhead.set", json!({"seconds": past.seconds()})).unwrap();
+    let r = s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale"})).unwrap();
+    assert_eq!(reply(&r), (json!(true), json!(media_at(&s, end - Tick(1)).0)), "{r}");
+
+    // hostile times neither panic nor leave a half-made keyframe; a delete that names no time is an error
+    for t in [i64::MIN, i64::MAX] {
+        let _ = s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": t}));
+    }
+    s.active_sequence().unwrap().check().unwrap();
+    assert!(s.execute("effects.deleteKeyframe", json!({"clip": c, "effect": "motion", "param": "scale"})).is_err());
+}
+
+/// The keyframe replies are for edits that undo and redo like any other, and the commands refuse to
+/// run without an active sequence instead of reporting a keyframe that was never made.
+#[test]
+fn add_and_delete_keyframe_undo_redo_and_need_a_sequence() {
+    let mut s = demo();
+    let (c, end) = {
+        let it = &s.active_sequence().unwrap().video_tracks[0].items[0];
+        (it.id.0, it.end())
+    };
+    let keys = |s: &Session| {
+        let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.clone();
+        it.effect("motion").unwrap().params["scale"].keyframes.iter().map(|k| k.time).collect::<Vec<_>>()
+    };
+    let out = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.source_time_at(end);
+    let key = |extra: Value| {
+        let mut p = json!({"clip": c, "effect": "motion", "param": "scale"});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        p
+    };
+
+    // add at the out point: one undo step that takes the keyframe away and brings it back
+    let r = s.execute("effects.addKeyframe", key(json!({"time": end.0}))).unwrap();
+    assert_eq!(r["added"], json!(true));
+    assert_eq!(keys(&s), vec![out]);
+    s.undo();
+    assert_eq!(keys(&s), Vec::<Tick>::new(), "undo removes the keyframe");
+    s.redo();
+    assert_eq!(keys(&s), vec![out], "redo puts it back at the out point");
+
+    // delete it: the same, the other way round
+    let r = s.execute("effects.deleteKeyframe", key(json!({"mediaTime": out.0}))).unwrap();
+    assert_eq!(r["removed"], json!(true));
+    assert_eq!(keys(&s), Vec::<Tick>::new());
+    s.undo();
+    assert_eq!(keys(&s), vec![out], "undo restores the deleted keyframe");
+    s.redo();
+    assert_eq!(keys(&s), Vec::<Tick>::new(), "redo deletes it again");
+
+    // no active sequence: both commands are refused, nothing panics, and there is no reply to trust
+    let mut empty = Session::default();
+    assert!(empty.active_sequence().is_none());
+    for (command, extra) in [("effects.addKeyframe", json!({"time": 0})), ("effects.deleteKeyframe", json!({"mediaTime": 0}))] {
+        assert!(empty.execute(command, key(extra)).is_err(), "{command} without a sequence");
+    }
+    assert!(empty.history.undo.is_empty(), "and no undo step was recorded");
+}
+
+/// The position half of #3386, read from the project and not from a reply: a keyframe asked for at
+/// the clip's out point is at the out point.
+#[test]
+fn add_keyframe_with_a_time_at_the_out_point_is_not_moved() {
+    let mut s = demo();
+    let (c, end) = {
+        let it = &s.active_sequence().unwrap().video_tracks[0].items[0];
+        (it.id.0, it.end())
+    };
+    s.execute("effects.addKeyframe", json!({"clip": c, "effect": "motion", "param": "scale", "time": end.0})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(c)).unwrap().1.clone();
+    let at: Vec<Tick> = it.effect("motion").unwrap().params["scale"].keyframes.iter().map(|k| k.time).collect();
+    assert_eq!(at, vec![it.source_time_at(end)], "the keyframe sits at the out point, not a tick before it");
+}
+
 /// `effects.setParam` writes a keyframe only on an animated parameter. An agent that sends a value
 /// with a `time` to a parameter that is not animated gets a static value (the result says so:
 /// 0 keyframes); `"keyframe": true` is the stopwatch and the value in one step.
@@ -349,11 +476,11 @@ fn set_param_writes_a_keyframe_when_asked_or_animated() {
     let mut first = set(60.0, 0.5);
     first["keyframe"] = json!(true);
     let r = s.execute("effects.setParam", first).unwrap();
-    assert_eq!(r["keyframes"], 1, "{r}");
+    assert_eq!(r, json!({"keyframes": 1, "param": "scale", "value": 60.0}));
     assert_eq!(scale(&s).0, 1);
     // animated now, so a plain set at another time is a second keyframe
     let r = s.execute("effects.setParam", set(120.0, 2.5)).unwrap();
-    assert_eq!(r["keyframes"], 2, "{r}");
+    assert_eq!(r, json!({"keyframes": 2, "param": "scale", "value": 120.0}));
     let (n, _, a, b) = scale(&s);
     assert_eq!((n, a, b), (2, 60.0, 120.0));
     // a keyframe that is already there is replaced, not doubled
@@ -379,6 +506,38 @@ fn set_param_writes_a_keyframe_when_asked_or_animated() {
     let mut odd = set(70.0, 0.5);
     odd["keyframe"] = json!("yes");
     assert_eq!(s.execute("effects.setParam", odd).unwrap()["keyframes"], 2);
+}
+
+/// The response reflects the stored point when extra input coordinates are ignored.
+#[test]
+fn set_param_reports_the_stored_vector_value() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    let result = s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "position", "value": [11.0, 22.0, 33.0]})).unwrap();
+    assert_eq!(result, json!({"keyframes": 0, "param": "position", "value": [11.0, 22.0]}));
+
+    let sequence = s.execute("sequence.inspect", json!({})).unwrap();
+    let effects = sequence["video"][0]["items"][0]["effects"].as_array().unwrap();
+    let motion = effects.iter().find(|e| e["effect"] == "motion").unwrap();
+    assert_eq!(motion["params"]["position"]["value"], "Vec2(Vec2 { x: 11.0, y: 22.0 })");
+}
+
+/// A static edit succeeds without creating keyframes; its response identifies the accepted value.
+#[test]
+fn set_param_reports_static_value_and_parameter() {
+    let mut s = demo();
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    for (effect, param, value, stored, inspected) in
+        [("opacity", "blend", json!("Screen"), json!(8), "Choice(8)"), ("motion", "scale", json!(80.0), json!(80.0), "Float(80.0)")]
+    {
+        let result = s.execute("effects.setParam", json!({"clip": c, "effect": effect, "param": param, "value": value})).unwrap();
+        assert_eq!(result, json!({"keyframes": 0, "param": param, "value": stored}));
+        let sequence = s.execute("sequence.inspect", json!({})).unwrap();
+        let effects = sequence["video"][0]["items"][0]["effects"].as_array().unwrap();
+        let effect = effects.iter().find(|e| e["effect"] == effect).unwrap();
+        assert_eq!(effect["params"][param]["value"], inspected);
+        assert_eq!(effect["params"][param]["keyframes"], 0);
+    }
 }
 
 /// A keyframe set with a `time` outside the clip stays at that time (#1055), before the start as
@@ -457,7 +616,7 @@ fn set_param_takes_a_choice_by_name() {
     // a name that is not an option is an error that lists the options and changes nothing
     let e = s.execute("effects.setParam", set(json!("Glow"))).unwrap_err().to_string();
     assert!(e.contains("Screen") && e.contains("Overlay"), "{e}");
-    for bad in [json!(""), json!(null), json!([8]), json!({"name": "Screen"}), json!(-1), json!(1.5)] {
+    for bad in [json!(""), json!(null), json!([8]), json!({"name": "Screen"}), json!(-1), json!(1.5), json!(u64::from(u32::MAX) + 1)] {
         assert!(s.execute("effects.setParam", set(bad.clone())).is_err(), "{bad}");
     }
     assert_eq!(blend(&s), ParamValue::Choice(12));
@@ -1085,6 +1244,31 @@ fn enable_flips_each_selected_clip() {
     s.execute("clip.enable", json!({"clips": [b]})).unwrap();
     s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
     assert_eq!((enabled(&s, a), enabled(&s, b)), (true, true));
+}
+
+/// #3031: with linked selection on, Enable on an Alt-selected audio clip flips only that clip,
+/// while a linked selection still flips both sides.
+#[test]
+fn enable_on_an_individual_selection_leaves_the_linked_partner() {
+    let mut s = demo();
+    assert!(s.state.linked_selection);
+    let enabled = |s: &Session, c: ClipId| s.active_sequence().unwrap().find_item(c).unwrap().1.enabled;
+    let video = ClipId(v1(&s)[0].0);
+    let audio = {
+        let q = s.active_sequence().unwrap();
+        let link = q.find_item(video).unwrap().1.link.unwrap();
+        q.all_tracks().flat_map(|t| t.items.iter()).find(|i| i.link == Some(link) && i.id != video).unwrap().id
+    };
+    s.execute("timeline.select", json!({"clips": [audio.0], "linked": false})).unwrap();
+    assert_eq!(s.state.selection, vec![audio]);
+    s.execute("clip.enable", json!({})).unwrap();
+    assert_eq!((enabled(&s, video), enabled(&s, audio)), (true, false), "only the selected audio is disabled");
+    s.execute("clip.enable", json!({})).unwrap();
+    assert_eq!((enabled(&s, video), enabled(&s, audio)), (true, true));
+    // a linked selection still flips both sides
+    s.execute("timeline.select", json!({"clips": [audio.0], "linked": true})).unwrap();
+    s.execute("clip.enable", json!({})).unwrap();
+    assert_eq!((enabled(&s, video), enabled(&s, audio)), (false, false));
 }
 
 /// #580: Escape takes back what a gesture changed, merged or not: the project returns to the mark,

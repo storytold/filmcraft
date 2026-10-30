@@ -8,13 +8,8 @@ use filmcraft_matroska::*;
 use serde_json::Value;
 use std::path::Path;
 
-/// Compare every packet (file order) and stream parameter against ffprobe.
-fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
-    let json = ffprobe_json(ffprobe, path);
-    let bytes = std::fs::read(path).unwrap();
-    let mut d = Demuxer::from_slice(&bytes).unwrap();
-    let name = path.file_name().unwrap().to_string_lossy().to_string();
-    let file = d.file().clone();
+/// Compare the stream count and each track's codec, time base and dimensions with ffprobe.
+fn check_streams(name: &str, json: &Value, file: &MkvFile) {
     let streams = json["streams"].as_array().unwrap();
     assert_eq!(streams.len(), file.tracks.len(), "{name}: stream count");
     for (i, st) in streams.iter().enumerate() {
@@ -35,7 +30,11 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             _ => {}
         }
     }
-    let packets: Vec<Packet> = d.by_ref().collect::<Result<_>>().unwrap();
+}
+
+/// Compare every packet's track, size, keyframe flag, pts and duration with ffprobe; returns how
+/// many pts and durations were compared.
+fn check_packets(name: &str, json: &Value, file: &MkvFile, packets: &[Packet]) -> (usize, usize) {
     let ff = json["packets"].as_array().unwrap();
     assert_eq!(packets.len(), ff.len(), "{name}: packet count");
     let (mut pts_checked, mut dur_checked) = (0, 0);
@@ -58,16 +57,24 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             assert!((pts - p.pts).abs() <= p.lace as i64, "{ctx}: pts ffprobe {pts} vs {}", p.pts);
             pts_checked += 1;
         }
+        // The last audio or video frame of a track cut by `-t` is shorter than a codec frame.
+        // ffmpeg 8 writes a shortened BlockDuration there and reports the codec frame duration; a
+        // remux by our writer stores DefaultDuration and ffprobe reports the shortened one. So
+        // that frame's duration is not compared. A subtitle's duration is its cue's, and is.
+        let last_of_track = packets[i + 1..].iter().all(|q| q.track != p.track);
         if let Some(dur) = int(&f["duration"])
             && p.duration != 0
+            && (!last_of_track || file.tracks[p.track].kind == TrackKind::Subtitle)
         {
             assert!((dur - p.duration as i64).abs() <= 1, "{ctx}: duration ffprobe {dur} vs {}", p.duration);
             dur_checked += 1;
         }
     }
-    assert!(pts_checked > 0, "{name}: no pts compared");
-    eprintln!("{name}: {} packets, {pts_checked} pts and {dur_checked} durations compared", packets.len());
-    // the sample index agrees with the packet stream
+    (pts_checked, dur_checked)
+}
+
+/// The per-track sample index agrees with the packet stream.
+fn check_sample_index(name: &str, file: &MkvFile, bytes: &[u8], packets: &[Packet]) {
     for (ti, t) in file.tracks.iter().enumerate() {
         let pk: Vec<&Packet> = packets.iter().filter(|p| p.track == ti).collect();
         assert_eq!(t.samples.len(), pk.len(), "{name}: index size track {ti}");
@@ -77,15 +84,34 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             assert_eq!(t.sample_size(i), Some(p.data.len() as u64));
         }
         if let Some(i) = pk.len().checked_sub(1) {
-            assert_eq!(file.read_sample(&bytes[..], ti, i).unwrap(), pk[i].data);
+            assert_eq!(file.read_sample(bytes, ti, i).unwrap(), pk[i].data);
         }
     }
-    // duration
+}
+
+/// The container duration agrees with ffprobe's.
+fn check_duration(name: &str, json: &Value, file: &MkvFile) {
     if let Some(fd) = json["format"]["duration"].as_str().and_then(|s| s.parse::<f64>().ok())
         && let Some(ours) = file.duration_ns()
     {
         assert!((fd - ours as f64 / 1e9).abs() < 0.05, "{name}: duration {fd} vs {ours}");
     }
+}
+
+/// Compare every packet (file order) and stream parameter against ffprobe.
+fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
+    let json = ffprobe_json(ffprobe, path);
+    let bytes = std::fs::read(path).unwrap();
+    let mut d = Demuxer::from_slice(&bytes).unwrap();
+    let name = path.file_name().unwrap().to_string_lossy().to_string();
+    let file = d.file().clone();
+    check_streams(&name, &json, &file);
+    let packets: Vec<Packet> = d.by_ref().collect::<Result<_>>().unwrap();
+    let (pts_checked, dur_checked) = check_packets(&name, &json, &file, &packets);
+    assert!(pts_checked > 0, "{name}: no pts compared");
+    eprintln!("{name}: {} packets, {pts_checked} pts and {dur_checked} durations compared", packets.len());
+    check_sample_index(&name, &file, &bytes, &packets);
+    check_duration(&name, &json, &file);
     (file, packets)
 }
 
@@ -226,11 +252,11 @@ fn live_stream_without_cues() {
 }
 
 #[test]
-fn hevc_hdr_colour() {
+fn hevc_hdr_color() {
     let Some((_, f, _)) = run("hevc_hdr.mkv") else { return };
     let t = &f.tracks[0];
     assert!(matches!(&t.codec, Codec::Hevc { hvcc } if hvcc.first() == Some(&1)));
-    let c = t.video.as_ref().unwrap().colour.as_ref().expect("Colour element");
+    let c = t.video.as_ref().unwrap().color.as_ref().expect("Colour element");
     assert_eq!(c.primaries, Some(9));
     assert_eq!(c.transfer_characteristics, Some(16));
     assert_eq!(c.matrix_coefficients, Some(9));
@@ -286,12 +312,14 @@ fn laced_remux() {
             let specs: Vec<TrackSpec> = file
                 .tracks
                 .iter()
-                .map(|t| {
+                .enumerate()
+                .map(|(ti, t)| {
                     let mut s = TrackSpec::new(t.kind, t.codec_id.clone());
                     s.codec_private = t.codec_private.clone();
+                    // audio without a DefaultDuration gets its mean packet spacing, so it can lace
                     s.default_duration_ns = t.default_duration_ns.or_else(|| {
-                        // give AAC a DefaultDuration so every lace gets a timestamp
-                        matches!(t.codec, Codec::Aac { .. }).then(|| (1024.0 * 1e9 / t.audio.as_ref().unwrap().sampling_frequency) as u64)
+                        let pts: Vec<i64> = packets.iter().filter(|p| p.track == ti).map(|p| p.pts_ns).collect();
+                        (t.kind == TrackKind::Audio && pts.len() > 1).then(|| ((pts[pts.len() - 1] - pts[0]) / (pts.len() as i64 - 1)) as u64)
                     });
                     s.video_size = t.video.as_ref().map(|v| (v.pixel_width, v.pixel_height));
                     s.audio = t.audio.as_ref().map(|a| (a.sampling_frequency, a.channels, a.bit_depth));
@@ -316,7 +344,7 @@ fn laced_remux() {
             assert_eq!(got.len(), packets.len());
             for (a, b) in got.iter().zip(&packets) {
                 assert_eq!(a.data, b.data, "{src} {mode:?}: payload");
-                assert_eq!(a.track, b.track);
+                assert_eq!((a.track, a.pts), (b.track, b.pts), "{src} {mode:?}: timestamp");
             }
             std::fs::remove_file(&outp).unwrap();
         }

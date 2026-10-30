@@ -205,6 +205,7 @@ impl Lut {
     }
 
     pub fn parse_cube(text: &str) -> Result<Lut, String> {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let mut size1 = 0usize;
         let mut size3 = 0usize;
         let mut title = String::new();
@@ -226,7 +227,14 @@ impl Lut {
                     return Err(err("keyword after table data"));
                 }
                 match key {
-                    "TITLE" => title = line[5..].trim().trim_matches('"').to_string(),
+                    "TITLE" => {
+                        // a '#' inside a quoted title is part of the title, not a comment
+                        let rest = raw.trim_start()[5..].trim_start();
+                        title = match rest.strip_prefix('"').and_then(|q| q.split_once('"')) {
+                            Some((t, _)) => t.to_string(),
+                            None => line[5..].trim().trim_matches('"').to_string(),
+                        };
+                    }
                     "LUT_1D_SIZE" => {
                         size1 = it.next().and_then(|v| v.parse().ok()).ok_or_else(|| err("bad LUT_1D_SIZE"))?;
                         if !(2..=65536).contains(&size1) {
@@ -560,6 +568,15 @@ mod tests {
     }
 
     #[test]
+    fn cube_title_with_hash_roundtrips() {
+        let mut c = Lut3d::identity(2);
+        c.title = "Look #2".into();
+        assert_eq!(Lut3d::parse_cube(&c.to_cube()).unwrap().title, "Look #2");
+        let text = c.to_cube().replace("TITLE \"Look #2\"", "TITLE \"Look\" # note");
+        assert_eq!(Lut::parse_cube(&text).unwrap().title, "Look");
+    }
+
+    #[test]
     fn cube_roundtrip_3d_1d_and_shaper() {
         let mut c = wild(17);
         c.title = "wild".into();
@@ -665,5 +682,13 @@ mod tests {
         assert_eq!(a.shaper.as_ref().unwrap().domain_max, [1.0, 2.0, 3.0]);
         let b = Lut::parse_cube(&a.to_cube()).unwrap();
         assert_eq!(b.shaper.unwrap().domain_max, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn parse_cube_strips_utf8_bom() {
+        let rows = "0 0 0\n".repeat(8);
+        let a = Lut::parse_cube(&format!("\u{feff}TITLE \"x\"\nLUT_3D_SIZE 2\n{rows}")).unwrap();
+        assert_eq!(a.title, "x");
+        assert!(Lut::parse_cube(&format!("\u{feff}# c\nLUT_3D_SIZE 2\n{rows}")).is_ok());
     }
 }
