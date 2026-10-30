@@ -200,7 +200,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area:
             if app.ui.tool == Tool::Razor {
                 razor_block(app, ui, seq, layout, tr, c, r, row, &mut actions);
             } else {
-                interact_block(app, ui, tr, c, r, rate, &mut actions);
+                interact_block(app, ui, seq, layout, tr, c, r, rate, &mut actions);
             }
         }
     }
@@ -251,6 +251,8 @@ fn razor_block(
 fn interact_block(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
+    seq: &filmcraft_project::Sequence,
+    layout: &super::timeline::Layout,
     tr: &CaptionTrack,
     c: &filmcraft_project::Caption,
     r: Rect,
@@ -315,7 +317,20 @@ fn interact_block(
         }
         let x0 = ctx.data(|d| d.get_temp::<f32>(egui::Id::unique("caption-drag-origin"))).unwrap_or(p.x);
         let pps = app.ui.timeline.pps;
-        let d = rate.snap_nearest(Tick::from_seconds_f64((p.x - x0) as f64 / pps));
+        let raw = rate.snap_nearest(Tick::from_seconds_f64((p.x - x0) as f64 / pps));
+        // Snap to clip edges, playhead, markers etc. (#2192): use the same snap engine
+        // used for regular clips, treating the caption start as the snap source.
+        let d = if g == 0 {
+            // Move: snap the leading edge (start + delta).
+            let snapped = super::timeline::snap(app, seq, layout, c.start + raw, &[]);
+            snapped - c.start
+        } else if g == 1 {
+            // TrimIn: snap the in-point (start + delta).
+            super::timeline::snap(app, seq, layout, c.start + raw, &[]) - c.start
+        } else {
+            // TrimOut: snap the out-point (end + delta).
+            super::timeline::snap(app, seq, layout, c.start + c.duration + raw, &[]) - (c.start + c.duration)
+        };
         ctx.data_mut(|dd| dd.insert_temp(drag_id(), (id, g, d.0)));
     }
     if resp.drag_stopped()
