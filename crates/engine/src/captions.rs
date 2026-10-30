@@ -352,7 +352,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Caption Track Style",
             &[],
             None,
-            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
+            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?,"boxPadding":f32?,"boxCornerRadius":f32?}"##,
             has_caption_track,
             |s, p| {
                 let tid = track_param(s, p).ok_or_else(|| {
@@ -412,6 +412,13 @@ pub fn commands() -> Vec<CommandSpec> {
                         Some("bottom") => y.anchor = CaptionAnchor::Bottom,
                         Some(o) => return Err(bad("captions.setStyle", format!("unknown anchor `{o}`"))),
                         None => {}
+                    }
+                    // Box padding (#3355), corner radius (#3356).
+                    if let Some(v) = f64_p(&p, "boxPadding") {
+                        y.box_padding = (v as f32).clamp(0.0, 200.0);
+                    }
+                    if let Some(v) = f64_p(&p, "boxCornerRadius") {
+                        y.box_corner_radius = (v as f32).clamp(0.0, 200.0);
                     }
                     Ok(())
                 })?;

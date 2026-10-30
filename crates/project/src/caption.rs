@@ -93,7 +93,17 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Padding around each background box, in pixels at 1080 lines (#3355).
+    /// Added to the text-advance side pads; also pads top and bottom.
+    #[serde(default = "default_box_padding")]
+    pub box_padding: f32,
+    /// Corner radius of the background box, in pixels at 1080 lines (#3356).
+    /// 0 = sharp corners (existing behaviour).
+    #[serde(default)]
+    pub box_corner_radius: f32,
 }
+
+fn default_box_padding() -> f32 { 0.0 }
 
 impl Default for CaptionStyle {
     fn default() -> Self {
@@ -109,6 +119,8 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            box_padding: 0.0,
+            box_corner_radius: 0.0,
         }
     }
 }
