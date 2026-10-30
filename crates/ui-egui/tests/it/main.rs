@@ -52,6 +52,7 @@ mod nest_editing_ui;
 mod nest_rendering_ui;
 mod nested_ui;
 mod open_project_prompt_ui;
+mod os_events_ui;
 mod panels_ui;
 mod par_ui;
 mod perf_ui;
