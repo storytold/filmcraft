@@ -700,6 +700,16 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
         if resp.changed() {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "background": bg})));
         }
+        // Box padding (#3355) — visible only when background is on.
+        if st.background {
+            ui.label(egui::RichText::new(tl!("Padding")).size(11.0).color(app.tokens.text_dim));
+            let mut pad = st.box_padding;
+            let resp = ui.add(crate::widgets::number_drag(&mut pad).range(0.0..=100.0).speed(0.5).suffix(" px"));
+            app.auto.add("text.captions.style.boxPadding", resp.rect, "Box padding");
+            if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "boxPadding": pad})));
+            }
+        }
         ui.label(egui::RichText::new(tl!("Align")).size(11.0).color(app.tokens.text_dim));
         for (a, icon_txt, name, tip) in [
             (CaptionAlign::Left, "L", "left", tl!("Align left")),
