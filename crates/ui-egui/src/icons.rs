@@ -342,23 +342,12 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.fill(&[(3.5, 3.5), (10.0, 8.0), (3.5, 12.5)]);
         }
         GoToIn => {
-            pen.line(&[(5.0, 3.0), (4.0, 3.0), (3.5, 3.5), (3.5, 6.0), (3.0, 7.0), (2.0, 8.0), (3.0, 9.0), (3.5, 10.0), (3.5, 12.5), (4.0, 13.0), (5.0, 13.0)]);
+            // Keep a pronounced waist: a shallow bend collapses to a square bracket at small sizes.
+            pen.line(&[(6.0, 2.0), (4.0, 2.0), (4.0, 6.0), (1.5, 8.0), (4.0, 10.0), (4.0, 14.0), (6.0, 14.0)]);
             pen.fill(&[(13.0, 3.5), (6.0, 8.0), (13.0, 12.5)]);
         }
         GoToOut => {
-            pen.line(&[
-                (11.0, 3.0),
-                (12.0, 3.0),
-                (12.5, 3.5),
-                (12.5, 6.0),
-                (13.0, 7.0),
-                (14.0, 8.0),
-                (13.0, 9.0),
-                (12.5, 10.0),
-                (12.5, 12.5),
-                (12.0, 13.0),
-                (11.0, 13.0),
-            ]);
+            pen.line(&[(10.0, 2.0), (12.0, 2.0), (12.0, 6.0), (14.5, 8.0), (12.0, 10.0), (12.0, 14.0), (10.0, 14.0)]);
             pen.fill(&[(3.0, 3.5), (10.0, 8.0), (3.0, 12.5)]);
         }
         PrevEdit => {
@@ -978,6 +967,24 @@ mod tests {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// The transport braces must retain their waist after device-pixel snapping.
+    #[test]
+    fn go_to_braces_keep_a_visible_waist_at_transport_sizes() {
+        for ppp in [1.0, 1.25, 1.5, 2.0] {
+            for size in [9.6, 13.0, 16.8] {
+                for icon in [Icon::GoToIn, Icon::GoToOut] {
+                    let shapes = drawn(icon, ppp, size);
+                    let Shape::Path(brace) = &shapes[0] else { panic!("missing brace path") };
+                    let center_y = 7.7 + size / 2.0;
+                    let middle = brace.points.iter().min_by(|a, b| (a.y - center_y).abs().total_cmp(&(b.y - center_y).abs())).unwrap();
+                    let stem =
+                        brace.points.iter().filter(|p| p.y < center_y - 1.0).min_by(|a, b| (a.y - center_y).abs().total_cmp(&(b.y - center_y).abs())).unwrap();
+                    assert!((middle.x - stem.x).abs() * ppp >= 1.0 - 1e-3, "{icon:?}, {ppp}x, {size}: brace collapsed to a square bracket");
                 }
             }
         }

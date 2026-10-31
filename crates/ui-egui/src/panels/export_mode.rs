@@ -11,7 +11,8 @@
 //! Automation ids: `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
 //! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`,
 //! `export.video.*`, `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
-//! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
+//! `export.preview.seek` (integer `frame`), `export.preview.toggle|first|last|stepBack|stepForward`,
+//! `export.preview.scrub`, `export.preview.timecode`, `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
 //! `export.queue.start|stop|clear`, `export.queue.item.<id>` and `….<id>.<up|down|cancel|retry|remove>`;
 //! Preset Manager: `presetManager.search`, `presetManager.favoritesOnly`,
 //! `presetManager.item.<name>`, `presetManager.favorite.<name>`, `presetManager.saveName`,
@@ -45,6 +46,7 @@ use presets::preset_manager;
 #[cfg(test)]
 pub(crate) use preview::RANGES;
 use preview::preview_column;
+pub(crate) use preview::{preview_bounds, preview_command};
 use queue::queue_column;
 pub use quick::quick_export;
 #[cfg(test)]

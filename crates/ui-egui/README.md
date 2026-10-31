@@ -144,3 +144,33 @@ than one clip is selected, matching the existing Speed control.
 
 `clip_dialogs_ui::duration_text_edits_speed_and_rejects_invalid_input` exercises real
 text input, validation, application, Cancel, and Undo/Redo.
+
+## Export preview (#1388)
+
+Export includes a seek bar, sequence timecode / last selected frame, Play/Stop, previous/next
+frame and start/end buttons. Space, Left/Right and Shift+I/Shift+O address the sequence while
+Export is open, even if Source previously had focus. Export-preview automation commands require
+Export mode. Dragging the seek bar pauses playback and follows the existing scrub-audio preference
+through the shared per-frame scrub handler. Playback uses the existing sequence audio clock,
+prefetch and preroll; cached pictures remain visible while the next frame renders.
+
+The seek bar and playback respect Entire Source, Source In/Out (inclusive Out), Work Area and
+Custom. Playback stops on the last selected frame; Play there restarts at the range start.
+Export does not loop even if Program looping is enabled; the Program preference is preserved.
+Navigation changes the shared sequence playhead without altering clips, marks, export settings,
+dirty state or undo history. Audio-only formats keep audition and navigation controls.
+Entering Export finishes any active editing/recording transport. Preview playback never starts
+mixer automation, multicamera recording or voice-over capture, including with a mixer strip in Write mode.
+The details below the picture scroll on smaller windows, leaving the Export buttons accessible.
+
+The picture previews sequence composition at reduced resolution with output dimensions/aspect
+and Fit/Fill/Stretch framing. It does not simulate encoder compression, output frame-rate
+conversion, export-only overlays, colour conversion or audio encoding/processing. It auditions
+the sequence mix; the Export Audio checkbox does not mute audition. Rendered-frame monitoring
+during an export job is separate and is not added here.
+
+Automation: `export.preview.seek {frame: i64}`, `.toggle`, `.first`, `.last`, `.stepBack` and
+`.stepForward` are UI commands (`ui.menu.invoke`); the seek widget is `export.preview.scrub`,
+the readout is `export.preview.timecode`. Invalid seek arguments fail without changing state.
+Unit and headless UI regressions cover range boundaries, hostile values, keyboard routing,
+play/stop, stepping, pointer scrubbing, and preservation of project/export state.

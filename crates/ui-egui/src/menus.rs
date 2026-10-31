@@ -48,6 +48,12 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
     uic!("source.playback.stop", "Stop Source", [], None),
+    uic!("export.preview.toggle", "Play/Stop", [], None),
+    uic!("export.preview.seek", "Set Playhead", [], None),
+    uic!("export.preview.first", "Go to In", [], None),
+    uic!("export.preview.last", "Go to Out", [], None),
+    uic!("export.preview.stepBack", "Step Back 1 Frame", [], None),
+    uic!("export.preview.stepForward", "Step Forward 1 Frame", [], None),
     uic!("playback.toggle", "Play/Stop", [], Some("Space")),
     uic!("playback.forward", "Shuttle Right", [], Some("L")),
     uic!("playback.stop", "Shuttle Stop", [], Some("K")),
@@ -184,7 +190,7 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     match params.get("monitor").and_then(Value::as_str) {
         Some("source") => true,
         Some(_) => false,
-        None => app.ui.focused == PanelKind::Source,
+        None => app.ui.mode != Mode::Export && app.ui.focused == PanelKind::Source,
     }
 }
 
@@ -204,6 +210,23 @@ fn select_all_in_text_field(ctx: &egui::Context) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    if id.starts_with("export.preview.") {
+        return crate::panels::export_mode::preview_command(app, id, &params);
+    }
+    // Export owns the transport even if Source had focus before changing workspaces.
+    if app.ui.mode == Mode::Export && params.get("monitor").is_none_or(Value::is_null) {
+        let preview = match id {
+            "playback.toggle" => Some("export.preview.toggle"),
+            "playhead.stepBack" => Some("export.preview.stepBack"),
+            "playhead.stepForward" => Some("export.preview.stepForward"),
+            "markers.goToIn" => Some("export.preview.first"),
+            "markers.goToOut" => Some("export.preview.last"),
+            _ => None,
+        };
+        if let Some(command) = preview {
+            return crate::panels::export_mode::preview_command(app, command, &params);
+        }
+    }
     // A focused text field takes Select All before the Project panel redirect below, or the
     // Project search box would select items.
     if id == "edit.selectAll" && select_all_in_text_field(ctx) {
@@ -494,7 +517,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(Value::Null);
         }
         "mode.export" => {
-            app.ui.mode = Mode::Export;
+            app.set_mode(Mode::Export);
             return Ok(Value::Null);
         }
         "app.checkForUpdates" => {
@@ -529,7 +552,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
         "file.exportMedia" if params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
-            app.ui.mode = Mode::Export;
+            app.set_mode(Mode::Export);
             return Ok(json!({"mode": "export"}));
         }
         // Audio Gain from the menu or G opens the dialog; with params it applies directly.

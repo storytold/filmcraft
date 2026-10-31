@@ -555,7 +555,7 @@ const ASKED_KEYS: usize = 64;
 /// is, and showing it keeps the picture one pass behind the mouse instead of frozen until the
 /// mouse rests. Playback has its own schedule and remembers nothing (what was on screen before
 /// Play is no stand-in for where it stopped).
-fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bool) -> Vec<FrameKey> {
+pub(crate) fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bool) -> Vec<FrameKey> {
     let asked = app.monitor_asked.entry(prefix.to_string()).or_default();
     if playing {
         asked.clear();
@@ -585,7 +585,7 @@ fn playing_recent(app: &FilmcraftApp, key: FrameKey, dir: Option<i64>) -> Option
 /// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
 /// it, else the newest ready one of `asked` (see [`asked_before`]), else `recent` (while playing),
 /// with the display mode's channel mapping. Returns the texture and the frame it shows.
-fn cpu_texture(
+pub(crate) fn cpu_texture(
     app: &mut FilmcraftApp,
     ctx: &egui::Context,
     name: &str,

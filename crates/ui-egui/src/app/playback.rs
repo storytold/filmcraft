@@ -1,11 +1,21 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::play_ahead;
 use super::{AUDIO_RETRY_S, AUDIO_STALL_S, FilmcraftApp, Tick, frames, json, panels, shuttle};
+use crate::state;
 #[cfg(test)]
 use filmcraft_engine::Session;
 
 impl FilmcraftApp {
     // ---------------------------------------------------------------- playback
+
+    /// Finish editing/recording transport before entering read-only Export preview.
+    pub(crate) fn set_mode(&mut self, mode: state::Mode) {
+        if mode == state::Mode::Export && self.ui.mode != mode {
+            self.stop();
+            self.stop_source();
+        }
+        self.ui.mode = mode;
+    }
 
     pub fn toggle_play(&mut self, speed: f64) {
         if self.playback.playing {
@@ -55,15 +65,18 @@ impl FilmcraftApp {
         self.playback.anchor_tick = self.session.playhead();
         self.playback.audio_seen = (0, now);
         self.start_audio(now);
-        // Audio Track Mixer: an automation pass runs while playing forward in real time
-        if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
-            let t = self.session.playhead();
-            let _ = self.session.execute("mixer.recordStart", json!({"time": t.0}));
+        // Export preview is read-only: never arm editing/recording passes from its transport.
+        if self.ui.mode != state::Mode::Export {
+            // Audio Track Mixer: an automation pass runs while playing forward in real time
+            if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
+                let t = self.session.playhead();
+                let _ = self.session.execute("mixer.recordStart", json!({"time": t.0}));
+            }
+            // Multi-Camera view: playing records live cuts (keys 1–9 / clicking angles)
+            panels::multicam::on_play(self);
+            // voice-over: the capture starts with the audio clock
+            panels::voiceover::on_play(self);
         }
-        // Multi-Camera view: playing records live cuts (keys 1–9 / clicking angles)
-        panels::multicam::on_play(self);
-        // voice-over: the capture starts with the audio clock
-        panels::voiceover::on_play(self);
     }
 
     /// Play the last Text to Speech preview (`Session::tts_preview`) on the audio output, stopping
@@ -189,7 +202,7 @@ impl FilmcraftApp {
 
     /// Advance the Program playhead only while playing; owns preroll completion, audio-clock anchoring, output retry and the fallback to wall time when audio
     /// is lost or stalls.
-    pub(super) fn advance_playback(&mut self, ctx: &egui::Context) {
+    pub(crate) fn advance_playback(&mut self, ctx: &egui::Context) {
         if !self.playback.playing {
             return;
         }
@@ -260,30 +273,88 @@ impl FilmcraftApp {
         let t = self.playback.anchor_tick + Tick::from_seconds_f64(elapsed * self.playback.speed);
         let seq = self.session.active_sequence();
         let dur = seq.map(|q| q.duration()).unwrap_or_default();
-        let (lo, hi) = if self.playback.looping {
+        let exporting = self.ui.mode == state::Mode::Export;
+        let looping = self.playback.looping && !exporting;
+        let (lo, hi) = if exporting {
+            panels::export_mode::preview_bounds(self)
+                .map(|(first, last)| (rate.tick_of(first), rate.tick_of(last.saturating_add(1))))
+                .unwrap_or((Tick::ZERO, dur))
+        } else if looping {
             (seq.and_then(|q| q.mark_in).unwrap_or(Tick::ZERO), seq.and_then(|q| q.mark_out).map(|o| o + rate.frame_duration()).unwrap_or(dur))
         } else {
             (Tick::ZERO, dur)
         };
-        if let Some(end) = self.playback.stop_at.filter(|e| t >= *e && self.playback.speed > 0.0 && !self.playback.looping) {
+        let reverse_end = if exporting { lo } else { Tick::ZERO };
+        if let Some(end) = self.playback.stop_at.filter(|e| !exporting && t >= *e && self.playback.speed > 0.0 && !looping) {
             self.session.set_playhead(self.playback.rest_at.unwrap_or(end));
             self.stop();
-        } else if t >= hi && self.playback.speed > 0.0 && (self.playback.looping || !self.session.voiceover.recording()) {
+        } else if t >= hi && self.playback.speed > 0.0 && (exporting || looping || !self.session.voiceover.recording()) {
             // a voice-over take keeps playing (and recording) into the empty timeline past the end
-            if self.playback.looping {
+            if looping {
                 self.session.set_playhead(lo);
                 self.play(self.playback.speed);
             } else {
                 self.session.set_playhead(hi - rate.frame_duration());
                 self.stop();
             }
-        } else if t <= Tick::ZERO && self.playback.speed < 0.0 {
-            self.session.set_playhead(Tick::ZERO);
+        } else if t <= reverse_end && self.playback.speed < 0.0 {
+            self.session.set_playhead(reverse_end);
             self.stop();
         } else {
             self.session.set_playhead(t);
         }
         ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod export_recording_tests {
+    use super::*;
+
+    #[test]
+    fn export_preview_never_arms_or_writes_mixer_automation() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        session.execute("mixer.setStrip", json!({"strip": "A1", "mode": "Write"})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.audio = None;
+        app.set_mode(state::Mode::Export);
+        app.ui.export.range = "custom".into();
+        app.ui.export.custom_end = 1.0;
+        let before = serde_json::to_value(&app.session.project).unwrap();
+        let undo = app.session.undo_mark();
+        let revision = app.session.revision;
+        let ctx = egui::Context::default();
+        panels::export_mode::preview_command(&mut app, "export.preview.toggle", &json!({})).unwrap();
+        app.end_preroll(0.0);
+        assert!(!app.session.mixrec.active(), "Export must not start a Write automation pass");
+        app.set_now_for_test(2.0);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!app.playback.playing);
+        assert_eq!(serde_json::to_value(&app.session.project).unwrap(), before);
+        assert_eq!(app.session.undo_mark(), undo);
+        assert_eq!(app.session.revision, revision);
+    }
+
+    #[test]
+    fn entering_export_finishes_an_existing_voiceover_take_and_editing_pass() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        session.execute("audio.voiceover.settings", json!({"prerollSeconds": 0.0})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.audio = None;
+        app.ui.mode = state::Mode::Edit;
+        panels::voiceover::toggle(&mut app, None).unwrap();
+        app.end_preroll(0.0);
+        assert!(app.playback.playing && app.session.voiceover.recording());
+        assert!(app.session.mixrec.active(), "normal Edit playback still records automation");
+        let ctx = egui::Context::default();
+        crate::menus::invoke(&mut app, &ctx, "mode.export", json!({})).unwrap();
+        assert_eq!(app.ui.mode, state::Mode::Export);
+        assert!(!app.playback.playing);
+        assert!(!app.session.voiceover.recording());
+        assert!(!app.session.mixrec.active());
     }
 }
 
