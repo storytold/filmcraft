@@ -67,6 +67,7 @@ impl FilmcraftApp {
         }
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
+        self.drop_hint(&ctx);
         panels::dialogs::show(self, &ctx);
         panels::file_dialogs::show_overwrite(self, &ctx);
         updates_ui::show(self, &ctx);

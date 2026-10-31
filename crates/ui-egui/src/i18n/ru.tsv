@@ -3596,3 +3596,10 @@
 	Couldn't open your web browser	Не удалось открыть браузер
 	Open this address in your browser yourself:	Этот адрес нужно открыть в браузере вручную:
 	Reset Interface Zoom	Сбросить масштаб интерфейса
+
+	Could not import the dropped files	Не удалось импортировать перетащенные файлы
+	Imported 1 file	Импортирован 1 файл
+	Imported {n} files	Импортировано {n} файлов
+	Drop to import	Отпустите для импорта
+	Drop on the Timeline to place the clips	Отпустите на таймлайне, чтобы разместить клипы
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	Добавьте медиафайлы в проект. Для перетаскивания требуется X11 (запустите со сброшенной переменной WAYLAND_DISPLAY) или выберите источник ниже.

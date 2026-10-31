@@ -217,6 +217,25 @@ mod native_window_input_tests {
         // the Timeline drawn in the window the files were dropped on places them
         drop_files(&mut h, PanelKind::Timeline, egui::ViewportId::ROOT);
         assert_eq!((h.state().session.project.items.len(), clips(&h)), (items + 3, 1), "status: {}", h.state().ui.status);
+        // a floating Timeline drop at coordinates matching the root Source rect must not open Source
+        let source_rect = h.state().auto.find("panel.Source").unwrap().rect;
+        let source_at = egui::pos2(source_rect[0] + 10.0, source_rect[1] + 10.0);
+        let files = WindowFiles {
+            window: 2,
+            viewport: egui::ViewportId::from_hash_of("floating timeline"),
+            panel: PanelKind::Timeline,
+            pos: Some(source_at),
+            hovered: Vec::new(),
+            dropped: vec![Arc::new(OsFile(still.clone()))],
+        };
+        h.state_mut().window_files = vec![files];
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(h.state().session.state.source_item, None, "Timeline drop over root Source rect does not open Source");
+        // a floating Source panel opens the first imported item
+        drop_files(&mut h, PanelKind::Source, egui::ViewportId::from_hash_of("floating Source"));
+        assert_eq!((h.state().session.project.items.len(), clips(&h)), (items + 5, 1), "status: {}", h.state().ui.status);
+        assert!(h.state().session.state.source_item.is_some(), "dropped clip opens in floating Source");
     }
 
     /// `--control-input-only` drops a native window's own input as the main window's hook does.
@@ -233,5 +252,20 @@ mod native_window_input_tests {
         assert_eq!(kept.dropped_files.len(), 1);
         rewrite_native_window_input(true, &armed, &mut raw);
         assert!(raw.events.is_empty() && raw.hovered_files.is_empty() && raw.dropped_files.is_empty());
+    }
+
+    /// `over_panel` matches elements only in the tested viewport so a drop on root
+    /// never matches a panel floated into its own OS window at the same coordinates.
+    #[test]
+    fn over_panel_matches_only_in_the_drop_viewport() {
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let mut app = FilmcraftApp::new(s);
+        let floating_vp = egui::ViewportId::from_hash_of("floating Source");
+        let rect = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 200.0));
+        app.auto.add_in(floating_vp, "panel.Source", rect, "Source");
+        app.auto.begin_frame();
+        assert!(!app.over_panel(egui::pos2(150.0, 150.0), egui::ViewportId::ROOT, "panel.Source"));
+        assert!(app.over_panel(egui::pos2(150.0, 150.0), floating_vp, "panel.Source"));
     }
 }

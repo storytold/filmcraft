@@ -172,6 +172,35 @@ fn missing_translations_report() {
     }
 }
 
+/// Every string added for OS file drag-and-drop is present in all eleven non-English catalogs.
+#[test]
+fn os_file_drop_strings_are_in_all_eleven_catalogs() {
+    for lang in [
+        Language::De,
+        Language::Es,
+        Language::Fr,
+        Language::Id,
+        Language::It,
+        Language::Ja,
+        Language::Ko,
+        Language::PtBr,
+        Language::Ru,
+        Language::Uk,
+        Language::ZhCn,
+    ] {
+        for text in [
+            "Could not import the dropped files",
+            "Imported 1 file",
+            "Imported {n} files",
+            "Drop to import",
+            "Drop on the Timeline to place the clips",
+            "Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.",
+        ] {
+            assert!(lang.has(text), "{}: missing translation for {text:?}", lang.code());
+        }
+    }
+}
+
 /// Chinese switches and persists like the other languages when a Chinese face is available,
 /// and is refused (the interface stays as it was) without one.
 #[test]

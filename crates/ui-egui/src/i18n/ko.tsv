@@ -3631,3 +3631,9 @@
 	Flash Cue Point	Flash 큐 포인트
 	Invalid duration: {error}	잘못된 지속 시간: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Could not import the dropped files	놓은 파일을 가져올 수 없습니다
+	Imported 1 file	파일 1개 가져옴
+	Imported {n} files	파일 {n}개 가져옴
+	Drop to import	놓아서 가져오기
+	Drop on the Timeline to place the clips	타임라인에 놓아 클립 배치
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	프로젝트에 미디어를 추가합니다. 드래그 앤 드롭은 X11이 필요합니다(WAYLAND_DISPLAY를 설정 해제하고 실행). 또는 아래에서 소스를 선택하세요.
