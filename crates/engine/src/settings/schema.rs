@@ -252,6 +252,7 @@ pub(super) static CATEGORIES: &[Category] = &[
             b("general.showCompatibilityIssues", "Show system compatibility issues at startup", false),
             b("general.showProjectBinInTab", "Show \"Project:\" and \"Bin:\" in Project panel tab", false),
             b("general.showMaskTrackerPreview", "Show Mask Tracker Preview", false),
+            b("general.showExportRangeWarning", "Warn before exporting the entire sequence when In/Out points are set", true),
         ],
     },
     Category {

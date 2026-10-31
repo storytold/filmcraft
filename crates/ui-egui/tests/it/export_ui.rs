@@ -562,3 +562,83 @@ fn sample_size_lists_every_size_and_greys_out_what_the_format_cannot_store() {
     assert_eq!(d.app().ui.export.settings.audio.sample_format(), SampleFormat::Float32);
     d.snapshot("export-sample-size-prores");
 }
+
+#[test]
+fn range_defaults_to_in_out_and_entire_source_asks_first() {
+    let mut d = Driver::new("entire");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "entire", "no marks: the whole sequence");
+    // setting marks switches Range to Source In/Out; clearing them switches it back
+    d.exec("markers.markIn", json!({"seconds": 0.0}));
+    d.exec("markers.markOut", json!({"seconds": 0.2}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "inOut");
+    d.exec("markers.clearInOut", json!({}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "entire");
+    d.exec("markers.markIn", json!({"seconds": 0.0}));
+    d.exec("markers.markOut", json!({"seconds": 0.2}));
+    d.frames(2);
+    // a hand-picked Entire Source stays, but Send to Queue asks first
+    let loc = d.dir.to_string_lossy().to_string();
+    d.ok("ui.set", json!({"export": {"preset": "Waveform Audio 48 kHz 16-bit", "location": loc, "fileName": "entire", "range": "entire"}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "entire");
+    d.click("export.sendToQueue");
+    assert!(d.app().ui.export.confirm_entire.is_some());
+    assert!(d.queue().is_empty(), "nothing queued before answering");
+    for id in ["export.entireWarning.useInOut", "export.entireWarning.entire", "export.entireWarning.cancel", "export.entireWarning.dontShow"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.snapshot("export-entire-warning");
+    d.click("export.entireWarning.cancel");
+    assert!(d.app().ui.export.confirm_entire.is_none());
+    assert!(d.queue().is_empty());
+    // Use Source In/Out queues the marked range
+    d.click("export.sendToQueue");
+    d.click("export.entireWarning.useInOut");
+    assert_eq!(d.app().ui.export.range, "inOut");
+    let q = d.queue();
+    assert_eq!(q.len(), 1);
+    // Don't show again + Queue Entire Sequence: no more asking
+    d.ok("ui.set", json!({"export": {"range": "entire"}}));
+    d.frames(2);
+    d.click("export.sendToQueue");
+    d.click("export.entireWarning.dontShow");
+    d.click("export.entireWarning.entire");
+    assert!(!d.app().session.prefs.general.show_export_range_warning);
+    assert_eq!(d.queue().len(), 2);
+    d.click("export.sendToQueue");
+    assert!(d.app().ui.export.confirm_entire.is_none());
+    assert_eq!(d.queue().len(), 3);
+}
+
+#[test]
+fn range_follows_each_mark_and_a_sequence_switch_drops_the_warning() {
+    let mut d = Driver::new("marks");
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.frames(2);
+    d.exec("markers.markIn", json!({"seconds": 0.0}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "inOut", "an In point alone is enough");
+    d.ok("ui.set", json!({"export": {"range": "entire"}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "entire", "picked by hand");
+    // adding the Out point is a mark change too, though the sequence already had a mark
+    d.exec("markers.markOut", json!({"seconds": 0.2}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.range, "inOut");
+    // the warning is up when another sequence is opened over the control channel: it is dropped,
+    // so answering it can't export the other sequence
+    d.ok("ui.set", json!({"export": {"range": "entire"}}));
+    d.frames(2);
+    d.click("export.sendToQueue");
+    assert!(d.app().ui.export.confirm_entire.is_some());
+    let before = d.app().session.state.active_sequence;
+    d.exec("file.newSequence", json!({"name": "Other"}));
+    d.frames(2);
+    assert_ne!(d.app().session.state.active_sequence, before);
+    assert!(d.app().ui.export.confirm_entire.is_none());
+    assert!(d.queue().is_empty());
+}
