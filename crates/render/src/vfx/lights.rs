@@ -198,39 +198,6 @@ pub fn light_leaks(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
-/// RGB Split: red and blue sampled from opposite offsets (linear or radial from a centre).
-pub fn rgb_split(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let amt = fv(e, "amount", cx) * cx.px_scale;
-    if amt.abs() < 1e-3 {
-        return;
-    }
-    let radial = chv(e, "mode") == 1;
-    let ang = fv(e, "angle", cx).to_radians();
-    let c = pv(e, "center", cx, img);
-    let blend = fv(e, "blend", cx) / 100.0;
-    let maxd = ((img.w as f64).hypot(img.h as f64) / 2.0) as f32;
-    let src = img.clone();
-    let w = img.w;
-    img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-        for x in 0..w {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let (ox, oy) = if radial {
-                let (dx, dy) = (px - c.x as f32, py - c.y as f32);
-                (dx / maxd * amt, dy / maxd * amt)
-            } else {
-                (ang.cos() * amt, ang.sin() * amt)
-            };
-            let r = src.sample_bilinear(px - ox, py - oy);
-            let g = src.get(x, y);
-            let b = src.sample_bilinear(px + ox, py + oy);
-            let o = [r[0], g[1], b[2], r[3].max(g[3]).max(b[3])];
-            for k in 0..4 {
-                row[x * 4 + k] = o[k] + (g[k] - o[k]) * blend;
-            }
-        }
-    });
-}
-
 /// Volumetric Rays: light shafts radiating from a source point (radial blur of the highlights).
 pub fn volumetric_rays(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let c = pv(e, "center", cx, img);

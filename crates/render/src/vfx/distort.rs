@@ -344,38 +344,6 @@ pub fn wiggle(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     place(img, c, Vec2::new(ox, oy), sc.max(1e-3), rot);
 }
 
-/// Camera Shake: layered smooth noise on position, rotation and zoom, with optional motion blur.
-pub fn camera_shake(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let freq = fv(e, "frequency", cx) as f64;
-    let seed = fv(e, "seed", cx).max(0.0) as u64;
-    let amt = (fv(e, "amount", cx) * cx.px_scale) as f64;
-    let rot = fv(e, "rotation", cx) as f64;
-    let zoom = fv(e, "zoom", cx) as f64 / 100.0;
-    let octaves = fv(e, "complexity", cx).clamp(1.0, 6.0) as usize;
-    let blur = fv(e, "motion_blur", cx) as f64 / 100.0;
-    let fps = cx.env.map_or(30.0, |env| env.frame_rate());
-    let shake = |t: f64, ch: u64| -> f64 {
-        let (mut s, mut a, mut f, mut norm) = (0.0, 1.0, 1.0, 0.0);
-        for o in 0..octaves {
-            s += noise1(t * freq * f, ch * 10 + o as u64, seed) as f64 * a;
-            norm += a;
-            a *= 0.5;
-            f *= 2.0;
-        }
-        s / norm * 1.6
-    };
-    let c = Vec2::new(img.w as f64 / 2.0, img.h as f64 / 2.0);
-    let t0 = cx.seconds;
-    let n = if blur > 0.0 { 5 } else { 1 };
-    motion_blurred(img, n, |im, k| {
-        let t = t0 + k * blur / fps;
-        let off = Vec2::new(shake(t, 0) * amt, shake(t, 1) * amt);
-        // zoom in a little with the shake so edges stay covered
-        let s = 1.0 + zoom * (0.5 + 0.5 * shake(t, 3));
-        place(im, c, off, s, shake(t, 2) * rot);
-    });
-}
-
 /// Spacer: insets the layer inside margins (scaled to fit), with rounded corners and an optional
 /// background fill.
 pub fn spacer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
