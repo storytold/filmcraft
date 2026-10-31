@@ -93,6 +93,8 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Width lines wrap at, as a fraction of the frame width (0.05–1).
+    pub max_width: f32,
 }
 
 impl Default for CaptionStyle {
@@ -109,6 +111,7 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            max_width: 0.9,
         }
     }
 }
@@ -302,6 +305,15 @@ pub fn plain_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn styles_saved_without_a_wrap_width_wrap_at_90_percent() {
+        let old = r#"{"font":"Inter","size":54.0,"color":[255,255,255,255],"background":true,"background_color":[0,0,0,191],
+            "align":"Center","anchor":"Bottom","margin":0.08,"line_spacing":1.25,"outline":0.0,"outline_color":[0,0,0,255]}"#;
+        let st: CaptionStyle = serde_json::from_str(old).unwrap();
+        assert_eq!(st, CaptionStyle::default());
+        assert_eq!(st.max_width, 0.9);
+    }
 
     #[test]
     fn plain() {

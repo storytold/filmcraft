@@ -248,6 +248,7 @@ fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
             "background": t.style.background, "backgroundColor": hex(t.style.background_color),
             "align": format!("{:?}", t.style.align).to_lowercase(), "anchor": format!("{:?}", t.style.anchor).to_lowercase(),
             "margin": t.style.margin, "lineSpacing": t.style.line_spacing, "outline": t.style.outline, "outlineColor": hex(t.style.outline_color),
+            "maxWidth": t.style.max_width,
         },
         "captions": t.captions.iter().map(|c| caption_json(s, c)).collect::<Vec<_>>(),
     })
@@ -352,7 +353,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Caption Track Style",
             &[],
             None,
-            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
+            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"maxWidth":0.05..1=0.9 (fraction of the frame width lines wrap at)?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
             has_caption_track,
             |s, p| {
                 let tid = track_param(s, p).ok_or_else(|| {
@@ -395,6 +396,9 @@ pub fn commands() -> Vec<CommandSpec> {
                     }
                     if let Some(v) = f64_p(&p, "margin") {
                         y.margin = (v as f32).clamp(0.0, 0.45);
+                    }
+                    if let Some(v) = f64_p(&p, "maxWidth").filter(|v| v.is_finite()) {
+                        y.max_width = (v as f32).clamp(0.05, 1.0);
                     }
                     if let Some(v) = f64_p(&p, "lineSpacing") {
                         y.line_spacing = (v as f32).clamp(0.8, 4.0);

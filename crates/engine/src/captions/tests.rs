@@ -224,3 +224,16 @@ fn captions_copy_cut_and_paste() {
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(caption_spans(&s).len(), 1);
 }
+
+#[test]
+fn set_style_max_width() {
+    let mut s = demo();
+    s.execute("captions.add", json!({"text": "Wrapped", "seconds": 1.0})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style.max_width, 0.9);
+    s.execute("captions.setStyle", json!({"maxWidth": 0.52})).unwrap();
+    assert_eq!(s.execute("captions.list", json!({})).unwrap()["tracks"][0]["style"]["maxWidth"].as_f64().map(|v| v as f32), Some(0.52));
+    for (v, want) in [(json!(40), 1.0), (json!(-1), 0.05)] {
+        s.execute("captions.setStyle", json!({"maxWidth": v})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style.max_width, want);
+    }
+}
