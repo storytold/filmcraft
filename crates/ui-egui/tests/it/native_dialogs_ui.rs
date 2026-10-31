@@ -219,3 +219,71 @@ fn export_location_browse_works_with_the_runner_and_with_synchronous_pickers() {
     assert_eq!(d.app().ui.export.location, "/tmp/exports-b");
     assert!(!d.app().native_dialog_open());
 }
+
+/// A file the OS dropped on the window, as the native integration hands it to egui.
+#[derive(Debug)]
+struct OsFile(std::path::PathBuf);
+
+impl egui::DroppedFile for OsFile {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+impl Driver {
+    /// The window is asked to close (Quit, Cmd+Q, its close button) for one frame.
+    fn request_close(&mut self) {
+        self.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        self.frames(1);
+    }
+
+    /// Drops `path` on the window, as the OS does (egui only reports it once).
+    fn drop_file(&mut self, path: &std::path::Path) {
+        self.harness.input_mut().dropped_files.push(std::sync::Arc::new(OsFile(path.to_path_buf())));
+        self.frames(2);
+        self.harness.input_mut().dropped_files.clear();
+        self.frames(1);
+    }
+}
+
+/// While a dialog is open the app is modal: a file dropped on the window is swallowed (#2018).
+/// The same drop imports once the dialog has been answered.
+#[test]
+fn a_drop_while_a_dialog_is_open_is_swallowed_until_the_dialog_closes() {
+    let mut d = Driver::new(true);
+    let before = d.items();
+    d.ok("ui.menu.invoke", json!({"id": "file.import"}));
+    assert!(d.app().native_dialog_open());
+    d.drop_file(&wav());
+    d.frames(3);
+    assert_eq!(d.items(), before, "the drop is swallowed while the dialog is open");
+    // answered: the dialog's file is imported, and a fresh drop imports again
+    let (_, answer) = d.asked();
+    answer.send(vec![wav().to_string_lossy().into_owned()]).unwrap();
+    d.frames(2);
+    assert!(!d.app().native_dialog_open());
+    assert_eq!(d.items(), before + 1);
+    d.drop_file(&wav());
+    d.frames(3);
+    assert_eq!(d.items(), before + 2, "the drop imports once the dialog is closed");
+}
+
+/// A close request (Cmd+Q, the red button, the OS) while a dialog is open is refused with a
+/// status note: the dialog stays open and the unsaved-changes prompt does not appear (#2018).
+/// Once the dialog is answered, the close goes through the normal flow again (covered by the
+/// quit-flow tests).
+#[test]
+fn a_close_request_while_a_dialog_is_open_is_refused_with_a_status_note() {
+    let mut d = Driver::new(true);
+    d.ok("ui.menu.invoke", json!({"id": "file.import"}));
+    assert!(d.app().native_dialog_open());
+    d.request_close();
+    d.frames(2);
+    assert!(d.app().native_dialog_open(), "the dialog stays open");
+    assert!(d.app().ui.clip_dialog.is_none(), "no unsaved-changes prompt");
+    assert!(d.app().ui.status.contains("file dialog is already open"), "{}", d.app().ui.status);
+}

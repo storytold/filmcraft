@@ -112,6 +112,11 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
 /// changes it is cancelled and Save / Don't Save / Cancel is asked first, as in Premiere (#266).
 /// Returns whether the close must be cancelled.
 pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
+    // a file dialog is open: the app is modal, so the close is refused with a note (#2018)
+    if app.native_dialog_open() {
+        app.ui.status = tl!("A file dialog is already open").into();
+        return true;
+    }
     if app.quit_confirmed || !app.session.is_dirty() {
         return false;
     }
