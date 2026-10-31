@@ -29,7 +29,8 @@ impl Driver {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
-        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
+        // frames 1/60 s apart, so that two clicks make a double-click
+        let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000);
         if shots.is_some() {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
@@ -233,6 +234,26 @@ fn effect_controls_reset_button_keeps_keyframes() {
     d.shot("effect-controls-reset");
     let (keys, value) = d.scale(&clip);
     assert_eq!(keys.len(), 2, "the keyframe stays and the default is keyed at the playhead: {keys:?}");
+    assert_eq!(value, 100.0);
+}
+
+/// Double-clicking a property's name resets it, as its reset button does; a single click doesn't.
+#[test]
+fn effect_controls_double_clicking_a_property_name_resets_it() {
+    let (mut d, clip) = Driver::demo();
+    d.exec("effects.setParam", json!({"clip": clip.id, "effect": "motion", "param": "scale", "value": 150.0}));
+    d.frames(2);
+    let [x, y, w, h] = d.rect("effectControls.motion.scale.name");
+    let (x, y) = (x + w * 0.3, y + h * 0.5);
+    d.ok("ui.click", json!({"x": x, "y": y}));
+    d.frames(3);
+    assert_eq!(d.scale(&clip).1, 150.0, "a single click leaves the value");
+    // half a second later, or egui counts the next clicks as a triple click
+    d.frames(30);
+    d.ok("ui.click", json!({"x": x, "y": y, "count": 2}));
+    d.frames(3);
+    let (keys, value) = d.scale(&clip);
+    assert!(keys.is_empty(), "{keys:?}");
     assert_eq!(value, 100.0);
 }
 
