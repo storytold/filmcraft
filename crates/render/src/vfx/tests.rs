@@ -1191,3 +1191,488 @@ fn transform_shutter_uses_the_sequence_frame_rate_without_env() {
         assert!(delta(frame) > 1e-3, "frame {frame} moves but is sharp");
     }
 }
+
+/// A frame that counts how many are alive at once.
+struct Live<'a> {
+    k: usize,
+    live: &'a std::sync::atomic::AtomicUsize,
+}
+
+impl<'a> Live<'a> {
+    fn new(k: usize, live: &'a std::sync::atomic::AtomicUsize, peak: &std::sync::atomic::AtomicUsize) -> Self {
+        use std::sync::atomic::Ordering::SeqCst;
+        peak.fetch_max(live.fetch_add(1, SeqCst) + 1, SeqCst);
+        Live { k, live }
+    }
+}
+
+impl Drop for Live<'_> {
+    fn drop(&mut self) {
+        self.live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn stabilizer_analysis_keeps_only_a_chunk_of_frames_in_memory() {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    let (live, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    // a long clip (#1895: every frame was prepared before any was tracked)
+    let n = 400;
+    let steps = super::temporal::chunked_steps(n, 8, &|| false, &|k| Some(Live::new(k, &live, &peak)), &|a: &Live, b: &Live| {
+        Affine::translate((b.k - a.k) as f64, a.k as f64)
+    })
+    .expect("not cancelled");
+    assert_eq!(steps.len(), n - 1);
+    // every pair is tracked once, in order, also across chunk boundaries
+    assert!(steps.iter().enumerate().all(|(k, s)| s.e == 1.0 && s.f == k as f64), "steps out of order");
+    assert!(peak.load(SeqCst) <= 9, "{} frames alive at once", peak.load(SeqCst));
+    assert_eq!(live.load(SeqCst), 0, "frames are released");
+}
+
+#[test]
+fn stabilizer_analysis_stops_when_cancelled_and_skips_missing_frames() {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    let fetched = AtomicUsize::new(0);
+    let r = super::temporal::chunked_steps(
+        1000,
+        8,
+        &|| fetched.load(SeqCst) >= 20,
+        &|k| {
+            fetched.fetch_add(1, SeqCst);
+            Some(k)
+        },
+        &|_: &usize, _: &usize| Affine::IDENTITY,
+    );
+    assert!(r.is_none(), "a cancelled analysis gives no path");
+    assert!(fetched.load(SeqCst) < 100, "it stopped early: {} frames", fetched.load(SeqCst));
+    // a frame that can't be decoded leaves identity steps around it
+    let steps =
+        super::temporal::chunked_steps(5, 2, &|| false, &|k| (k != 2).then_some(k), &|_: &usize, _: &usize| Affine::translate(1.0, 0.0)).expect("steps");
+    assert_eq!(steps.iter().map(|s| s.e).collect::<Vec<_>>(), vec![1.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn stabilizer_analysis_runs_here_where_no_pool_can_be_built() {
+    // the web build can't make threads: its own pool fails to build, and the analysis runs on this
+    // thread (rayon's global pool runs everything there); a native build without a pool gives up
+    // rather than run inline on a render worker (the deadlock below)
+    assert_eq!(super::temporal::run_analysis(None, true, || Some(7)), Some(7));
+    assert_eq!(super::temporal::run_analysis(None, false, || Some(7)), None);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().expect("pool");
+    assert_eq!(super::temporal::run_analysis(Some(&pool), false, || Some(7)), Some(7));
+}
+
+#[test]
+fn stabilizer_analysis_does_not_deadlock_inside_a_frame_parallel_render() {
+    // export renders frames with rayon; a frame that needs an analysis must not block the pool
+    // (the worker holding the analysis lock stole another frame that waited for the same lock)
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let Ok(outer) = rayon::ThreadPoolBuilder::new().num_threads(4).build() else {
+            let _ = tx.send(false);
+            return;
+        };
+        let ok = outer.install(|| {
+            (0..12u64)
+                .into_par_iter()
+                .map(|i| {
+                    let env = ClipEnv { w: 96, h: 72, fps: 24.0, secs: 1.0, now: 0.0, key: 0xDEAD_0000 + i, seq: (96, 72), pic: shaky };
+                    stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some()
+                })
+                .collect::<Vec<_>>()
+        });
+        let _ = tx.send(ok.iter().all(|&b| b));
+    });
+    assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(60)), Ok(true), "the analyses did not finish (deadlock)");
+}
+
+/// A nested sequence's clip: fetching its frames renders the nest, whose own clips have a Warp
+/// Stabilizer that isn't analysed yet (a later clip every eight frames).
+struct NestEnv(ClipEnv, Option<Arc<std::sync::atomic::AtomicBool>>);
+impl FxEnv for NestEnv {
+    fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
+        self.0.frame(dt, upto)
+    }
+    fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+        let k = ((self.0.now + dt) * self.0.fps).round() as u64;
+        let inner = ClipEnv { key: self.0.key ^ 0x1_0000 ^ (k / 8), secs: 0.5, ..ClipEnv { ..self.0 } };
+        // a nested clip without its path shows another picture, as an unstabilised one would
+        let shown = if stabilizer_path(&inner, 0.0, filmcraft_project::TrackMethod::Position, false).is_some() {
+            0.0
+        } else {
+            if let Some(skipped) = &self.1 {
+                skipped.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            3.0
+        };
+        let t = ((self.0.now + dt) * self.0.fps).round() / self.0.fps + shown / self.0.fps;
+        Some(self.0.render(t, scale))
+    }
+    fn track(&self, index: usize) -> Option<Image> {
+        self.0.track(index)
+    }
+    fn layer_to_output(&self) -> Affine {
+        self.0.layer_to_output()
+    }
+    fn clip_seconds(&self) -> f64 {
+        self.0.clip_seconds()
+    }
+    fn clip_offset(&self) -> f64 {
+        self.0.clip_offset()
+    }
+    fn frame_rate(&self) -> f64 {
+        self.0.frame_rate()
+    }
+    fn media_timecode(&self) -> String {
+        self.0.media_timecode()
+    }
+    fn file_name(&self) -> String {
+        self.0.file_name()
+    }
+    fn sequence_name(&self) -> String {
+        self.0.sequence_name()
+    }
+    fn sequence_size(&self) -> (u32, u32) {
+        self.0.sequence_size()
+    }
+    fn source_size(&self) -> (u32, u32) {
+        self.0.source_size()
+    }
+    fn clip_key(&self) -> u64 {
+        self.0.clip_key()
+    }
+}
+
+#[test]
+fn stabilizer_analysis_of_a_nest_does_not_deadlock_on_its_clips_analyses() {
+    // the nest's analysis fetches its frames, which analyse the nested clips: they must not wait
+    // for the nest's analysis to end (it waits for them)
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let nest = || NestEnv(ClipEnv { w: 96, h: 72, fps: 24.0, secs: 1.0, now: 0.0, key: 0xBEEF_0000, seq: (96, 72), pic: shaky }, None);
+        let method = filmcraft_project::TrackMethod::Position;
+        let cold = stabilizer_path(&nest(), 0.0, method, false).map(|p| p.steps.clone());
+        // the same analysis with every nested clip analysed first
+        super::temporal::clear_stabilizer_cache();
+        for k in 0..24 / 8 + 1 {
+            let inner = ClipEnv { key: 0xBEEF_0000 ^ 0x1_0000 ^ k, secs: 0.5, ..nest().0 };
+            let _ = stabilizer_path(&inner, 0.0, method, false);
+        }
+        let warm = stabilizer_path(&nest(), 0.0, method, false).map(|p| p.steps.clone());
+        let _ = tx.send((cold, warm));
+    });
+    let (cold, warm) = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("the nest's analysis did not finish (deadlock)");
+    assert!(cold.is_some(), "the nest has a path");
+    // a path measured on a mix of stabilised and unstabilised nested frames is not kept
+    assert_eq!(cold, warm, "the nest's path depends on which nested clips were analysed first");
+}
+
+/// A clip counting its fetches and running `before` (given the number of fetches before) ahead of each.
+/// `shifted` (given the same number) says to draw that frame three frames later, as a nest draws a
+/// nested clip it could not stabilise.
+struct ProbeEnv {
+    clip: ClipEnv,
+    fetches: std::sync::atomic::AtomicUsize,
+    before: Box<dyn Fn(usize) + Send + Sync>,
+    shifted: Option<Box<dyn Fn(usize) -> bool + Send + Sync>>,
+    /// Given the frame's index: draw it at three quarters of the size asked for (it may wait first).
+    narrow: Option<Box<dyn Fn(usize) -> bool + Send + Sync>>,
+    /// Every frame is unavailable (the source fails to deliver it).
+    gone: bool,
+}
+impl FxEnv for ProbeEnv {
+    fn frame(&self, dt: f64, upto: &EffectInstance) -> Option<Image> {
+        self.clip.frame(dt, upto)
+    }
+    fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+        let n = self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        (self.before)(n);
+        if self.gone {
+            return None;
+        }
+        let shifted = self.shifted.as_ref().is_some_and(|f| f(n));
+        let t = ((self.clip.now + dt) * self.clip.fps).round() / self.clip.fps + if shifted { 3.0 / self.clip.fps } else { 0.0 };
+        let k = (dt * self.clip.fps).round().max(0.0) as usize;
+        let scale = if self.narrow.as_ref().is_some_and(|f| f(k)) { scale * 0.75 } else { scale };
+        Some(self.clip.render(t, scale))
+    }
+    fn track(&self, index: usize) -> Option<Image> {
+        self.clip.track(index)
+    }
+    fn layer_to_output(&self) -> Affine {
+        self.clip.layer_to_output()
+    }
+    fn clip_seconds(&self) -> f64 {
+        self.clip.clip_seconds()
+    }
+    fn clip_offset(&self) -> f64 {
+        self.clip.clip_offset()
+    }
+    fn frame_rate(&self) -> f64 {
+        self.clip.frame_rate()
+    }
+    fn media_timecode(&self) -> String {
+        self.clip.media_timecode()
+    }
+    fn file_name(&self) -> String {
+        self.clip.file_name()
+    }
+    fn sequence_name(&self) -> String {
+        self.clip.sequence_name()
+    }
+    fn sequence_size(&self) -> (u32, u32) {
+        self.clip.sequence_size()
+    }
+    fn source_size(&self) -> (u32, u32) {
+        self.clip.source_size()
+    }
+    fn clip_key(&self) -> u64 {
+        self.clip.clip_key()
+    }
+}
+
+#[test]
+fn stabilizer_analysis_is_not_repeated_for_a_skip_in_another_analysis() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    // a nest skips a nested clip another request is analysing; an unrelated clip analysed at the
+    // same time measured nothing of that and keeps its first run
+    // (the unrelated clip waits on a worker for the nest's skip, which needs another one)
+    if super::temporal::analysis_pool_threads() < 2 {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let method = filmcraft_project::TrackMethod::Position;
+        let clip = |key| ClipEnv { w: 96, h: 72, fps: 24.0, secs: 1.0, now: 0.0, key, seq: (96, 72), pic: shaky };
+        // the nest's first nested clip, analysed (slowly) by someone else: its claim is held from
+        // this plain thread, not by an analysis occupying a pool worker
+        let held = super::temporal::Analysing::claim(super::temporal::path_key(0xBEEF_1000 ^ 0x1_0000, method, false));
+        let skipped = Arc::new(AtomicBool::new(false));
+        // the unrelated clip waits for the nest's skip before it finishes its first frame
+        let other = {
+            let skipped = skipped.clone();
+            std::thread::spawn(move || {
+                let env = ProbeEnv {
+                    clip: clip(0xCAFE_0000),
+                    fetches: Default::default(),
+                    shifted: None,
+                    narrow: None,
+                    gone: false,
+                    before: Box::new(move |n| {
+                        if n == 0 {
+                            wait_for(&skipped)
+                        }
+                    }),
+                };
+                let path = stabilizer_path(&env, 0.0, method, false);
+                (path.is_some(), env.fetches.load(SeqCst))
+            })
+        };
+        let nest = std::thread::spawn({
+            let skipped = skipped.clone();
+            move || stabilizer_path(&NestEnv(clip(0xBEEF_1000), Some(skipped)), 0.0, method, false).is_some()
+        });
+        let other = other.join();
+        drop(held);
+        let _ = nest.join();
+        let _ = tx.send(other.ok());
+    });
+    let (some, fetches) = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("analyses finished").expect("analysis ran");
+    assert!(some, "the unrelated clip has a path");
+    assert_eq!(fetches, 24, "the unrelated clip was analysed once, not repeated for another analysis' skip");
+}
+
+/// An outer nest of middle nests of one leaf clip that someone else is analysing (`base` keys the
+/// clips apart from other tests'). The leaf's claim is held until the run ends or, with
+/// `release_at`, until the outer's fetch of that frame, after which the middle nests analyse the
+/// leaf themselves. Returns the outer's steps (None: its path was not kept) and, for `release_at`,
+/// the steps of the same outer analysed again with the leaf cached from the start.
+fn nest_in_a_nest(base: u64, release_at: Option<usize>) -> (Option<Vec<Affine>>, Option<Vec<Affine>>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let method = filmcraft_project::TrackMethod::Position;
+        let clip = |key| ClipEnv { w: 96, h: 72, fps: 24.0, secs: 0.25, now: 0.0, key, seq: (96, 72), pic: shaky };
+        // The leaf is "being analysed elsewhere": its claim is held from this plain thread, so no
+        // pool worker is occupied (a one-worker pool could not run the outer then), and dropped
+        // with `claim` however this ends.
+        let leaf_key = super::temporal::path_key(base ^ 0x1EAF, method, false);
+        let claim = Arc::new(std::sync::Mutex::new(super::temporal::Analysing::claim(leaf_key)));
+        // one middle nest per outer frame, so they don't claim each other's analyses
+        let middle = move |n: usize| ProbeEnv {
+            clip: clip(base ^ (0x31DD + n as u64)),
+            fetches: Default::default(),
+            before: Box::new(|_| {}),
+            shifted: Some(Box::new(move |_| stabilizer_path(&clip(base ^ 0x1EAF), 0.0, method, false).is_none())),
+            narrow: None,
+            gone: false,
+        };
+        let outer = {
+            let claim = claim.clone();
+            ProbeEnv {
+                clip: clip(base ^ 0x0A7E),
+                fetches: Default::default(),
+                before: Box::new(move |n| {
+                    if release_at == Some(n) {
+                        claim.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                    }
+                }),
+                shifted: Some(Box::new(move |n| stabilizer_path(&middle(n), 0.0, method, false).is_none())),
+                narrow: None,
+                gone: false,
+            }
+        };
+        let first = stabilizer_path(&outer, 0.0, method, false).map(|p| p.steps.clone());
+        claim.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let warm = release_at.and_then(|_| {
+            // the leaf is cached now: nothing is skipped
+            super::temporal::clear_stabilizer_cache();
+            let _ = stabilizer_path(&clip(base ^ 0x1EAF), 0.0, method, false);
+            let outer = ProbeEnv {
+                clip: clip(base ^ 0x0A7E),
+                fetches: Default::default(),
+                shifted: None,
+                narrow: None,
+                gone: false,
+                before: Box::new(move |n| drop(stabilizer_path(&middle(n), 0.0, method, false))),
+            };
+            stabilizer_path(&outer, 0.0, method, false).map(|p| p.steps.clone())
+        });
+        let _ = tx.send((first, warm));
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(60)).expect("the analyses finished")
+}
+
+#[test]
+fn stabilizer_analysis_of_a_nest_in_a_nest_is_not_kept_mixed() {
+    // the leaf is analysed elsewhere for the whole run, so the middle nest gives up on it and is
+    // drawn unstabilised; the outer nest measured that too and must not keep its path either
+    assert_eq!(nest_in_a_nest(0x1000_0000, None).0, None, "a path measured on unstabilised nested frames was kept");
+}
+
+#[test]
+fn stabilizer_analysis_of_a_nest_is_not_kept_when_the_leaf_finishes_mid_way() {
+    // the leaf's claim is released at the outer's seventh fetch, the first of its second run (a run is the
+    // outer's six frames): the first run was drawn entirely on unstabilised middle nests and is
+    // thrown away; what is kept (if anything) is a later run, measured with the leaf analysed
+    let (first, warm) = nest_in_a_nest(0x2000_0000, Some(6));
+    assert!(warm.is_some(), "the outer has a path once the leaf is analysed");
+    if first.is_some() {
+        assert_eq!(first, warm, "the outer kept a path measured partly on unstabilised nested frames");
+    }
+}
+
+fn wait_for(flag: &Arc<std::sync::atomic::AtomicBool>) {
+    wait_for_up_to(flag, 20);
+}
+
+fn wait_for_up_to(flag: &Arc<std::sync::atomic::AtomicBool>, secs: u64) {
+    let start = std::time::Instant::now();
+    while !flag.load(std::sync::atomic::Ordering::SeqCst) && start.elapsed() < std::time::Duration::from_secs(secs) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn stabilizer_analysis_hands_its_cancellation_to_the_nested_clips_it_fetches() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+    // the request is cancelled while the outer is analysed; the frame it is fetching analyses a
+    // nested clip on a pool worker, which has to see the request's flag and stop at once
+    let method = filmcraft_project::TrackMethod::Position;
+    let clip = |key| ClipEnv { w: 96, h: 72, fps: 24.0, secs: 1.0, now: 0.0, key, seq: (96, 72), pic: shaky };
+    let flag = Arc::new(AtomicBool::new(false));
+    let nested_fetches = Arc::new(AtomicUsize::new(0));
+    let outer = {
+        let (flag, nested_fetches) = (flag.clone(), nested_fetches.clone());
+        ProbeEnv {
+            clip: clip(0x3000_0001),
+            fetches: Default::default(),
+            before: Box::new(move |n| {
+                if n != 0 {
+                    return;
+                }
+                flag.store(true, SeqCst);
+                let counted = nested_fetches.clone();
+                let nested = ProbeEnv {
+                    clip: clip(0x3000_0002),
+                    fetches: Default::default(),
+                    before: Box::new(move |_| {
+                        counted.fetch_add(1, SeqCst);
+                    }),
+                    shifted: None,
+                    narrow: None,
+                    gone: false,
+                };
+                let _ = stabilizer_path(&nested, 0.0, method, false);
+            }),
+            shifted: None,
+            narrow: None,
+            gone: false,
+        }
+    };
+    let path = filmcraft_media::cancel::with_cancel(&flag, || stabilizer_path(&outer, 0.0, method, false));
+    assert!(path.is_none(), "a cancelled analysis has no path");
+    assert_eq!(nested_fetches.load(SeqCst), 0, "the nested clip was analysed for a cancelled request");
+}
+
+#[test]
+fn stabilizer_analysis_takes_its_size_from_the_first_frame_whichever_fetch_ends_first() {
+    // an image sequence of mixed sizes: the first frame is slow, so later (narrower) frames end
+    // first; the path is still in the first frame's size, every time
+    let method = filmcraft_project::TrackMethod::Position;
+    for run in 0..4u64 {
+        let env = ProbeEnv {
+            clip: ClipEnv { w: 96, h: 72, fps: 24.0, secs: 0.25, now: 0.0, key: 0x4000_0000 + run, seq: (96, 72), pic: shaky },
+            fetches: Default::default(),
+            before: Box::new(|_| {}),
+            shifted: None,
+            narrow: Some(Box::new(|k| {
+                if k == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+                k != 0
+            })),
+            gone: false,
+        };
+        let path = stabilizer_path(&env, 0.0, method, false).expect("a path");
+        assert_eq!((path.w, path.h), (96, 72), "run {run}: the path took the size of a later frame");
+    }
+}
+
+#[test]
+fn stabilizer_analysis_that_gives_up_on_a_nested_clip_is_not_kept() {
+    // every other middle nest fails to deliver any frame of its own, so its analysis ends without a
+    // path; the outer drew those nests unstabilised, so the path it measured is mixed, whatever the
+    // way the middle's analysis ended
+    let method = filmcraft_project::TrackMethod::Position;
+    let clip = |key| ClipEnv { w: 96, h: 72, fps: 24.0, secs: 0.25, now: 0.0, key, seq: (96, 72), pic: shaky };
+    let middle = move |n: usize| ProbeEnv {
+        clip: clip(0x5000_0000 + n as u64),
+        fetches: Default::default(),
+        before: Box::new(|_| {}),
+        shifted: None,
+        narrow: None,
+        gone: n.is_multiple_of(2),
+    };
+    let outer = ProbeEnv {
+        clip: clip(0x5000_ffff),
+        fetches: Default::default(),
+        before: Box::new(|_| {}),
+        shifted: Some(Box::new(move |n| stabilizer_path(&middle(n), 0.0, method, false).is_none())),
+        narrow: None,
+        gone: false,
+    };
+    assert!(stabilizer_path(&outer, 0.0, method, false).is_none(), "a path measured partly on unstabilised nested frames was kept");
+}
+
+#[test]
+fn stabilizer_analysis_ignores_frames_of_another_size() {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    let tracked = AtomicUsize::new(0);
+    let a = super::temporal::steps_between_same_size(&(8usize, 8usize), &(8usize, 6usize), |_, _| {
+        tracked.fetch_add(1, SeqCst);
+        Affine::translate(1.0, 0.0)
+    });
+    assert_eq!((a.e, tracked.load(SeqCst)), (0.0, 0), "same width, different height: identity, nothing tracked");
+    let b = super::temporal::steps_between_same_size(&(8usize, 8usize), &(8usize, 8usize), |_, _| Affine::translate(1.0, 0.0));
+    assert_eq!(b.e, 1.0);
+}

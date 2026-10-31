@@ -8,7 +8,9 @@
 //! the result (crop / auto-scale / synthesise edges). Perspective and Subspace Warp use the
 //! similarity model (no per-region warping).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_project::{EffectInstance, TrackMethod};
@@ -241,10 +243,178 @@ pub fn clear_stabilizer_cache() {
     }
 }
 
+/// How many frames the analysis prepares at once. A prepared frame is the gray picture and its
+/// pyramid (about 8 MB at the detailed size), so the working set stays near 16 frames however
+/// long the clip is (#1895: every frame of a 15 s clip at once took 3 GB).
+const ANALYSIS_CHUNK: usize = 16;
+
+/// The clips being analysed (their path keys): several renders asking for the same clip's path
+/// (playback workers) must not each run it. Other clips don't wait: a nest's analysis fetches its
+/// frames by rendering the nest, which analyses the nested clips, so one lock for every clip would
+/// have the nest wait for its clips and its clips for the nest (a deadlock).
+static ANALYSING: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+thread_local! {
+    /// The skips of the analysis whose frame this thread is fetching (the pool's workers don't
+    /// share one analysis, and a nest's frame is rendered on the worker that fetches it).
+    static SKIPS: RefCell<Option<Arc<AtomicUsize>>> = const { RefCell::new(None) };
+}
+
+/// Run `f` counting the clips it draws unstabilised (claimed elsewhere, see `stabilizer_path`) in
+/// `skips`; the worker's previous count is back after, also for an analysis run inline within one.
+fn counting_skips<R>(skips: &Arc<AtomicUsize>, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Arc<AtomicUsize>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SKIPS.with(|c| *c.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(SKIPS.with(|c| c.borrow_mut().replace(skips.clone())));
+    f()
+}
+
+/// Counts a clip drawn unstabilised for the analysis this thread is fetching a frame of: it
+/// measured some nested frames stabilised and some not, so its result is not kept.
+fn note_skip() {
+    SKIPS.with(|c| {
+        if let Some(n) = c.borrow().as_ref() {
+            n.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+}
+
+/// How often a mixed analysis is run again (the nested clips are cached by then) before giving up.
+const ANALYSIS_ATTEMPTS: usize = 3;
+
+/// `key` marked as being analysed until this is dropped.
+pub(crate) struct Analysing(u64);
+
+impl Analysing {
+    /// Marks `key` as being analysed, or None when it already is.
+    pub(crate) fn claim(key: u64) -> Option<Self> {
+        let mut keys = ANALYSING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if keys.contains(&key) {
+            return None;
+        }
+        keys.push(key);
+        Some(Analysing(key))
+    }
+}
+
+impl Drop for Analysing {
+    fn drop(&mut self) {
+        ANALYSING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|k| *k != self.0);
+    }
+}
+
+/// The pool the analysis runs on, apart from the one that renders frames (None: it can't be built,
+/// as on the web build, which can't make threads).
+fn analysis_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().thread_name(|i| format!("stabilizer-{i}")).build().ok()).as_ref()
+}
+
+/// How many workers the analysis pool has (0: none can be built).
+#[cfg(test)]
+pub(crate) fn analysis_pool_threads() -> usize {
+    analysis_pool().map_or(0, rayon::ThreadPool::current_num_threads)
+}
+
+/// Run `job` on the analysis' own `pool`, entered from a plain thread: a worker of the pool that
+/// renders frames would steal another frame while it waits (also when it waits on a foreign pool),
+/// and that frame would wait for `ANALYSING` under the worker that holds it (a deadlock). Without a
+/// pool, `inline` runs it on this thread: where threads can't be made (the web build) rayon's
+/// global pool runs everything here, so nothing can steal. A native build without a pool gives up.
+/// Asked on one of the pool's own workers (a nest's analysis fetching a frame that analyses a
+/// nested clip), it runs right there: on a new thread it would queue behind workers that wait for it.
+pub(crate) fn run_analysis<R: Send>(pool: Option<&rayon::ThreadPool>, inline: bool, job: impl FnOnce() -> Option<R> + Send) -> Option<R> {
+    let Some(pool) = pool else { return if inline { job() } else { None } };
+    if pool.current_thread_index().is_some() {
+        return job();
+    }
+    std::thread::scope(|s| {
+        let job = std::thread::Builder::new().name("stabilizer-analysis".into()).spawn_scoped(s, || pool.install(job));
+        job.ok()?.join().ok()?
+    })
+}
+
+/// The step between two prepared frames of sizes `a` and `b`: `track` when they match in both
+/// dimensions (image sequences can mix sizes), else identity.
+pub(crate) fn steps_between_same_size(a: &(usize, usize), b: &(usize, usize), track: impl FnOnce(&(usize, usize), &(usize, usize)) -> Affine) -> Affine {
+    if a == b { track(a, b) } else { Affine::IDENTITY }
+}
+
+/// The frame-to-frame steps of `n` frames: `fetch(k)` prepares frame `k` (None: unavailable) and
+/// `step(a, b)` tracks from one prepared frame to the next. Frames are prepared `chunk` at a time
+/// and dropped once their steps are known, the last of a chunk is kept for the next one. Returns
+/// None when `cancelled` says so (checked before every chunk).
+pub(crate) fn chunked_steps<T: Send + Sync>(
+    n: usize,
+    chunk: usize,
+    cancelled: &(dyn Fn() -> bool + Sync),
+    fetch: &(dyn Fn(usize) -> Option<T> + Sync),
+    step: &(dyn Fn(&T, &T) -> Affine + Sync),
+) -> Option<Vec<Affine>> {
+    let chunk = chunk.max(1);
+    let mut steps = Vec::with_capacity(n.saturating_sub(1));
+    let mut carry: Option<Option<T>> = None;
+    let mut next = 0;
+    while next < n {
+        if cancelled() {
+            return None;
+        }
+        let end = (next + chunk).min(n);
+        let fresh: Vec<Option<T>> = (next..end).into_par_iter().map(|k| if cancelled() { None } else { fetch(k) }).collect();
+        let mut frames: Vec<Option<T>> = Vec::with_capacity(fresh.len() + 1);
+        frames.extend(carry.take());
+        frames.extend(fresh);
+        let pairs: Vec<Affine> = (0..frames.len().saturating_sub(1))
+            .into_par_iter()
+            .map(|k| match (frames.get(k), frames.get(k + 1)) {
+                (Some(Some(a)), Some(Some(b))) => step(a, b),
+                _ => Affine::IDENTITY,
+            })
+            .collect();
+        steps.extend(pairs);
+        carry = frames.pop();
+        next = end;
+    }
+    (!cancelled()).then_some(steps)
+}
+
+/// The key a clip's analysis is cached and claimed under.
+pub(crate) fn path_key(clip_key: u64, method: TrackMethod, detailed: bool) -> u64 {
+    clip_key ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1)
+}
+
 /// Analyse (or fetch the cached analysis of) the clip `env` describes.
 pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<Arc<StabilizerPath>> {
-    let key = env.clip_key() ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1);
-    if let Some(p) = path_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+    let key = path_key(env.clip_key(), method, detailed);
+    let cached = || path_cache().lock().ok().and_then(|c| c.get(&key).cloned());
+    if let Some(p) = cached() {
+        return Some(p);
+    }
+    // wait while this clip is being analysed elsewhere, giving up when this request is cancelled
+    let _turn = loop {
+        if let Some(turn) = Analysing::claim(key) {
+            break turn;
+        }
+        // An analysis worker never waits: it may hold this very clip's analysis further up its
+        // stack (rayon runs other queued work while it waits on its own), or wait on a worker that
+        // waits on it. The nest frame it fetches gets this clip unstabilised instead.
+        if analysis_pool().is_some_and(|p| p.current_thread_index().is_some()) {
+            note_skip();
+            return None;
+        }
+        if filmcraft_media::cancel::cancelled() {
+            return None;
+        }
+        if let Some(p) = cached() {
+            return Some(p);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    if let Some(p) = cached() {
         return Some(p);
     }
     let fps = env.frame_rate().max(1.0);
@@ -252,28 +422,57 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
     let src_w = env.source_size().0.max(1) as f32;
     let target_w = if detailed { 960.0 } else { 480.0 };
     let scale = (target_w / src_w).min(1.0);
-    let frames: Vec<Option<Prepared>> = (0..n)
-        .into_par_iter()
-        .map(|k| {
-            if filmcraft_media::cancel::cancelled() {
-                return None;
-            }
-            env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f)))
+    // the pool's workers don't carry this thread's cancellation flag; hand it to them
+    let hints = filmcraft_media::cancel::Context::current();
+    let cancelled = || hints.clone().run(filmcraft_media::cancel::cancelled);
+    // every frame has the size of the first one that exists: the fetches end in any order, so the
+    // earliest index wins, not the first to finish
+    let dims: Mutex<Option<(usize, (usize, usize))>> = Mutex::new(None);
+    let skips = Arc::new(AtomicUsize::new(0));
+    let fetch = |k: usize| {
+        // the frame is fetched on a pool worker: the request's flag covers what it analyses too
+        let frame = hints.clone().run(|| counting_skips(&skips, || env.source_frame(k as f64 / fps - now, scale)));
+        let p = frame.map(|f| Prepared::new(gray_of(&f)))?;
+        let mut first = dims.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if first.is_none_or(|(at, _)| k < at) {
+            *first = Some((k, (p.base().w, p.base().h)));
+        }
+        drop(first);
+        Some(p)
+    };
+    let track = |a: &Prepared, b: &Prepared| {
+        let m = 8.0;
+        let (w, h) = (a.base().w as f64, a.base().h as f64);
+        let region = [Vec2::new(m, m), Vec2::new(w - m, m), Vec2::new(w - m, h - m), Vec2::new(m, h - m)];
+        steps_between_same_size(&(a.base().w, a.base().h), &(b.base().w, b.base().h), |_, _| {
+            track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY)
         })
-        .collect();
-    if filmcraft_media::cancel::cancelled() {
-        return None;
+    };
+    // A run that skipped a nested clip's analysis is thrown away and repeated; one still mixed
+    // after the attempts is returned uncached, so a later request retries.
+    let mut steps = None;
+    for _ in 0..ANALYSIS_ATTEMPTS {
+        let skipped = skips.load(Ordering::SeqCst);
+        // no run (cancelled, no pool, a worker panicked): drawn unstabilised for whoever fetched this frame
+        let Some(run) = run_analysis(analysis_pool(), cfg!(target_family = "wasm"), || chunked_steps(n, ANALYSIS_CHUNK, &cancelled, &fetch, &track)) else {
+            note_skip();
+            return None;
+        };
+        if skips.load(Ordering::SeqCst) == skipped {
+            steps = Some(run);
+            break;
+        }
     }
-    let (w, h) = frames.iter().flatten().next().map(|p| (p.base().w, p.base().h))?;
-    let m = 8.0;
-    let region = [Vec2::new(m, m), Vec2::new(w as f64 - m, m), Vec2::new(w as f64 - m, h as f64 - m), Vec2::new(m, h as f64 - m)];
-    let steps: Vec<Affine> = (0..n.saturating_sub(1))
-        .into_par_iter()
-        .map(|k| match (&frames[k], &frames[k + 1]) {
-            (Some(a), Some(b)) if a.base().w == b.base().w => track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY),
-            _ => Affine::IDENTITY,
-        })
-        .collect();
+    let Some(steps) = steps else {
+        // drawn unstabilised for whoever fetched this frame: an analysis enclosing this one is mixed too
+        note_skip();
+        return None;
+    };
+    // no frame existed: the nest that fetched this clip's frames drew it unstabilised
+    let Some((w, h)) = dims.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner).map(|(_, size)| size) else {
+        note_skip();
+        return None;
+    };
     let path = Arc::new(StabilizerPath { w, h, steps, fps });
     if let Ok(mut c) = path_cache().lock() {
         if c.len() > 64 {
