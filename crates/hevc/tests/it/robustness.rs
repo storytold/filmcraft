@@ -78,7 +78,7 @@ fn xorshift(seed: &mut u64) -> u64 {
 /// Damaged streams must never panic or hang; errors are fine.
 #[test]
 fn corrupted_streams_do_not_panic() {
-    for name in ["medium", "bframes", "intra_main10", "rect_amp", "weightp"] {
+    for name in ["medium", "bframes", "intra_main10", "rect_amp", "weightp", "no_wpp", "slices4"] {
         let f = common::fixture(name);
         let Some((hevc, _)) = common::ensure(f) else { return };
         let data = std::fs::read(hevc).unwrap();
@@ -92,8 +92,46 @@ fn corrupted_streams_do_not_panic() {
             if round % 4 == 3 {
                 d.truncate(d.len() * 2 / 3);
             }
-            for threads in [1, 4] {
+            for (threads, intra) in [(1, None), (2, Some(true)), (4, None)] {
                 let mut dec = Decoder::with_threads(threads);
+                dec.set_intra_picture_parallel(intra);
+                for au in common::split_access_units(&d) {
+                    let _ = dec.decode(au, 0);
+                }
+                let _ = dec.flush();
+                let _ = dec.take_error();
+            }
+        }
+    }
+}
+
+/// Damaged slice segment headers (entry point offsets, slice addresses, flags) must never panic
+/// or hang, also when pictures are split over threads by their entry points.
+#[test]
+fn corrupted_slice_headers_do_not_panic() {
+    for name in ["medium", "slices4", "no_wpp"] {
+        let f = common::fixture(name);
+        let Some((hevc, _)) = common::ensure(f) else { return };
+        let data = std::fs::read(hevc).unwrap();
+        // payload starts of the slice NAL units
+        let slices: Vec<usize> = (0..data.len().saturating_sub(4))
+            .filter(|&i| data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && (data[i + 3] >> 1) & 0x3f < 32)
+            .map(|i| i + 3)
+            .collect();
+        let mut seed = 0x0bad_5eed_u64 ^ name.len() as u64;
+        for _ in 0..16 {
+            let mut d = data.clone();
+            for _ in 0..6 {
+                let s = slices[(xorshift(&mut seed) as usize) % slices.len()];
+                // the slice header with its entry points lies in the first bytes
+                let pos = s + 2 + (xorshift(&mut seed) as usize) % 24;
+                if let Some(b) = d.get_mut(pos) {
+                    *b ^= 1 << (xorshift(&mut seed) % 8);
+                }
+            }
+            for (threads, intra) in [(2, Some(true)), (4, Some(true)), (8, None)] {
+                let mut dec = Decoder::with_threads(threads);
+                dec.set_intra_picture_parallel(intra);
                 for au in common::split_access_units(&d) {
                     let _ = dec.decode(au, 0);
                 }
