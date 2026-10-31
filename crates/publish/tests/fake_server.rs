@@ -1,6 +1,7 @@
 //! The real HTTP transport (ureq) against a local fake YouTube upload server: a whole upload in
-//! chunks, a connection cut in the middle of a chunk, a 503 with `Retry-After`, and an upload
-//! resumed by a new uploader from the saved session (as after an app restart).
+//! chunks, a connection cut in the middle of a chunk, a 503 with `Retry-After`, an upload
+//! resumed by a new uploader from the saved session (as after an app restart), and progress and
+//! cancel while a chunk goes out.
 
 use filmcraft_publish::youtube::{CHUNK_UNIT, UploadSession, Uploader, VideoMetadata};
 use filmcraft_publish::{Control, PublishError, http::UreqTransport};
@@ -134,13 +135,14 @@ fn answer(out: &mut TcpStream, status: &str, headers: &[(&str, &str)], body: &st
 struct Recorder {
     waits: Vec<Duration>,
     progress: Vec<u64>,
-    stop_at_progress: Option<usize>,
+    /// Cancel once this many bytes are reported.
+    stop_at: Option<u64>,
 }
 
 impl Control for Recorder {
     fn progress(&mut self, sent: u64, _total: u64) -> bool {
         self.progress.push(sent);
-        self.stop_at_progress.is_none_or(|n| self.progress.len() < n)
+        self.stop_at.is_none_or(|n| sent < n)
     }
 
     fn wait(&mut self, delay: Duration) -> bool {
@@ -201,7 +203,7 @@ fn a_saved_session_resumes_in_a_new_uploader() {
     let total = data.len() as u64;
     let up = Uploader::new(&transport, TOKEN).with_upload_url(&fake.url).with_chunk_size(CHUNK_UNIT);
     // The app quits after the first chunk: the cancel comes before the second.
-    let mut first_run = Recorder { stop_at_progress: Some(2), ..Default::default() };
+    let mut first_run = Recorder { stop_at: Some(CHUNK_UNIT), ..Default::default() };
     let session = up.start(&meta(), total, "video/mp4", &mut first_run).unwrap();
     let saved = serde_json::to_string(&session).unwrap();
     assert!(matches!(up.upload(&session, &mut Cursor::new(data.clone()), &mut first_run), Err(PublishError::Cancelled)));
@@ -214,6 +216,45 @@ fn a_saved_session_resumes_in_a_new_uploader() {
     assert_eq!(up.upload(&session, &mut Cursor::new(data.clone()), &mut second_run).unwrap().id, VIDEO_ID);
     assert_eq!(second_run.progress.first(), Some(&CHUNK_UNIT), "starts after the chunk the server has");
     fake.with(|s| assert_eq!(s.received, data));
+}
+
+#[test]
+fn progress_moves_while_one_chunk_goes_out() {
+    let fake = Fake::start(Server::default());
+    let transport = UreqTransport::default();
+    let up = Uploader::new(&transport, TOKEN).with_upload_url(&fake.url).with_chunk_size(4 * CHUNK_UNIT);
+    let data = video_file();
+    let total = data.len() as u64;
+    let mut control = Recorder::default();
+    let session = up.start(&meta(), total, "video/mp4", &mut control).unwrap();
+    assert_eq!(up.upload(&session, &mut Cursor::new(data.clone()), &mut control).unwrap().id, VIDEO_ID);
+    fake.with(|s| {
+        assert_eq!(s.received, data);
+        assert_eq!(s.chunks, 1, "the whole file in one chunk");
+    });
+    let p = &control.progress;
+    assert_eq!((p.first(), p.last()), (Some(&0), Some(&total)));
+    assert!(p.len() > 3, "reports in the middle of the chunk: {p:?}");
+    assert!(p.windows(2).all(|w| w[0] < w[1]), "only goes up: {p:?}");
+}
+
+#[test]
+fn cancel_stops_a_chunk_on_its_way() {
+    let fake = Fake::start(Server::default());
+    let transport = UreqTransport::default();
+    let up = Uploader::new(&transport, TOKEN).with_upload_url(&fake.url).with_chunk_size(4 * CHUNK_UNIT);
+    let data = video_file();
+    let total = data.len() as u64;
+    let mut control = Recorder { stop_at: Some(1), ..Default::default() };
+    let session = up.start(&meta(), total, "video/mp4", &mut control).unwrap();
+    let e = up.upload(&session, &mut Cursor::new(data), &mut control).unwrap_err();
+    assert!(matches!(e, PublishError::Cancelled), "{e:?}");
+    assert!(control.progress.last().is_some_and(|&p| p > 0 && p < total), "{:?}", control.progress);
+    assert!(control.waits.is_empty(), "a cancel is not retried");
+    fake.with(|s| {
+        assert!(s.received.is_empty(), "the server never got the whole chunk");
+        assert_eq!(s.chunks, 1);
+    });
 }
 
 #[test]

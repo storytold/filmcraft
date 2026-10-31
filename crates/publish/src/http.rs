@@ -49,6 +49,15 @@ pub struct TransportError(pub String);
 /// responses, not errors.
 pub trait Transport {
     fn send(&self, request: &Request<'_>) -> Result<Response, TransportError>;
+
+    /// [`send`](Self::send), calling `watch` with the number of body bytes handed to the network
+    /// so far while the body goes out (never with 0 or the whole length); when `watch` returns
+    /// false the request stops with an error. A transport that can't tell sends the request and
+    /// reports nothing.
+    fn send_watched(&self, request: &Request<'_>, watch: &mut dyn FnMut(u64) -> bool) -> Result<Response, TransportError> {
+        let _ = watch;
+        self.send(request)
+    }
 }
 
 /// Whether this build has the HTTPS transport (feature `net`).
@@ -68,6 +77,7 @@ pub use net::UreqTransport;
 #[cfg(feature = "net")]
 mod net {
     use super::{MAX_RESPONSE_BYTES, Method, Request, Response, Transport, TransportError};
+    use std::io::Read;
     use std::time::Duration;
 
     /// HTTPS over ureq with pure-Rust TLS (rustls + RustCrypto) and the operating system's
@@ -103,6 +113,17 @@ mod net {
 
     impl Transport for UreqTransport {
         fn send(&self, request: &Request<'_>) -> Result<Response, TransportError> {
+            self.send_body(request, request.body)
+        }
+
+        fn send_watched(&self, request: &Request<'_>, watch: &mut dyn FnMut(u64) -> bool) -> Result<Response, TransportError> {
+            let mut body = Watched { rest: request.body, sent: 0, watch };
+            self.send_body(request, ureq::SendBody::from_reader(&mut body))
+        }
+    }
+
+    impl UreqTransport {
+        fn send_body(&self, request: &Request<'_>, body: impl ureq::AsSendBody) -> Result<Response, TransportError> {
             let mut builder = match request.method {
                 Method::Post => self.agent.post(request.url),
                 Method::Put => self.agent.put(request.url),
@@ -110,13 +131,37 @@ mod net {
             for (name, value) in &request.headers {
                 builder = builder.header(*name, value);
             }
+            // A body read as it goes has no length of its own; saying it keeps the request
+            // length-delimited rather than chunked.
+            builder = builder.header("Content-Length", request.body.len().to_string());
             // Error texts may quote the URL, which for an upload session is a credential.
             let fail = |e: ureq::Error| TransportError(e.to_string().replace(request.url, "<upload address>"));
-            let response = builder.send(request.body).map_err(fail)?;
+            let response = builder.send(body).map_err(fail)?;
             let status = response.status().as_u16();
             let headers = response.headers().iter().filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string()))).collect();
             let body = response.into_body().with_config().limit(MAX_RESPONSE_BYTES).read_to_vec().map_err(fail)?;
             Ok(Response { status, headers, body })
+        }
+    }
+
+    /// A request body that tells `watch` how much of it was taken before handing out more.
+    struct Watched<'a, 'w> {
+        rest: &'a [u8],
+        sent: u64,
+        watch: &'w mut dyn FnMut(u64) -> bool,
+    }
+
+    impl Read for Watched<'_, '_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.rest.is_empty() {
+                return Ok(0);
+            }
+            if self.sent > 0 && !(self.watch)(self.sent) {
+                return Err(std::io::Error::other("stopped"));
+            }
+            let n = self.rest.read(buf)?;
+            self.sent = self.sent.saturating_add(n as u64);
+            Ok(n)
         }
     }
 }

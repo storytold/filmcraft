@@ -342,6 +342,27 @@ fn cancel_stops_between_chunks_and_during_waits() {
 }
 
 #[test]
+fn progress_moves_while_a_chunk_is_sent() {
+    let total = 2 * C + 10;
+    let server = Script::new(vec![fresh(), has(C), has(2 * C), done("v")]).reporting_halfway();
+    let mut c = Recorder::default();
+    Uploader::new(&server, TOKEN).with_chunk_size(C).upload(&session(total), &mut file(total as usize), &mut c).unwrap();
+    assert_eq!(c.progress, [0, C / 2, C, C + C / 2, 2 * C, 2 * C + 5, total]);
+}
+
+#[test]
+fn cancel_stops_in_the_middle_of_a_chunk() {
+    let total = 2 * C;
+    let server = Script::new(vec![fresh()]).reporting_halfway();
+    let mut c = Recorder { cancel_after_progress: Some(1), ..Default::default() };
+    let e = Uploader::new(&server, TOKEN).with_chunk_size(C).upload(&session(total), &mut file(total as usize), &mut c).unwrap_err();
+    assert!(matches!(e, PublishError::Cancelled), "{e:?}");
+    assert_eq!(c.progress, [0, C / 2]);
+    assert_eq!(server.seen().len(), 2, "the status query and the stopped chunk");
+    assert!(c.waits.is_empty(), "a cancel is not retried");
+}
+
+#[test]
 fn a_file_that_changes_size_stops_the_upload() {
     let server = Script::default();
     let e = Uploader::new(&server, TOKEN).upload(&session(100), &mut file(99), &mut Recorder::default()).unwrap_err();

@@ -20,11 +20,18 @@ pub(crate) struct Seen {
 pub(crate) struct Script {
     replies: RefCell<VecDeque<Result<Response, TransportError>>>,
     seen: RefCell<Vec<Seen>>,
+    /// Watched requests report half their body as sent before the reply.
+    halfway: bool,
 }
 
 impl Script {
     pub(crate) fn new(replies: Vec<Result<Response, TransportError>>) -> Self {
-        Self { replies: RefCell::new(replies.into()), seen: RefCell::default() }
+        Self { replies: RefCell::new(replies.into()), seen: RefCell::default(), halfway: false }
+    }
+
+    pub(crate) fn reporting_halfway(mut self) -> Self {
+        self.halfway = true;
+        self
     }
 
     pub(crate) fn seen(&self) -> Vec<Seen> {
@@ -38,6 +45,22 @@ impl Script {
 
 impl Transport for Script {
     fn send(&self, request: &Request<'_>) -> Result<Response, TransportError> {
+        self.record(request);
+        self.replies.borrow_mut().pop_front().unwrap_or_else(|| panic!("no reply scripted for request {}", self.seen.borrow().len()))
+    }
+
+    fn send_watched(&self, request: &Request<'_>, watch: &mut dyn FnMut(u64) -> bool) -> Result<Response, TransportError> {
+        let half = request.body.len() as u64 / 2;
+        if self.halfway && half > 0 && !watch(half) {
+            self.record(request);
+            return Err(TransportError("stopped".into()));
+        }
+        self.send(request)
+    }
+}
+
+impl Script {
+    fn record(&self, request: &Request<'_>) {
         self.seen.borrow_mut().push(Seen {
             method: request.method,
             url: request.url.into(),
@@ -46,7 +69,6 @@ impl Transport for Script {
             authorization: request.header("authorization").map(str::to_string),
             body: request.body.to_vec(),
         });
-        self.replies.borrow_mut().pop_front().unwrap_or_else(|| panic!("no reply scripted for request {}", self.seen.borrow().len()))
     }
 }
 

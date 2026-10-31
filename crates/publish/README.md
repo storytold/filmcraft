@@ -38,7 +38,9 @@ are in [storytold/filmcraft#2626](https://github.com/storytold/filmcraft/issues/
     - `UploadLimitExceeded`
     - `SessionExpired`
   - `Control` reports progress and waits between attempts. Either one can cancel.
-    `ThreadControl` sleeps in 100 ms steps and stops when a cancel flag is set.
+    - Progress also moves while a chunk goes out (`Transport::send_watched`), so a slow
+      connection doesn't look stuck for a whole chunk, and a cancel stops the chunk there.
+    - `ThreadControl` sleeps in 100 ms steps and stops when a cancel flag is set.
 
 - `oauth`: signing in with Google through
   [OAuth 2.0 for installed apps](https://developers.google.com/identity/protocols/oauth2/native-app).
@@ -61,17 +63,16 @@ the session address, which authorizes the upload.
 
 ## Not here yet
 
-These come next and use this crate:
-- token storage
-- the `publish.*` engine commands, with sign-in and upload as jobs
-- the Export page's *Publish to* section
+The engine's `publish.youtube.*` commands (sign-in and upload as jobs, the account kept in the
+app's data folder) use this crate. Next is the Export page's *Publish to* section.
 
 ## Tests
 
 - `src/youtube_tests.rs` runs the protocol against scripted server replies:
   - chunks, partial chunks, dropped connections, resume after a restart
   - `Retry-After`, backoff, giving up, stalls
-  - every mapped error, hostile `Range` headers and response bodies, cancel
+  - every mapped error, hostile `Range` headers and response bodies
+  - progress and cancel in the middle of a chunk
 - `src/oauth_tests.rs` covers:
   - the RFC 7636 PKCE test vector
   - client files, good and refused
@@ -85,7 +86,8 @@ These come next and use this crate:
   - It also covers denial, an escaped hostile answer, cancel and timeout.
 - `tests/fake_server.rs` runs the real `UreqTransport` against a local fake upload server. The
   server cuts the connection in the middle of a chunk, answers `503 Retry-After: 1`, and a new
-  uploader resumes from a saved session.
+  uploader resumes from a saved session. Progress rises while one large chunk goes out, and a
+  cancel stops that chunk before the server has it.
 
 No test touches the network. The crate's dev-dependency on itself with `net` lets
 `cargo test --workspace` and clippy build the transport.

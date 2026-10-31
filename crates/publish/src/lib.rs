@@ -72,7 +72,8 @@ pub enum PublishError {
 
 /// What a running upload reports to its caller and asks of it.
 pub trait Control {
-    /// `sent` of `total` bytes are on the server. Return false to cancel.
+    /// `sent` of `total` bytes are on the server or, during a chunk, on their way to it (after a
+    /// dropped connection the count goes back to what the server has). Return false to cancel.
     fn progress(&mut self, sent: u64, total: u64) -> bool;
     /// Wait `delay` before the next attempt. Return false to cancel instead.
     fn wait(&mut self, delay: Duration) -> bool;

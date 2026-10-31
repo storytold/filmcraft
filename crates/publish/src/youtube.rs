@@ -259,7 +259,7 @@ impl<'a> Uploader<'a> {
             }
             let reply = match at {
                 None => self.query(session, &authorization),
-                Some(from) => self.send_chunk(session, &authorization, source, from, &mut buf)?,
+                Some(from) => self.send_chunk(session, &authorization, source, from, &mut buf, control)?,
             };
             match reply {
                 Reply::Done(video) => {
@@ -305,6 +305,7 @@ impl<'a> Uploader<'a> {
         source: &mut R,
         from: u64,
         buf: &mut Vec<u8>,
+        control: &mut dyn Control,
     ) -> Result<Reply, PublishError> {
         let total = session.total;
         let len = self.chunk_size.min(total.saturating_sub(from));
@@ -323,7 +324,16 @@ impl<'a> Uploader<'a> {
             ("Content-Range", format!("bytes {from}-{last}/{total}")),
         ];
         let request = Request { method: Method::Put, url: &session.uri, headers, body: buf };
-        Ok(match self.transport.send(&request) {
+        // Progress while the chunk goes out; a cancel stops it there instead of after the chunk.
+        let mut cancelled = false;
+        let sent = self.transport.send_watched(&request, &mut |sent| {
+            cancelled = !control.progress(from.saturating_add(sent), total);
+            !cancelled
+        });
+        if cancelled {
+            return Err(PublishError::Cancelled);
+        }
+        Ok(match sent {
             Ok(response) => classify(&response, total, true),
             Err(e) => Reply::Retry(None, e.0),
         })
