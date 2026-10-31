@@ -3615,3 +3615,44 @@
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) zahtijeva hardverski enkoder (NVENC na NVIDIA GPU-ovima, VideoToolbox na macOS-u); na ovom računaru nije pronađen nijedan, a FilmCraft još nema softverski H.265 enkoder. Umjesto toga odaberite H.264 ili ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 zahtijeva hardverski enkoder; na ovom računaru nije pronađen nijedan, a FilmCraft još nema softverski AV1 enkoder.
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Hardversko dekodiranje: Automatski koristi video dekoder sistema (VideoToolbox na macOS-u, Media Foundation na Windowsu, VA-API za H.264 i HEVC na Linuxu) za tokove koje podržava, a FilmCraftov vlastiti dekoder za sve ostalo ili ako hardver zakaže. Mediji koji su već otvoreni zadržavaju svoj dekoder dok se ponovo ne otvore.
+	1/2	1/2
+	Audio Names	Nazivi zvuka
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Audio izlaz nije uspio: reprodukcija bez zvuka (provjerite Postavke ▸ Audio hardver)
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Audio izlaz ne odgovara: reprodukcija bez zvuka (provjerite Postavke ▸ Audio hardver)
+	Center at Cut	Centriraj na rezu
+	Change Sequence Settings	Promijeni postavke sekvence
+	Change the sequence to match the clip's settings?	Promijeniti sekvencu da odgovara postavkama klipa?
+	Chapter Marker	Marker poglavlja
+	Check for Updates…	Provjeri ažuriranja…
+	Checking for updates…	Provjera ažuriranja…
+	Clip Mismatch Warning	Upozorenje o neusklađenom klipu
+	Clip: {settings}	Klip: {settings}
+	Comment Marker	Marker komentara
+	Could not check for updates:\n{error}	Nije moguće provjeriti ažuriranja:\n{error}
+	Custom Start	Prilagođeni početak
+	Edit Marker…	Uredi marker…
+	End at Cut	Završi na rezu
+	Enter a positive duration within the supported speed range.	Unesite pozitivno trajanje unutar podržanog raspona brzine.
+	FilmCraft Updates	FilmCraft ažuriranja
+	FilmCraft {version} is currently the newest version available.	FilmCraft {version} je trenutno najnovija dostupna verzija.
+	Flash Cue Point	Flash tačka znaka
+	In:	Ulaz:
+	Invalid duration: {error}	Nevažeće trajanje: {error}
+	Keep Existing Settings	Zadrži postojeće postavke
+	Looks for a newer FilmCraft release and offers to update.	Traži noviju verziju FilmCrafta i nudi ažuriranje.
+	Marker Color:	Boja markera:
+	Options:	Opcije:
+	Replace	Zamijeni
+	Replace File	Zamijeni datoteku
+	Segmentation Marker	Marker segmentacije
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Odaberite jedan klip (ili povezani klip) na vremenskoj liniji ili jednu stavku u panelu Projekat da biste je preimenovali
+	Sequence: {settings}	Sekvenca: {settings}
+	Set Work Area Bar In Point	Postavi ulaznu tačku trake radnog područja
+	Set Work Area Bar Out Point	Postavi izlaznu tačku trake radnog područja
+	Show Audio Names	Prikaži nazive zvuka
+	Show Video Names	Prikaži nazive videa
+	Start at Cut	Počni na rezu
+	This clip does not match the sequence settings.	Ovaj klip ne odgovara postavkama sekvence.
+	Video Names	Nazivi videa
+	Web Link	Web veza
+	“{file}” already exists in “{folder}”. Do you want to replace it?	„{file}” već postoji u „{folder}”. Želite li ga zamijeniti?
