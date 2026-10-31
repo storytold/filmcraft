@@ -1,7 +1,8 @@
 //! Headless UI tests of scrolling the Timeline: what the wheel does with each modifier, how far
 //! the view can go, and the zoom scroll bar. Premiere Pro 26.5.2 on macOS, checked in the app: the
 //! wheel moves the tracks up and down, Cmd + wheel moves the Timeline sideways, Option + wheel
-//! zooms, and the view stops ten minutes past the end of the sequence.
+//! zooms, and the view stops ten minutes past the end of the sequence. Off macOS the wheel's two
+//! directions start the other way round (#400).
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -94,13 +95,21 @@ impl Driver {
         (v.target_scroll, v.target_pps, v.v_scroll, v.a_scroll)
     }
 
-    /// The demo sequence with enough tracks to scroll both halves, at a known zoom.
-    fn tall() -> Driver {
+    /// The demo sequence with enough tracks to scroll both halves, at a known zoom, with the
+    /// platform's default wheel.
+    fn tall_by_default() -> Driver {
         let mut d = Driver::demo();
         d.exec("sequence.addTracks", json!({"video": 12, "audio": 12}));
         d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
         d.frames(4);
         assert_eq!(d.view(), (4.0, 50.0, 0.0, 0.0));
+        d
+    }
+
+    /// [`Self::tall_by_default`] with the wheel moving the tracks, as it does by default on macOS.
+    fn tall() -> Driver {
+        let mut d = Driver::tall_by_default();
+        d.app().session.prefs.timeline.mouse_scrolling = "vertical".into();
         d
     }
 
@@ -164,12 +173,29 @@ fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
 }
 
+/// #400: out of the box the wheel goes sideways on Windows and Linux, over the video and the audio
+/// tracks alike, and Ctrl + wheel moves the tracks; on macOS it moves the tracks, as in Premiere Pro.
+#[test]
+fn the_wheel_starts_out_as_the_platform_has_it() {
+    let mut d = Driver::tall_by_default();
+    if cfg!(target_os = "macos") {
+        d.wheel(0.8, 0.0, -30.0, none());
+        assert_eq!(d.view(), (4.0, 50.0, 0.0, 30.0));
+        return;
+    }
+    d.wheel(0.8, 0.0, -100.0, none());
+    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0), "over the audio tracks: 2 s later, and they stay");
+    d.wheel(0.2, 0.0, -50.0, none());
+    assert_eq!(d.view(), (7.0, 50.0, 0.0, 0.0), "over the video tracks: the same");
+    d.wheel(0.8, 0.0, -30.0, json!({"ctrl": true}));
+    assert_eq!(d.view(), (7.0, 50.0, 0.0, 30.0), "Ctrl + wheel moves the tracks");
+}
+
 /// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
 /// sideways and Cmd + wheel moves the tracks.
 #[test]
 fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
     let mut d = Driver::tall();
-    assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, "vertical", "Premiere's default on macOS");
     d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
     d.wheel(0.2, 0.0, -100.0, none());
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));

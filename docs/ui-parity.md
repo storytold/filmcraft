@@ -1,6 +1,6 @@
 # UI and interaction parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (Delete and Backspace go by the panel in focus, #404) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (the wheel over the Timeline goes sideways by default on Windows and Linux, #400) · **Target:** Adobe Premiere Pro 2026 (26.5.2, macOS)
 
 How FilmCraft looks, feels and responds compared with Premiere: tools, on-screen handles, snapping,
 nudging, modifier keys, shortcuts, drag behaviour, numeric entry, panels, context menus. Keyboard
@@ -23,7 +23,7 @@ open interaction reports (about 40 of the 188 open issues).
 | Effect Controls | property rows, keyframe area with zoom, divider, graphs, eyedroppers | rows, keyframes, value / velocity graphs, eyedropper (#518); missing keyframe zoom (#641, #645), draggable divider (#643), row lines (#640), Position curves (#448) | 60% | #412, #640–#645, #448 | 15–25 h |
 | Panels and docking | 17 workspaces, dock / undock / float, drop zones | 11 workspaces, docking; rearranging windows reported missing (#493); multi-monitor floating windows (#466) | 60% | #493, #466 | 20–35 h |
 | Project panel | List / Icon / Freeform, hover scrub, marquee | all three views, hover scrub, view presets; no marquee (#578), Freeform bins and pan (#579), bins can't be left on Windows (#587), duplicate imports allowed (#356) | 75% | #578, #579, #587, #456 | 10–20 h |
-| Timeline display | filmstrip thumbnails, waveforms, track heights, renaming, duplicate frame markers | clip thumbnails, waveforms, heights, duplicate frame markers; no continuous filmstrip (#614), no track rename (#654), wheel scroll in audio area (#400) | 70% | #614, #654, #400 | 8–15 h |
+| Timeline display | filmstrip thumbnails, waveforms, track heights, renaming, duplicate frame markers | clip thumbnails, waveforms, heights, duplicate frame markers; no continuous filmstrip (#614), no track rename (#654); the wheel goes sideways by default on Windows and Linux, up and down on macOS (#400 fixed) | 70% | #614, #654 | 8–15 h |
 | Transitions | drag, resize, alignment, edit in Effect Controls | drag / select / resize (#503); settings and the transition's own timeline in Effect Controls, drag to slide or resize (#577), drag the cut to move it with the transition; no A/B previews with Start / End sliders | 70% | #577 | 5–10 h |
 | Numeric entry and scrubbing | scrubbable hot text, typed values | scrubbable values, timecode scrub-edit (#576); audio clip mixer values cannot be typed (#481) | 80% | #481 | 3–6 h |
 | Drag and drop | OS files into Project / Timeline, clipboard paste | OS drops into the timeline (#517); no clipboard paste of images / files (#611) | 70% | #519, #611 | 5–10 h |
@@ -38,3 +38,4 @@ open interaction reports (about 40 of the 188 open issues).
 | 2026-10-10 | major | Created: UI areas against Premiere 26.5.2, menu label diff, keyboard parity from keyboard.md, open UI issues itemized |
 | 2026-10-30 | minor | Clicking empty space deselects, on the Program monitor too (#683) |
 | 2026-10-30 | minor | Delete and Backspace go by the panel in focus (#404) |
+| 2026-10-30 | minor | The wheel over the Timeline goes sideways by default on Windows and Linux (#400) |

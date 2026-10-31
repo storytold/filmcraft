@@ -211,15 +211,16 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
 
 /// Wheel input over the Timeline, as in Premiere Pro on macOS (checked in 26.5.2): the wheel
 /// moves the tracks under the pointer, Cmd + wheel the Timeline sideways, Option + wheel
-/// zooms about the pointer.
+/// zooms about the pointer. Windows and Linux start with the first two swapped (#400).
 fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &Layout, seq: &Sequence) {
     let ctx = ui.ctx().clone();
     // ---- wheel, as in Premiere Pro on macOS (checked in 26.5.2):
     //   wheel            the tracks under the pointer, up and down
     //   Cmd + wheel      the Timeline, sideways
     //   Option + wheel   zoom about the pointer
-    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the first two. A sideways
-    // gesture (trackpad swipe, tilt wheel, Shift + wheel) always scrolls sideways; a pinch zooms.
+    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal", the default off macOS, swaps the
+    // first two. A sideways gesture (trackpad swipe, tilt wheel, Shift + wheel) always scrolls
+    // sideways; a pinch zooms.
     if ui.rect_contains_pointer(rect)
         && let Some(p) = ctx.pointer_hover_pos()
     {
