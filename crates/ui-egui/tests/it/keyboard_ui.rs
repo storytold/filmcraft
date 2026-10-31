@@ -414,15 +414,17 @@ fn delete_keys_act_on_the_focused_panel_only() {
                 assert_eq!(*d.app().session.project, *project, "{preset}: {key} with {panel} focused changes nothing");
             }
         }
-        // the Timeline's and the Program monitor's Delete take the clip and leave the Project panel alone
-        for panel in ["Timeline", "Program"] {
-            d.focus(panel);
-            d.key("Delete");
-            assert_ne!(first_clip(&mut d), clip, "{preset}: Delete with {panel} focused removes the clip");
-            assert_eq!(project_items(&mut d).1, count, "{preset}: and no Project item");
-            d.key("Cmd+Z");
-            assert_eq!(first_clip(&mut d), clip);
-            select(&mut d);
+        // where the Timeline's selection is in play, either key takes the clip and leaves the Project panel alone
+        for panel in ["Timeline", "Program", "Properties"] {
+            for key in ["Delete", "Backspace"] {
+                d.focus(panel);
+                d.key(key);
+                assert_ne!(first_clip(&mut d), clip, "{preset}: {key} with {panel} focused removes the clip");
+                assert_eq!(project_items(&mut d).1, count, "{preset}: and no Project item");
+                d.key("Cmd+Z");
+                assert_eq!(first_clip(&mut d), clip);
+                select(&mut d);
+            }
         }
         // the Project panel's takes the item, by either key
         d.focus("Project");
@@ -433,6 +435,40 @@ fn delete_keys_act_on_the_focused_panel_only() {
             assert_eq!(project_items(&mut d).1, count);
             select(&mut d);
         }
+    }
+}
+
+#[test]
+fn other_keys_bound_to_the_clear_commands_do_what_they_name() {
+    // Only Delete and Backspace go by the panel in focus (#404). A key someone bound to one of
+    // these commands runs that command, wherever the focus is.
+    let mut d = Driver::new();
+    d.exec("shortcuts.set", json!({"command": "edit.clear", "keys": "F9", "add": true}));
+    d.exec("shortcuts.set", json!({"command": "project.delete", "keys": "F10", "add": true}));
+    d.frames(2);
+    let first_clip = |d: &mut Driver| d.exec("sequence.inspect", json!({}))["video"][0]["items"][0]["clip"].as_u64().unwrap();
+    let clip = first_clip(&mut d);
+    let (item, count) = project_items(&mut d);
+    let select = |d: &mut Driver| {
+        d.exec("project.select", json!({"items": [item]}));
+        d.exec("timeline.select", json!({"clips": [clip]}));
+    };
+    select(&mut d);
+    for panel in ["Project", "Effects"] {
+        d.focus(panel);
+        d.key("F9");
+        assert_ne!(first_clip(&mut d), clip, "Clear's own key with {panel} focused removes the clip");
+        assert_eq!(project_items(&mut d).1, count, "and no Project item");
+        d.key("Cmd+Z");
+        select(&mut d);
+    }
+    for panel in ["Timeline", "Effects"] {
+        d.focus(panel);
+        d.key("F10");
+        assert_eq!(project_items(&mut d).1, count - 1, "Project Clear's own key with {panel} focused removes the item");
+        d.key("Cmd+Z");
+        assert_eq!(project_items(&mut d).1, count);
+        select(&mut d);
     }
 }
 

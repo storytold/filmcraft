@@ -84,6 +84,8 @@ pub const PREMIERE: &[Entry] = &[
     ("edit.pasteInsert", "Cmd+Shift+V", ""),
     ("edit.clear", "Delete", ""),
     ("edit.clear", "Backspace", "Timeline"),
+    // a Mac keyboard's delete key is Backspace, and the Program monitor clears as the Timeline does (#404)
+    ("edit.clear", "Backspace", "Program"),
     ("edit.rippleDelete", "Shift+Delete", ""),
     ("edit.rippleDelete", "Alt+Backspace", "Timeline"),
     ("edit.duplicate", "Cmd+Shift+/", ""),
