@@ -745,6 +745,194 @@ fn copy_paste_includes_sequence_markers() {
 }
 
 #[test]
+fn copy_paste_uses_the_lowest_targeted_track_and_respects_locks() {
+    let (mut s, bars) = fresh();
+    place(&mut s, bars, "V1", 0, 0, 24);
+    let source = s.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    let destination = s.active_sequence().unwrap().audio_tracks[1].id.0;
+    let higher_destination = s.active_sequence().unwrap().audio_tracks[2].id.0;
+    let audio_track_count = s.active_sequence().unwrap().audio_tracks.len();
+    s.state.linked_selection = false;
+    s.execute("timeline.select", json!({"clips": [source.0], "linked": false})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+
+    let tracks: Vec<u64> = s.active_sequence().unwrap().all_tracks().map(|t| t.id.0).collect();
+    for track in tracks {
+        s.execute("timeline.setTargeting", json!({"track": track, "targeted": false})).unwrap();
+    }
+    s.execute("timeline.setTargeting", json!({"track": destination, "targeted": true})).unwrap();
+    s.execute("timeline.setTargeting", json!({"track": higher_destination, "targeted": true})).unwrap();
+    s.execute("playhead.set", json!({"frame": 100})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.audio_tracks[0].items.len(), 1, "source track stays unchanged");
+    assert_eq!(q.audio_tracks[1].items.len(), 1, "paste lands on the targeted A2");
+    assert!(q.audio_tracks[2].items.is_empty(), "the higher targeted A3 is not the anchor");
+    assert_eq!(q.audio_tracks[1].items[0].start, f(&s, 100));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(s.active_sequence().unwrap().audio_tracks[1].items.is_empty(), "paste is one undoable edit");
+
+    s.execute("timeline.setTrack", json!({"track": "A2", "locked": true})).unwrap();
+    s.execute("playhead.set", json!({"frame": 150})).unwrap();
+    assert!(s.execute("edit.paste", json!({})).is_err(), "locked destination must reject paste");
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.audio_tracks.len(), audio_track_count, "a rejected paste adds no tracks");
+    assert!(q.audio_tracks[1].items.is_empty(), "a rejected paste leaves no partial clips");
+}
+
+#[test]
+fn copy_paste_keeps_linked_audio_and_video_together_on_target_tracks() {
+    let (mut s, bars) = fresh();
+    s.execute("sequence.addTracks", json!({"video": 1, "audio": 1})).unwrap();
+    place(&mut s, bars, "V1", 0, 0, 24);
+    let q = s.active_sequence().unwrap();
+    let source_video = q.video_tracks[0].items[0].clone();
+    let source_audio = q.audio_tracks[0].items[0].clone();
+    assert_eq!(source_video.link, source_audio.link);
+    let video_destination = q.video_tracks[1].id.0;
+    let audio_destination = q.audio_tracks[1].id.0;
+    s.execute("timeline.select", json!({"clips": [source_video.id.0]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+
+    let tracks: Vec<u64> = s.active_sequence().unwrap().all_tracks().map(|t| t.id.0).collect();
+    for track in tracks {
+        s.execute("timeline.setTargeting", json!({"track": track, "targeted": false})).unwrap();
+    }
+    for track in [video_destination, audio_destination] {
+        s.execute("timeline.setTargeting", json!({"track": track, "targeted": true})).unwrap();
+    }
+    s.execute("playhead.set", json!({"frame": 100})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+
+    let q = s.active_sequence().unwrap();
+    let pasted_video = q.video_tracks[1].items.iter().find(|item| item.start == f(&s, 100)).expect("video paste on V2");
+    let pasted_audio = q.audio_tracks[1].items.iter().find(|item| item.start == f(&s, 100)).expect("audio paste on A2");
+    assert_eq!(pasted_video.link, pasted_audio.link, "the copied pair keeps a shared link");
+    assert_ne!(pasted_video.link, source_video.link, "the pasted pair has its own link id");
+}
+
+#[test]
+fn copy_paste_with_default_all_track_targeting_preserves_source_indexes() {
+    let (mut s, bars) = fresh();
+    s.execute("sequence.addTracks", json!({"video": 1, "audio": 1})).unwrap();
+    place(&mut s, bars, "V2", 0, 0, 24);
+    let source_video = s.active_sequence().unwrap().video_tracks[1].items[0].id.0;
+    s.execute("timeline.select", json!({"clips": [source_video]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert!(s.state.targeting.is_empty(), "the test uses the default all-track targeting");
+
+    s.execute("playhead.set", json!({"frame": 100})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+
+    let q = s.active_sequence().unwrap();
+    assert!(q.video_tracks[1].items.iter().any(|item| item.start == f(&s, 100)), "V2 remains the destination");
+    assert!(q.audio_tracks[1].items.iter().any(|item| item.start == f(&s, 100)), "A2 remains the destination");
+    assert!(q.video_tracks[0].items.is_empty(), "the paste does not shift the video clip to V1");
+    assert!(q.audio_tracks[0].items.is_empty(), "the paste does not shift the audio clip to A1");
+}
+
+#[test]
+fn copy_paste_preserves_track_offsets_and_adds_missing_destination_tracks() {
+    let (mut s, bars) = fresh();
+    s.execute("sequence.addTracks", json!({"video": 1, "audio": 0})).unwrap();
+    place(&mut s, bars, "V1", 0, 0, 24);
+    place(&mut s, bars, "V2", 40, 0, 24);
+    let source_clips: Vec<u64> = s.active_sequence().unwrap().video_tracks.iter().filter_map(|t| t.items.first().map(|item| item.id.0)).collect();
+    let destination_index = s.active_sequence().unwrap().video_tracks.len().saturating_sub(1);
+    let initial_video_track_count = s.active_sequence().unwrap().video_tracks.len();
+    let destination = s.active_sequence().unwrap().video_tracks[destination_index].id.0;
+    s.state.linked_selection = false;
+    s.execute("timeline.select", json!({"clips": source_clips, "linked": false})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+
+    let tracks: Vec<u64> = s.active_sequence().unwrap().all_tracks().map(|t| t.id.0).collect();
+    for track in tracks {
+        s.execute("timeline.setTargeting", json!({"track": track, "targeted": false})).unwrap();
+    }
+    s.execute("timeline.setTargeting", json!({"track": destination, "targeted": true})).unwrap();
+    s.execute("playhead.set", json!({"frame": 100})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks.len(), initial_video_track_count + 1, "the relative second lane gets a new track");
+    assert!(q.video_tracks[destination_index].items.iter().any(|item| item.start == f(&s, 100)), "source V1 maps to the target track");
+    let next = q.video_tracks.get(destination_index + 1).expect("paste adds the next relative lane");
+    assert_eq!(next.items.len(), 1);
+    assert_eq!(next.items[0].start, f(&s, 140), "source V2 remains one lane below the destination");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().video_tracks.len(), initial_video_track_count, "undo also removes the auto-added destination track");
+}
+
+#[test]
+fn copy_paste_without_targets_clamps_to_the_last_existing_track() {
+    let (mut s, bars) = fresh();
+    s.execute("sequence.addTracks", json!({"video": 99, "audio": 0})).unwrap();
+    s.execute("sequence.addTracks", json!({"video": 1, "audio": 0})).unwrap();
+    let first =
+        s.execute("timeline.place", json!({"item": bars, "track": "V1", "video": true, "audio": false, "frame": 0})).unwrap()["clips"][0].as_u64().unwrap();
+    let far =
+        s.execute("timeline.place", json!({"item": bars, "track": "V103", "video": true, "audio": false, "frame": 48})).unwrap()["clips"][0].as_u64().unwrap();
+    s.state.linked_selection = false;
+    s.execute("timeline.select", json!({"clips": [first, far], "linked": false})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+
+    s.execute("file.newSequence", json!({"name": "Small destination", "video": 1, "audio": 0})).unwrap();
+    let only_track = s.active_sequence().unwrap().video_tracks[0].id.0;
+    s.execute("timeline.setTargeting", json!({"track": only_track, "targeted": false})).unwrap();
+    s.execute("playhead.set", json!({"frame": 100})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks.len(), 1, "an out-of-range clipboard index never grows an unanchored sequence");
+    assert_eq!(q.video_tracks[0].items.len(), 2, "both clips clamp to the last existing track");
+    assert_eq!(q.video_tracks[0].items[0].start, f(&s, 100));
+    assert_eq!(q.video_tracks[0].items[1].start, f(&s, 148));
+
+    s.execute("file.newSequence", json!({"name": "Anchored destination", "video": 1, "audio": 0})).unwrap();
+    let only_track = s.active_sequence().unwrap().video_tracks[0].id.0;
+    s.execute("timeline.setTargeting", json!({"track": only_track, "targeted": true})).unwrap();
+    let undo_count = s.history.undo.len();
+    assert!(s.execute("edit.paste", json!({})).is_err(), "one paste cannot add more than sequence.addTracks allows");
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks.len(), 1, "an oversized anchored paste adds no partial tracks");
+    assert!(q.video_tracks[0].items.is_empty(), "an oversized anchored paste leaves no clips");
+    assert_eq!(s.history.undo.len(), undo_count, "a rejected paste leaves undo history alone");
+}
+
+#[test]
+fn copy_paste_adds_standard_audio_tracks_and_keeps_one_undo_step() {
+    let (mut s, bars) = fresh();
+    s.execute("timeline.place", json!({"item": bars, "track": "V1", "audioTrack": "A2", "video": false, "audio": true, "frame": 0})).unwrap();
+    s.execute("timeline.place", json!({"item": bars, "track": "V1", "audioTrack": "A3", "video": false, "audio": true, "frame": 48})).unwrap();
+    let source_clips = [s.active_sequence().unwrap().audio_tracks[1].items[0].id.0, s.active_sequence().unwrap().audio_tracks[2].items[0].id.0];
+    s.state.linked_selection = false;
+    s.execute("timeline.select", json!({"clips": source_clips, "linked": false})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    let tracks: Vec<u64> = s.active_sequence().unwrap().all_tracks().map(|track| track.id.0).collect();
+    for track in tracks {
+        s.execute("timeline.setTargeting", json!({"track": track, "targeted": false})).unwrap();
+    }
+    let anchor = s.active_sequence().unwrap().audio_tracks[2].id.0;
+    s.execute("timeline.setTargeting", json!({"track": anchor, "targeted": true})).unwrap();
+    s.execute("playhead.set", json!({"frame": 100})).unwrap();
+    let undo_count = s.history.undo.len();
+    s.execute("edit.paste", json!({})).unwrap();
+
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.audio_tracks.len(), 4, "the relative second source lane creates A4");
+    assert_eq!(q.audio_tracks[3].channels, AudioChannels::Stereo, "new audio tracks use the standard channel setup");
+    assert_eq!(q.audio_tracks[2].items.len(), 2, "source A2 maps to targeted A3");
+    assert_eq!(q.audio_tracks[3].items.len(), 1, "source A3 maps to added A4");
+    assert_eq!(s.history.undo.len(), undo_count + 1, "track addition and clips are one undo step");
+
+    s.execute("edit.undo", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.audio_tracks.len(), 3, "undo removes the added audio track");
+    assert_eq!(q.audio_tracks[1].items.len(), 1);
+    assert_eq!(q.audio_tracks[2].items.len(), 1);
+}
+
+#[test]
 fn selection_follows_playhead() {
     let mut s = demo();
     s.execute("sequence.selectionFollowsPlayhead", json!({"on": true})).unwrap();

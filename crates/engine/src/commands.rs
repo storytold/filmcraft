@@ -4122,15 +4122,72 @@ fn paste(s: &mut Session, insert: bool) -> Result<Value> {
     let at = s.playhead();
     let clip = s.state.clipboard.clone();
     let markers = if s.state.copy_paste_sequence_markers { s.state.clipboard_markers.clone() } else { Vec::new() };
-    let end = s.edit_sequence(if insert { "Paste Insert" } else { "Paste" }, |q, ctx, st| {
+    // The lowest targeted track is the paste anchor for that kind. With no targeted track, keep
+    // the old behavior of clamping clipboard indexes to the last existing track.
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let targeting = s.targeting();
+    let mut paste_anchors = std::collections::HashMap::new();
+    for kind in [TrackKind::Video, TrackKind::Audio] {
+        let source_min = clip.iter().filter(|(k, _, _)| *k == kind).map(|(_, ti, _)| *ti).min();
+        let tracks = seq.tracks(kind);
+        let all_targeted = !tracks.is_empty() && tracks.iter().all(|track| targeting.targeted.contains(&track.id));
+        // Default targeting selects every track, so preserve the copied source index in that case.
+        let destination = if all_targeted { source_min } else { tracks.iter().position(|track| targeting.targeted.contains(&track.id)) };
+        if let (Some(source_min), Some(destination)) = (source_min, destination) {
+            paste_anchors.insert(kind == TrackKind::Audio, (source_min, destination));
+        }
+    }
+
+    // Adding tracks is a separate sequence command so audio tracks get their standard channel
+    // setup. Preflight every destination before adding anything, then fold the additions into the
+    // paste's single undo step. `sequence.addTracks` also caps one paste at 99 added tracks.
+    let mut add_video = 0usize;
+    let mut add_audio = 0usize;
+    for (kind, ti, _) in &clip {
+        let tracks = seq.tracks(*kind);
+        let destination_index = if let Some((source_min, destination)) = paste_anchors.get(&(*kind == TrackKind::Audio)) {
+            let offset = ti.checked_sub(*source_min).ok_or_else(|| bad("edit.paste", "clipboard track offset is invalid"))?;
+            destination.checked_add(offset).ok_or_else(|| bad("edit.paste", "destination track index is too large"))?
+        } else {
+            let Some(last) = tracks.len().checked_sub(1) else { continue };
+            (*ti).min(last)
+        };
+        if destination_index >= crate::sequence_tools::MAX_TRACKS {
+            return Err(bad("edit.paste", format!("destination exceeds the {}-track limit", crate::sequence_tools::MAX_TRACKS)));
+        }
+        let needed = destination_index.checked_add(1).ok_or_else(|| bad("edit.paste", "destination track index is too large"))?.saturating_sub(tracks.len());
+        if *kind == TrackKind::Video {
+            add_video = add_video.max(needed);
+        } else {
+            add_audio = add_audio.max(needed);
+        }
+    }
+    let added_tracks = add_video > 0 || add_audio > 0;
+    if added_tracks {
+        crate::sequence_tools::add_tracks(
+            s,
+            &json!({"video": u64::try_from(add_video).map_err(|_| bad("edit.paste", "video track count is too large"))?, "audio": u64::try_from(add_audio).map_err(|_| bad("edit.paste", "audio track count is too large"))?}),
+        )?;
+    }
+    let mark = s.history.undo.len();
+    let paste = s.edit_sequence(if insert { "Paste Insert" } else { "Paste" }, |q, ctx, st| {
         let mut placements = Vec::new();
         let mut links = std::collections::HashMap::new();
         // pasted clips get groups of their own, as their links: sharing the originals' group
         // would select (and so drag or delete) the originals with them
         let mut groups = std::collections::HashMap::new();
         for (kind, ti, item) in clip {
-            let tracks = q.tracks(kind);
-            let Some(t) = tracks.get(ti).or(tracks.last()) else { continue };
+            let destination_index = if let Some((source_min, destination)) = paste_anchors.get(&(kind == TrackKind::Audio)) {
+                let offset = ti.checked_sub(*source_min).ok_or_else(|| bad("edit.paste", "clipboard track offset is invalid"))?;
+                destination.checked_add(offset).ok_or_else(|| bad("edit.paste", "destination track index is too large"))?
+            } else {
+                let Some(last) = q.tracks(kind).len().checked_sub(1) else { continue };
+                ti.min(last)
+            };
+            if destination_index >= crate::sequence_tools::MAX_TRACKS {
+                return Err(bad("edit.paste", format!("destination exceeds the {}-track limit", crate::sequence_tools::MAX_TRACKS)));
+            }
+            let Some(t) = q.tracks(kind).get(destination_index) else { continue };
             let mut it = item.clone();
             it.id = ClipId(ctx.alloc());
             it.start += at;
@@ -4153,9 +4210,27 @@ fn paste(s: &mut Session, insert: bool) -> Result<Value> {
         q.markers.sort_by_key(|m| m.start);
         st.selection = ids;
         Ok(end)
-    })?;
-    s.set_playhead(end);
-    Ok(Value::Null)
+    });
+    match paste {
+        Ok(end) => {
+            if added_tracks
+                && mark >= 1
+                && s.history.undo.len() == mark + 1
+                && let (Some((label, _)), Some((_, before))) = (s.history.undo.pop(), s.history.undo.pop())
+            {
+                s.history.undo.push((label, before));
+            }
+            s.set_playhead(end);
+            Ok(Value::Null)
+        }
+        Err(error) => {
+            if added_tracks {
+                s.undo();
+                s.history.redo.pop();
+            }
+            Err(error)
+        }
+    }
 }
 
 /// Select `item` in the Project panel and ask the UI to show it there.
