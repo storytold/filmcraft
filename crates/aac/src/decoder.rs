@@ -5,8 +5,8 @@ use filmcraft_bitstream::BitReader;
 use crate::config::{AudioSpecificConfig, ElementType, ProgramConfig};
 use crate::huffman::{self, INTENSITY_HCB, INTENSITY_HCB2, NOISE_HCB, ZERO_HCB};
 use crate::ics::{IcsInfo, WindowSequence};
-use crate::mdct::{WindowShape, mdct_long, mdct_short, window};
-use crate::tables::{pow43, sf_gain};
+use crate::mdct::{MdctScratch, WindowShape, mdct_long, mdct_short, window};
+use crate::tables::{pow43, pow43_table, sf_gain};
 use crate::tns::{self, TnsData};
 use crate::{Error, Result};
 
@@ -41,6 +41,23 @@ struct ChannelState {
     prev_shape: WindowShape,
 }
 
+/// Buffers reused by every frame so the steady state does not allocate per channel.
+struct Scratch {
+    /// Quantised values of the channel being parsed.
+    q: Vec<i32>,
+    /// Windowed output of the current block (2048) and the raw inverse transform (2048 / 256).
+    buf: Vec<f32>,
+    y: Vec<f32>,
+    long: MdctScratch,
+    short: MdctScratch,
+}
+
+impl Scratch {
+    fn new() -> Scratch {
+        Scratch { q: vec![0; 1024], buf: vec![0.0; 2048], y: vec![0.0; 2048], long: mdct_long().scratch(), short: mdct_short().scratch() }
+    }
+}
+
 /// AAC-LC decoder.
 pub struct Decoder {
     asc: AudioSpecificConfig,
@@ -49,6 +66,7 @@ pub struct Decoder {
     offsets: Vec<usize>,
     channels: Vec<ChannelState>,
     noise_state: u32,
+    scratch: Scratch,
     /// A fill element carried SBR data (implicitly signalled HE-AAC).
     sbr_seen: bool,
 }
@@ -73,7 +91,8 @@ impl Decoder {
         if layout.is_empty() && asc.channel_config != 0 {
             return Err(Error::InvalidConfig("unsupported channel configuration"));
         }
-        let mut d = Decoder { asc, layout: Vec::new(), offsets: Vec::new(), channels: Vec::new(), noise_state: 0x2545_F491, sbr_seen: false };
+        let mut d =
+            Decoder { asc, layout: Vec::new(), offsets: Vec::new(), channels: Vec::new(), noise_state: 0x2545_F491, scratch: Scratch::new(), sbr_seen: false };
         d.set_layout(layout);
         Ok(d)
     }
@@ -389,7 +408,9 @@ impl Decoder {
         }
 
         // spectral_data
-        let mut q = vec![0i32; 1024];
+        let mut q = std::mem::take(&mut self.scratch.q);
+        q.clear();
+        q.resize(1024, 0);
         let mut vals = [0i32; 4];
         for g in 0..info.num_groups {
             let w0 = info.group_start(g);
@@ -421,6 +442,7 @@ impl Decoder {
         }
 
         // dequantise
+        let t43 = pow43_table();
         for g in 0..info.num_groups {
             let w0 = info.group_start(g);
             for sfb in 0..info.max_sfb {
@@ -430,14 +452,16 @@ impl Decoder {
                 }
                 let gain = sf_gain(ics.sf[g][sfb]);
                 for w in w0..w0 + info.group_len[g] as usize {
-                    for k in swb[sfb] as usize..swb[sfb + 1] as usize {
-                        let v = q[w * 128 + k];
-                        let m = pow43(v.unsigned_abs()) * gain;
-                        ics.spec[w * 128 + k] = if v < 0 { -m } else { m };
+                    let r = w * 128 + swb[sfb] as usize..w * 128 + swb[sfb + 1] as usize;
+                    for (o, &v) in ics.spec[r.clone()].iter_mut().zip(&q[r]) {
+                        let a = v.unsigned_abs();
+                        let m = t43.get(a as usize).copied().unwrap_or_else(|| pow43(a)) * gain;
+                        *o = if v < 0 { -m } else { m };
                     }
                 }
             }
         }
+        self.scratch.q = q;
         Ok(ics)
     }
 
@@ -487,23 +511,24 @@ impl Decoder {
         if let Some(t) = &ics.tns {
             tns::apply_decoder(&mut ics.spec, &ics.info, self.sf_index(), t);
         }
-        synth(&mut self.channels[ch], &ics.info, &ics.spec)
+        synth(&mut self.channels[ch], &mut self.scratch, &ics.info, &ics.spec)
     }
 }
 
 /// Inverse MDCT, windowing and overlap-add (§4.6.18), output scaled to ±1.0 full scale.
-fn synth(state: &mut ChannelState, info: &IcsInfo, spec: &[f32]) -> Vec<f32> {
-    let mut buf = vec![0f32; 2048];
+fn synth(state: &mut ChannelState, sc: &mut Scratch, info: &IcsInfo, spec: &[f32]) -> Vec<f32> {
+    let Scratch { buf, y, long, short, .. } = sc;
+    buf.fill(0.0);
     let prev = state.prev_shape;
     let cur = info.window_shape;
     let norm = 1.0 / 32768.0;
     match info.window_sequence {
         WindowSequence::EightShort => {
             let t = mdct_short();
-            let mut y = vec![0f32; 256];
+            let y = &mut y[..256];
             let wc = window(cur, false);
             for w in 0..8 {
-                t.inverse(&spec[w * 128..(w + 1) * 128], &mut y);
+                t.inverse_with(&spec[w * 128..(w + 1) * 128], y, short);
                 let wl = window(if w == 0 { prev } else { cur }, false);
                 let off = 448 + 128 * w;
                 let s = norm / 128.0;
@@ -514,8 +539,7 @@ fn synth(state: &mut ChannelState, info: &IcsInfo, spec: &[f32]) -> Vec<f32> {
             }
         }
         seq => {
-            let mut y = vec![0f32; 2048];
-            mdct_long().inverse(&spec[..1024], &mut y);
+            mdct_long().inverse_with(&spec[..1024], y, long);
             let s = norm / 1024.0;
             match seq {
                 WindowSequence::LongStop => {

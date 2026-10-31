@@ -708,6 +708,30 @@ fn sequence_settings_dialog_renames_the_sequence() {
     assert_eq!(d.app().session.history.undo.len(), history);
 }
 
+/// #1824: right-clicking a sequence in the Project panel offers Sequence Settings…, which opens the
+/// dialog on that sequence even when another one is active in the Timeline (it opens it first).
+#[test]
+fn project_panel_sequence_menu_opens_its_settings() {
+    let mut d = Driver::demo();
+    let main = d.app().session.state.active_sequence.unwrap();
+    let vertical = d.exec("file.newSequence", json!({"name": "Vertical", "width": 1080, "height": 1920}))["sequence"].as_u64().expect("sequence id");
+    d.exec("sequence.open", json!({"item": main.0}));
+    assert_eq!(d.app().session.state.active_sequence, Some(main));
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.frames(4);
+    let row = format!("project.item.{vertical}");
+    assert!(d.ids(&row).contains(&row), "{:?}", d.ids("project.item."));
+    d.ok("ui.click", json!({"id": row, "button": "right"}));
+    d.frames(3);
+    d.click("project.itemMenu.sequenceSettings");
+    d.frames(3);
+    assert!(matches!(d.app().dialog, Some(filmcraft_ui_egui::Dialog::SequenceSettings)));
+    assert_eq!(d.label("sequenceSettings.name"), "Vertical");
+    assert_eq!((d.label("sequenceSettings.width"), d.label("sequenceSettings.height")), ("1080".into(), "1920".into()));
+    assert_eq!(d.app().session.state.active_sequence.map(|i| i.0), Some(vertical));
+}
+
 /// File ▸ New ▸ Sequence… (Cmd+N) made a default sequence at once; it opens New Sequence: the
 /// Sequence Settings dialog from the default settings, named like the command would name it, with
 /// a Tracks tab. OK makes the sequence with what was chosen (one undo step); Cancel makes none.
@@ -850,7 +874,11 @@ fn timeline_clip_label_is_disabled_without_a_selected_clip() {
     let mut d = Driver::demo();
     d.exec("markers.clearAll", json!({}));
     d.exec("timeline.select", json!({"clips":[]}));
-    d.ok("ui.click", json!({"id":"timeline.ruler","fx":0.8,"fy":0.5,"button":"right"}));
+    // empty space above the top video track, where no track row is (the ruler has a menu of its
+    // own, #1535, and an empty spot in a row opens the gap menu)
+    d.ok("ui.set", json!({"timeline": {"videoTrackHeight": 30.0}}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"timeline.tracks","fx":0.5,"fy":0.02,"button":"right"}));
     d.frames(3);
     let enabled = |d: &mut Driver| {
         let elements = d.ok("ui.elements", json!({"prefix":"timeline.clipMenu.edit.label"}));

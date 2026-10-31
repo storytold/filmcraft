@@ -19,9 +19,14 @@ impl Cpx {
     fn add(self, o: Cpx) -> Cpx {
         Cpx { re: self.re + o.re, im: self.im + o.im }
     }
+    #[inline]
+    fn sub(self, o: Cpx) -> Cpx {
+        Cpx { re: self.re - o.re, im: self.im - o.im }
+    }
 }
 
-/// Mixed-radix (2, 3, 4, 5) forward complex FFT, unscaled.
+/// Mixed-radix (2, 3, 4, 5) forward complex FFT, unscaled. Radix 2, 3 and 4 use dedicated
+/// butterflies; radix 5 uses a generic one.
 pub struct Fft {
     n: usize,
     factors: Vec<usize>,
@@ -66,20 +71,70 @@ impl Fft {
                 self.rec(&mut out[q * m..(q + 1) * m], &inp[q * in_stride..], in_stride * p, m, fi + 1, tw_stride * p);
             }
         }
-        let big = self.n;
-        let mut t = [Cpx::default(); 5];
-        for k in 0..m {
-            for q in 0..p {
-                let w = self.twiddle[(q * k * tw_stride) % big];
-                t[q] = out[q * m + k].mul(w);
-            }
-            for q2 in 0..p {
-                let mut acc = Cpx::default();
-                for (q, tq) in t.iter().enumerate().take(p) {
-                    let w = self.twiddle[((q * q2) % p) * (big / p)];
-                    acc = acc.add(tq.mul(w));
+        let tw = &self.twiddle;
+        match p {
+            2 => {
+                for k in 0..m {
+                    let a0 = out[k];
+                    let a1 = out[m + k].mul(tw[k * tw_stride]);
+                    out[k] = a0.add(a1);
+                    out[m + k] = a0.sub(a1);
                 }
-                out[q2 * m + k] = acc;
+            }
+            4 => {
+                for k in 0..m {
+                    let t0 = out[k];
+                    let t1 = out[m + k].mul(tw[k * tw_stride]);
+                    let t2 = out[2 * m + k].mul(tw[2 * k * tw_stride]);
+                    let t3 = out[3 * m + k].mul(tw[3 * k * tw_stride]);
+                    let s0 = t0.add(t2);
+                    let d0 = t0.sub(t2);
+                    let s1 = t1.add(t3);
+                    let d1 = t1.sub(t3);
+                    out[k] = s0.add(s1);
+                    out[2 * m + k] = s0.sub(s1);
+                    // -j * d1 = (d1.im, -d1.re)
+                    out[m + k] = Cpx { re: d0.re + d1.im, im: d0.im - d1.re };
+                    out[3 * m + k] = Cpx { re: d0.re - d1.im, im: d0.im + d1.re };
+                }
+            }
+            3 => {
+                // sin(-2*pi/3) = -sqrt(3)/2
+                let h = tw[self.n / 3].im;
+                for k in 0..m {
+                    let t0 = out[k];
+                    let t1 = out[m + k].mul(tw[k * tw_stride]);
+                    let t2 = out[2 * m + k].mul(tw[2 * k * tw_stride]);
+                    let s = t1.add(t2);
+                    let d = t1.sub(t2);
+                    let a = Cpx { re: t0.re - 0.5 * s.re, im: t0.im - 0.5 * s.im };
+                    out[k] = t0.add(s);
+                    // j * h * d = (-h * d.im, h * d.re)
+                    out[m + k] = Cpx { re: a.re - h * d.im, im: a.im + h * d.re };
+                    out[2 * m + k] = Cpx { re: a.re + h * d.im, im: a.im - h * d.re };
+                }
+            }
+            _ => {
+                // Radix 5 (at most once per transform): generic butterfly with the five roots of
+                // unity looked up once.
+                let mut w5 = [Cpx::default(); 5];
+                for (q, w) in w5.iter_mut().enumerate() {
+                    *w = tw[q * (self.n / p)];
+                }
+                let mut t = [Cpx::default(); 5];
+                for k in 0..m {
+                    t[0] = out[k];
+                    for q in 1..p {
+                        t[q] = out[q * m + k].mul(tw[q * k * tw_stride]);
+                    }
+                    for q2 in 0..p {
+                        let mut acc = t[0];
+                        for q in 1..p {
+                            acc = acc.add(t[q].mul(w5[(q * q2) % p]));
+                        }
+                        out[q2 * m + k] = acc;
+                    }
+                }
             }
         }
     }
@@ -159,7 +214,7 @@ mod tests {
 
     #[test]
     fn fft_matches_dft() {
-        for &n in &[60usize, 120, 240, 480] {
+        for &n in &[15usize, 30, 60, 120, 240, 480, 960] {
             let fft = Fft::new(n);
             let x: Vec<Cpx> = (0..n).map(|i| Cpx { re: ((i * 7) % 13) as f32 - 6.0, im: ((i * 3) % 5) as f32 - 2.0 }).collect();
             let mut y = x.clone();
@@ -173,6 +228,62 @@ mod tests {
                 }
                 assert!((acc.0 - y[k].re as f64).abs() < 1e-2 && (acc.1 - y[k].im as f64).abs() < 1e-2, "n={n} k={k}");
             }
+        }
+    }
+
+    /// The previous generic implementation (every butterfly multiplies by every DFT root), kept
+    /// to measure how far the specialised kernels move the output.
+    fn reference_fft(n: usize, data: &mut [Cpx]) {
+        let fft = Fft::new(n);
+        let inp = data.to_vec();
+        rec_ref(&fft, data, &inp, 1, n, 0, 1);
+    }
+
+    fn rec_ref(f: &Fft, out: &mut [Cpx], inp: &[Cpx], in_stride: usize, n: usize, fi: usize, tw_stride: usize) {
+        let p = f.factors[fi];
+        let m = n / p;
+        if m == 1 {
+            for (i, o) in out.iter_mut().enumerate().take(p) {
+                *o = inp[i * in_stride];
+            }
+        } else {
+            for q in 0..p {
+                rec_ref(f, &mut out[q * m..(q + 1) * m], &inp[q * in_stride..], in_stride * p, m, fi + 1, tw_stride * p);
+            }
+        }
+        let big = f.n;
+        let mut t = [Cpx::default(); 5];
+        for k in 0..m {
+            for q in 0..p {
+                let w = f.twiddle[(q * k * tw_stride) % big];
+                t[q] = out[q * m + k].mul(w);
+            }
+            for q2 in 0..p {
+                let mut acc = Cpx::default();
+                for (q, tq) in t.iter().enumerate().take(p) {
+                    let w = f.twiddle[((q * q2) % p) * (big / p)];
+                    acc = acc.add(tq.mul(w));
+                }
+                out[q2 * m + k] = acc;
+            }
+        }
+    }
+
+    /// Every size the CELT frame sizes use (N/4 for N = 2 * {120, 240, 480, 960}, plus the
+    /// short-block sizes) agrees with the previous implementation to f32 rounding.
+    #[test]
+    fn fft_matches_reference_implementation() {
+        for &n in &[15usize, 30, 60, 120, 240, 480, 960] {
+            let fft = Fft::new(n);
+            let x: Vec<Cpx> =
+                (0..n).map(|i| Cpx { re: (((i * 7919) % 2003) as f32 - 1000.0) / 500.0, im: (((i * 104729) % 1009) as f32 - 500.0) / 250.0 }).collect();
+            let mut new = x.clone();
+            fft.process(&mut new, &mut Vec::new());
+            let mut old = x.clone();
+            reference_fft(n, &mut old);
+            let peak = old.iter().map(|c| c.re.abs().max(c.im.abs())).fold(0f32, f32::max);
+            let max_diff = new.iter().zip(&old).map(|(a, b)| (a.re - b.re).abs().max((a.im - b.im).abs())).fold(0f32, f32::max);
+            assert!(max_diff <= 1e-5 * peak, "n={n} max_diff={max_diff} peak={peak}");
         }
     }
 

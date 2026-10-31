@@ -131,6 +131,18 @@ fn file_type_filter() {
 }
 
 #[test]
+fn column_widths_persist_clamped() {
+    let mut s = session();
+    s.execute("mediaBrowser.settings", json!({"columnWidths": {"name": 300, "Size": 5}})).unwrap();
+    s.execute("mediaBrowser.settings", json!({"columnWidths": {"Frame Rate": 90}})).unwrap();
+    let w = &s.prefs.media_browser.column_widths;
+    assert_eq!((w.get("Name"), w.get("Size"), w.get("Frame Rate")), (Some(&300.0), Some(&30.0), Some(&90.0)));
+    assert!(s.execute("mediaBrowser.settings", json!({"columnWidths": {"Colour": 100}})).is_err());
+    assert!(s.execute("mediaBrowser.settings", json!({"columnWidths": {"Name": "wide"}})).is_err());
+    assert_eq!(s.prefs.media_browser.column_widths.len(), 3);
+}
+
+#[test]
 fn navigation_back_forward_up_and_recent() {
     let mut s = session();
     s.execute("mediaBrowser.navigate", json!({"path": "/home/me/Movies"})).unwrap();
@@ -326,4 +338,51 @@ fn ale_logs_are_not_offered_for_import() {
     assert_eq!(media_browser::kind_of("clips.ale"), None);
     assert!(!media_browser::extensions().contains(&"ale"));
     assert_eq!(media_browser::kind_of("cut.edl"), Some("project"));
+}
+
+/// The background probe returns `None` until its thread has the result, then the same properties
+/// as the blocking probe; a path that isn't media is answered at once.
+#[cfg(any(unix, windows))]
+#[test]
+fn probe_background_returns_the_blocking_probe_result() {
+    let dir = crate::media_test_util::tmp_dir("browser-probe-background");
+    let wav = dir.join("voice.wav");
+    std::fs::write(&wav, filmcraft_media::wav::write_wav16(&[0.1; 9_600], 2, 48_000)).unwrap();
+    let path = wav.to_string_lossy().to_string();
+    let mut s = Session::default();
+    let mut got = None;
+    for _ in 0..500 {
+        got = media_browser::probe_background(&mut s, &path);
+        if got.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let background = got.expect("background probe finished").expect("wav has properties");
+    let mut fresh = Session::default();
+    let blocking = media_browser::probe(&mut fresh, &path).unwrap();
+    assert_eq!(background.duration, blocking.duration);
+    assert_eq!(background.audio().map(|a| a.sample_rate), blocking.audio().map(|a| a.sample_rate));
+    let notes = dir.join("notes.txt");
+    assert_eq!(media_browser::probe_background(&mut s, &notes.to_string_lossy()), Some(None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// AAF and OMF documents import through `file.import` like EDL, FCP7 XML, FCPXML and OTIO, so the
+/// browser lists them as projects too, including the `.omfi` spelling the importer accepts.
+#[test]
+fn every_interchange_document_the_importer_reads_is_listed() {
+    for ext in crate::interchange::EXTENSIONS {
+        let name = format!("cut.{ext}");
+        assert_eq!(media_browser::kind_of(&name), Some("project"), "{name}");
+        assert_eq!(media_browser::kind_of(&name.to_ascii_uppercase()), Some("project"), "{name}");
+        assert!(media_browser::extensions().contains(&ext), "{ext}");
+    }
+    let mut s = session();
+    s.services.write_file("/home/me/Movies/cut.aaf", &[0; 16]).unwrap();
+    s.services.write_file("/home/me/Movies/mix.omf", &[0; 16]).unwrap();
+    let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies", "fileTypes": "project"})).unwrap();
+    assert_eq!(names(&l), ["Selects", "cut.aaf", "edit.edl", "mix.omf"]);
+    let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies", "fileTypes": "aaf"})).unwrap();
+    assert_eq!(names(&l), ["Selects", "cut.aaf"]);
 }
