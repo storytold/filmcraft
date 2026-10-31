@@ -431,18 +431,25 @@ impl AudioParam {
 /// to the parameter's range, so the differences between the clips stay. Clips without the effect are
 /// left alone.
 fn shift_audio_param(s: &mut Session, clips: &[ClipId], param: AudioParam, delta: f64, label: &str, merge: Option<&str>) -> Result<()> {
-    let (effect, pid, lo, hi) = param.target();
-    let shift = |v: &ParamValue| match v {
-        ParamValue::Float(x) => ParamValue::Float((x + delta).clamp(lo, hi)),
-        o => o.clone(),
-    };
+    shift_audio_params(s, clips, &[(param, delta)], label, merge)
+}
+
+/// [`shift_audio_param`] for several parameters at once, all in the one undo step.
+fn shift_audio_params(s: &mut Session, clips: &[ClipId], changes: &[(AudioParam, f64)], label: &str, merge: Option<&str>) -> Result<()> {
     s.edit_sequence_as(label, merge, |q, _, _| {
-        for c in clips {
-            let Some((_, it)) = q.find_item_mut(*c) else { continue };
-            let Some(p) = it.effect_mut(effect).and_then(|e| e.param_mut(pid)) else { continue };
-            p.value = shift(&p.value);
-            for k in &mut p.keyframes {
-                k.value = shift(&k.value);
+        for &(param, delta) in changes {
+            let (effect, pid, lo, hi) = param.target();
+            let shift = |v: &ParamValue| match v {
+                ParamValue::Float(x) => ParamValue::Float((x + delta).clamp(lo, hi)),
+                o => o.clone(),
+            };
+            for c in clips {
+                let Some((_, it)) = q.find_item_mut(*c) else { continue };
+                let Some(p) = it.effect_mut(effect).and_then(|e| e.param_mut(pid)) else { continue };
+                p.value = shift(&p.value);
+                for k in &mut p.keyframes {
+                    k.value = shift(&k.value);
+                }
             }
         }
         Ok(())
@@ -494,15 +501,18 @@ fn adjust_audio_command(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut ids: Vec<u64> = audio.iter().map(|c| c.0).collect();
     ids.sort_unstable();
+    // one undo step for everything this call changes (#3738 review); a single-parameter drag keeps
+    // its own label and merge key
+    let (label, key) = match changes.as_slice() {
+        [(AudioParam::Volume, _)] => ("Change Clip Volume", "volume"),
+        [(AudioParam::Pan, _)] => ("Change Clip Pan", "pan"),
+        _ => ("Change Clip Volume and Pan", "volume+pan"),
+    };
+    let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("adjustAudio:{key}:{ids:?}"));
+    shift_audio_params(s, &audio, &changes, label, merge.as_deref())?;
     let mut out = json!({"clips": audio.iter().map(|c| c.0).collect::<Vec<_>>()});
-    for (param, d) in changes {
-        let (label, key) = match param {
-            AudioParam::Volume => ("Change Clip Volume", "volume"),
-            AudioParam::Pan => ("Change Clip Pan", "pan"),
-        };
-        let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("adjustAudio:{key}:{ids:?}"));
-        shift_audio_param(s, &audio, param, d, label, merge.as_deref())?;
-        out[if param == AudioParam::Volume { "levels" } else { "balances" }] = json!(audio_values(s, &audio, param));
+    for (param, _) in &changes {
+        out[if *param == AudioParam::Volume { "levels" } else { "balances" }] = json!(audio_values(s, &audio, *param));
     }
     Ok(out)
 }

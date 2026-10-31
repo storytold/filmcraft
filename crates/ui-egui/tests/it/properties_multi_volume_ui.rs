@@ -108,4 +108,20 @@ fn properties_level_changes_every_selected_audio_clip() {
     d.exec("edit.undo", json!({}));
     let undone: Vec<f64> = d.audio().iter().take(3).map(|c| c.3).collect();
     assert_eq!(undone, before, "the drag is one undo step");
+
+    // the shown clip already at full right: a Pan drag to the right still moves the others
+    let pan = |d: &mut Driver, id: u64| -> f64 {
+        let seq = d.exec("sequence.inspect", json!({}));
+        let it = seq["audio"][0]["items"].as_array().unwrap().iter().find(|i| i["clip"] == id).cloned().unwrap();
+        let e = it["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "panner").cloned().unwrap();
+        e["params"]["balance"]["value"].as_str().unwrap().trim_start_matches("Float(").trim_end_matches(')').parse().unwrap()
+    };
+    d.exec("effects.setParam", json!({"clip": ids[0], "effect": "panner", "param": "balance", "value": 100.0}));
+    d.exec("timeline.select", json!({"clips": ids}));
+    d.frames(3);
+    d.element("properties.pan").expect("the Pan is laid out");
+    d.ok("ui.drag", json!({"from": {"id": "properties.pan"}, "to": {"id": "properties.pan", "fx": 2.5}, "steps": 12}));
+    d.frames(3);
+    assert_eq!(pan(&mut d, ids[0]), 100.0, "the shown clip stays at its bound");
+    assert!(pan(&mut d, ids[1]) > 1.0 && pan(&mut d, ids[2]) > 1.0, "the others keep moving right");
 }

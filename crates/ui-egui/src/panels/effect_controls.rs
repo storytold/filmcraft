@@ -1134,6 +1134,10 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             // several audio clips selected: the shown clip's Level and Pan change every one of them
             // by the same amount, as the clip volume keys do (#3710)
             let group = (audio_group.len() > 1).then(|| audio_group.iter().map(|c| c.0).collect::<Vec<_>>());
+            // a group's change is a difference that `clip.adjustAudio` clamps clip by clip: the fields
+            // must not clamp it to the shown clip's range, or the others stop when it reaches its bound
+            const GROUP_RANGE: (f64, f64) = (-1000.0, 1000.0);
+            let (level_range, pan_range) = if group.is_some() { (GROUP_RANGE, GROUP_RANGE) } else { ((-96.0, 15.0), (-100.0, 100.0)) };
             if let Some(ids) = &group {
                 let (r, _) = bui.allocate_exact_size(vec2(bui.available_width(), 22.0), Sense::hover());
                 let text = tlf!("Level and Pan change all {n} selected audio clips", n = ids.len());
@@ -1152,7 +1156,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 tl!("Level"),
                 egui::Id::unique(("pp-vol", clip.0)),
                 v,
-                HotNumberOptions::new(0.1, (-96.0, 15.0), 1, " dB", &t),
+                HotNumberOptions::new(0.1, level_range, 1, " dB", &t),
             );
             app.auto.add("properties.volume", resp.rect, "Level");
             if let Some(nv) = nv {
@@ -1169,13 +1173,8 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             let v = val("panner", "balance").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let (resp, nv) = crate::widgets::hot_number(
-                &mut vui,
-                tl!("Pan"),
-                egui::Id::unique(("pp-pan", clip.0)),
-                v,
-                HotNumberOptions::new(0.5, (-100.0, 100.0), 0, "", &t),
-            );
+            let (resp, nv) =
+                crate::widgets::hot_number(&mut vui, tl!("Pan"), egui::Id::unique(("pp-pan", clip.0)), v, HotNumberOptions::new(0.5, pan_range, 0, "", &t));
             app.auto.add("properties.pan", resp.rect, "Pan");
             if let Some(nv) = nv {
                 actions.push(match &group {

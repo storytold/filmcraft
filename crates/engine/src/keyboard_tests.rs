@@ -335,6 +335,13 @@ fn adjust_audio_moves_every_selected_clip_by_the_same_amount() {
     s.undo();
     assert_eq!((level(&s, a), level(&s, b), level_keys(&s, c)), before);
 
+    // Level and Pan in one call are one undo step
+    let pans = (pan(&s, a), pan(&s, b));
+    s.execute("clip.adjustAudio", json!({"volumeDb": -1.0, "pan": -10.0})).unwrap();
+    assert_eq!((level(&s, a), pan(&s, b)), (before.0 - 1.0, pans.1 - 10.0));
+    s.undo();
+    assert_eq!((level(&s, a), level(&s, b), pan(&s, a), pan(&s, b)), (before.0, before.1, pans.0, pans.1), "volume and pan undo together");
+
     // refused: nothing to change, a non-number, no audio clip
     for bad in [json!({}), json!({"volumeDb": "loud"}), json!({"clips": [], "volumeDb": 1.0})] {
         assert!(s.execute("clip.adjustAudio", bad.clone()).is_err(), "{bad}");
