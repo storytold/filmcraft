@@ -242,7 +242,7 @@ pub fn open_reader_within(name: &str, reader: SharedReader, reader_openers: &[Re
         return Err(MediaError::Unsupported(format!("{name}: no streaming reader for this format, and it is too large to read whole here")));
     }
     let all = read_range(&*reader, 0, usize::try_from(reader.len()).unwrap_or(usize::MAX)).map_err(|e| MediaError::Io(format!("{name}: {e}")))?;
-    crate::open_bytes(name, all.into(), extra)
+    crate::open_bytes_from(name, all.into(), extra, Some(reader))
 }
 
 #[cfg(test)]
