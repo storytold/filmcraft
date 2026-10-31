@@ -3198,6 +3198,11 @@ fn build() -> Vec<CommandSpec> {
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
                 let clips = with_links_p(s, p, c);
+                // a ripple trim's step records the ripple id, whichever command runs it
+                let outer = s.command_origin.clone();
+                if mode == TrimMode::Ripple {
+                    s.command_origin = Some(crate::trim::RIPPLE_TRIM_ORIGIN.to_string());
+                }
                 let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, st| {
                     if q.find_item(c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked)) {
                         return Err(edit::EditError::Locked.into());
@@ -3234,8 +3239,9 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                     Ok(dd)
-                })?;
-                Ok(json!({"delta": applied.0}))
+                });
+                s.command_origin = outer;
+                Ok(json!({"delta": applied?.0}))
             }
         ),
         // ================= Trim mode =================
