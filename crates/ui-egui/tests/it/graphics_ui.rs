@@ -487,3 +487,57 @@ fn a_graphics_tab_edit_writes_keyframed_text_where_it_is_shown() {
     assert_eq!(at(&mut d, it.start.0), filmcraft_project::ParamValue::Text("Edited".into()), "the shown (start) value changed");
     assert_eq!(at(&mut d, late), filmcraft_project::ParamValue::Text("End".into()), "the end keeps its own");
 }
+
+/// Click the entry labelled `label` of the open drop-down list with the pointer.
+fn pick(d: &mut Driver, label: &str) {
+    let r = d.harness.get_by_label(label).rect();
+    d.ok("ui.click", json!({"x": (r.min.x + r.max.x) / 2.0, "y": (r.min.y + r.max.y) / 2.0}));
+    d.frames(3);
+}
+
+/// #3539: Effect Controls' Text rows for Font and Font Style are drop-downs of the installed
+/// families and styles (like the Text panel's), and picking one applies it to the text layer.
+#[test]
+fn effect_controls_font_and_style_are_drop_downs_that_apply() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let clip = d.exec("graphics.newText", json!({"text": "Night Drive"}))["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
+    d.frames(4);
+    let fams = filmcraft_text::families();
+    let fam = fams.iter().map(|(f, _)| f.clone()).find(|f| f != "Inter").expect("another family");
+    let font = d
+        .ok("ui.elements", json!({"prefix": "effectControls.text."}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["id"].as_str())
+        .find(|id| id.ends_with(".font"))
+        .expect("font row")
+        .to_string();
+    // the Text rows sit below the fold of the short panel: scroll them into view
+    for _ in 0..10 {
+        if d.rect(&font)[1] < 440.0 {
+            break;
+        }
+        d.ok("ui.scroll", json!({"x": 150.0, "y": 300.0, "dy": -120.0}));
+        d.frames(2);
+    }
+    let r = d.rect(&font);
+    assert!(r[2] <= 150.0 + 0.5, "the drop-down never asks for more than the value column holds: {r:?}");
+    d.ok("ui.click", json!({"id": font}));
+    d.frames(3);
+    // every visible option is addressable by id (review of #3588)
+    let opts = d.ok("ui.elements", json!({"prefix": format!("{font}.option.")}));
+    let want = format!("{font}.option.{fam}");
+    assert!(opts.as_array().unwrap().iter().any(|e| e["id"].as_str() == Some(want.as_str())), "no {want}");
+    pick(&mut d, &fam);
+    assert_eq!(text_param(&mut d, clip, "font"), Some(filmcraft_project::ParamValue::Text(fam.clone())), "picking a family applies it");
+    // the style list follows the family
+    let style_id = font.replace(".font", ".font_style");
+    d.ok("ui.click", json!({"id": style_id}));
+    d.frames(3);
+    pick(&mut d, "Bold Italic");
+    assert_eq!(text_param(&mut d, clip, "font_style"), Some(filmcraft_project::ParamValue::Text("Bold Italic".into())), "picking a style applies it");
+}

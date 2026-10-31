@@ -17,6 +17,11 @@
 #   - "Horizontal"/"Vertical" are 水平/垂直 (guides, blur, axes); vertical text is "Vertical Text".
 
 	About FilmCraft	FilmCraft について
+	Check for Updates…	アップデートを確認…
+	Checking for updates…	アップデートを確認中…
+	Could not check for updates:\n{error}	アップデートを確認できませんでした:\n{error}
+	FilmCraft Updates	FilmCraft のアップデート
+	FilmCraft {version} is currently the newest version available.	FilmCraft {version} は最新バージョンです。
 	Add Audio Submix Track	オーディオサブミックストラックを追加
 	Add Caption at Playhead	再生ヘッドの位置にキャプションを追加
 	Add Chapter Marker…	チャプターマーカーを追加…
@@ -71,6 +76,10 @@
 	Captions and Graphics	キャプションとグラフィックス
 	Captions…	キャプション…
 	Caribbean	カリビアン
+	Center at Cut	カット中央
+	Start at Cut	カット開始
+	End at Cut	カット終了
+	Custom Start	カスタム開始
 	Center Horizontally	水平方向の中央に整列
 	Center Vertically	垂直方向の中央に整列
 	Cerulean	セルリアン
@@ -449,6 +458,9 @@
 	Recover	復元
 	Not Now	後で
 	Are you sure you want to discard your changes to '{file}'?	「{file}」への変更を破棄してもよろしいですか？
+	Replace File	ファイルを置き換え
+	“{file}” already exists in “{folder}”. Do you want to replace it?	「{file}」は「{folder}」に既に存在します。置き換えますか？
+	Replace	置き換え
 	Yes	はい
 	No	いいえ
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	プロジェクトにメディアを追加します。ウィンドウ内の任意の場所にファイルをドロップするか、下のソースを選択してください。
@@ -993,7 +1005,6 @@
 	Show graphs	グラフを表示
 	Toggle animation	アニメーションのオン / オフを切り替え
 	Add/Remove Keyframe	キーフレームを追加/削除
-	Temporal Interpolation	時間補間
 	Linear	リニア
 	Bezier	ベジェ
 	Auto Bezier	自動ベジェ
@@ -1042,6 +1053,7 @@
 	All Caps	すべて大文字
 	Small Caps	スモールキャップ
 	Underline	下線
+	Strikethrough	取り消し線
 	OpenType	OpenType
 	Kerning	カーニング
 	Ligatures	合字
@@ -1182,7 +1194,7 @@
 	New Bin	新規ビン
 	Find	検索
 	Automate to Sequence	シーケンスに自動配置
-	Select items to clear	消去する項目を選択してください
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	名前を変更するには、タイムラインでクリップ（またはリンクされたクリップ）を1つ、またはプロジェクトパネルで項目を1つ選択してください
 	User Order	ユーザー定義の順序
 	Descending	降順
 	Refresh Project	プロジェクトを更新
@@ -3234,6 +3246,9 @@
 	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime、ProRes 4444 (4:4:4) アルファチャンネル付き、24-bit 48 kHz PCM
 	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime、ProRes 4444 XQ (4:4:4)、24-bit 48 kHz PCM
 	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime、ProRes 422、24-bit 48 kHz PCM
+	Settings	設定
+	Hide FilmCraft	FilmCraft を隠す
+	Hide Others	ほかを隠す
 	Quit FilmCraft	FilmCraft を終了
 	Rate Stretch Tool	レートストレッチツール
 	Razor Tool	カミソリツール
@@ -3613,10 +3628,10 @@
 	Export the labels to a preset file…	ラベルをプリセットファイルに書き出し…
 	Show the presets folder	プリセットフォルダーを表示
 	Delete this preset	このプリセットを削除
-	Opens in your web browser: {url}	ウェブブラウザーで開きます：{url}
 	Saves this session's log and shows it in your file manager.	このセッションのログを保存し、ファイルマネージャーで表示します。
 	Shows a report on this computer.	このコンピューターのレポートを表示します。
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
+	Looks for a newer FilmCraft release and offers to update.	FilmCraft の新しいリリースを確認し、アップデートを提案します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
 # View > Reset Interface Zoom (#2253).
@@ -3625,5 +3640,35 @@
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	マーカーを編集…
+	In:	イン:
+	Marker Color:	マーカーのカラー:
+	Options:	オプション:
+	Comment Marker	コメントマーカー
+	Chapter Marker	チャプターマーカー
+	Segmentation Marker	セグメンテーションマーカー
+	Web Link	Web リンク
+	Flash Cue Point	フラッシュキューポイント
+	Invalid duration: {error}	無効なデュレーション: {error}
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。
+	Enter a positive duration within the supported speed range.	対応する速度の範囲内で正の長さを入力してください。
+	Show Video Names	ビデオ名を表示
+	Show Audio Names	オーディオ名を表示
+	Video Names	ビデオ名
+	Audio Names	オーディオ名
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	コントロールサーバーが無効です: FILMCRAFT_CONTROL_TOKEN には 64 文字のランダムな 16 進数文字が必要です (docs/control-protocol.md を参照)
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Clip Mismatch Warning dialog.
+	Clip Mismatch Warning	クリップの不一致警告
+	This clip does not match the sequence settings.	このクリップはシーケンス設定と一致しません。
+	Clip: {settings}	クリップ: {settings}
+	Sequence: {settings}	シーケンス: {settings}
+	Change the sequence to match the clip's settings?	シーケンスをクリップの設定に合わせますか？
+	Change Sequence Settings	シーケンス設定を変更
+	Keep Existing Settings	現在の設定を維持

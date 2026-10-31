@@ -12,6 +12,7 @@
 //! (isolated tests, adjustment layers) they leave the image unchanged.
 
 mod blur;
+pub(crate) use blur::bokeh;
 mod color;
 pub(crate) use color::cdl;
 mod distort;
@@ -467,7 +468,6 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "cineon_converter" => color::cineon(img, e, cx),
         "noise" | "noise_legacy" => color::noise(img, e, cx),
         // Blur & Sharpen
-        "bokeh_blur" => blur::bokeh(img, e, cx),
         "channel_blur" => blur::channel_blur(img, e, cx),
         "compound_blur" => blur::compound(img, e, cx),
         "focus_blur" => blur::focus(img, e, cx),

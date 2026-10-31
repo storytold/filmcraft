@@ -77,6 +77,10 @@ pub struct ExportUi {
     pub quick_open: bool,
     pub quick_path: String,
     pub quick_preset: String,
+    /// The sequence and its In/Out marks the Range was last chosen for: when either changes, the
+    /// Range follows them again (Source In/Out with marks set, else Entire Source; #2749). Part of
+    /// the state, so a `ui.set` of other export fields keeps it (and a chosen Range stays).
+    pub range_for: Option<(u64, Option<i64>, Option<i64>)>,
 }
 
 impl Default for ExportUi {
@@ -96,6 +100,7 @@ impl Default for ExportUi {
             quick_open: false,
             quick_path: String::new(),
             quick_preset: String::new(),
+            range_for: None,
         }
     }
 }
@@ -174,6 +179,26 @@ fn sync_sequence(app: &mut FilmcraftApp) {
     if app.ui.export.location.is_empty() {
         app.ui.export.location = filmcraft_engine::export_tools::default_export_dir(&app.session).to_string_lossy().to_string();
     }
+    // As Premiere does: a sequence with In/Out marks exports that range unless another is chosen.
+    // Only when the sequence or its marks change, so a Range picked by hand (or `ui.set`) stays.
+    let marks = app.session.project.sequence(seq).map(|q| (q.mark_in.map(|t| t.0), q.mark_out.map(|t| t.0))).unwrap_or_default();
+    let now = Some((seq.0, marks.0, marks.1));
+    if app.ui.export.range_for != now {
+        app.ui.export.range_for = now;
+        app.ui.export.range = if marks.0.is_some() || marks.1.is_some() { "inOut" } else { "entire" }.into();
+    }
+}
+
+pub(super) fn active_export_job(app: &FilmcraftApp) -> Option<filmcraft_engine::Job> {
+    app.session
+        .jobs
+        .iter()
+        .find(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed) && (j.label.starts_with("Export") || j.label.starts_with("Quick Export")))
+        .cloned()
+}
+
+pub(super) fn is_export_busy(app: &FilmcraftApp) -> bool {
+    active_export_job(app).is_some() || app.session.export_queue.is_active()
 }
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {

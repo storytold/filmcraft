@@ -157,6 +157,9 @@ fn write_add_click_to_edit_and_save_in_place() {
     d.click("tts.text");
     d.ok("ui.key", json!({"key": "Cmd+A"}));
     d.type_text("Something else");
+    // the new narration track can sit below the audio pane's visible rows: scroll to the end
+    d.harness.state_mut().ui.timeline.a_scroll = f32::MAX;
+    d.frames(3);
     let at = d.ok("ui.timeline.locate", json!({"clip": clip}));
     d.ok("ui.click", json!({"x": at["x"], "y": at["y"]}));
     d.frames(4);

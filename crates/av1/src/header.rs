@@ -424,16 +424,9 @@ pub struct FrameHeader {
     pub gm_params: [[i32; 6]; 8],
     pub prev_gm_params: [[i32; 6]; 8],
     pub film_grain: FilmGrainParams,
-    /// Temporal / spatial id of the OBU carrying the header.
-    pub temporal_id: u32,
-    pub spatial_id: u32,
 }
 
 impl FrameHeader {
-    pub fn get_relative_dist(&self, seq: &SequenceHeader, a: u32, b: u32) -> i32 {
-        relative_dist(seq, a, b)
-    }
-
     /// get_qindex( ignoreDeltaQ, segmentId ) with CurrentQIndex.
     pub fn get_qindex(&self, ignore_delta_q: bool, segment_id: usize, current_q_index: i32) -> i32 {
         let base = self.quant.base_q_idx as i32;
@@ -487,7 +480,7 @@ impl FrameHeader {
     /// uncompressed_header( ). `st` holds the cross-frame state.
     pub(crate) fn parse(r: &mut BitReader, st: &mut HeaderState, temporal_id: u32, spatial_id: u32) -> Result<FrameHeader> {
         let seq = st.seq;
-        let mut h = FrameHeader { temporal_id, spatial_id, ..Default::default() };
+        let mut h = FrameHeader::default();
         let id_len = if seq.frame_id_numbers_present { seq.additional_frame_id_length_minus_1 + seq.delta_frame_id_length_minus_2 + 3 } else { 0 };
         if seq.reduced_still_picture_header {
             h.frame_type = KEY_FRAME as u8;
@@ -514,7 +507,7 @@ impl FrameHeader {
         };
         h.order_hint = r.f(seq.order_hint_bits)?;
         h.primary_ref_frame = if h.frame_is_intra || h.error_resilient_mode { PRIMARY_REF_NONE } else { r.f(3)? as usize };
-        h.skip_buffer_removal_times(r, seq)?;
+        h.skip_buffer_removal_times(r, seq, temporal_id, spatial_id)?;
         h.refresh_frame_flags = if h.frame_type == SWITCH_FRAME as u8 || (h.frame_type == KEY_FRAME as u8 && h.show_frame) { ALL_FRAMES } else { r.f(8)? };
         h.read_ref_order_hints(r, st)?;
         if h.frame_is_intra {
@@ -641,13 +634,13 @@ impl FrameHeader {
     }
 
     /// Reads and discards the buffer_removal_time of every operating point that applies to this layer.
-    fn skip_buffer_removal_times(&self, r: &mut BitReader, seq: &SequenceHeader) -> Result<()> {
+    fn skip_buffer_removal_times(&self, r: &mut BitReader, seq: &SequenceHeader, temporal_id: u32, spatial_id: u32) -> Result<()> {
         if seq.decoder_model_info_present && r.flag()? {
             for op in 0..=seq.operating_points_cnt_minus_1 {
                 if seq.decoder_model_present_for_this_op[op] {
                     let idc = seq.operating_point_idc[op];
-                    let in_t = (idc >> self.temporal_id) & 1;
-                    let in_s = (idc >> (self.spatial_id + 8)) & 1;
+                    let in_t = (idc >> temporal_id) & 1;
+                    let in_s = (idc >> (spatial_id + 8)) & 1;
                     if idc == 0 || (in_t == 1 && in_s == 1) {
                         r.f(seq.buffer_removal_time_length_minus_1 + 1)?;
                     }

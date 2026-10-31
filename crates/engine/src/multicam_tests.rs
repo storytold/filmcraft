@@ -921,3 +921,42 @@ fn multicam_menu_items_are_enabled_only_for_clips_they_work_on() {
     let q = s.active_sequence().unwrap();
     assert!(q.find_item(nest).is_none(), "flattened into the camera clips");
 }
+
+/// Synchronizing by audio against a long stereo reference clip works (#3554): the analysis read is
+/// chunked, so a stereo read of more than 23 minutes stays under the audio buffer limit instead of
+/// failing as "has no audio to synchronize by".
+#[test]
+fn audio_sync_against_a_long_stereo_clip() {
+    let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("long stereo sync") else { return };
+    let dir = filmcraft_testkit::fixtures_dir("multicam");
+    // 25 minutes of stereo pink noise (AAC, small), and a 20 s excerpt of it starting at 100 s
+    let gen_clip = |name: &str, extra: &[&str]| {
+        filmcraft_testkit::fixtures::generate(&dir.join(name), |tmp| {
+            let t = tmp.to_string_lossy();
+            let mut args = vec![
+                "-f",
+                "lavfi",
+                "-i",
+                "color=s=64x36:r=1:d=1500",
+                "-f",
+                "lavfi",
+                "-i",
+                "anoisesrc=d=1500:c=pink:r=48000:a=0.35:s=11,aformat=channel_layouts=stereo",
+            ];
+            args.extend_from_slice(extra);
+            args.extend_from_slice(&["-c:v", "libx264", "-c:a", "aac", "-b:a", "32k", "-shortest", "-f", "mp4", &t]);
+            ff(&ffmpeg, &args)
+        })
+    };
+    let long = gen_clip("long_stereo.mp4", &["-t", "1500"]);
+    let short = gen_clip("long_stereo_excerpt.mp4", &["-ss", "100", "-t", "20"]);
+    // ffmpeg is there (the skip above): a fixture that cannot be generated is a failure, not a pass
+    let (Some(long), Some(short)) = (long, short) else { panic!("ffmpeg could not generate the long stereo fixtures") };
+    let mut s = Session::default();
+    let items = import(&mut s, &[&long, &short]);
+    let clips: Vec<_> = items.iter().map(|i| crate::sync::project_clip(&s.project, *i).unwrap()).collect();
+    let a = crate::sync::anchors(&s, &clips, 0, &crate::sync::Method::Audio, Tick::ZERO).unwrap();
+    // the excerpt's media 0 lines up with the long clip's media 100 s: the long clip starts 100 s earlier
+    let dt = (a[1].anchor - a[0].anchor).0 as f64 / TICKS_PER_SECOND as f64;
+    assert!((dt + 100.0).abs() < 0.05, "{dt}");
+}

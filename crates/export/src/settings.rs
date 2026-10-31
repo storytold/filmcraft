@@ -505,10 +505,10 @@ impl ExportSettings {
     }
 
     /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): PNG, TIFF,
-    /// Targa and OpenEXR sequences and ProRes 4444 / 4444 XQ QuickTime movies.
+    /// Targa and OpenEXR sequences, GIF (binary transparency), and ProRes 4444 / 4444 XQ movies.
     pub fn supports_alpha(&self) -> bool {
         match self.format {
-            Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence => true,
+            Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence | Format::Gif => true,
             Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
             _ => false,
         }
