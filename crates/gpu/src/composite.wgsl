@@ -14,7 +14,7 @@ struct U {
     p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
-    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, unused
+    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, magnified (1: scaled up along either axis)
     // Colour management of HDR / wide-gamut Y'CbCr (`filmcraft_color::InputTransform`, #965):
     q0: vec4<f32>,   // on, curve (0 sdr, 1 linear, 2 pq, 3 hlg), HLG OOTF scale (0: none), reference white cd/m²
     q1: vec4<f32>,   // HLG OOTF luma weights, gamut matrix on
@@ -50,14 +50,25 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
     return out;
 }
 
-fn load4(t: texture_2d<f32>, p: vec2<f32>) -> vec4<f32> {
-    let d = vec2<i32>(textureDimensions(t));
+// The top-left texel of the 2×2 bilinear footprint at p and the weights towards the others.
+struct Taps {
+    i: vec2<i32>,
+    f: vec2<f32>,
+};
+
+fn taps(p: vec2<f32>) -> Taps {
     var q = p - 0.5;
     let rq = round(q);
     if abs(q.x - rq.x) < 1e-4 { q.x = rq.x; }
     if abs(q.y - rq.y) < 1e-4 { q.y = rq.y; }
-    let i = vec2<i32>(floor(q));
-    let f = q - floor(q);
+    return Taps(vec2<i32>(floor(q)), q - floor(q));
+}
+
+fn load4(t: texture_2d<f32>, p: vec2<f32>) -> vec4<f32> {
+    let d = vec2<i32>(textureDimensions(t));
+    let tp = taps(p);
+    let i = tp.i;
+    let f = tp.f;
     let a = textureLoad(t, clamp(i, vec2(0), d - 1), 0);
     let b = textureLoad(t, clamp(i + vec2(1, 0), vec2(0), d - 1), 0);
     let cc = textureLoad(t, clamp(i + vec2(0, 1), vec2(0), d - 1), 0);
@@ -179,11 +190,48 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     if kind == 1u {
         return load4(tex0, p);
     }
+    if u.p3.w > 0.5 {
+        // Y'CbCr scaled up: the four texels are converted to linear light before they are
+        // interpolated, as the CPU resamples its linear image; mixing code values darkens fine
+        // bright detail (#1558)
+        let tp = taps(p);
+        let i = tp.i;
+        let f = tp.f;
+        let top = mix(yuv_texel(i), yuv_texel(i + vec2(1, 0)), f.x);
+        let bottom = mix(yuv_texel(i + vec2(0, 1)), yuv_texel(i + vec2(1, 1)), f.x);
+        return mix(top, bottom, f.y);
+    }
+    // 1:1 and scaled down: the code values interpolated at p and converted once (per tap, so a
+    // minified draw costs what it did before #1558)
     let cs = u.p2.z;
-    let yc = load4(tex0, p).r * cs;
     let cp = p * u.src.zw / u.src.xy;
-    let cb = load4(tex1, cp).r * cs;
-    let cr = load4(tex2, cp).r * cs;
+    var a = 1.0;
+    if u.p3.y > 0.0 {
+        a = clamp(load4(tex3, p).r * u.p3.y, 0.0, 1.0);
+    }
+    return yuv_linear(load4(tex0, p).r * cs, load4(tex1, cp).r * cs, load4(tex2, cp).r * cs, a);
+}
+
+// One Y'CbCr texel of a scaled-up layer (luma position, clamped to the picture) as linear
+// premultiplied colour. Its chroma is the chroma texel that covers it (`x >> 1` when subsampled), as
+// the CPU decodes the frame before it resamples: interpolating the chroma plane as well smears hard
+// colour edges (#1558).
+fn yuv_texel(texel: vec2<i32>) -> vec4<f32> {
+    let t = clamp(texel, vec2(0), vec2<i32>(textureDimensions(tex0)) - 1);
+    let cs = u.p2.z;
+    let cd = vec2<i32>(textureDimensions(tex1));
+    let sh = vec2<u32>(select(vec2(0u), vec2(1u), cd < vec2<i32>(textureDimensions(tex0))));
+    let ct = min(t >> sh, cd - 1);
+    var a = 1.0;
+    if u.p3.y > 0.0 {
+        a = clamp(textureLoad(tex3, t, 0).r * u.p3.y, 0.0, 1.0);
+    }
+    return yuv_linear(textureLoad(tex0, t, 0).r * cs, textureLoad(tex1, ct, 0).r * cs, textureLoad(tex2, ct, 0).r * cs, a);
+}
+
+// Y'CbCr codes and straight alpha (from the alpha plane, full resolution like luma) as linear
+// premultiplied colour.
+fn yuv_linear(yc: f32, cb: f32, cr: f32, a: f32) -> vec4<f32> {
     let y = (yc - u.p1.x) / u.p1.y;
     let b = (cb - u.p1.z) / u.p1.w;
     let r = (cr - u.p1.z) / u.p1.w;
@@ -191,11 +239,6 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     let R = y + 2.0 * (1.0 - kr) * r;
     let B = y + 2.0 * (1.0 - kb) * b;
     let G = (y - kr * R - kb * B) / kg;
-    // straight alpha from the alpha plane (full resolution, like luma), premultiplied here
-    var a = 1.0;
-    if u.p3.y > 0.0 {
-        a = clamp(load4(tex3, p).r * u.p3.y, 0.0, 1.0);
-    }
     var lin = to_linear(vec3(R, G, B));
     if u.q0.x > 0.5 { lin = managed(vec3(R, G, B)); }
     return vec4(lin * a, a);
