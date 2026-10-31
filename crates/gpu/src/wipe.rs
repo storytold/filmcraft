@@ -45,6 +45,7 @@ impl Field {
         })
     }
 
+    #[expect(clippy::too_many_arguments, reason = "the CPU field closures' inputs, one by one")]
     fn value(self, x: f32, y: f32, w: f32, h: f32, cx: f32, cy: f32, aspect: f32) -> f32 {
         match self {
             Self::Linear { dx, dy } => x * dx + y * dy,
@@ -247,6 +248,7 @@ impl WipeStage {
         Self { pipeline }
     }
 
+    #[expect(clippy::too_many_arguments, reason = "PushStage::draw's inputs plus the pixel scale")]
     pub(crate) fn draw(
         &self,
         device: &wgpu::Device,
