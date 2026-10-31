@@ -7,6 +7,8 @@
 //!   sits on the same-numbered audio track with identical timing is written as one clip carrying
 //!   both (`srcEnable="all"`), otherwise `srcEnable="video"`/`"audio"`.
 //! - Rational times (`1001/24000s`) map exactly onto ticks.
+//! - Standalone `video` elements reference the picture of an asset (including still images),
+//!   without importing that asset's audio. Effect-backed generators are reported as unsupported.
 //! - `adjust-transform` (position in percent of frame height, FCP y-up, counter-clockwise
 //!   rotation), `adjust-blend` (opacity), `adjust-volume` (dB) and their keyframes are mapped;
 //!   constant speed, reverse and freeze frames use a two-point `timeMap`.
@@ -27,7 +29,7 @@ use roxmltree::Node;
 
 use crate::common::{
     Builder, MAX_IMPORTED_TRACKS, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, gain_to_db, generator_of, item_media, item_path, kind_from_ext,
-    param, param_modified, path_to_file_url, resolve_path, scaled, set_param, settings_for, standard_effects, transition_effect, transition_name,
+    param, param_modified, path_to_file_url, resolve_path, resolve_url, scaled, set_param, settings_for, standard_effects, transition_effect, transition_name,
 };
 use crate::xml::{child, children, elements, num};
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
@@ -96,7 +98,8 @@ fn rate_from_frame_duration(s: &str) -> Option<FrameRate> {
     let s = s.trim().strip_suffix('s')?;
     let (a, b) = s.split_once('/').unwrap_or((s, "1"));
     let (a, b): (i64, i64) = (a.parse().ok()?, b.parse().ok()?);
-    (a > 0).then(|| FrameRate::new(b, a))
+    // both parts must be positive: a zero or negative numerator of the rate divides by zero later
+    (a > 0 && b > 0).then(|| FrameRate::new(b, a))
 }
 
 fn audio_rate_str(sr: u32) -> String {
@@ -137,6 +140,23 @@ struct Imp<'a, 'i, 'r> {
     effects: HashMap<String, String>,
 }
 
+/// Where an element's keyframe times start, the media time it starts at and its playback speed.
+#[derive(Clone, Copy)]
+struct LocalTiming {
+    local_start: Tick,
+    src_in: Tick,
+    speed: f64,
+}
+
+/// Where a written clip element sits: offset in its parent's local time, connected lane, and
+/// whether it is on the primary storyline.
+#[derive(Clone, Copy)]
+struct ClipPlacement {
+    offset: Tick,
+    lane: Option<i32>,
+    primary: bool,
+}
+
 /// Placement context of a storyline element.
 struct Ctx {
     seq_rate: FrameRate,
@@ -173,7 +193,13 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
             let Some(id) = r.attribute("id") else { continue };
             match r.tag_name().name() {
                 "format" => {
-                    let rate = r.attribute("frameDuration").and_then(rate_from_frame_duration).unwrap_or_default();
+                    let rate = match r.attribute("frameDuration") {
+                        Some(fd) => rate_from_frame_duration(fd).unwrap_or_else(|| {
+                            imp.report.warn(format!("format \"{id}\" has an invalid frameDuration \"{fd}\"; the default frame rate was used"));
+                            FrameRate::default()
+                        }),
+                        None => FrameRate::default(),
+                    };
                     let w = r.attribute("width").and_then(|v| v.parse().ok()).unwrap_or(1920);
                     let h = r.attribute("height").and_then(|v| v.parse().ok()).unwrap_or(1080);
                     imp.formats.insert(id.into(), (rate, w, h));
@@ -259,7 +285,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         };
         let item = match src {
             Some(url) => {
-                let p = resolve_path(url, self.opts.base_dir.as_deref());
+                let p = resolve_url(url, self.opts.base_dir.as_deref());
                 self.b.file_media(&format!("file:{p}"), &name, &p, &spec, bin)
             }
             None => {
@@ -390,6 +416,20 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         // Media and source in.
         let media: Option<(ItemId, Tick, bool, bool)> = match tag {
             "asset-clip" => el.attribute("ref").and_then(|r| self.asset(r, None)).map(|a| (a.item, a.start, a.has_video, a.has_audio)),
+            "video" => {
+                // FCPXML 1.10 DTD: video selects an asset's picture, or references a generator.
+                // Our media model does not select additional video sources within an asset.
+                let asset = el
+                    .attribute("srcID")
+                    .is_none_or(|id| id == "1")
+                    .then(|| el.attribute("ref").and_then(|r| self.asset(r, None)))
+                    .flatten()
+                    .filter(|a| a.has_video);
+                if asset.is_none() {
+                    self.report.warn(format!("FCPXML <video> \"{name}\" has no supported video asset/source; clip was skipped"));
+                }
+                asset.map(|a| (a.item, a.start, true, false))
+            }
             "clip" => {
                 // A clip wraps video/audio/asset-clip children that reference the asset.
                 let inner = elements(el).find(|c| matches!(c.tag_name().name(), "video" | "audio" | "asset-clip") && c.attribute("ref").is_some());
@@ -408,7 +448,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 Some((item, tc, true, self.b.p.sequence(item).is_some_and(|s| s.audio_tracks.iter().any(|t| !t.items.is_empty()))))
             }),
             "gap" => None,
-            "title" | "video" | "audio" | "sync-clip" | "mc-clip" | "live-drawing" => {
+            "title" | "audio" | "sync-clip" | "mc-clip" | "live-drawing" => {
                 self.report.warn(format!("FCPXML <{tag}> elements are not supported and were skipped"));
                 None
             }
@@ -438,7 +478,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 if let Some(l) = el.attribute("label").and_then(Label::from_name) {
                     ti.label = l;
                 }
-                self.adjustments(&mut ti, el, local_start, src_in, speed, ctx, kind);
+                self.adjustments(&mut ti, el, LocalTiming { local_start, src_in, speed }, ctx, kind);
                 if !primary || kind == TrackKind::Audio {
                     ti.markers = self.markers(el, local_start, src_in, speed, ctx.seq_rate);
                 }
@@ -508,8 +548,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         out
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn adjustments(&mut self, ti: &mut TrackItem, el: Node, local_start: Tick, src_in: Tick, speed: f64, ctx: &Ctx, kind: TrackKind) {
+    fn adjustments(&mut self, ti: &mut TrackItem, el: Node, timing: LocalTiming, ctx: &Ctx, kind: TrackKind) {
+        let LocalTiming { local_start, src_in, speed } = timing;
         // keyframe time (element-local) -> media time
         let kt = |t: Tick| src_in + scaled(t - local_start, speed);
         let (fw, fh) = (ctx.frame.0 as f64, ctx.frame.1 as f64);
@@ -861,7 +901,7 @@ impl Exp<'_, '_> {
                     trans_after.push((els.len(), self.transition_xml(tr, tc0, rate)));
                 }
                 let audio = merged.get(&it.id).and_then(|a| seq.audio_tracks[0].item(*a));
-                let el = self.clip_el(it, audio, TrackKind::Video, tc0 + it.start, None, seq, true);
+                let el = self.clip_el(it, audio, TrackKind::Video, ClipPlacement { offset: tc0 + it.start, lane: None, primary: true }, seq);
                 els.push(el);
                 for tr in v1.transitions.iter().filter(|tr| tr.from == Some(it.id) && tr.to.is_none()) {
                     trans_after.push((els.len(), self.transition_xml(tr, tc0, rate)));
@@ -898,7 +938,7 @@ impl Exp<'_, '_> {
                     let local = els[pi].local + (it.start - els[pi].start);
                     let audio =
                         if kind == TrackKind::Video { merged.get(&it.id).and_then(|a| seq.audio_tracks.get(ti).and_then(|t| t.item(*a))) } else { None };
-                    let el = self.clip_el(it, audio, kind, local, Some(lane), seq, false);
+                    let el = self.clip_el(it, audio, kind, ClipPlacement { offset: local, lane: Some(lane), primary: false }, seq);
                     let s = self.render_el(&el, 0);
                     els[pi].children.push(s);
                 }
@@ -969,8 +1009,8 @@ impl Exp<'_, '_> {
     }
 
     /// A clip element at `offset` (in its parent's local time).
-    #[allow(clippy::too_many_arguments)]
-    fn clip_el(&mut self, it: &TrackItem, audio: Option<&TrackItem>, kind: TrackKind, offset: Tick, lane: Option<i32>, seq: &Sequence, primary: bool) -> El {
+    fn clip_el(&mut self, it: &TrackItem, audio: Option<&TrackItem>, kind: TrackKind, at: ClipPlacement, seq: &Sequence) -> El {
+        let ClipPlacement { offset, lane, primary } = at;
         let rate = seq.settings.frame_rate;
         let base = base_item(self.p, it.item);
         let is_seq = matches!(self.p.item(base).map(|i| &i.kind), Some(ItemKind::Sequence(_)));
@@ -1226,5 +1266,27 @@ mod tests {
         assert_eq!(parse_time(&fmt_time(odd, r)), Some(odd));
         assert_eq!(rate_from_frame_duration("1001/30000s"), Some(FrameRate::FPS_29_97));
         assert_eq!(rate_from_frame_duration("100/2500s"), Some(FrameRate::FPS_25));
+        for bad in ["100/0s", "0/100s", "-100/2500s", "100/-2500s", "0s", "x"] {
+            assert_eq!(rate_from_frame_duration(bad), None, "{bad}");
+        }
+    }
+
+    /// A zero frame duration denominator gave the format a zero frame rate, and export then
+    /// divided by zero (`fmt_time`) as soon as the sequence had a start timecode or a marker.
+    #[test]
+    fn zero_frame_duration_falls_back_to_the_default_rate() {
+        for fd in ["100/0s", "0/100s", "-100/2500s"] {
+            let xml = format!(
+                r#"<?xml version="1.0"?><fcpxml version="1.10"><resources><format id="f1" frameDuration="{fd}" width="1920" height="1080"/>
+<asset id="a1" name="c" start="0s" duration="10s" hasVideo="1" format="f1"><media-rep kind="original-media" src="file:///tmp/c.mov"/></asset></resources>
+<library><event name="E"><project name="P"><sequence format="f1" tcStart="3600/1s" tcFormat="DF"><spine>
+<asset-clip ref="a1" offset="3600s" duration="5s"><marker start="1s" duration="1/25s" value="m"/></asset-clip></spine></sequence></project></event></library></fcpxml>"#
+            );
+            let (imported, report) = crate::import(xml.as_bytes(), crate::Format::Fcpxml, None).expect("import succeeds");
+            for seq in &imported.sequences {
+                crate::export(&imported.project, *seq, crate::Format::Fcpxml, &crate::ExportOptions::default()).expect("export succeeds");
+            }
+            assert!(report.mentions("invalid frameDuration"), "{fd}: {report}");
+        }
     }
 }

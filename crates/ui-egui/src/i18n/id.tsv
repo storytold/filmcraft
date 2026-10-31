@@ -76,6 +76,10 @@
 	Captions and Graphics	Takarir dan Grafis
 	Captions…	Takarir…
 	Caribbean	Karibia
+	Center at Cut	Tengah di Titik Potong
+	Start at Cut	Mulai di Titik Potong
+	End at Cut	Akhir di Titik Potong
+	Custom Start	Awal Kustom
 	Center Horizontally	Tengahkan Secara Horizontal
 	Center Vertically	Tengahkan Secara Vertikal
 	Cerulean	Biru Langit
@@ -455,6 +459,9 @@
 	Recover	Pulihkan
 	Not Now	Jangan Sekarang
 	Are you sure you want to discard your changes to '{file}'?	Yakin ingin membuang perubahan Anda pada '{file}'?
+	Replace File	Ganti Berkas
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}” sudah ada di “{folder}”. Ingin menggantinya?
+	Replace	Ganti
 	Yes	Ya
 	No	Tidak
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	Tambahkan media ke proyek Anda. Letakkan berkas di mana saja di jendela, atau pilih sumber di bawah.
@@ -996,7 +1003,6 @@
 	Eyedropper (pick a color from the Program monitor)	Pipet (ambil warna dari monitor Program)
 	Eyedropper: no picture to sample	Pipet: tidak ada gambar untuk diambil sampelnya
 	Add/Remove Keyframe	Tambah/Hapus Bingkai Kunci
-	Temporal Interpolation	Interpolasi Temporal
 	Linear	Linier
 	Bezier	Bezier
 	Auto Bezier	Bezier Otomatis
@@ -1045,6 +1051,7 @@
 	All Caps	Semua Kapital
 	Small Caps	Kapital Kecil
 	Underline	Garis Bawah
+	Strikethrough	Coret
 	OpenType	OpenType
 	Kerning	Kerning
 	Ligatures	Ligatur
@@ -1185,7 +1192,7 @@
 	New Bin	Bin Baru
 	Find	Cari
 	Automate to Sequence	Otomatiskan ke Sekuens
-	Select items to clear	Pilih item yang akan dihapus
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Pilih satu klip (atau klip yang ditautkan) di Linimasa, atau satu item di panel Proyek, untuk mengganti namanya
 	User Order	Urutan Pengguna
 	Descending	Menurun
 	Refresh Project	Segarkan Proyek
@@ -3583,3 +3590,24 @@
 	Open a sequence to search its graphics	Buka sekuens untuk mencari di grafisnya
 	No text graphics in this sequence. Add text with the Type tool.	Tidak ada grafis teks di sekuens ini. Tambahkan teks dengan alat Teks.
 	No matching text.	Tidak ada teks yang cocok.
+	Enter a positive duration within the supported speed range.	Masukkan durasi positif dalam rentang kecepatan yang didukung.
+	Show Video Names	Tampilkan Nama Video
+	Show Audio Names	Tampilkan Nama Audio
+	Video Names	Nama Video
+	Audio Names	Nama Audio
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Server kontrol dinonaktifkan: FILMCRAFT_CONTROL_TOKEN harus berisi 64 karakter heksadesimal acak (lihat docs/control-protocol.md)
+
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	Edit Penanda…
+	In:	Masuk:
+	Marker Color:	Warna Penanda:
+	Options:	Opsi:
+	Comment Marker	Penanda Komentar
+	Chapter Marker	Penanda Bab
+	Segmentation Marker	Penanda Segmentasi
+	Web Link	Tautan Web
+	Flash Cue Point	Titik Isyarat Flash
+	Invalid duration: {error}	Durasi tidak valid: {error}
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).

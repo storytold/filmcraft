@@ -150,14 +150,14 @@ fn project() -> (Project, filmcraft_project::ItemId) {
     let b = media(&mut p, "/m/b.mov", true, true, r);
     let g = generator(&mut p, "Matte", Generator::ColorMatte { color: [0.2, 0.4, 0.6, 1.0] });
     let nest = sequence(&mut p, "Inner", r, false);
-    clip(&mut p, nest, TrackKind::Video, 0, b, 0, 50, 5);
+    clip(&mut p, nest, TrackKind::Video, 0, b, 0..50, 5);
     let s = sequence(&mut p, "Outer", r, false);
-    let v1 = clip(&mut p, s, TrackKind::Video, 0, a, 0, 48, 24);
-    let a1 = clip(&mut p, s, TrackKind::Audio, 0, a, 0, 48, 24);
+    let v1 = clip(&mut p, s, TrackKind::Video, 0, a, 0..48, 24);
+    let a1 = clip(&mut p, s, TrackKind::Audio, 0, a, 0..48, 24);
     link(&mut p, s, &[v1, a1]);
-    let v2 = clip(&mut p, s, TrackKind::Video, 0, nest, 48, 40, 3);
-    transition(&mut p, s, TrackKind::Video, 0, "iris_round", Some(v1), Some(v2), 40, 16, TransitionAlign::CenterAtCut);
-    clip(&mut p, s, TrackKind::Video, 1, g, 10, 20, 0);
+    let v2 = clip(&mut p, s, TrackKind::Video, 0, nest, 48..48 + (40), 3);
+    transition(&mut p, s, (TrackKind::Video, 0), "iris_round", (Some(v1), Some(v2)), 40..40 + (16), TransitionAlign::CenterAtCut);
+    clip(&mut p, s, TrackKind::Video, 1, g, 10..10 + (20), 0);
     {
         let q = p.sequence_mut(s).unwrap();
         // sub-frame audio position
@@ -318,7 +318,7 @@ proptest! {
         let mut aend = [Tick::ZERO; 3];
         for g in &clips {
             let t = ends[g.track] + g.gap;
-            let v = clip(&mut p, s, TrackKind::Video, g.track, ms[g.media], t, g.dur, g.src);
+            let v = clip(&mut p, s, TrackKind::Video, g.track, ms[g.media], t..t + (g.dur), g.src);
             {
                 let q = p.sequence_mut(s).unwrap();
                 let (_, it) = q.find_item_mut(v).unwrap();
@@ -334,16 +334,16 @@ proptest! {
             let d = g.tr_len;
             let adjacent = g.gap == 0 && prev[g.track].is_some();
             match g.tr {
-                0 if adjacent => transition(&mut p, s, TrackKind::Video, g.track, "cross_dissolve", prev[g.track], Some(v), t - d / 2, d, TransitionAlign::CenterAtCut),
-                1 if adjacent => transition(&mut p, s, TrackKind::Video, g.track, "dip_to_white", prev[g.track], Some(v), t, d, TransitionAlign::StartAtCut),
-                2 if adjacent => transition(&mut p, s, TrackKind::Video, g.track, "push", prev[g.track], Some(v), t - d, d, TransitionAlign::EndAtCut),
-                3 if !adjacent => transition(&mut p, s, TrackKind::Video, g.track, "cross_dissolve", None, Some(v), t, d, TransitionAlign::StartAtCut),
+                0 if adjacent => transition(&mut p, s, (TrackKind::Video, g.track), "cross_dissolve", (prev[g.track], Some(v)), t - d / 2..t - d / 2 + (d), TransitionAlign::CenterAtCut),
+                1 if adjacent => transition(&mut p, s, (TrackKind::Video, g.track), "dip_to_white", (prev[g.track], Some(v)), t..t + (d), TransitionAlign::StartAtCut),
+                2 if adjacent => transition(&mut p, s, (TrackKind::Video, g.track), "push", (prev[g.track], Some(v)), t - d..t - d + (d), TransitionAlign::EndAtCut),
+                3 if !adjacent => transition(&mut p, s, (TrackKind::Video, g.track), "cross_dissolve", (None, Some(v)), t..t + (d), TransitionAlign::StartAtCut),
                 _ => {}
             }
             // Audio at sample (not frame) positions, linked to the video.
             let at = rate.tick_of(t) + Tick(TICKS_PER_SECOND / 48_000 * g.subframe % rate.frame_duration().0.max(1));
             if g.audio && aend[g.track] <= at {
-                let a = clip(&mut p, s, TrackKind::Audio, g.track, ms[g.media], t, g.dur, g.src);
+                let a = clip(&mut p, s, TrackKind::Audio, g.track, ms[g.media], t..t + (g.dur), g.src);
                 let q = p.sequence_mut(s).unwrap();
                 let (_, ai) = q.find_item_mut(a).unwrap();
                 ai.start = at;
@@ -359,4 +359,17 @@ proptest! {
         prop_assert_eq!(structure(&imp.project, si, TrackKind::Audio), structure(&p, s, TrackKind::Audio));
         prop_assert_eq!(links(&imp.project, si), links(&p, s));
     }
+}
+
+/// #2195: a relative `target_url` is a URL: `Clip%20A.mov` is the file `Clip A.mov`.
+#[test]
+fn relative_target_urls_are_percent_decoded() {
+    let doc = r#"{"OTIO_SCHEMA": "Timeline.1", "name": "T", "tracks": {"OTIO_SCHEMA": "Stack.1", "children": [
+        {"OTIO_SCHEMA": "Track.1", "kind": "Video", "children": [
+            {"OTIO_SCHEMA": "Clip.2", "name": "a", "source_range": {"OTIO_SCHEMA": "TimeRange.1", "start_time": {"OTIO_SCHEMA": "RationalTime.1", "rate": 25, "value": 0}, "duration": {"OTIO_SCHEMA": "RationalTime.1", "rate": 25, "value": 50}},
+             "media_references": {"DEFAULT_MEDIA": {"OTIO_SCHEMA": "ExternalReference.1", "target_url": "media/Clip%20A.mov"}}, "active_media_reference_key": "DEFAULT_MEDIA"}]}]}}"#;
+    let (imp, _) = import(doc.as_bytes(), Format::Otio, Some("/proj")).unwrap();
+    let p = &imp.project;
+    let clip = &p.sequence(imp.sequences[0]).unwrap().video_tracks[0].items[0];
+    assert_eq!(media_key(p, clip.item), "/proj/media/Clip A.mov");
 }

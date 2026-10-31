@@ -134,19 +134,20 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
             row_line(ui);
 
             ui.label(tl!("Alignment"));
-            let shown = align.label();
+            let shown = crate::i18n::t(align.label());
             let r = ui
                 .add_enabled_ui(!one_sided, |ui| {
-                    egui::ComboBox::from_id_salt(("tr-align", id.0))
+                    craft_ui::ComboBox::from_id_salt(("tr-align", id.0))
                         .selected_text(shown)
                         .width(170.0)
                         .show_ui(ui, |ui| {
                             for a in Alignment::MENU {
-                                let o = ui.selectable_label(a == align, a.label());
+                                let label = crate::i18n::t(a.label());
+                                let o = ui.selectable_label(a == align, label);
                                 if o.clicked() && a != align {
                                     changes.push(json!({"align": a.id()}));
                                 }
-                                elems.push((format!("effectControls.transition.alignment.option.{}", a.id()), o.rect, a.label().to_string()));
+                                elems.push((format!("effectControls.transition.alignment.option.{}", a.id()), o.rect, label.to_string()));
                             }
                         })
                         .response
@@ -421,7 +422,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
         drag = None;
     }
     if let Some(tk) = seek {
-        app.stop();
+        app.stop_for_scrub();
         app.session.set_playhead(tk);
     }
     if let Some((a, b, d)) = rolled
@@ -506,7 +507,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, label: &str, ki
             let shown = opts.get(*c as usize).copied().unwrap_or("");
             let mut picked = None;
             let mut options = Vec::new();
-            let r = egui::ComboBox::from_id_salt(("tr-param", pid.to_string())).selected_text(crate::i18n::t(shown)).show_ui(ui, |ui| {
+            let r = craft_ui::ComboBox::from_id_salt(("tr-param", pid.to_string())).selected_text(crate::i18n::t(shown)).show_ui(ui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
                     let r = ui.selectable_label(i == *c as usize, crate::i18n::t(o));
                     if r.clicked() && i != *c as usize {

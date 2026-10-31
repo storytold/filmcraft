@@ -69,6 +69,10 @@
 	Captions and Graphics	Sottotitoli e grafica
 	Captions…	Sottotitoli…
 	Caribbean	Caraibi
+	Center at Cut	Centrato sul taglio
+	Start at Cut	Inizio sul taglio
+	End at Cut	Fine sul taglio
+	Custom Start	Inizio personalizzato
 	Center Horizontally	Centra orizzontalmente
 	Center Vertically	Centra verticalmente
 	Cerulean	Ceruleo
@@ -445,6 +449,9 @@
 	Recover	Recupera
 	Not Now	Non ora
 	Are you sure you want to discard your changes to '{file}'?	Vuoi davvero scartare le modifiche a '{file}'?
+	Replace File	Sostituisci file
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}” esiste già in “{folder}”. Vuoi sostituirlo?
+	Replace	Sostituisci
 	Yes	Sì
 	No	No
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	Aggiungi media al progetto. Trascina i file in un punto qualsiasi della finestra o scegli una sorgente qui sotto.
@@ -988,7 +995,6 @@
 	Eyedropper (pick a color from the Program monitor)	Contagocce (preleva un colore dal monitor programma)
 	Eyedropper: no picture to sample	Contagocce: nessuna immagine da campionare
 	Add/Remove Keyframe	Aggiungi/rimuovi fotogramma chiave
-	Temporal Interpolation	Interpolazione temporale
 	Linear	Lineare
 	Bezier	Bezier
 	Auto Bezier	Bezier automatica
@@ -1037,6 +1043,7 @@
 	All Caps	Tutto maiuscolo
 	Small Caps	Maiuscoletto
 	Underline	Sottolineato
+	Strikethrough	Barrato
 	OpenType	OpenType
 	Kerning	Crenatura
 	Ligatures	Legature
@@ -1177,7 +1184,7 @@
 	New Bin	Nuovo raccoglitore
 	Find	Trova
 	Automate to Sequence	Automatizza in sequenza
-	Select items to clear	Seleziona gli elementi da cancellare
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Seleziona una clip (o una clip collegata) nella timeline, o un elemento nel pannello Progetto, per rinominarlo
 	User Order	Ordine utente
 	Descending	Decrescente
 	Refresh Project	Aggiorna progetto
@@ -3597,7 +3604,6 @@
 	32 bit float	32 bit in virgola mobile
 	FLAC stores whole-number samples only	FLAC memorizza solo campioni interi
 	MXF export writes integer PCM only	L'esportazione MXF scrive solo PCM intero
-	Opens in your web browser: {url}	Si apre nel browser web: {url}
 	Saves this session's log and shows it in your file manager.	Salva il registro di questa sessione e lo mostra nel gestore file.
 	Shows a report on this computer.	Mostra un rapporto su questo computer.
 	Shows the version, community links and credits in a FilmCraft window.	Mostra la versione, i link della community e i riconoscimenti in una finestra di FilmCraft.
@@ -3609,3 +3615,24 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+	Enter a positive duration within the supported speed range.	Inserisci una durata positiva nell’intervallo di velocità supportato.
+	Show Video Names	Mostra nomi video
+	Show Audio Names	Mostra nomi audio
+	Video Names	Nomi video
+	Audio Names	Nomi audio
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Il server di controllo è disattivato: FILMCRAFT_CONTROL_TOKEN deve contenere 64 caratteri esadecimali casuali (vedi docs/control-protocol.md)
+
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	Modifica marcatore…
+	In:	Attacco:
+	Marker Color:	Colore marcatore:
+	Options:	Opzioni:
+	Comment Marker	Marcatore commento
+	Chapter Marker	Marcatore capitolo
+	Segmentation Marker	Marcatore segmentazione
+	Web Link	Collegamento web
+	Flash Cue Point	Punto Flash Cue
+	Invalid duration: {error}	Durata non valida: {error}
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
