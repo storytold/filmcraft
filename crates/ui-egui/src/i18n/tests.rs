@@ -14,7 +14,12 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Fr => Some(include_str!("fr.tsv")),
         Language::Id => Some(include_str!("id.tsv")),
         Language::It => Some(include_str!("it.tsv")),
+        Language::Bs => Some(include_str!("bs.tsv")),
         Language::Ko => Some(include_str!("ko.tsv")),
+        Language::Cs => Some(include_str!("cs.tsv")),
+        Language::Pl => Some(include_str!("pl.tsv")),
+        Language::Sv => Some(include_str!("sv.tsv")),
+        Language::Tr => Some(include_str!("tr.tsv")),
     }
 }
 
@@ -49,7 +54,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
     }
     assert_eq!(Language::En.tr("File"), "File");
     assert_eq!(Language::parse("xx"), None);
-    for code in ["de-DE", "fr-FR", "id-ID", "it-IT"] {
+    for code in ["de-DE", "fr-FR", "id-ID", "it-IT", "cs-CZ", "sv-SE"] {
         assert_eq!(Language::parse(code), None, "the preference stores the bare code");
     }
     // language names are always shown in their own language
@@ -62,7 +67,12 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         (Language::Fr, "Français"),
         (Language::Id, "Bahasa Indonesia"),
         (Language::It, "Italiano"),
+        (Language::Bs, "Bosanski"),
         (Language::Ko, "한국어"),
+        (Language::Cs, "Čeština"),
+        (Language::Pl, "Polski"),
+        (Language::Sv, "Svenska"),
+        (Language::Tr, "Türkçe"),
     ] {
         assert_eq!(l.name(), name);
     }
@@ -513,6 +523,11 @@ fn language_commands_switch_and_persist_without_a_document() {
         ("french", Language::Fr, "fr", "Français", Some(("app.language.german", "Deutsch"))),
         ("indonesian", Language::Id, "id", "Bahasa Indonesia", Some(("app.language.french", "Français"))),
         ("italian", Language::It, "it", "Italiano", Some(("app.language.indonesian", "Bahasa Indonesia"))),
+        ("czech", Language::Cs, "cs", "Čeština", Some(("app.language.italian", "Italiano"))),
+        ("polish", Language::Pl, "pl", "Polski", Some(("app.language.italian", "Italiano"))),
+        ("swedish", Language::Sv, "sv", "Svenska", Some(("app.language.italian", "Italiano"))),
+        ("turkish", Language::Tr, "tr", "Türkçe", Some(("app.language.italian", "Italiano"))),
+        ("bosnian", Language::Bs, "bs", "Bosanski", Some(("app.language.italian", "Italiano"))),
     ] {
         switch_and_check(&mut app, &ctx, name, lang, code, own, earlier);
     }
@@ -575,10 +590,23 @@ fn system_language_picks_italian_korean_and_the_first_known() {
     for tag in ["ko", "ko-KR", "ko_KR.UTF-8"] {
         assert_eq!(l(&[tag]), Language::Ko, "{tag}");
     }
+    for tag in ["cs", "CS", "cs-CZ", "cs_CZ.UTF-8"] {
+        assert_eq!(l(&[tag]), Language::Cs, "{tag}");
+    }
+    for tag in ["sv", "SV", "sv-SE", "sv-FI", "sv-AX", "sv_SE.UTF-8", "sv_FI.UTF-8@euro", "sv_SE"] {
+        assert_eq!(l(&[tag]), Language::Sv, "{tag}");
+    }
+    assert_eq!(l(&["fi-FI", "sv-FI", "en"]), Language::Sv, "Finnish has no catalog");
+    for none in [&["swe"][..], &["s"], &["-sv"], &["da"], &["nb-NO"], &["nn"], &["no"]] {
+        assert_eq!(l(none), Language::En, "{none:?}");
+    }
+    for tag in ["tr", "TR", "tr-TR", "tr_TR.UTF-8", "tr_TR"] {
+        assert_eq!(l(&[tag]), Language::Tr, "{tag}");
+    }
     for none in [&["ita"][..], &["i"], &["-it"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
-    assert_eq!(l(&["sv-SE", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
+    assert_eq!(l(&["da-DK", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
     assert_eq!(l(&["rm-CH", "de-CH", "fr-CH", "en"]), Language::De);
     assert_eq!(l(&["rm-CH", "fr-CH", "de-CH", "en"]), Language::Fr);
     assert_eq!(l(&["en-GB", "es"]), Language::En);
@@ -708,6 +736,14 @@ fn italian_renders_with_bundled_fonts() {
 }
 
 #[test]
+fn czech_renders_with_bundled_fonts() {
+    let (entries, _) = catalog::parse_entries(include_str!("cs.tsv"));
+    let alphabet = "ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽáčďéěíňóřšťúůýž„“‚‘’";
+    let letters = entries.iter().flat_map(|(_, _, cs)| cs.chars()).filter(|ch| ch.is_alphabetic());
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Cs.name().chars()).chain(letters));
+}
+
+#[test]
 fn japanese_needs_an_installed_font() {
     let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
     let ctx = egui::Context::default();
@@ -730,6 +766,7 @@ fn japanese_needs_an_installed_font() {
         for family in crate::theme::font_families() {
             let mut stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
             stack.retain(|n| !crate::rtl::is_system_face(n));
+            stack.retain(|n| n != crate::cjk::KOREAN_FACE && n != "system-chinese");
             if craft {
                 assert!(stack.last().is_some_and(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 assert!(!stack.iter().any(|n| n == JAPANESE_FONT), "{family:?}: {stack:?}");
@@ -748,4 +785,103 @@ fn japanese_needs_an_installed_font() {
             }
         }
     });
+}
+
+/// Edit ▸ Language and Settings ▸ Interface Language list the same languages in the same order.
+#[test]
+fn language_menu_and_settings_choices_are_in_the_same_order() {
+    use filmcraft_engine::settings::{Kind, Row};
+    fn choices(rows: &[Row], out: &mut Vec<&'static str>) {
+        for r in rows {
+            match r {
+                Row::Field(f) if f.key == "general.interfaceLanguage" => {
+                    if let Kind::Choice(opts) = f.kind {
+                        out.extend(opts.iter().filter(|(code, _)| *code != "system").map(|(_, label)| *label));
+                    }
+                }
+                Row::Group(_, inner) => choices(inner, out),
+                _ => {}
+            }
+        }
+    }
+    let mut settings = Vec::new();
+    for c in filmcraft_engine::settings::categories() {
+        choices(c.rows, &mut settings);
+    }
+    let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let menu: Vec<String> = crate::menus::menu_items(&app).into_iter().filter(|it| it.id.starts_with("app.language.")).map(|it| it.label).collect();
+    assert!(!settings.is_empty());
+    assert_eq!(menu, settings);
+}
+
+#[test]
+fn polish_renders_with_bundled_fonts() {
+    let (entries, errors) = catalog::parse_entries(include_str!("pl.tsv"));
+    assert!(errors.is_empty(), "{errors:?}");
+    // every Polish letter, even ones no entry uses yet, and every letter, curly quote, dash and
+    // ellipsis the entries use
+    let alphabet = "ĄĆĘŁŃÓŚŹŻąćęłńóśźż„”";
+    let letters = entries.iter().flat_map(|(_, _, pl)| pl.chars()).filter(|ch| ch.is_alphabetic() || "„”“‘’–—…".contains(*ch));
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Pl.name().chars()).chain(letters));
+}
+
+#[test]
+fn swedish_renders_with_bundled_fonts() {
+    let (entries, _) = catalog::parse_entries(include_str!("sv.tsv"));
+    // every Swedish letter (é as in "idé", ü in loanwords), even ones no entry uses yet, and every
+    // letter, curly quote, dash and ellipsis the entries use (symbols such as ✔ come from the
+    // English sources)
+    let alphabet = "ÅÄÖÉÜåäöéü";
+    let letters = entries.iter().flat_map(|(_, _, sv)| sv.chars()).filter(|ch| ch.is_alphabetic() || "“”‘’–—…".contains(*ch));
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Sv.name().chars()).chain(letters));
+}
+
+#[test]
+fn russian_renders_with_bundled_fonts() {
+    let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
+    // the whole alphabet including «ё», even letters no entry uses yet, and every letter, quote,
+    // dash and ellipsis the entries use
+    let alphabet = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя«»";
+    let letters = entries.iter().flat_map(|(_, _, ru)| ru.chars()).filter(|ch| ch.is_alphabetic() || "«»“”‘’–—…".contains(*ch));
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Ru.name().chars()).chain(letters));
+}
+
+#[test]
+fn turkish_casing_and_search_folding() {
+    assert_eq!(Language::Tr.to_uppercase("i"), "İ");
+    assert_eq!(Language::Tr.to_uppercase("ı"), "I");
+    assert_eq!(Language::Tr.to_lowercase("İ"), "i");
+    assert_eq!(Language::Tr.to_lowercase("I"), "ı");
+    assert_eq!(Language::Tr.to_lowercase("I\u{0307}"), "i");
+    assert_eq!(to_uppercase("file"), "FILE");
+    set_current(Language::Tr);
+    assert_eq!(to_uppercase("i"), "İ");
+    assert_eq!(to_lowercase("I"), "ı");
+    assert_eq!(to_lowercase("I\u{0307}"), "i");
+    assert!(matches_query("Gaussian Blur", "gaussian"));
+    assert!(matches_query("Gaussian Blur", "GAUSSIAN"));
+    assert!(matches_query("Inceleme", "inceleme"));
+    assert!(matches_query("İnceleme", "inceleme"));
+    assert!(matches_query("inceleme", "İnceleme"));
+    assert!(matches_query("Işık", "ışık"));
+    assert!(matches_query("ışık", "IŞIK"));
+    set_current(Language::En);
+}
+
+#[test]
+fn turkish_renders_with_bundled_fonts() {
+    let (entries, _) = catalog::parse_entries(include_str!("tr.tsv"));
+    let alphabet = "ABCÇDEFGĞHIİJKLMNOÖPRSŞTUÜVYZabcçdefgğhıijklmnoöprsştuüvyz";
+    let letters = entries.iter().flat_map(|(_, _, tr)| tr.chars()).filter(|ch| ch.is_alphabetic() || "“”‘’–—…".contains(*ch));
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Tr.name().chars()).chain(letters));
+}
+
+/// Every Bosnian locale, with region, script or encoding, picks the Bosnian catalog.
+#[test]
+fn system_language_picks_bosnian() {
+    let l = locales;
+    for tag in ["bs", "BS", "bs-BA", "bs_BA.UTF-8", "bs-Latn-BA", "bs-Cyrl-BA", "BS-ba"] {
+        assert_eq!(l(&[tag]), Language::Bs, "{tag}");
+    }
+    assert_eq!(l(&["hr-HR", "bs-BA"]), Language::Bs, "Croatian has no catalog here, so the next preference wins");
 }
