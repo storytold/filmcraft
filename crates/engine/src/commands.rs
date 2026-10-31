@@ -2764,6 +2764,15 @@ fn build() -> Vec<CommandSpec> {
             has_seq,
             crate::marker_export::export
         ),
+        cmd!(
+            "markers.import",
+            "Import Markers…",
+            ["Markers"],
+            None,
+            r#"{"markers":[{"time":ticks|"frame":i64|"seconds":f64|"timecode":str,"name":str?,"comment":str?,"color":label?,"kind":str?,"durationFrames":i64?}]} or {"path":str} (a markers.exportCsv file); one undo step"#,
+            has_seq,
+            crate::marker_import::import
+        ),
         cmd!("markers.clearAll", "Clear Markers", ["Markers"], Some("Cmd+Alt+Shift+M"), r#"{"target":"program|source"}"#, always, |s, p| {
             if let Some(v) = crate::source_monitor::route(s, "markers.clearAll", p)? {
                 return Ok(v);

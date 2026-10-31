@@ -605,6 +605,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         || (id == "file.open" && params.get("path").is_none())
         || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
         || (id == "captions.import" && params.get("path").is_none())
+        || (id == "markers.import" && params.get("path").is_none() && params.get("markers").is_none())
         || (id == "graphics.newFromFile" && params.get("path").is_none())
         || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none())
     {
