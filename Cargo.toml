@@ -60,6 +60,7 @@ filmcraft-engine = { path = "crates/engine" }
 filmcraft-ui-egui = { path = "crates/ui-egui" }
 filmcraft-automation = { path = "crates/automation" }
 filmcraft-platform = { path = "crates/platform" }
+filmcraft-simd = { path = "crates/simd" }
 filmcraft-testkit = { path = "crates/testkit" }
 
 # foundation
@@ -70,6 +71,7 @@ log = "0.4"
 # All date/time conversion goes through chrono (no hand-rolled calendar code beyond the 400-year range extension; AGENTS.md).
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rayon = "1"
+bytemuck = { version = "1.25", default-features = false }
 proptest = "1"
 roxmltree = "0.21"
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "92d392cff132eaf53e13afff77f38b5c11b73aa0" }

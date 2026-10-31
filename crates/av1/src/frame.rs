@@ -6,14 +6,14 @@
 
 /// Recycled plane allocations: every frame allocates (and every evicted reference frees)
 /// megabytes of planes, and fresh large allocations cost page faults and kernel calls. Buffers
-/// are zeroed again on reuse, so contents never leak between frames.
+/// are zeroed again on reuse (or entirely overwritten), so contents never leak between frames.
 static PLANE_POOL: std::sync::Mutex<Vec<Vec<u16>>> = std::sync::Mutex::new(Vec::new());
 const POOL_MIN_LEN: usize = 1 << 16;
 /// Samples kept at most (96 M samples = 192 MB, a few 4K frames).
 const POOL_MAX_SAMPLES: usize = 96 << 20;
 
-/// A zeroed buffer of `len` samples (recycled memory for large ones).
-fn zeroed(len: usize) -> Vec<u16> {
+/// An empty buffer with room for `len` samples (recycled memory for large ones).
+pub(crate) fn pooled(len: usize) -> Vec<u16> {
     if len >= POOL_MIN_LEN {
         let found = {
             let mut pool = PLANE_POOL.lock().unwrap_or_else(|e| e.into_inner());
@@ -21,11 +21,28 @@ fn zeroed(len: usize) -> Vec<u16> {
         };
         if let Some(mut v) = found {
             v.clear();
-            v.resize(len, 0);
             return v;
         }
     }
-    vec![0; len]
+    Vec::with_capacity(len)
+}
+
+/// A zeroed buffer of `len` samples (recycled memory for large ones).
+fn zeroed(len: usize) -> Vec<u16> {
+    let mut v = pooled(len);
+    v.resize(len, 0);
+    v
+}
+
+/// Return a buffer to the pool (or free it) once nothing uses it.
+pub(crate) fn recycle(v: Vec<u16>) {
+    if v.capacity() >= POOL_MIN_LEN {
+        let mut pool = PLANE_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        let kept: usize = pool.iter().map(|b| b.capacity()).sum();
+        if kept + v.capacity() <= POOL_MAX_SAMPLES {
+            pool.push(v);
+        }
+    }
 }
 
 /// One plane of samples (u16 at every bit depth), or a rectangular region of one.
@@ -42,22 +59,16 @@ pub struct Plane {
 
 impl Clone for Plane {
     fn clone(&self) -> Plane {
-        let mut data = zeroed(self.data.len());
-        data.copy_from_slice(&self.data);
+        // Every sample is overwritten: no zeroing first.
+        let mut data = pooled(self.data.len());
+        data.extend_from_slice(&self.data);
         Plane { data, stride: self.stride, rows: self.rows, ox: self.ox, oy: self.oy }
     }
 }
 
 impl Drop for Plane {
     fn drop(&mut self) {
-        if self.data.capacity() >= POOL_MIN_LEN {
-            let v = std::mem::take(&mut self.data);
-            let mut pool = PLANE_POOL.lock().unwrap_or_else(|e| e.into_inner());
-            let kept: usize = pool.iter().map(|b| b.capacity()).sum();
-            if kept + v.capacity() <= POOL_MAX_SAMPLES {
-                pool.push(v);
-            }
-        }
+        recycle(std::mem::take(&mut self.data));
     }
 }
 
@@ -93,6 +104,18 @@ impl Plane {
     pub fn row_from(&self, y: usize, x: usize) -> &[u16] {
         let o = (y - self.oy) * self.stride;
         &self.data[o + x - self.ox..o + self.stride]
+    }
+    /// The samples from (x, y) to the end of the plane (rows `stride` apart); empty outside it.
+    #[inline(always)]
+    pub fn tail(&self, x: usize, y: usize) -> &[u16] {
+        let o = y.checked_sub(self.oy).and_then(|r| r.checked_mul(self.stride)).zip(x.checked_sub(self.ox)).map(|(r, c)| r + c);
+        o.and_then(|o| self.data.get(o..)).unwrap_or(&[])
+    }
+    /// [`Plane::tail`], writable.
+    #[inline(always)]
+    pub fn tail_mut(&mut self, x: usize, y: usize) -> &mut [u16] {
+        let o = y.checked_sub(self.oy).and_then(|r| r.checked_mul(self.stride)).zip(x.checked_sub(self.ox)).map(|(r, c)| r + c);
+        o.and_then(|o| self.data.get_mut(o..)).unwrap_or(&mut [])
     }
     #[inline(always)]
     pub fn row_from_mut(&mut self, y: usize, x: usize) -> &mut [u16] {
@@ -139,6 +162,11 @@ pub struct RowBand<'a> {
 }
 
 impl RowBand<'_> {
+    #[inline(always)]
+    pub fn row(&self, y: usize) -> &[u16] {
+        let o = (y - self.y0) * self.stride;
+        &self.data[o..o + self.stride]
+    }
     #[inline(always)]
     pub fn set(&mut self, x: usize, y: usize, v: u16) {
         self.data[(y - self.y0) * self.stride + x] = v;
@@ -233,6 +261,10 @@ impl Mv {
     }
 }
 
+/// Recycled mode info storage (see [`MiInfo::recycle`]).
+static MI_POOL: std::sync::Mutex<Vec<MiInfo>> = std::sync::Mutex::new(Vec::new());
+const MI_POOL_MAX: usize = 4;
+
 /// Mode info stored for every 4x4 luma position (the arrays the spec indexes by
 /// `[ row ][ col ]` in mode-info units).
 #[derive(Clone, Default)]
@@ -276,37 +308,48 @@ impl MiInfo {
         MiInfo::region(cols, rows, 0, 0, cols, rows, palette)
     }
 
-    /// Storage for the w x h mode info units at (ox, oy) of a cols x rows frame.
+    /// Storage for the w x h mode info units at (ox, oy) of a cols x rows frame (the memory of
+    /// a recycled one when there is any).
     pub fn region(cols: usize, rows: usize, ox: usize, oy: usize, w: usize, h: usize, palette: bool) -> MiInfo {
+        fn fill<T: Clone>(v: &mut Vec<T>, n: usize, x: T) {
+            v.clear();
+            v.resize(n, x);
+        }
         let n = w * h;
         let np = if palette { n } else { 0 };
-        MiInfo {
-            cols,
-            rows,
-            ox,
-            oy,
-            stride: w,
-            region_rows: h,
-            y_mode: vec![0; n],
-            uv_mode: vec![0; n],
-            ref_frame: vec![[0, -1]; n],
-            mv: vec![[Mv::ZERO; 2]; n],
-            is_inter: vec![false; n],
-            skip_mode: vec![false; n],
-            skip: vec![false; n],
-            tx_size: vec![0; n],
-            inter_tx_size: vec![0; n],
-            mi_size: vec![0; n],
-            segment_id: vec![0; n],
-            palette_size: [vec![0; np], vec![0; np]],
-            palette_colors: [vec![[0; 8]; np], vec![[0; 8]; np]],
-            delta_lf: vec![[0; 4]; n],
-            comp_group_idx: vec![0; n],
-            compound_idx: vec![0; n],
-            interp_filter: vec![[0; 2]; n],
-            motion_mode: vec![0; n],
-            tx_type: vec![0; n],
-            written: vec![false; n],
+        let mut m = MI_POOL.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_default();
+        (m.cols, m.rows, m.ox, m.oy, m.stride, m.region_rows) = (cols, rows, ox, oy, w, h);
+        fill(&mut m.y_mode, n, 0);
+        fill(&mut m.uv_mode, n, 0);
+        fill(&mut m.ref_frame, n, [0, -1]);
+        fill(&mut m.mv, n, [Mv::ZERO; 2]);
+        fill(&mut m.is_inter, n, false);
+        fill(&mut m.skip_mode, n, false);
+        fill(&mut m.skip, n, false);
+        fill(&mut m.tx_size, n, 0);
+        fill(&mut m.inter_tx_size, n, 0);
+        fill(&mut m.mi_size, n, 0);
+        fill(&mut m.segment_id, n, 0);
+        for k in 0..2 {
+            fill(&mut m.palette_size[k], np, 0);
+            fill(&mut m.palette_colors[k], np, [0; 8]);
+        }
+        fill(&mut m.delta_lf, n, [0; 4]);
+        fill(&mut m.comp_group_idx, n, 0);
+        fill(&mut m.compound_idx, n, 0);
+        fill(&mut m.interp_filter, n, [0; 2]);
+        fill(&mut m.motion_mode, n, 0);
+        fill(&mut m.tx_type, n, 0);
+        fill(&mut m.written, n, false);
+        m
+    }
+
+    /// Keep this storage for a later frame's [`MiInfo::region`] (fresh allocations of megabytes
+    /// cost page faults and kernel calls every frame).
+    pub fn recycle(self) {
+        let mut pool = MI_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        if pool.len() < MI_POOL_MAX {
+            pool.push(self);
         }
     }
 

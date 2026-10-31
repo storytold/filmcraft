@@ -1,5 +1,7 @@
 //! Loop filter (15).
 
+use filmcraft_simd::{Vp8Filter, Vp8Limits};
+
 /// Filter parameters of one macroblock (15.4).
 #[derive(Clone, Copy, Debug)]
 pub struct Params {
@@ -110,6 +112,28 @@ fn filter_lanes<const N: usize, const NORMAL: bool, const MB: bool>(px: &mut [[u
     }
 }
 
+/// The vector kernels' filter and limits of `kind`.
+fn vector_filter(kind: Kind, prm: &Params) -> (Vp8Filter, Vp8Limits) {
+    let (f, edge) = match kind {
+        Kind::Simple => (Vp8Filter::Simple, prm.mbedge_limit),
+        Kind::SimpleInner => (Vp8Filter::Simple, prm.sub_bedge_limit),
+        Kind::NormalMb => (Vp8Filter::Macroblock, prm.mbedge_limit),
+        Kind::NormalSub => (Vp8Filter::Subblock, prm.sub_bedge_limit),
+    };
+    (f, Vp8Limits { edge, interior: prm.interior_limit, hev_threshold: prm.hev_threshold })
+}
+
+/// [`filter_edge`] of the same 8-segment edge of both chroma planes (VP8 filters them alike): in
+/// one call of the vector kernel when it runs.
+pub fn filter_edge_uv(u: &mut [u8], v: &mut [u8], stride: usize, start: usize, vertical: bool, kind: Kind, prm: &Params) {
+    let (f, limits) = vector_filter(kind, prm);
+    if filmcraft_simd::vp8_loop_filter_uv(u, v, (start, stride), vertical, f, &limits) {
+        return;
+    }
+    filter_edge::<8>(u, stride, start, vertical, kind, prm);
+    filter_edge::<8>(v, stride, start, vertical, kind, prm);
+}
+
 /// Filter an edge (15.2, 15.3) of `N` segments. `start` is q0 of the first segment; a vertical
 /// edge (`vertical`) has its segments one row apart, a horizontal one one pixel apart. Every
 /// segment must have 4 pixels inside the plane on both sides of the edge; an edge that does not
@@ -119,6 +143,18 @@ pub fn filter_edge<const N: usize>(plane: &mut [u8], stride: usize, start: usize
     if start < 4 * step || start + (N - 1) * along + 3 * step >= plane.len() {
         return;
     }
+    if N == 16 {
+        let (f, limits) = vector_filter(kind, prm);
+        if filmcraft_simd::vp8_loop_filter(plane, start, stride, vertical, f, &limits) {
+            return;
+        }
+    }
+    scalar_edge::<N>(plane, stride, start, vertical, kind, prm);
+}
+
+/// [`filter_edge`] by [`filter_lanes`] (the lines are known to fit).
+fn scalar_edge<const N: usize>(plane: &mut [u8], stride: usize, start: usize, vertical: bool, kind: Kind, prm: &Params) {
+    let step = if vertical { 1 } else { stride };
     let mut px = [[0u8; N]; 8];
     let first = start - 4 * step;
     if vertical {
@@ -152,5 +188,75 @@ pub fn filter_edge<const N: usize>(plane: &mut [u8], stride: usize, start: usize
             let at = first + k * stride;
             plane[at..at + N].copy_from_slice(row);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The vector kernels filter as the scalar lanes do: every filter, both edge directions, luma
+    /// edges and paired chroma edges, levels and sharpness over their range, on ramps with steps
+    /// (filtered, high edge variance and unfiltered lines) and noise.
+    #[test]
+    fn vector_edges_match_the_scalar_filter() {
+        let mut seed = 0x7a3c_51e9_0b2d_8f61u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let (w, h) = (40usize, 40usize);
+        let (mut ran, mut chroma_ran) = (0, 0);
+        for case in 0..6000 {
+            let vertical = case % 2 == 0;
+            let kind = [Kind::Simple, Kind::SimpleInner, Kind::NormalMb, Kind::NormalSub][(next() % 4) as usize];
+            let prm = Params::new((next() % 64) as u8, (next() % 8) as u8, next() % 2 == 0);
+            let mut plane = || -> Vec<u8> {
+                let base = (next() % 256) as i32;
+                let slope = (next() % 9) as i32 - 4;
+                let step = [0i32, 3, 10, 30, 90][(next() % 5) as usize];
+                let noise = [0u64, 1, 4, 16][(next() % 4) as usize];
+                (0..w * h)
+                    .map(|i| {
+                        let (x, y) = ((i % w) as i32, (i / w) as i32);
+                        let a = if vertical { x } else { y };
+                        let v = base + slope * a + if a >= 16 { step } else { 0 } + (next() % (noise + 1)) as i32;
+                        match next() % 40 {
+                            0 => 0,
+                            1 => 255,
+                            _ => v.clamp(0, 255) as u8,
+                        }
+                    })
+                    .collect()
+            };
+            let (y0, u0, v0) = (plane(), plane(), plane());
+            // the edge between columns (rows) 15 and 16, lines 8..24 (luma) and 8..16 (chroma)
+            let start = if vertical { 8 * w + 16 } else { 16 * w + 8 };
+            let (f, limits) = vector_filter(kind, &prm);
+            let mut want = y0.clone();
+            scalar_edge::<16>(&mut want, w, start, vertical, kind, &prm);
+            let (mut wu, mut wv) = (u0.clone(), v0.clone());
+            scalar_edge::<8>(&mut wu, w, start, vertical, kind, &prm);
+            scalar_edge::<8>(&mut wv, w, start, vertical, kind, &prm);
+            for &level in filmcraft_simd::levels() {
+                let mut got = y0.clone();
+                if filmcraft_simd::vp8_loop_filter_at(level, &mut got, start, w, vertical, f, &limits) {
+                    ran += 1;
+                    assert_eq!(got, want, "{level:?} luma case {case} vertical {vertical} {f:?} {prm:?}");
+                } else {
+                    assert_eq!(got, y0, "nothing written when declined");
+                }
+                let (mut gu, mut gv) = (u0.clone(), v0.clone());
+                if filmcraft_simd::vp8_loop_filter_uv_at(level, &mut gu, &mut gv, (start, w), vertical, f, &limits) {
+                    chroma_ran += 1;
+                    assert_eq!((gu, gv), (wu.clone(), wv.clone()), "{level:?} chroma case {case} vertical {vertical} {f:?} {prm:?}");
+                }
+            }
+        }
+        // (only aarch64 has a vector version so far)
+        assert!(ran > 0 || !cfg!(target_arch = "aarch64"));
+        assert!(chroma_ran > 0 || !cfg!(target_arch = "aarch64"));
     }
 }

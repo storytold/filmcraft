@@ -64,6 +64,16 @@ pub(crate) static NEXT_STATE: [[u8; 2]; 128] = {
 pub const NUM_CTX: usize = 1024;
 
 pub struct Cabac<'a> {
+    /// The arithmetic decoder; the per-bin loops copy it into a local (see [`Engine`]).
+    pub(crate) e: Engine<'a>,
+    pub ctx: [u8; NUM_CTX],
+}
+
+/// The arithmetic decoding engine without the context variables. It is `Copy` so that the hot
+/// loops can work on a local copy (`let mut e = c.e; ...; c.e = e;`) whose fields stay in
+/// registers: stores to the contexts would otherwise force them through memory around every bin.
+#[derive(Clone, Copy)]
+pub(crate) struct Engine<'a> {
     data: &'a [u8],
     /// Byte position of the next byte to load into `value`.
     next_byte: usize,
@@ -72,14 +82,13 @@ pub struct Cabac<'a> {
     /// consumed by the arithmetic decoder).
     value: u64,
     bits: u32,
-    pub ctx: [u8; NUM_CTX],
 }
 
 impl<'a> Cabac<'a> {
     /// Create an engine over `data` (slice RBSP) starting at bit `pos` (must be byte aligned),
     /// with contexts initialised for `slice_qp` and `init` (0..=2 cabac_init_idc, 3 = I slice).
     pub fn new(data: &'a [u8], pos: usize, slice_qp: i32, init: usize) -> Result<Self> {
-        let mut c = Cabac { data, next_byte: pos / 8, range: 0, value: 0, bits: 0, ctx: [0; NUM_CTX] };
+        let mut c = Cabac { e: Engine { data, next_byte: pos / 8, range: 0, value: 0, bits: 0 }, ctx: [0; NUM_CTX] };
         c.init_contexts(slice_qp, init);
         c.init_engine()?;
         Ok(c)
@@ -98,16 +107,60 @@ impl<'a> Cabac<'a> {
 
     /// 9.3.1.2: codIRange = 510, codIOffset = read_bits(9) (from the current byte-aligned position).
     pub fn init_engine(&mut self) -> Result<()> {
-        self.range = 510;
-        self.value = 0;
-        self.bits = 0;
-        self.refill();
+        let e = &mut self.e;
+        e.range = 510;
+        e.value = 0;
+        e.bits = 0;
+        e.refill();
         // the top 9 loaded bits form codIOffset; the remaining ones stay buffered below it
-        self.bits -= 9;
-        ensure!((self.value >> self.bits) < 510, "invalid CABAC offset at init");
+        e.bits -= 9;
+        ensure!((e.value >> e.bits) < 510, "invalid CABAC offset at init");
         Ok(())
     }
 
+    /// Bit position of the next bit not consumed by the arithmetic decoder (for I_PCM alignment
+    /// after decode_terminate returned 1).
+    pub fn bit_pos(&self) -> usize {
+        self.e.next_byte * 8 - self.e.bits as usize
+    }
+    /// Continue reading at byte-aligned bit position `pos` (call `init_engine` afterwards).
+    pub fn set_bit_pos(&mut self, pos: usize) {
+        self.e.next_byte = pos / 8;
+        self.e.value = 0;
+        self.e.bits = 0;
+    }
+    pub fn data(&self) -> &'a [u8] {
+        self.e.data
+    }
+    /// True when the reader has run past the end of the data (corrupt stream).
+    pub fn overrun(&self) -> bool {
+        self.e.next_byte > self.e.data.len() + 16
+    }
+
+    #[inline(always)]
+    pub fn decode_decision(&mut self, ctx_idx: usize) -> u32 {
+        self.e.decision(&mut self.ctx, ctx_idx)
+    }
+
+    #[inline(always)]
+    pub fn decode_bypass(&mut self) -> u32 {
+        self.e.bypass()
+    }
+
+    pub fn decode_terminate(&mut self) -> u32 {
+        let e = &mut self.e;
+        e.range -= 2;
+        let scaled = (e.range as u64) << e.bits;
+        if e.value >= scaled {
+            1
+        } else {
+            e.renorm();
+            0
+        }
+    }
+}
+
+impl Engine<'_> {
     /// Load 32 more bits (zeros past the end of the data).
     #[inline(always)]
     fn refill(&mut self) {
@@ -124,25 +177,6 @@ impl<'a> Cabac<'a> {
         self.bits += 32;
     }
 
-    /// Bit position of the next bit not consumed by the arithmetic decoder (for I_PCM alignment
-    /// after decode_terminate returned 1).
-    pub fn bit_pos(&self) -> usize {
-        self.next_byte * 8 - self.bits as usize
-    }
-    /// Continue reading at byte-aligned bit position `pos` (call `init_engine` afterwards).
-    pub fn set_bit_pos(&mut self, pos: usize) {
-        self.next_byte = pos / 8;
-        self.value = 0;
-        self.bits = 0;
-    }
-    pub fn data(&self) -> &'a [u8] {
-        self.data
-    }
-    /// True when the reader has run past the end of the data (corrupt stream).
-    pub fn overrun(&self) -> bool {
-        self.next_byte > self.data.len() + 16
-    }
-
     #[inline(always)]
     fn renorm(&mut self) {
         // codIRange < 512 always, so the shift is 0 when no renormalisation is needed: no branch on
@@ -155,14 +189,15 @@ impl<'a> Cabac<'a> {
         self.bits -= shift;
     }
 
-    /// 9.3.3.2.1, branch-free: the MPS / LPS outcome of a context-coded bin is close to random
-    /// at high bit rates, so it selects values instead of jumping.
+    /// 9.3.3.2.1 with context variable `ctx[ctx_idx]`, branch-free: the MPS / LPS outcome of a
+    /// context-coded bin is close to random at high bit rates, so it selects values instead of
+    /// jumping.
     #[inline(always)]
-    pub fn decode_decision(&mut self, ctx_idx: usize) -> u32 {
+    pub(crate) fn decision(&mut self, ctx: &mut [u8; NUM_CTX], ctx_idx: usize) -> u32 {
         // Every ctxIdx is < 1024 and every state < 128: the masks only let the compiler drop the
         // bounds checks from the per-bin path.
         let ctx_idx = ctx_idx & (NUM_CTX - 1);
-        let s = (self.ctx[ctx_idx] & 127) as usize;
+        let s = (ctx[ctx_idx] & 127) as usize;
         let q = ((self.range >> 6) & 3) as usize;
         let lps = RANGE_TAB_LPS[s >> 1][q] as u32;
         let mps_range = self.range - lps;
@@ -170,13 +205,14 @@ impl<'a> Cabac<'a> {
         let is_lps = self.value >= scaled;
         self.value -= scaled & (is_lps as u64).wrapping_neg();
         self.range = if is_lps { lps } else { mps_range };
-        self.ctx[ctx_idx] = NEXT_STATE[s][is_lps as usize];
+        ctx[ctx_idx] = NEXT_STATE[s][is_lps as usize];
         self.renorm();
         (s & 1) as u32 ^ is_lps as u32
     }
 
+    /// 9.3.3.2.3.
     #[inline(always)]
-    pub fn decode_bypass(&mut self) -> u32 {
+    pub(crate) fn bypass(&mut self) -> u32 {
         if self.bits == 0 {
             self.refill();
         }
@@ -185,17 +221,6 @@ impl<'a> Cabac<'a> {
         let one = self.value >= scaled;
         self.value -= scaled & (one as u64).wrapping_neg();
         one as u32
-    }
-
-    pub fn decode_terminate(&mut self) -> u32 {
-        self.range -= 2;
-        let scaled = (self.range as u64) << self.bits;
-        if self.value >= scaled {
-            1
-        } else {
-            self.renorm();
-            0
-        }
     }
 }
 

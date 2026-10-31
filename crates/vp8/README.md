@@ -1,8 +1,12 @@
 # filmcraft-vp8
 
-Clean-room, pure-Rust (no `unsafe`) VP8 decoder, implemented from RFC 6386, *VP8 Data Format and
-Decoding Guide*, sections 1-19. It is an L0 crate: it depends only on `thiserror`, and builds for
-`wasm32-unknown-unknown`.
+Clean-room, pure-Rust VP8 decoder, implemented from RFC 6386, *VP8 Data Format and Decoding
+Guide*, sections 1-19. The crate itself has no `unsafe`. It is an L0 crate: it depends on
+`thiserror` and `filmcraft-simd`, whose per-architecture NEON and SSE2 modules are, besides
+`platform`, the only `unsafe` in the workspace, under
+[ADR 0002](../../docs/adr/0002-simd-crate-and-unsafe-policy.md). VP8 uses its NEON kernels (inter
+prediction, the inverse DCT, the loop filter) on aarch64. Scalar versions run on other targets,
+including `wasm32-unknown-unknown`, which it builds for.
 
 The constant tables (coefficient and mode probabilities and their update probabilities, the
 subblock mode contexts, quantizer lookups, MV probabilities, interpolation filters...) were

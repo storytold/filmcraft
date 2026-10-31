@@ -125,24 +125,72 @@ impl<const L: usize> Lane for [i32; L] {
     }
 }
 
-fn brev(num_bits: u32, x: usize) -> usize {
-    let mut t = 0;
-    for i in 0..num_bits {
-        let bit = (x >> i) & 1;
-        t += bit << (num_bits - 1 - i);
+/// Lanes in 16-bit arithmetic, for 8-bit streams only: the spec requires every value stored by
+/// the row transforms to fit in 8 + BitDepth = 16 bits and every value stored by the column
+/// transforms to fit in Max(BitDepth + 6, 16) = 16 bits, so both clamp ranges are exactly the
+/// i16 range (a Hadamard step is a saturating add) and products with the 12-bit cosines are
+/// formed in 32 bits and narrowed after their rounding. Narrowing wraps, so corrupt streams
+/// cannot panic.
+impl<const L: usize> Lane for [i16; L] {
+    const ZERO: Self = [0; L];
+    #[inline(always)]
+    fn rotate(a: Self, b: Self, cos: i32, sin: i32) -> (Self, Self) {
+        let mut x = [0; L];
+        let mut y = [0; L];
+        for l in 0..L {
+            let (p, q) = (a[l] as i32, b[l] as i32);
+            x[l] = ((p * cos - q * sin + (1 << 11)) >> 12) as i16;
+            y[l] = ((p * sin + q * cos + (1 << 11)) >> 12) as i16;
+        }
+        (x, y)
     }
-    t
+    #[inline(always)]
+    fn hadamard(x: Self, y: Self, lo: i32, hi: i32) -> (Self, Self) {
+        debug_assert!(lo == i16::MIN as i32 && hi == i16::MAX as i32, "16-bit lanes need the 16-bit clamp");
+        let mut a = [0; L];
+        let mut b = [0; L];
+        for l in 0..L {
+            a[l] = x[l].saturating_add(y[l]);
+            b[l] = x[l].saturating_sub(y[l]);
+        }
+        (a, b)
+    }
+    #[inline(always)]
+    fn neg(self) -> Self {
+        self.map(|v| v.wrapping_neg())
+    }
+    #[inline(always)]
+    fn mul_round12(self, m: i32) -> Self {
+        self.map(|v| ((v as i32 * m + (1 << 11)) >> 12) as i16)
+    }
+    #[inline(always)]
+    fn mul(self, k: i32) -> Self {
+        self.map(|v| v.wrapping_mul(k as i16))
+    }
+    fn adst4(t: &mut [Self]) {
+        for l in 0..L {
+            let mut v = [t[0][l] as i32, t[1][l] as i32, t[2][l] as i32, t[3][l] as i32];
+            inverse_adst4_scalar(&mut v);
+            for k in 0..4 {
+                t[k][l] = v[k] as i16;
+            }
+        }
+    }
+}
+
+/// The low `num_bits` bits of `x` in reverse order.
+#[inline(always)]
+fn brev(num_bits: u32, x: usize) -> usize {
+    x.reverse_bits().checked_shr(usize::BITS - num_bits).unwrap_or(0)
 }
 
 /// Butterfly rotation B( a, b, angle, flip ).
 #[inline(always)]
 fn bf<T: Lane>(t: &mut [T], a: usize, b: usize, angle: i32, flip: bool) {
     let (x, y) = T::rotate(t[a], t[b], cos128(angle) as i32, sin128(angle) as i32);
+    let (a, b) = if flip { (b, a) } else { (a, b) };
     t[a] = x;
     t[b] = y;
-    if flip {
-        t.swap(a, b);
-    }
 }
 
 /// Hadamard rotation H( a, b, flip, r ).
@@ -339,12 +387,12 @@ fn dct_stage_merge_halves<T: Lane>(t: &mut [T], n: u32, r: u32) {
 
 /// Inverse DCT of length 2^n (7.13.2.3), in place.
 pub(crate) fn inverse_dct<T: Lane>(t: &mut [T], n: u32, r: u32) {
-    // 7.13.2.2 permutation
-    let len = 1usize << n;
-    let mut copy = [T::ZERO; 64];
-    copy[..len].copy_from_slice(&t[..len]);
-    for i in 0..len {
-        t[i] = copy[brev(n, i)];
+    // 7.13.2.2 permutation: bit reversal is its own inverse, so it is a set of swaps.
+    for i in 0..1usize << n {
+        let j = brev(n, i);
+        if i < j {
+            t.swap(i, j);
+        }
     }
     dct_stage_outer_rotations(t, n, r);
     dct_stage_even_half(t, n, r);
@@ -543,8 +591,9 @@ fn col_kind(tx_type: usize) -> Kind1d {
 }
 
 /// 2D inverse transform (7.13.3). `dequant` is 64x64 (row stride 64, only the top-left 32x32
-/// may be non-zero); the residual is written to `residual` with row stride `w`.
-pub(crate) fn inverse_transform_2d(dequant: &[i32], residual: &mut [i32], tx_sz: usize, tx_type: usize, lossless: bool, bit_depth: u32) {
+/// may be non-zero, and only `dequant[0]` when `dc_only`); the residual is written to
+/// `residual` with row stride `w`.
+pub(crate) fn inverse_transform_2d(dequant: &[i32], residual: &mut [i32], tx_sz: usize, tx_type: usize, lossless: bool, bit_depth: u32, dc_only: bool) {
     let log2w = TX_WIDTH_LOG2[tx_sz] as u32;
     let log2h = TX_HEIGHT_LOG2[tx_sz] as u32;
     let w = 1usize << log2w;
@@ -557,6 +606,26 @@ pub(crate) fn inverse_transform_2d(dequant: &[i32], residual: &mut [i32], tx_sz:
     let ck = col_kind(tx_type);
     let mut t = [0i32; 64];
     let rect2 = log2w.abs_diff(log2h) == 1;
+    if dc_only && !lossless && tx_type == DCT_DCT {
+        // The DCT of [x, 0, 0, ...] is flat: its first butterfly makes x * cos(pi / 4) of both
+        // its outputs, every other butterfly rotates zeros, and every Hadamard step adds or
+        // subtracts a zero (clamping alike). Rows past the first are zero, so the column pass
+        // sees the same in every column.
+        let flat = |x: i32, r: u32| round2_64(x as i64 * 2896, 12).clamp(-(1 << (r - 1)), (1 << (r - 1)) - 1);
+        let x = if rect2 { round2_64(dequant[0] as i64 * 2896, 12) } else { dequant[0] };
+        let row = round2(flat(x, row_clamp), row_shift).clamp(-(1 << (col_clamp - 1)), (1 << (col_clamp - 1)) - 1);
+        residual[..w * h].fill(round2(flat(row, col_clamp), col_shift));
+        return;
+    }
+    if !lossless && bit_depth == 8 {
+        let p = Tx2d { w, h, log2w, log2h, row_shift, col_shift, row_clamp, col_clamp, rk, ck, rect2 };
+        if w >= 8 && h >= 8 {
+            transform_lanes16::<8>(dequant, residual, &p);
+        } else {
+            transform_lanes16::<4>(dequant, residual, &p);
+        }
+        return;
+    }
     if !lossless && bit_depth <= 10 {
         let p = Tx2d { w, h, log2w, log2h, row_shift, col_shift, row_clamp, col_clamp, rk, ck, rect2 };
         if w >= 8 && h >= 8 {
@@ -689,9 +758,226 @@ fn transform_lanes<const L: usize>(dequant: &[i32], residual: &mut [i32], p: &Tx
     }
 }
 
+/// [`transform_lanes`] in 16-bit lanes, for 8-bit streams (see the `[i16; L]` lanes). The row
+/// pass's output fits 16 bits (the clamp to Max(BitDepth + 6, 16) bits is a no-op).
+fn transform_lanes16<const L: usize>(dequant: &[i32], residual: &mut [i32], p: &Tx2d)
+where
+    [i16; L]: RowLanes,
+{
+    let (w, h) = (p.w, p.h);
+    let in_w = w.min(32);
+    let mut t = [[0i16; L]; 64];
+    let mut i0 = 0;
+    while i0 < h {
+        // Rows without coefficients (and rows 32..63) transform to zeros.
+        if i0 >= 32 || (i0..i0 + L).all(|i| dequant[i * 64..i * 64 + in_w].iter().all(|&v| v == 0)) {
+            residual[i0 * w..(i0 + L) * w].fill(0);
+            i0 += L;
+            continue;
+        }
+        // Dequantised coefficients lie in [-(1 << 15), (1 << 15) - 1] at 8 bits.
+        <[i16; L]>::gather(&dequant[i0 * 64..], in_w, &mut t[..w]);
+        if p.rect2 {
+            for v in t[..w].iter_mut() {
+                *v = v.mul_round12(2896);
+            }
+        }
+        transform_1d(&mut t[..], p.rk, p.log2w, p.row_clamp);
+        // Round2 of a 16-bit value stays within 16 bits: the clamp to them is a no-op.
+        <[i16; L]>::scatter(&t[..w], p.row_shift, &mut residual[i0 * w..]);
+        i0 += L;
+    }
+    let mut j0 = 0;
+    while j0 < w {
+        for i in 0..h {
+            for l in 0..L {
+                t[i][l] = residual[i * w + j0 + l] as i16;
+            }
+        }
+        transform_1d(&mut t[..], p.ck, p.log2h, p.col_clamp);
+        for i in 0..h {
+            let out = &mut residual[i * w + j0..i * w + j0 + L];
+            for l in 0..L {
+                out[l] = round2(t[i][l] as i32, p.col_shift);
+            }
+        }
+        j0 += L;
+    }
+}
+
+/// Moving L rows between their row-major layout and the row pass's lanes (one lane per row).
+trait RowLanes: Sized {
+    /// `t[j][l]` = `rows[l * 64 + j]` for j < `in_w`, 0 for the other columns of `t`.
+    fn gather(rows: &[i32], in_w: usize, t: &mut [Self]);
+    /// `dst[l * w + j]` = Round2(`t[j][l]`, `shift`), w = `t.len()`.
+    fn scatter(t: &[Self], shift: u32, dst: &mut [i32]);
+}
+
+impl RowLanes for [i16; 4] {
+    fn gather(rows: &[i32], in_w: usize, t: &mut [Self]) {
+        for (j, tj) in t.iter_mut().enumerate() {
+            for (l, v) in tj.iter_mut().enumerate() {
+                *v = if j < in_w { rows[l * 64 + j] as i16 } else { 0 };
+            }
+        }
+    }
+    fn scatter(t: &[Self], shift: u32, dst: &mut [i32]) {
+        let w = t.len();
+        for (j, tj) in t.iter().enumerate() {
+            for (l, &v) in tj.iter().enumerate() {
+                dst[l * w + j] = round2(v as i32, shift);
+            }
+        }
+    }
+}
+
+/// 8 rows: whole 8x8 blocks transposed in registers (`filmcraft_simd`).
+impl RowLanes for [i16; 8] {
+    fn gather(rows: &[i32], in_w: usize, t: &mut [Self]) {
+        let (head, zeros) = t.split_at_mut(in_w.min(t.len()));
+        if !filmcraft_simd::av1_rows_to_lanes(rows, 64, head.len(), head) {
+            for (j, tj) in head.iter_mut().enumerate() {
+                for (l, v) in tj.iter_mut().enumerate() {
+                    *v = rows[l * 64 + j] as i16;
+                }
+            }
+        }
+        zeros.fill([0; 8]);
+    }
+    fn scatter(t: &[Self], shift: u32, dst: &mut [i32]) {
+        let w = t.len();
+        if !filmcraft_simd::av1_lanes_to_rows(t, w, shift, dst, w) {
+            for (j, tj) in t.iter().enumerate() {
+                for (l, &v) in tj.iter().enumerate() {
+                    dst[l * w + j] = round2(v as i32, shift);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec_tables::{IDTX, TX_SIZES_ALL};
+
+    fn rng(mut seed: u32) -> impl FnMut() -> u32 {
+        move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        }
+    }
+
+    /// The 16-bit lanes compute what the 32-bit ones do wherever the exact result fits 16 bits
+    /// (as a conforming 8-bit stream's must), and a Hadamard step saturates exactly where the
+    /// 32-bit one clamps to 16 bits.
+    #[test]
+    fn sixteen_bit_lanes_match_the_32_bit_lanes() {
+        let mut next = rng(0x1d17_ce55);
+        let (lo, hi) = (i16::MIN as i32, i16::MAX as i32);
+        let fits = |v: [i32; 8]| v.iter().all(|&x| (lo..=hi).contains(&x));
+        let mut saturated = 0;
+        for _ in 0..20000 {
+            let big = next().is_multiple_of(2);
+            let lanes =
+                |next: &mut dyn FnMut() -> u32| -> [i16; 8] { std::array::from_fn(|_| if big { next() as i16 } else { (next() % 4001) as i16 - 2000 }) };
+            let (a, b) = (lanes(&mut next), lanes(&mut next));
+            let (a32, b32) = (a.map(i32::from), b.map(i32::from));
+            let (x, y) = <[i16; 8]>::hadamard(a, b, lo, hi);
+            let (x32, y32) = <[i32; 8]>::hadamard(a32, b32, lo, hi);
+            assert_eq!((x.map(i32::from), y.map(i32::from)), (x32, y32), "hadamard {a:?} {b:?}");
+            saturated += x32.iter().chain(&y32).filter(|&&v| v == lo || v == hi).count();
+            let angle = (next() % 128) as i32;
+            let (c, sn) = (cos128(angle) as i32, sin128(angle) as i32);
+            let (x32, y32) = <[i32; 8]>::rotate(a32, b32, c, sn);
+            if fits(x32) && fits(y32) {
+                let (x, y) = <[i16; 8]>::rotate(a, b, c, sn);
+                assert_eq!((x.map(i32::from), y.map(i32::from)), (x32, y32), "rotate {a:?} {b:?} angle {angle}");
+            }
+            for m in [2896, 5793, 11586] {
+                let r32 = a32.mul_round12(m);
+                if fits(r32) {
+                    assert_eq!(a.mul_round12(m).map(i32::from), r32, "mul_round12 {a:?} by {m}");
+                }
+            }
+        }
+        assert!(saturated > 1000, "the test must reach the clamp ({saturated} saturated outputs)");
+    }
+
+    /// The 8-bit transforms in 16-bit lanes give the bits of the 32-bit lanes, for every size and
+    /// type, on coefficients small enough to keep every intermediate in 16 bits.
+    #[test]
+    fn sixteen_bit_transforms_match_the_32_bit_transforms() {
+        let mut next = rng(0x7a11_0b16);
+        let mut dequant = vec![0i32; 64 * 64];
+        for tx_sz in 0..TX_SIZES_ALL {
+            let (log2w, log2h) = (TX_WIDTH_LOG2[tx_sz] as u32, TX_HEIGHT_LOG2[tx_sz] as u32);
+            let (w, h) = (1usize << log2w, 1usize << log2h);
+            for tx_type in 0..16 {
+                // 64-point transforms are DCTs only; identity stops at 32.
+                if (w == 64 || h == 64) && tx_type != DCT_DCT {
+                    continue;
+                }
+                if (w > 16 || h > 16) && tx_type != DCT_DCT && tx_type != IDTX {
+                    continue;
+                }
+                for case in 0..20 {
+                    dequant.fill(0);
+                    let n = 1 + next() as usize % 12;
+                    for _ in 0..n {
+                        let (i, j) = (next() as usize % h.min(32).min(8), next() as usize % w.min(32).min(8));
+                        dequant[i * 64 + j] = (next() % 513) as i32 - 256;
+                    }
+                    let p = Tx2d {
+                        w,
+                        h,
+                        log2w,
+                        log2h,
+                        row_shift: TRANSFORM_ROW_SHIFT[tx_sz] as u32,
+                        col_shift: 4,
+                        row_clamp: 16,
+                        col_clamp: 16,
+                        rk: row_kind(tx_type),
+                        ck: col_kind(tx_type),
+                        rect2: log2w.abs_diff(log2h) == 1,
+                    };
+                    let (mut want, mut got) = (vec![0i32; w * h], vec![1i32; w * h]);
+                    if w >= 8 && h >= 8 {
+                        transform_lanes::<8>(&dequant, &mut want, &p);
+                        transform_lanes16::<8>(&dequant, &mut got, &p);
+                    } else {
+                        transform_lanes::<4>(&dequant, &mut want, &p);
+                        transform_lanes16::<4>(&dequant, &mut got, &p);
+                    }
+                    assert_eq!(got, want, "tx_sz {tx_sz} type {tx_type} case {case}");
+                }
+            }
+        }
+    }
+
+    /// The flat DC-only shortcut gives the bits of the full transform, from tiny to clamped
+    /// coefficients, at every size and bit depth.
+    #[test]
+    fn dc_only_matches_the_full_transform() {
+        let mut dequant = vec![0i32; 64 * 64];
+        for bd in [8, 10, 12] {
+            let lim = 1i32 << (7 + bd);
+            for tx_sz in 0..TX_WIDTH_LOG2.len() {
+                let w = 1usize << TX_WIDTH_LOG2[tx_sz];
+                let h = 1usize << TX_HEIGHT_LOG2[tx_sz];
+                for dc in [1, -1, 7, -9, 100, -555, 4096, -30000, lim / 3, lim - 1, -lim] {
+                    dequant[0] = dc;
+                    let mut want = vec![0i32; w * h];
+                    let mut got = vec![1i32; w * h];
+                    inverse_transform_2d(&dequant, &mut want, tx_sz, DCT_DCT, false, bd, false);
+                    inverse_transform_2d(&dequant, &mut got, tx_sz, DCT_DCT, false, bd, true);
+                    assert_eq!(got, want, "bd {bd} tx_sz {tx_sz} dc {dc}");
+                }
+            }
+        }
+    }
 
     /// The DCT step list must implement an orthogonal transform: a DC-only input gives a flat
     /// output equal to DC * cos(pi/4) (in the 2^12 fixed-point scale).

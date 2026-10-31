@@ -5,6 +5,9 @@
 //! whose lower bits hold the next bytes of the input, which is equivalent and refills only every
 //! few bytes. Reading past the end of the data yields zero bits.
 
+/// `Copy` so that hot loops can work on a local copy, which the compiler keeps in registers,
+/// and store it back once: through a `&mut` the state goes to memory after every bool.
+#[derive(Clone, Copy)]
 pub struct BoolDecoder<'a> {
     data: &'a [u8],
     pos: usize,
@@ -45,6 +48,19 @@ impl<'a> BoolDecoder<'a> {
     #[inline(always)]
     pub fn read_bool(&mut self, p: u8) -> bool {
         let split = 1 + (((self.range - 1) * u32::from(p)) >> 8);
+        self.decide(split)
+    }
+
+    /// `read_bool(128)`: `1 + (((range - 1) * 128) >> 8)` is `(range + 1) >> 1`, no multiply.
+    #[inline(always)]
+    pub fn read_half(&mut self) -> bool {
+        let split = (self.range + 1) >> 1;
+        self.decide(split)
+    }
+
+    /// The rest of `read_bool` once `split` is known.
+    #[inline(always)]
+    fn decide(&mut self, split: u32) -> bool {
         if self.count < 0 {
             self.fill();
         }
@@ -57,8 +73,8 @@ impl<'a> BoolDecoder<'a> {
             self.range = split;
             false
         };
-        // renormalise: shift until range >= 128
-        let shift = self.range.leading_zeros().saturating_sub(24);
+        // renormalise: shift until range >= 128 (range is 1..=255: at least 24 leading zeros)
+        let shift = self.range.leading_zeros() - 24;
         self.range <<= shift;
         self.value <<= shift;
         self.count -= shift as i32;
@@ -196,7 +212,8 @@ mod tests {
             seed ^= seed << 5;
             seed
         };
-        let bits: Vec<(u8, bool)> = (0..20_000).map(|_| (((rnd() % 255) + 1) as u8, rnd() % 3 == 0)).collect();
+        // every fourth bool at p = 128, read back by `read_half`
+        let bits: Vec<(u8, bool)> = (0..20_000).map(|i| (if i % 4 == 0 { 128 } else { ((rnd() % 255) + 1) as u8 }, rnd() % 3 == 0)).collect();
         let mut e = BoolEncoder::new();
         for &(p, b) in &bits {
             e.write(p, b);
@@ -204,7 +221,8 @@ mod tests {
         let data = e.finish();
         let mut d = BoolDecoder::new(&data);
         for (i, &(p, b)) in bits.iter().enumerate() {
-            assert_eq!(d.read_bool(p), b, "bool {i}");
+            let got = if i % 4 == 0 { d.read_half() } else { d.read_bool(p) };
+            assert_eq!(got, b, "bool {i}");
         }
     }
 

@@ -94,12 +94,18 @@ pub const MVP_SIGN: usize = 1;
 pub const MVP_SHORT: usize = 2;
 pub const MVP_BITS: usize = 9;
 
-// DCT tokens (13.2).
+// DCT tokens (13.2): the decoder codes the tree as branches; the tree itself is the reference
+// of its tests.
+#[cfg(test)]
 pub const DCT_0: u8 = 0;
+#[cfg(test)]
 pub const DCT_4: u8 = 4;
+#[cfg(test)]
 pub const DCT_CAT1: u8 = 5;
+#[cfg(test)]
 pub const DCT_EOB: u8 = 11;
 /// `coeff_tree` (13.2).
+#[cfg(test)]
 pub const COEFF_TREE: [i8; 22] = [-(DCT_EOB as i8), 2, -(DCT_0 as i8), 4, -1, 6, 8, 12, -2, 10, -3, -4, 14, 16, -5, -6, 18, 20, -7, -8, -9, -10];
 /// `Pcat1` ... `Pcat6` (13.2), without the terminating zeros.
 pub const PCAT: [&[u8]; 6] =

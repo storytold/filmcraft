@@ -107,6 +107,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
         // CU-level block state: depth, skip, coded; CU edges are transform and prediction edges
         let bypass = self.cu_transquant_bypass;
+        self.pic.any_nofilter |= bypass;
         let qp = self.qp_y as i8;
         self.fill_blk(x0, y0, n, n, |b| {
             b.depth = depth as u8;
@@ -137,6 +138,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             if pcm {
                 self.pcm_sample(x0, y0, log2)?;
                 if self.sps.pcm_loop_filter_disabled {
+                    self.pic.any_nofilter = true;
                     self.fill_blk(x0, y0, n, n, |b| b.flags |= F_NOFILTER);
                 }
                 self.finish_cu(x0, y0, n);
@@ -192,17 +194,26 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
     /// Mark the left (vertical) and top (horizontal) edges of a rectangle.
     pub(super) fn mark_edges(&mut self, x0: i32, y0: i32, w: i32, h: i32, v: u8, hz: u8) {
         let w4 = self.pic.w4;
+        let ww = w4.div_ceil(64);
         let (bx0, by0) = ((x0 >> 2) as usize, (y0 >> 2) as usize);
         if v != 0 {
             let by1 = ((y0 + h) as usize).min(self.pic.height).div_ceil(4);
             for by in by0..by1 {
                 self.pic.blk[by * w4 + bx0].edges |= v;
+                if let Some(word) = self.pic.vedges.get_mut(by * ww + bx0 / 64) {
+                    *word |= 1 << (bx0 % 64);
+                }
             }
         }
         if hz != 0 {
             let bx1 = ((x0 + w) as usize).min(self.pic.width).div_ceil(4);
             for b in &mut self.pic.blk[by0 * w4 + bx0..by0 * w4 + bx1] {
                 b.edges |= hz;
+            }
+            for bx in bx0..bx1 {
+                if let Some(word) = self.pic.hedges.get_mut(by0 * ww + bx / 64) {
+                    *word |= 1 << (bx % 64);
+                }
             }
         }
     }

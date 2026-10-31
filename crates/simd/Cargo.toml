@@ -1,0 +1,24 @@
+[package]
+name = "filmcraft-simd"
+description = "Hand-written SIMD kernels for the codecs (NEON on aarch64, SSE2 on x86_64), each with a scalar twin it must match bit for bit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The second crate allowed to contain `unsafe` (AGENTS.md §0.3): only the per-architecture modules
+# opt in with `#[allow(unsafe_code)]`, only for vector loads and stores, and every `unsafe` block
+# carries a `// SAFETY:` comment. The public API is safe and the same on every target.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+needless_range_loop = "allow"
+type_complexity = "allow"
+undocumented_unsafe_blocks = "deny"
+
+[dependencies]
+# Casts between whole arrays and vector registers (`must_cast`: sizes checked at compile time).
+bytemuck = { workspace = true, features = ["must_cast", "aarch64_simd"] }

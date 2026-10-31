@@ -30,6 +30,12 @@ pub trait Sample: Copy + Default + PartialEq + std::fmt::Debug + Send + Sync + '
     /// The rows of `f` if they are stored with this type.
     fn rows(f: &Frame) -> Option<&[OnceLock<FrameRow<Self>>]>;
     fn wrap_rows(rows: Box<[OnceLock<FrameRow<Self>>]>) -> Rows;
+    /// `rows` as 8-bit sample rows, if this is the 8-bit storage type (for the vector kernels).
+    fn as_u8<'a>(rows: &'a [&'a [Self]]) -> Option<&'a [&'a [u8]]>;
+    /// `d` as 8-bit samples, if this is the 8-bit storage type.
+    fn as_u8_mut(d: &mut [Self]) -> Option<&mut [u8]>;
+    /// `s` as 8-bit samples, if this is the 8-bit storage type.
+    fn as_u8_ref(s: &[Self]) -> Option<&[u8]>;
 }
 
 impl Sample for u8 {
@@ -63,6 +69,18 @@ impl Sample for u8 {
     fn wrap_rows(rows: Box<[OnceLock<FrameRow<u8>>]>) -> Rows {
         Rows::U8(rows.into())
     }
+    #[inline(always)]
+    fn as_u8<'a>(rows: &'a [&'a [u8]]) -> Option<&'a [&'a [u8]]> {
+        Some(rows)
+    }
+    #[inline(always)]
+    fn as_u8_mut(d: &mut [u8]) -> Option<&mut [u8]> {
+        Some(d)
+    }
+    #[inline(always)]
+    fn as_u8_ref(s: &[u8]) -> Option<&[u8]> {
+        Some(s)
+    }
 }
 
 impl Sample for u16 {
@@ -95,6 +113,18 @@ impl Sample for u16 {
     }
     fn wrap_rows(rows: Box<[OnceLock<FrameRow<u16>>]>) -> Rows {
         Rows::U16(rows.into())
+    }
+    #[inline(always)]
+    fn as_u8<'a>(_: &'a [&'a [u16]]) -> Option<&'a [&'a [u8]]> {
+        None
+    }
+    #[inline(always)]
+    fn as_u8_mut(_: &mut [u16]) -> Option<&mut [u8]> {
+        None
+    }
+    #[inline(always)]
+    fn as_u8_ref(_: &[u16]) -> Option<&[u8]> {
+        None
     }
 }
 
@@ -252,32 +282,40 @@ impl Frame {
 
     /// The w-sample runs at x0 of the h lines from y0 of plane `c` (0 = luma, 1 = Cb, 2 = Cr) into
     /// `rows` (h = `rows.len()`), lines outside the picture replicated from its top / bottom edge
-    /// (8-228, 8-229): the reference window of a prediction block without copying it. False (and
-    /// `rows` partly filled) when the runs are not inside the picture horizontally.
+    /// (8-228, 8-229): the reference window of a prediction block without copying it. Each run
+    /// goes on to the end of its line (at least `w` samples: the vector kernels load past the
+    /// window). False (and `rows` partly filled) when the runs are not inside the picture
+    /// horizontally.
     pub fn window_rows<'f, S: Sample>(&'f self, c: usize, x0: i32, y0: i32, w: usize, rows: &mut [&'f [S]]) -> bool {
         let (pw, ph, sh) = if c == 0 { (self.width, self.height, self.log2_ctb) } else { (self.cwidth, self.cheight, self.log2_ctb - 1) };
         let Some(x) = usize::try_from(x0).ok().filter(|&x| x.saturating_add(w) <= pw) else { return false };
         let mask = (1usize << sh) - 1;
         let max_y = ph as i32 - 1;
-        let mut cur: Option<(usize, &'f [S])> = None;
-        for (r, slot) in rows.iter_mut().enumerate() {
-            let yy = y0.saturating_add(r as i32).min(max_y).max(0) as usize;
-            let plane = match cur {
-                Some((i, p)) if i == yy >> sh => p,
-                _ => {
-                    let Some(row) = self.row::<S>(yy >> sh) else { return false };
-                    let p: &'f [S] = match c {
-                        0 => &row.y,
-                        1 => &row.cb,
-                        _ => &row.cr,
-                    };
-                    cur = Some((yy >> sh, p));
-                    p
-                }
-            };
-            let off = (yy & mask) * pw + x;
-            let Some(run) = plane.get(off..off + w) else { return false };
-            *slot = run;
+        let plane_of = |ctb_row: usize| -> Option<&'f [S]> {
+            let row = self.row::<S>(ctb_row)?;
+            Some(match c {
+                0 => &row.y,
+                1 => &row.cb,
+                _ => &row.cr,
+            })
+        };
+        let n = rows.len();
+        let mut r = 0;
+        while r < n {
+            let y = y0.saturating_add(r as i32);
+            let yy = y.clamp(0, max_y.max(0)) as usize;
+            let Some(plane) = plane_of(yy >> sh) else { return false };
+            // Lines inside the picture: the rest of this CTB row's in one go, each CTB row
+            // looked up once; lines replicated from the top or bottom edge one at a time.
+            let lines = if y == yy as i32 { (n - r).min((mask + 1) - (yy & mask)).min(ph - yy) } else { 1 };
+            // (offsets stepped rather than `chunks`, whose zip with the rows divides by pw)
+            let mut o = (yy & mask) * pw + x;
+            for slot in &mut rows[r..r + lines] {
+                let Some(run) = plane.get(o..o - x + pw) else { return false };
+                *slot = run;
+                o += pw;
+            }
+            r += lines;
         }
         true
     }
@@ -285,6 +323,11 @@ impl Frame {
     /// Copy the w x h block at (x0, y0) of plane `c` (0 = luma, 1 = Cb, 2 = Cr) into `dst`
     /// (stride `ds`), samples outside the picture replicated from its edges (8-228, 8-229).
     pub fn copy_block<S: Sample>(&self, c: usize, (x0, y0): (i32, i32), (w, h): (usize, usize), dst: &mut [S], ds: usize) {
+        // Inside the picture horizontally: the lines in place, each CTB row looked up once.
+        let done = if c == 0 { self.copy_in_place::<S, 64>(c, (x0, y0), (w, h), dst, ds) } else { self.copy_in_place::<S, 32>(c, (x0, y0), (w, h), dst, ds) };
+        if done {
+            return;
+        }
         let (pw, ph, sh) = if c == 0 { (self.width, self.height, self.log2_ctb) } else { (self.cwidth, self.cheight, self.log2_ctb - 1) };
         let inside = usize::try_from(x0).ok().filter(|&x| x.saturating_add(w) <= pw);
         for (r, d) in dst.chunks_mut(ds).take(h).enumerate() {
@@ -308,6 +351,44 @@ impl Frame {
                 }
             }
         }
+    }
+
+    /// [`Frame::copy_block`] from the lines in place ([`Frame::window_rows`]) for blocks of up to
+    /// `R` lines; false when the block is not inside the picture horizontally.
+    fn copy_in_place<S: Sample, const R: usize>(&self, c: usize, (x0, y0): (i32, i32), (w, h): (usize, usize), dst: &mut [S], ds: usize) -> bool {
+        let mut rows: [&[S]; R] = [&[]; R];
+        let Some(rows) = rows.get_mut(..h) else { return false };
+        if !self.window_rows(c, x0, y0, w, rows) {
+            return false;
+        }
+        #[inline(always)]
+        fn lines<S: Sample, const N: usize>(rows: &[&[S]], dst: &mut [S], ds: usize) {
+            for (i, row) in rows.iter().enumerate() {
+                if let (Some(s), Some(d)) = (row.first_chunk::<N>(), dst.get_mut(i * ds..).and_then(|d| d.first_chunk_mut::<N>())) {
+                    *d = *s;
+                }
+            }
+        }
+        match w {
+            2 => lines::<S, 2>(rows, dst, ds),
+            4 => lines::<S, 4>(rows, dst, ds),
+            6 => lines::<S, 6>(rows, dst, ds),
+            8 => lines::<S, 8>(rows, dst, ds),
+            12 => lines::<S, 12>(rows, dst, ds),
+            16 => lines::<S, 16>(rows, dst, ds),
+            24 => lines::<S, 24>(rows, dst, ds),
+            32 => lines::<S, 32>(rows, dst, ds),
+            48 => lines::<S, 48>(rows, dst, ds),
+            64 => lines::<S, 64>(rows, dst, ds),
+            _ => {
+                for (i, row) in rows.iter().enumerate() {
+                    if let (Some(s), Some(d)) = (row.get(..w), dst.get_mut(i * ds..i * ds + w)) {
+                        d.copy_from_slice(s);
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// Crop the frame into planar buffers (waits for completion): 8-bit planes when `eight_bit`,

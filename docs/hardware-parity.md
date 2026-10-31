@@ -3,8 +3,8 @@
 > **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: hardware decode / encode per platform and codec, GPU effects, devices; re-measured after NVDEC #549 and GPU export #421) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Each hardware feature Premiere uses, per platform, against ours. Implementation detail lives in
-[`crates/platform/README.md`](../crates/platform/README.md) (decode / encode backends, the one
-crate allowed `unsafe`, [ADR 0001](adr/0001-platform-ffi.md)), the GPU compositor in
+[`crates/platform/README.md`](../crates/platform/README.md) (decode / encode backends, one of the
+two crates allowed `unsafe`, [ADR 0001](adr/0001-platform-ffi.md)), the GPU compositor in
 [architecture.md](architecture.md), and timings in [performance.md](performance.md).
 Hardware paths are always optional: our software codecs are the tested fallback, and a hardware
 decoder that fails mid-stream hands over to software (`HybridDecoder`).

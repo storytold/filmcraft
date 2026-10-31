@@ -141,6 +141,81 @@ mod tests {
         }
     }
 
+    /// The vector kernels (transform and addition to 8-bit predictions in one) give what the
+    /// transform and Clip1 addition give: every size, DST, bounded regions, extreme and
+    /// out-of-range coefficients (which saturate as the scaling process clips them), extreme
+    /// predictions, and DC-only blocks.
+    #[test]
+    fn vector_transform_add_matches_transform_and_add() {
+        let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let mut ran = 0;
+        for &level in filmcraft_simd::levels() {
+            for &(n, dst) in &[(4usize, true), (4, false), (8, false), (16, false), (32, false)] {
+                for case in 0..300 {
+                    let (max_x, max_y) = if case % 5 == 0 { (0, 0) } else { ((next() as usize) % n, (next() as usize) % n) };
+                    let density = [2u64, 8, 50, 100][case % 4];
+                    let mut c = vec![0i32; n * n];
+                    for y in 0..=max_y {
+                        for x in 0..=max_x {
+                            if next() % 100 < density || (x, y) == (max_x, max_y) {
+                                c[y * n + x] = match next() % 10 {
+                                    0 => 32767,
+                                    1 => -32768,
+                                    2 => 40000,
+                                    3 => -40000,
+                                    _ => (next() % 2001) as i32 - 1000,
+                                };
+                            }
+                        }
+                    }
+                    let ds = n + 3;
+                    let pred: Vec<u8> = (0..ds * n)
+                        .map(|_| match next() % 6 {
+                            0 => 0,
+                            1 => 255,
+                            _ => next() as u8,
+                        })
+                        .collect();
+                    // the scalar path: coefficients clipped as scaling leaves them
+                    let mut r: Vec<i32> = c.iter().map(|&v| v.clamp(-32768, 32767)).collect();
+                    let dc_only = max_x == 0 && max_y == 0 && !dst;
+                    if dc_only {
+                        let v = inverse_dc(r[0], 12);
+                        r.fill(v);
+                    } else {
+                        inverse_transform(&mut r, n, dst, max_x, max_y, 12);
+                    }
+                    let mut want = pred.clone();
+                    for y in 0..n {
+                        for x in 0..n {
+                            want[y * ds + x] = (want[y * ds + x] as i32 + r[y * n + x]).clamp(0, 255) as u8;
+                        }
+                    }
+                    let mut got = pred.clone();
+                    let done = if dc_only {
+                        filmcraft_simd::hevc_dc_add8_at(level, inverse_dc(c[0].clamp(-32768, 32767), 12), n, &mut got, ds)
+                    } else {
+                        filmcraft_simd::hevc_idct_add8_at(level, &c, n, dst, (max_x, max_y), &mut got, ds)
+                    };
+                    if !done {
+                        assert_eq!(got, pred, "nothing written when declined");
+                        continue;
+                    }
+                    ran += 1;
+                    assert_eq!(got, want, "{level:?} n {n} dst {dst} max ({max_x}, {max_y}) case {case}");
+                }
+            }
+        }
+        // (only aarch64 has vector versions of these kernels so far)
+        assert!(ran > 0 || !cfg!(target_arch = "aarch64"));
+    }
+
     #[test]
     fn dc_only_matches_full_transform() {
         for &n in &[4usize, 8, 16, 32] {

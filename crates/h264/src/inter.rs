@@ -10,6 +10,7 @@ pub struct PlaneRef<'a> {
     pub stride: usize,
 }
 
+#[cfg(test)]
 const WIN: usize = 16 + 5;
 
 /// Copy the (bw+5)x(bh+5) window whose top-left is (x-2, y-2) into `win` (stride WIN), clamping
@@ -40,16 +41,19 @@ fn fetch_window(p: PlaneRef, x: i32, y: i32, bw: usize, bh: usize, win: &mut [u8
     }
 }
 
+#[cfg(test)]
 #[inline(always)]
 fn tap6(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 {
     a - 5 * b + 20 * c + 20 * d - 5 * e + f
 }
 
+#[cfg(test)]
 #[inline(always)]
 fn clip1(v: i32) -> u8 {
     v.clamp(0, 255) as u8
 }
 
+#[cfg(test)]
 /// Copy `n` bytes with a fixed-size move for the common block widths.
 #[inline(always)]
 fn copy_n(dst: &mut [u8], src: &[u8], n: usize) {
@@ -64,29 +68,6 @@ fn copy_n(dst: &mut [u8], src: &[u8], n: usize) {
         4 => fixed::<4>(dst, src),
         2 => fixed::<2>(dst, src),
         _ => dst[..n].copy_from_slice(&src[..n]),
-    }
-}
-
-#[inline(always)]
-fn avg(a: u8, b: u8) -> u8 {
-    ((a as u16 + b as u16 + 1) >> 1) as u8
-}
-
-/// Horizontal 6-tap (unclipped) at every position of `row` for `n` outputs: out[c] uses row[c..c + 6].
-#[inline(always)]
-fn htap_row(row: &[u8], out: &mut [i32], n: usize) {
-    let row = &row[..n + 5];
-    for (o, w) in out[..n].iter_mut().zip(row.windows(6)) {
-        *o = tap6(w[0] as i32, w[1] as i32, w[2] as i32, w[3] as i32, w[4] as i32, w[5] as i32);
-    }
-}
-
-/// Vertical 6-tap (unclipped) over six rows at columns 0..n.
-#[inline(always)]
-fn vtap_row(rows: [&[u8]; 6], out: &mut [i32], n: usize) {
-    let [a, b, c, d, e, f] = rows.map(|r| &r[..n]);
-    for i in 0..n {
-        out[i] = tap6(a[i] as i32, b[i] as i32, c[i] as i32, d[i] as i32, e[i] as i32, f[i] as i32);
     }
 }
 
@@ -107,112 +88,12 @@ pub fn mc_luma(p: PlaneRef, x: i32, y: i32, blk: McBlock, out: &mut [u8], os: us
     mc_luma_win(src, ss, blk, out, os);
 }
 
-/// Luma interpolation from a prepared window: `src[0]` is the sample at (x - 2, y - 2) and `ss` the
-/// window stride; the window covers (bw + 5) x (bh + 5) samples.
+/// Luma interpolation from a window whose rows are `ss` apart in `src` (`src[0]` is the sample at
+/// (x - 2, y - 2)), put into `out`: the tests' entry to the decoder's kernel.
+#[cfg(test)]
 pub fn mc_luma_win(src: &[u8], ss: usize, blk: McBlock, out: &mut [u8], os: usize) {
     let McBlock { fx, fy, bw, bh } = blk;
-    // window row r (0..bh+5) starts at src[r * ss]; sample G of block (r, c) is at window (r + 2, c + 2)
-    let wrow = |r: usize| &src[r * ss..r * ss + bw + 5];
-    let mut t = [0i32; 16];
-    match (fx, fy) {
-        (0, 0) => {
-            for r in 0..bh {
-                copy_n(&mut out[r * os..], &wrow(r + 2)[2..], bw);
-            }
-        }
-        (_, 0) => {
-            for r in 0..bh {
-                let row = wrow(r + 2);
-                htap_row(row, &mut t, bw);
-                let o = &mut out[r * os..r * os + bw];
-                match fx {
-                    1 => {
-                        for c in 0..bw {
-                            o[c] = avg(row[c + 2], clip1((t[c] + 16) >> 5));
-                        }
-                    }
-                    2 => {
-                        for c in 0..bw {
-                            o[c] = clip1((t[c] + 16) >> 5);
-                        }
-                    }
-                    _ => {
-                        for c in 0..bw {
-                            o[c] = avg(row[c + 3], clip1((t[c] + 16) >> 5));
-                        }
-                    }
-                }
-            }
-        }
-        (0, _) => {
-            for r in 0..bh {
-                let rows = [wrow(r), wrow(r + 1), wrow(r + 2), wrow(r + 3), wrow(r + 4), wrow(r + 5)].map(|x| &x[2..]);
-                vtap_row(rows, &mut t, bw);
-                let g = if fy == 1 { rows[2] } else { rows[3] };
-                let o = &mut out[r * os..r * os + bw];
-                if fy == 2 {
-                    for c in 0..bw {
-                        o[c] = clip1((t[c] + 16) >> 5);
-                    }
-                } else {
-                    for c in 0..bw {
-                        o[c] = avg(g[c], clip1((t[c] + 16) >> 5));
-                    }
-                }
-            }
-        }
-        (2, _) | (_, 2) => {
-            // unclipped horizontal half samples b1 for window rows 0..bh+5
-            let mut b1 = [[0i32; 16]; WIN];
-            for (r, bt) in b1.iter_mut().enumerate().take(bh + 5) {
-                htap_row(wrow(r), bt, bw);
-            }
-            let mut v = [0i32; 16];
-            for r in 0..bh {
-                let o = &mut out[r * os..r * os + bw];
-                let (b0, b1r, b2, b3, b4, b5) = (&b1[r], &b1[r + 1], &b1[r + 2], &b1[r + 3], &b1[r + 4], &b1[r + 5]);
-                for c in 0..bw {
-                    t[c] = tap6(b0[c], b1r[c], b2[c], b3[c], b4[c], b5[c]);
-                }
-                match (fx, fy) {
-                    (2, 2) => {
-                        for c in 0..bw {
-                            o[c] = clip1((t[c] + 512) >> 10);
-                        }
-                    }
-                    (2, 1) | (2, 3) => {
-                        let bh_ = if fy == 1 { b2 } else { b3 };
-                        for c in 0..bw {
-                            o[c] = avg(clip1((bh_[c] + 16) >> 5), clip1((t[c] + 512) >> 10));
-                        }
-                    }
-                    _ => {
-                        let off = if fx == 1 { 2 } else { 3 };
-                        let rows = [wrow(r), wrow(r + 1), wrow(r + 2), wrow(r + 3), wrow(r + 4), wrow(r + 5)].map(|x| &x[off..]);
-                        vtap_row(rows, &mut v, bw);
-                        for c in 0..bw {
-                            o[c] = avg(clip1((v[c] + 16) >> 5), clip1((t[c] + 512) >> 10));
-                        }
-                    }
-                }
-            }
-        }
-        _ => {
-            // e, g, p, r: average of a horizontal half sample (row r or r + 1) and a vertical one (col c or c + 1)
-            let hoff = if fy == 1 { 2 } else { 3 };
-            let voff = if fx == 1 { 2 } else { 3 };
-            let mut v = [0i32; 16];
-            for r in 0..bh {
-                htap_row(wrow(r + hoff), &mut t, bw);
-                let rows = [wrow(r), wrow(r + 1), wrow(r + 2), wrow(r + 3), wrow(r + 4), wrow(r + 5)].map(|x| &x[voff..]);
-                vtap_row(rows, &mut v, bw);
-                let o = &mut out[r * os..r * os + bw];
-                for c in 0..bw {
-                    o[c] = avg(clip1((t[c] + 16) >> 5), clip1((v[c] + 16) >> 5));
-                }
-            }
-        }
-    }
+    filmcraft_simd::h264_luma((src, ss), (fx, fy), (bw, bh), (out, os), filmcraft_simd::H264Out::Put);
 }
 
 /// Chroma sample interpolation (8.4.2.2.2) for a bw x bh block at integer position (x, y) with
@@ -239,30 +120,15 @@ pub fn mc_chroma(p: PlaneRef, x: i32, y: i32, blk: McBlock, out: &mut [u8], os: 
     mc_chroma_win(src, ss, blk, out, os);
 }
 
-/// Chroma interpolation from a prepared (bw + 1) x (bh + 1) window whose first sample is the integer
-/// position of the block.
+/// Chroma interpolation from a window whose rows are `ss` apart in `src`, put into `out` (tests).
+#[cfg(test)]
 pub fn mc_chroma_win(src: &[u8], ss: usize, blk: McBlock, out: &mut [u8], os: usize) {
     let McBlock { fx, fy, bw, bh } = blk;
-    let (fx, fy) = (fx as u16, fy as u16);
-    let (w00, w10, w01, w11) = ((8 - fx) * (8 - fy), fx * (8 - fy), (8 - fx) * fy, fx * fy);
-    if fx == 0 && fy == 0 {
-        for r in 0..bh {
-            copy_n(&mut out[r * os..], &src[r * ss..], bw);
-        }
-        return;
-    }
-    for r in 0..bh {
-        let r0 = &src[r * ss..r * ss + bw + 1];
-        let r1 = &src[(r + 1) * ss..(r + 1) * ss + bw + 1];
-        let o = &mut out[r * os..r * os + bw];
-        for (c, o) in o.iter_mut().enumerate() {
-            let v = w00 * r0[c] as u16 + w10 * r0[c + 1] as u16 + w01 * r1[c] as u16 + w11 * r1[c + 1] as u16;
-            *o = ((v + 32) >> 6) as u8;
-        }
-    }
+    filmcraft_simd::h264_chroma((src, ss), (fx, fy), (bw, bh), (out, os), filmcraft_simd::H264Out::Put);
 }
 
 /// Fractional offset and size of one motion-compensated block.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub struct McBlock {
     pub fx: u32,
@@ -280,7 +146,9 @@ pub enum Weight {
     Weighted { log_wd: i32, w0: i32, w1: i32, o0: i32, o1: i32 },
 }
 
-/// Combine prediction(s) into `dst` (stride `ds`). `p0`/`p1` have stride `ps`.
+/// Combine prediction(s) into `dst` (stride `ds`). `p0`/`p1` have stride `ps`: the reference for
+/// the prediction kernels' output modes (`filmcraft_simd::H264Out`).
+#[cfg(test)]
 pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&[u8]>, ps: usize, (bw, bh): (usize, usize), w: Weight) {
     match (p0, p1, w) {
         (Some(a), Some(b), Weight::Default) => {

@@ -41,6 +41,36 @@ pub fn scale8(c: i32, ls: i32, qp: i32) -> i32 {
     if qp >= 36 { c.wrapping_mul(ls) << (qp / 6 - 6) } else { c.wrapping_mul(ls).wrapping_add(1 << (5 - qp / 6)) >> (6 - qp / 6) }
 }
 
+/// [`scale4`] or [`scale8`] at one qP, set up once per block: ((c * ls + rnd) << shl) >> shr.
+#[derive(Clone, Copy)]
+pub struct Dequant {
+    rnd: i32,
+    shl: u32,
+    shr: u32,
+}
+
+impl Dequant {
+    /// [`scale4`] at `qp`.
+    pub fn new4(qp: i32) -> Self {
+        Self::new(qp / 6 - 4)
+    }
+
+    /// [`scale8`] at `qp`.
+    pub fn new8(qp: i32) -> Self {
+        Self::new(qp / 6 - 6)
+    }
+
+    /// Left by `sh` when it is not negative, otherwise right by -sh with rounding.
+    fn new(sh: i32) -> Self {
+        if sh >= 0 { Dequant { rnd: 0, shl: sh as u32, shr: 0 } } else { Dequant { rnd: 1 << (-sh - 1), shl: 0, shr: (-sh) as u32 } }
+    }
+
+    #[inline(always)]
+    pub fn apply(self, c: i32, ls: i32) -> i32 {
+        (c.wrapping_mul(ls).wrapping_add(self.rnd) << self.shl) >> self.shr
+    }
+}
+
 /// Intra16x16 luma DC: inverse Hadamard + scaling (8.5.10). `c` is raster order (row*4+col);
 /// output replaces `c` with dcY (raster: row i -> 4x4 block row, col j -> block column).
 pub fn luma_dc_dequant(c: &mut [i32; 16], qp: i32, ls00: i32) {
@@ -182,6 +212,21 @@ pub fn idct8_add(d: &[i32; 64], dst: &mut [u8], stride: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dequant_matches_scale() {
+        // every qP, level scales up to 16 * 255 * 25 (the largest scaling-list product) and
+        // levels of both signs, including large ones that wrap
+        for qp in 0..52 {
+            let (d4, d8) = (Dequant::new4(qp), Dequant::new8(qp));
+            for ls in [10, 16, 25, 1000, 16 * 255 * 25] {
+                for c in [-70000, -300, -2, -1, 1, 2, 3, 17, 300, 2047, 70000, i32::MAX / 7] {
+                    assert_eq!(d4.apply(c, ls), scale4(c, ls, qp), "4x4 qp {qp} ls {ls} c {c}");
+                    assert_eq!(d8.apply(c, ls), scale8(c, ls, qp), "8x8 qp {qp} ls {ls} c {c}");
+                }
+            }
+        }
+    }
 
     /// The straightforward per-column formulation (8.5.12.2 / 8.5.13.2) the vectorised
     /// transforms must equal.

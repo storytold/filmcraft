@@ -2,7 +2,8 @@ use super::tx_size::find_tx_size;
 use super::{
     BLOCK_64X64, DC_PRED, H_PRED, II_DC_PRED, II_H_PRED, II_V_PRED, INTRA_FRAME, IntraParams, MAX_TX_SIZE_RECT, MI_HEIGHT_LOG2, MI_WIDTH_LOG2,
     NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, Result, SMOOTH_H_PRED, SMOOTH_PRED, SMOOTH_V_PRED, TX_4X4, TX_16X32, TX_32X16, TX_32X32, TX_HEIGHT,
-    TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2, TileDecoder, UV_CFL_PRED, V_PRED, block_height, block_width, is_directional_mode, predict_intra, round2_signed,
+    TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2, TileDecoder, UV_CFL_PRED, V_PRED, block_height, block_width, fill_span, is_directional_mode, predict_intra,
+    round2_signed,
 };
 use crate::inter::PredBlock;
 
@@ -62,12 +63,15 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                     enable_intra_edge_filter: self.fs.seq.enable_intra_edge_filter,
                     filter_type: if is_directional_mode(mode) && self.fs.seq.enable_intra_edge_filter { self.get_filter_type(plane) } else { false },
                 };
-                predict_intra(&mut self.t.cur.planes[plane], &params);
+                predict_intra(&mut self.t.cur.planes[plane], &params, &mut self.intra);
             }
             let mut pred_w = block_width(self.b.mi_size) >> sub_x;
             let mut pred_h = block_height(self.b.mi_size) >> sub_y;
             let mut some_use_intra = false;
-            for r in 0..(n4h << sub_y) {
+            // The candidates are this (inter) block's own positions unless the chroma
+            // prediction of a small block reaches back into the blocks before it.
+            let own = cand_row == self.b.mi_row && cand_col == self.b.mi_col && (n4h << sub_y) <= self.b.bh4 && (n4w << sub_x) <= self.b.bw4;
+            for r in 0..if own { 0 } else { n4h << sub_y } {
                 for c in 0..(n4w << sub_x) {
                     let (rr, cc) = (cand_row + r, cand_col + c);
                     if rr < self.t.mi.rows && cc < self.t.mi.cols && self.t.mi.ref_frame[self.t.mi.idx(rr, cc)][0] == INTRA_FRAME as i8 {
@@ -249,7 +253,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                     enable_intra_edge_filter: self.fs.seq.enable_intra_edge_filter,
                     filter_type,
                 };
-                predict_intra(&mut self.t.cur.planes[plane], &params);
+                predict_intra(&mut self.t.cur.planes[plane], &params, &mut self.intra);
                 if is_cfl {
                     self.predict_cfl(plane, start_x, start_y, tx_sz);
                 }
@@ -265,16 +269,11 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 self.reconstruct(plane, start_x, start_y, tx_sz);
             }
         }
-        for i in 0..step_y {
-            for j in 0..step_x {
-                let rr = (row >> sub_y) + i;
-                let cc = (col >> sub_x) + j;
-                self.t.set_lf_tx_size(plane, rr, cc, tx_sz as u8);
-                let by = (sub_block_mi_row >> sub_y) + i;
-                let bx = (sub_block_mi_col >> sub_x) + j;
-                if by + 1 < 35 && bx + 1 < 35 {
-                    self.block_decoded[plane][by + 1][bx + 1] = true;
-                }
+        self.t.set_lf_tx_size(plane, row >> sub_y, col >> sub_x, step_y, step_x, tx_sz as u8);
+        let (by, bx) = ((sub_block_mi_row >> sub_y) + 1, (sub_block_mi_col >> sub_x) + 1);
+        for r in self.block_decoded[plane].iter_mut().skip(by).take(step_y) {
+            if let Some(d) = r.get_mut(bx.min(35)..(bx + step_x).min(35)) {
+                fill_span(d, true);
             }
         }
         Ok(())

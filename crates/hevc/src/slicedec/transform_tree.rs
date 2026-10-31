@@ -405,6 +405,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let last_sb = sb_scan.iter().position(|&(x, y)| x as u32 == lx >> 2 && y as u32 == ly >> 2).unwrap_or(0);
         let last_pos = pos_scan.iter().position(|&(x, y)| x as u32 == lx & 3 && y as u32 == ly & 3).unwrap_or(0);
         self.coeffs[..n * n].fill(0);
+        let scaling = self.scaling(log2, c, qp, ts);
         let mut csbf = [0u8; 64];
         let mut prev_g1: Option<u32> = None;
         let sdh = self.pps.sign_data_hiding && !bypass;
@@ -449,12 +450,15 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             for k in 0..list.n {
                 let np = list.pos[k] as usize;
                 let (xc, yc) = (xs * 4 + pos_scan[np].0 as usize, ys * 4 + pos_scan[np].1 as usize);
-                self.coeffs[yc * n + xc] = values[k];
+                self.coeffs[yc * n + xc] = match &scaling {
+                    Some(s) => s.scale(values[k], yc * n + xc, self.pic.scaling.as_deref()),
+                    None => values[k],
+                };
                 max_x = max_x.max(xc);
                 max_y = max_y.max(yc);
             }
         }
-        self.reconstruct((x0, y0), log2, c, qp, ts, (max_x, max_y))
+        self.reconstruct((x0, y0), log2, c, ts, (max_x, max_y))
     }
 
     fn coeff_abs_level_remaining(&mut self, rice: u32) -> Result<i32> {
@@ -472,55 +476,83 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
     }
 
-    /// Scaling, transform and addition to the prediction.
-    fn reconstruct(&mut self, (x0, y0): (i32, i32), log2: u32, c: usize, qp: i32, ts: bool, (max_x, max_y): (usize, usize)) -> Result<()> {
+    /// The scaling process (8.6.3) of a transform block, unless its coefficients are not scaled
+    /// (cu_transquant_bypass).
+    fn scaling(&self, log2: u32, c: usize, qp: i32, ts: bool) -> Option<Scaling> {
+        if self.cu_transquant_bypass {
+            return None;
+        }
+        let bd = if c == 0 { self.pic.bd_y } else { self.pic.bd_c };
+        let bd_shift = bd + log2 - 5;
+        let matrix = (self.pic.scaling.is_some() && !(ts && log2 > 2)).then(|| (log2 - 2) as usize * 6 + if self.cu_intra { c } else { 3 + c });
+        Some(Scaling { scale: (LEVEL_SCALE[(qp % 6) as usize] as i64) << (qp / 6), round: 1 << (bd_shift - 1), bd_shift, matrix })
+    }
+
+    /// Transform (of coefficients scaled as they were parsed, 8.6.3) and addition to the
+    /// prediction (8.6.7): for 8-bit pictures by the vector kernels, which add as they transform.
+    fn reconstruct(&mut self, (x0, y0): (i32, i32), log2: u32, c: usize, ts: bool, (max_x, max_y): (usize, usize)) -> Result<()> {
         let n = 1usize << log2;
         let bd = if c == 0 { self.pic.bd_y } else { self.pic.bd_c };
+        let (stride, max) = (if c == 0 { self.pic.width } else { self.pic.cwidth }, (1i32 << bd) - 1);
         let coeffs = &mut self.coeffs[..n * n];
-        let mut dc_only = false;
+        let plane = &mut self.pic.planes[c];
+        let o = y0 as usize * stride + x0 as usize;
         if !self.cu_transquant_bypass {
-            // scaling (8.6.3)
-            let bd_shift = bd + log2 - 5;
-            let round = 1i64 << (bd_shift - 1);
-            let scale = (LEVEL_SCALE[(qp % 6) as usize] as i64) << (qp / 6);
-            let m: Option<&[u8]> = match &self.pic.scaling {
-                Some(s) if !(ts && n > 4) => {
-                    let size_id = (log2 - 2) as usize;
-                    let matrix_id = if self.cu_intra { c } else { 3 + c };
-                    Some(&s[size_id * 6 + matrix_id])
-                }
-                _ => None,
-            };
-            for y in 0..=max_y {
-                for x in 0..=max_x {
-                    let v = coeffs[y * n + x];
-                    if v != 0 {
-                        let f = m.map_or(16, |m| m[y * n + x] as i64);
-                        coeffs[y * n + x] = ((v as i64 * f * scale + round) >> bd_shift).clamp(-32768, 32767) as i32;
-                    }
-                }
-            }
             let bd_shift = 20 - bd;
             if ts {
                 transform::transform_skip(coeffs, n, bd_shift);
-            } else if max_x == 0 && max_y == 0 && !(self.cu_intra && c == 0 && n == 4) {
-                let v = transform::inverse_dc(coeffs[0], bd_shift);
-                coeffs.fill(v);
-                dc_only = true;
             } else {
                 let dst = self.cu_intra && c == 0 && n == 4;
-                transform::inverse_transform(coeffs, n, dst, max_x, max_y, bd_shift);
+                let dc_only = max_x == 0 && max_y == 0 && !dst;
+                if bd == 8
+                    && let Some(p) = plane.get_mut(o..).and_then(S::as_u8_mut)
+                {
+                    let done = if dc_only {
+                        filmcraft_simd::hevc_dc_add8(transform::inverse_dc(coeffs[0], bd_shift), n, p, stride)
+                    } else {
+                        filmcraft_simd::hevc_idct_add8(coeffs, n, dst, (max_x, max_y), p, stride)
+                    };
+                    if done {
+                        return Ok(());
+                    }
+                }
+                if dc_only {
+                    let v = transform::inverse_dc(coeffs[0], bd_shift);
+                    coeffs.fill(v);
+                } else {
+                    transform::inverse_transform(coeffs, n, dst, max_x, max_y, bd_shift);
+                }
             }
         }
-        let _ = dc_only;
-        let (stride, max) = (if c == 0 { self.pic.width } else { self.pic.cwidth }, (1i32 << bd) - 1);
-        let plane = &mut self.pic.planes[c];
         for y in 0..n {
-            let row = &mut plane[(y0 as usize + y) * stride + x0 as usize..][..n];
+            let row = &mut plane[o + y * stride..][..n];
             for (x, s) in row.iter_mut().enumerate() {
                 *s = S::from_i32((s.to_i32() + coeffs[y * n + x]).clamp(0, max));
             }
         }
         Ok(())
+    }
+}
+
+/// The scaling process (8.6.3) of one transform block: `levelScale << (qP / 6)`, the rounding
+/// and shift of bdShift, and the index of its scaling matrix among the picture's (None: flat,
+/// m = 16).
+struct Scaling {
+    scale: i64,
+    round: i64,
+    bd_shift: u32,
+    matrix: Option<usize>,
+}
+
+impl Scaling {
+    /// The scaled transform coefficient (8-310) of the level `v` at position `i` (y * n + x),
+    /// with the picture's scaling matrices `lists`.
+    #[inline]
+    fn scale(&self, v: i32, i: usize, lists: Option<&Vec<Vec<u8>>>) -> i32 {
+        let f = match (self.matrix, lists) {
+            (Some(k), Some(l)) => l.get(k).and_then(|m| m.get(i)).map_or(16, |&f| f as i64),
+            _ => 16,
+        };
+        ((v as i64 * f * self.scale + self.round) >> self.bd_shift).clamp(-32768, 32767) as i32
     }
 }
