@@ -248,6 +248,7 @@ fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
             "background": t.style.background, "backgroundColor": hex(t.style.background_color),
             "align": format!("{:?}", t.style.align).to_lowercase(), "anchor": format!("{:?}", t.style.anchor).to_lowercase(),
             "margin": t.style.margin, "lineSpacing": t.style.line_spacing, "outline": t.style.outline, "outlineColor": hex(t.style.outline_color),
+            "backgroundPadding": t.style.background_padding,
         },
         "captions": t.captions.iter().map(|c| caption_json(s, c)).collect::<Vec<_>>(),
     })
@@ -266,6 +267,20 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let n = doc.cues.len();
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
     Ok(json!({"path": path, "format": format.name(), "captions": n, "bytes": bytes.len()}))
+}
+
+/// `backgroundPadding`: one number for all sides, `[x, y]`, or null (automatic); clamped to
+/// 0–500 px at 1080 lines. `None` when the value is malformed.
+fn padding_p(v: &Value) -> Option<Option<[f32; 2]>> {
+    let num = |v: &Value| v.as_f64().filter(|v| v.is_finite()).map(|v| (v as f32).clamp(0.0, 500.0));
+    match v {
+        Value::Null => Some(None),
+        Value::Array(a) => match a.as_slice() {
+            [x, y] => Some(Some([num(x)?, num(y)?])),
+            _ => None,
+        },
+        _ => num(v).map(|p| Some([p, p])),
+    }
 }
 
 fn delta_p(s: &Session, p: &Value) -> Option<Tick> {
@@ -352,7 +367,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Caption Track Style",
             &[],
             None,
-            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
+            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"backgroundPadding":px at 1080 lines|[x,y]|null (null = automatic: 0.3 × size left/right, none above/below)?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
             has_caption_track,
             |s, p| {
                 let tid = track_param(s, p).ok_or_else(|| {
@@ -386,6 +401,9 @@ pub fn commands() -> Vec<CommandSpec> {
                     }
                     if let Some(c) = p.get("backgroundColor").and_then(parse_color) {
                         y.background_color = c;
+                    }
+                    if let Some(v) = p.get("backgroundPadding") {
+                        y.background_padding = padding_p(v).ok_or_else(|| bad("captions.setStyle", "`backgroundPadding` must be a number, [x, y] or null"))?;
                     }
                     if let Some(c) = p.get("outlineColor").and_then(parse_color) {
                         y.outline_color = c;

@@ -1,7 +1,7 @@
 //! Caption layout and burn-in.
 //!
 //! [`overlay`] lays out the caption showing on a track at a time with the track's
-//! [`CaptionStyle`] (size relative to a 1080-line frame, colour, background box, outline,
+//! [`CaptionStyle`] (size relative to a 1080-line frame, colour, background box and its padding, outline,
 //! alignment, anchor and margin; WebVTT `line:N%` and `align:` cue settings override the style)
 //! and rasterises it into a small premultiplied linear-light RGBA [`Overlay`] positioned in the
 //! frame. Renderers composite overlays over the finished picture.
@@ -64,6 +64,23 @@ fn caption_style(font: &str, px: f32) -> TextStyle {
 fn lin(c: [u8; 4]) -> [f32; 4] {
     let a = c[3] as f32 / 255.0;
     [srgb_to_linear(c[0] as f32 / 255.0) * a, srgb_to_linear(c[1] as f32 / 255.0) * a, srgb_to_linear(c[2] as f32 / 255.0) * a, a]
+}
+
+/// Add the box `x0..x1` × `y0..y1` (by area coverage) to the `ow`×`oh` mask at `(ox, oy)` in the frame.
+fn fill_box(bg: &mut [f32], (ox, oy, ow, oh): (i32, i32, usize, usize), (x0, y0, x1, y1): (f32, f32, f32, f32)) {
+    if !(x1 > x0 && y1 > y0) {
+        return;
+    }
+    let (x_end, y_end) = (ox.saturating_add(i32::try_from(ow).unwrap_or(i32::MAX)), oy.saturating_add(i32::try_from(oh).unwrap_or(i32::MAX)));
+    for y in (y0.floor() as i32).max(oy)..(y1.ceil() as i32).min(y_end) {
+        let fy = ((y as f32 + 1.0).min(y1) - (y as f32).max(y0)).clamp(0.0, 1.0);
+        for x in (x0.floor() as i32).max(ox)..(x1.ceil() as i32).min(x_end) {
+            let fx = ((x as f32 + 1.0).min(x1) - (x as f32).max(x0)).clamp(0.0, 1.0);
+            if let Some(v) = bg.get_mut((y - oy) as usize * ow + (x - ox) as usize) {
+                *v = (*v + fx * fy).min(1.0);
+            }
+        }
+    }
 }
 
 /// Word-wrap one line to `max_w` pixels.
@@ -131,16 +148,25 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(&ts.family, &ts.style).face).metrics(px);
     let (asc, desc) = (vm.ascent, vm.descent);
     let lh = px * style.line_spacing.clamp(0.8, 4.0);
-    let pad_x = (px * 0.3).round();
+    // automatic padding: 0.3 × size left and right, none above or below; set padding scales with
+    // the frame like the size (hostile values are clamped)
+    let (pad_x, pad_y) = match style.background_padding {
+        Some([x, y]) => {
+            let px_at = |v: f32| if v.is_finite() { (v.clamp(0.0, 500.0) * scale).round() } else { 0.0 };
+            (px_at(x), px_at(y))
+        }
+        None => ((px * 0.3).round(), 0.0),
+    };
     let block_h = lh * lines.len() as f32;
     let (line_override, align_override) = vtt_overrides(&c.settings);
     let align = align_override.unwrap_or(style.align);
     let margin = style.margin.clamp(0.0, 0.45) * h as f32;
     let top = match (line_override, style.anchor) {
         (Some(f), _) => (f * h as f32).min(h as f32 - block_h),
-        (None, CaptionAnchor::Top) => margin,
+        // the margin is measured to the box edge, padding included
+        (None, CaptionAnchor::Top) => margin + pad_y,
         (None, CaptionAnchor::Middle) => (h as f32 - block_h) / 2.0,
-        (None, CaptionAnchor::Bottom) => h as f32 - margin - block_h,
+        (None, CaptionAnchor::Bottom) => h as f32 - margin - pad_y - block_h,
     }
     .max(0.0)
     .round();
@@ -158,35 +184,29 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let grow = outline.ceil() + 1.0;
     let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
     let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
-    let by0 = (top - grow).floor();
-    let by1 = (top + block_h + grow).ceil();
+    let by0 = (top - pad_y - grow).floor();
+    let by1 = (top + block_h + pad_y + grow).ceil();
     // Text can be wider than the frame (an unbroken imported WebVTT word, for example). Raster
     // only the visible intersection; `draw` receives the original coordinates and clips into it.
-    let (left, top) = (bx0.clamp(0.0, w as f32), by0.clamp(0.0, h as f32));
+    let (left, clip_top) = (bx0.clamp(0.0, w as f32), by0.clamp(0.0, h as f32));
     let (right, bottom) = (bx1.clamp(0.0, w as f32), by1.clamp(0.0, h as f32));
-    if right <= left || bottom <= top {
+    if right <= left || bottom <= clip_top {
         return None;
     }
-    let (ox, oy) = (left as i32, top as i32);
-    let (ow, oh) = ((right - left) as usize, (bottom - top) as usize);
+    let (ox, oy) = (left as i32, clip_top as i32);
+    let (ow, oh) = ((right - left) as usize, (bottom - clip_top) as usize);
     if ow.checked_mul(oh).is_none_or(|pixels| pixels > MAX_OVERLAY_PIXELS) {
         return None;
     }
+    // the lines are laid out from the overlay's top edge inside the padding, as they always were,
+    // except that padding pushed above the frame is clipped rather than moving the text down
+    let top = (by0 + pad_y).max(0.0);
     let mut cover = vec![0.0f32; ow * oh];
     let mut bg = vec![0.0f32; ow * oh];
     for (i, line) in lines.iter().enumerate() {
         let lt = top + lh * i as f32;
         if style.background && style.background_color[3] > 0 {
-            let (x0, x1) = (xs[i] - pad_x, xs[i] + widths[i] + pad_x);
-            let (y0, y1) = (lt, lt + lh);
-            for y in (y0.floor() as i32).max(oy)..(y1.ceil() as i32).min(oy + oh as i32) {
-                let fy = ((y as f32 + 1.0).min(y1) - (y as f32).max(y0)).clamp(0.0, 1.0);
-                for x in (x0.floor() as i32).max(ox)..(x1.ceil() as i32).min(ox + ow as i32) {
-                    let fx = ((x as f32 + 1.0).min(x1) - (x as f32).max(x0)).clamp(0.0, 1.0);
-                    let j = (y - oy) as usize * ow + (x - ox) as usize;
-                    bg[j] = (bg[j] + fx * fy).min(1.0);
-                }
-            }
+            fill_box(&mut bg, (ox, oy, ow, oh), (xs[i] - pad_x, lt - pad_y, xs[i] + widths[i] + pad_x, lt + lh + pad_y));
         }
         let baseline = lt + (lh - (asc + desc)) / 2.0 + asc;
         let l = layout(line, &ts, &ParagraphStyle::default());
@@ -375,6 +395,220 @@ mod tests {
             let st = CaptionStyle { font: font.into(), ..Default::default() };
             assert_eq!(render_caption(&cap("Hello"), &st, 1280, 720), Some(inter.clone()), "font {font:?}");
         }
+    }
+
+    /// `render_caption` as it was before the caption box settings (#3354-#3358), kept verbatim
+    /// (with the SemiBold face inlined) so every new style field can prove its default leaves
+    /// existing projects pixel-identical.
+    #[allow(clippy::needless_range_loop)]
+    fn reference_render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> Option<Overlay> {
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let scale = h as f32 / 1080.0;
+        let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0, h as f32);
+        let max_w = w as f32 * 0.9;
+        let family = if style.font.trim().is_empty() { filmcraft_text::fonts::DEFAULT_FAMILY } else { style.font.trim() };
+        let ts = TextStyle { family: family.into(), style: "SemiBold".into(), size: px, ..Default::default() };
+        let mut lines: Vec<String> = Vec::new();
+        // (speaker names are metadata; like Premiere, they are not burned in)
+        for l in c.plain_lines() {
+            lines.extend(wrap(l.trim(), &ts, max_w));
+        }
+        lines.retain(|l| !l.is_empty());
+        if lines.is_empty() {
+            return None;
+        }
+        let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(&ts.family, &ts.style).face).metrics(px);
+        let (asc, desc) = (vm.ascent, vm.descent);
+        let lh = px * style.line_spacing.clamp(0.8, 4.0);
+        let pad_x = (px * 0.3).round();
+        let block_h = lh * lines.len() as f32;
+        let (line_override, align_override) = vtt_overrides(&c.settings);
+        let align = align_override.unwrap_or(style.align);
+        let margin = style.margin.clamp(0.0, 0.45) * h as f32;
+        let top = match (line_override, style.anchor) {
+            (Some(f), _) => (f * h as f32).min(h as f32 - block_h),
+            (None, CaptionAnchor::Top) => margin,
+            (None, CaptionAnchor::Middle) => (h as f32 - block_h) / 2.0,
+            (None, CaptionAnchor::Bottom) => h as f32 - margin - block_h,
+        }
+        .max(0.0)
+        .round();
+        let side = w as f32 * 0.05;
+        let widths: Vec<f32> = lines.iter().map(|l| filmcraft_text::measure(l, &ts)).collect();
+        let xs: Vec<f32> = widths
+            .iter()
+            .map(|&lw| match align {
+                CaptionAlign::Left => side + pad_x,
+                CaptionAlign::Right => w as f32 - side - pad_x - lw,
+                CaptionAlign::Center => (w as f32 - lw) / 2.0,
+            })
+            .collect();
+        let outline = (style.outline * scale).clamp(0.0, MAX_OUTLINE_RADIUS);
+        let grow = outline.ceil() + 1.0;
+        let bx0 = xs.iter().zip(&widths).map(|(x, _)| x - pad_x - grow).fold(f32::MAX, f32::min).floor();
+        let bx1 = xs.iter().zip(&widths).map(|(x, lw)| x + lw + pad_x + grow).fold(f32::MIN, f32::max).ceil();
+        let by0 = (top - grow).floor();
+        let by1 = (top + block_h + grow).ceil();
+        // Text can be wider than the frame (an unbroken imported WebVTT word, for example). Raster
+        // only the visible intersection; `draw` receives the original coordinates and clips into it.
+        let (left, top) = (bx0.clamp(0.0, w as f32), by0.clamp(0.0, h as f32));
+        let (right, bottom) = (bx1.clamp(0.0, w as f32), by1.clamp(0.0, h as f32));
+        if right <= left || bottom <= top {
+            return None;
+        }
+        let (ox, oy) = (left as i32, top as i32);
+        let (ow, oh) = ((right - left) as usize, (bottom - top) as usize);
+        if ow.checked_mul(oh).is_none_or(|pixels| pixels > MAX_OVERLAY_PIXELS) {
+            return None;
+        }
+        let mut cover = vec![0.0f32; ow * oh];
+        let mut bg = vec![0.0f32; ow * oh];
+        for (i, line) in lines.iter().enumerate() {
+            let lt = top + lh * i as f32;
+            if style.background && style.background_color[3] > 0 {
+                let (x0, x1) = (xs[i] - pad_x, xs[i] + widths[i] + pad_x);
+                let (y0, y1) = (lt, lt + lh);
+                for y in (y0.floor() as i32).max(oy)..(y1.ceil() as i32).min(oy + oh as i32) {
+                    let fy = ((y as f32 + 1.0).min(y1) - (y as f32).max(y0)).clamp(0.0, 1.0);
+                    for x in (x0.floor() as i32).max(ox)..(x1.ceil() as i32).min(ox + ow as i32) {
+                        let fx = ((x as f32 + 1.0).min(x1) - (x as f32).max(x0)).clamp(0.0, 1.0);
+                        let j = (y - oy) as usize * ow + (x - ox) as usize;
+                        bg[j] = (bg[j] + fx * fy).min(1.0);
+                    }
+                }
+            }
+            let baseline = lt + (lh - (asc + desc)) / 2.0 + asc;
+            let l = layout(line, &ts, &ParagraphStyle::default());
+            let mut m = filmcraft_text::Mask { w: ow, h: oh, a: std::mem::take(&mut cover) };
+            render::draw(&l, &render::at(xs[i], baseline.round()), &mut m, (ox, oy));
+            cover = m.a;
+        }
+        let stroke = if outline > 0.0 { dilate(&cover, ow, oh, outline) } else { Vec::new() };
+        let (tc, bc, oc) = (lin(style.color), lin(style.background_color), lin(style.outline_color));
+        let mut out = vec![0.0f32; ow * oh * 4];
+        for j in 0..ow * oh {
+            let mut p = [0.0f32; 4];
+            let over = |p: &mut [f32; 4], c: [f32; 4], a: f32| {
+                if a > 0.0 {
+                    for k in 0..4 {
+                        p[k] = c[k] * a + p[k] * (1.0 - c[3] * a);
+                    }
+                }
+            };
+            over(&mut p, bc, bg[j]);
+            if !stroke.is_empty() {
+                over(&mut p, oc, stroke[j]);
+            }
+            over(&mut p, tc, cover[j]);
+            out[j * 4..j * 4 + 4].copy_from_slice(&p);
+        }
+        Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
+    }
+
+    /// Styles and captions existing projects use, at the frame sizes they are drawn at.
+    fn reference_cases() -> Vec<(Caption, CaptionStyle, usize, usize)> {
+        let (long, unbroken) = ("word ".repeat(40), "x".repeat(300));
+        let texts = ["Hello world", "Two\nlines here", long.as_str(), unbroken.as_str(), "<i>Styled</i> &amp; done"];
+        let styles = [
+            CaptionStyle::default(),
+            CaptionStyle { anchor: CaptionAnchor::Top, align: CaptionAlign::Left, size: 40.0, ..Default::default() },
+            CaptionStyle { anchor: CaptionAnchor::Middle, align: CaptionAlign::Right, line_spacing: 1.6, ..Default::default() },
+            CaptionStyle { outline: 3.0, background_color: [20, 40, 200, 128], margin: 0.31, ..Default::default() },
+            CaptionStyle { background: false, font: "Noto Serif".into(), ..Default::default() },
+            CaptionStyle { size: 200.0, margin: 0.0, anchor: CaptionAnchor::Top, ..Default::default() },
+        ];
+        let mut out = Vec::new();
+        for (w, h) in [(1920, 1080), (1280, 720), (1080, 1920), (640, 360)] {
+            for st in &styles {
+                for t in texts {
+                    let mut c = cap(t);
+                    out.push((c.clone(), st.clone(), w, h));
+                    c.settings = "line:30% align:end".into();
+                    out.push((c, st.clone(), w, h));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn default_style_renders_like_the_reference() {
+        for (c, st, w, h) in reference_cases() {
+            assert_eq!(render_caption(&c, &st, w, h), reference_render_caption(&c, &st, w, h), "{:?} {w}x{h} {st:?}", c.text);
+        }
+    }
+
+    /// Alpha at frame pixel `(x, y)` of an overlay (0 outside it).
+    fn alpha(o: &Overlay, x: i32, y: i32) -> f32 {
+        let (lx, ly) = (x - o.x, y - o.y);
+        if lx < 0 || ly < 0 || lx as usize >= o.w || ly as usize >= o.h {
+            return 0.0;
+        }
+        o.px.get((ly as usize * o.w + lx as usize) * 4 + 3).copied().unwrap_or(0.0)
+    }
+
+    /// Frame columns `[first, last]` with alpha > 0.5 on row `y`.
+    fn row_span(o: &Overlay, y: i32) -> Option<(i32, i32)> {
+        let xs: Vec<i32> = (o.x..o.x + o.w as i32).filter(|&x| alpha(o, x, y) > 0.5).collect();
+        Some((*xs.first()?, *xs.last()?))
+    }
+
+    /// Frame rows `[first, last]` with alpha > 0.5 in column `x`.
+    fn col_span(o: &Overlay, x: i32) -> Option<(i32, i32)> {
+        let ys: Vec<i32> = (o.y..o.y + o.h as i32).filter(|&y| alpha(o, x, y) > 0.5).collect();
+        Some((*ys.first()?, *ys.last()?))
+    }
+
+    #[test]
+    fn background_padding_sets_the_box_edges() {
+        let ts = caption_style("Inter", 58.0);
+        let text_w = filmcraft_text::measure("Hello world", &ts);
+        for (pad, scale_h) in [([20.0_f32, 20.0], 1080), ([30.0, 10.0], 1080), ([30.0, 10.0], 2160)] {
+            let st = CaptionStyle { size: 58.0, background_color: [0, 0, 0, 255], background_padding: Some(pad), ..Default::default() };
+            let (w, h) = (scale_h * 16 / 9, scale_h);
+            let k = h as f32 / 1080.0;
+            let o = render_caption(&cap("Hello world"), &st, w, h).unwrap();
+            let (x0, x1) = row_span(&o, o.y + o.h as i32 / 2).unwrap();
+            let (y0, y1) = col_span(&o, w as i32 / 2).unwrap();
+            let box_w = (x1 - x0 + 1) as f32;
+            let want_w = text_w * k + 2.0 * (pad[0] * k).round();
+            assert!((box_w - want_w).abs() <= 2.0, "{pad:?}@{h}: box width {box_w}, expected {want_w}");
+            let box_h = (y1 - y0 + 1) as f32;
+            let want_h = 58.0 * k * st.line_spacing + 2.0 * (pad[1] * k).round();
+            assert!((box_h - want_h).abs() <= 2.0, "{pad:?}@{h}: box height {box_h}, expected {want_h}");
+            // the bottom margin is measured to the box edge, padding included
+            let bottom = (y1 + 1) as f32;
+            assert!((bottom - (h as f32 - 0.08 * h as f32)).abs() <= 2.0, "{pad:?}@{h}: box bottom {bottom}");
+        }
+    }
+
+    #[test]
+    fn padding_above_the_frame_is_clipped_without_moving_the_text() {
+        // a WebVTT cue at line:1% with 100 px of vertical padding: the box runs off the top of the
+        // frame, but the text stays where it is without padding
+        let first_text_row = |pad: f32| {
+            let st = CaptionStyle { background: false, background_padding: Some([0.0, pad]), ..Default::default() };
+            let mut c = cap("Hi");
+            c.settings = "line:1%".into();
+            let o = render_caption(&c, &st, 1920, 1080).unwrap();
+            (o.y..o.y + o.h as i32).find(|&y| (o.x..o.x + o.w as i32).any(|x| alpha(&o, x, y) > 0.5)).unwrap()
+        };
+        assert_eq!(first_text_row(100.0), first_text_row(0.0), "rows: pad 100 {} vs pad 0 {}", first_text_row(100.0), first_text_row(0.0));
+    }
+
+    #[test]
+    fn hostile_background_padding_is_clamped() {
+        for pad in [[f32::NAN, f32::INFINITY], [-4.0, -1e30], [1e30, 1e9], [f32::NEG_INFINITY, 0.0]] {
+            let st = CaptionStyle { background_padding: Some(pad), ..Default::default() };
+            let r = std::panic::catch_unwind(|| render_caption(&cap("Hello world"), &st, 640, 360));
+            assert!(r.is_ok(), "{pad:?}");
+        }
+        // negative and non-finite padding is none
+        let none = CaptionStyle { background_padding: Some([0.0, 0.0]), ..Default::default() };
+        let neg = CaptionStyle { background_padding: Some([-4.0, f32::NAN]), ..Default::default() };
+        assert_eq!(render_caption(&cap("Hi"), &neg, 640, 360), render_caption(&cap("Hi"), &none, 640, 360));
     }
 
     #[test]

@@ -224,3 +224,23 @@ fn captions_copy_cut_and_paste() {
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(caption_spans(&s).len(), 1);
 }
+
+#[test]
+fn set_style_background_padding() {
+    let mut s = demo();
+    s.execute("captions.add", json!({"text": "Padded", "seconds": 1.0})).unwrap();
+    let pad = |s: &Session| s.active_sequence().unwrap().caption_tracks[0].style.background_padding;
+    assert_eq!(pad(&s), None, "automatic by default");
+    s.execute("captions.setStyle", json!({"backgroundPadding": 20})).unwrap();
+    assert_eq!(pad(&s), Some([20.0, 20.0]));
+    s.execute("captions.setStyle", json!({"backgroundPadding": [24, -8]})).unwrap();
+    assert_eq!(pad(&s), Some([24.0, 0.0]), "negative clamps to 0");
+    assert_eq!(s.execute("captions.list", json!({})).unwrap()["tracks"][0]["style"]["backgroundPadding"], json!([24.0, 0.0]));
+    s.execute("captions.setStyle", json!({"backgroundPadding": 1e9})).unwrap();
+    assert_eq!(pad(&s), Some([500.0, 500.0]), "huge clamps to 500");
+    for bad in [json!("wide"), json!([1, 2, 3]), json!([1, "x"])] {
+        assert!(s.execute("captions.setStyle", json!({"backgroundPadding": bad})).is_err(), "{bad}");
+    }
+    s.execute("captions.setStyle", json!({"backgroundPadding": null})).unwrap();
+    assert_eq!(pad(&s), None, "null goes back to automatic");
+}

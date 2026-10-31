@@ -12,7 +12,10 @@ version 2; version 1 projects open with no caption tracks).
   font size (pixels at 1080 lines, scaled to the frame), text colour, background box and its colour,
   outline width and colour, alignment (left/centre/right), position (top/middle/bottom) and
   margin (a fraction of the frame height, default 0.08; `captions.setStyle` clamps it to 0–0.45),
-  line spacing.
+  line spacing, and the background padding (`backgroundPadding`: pixels at 1080 lines, scaled with
+  the frame like the size, one number for all sides or `[x, y]`, clamped to 0–500; unset (`null`,
+  the default) keeps the automatic padding of 0.3 × the font size left and right and none above or
+  below; with top/bottom anchors the margin is measured to the box edge, padding included).
 - **Caption**: in/out in exact `Tick`s, text (lines separated by `\n`; `<i>`, `<b>`, `<u>` kept
   as written), optional speaker, and the WebVTT cue id and cue settings, kept for round trips.
   Captions on a track never overlap.
@@ -60,7 +63,7 @@ Details of each format and the SCC encoder are in [`crates/captions/README.md`](
 | `edit.copy` / `edit.cut` / `edit.paste` / `edit.pasteInsert` | ⌘C / ⌘X / ⌘V / ⇧⌘V with only captions selected | captions paste at the playhead on the tracks they came from, overwriting (Paste Insert pushes later captions on); Paste places whichever of clips or captions was copied last |
 | `captions.select`, `captions.goTo` | click / number button | `captions`, `add` / `caption` |
 | `captions.setTrack` | caption track header (eye, lock) | `track`, `name`, `format`, `language`, `enabled`, `locked`, `syncLock` |
-| `captions.setStyle` | Text panel style strip | `track`, `size`, `color`, `background`, `backgroundColor`, `outline`, `outlineColor`, `align`, `anchor`, `margin`, `lineSpacing`, `reset` |
+| `captions.setStyle` | Text panel style strip | `track`, `size`, `color`, `background`, `backgroundColor`, `backgroundPadding` (px at 1080 lines, `[x, y]`, or `null` for automatic), `outline`, `outlineColor`, `align`, `anchor`, `margin`, `lineSpacing`, `reset` |
 | `captions.deleteTrack` | | `track` |
 | `captions.import` / `captions.export` | File ▸ Export ▸ Captions… | `path`, `format`, `track`, `dropFrame` |
 | `captions.list` | (query) | `track` — tracks, styles and captions with timecodes (a `track` that names no caption track is an error) |
@@ -80,7 +83,7 @@ also splits captions.
 - **Text panel ▸ Captions**: search, track picker (also creates tracks of each format), add /
   split / merge / delete / export buttons, the list of segments with editable in/out timecodes
   and text (committed when the field loses focus; Arabic and Hebrew show in reading order and are
-  edited in logical order while the field has focus), and the track style strip (size, colour, box,
+  edited in logical order while the field has focus), and the track style strip (size, colour, box and its padding,
   alignment, position). The list keeps the caption under the playhead in view (centred as the
   playhead reaches it, not while a field is being edited). Automation ids: `text.tab.Captions`, `text.captions.add|split|merge|delete|export|search|track`,
   `text.captions.<id>.in|out|text|goto|row`, `text.captions.style.*`.
