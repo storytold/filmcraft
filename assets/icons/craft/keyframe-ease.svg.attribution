@@ -1,0 +1,8 @@
+asset:        keyframe-ease.svg
+title:        Craft NLE icon (keyframe-ease)
+author:       ArtCraft Team
+source:       original work in craft-icons (Lucide-compatible; ISC)
+license:      ISC
+license-file: assets/icons/craft/LICENSE
+added:        2026-10-11 by Vikram Bhaskaran
+notes:        Original NLE glyph, 24x24 stroke-only. Not a Lucide remix.
