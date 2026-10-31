@@ -23,6 +23,7 @@ pub mod export_tools;
 pub mod graphic_templates;
 pub mod graphics;
 pub mod interchange;
+pub mod jkl;
 pub mod keyboard;
 mod keyframe_move;
 mod marker_export;
@@ -1297,6 +1298,8 @@ mod image_sequence_tests;
 mod individual_selection_tests;
 #[cfg(test)]
 mod interchange_auto_points_tests;
+#[cfg(test)]
+mod jkl_tests;
 #[cfg(test)]
 mod keyboard_tests;
 #[cfg(test)]

@@ -230,3 +230,38 @@ fn j_and_l_shuttle_the_source_both_ways_and_double_the_speed() {
     assert!(!h.state().playback.playing);
     assert_eq!(h.state().session.project.to_json(), before);
 }
+
+/// Settings ▸ Playback ▸ "J and L step speed through zero" (#2718): in both monitors J while
+/// fast-forwarding slows down, 0 pauses where the playhead is, and the next J reverses.
+#[test]
+fn signed_jl_steps_speed_through_zero_in_both_monitors() {
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app(5));
+    h.step();
+    let ctx = h.ctx.clone();
+    h.state_mut().session.execute("prefs.set", json!({"key": "playback.jklSignedSpeed", "value": true})).unwrap();
+    for monitor in ["source", "program"] {
+        if monitor == "source" {
+            h.state_mut().session.execute("source.setPlayhead", json!({"seconds":2})).unwrap();
+        } else {
+            h.state_mut().session.set_playhead(Tick::from_seconds_f64(2.0));
+        }
+        let p = json!({"monitor": monitor});
+        let mut press = |id: &str| menus::invoke(h.state_mut(), &ctx, id, p.clone()).unwrap()["speed"].as_f64().unwrap();
+        let speeds: Vec<f64> = ["playback.forward", "playback.forward", "playback.reverse", "playback.reverse"].iter().map(|id| press(id)).collect();
+        assert_eq!(speeds, [1.0, 2.0, 1.0, 0.0], "{monitor}");
+        let playing = |h: &Harness<FilmcraftApp>| if monitor == "source" { h.state().source_playback.clock.playing } else { h.state().playback.playing };
+        assert!(!playing(&h), "{monitor}: zero pauses");
+        let mut press = |id: &str| menus::invoke(h.state_mut(), &ctx, id, p.clone()).unwrap()["speed"].as_f64().unwrap();
+        assert_eq!(press("playback.reverse"), -1.0, "{monitor}: the next J plays backward");
+        assert!(playing(&h));
+        menus::invoke(h.state_mut(), &ctx, "playback.stop", p.clone()).unwrap();
+        assert!(!playing(&h));
+    }
+    // off again: J while playing forward turns around at once (Premiere's default)
+    h.state_mut().session.execute("prefs.set", json!({"key": "playback.jklSignedSpeed", "value": false})).unwrap();
+    let p = json!({"monitor": "program"});
+    for (id, speed) in [("playback.forward", 1.0), ("playback.forward", 2.0), ("playback.reverse", -1.0)] {
+        assert_eq!(menus::invoke(h.state_mut(), &ctx, id, p.clone()).unwrap()["speed"], speed);
+    }
+    h.state_mut().stop();
+}

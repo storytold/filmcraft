@@ -100,6 +100,9 @@ pub struct PlaybackPrefs {
     /// or `off` (always FilmCraft's own decoders). Media already open keeps its decoder until it
     /// is reopened.
     pub hardware_decoding: String,
+    /// "J and L step speed through zero (shuttle)": J/L move one step along the signed speed
+    /// ladder instead of switching direction (see [`crate::jkl`]). Off by default (Premiere).
+    pub jkl_signed_speed: bool,
 }
 
 impl Default for PlaybackPrefs {
@@ -113,6 +116,7 @@ impl Default for PlaybackPrefs {
             disable_video_in_background: true,
             draft_decode: false,
             hardware_decoding: "auto".into(),
+            jkl_signed_speed: false,
         }
     }
 }
