@@ -472,22 +472,16 @@ fn frame_rate_of_durations_rounded_to_the_timescale() {
 }
 
 /// #1282: phones stamp pictures just off their grid. 60 fps samples with every other picture 10
-/// units late are 1510 and 1490 apart, whose median alone reads 59.60 fps.
+/// units late are 1510 and 1490 apart, whose median alone reads 59.60 fps (and their slope 60).
 #[test]
 fn frame_rate_of_pictures_just_off_their_grid() {
     let src = timed_prores("a.mov", &(0..24).map(|k| (1500, if k % 2 == 1 { 10 } else { 0 })).collect::<Vec<_>>());
     assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
 }
 
+/// 60 fps pictures that shift 10 units once, halfway: one picture 1510 units after the one before.
 #[test]
-fn frame_duration_fits_the_grid_of_the_pictures() {
-    let at = |times: &[i64]| frame_duration(times.iter().copied());
-    assert_eq!(at(&[0, 1500, 3000, 4500]), Some(1500.0));
-    assert_eq!(at(&[4500, 0, 3000, 1500, 1500]), Some(1500.0), "order and repeats");
-    assert_eq!(at(&[0, 1500, 4500, 6000]), Some(1500.0), "a dropped frame skips a number");
-    let alternating: Vec<i64> = (0..240).map(|k| (k * 3003 + 1) / 2).collect();
-    assert!(at(&alternating).is_some_and(|d| (d - 1501.5).abs() < 0.01), "{:?}", at(&alternating));
-    assert_eq!(at(&[7, 7, 7]), None);
-    assert_eq!(at(&[]), None);
-    assert!(at(&[i64::MIN, 0, i64::MAX]).is_none_or(f64::is_finite), "hostile times");
+fn frame_rate_of_pictures_shifted_once() {
+    let src = timed_prores("a.mov", &(0..24).map(|k| (1500, if k >= 12 { 10 } else { 0 })).collect::<Vec<_>>());
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
 }
