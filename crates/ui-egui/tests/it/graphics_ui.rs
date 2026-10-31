@@ -320,6 +320,99 @@ fn shadow_color_drag_is_one_undo_step() {
     assert_eq!(color(&mut d), before, "one undo restores the original color");
 }
 
+/// With a Type-tool selection the Style buttons show and toggle the selected characters' style,
+/// not the layer's: a second click turns Faux Bold (or All Caps) off again.
+#[test]
+fn style_buttons_toggle_the_selected_characters() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace":"Captions and Graphics","tool":"Type"}));
+    d.exec("playhead.set", json!({"seconds":2}));
+    d.frames(3);
+    let p = d.rect("program.picture");
+    d.ok("ui.click", json!({"x":p[0]+p[2]*0.2,"y":p[1]+p[3]*0.35}));
+    d.ok("ui.type", json!({"text":"Night Drive"}));
+    for _ in 0..5 {
+        d.ok("ui.key", json!({"key":"Shift+ArrowLeft"}));
+    }
+    d.frames(3);
+    let styles = |d: &mut Driver| d.exec("graphics.list", json!({}))["layers"][0]["styles"].clone();
+    for (id, key, on, off) in [("faux_bold", "fauxBold", json!(true), json!(false)), ("all_caps", "caps", json!(1), json!(0))] {
+        d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+        d.frames(3);
+        assert_eq!(styles(&mut d)[0][key], on, "first click styles the selection: {}", styles(&mut d));
+        d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+        d.frames(3);
+        let st = styles(&mut d);
+        assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0][key].clone()), (json!(6), json!(11), off), "second click unstyles it: {st}");
+    }
+}
+
+/// A selection whose characters mix a style shows its button off (on only when every selected
+/// character has it), so a click styles all of them; reading the first character alone showed it
+/// on, and the click unstyled the characters that had it.
+#[test]
+fn style_button_on_a_mixed_selection_styles_all_of_it() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace":"Captions and Graphics","tool":"Type"}));
+    d.exec("playhead.set", json!({"seconds":2}));
+    d.frames(3);
+    let p = d.rect("program.picture");
+    d.ok("ui.click", json!({"x":p[0]+p[2]*0.2,"y":p[1]+p[3]*0.35}));
+    d.ok("ui.type", json!({"text":"Night Drive"}));
+    for _ in 0..5 {
+        d.ok("ui.key", json!({"key":"ArrowLeft"}));
+    }
+    for _ in 0..2 {
+        d.ok("ui.key", json!({"key":"Shift+ArrowRight"}));
+    }
+    d.frames(3);
+    let styles = |d: &mut Driver| d.exec("graphics.list", json!({}))["layers"][0]["styles"].clone();
+    d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
+    d.frames(3);
+    let st = styles(&mut d);
+    assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0]["fauxBold"].clone()), (json!(6), json!(8), json!(true)), "\"Dr\" is bold: {st}");
+    for _ in 0..3 {
+        d.ok("ui.key", json!({"key":"Shift+ArrowRight"}));
+    }
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
+    d.frames(3);
+    let st = styles(&mut d);
+    assert_eq!(
+        (st[0]["start"].clone(), st[0]["end"].clone(), st[0]["fauxBold"].clone()),
+        (json!(6), json!(11), json!(true)),
+        "the click bolds all of \"Drive\": {st}"
+    );
+}
+
+/// Without a Type-tool selection the Style buttons show and toggle the layer's style: an unstyled
+/// layer's buttons are off, so a click turns the style on (an empty selection counted as "every
+/// selected character has it", so the click wrote `false`).
+#[test]
+fn style_buttons_toggle_the_layer_without_a_selection() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let r = d.exec("graphics.newText", json!({"text": "Title"}));
+    let clip = r["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+    d.frames(4);
+    for id in ["faux_bold", "faux_italic", "underline", "strikethrough"] {
+        let on = |d: &mut Driver| text_param(d, clip, id).and_then(|v| v.as_bool()).unwrap_or(false);
+        // near the button's left edge: in the test window the panel's scrollbar covers the
+        // middle of the last button of the row
+        let click = |d: &mut Driver| {
+            let b = d.rect(&format!("graphics.prop.{id}"));
+            d.ok("ui.click", json!({"x": b[0] + 4.0, "y": b[1] + b[3] / 2.0}));
+            d.frames(3);
+        };
+        assert!(!on(&mut d), "{id} starts off");
+        click(&mut d);
+        assert!(on(&mut d), "first click turns {id} on");
+        click(&mut d);
+        assert!(!on(&mut d), "second click turns {id} off");
+    }
+}
+
 /// Character ranges use setCharStyle, but must share the same one-gesture undo rule as a layer.
 #[test]
 fn selected_character_size_drag_is_one_undo_step() {

@@ -159,6 +159,11 @@ pub fn apply_char_style(runs: &[StyleRun], n: usize, start: usize, end: usize, s
     compress(&v)
 }
 
+/// The overrides of each character `start..end` of a text of `n` characters (clamped to the text).
+pub fn range_styles(runs: &[StyleRun], n: usize, start: usize, end: usize) -> Vec<CharStyle> {
+    expand(runs, n).into_iter().take(end.min(n)).skip(start.min(n)).collect()
+}
+
 /// Remove every override from characters `start..end`.
 pub fn clear_char_style(runs: &[StyleRun], n: usize, start: usize, end: usize) -> Vec<StyleRun> {
     let mut v = expand(runs, n);
@@ -470,6 +475,16 @@ mod tests {
     }
     fn bold() -> CharStyle {
         CharStyle { faux_bold: Some(true), ..Default::default() }
+    }
+
+    #[test]
+    fn range_styles_lists_each_selected_character() {
+        let runs = apply_char_style(&[], 10, 2, 6, &bold());
+        let v = range_styles(&runs, 10, 4, 8);
+        assert_eq!(v, vec![bold(), bold(), CharStyle::default(), CharStyle::default()]);
+        assert_eq!(range_styles(&runs, 10, 8, 50).len(), 2, "clamped to the text");
+        assert!(range_styles(&runs, 10, 6, 3).is_empty());
+        assert!(range_styles(&runs, 0, 0, 5).is_empty());
     }
 
     #[test]
