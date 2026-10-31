@@ -655,7 +655,8 @@ impl Plan {
 
 /// Generated rhythmic test music: drums on every beat, a bass note per beat and a chord pad per
 /// bar following `sections` of four-bar progressions. Returns stereo planar audio and the true
-/// beat positions (samples). Used by tests here and in the engine.
+/// beat positions (samples). Used by tests here, in the engine and in the UI.
+#[cfg(any(test, feature = "test-util"))]
 pub fn test_music(sr: u32, bpm: f64, bars: usize, seed: u32) -> (Vec<Vec<f32>>, Vec<i64>) {
     let beat = sr as f64 * 60.0 / bpm;
     let n = (bars as f64 * 4.0 * beat).round() as usize;

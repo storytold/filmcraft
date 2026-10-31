@@ -30,14 +30,6 @@ impl Fft {
         Fft { n, tw_re, tw_im, rev }
     }
 
-    pub fn len(&self) -> usize {
-        self.n
-    }
-
-    pub fn is_empty(&self) -> bool {
-        false
-    }
-
     /// Forward transform (e^{-iωt}), unscaled.
     pub fn forward(&self, re: &mut [f32], im: &mut [f32]) {
         self.run(re, im, false);
