@@ -486,7 +486,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     action = Some("preview");
                 }
                 if let Some(result) = d.info.get("result") {
-                    ui.label(format!("{} cuts, {:.2} seconds to remove", result["removed"].as_u64().unwrap_or(0), result["seconds"].as_f64().unwrap_or(0.0)));
+                    let count = result["removed"].as_u64().unwrap_or(0);
+                    ui.label(format!("{count} cuts, {:.2} seconds to remove", result["seconds"].as_f64().unwrap_or(0.0)));
+                    if count == 0 {
+                        ui.label("No matching silence found. Try -30 dBFS or a shorter minimum pause.");
+                    }
                 }
                 ui.label("Apply Cuts edits the timeline. Save a test copy first; Undo reverses the edit.");
             }

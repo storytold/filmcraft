@@ -119,6 +119,11 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({"preview": true, "removed": count, "seconds": seconds,
             "ranges": merged.iter().map(|r| json!({"start": r.start.0, "duration": r.duration.0})).collect::<Vec<_>>()}));
     }
+    if count == 0 {
+        return Err(EngineError::Other(
+            "no silence ranges matched these settings; try a higher threshold (for example -30 dBFS) or a shorter minimum pause".into(),
+        ));
+    }
     let ticks = s.edit_sequence("Remove Silence", |q, ctx, _| Ok(filmcraft_edit::transcript::ripple_delete_ranges(q, merged, ctx)))?;
     Ok(json!({"preview": false, "removed": count, "seconds": ticks.seconds()}))
 }
