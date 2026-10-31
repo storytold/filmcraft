@@ -32,6 +32,11 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
     cands.extend(seq.markers.iter().map(|m| m.start));
     cands.extend(seq.mark_in);
     cands.extend(seq.mark_out);
+    // Work area boundaries are natural edit points (#3404).
+    if let Some(wa) = seq.work_area {
+        cands.push(wa.start);
+        cands.push(wa.start + wa.duration);
+    }
     let x = layout.x_of(t);
     let mut best: Option<(f32, Tick)> = None;
     for c in cands {
