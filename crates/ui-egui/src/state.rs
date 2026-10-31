@@ -439,6 +439,18 @@ pub struct KeyframeRef {
     pub time: filmcraft_time::Tick,
 }
 
+/// A transient correction tied to the original document and complete media word.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TranscriptWordDraft {
+    pub item: u64,
+    pub index: usize,
+    pub text: String,
+    pub original: filmcraft_project::Word,
+    pub epoch: u64,
+    pub fresh: bool,
+    pub error: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
@@ -504,7 +516,7 @@ pub struct UiState {
     /// Export mode: settings, preset, destination, range, the Preset Manager and Quick Export.
     #[serde(default)]
     pub export: crate::panels::export_mode::ExportUi,
-    /// Text panel: active tab ("Transcript" / "Captions" / "Graphics").
+    /// Text panel: active tab ("Transcript" / "Captions" / "Graphics" / "Search").
     #[serde(default = "captions_tab")]
     pub text_tab: String,
     /// Text panel: caption search filter.
@@ -517,6 +529,24 @@ pub struct UiState {
     /// Text panel ▸ Transcript: search text.
     #[serde(default)]
     pub transcript_search: String,
+    /// Project-wide source transcript query, separate from the current-view filter.
+    #[serde(default)]
+    pub project_transcript_query: String,
+    /// Show the open Source clip instead of the sequence transcript.
+    #[serde(default)]
+    pub transcript_source: bool,
+    /// Never restore a word-edit draft into a different document.
+    #[serde(skip)]
+    pub transcript_edit: Option<TranscriptWordDraft>,
+    /// A live source-scoped manager; never restore drafts into another document.
+    #[serde(skip)]
+    pub speaker_dialog: Option<crate::panels::speaker_dialog::Draft>,
+    /// Name input shared by the transcript's speaker menus.
+    #[serde(default)]
+    pub transcript_speaker_name: String,
+    /// Maximum number of voices to group during local speaker identification.
+    #[serde(default = "default_speaker_limit")]
+    pub transcript_speaker_limit: u32,
     /// Preferences ▸ Playback: play the rendered range when a preview render finishes.
     #[serde(default = "yes")]
     pub play_after_render: bool,
@@ -596,6 +626,9 @@ pub struct UiState {
     /// Open Edit Marker dialog (double-click a marker, or Edit Marker… in its menu).
     #[serde(default)]
     pub marker_dialog: Option<MarkerDraft>,
+    /// Open speech model download dialog (Transcribe without the model, G19).
+    #[serde(default)]
+    pub speech_download: Option<SpeechDownload>,
     /// Open Text Properties dialog (the wrench in the Properties panel's Text section).
     #[serde(default)]
     pub text_props_dialog: Option<TextPropsDialog>,
@@ -606,6 +639,9 @@ pub struct UiState {
     /// open when Some). See `panels::clip_dialogs`.
     #[serde(default)]
     pub clip_dialog: Option<ClipDialogDraft>,
+    /// Create Captions from Transcript (open when Some). See `panels::caption_dialog`.
+    #[serde(default)]
+    pub caption_dialog: Option<CaptionDialogDraft>,
     /// M3.11 menu items: their dialog, Dynamic Audio Waveforms, the Media Browser selection. See
     /// `panels::menu_dialogs`.
     #[serde(default)]
@@ -641,6 +677,19 @@ pub struct ClipDialogDraft {
     #[serde(default)]
     pub info: serde_json::Value,
     #[serde(default)]
+    pub error: String,
+}
+
+/// The open Create Captions dialog: the settings being edited (sent to
+/// `transcript.createCaptions` and remembered in `Preferences::captions` on Create).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CaptionDialogDraft {
+    pub settings: filmcraft_engine::transcript::CaptionSettings,
+    /// The Captioning Preferences section is collapsed.
+    pub collapsed: bool,
+    /// The name being typed for Save Preset (open when Some).
+    pub saving: Option<String>,
     pub error: String,
 }
 
@@ -840,6 +889,21 @@ pub struct MarkerDraft {
     pub kind: String,
 }
 
+/// The speech model download dialog (G19): the model, the running download job, and the
+/// transcription to run once it is there.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpeechDownload {
+    pub model: String,
+    /// The download can outlive the project that requested transcription.
+    pub document_epoch: u64,
+    pub job: Option<u64>,
+    /// Empty for a model-only download; never starts recognition when it completes.
+    pub then_command: String,
+    pub then_params: serde_json::Value,
+    pub error: String,
+}
+
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -998,6 +1062,10 @@ fn captions_tab() -> String {
     "Captions".into()
 }
 
+fn default_speaker_limit() -> u32 {
+    6
+}
+
 fn yes() -> bool {
     true
 }
@@ -1038,6 +1106,12 @@ impl Default for UiState {
             caption_search: String::new(),
             transcript_sel: None,
             transcript_search: String::new(),
+            project_transcript_query: String::new(),
+            transcript_source: false,
+            transcript_edit: None,
+            speaker_dialog: None,
+            transcript_speaker_name: String::new(),
+            transcript_speaker_limit: 6,
             play_after_render: true,
             mixer_fx_open: false,
             mixer_hidden: Vec::new(),
@@ -1064,9 +1138,11 @@ impl Default for UiState {
             edit_cameras: None,
             guide_dialog: None,
             marker_dialog: None,
+            speech_download: None,
             text_props_dialog: None,
             workspace_dialog: None,
             clip_dialog: None,
+            caption_dialog: None,
             extras: Default::default(),
             gfx_templates: Default::default(),
             panels: Default::default(),
@@ -1074,5 +1150,27 @@ impl Default for UiState {
             project_panel: Default::default(),
             media_browser: Default::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod transcript_state_tests {
+    use super::*;
+
+    #[test]
+    fn older_ui_state_defaults_transcript_tools_and_never_restores_a_correction() {
+        let mut value = serde_json::to_value(UiState::default()).unwrap();
+        for key in ["project_transcript_query", "transcript_source", "transcript_speaker_name", "transcript_speaker_limit"] {
+            value.as_object_mut().unwrap().remove(key);
+        }
+        // A pasted or older serialized draft must not attach itself to a new document.
+        value["transcript_edit"] = serde_json::json!({"item":1,"index":0,"text":"stale"});
+        value["speaker_dialog"] = serde_json::json!({"target":1,"sources":[]});
+        let state: UiState = serde_json::from_value(value).unwrap();
+        assert!(state.project_transcript_query.is_empty());
+        assert!(!state.transcript_source);
+        assert_eq!(state.transcript_speaker_limit, 6);
+        assert!(state.transcript_edit.is_none());
+        assert!(state.speaker_dialog.is_none());
     }
 }

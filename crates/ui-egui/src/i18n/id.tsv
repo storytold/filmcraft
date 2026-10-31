@@ -3611,3 +3611,87 @@
 	Flash Cue Point	Titik Isyarat Flash
 	Invalid duration: {error}	Durasi tidak valid: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Transcription runs on this computer with {model}. It needs a one-time download of {size}.	Transkripsi berjalan di komputer ini dengan {model}. Perlu unduhan satu kali sebesar {size}.
+	The audio is not sent anywhere.	Audio tidak dikirim ke mana pun.
+	Licence:	Lisensi:
+	Download and Transcribe	Unduh dan Transkripsikan
+	Try Again	Coba Lagi
+	Transcribing…	Mentranskripsi…
+	Stopping…	Menghentikan…
+	Transcribing in the background (see the Text panel or Progress)	Mentranskripsi di latar belakang (lihat panel Teks atau Kemajuan)
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (akurasi terbaik, waktu per kata)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = tanpa batas. 1 membuat takarir kata demi kata; dengan durasi minimum 0, setiap kata mempertahankan waktunya sendiri.
+	A shorter caption is held into the silence after it, never over the next caption.	Takarir yang lebih pendek diperpanjang ke jeda sesudahnya, tidak pernah menimpa takarir berikutnya.
+	Caption preset	Prasetel takarir
+	Captioning Preferences (format, max/min length, lines)	Preferensi takarir (format, panjang maks./min., baris)
+	Couldn't save caption settings: {e}	Tidak dapat menyimpan pengaturan takarir: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Buat takarir dari transkrip, mulai trek takarir kosong, atau impor berkas takarir.
+	Create captions from transcript	Buat takarir dari transkrip
+	Created {n} captions	{n} takarir dibuat
+	Delete preset	Hapus prasetel
+	Double Line	Dua baris
+	Frames left empty between one caption and the next.	Bingkai yang dibiarkan kosong di antara satu takarir dan berikutnya.
+	Gap between captions (frames)	Jarak antar takarir (bingkai)
+	Layout	Tata letak
+	Maximum length in characters	Panjang maksimum dalam karakter
+	Maximum words per caption	Kata maksimum per takarir
+	Minimum duration in seconds	Durasi minimum dalam detik
+	Save as preset…	Simpan sebagai prasetel…
+	Single Line	Satu baris
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	Gaya trek takarir untuk trek baru: gaya bawaan, atau gaya trek takarir di sekuens ini.
+	Words wrap to a new line, or a new caption, at this many characters.	Kata berpindah ke baris baru, atau takarir baru, pada jumlah karakter ini.
+	characters	karakter
+	words	kata
+	words (no limit)	kata (tanpa batas)
+
+# Project audio transcription options
+	Transcribe Audio	Transkripsikan Audio
+	Transcribe Audio…	Transkripsikan Audio…
+	Transcribe Again	Transkripsikan Ulang
+	Transcribe Again…	Transkripsikan Ulang…
+	Already transcribed with {model}	Sudah ditranskripsikan dengan {model}
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Transkrip yang ada tetap disimpan sampai penggantian berhasil. Takarir tidak berubah.
+	Select clips with audio first	Pilih klip dengan audio terlebih dahulu
+
+# Speech model cache controls
+	Delete downloaded model	Hapus model yang diunduh
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet mendeteksi bahasa secara otomatis. Pilih Whisper untuk memilih bahasa secara manual.
+	Delete Downloaded Model	Hapus Model yang Diunduh
+	Delete {model} from this app's model cache?	Hapus {model} dari cache model aplikasi ini?
+	Transcripts and captions stay unchanged. You can download the model again later.	Transkrip dan takarir tetap tidak berubah. Anda dapat mengunduh model lagi nanti.
+	Shared model files are kept; only this app’s cache link is removed.	File model bersama tetap disimpan; hanya tautan cache aplikasi ini yang dihapus.
+	Download model	Unduh model
+
+# Transcript workflows and project search
+	Assign passage to speaker	Tetapkan bagian ke pembicara
+	Assign to new speaker	Tetapkan ke pembicara baru
+	Choose a passage from one source clip.	Pilih bagian dari satu klip sumber.
+	Correct transcript word	Koreksi kata transkrip
+	Find spoken words in any transcribed source, including unused clips.	Cari kata di semua sumber yang ditranskripsi, termasuk klip yang tidak digunakan.
+	Identify Speakers	Identifikasi Pembicara
+	Maximum speakers	Jumlah pembicara maksimum
+	No speaker	Tanpa pembicara
+	Open a sequence or Source clip to see its transcript	Buka urutan atau klip sumber untuk melihat transkripnya
+	Rename speaker	Ganti nama pembicara
+	Replaces speaker names and assignments. Undo is available.	Mengganti nama dan penetapan pembicara. Dapat diurungkan.
+	Search all source transcripts	Cari semua transkrip sumber
+	Search limit reached. Refine your query.	Batas pencarian tercapai. Persempit kueri.
+	Searching…	Mencari…
+	Speaker name	Nama pembicara
+	Speakers	Pembicara
+	View Transcript	Lihat Transkrip
+	Show Source Transcript	Tampilkan Transkrip Sumber
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} hasil · {sources} ditranskripsi · {missing} belum ditranskripsi
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Terlalu banyak pembicara. Buka satu klip sumber.
+	Names are specific to each source clip.	Nama berlaku khusus untuk setiap klip sumber.
+	No speakers identified yet.	Belum ada pembicara yang diidentifikasi.
+	Transcript changed. Close and reopen Speakers.	Transkrip berubah. Tutup dan buka kembali Pembicara.
+	Identify Speakers…	Identifikasi Pembicara…
+	Apply name changes before identifying speakers.	Terapkan perubahan nama sebelum mengidentifikasi pembicara.
+
+# Caption navigation and preview
+	Play caption	Putar takarir
+	Stop caption preview	Hentikan pratinjau takarir
+	Stop recording before navigating or previewing captions.	Hentikan perekaman sebelum menavigasi atau mempratinjau takarir.

@@ -22,6 +22,10 @@ macro_rules! uic {
 }
 
 pub const UI_COMMANDS: &[UiCommand] = &[
+    uic!("textPanel.goToCaption", "Go to Caption", [], None),
+    uic!("textPanel.previewCaption", "Play Caption", [], None),
+    uic!("textPanel.manageSpeakers", "Speakers", [], None),
+    uic!("textPanel.previewSpeaker", "Preview Speaker", [], None),
     uic!("window.dockAction", "Docking Action", [], None),
     uic!("window.dockPanel", "Dock Panel", [], None),
     uic!("window.floatPanel", "Undock Panel", [], None),
@@ -226,6 +230,20 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     if matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
         return Ok(json!({"dialog": "clipMismatch"}));
     }
+    if id == "textPanel.showSourceTranscript"
+        && let Some(item) = params.get("item")
+    {
+        let item = item.as_u64().ok_or("item must be a media id")?;
+        app.session.execute("source.open", json!({"item":item})).map_err(|error| error.to_string())?;
+        // The explicit transcript command gives Text the final focus when it shares Source's tab group.
+        if matches!(app.session.events.last(),Some(filmcraft_engine::Event::OpenSource(id)) if id.0==item) {
+            app.session.events.pop();
+        }
+        app.show_panel(PanelKind::Source);
+    }
+    if id == "transcript.identifySpeakers" {
+        params.as_object_mut().ok_or("command parameters must be an object")?.entry("wait").or_insert(json!(false));
+    }
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
         object.insert("target".into(), json!("source"));
@@ -336,6 +354,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         return r;
     }
     if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params) {
+        return r;
+    }
+    if let Some(r) = crate::panels::caption_preview::route(app, id, &params) {
+        return r;
+    }
+    if let Some(r) = crate::panels::speaker_dialog::route(app, id, &params) {
+        return r;
+    }
+    if let Some(r) = crate::panels::caption_dialog::route(app, id, &params) {
         return r;
     }
     if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
@@ -465,6 +492,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return Ok(Value::Null);
         }
         "playback.loop" => {
+            crate::panels::caption_preview::release(app);
             app.playback.looping = !app.playback.looping;
             return Ok(json!({"loop": app.playback.looping}));
         }

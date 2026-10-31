@@ -3596,3 +3596,57 @@
 	Couldn't open your web browser	Не удалось открыть браузер
 	Open this address in your browser yourself:	Этот адрес нужно открыть в браузере вручную:
 	Reset Interface Zoom	Сбросить масштаб интерфейса
+
+# Project audio transcription options
+	Transcribe Audio	Транскрибировать аудио
+	Transcribe Audio…	Транскрибировать аудио…
+	Transcribe Again	Транскрибировать заново
+	Transcribe Again…	Транскрибировать заново…
+	Already transcribed with {model}	Уже транскрибировано с помощью {model}
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Существующие расшифровки сохраняются до успешной замены. Субтитры не изменятся.
+	Select clips with audio first	Сначала выберите клипы со звуком
+
+# Speech model cache controls
+	Delete downloaded model	Удалить загруженную модель
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet определяет язык автоматически. Для ручного выбора языка выберите Whisper.
+	Delete Downloaded Model	Удалить загруженную модель
+	Delete {model} from this app's model cache?	Удалить {model} из кеша моделей этого приложения?
+	Transcripts and captions stay unchanged. You can download the model again later.	Транскрипции и субтитры не изменятся. Модель можно загрузить повторно позже.
+	Shared model files are kept; only this app’s cache link is removed.	Общие файлы модели сохранятся; будет удалена только ссылка в кеше этого приложения.
+	Download model	Загрузить модель
+
+# Transcript workflows and project search
+	Assign passage to speaker	Назначить фрагмент говорящему
+	Assign to new speaker	Назначить новому говорящему
+	Choose a passage from one source clip.	Выберите фрагмент одного исходного клипа.
+	Correct transcript word	Исправить слово транскрипции
+	Find spoken words in any transcribed source, including unused clips.	Найти слова во всех транскрибированных источниках, включая неиспользуемые клипы.
+	Identify Speakers	Определить говорящих
+	Maximum speakers	Максимум говорящих
+	No speaker	Без говорящего
+	Open a sequence or Source clip to see its transcript	Откройте секвенцию или исходный клип для просмотра транскрипции
+	Rename speaker	Переименовать говорящего
+	Replaces speaker names and assignments. Undo is available.	Заменяет имена и назначения говорящих. Можно отменить.
+	Search all source transcripts	Поиск по всем исходным транскрипциям
+	Search limit reached. Refine your query.	Достигнут предел поиска. Уточните запрос.
+	Searching…	Поиск…
+	Speaker name	Имя говорящего
+	Speakers	Говорящие
+	View Transcript	Показать транскрипцию
+	Show Source Transcript	Показать исходную транскрипцию
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} результатов · {sources} транскрибировано · {missing} без транскрипции
+	Stopping…	Остановка…
+	Transcribing…	Транскрибирование…
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Слишком много говорящих. Откройте один исходный клип.
+	Names are specific to each source clip.	Имена задаются отдельно для каждого исходного клипа.
+	No speakers identified yet.	Говорящие пока не определены.
+	Transcript changed. Close and reopen Speakers.	Транскрипция изменилась. Закройте и снова откройте Говорящие.
+	Identify Speakers…	Определить говорящих…
+	Apply name changes before identifying speakers.	Примените имена перед определением говорящих.
+
+# Caption navigation and preview
+	Play caption	Воспроизвести субтитр
+	Stop caption preview	Остановить просмотр субтитра
+	Stop recording before navigating or previewing captions.	Остановите запись перед переходом к субтитрам или их просмотром.

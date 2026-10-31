@@ -3614,3 +3614,87 @@
 	Flash Cue Point	Ponto de referência Flash
 	Invalid duration: {error}	Duração inválida: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Transcription runs on this computer with {model}. It needs a one-time download of {size}.	A transcrição é feita neste computador com {model}. É necessário um download único de {size}.
+	The audio is not sent anywhere.	O áudio não é enviado a lugar nenhum.
+	Licence:	Licença:
+	Download and Transcribe	Baixar e transcrever
+	Try Again	Tentar novamente
+	Transcribing…	Transcrevendo…
+	Stopping…	Parando…
+	Transcribing in the background (see the Text panel or Progress)	Transcrevendo em segundo plano (veja o painel Texto ou Progresso)
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (máxima precisão, tempo por palavra)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = sem limite. 1 cria legendas palavra por palavra; com duração mínima de 0, cada palavra mantém o próprio tempo.
+	A shorter caption is held into the silence after it, never over the next caption.	Uma legenda mais curta é estendida no silêncio seguinte, nunca sobre a próxima legenda.
+	Caption preset	Predefinição de legendas
+	Captioning Preferences (format, max/min length, lines)	Preferências de legendagem (formato, comprimento máx./mín., linhas)
+	Couldn't save caption settings: {e}	Não foi possível salvar as configurações de legenda: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Crie legendas a partir da transcrição, comece uma faixa de legendas vazia ou importe um arquivo de legendas.
+	Create captions from transcript	Criar legendas a partir da transcrição
+	Created {n} captions	{n} legendas criadas
+	Delete preset	Excluir predefinição
+	Double Line	Duas linhas
+	Frames left empty between one caption and the next.	Quadros deixados vazios entre uma legenda e a próxima.
+	Gap between captions (frames)	Intervalo entre legendas (quadros)
+	Layout	Layout
+	Maximum length in characters	Comprimento máximo em caracteres
+	Maximum words per caption	Máximo de palavras por legenda
+	Minimum duration in seconds	Duração mínima em segundos
+	Save as preset…	Salvar como predefinição…
+	Single Line	Uma linha
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	O estilo da nova faixa de legendas: o estilo padrão ou o estilo de uma faixa de legendas desta sequência.
+	Words wrap to a new line, or a new caption, at this many characters.	As palavras quebram para uma nova linha, ou uma nova legenda, neste número de caracteres.
+	characters	caracteres
+	words	palavras
+	words (no limit)	palavras (sem limite)
+
+# Project audio transcription options
+	Transcribe Audio	Transcrever áudio
+	Transcribe Audio…	Transcrever áudio…
+	Transcribe Again	Transcrever novamente
+	Transcribe Again…	Transcrever novamente…
+	Already transcribed with {model}	Já transcrito com {model}
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	As transcrições existentes permanecem até a substituição bem-sucedida. As legendas não mudam.
+	Select clips with audio first	Selecione primeiro clipes com áudio
+
+# Speech model cache controls
+	Delete downloaded model	Excluir modelo baixado
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	O Parakeet detecta o idioma automaticamente. Escolha Whisper para selecionar um idioma manualmente.
+	Delete Downloaded Model	Excluir modelo baixado
+	Delete {model} from this app's model cache?	Excluir {model} do cache de modelos deste aplicativo?
+	Transcripts and captions stay unchanged. You can download the model again later.	Transcrições e legendas permanecem inalteradas. Você pode baixar o modelo novamente depois.
+	Shared model files are kept; only this app’s cache link is removed.	Os arquivos compartilhados do modelo são mantidos; apenas o link de cache deste aplicativo é removido.
+	Download model	Baixar modelo
+
+# Transcript workflows and project search
+	Assign passage to speaker	Atribuir trecho a um falante
+	Assign to new speaker	Atribuir a um novo falante
+	Choose a passage from one source clip.	Escolha um trecho de um único clipe de origem.
+	Correct transcript word	Corrigir palavra da transcrição
+	Find spoken words in any transcribed source, including unused clips.	Busque palavras em todas as origens transcritas, incluindo clipes não usados.
+	Identify Speakers	Identificar falantes
+	Maximum speakers	Máximo de falantes
+	No speaker	Sem falante
+	Open a sequence or Source clip to see its transcript	Abra uma sequência ou clipe de origem para ver a transcrição
+	Rename speaker	Renomear falante
+	Replaces speaker names and assignments. Undo is available.	Substitui nomes e atribuições de falantes. É possível desfazer.
+	Search all source transcripts	Buscar em todas as transcrições de origem
+	Search limit reached. Refine your query.	Limite de busca atingido. Refine a consulta.
+	Searching…	Buscando…
+	Speaker name	Nome do falante
+	Speakers	Falantes
+	View Transcript	Ver transcrição
+	Show Source Transcript	Mostrar transcrição de origem
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} resultados · {sources} transcritos · {missing} não transcritos
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Há falantes demais. Abra um único clipe de origem.
+	Names are specific to each source clip.	Os nomes são específicos de cada clipe de origem.
+	No speakers identified yet.	Nenhum falante identificado ainda.
+	Transcript changed. Close and reopen Speakers.	A transcrição mudou. Feche e reabra Falantes.
+	Identify Speakers…	Identificar falantes…
+	Apply name changes before identifying speakers.	Aplique os nomes antes de identificar os falantes.
+
+# Caption navigation and preview
+	Play caption	Reproduzir legenda
+	Stop caption preview	Parar prévia da legenda
+	Stop recording before navigating or previewing captions.	Pare a gravação antes de navegar ou pré-visualizar legendas.

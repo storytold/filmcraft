@@ -107,13 +107,13 @@ pub fn word_at(words: &[SeqWord], t: Tick) -> Option<usize> {
     (t < words[i].end).then_some(i)
 }
 
-/// Paragraphs (Text panel segments): runs of words split where the speaker changes or at a pause
+/// Paragraphs (Text panel segments): split at source identity or speaker changes, or at a pause
 /// of at least `gap`.
 pub fn paragraphs(words: &[SeqWord], gap: Tick) -> Vec<std::ops::Range<usize>> {
     let mut out = Vec::new();
     let mut a = 0;
     for i in 1..=words.len() {
-        if i == words.len() || words[i].speaker != words[i - 1].speaker || words[i].start - words[i - 1].end >= gap {
+        if i == words.len() || words[i].item != words[i - 1].item || words[i].speaker != words[i - 1].speaker || words[i].start - words[i - 1].end >= gap {
             if a < i {
                 out.push(a..i);
             }
@@ -286,6 +286,8 @@ pub struct CaptionRules {
     pub gap_frames: i64,
     /// A pause at least this long starts a new caption.
     pub break_pause: Tick,
+    /// Most words in one caption (0 = no limit; 1 = word-by-word captions).
+    pub max_words: usize,
 }
 
 impl Default for CaptionRules {
@@ -297,6 +299,7 @@ impl Default for CaptionRules {
             max_duration: Tick(7 * TICKS_PER_SECOND),
             gap_frames: 0,
             break_pause: Tick(TICKS_PER_SECOND),
+            max_words: 0,
         }
     }
 }
@@ -335,8 +338,13 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
             let fits = fits_line || lines.len() < max_lines;
             let used: usize = lines.iter().sum::<usize>() + lines.len() - 1;
             let sentence_end = prev.text.ends_with(['.', '?', '!']) && used * 2 >= cap_chars;
-            let brk =
-                !fits || w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || w.end - words[a].start > rules.max_duration || sentence_end;
+            let full = rules.max_words > 0 && i - a >= rules.max_words;
+            let brk = !fits
+                || full
+                || w.speaker != prev.speaker
+                || w.start - prev.end >= rules.break_pause
+                || w.end - words[a].start > rules.max_duration
+                || sentence_end;
             if brk {
                 groups.push(a..i);
                 a = i;

@@ -3615,3 +3615,57 @@
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) zahtijeva hardverski enkoder (NVENC na NVIDIA GPU-ovima, VideoToolbox na macOS-u); na ovom računaru nije pronađen nijedan, a FilmCraft još nema softverski H.265 enkoder. Umjesto toga odaberite H.264 ili ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 zahtijeva hardverski enkoder; na ovom računaru nije pronađen nijedan, a FilmCraft još nema softverski AV1 enkoder.
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Hardversko dekodiranje: Automatski koristi video dekoder sistema (VideoToolbox na macOS-u, Media Foundation na Windowsu, VA-API za H.264 i HEVC na Linuxu) za tokove koje podržava, a FilmCraftov vlastiti dekoder za sve ostalo ili ako hardver zakaže. Mediji koji su već otvoreni zadržavaju svoj dekoder dok se ponovo ne otvore.
+
+# Project audio transcription options
+	Transcribe Audio	Transkribuj audio
+	Transcribe Audio…	Transkribuj audio…
+	Transcribe Again	Ponovo transkribuj
+	Transcribe Again…	Ponovo transkribuj…
+	Already transcribed with {model}	Već transkribovano pomoću {model}
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Postojeći transkripti ostaju do uspješne zamjene. Titlovi ostaju nepromijenjeni.
+	Select clips with audio first	Prvo odaberite klipove sa zvukom
+
+# Speech model cache controls
+	Delete downloaded model	Izbriši preuzeti model
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet automatski prepoznaje jezik. Odaberite Whisper za ručni odabir jezika.
+	Delete Downloaded Model	Izbriši preuzeti model
+	Delete {model} from this app's model cache?	Izbrisati {model} iz predmemorije modela ove aplikacije?
+	Transcripts and captions stay unchanged. You can download the model again later.	Transkripti i titlovi ostaju nepromijenjeni. Model možete ponovo preuzeti kasnije.
+	Shared model files are kept; only this app’s cache link is removed.	Dijeljene datoteke modela se čuvaju; uklanja se samo veza predmemorije ove aplikacije.
+	Download model	Preuzmi model
+
+# Transcript workflows and project search
+	Assign passage to speaker	Dodijeli odlomak govorniku
+	Assign to new speaker	Dodijeli novom govorniku
+	Choose a passage from one source clip.	Odaberite odlomak iz jednog izvornog klipa.
+	Correct transcript word	Ispravi riječ transkripta
+	Find spoken words in any transcribed source, including unused clips.	Pronađite riječi u svim transkribovanim izvorima, uključujući nekorištene klipove.
+	Identify Speakers	Prepoznaj govornike
+	Maximum speakers	Maksimalan broj govornika
+	No speaker	Bez govornika
+	Open a sequence or Source clip to see its transcript	Otvorite sekvencu ili izvorni klip da vidite transkript
+	Rename speaker	Preimenuj govornika
+	Replaces speaker names and assignments. Undo is available.	Zamjenjuje imena i dodjele govornika. Poništavanje je dostupno.
+	Search all source transcripts	Pretraži sve izvorne transkripte
+	Search limit reached. Refine your query.	Dostignuto ograničenje pretrage. Precizirajte upit.
+	Searching…	Pretraživanje…
+	Speaker name	Ime govornika
+	Speakers	Govornici
+	View Transcript	Prikaži transkript
+	Show Source Transcript	Prikaži izvorni transkript
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} rezultata · {sources} transkribovano · {missing} nije transkribovano
+	Stopping…	Zaustavljanje…
+	Transcribing…	Transkribovanje…
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Previše govornika. Otvorite jedan izvorni klip.
+	Names are specific to each source clip.	Imena su vezana za svaki izvorni klip.
+	No speakers identified yet.	Govornici još nisu prepoznati.
+	Transcript changed. Close and reopen Speakers.	Transkript je promijenjen. Zatvorite i ponovo otvorite Govornike.
+	Identify Speakers…	Prepoznaj govornike…
+	Apply name changes before identifying speakers.	Primijenite imena prije prepoznavanja govornika.
+
+# Caption navigation and preview
+	Play caption	Reproduciraj titl
+	Stop caption preview	Zaustavi pregled titla
+	Stop recording before navigating or previewing captions.	Zaustavite snimanje prije navigacije ili pregleda titlova.

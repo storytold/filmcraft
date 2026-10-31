@@ -3619,3 +3619,81 @@
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Der Kontrollserver ist deaktiviert: FILMCRAFT_CONTROL_TOKEN muss 64 zufällige Hexzeichen enthalten (siehe docs/control-protocol.md)
 
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (höchste Genauigkeit, Zeitangaben pro Wort)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = keine Begrenzung. 1 erzeugt Wort-für-Wort-Untertitel; bei einer Mindestdauer von 0 behält jedes Wort sein eigenes Timing.
+	A shorter caption is held into the silence after it, never over the next caption.	Ein kürzerer Untertitel wird in die folgende Stille verlängert, nie über den nächsten Untertitel.
+	Caption preset	Untertitelvorgabe
+	Captioning Preferences (format, max/min length, lines)	Untertiteleinstellungen (Format, max./min. Länge, Zeilen)
+	Couldn't save caption settings: {e}	Untertiteleinstellungen konnten nicht gespeichert werden: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Untertitel aus dem Transkript erstellen, eine leere Untertitelspur beginnen oder eine Untertiteldatei importieren.
+	Create captions from transcript	Untertitel aus Transkript erstellen
+	Created {n} captions	{n} Untertitel erstellt
+	Delete preset	Vorgabe löschen
+	Double Line	Zwei Zeilen
+	Frames left empty between one caption and the next.	Leere Frames zwischen einem Untertitel und dem nächsten.
+	Gap between captions (frames)	Abstand zwischen Untertiteln (Frames)
+	Layout	Layout
+	Maximum length in characters	Maximale Länge in Zeichen
+	Maximum words per caption	Maximale Wörter pro Untertitel
+	Minimum duration in seconds	Mindestdauer in Sekunden
+	Save as preset…	Als Vorgabe speichern…
+	Single Line	Eine Zeile
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	Der Untertitelspurstil der neuen Spur: der Standardstil oder der Stil einer Untertitelspur in dieser Sequenz.
+	Words wrap to a new line, or a new caption, at this many characters.	Bei so vielen Zeichen werden Wörter in eine neue Zeile oder einen neuen Untertitel umbrochen.
+	characters	Zeichen
+	words	Wörter
+	words (no limit)	Wörter (unbegrenzt)
+
+# Project audio transcription options
+	Transcribe Audio	Audio transkribieren
+	Transcribe Audio…	Audio transkribieren…
+	Transcribe Again	Erneut transkribieren
+	Transcribe Again…	Erneut transkribieren…
+	Already transcribed with {model}	Bereits mit {model} transkribiert
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Vorhandene Transkripte bleiben bis zum erfolgreichen Ersatz erhalten. Untertitel bleiben unverändert.
+	Select clips with audio first	Zuerst Clips mit Audio auswählen
+
+# Speech model cache controls
+	Delete downloaded model	Heruntergeladenes Modell löschen
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet erkennt die Sprache automatisch. Wähle Whisper, um eine Sprache manuell auszuwählen.
+	Delete Downloaded Model	Heruntergeladenes Modell löschen
+	Delete {model} from this app's model cache?	{model} aus dem Modellcache dieser App löschen?
+	Transcripts and captions stay unchanged. You can download the model again later.	Transkripte und Untertitel bleiben unverändert. Das Modell kann später erneut heruntergeladen werden.
+	Shared model files are kept; only this app’s cache link is removed.	Gemeinsame Modelldateien bleiben erhalten; nur der Cache-Link dieser App wird entfernt.
+	Download model	Modell herunterladen
+
+# Transcript workflows and project search
+	Assign passage to speaker	Passage einem Sprecher zuweisen
+	Assign to new speaker	Neuem Sprecher zuweisen
+	Choose a passage from one source clip.	Wähle eine Passage aus einem Quellclip.
+	Correct transcript word	Transkriptwort korrigieren
+	Find spoken words in any transcribed source, including unused clips.	Gesprochene Wörter in allen transkribierten Quellen finden, auch in unbenutzten Clips.
+	Identify Speakers	Sprecher identifizieren
+	Maximum speakers	Maximale Sprecherzahl
+	No speaker	Kein Sprecher
+	Open a sequence or Source clip to see its transcript	Öffne eine Sequenz oder einen Quellclip, um das Transkript zu sehen
+	Rename speaker	Sprecher umbenennen
+	Replaces speaker names and assignments. Undo is available.	Ersetzt Sprechernamen und Zuordnungen. Rückgängig ist verfügbar.
+	Search all source transcripts	Alle Quelltranskripte durchsuchen
+	Search limit reached. Refine your query.	Suchgrenze erreicht. Verfeinere die Abfrage.
+	Searching…	Suche läuft…
+	Speaker name	Sprechername
+	Speakers	Sprecher
+	View Transcript	Transkript anzeigen
+	Show Source Transcript	Quelltranskript anzeigen
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} Ergebnisse · {sources} transkribiert · {missing} nicht transkribiert
+	Stopping…	Wird angehalten…
+	Transcribing…	Wird transkribiert…
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Zu viele Sprecher. Öffne einen einzelnen Quellclip.
+	Names are specific to each source clip.	Namen gelten jeweils für einen Quellclip.
+	No speakers identified yet.	Noch keine Sprecher identifiziert.
+	Transcript changed. Close and reopen Speakers.	Transkript geändert. Schließe und öffne Sprecher erneut.
+	Identify Speakers…	Sprecher identifizieren…
+	Apply name changes before identifying speakers.	Übernimm die Namensänderungen vor der Sprecheridentifizierung.
+
+# Caption navigation and preview
+	Play caption	Untertitel abspielen
+	Stop caption preview	Untertitelvorschau stoppen
+	Stop recording before navigating or previewing captions.	Beende die Aufnahme, bevor du zu Untertiteln springst oder sie vorhörst.

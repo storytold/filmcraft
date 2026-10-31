@@ -56,7 +56,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Transcribe Sequence…",
             &["Sequence"],
             None,
-            r#"{"track":"mix"|"A1"|id?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"model":str?}"#,
+            r#"{"track":"mix"|"A1"|id?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?,"model":str?,"wait":bool=true}"#,
             can_transcribe_sequence,
             transcribe,
         ),
@@ -267,6 +267,12 @@ fn normalize_mix(s: &mut Session, p: &Value) -> Result<Value> {
 /// Sequence ▸ Transcribe Sequence…: transcribe the media of the sequence's audio clips (all audio
 /// tracks — "Mix" — or one track) with `transcript.generate`.
 fn transcribe(s: &mut Session, p: &Value) -> Result<Value> {
+    let params = transcription_params(s, p)?;
+    s.execute("transcript.generate", params)
+}
+
+/// Freeze the sequence's selected audio targets before a model download changes UI context.
+pub fn transcription_params(s: &Session, p: &Value) -> Result<Value> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let track = match p.get("track") {
         None => None,
@@ -285,12 +291,12 @@ fn transcribe(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other("there are no audio clips to transcribe".into()));
     }
     let mut params = json!({"items": items});
-    for k in ["language", "diarize", "maxSpeakers", "model"] {
+    for k in ["language", "diarize", "maxSpeakers", "model", "wait"] {
         if let Some(v) = p.get(k) {
             params[k] = v.clone();
         }
     }
-    s.execute("transcript.generate", params)
+    Ok(params)
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1,9 +1,11 @@
 mod audio51_ui;
 mod audio_fx_editor_ui;
 mod caption_copy_paste_ui;
+mod caption_dialog_ui;
 mod caption_export_ui;
 mod caption_list_follow_ui;
 mod caption_option_drag_ui;
+mod caption_preview_ui;
 mod caption_properties_ui;
 mod caption_razor_ui;
 mod captions_font_ui;
@@ -99,3 +101,9 @@ mod unlink_ui;
 mod view_ui;
 mod voiceover_ui;
 mod workspaces_ui;
+
+mod speech_model_ui;
+mod transcribe_background_ui;
+
+mod media_search_ui;
+mod workflow_transcript_ui;

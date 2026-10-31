@@ -7,7 +7,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::media_dialogs::show(app, ctx);
     crate::panels::color_dialogs::show(app, ctx);
     crate::panels::clip_dialogs::show(app, ctx);
+    crate::panels::caption_dialog::show(app, ctx);
+    crate::panels::speaker_dialog::show(app, ctx);
     crate::panels::menu_dialogs::show(app, ctx);
+    crate::panels::menu_dialogs::model_delete_dialog(app, ctx);
     crate::panels::graphics_templates::show(app, ctx);
     crate::panels::presets::save_dialog(app, ctx);
     crate::panels::audio_fx_editor::show(app, ctx);
@@ -15,6 +18,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::multicam::show_edit_cameras(app, ctx);
     crate::panels::monitor_view::dialogs(app, ctx);
     crate::panels::misc::marker_dialog(app, ctx);
+    crate::panels::speech_model::dialog(app, ctx);
     crate::panels::graphics::dialogs(app, ctx);
     crate::panels::workspaces::dialogs(app, ctx);
     crate::panels::voiceover::show(app, ctx);

@@ -16,6 +16,7 @@ impl FilmcraftApp {
     }
 
     pub fn play(&mut self, speed: f64) {
+        panels::caption_preview::release(self);
         self.stop_source();
         if self.session.active_sequence().is_none() {
             return;
@@ -55,6 +56,10 @@ impl FilmcraftApp {
         self.playback.anchor_tick = self.session.playhead();
         self.playback.audio_seen = (0, now);
         self.start_audio(now);
+        // Auditioning a caption never starts mixer, multicam or voice-over recording.
+        if self.caption_preview.is_some() {
+            return;
+        }
         // Audio Track Mixer: an automation pass runs while playing forward in real time
         if (self.playback.speed - 1.0).abs() < 1e-9 && !self.session.mixrec.active() {
             let t = self.session.playhead();
@@ -112,6 +117,7 @@ impl FilmcraftApp {
     }
 
     pub fn stop(&mut self) {
+        panels::caption_preview::release(self);
         self.playback.playing = false;
         self.playback.tts_preview = false;
         self.playback.stop_at = None;
@@ -340,6 +346,134 @@ mod voiceover_playback_tests {
         assert!(app.session.voiceover.recording());
         assert!(app.session.playhead() > from, "{:?} <= {from:?}", app.session.playhead());
         app.session.execute("audio.voiceover.stop", json!({"discard": true})).unwrap();
+        app.stop();
+    }
+}
+
+#[cfg(test)]
+mod caption_preview_tests {
+    use super::*;
+
+    fn fixture() -> (FilmcraftApp, u64, u64) {
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let a = s.execute("captions.add", json!({"seconds":1,"durationSeconds":1,"text":"First"})).unwrap()["caption"].as_u64().unwrap();
+        let b = s.execute("captions.add", json!({"seconds":3,"durationSeconds":1,"text":"Second"})).unwrap()["caption"].as_u64().unwrap();
+        s.execute("mixer.setStrip", json!({"strip":"A1","mode":"Write"})).unwrap();
+        let mut app = FilmcraftApp::new(s);
+        app.ui.program.multicam = true;
+        app.ui.multicam_record = true;
+        (app, a, b)
+    }
+    fn preview(app: &mut FilmcraftApp, id: u64) {
+        panels::caption_preview::route(app, "textPanel.previewCaption", &json!({"caption":id})).unwrap().unwrap();
+    }
+    #[test]
+    fn caption_audition_stops_at_end_restores_loop_and_never_records() {
+        let (mut app, a, _) = fixture();
+        let before = app.session.project.clone();
+        let undo = app.session.history.undo.len();
+        app.playback.looping = true;
+        preview(&mut app, a);
+        app.end_preroll(0.0);
+        assert!(!app.session.mixrec.active());
+        assert!(!app.session.mcrec.active());
+        assert!(!app.session.voiceover.recording());
+        app.set_now_for_test(2.0);
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(2.0), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(!app.playback.playing);
+        assert!(app.playback.looping);
+        assert!(app.caption_preview.is_none());
+        assert!(app.session.playhead() >= Tick::from_seconds_f64(1.0) && app.session.playhead() < Tick::from_seconds_f64(2.0));
+        assert_eq!(app.session.project, before);
+        assert_eq!(app.session.history.undo.len(), undo);
+    }
+    #[test]
+    fn caption_audition_switch_delete_and_project_replacement_release_the_owner() {
+        let (mut app, a, b) = fixture();
+        app.playback.looping = true;
+        preview(&mut app, a);
+        preview(&mut app, b);
+        assert_eq!(app.session.playhead(), app.session.active_sequence().unwrap().find_caption(filmcraft_project::ClipId(b)).unwrap().1.start);
+        assert_eq!(app.playback.stop_at, Some(app.session.active_sequence().unwrap().find_caption(filmcraft_project::ClipId(b)).unwrap().1.end()));
+        app.session.execute("captions.delete", json!({"captions":[b]})).unwrap();
+        panels::caption_preview::poll(&mut app);
+        assert!(!app.playback.playing);
+        assert!(app.playback.looping);
+        preview(&mut app, a);
+        app.session.execute("file.openDemoProject", json!({})).unwrap();
+        panels::caption_preview::poll(&mut app);
+        assert!(!app.playback.playing);
+        assert!(app.caption_preview.is_none());
+    }
+    #[test]
+    fn caption_preview_rejects_bad_ids_and_active_recordings_before_any_navigation() {
+        let (mut app, a, _) = fixture();
+        let before = app.session.project.clone();
+        let ph = app.session.playhead();
+        for caption in [json!(-1), json!(0.5), json!("1"), json!(u64::MAX), json!(null)] {
+            assert!(panels::caption_preview::route(&mut app, "textPanel.previewCaption", &json!({"caption":caption})).unwrap().is_err());
+            assert!(!app.playback.playing);
+            assert_eq!(app.session.project, before);
+            assert_eq!(app.session.playhead(), ph);
+        }
+        app.session.execute("mixer.recordStart", json!({})).unwrap();
+        assert!(app.session.mixrec.active());
+        assert!(panels::caption_preview::route(&mut app, "textPanel.previewCaption", &json!({"caption":a})).unwrap().is_err());
+        assert!(app.session.mixrec.active());
+        assert_eq!(app.session.project, before);
+        assert_eq!(app.session.playhead(), ph);
+        app.session.execute("mixer.recordStop", json!({})).unwrap();
+    }
+    #[test]
+    fn retiming_a_caption_releases_only_the_preview_and_preserves_the_edit() {
+        let (mut app, a, _) = fixture();
+        preview(&mut app, a);
+        let caption = app.session.active_sequence().unwrap().find_caption(filmcraft_project::ClipId(a)).unwrap().1.clone();
+        app.session
+            .execute(
+                "captions.setTimes",
+                json!({"caption":a,"startTime":caption.start.0+app.session.sequence_rate().frame_duration().0,"endTime":caption.end().0}),
+            )
+            .unwrap();
+        let expected = app.session.project.clone();
+        panels::caption_preview::poll(&mut app);
+        assert!(!app.playback.playing);
+        assert_eq!(app.session.project, expected);
+        assert!(app.caption_preview.is_none());
+    }
+    #[test]
+    fn ordinary_play_takes_over_after_a_caption_preview() {
+        let (mut app, a, _) = fixture();
+        app.playback.looping = true;
+        preview(&mut app, a);
+        app.play(1.0);
+        assert!(app.caption_preview.is_none());
+        assert!(app.playback.looping);
+        assert!(app.playback.stop_at.is_none());
+        app.stop();
+    }
+    #[test]
+    fn last_frame_caption_preview_does_not_restart_from_the_sequence_beginning() {
+        let (mut app, _, _) = fixture();
+        app.session
+            .edit_sequence("Caption-only fixture", |q, _, _| {
+                for track in q.video_tracks.iter_mut().chain(&mut q.audio_tracks) {
+                    track.items.clear();
+                }
+                Ok(())
+            })
+            .unwrap();
+        let fd = app.session.sequence_rate().frame_duration();
+        let start = Tick(fd.0 * 240);
+        let id = app.session.execute("captions.add", json!({"time":start.0,"durationSeconds":fd.seconds(),"text":"Last frame"})).unwrap()["caption"]
+            .as_u64()
+            .unwrap();
+        app.session.prefs.timeline.return_to_beginning = true;
+        preview(&mut app, id);
+        assert_eq!(app.session.playhead(), start);
         app.stop();
     }
 }

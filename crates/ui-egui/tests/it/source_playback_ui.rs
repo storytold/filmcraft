@@ -184,18 +184,21 @@ fn source_range_playback_stops_at_out_and_loop_restarts_without_program_playback
 #[test]
 fn a_single_frame_source_range_starts_at_the_marked_last_frame() {
     let mut h = Harness::builder().with_step_dt(0.1).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app(5));
+    const START: f64 = 10_000.0;
+    h.input_mut().time = Some(START);
     h.step();
     let v = filmcraft_engine::clip_ops::source_view(&h.state().session, filmcraft_engine::project::ItemId(5)).unwrap();
     let last = v.rate.snap(v.end - v.rate.frame_duration());
     h.state_mut().session.execute("project.setMarks", json!({"item":5,"in":last.0,"out":last.0})).unwrap();
     h.state_mut().play_source_range(false, false).unwrap();
     assert_eq!(h.state().session.state.source_playhead, last);
-    // the one frame ends on the UI clock, which follows the wall clock: wait for it
-    for _ in 0..200 {
+    // RawInput::time overrides the harness clock. Advance it explicitly: sleeping with
+    // START held fixed freezes now() when the host clock's offset was captured earlier.
+    for step in 1..=200 {
         if !h.state().source_playback.clock.playing {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.input_mut().time = Some(START + f64::from(step) * 0.1);
         h.step();
     }
     assert!(!h.state().source_playback.clock.playing);

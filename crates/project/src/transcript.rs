@@ -24,7 +24,7 @@ pub struct Word {
     /// Index into [`Transcript::speakers`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speaker: Option<u32>,
-    /// Recogniser confidence 0..1 (1 for hand-made or corrected words).
+    /// Recogniser confidence 0..1 (1 for hand-made words). Text-only corrections retain this score.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub confidence: f32,
 }

@@ -3636,3 +3636,87 @@
 	Flash Cue Point	Punto Flash Cue
 	Invalid duration: {error}	Durata non valida: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Transcription runs on this computer with {model}. It needs a one-time download of {size}.	La trascrizione avviene su questo computer con {model}. Serve un download una tantum di {size}.
+	The audio is not sent anywhere.	L'audio non viene inviato da nessuna parte.
+	Licence:	Licenza:
+	Download and Transcribe	Scarica e trascrivi
+	Try Again	Riprova
+	Transcribing…	Trascrizione in corso…
+	Stopping…	Interruzione…
+	Transcribing in the background (see the Text panel or Progress)	Trascrizione in background (vedi il pannello Testo o Avanzamento)
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (massima precisione, tempi per parola)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = nessun limite. 1 crea sottotitoli parola per parola; con una durata minima di 0, ogni parola mantiene la propria temporizzazione.
+	A shorter caption is held into the silence after it, never over the next caption.	Un sottotitolo più breve viene prolungato nel silenzio che segue, mai sopra il sottotitolo successivo.
+	Caption preset	Predefinito sottotitoli
+	Captioning Preferences (format, max/min length, lines)	Preferenze sottotitoli (formato, lunghezza max/min, righe)
+	Couldn't save caption settings: {e}	Impossibile salvare le impostazioni dei sottotitoli: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Crea sottotitoli dalla trascrizione, inizia una traccia sottotitoli vuota o importa un file di sottotitoli.
+	Create captions from transcript	Crea sottotitoli dalla trascrizione
+	Created {n} captions	Creati {n} sottotitoli
+	Delete preset	Elimina predefinito
+	Double Line	Due righe
+	Frames left empty between one caption and the next.	Fotogrammi lasciati vuoti tra un sottotitolo e il successivo.
+	Gap between captions (frames)	Spazio tra i sottotitoli (fotogrammi)
+	Layout	Layout
+	Maximum length in characters	Lunghezza massima in caratteri
+	Maximum words per caption	Numero massimo di parole per sottotitolo
+	Minimum duration in seconds	Durata minima in secondi
+	Save as preset…	Salva come predefinito…
+	Single Line	Una riga
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	Lo stile della nuova traccia sottotitoli: lo stile predefinito o lo stile di una traccia sottotitoli di questa sequenza.
+	Words wrap to a new line, or a new caption, at this many characters.	Le parole vanno a capo, o in un nuovo sottotitolo, a questo numero di caratteri.
+	characters	caratteri
+	words	parole
+	words (no limit)	parole (nessun limite)
+
+# Project audio transcription options
+	Transcribe Audio	Trascrivi audio
+	Transcribe Audio…	Trascrivi audio…
+	Transcribe Again	Trascrivi di nuovo
+	Transcribe Again…	Trascrivi di nuovo…
+	Already transcribed with {model}	Già trascritto con {model}
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Le trascrizioni esistenti restano fino alla sostituzione riuscita. I sottotitoli rimangono invariati.
+	Select clips with audio first	Seleziona prima clip con audio
+
+# Speech model cache controls
+	Delete downloaded model	Elimina modello scaricato
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet rileva automaticamente la lingua. Scegli Whisper per selezionare una lingua manualmente.
+	Delete Downloaded Model	Elimina modello scaricato
+	Delete {model} from this app's model cache?	Eliminare {model} dalla cache dei modelli di questa app?
+	Transcripts and captions stay unchanged. You can download the model again later.	Trascrizioni e sottotitoli restano invariati. Puoi scaricare nuovamente il modello in seguito.
+	Shared model files are kept; only this app’s cache link is removed.	I file condivisi del modello vengono conservati; viene rimosso solo il collegamento alla cache di questa app.
+	Download model	Scarica modello
+
+# Transcript workflows and project search
+	Assign passage to speaker	Assegna il passaggio a un parlante
+	Assign to new speaker	Assegna a un nuovo parlante
+	Choose a passage from one source clip.	Scegli un passaggio da una sola clip sorgente.
+	Correct transcript word	Correggi una parola della trascrizione
+	Find spoken words in any transcribed source, including unused clips.	Cerca parole in tutte le sorgenti trascritte, anche nelle clip inutilizzate.
+	Identify Speakers	Identifica parlanti
+	Maximum speakers	Numero massimo di parlanti
+	No speaker	Nessun parlante
+	Open a sequence or Source clip to see its transcript	Apri una sequenza o clip sorgente per visualizzarne la trascrizione
+	Rename speaker	Rinomina parlante
+	Replaces speaker names and assignments. Undo is available.	Sostituisce nomi e assegnazioni dei parlanti. È possibile annullare.
+	Search all source transcripts	Cerca in tutte le trascrizioni sorgente
+	Search limit reached. Refine your query.	Limite di ricerca raggiunto. Affina la ricerca.
+	Searching…	Ricerca…
+	Speaker name	Nome del parlante
+	Speakers	Parlanti
+	View Transcript	Visualizza trascrizione
+	Show Source Transcript	Mostra trascrizione sorgente
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} risultati · {sources} trascritte · {missing} non trascritte
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Troppi parlanti. Apri una sola clip sorgente.
+	Names are specific to each source clip.	I nomi sono specifici di ogni clip sorgente.
+	No speakers identified yet.	Nessun parlante ancora identificato.
+	Transcript changed. Close and reopen Speakers.	La trascrizione è cambiata. Chiudi e riapri Parlanti.
+	Identify Speakers…	Identifica parlanti…
+	Apply name changes before identifying speakers.	Applica i nomi prima di identificare i parlanti.
+
+# Caption navigation and preview
+	Play caption	Riproduci sottotitolo
+	Stop caption preview	Interrompi anteprima sottotitolo
+	Stop recording before navigating or previewing captions.	Interrompi la registrazione prima di navigare o visualizzare l’anteprima dei sottotitoli.

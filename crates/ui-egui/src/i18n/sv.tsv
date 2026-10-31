@@ -3630,3 +3630,57 @@
 	Check for Updates…	Sök efter uppdateringar…
 	Set Work Area Bar In Point	Ange arbetsområdesfältets in-punkt
 	Set Work Area Bar Out Point	Ange arbetsområdesfältets ut-punkt
+
+# Project audio transcription options
+	Transcribe Audio	Transkribera ljud
+	Transcribe Audio…	Transkribera ljud…
+	Transcribe Again	Transkribera igen
+	Transcribe Again…	Transkribera igen…
+	Already transcribed with {model}	Redan transkriberat med {model}
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Befintliga transkriptioner behålls tills ersättningen lyckas. Undertexter ändras inte.
+	Select clips with audio first	Välj först klipp med ljud
+
+# Speech model cache controls
+	Delete downloaded model	Ta bort hämtad modell
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet identifierar språket automatiskt. Välj Whisper för att välja språk manuellt.
+	Delete Downloaded Model	Ta bort hämtad modell
+	Delete {model} from this app's model cache?	Ta bort {model} från den här appens modellcache?
+	Transcripts and captions stay unchanged. You can download the model again later.	Transkriptioner och undertexter förblir oförändrade. Du kan hämta modellen igen senare.
+	Shared model files are kept; only this app’s cache link is removed.	Delade modellfiler behålls; endast den här appens cachelänk tas bort.
+	Download model	Hämta modell
+
+# Transcript workflows and project search
+	Assign passage to speaker	Tilldela avsnitt till talare
+	Assign to new speaker	Tilldela ny talare
+	Choose a passage from one source clip.	Välj ett avsnitt från ett enda källklipp.
+	Correct transcript word	Rätta transkriptionsord
+	Find spoken words in any transcribed source, including unused clips.	Hitta ord i alla transkriberade källor, även oanvända klipp.
+	Identify Speakers	Identifiera talare
+	Maximum speakers	Högsta antal talare
+	No speaker	Ingen talare
+	Open a sequence or Source clip to see its transcript	Öppna en sekvens eller ett källklipp för att se transkriptionen
+	Rename speaker	Byt namn på talare
+	Replaces speaker names and assignments. Undo is available.	Ersätter talarnamn och tilldelningar. Kan ångras.
+	Search all source transcripts	Sök i alla källtranskriptioner
+	Search limit reached. Refine your query.	Sökgränsen nådd. Förfina sökningen.
+	Searching…	Söker…
+	Speaker name	Talarnamn
+	Speakers	Talare
+	View Transcript	Visa transkription
+	Show Source Transcript	Visa källtranskription
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} resultat · {sources} transkriberade · {missing} ej transkriberade
+	Stopping…	Stoppar…
+	Transcribing…	Transkriberar…
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	För många talare. Öppna ett enda källklipp.
+	Names are specific to each source clip.	Namn gäller separat för varje källklipp.
+	No speakers identified yet.	Inga talare identifierade ännu.
+	Transcript changed. Close and reopen Speakers.	Transkriptionen har ändrats. Stäng och öppna Talare igen.
+	Identify Speakers…	Identifiera talare…
+	Apply name changes before identifying speakers.	Tillämpa namnändringarna innan talare identifieras.
+
+# Caption navigation and preview
+	Play caption	Spela undertext
+	Stop caption preview	Stoppa undertextförhandsvisning
+	Stop recording before navigating or previewing captions.	Stoppa inspelningen innan du navigerar eller förhandsvisar undertexter.

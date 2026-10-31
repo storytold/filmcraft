@@ -33,6 +33,11 @@ use crate::state::ClipDialogDraft;
 pub struct Extras {
     /// The open dialog (None = closed).
     pub dialog: Option<ClipDialogDraft>,
+    /// A restored UI draft must never transcribe reused item ids in another document.
+    #[serde(skip)]
+    transcription_epoch: Option<u64>,
+    #[serde(skip)]
+    model_delete: Option<ModelDeleteDraft>,
     /// View ▸ Dynamic Audio Waveforms: logarithmic (dB) waveform display; off = linear amplitude.
     pub dynamic_waveforms: bool,
     /// Paths handed to the operating system's opener (Edit Original, Reveal Log Files), newest last.
@@ -41,8 +46,20 @@ pub struct Extras {
 
 impl Default for Extras {
     fn default() -> Self {
-        Extras { dialog: None, dynamic_waveforms: true, opened: Vec::new() }
+        Extras { dialog: None, transcription_epoch: None, model_delete: None, dynamic_waveforms: true, opened: Vec::new() }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ModelDeleteDraft {
+    model: String,
+    epoch: u64,
+    error: String,
+    fresh: bool,
+}
+
+fn model_name(name: &str) -> &str {
+    name.split(" (").next().unwrap_or(name)
 }
 
 type Elems = Vec<(String, egui::Rect, String)>;
@@ -68,6 +85,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "sequence.normalizeMixTrack" => (tl!("Normalize Mix Track"), "normalizeMix", tl!("OK")),
         "sequence.simplify" => (tl!("Simplify Sequence"), "simplify", tl!("Simplify")),
         "sequence.transcribe" => (tl!("Transcribe Sequence"), "transcribe", tl!("Transcribe")),
+        "transcript.generate" => (tl!("Transcribe Audio"), "transcribeAudio", tl!("Transcribe")),
         "file.saveAsTemplate" => (tl!("Save as Template"), "saveTemplate", tl!("Save")),
         "markers.addFlashCue" => (tl!("Flash Cue Marker"), "flashCue", tl!("OK")),
         "help.systemCompatibilityReport" => (tl!("System Compatibility Report"), "systemReport", tl!("Close")),
@@ -171,6 +189,9 @@ pub fn system_report(app: &FilmcraftApp) -> Value {
 /// Menu / shortcut entry points. Returns None for ids this module doesn't handle.
 pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
     let empty = params.as_object().is_none_or(|m| m.is_empty());
+    if id == "transcript.generate" && params["options"] == true {
+        return Some(open_transcribe_audio(app, params));
+    }
     // UI commands
     match id {
         "view.dynamicAudioWaveforms" => {
@@ -262,6 +283,46 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
     Some(Ok(json!({"dialog": meta(cmd).map(|m| m.1)})))
 }
 
+/// Audio-bearing master clips behind the explicit Project-panel targets, once each.
+pub(super) fn audio_items(app: &FilmcraftApp, items: &[filmcraft_project::ItemId]) -> Vec<filmcraft_project::ItemId> {
+    let mut result = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for item in items {
+        if let Some((id, media, _)) = app.session.project.resolve_media(*item)
+            && !media.info.audio_streams.is_empty()
+            && seen.insert(id)
+        {
+            result.push(id);
+        }
+    }
+    result
+}
+
+fn open_transcribe_audio(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String> {
+    enabled(app, "transcript.generate")?;
+    let ids = params["items"]
+        .as_array()
+        .filter(|items| !items.is_empty() && items.len() <= 100_000)
+        .ok_or_else(|| tl!("Select clips with audio first").to_string())?;
+    let ids = ids.iter().map(|id| id.as_u64().map(filmcraft_project::ItemId).ok_or_else(|| "Invalid media item".to_string())).collect::<Result<Vec<_>, _>>()?;
+    let items = audio_items(app, &ids);
+    if items.is_empty() {
+        return Err(tl!("Select clips with audio first").into());
+    }
+    let existing: Vec<_> = items.iter().filter_map(|id| app.session.project.transcripts.get(id)).collect();
+    let sources: std::collections::BTreeSet<_> = existing.iter().map(|transcript| transcript.source.clone()).collect();
+    let prefs = &app.session.prefs.media_analysis;
+    app.ui.extras.transcription_epoch = Some(app.session.document_epoch);
+    app.ui.extras.dialog = Some(ClipDialogDraft {
+        command: "transcript.generate".into(),
+        params: json!({"items": items.iter().map(|id| id.0).collect::<Vec<_>>(), "model": prefs.whisper_model,
+            "language": if prefs.language_auto_detect { "auto" } else { &prefs.default_language }, "diarize": prefs.speaker_labeling != "off"}),
+        info: json!({"documentEpoch": app.session.document_epoch, "sources": sources, "again": existing.len() == items.len(), "hasExisting": !existing.is_empty()}),
+        error: String::new(),
+    });
+    Ok(json!({"dialog": "transcribeAudio"}))
+}
+
 /// Initial parameters (and display info) of a dialog.
 fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value), String> {
     let s = &mut app.session;
@@ -343,7 +404,7 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         }
         "sequence.transcribe" => {
             let tracks: Vec<String> = s.active_sequence().map(|q| (1..=q.audio_tracks.len()).map(|i| format!("A{i}")).collect()).unwrap_or_default();
-            (json!({"language": "auto", "track": "mix", "diarize": true}), json!({"tracks": tracks}))
+            (json!({"language": "auto", "track": "mix", "diarize": true, "model": s.prefs.media_analysis.whisper_model}), json!({"tracks": tracks}))
         }
         "file.saveAsTemplate" => (json!({"name": s.project.name}), Value::Null),
         "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
@@ -425,17 +486,30 @@ fn combo(ui: &mut egui::Ui, elems: &mut Elems, id: &str, label: &str, value: &mu
         if !label.is_empty() {
             ui.label(label);
         }
-        let cur = value.as_str().unwrap_or_default().to_string();
-        let shown = options.iter().find(|o| o.0 == cur).map(|o| o.1.clone()).unwrap_or(cur.clone());
-        let r = craft_ui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(&shown)).show_ui(ui, |ui| {
-            for (k, l) in options {
-                if ui.selectable_label(cur == *k, crate::i18n::t(l)).clicked() {
-                    *value = json!(k);
-                }
-            }
-        });
-        push(elems, id, &r.response, label);
+        combo_cell(ui, elems, id, label, value, options);
     });
+}
+
+fn combo_cell(ui: &mut egui::Ui, elems: &mut Elems, id: &str, label: &str, value: &mut Value, options: &[(String, String)]) {
+    let cur = value.as_str().unwrap_or_default().to_string();
+    let shown = options.iter().find(|o| o.0 == cur).map(|o| o.1.clone()).unwrap_or(cur.clone());
+    let mut combo = craft_ui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(&shown));
+    if id.ends_with(".model") && (id.starts_with("transcribeAudio.") || id.starts_with("transcribe.")) {
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let widest = options
+            .iter()
+            .map(|(_, label)| ui.painter().layout_no_wrap(crate::i18n::t(label).to_owned(), font.clone(), ui.visuals().text_color()).size().x)
+            .fold(0.0_f32, f32::max);
+        combo = combo.width(widest + 2.0 * ui.spacing().button_padding.x + ui.spacing().icon_width + ui.spacing().icon_spacing);
+    }
+    let r = combo.show_ui(ui, |ui| {
+        for (k, l) in options {
+            if ui.selectable_label(cur == *k, crate::i18n::t(l)).clicked() {
+                *value = json!(k);
+            }
+        }
+    });
+    push(elems, id, &r.response, label);
 }
 
 /// A color swatch that opens the color picker; the parameter is `#rrggbb`.
@@ -460,6 +534,13 @@ fn pairs(v: &[&str]) -> Vec<(String, String)> {
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.extras.dialog.clone() else { return };
+    if app.ui.speech_download.is_some() && matches!(d.command.as_str(), "transcript.generate" | "sequence.transcribe") {
+        return;
+    }
+    if d.command == "transcript.generate" && app.ui.extras.transcription_epoch != Some(app.session.document_epoch) {
+        app.ui.extras.dialog = None;
+        return;
+    }
     crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("menu-dialog-before-drag"), &mut d);
     let Some((title, pre, ok_text)) = meta(&d.command) else {
         app.ui.extras.dialog = None;
@@ -468,10 +549,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let mut browse: Option<String> = None;
+    let mut delete_model = None;
+    let mut download_model = None;
     let info_only = matches!(d.command.as_str(), "file.mediaProperties" | "clip.sourceSettings" | "help.systemCompatibilityReport");
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("menu-dialog", pre));
-    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(420.0).centered(ctx).show(ctx, |ui| {
+    let speech_dialog = matches!(d.command.as_str(), "transcript.generate" | "sequence.transcribe");
+    let window = egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(if speech_dialog { 380.0 } else { 420.0 }).centered(ctx);
+    let window = window.show(ctx, |ui| {
         let p = &mut d.params;
         match d.command.as_str() {
             "edit.find" => {
@@ -756,20 +841,77 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     &[("both", tl!("Video and Audio")), ("video", tl!("Video Only")), ("audio", tl!("Audio Only"))],
                 );
             }
-            "sequence.transcribe" => {
-                let langs = pairs(&["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "nl", "ru"]);
-                combo(ui, &mut elems, "transcribe.language", tl!("Language:"), &mut p["language"], &langs);
-                let mut tracks: Vec<(String, String)> = vec![("mix".into(), tl!("Mix").into())];
-                tracks.extend(
-                    d.info["tracks"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|t| t.as_str())
-                        .map(|t| (t.to_string(), tlf!("Audio on track {t}", t))),
-                );
-                combo(ui, &mut elems, "transcribe.track", tl!("Audio analysis:"), &mut p["track"], &tracks);
+            "sequence.transcribe" | "transcript.generate" => {
+                ui.set_width(380.0);
+                if d.command == "transcript.generate" {
+                    for source in d.info["sources"].as_array().into_iter().flatten().take(8).filter_map(Value::as_str).filter(|source| !source.is_empty()) {
+                        let name: String =
+                            filmcraft_engine::transcript::find_model(source).map_or(source, |model| model_name(model.name)).chars().take(160).collect();
+                        ui.add(egui::Label::new(tlf!("Already transcribed with {model}", model = name)).wrap());
+                    }
+                    if d.info["hasExisting"] == true {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(tl!("Existing transcripts remain until replacement succeeds. Captions stay unchanged.")).small().weak(),
+                            )
+                            .wrap(),
+                        );
+                    }
+                }
+                ui.add_space(6.0);
+                let models: Vec<_> =
+                    filmcraft_engine::speech::models::catalogue().iter().map(|model| (model.id.to_string(), model_name(model.name).to_string())).collect();
+                egui::Grid::new((pre, "speech-options")).spacing([10.0, 8.0]).show(ui, |ui| {
+                    ui.label(tl!("Speech model"));
+                    ui.horizontal(|ui| {
+                        combo_cell(ui, &mut elems, &format!("{pre}.model"), tl!("Speech model"), &mut p["model"], &models);
+                        let selected = p["model"].as_str().and_then(filmcraft_engine::transcript::find_model);
+                        let cached = selected.is_some_and(|model| {
+                            filmcraft_engine::transcript::models_dir().is_some_and(|dir| filmcraft_engine::speech::models::cached(&dir, model))
+                        });
+                        let enabled = !filmcraft_engine::transcript::model_busy(&app.session);
+                        let (icon, label, key) = if cached {
+                            (crate::icons::Icon::Trash, tl!("Delete downloaded model"), "deleteModel")
+                        } else {
+                            (crate::icons::Icon::Import, tl!("Download model"), "downloadModel")
+                        };
+                        let r = ui.add_enabled_ui(enabled, |ui| crate::icons::button(ui, icon, 24.0, false, &app.tokens, label)).inner;
+                        push(&mut elems, format!("{pre}.{key}"), &r, label);
+                        if r.clicked() {
+                            if cached {
+                                delete_model = selected.map(|model| model.id.to_string());
+                            } else {
+                                download_model = selected.map(|model| model.id.to_string());
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(tl!("Language:"));
+                    let parakeet = p["model"] == "parakeet-tdt-0.6b-v3";
+                    if parakeet {
+                        p["language"] = json!("auto");
+                        ui.add_enabled_ui(false, |ui| {
+                            let r = craft_ui::ComboBox::from_id_salt((pre, "language")).selected_text(tl!("Auto")).width(120.0).show_ui(ui, |_| {});
+                            push(&mut elems, format!("{pre}.language"), &r.response, tl!("Auto"));
+                            r.response
+                                .on_disabled_hover_text(tl!("Parakeet detects the language automatically. Choose Whisper to select a language manually."));
+                        });
+                    } else {
+                        let mut langs = pairs(&["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "nl", "ru"]);
+                        if let Some(auto) = langs.first_mut() {
+                            auto.1 = tl!("Auto").into();
+                        }
+                        combo_cell(ui, &mut elems, &format!("{pre}.language"), tl!("Language:"), &mut p["language"], &langs);
+                    }
+                    ui.end_row();
+                });
+                if d.command == "sequence.transcribe" {
+                    let mut tracks: Vec<(String, String)> = vec![("mix".into(), tl!("Mix").into())];
+                    tracks.extend(
+                        d.info["tracks"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|t| (t.to_string(), tlf!("Audio on track {t}", t))),
+                    );
+                    combo(ui, &mut elems, "transcribe.track", tl!("Audio analysis:"), &mut p["track"], &tracks);
+                }
                 check(ui, &mut elems, pre, p, "diarize", tl!("Recognize when different speakers are talking"));
             }
             "file.saveAsTemplate" => text(ui, &mut elems, pre, p, "name", tl!("Template Name:"), 240.0),
@@ -822,7 +964,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), &d.error);
         }
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        let ok_text = if d.command == "transcript.generate" && d.info["again"] == true { tl!("Transcribe Again") } else { ok_text };
+        let labels: &[&str] = if info_only { &[ok_text] } else { &[tl!("Cancel"), ok_text] };
+        let buttons = |ui: &mut egui::Ui| {
             if !info_only {
                 let r = ui.button(if d.command == "edit.find" { tl!("Done") } else { tl!("Cancel") });
                 push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
@@ -835,8 +979,17 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if r.clicked() {
                 action = Some(if info_only { "cancel" } else { "ok" });
             }
-        });
+        };
+        if matches!(d.command.as_str(), "transcript.generate" | "sequence.transcribe") {
+            crate::widgets::centered_buttons(ui, labels, buttons);
+        } else {
+            ui.horizontal(buttons);
+        }
+        elems.push((format!("{pre}.bounds"), ui.min_rect(), title.to_string()));
     });
+    if let Some(window) = window {
+        elems.push((format!("{pre}.window"), window.response.rect, title.to_string()));
+    }
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -851,7 +1004,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         });
     }
-    if crate::widgets::escape_closes(ctx) {
+    if crate::widgets::escape_closes(ctx) && app.ui.extras.model_delete.is_none() {
         action = Some("cancel");
     }
     match action {
@@ -869,7 +1022,67 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         },
         _ => {}
     }
+    if let Some(model) = download_model {
+        app.ui.speech_download = Some(crate::state::SpeechDownload { model, document_epoch: app.session.document_epoch, ..Default::default() });
+    }
+    if let Some(model) = delete_model {
+        app.ui.extras.model_delete = Some(ModelDeleteDraft { model, epoch: app.session.document_epoch, error: String::new(), fresh: true });
+    }
     app.ui.extras.dialog = Some(d);
+}
+
+/// Model deletion is a separate modal: opening it or cancelling never changes a project.
+pub fn model_delete_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut d) = app.ui.extras.model_delete.take() else { return };
+    if d.epoch != app.session.document_epoch || app.ui.extras.dialog.is_none() {
+        return;
+    }
+    let Some(model) = filmcraft_engine::transcript::find_model(&d.model) else { return };
+    let mut cancel = false;
+    let mut delete = false;
+    let r = egui::Modal::new(egui::Id::unique("speech-model-delete")).frame(super::file_dialogs::modal_frame(&app.tokens).inner_margin(16.0)).show(ctx, |ui| {
+        ui.set_width(360.0);
+        ui.heading(tl!("Delete Downloaded Model"));
+        ui.add_space(8.0);
+        ui.label(tlf!("Delete {model} from this app's model cache?", model = model_name(model.name)));
+        ui.label(tl!("Transcripts and captions stay unchanged. You can download the model again later."));
+        let shared = filmcraft_engine::transcript::models_dir()
+            .and_then(|dir| std::fs::symlink_metadata(filmcraft_engine::speech::models::model_dir(&dir, model)).ok())
+            .is_some_and(|m| m.file_type().is_symlink());
+        if shared {
+            ui.small(tl!("Shared model files are kept; only this app’s cache link is removed."));
+        }
+
+        if !d.error.is_empty() {
+            ui.colored_label(app.tokens.danger, &d.error);
+        }
+        ui.add_space(12.0);
+        crate::widgets::centered_buttons(ui, &[tl!("Cancel"), tl!("Delete")], |ui| {
+            let c = ui.button(tl!("Cancel"));
+            app.auto.add("speechModelDelete.cancel", c.rect, tl!("Cancel"));
+            if d.fresh {
+                c.request_focus();
+            }
+            cancel = c.clicked();
+            let b = ui.add_enabled(
+                !filmcraft_engine::transcript::model_busy(&app.session),
+                egui::Button::new(RichText::new(tl!("Delete")).color(egui::Color32::WHITE)).fill(app.tokens.danger),
+            );
+            app.auto.add("speechModelDelete.confirm", b.rect, tl!("Delete"));
+            delete = b.clicked();
+        });
+    });
+    d.fresh = false;
+    if cancel || r.should_close() {
+        return;
+    }
+    if delete {
+        match app.session.execute("transcript.deleteModel", json!({"model": d.model, "confirm": true})) {
+            Ok(_) => return,
+            Err(error) => d.error = error.to_string(),
+        }
+    }
+    app.ui.extras.model_delete = Some(d);
 }
 
 /// Run the dialog's command(s). `Ok(Some(text))` keeps the dialog open with a message (Find).
@@ -917,10 +1130,17 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             if cmd == "markers.addFlashCue" && q["name"].as_str().is_some_and(str::is_empty) {
                 q.as_object_mut().map(|m| m.remove("name"));
             }
-            if cmd == "sequence.transcribe" && q["language"] == "auto" {
-                q.as_object_mut().map(|m| m.remove("language"));
+            // Download the chosen model first, then start recognition in the background.
+            if matches!(cmd, "sequence.transcribe" | "transcript.generate") {
+                q["wait"] = json!(false);
+                if crate::panels::speech_model::request(app, cmd, q.clone()) {
+                    return Ok(None);
+                }
             }
-            s.execute(cmd, q).map_err(|e| e.to_string())?;
+            app.session.execute(cmd, q).map_err(|e| e.to_string())?;
+            if matches!(cmd, "sequence.transcribe" | "transcript.generate") {
+                app.ui.status = tl!("Transcribing in the background (see the Text panel or Progress)").into();
+            }
             Ok(None)
         }
     }

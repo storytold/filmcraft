@@ -6,7 +6,7 @@ and `.md` (options and sections: [testing.md](testing.md) §5). Agents read live
 
 ## Interactive builds and redraw work
 
-For interactive editing, build with `cargo build --release -p filmcraft --features whisper` and
+For interactive editing, build with `cargo build --release -p filmcraft` (speech-to-text included) and
 launch `target/release/filmcraft`. The development profile optimizes dependencies and codec hot
 loops, but still builds the editor at optimization level 1; it is not the release performance
 baseline. Keep the same build profile when comparing code changes.

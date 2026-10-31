@@ -277,6 +277,26 @@ fn captions_follow_line_length_speaker_and_pause_rules() {
 }
 
 #[test]
+fn word_by_word_captions_keep_each_words_timing() {
+    let w = sequence_words(&whole(), &transcripts());
+    let rules = CaptionRules { max_words: 1, min_duration: Tick::ZERO, ..Default::default() };
+    let b = caption_blocks(&w, &rules, R);
+    check_blocks(&b, &rules);
+    assert_eq!(b.len(), w.len());
+    for (blk, word) in b.iter().zip(&w) {
+        assert_eq!(blk.text, word.text);
+        assert_eq!(blk.words.len(), 1);
+        // frame-snapped, but the word's own span, not stretched to a minimum
+        assert!((blk.start - word.start).0.abs() <= R.frame_duration().0, "{}", blk.text);
+        assert!((blk.end - word.end).0.abs() <= R.frame_duration().0, "{}", blk.text);
+    }
+    // three words at most
+    let b = caption_blocks(&w, &CaptionRules { max_words: 3, ..Default::default() }, R);
+    assert!(b.iter().all(|x| x.words.len() <= 3));
+    assert_eq!(b.iter().flat_map(|x| x.words.clone()).collect::<Vec<_>>(), (0..w.len()).collect::<Vec<_>>());
+}
+
+#[test]
 fn captions_never_overlap_with_dense_words() {
     // 30 one-frame words back to back
     let words: Vec<SeqWord> = (0..30)
@@ -295,4 +315,14 @@ fn captions_never_overlap_with_dense_words() {
     let rules = CaptionRules { gap_frames: 1, ..Default::default() };
     let b = caption_blocks(&words, &rules, R);
     check_blocks(&b, &rules);
+}
+
+#[test]
+fn matching_speaker_names_in_different_sources_do_not_join_paragraphs() {
+    let mut words = sequence_words(&whole(), &transcripts());
+    words.truncate(2);
+    words[0].speaker = Some("Speaker 1".into());
+    words[1].speaker = words[0].speaker.clone();
+    words[1].item = ItemId(99);
+    assert_eq!(paragraphs(&words, s(10.0)), vec![0..1, 1..2]);
 }
