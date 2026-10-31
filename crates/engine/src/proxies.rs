@@ -607,6 +607,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: has_file_media,
             run: create,
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.attachProxies",
@@ -626,6 +627,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 attach(s, &pairs, bool_p(p, "force").unwrap_or(false))
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.detachProxies",
@@ -650,6 +652,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"detached": n}))
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.reconnectFullRes",
@@ -669,6 +672,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 crate::relink::relink(s, &q)
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.toggleProxies",
@@ -686,6 +690,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"enabled": on, "clipsWithProxies": attached}))
             },
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "media.proxyPresets",
@@ -696,6 +701,7 @@ pub fn commands() -> Vec<CommandSpec> {
             enabled: always,
             run: |_, _| Ok(serde_json::to_value(PRESETS).unwrap_or_default()),
             journal: false,
+            named: crate::commands::NamedKeys::NONE,
         },
         CommandSpec {
             id: "project.ingestSettings",
@@ -734,6 +740,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(serde_json::to_value(&s.project.settings.ingest).unwrap_or_default())
             },
             journal: true,
+            named: crate::commands::NamedKeys::NONE,
         },
     ]
 }
