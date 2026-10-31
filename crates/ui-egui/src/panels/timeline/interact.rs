@@ -3,17 +3,29 @@ use super::layout::{Layout, max_scroll, min_pps, new_track_at};
 use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, ruler_menu};
 use super::snap::{snap, snap_playhead};
 use super::{
-    Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
+    Align2, Arc, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
     Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2,
     selection_trim_kind, vec2,
 };
 
+/// Preview an edit's clip positions and source ranges without changing the project.
 pub(super) fn preview_drag(
     app: &FilmcraftApp,
     seq: &Sequence,
     out: &mut HashMap<ClipId, (Tick, Tick, Option<TrackId>)>,
     edited: &mut HashMap<ClipId, TrackItem>,
-) {
+) -> Option<Arc<Sequence>> {
+    if let Some(Drag::Stretch { clip, edge, delta, ripple, linked, .. }) = &app.tl.drag {
+        let work = super::stretch_preview::cached(app, *clip, *edge, *delta, *ripple, *linked).ok()?;
+        let old_positions: HashMap<ClipId, (Tick, Tick)> = seq.all_tracks().flat_map(|tr| tr.items.iter().map(|i| (i.id, (i.start, i.duration)))).collect();
+        for it in work.all_tracks().flat_map(|tr| &tr.items) {
+            if old_positions.get(&it.id).is_some_and(|old| *old != (it.start, it.duration)) {
+                out.insert(it.id, (it.start, it.duration, None));
+            }
+        }
+        return Some(work);
+    }
+    app.tl.stretch_preview.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
     // the item as the edge move leaves it, and its place in the preview
     let mut moved = |it: &TrackItem, edge: filmcraft_edit::Edge, delta: Tick| {
         let mut e = it.clone();
@@ -21,7 +33,7 @@ pub(super) fn preview_drag(
         out.insert(e.id, (e.start, e.duration, None));
         edited.insert(e.id, e);
     };
-    let Some(d) = &app.tl.drag else { return };
+    let Some(d) = &app.tl.drag else { return None };
     match d {
         Drag::Move { new_track: Some(_), .. } => {}
         Drag::Move { clips, offset, track_delta, .. } => {
@@ -52,19 +64,6 @@ pub(super) fn preview_drag(
                 }
             }
         }
-        // a rate stretch keeps the same media in a new length: that one does squeeze
-        Drag::Stretch { clip, edge, delta, linked, .. } => {
-            let ids = if *linked { filmcraft_engine::commands::with_links(&app.session, &[*clip]) } else { vec![*clip] };
-            for c in ids {
-                if let Some((_, it)) = seq.find_item(c) {
-                    let v = match edge {
-                        filmcraft_edit::Edge::In => (it.start + *delta, it.duration - *delta, None),
-                        filmcraft_edit::Edge::Out => (it.start, it.duration + *delta, None),
-                    };
-                    out.insert(c, v);
-                }
-            }
-        }
         Drag::Roll { left, right, delta, .. } => {
             let pairs = filmcraft_engine::commands::linked_roll_pairs(seq, *left, *right, app.session.state.linked_selection);
             for (pl, pr) in pairs {
@@ -83,6 +82,7 @@ pub(super) fn preview_drag(
         }
         _ => {}
     }
+    None
 }
 
 /// The transition a clip drag will leave behind, by the same rule `edit::move_items` applies:
@@ -156,6 +156,7 @@ fn marquee_clips(seq: &Sequence, layout: &Layout, r: Rect) -> Vec<ClipId> {
 fn drag_is_locked(session: &filmcraft_engine::Session, seq: &Sequence, drag: &Drag) -> bool {
     let clips = match drag {
         Drag::Move { clips, track_delta, .. } => return move_is_locked(seq, clips, *track_delta),
+        Drag::Stretch { clip, ripple: true, .. } | Drag::Stretch { clip, linked: false, .. } => return move_is_locked(seq, &[*clip], 0),
         Drag::Trim { clip, .. } | Drag::Stretch { clip, .. } | Drag::Remix { clip, .. } | Drag::Slip { clip, .. } | Drag::Slide { clip, .. } => vec![*clip],
         Drag::Roll { left, right, .. } => vec![*left, *right],
         Drag::Transition { id, .. } => return seq.all_tracks().any(|t| t.locked && t.transitions.iter().any(|tr| tr.id == *id)),
@@ -375,6 +376,7 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
                     pos: p,
                     tick: layout.tick_at(p.x),
                     grab: grab_at(seq, layout, p, tool, mods, roll_ripple),
+                    linked: !mods.alt,
                     v_scroll: layout.v_scroll,
                     a_scroll: layout.a_scroll,
                 }
@@ -387,7 +389,7 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
             Grab::Volume { .. } if resp.clicked() && !adding => Grab::Other(pressed.grab.hit()),
             g => g,
         };
-        start_drag(app, ctx, resp, seq, layout, grab, p, t, (pressed.v_scroll, pressed.a_scroll));
+        start_drag(app, ctx, resp, seq, layout, grab, p, t, (pressed.v_scroll, pressed.a_scroll), pressed.linked);
     }
 
     false
@@ -406,6 +408,7 @@ fn start_drag(
     p: Pos2,
     t: Tick,
     scroll: (f32, f32),
+    linked: bool,
 ) {
     let tool = app.ui.tool;
     let mods = ctx.input(|i| i.modifiers);
@@ -497,10 +500,11 @@ fn start_drag(
             None
         }
         (_, Grab::Edge { clip, edge, kind, .. }) => Some(match kind {
-            EdgeKind::Trim => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Regular, delta: Tick::ZERO, from: t, linked: !mods.alt },
-            EdgeKind::Ripple => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, delta: Tick::ZERO, from: t, linked: !mods.alt },
+            EdgeKind::Trim => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Regular, delta: Tick::ZERO, from: t, linked },
+            EdgeKind::Ripple => Drag::Trim { clip, edge, mode: filmcraft_edit::TrimMode::Ripple, delta: Tick::ZERO, from: t, linked },
             EdgeKind::Roll { left, right } => Drag::Roll { left, right, delta: Tick::ZERO, from: t },
-            EdgeKind::Stretch => Drag::Stretch { clip, edge, delta: Tick::ZERO, from: t, linked: !mods.alt },
+            EdgeKind::Stretch => Drag::Stretch { clip, edge, delta: Tick::ZERO, from: t, ripple: false, linked },
+            EdgeKind::RippleStretch => Drag::Stretch { clip, edge, delta: Tick::ZERO, from: t, ripple: true, linked },
             EdgeKind::Remix => Drag::Remix { clip, delta: Tick::ZERO, from: t },
         }),
         (_, Grab::Volume { clip, .. }) if resp.drag_started() => crate::panels::timeline_volume::start(seq, layout, clip, p).map(Drag::Volume),
@@ -716,10 +720,21 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 let target = rate.snap_nearest(it.end() + (t_here - from)).max(it.start + rate.frame_duration());
                 Drag::Remix { clip, delta: target - it.end(), from }
             }),
-            Drag::Stretch { clip, edge, from, linked, .. } => seq.find_item(clip).map(|(_, it)| {
+            Drag::Stretch { clip, edge, from, ripple, linked, .. } => seq.find_item(clip).map(|(_, it)| {
                 let base = if edge == filmcraft_edit::Edge::In { it.start } else { it.end() };
                 let target = snap(app, seq, layout, rate.snap_nearest(base + (t_here - from)), &[clip]);
-                Drag::Stretch { clip, edge, delta: target - base, from, linked }
+                let delta = match super::stretch_preview::cached(app, clip, edge, target - base, ripple, linked) {
+                    Ok(q) => q
+                        .find_item(clip)
+                        .map(|(_, i)| if edge == filmcraft_edit::Edge::In { i.start - it.start } else { i.duration - it.duration })
+                        .unwrap_or_default(),
+                    Err(e) => {
+                        ctx.set_cursor_icon(CursorIcon::NotAllowed);
+                        app.ui.status = e.to_string();
+                        Tick::ZERO
+                    }
+                };
+                Drag::Stretch { clip, edge, delta, from, ripple, linked }
             }),
             Drag::Roll { left, right, from, .. } => seq.find_item(left).map(|(_, l)| {
                 let target = snap(app, seq, layout, rate.snap_nearest(l.end() + (t_here - from)), &[left, right]);
@@ -837,7 +852,7 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                     "timeline.trim",
                     json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "mode": if mode == filmcraft_edit::TrimMode::Ripple {"ripple"} else {"regular"}, "delta": delta.0, "linked": linked}),
                 )),
-                Drag::Stretch { clip, edge, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.rateStretch", json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0, "linked": linked}))),
+                Drag::Stretch { clip, edge, delta, ripple, linked, .. } if delta != Tick::ZERO => Some(app.session.execute("timeline.rateStretch", json!({"clip": clip.0, "edge": if edge == filmcraft_edit::Edge::In {"in"} else {"out"}, "delta": delta.0, "ripple": ripple, "linked": linked}))),
                 Drag::Remix { clip, delta, .. } if delta != Tick::ZERO => {
                     let d = seq.find_item(clip).map(|(_, it)| it.duration + delta).unwrap_or(Tick::ZERO);
                     Some(app.session.execute("clip.remix", json!({"clip": clip.0, "duration": d.0})))
@@ -1164,7 +1179,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
         if matches!(grab, Grab::Other(Hit::Ruler)) {
             scrub_playhead(app, seq, layout, p, mods.shift);
         }
-        app.tl.pressed = Some(Pressed { pos: p, tick: layout.tick_at(p.x), grab, v_scroll: layout.v_scroll, a_scroll: layout.a_scroll });
+        app.tl.pressed = Some(Pressed { pos: p, tick: layout.tick_at(p.x), grab, linked: !mods.alt, v_scroll: layout.v_scroll, a_scroll: layout.a_scroll });
     }
 
     wheel_scroll(app, ui, rect, layout, seq);

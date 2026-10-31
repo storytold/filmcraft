@@ -233,6 +233,8 @@ pub enum EdgeKind {
     Roll { left: ClipId, right: ClipId },
     /// Rate Stretch: the clip's speed changes to fill its new length.
     Stretch,
+    /// Shift + Out-edge Rate Stretch: later clips follow the changed duration.
+    RippleStretch,
     /// Remix: a music clip is re-planned to its new length (Out edges only).
     Remix,
 }
@@ -245,6 +247,7 @@ impl EdgeKind {
             EdgeKind::Ripple => "ripple",
             EdgeKind::Roll { .. } => "roll",
             EdgeKind::Stretch => "rateStretch",
+            EdgeKind::RippleStretch => "rippleRateStretch",
             EdgeKind::Remix => "remix",
         }
     }
@@ -306,6 +309,7 @@ pub fn grab_at(seq: &Sequence, layout: &Layout, pos: Pos2, tool: Tool, mods: Mod
         }
         Tool::Ripple => EdgeKind::Ripple,
         Tool::Rolling => roll(seq, track, clip, edge),
+        Tool::RateStretch if mods.shift && edge == Edge::Out => EdgeKind::RippleStretch,
         Tool::RateStretch => EdgeKind::Stretch,
         Tool::Remix if edge == Edge::Out => EdgeKind::Remix,
         _ => return Grab::Other(h),
@@ -589,6 +593,15 @@ mod tests {
         for tool in [Tool::Razor, Tool::Slip, Tool::Slide, Tool::Hand, Tool::Zoom, Tool::TrackSelectForward] {
             assert_eq!(g(tool, 297.0), Grab::Other(edge_hit(tr, 1, Edge::Out)), "{tool:?}");
         }
+    }
+
+    /// Shift exposes ripple stretching only for the Rate Stretch tool’s Out edge.
+    #[test]
+    fn shift_rate_stretch_is_explicit_and_out_only() {
+        let (seq, l, tr) = fixture(clips());
+        assert_eq!(grab(&seq, &l, Tool::RateStretch, 297.0, Modifiers::SHIFT, false), edge_grab(tr, 1, Edge::Out, EdgeKind::RippleStretch));
+        assert_eq!(grab(&seq, &l, Tool::RateStretch, 303.0, Modifiers::SHIFT, false), edge_grab(tr, 2, Edge::In, EdgeKind::Stretch));
+        assert_eq!(EdgeKind::RippleStretch.name(), "rippleRateStretch");
     }
 
     #[test]

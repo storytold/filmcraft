@@ -176,7 +176,18 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
 /// on hover, its name.
 fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, layout: &Layout, seq: &Sequence) {
     let marker_y = layout.ruler.min.y + 2.0;
-    for m in &seq.markers {
+    let preview = if app.session.state.ripple_sequence_markers {
+        match &app.tl.drag {
+            Some(Drag::Stretch { clip, edge, delta, ripple: true, linked, .. }) => {
+                super::stretch_preview::cached(app, *clip, *edge, *delta, true, *linked).ok()
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let markers = preview.as_ref().map_or(&seq.markers, |q| &q.markers);
+    for m in markers {
         let x = layout.x_of(m.start);
         let c = m.color.marker_rgb();
         let c = Color32::from_rgb(c[0], c[1], c[2]);

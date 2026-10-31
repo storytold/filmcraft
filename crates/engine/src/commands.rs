@@ -872,6 +872,50 @@ pub fn roll_delta(s: &Session, left: ClipId, right: ClipId, delta: Tick) -> Resu
     clamp_roll_linked(q, &linked_roll_pairs(q, left, right, s.state.linked_selection), delta, &mut ctx)
 }
 
+/// The sequence a Rate Stretch would produce, for a transient Timeline preview. No project,
+/// history, media or preferences are changed. Preview and release share the edit algebra.
+pub fn rate_stretch_preview(s: &Session, clip: ClipId, edge: Edge, delta: Tick, ripple: bool) -> Result<filmcraft_project::Sequence> {
+    rate_stretch_preview_linked(s, clip, edge, delta, ripple, true)
+}
+
+/// [`rate_stretch_preview`] with the link-following choice captured at the pointer press.
+/// With `linked` false (Alt held), only the grabbed member is rate stretched.
+pub fn rate_stretch_preview_linked(s: &Session, clip: ClipId, edge: Edge, delta: Tick, ripple: bool, linked: bool) -> Result<filmcraft_project::Sequence> {
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let mut work = q.clone();
+    let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
+    let starts = |id: ItemId| crate::media_start(&s.project, id);
+    let mut next = s.project.next_id;
+    let mut ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
+    let clips = if linked { with_links(s, &[clip]) } else { vec![clip] };
+    if ripple {
+        if edge != Edge::Out {
+            return Err(bad("timeline.rateStretch", "ripple rate stretch supports the Out edge only"));
+        }
+        ripple_rate_stretch(&mut work, &clips, delta, s.state.ripple_sequence_markers, &mut ctx)?;
+    } else {
+        edit::rate_stretch_items(&mut work, &clips, edge, delta, &mut ctx)?;
+    }
+    Ok(work)
+}
+
+/// Apply the marker preference to the accepted cut movement, shared by preview and release.
+/// Sequence duration is not a suitable delta: locked material can extend beyond the moved cut.
+fn ripple_rate_stretch(q: &mut filmcraft_project::Sequence, clips: &[ClipId], delta: Tick, markers: bool, ctx: &mut edit::EditCtx<'_>) -> Result<f64> {
+    let before = if markers {
+        let clip = *clips.first().ok_or(edit::EditError::Nothing)?;
+        Some((clip, q.find_item(clip).ok_or(edit::EditError::NoItem(clip))?.1.end()))
+    } else {
+        None
+    };
+    let speed = edit::ripple_rate_stretch_items(q, clips, delta, ctx)?;
+    if let Some((clip, from)) = before {
+        let shift = q.find_item(clip).ok_or(edit::EditError::NoItem(clip))?.1.end() - from;
+        crate::sequence_tools::ripple_markers(&mut q.markers, from, shift);
+    }
+    Ok(speed)
+}
+
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
 /// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
 /// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
@@ -3371,19 +3415,37 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("timeline.rateStretch", "Rate Stretch", [], None, r#"{"clip":id,"edge":"in|out","delta":ticks,"linked":bool?}"#, has_seq, |s, p| {
-            let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.rateStretch", "need `clip`"))?;
-            let edge = if str_p(p, "edge") == Some("in") { Edge::In } else { Edge::Out };
-            let d = p
-                .get("delta")
-                .and_then(Value::as_i64)
-                .map(Tick)
-                .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
-                .unwrap_or_default();
-            let clips = with_links_p(s, p, c);
-            let sp = s.edit_sequence("Rate Stretch", |q, ctx, _| Ok(edit::rate_stretch_items(q, &clips, edge, d, ctx)?))?;
-            Ok(json!({"speed": sp}))
-        }),
+        cmd!(
+            "timeline.rateStretch",
+            "Rate Stretch",
+            [],
+            None,
+            r#"{"clip":id,"edge":"in|out","delta":ticks,"ripple":bool?,"linked":bool?}"#,
+            has_seq,
+            |s, p| {
+                let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.rateStretch", "need `clip`"))?;
+                let edge = if str_p(p, "edge") == Some("in") { Edge::In } else { Edge::Out };
+                let d = p
+                    .get("delta")
+                    .and_then(Value::as_i64)
+                    .map(Tick)
+                    .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
+                    .unwrap_or_default();
+                let clips = with_links_p(s, p, c);
+                let ripple = bool_p(p, "ripple").unwrap_or(false);
+                if ripple && edge != Edge::Out {
+                    return Err(bad("timeline.rateStretch", "ripple rate stretch supports the Out edge only"));
+                }
+                let sp = s.edit_sequence("Rate Stretch", |q, ctx, st| {
+                    if ripple {
+                        ripple_rate_stretch(q, &clips, d, st.ripple_sequence_markers, ctx)
+                    } else {
+                        Ok(edit::rate_stretch_items(q, &clips, edge, d, ctx)?)
+                    }
+                })?;
+                Ok(json!({"speed": sp}))
+            }
+        ),
         cmd!("timeline.razor", "Razor", [], None, r#"{"time":ticks,"track":"V1"|id?,"clip":id?}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
             let tr = track_p(s, p, "track", "timeline.razor")?;

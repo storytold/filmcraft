@@ -3,6 +3,51 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Visual ripple rate stretch
+
+With the Rate Stretch tool (`R`), hold **Shift when pressing an Out edge**, then drag to shorten
+or lengthen the clip while trailing clips follow. The hover bracket turns red. The gesture is
+captured at the press, so releasing Shift before the mouse does not change the edit. The
+preview uses the same edit algebra as release; a blocked edit reports its reason and stays put.
+One drag is one undo step.
+
+The existing **Ripple Sequence Markers** setting also applies to the drag and its live ruler
+preview. Markers follow the accepted duration change, including a clamped drag; shortening
+removes markers in the removed span, as for ripple trim. With the setting off, markers stay fixed.
+
+Pointer updates and drawing share a bounded cache of successful or blocked edit previews. The
+key includes project identity/revision, active sequence, link-selection state and stretch inputs;
+clamped requests share their accepted-delta preview. Ending or cancelling the drag releases the
+snapshots. `stretch_preview::tests` covers reuse and invalidation without mutating the project.
+
+Plain Rate Stretch, including Shift on an In edge, retains its usual neighbour-limited behavior.
+The **Ripple Edit, Shifting Trailing Clips** checkbox applies only to the Speed/Duration dialog;
+it does not enable a persistent mode for later drags. There is no new global preference.
+
+The edited clip's In edge and source span stay fixed. Followers on its track and unlocked,
+sync-locked video/audio tracks move once by the duration change, preserving existing gaps and
+following split-edit partners according to ripple-trim rules. Selection does not restrict the
+followers. Locked tracks (including a music bed) stay fixed. An unlocked grabbed clip may stretch
+while its locked linked partner stays fixed, matching ordinary Rate Stretch's locked-partner rule.
+Linked members being stretched must have matching starts, durations, speeds and direction;
+other split edits are refused rather than silently losing their source correspondence. In-edge
+ripple rate stretch and retiming captions are outside this gesture's scope. Affected unlocked,
+sync-locked caption tracks therefore block the edit with an explanation; locked captions or
+tracks with sync lock off stay fixed. Rate stretch does
+not consume extra source handles; transitions follow their cut and one-sided fades fit the clip.
+
+Automation: `timeline.rateStretch` accepts `ripple: true` for the Out edge, and
+`ui.timeline.hit` reports `kind: "rippleRateStretch"` for Shift + Out edge. The command's default
+is non-ripple. Edit-algebra, engine undo/redo and headless pointer tests use synthetic fixtures;
+the ignored `ripple_rate_stretch_screenshot` test renders the hover and preview without a desktop
+window. Live playback, hardware decode and the separate report of a temporarily black clip are
+not established by these geometry/state tests.
+
+Alt at the press leaves the edited clip's linked partner unstretched, matching ordinary edge
+edits. The preview and release capture this choice together with Shift. `timeline.rateStretch`
+accepts `linked: false` for the same operation; ripple followers still obey track sync-lock and
+collision rules, so an unchanged partner that blocks a shortening refuses the edit atomically.
+
 ## Export range warnings
 
 The Export panel shows the selected range's length in sequence frames and seconds beside Range

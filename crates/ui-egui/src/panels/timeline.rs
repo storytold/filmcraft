@@ -35,6 +35,7 @@ mod menus;
 mod ruler;
 mod scrollbars;
 mod snap;
+mod stretch_preview;
 mod waveforms;
 
 #[cfg(test)]
@@ -92,6 +93,8 @@ pub struct TlState {
     pub drag: Option<Drag>,
     /// What the primary button went down on in the Timeline (#259); see [`Pressed`].
     pub pressed: Option<Pressed>,
+    /// The last two stretch calculations, shared by pointer updates and drawing.
+    stretch_preview: Mutex<stretch_preview::Cache>,
     /// A drag or press aborted with Escape; ignores release until the button comes up (#580).
     pub cancelled: bool,
     /// Last layout (for hit-testing from the control channel).
@@ -132,6 +135,7 @@ impl TlState {
         self.duplicates = None;
         self.duplicates_pending = None;
         self.duplicates_done = Default::default();
+        self.stretch_preview = Default::default();
     }
 }
 
@@ -145,6 +149,8 @@ pub struct Pressed {
     /// The time under the pointer.
     pub tick: Tick,
     pub grab: Grab,
+    /// Whether an edge edit follows linked partners, captured before the drag threshold.
+    pub linked: bool,
     /// The vertical scrolls when the button went down (a wheel turn before the drag starts must not move a box's corner).
     pub v_scroll: f32,
     pub a_scroll: f32,
@@ -215,6 +221,8 @@ pub enum Drag {
         delta: Tick,
         /// As in [`Drag::Trim`].
         from: Tick,
+        /// Captured at press by the shared hit test; never inherited from Speed/Duration.
+        ripple: bool,
         /// As in [`Drag::Trim`].
         linked: bool,
     },
@@ -609,7 +617,7 @@ fn draw_clips(
     // clips whose media changes in the preview (a trimmed or rolled edge): drawn from the edited
     // item, so the waveform and thumbnail stay where the media is instead of squeezing (#374)
     let mut edited: HashMap<ClipId, TrackItem> = HashMap::new();
-    preview_drag(app, seq, &mut previews, &mut edited);
+    let stretch_preview = preview_drag(app, seq, &mut previews, &mut edited);
     // Option-drag copies: the clips stay where they are and their copies follow the pointer
     let copying = matches!(app.tl.drag, Some(Drag::Move { copy: true, .. }));
     let copies: Vec<(ClipId, (Tick, Tick, Option<TrackId>))> = if copying { previews.drain().collect() } else { Vec::new() };
@@ -696,7 +704,7 @@ fn draw_clips(
                 app.auto.add(&format!("timeline.clip.{}.copy", cid.0), body.intersect(content), &it.name);
             }
         }
-        paint_track_edits(app, painter, seq, rows, layout, content, vclip, aclip, t, copying);
+        paint_track_edits(app, painter, seq, rows, layout, content, vclip, aclip, t, copying, stretch_preview.as_deref());
     }
 }
 
@@ -714,6 +722,7 @@ fn paint_track_edits(
     aclip: Rect,
     t: Tokens,
     copying: bool,
+    stretch_preview: Option<&Sequence>,
 ) {
     // transitions a clip drag carries, keyed by the row they land on: a carried transition draws
     // where the drop leaves it — also when that is another track, so a fade dragged from V1 to V2
@@ -754,7 +763,8 @@ fn paint_track_edits(
         // another — right away, a copy adds a ghost beside the copies while the originals stay
         // at home.
         let mut draws: Vec<(&filmcraft_project::Transition, Tick, Tick, bool)> = Vec::new();
-        for trn in &tr.transitions {
+        let transitions = stretch_preview.and_then(|q| q.track(r.track)).map(|tr| &tr.transitions).unwrap_or(&tr.transitions);
+        for trn in transitions {
             let carried = move_transition_preview(app, seq, trn);
             // the transition's home span (a transition dragged by an end still takes over)
             let (start, end) = match &app.tl.drag {
@@ -951,7 +961,7 @@ mod trim_preview_tests {
         assert_same_media(&right, &edited[&right.id]);
         assert_eq!(edited[&right.id].start, right.start + delta);
         // Rate Stretch keeps the same media in a new length: drawn from the original item
-        app.tl.drag = Some(Drag::Stretch { clip: left.id, edge: filmcraft_edit::Edge::Out, delta, from: Tick::ZERO, linked: true });
+        app.tl.drag = Some(Drag::Stretch { clip: left.id, edge: filmcraft_edit::Edge::Out, delta: -delta, from: Tick::ZERO, ripple: false, linked: true });
         let (mut out, mut edited) = (HashMap::new(), HashMap::new());
         preview_drag(&app, &seq, &mut out, &mut edited);
         assert!(edited.is_empty() && out.contains_key(&left.id));

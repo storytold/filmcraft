@@ -1364,6 +1364,9 @@ fn moving_an_edge_keeps_the_media_under_the_timeline() {
     }
 }
 
+#[path = "ripple_rate_tests.rs"]
+mod ripple_rate_tests;
+
 #[test]
 fn trim_caption_shorter_than_min_duration_does_not_cross_bounds() {
     use filmcraft_project::{Caption, CaptionFormat, CaptionTrack};
