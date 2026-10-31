@@ -67,6 +67,7 @@ fn round_trip(profile: Profile, w: usize, h: usize, frames: &[Vec<u8>]) -> Vec<[
     assert_eq!(packets.len(), frames.len(), "one packet per picture");
     let entry = match enc.codec() {
         Codec::Hevc => SampleEntry::hevc(enc.hevc_config().expect("an hvcC record").clone(), w as u16, h as u16),
+        Codec::Av1 => SampleEntry::av1(enc.av1_config().expect("an av1C record").clone(), w as u16, h as u16),
         Codec::H264 => {
             let (sps, pps) = enc.parameter_sets();
             SampleEntry::avc(AvcConfig::new(vec![sps.to_vec()], vec![pps.to_vec()], 4), w as u16, h as u16)
