@@ -355,7 +355,9 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   requests only (a paused frame, render or export decodes them again exactly), and draft plans
   hand the GPU box-decimated Y'CbCr planes at the drawn size. `perf.stats` reports the counters.
   GPU plans carry their texels already converted for upload (`filmcraft_gpu::prepare`), so the UI
-  thread only copies them.
+  thread only copies them. Where the adapter has 16-bit normalized textures (Vulkan, Metal,
+  DX12; `filmcraft_gpu::optional_features`), 10- and 12-bit planes are left as their codes
+  (`prepare_with`) and upload as `R16Unorm`; elsewhere (WebGPU) they are converted to half floats.
 - **Audio clock.** The desktop app passes a cpal output (`apps/filmcraft/src/audio.rs`) to the UI as
   `AudioOut`. While playing, the samples played by the sound card drive the playhead and video follows.
   Without an audio device, playback falls back to the wall clock. `PlaybackMeter` counts timeline

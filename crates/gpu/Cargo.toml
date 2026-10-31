@@ -17,6 +17,7 @@ filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }
 wgpu = { version = "30", default-features = false, features = ["wgsl"] }
+bytemuck = "1"
 log = { workspace = true }
 pollster = "1"
 rayon = { workspace = true }

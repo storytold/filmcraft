@@ -94,6 +94,19 @@ pub struct GpuCompositor {
     pub cpu_transitions: u64,
     /// Total bytes uploaded (stats).
     pub uploaded_bytes: u64,
+    /// 16-bit Y'CbCr planes upload as they are (`R16Unorm`, [`OPTIONAL_FEATURES`]) instead of
+    /// being converted to half floats first.
+    raw16: bool,
+}
+
+/// Device features the compositor uses when the adapter has them; request them with
+/// [`optional_features`]. `TEXTURE_FORMAT_16BIT_NORM`: 10- and 12-bit Y'CbCr planes upload as
+/// their 16-bit codes, with no per-sample conversion on the CPU.
+pub const OPTIONAL_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+
+/// The [`OPTIONAL_FEATURES`] `adapter` has, for its `DeviceDescriptor::required_features`.
+pub fn optional_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    adapter.features() & OPTIONAL_FEATURES
 }
 
 fn tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -255,6 +268,15 @@ pub fn prepare_frame(f: &VideoFrame) -> Option<Prepared> {
 
 /// Convert every layer of a plan for upload. Thread-safe and GPU-free: run it on a worker.
 pub fn prepare(plan: &FramePlan) -> PreparedPlan {
+    prepare_with(plan, false)
+}
+
+/// [`prepare`] for a compositor that uploads 16-bit planes as they are
+/// ([`GpuCompositor::uploads_raw_16bit`]): those are left unconverted. A mismatch is harmless:
+/// a converted plane uploads as half floats on any device, an unconverted one is converted at
+/// upload where the device has no 16-bit normalized textures.
+pub fn prepare_with(plan: &FramePlan, raw16: bool) -> PreparedPlan {
+    let prepare_layers = |layers: &[PlanLayer]| prepare_layers(layers, raw16);
     match plan {
         FramePlan::Layers { layers, .. } => prepare_layers(layers),
         FramePlan::Image(img) => PreparedPlan { image: Some(Prepared { planes: vec![f32_to_f16_bytes(&img.px)] }), ..Default::default() },
@@ -271,8 +293,9 @@ pub fn prepare(plan: &FramePlan) -> PreparedPlan {
     }
 }
 
-fn prepare_layers(layers: &[PlanLayer]) -> PreparedPlan {
-    PreparedPlan { layers: layers.iter().map(|l| prepare_frame(&l.frame)).collect(), ..Default::default() }
+fn prepare_layers(layers: &[PlanLayer], raw16: bool) -> PreparedPlan {
+    let prepare = |f: &VideoFrame| if raw16 && matches!(f.data, PixelData::Yuv16 { .. }) { None } else { prepare_frame(f) };
+    PreparedPlan { layers: layers.iter().map(|l| prepare(&l.frame)).collect(), ..Default::default() }
 }
 
 impl GpuCompositor {
@@ -427,7 +450,14 @@ impl GpuCompositor {
             gpu_transitions: 0,
             cpu_transitions: 0,
             uploaded_bytes: 0,
+            raw16: device.features().contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
         }
+    }
+
+    /// Whether 16-bit Y'CbCr planes upload as they are (the device has 16-bit normalized
+    /// textures): pass it to [`prepare_with`].
+    pub fn uploads_raw_16bit(&self) -> bool {
+        self.raw16
     }
 
     fn target(
@@ -549,25 +579,36 @@ impl GpuCompositor {
                 let (sx, sy) = chroma.shifts();
                 let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
                 let scale = (1u32 << bits) as f32;
-                let owned;
-                let p = match prep {
-                    Some(p) => p,
-                    None => {
-                        owned = Prepared { planes: planes.iter().chain(alpha.as_ref()).map(|p| codes_to_f16_bytes(p, *bits)).collect() };
-                        &owned
-                    }
+                // (full-resolution alpha plane: its codes span 0..2^bits - 1, hence its scale)
+                let (y, u, v, a, code_scale, alpha_scale) = if prep.is_none() && self.raw16 {
+                    // the codes as they are: R16Unorm samples are code / 65535
+                    let plane = |s: &mut Self, w, h, p: &[u16]| s.plane_texture(w, h, wgpu::TextureFormat::R16Unorm, bytemuck::cast_slice(p), 2);
+                    let y = plane(self, w, h, &planes[0]);
+                    let u = plane(self, cw, ch, &planes[1]);
+                    let v = plane(self, cw, ch, &planes[2]);
+                    let a = alpha.as_ref().map(|a| plane(self, w, h, a));
+                    (y, u, v, a, 65535.0, 65535.0 / (scale - 1.0))
+                } else {
+                    let owned;
+                    let p = match prep {
+                        Some(p) => p,
+                        None => {
+                            owned = Prepared { planes: planes.iter().chain(alpha.as_ref()).map(|p| codes_to_f16_bytes(p, *bits)).collect() };
+                            &owned
+                        }
+                    };
+                    let y = self.plane_texture(w, h, wgpu::TextureFormat::R16Float, &p.planes[0], 2);
+                    let u = self.plane_texture(cw, ch, wgpu::TextureFormat::R16Float, &p.planes[1], 2);
+                    let v = self.plane_texture(cw, ch, wgpu::TextureFormat::R16Float, &p.planes[2], 2);
+                    let a = alpha.as_ref().and_then(|_| p.planes.get(3)).map(|b| self.plane_texture(w, h, wgpu::TextureFormat::R16Float, b, 2));
+                    (y, u, v, a, scale, scale / (scale - 1.0))
                 };
-                let y = self.plane_texture(w, h, wgpu::TextureFormat::R16Float, &p.planes[0], 2);
-                let u = self.plane_texture(cw, ch, wgpu::TextureFormat::R16Float, &p.planes[1], 2);
-                let v = self.plane_texture(cw, ch, wgpu::TextureFormat::R16Float, &p.planes[2], 2);
-                // (full-resolution alpha plane: its codes span 0..2^bits - 1, hence the scale)
-                let a = alpha.as_ref().and_then(|_| p.planes.get(3)).map(|b| self.plane_texture(w, h, wgpu::TextureFormat::R16Float, b, 2));
-                let alpha_scale = if a.is_some() { scale / (scale - 1.0) } else { 0.0 };
+                let alpha_scale = if a.is_some() { alpha_scale } else { 0.0 };
                 let _ = Chroma::C420;
                 Uploaded {
                     views: [y, u, v, a.unwrap_or_else(dummy)],
                     kind: 2,
-                    code_scale: scale,
+                    code_scale,
                     alpha_scale,
                     chroma: (cw, ch),
                     last_used: self.clock,
@@ -576,7 +617,12 @@ impl GpuCompositor {
             }
         };
         self.uploads.insert(key, up);
-        // keep the most recent uploads (enough for several stacked layers + playback lookahead)
+        self.evict_uploads();
+        key
+    }
+
+    /// Keep the most recent uploads (enough for several stacked layers + playback lookahead).
+    fn evict_uploads(&mut self) {
         if self.uploads.len() > 24 {
             let mut v: Vec<(u64, (usize, u32, u32))> = self.uploads.iter().map(|(k, u)| (u.last_used, *k)).collect();
             v.sort_unstable();
@@ -584,7 +630,6 @@ impl GpuCompositor {
                 self.uploads.remove(&k);
             }
         }
-        key
     }
 
     /// The source description of an uploaded frame.
@@ -1159,7 +1204,7 @@ fn wait_mapped(device: &wgpu::Device) -> Option<()> {
 /// Shader source: kind (0 RGBA8 sRGB, 1 linear premultiplied RGBA, 2 YUV), sampling scales, dimensions, color.
 struct SrcInfo {
     kind: u32,
-    /// Texture sample -> code units: 255 for R8Unorm, 2^bits for R16Float.
+    /// Texture sample -> code units: 255 for R8Unorm, 2^bits for R16Float, 65535 for R16Unorm.
     code_scale: f32,
     /// YUV quantization levels: 2^bits; R8Unorm's decoding scale is one less.
     code_levels: f32,
