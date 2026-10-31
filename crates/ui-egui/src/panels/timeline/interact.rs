@@ -550,6 +550,7 @@ fn start_drag(
                 Some(Drag::Marquee {
                     start: MarqueeAnchor::new(layout, t, scroll, p),
                     before: app.session.state.selection.clone(),
+                    before_captions: app.session.state.caption_selection.clone(),
                     add: mods.shift || mods.command,
                     individual: mods.alt,
                 })
@@ -628,8 +629,9 @@ fn escape_cancel(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     v.a_scroll = start_a;
                 }
                 // the live box (#1028) already changed the selection: put back the one the drag began with
-                Drag::Marquee { before, .. } => {
+                Drag::Marquee { before, before_captions, .. } => {
                     app.session.state.selection = before;
+                    app.session.state.caption_selection = before_captions;
                 }
                 _ => {}
             }
@@ -761,7 +763,7 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 Some(Drag::WorkArea { edge, from, start, end })
             }
             Drag::Volume(v) => Some(Drag::Volume(crate::panels::timeline_volume::drag(app, ui, seq, layout, v, p.y))),
-            Drag::Marquee { start, before, add, individual } => {
+            Drag::Marquee { start, before, before_captions, add, individual } => {
                 let r = start.rect_to(layout, p);
                 ui.painter().rect_filled(r, 0.0, Color32::from_white_alpha(18));
                 ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_white_alpha(140)), StrokeKind::Inside);
@@ -776,7 +778,14 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                     }
                 }
                 app.session.state.selection = sel;
-                Some(Drag::Marquee { start, before, add, individual })
+                let mut caps = if add { before_captions.clone() } else { Vec::new() };
+                for c in crate::panels::timeline_captions::marquee_captions(seq, layout, r) {
+                    if !caps.contains(&c) {
+                        caps.push(c);
+                    }
+                }
+                app.session.state.caption_selection = caps;
+                Some(Drag::Marquee { start, before, before_captions, add, individual })
             }
             other => Some(other),
         };
@@ -853,13 +862,23 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                     let moved = seq.work_area.is_some_and(|w| (w.start, w.end()) != (start, end));
                     moved.then(|| app.session.execute("sequence.setWorkArea", json!({"start": start.0, "end": end.0})))
                 }
-                Drag::Marquee { start, before, add, individual } => {
+                Drag::Marquee { start, before, before_captions, add, individual } => {
                     app.session.state.selection = before;
+                    app.session.state.caption_selection = before_captions;
                     // egui ends a drag on Escape: that cancels the box, as in the Project panel
                     match resp.interact_pointer_pos() {
                         Some(end) if !ctx.input(|i| i.key_pressed(egui::Key::Escape)) => {
-                            let ids: Vec<u64> = marquee_clips(seq, layout, start.rect_to(layout, end)).iter().map(|c| c.0).collect();
-                            Some(app.session.execute("timeline.select", json!({"clips": ids, "add": add, "linked": !individual})))
+                            let r = start.rect_to(layout, end);
+                            let ids: Vec<u64> = marquee_clips(seq, layout, r).iter().map(|c| c.0).collect();
+                            let caps: Vec<u64> = crate::panels::timeline_captions::marquee_captions(seq, layout, r).iter().map(|c| c.0).collect();
+                            let res = app.session.execute("timeline.select", json!({"clips": ids, "add": add, "linked": !individual}));
+                            // the captions the box touched join whatever the clip selection left
+                            // (a replacing `timeline.select` clears the caption selection)
+                            if res.is_ok() && !caps.is_empty() {
+                                Some(app.session.execute("captions.select", json!({"captions": caps, "add": true})))
+                            } else {
+                                Some(res)
+                            }
                         }
                         _ => None,
                     }

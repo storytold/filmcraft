@@ -351,6 +351,64 @@ fn upgrade_caption_to_graphic() {
 }
 
 #[test]
+fn select_all_then_upgrade_converts_every_caption() {
+    let mut s = demo("gt-caption-all");
+    for (i, t) in ["One", "Two", "Three"].iter().enumerate() {
+        s.execute("captions.add", json!({"text": t, "seconds": 600 + 3 * i, "durationSeconds": 2})).unwrap();
+    }
+    let n = s.execute("captions.list", json!({})).unwrap()["tracks"][0]["captions"].as_array().unwrap().len();
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    s.execute("edit.selectAll", json!({})).unwrap();
+    assert_eq!(s.state.caption_selection.len(), n, "Select All takes the captions too");
+    let r = s.execute("graphics.upgradeCaption", json!({})).unwrap();
+    assert_eq!(r["upgraded"], n);
+    assert!(s.execute("captions.list", json!({})).unwrap()["tracks"][0]["captions"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn select_all_then_delete_removes_clips_and_captions_in_one_undo() {
+    for cmd in ["edit.clear", "edit.rippleDelete"] {
+        let mut s = demo("gt-caption-all-delete");
+        s.execute("captions.add", json!({"text": "One", "seconds": 600, "durationSeconds": 2})).unwrap();
+        let count = |s: &Session| {
+            let q = s.active_sequence().unwrap();
+            let clips: usize = q.all_tracks().map(|t| t.items.len()).sum();
+            let caps: usize = q.caption_tracks.iter().map(|t| t.captions.len()).sum();
+            (clips, caps)
+        };
+        let before = count(&s);
+        assert!(before.0 > 0 && before.1 > 0);
+        s.execute("edit.selectAll", json!({})).unwrap();
+        s.execute(cmd, json!({})).unwrap();
+        assert_eq!(count(&s), (0, 0), "{cmd}: one Delete takes clips and captions");
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(count(&s), before, "{cmd}: one undo restores both");
+    }
+}
+
+#[test]
+fn explicit_clip_deletion_keeps_selected_captions_and_rejects_invalid_targets() {
+    for cmd in ["edit.clear", "edit.rippleDelete"] {
+        let mut s = demo("gt-caption-explicit-delete");
+        s.execute("captions.add", json!({"text": "Keep me", "seconds": 600, "durationSeconds": 2})).unwrap();
+        s.execute("edit.selectAll", json!({})).unwrap();
+        let captions = s.state.caption_selection.clone();
+        let clips = s.state.selection.clone();
+        let count = s.active_sequence().unwrap().caption_tracks.iter().map(|t| t.captions.len()).sum::<usize>();
+        for target in [json!({"clip": null}), json!({"clips": []}), json!({"clips": [u64::MAX]})] {
+            let before = s.project.clone();
+            assert!(s.execute(cmd, target).is_err());
+            assert!(std::sync::Arc::ptr_eq(&before, &s.project));
+            assert_eq!(s.state.caption_selection, captions);
+            assert_eq!(s.state.selection, clips);
+        }
+        s.execute(cmd, json!({"clips": clips.iter().map(|c| c.0).collect::<Vec<_>>()})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().caption_tracks.iter().map(|t| t.captions.len()).sum::<usize>(), count);
+        assert_eq!(s.state.caption_selection, captions, "explicit clip targets leave captions selected");
+    }
+}
+
+#[test]
 fn caption_font_style_is_upgraded_listed_and_replaced() {
     let mut s = demo("gt-caption-font");
     s.execute("captions.add", json!({"text": "Styled", "seconds": 600, "durationSeconds": 2})).unwrap();
