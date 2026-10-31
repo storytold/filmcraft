@@ -153,6 +153,57 @@ fn gpu_matches_cpu_plan() {
 }
 
 #[test]
+fn gpu_matches_cpu_for_a_log_source() {
+    use filmcraft_color::{ColorPipeline, ColorSpace, GpuCurve, InputTransform, Range};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    // S-Log3/S-Gamut3.Cine into the Rec. 2100 HLG working space: the shader cannot evaluate the log
+    // curve, so it samples the CPU's decode table (binding 6), then runs the camera-gamut
+    // compression stage. A constant chroma per run isolates the transform from the chroma
+    // upsampling difference (bilinear in the shader, nearest on the CPU) that `gpu_matches_cpu_plan`
+    // tolerates near edges.
+    let pipe = ColorPipeline { working: filmcraft_color::WorkingSpace::Rec2100Hlg, wide_gamut: true, auto_tone_map: true };
+    let t = Arc::new(InputTransform::new(ColorSpace::SLog3SGamut3Cine, Range::Limited, &pipe, None));
+    let params = t.gpu_params().expect("a log source has a shader form");
+    assert_eq!(params.curve, GpuCurve::Lut);
+    assert!(params.lut.is_some() && params.compress && params.matrix.is_some(), "{params:?}");
+    assert!(t.gpu_lut().is_some_and(|v| v.len() > 1024));
+    let (w, h) = (256usize, 1usize);
+    let mut c = GpuCompositor::new(&dev, &q);
+    for (u, v) in [(128u8, 128u8), (64, 192), (192, 64)] {
+        // a luma ramp over the frame's whole limited range, one chroma value throughout
+        let y: Vec<u8> = (0..w).map(|i| (16 + i * 219 / w) as u8).collect();
+        let frame = Arc::new(VideoFrame {
+            width: w as u32,
+            height: h as u32,
+            data: PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(vec![u; w]), Arc::new(vec![v; w])], chroma: Chroma::C444, alpha: None },
+            color: filmcraft_color::ColorInfo { range: Range::Limited, ..filmcraft_color::ColorInfo::REC709 },
+            par: (1, 1),
+            pts: Default::default(),
+        });
+        let plan = FramePlan::Layers {
+            width: w,
+            height: h,
+            layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: Some(t.clone()) }],
+        };
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (gw, gh, gpu) = c.read_output().expect("readback");
+        assert_eq!((gw as usize, gh as usize), (w, h));
+        let mut diffs: Vec<u32> =
+            cpu.chunks(4).zip(gpu.chunks(4)).map(|(a, b)| (0..3).map(|k| (a[k] as i32 - b[k] as i32).unsigned_abs()).max().unwrap_or(0)).collect();
+        diffs.sort_unstable();
+        let p99 = diffs[diffs.len() * 99 / 100];
+        let mean = diffs.iter().sum::<u32>() as f64 / diffs.len() as f64;
+        // f16 accumulator quantization plus the sampled table's own interpolation, nothing more
+        assert!(p99 <= 6 && mean < 1.5, "log source U={u} V={v}: p99 {p99}, mean {mean}");
+        eprintln!("log source (S-Log3 -> HLG working space) U={u} V={v}: p99 {p99}, mean {mean:.2}");
+    }
+}
+
+#[test]
 fn half_float_conversion() {
     for v in [0.0f32, 1.0, 0.5, 0.123, 65504.0, -2.0, 1e-5] {
         let h = f32_to_f16(v);
