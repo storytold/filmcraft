@@ -32,12 +32,37 @@ impl FilmcraftApp {
 }
 
 impl FilmcraftApp {
+    /// The native menu bar (macOS) takes the key equivalents of its items before the window sees
+    /// them, so with the Keyboard Shortcuts dialog open a chord such as ⌘B arrives as its menu
+    /// command (New Bin) instead of a key press: it ran the command and the recorder never saw the
+    /// chord (#1333). While a shortcut is being recorded, the command becomes the key press of its
+    /// shortcut for the recorder. Otherwise Quit and the Edit menu's text commands for a focused
+    /// field (the dialog's search box) go on as usual, and other commands are kept from running
+    /// behind the dialog, as the in-app shortcuts are. Returns whether `id` was taken.
+    fn menu_command_in_shortcut_editor(&mut self, ctx: &egui::Context, id: &str) -> bool {
+        if self.dialog != Some(crate::Dialog::Shortcuts) {
+            return false;
+        }
+        if self.shortcut_editor.recording.is_some() {
+            if let Some((modifiers, key)) = self.session.shortcuts.primary(id).as_deref().and_then(menus::parse_shortcut) {
+                self.synthetic.extend([true, false].map(|pressed| egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers }));
+                ctx.request_repaint();
+            }
+            return true;
+        }
+        let text_command = menus::text_field_window(ctx).is_some() && menus::edits_text(id);
+        id != "app.quit" && !text_command
+    }
+
     /// Drain native menu/control command ids, preserving the control-only Quit exception.
     pub(super) fn logic_command_inbox(&mut self, ctx: &egui::Context) {
         if let Some(rx) = self.command_inbox.take() {
             while let Ok(id) = rx.try_recv() {
                 // control-only mode ignores native menu commands, but Quit stays available (#1943)
                 if self.control_input_only && id != "app.quit" {
+                    continue;
+                }
+                if self.menu_command_in_shortcut_editor(ctx, &id) {
                     continue;
                 }
                 if let Err(e) = menus::activate_native(self, ctx, &id) {
