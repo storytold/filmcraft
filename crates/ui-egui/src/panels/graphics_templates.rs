@@ -170,7 +170,7 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut elems: Elems = Vec::new();
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut install = false;
-    let mut cats: Vec<String> = lib.iter().map(|e| e.template.category.clone()).collect();
+    let mut cats: Vec<String> = lib.iter().flat_map(|e| filmcraft_engine::graphic_templates::template_categories(&e.template)).collect();
     cats.sort();
     cats.dedup();
     let mut b = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 6.0))).id_salt("gfx-browse"));
@@ -201,9 +201,9 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         .iter()
         .filter(|e| {
             let tt = &e.template;
-            (st.category.is_empty() || tt.category == st.category)
+            (st.category.is_empty() || filmcraft_engine::graphic_templates::template_categories(tt).contains(&st.category))
                 && (crate::i18n::matches_query(&tt.name, &q)
-                    || crate::i18n::matches_query(&tt.category, &q)
+                    || filmcraft_engine::graphic_templates::template_categories(tt).iter().any(|c| crate::i18n::matches_query(c, &q))
                     || crate::i18n::matches_query(&tt.description, &q)
                     || tt.tags.iter().any(|x| crate::i18n::matches_query(x, &q)))
         })

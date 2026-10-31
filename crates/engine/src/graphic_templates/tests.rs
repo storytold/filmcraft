@@ -459,3 +459,73 @@ fn character_style_merge_preserves_default_calls_and_separate_clips() {
     }
     assert_eq!(s.history.undo.len(), n + 2, "distinct layers do not merge");
 }
+
+/// A user template's category: its own, else (when it has none or the default) the name of the
+/// subfolder it sits in (#3657).
+#[test]
+fn subfolder_name_is_the_category_of_a_user_template() {
+    let mut s = demo("gt-subfolder-cat");
+    let dir = filmcraft_engine_user_dir(&s);
+    let write = |rel: &str, category: &str, id: &str| {
+        let mut t = crate::graphic_templates::builtin_templates().remove(0);
+        t.id = id.into();
+        t.name = id.into();
+        t.category = category.into();
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, t.to_json()).unwrap();
+    };
+    write("Top.fcgt", "My Templates", "top-level");
+    write("Acme/Intro.fcgt", "My Templates", "acme-intro");
+    write("Acme/Outro.fcgt", "", "acme-outro");
+    write("Acme/Own.fcgt", "Lower Thirds", "acme-own");
+    write("Acme/deeper/Ignored.fcgt", "My Templates", "too-deep");
+    write(".hidden/Skipped.fcgt", "My Templates", "hidden");
+    let lib = crate::graphic_templates::library(&s);
+    let cat = |id: &str| lib.iter().find(|e| e.template.id == id).map(|e| e.template.category.clone());
+    assert_eq!(cat("top-level").as_deref(), Some("My Templates"));
+    assert_eq!(cat("acme-intro").as_deref(), Some("Acme"), "the folder is the category");
+    assert_eq!(cat("acme-outro").as_deref(), Some("Acme"));
+    assert_eq!(cat("acme-own").as_deref(), Some("Lower Thirds"), "an explicit category wins");
+    assert_eq!(cat("too-deep"), None, "only one folder level is read");
+    assert_eq!(cat("hidden"), None, "hidden folders are skipped");
+    let listed = s.execute("graphics.template.list", json!({"category": "Acme"})).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 2, "{listed}");
+    // it still applies by id
+    s.execute("graphics.template.apply", json!({"template": "acme-intro"})).unwrap();
+}
+
+fn filmcraft_engine_user_dir(s: &Session) -> std::path::PathBuf {
+    crate::graphic_templates::user_templates_dir(s).unwrap()
+}
+
+/// Portrait templates (taller than wide) are also listed under "Vertical" (#3658).
+#[test]
+fn portrait_templates_are_in_the_vertical_category() {
+    let mut s = demo("gt-vertical");
+    let dir = filmcraft_engine_user_dir(&s);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (id, canvas) in [("portrait", [1080, 1920]), ("landscape", [1920, 1080]), ("square", [1080, 1080])] {
+        let mut t = crate::graphic_templates::builtin_templates().remove(0);
+        t.id = id.into();
+        t.name = id.into();
+        t.category = "Social".into();
+        t.canvas = canvas;
+        std::fs::write(dir.join(format!("{id}.fcgt")), t.to_json()).unwrap();
+    }
+    let ids = |v: Value| -> Vec<String> { v.as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap().to_string()).collect() };
+    assert_eq!(ids(s.execute("graphics.template.list", json!({"category": "Vertical"})).unwrap()), ["portrait"]);
+    let social = ids(s.execute("graphics.template.list", json!({"category": "Social"})).unwrap());
+    assert_eq!(social.len(), 3, "a portrait template keeps its own category: {social:?}");
+    let t = crate::graphic_templates::library(&s).into_iter().find(|e| e.template.id == "portrait").unwrap().template;
+    assert_eq!(crate::graphic_templates::template_categories(&t), ["Social", "Vertical"]);
+    let l = crate::graphic_templates::library(&s).into_iter().find(|e| e.template.id == "landscape").unwrap().template;
+    assert_eq!(crate::graphic_templates::template_categories(&l), ["Social"]);
+    // a case-variant own category still gets the canonical Vertical entry
+    let mut odd = t.clone();
+    odd.category = "vertical".into();
+    assert_eq!(crate::graphic_templates::template_categories(&odd), ["vertical", "Vertical"]);
+    let mut exact = t;
+    exact.category = "Vertical".into();
+    assert_eq!(crate::graphic_templates::template_categories(&exact), ["Vertical"]);
+}

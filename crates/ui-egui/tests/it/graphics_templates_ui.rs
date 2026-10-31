@@ -221,3 +221,41 @@ fn install_refused_shows_the_reason_on_the_status_bar() {
     let msg = st["ui"]["status"].as_str().unwrap_or_default().to_lowercase();
     assert!(msg.contains("zip archive"), "the refused install left no visible reason: {:?}", st["ui"]["status"]);
 }
+
+/// #3658 / #3657: portrait templates are under "Vertical" and a template in a subfolder under the
+/// folder's name, in the Browse category list and filter.
+#[test]
+fn browse_lists_vertical_and_subfolder_categories() {
+    let mut d = Driver::demo("categories");
+    let prefs = d.harness.state().session.prefs_path.clone().unwrap();
+    let dir = prefs.parent().unwrap().join("Graphics Templates");
+    std::fs::create_dir_all(dir.join("Acme")).unwrap();
+    for (rel, id, canvas) in [("Acme/Tall.fcgt", "tall", [1080, 1920]), ("Wide.fcgt", "wide", [1920, 1080])] {
+        let mut t = filmcraft_engine::graphic_templates::library(&d.harness.state().session).remove(0).template;
+        t.id = id.into();
+        t.name = id.into();
+        t.category = "My Templates".into();
+        t.canvas = canvas;
+        std::fs::write(dir.join(rel), t.to_json()).unwrap();
+    }
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.EssentialGraphics"}));
+    d.ok("ui.set", json!({"gfxTemplates": {"tab": "browse"}}));
+    d.frames(4);
+    let item = |id: &str| format!("gfxTemplates.item.{id}");
+    let path_id = |name: &str| {
+        let lib = filmcraft_engine::graphic_templates::library(&d.harness.state().session);
+        lib.into_iter().find(|e| e.template.name == name).map(|e| item(&e.template.id)).unwrap()
+    };
+    let (tall, wide) = (path_id("tall"), path_id("wide"));
+    d.ok("ui.set", json!({"gfxTemplates": {"category": "Vertical"}}));
+    d.frames(3);
+    assert_eq!(d.ids("gfxTemplates.item."), vec![tall.clone()], "only the portrait template is Vertical");
+    d.ok("ui.set", json!({"gfxTemplates": {"category": "Acme"}}));
+    d.frames(3);
+    assert_eq!(d.ids("gfxTemplates.item."), vec![tall.clone()], "the subfolder is the category");
+    d.ok("ui.set", json!({"gfxTemplates": {"category": ""}}));
+    d.frames(3);
+    let all = d.ids("gfxTemplates.item.");
+    assert!(all.contains(&tall) && all.contains(&wide));
+}

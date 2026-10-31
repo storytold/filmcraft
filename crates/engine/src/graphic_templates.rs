@@ -77,20 +77,62 @@ pub struct LibraryEntry {
 /// Built-in and user templates (user files that fail to read are skipped).
 pub fn library(s: &Session) -> Vec<LibraryEntry> {
     let mut v: Vec<LibraryEntry> = builtin_templates().into_iter().map(|t| LibraryEntry { template: t, path: None }).collect();
-    if let Some(dir) = user_templates_dir(s)
-        && let Some(Ok(mut names)) = s.services.list_dir(&dir.to_string_lossy())
-    {
-        names.sort();
-        for n in names.into_iter().filter(|n| n.to_ascii_lowercase().ends_with(&format!(".{TEMPLATE_EXTENSION}"))) {
-            let path = dir.join(&n).to_string_lossy().to_string();
-            if let Ok(b) = s.services.read_file(&path)
-                && let Ok(t) = GraphicsTemplate::from_bytes(&b)
-            {
-                v.push(LibraryEntry { template: t, path: Some(path) });
-            }
-        }
+    if let Some(dir) = user_templates_dir(s) {
+        v.extend(user_library(s, &dir));
     }
     v
+}
+
+/// The categories a template is listed under: its own, and "Vertical" when its canvas is taller
+/// than wide (#3658).
+pub fn template_categories(t: &GraphicsTemplate) -> Vec<String> {
+    let mut v = vec![t.category.clone()];
+    if t.canvas[1] > t.canvas[0] && t.category != VERTICAL_CATEGORY {
+        v.push(VERTICAL_CATEGORY.to_string());
+    }
+    v
+}
+
+/// The Browse category of portrait templates.
+pub const VERTICAL_CATEGORY: &str = "Vertical";
+
+/// The category a template exported without one gets.
+const DEFAULT_TEMPLATE_CATEGORY: &str = "My Templates";
+
+/// Most subfolders of the templates folder that are read.
+const MAX_TEMPLATE_FOLDERS: usize = 256;
+
+/// The `.fcgt` files of the templates folder and of its direct subfolders (one level, so no
+/// folder loops; hidden folders are skipped). A template in a subfolder whose own category is
+/// empty or the default ([`DEFAULT_TEMPLATE_CATEGORY`]) is listed under the folder's name (#3657).
+fn user_library(s: &Session, dir: &std::path::Path) -> Vec<LibraryEntry> {
+    let mut out = Vec::new();
+    let Some(Ok(mut entries)) = s.services.list_entries(&dir.to_string_lossy()) else { return out };
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    let ext = format!(".{TEMPLATE_EXTENSION}");
+    let read = |folder: &std::path::Path, names: Vec<String>, category: Option<&str>, out: &mut Vec<LibraryEntry>| {
+        for n in names.into_iter().filter(|n| n.to_ascii_lowercase().ends_with(&ext)) {
+            let path = folder.join(&n).to_string_lossy().to_string();
+            if let Ok(b) = s.services.read_file(&path)
+                && let Ok(mut t) = GraphicsTemplate::from_bytes(&b)
+            {
+                if let Some(c) = category.filter(|_| t.category.is_empty() || t.category == DEFAULT_TEMPLATE_CATEGORY) {
+                    t.category = c.to_string();
+                }
+                out.push(LibraryEntry { template: t, path: Some(path) });
+            }
+        }
+    };
+    let (files, folders): (Vec<_>, Vec<_>) = entries.into_iter().partition(|e| !e.is_dir);
+    read(dir, files.into_iter().map(|e| e.name).collect(), None, &mut out);
+    for f in folders.into_iter().filter(|f| !f.name.starts_with('.') && !f.name.contains(['/', '\\'])).take(MAX_TEMPLATE_FOLDERS) {
+        let sub = dir.join(&f.name);
+        if let Some(Ok(mut names)) = s.services.list_dir(&sub.to_string_lossy()) {
+            names.sort();
+            read(&sub, names, Some(&f.name), &mut out);
+        }
+    }
+    out
 }
 
 fn is_mogrt(path: &str) -> bool {
@@ -218,10 +260,10 @@ fn list_templates(s: &mut Session, p: &Value) -> Result<Value> {
             let t = &e.template;
             (q.is_empty()
                 || t.name.to_ascii_lowercase().contains(&q)
-                || t.category.to_ascii_lowercase().contains(&q)
+                || template_categories(t).iter().any(|c| c.to_ascii_lowercase().contains(&q))
                 || t.description.to_ascii_lowercase().contains(&q)
                 || t.tags.iter().any(|x| x.to_ascii_lowercase().contains(&q)))
-                && cat.as_ref().is_none_or(|c| t.category.to_ascii_lowercase() == *c)
+                && cat.as_ref().is_none_or(|c| template_categories(t).iter().any(|x| x.to_ascii_lowercase() == *c))
                 && src.is_none_or(|x| (x == "user") == e.path.is_some())
         })
         .map(entry_json)
@@ -499,7 +541,7 @@ fn export_template(s: &mut Session, p: &Value) -> Result<Value> {
     let t = GraphicsTemplate {
         id: format!("user:{}", gtemplate::slug(&name)),
         name: name.clone(),
-        category: str_p(p, "category").unwrap_or("My Templates").to_string(),
+        category: str_p(p, "category").unwrap_or(DEFAULT_TEMPLATE_CATEGORY).to_string(),
         description: str_p(p, "description").unwrap_or("").to_string(),
         author: str_p(p, "author").unwrap_or("").to_string(),
         license: str_p(p, "license").unwrap_or("").to_string(),
