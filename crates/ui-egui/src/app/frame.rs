@@ -1,4 +1,4 @@
-use super::{FilmcraftApp, Tick, Tokens, crash, header, i18n, panels, state, updates_ui};
+use super::{FilmcraftApp, Tick, Tokens, crash, header, i18n, panels, state, updates_ui, widgets};
 
 impl FilmcraftApp {
     // ---------------------------------------------------------------- frame
@@ -154,32 +154,42 @@ impl FilmcraftApp {
         use std::sync::atomic::Ordering;
         let job = self.running_job()?;
         let f = job.progress.fraction().clamp(0.0, 1.0);
-        let left = job.progress.eta().map(panels::left_text).unwrap_or_default();
+        // asked every frame though shown once a second: each call is also a reading of the job's speed
+        let eta = job.progress.eta();
         let cancel = egui::Rect::from_center_size(egui::pos2(sb.max.x - 14.0, sb.center().y), egui::vec2(14.0, 14.0));
         let bar = egui::Rect::from_min_size(egui::pos2(cancel.min.x - 128.0, sb.center().y - 3.0), egui::vec2(120.0, 6.0));
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
-        let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
-        let progress = p.text(
-            egui::pos2(bar.min.x - 8.0, sb.center().y),
-            egui::Align2::RIGHT_CENTER,
-            format!("{verb}… {:.0}%{left}", f * 100.0),
-            Tokens::ui(11.0),
-            t.text_dim,
-        );
+        let (now, font) = (self.now(), Tokens::ui(11.0));
+        let shown = match self.job_text.take().filter(|s| s.job == job.id) {
+            Some(s) if (s.at..s.at + panels::JobText::EVERY).contains(&now) => s,
+            old => {
+                let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+                let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
+                let text = format!("{verb}… {label}");
+                // room from the start for 100 % and a time under an hour, so the first estimate fits
+                let room = format!("{verb}… 100%{}", panels::left_text(std::time::Duration::from_secs(3599)));
+                let width = [&text, &room].map(|s| widgets::tabular_text(p, s, &font, t.text_dim).1).into_iter().fold(old.map_or(0.0, |o| o.width), f32::max);
+                panels::JobText { job: job.id, at: now, text, label, width }
+            }
+        };
+        let start = bar.min.x - 8.0 - shown.width;
+        widgets::paint_tabular(p, egui::pos2(start, sb.center().y), widgets::tabular_text(p, &shown.text, &font, t.text_dim).0, t.text_dim);
+        let left = shown.label.clone();
+        self.job_text = Some(shown);
         let resp = ui.interact(cancel, egui::Id::unique(("job-cancel", job.id)), egui::Sense::click());
         let c = if resp.hovered() { t.hot_text } else { t.text_dim };
         let k = 3.5;
         p.line_segment([cancel.center() - egui::vec2(k, k), cancel.center() + egui::vec2(k, k)], egui::Stroke::new(1.4, c));
         p.line_segment([cancel.center() + egui::vec2(-k, k), cancel.center() + egui::vec2(k, -k)], egui::Stroke::new(1.4, c));
         self.auto.add("status.job.cancel", cancel, &format!("Cancel {}", job.label));
-        self.auto.add("status.job.progress", bar, &format!("{:.0}%{left}", f * 100.0));
+        self.auto.add("status.job.progress", bar, &left);
         if resp.on_hover_text(tl!("Cancel")).clicked() {
             job.progress.cancel.store(true, Ordering::Relaxed);
             self.watched_render = None;
         }
-        Some(progress.min.x)
+        Some(start)
     }
 
     /// Contextual hint for the status bar (Premiere shows tool/gesture hints here).
@@ -243,5 +253,47 @@ impl FilmcraftApp {
         if close {
             self.ui_error = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod job_status_tests {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// The status bar's export text changed on every frame, and right-aligned against the bar, so
+    /// "Exporting… 46%" jumped sideways whenever the time left gained or lost a digit or its hour.
+    #[test]
+    fn the_job_text_changes_once_a_second_and_where_it_starts_stays_put() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let job = filmcraft_engine::Job { id: 7, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+        let progress = job.progress.clone();
+        // 250 units a second of 1 000 000 (readings from the near future, which the real clock reading
+        // every frame does not disturb): 3995 s left
+        progress.total.store(1_000_000, Ordering::Relaxed);
+        let t0 = web_time::Instant::now() + Duration::from_secs(60);
+        for i in 0..=50u64 {
+            progress.done.store(i * 25, Ordering::Relaxed);
+            progress.eta_at(t0 + Duration::from_millis(i * 100));
+        }
+        app.session.jobs.push(job);
+        let (ctx, t) = (egui::Context::default(), Tokens::for_kind(crate::theme::ThemeKind::Dark));
+        let sb = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 24.0));
+        let draw = |app: &mut FilmcraftApp, now: f64| {
+            app.set_now_for_test(now);
+            let mut start = None;
+            ctx.run_ui(egui::RawInput::default(), |ui| start = app.job_status(ui, sb, &t)).textures_delta.clear();
+            (start, app.job_text.as_ref().map(|s| s.label.clone()))
+        };
+        let (start, label) = draw(&mut app, 10.0);
+        assert_eq!(label.as_deref(), Some("0% · 1:06:35 left"));
+        // half as much left: under an hour, but not shown before a second has passed
+        progress.total.store(500_000, Ordering::Relaxed);
+        assert_eq!(draw(&mut app, 10.5), (start, label));
+        let (later, label) = draw(&mut app, 11.0);
+        assert_eq!(label.as_deref(), Some("0% · 33:15 left"));
+        assert_eq!(later, start, "the shorter text starts where the longer one did");
     }
 }

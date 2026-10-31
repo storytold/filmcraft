@@ -66,6 +66,25 @@ use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::theme::Tokens;
 
+/// The status bar's job text as last shown. It changes at most every [`JobText::EVERY`] seconds,
+/// and the room it takes only grows while the job runs, so where it starts stays put.
+pub struct JobText {
+    pub job: u64,
+    /// [`FilmcraftApp::now`] when `text` was made.
+    pub at: f64,
+    /// `Exporting… 46% · 56:11 left`.
+    pub text: String,
+    /// The same without the verb, for agents (`status.job.progress`).
+    pub label: String,
+    /// The widest the text has been for this job.
+    pub width: f32,
+}
+
+impl JobText {
+    /// More often than about once a second, a changing number is flicker rather than news.
+    pub const EVERY: f64 = 1.0;
+}
+
 /// ` · 2:05 left`: the time a job has left, as it follows a percentage.
 pub fn left_text(d: std::time::Duration) -> String {
     tlf!(" · {time} left", time = filmcraft_engine::export::format_eta(d))

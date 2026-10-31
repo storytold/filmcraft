@@ -120,6 +120,7 @@ impl FilmcraftApp {
             stale_clipboard_media: None,
             gpu: None,
             watched_render: None,
+            job_text: None,
             applied_prefs: None,
             applied_ui_scale: None,
             workspace_restored: false,

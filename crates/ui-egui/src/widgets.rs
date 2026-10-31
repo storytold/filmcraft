@@ -518,6 +518,38 @@ pub(crate) fn zoom_thumb_cursor(ui: &Ui, resp: &Response, thumb: Rect, handle_gr
     }
 }
 
+/// `text` laid out with each digit centred in a cell as wide as the widest digit (tabular figures,
+/// which egui's fonts don't switch on), so a number that changes doesn't move the text after it:
+/// the pieces with their x offsets, and the width of the whole.
+pub fn tabular_text(painter: &egui::Painter, text: &str, font: &egui::FontId, color: Color32) -> (Vec<(f32, std::sync::Arc<egui::Galley>)>, f32) {
+    let layout = |s: String| painter.layout_no_wrap(s, font.clone(), color);
+    let cell = ('0'..='9').map(|c| layout(c.to_string()).size().x).fold(0.0, f32::max);
+    // each digit alone; the runs between them whole, keeping their kerning
+    let mut runs: Vec<(bool, String)> = Vec::new();
+    for c in text.chars() {
+        match runs.last_mut() {
+            Some((false, run)) if !c.is_ascii_digit() => run.push(c),
+            _ => runs.push((c.is_ascii_digit(), c.to_string())),
+        }
+    }
+    let (mut pieces, mut x) = (Vec::with_capacity(runs.len()), 0.0);
+    for (digit, run) in runs {
+        let g = layout(run);
+        let w = g.size().x;
+        pieces.push((if digit { x + (cell - w) / 2.0 } else { x }, g));
+        x += if digit { cell } else { w };
+    }
+    (pieces, x)
+}
+
+/// Paint [`tabular_text`]'s pieces with their left edge at `left_center.x`, centred on its y.
+pub fn paint_tabular(painter: &egui::Painter, left_center: egui::Pos2, pieces: Vec<(f32, std::sync::Arc<egui::Galley>)>, color: Color32) {
+    for (dx, g) in pieces {
+        let y = left_center.y - g.size().y / 2.0;
+        painter.galley(pos2(left_center.x + dx, y), g, color);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,6 +574,24 @@ mod tests {
             // (an empty text has no extent)
             .filter(|c| c.is_finite())
             .collect()
+    }
+
+    /// Tabular text: every digit takes the same room, so `11:11` and `88:08` are as wide.
+    #[test]
+    fn tabular_text_gives_every_digit_the_same_room() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &Tokens::for_kind(ThemeKind::Dark)); // the app's UI font
+        let mut widths = Vec::new();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            for s in ["Exporting… 11% · 11:11 left", "Exporting… 88% · 88:08 left"] {
+                widths.push(tabular_text(ui.painter(), s, &Tokens::ui(11.0), Color32::WHITE).1);
+            }
+            let plain = |s: &str| ui.painter().layout_no_wrap(s.to_string(), Tokens::ui(11.0), Color32::WHITE).size().x;
+            assert!(plain("11:11") < plain("88:08"), "the font's own digits differ in width");
+        })
+        .textures_delta
+        .clear();
+        assert!((widths[0] - widths[1]).abs() < 0.01, "{widths:?}");
     }
 
     #[test]
