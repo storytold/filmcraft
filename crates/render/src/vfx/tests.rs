@@ -488,6 +488,90 @@ fn track_matte_uses_the_other_tracks_alpha_and_luma() {
     assert!(close(o.get(1, 1)[3], 1.0, 1e-3) && close(o.get(6, 1)[3], 0.0, 1e-4));
 }
 
+/// Half key colour, half a warm foreground; the alpha of a pixel in each half after Ultra Key.
+fn ultra_halves(key: [f32; 3], screen: [f32; 3], tweak: impl Fn(&mut EffectInstance)) -> (f32, f32) {
+    let mut img = solid(8, 2, screen);
+    let fg = dec([0.7, 0.45, 0.3]);
+    for x in 4..8 {
+        for y in 0..2 {
+            img.px[(y * 8 + x) * 4..(y * 8 + x) * 4 + 4].copy_from_slice(&[fg[0], fg[1], fg[2], 1.0]);
+        }
+    }
+    let mut e = inst("ultra_key");
+    set(&mut e, "key_color", ParamValue::Color([key[0], key[1], key[2], 1.0]));
+    tweak(&mut e);
+    let o = run("ultra_key", &e, &img, &cx());
+    (o.get(1, 0)[3], o.get(6, 0)[3])
+}
+
+/// #3618: at the default Setting the sliders drive the matte (the preset used to override them), and
+/// a blue or neutral key colour keys out its half.
+#[test]
+fn ultra_key_sliders_and_key_colours() {
+    let green = [0.0, 0.8, 0.2];
+    let at = |tol: f64| ultra_halves(green, green, |e| setf(e, "tolerance", tol));
+    // a screen a little off the key colour: Tolerance decides whether it keys
+    let off = |tol: f64| ultra_halves(green, [0.45, 0.65, 0.3], |e| setf(e, "tolerance", tol));
+    assert!(at(0.0).0 < 0.05 && at(100.0).0 < 0.05);
+    assert!((off(0.0).0 - off(100.0).0).abs() > 0.2, "Tolerance did nothing at the Default Setting: {:?} {:?}", off(0.0), off(100.0));
+    // Transparency changes the matte too
+    let tr = |v: f64| ultra_halves(green, [0.45, 0.65, 0.3], |e| setf(e, "transparency", v)).0;
+    assert!((tr(0.0) - tr(100.0)).abs() > 0.05, "Transparency did nothing");
+    // an untouched Aggressive Setting still applies its preset
+    let (s_def, _) = ultra_halves(green, [0.45, 0.65, 0.3], |_| {});
+    let (s_ag, _) = ultra_halves(green, [0.45, 0.65, 0.3], |e| set(e, "setting", ParamValue::Choice(2)));
+    assert!((s_def - s_ag).abs() > 1e-4);
+    // the Setting command writes Aggressive's values into the sliders: from then on they are the
+    // user's, including an edit back to the Default's value and edits of every differing slider
+    let written = |edit: &dyn Fn(&mut EffectInstance)| {
+        ultra_halves(green, [0.45, 0.65, 0.3], |e| {
+            set(e, "setting", ParamValue::Choice(2));
+            for (id, v) in filmcraft_project::effect::ultra_key_setting(2).unwrap() {
+                setf(e, id, *v);
+            }
+            edit(e);
+        })
+        .0
+    };
+    let aggressive = written(&|_| {});
+    assert!((written(&|e| setf(e, "tolerance", 50.0)) - aggressive).abs() > 0.05, "Tolerance 50 after the Setting command is honoured");
+    let all_edited = written(&|e| {
+        for (id, v) in filmcraft_project::effect::ultra_key_setting(2).unwrap() {
+            setf(e, id, if *v == 90.0 { 50.0 } else { *v + 1.0 });
+        }
+    });
+    assert!((all_edited - aggressive).abs() > 1e-4, "every edited slider is honoured, none snaps back to the preset");
+    // blue and grey keys remove their half and keep the foreground
+    for key in [[0.0, 0.2, 0.9], [0.5, 0.5, 0.5]] {
+        let (screen, fg) = ultra_halves(key, key, |_| {});
+        assert!(screen < 0.05 && fg > 0.95, "key {key:?}: screen {screen} fg {fg}");
+    }
+}
+
+/// #3618 review: the neutral-key matte blends into the chroma matte across a band, so the alpha of
+/// a pixel is continuous in the key colour (an animated key colour does not flicker), while a
+/// clearly grey or clearly coloured key keeps its matte.
+#[test]
+fn ultra_key_matte_is_continuous_across_the_neutral_boundary() {
+    let alpha = |r: f32| {
+        let mut img = solid(2, 1, [0.5, 0.5, 0.5]);
+        let mut e = inst("ultra_key");
+        set(&mut e, "key_color", ParamValue::Color([r, 0.5, 0.5, 1.0]));
+        let o = run("ultra_key", &e, &img.clone(), &cx());
+        img.px.clear();
+        o.get(0, 0)[3]
+    };
+    let mut prev = alpha(0.5);
+    let mut worst = 0.0f32;
+    for i in 1..=80 {
+        let a = alpha(0.5 + i as f32 * 0.0005);
+        worst = worst.max((a - prev).abs());
+        prev = a;
+    }
+    assert!(worst < 0.15, "alpha jumps by {worst} for a 0.0005 change of the key colour");
+    assert!(alpha(0.5) < 0.05, "a grey key keys the grey pixel");
+}
+
 #[test]
 fn keyers_known_values() {
     // Ultra Key: pure green screen → transparent, grey foreground → opaque
