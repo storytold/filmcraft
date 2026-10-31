@@ -182,6 +182,11 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("posterize", vec![("levels", fl(2.0))], true),
         ("posterize", vec![("levels", fl(7.0))], true),
         ("posterize", vec![("levels", fl(255.0))], true),
+        ("noise", vec![("amount", fl(30.0))], false),
+        ("noise", vec![("amount", fl(80.0)), ("color", ParamValue::Bool(false))], false),
+        ("noise", vec![("amount", fl(50.0)), ("grain_size", fl(3.5))], true),
+        ("noise", vec![("amount", fl(100.0)), ("clip", ParamValue::Bool(false))], false),
+        ("noise_legacy", vec![("amount", fl(40.0))], false),
         ("gaussian_blur", vec![("blurriness", fl(0.0))], false),
         ("gaussian_blur", vec![("blurriness", fl(5.0))], false),
         ("gaussian_blur", vec![("blurriness", fl(5.0)), ("repeat_edge", ParamValue::Bool(true))], false),
@@ -438,6 +443,33 @@ fn gpu_neutral_three_way_leaves_negative_and_hdr_values() {
     let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
     let (worst, flips) = compare(&px, &gpu);
     assert!(worst <= EXACT && flips == 0.0, "the GPU changed a neutral corrector's input: {worst:.2e}, {flips:.4} of the values");
+}
+
+/// Noise hashes the exact frame time as a 64-bit seed: the shader's 64-bit integer emulation gives
+/// the CPU's field at any time, and two frames differ.
+#[test]
+fn gpu_noise_matches_cpu_at_any_frame() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    assert!(c.fx.is_some(), "no effect stage");
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let e = effect("noise", &[("amount", ParamValue::Float(60.0))]);
+    let mut fields = Vec::new();
+    for t in [Tick(1), Tick(8_467_200_000), Tick(254_016_000_000 * 3600 + 12_345), Tick(i64::MAX)] {
+        let op = FxOp::eval(&e, &cx(t, 1.0), w as usize, h as usize).expect("noise op");
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        op.apply(&mut cpu);
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        assert!(worst <= EXACT && flips == 0.0, "noise at {t:?}: {worst:.2e}, flips {flips}");
+        fields.push(cpu.px);
+    }
+    assert_ne!(fields[0], fields[1], "the noise changes from frame to frame");
 }
 
 #[test]
