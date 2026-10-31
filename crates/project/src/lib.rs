@@ -21,6 +21,7 @@ pub mod mask;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod project_link;
 pub mod transcript;
 pub mod vtransition;
 
@@ -111,6 +112,9 @@ pub struct Project {
     /// instructions for whoever opens it next, frame numbers and the like. Schema v15.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
+    /// Persistent cross-application project references, keyed by their media item. Schema v16.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub project_links: BTreeMap<ItemId, project_link::ProjectLink>,
 }
 
 impl Default for Project {
@@ -138,6 +142,7 @@ impl Project {
             source_graphics: BTreeMap::new(),
             narrations: BTreeMap::new(),
             notes: String::new(),
+            project_links: BTreeMap::new(),
         }
     }
 
@@ -166,7 +171,7 @@ impl Project {
         }
         self.search_bins.iter().for_each(|b| see(b.id.0));
         // deleting an item leaves these entries behind: a new item taking that id would inherit them
-        self.transcripts.keys().chain(self.source_graphics.keys()).chain(self.narrations.keys()).for_each(|i| see(i.0));
+        self.transcripts.keys().chain(self.source_graphics.keys()).chain(self.narrations.keys()).chain(self.project_links.keys()).for_each(|i| see(i.0));
         // `lut.import` names LUTs `lut<id>`
         self.luts.iter().filter_map(|l| l.id.strip_prefix("lut")?.parse().ok()).for_each(&mut see);
         fn mixer(m: &MixerStrip) -> impl Iterator<Item = u64> + '_ {

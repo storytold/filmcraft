@@ -909,3 +909,109 @@ fn menu_bar_menus_use_the_13pt_menu_text() {
         assert_eq!(font.size, 13.0, "`{label}` in the File menu");
     }
 }
+
+#[test]
+fn linked_projects_dialog_is_automatable_and_unconfigured_import_fails() {
+    let mut d = Driver::with(Session::default());
+    filmcraft_ui_egui::panels::project_links::open(&d.harness.ctx);
+    d.frames(3);
+    for id in [
+        "linkedProjects.renderer",
+        "linkedProjects.enable",
+        "linkedProjects.path",
+        "linkedProjects.inspect",
+        "linkedProjects.import",
+        "linkedProjects.folderPath",
+        "linkedProjects.go",
+        "linkedProjects.up",
+        "linkedProjects.close",
+    ] {
+        assert!(d.has(id), "missing {id}");
+    }
+    d.click("linkedProjects.inspect");
+    assert!(d.app().session.project_links.adapters.is_empty());
+    assert!(d.app().session.project.project_links.is_empty());
+    d.snapshot("linked-projects-dialog", None);
+}
+
+#[test]
+fn dynamic_link_import_uses_a_styled_modal_and_cancels_without_importing() {
+    use filmcraft_engine::Services;
+    use filmcraft_engine::media_browser::DirEntry;
+    use filmcraft_engine::project_links::{Object, ProjectAdapter};
+    use filmcraft_project::project_link::ProjectLink;
+
+    struct Files;
+    impl Services for Files {
+        fn read_file(&self, _: &str) -> std::io::Result<Vec<u8>> {
+            Err(std::io::ErrorKind::NotFound.into())
+        }
+        fn write_file(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        }
+        fn home_dir(&self) -> Option<String> {
+            Some("/projects".into())
+        }
+        fn list_entries(&self, path: &str) -> Option<std::io::Result<Vec<DirEntry>>> {
+            Some(Ok(match path {
+                "/projects" => {
+                    vec![DirEntry { name: "Graphics".into(), is_dir: true, ..Default::default() }, DirEntry { name: "notes.txt".into(), ..Default::default() }]
+                }
+                "/projects/Graphics" => vec![DirEntry { name: "title.ecproj".into(), ..Default::default() }],
+                _ => vec![],
+            }))
+        }
+    }
+    struct Comps;
+    impl ProjectAdapter for Comps {
+        fn id(&self) -> &'static str {
+            "effectcraft"
+        }
+        fn objects(&self, _: &dyn Services, path: &str) -> Result<Vec<Object>, String> {
+            assert_eq!(path, "/projects/Graphics/title.ecproj");
+            Ok(vec![Object {
+                id: "1".into(),
+                name: "Lower third".into(),
+                width: 1920,
+                height: 1080,
+                rate: filmcraft_time::FrameRate::FPS_24,
+                duration: filmcraft_time::Tick::ZERO,
+            }])
+        }
+        fn revision(&self, _: &dyn Services, _: &ProjectLink) -> Result<String, String> {
+            Ok("test".into())
+        }
+        fn render(&self, _: &ProjectLink, _: &std::path::Path, _: &filmcraft_export::Progress) -> Result<(), String> {
+            Err("not used".into())
+        }
+    }
+    let mut session = Session::new(Arc::new(Files));
+    session.project_links.adapters.insert("effectcraft".into(), Arc::new(Comps));
+    assert!(session.execute("linkedProject.manage", json!({})).is_err(), "frontend-only actions must not report success through engine execution");
+    let mut d = Driver::with(session);
+    let menu = d.ok("ui.menu.list", json!({}));
+    let entry = menu.as_array().unwrap().iter().find(|e| e["id"] == "linkedProject.manage").unwrap();
+    assert_eq!(entry["path"], json!(["File", "Dynamic Link"]));
+    assert_eq!(entry["label"], "Import EffectCraft Composition…");
+    d.ok("ui.menu.invoke", json!({"id":"linkedProject.manage"}));
+    d.frames(4);
+    assert_eq!(d.label("linkedProjects.file.0"), "/projects/Graphics");
+    assert!(!d.has("linkedProjects.file.1"), "unrelated file types should not clutter the picker");
+    d.click("linkedProjects.file.0");
+    d.frames(5);
+    assert_eq!(d.label("linkedProjects.file.0"), "/projects/Graphics/title.ecproj");
+    d.click("linkedProjects.file.0");
+    assert_eq!(d.label("linkedProjects.object.1"), "Lower third");
+    let title = painted_text(&d).into_iter().find(|(text, ..)| text == "Import EffectCraft Composition").unwrap();
+    assert_eq!(title.3, filmcraft_ui_egui::panels::project_links::style::HEADER_TEXT);
+    let elements = d.ok("ui.elements", json!({"prefix":"linkedProjects.close"}));
+    let rect = &elements[0]["rect"];
+    assert!(rect[0].as_f64().unwrap() > 400.0, "modal should open in the center rather than top left");
+    assert!(d.app().session.project.project_links.is_empty());
+    d.snapshot("dynamic-link-import-modal", None);
+    d.click("linkedProjects.up");
+    assert!(!d.has("linkedProjects.object.1"), "changing folders must clear the old composition selection");
+    d.click("linkedProjects.close");
+    assert!(!d.has("linkedProjects.import"));
+    assert!(d.app().session.project.project_links.is_empty());
+}

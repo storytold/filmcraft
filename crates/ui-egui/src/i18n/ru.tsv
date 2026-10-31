@@ -3566,6 +3566,9 @@
 	Docking Action	Действие пристыковки
 	Resize floating panel	Изменить размер плавающей панели
 	Project Notes	Заметки проекта
+
+	Export blocked: enable the renderer for linked composition {name} in this session, or bake it to ordinary media.	Экспорт заблокирован: включите средство рендеринга связанной композиции {name} для этого сеанса или преобразуйте её в обычный медиафайл.
+	Configure linked projects…	Настроить связанные проекты…
 	Get Project Notes	Получить заметки проекта
 	Edit Project Notes	Редактировать заметки проекта
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Заметки для этого проекта: задачи, инструкции, номера кадров… Сохраняются вместе с проектом.

@@ -1,5 +1,6 @@
 //! Vector icons drawn in code on a 16×16 design grid (crisp at any DPI, recolourable, no
-//! third-party or Adobe artwork). Shapes follow NLE conventions (ripple brackets, razor blade…).
+//! Adobe artwork). The composition glyph is credited to EffectCraft in ATTRIBUTION.md.
+//! Shapes follow NLE conventions (ripple brackets, razor blade…).
 
 use egui::epaint::{PathShape, PathStroke};
 use egui::{Color32, Painter, Pos2, Rect, Stroke, pos2, vec2};
@@ -54,6 +55,7 @@ pub enum Icon {
     Folder,
     Film,
     Sequence,
+    Composition,
     Audio,
     Image,
     Search,
@@ -488,6 +490,12 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.line(&[(5.5, 3.0), (5.5, 13.0)]);
             pen.line(&[(10.5, 3.0), (10.5, 13.0)]);
         }
+        // EffectCraft Icon::Comp, MIT OR Apache-2.0; see ATTRIBUTION.md.
+        Composition => {
+            pen.rect(2.0, 3.0, 14.0, 13.0);
+            pen.rect_fill(4.0, 5.0, 8.0, 9.0);
+            pen.rect(7.0, 7.5, 12.0, 11.0);
+        }
         Sequence => {
             pen.rect(1.5, 3.5, 14.5, 12.5);
             pen.rect_fill(3.0, 5.5, 9.0, 7.5);
@@ -868,6 +876,7 @@ mod tests {
         Folder,
         Film,
         Sequence,
+        Composition,
         Audio,
         Image,
         Search,

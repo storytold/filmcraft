@@ -1,5 +1,7 @@
 # Where FilmCraft falls short of Premiere Pro
 
+Experimental contribution (2026-10-24, #388): saved-project links with an EffectCraft CLI adapter are implemented on this branch. Full-composition background cache refresh, errors, relink and bake/restore are in scope; frame serving, used ranges, web/Flatpak packaging and other app adapters remain. This is a draft prototype, not a readiness or parity-score increase. See [linked-projects](linked-projects.md).
+
 > **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real

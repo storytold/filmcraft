@@ -40,6 +40,7 @@ pub mod paste_media;
 pub mod perf;
 pub mod presets;
 pub mod previews;
+pub mod project_links;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
@@ -509,6 +510,7 @@ pub struct Session {
     pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
     /// The stamps being taken on a worker thread ([`Session::start_media_scan`]).
     pub media_scan: Option<media_watch::MediaScan>,
+    pub project_links: project_links::Runtime,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -602,6 +604,7 @@ impl Session {
             exec_depth: 0,
             media_stamps: Default::default(),
             media_scan: None,
+            project_links: Default::default(),
         }
     }
 
@@ -686,6 +689,7 @@ impl Session {
     /// Apply worker notifications (call regularly, e.g. once per UI frame). Also applies the
     /// results of finished proxy / ingest jobs.
     pub fn poll_persistence(&mut self) {
+        project_links::poll(self);
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);

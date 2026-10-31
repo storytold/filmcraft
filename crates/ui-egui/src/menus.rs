@@ -22,6 +22,7 @@ macro_rules! uic {
 }
 
 pub const UI_COMMANDS: &[UiCommand] = &[
+    uic!("linkedProject.manage", "Import EffectCraft Composition…", ["File", "Dynamic Link"], None),
     uic!("window.dockAction", "Docking Action", [], None),
     uic!("window.dockPanel", "Dock Panel", [], None),
     uic!("window.floatPanel", "Undock Panel", [], None),
@@ -647,6 +648,10 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         let mut next = app.session.prefs.clone();
         next.general.recent_projects.clear();
         app.session.set_prefs(next).map_err(|e| e.to_string())?;
+        return Ok(Value::Null);
+    }
+    if id == "linkedProject.manage" {
+        crate::panels::project_links::open(ctx);
         return Ok(Value::Null);
     }
     // File dialogs for commands that need a path.

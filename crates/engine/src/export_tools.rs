@@ -477,7 +477,7 @@ fn output_path(s: &Session, p: &Value, seq: ItemId, settings: &ExportSettings, s
 }
 
 /// Write the caption sidecar (`settings.caption_sidecar`) next to `path` for `range` of `seq`.
-fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<Option<String>> {
+fn write_sidecar(services: &dyn crate::Services, project: &Project, seq: ItemId, settings: &ExportSettings) -> Result<Option<String>> {
     let Some(kind) = settings.caption_sidecar.as_deref() else { return Ok(None) };
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     let Some(track) = q.caption_tracks.first() else { return Ok(None) };
@@ -492,12 +492,13 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
         filmcraft_captions::write(&doc, format, filmcraft_captions::WriteOptions { drop_frame: q.settings.drop_frame, rate: Some(q.settings.frame_rate) });
     let ext = if format == filmcraft_captions::Format::WebVtt { "vtt" } else { kind };
     let path = format!("{}.{ext}", settings.path.rsplit_once('.').map_or(settings.path.as_str(), |x| x.0));
-    s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(Some(path))
 }
 
 /// Run an export of `seq` in `project` as a background job (or now, with `wait`); returns the job id.
 pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
+    let preflight = crate::project_links::export_preflight(s);
     let format = settings.format;
     if !filmcraft_export::available(format) {
         return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));
@@ -509,7 +510,6 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     if let Some(dir) = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty() && !s.services.export_in_memory()) {
         let _ = std::fs::create_dir_all(dir);
     }
-    write_sidecar(s, &project, seq, &settings)?;
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     // Export always renders full-resolution media, whatever the proxy toggle says, from its own
@@ -518,6 +518,8 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let offline = s.export_offline.entry(id).or_default().clone();
     if cfg!(target_arch = "wasm32") && !wait && filmcraft_export::stepped(format) {
+        preflight(&project, seq)?;
+        write_sidecar(&*s.services, &project, seq, &settings)?;
         // No threads: the host advances the export between UI frames (`Session::pump_jobs`).
         let mut exporter = filmcraft_export::Exporter::new(project, seq, &settings, &prog).map_err(|e| EngineError::Other(e.to_string()))?;
         exporter.set_batch(1);
@@ -525,8 +527,13 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
         s.stepped.push(crate::SteppedJob { job: id, exporter, provider, progress: prog, result: res });
         return Ok(id);
     }
+    let services = s.services.clone();
     let run = move || {
-        let r = filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string());
+        *prog.status.lock().unwrap_or_else(|x| x.into_inner()) = "Checking linked sources".into();
+        let r = preflight(&project, seq)
+            .and_then(|()| write_sidecar(&*services, &project, seq, &settings).map(|_| ()))
+            .map_err(|e| e.to_string())
+            .and_then(|()| filmcraft_export::export(&project, seq, &settings, &provider, &prog).map_err(|e| e.to_string()));
         *offline.lock().unwrap_or_else(|x| x.into_inner()) = provider.offline_used();
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());

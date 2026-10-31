@@ -1715,6 +1715,13 @@ fn build() -> Vec<CommandSpec> {
             let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
             let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
             for path in paths {
+                if std::path::Path::new(&path).extension().is_some_and(|e| e.eq_ignore_ascii_case("ecproj")) {
+                    match crate::project_links::import(s, &json!({"path":path,"bin":bin.map(|b| b.0)})) {
+                        Ok(v) => ids.extend(v["items"].as_array().into_iter().flatten().filter_map(Value::as_u64)),
+                        Err(e) => errors.push(format!("{path}: {e}; use File > Dynamic Link > Import EffectCraft Composition")),
+                    }
+                    continue;
+                }
                 if as_sequence || (detect && detect_image_sequence(s, &path)) {
                     match import_image_sequence(s, &path, bin) {
                         Ok((id, frames, missing)) => {
@@ -3886,6 +3893,7 @@ fn build() -> Vec<CommandSpec> {
                 }
                 for i in &gone {
                     pr.items.remove(i);
+                    pr.project_links.remove(i);
                     pr.root.remove_item(*i);
                 }
                 let seq_ids: Vec<ItemId> = pr.sequences().map(|q| q.id).collect();
@@ -3997,6 +4005,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::graphic_templates::commands());
     v.extend(crate::shortcuts::commands());
     v.extend(crate::relink::commands());
+    v.extend(crate::project_links::commands());
     v.extend(crate::proxies::commands());
     v.extend(crate::project_manager::commands());
     v.extend(crate::masks::commands());

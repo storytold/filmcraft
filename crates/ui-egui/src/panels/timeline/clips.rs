@@ -191,7 +191,7 @@ pub(super) fn draw_clip(
     t: &Tokens,
     rate: FrameRate,
 ) {
-    let base = label_color(app, it.label);
+    let base = crate::panels::project_links::linked_color(app, it.item).unwrap_or_else(|| label_color(app, it.label));
     let inr = in_range(app, it);
     let fill = if !it.enabled {
         // Keep the configured label hue when disabled, with an opaque darker fill (#1190).

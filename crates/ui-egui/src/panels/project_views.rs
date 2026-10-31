@@ -32,6 +32,11 @@ pub fn item_icon(k: &ItemKind) -> Icon {
     }
 }
 
+/// Linked compositions retain their source application's composition identity in the bin.
+pub fn project_item_icon(app: &FilmcraftApp, it: &filmcraft_project::ProjectItem) -> Icon {
+    if crate::panels::project_links::linked_color(app, it.id).is_some() { Icon::Composition } else { item_icon(&it.kind) }
+}
+
 /// Offline / proxy state of a project item for the badges.
 pub struct Badge {
     pub offline: bool,
@@ -794,7 +799,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         *row += 1;
         // label chip
         let chip = Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(12.0, 12.0));
-        ui.painter().rect_filled(chip, 2.5, label_color(app, it.label));
+        ui.painter().rect_filled(chip, 2.5, crate::panels::project_links::linked_color(app, it.id).unwrap_or_else(|| label_color(app, it.label)));
         app.auto.add(&format!("{}.item.{}.label", v.prefix, id.0), chip, it.label.name());
         let mut x = r.min.x + LEAD;
         let name_w = lc.cols.first().map(|c| c.width).unwrap_or(200.0);
@@ -805,7 +810,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
             thumb(app, ui, th, &it, None);
             icon_x = th.max.x + 4.0;
         }
-        icons::paint(ui.painter(), Rect::from_center_size(pos2(icon_x + 7.0, r.center().y), vec2(14.0, 14.0)), item_icon(&it.kind), t.icon);
+        icons::paint(ui.painter(), Rect::from_center_size(pos2(icon_x + 7.0, r.center().y), vec2(14.0, 14.0)), project_item_icon(app, &it), t.icon);
         let name_r = Rect::from_min_max(pos2(icon_x + 18.0, r.min.y + 2.0), pos2(x + name_w - 4.0, r.max.y - 2.0));
         let badge = media_badge(app, &it);
         if !rename_field(app, ui, name_r, Some(id.0), None, &v.prefix) {
@@ -825,7 +830,11 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
             let cr = Rect::from_min_size(pos2(x, r.min.y), vec2(c.width, r.height()));
             let p = ui.painter().with_clip_rect(cr.shrink2(vec2(2.0, 0.0)).intersect(ui.clip_rect()));
             if c.name == "Label" {
-                p.rect_filled(Rect::from_center_size(pos2(cr.min.x + 12.0, cr.center().y), vec2(10.0, 10.0)), 2.0, label_color(app, it.label));
+                p.rect_filled(
+                    Rect::from_center_size(pos2(cr.min.x + 12.0, cr.center().y), vec2(10.0, 10.0)),
+                    2.0,
+                    crate::panels::project_links::linked_color(app, it.id).unwrap_or_else(|| label_color(app, it.label)),
+                );
                 p.text(pos2(cr.min.x + 22.0, cr.center().y), Align2::LEFT_CENTER, crate::i18n::t(it.label.name()), Tokens::ui(lc.font - 0.5), t.text_dim);
             } else {
                 let (text, _) = pp::cell(&app.session.project, &it, &c.name);
@@ -855,7 +864,7 @@ fn thumb(app: &mut FilmcraftApp, ui: &egui::Ui, r: Rect, it: &filmcraft_project:
         icons::paint(
             ui.painter(),
             Rect::from_center_size(r.center(), vec2(r.height().min(28.0) * 0.8, r.height().min(28.0) * 0.8)),
-            item_icon(&it.kind),
+            project_item_icon(app, it),
             app.tokens.text_faint,
         );
     }
@@ -918,13 +927,16 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     let mut bx = th.max.x - 4.0;
     for (has, icon) in [
         (it.has_audio(), Icon::Audio),
-        (it.has_video() && !matches!(it.kind, ItemKind::Sequence(_)), Icon::Film),
+        (it.has_video() && !matches!(it.kind, ItemKind::Sequence(_)), project_item_icon(app, &it)),
         (matches!(it.kind, ItemKind::Sequence(_)), Icon::Sequence),
     ] {
         if has {
             let br = Rect::from_min_max(pos2(bx - 15.0, th.max.y - 17.0), pos2(bx, th.max.y - 5.0));
             ui.painter().rect_filled(br, 2.0, Color32::from_black_alpha(160));
             icons::paint(ui.painter(), br.shrink(1.5), icon, Color32::from_rgb(0x8f, 0xb8, 0xf5));
+            if icon == Icon::Composition {
+                app.auto.add(&format!("{pre}.item.{}.compositionIcon", id.0), br, "EffectCraft composition");
+            }
             bx -= 17.0;
         }
     }
@@ -954,7 +966,11 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     }
     let nr = Rect::from_min_max(pos2(th.min.x, th.max.y + 2.0), pos2(th.max.x - dw - 6.0, th.max.y + 20.0));
     if show_name && !rename_field(app, ui, nr, Some(id.0), None, pre) {
-        ui.painter().rect_filled(Rect::from_min_size(pos2(th.min.x, ty - 5.0), vec2(8.0, 10.0)), 1.5, label_color(app, it.label));
+        ui.painter().rect_filled(
+            Rect::from_min_size(pos2(th.min.x, ty - 5.0), vec2(8.0, 10.0)),
+            1.5,
+            crate::panels::project_links::linked_color(app, it.id).unwrap_or_else(|| label_color(app, it.label)),
+        );
         let g = elided_name(ui, &it.name, Tokens::ui(f - 0.5), if badge.offline { OFFLINE } else { t.text }, nr.max.x - th.min.x - 12.0);
         let elided = g.elided;
         ui.painter().galley(pos2(th.min.x + 12.0, ty - g.size().y / 2.0), g, t.text);

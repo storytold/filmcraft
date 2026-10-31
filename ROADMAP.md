@@ -1,5 +1,7 @@
 # FilmCraft Roadmap
 
+Experimental contribution (2026-10-24, #388): saved-project links with an EffectCraft CLI adapter are implemented on this branch. Full-composition background cache refresh, error handling, relinking, and baking/restoring are in scope; frame serving, used ranges, web/Flatpak packaging and other app adapters remain. This is a draft prototype, not a readiness or parity-score increase. See [linked-projects](docs/linked-projects.md).
+
 - UI.6: Compact Source and Program monitors separate timecodes from view settings and retain Source drag choices. Transport controls use the shared toolbar sizing helper, with overflow actions in an operable More menu and a scrolling fallback at tiny widths.
 - UI.3: Panel tabs, edge splits, tab reordering and floating groups use the shared docking model and drop resolver. Floating geometry is saved with named workspaces while legacy layout JSON remains readable. Dock dividers use bounded shared geometry and keyboard-accessible resize handles. Tools and dock tabs expose actual widget focus, paint focus outlines, and support keyboard traversal/activation. Control input reaches focused widgets in background windows; optional input isolation supports unattended validation. Existing workspace trees and saved layout formats are retained.
 

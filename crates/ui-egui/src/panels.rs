@@ -37,6 +37,7 @@ pub mod panel_state;
 pub mod presets;
 pub mod project;
 pub mod project_dialogs;
+pub mod project_links;
 pub mod project_views;
 pub mod reference;
 pub mod remix;

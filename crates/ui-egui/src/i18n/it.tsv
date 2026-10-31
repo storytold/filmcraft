@@ -3615,6 +3615,8 @@
 	Open a sequence to search its graphics	Apri una sequenza per cercare nelle sue grafiche
 	No text graphics in this sequence. Add text with the Type tool.	Nessuna grafica con testo in questa sequenza. Aggiungi testo con lo strumento Testo.
 	No matching text.	Nessun testo corrispondente.
+	Export blocked: enable the renderer for linked composition {name} in this session, or bake it to ordinary media.	Esportazione bloccata: abilita il renderer della composizione collegata {name} per questa sessione oppure convertila in un normale file multimediale.
+	Configure linked projects…	Configura progetti collegati…
 	Enter a positive duration within the supported speed range.	Inserisci una durata positiva nell’intervallo di velocità supportato.
 	Show Video Names	Mostra nomi video
 	Show Audio Names	Mostra nomi audio
