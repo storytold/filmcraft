@@ -8,7 +8,7 @@
 //!   (antialiased edges and half-float textures differ slightly; the CPU is the reference).
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use filmcraft_color::{ColorInfo, ColorSpace, Gamut, Primaries, Transfer};
 use filmcraft_geom::Vec2;
@@ -738,11 +738,29 @@ fn scenes_are_distinct() {
 
 // ---- GPU parity ----
 
+/// The instance the GPU parity tests draw through, made one at a time because they run at once.
+/// AMD's Windows Vulkan driver is not thread-safe here: threads in the first
+/// `vkEnumerateInstanceExtensionProperties` of `amdvlk64` are told two, three or four times the
+/// real count, then `VK_INCOMPLETE`; wgpu leaves Vulkan out of that instance without an error, and
+/// the test draws through another backend. `native_instance` also leaves OpenGL out on Windows:
+/// with `Instance::default()` these tests have died with 0xc0000374 and `atio6axx` on the stack.
+fn instance() -> wgpu::Instance {
+    static CREATING: Mutex<()> = Mutex::new(());
+    let _creating = CREATING.lock().unwrap_or_else(PoisonError::into_inner);
+    filmcraft_gpu::adapter::native_instance()
+}
+
+#[test]
+fn gpu_parity_instance_leaves_opengl_out_on_windows() {
+    let adapters = pollster::block_on(instance().enumerate_adapters(wgpu::Backends::all()));
+    assert!(!cfg!(windows) || adapters.iter().all(|a| a.get_info().backend != wgpu::Backend::Gl));
+}
+
 /// A device for the GPU parity tests, or `None` (with a `SKIPPED` note) when the machine has no
 /// usable adapter. `require_float_target` additionally demands a renderable `Rgba32Float`, which
 /// only the effect-chain plan needs; main falls back to CPU effects on adapters without it.
 fn device(context: &str, require_float_target: bool) -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
+    let instance = instance();
     let Some(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok() else {
         eprintln!("SKIPPED ({context}): no GPU adapter");
         return None;

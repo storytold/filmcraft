@@ -126,7 +126,7 @@ fn wgpu_choice(candidates: &[Candidate], power: PowerPreference) -> Option<usize
 /// There GL starts a WGL context thread inside the vendor driver (NVIDIA's `nvoglv64` is both its
 /// GL driver and its Vulkan ICD); instances created and devices dropped concurrently then deadlock
 /// in that driver (#3418). Elsewhere GL stays, for machines where it is the only working backend.
-pub(crate) fn native_instance() -> wgpu::Instance {
+pub fn native_instance() -> wgpu::Instance {
     let backends = if cfg!(windows) { wgpu::Backends::PRIMARY } else { wgpu::Backends::PRIMARY | wgpu::Backends::GL };
     wgpu::Instance::new(wgpu::InstanceDescriptor { backends, ..wgpu::InstanceDescriptor::new_without_display_handle() })
 }
