@@ -70,6 +70,32 @@ pub enum CaptionAnchor {
     Bottom,
 }
 
+/// How the caption background box is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CaptionBoxMode {
+    /// One box behind each line, as wide as that line.
+    #[default]
+    Line,
+    /// One box around the whole caption, as wide as its longest line.
+    Block,
+}
+
+impl CaptionBoxMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            CaptionBoxMode::Line => "line",
+            CaptionBoxMode::Block => "block",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<CaptionBoxMode> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "line" | "lines" => Some(CaptionBoxMode::Line),
+            "block" => Some(CaptionBoxMode::Block),
+            _ => None,
+        }
+    }
+}
+
 /// Track-level caption style (Premiere's caption track style / Essential Graphics text settings).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -93,6 +119,12 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Background padding around the text in pixels at 1080 lines, `[left and right, top and
+    /// bottom]`. `None` keeps the automatic padding: 0.3 × the font size left and right, none above
+    /// or below.
+    pub background_padding: Option<[f32; 2]>,
+    /// One background box per line, or one around the whole caption.
+    pub box_mode: CaptionBoxMode,
 }
 
 impl Default for CaptionStyle {
@@ -109,6 +141,8 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            background_padding: None,
+            box_mode: CaptionBoxMode::Line,
         }
     }
 }
@@ -302,6 +336,28 @@ pub fn plain_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn styles_saved_without_padding_keep_the_automatic_padding() {
+        let old = r#"{"font":"Inter","size":54.0,"color":[255,255,255,255],"background":true,"background_color":[0,0,0,191],
+            "align":"Center","anchor":"Bottom","margin":0.08,"line_spacing":1.25,"outline":0.0,"outline_color":[0,0,0,255]}"#;
+        let st: CaptionStyle = serde_json::from_str(old).unwrap();
+        assert_eq!(st, CaptionStyle::default());
+        assert_eq!(st.background_padding, None);
+        let padded = CaptionStyle { background_padding: Some([20.0, 12.0]), ..Default::default() };
+        assert_eq!(serde_json::from_str::<CaptionStyle>(&serde_json::to_string(&padded).unwrap()).unwrap(), padded);
+    }
+
+    #[test]
+    fn styles_saved_without_a_box_mode_keep_a_box_per_line() {
+        let old = r#"{"font":"Inter","size":54.0,"color":[255,255,255,255],"background":true,"background_color":[0,0,0,191],
+            "align":"Center","anchor":"Bottom","margin":0.08,"line_spacing":1.25,"outline":0.0,"outline_color":[0,0,0,255]}"#;
+        let st: CaptionStyle = serde_json::from_str(old).unwrap();
+        assert_eq!(st, CaptionStyle::default());
+        assert_eq!(st.box_mode, CaptionBoxMode::Line);
+        assert_eq!(CaptionBoxMode::from_name(" Block "), Some(CaptionBoxMode::Block));
+        assert_eq!(CaptionBoxMode::from_name("bubble"), None);
+    }
 
     #[test]
     fn plain() {

@@ -899,9 +899,14 @@ fn upgrade_caption(s: &mut Session, p: &Value) -> Result<Value> {
             filmcraft_project::CaptionAlign::Right => w as f64 * 0.9,
         };
         let margin = st.margin as f64 * h as f64;
+        // set padding sits between the margin and the text (the margin measures to the box edge);
+        // a graphic's text background has one padding for all sides: the horizontal one
+        let pad_of = |v: f32| if v.is_finite() { v.clamp(0.0, 500.0) as f64 * k } else { 0.0 };
+        let pad = st.background_padding.map(|[x, _]| pad_of(x));
+        let pad_y = st.background_padding.map_or(0.0, |[_, y]| pad_of(y));
         let first_baseline = match st.anchor {
-            filmcraft_project::CaptionAnchor::Bottom => h as f64 - margin - (lines - 1.0) * line_h - size * 0.25,
-            filmcraft_project::CaptionAnchor::Top => margin + size,
+            filmcraft_project::CaptionAnchor::Bottom => h as f64 - margin - pad_y - (lines - 1.0) * line_h - size * 0.25,
+            filmcraft_project::CaptionAnchor::Top => margin + pad_y + size,
             filmcraft_project::CaptionAnchor::Middle => h as f64 / 2.0 - (lines - 1.0) * line_h / 2.0 + size * 0.35,
         };
         let mut layer = graphic::new_text_layer(&text, Vec2::new(x, first_baseline), size);
@@ -918,7 +923,7 @@ fn upgrade_caption(s: &mut Session, p: &Value) -> Result<Value> {
             set(&mut layer, "background", ParamValue::Bool(true));
             set(&mut layer, "background_color", ParamValue::Color(col(st.background_color)));
             set(&mut layer, "background_opacity", ParamValue::Float(st.background_color[3] as f64 / 2.55));
-            set(&mut layer, "background_size", ParamValue::Float(size * 0.2));
+            set(&mut layer, "background_size", ParamValue::Float(pad.unwrap_or(size * 0.2)));
         }
         if st.outline > 0.0 {
             set(&mut layer, "stroke", ParamValue::Bool(true));
