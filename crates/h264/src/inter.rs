@@ -72,6 +72,31 @@ fn avg(a: u8, b: u8) -> u8 {
     ((a as u16 + b as u16 + 1) >> 1) as u8
 }
 
+
+/// Load eight consecutive 8-bit samples as `i32x8` (no `unsafe`; `src` must hold at least 8 bytes).
+#[inline(always)]
+fn load8_u8_i32(src: &[u8]) -> wide::i32x8 {
+    wide::i32x8::from([
+        src[0] as i32,
+        src[1] as i32,
+        src[2] as i32,
+        src[3] as i32,
+        src[4] as i32,
+        src[5] as i32,
+        src[6] as i32,
+        src[7] as i32,
+    ])
+}
+
+/// Clip eight `i32` lanes to 8-bit and store.
+#[inline(always)]
+fn store8_clip_u8(dst: &mut [u8], v: wide::i32x8) {
+    let a: [i32; 8] = v.max(wide::i32x8::splat(0)).min(wide::i32x8::splat(255)).into();
+    for i in 0..8 {
+        dst[i] = a[i] as u8;
+    }
+}
+
 /// 6-tap filter in i16: the unclipped result of a first pass lies in -2550..=10710.
 #[inline(always)]
 fn tap6_16(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) -> i16 {
@@ -85,21 +110,76 @@ fn round5(v: i16) -> u8 {
     ((v + 16) >> 5).clamp(0, 255) as u8
 }
 
+/// ITU-T H.264 6-tap on eight i16 lanes. A first pass stays in -2550..=10710.
+#[inline(always)]
+fn tap6_i16x8(a: wide::i16x8, b: wide::i16x8, c: wide::i16x8, d: wide::i16x8, e: wide::i16x8, f: wide::i16x8) -> wide::i16x8 {
+    let five = wide::i16x8::splat(5);
+    let twenty = wide::i16x8::splat(20);
+    a - b * five + c * twenty + d * twenty - e * five + f
+}
+
+/// Load eight consecutive samples as `i16x8` (no `unsafe`; `src` must hold at least 8 bytes).
+#[inline(always)]
+fn load8_u8_i16(src: &[u8]) -> wide::i16x8 {
+    wide::i16x8::from([
+        src[0] as i16,
+        src[1] as i16,
+        src[2] as i16,
+        src[3] as i16,
+        src[4] as i16,
+        src[5] as i16,
+        src[6] as i16,
+        src[7] as i16,
+    ])
+}
+
 /// Horizontal 6-tap (unclipped) for `BW` outputs: out[c] uses row[c..c + 6].
+/// Widths of 8 and 16 use `wide::i16x8`; width 4 stays scalar because an 8-lane load would read past the window.
 #[inline(always)]
 fn htap_row<const BW: usize>(row: &[u8], out: &mut [i16; 16]) {
     let row = &row[..BW + 5];
-    for c in 0..BW {
+    let mut c = 0;
+    while c + 8 <= BW {
+        let v = tap6_i16x8(
+            load8_u8_i16(&row[c..]),
+            load8_u8_i16(&row[c + 1..]),
+            load8_u8_i16(&row[c + 2..]),
+            load8_u8_i16(&row[c + 3..]),
+            load8_u8_i16(&row[c + 4..]),
+            load8_u8_i16(&row[c + 5..]),
+        );
+        let lanes: [i16; 8] = v.into();
+        out[c..c + 8].copy_from_slice(&lanes);
+        c += 8;
+    }
+    while c < BW {
         out[c] = tap6_16(row[c], row[c + 1], row[c + 2], row[c + 3], row[c + 4], row[c + 5]);
+        c += 1;
     }
 }
 
 /// Vertical 6-tap (unclipped) over six rows at columns 0..BW.
+/// Widths of 8 and 16 use `wide::i16x8`; width 4 stays scalar.
 #[inline(always)]
 fn vtap_row<const BW: usize>(rows: [&[u8]; 6], out: &mut [i16; 16]) {
     let [a, b, c, d, e, f] = rows.map(|r| &r[..BW]);
-    for i in 0..BW {
+    let mut i = 0;
+    while i + 8 <= BW {
+        let v = tap6_i16x8(
+            load8_u8_i16(&a[i..]),
+            load8_u8_i16(&b[i..]),
+            load8_u8_i16(&c[i..]),
+            load8_u8_i16(&d[i..]),
+            load8_u8_i16(&e[i..]),
+            load8_u8_i16(&f[i..]),
+        );
+        let lanes: [i16; 8] = v.into();
+        out[i..i + 8].copy_from_slice(&lanes);
+        i += 8;
+    }
+    while i < BW {
         out[i] = tap6_16(a[i], b[i], c[i], d[i], e[i], f[i]);
+        i += 1;
     }
 }
 
@@ -279,6 +359,34 @@ fn chroma_win<const BW: usize>(src: &[u8], ss: usize, fx: u32, fy: u32, bh: usiz
     }
     let (fx, fy) = (fx as u16, fy as u16);
     let (w00, w10, w01, w11) = ((8 - fx) * (8 - fy), fx * (8 - fy), (8 - fx) * fy, fx * fy);
+    // Eight-wide blocks are the only width an 8-lane load fits: 2 and 4 stay on the scalar formula.
+    if BW >= 8 {
+        let w00s = wide::i32x8::splat(w00 as i32);
+        let w10s = wide::i32x8::splat(w10 as i32);
+        let w01s = wide::i32x8::splat(w01 as i32);
+        let w11s = wide::i32x8::splat(w11 as i32);
+        let thirty_two = wide::i32x8::splat(32);
+        for r in 0..bh {
+            let r0 = &src[r * ss..r * ss + BW + 1];
+            let r1 = &src[(r + 1) * ss..(r + 1) * ss + BW + 1];
+            let o = &mut out[r * os..r * os + BW];
+            let mut c = 0;
+            while c + 8 <= BW {
+                let v = w00s * load8_u8_i32(&r0[c..]) + w10s * load8_u8_i32(&r0[c + 1..]) + w01s * load8_u8_i32(&r1[c..]) + w11s * load8_u8_i32(&r1[c + 1..]);
+                let a: [i32; 8] = ((v + thirty_two) >> 6u32).into();
+                for i in 0..8 {
+                    o[c + i] = a[i] as u8;
+                }
+                c += 8;
+            }
+            while c < BW {
+                let v = w00 * r0[c] as u16 + w10 * r0[c + 1] as u16 + w01 * r1[c] as u16 + w11 * r1[c + 1] as u16;
+                o[c] = ((v + 32) >> 6) as u8;
+                c += 1;
+            }
+        }
+        return;
+    }
     for r in 0..bh {
         let r0 = &src[r * ss..r * ss + BW + 1];
         let r1 = &src[(r + 1) * ss..(r + 1) * ss + BW + 1];
@@ -319,12 +427,23 @@ pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&
     };
     match (p0, p1, w) {
         (Some(a), Some(b), Weight::Default) => {
+            let one = wide::i32x8::splat(1);
             for r in 0..bh {
                 let d = &mut dst[r * ds..r * ds + bw];
                 let ra = &a[r * ps..r * ps + bw];
                 let rb = &b[r * ps..r * ps + bw];
-                for ((d, &x), &y) in d.iter_mut().zip(ra).zip(rb) {
-                    *d = ((x as u32 + y as u32 + 1) >> 1) as u8;
+                let mut c = 0;
+                while c + 8 <= bw {
+                    let avg: wide::i32x8 = (load8_u8_i32(&ra[c..]) + load8_u8_i32(&rb[c..]) + one) >> 1u32;
+                    let t: [i32; 8] = avg.into();
+                    for i in 0..8 {
+                        d[c + i] = t[i] as u8;
+                    }
+                    c += 8;
+                }
+                while c < bw {
+                    d[c] = ((ra[c] as u32 + rb[c] as u32 + 1) >> 1) as u8;
+                    c += 1;
                 }
             }
         }
@@ -332,12 +451,24 @@ pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&
             let round = 1 << log_wd;
             let off = (o0 + o1 + 1) >> 1;
             let sh = log_wd + 1;
+            let w0s = wide::i32x8::splat(w0);
+            let w1s = wide::i32x8::splat(w1);
+            let rounds = wide::i32x8::splat(round);
+            let offs = wide::i32x8::splat(off);
+            let shu = sh as u32;
             for r in 0..bh {
                 let d = &mut dst[r * ds..r * ds + bw];
                 let ra = &a[r * ps..r * ps + bw];
                 let rb = &b[r * ps..r * ps + bw];
-                for ((d, &x), &y) in d.iter_mut().zip(ra).zip(rb) {
-                    *d = clip1(((x as i32 * w0 + y as i32 * w1 + round) >> sh) + off);
+                let mut c = 0;
+                while c + 8 <= bw {
+                    let v: wide::i32x8 = (load8_u8_i32(&ra[c..]) * w0s + load8_u8_i32(&rb[c..]) * w1s + rounds) >> shu;
+                    store8_clip_u8(&mut d[c..], v + offs);
+                    c += 8;
+                }
+                while c < bw {
+                    d[c] = clip1(((ra[c] as i32 * w0 + rb[c] as i32 * w1 + round) >> sh) + off);
+                    c += 1;
                 }
             }
         }
@@ -353,11 +484,21 @@ pub fn weighted_store(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&
                 (Weight::Weighted { w1, o1, log_wd, .. }, false) => (w1, o1, log_wd),
             };
             let round = if log_wd >= 1 { 1 << (log_wd - 1) } else { 0 };
+            let wts = wide::i32x8::splat(wt);
+            let rounds = wide::i32x8::splat(round);
+            let os = wide::i32x8::splat(o);
+            let shu = log_wd as u32;
             for r in 0..bh {
                 let d = &mut dst[r * ds..r * ds + bw];
                 let ra = &a[r * ps..r * ps + bw];
-                for (d, &x) in d.iter_mut().zip(ra) {
-                    *d = clip1(((x as i32 * wt + round) >> log_wd) + o);
+                let mut c = 0;
+                while c + 8 <= bw {
+                    store8_clip_u8(&mut d[c..], ((load8_u8_i32(&ra[c..]) * wts + rounds) >> shu) + os);
+                    c += 8;
+                }
+                while c < bw {
+                    d[c] = clip1(((ra[c] as i32 * wt + round) >> log_wd) + o);
+                    c += 1;
                 }
             }
         }
@@ -544,6 +685,67 @@ mod tests {
     }
 
     #[test]
+    fn six_tap_simd_matches_scalar() {
+        let mut seed = 0x9e37_79b9u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 24) as u8
+        };
+        let check = |n: usize, row: &[u8], rows: [&[u8]; 6]| {
+            let mut simd = [0i16; 16];
+            let mut scalar = [0i16; 16];
+            let run = match n {
+                16 => {
+                    htap_row::<16>(row, &mut simd);
+                    for c in 0..16 {
+                        scalar[c] = tap6_16(row[c], row[c + 1], row[c + 2], row[c + 3], row[c + 4], row[c + 5]);
+                    }
+                    assert_eq!(simd[..16], scalar[..16], "htap_row n=16");
+                    vtap_row::<16>(rows, &mut simd);
+                    for i in 0..16 {
+                        scalar[i] = tap6_16(rows[0][i], rows[1][i], rows[2][i], rows[3][i], rows[4][i], rows[5][i]);
+                    }
+                    assert_eq!(simd[..16], scalar[..16], "vtap_row n=16");
+                }
+                8 => {
+                    htap_row::<8>(row, &mut simd);
+                    for c in 0..8 {
+                        scalar[c] = tap6_16(row[c], row[c + 1], row[c + 2], row[c + 3], row[c + 4], row[c + 5]);
+                    }
+                    assert_eq!(simd[..8], scalar[..8], "htap_row n=8");
+                    vtap_row::<8>(rows, &mut simd);
+                    for i in 0..8 {
+                        scalar[i] = tap6_16(rows[0][i], rows[1][i], rows[2][i], rows[3][i], rows[4][i], rows[5][i]);
+                    }
+                    assert_eq!(simd[..8], scalar[..8], "vtap_row n=8");
+                }
+                _ => {
+                    htap_row::<4>(row, &mut simd);
+                    for c in 0..4 {
+                        scalar[c] = tap6_16(row[c], row[c + 1], row[c + 2], row[c + 3], row[c + 4], row[c + 5]);
+                    }
+                    assert_eq!(simd[..4], scalar[..4], "htap_row n=4");
+                    vtap_row::<4>(rows, &mut simd);
+                    for i in 0..4 {
+                        scalar[i] = tap6_16(rows[0][i], rows[1][i], rows[2][i], rows[3][i], rows[4][i], rows[5][i]);
+                    }
+                    assert_eq!(simd[..4], scalar[..4], "vtap_row n=4");
+                }
+            };
+            let _ = run;
+        };
+        for n in [4usize, 8, 16] {
+            let mut row = vec![0u8; n + 5];
+            for x in &mut row {
+                *x = next();
+            }
+            let owned: [Vec<u8>; 6] = std::array::from_fn(|_| (0..n).map(|_| next()).collect());
+            let refs: [&[u8]; 6] = std::array::from_fn(|i| owned[i].as_slice());
+            check(n, &row, refs);
+        }
+    }
+
+    #[test]
     fn chroma_matches_formula() {
         let mut seed = 11u32;
         let src: Vec<u8> = (0..9 * 9)
@@ -580,6 +782,117 @@ mod tests {
         assert_eq!(d, [75; 4]);
         weighted_store(&mut d, 4, Some(&a), None, 4, (4, 1), Weight::Weighted { log_wd: 5, w0: 16, w1: 0, o0: 3, o1: 0 });
         assert_eq!(d, [53; 4]);
+    }
+
+    fn chroma_scalar(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize, out: &mut [u8], os: usize) {
+        let (fx, fy) = (fx as u16, fy as u16);
+        let (w00, w10, w01, w11) = ((8 - fx) * (8 - fy), fx * (8 - fy), (8 - fx) * fy, fx * fy);
+        for r in 0..bh {
+            let r0 = &src[r * ss..r * ss + bw + 1];
+            let r1 = &src[(r + 1) * ss..(r + 1) * ss + bw + 1];
+            let o = &mut out[r * os..r * os + bw];
+            for c in 0..bw {
+                let v = w00 * r0[c] as u16 + w10 * r0[c + 1] as u16 + w01 * r1[c] as u16 + w11 * r1[c + 1] as u16;
+                o[c] = ((v + 32) >> 6) as u8;
+            }
+        }
+    }
+
+    fn weighted_store_scalar(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&[u8]>, ps: usize, bw: usize, bh: usize, w: Weight) {
+        match (p0, p1, w) {
+            (Some(a), Some(b), Weight::Default) => {
+                for r in 0..bh {
+                    for c in 0..bw {
+                        dst[r * ds + c] = ((a[r * ps + c] as u32 + b[r * ps + c] as u32 + 1) >> 1) as u8;
+                    }
+                }
+            }
+            (Some(a), Some(b), Weight::Weighted { log_wd, w0, w1, o0, o1 }) => {
+                let round = 1 << log_wd;
+                let off = (o0 + o1 + 1) >> 1;
+                let sh = log_wd + 1;
+                for r in 0..bh {
+                    for c in 0..bw {
+                        dst[r * ds + c] = clip1(((a[r * ps + c] as i32 * w0 + b[r * ps + c] as i32 * w1 + round) >> sh) + off);
+                    }
+                }
+            }
+            (Some(a), None, Weight::Default) | (None, Some(a), Weight::Default) => {
+                for r in 0..bh {
+                    dst[r * ds..r * ds + bw].copy_from_slice(&a[r * ps..r * ps + bw]);
+                }
+            }
+            (Some(a), None, Weight::Weighted { w0, o0, log_wd, .. }) => {
+                let round = if log_wd >= 1 { 1 << (log_wd - 1) } else { 0 };
+                for r in 0..bh {
+                    for c in 0..bw {
+                        dst[r * ds + c] = clip1(((a[r * ps + c] as i32 * w0 + round) >> log_wd) + o0);
+                    }
+                }
+            }
+            (None, Some(a), Weight::Weighted { w1, o1, log_wd, .. }) => {
+                let round = if log_wd >= 1 { 1 << (log_wd - 1) } else { 0 };
+                for r in 0..bh {
+                    for c in 0..bw {
+                        dst[r * ds + c] = clip1(((a[r * ps + c] as i32 * w1 + round) >> log_wd) + o1);
+                    }
+                }
+            }
+            (None, None, _) => {}
+        }
+    }
+
+    #[test]
+    fn chroma_simd_matches_scalar() {
+        let mut seed = 0x51aa_e995u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 24) as u8
+        };
+        for &(bw, bh) in &[(4, 4), (8, 8), (8, 4), (2, 2)] {
+            let ss = bw + 1;
+            let src: Vec<u8> = (0..(bh + 1) * ss).map(|_| next()).collect();
+            for fx in 0..8u32 {
+                for fy in 0..8u32 {
+                    let mut a = vec![0u8; bh * 16];
+                    let mut b = vec![0u8; bh * 16];
+                    mc_chroma_win(&src, ss, McBlock { fx, fy, bw, bh }, &mut a, 16);
+                    chroma_scalar(&src, ss, fx, fy, bw, bh, &mut b, 16);
+                    assert_eq!(a, b, "chroma {bw}x{bh} frac {fx},{fy}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn weighted_store_simd_matches_scalar() {
+        let mut seed = 0xc2b2_ae35u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            seed
+        };
+        let weights = [
+            Weight::Default,
+            Weight::Weighted { log_wd: 5, w0: 16, w1: 32, o0: 3, o1: -2 },
+            Weight::Weighted { log_wd: 6, w0: -20, w1: 50, o0: 10, o1: -7 },
+            Weight::Weighted { log_wd: 0, w0: 1, w1: 1, o0: 0, o1: 0 },
+        ];
+        for &(bw, bh) in &[(4, 4), (8, 8), (16, 16), (16, 8), (8, 4), (5, 3), (9, 1)] {
+            let n = bw.max(16) * bh;
+            let a: Vec<u8> = (0..n).map(|_| next() as u8).collect();
+            let b: Vec<u8> = (0..n).map(|_| next() as u8).collect();
+            let ps = bw.max(16);
+            for w in weights {
+                for pair in [true, false] {
+                    let mut simd = vec![0u8; n];
+                    let mut scalar = vec![0u8; n];
+                    let p1 = if pair { Some(b.as_slice()) } else { None };
+                    weighted_store(&mut simd, ps, Some(&a), p1, ps, (bw, bh), w);
+                    weighted_store_scalar(&mut scalar, ps, Some(&a), p1, ps, bw, bh, w);
+                    assert_eq!(simd, scalar, "weighted {bw}x{bh} pair={pair} {w:?}");
+                }
+            }
+        }
     }
 
     #[test]
