@@ -896,3 +896,19 @@ fn menu_bar_menus_use_the_13pt_menu_text() {
         assert_eq!(font.size, 13.0, "`{label}` in the File menu");
     }
 }
+
+/// #3669: opening a clip in the Source monitor must also focus it, so Space plays that clip.
+#[test]
+fn opening_a_clip_in_source_focuses_it_so_space_plays_it() {
+    let (mut d, a, _, _) = inspector_selection_driver();
+    d.click("panel.tab.Project");
+    // what a double-click on a Project item runs
+    d.exec("source.open", json!({"item": a.0}));
+    d.frames(3);
+    assert_eq!(d.app().session.state.source_item, Some(a));
+    assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::Source, "Source takes focus");
+    assert!(!d.app().source_playback.clock.playing);
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().source_playback.clock.playing, "Space plays the Source clip");
+}

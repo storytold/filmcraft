@@ -290,6 +290,8 @@ impl FilmcraftApp {
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
+                    // the clip just opened there is what Space and J/K/L act on next (#3669)
+                    self.ui.focused = PanelKind::Source;
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, now)),
