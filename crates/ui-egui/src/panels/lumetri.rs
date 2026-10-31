@@ -559,6 +559,17 @@ fn curve_editor(ui: &mut egui::Ui, e: &EffectInstance, id: &str, hue: bool, col:
         let sp = to_screen(*q);
         p.circle_filled(sp, 4.0, if dragging == Some(i) { t.hot_text } else { col });
     }
+    // A plain click away from existing points inserts a new point (#2129 / issue 9).
+    // drag_started handles the same for drags; clicked() fires for quick taps with no drag.
+    if resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let near_any = pts.iter().any(|q| to_screen(*q).distance(pos) < 9.0);
+        if !near_any {
+            new_pts.push(from_screen(pos));
+            changed = true;
+        }
+    }
     if resp.drag_started()
         && let Some(pos) = resp.interact_pointer_pos()
     {
