@@ -466,7 +466,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let ph = app.session.playhead();
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let idx = layer_indices(&it.effects);
     let sel = app.session.state.graphic_layers.first().copied().filter(|l| *l < idx.len());
     let mut actions: Vec<(String, Value)> = Vec::new();
