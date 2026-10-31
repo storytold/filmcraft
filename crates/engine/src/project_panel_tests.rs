@@ -2,7 +2,8 @@
 //! sorting, view presets, Freeform positions / stacks / arrangements (undoable, saved with the
 //! project) and bin renames.
 
-use filmcraft_project::{BinEntry, ItemId, ItemKind};
+use filmcraft_project::{BinEntry, ItemId, ItemKind, Label};
+use filmcraft_time::{Tick, TimeRange};
 use serde_json::{Value, json};
 
 use crate::Session;
@@ -304,6 +305,130 @@ fn select_all_selects_every_project_item() {
     s.execute("edit.selectAll", json!({})).unwrap();
     assert!(!s.state.selection.is_empty());
     assert_eq!(s.state.project_selection, before);
+}
+
+#[test]
+fn project_copy_pastes_snapshots_into_the_chosen_bin() {
+    let mut s = demo();
+    let source = *s.project.items.keys().next().unwrap();
+    let original = s.project.item(source).unwrap().clone();
+    let bin = s.execute("file.newBin", json!({"name": "Copies"})).unwrap()["bin"].as_u64().unwrap();
+    s.execute("project.select", json!({"items": [source.0]})).unwrap();
+    assert_eq!(s.execute("project.copy", json!({})).unwrap()["copied"], json!(1));
+
+    // Changing the selection does not change what Paste copied.
+    s.execute("project.select", json!({"items": []})).unwrap();
+    let pasted = s.execute("project.paste", json!({"bin": bin})).unwrap()["items"][0].as_u64().unwrap();
+    let pasted = filmcraft_project::ItemId(pasted);
+    assert_ne!(pasted, source);
+    let item = s.project.item(pasted).unwrap();
+    assert_eq!(item.name, original.name);
+    assert_eq!(item.label, original.label);
+    assert_eq!(item.kind, original.kind);
+    assert_eq!(item.metadata, original.metadata);
+    assert_eq!(item.split, original.split);
+    assert_eq!(s.state.project_selection, vec![pasted]);
+    assert!(
+        s.project
+            .root
+            .find_bin(filmcraft_project::BinId(bin))
+            .unwrap()
+            .children
+            .iter()
+            .any(|entry| { matches!(entry, filmcraft_project::BinEntry::Item(id) if *id == pasted) })
+    );
+    assert_eq!(s.undo().as_deref(), Some("Paste"));
+    assert!(s.project.item(pasted).is_none());
+}
+
+#[test]
+fn project_paste_remaps_a_copied_subclip_to_its_copied_parent() {
+    let mut s = demo();
+    let parent = media(&s)[0];
+    let subclip = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Copied subclip",
+        Label::Iris,
+        ItemKind::Subclip { parent, range: TimeRange::new(Tick::ZERO, Tick(100)), restrict_trims: true },
+        None,
+    );
+    s.state.project_selection = vec![parent, subclip];
+    s.execute("project.copy", json!({})).unwrap();
+    let pasted = s.execute("project.paste", json!({})).unwrap()["items"].as_array().unwrap().iter().map(|id| ItemId(id.as_u64().unwrap())).collect::<Vec<_>>();
+    let pasted_parent = pasted[0];
+    let pasted_subclip = pasted[1];
+    assert_ne!(pasted_parent, parent);
+    assert_ne!(pasted_subclip, subclip);
+    assert!(matches!(s.project.item(pasted_subclip).map(|item| &item.kind), Some(ItemKind::Subclip { parent, .. }) if *parent == pasted_parent));
+}
+
+#[test]
+fn project_paste_rejects_a_subclip_whose_parent_was_deleted() {
+    let mut s = demo();
+    let parent = media(&s)[0];
+    let subclip = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Orphaned subclip",
+        Label::Iris,
+        ItemKind::Subclip { parent, range: TimeRange::new(Tick::ZERO, Tick(100)), restrict_trims: false },
+        None,
+    );
+    s.state.project_selection = vec![subclip];
+    s.execute("project.copy", json!({})).unwrap();
+    let before = s.project.clone();
+    std::sync::Arc::make_mut(&mut s.project).items.remove(&parent);
+    let after_delete = s.project.clone();
+
+    let error = s.execute("project.paste", json!({})).unwrap_err().to_string();
+    assert!(error.contains("parent item"));
+    assert_eq!(s.project, after_delete, "a rejected paste must not commit partial items");
+    assert_ne!(s.project, before);
+}
+
+#[test]
+fn project_copy_and_cut_keep_source_graphics_consistent() {
+    let mut s = demo();
+    let graphic = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Shared title",
+        Label::Rose,
+        ItemKind::Graphic { width: 1920, height: 1080, rate: filmcraft_time::FrameRate::FPS_30 },
+        None,
+    );
+    let design = filmcraft_project::SourceGraphic::default();
+    std::sync::Arc::make_mut(&mut s.project).source_graphics.insert(graphic, design.clone());
+    s.state.project_selection = vec![graphic];
+    s.execute("project.copy", json!({})).unwrap();
+    let pasted = ItemId(s.execute("project.paste", json!({})).unwrap()["items"][0].as_u64().unwrap());
+    assert_eq!(s.project.source_graphics.get(&pasted), Some(&design));
+
+    s.state.project_selection = vec![graphic];
+    s.execute("project.cut", json!({})).unwrap();
+    assert!(s.project.item(graphic).is_none());
+    assert!(!s.project.source_graphics.contains_key(&graphic));
+    assert_eq!(s.project.source_graphics.get(&pasted), Some(&design));
+}
+
+#[test]
+fn project_cut_retains_the_complete_parent_chain_of_an_uncut_nested_subclip() {
+    let mut s = demo();
+    let media = media(&s)[0];
+    let parent = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Parent subclip",
+        Label::Iris,
+        ItemKind::Subclip { parent: media, range: TimeRange::new(Tick::ZERO, Tick(200)), restrict_trims: false },
+        None,
+    );
+    let child = std::sync::Arc::make_mut(&mut s.project).add_item(
+        "Uncut child",
+        Label::Iris,
+        ItemKind::Subclip { parent, range: TimeRange::new(Tick::ZERO, Tick(100)), restrict_trims: false },
+        None,
+    );
+
+    s.state.project_selection = vec![media, parent];
+    s.execute("project.cut", json!({})).unwrap();
+
+    assert!(s.project.item(media).is_some(), "the uncut child's root media must remain resolvable");
+    assert!(s.project.item(parent).is_some(), "the uncut child's direct parent must remain resolvable");
+    assert!(matches!(s.project.item(child).map(|item| &item.kind), Some(ItemKind::Subclip { parent: id, .. }) if *id == parent));
 }
 
 #[test]

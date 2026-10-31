@@ -375,9 +375,11 @@ fn begin_text_editing(app: &mut FilmcraftApp) -> Result<Value, String> {
 
 // ------------------------------------------------------------------ Project panel
 
-/// Items as the Project panel lists them (its shown tab, in display order).
-fn panel_items(app: &FilmcraftApp) -> Vec<filmcraft_project::ItemId> {
-    crate::panels::project::visible_items(app, crate::panels::project::shown_inst(app))
+/// Bins and items as the Project panel displays them.
+fn panel_entries(app: &FilmcraftApp) -> Vec<crate::panels::project_views::Entry> {
+    let inst = crate::panels::project::shown_inst(app);
+    let view = crate::panels::project::view_of(app, inst);
+    crate::panels::project_views::entries_in_view(app, &view, &app.ui.project_search.to_ascii_lowercase())
 }
 
 fn project_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
@@ -418,16 +420,80 @@ fn project_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
         }
         _ => {}
     }
-    let items = panel_items(app);
-    if items.is_empty() {
+    use crate::panels::project_views::Entry;
+
+    let entries = panel_entries(app);
+    if entries.is_empty() {
         return Ok(json!({"items": []}));
     }
-    let sel = app.session.state.project_selection.clone();
-    let last = sel.last().and_then(|s| items.iter().position(|i| i == s));
-    let icon = crate::panels::project::view_of(app, crate::panels::project::shown_inst(app)).mode != ViewMode::List;
+    // Keep the moving end separate from the mixed selection itself: once a range crosses a bin,
+    // choosing "the last selected bin" would jump the cursor away from the item it just reached
+    // and the next Shift+Arrow would drop the bin's visible children from the range.
+    let selected_entry = app
+        .ui
+        .project_panel
+        .keyboard_cursor_bin
+        .filter(|id| app.ui.project_panel.selected_bins.contains(id))
+        .map(|id| Entry::Bin(filmcraft_project::BinId(id)))
+        .or_else(|| {
+            app.ui
+                .project_panel
+                .keyboard_cursor_item
+                .filter(|id| app.session.state.project_selection.iter().any(|item| item.0 == *id))
+                .map(|id| Entry::Item(filmcraft_project::ItemId(id)))
+        })
+        .or_else(|| app.ui.project_panel.selected_bins.last().copied().map(|id| Entry::Bin(filmcraft_project::BinId(id))))
+        .or_else(|| app.ui.project_panel.selected_bin.map(|id| Entry::Bin(filmcraft_project::BinId(id))))
+        .or_else(|| app.session.state.project_selection.last().copied().map(Entry::Item));
+    let last = selected_entry.and_then(|selected| entries.iter().position(|entry| *entry == selected));
+    let inst = crate::panels::project::shown_inst(app);
+    let view = crate::panels::project::view_of(app, inst);
+    let icon = view.mode != ViewMode::List;
+
+    // List-view arrows treat bins as a tree: Right expands, Left collapses, and another Right on
+    // an expanded bin moves into its first visible child.
+    if view.mode == ViewMode::List
+        && matches!(op, "moveLeft" | "moveRight")
+        && let Some(current) = selected_entry
+    {
+        match (op, current) {
+            ("moveRight", Entry::Bin(bin)) if !app.ui.expanded_bins.contains(&bin.0) => {
+                app.ui.expanded_bins.push(bin.0);
+                return Ok(json!({"bin": bin.0, "expanded": true}));
+            }
+            ("moveRight", Entry::Bin(bin)) => {
+                if let Some(next) = entries.iter().position(|entry| *entry == Entry::Bin(bin)).and_then(|index| entries.get(index + 1)).copied() {
+                    return select_project_entries(app, &[next]);
+                }
+                return Ok(json!({"bin": bin.0}));
+            }
+            ("moveLeft", Entry::Bin(bin)) if app.ui.expanded_bins.contains(&bin.0) => {
+                app.ui.expanded_bins.retain(|id| *id != bin.0);
+                return Ok(json!({"bin": bin.0, "expanded": false}));
+            }
+            ("moveLeft", Entry::Bin(bin)) => {
+                if let Some(parent) = crate::panels::project::parent_bin(&app.session.project.root, bin)
+                    && entries.contains(&Entry::Bin(parent))
+                {
+                    return select_project_entries(app, &[Entry::Bin(parent)]);
+                }
+                return Ok(json!({"bin": bin.0}));
+            }
+            ("moveLeft", Entry::Item(item)) => {
+                if let Some(parent) = app.session.project.root.parent_of(item)
+                    && entries.contains(&Entry::Bin(parent))
+                {
+                    return select_project_entries(app, &[Entry::Bin(parent)]);
+                }
+                return Ok(json!({"item": item.0}));
+            }
+            _ => {}
+        }
+    }
+
     let cols = if icon { app.ui.keys.icon_columns.max(1) as i64 } else { 1 };
     let page = 10i64;
-    let n = items.len() as i64;
+    let n = entries.len() as i64;
     let (step, extend): (Option<i64>, bool) = match op {
         "moveUp" => (Some(-cols), false),
         "moveDown" => (Some(cols), false),
@@ -459,22 +525,58 @@ fn project_panel(app: &mut FilmcraftApp, op: &str) -> Result<Value, String> {
             }
         }
     } as usize;
-    let mut new_sel: Vec<filmcraft_project::ItemId> = if extend {
-        let anchor = sel.first().and_then(|s| items.iter().position(|i| i == s)).unwrap_or(target);
+    let mut new_sel: Vec<Entry> = if extend {
+        let anchor_entry = app
+            .ui
+            .project_panel
+            .anchor
+            .map(|id| if app.ui.project_panel.anchor_bin { Entry::Bin(filmcraft_project::BinId(id)) } else { Entry::Item(filmcraft_project::ItemId(id)) })
+            .or_else(|| app.ui.project_panel.selected_bins.first().copied().map(|id| Entry::Bin(filmcraft_project::BinId(id))))
+            .or_else(|| app.ui.project_panel.selected_bin.map(|id| Entry::Bin(filmcraft_project::BinId(id))))
+            .or_else(|| app.session.state.project_selection.first().copied().map(Entry::Item));
+        let anchor = anchor_entry.and_then(|selected| entries.iter().position(|entry| *entry == selected)).unwrap_or(target);
         let (a, b) = (anchor.min(target), anchor.max(target));
-        let mut v: Vec<_> = items[a..=b].to_vec();
+        let mut v: Vec<_> = entries[a..=b].to_vec();
         // keep the anchor first and the moving end last
         if target < anchor {
             v.reverse();
         }
         v
     } else {
-        vec![items[target]]
+        vec![entries[target]]
     };
     new_sel.dedup();
-    let ids: Vec<u64> = new_sel.iter().map(|i| i.0).collect();
-    app.session.execute("project.select", json!({"items": ids})).map_err(|e| e.to_string())?;
-    Ok(json!({"items": ids}))
+    if !extend {
+        match entries[target] {
+            Entry::Bin(id) => {
+                app.ui.project_panel.anchor = Some(id.0);
+                app.ui.project_panel.anchor_bin = true;
+            }
+            Entry::Item(id) => {
+                app.ui.project_panel.anchor = Some(id.0);
+                app.ui.project_panel.anchor_bin = false;
+            }
+        }
+    }
+    select_project_entries(app, &new_sel)
+}
+
+fn select_project_entries(app: &mut FilmcraftApp, entries: &[crate::panels::project_views::Entry]) -> Result<Value, String> {
+    use crate::panels::project_views::Entry;
+
+    let items: Vec<u64> = entries.iter().filter_map(|entry| if let Entry::Item(id) = entry { Some(id.0) } else { None }).collect();
+    let bins: Vec<u64> = entries.iter().filter_map(|entry| if let Entry::Bin(id) = entry { Some(id.0) } else { None }).collect();
+    app.session.execute("project.select", json!({"items": items})).map_err(|e| e.to_string())?;
+    app.ui.project_panel.selected_bin = match entries {
+        [Entry::Bin(bin)] => Some(bin.0),
+        _ => None,
+    };
+    app.ui.project_panel.selected_bins = bins.clone();
+    app.ui.project_panel.scroll_to_item = entries.last().and_then(|entry| if let Entry::Item(id) = entry { Some(id.0) } else { None });
+    app.ui.project_panel.scroll_to_bin = entries.last().and_then(|entry| if let Entry::Bin(id) = entry { Some(id.0) } else { None });
+    app.ui.project_panel.keyboard_cursor_item = app.ui.project_panel.scroll_to_item;
+    app.ui.project_panel.keyboard_cursor_bin = app.ui.project_panel.scroll_to_bin;
+    Ok(json!({"items": items, "bins": bins}))
 }
 
 // ------------------------------------------------------------------ Text panel (transcript)

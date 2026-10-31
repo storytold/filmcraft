@@ -131,23 +131,29 @@ impl FilmcraftApp {
 
     /// Run the commands of the bindings `match_shortcuts` fired, as the focused panel scopes them.
     fn fire_shortcuts(&mut self, ctx: &egui::Context, fire: Vec<String>) {
-        for mut id in fire {
+        for id in fire {
             // Select All / Deselect All act on the Project panel's items when it has focus (#168).
             // Select All takes only what the shown bin lists, not the whole project (#456).
             if self.ui.focused == PanelKind::Project && id == "edit.selectAll" {
-                let (cmd, params) = panels::project::select_all_command(self);
-                if let Err(e) = menus::invoke(self, ctx, &cmd, params) {
+                if let Err(e) = menus::invoke(self, ctx, "edit.selectAll", json!({})) {
                     self.ui.status = e;
                 }
                 continue;
             }
             if self.ui.focused == PanelKind::Project && id == "edit.deselectAll" {
-                id = "project.deselectAll".into();
+                if let Err(e) = menus::invoke(self, ctx, "edit.deselectAll", json!({})) {
+                    self.ui.status = e;
+                }
+                continue;
             }
             // Clear in the Project panel removes the selected bin when no item is selected (#587).
             let clear = if self.ui.focused == PanelKind::Project && id == "project.delete" {
                 self.ui.project_panel.rename = None;
-                crate::panels::project_views::clear_params(&self.session.state.project_selection, self.ui.project_panel.selected_bin)
+                crate::panels::project_views::clear_params(
+                    &self.session.state.project_selection,
+                    self.ui.project_panel.selected_bin,
+                    &self.ui.project_panel.selected_bins,
+                )
             } else {
                 None
             };

@@ -18,6 +18,7 @@
 //! | `project.freeform.options` | Freeform View Options… (grid, snap, names, durations) |
 //! | `project.renameBin` | rename a bin (inline rename, undoable) |
 //! | `project.selectAll` / `project.deselectAll` | select the items a bin shows (`bin`, plus the sub-bins open in List view in `expanded`; without `bin` every item in the project) / clear the Project panel selection (Cmd+A / Cmd+Shift+A with the panel focused) |
+//! | `project.copy` / `project.cut` / `project.paste` | copy or cut selected Project items / paste snapshots into the shown bin |
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,8 +27,26 @@ use filmcraft_time::{Tick, TimeDisplay, format_time};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, item_p, str_p, u64_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_project_selection, item_p, str_p, u64_p};
 use crate::{Result, Session};
+
+/// Retain an item and its bounded parent chain so an uncut subclip or Timeline clip cannot be
+/// disconnected when another Project-panel item is cut. The local seen-set also stops malformed
+/// cyclic project data without looping.
+fn retain_item_and_parents(project: &Project, start: ItemId, retained: &mut BTreeSet<ItemId>) {
+    let mut id = start;
+    let mut seen = BTreeSet::new();
+    for _ in 0..16 {
+        if !seen.insert(id) {
+            break;
+        }
+        retained.insert(id);
+        match project.item(id).map(|item| &item.kind) {
+            Some(ItemKind::Subclip { parent, .. }) => id = *parent,
+            _ => break,
+        }
+    }
+}
 
 // ------------------------------------------------------------------------------------ settings
 
@@ -1265,5 +1284,109 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             s.state.project_selection.clear();
             Ok(Value::Null)
         }),
+        c("project.copy", "Copy Project Items", "{}", has_project_selection, |s, _| {
+            s.state.project_clipboard = s
+                .state
+                .project_selection
+                .iter()
+                .filter_map(|id| {
+                    s.project.item(*id).cloned().map(|item| crate::ProjectClipboardItem { source_graphic: s.project.source_graphics.get(id).cloned(), item })
+                })
+                .collect();
+            Ok(json!({"copied": s.state.project_clipboard.len()}))
+        }),
+        c("project.cut", "Cut Project Items", "{}", has_project_selection, |s, _| {
+            s.state.project_clipboard = s
+                .state
+                .project_selection
+                .iter()
+                .filter_map(|id| {
+                    s.project.item(*id).cloned().map(|item| crate::ProjectClipboardItem { source_graphic: s.project.source_graphics.get(id).cloned(), item })
+                })
+                .collect();
+            let selected: BTreeSet<ItemId> = s.state.project_selection.iter().copied().collect();
+            // A cut removes Project-panel entries, but an item already referenced by a sequence
+            // must remain in the document so its Timeline clips stay online. Parents needed by an
+            // uncut subclip are retained for the same reason. Ordinary Delete keeps its existing
+            // make-offline behaviour; this preservation is specific to Cut.
+            let mut retained = BTreeSet::new();
+            for sequence in s.project.sequences() {
+                if let Some(sequence) = sequence.as_sequence() {
+                    for clip in sequence.all_tracks().flat_map(|track| &track.items) {
+                        retain_item_and_parents(&s.project, clip.item, &mut retained);
+                    }
+                }
+            }
+            for item in s.project.items.values() {
+                if !selected.contains(&item.id) {
+                    retain_item_and_parents(&s.project, item.id, &mut retained);
+                }
+            }
+            let removed = s.edit("Cut", |project, state| {
+                let mut removed = 0usize;
+                for id in &selected {
+                    project.root.remove_item(*id);
+                    if !retained.contains(id) {
+                        project.items.remove(id);
+                        project.source_graphics.remove(id);
+                    }
+                    removed += 1;
+                }
+                state.project_selection.clear();
+                Ok(removed)
+            })?;
+            Ok(json!({"items": removed}))
+        }),
+        c(
+            "project.paste",
+            "Paste Project Items",
+            r#"{"bin":binId?}"#,
+            |s| if s.state.project_clipboard.is_empty() { Err("the Project clipboard is empty".into()) } else { Ok(()) },
+            |s, p| {
+                let bin = match p.get("bin") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => {
+                        let id = BinId(value.as_u64().ok_or_else(|| bad("project.paste", "`bin` must be a bin id"))?);
+                        Some(s.project.root.find_bin(id).is_some().then_some(id).ok_or_else(|| bad("project.paste", "no such bin"))?)
+                    }
+                };
+                let copied = s.state.project_clipboard.clone();
+                let ids = s.edit("Paste", |project, state| {
+                    let mut ids = Vec::with_capacity(copied.len());
+                    let mut remapped = BTreeMap::new();
+                    for entry in &copied {
+                        let item = &entry.item;
+                        let id = project.add_item(&item.name, item.label, item.kind.clone(), bin);
+                        remapped.insert(item.id, id);
+                        if let Some(pasted) = project.item_mut(id) {
+                            pasted.metadata = item.metadata.clone();
+                            pasted.split = item.split;
+                        }
+                        if let Some(source_graphic) = &entry.source_graphic {
+                            project.source_graphics.insert(id, source_graphic.clone());
+                        }
+                        ids.push(id);
+                    }
+                    for id in &ids {
+                        let parent = match project.item(*id).map(|item| &item.kind) {
+                            Some(ItemKind::Subclip { parent, .. }) => Some(*parent),
+                            _ => None,
+                        };
+                        if let Some(parent) = parent {
+                            if let Some(new_parent) = remapped.get(&parent) {
+                                if let Some(ProjectItem { kind: ItemKind::Subclip { parent, .. }, .. }) = project.item_mut(*id) {
+                                    *parent = *new_parent;
+                                }
+                            } else if !project.items.contains_key(&parent) {
+                                return Err(crate::EngineError::Other(format!("cannot paste subclip: its parent item {} no longer exists", parent.0)));
+                            }
+                        }
+                    }
+                    state.project_selection = ids.clone();
+                    Ok(ids)
+                })?;
+                Ok(json!({"items": ids.iter().map(|id| id.0).collect::<Vec<_>>() }))
+            },
+        ),
     ]
 }

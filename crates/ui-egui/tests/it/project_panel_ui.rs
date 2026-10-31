@@ -517,6 +517,155 @@ fn bins_open_in_place_in_a_tab_or_in_a_window() {
 }
 
 #[test]
+fn a_slow_second_click_renames_a_bin_inline() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, _) = d.footage();
+    d.frames(3);
+    let r = d.rect(&format!("project.bin.{bin}"));
+    let click_name = |d: &mut Driver| {
+        d.ok("ui.click", json!({"x": r[0] + 90.0, "y": r[1] + r[3] / 2.0}));
+        d.frames(2);
+    };
+    click_name(&mut d);
+    assert_eq!(d.app().ui.project_panel.selected_bins, vec![bin]);
+    std::thread::sleep(std::time::Duration::from_millis(550));
+    d.frames(2);
+    click_name(&mut d);
+    std::thread::sleep(std::time::Duration::from_millis(550));
+    d.frames(2);
+
+    assert!(d.has("project.rename"));
+    assert_eq!(d.app().ui.project_panel.rename.as_ref().and_then(|rename| rename.bin), Some(bin));
+}
+
+#[test]
+fn collapsing_a_multi_bin_selection_does_not_start_inline_rename() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "icon"}));
+    let (first, _) = d.footage();
+    let second = d.exec("file.newBin", json!({"name": "Second selected bin"}))["bin"].as_u64().unwrap();
+    d.app().ui.project_panel.selected_bins = vec![first, second];
+    d.frames(3);
+    let r = d.rect(&format!("project.bin.{first}"));
+    d.ok("ui.click", json!({"x": r[0] + r[2] / 2.0, "y": r[1] + r[3] + 11.0}));
+    d.frames(2);
+    std::thread::sleep(std::time::Duration::from_millis(550));
+    d.frames(2);
+
+    assert_eq!(d.app().ui.project_panel.selected_bins, vec![first]);
+    assert!(d.app().ui.project_panel.rename.is_none(), "collapsing a multi-selection is not a slow second click");
+}
+
+#[test]
+fn collapsing_a_mixed_selection_does_not_rename_the_item() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "icon"}));
+    let (bin, items) = d.footage();
+    double_click_bin(&mut d, bin, false);
+    let item = ItemId(items[0]);
+    d.app().session.state.project_selection = vec![item];
+    d.app().ui.project_panel.selected_bins = vec![bin];
+    d.frames(3);
+    let r = d.rect(&format!("project.item.{}", item.0));
+    d.ok("ui.click", json!({"x": r[0] + r[2] / 2.0, "y": r[1] + r[3] + 10.0}));
+    d.frames(2);
+    std::thread::sleep(std::time::Duration::from_millis(550));
+    d.frames(2);
+
+    assert_eq!(d.app().session.state.project_selection, vec![item]);
+    assert!(d.app().ui.project_panel.selected_bins.is_empty());
+    assert!(d.app().ui.project_panel.rename.is_none(), "collapsing a mixed selection is not a slow second click");
+}
+
+#[test]
+fn arrow_keys_navigate_expand_and_collapse_bins() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let outer = d.exec("file.newBin", json!({"name": "000 Outer"}))["bin"].as_u64().unwrap();
+    let inner = d.exec("file.newBin", json!({"name": "000 Inner", "parent": outer}))["bin"].as_u64().unwrap();
+    d.app().session.state.project_selection.clear();
+    d.app().ui.project_panel.selected_bin = None;
+    d.app().ui.project_panel.selected_bins.clear();
+    d.app().ui.expanded_bins.clear();
+    d.frames(3);
+
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveDown"}));
+    assert_eq!(d.app().ui.project_panel.selected_bins, vec![outer]);
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveRight"}));
+    assert!(d.app().ui.expanded_bins.contains(&outer));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveRight"}));
+    assert_eq!(d.app().ui.project_panel.selected_bins, vec![inner]);
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveLeft"}));
+    assert_eq!(d.app().ui.project_panel.selected_bins, vec![outer]);
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveLeft"}));
+    assert!(!d.app().ui.expanded_bins.contains(&outer));
+}
+
+#[test]
+fn arrow_navigation_ignores_a_cursor_that_is_no_longer_selected() {
+    use filmcraft_ui_egui::panels::project_views::Entry;
+
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.frames(3);
+    let view = filmcraft_ui_egui::panels::project::view_of(d.app(), filmcraft_ui_egui::panels::project::Inst::Main);
+    let entries = filmcraft_ui_egui::panels::project_views::entries_in_view(d.app(), &view, "");
+    let Some(stale) = entries.first().copied() else { return };
+    match stale {
+        Entry::Bin(id) => d.app().ui.project_panel.keyboard_cursor_bin = Some(id.0),
+        Entry::Item(id) => d.app().ui.project_panel.keyboard_cursor_item = Some(id.0),
+    }
+    d.app().ui.project_panel.selected_bin = None;
+    d.app().ui.project_panel.selected_bins.clear();
+    d.app().session.state.project_selection.clear();
+
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.moveDown"}));
+    match stale {
+        Entry::Bin(id) => assert_eq!(d.app().ui.project_panel.selected_bins, vec![id.0]),
+        Entry::Item(id) => assert_eq!(d.app().session.state.project_selection, vec![id]),
+    }
+}
+
+#[test]
+fn shift_arrow_keeps_visible_children_selected_when_the_range_crosses_a_bin() {
+    use filmcraft_ui_egui::panels::project_views::Entry;
+
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, _) = d.footage();
+    d.app().ui.expanded_bins = vec![bin];
+    d.frames(3);
+    let view = filmcraft_ui_egui::panels::project::view_of(d.app(), filmcraft_ui_egui::panels::project::Inst::Main);
+    let entries = filmcraft_ui_egui::panels::project_views::entries_in_view(d.app(), &view, "");
+    let Some(last) = entries.last().copied() else { return };
+    d.app().session.state.project_selection.clear();
+    d.app().ui.project_panel.selected_bins.clear();
+    match last {
+        Entry::Item(id) => {
+            d.app().session.state.project_selection.push(id);
+            d.app().ui.project_panel.anchor = Some(id.0);
+            d.app().ui.project_panel.anchor_bin = false;
+        }
+        Entry::Bin(id) => {
+            d.app().ui.project_panel.selected_bin = Some(id.0);
+            d.app().ui.project_panel.selected_bins.push(id.0);
+            d.app().ui.project_panel.anchor = Some(id.0);
+            d.app().ui.project_panel.anchor_bin = true;
+        }
+    }
+    for _ in 1..entries.len() {
+        d.ok("ui.menu.invoke", json!({"id": "projectPanel.extendUp"}));
+    }
+    for entry in entries {
+        match entry {
+            Entry::Item(id) => assert!(d.app().session.state.project_selection.contains(&id), "visible item {} was dropped", id.0),
+            Entry::Bin(id) => assert!(d.app().ui.project_panel.selected_bins.contains(&id.0), "visible bin {} was dropped", id.0),
+        }
+    }
+}
+
+#[test]
 fn select_all_takes_only_the_shown_bin() {
     // #456: Cmd+A selected every item in the project, closed bins and other tabs included
     let mut d = project_driver();
@@ -535,6 +684,7 @@ fn select_all_takes_only_the_shown_bin() {
     d.frames(2);
     d.key("Cmd+A");
     let sel = d.app().session.state.project_selection.clone();
+    assert!(d.app().ui.project_panel.selected_bins.contains(&bin), "the visible bin itself is selected");
     assert!(sel.iter().all(|i| !items.contains(&i.0)), "{sel:?}");
     assert!(sel.iter().all(|i| d.app().session.project.root.children.contains(&BinEntry::Item(*i))), "{sel:?}");
     // twirled open in List view, its items are shown and count
@@ -545,6 +695,7 @@ fn select_all_takes_only_the_shown_bin() {
     assert!(items.iter().all(|i| sel.contains(&ItemId(*i))), "{sel:?}");
     d.key("Cmd+Shift+A");
     assert!(d.app().session.state.project_selection.is_empty());
+    assert!(d.app().ui.project_panel.selected_bins.is_empty());
     // the bin opened in its own tab: exactly its items
     d.app().ui.expanded_bins.clear();
     d.app().session.prefs.general.bins_double_click = "openNewTab".into();

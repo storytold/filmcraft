@@ -60,7 +60,7 @@ pub mod voiceover;
 use std::sync::Arc;
 
 use filmcraft_edit::EditCtx;
-use filmcraft_project::{ClipId, ItemId, Project, Sequence, TrackId, TrackKind};
+use filmcraft_project::{ClipId, ItemId, Project, ProjectItem, Sequence, SourceGraphic, TrackId, TrackKind};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -270,6 +270,13 @@ pub struct Targeting {
     pub audio_dest: Option<TrackId>,
 }
 
+/// A Project-panel clipboard entry, including design data stored outside the item itself.
+#[derive(Clone, Debug)]
+pub struct ProjectClipboardItem {
+    pub item: ProjectItem,
+    pub source_graphic: Option<SourceGraphic>,
+}
+
 /// A gap on one track of the active sequence (see [`EditorState::gap_selection`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GapSelection {
@@ -334,6 +341,10 @@ pub struct EditorState {
     /// Timeline clipboard (serialized track items with their relative track index).
     #[serde(skip)]
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
+    /// Project-panel items copied for Paste. These are snapshots rather than ids, so Paste still
+    /// works after the originals are deleted or the selection changes.
+    #[serde(skip)]
+    pub project_clipboard: Vec<ProjectClipboardItem>,
     pub default_video_transition: String,
     pub default_audio_transition: String,
     /// Selected edit points (trim mode).

@@ -3,6 +3,17 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Focused Edit commands
+
+Edit commands follow the focused panel. In the Project panel, Select All selects the bins and items
+shown in the current view, Copy and Paste duplicate Project items into the shown bin, and
+Clear/Delete removes the Project selection; they do not change Timeline clips. A slow second click
+on the selected media, sequence or bin name starts inline rename; a double-click keeps its normal
+open action. Up and Down move through visible bins and items; Right expands a selected bin or
+enters its first child, and Left collapses it or returns to its parent. A focused text field owns
+its normal text-editing commands. This routing also applies to the native macOS Edit menu, which
+receives its key equivalents before the panel sees a key press.
+
 ## Export range warnings
 
 The Export panel shows the selected range's length in sequence frames and seconds beside Range
