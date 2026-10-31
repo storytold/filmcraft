@@ -362,7 +362,7 @@ fn replace_fonts_in_project() {
     let c = clip_of(&s.execute("graphics.newText", json!({"text": "Serif", "font": "Noto Serif"})).unwrap());
     s.execute("graphics.setCharStyle", json!({"clip": c.0, "start": 0, "end": 2, "style": {"font": "Noto Serif"}})).unwrap();
     let used = s.execute("graphics.fonts.used", json!({})).unwrap();
-    assert!(used.as_array().unwrap().iter().any(|f| f["family"] == "Noto Serif" && f["missing"] == false), "{used}");
+    assert!(used.as_array().unwrap().iter().any(|f| f["family"] == "Noto Serif" && f["missing"] == false && f["substituted"] == false), "{used}");
     let r = s.execute("file.replaceFonts", json!({"from": "Noto Serif", "to": "JetBrains Mono"})).unwrap();
     assert_eq!(r["replaced"], 2);
     let used = s.execute("graphics.fonts.used", json!({})).unwrap();
@@ -458,4 +458,33 @@ fn character_style_merge_preserves_default_calls_and_separate_clips() {
         s.execute("graphics.setCharStyle", json!({"clip":b.0,"layer":layer,"start":0,"end":5,"style":{"size":150},"merge":true})).unwrap();
     }
     assert_eq!(s.history.undo.len(), n + 2, "distinct layers do not merge");
+}
+
+/// Issue #3359: a style the family lacks is reported as substituted, not silently accepted.
+#[test]
+fn fonts_used_flags_substituted_style() {
+    struct OnlyBold;
+    impl filmcraft_text::fonts::FontSource for OnlyBold {
+        fn faces(&self) -> Vec<filmcraft_text::fonts::FaceInfo> {
+            vec![filmcraft_text::fonts::FaceInfo {
+                family: "Subst Only Bold Eng".into(),
+                style: "Bold".into(),
+                weight: 700,
+                italic: false,
+                index: 0,
+                data: filmcraft_text::fonts::FaceData::Static(filmcraft_text::fonts::INTER_BOLD),
+                origin: "test",
+            }]
+        }
+    }
+    filmcraft_text::fonts::add_source(&OnlyBold);
+    let mut s = demo("gt-fonts-subst");
+    s.execute("graphics.newText", json!({"text": "X", "font": "Subst Only Bold Eng", "fontStyle": "Light"})).unwrap();
+    s.execute("graphics.newText", json!({"text": "Y", "font": "Subst Only Bold Eng", "fontStyle": "Bold", "newClip": true})).unwrap();
+    let used = s.execute("graphics.fonts.used", json!({})).unwrap();
+    let row = |st: &str| used.as_array().unwrap().iter().find(|f| f["family"] == "Subst Only Bold Eng" && f["style"] == st).cloned();
+    let light = row("Light").unwrap_or_else(|| panic!("{used}"));
+    assert_eq!((light["missing"].clone(), light["substituted"].clone()), (json!(false), json!(true)), "{used}");
+    let bold = row("Bold").unwrap_or_else(|| panic!("{used}"));
+    assert_eq!((bold["missing"].clone(), bold["substituted"].clone()), (json!(false), json!(false)), "{used}");
 }

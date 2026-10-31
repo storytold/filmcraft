@@ -745,13 +745,17 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.label(tl!("Fonts used in the project:"));
             egui::Grid::new("gfx-fonts-used").striped(true).num_columns(3).show(ui, |ui| {
                 for (f, st, n) in &used {
-                    let missing = filmcraft_text::resolve(f, st).missing;
-                    ui.label(if missing {
+                    let r = filmcraft_text::resolve(f, st);
+                    ui.label(if r.missing {
                         egui::RichText::new(tlf!("{f} (missing)", f)).color(Color32::from_rgb(0xff, 0xa0, 0x60))
                     } else {
                         egui::RichText::new(f)
                     });
-                    ui.label(st);
+                    if r.substituted {
+                        ui.label(egui::RichText::new(tlf!("{st} (substituted)", st)).color(Color32::from_rgb(0xff, 0xa0, 0x60)));
+                    } else {
+                        ui.label(st);
+                    }
                     ui.label(format!("{n}"));
                     ui.end_row();
                 }

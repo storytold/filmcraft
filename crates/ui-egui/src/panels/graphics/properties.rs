@@ -569,8 +569,10 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 _ => String::new(),
             };
             let fams = filmcraft_text::families();
+            let resolved = filmcraft_text::resolve(&family, &style);
             let (_, mut vui) = cx.row(ui, tl!("Font"));
-            let r = craft_ui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
+            let family_label = if resolved.missing { format!("⚠ {family}") } else { family.clone() };
+            let r = craft_ui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family_label).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
                 if !filmcraft_text::fonts::system_scanned() {
                     filmcraft_text::fonts::scan_system();
                 }
@@ -584,7 +586,8 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.auto("font", response.rect, "Font");
             let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
             let (_, mut vui) = cx.row(ui, tl!("Font Style"));
-            let r = craft_ui::ComboBox::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style).width(170.0).show_ui(&mut vui, |ui| {
+            let style_label = if resolved.substituted { format!("⚠ {style}") } else { style.clone() };
+            let r = craft_ui::ComboBox::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style_label).width(170.0).show_ui(&mut vui, |ui| {
                 for st in styles.iter().map(String::as_str).chain(["Bold", "Italic", "Bold Italic"]).filter({
                     let mut seen = Vec::new();
                     move |x: &&str| {

@@ -1140,8 +1140,8 @@ fn list_fonts_used(s: &mut Session, _: &Value) -> Result<Value> {
         fonts_used(s)
             .into_iter()
             .map(|(f, st, n)| {
-                let missing = filmcraft_text::resolve(&f, &st).missing;
-                json!({"family": f, "style": st, "uses": n, "missing": missing})
+                let r = filmcraft_text::resolve(&f, &st);
+                json!({"family": f, "style": st, "uses": n, "missing": r.missing, "substituted": r.substituted})
             })
             .collect(),
     ))

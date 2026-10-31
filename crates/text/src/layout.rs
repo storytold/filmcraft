@@ -217,7 +217,7 @@ pub struct Layout {
     pub underline_runs: Vec<u16>,
     /// Logical bounds `[x0, y0, x1, y1]` (line boxes; area text spans the box width).
     pub bounds: [f32; 4],
-    /// The face requested was missing (substituted).
+    /// The requested family was missing, or its requested style was substituted.
     pub missing_font: bool,
     /// Lines were left out because they do not fit the box height.
     pub overflow: bool,
@@ -724,7 +724,7 @@ pub fn layout_rich_uncached(text: &str, style: &TextStyle, runs: &[StyleRun], pa
     let sty = Styles::new(text, style, runs);
     let pm = fonts::face(sty.prim[0].face).metrics(style.size);
     let line_h = (pm.ascent + pm.descent + pm.line_gap).max(style.size * 0.5) + para.leading;
-    let mut lay = Layout { missing_font: sty.prim.iter().any(|p| p.missing), text_len: text.len(), ..Default::default() };
+    let mut lay = Layout { missing_font: sty.prim.iter().any(|p| p.missing || p.substituted), text_len: text.len(), ..Default::default() };
     if para.vertical {
         return layout_vertical(text, &sty, para, line_h, lay);
     }
