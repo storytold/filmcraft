@@ -133,6 +133,15 @@ pub fn open_path(app: &mut FilmcraftApp, ctx: &egui::Context, path: &str, reveal
     }
 }
 
+/// Whether Edit Original / Reveal may hand a media path to the OS opener. Project files and the
+/// control channel can name any string; the engine's `edit.editOriginal` already refuses missing
+/// files, files that are not media, and network shares and devices. The opener also gets only an
+/// absolute path, never one the OS would resolve against the working directory.
+fn safe_open_target(path: &str) -> Result<(), String> {
+    let local = std::path::Path::new(path).is_absolute() && !filmcraft_engine::doc_path::is_network_or_device(path) && !path.contains('\0');
+    if local { Ok(()) } else { Err(format!("`{path}` is not an absolute local path")) }
+}
+
 /// Where Reveal Log Files points: `<data dir>/Logs` (the temp folder without a data directory).
 pub fn logs_dir(app: &FilmcraftApp) -> std::path::PathBuf {
     app.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join("Logs")).unwrap_or_else(|| filmcraft_engine::temp_dir().join("FilmCraft Logs"))
@@ -194,7 +203,9 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             let r = app.session.execute(id, params.clone()).map_err(|e| e.to_string());
             return Some(r.and_then(|v| {
                 for p in v["paths"].as_array().cloned().unwrap_or_default() {
-                    open_path(app, ctx, p.as_str().unwrap_or_default(), reveal)?;
+                    let path = p.as_str().unwrap_or_default();
+                    safe_open_target(path)?;
+                    open_path(app, ctx, path, reveal)?;
                 }
                 Ok(v)
             }));
@@ -982,6 +993,33 @@ pub fn search_bin_rows(
             let bin =
                 filmcraft_project::Bin { id: sb.id, name: sb.name.clone(), children: matches.into_iter().map(filmcraft_project::BinEntry::Item).collect() };
             draw_items(app, ui, &bin, row, actions);
+        }
+    }
+}
+
+#[cfg(test)]
+mod open_target_tests {
+    use super::safe_open_target;
+
+    #[test]
+    fn absolute_local_paths_pass() {
+        assert_eq!(safe_open_target(&std::env::temp_dir().join("clip.mov").to_string_lossy()), Ok(()));
+    }
+
+    #[test]
+    fn urls_relative_and_network_paths_are_refused() {
+        for bad in [
+            "https://example.com/a.mp4",
+            "file:///etc/passwd",
+            "clip.mp4",
+            "../clip.mp4",
+            "//server/share/a.mp4",
+            "\\\\server\\share\\a.mp4",
+            "\\/server/share/a.mp4",
+            "/\\server/share/a.mp4",
+            "",
+        ] {
+            assert!(safe_open_target(bad).is_err(), "{bad}");
         }
     }
 }

@@ -50,6 +50,26 @@ pub fn resolve(stored: &str, document: Option<&Path>) -> Result<String, NotFollo
     path.into_os_string().into_string().map_err(|_| NotFollowed::Refused(Refused::Invalid))
 }
 
+/// Whether `path` names a network share or a device rather than a file on a local disk:
+/// `\\server\share`, `//server/share` and mixed `\/` or `/\`, `\\?\UNC\…`, `\\.\…` and `\??\…`.
+/// Only `\\?\C:\…`, a drive spelled verbatim, of the two-separator forms is local. The check reads
+/// the spelling only, the same way on every platform, so it can run before anything looks the
+/// path up (on Windows even `canonicalize` or `is_file` can contact the server). It cannot see
+/// mapped drives or links that lead to a share.
+pub fn is_network_or_device(path: &str) -> bool {
+    let sep = |c: char| c == '/' || c == '\\';
+    let mut chars = path.chars();
+    match (chars.next(), chars.next(), chars.next(), chars.next()) {
+        (Some(a), Some(b), ..) if sep(a) && sep(b) => {
+            let Some(verbatim) = path.strip_prefix(r"\\?\") else { return true };
+            let mut d = verbatim.chars();
+            !matches!((d.next(), d.next(), d.next()), (Some(l), Some(':'), Some('\\')) if l.is_ascii_alphabetic())
+        }
+        (Some(a), Some('?'), Some('?'), next) => sep(a) && next.is_none_or(sep),
+        _ => false,
+    }
+}
+
 /// Whether an unresolved `craft_docpath::resolve` result starts with a drive (`C:`) or a share
 /// root (`\\`) outside Windows. Such a path names no file here, and no document folder makes it one.
 fn foreign_root(path: &Path) -> bool {
@@ -80,6 +100,27 @@ mod tests {
         } else {
             assert_eq!(resolve("media/take:2.mp4", Some(&doc)), Ok(dir.join("media").join("take:2.mp4").to_string_lossy().into_owned()));
             assert_eq!(resolve("take:2.mp4", Some(&doc)), Ok(dir.join("take:2.mp4").to_string_lossy().into_owned()));
+        }
+    }
+
+    #[test]
+    fn network_and_device_paths_are_told_from_their_spelling() {
+        for p in [
+            r"\\server\share\clip.mp4",
+            "//server/share/clip.mp4",
+            r"\/server/share/clip.mp4",
+            r"/\server\share\clip.mp4",
+            r"\\?\UNC\server\share\clip.mp4",
+            r"\\.\pipe\x",
+            "//./pipe/x",
+            r"\\?\C:",
+            r"\??\UNC\server\share\clip.mp4",
+            "//",
+        ] {
+            assert!(is_network_or_device(p), "{p}");
+        }
+        for p in [r"C:\clip.mp4", "C:/clip.mp4", r"\\?\C:\clip.mp4", "/Users/a/clip.mp4", r"\clip.mp4", "clip.mp4", "/??x/clip.mp4", "/", ""] {
+            assert!(!is_network_or_device(p), "{p}");
         }
     }
 

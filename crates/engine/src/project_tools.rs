@@ -13,7 +13,7 @@
 //! | `file.mediaPropertiesFile` / `file.mediaProperties` | File ▸ Get Media File Properties for ▸ File… / Selection… (⇧⌘H) |
 //! | `file.projectSettings.general` / `.scratchDisks` | File ▸ Project Settings ▸ General… / Scratch Disks… |
 //! | `edit.find` / `edit.findNext` | Edit ▸ Find… (⌘F) / Find Next |
-//! | `edit.editOriginal` | Edit ▸ Edit Original (⌘E): the frontend opens the files (regular files with a media extension only) |
+//! | `edit.editOriginal` | Edit ▸ Edit Original (⌘E): the frontend opens the files (local regular files with a media extension only) |
 //! | `file.reveal` | Project panel ▸ Reveal in Finder / Show in Explorer: the frontend reveals the media file |
 //! | `clip.editOffline` | Clip ▸ Edit Offline… |
 //! | `clip.sourceSettings` | Clip ▸ Source Settings… |
@@ -1102,11 +1102,15 @@ fn project_settings_scratch(s: &mut Session, p: &Value) -> Result<Value> {
 // Edit Original, clip items
 // ---------------------------------------------------------------------------------------------
 
-/// Whether Edit Original may hand `path` to the system's default app: a regular file (after
-/// following links) whose name, and the name it links to, have an extension the importer takes.
-/// Anything else (a folder or app bundle, a script, a shortcut, a launcher) is refused.
+/// Whether Edit Original may hand `path` to the system's default app: a regular file on this
+/// computer (after following links) whose name, and the name it links to, have an extension the
+/// importer takes. Anything else (a network share or device, a folder or app bundle, a script, a
+/// shortcut, a launcher) is refused; a share or device from its spelling, before any lookup.
 pub(crate) fn openable_original(path: &str) -> std::result::Result<(), String> {
     let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
+    if crate::doc_path::is_network_or_device(path) {
+        return Err(format!("Edit Original opens files on this computer only; “{name}” is on a network share or a device"));
+    }
     let real = std::fs::canonicalize(path).map_err(|e| format!("can't open “{name}”: {e}"))?;
     if !real.is_file() {
         return Err(format!("“{name}” is not a file"));

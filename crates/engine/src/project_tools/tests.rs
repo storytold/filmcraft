@@ -367,6 +367,23 @@ fn edit_original_opens_media_files_only() {
     assert!(e.contains("run.bat"), "{e}");
 }
 
+/// Edit Original refuses a share or device path from its spelling, before looking the file up:
+/// on Windows even that lookup can contact the server (#2783).
+#[test]
+fn edit_original_refuses_network_paths_before_looking_them_up() {
+    let refused = |p: &str| crate::project_tools::openable_original(p).is_err_and(|e| e.contains("network share or a device"));
+    for p in [r"\\server\share\clip.mp4", "//server/share/clip.mp4", r"\/server/share/clip.mp4", r"\\?\UNC\server\share\clip.mp4"] {
+        assert!(refused(p), "{p}");
+    }
+    // `//` names a share even where the system would read it as a local folder.
+    #[cfg(unix)]
+    {
+        let clip = tmp_dir("orig-unc").join("clip.mov");
+        std::fs::write(&clip, b"").unwrap();
+        assert!(refused(&format!("/{}", clip.display())), "//{}", clip.display());
+    }
+}
+
 #[test]
 fn edit_original_update_metadata_and_clip_items() {
     let dir = tmp_dir("orig");
