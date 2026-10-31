@@ -236,6 +236,8 @@ pub struct Imported {
     pub project: Project,
     /// Top-level sequences, in document order (nested sequences are items too but not listed here).
     pub sequences: Vec<ItemId>,
+    /// OTIO sequences without explicit settings, eligible for host-probed picture sizing.
+    pub source_size_sequences: Vec<ItemId>,
 }
 
 /// Import options beyond the defaults of [`import`].
@@ -424,7 +426,12 @@ pub fn export_edl_per_track(project: &Project, sequence: ItemId, opts: &ExportOp
 /// fragment's root children go into `bin` (or the root). Returns the new ids of the fragment's
 /// top-level sequences.
 pub fn merge_into(target: &mut Project, fragment: Imported, bin: Option<BinId>) -> Vec<ItemId> {
-    let Imported { project: frag, sequences } = fragment;
+    merge_with_provenance(target, fragment, bin).0
+}
+
+/// Merge a fragment, also returning remapped sequences eligible for source picture sizing.
+pub fn merge_with_provenance(target: &mut Project, fragment: Imported, bin: Option<BinId>) -> (Vec<ItemId>, Vec<ItemId>) {
+    let Imported { project: frag, sequences, source_size_sequences } = fragment;
     let mut items: HashMap<ItemId, ItemId> = HashMap::new();
     for id in frag.items.keys() {
         items.insert(*id, ItemId(target.alloc_id()));
@@ -498,7 +505,7 @@ pub fn merge_into(target: &mut Project, fragment: Imported, bin: Option<BinId>) 
         None => &mut target.root,
     };
     dest.children.extend(root.children);
-    sequences.iter().filter_map(|s| items.get(s).copied()).collect()
+    (sequences.iter().filter_map(|s| items.get(s).copied()).collect(), source_size_sequences.iter().filter_map(|s| items.get(s).copied()).collect())
 }
 
 /// After probing a media file imported from an EDL (whose source times are absolute timecode),

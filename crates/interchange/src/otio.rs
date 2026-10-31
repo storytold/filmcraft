@@ -458,9 +458,12 @@ impl Imp<'_, '_> {
     }
 
     fn sequence(&mut self, stack: &Value, name: &str, meta: Option<&Value>, rate: FrameRate) -> ItemId {
-        let settings: SequenceSettings =
-            meta.and_then(|m| m.get("settings")).and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_else(|| settings_for(rate, 1920, 1080, false));
+        let explicit: Option<SequenceSettings> = meta.and_then(|m| m.get("settings")).and_then(|s| serde_json::from_value(s.clone()).ok());
+        let settings = explicit.clone().unwrap_or_else(|| settings_for(rate, 1920, 1080, false));
         let id = self.b.reserve_sequence(name, settings.clone(), None);
+        if explicit.is_none() {
+            self.b.source_size_sequences.push(id);
+        }
         if let Some(l) = meta.and_then(|m| m.get("label")).and_then(|l| serde_json::from_value::<Label>(l.clone()).ok())
             && let Some(it) = self.b.p.item_mut(id)
         {

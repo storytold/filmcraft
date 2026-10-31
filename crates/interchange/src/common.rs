@@ -348,12 +348,13 @@ pub(crate) struct Builder {
     pub p: Project,
     media: HashMap<String, ItemId>,
     pub top: Vec<ItemId>,
+    pub source_size_sequences: Vec<ItemId>,
     next_link: u64,
 }
 
 impl Builder {
     pub fn new(name: &str) -> Self {
-        Self { p: Project::new(name), media: HashMap::new(), top: Vec::new(), next_link: 1 }
+        Self { p: Project::new(name), media: HashMap::new(), top: Vec::new(), source_size_sequences: Vec::new(), next_link: 1 }
     }
 
     pub fn bin(&mut self, name: &str, parent: Option<BinId>) -> BinId {
@@ -512,7 +513,7 @@ impl Builder {
                 m.info.duration = end;
             }
         }
-        Imported { project: self.p, sequences: self.top }
+        Imported { project: self.p, sequences: self.top, source_size_sequences: self.source_size_sequences }
     }
 }
 

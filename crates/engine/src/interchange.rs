@@ -80,16 +80,37 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
             sequence.settings.validate().map_err(|e| EngineError::Other(format!("{path}: invalid imported sequence settings: {e}")))?;
         }
     }
-    let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
-    let seqs = s.edit(&format!("Import {name}"), |proj, _| {
-        let seqs = filmcraft_interchange::merge_into(proj, fragment, None);
+    let infer_size = !fragment.source_size_sequences.is_empty();
+    let apply = |session: &mut Session| import_fragment(session, path, fragment, report, format, &name);
+    if infer_size {
+        // Sizing and its auto-points must undo with the import, never expose a half-sized cut.
+        s.edit_group("Import OTIO", apply)
+    } else {
+        apply(s)
+    }
+}
+
+fn import_fragment(
+    s: &mut Session,
+    path: &str,
+    fragment: filmcraft_interchange::Imported,
+    report: filmcraft_interchange::Report,
+    format: Format,
+    name: &str,
+) -> Result<Value> {
+    let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
+    let (seqs, source_size_sequences) = s.edit(&format!("Import {name}"), |proj, _| {
+        let (seqs, source_size_sequences) = filmcraft_interchange::merge_with_provenance(proj, fragment, None);
         // A document that sets only some Motion parameters leaves the others at their "auto"
         // (NaN) defaults. Resolve them as placing a clip does, for every format. A media file's
         // picture size is only what the document says so far (an EDL says nothing: the importer
         // assumes the sequence size), so its clips' anchors wait for Link Media below.
-        proj.resolve_placed_auto_points(|seq| !before.contains(&seq), |source| !is_file_media(source));
-        Ok(seqs)
+        proj.resolve_placed_auto_points(
+            |seq| !before.contains(&seq) && !source_size_sequences.contains(&seq),
+            |source| !is_file_media(source) && !source_size_sequences.contains(&source.id),
+        );
+        Ok((seqs, source_size_sequences))
     })?;
     // Link media: probe each new file-backed item that exists, through the host's reader as a
     // direct import does (only the container index is read now, not the whole file: #461).
@@ -109,6 +130,7 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
     // The document's media paths are opened as stored paths of the document.
     s.media.add_stored_paths(new_media.iter().map(|(_, p)| p.clone()), Some(path));
     let mut linked = 0;
+    let mut linked_items = std::collections::HashSet::new();
     let mut offline = Vec::new();
     for (id, mpath) in new_media {
         let file = match s.media.follow(&mpath) {
@@ -137,14 +159,36 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
                         }
                     }
                     // the picture size is now the file's own: centre the anchors of its clips in it
-                    proj.resolve_placed_auto_points(|seq| !before.contains(&seq), |source| source.id == id);
+                    proj.resolve_placed_auto_points(|seq| !before.contains(&seq) && !source_size_sequences.contains(&seq), |source| source.id == id);
                     Ok(())
                 })?;
                 s.media.insert_file(id, &mpath, src);
                 linked += 1;
+                linked_items.insert(id);
             }
             None => offline.push(mpath),
         }
+    }
+    if !source_size_sequences.is_empty() {
+        s.edit("Size imported sequences", |proj, _| {
+            let sizes: Vec<_> = source_size_sequences
+                .iter()
+                .filter_map(|&id| first_linked_picture(proj, id, &source_size_sequences, &linked_items).map(|size| (id, size)))
+                .collect();
+            for (id, (width, height)) in sizes {
+                if let Some(sequence) = proj.sequence_mut(id) {
+                    let mut settings = sequence.settings.clone();
+                    settings.width = width;
+                    settings.height = height;
+                    settings.preset = format!("Custom {width}x{height} {}", settings.frame_rate.label());
+                    if settings.validate().is_ok() {
+                        sequence.settings = settings;
+                    }
+                }
+            }
+            proj.resolve_placed_auto_points(|seq| !before.contains(&seq), |_| true);
+            Ok(())
+        })?;
     }
     if let Some(&first) = seqs.first() {
         s.state.active_sequence = Some(first);
@@ -159,6 +203,46 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
         "offlineMedia": offline,
         "report": report_json(&report),
     }))
+}
+
+// Choose the earliest picture in each video track, visiting tracks in document order.
+// Only successfully linked files provide dimensions; parser placeholders are not evidence.
+fn first_linked_picture(
+    project: &filmcraft_project::Project,
+    root: ItemId,
+    source_size_sequences: &[ItemId],
+    linked: &std::collections::HashSet<ItemId>,
+) -> Option<(u32, u32)> {
+    let mut visited = std::collections::HashSet::new();
+    let mut pending = vec![root];
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let Some(item) = project.item(id) else { continue };
+        match &item.kind {
+            ItemKind::Media(media) if linked.contains(&id) => {
+                if let Some(video) = &media.info.video
+                    && filmcraft_project::validate_frame_size(video.width, video.height).is_ok()
+                {
+                    return Some((video.width, video.height));
+                }
+            }
+            ItemKind::Subclip { parent, .. } => pending.push(*parent),
+            ItemKind::Sequence(sequence) => {
+                if !source_size_sequences.contains(&id) {
+                    return Some((sequence.settings.width, sequence.settings.height));
+                }
+                for track in sequence.video_tracks.iter().rev() {
+                    let mut clips: Vec<_> = track.items.iter().collect();
+                    clips.sort_by_key(|clip| clip.start);
+                    pending.extend(clips.into_iter().rev().map(|clip| clip.item));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `file.exportInterchange {format: "edl"|"xml"|"fcpxml"|"otio"|"aaf"|"omf" = "xml", path, sequence?}`

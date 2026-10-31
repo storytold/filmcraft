@@ -256,3 +256,145 @@ fn an_interchange_import_links_media_without_reading_the_files_whole() {
     assert_eq!(s.project.source_size(clip.item), Some((320, 180)), "the file's real size, from its index");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn otio_without_sequence_settings_uses_the_linked_picture_size() {
+    let d = tmp_dir("otio-source-size");
+    make_movie(&d.join("portrait.mov"), DemoScene::OceanSunset, 48, 80, 24);
+    let range = json!({"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","value":0,"rate":24},"duration":{"OTIO_SCHEMA":"RationalTime.1","value":24,"rate":24}});
+    let doc = json!({"OTIO_SCHEMA":"Timeline.1","name":"Portrait cut","tracks":{"OTIO_SCHEMA":"Stack.1","children":[{"OTIO_SCHEMA":"Track.1","kind":"Video","children":[{"OTIO_SCHEMA":"Clip.2","name":"Portrait","source_range":range,"media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"portrait.mov","available_range":range}}]}]}});
+    let path = d.join("cut.otio");
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let mut s = Session::default();
+    let (result, seq) = import(&mut s, &path);
+    assert_eq!(result["linkedMedia"], 1, "the host actually probed the local source");
+    let settings = &s.project.sequence(seq).unwrap().settings;
+    assert_eq!((settings.width, settings.height), (48, 80));
+    let clip = first_clip(&s, seq);
+    assert_eq!(motion_point(&clip, "position"), Vec2::new(24.0, 40.0), "resolve placement against the inferred canvas");
+    assert_eq!(motion_point(&clip, "anchor"), Vec2::new(24.0, 40.0));
+}
+
+fn portrait_otio(path: &str) -> serde_json::Value {
+    let range = json!({"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","value":0,"rate":24},"duration":{"OTIO_SCHEMA":"RationalTime.1","value":24,"rate":24}});
+    json!({"OTIO_SCHEMA":"Timeline.1","name":"Cut","tracks":{"OTIO_SCHEMA":"Stack.1","children":[{"OTIO_SCHEMA":"Track.1","kind":"Video","children":[{"OTIO_SCHEMA":"Clip.2","source_range":range,"media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":path,"available_range":range}}]}]}})
+}
+
+#[test]
+fn otio_explicit_hd_canvas_overrides_a_linked_portrait() {
+    let d = tmp_dir("otio-explicit-size");
+    make_movie(&d.join("portrait.mov"), DemoScene::OceanSunset, 48, 80, 24);
+    let mut doc = portrait_otio("portrait.mov");
+    doc["metadata"] = json!({"filmcraft":{"settings":filmcraft_project::SequenceSettings::default()}});
+    let path = d.join("cut.otio");
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let mut session = Session::default();
+    let (_, id) = import(&mut session, &path);
+    let settings = &session.project.sequence(id).unwrap().settings;
+    assert_eq!((settings.width, settings.height), (1920, 1080));
+    assert_eq!(motion_point(&first_clip(&session, id), "position"), Vec2::new(960., 540.));
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn otio_offline_picture_keeps_the_default_canvas() {
+    let d = tmp_dir("otio-offline-size");
+    let path = d.join("cut.otio");
+    std::fs::write(&path, serde_json::to_vec(&portrait_otio("absent.mov")).unwrap()).unwrap();
+    let mut session = Session::default();
+    let (result, id) = import(&mut session, &path);
+    assert_eq!(result["linkedMedia"], 0);
+    let settings = &session.project.sequence(id).unwrap().settings;
+    assert_eq!((settings.width, settings.height), (1920, 1080));
+    assert_eq!(motion_point(&first_clip(&session, id), "position"), Vec2::new(960., 540.));
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn otio_nested_canvas_uses_explicit_settings_or_the_linked_picture() {
+    let d = tmp_dir("otio-nested-size");
+    make_movie(&d.join("portrait.mov"), DemoScene::OceanSunset, 48, 80, 24);
+    for explicit in [false, true] {
+        let original = portrait_otio("portrait.mov");
+        let mut nested = original["tracks"].clone();
+        nested["source_range"] = original["tracks"]["children"][0]["children"][0]["source_range"].clone();
+        if explicit {
+            nested["metadata"] = json!({"filmcraft":{"settings":filmcraft_project::SequenceSettings::default()}});
+        }
+        let mut doc = original;
+        doc["tracks"]["children"][0]["children"] = json!([nested]);
+        let path = d.join("cut.otio");
+        std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        let mut session = Session::default();
+        let (_, id) = import(&mut session, &path);
+        let settings = &session.project.sequence(id).unwrap().settings;
+        let expected = if explicit { (1920, 1080) } else { (48, 80) };
+        assert_eq!((settings.width, settings.height), expected);
+        assert_eq!(motion_point(&first_clip(&session, id), "position"), Vec2::new(expected.0 as f64 / 2., expected.1 as f64 / 2.));
+        assert!(auto_points(&session.project).is_empty());
+    }
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn otio_source_sizing_and_auto_points_undo_and_redo_together() {
+    let d = tmp_dir("otio-size-history");
+    make_movie(&d.join("portrait.mov"), DemoScene::OceanSunset, 48, 80, 24);
+    let path = d.join("cut.otio");
+    std::fs::write(&path, serde_json::to_vec(&portrait_otio("portrait.mov")).unwrap()).unwrap();
+    let mut session = Session::default();
+    let before = session.project.clone();
+    let (_, _) = import(&mut session, &path);
+    let imported = session.project.clone();
+    session.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*session.project, *before);
+    session.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(*session.project, *imported);
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn otio_picture_choice_follows_video_timeline_not_media_allocation() {
+    let d = tmp_dir("otio-picture-order");
+    make_movie(&d.join("portrait.mov"), DemoScene::OceanSunset, 48, 80, 24);
+    make_movie(&d.join("landscape.mov"), DemoScene::OceanSunset, 80, 48, 24);
+    let mut doc = portrait_otio("portrait.mov");
+    let landscape = portrait_otio("landscape.mov");
+    let mut audio = landscape["tracks"]["children"][0].clone();
+    audio["kind"] = json!("Audio");
+    let mut video = doc["tracks"]["children"][0].clone();
+    video["children"].as_array_mut().unwrap().push(landscape["tracks"]["children"][0]["children"][0].clone());
+    // Audio creates landscape's media item first; it must not choose the video canvas.
+    doc["tracks"]["children"] = json!([audio, video]);
+    let path = d.join("cut.otio");
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let mut session = Session::default();
+    let (result, id) = import(&mut session, &path);
+    assert_eq!(result["linkedMedia"], 2);
+    let settings = &session.project.sequence(id).unwrap().settings;
+    assert_eq!((settings.width, settings.height), (48, 80));
+    assert_eq!(settings.frame_rate, filmcraft_time::FrameRate::new(24, 1));
+    assert_eq!(settings.preset, "Custom 48x80 24");
+    assert!(auto_points(&session.project).is_empty());
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn otio_explicit_parent_waits_for_an_inferred_nested_anchor() {
+    let d = tmp_dir("otio-nested-anchor");
+    make_movie(&d.join("portrait.mov"), DemoScene::OceanSunset, 48, 80, 24);
+    let original = portrait_otio("portrait.mov");
+    let mut nested = original["tracks"].clone();
+    nested["source_range"] = original["tracks"]["children"][0]["children"][0]["source_range"].clone();
+    let mut doc = original;
+    doc["metadata"] = json!({"filmcraft":{"settings":filmcraft_project::SequenceSettings::default()}});
+    doc["tracks"]["children"][0]["children"] = json!([nested]);
+    let path = d.join("cut.otio");
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let mut session = Session::default();
+    let (_, id) = import(&mut session, &path);
+    let clip = first_clip(&session, id);
+    assert_eq!(motion_point(&clip, "position"), Vec2::new(960., 540.));
+    assert_eq!(motion_point(&clip, "anchor"), Vec2::new(24., 40.));
+    std::fs::remove_dir_all(d).unwrap();
+}
