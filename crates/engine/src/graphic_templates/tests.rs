@@ -332,6 +332,47 @@ fn upgrade_caption_to_graphic() {
 }
 
 #[test]
+fn upgrade_caption_carries_the_background_padding() {
+    let mut s = demo("gt-caption-pad");
+    s.execute("captions.add", json!({"text": "Padded", "seconds": 600, "durationSeconds": 2})).unwrap();
+    s.execute("captions.setStyle", json!({"backgroundPadding": [20, 10]})).unwrap();
+    let r = s.execute("graphics.upgradeCaption", json!({})).unwrap();
+    let it = item(&s, ClipId(r["clips"][0].as_u64().unwrap()));
+    let e = it.effects.iter().find(|e| e.effect == "graphic_text").unwrap();
+    let k = canvas(&s).1 as f64 / 1080.0;
+    assert_eq!(e.param("background_size").unwrap().value, ParamValue::Float(20.0 * k));
+    s.execute("edit.undo", json!({})).unwrap();
+    // the vertical padding sits between the margin and the text, for either anchor
+    let baseline = |s: &mut Session, anchor: &str, pad: Value| {
+        s.execute("captions.setStyle", json!({"anchor": anchor, "backgroundPadding": pad})).unwrap();
+        let r = s.execute("graphics.upgradeCaption", json!({})).unwrap();
+        let it = item(s, ClipId(r["clips"][0].as_u64().unwrap()));
+        let e = it.effects.iter().find(|e| e.effect == "graphic_text").unwrap().clone();
+        s.execute("edit.undo", json!({})).unwrap();
+        match e.param("position").unwrap().value {
+            ParamValue::Vec2(p) => p.y,
+            ref v => panic!("position is {v:?}"),
+        }
+    };
+    let (bottom, bottom_padded) = (baseline(&mut s, "bottom", Value::Null), baseline(&mut s, "bottom", json!([20, 10])));
+    assert!((bottom - bottom_padded - 10.0 * k).abs() < 1e-6, "bottom: {bottom} -> {bottom_padded}");
+    let (top, top_padded) = (baseline(&mut s, "top", Value::Null), baseline(&mut s, "top", json!([20, 10])));
+    assert!((top_padded - top - 10.0 * k).abs() < 1e-6, "top: {top} -> {top_padded}");
+}
+
+#[test]
+fn upgrade_caption_carries_the_corner_radius() {
+    let mut s = demo("gt-caption-radius");
+    s.execute("captions.add", json!({"text": "Rounded", "seconds": 600, "durationSeconds": 2})).unwrap();
+    s.execute("captions.setStyle", json!({"cornerRadius": 18})).unwrap();
+    let r = s.execute("graphics.upgradeCaption", json!({})).unwrap();
+    let it = item(&s, ClipId(r["clips"][0].as_u64().unwrap()));
+    let e = it.effects.iter().find(|e| e.effect == "graphic_text").unwrap();
+    let k = canvas(&s).1 as f64 / 1080.0;
+    assert_eq!(e.param("background_radius").unwrap().value, ParamValue::Float(18.0 * k));
+}
+
+#[test]
 fn source_graphics_share_edits() {
     let mut s = demo("gt-source");
     let c = clip_of(&s.execute("graphics.newText", json!({"text": "Shared"})).unwrap());
