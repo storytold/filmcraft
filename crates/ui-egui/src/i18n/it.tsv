@@ -102,6 +102,7 @@
 	Darkest	Più scuro
 	Delete Render Files	Elimina file di rendering
 	Delete Render Files In to Out	Elimina file di rendering da attacco a stacco
+	Delete Work Area Render Files	Elimina file di rendering dell’area di lavoro
 	Delete Tracks…	Elimina tracce…
 	Delete Transcript	Elimina trascrizione
 	Demo Footage	Filmati demo
@@ -270,6 +271,8 @@
 	Rename…	Rinomina…
 	Render Audio	Esegui rendering audio
 	Render Effects In to Out	Esegui rendering effetti da attacco a stacco
+	Render Effects in Work Area	Esegui rendering effetti nell’area di lavoro
+	Render Entire Work Area	Esegui rendering dell’intera area di lavoro
 	Render In to Out	Esegui rendering da attacco a stacco
 	Render Selection	Esegui rendering selezione
 	Replace Fonts in Projects…	Sostituisci font nei progetti…
@@ -3636,3 +3639,6 @@
 	Flash Cue Point	Punto Flash Cue
 	Invalid duration: {error}	Durata non valida: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	Eliminare i file di anteprima sovrapposti all’area di lavoro?

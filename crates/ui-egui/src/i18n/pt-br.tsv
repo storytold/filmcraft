@@ -106,6 +106,7 @@
 	Darkest	Mais escuro
 	Delete Render Files	Excluir arquivos de renderização
 	Delete Render Files In to Out	Excluir arquivos de renderização da entrada à saída
+	Delete Work Area Render Files	Excluir arquivos de renderização da área de trabalho
 	Delete Tracks…	Excluir faixas…
 	Delete Transcript	Excluir transcrição
 	Demo Footage	Clipes de demonstração
@@ -277,6 +278,8 @@
 	Rename…	Renomear…
 	Render Audio	Renderizar áudio
 	Render Effects In to Out	Renderizar efeitos da entrada à saída
+	Render Effects in Work Area	Renderizar efeitos na área de trabalho
+	Render Entire Work Area	Renderizar toda a área de trabalho
 	Render In to Out	Renderizar da entrada à saída
 	Render Selection	Renderizar seleção
 	Replace Fonts in Projects…	Substituir fontes em projetos…
@@ -3614,3 +3617,6 @@
 	Flash Cue Point	Ponto de referência Flash
 	Invalid duration: {error}	Duração inválida: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	Excluir os arquivos de pré-visualização que se sobrepõem à área de trabalho?

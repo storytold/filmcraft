@@ -115,6 +115,9 @@ fn can_redo(s: &Session) -> std::result::Result<(), String> {
 fn has_history(s: &Session) -> std::result::Result<(), String> {
     if s.history.can_undo() || s.history.can_redo() { Ok(()) } else { Err("the history is empty".into()) }
 }
+fn has_work_area(s: &Session) -> std::result::Result<(), String> {
+    crate::previews::work_area(s).map(|_| ()).map_err(|e| e.to_string())
+}
 fn has_in_out(s: &Session) -> std::result::Result<(), String> {
     let seq = s.active_sequence().ok_or("no sequence is open")?;
     if seq.mark_in.is_some() || seq.mark_out.is_some() { Ok(()) } else { Err("mark an In or Out point first".into()) }
@@ -2721,13 +2724,25 @@ fn build() -> Vec<CommandSpec> {
         cmd!("sequence.renderInToOut", "Render In to Out", ["Sequence"], None, r#"{"wait":bool=false}"#, has_seq, |s, p| {
             crate::previews::render(s, crate::previews::RenderMode::InToOut, p)
         }),
+        cmd!("sequence.renderEffectsInWorkArea", "Render Effects in Work Area", ["Sequence"], None, r#"{"wait":bool=false}"#, has_work_area, |s, p| {
+            crate::previews::render(s, crate::previews::RenderMode::EffectsInWorkArea, p)
+        }),
+        cmd!("sequence.renderEntireWorkArea", "Render Entire Work Area", ["Sequence"], None, r#"{"wait":bool=false}"#, has_work_area, |s, p| {
+            crate::previews::render(s, crate::previews::RenderMode::EntireWorkArea, p)
+        }),
         cmd!("sequence.renderSelection", "Render Selection", ["Sequence"], None, r#"{"wait":bool=false}"#, has_selection, |s, p| {
             crate::previews::render(s, crate::previews::RenderMode::Selection, p)
         }),
         cmd!("sequence.renderAudio", "Render Audio", ["Sequence"], None, r#"{"wait":bool=false}"#, has_seq, |s, p| crate::previews::render_audio(s, p)),
-        cmd!("sequence.deleteRenderFiles", "Delete Render Files", ["Sequence"], None, "{}", has_previews, |s, _| crate::previews::delete(s, false)),
+        cmd!("sequence.deleteRenderFiles", "Delete Render Files", ["Sequence"], None, "{}", has_previews, |s, _| crate::previews::delete(
+            s,
+            crate::previews::DeleteScope::All
+        )),
         cmd!("sequence.deleteRenderFilesInToOut", "Delete Render Files In to Out", ["Sequence"], None, "{}", has_in_out, |s, _| {
-            crate::previews::delete(s, true)
+            crate::previews::delete(s, crate::previews::DeleteScope::InToOut)
+        }),
+        cmd!("sequence.deleteWorkAreaRenderFiles", "Delete Work Area Render Files", ["Sequence"], None, "{}", has_work_area, |s, _| {
+            crate::previews::delete(s, crate::previews::DeleteScope::WorkArea)
         }),
         query!("sequence.renderBar", "Render Bar", "{}", |s, _| crate::previews::bar_json(s)),
         // ================= Work area bar =================

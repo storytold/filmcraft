@@ -387,3 +387,123 @@ fn saved_projects_are_listed_in_home_and_open_recent() {
     assert!(!menus.as_array().unwrap().iter().any(|m| m["id"].as_str().is_some_and(|id| id.starts_with("file.openRecent."))));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn work_area_menu_switches_and_in_out_keys_run_the_work_area_commands() {
+    let mut d = Driver::new();
+    let ids = |d: &mut Driver| -> Vec<String> {
+        d.ok("ui.menu.list", json!({})).as_array().unwrap().iter().filter_map(|m| m["id"].as_str().map(str::to_string)).collect()
+    };
+    let before = ids(&mut d);
+    assert!(before.contains(&"sequence.renderEffectsInToOut".to_string()));
+    assert!(!before.contains(&"sequence.renderEffectsInWorkArea".to_string()));
+    assert!(filmcraft_ui_egui::menus::bindings(d.app()).iter().any(|b| b.1 == egui::Key::Enter && b.2 == "sequence.renderEffectsInToOut"));
+    d.exec("shortcuts.set", json!({"command": "sequence.renderInToOut", "keys": "Alt+Shift+F8"}));
+    // A key goes through the app's key handling, which keeps its bindings between frames. While
+    // it is pressed, an Out point at the end of the time range makes the In/Out commands fail and
+    // leaves the work-area commands unaffected, so the status shows which command the key ran.
+    let press = |d: &mut Driver, key: &str| -> String {
+        d.ok("ui.set", json!({"focused": "Timeline"}));
+        d.frames(2);
+        let seq = d.app().session.state.active_sequence.unwrap();
+        let original = d.app().session.project.clone();
+        let mut project = (*original).clone();
+        project.sequence_mut(seq).unwrap().mark_out = Some(filmcraft_time::Tick(i64::MAX));
+        d.app().session.project = std::sync::Arc::new(project);
+        d.app().ui.status.clear();
+        d.ok("ui.key", json!({"key": key}));
+        d.frames(3);
+        d.app().session.project = original;
+        d.app().ui.status.clone()
+    };
+    // A native menu item keeps the command id it was built with.
+    let native = |d: &mut Driver, id: &str| -> Result<Value, String> {
+        let seq = d.app().session.state.active_sequence.unwrap();
+        let original = d.app().session.project.clone();
+        let mut project = (*original).clone();
+        project.sequence_mut(seq).unwrap().mark_out = Some(filmcraft_time::Tick(i64::MAX));
+        d.app().session.project = std::sync::Arc::new(project);
+        let ctx = d.harness.ctx.clone();
+        let r = filmcraft_ui_egui::menus::activate_native(d.app(), &ctx, id);
+        d.app().session.project = original;
+        r
+    };
+    let in_out_error = "set an Out point within the sequence time range";
+    assert_eq!(press(&mut d, "Enter"), in_out_error, "Enter runs Render Effects In to Out without the bar");
+    assert_eq!(press(&mut d, "Alt+Shift+F8"), in_out_error, "the key runs Render In to Out without the bar");
+    assert_eq!(native(&mut d, "sequence.renderEffectsInWorkArea").unwrap_err(), in_out_error, "the work-area item runs In to Out without the bar");
+    d.exec("sequence.workAreaBar", json!({"show": true}));
+    assert_ne!(press(&mut d, "Enter"), in_out_error, "Enter runs Render Effects in Work Area with the bar");
+    assert_ne!(press(&mut d, "Alt+Shift+F8"), in_out_error, "the key runs Render Entire Work Area with the bar");
+    assert!(native(&mut d, "sequence.renderEffectsInToOut").is_ok(), "the In/Out item runs Render Effects in Work Area with the bar");
+    let shortcut = |d: &mut Driver, id: &str| -> Value {
+        let menus = d.ok("ui.menu.list", json!({}));
+        menus.as_array().unwrap().iter().find(|m| m["id"] == json!(id)).map(|m| m["shortcut"].clone()).unwrap_or_default()
+    };
+    assert_eq!(shortcut(&mut d, "sequence.renderEffectsInWorkArea"), "Enter");
+    assert_eq!(shortcut(&mut d, "sequence.renderEntireWorkArea"), "Alt+Shift+F8");
+    let after = ids(&mut d);
+    for id in ["sequence.renderEffectsInToOut", "sequence.renderInToOut", "sequence.deleteRenderFilesInToOut"] {
+        assert!(!after.contains(&id.to_string()), "{id}");
+    }
+    for id in [
+        "sequence.renderEffectsInWorkArea",
+        "sequence.renderEntireWorkArea",
+        "sequence.deleteWorkAreaRenderFiles",
+        "sequence.renderAudio",
+        "sequence.deleteRenderFiles",
+    ] {
+        assert!(after.contains(&id.to_string()), "{id}");
+    }
+    let ordered: Vec<&str> = after
+        .iter()
+        .map(String::as_str)
+        .filter(|id| {
+            matches!(
+                *id,
+                "sequence.renderEffectsInWorkArea"
+                    | "sequence.renderEntireWorkArea"
+                    | "sequence.renderAudio"
+                    | "sequence.deleteRenderFiles"
+                    | "sequence.deleteWorkAreaRenderFiles"
+            )
+        })
+        .collect();
+    assert_eq!(
+        ordered,
+        [
+            "sequence.renderEffectsInWorkArea",
+            "sequence.renderEntireWorkArea",
+            "sequence.renderAudio",
+            "sequence.deleteRenderFiles",
+            "sequence.deleteWorkAreaRenderFiles"
+        ]
+    );
+    d.exec("sequence.workAreaBar", json!({"show": false}));
+    assert_eq!(press(&mut d, "Enter"), in_out_error, "Enter runs Render Effects In to Out again once the bar is off");
+    assert_eq!(press(&mut d, "Alt+Shift+F8"), in_out_error, "the key runs Render In to Out again once the bar is off");
+    d.exec("shortcuts.set", json!({"command": "sequence.deleteWorkAreaRenderFiles", "keys": "Alt+Shift+F9"}));
+    assert_eq!(shortcut(&mut d, "sequence.deleteRenderFilesInToOut"), "Alt+Shift+F9", "the In/Out entry shows its work-area key");
+}
+
+#[test]
+fn work_area_delete_dialog_cancel_and_ok() {
+    let mut d = Driver::new();
+    d.exec("sequence.workAreaBar", json!({"show": true}));
+    assert_eq!(d.exec("sequence.deleteWorkAreaRenderFiles", json!({}))["deleted"], 0);
+    let frame = d.app().session.sequence_rate().frame_duration();
+    d.exec("sequence.setWorkArea", json!({"start": 0, "end": frame.0}));
+    d.exec("sequence.renderEntireWorkArea", json!({"wait": true}));
+    let count = d.app().session.previews.count();
+    assert!(count > 0);
+    assert_eq!(d.menu("sequence.deleteWorkAreaRenderFiles")["dialog"], "deleteWorkAreaRenderFiles");
+    assert!(d.has("sequence.deleteWorkAreaRenderFiles.cancel"));
+    d.click("sequence.deleteWorkAreaRenderFiles.cancel");
+    assert_eq!(d.app().session.previews.count(), count);
+    d.menu("sequence.deleteWorkAreaRenderFiles");
+    assert!(d.has("sequence.deleteWorkAreaRenderFiles.ok"));
+    d.click("sequence.deleteWorkAreaRenderFiles.ok");
+    assert!(d.app().session.previews.count() < count);
+    assert!(!d.has("sequence.deleteWorkAreaRenderFiles.ok"));
+    let _ = std::fs::remove_dir_all(d.app().session.previews.dir().unwrap());
+}

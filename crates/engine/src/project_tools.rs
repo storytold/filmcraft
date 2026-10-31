@@ -278,14 +278,17 @@ pub(crate) fn apply_layout(v: &mut Vec<CommandSpec>) {
 }
 
 /// The Sequence menu in Premiere's order (submenu items where their submenu goes).
-const SEQUENCE_MENU: [&str; 34] = [
+const SEQUENCE_MENU: [&str; 37] = [
     "sequence.settings",
     "sequence.renderEffectsInToOut",
+    "sequence.renderEffectsInWorkArea",
     "sequence.renderInToOut",
+    "sequence.renderEntireWorkArea",
     "sequence.renderSelection",
     "sequence.renderAudio",
     "sequence.deleteRenderFiles",
     "sequence.deleteRenderFilesInToOut",
+    "sequence.deleteWorkAreaRenderFiles",
     "sequence.matchFrame",
     "sequence.reverseMatchFrame",
     "sequence.addEdit",

@@ -102,6 +102,7 @@
 	Darkest	Más oscuro
 	Delete Render Files	Eliminar archivos de procesamiento
 	Delete Render Files In to Out	Eliminar archivos de procesamiento de entrada a salida
+	Delete Work Area Render Files	Eliminar archivos de procesamiento del área de trabajo
 	Delete Tracks…	Eliminar pistas…
 	Delete Transcript	Eliminar transcripción
 	Demo Footage	Material de demostración
@@ -276,6 +277,8 @@
 	Rename…	Cambiar nombre…
 	Render Audio	Procesar audio
 	Render Effects In to Out	Procesar efectos de entrada a salida
+	Render Effects in Work Area	Procesar efectos en el área de trabajo
+	Render Entire Work Area	Procesar toda el área de trabajo
 	Render In to Out	Procesar de entrada a salida
 	Render Selection	Procesar selección
 	Replace Fonts in Projects…	Reemplazar fuentes en proyectos…
@@ -3664,3 +3667,6 @@
 	Change the sequence to match the clip's settings?	¿Cambiar la secuencia para que coincida con los ajustes del clip?
 	Change Sequence Settings	Cambiar ajustes de secuencia
 	Keep Existing Settings	Mantener los ajustes actuales
+
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	¿Eliminar los archivos de vista previa que se superponen al área de trabajo?

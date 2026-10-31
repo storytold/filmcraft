@@ -171,7 +171,12 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
         }
         quit.set_text(language.tr(quit_label));
         for (shown, mi) in &mut native {
-            let Some(it) = items.iter().find(|i| i.id == shown.id) else { continue };
+            // An In/Out render or delete item shows its work-area command while the Work Area Bar
+            // is on, and the other way around (`menus::activate_native` runs the shown one).
+            let counterpart = filmcraft_ui_egui::menus::work_area_counterpart(&shown.id);
+            let Some(it) = items.iter().find(|i| i.id == shown.id).or_else(|| items.iter().find(|i| Some(i.id.as_str()) == counterpart)) else {
+                continue;
+            };
             if it.label != shown.label {
                 // Settings entries drop the trailing ellipsis, as when the menu was built
                 mi.set_text(if it.id.starts_with("app.settings.") { it.label.trim_end_matches('…') } else { &it.label });

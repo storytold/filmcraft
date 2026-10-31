@@ -87,6 +87,7 @@
 	Darkest	Самый тёмный
 	Delete Render Files	Удалить файлы визуализации
 	Delete Render Files In to Out	Удалить файлы визуализации от входа до выхода
+	Delete Work Area Render Files	Удалить файлы визуализации рабочей области
 	Delete Tracks…	Удалить дорожки…
 	Delete Transcript	Удалить транскрипт
 	Demo Footage	Демонстрационный материал
@@ -258,6 +259,8 @@
 	Rename…	Переименовать…
 	Render Audio	Визуализировать звук
 	Render Effects In to Out	Визуализировать эффекты от входа до выхода
+	Render Effects in Work Area	Визуализировать эффекты в рабочей области
+	Render Entire Work Area	Визуализировать всю рабочую область
 	Render In to Out	Визуализировать от входа до выхода
 	Render Selection	Визуализировать выделение
 	Replace Fonts in Projects…	Заменить шрифты в проектах…
@@ -3596,3 +3599,6 @@
 	Couldn't open your web browser	Не удалось открыть браузер
 	Open this address in your browser yourself:	Этот адрес нужно открыть в браузере вручную:
 	Reset Interface Zoom	Сбросить масштаб интерфейса
+
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	Удалить файлы предпросмотра, пересекающие рабочую область?
