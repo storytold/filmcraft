@@ -1,6 +1,6 @@
 use super::{
-    Avail, Cand, MbCtx, MbEdges, MbInfo, MbKind, Mv, MvNb, Part, PartGeom, PartSearch, PredOut, RefPic, SearchBlock, Shape, SliceEnc, Src, mv_bits, sad, sad16,
-    satd,
+    Avail, Cand, MbCtx, MbEdges, MbInfo, MbKind, Mv, MvNb, Part, PartGeom, PartSearch, PredOut, RefPic, SearchBlock, Shape, SliceEnc, Src, mv_bits, sad, sad8,
+    sad16, satd,
 };
 use crate::picture::McBlock;
 
@@ -49,7 +49,11 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         let p = self.f.p;
         let fcost = |mv: Mv| -> u32 {
             let i = pl.idx(bx as isize + (mv.x as isize >> 2), by as isize + (mv.y as isize >> 2));
-            let d = if w == 16 { sad16(src, sstride, &pl.data[i..], pl.stride, h) } else { sad(src, sstride, &pl.data[i..], pl.stride, w, h) };
+            let d = match w {
+                16 => sad16(src, sstride, &pl.data[i..], pl.stride, h),
+                8 => sad8(src, sstride, &pl.data[i..], pl.stride, h),
+                _ => sad(src, sstride, &pl.data[i..], pl.stride, w, h),
+            };
             d + ((lam * mv_bits(mv, mvp)) >> 8)
         };
         let mut best = Mv::new((mvp.x as i32 + 2) & !3, (mvp.y as i32 + 2) & !3);
@@ -118,8 +122,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         // sub-pel refinement with SATD
         let mut buf = [0u8; 256];
         let scost = |mv: Mv, buf: &mut [u8; 256]| -> u32 {
-            r.mc_luma(McBlock { x: bx, y: by, w, h }, mv, buf, 16);
-            satd(src, sstride, buf, 16, w, h) + ((lam * mv_bits(mv, mvp)) >> 8)
+            let (pr, ps) = r.luma_ref(bx, by, mv, w, h, buf);
+            satd(src, sstride, pr, ps, w, h) + ((lam * mv_bits(mv, mvp)) >> 8)
         };
         let mut bs = scost(best, &mut buf);
         let mut seen = Visited::<2>::new(best, 4, 1);

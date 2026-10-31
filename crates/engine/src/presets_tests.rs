@@ -57,8 +57,8 @@ fn keyframe_modes_retime_onto_the_target() {
         let it = item(&s, b);
         assert_eq!(it.effects.len(), before + 1);
         let e = it.effects.iter().rfind(|e| e.effect == "gaussian_blur").unwrap();
-        // standard effects go before the intrinsic ones
-        assert!(it.effects.iter().position(|x| x.effect == "gaussian_blur").unwrap() < it.effects.iter().position(|x| x.effect == "motion").unwrap());
+        // standard effects go after the intrinsic ones, like effects.apply (#1879)
+        assert!(it.effects.iter().position(|x| x.effect == "gaussian_blur").unwrap() > it.effects.iter().position(|x| x.effect == "motion").unwrap());
         let p = e.param("blurriness").unwrap();
         assert_eq!(
             p.keyframes.len(),

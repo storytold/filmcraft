@@ -18,6 +18,9 @@ struct Draft {
     folder: String,
     import: bool,
     replace: Option<String>,
+    /// Why the last OK failed, shown in the dialog (it only reached the status bar, so a failed
+    /// export looked like nothing happening, #2211).
+    error: Option<String>,
 }
 fn draft_id() -> egui::Id {
     egui::Id::unique("frame-export-draft")
@@ -45,12 +48,20 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context, params: &Value) -> Resu
         if cfg!(target_arch = "wasm32") {
             return "/exports".into();
         }
-        app.session.path.as_deref().and_then(|p| std::path::Path::new(p).parent()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into())
+        // beside the project; for a project never saved, the home folder (not the working
+        // directory, which for an app started from a menu or an AppImage may be `/`, #2211)
+        app.session
+            .path
+            .as_deref()
+            .and_then(|p| std::path::Path::new(p).parent())
+            .map(|p| p.to_string_lossy().into_owned())
+            .or_else(|| app.session.services.home_dir())
+            .unwrap_or_else(|| ".".into())
     });
     let name = if target.source { std::path::Path::new(&target.name).file_stem().and_then(|s| s.to_str()).unwrap_or(&target.name) } else { &target.name };
     let name = clean(name);
     ctx.data_mut(|m| {
-        m.insert_temp(draft_id(), Some(Draft { target, timecode, name, format: StillFormat::Png, depth: 8, folder, import: false, replace: None }))
+        m.insert_temp(draft_id(), Some(Draft { target, timecode, name, format: StillFormat::Png, depth: 8, folder, import: false, replace: None, error: None }))
     });
     ctx.request_repaint();
     Ok(json!({"dialog":"exportFrame"}))
@@ -159,6 +170,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
             });
             ui.add_space(12.0);
+            if let Some(e) = &d.error {
+                let r = ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), e);
+                elems.push(("exportFrame.error".into(), r.rect, e.clone()));
+            }
             if let Some(path) = d.replace.clone() {
                 ui.label(format!("This file already exists: {path}"));
                 ui.horizontal(|ui| {
@@ -224,6 +239,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         });
     }
     if (apply || replace) && !close {
+        d.error = None;
         let mut stem = clean(&d.name);
         let lower = stem.to_ascii_lowercase();
         for suffix in [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"] {
@@ -242,6 +258,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
             Err(e) => {
                 app.ui.status = format!("Cannot check export destination: {e}");
+                d.error = Some(app.ui.status.clone());
                 false
             }
         };
@@ -258,7 +275,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ctx.data_mut(|m| m.insert_temp(egui::Id::unique("frame-export-folder"), d.folder.clone()));
                     close = true;
                 }
-                Err(e) => app.ui.status = e.to_string(),
+                Err(e) => {
+                    app.ui.status = e.to_string();
+                    d.error = Some(e.to_string());
+                }
             }
         }
     }

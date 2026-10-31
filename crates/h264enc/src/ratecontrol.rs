@@ -199,7 +199,11 @@ impl RateControl {
                 let s = self.sum_s + s_here + ps;
                 let wanted = bpf * (self.frames as f64 + 1.0 + pn);
                 let mut rf = s / wanted;
-                let abr_buffer = bpf * self.fps.max(1.0);
+                // A quarter second of bits: with a longer horizon the correction is so weak that a short clip
+                // that starts over target never pays the excess back (+10..14% on 2 s of high motion at 1 s).
+                // Never shorter than one frame's budget: at a low frame rate the horizon would be a fraction of a
+                // frame and the correction would overshoot in the other direction every frame.
+                let abr_buffer = (bpf * self.fps.max(1.0) * 0.25).max(bpf);
                 let overflow = (1.0 + (self.total_bits - bpf * self.frames as f64) / abr_buffer).clamp(0.5, 2.0);
                 rf *= overflow;
                 let q = rf * cplx.powf(1.0 - QCOMP) * type_factor(t);

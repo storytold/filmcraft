@@ -187,3 +187,58 @@ fn set_param_refuses_values_outside_the_range() {
     s.execute("effects.setParam", json!({"clip": clip, "effect": "opacity", "param": "opacity", "value": 100})).unwrap();
     s.execute("effects.setParam", json!({"clip": clip, "effect": "opacity", "param": "opacity", "value": 0})).unwrap();
 }
+
+/// #3455: a transition's requested duration can be longer than the clips around its cut can
+/// hold (a crossfade next to a few-frames clip). The preview clamps it to what the cut
+/// supports — the same invariant `edit::transitions::set_span` keeps when a transition is
+/// resized: a centered crossfade spends half its length on each side of the cut, a fade to
+/// or from nothing spends it all on its one side.
+#[test]
+fn transition_duration_is_clamped_to_what_the_cut_supports() {
+    use crate::commands::preview_transition;
+    use filmcraft_project::TrackKind;
+    use filmcraft_time::Tick;
+
+    let mut s = demo();
+    let sid = s.state.active_sequence.unwrap();
+    let frame = s.sequence_rate().tick_of(1);
+    let track = s.active_sequence().unwrap().video_tracks[0].id;
+    let clips: Vec<_> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|c| c.id).collect();
+    assert!(clips.len() >= 2, "the demo project needs at least two V1 clips for this test");
+    let (first_start, second_end) = {
+        let items = &mut std::sync::Arc::make_mut(&mut s.project).sequence_mut(sid).unwrap().track_mut(track).unwrap().items;
+        items[0].duration = frame.mul_ratio(3, 1);
+        let cut = items[0].end();
+        items[1].start = cut;
+        (items[0].start, items[1].end())
+    };
+
+    // Crossfade at the cut between the 3-frame clip and its neighbour: the short side
+    // caps a centered transition at 2 x 3 frames.
+    let (_, planned) = preview_transition(&s, &json!({"effect": "cross_dissolve", "clip": clips[1].0, "edge": "in", "frames": 999}), TrackKind::Video).unwrap();
+    assert_eq!(planned.duration, frame.mul_ratio(6, 1), "clamped to twice the short side of the cut");
+    assert!(planned.start >= first_start && planned.start + planned.duration <= second_end, "the clamped transition stays inside the clips");
+
+    // The same cut with a request that fits is untouched.
+    let (_, planned) = preview_transition(&s, &json!({"effect": "cross_dissolve", "clip": clips[1].0, "edge": "in", "frames": 4}), TrackKind::Video).unwrap();
+    assert_eq!(planned.duration, frame.mul_ratio(4, 1));
+
+    // A fade to nothing on the last clip's out edge can be at most that clip's own length.
+    let (last, last_duration) = {
+        let items = &s.active_sequence().unwrap().track(track).unwrap().items;
+        (items.last().unwrap().id, items.last().unwrap().duration)
+    };
+    let (_, planned) = preview_transition(&s, &json!({"effect": "cross_dissolve", "clip": last.0, "edge": "out", "frames": 9999}), TrackKind::Video).unwrap();
+    assert_eq!(planned.duration, last_duration, "a one-sided fade is clamped to its clip");
+    let items = s.active_sequence().unwrap().track(track).unwrap().items.clone();
+    let last = items.last().unwrap();
+    assert_eq!(planned.start + planned.duration, last.end());
+
+    // A cut whose clips are shorter than a frame is refused instead of creating a
+    // zero-length transition.
+    let items = &mut std::sync::Arc::make_mut(&mut s.project).sequence_mut(sid).unwrap().track_mut(track).unwrap().items;
+    items[1].duration = Tick(0);
+    let err =
+        preview_transition(&s, &json!({"effect": "cross_dissolve", "clip": clips[1].0, "edge": "in", "frames": 5}), TrackKind::Video).unwrap_err().to_string();
+    assert!(err.contains("no room for a transition"), "{err}");
+}
