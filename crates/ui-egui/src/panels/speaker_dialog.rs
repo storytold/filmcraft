@@ -50,10 +50,10 @@ impl Draft {
         }).collect::<Vec<_>>()})
     }
     fn stop_preview(&mut self, app: &mut FilmcraftApp) {
-        if let Some((item, looping)) = self.preview.take()
-            && app.session.state.source_item == Some(item)
-        {
-            app.stop_source();
+        if let Some((item, looping)) = self.preview.take() {
+            if app.session.state.source_item == Some(item) {
+                app.stop_source();
+            }
             app.source_playback.clock.looping = looping;
         }
     }
@@ -294,6 +294,31 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switching_source_during_speaker_preview_restores_loop_without_stopping_the_new_source() {
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let first = session.active_sequence().unwrap().audio_tracks[0].items[0].item;
+        let second = session.active_sequence().unwrap().audio_tracks[0].items.iter().find(|clip| clip.item != first).unwrap().item;
+        session.execute("source.open", json!({"item":first.0})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.ui.transcript_source = true;
+        open(&mut app).unwrap();
+        app.ui.speaker_dialog.as_mut().unwrap().preview = Some((first, true));
+        app.source_playback.clock.looping = false;
+        app.session.execute("source.open", json!({"item":second.0})).unwrap();
+        app.source_playback.clock.playing = true;
+        let before = app.session.project.clone();
+        let undo = app.session.history.undo.len();
+        show(&mut app, &egui::Context::default());
+        assert!(app.ui.speaker_dialog.is_none());
+        assert!(app.source_playback.clock.looping, "the preview's temporary loop setting must be restored");
+        assert!(app.source_playback.clock.playing, "closing the old preview must not stop another source");
+        assert_eq!(app.session.state.source_item, Some(second));
+        assert_eq!(app.session.project, before);
+        assert_eq!(app.session.history.undo.len(), undo);
+    }
 
     #[test]
     fn speaker_preview_validates_hostile_input_and_respects_a_subclip() {

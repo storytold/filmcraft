@@ -1710,12 +1710,24 @@ fn project_transcribe_audio_prompts_for_the_chosen_model_without_replacing_exist
     if !filmcraft_engine::transcript::speech_available() {
         return;
     }
+    // Guarantee a missing model without reading or modifying the user's model cache.
+    if std::env::var_os("FILMCRAFT_TEST_TRANSCRIBE_PROMPT_CHILD").is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "project_panel_ui::project_transcribe_audio_prompts_for_the_chosen_model_without_replacing_existing_words", "--nocapture"])
+            .env("FILMCRAFT_TEST_TRANSCRIBE_PROMPT_CHILD", "1")
+            .env("FILMCRAFT_DATA_DIR", temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
     let (mut d, a, b, _) = transcription_project();
     d.app().session.transcriber = None;
-    // The test environment points FILMCRAFT_DATA_DIR at an isolated external directory.
-    // Nothing here clicks Download or uses the network.
+    // Read-only use of this isolated directory: no Download click or network access.
     let dir = filmcraft_engine::transcript::models_dir().unwrap();
-    let missing = filmcraft_engine::speech::models::catalogue().iter().find(|m| !filmcraft_engine::speech::models::installed(&dir, m)).unwrap();
+    let missing = filmcraft_engine::transcript::find_model("whisper-small").unwrap();
+    assert!(!filmcraft_engine::speech::models::cached(&dir, missing));
     d.exec("transcript.set", json!({"item":a,"transcript":{"language":"en","source":"whisper-tiny","words":[{"text":"Original","start":0,"end":1000}]}}));
     let before = d.app().session.project.transcripts.clone();
     d.app().session.prefs.media_analysis.whisper_model = "invalid-old-setting".into();
@@ -1742,6 +1754,32 @@ fn project_transcribe_audio_restored_ui_drafts_cannot_follow_reused_item_ids() {
     d.app().ui.extras = restored;
     d.frames(2);
     assert!(d.app().ui.extras.dialog.is_none());
+}
+
+fn verify_corrupt_cached_model_in_worker(d: &mut Driver, item: u64, model: &str) {
+    if !filmcraft_engine::transcript::speech_available() {
+        return;
+    }
+    let before = d.app().session.project.clone();
+    let undo = d.app().session.history.undo.len();
+    d.app().session.transcriber = None;
+    d.ok("ui.menu.invoke", json!({"id":"transcript.generate","params":{"options":true,"items":[item]}}));
+    d.ok("ui.set", json!({"menuDialog":{"model":model}}));
+    d.click("transcribeAudio.ok");
+    assert!(d.app().ui.speech_download.is_none(), "cached files must be verified by a worker, not the UI");
+    assert_eq!(d.app().session.jobs.len(), 1);
+    for _ in 0..200 {
+        d.frames(1);
+        if d.app().session.transcribe_jobs.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(d.app().session.transcribe_jobs.is_empty());
+    let error = d.app().session.jobs.last().unwrap().progress.error.lock().unwrap().clone().unwrap();
+    assert!(error.contains("not downloaded"), "invalid fixture weights must fail verification: {error}");
+    assert_eq!(d.app().session.project, before);
+    assert_eq!(d.app().session.history.undo.len(), undo);
 }
 
 #[test]
@@ -1781,6 +1819,8 @@ fn transcription_model_controls_are_compact_centered_and_delete_only_after_confi
     let _fixture = Fixture(cached.clone());
     let before = d.app().session.project.clone();
     let undo = d.app().session.history.undo.len();
+    verify_corrupt_cached_model_in_worker(&mut d, a, model.id);
+    let job_count = d.app().session.jobs.len();
     d.ok("ui.menu.invoke", json!({"id":"transcript.generate","params":{"options":true,"items":[a]}}));
     d.ok("ui.set", json!({"menuDialog":{"model":"parakeet-tdt-0.6b-v3","language":"fr"}}));
     assert_eq!(d.label("transcribeAudio.language"), "Auto");
@@ -1794,7 +1834,7 @@ fn transcription_model_controls_are_compact_centered_and_delete_only_after_confi
     d.click("transcribeAudio.downloadModel");
     assert_eq!(d.label("speechModel.download"), "Download model");
     assert!(d.app().ui.speech_download.as_ref().unwrap().then_command.is_empty());
-    assert!(d.app().session.jobs.is_empty(), "opening a download prompt starts nothing");
+    assert_eq!(d.app().session.jobs.len(), job_count, "opening a download prompt starts nothing");
     d.click("speechModel.cancel");
     assert!(d.has("transcribeAudio.ok"));
 

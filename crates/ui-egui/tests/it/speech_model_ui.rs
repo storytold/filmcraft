@@ -187,3 +187,29 @@ fn model_only_download_completion_never_starts_transcription() {
     assert_eq!(d.app().session.jobs.len(), 1, "no inference job created");
     assert_eq!(d.app().session.project, before);
 }
+
+#[test]
+fn a_late_cancelled_download_never_resumes_transcription_even_after_success() {
+    let mut d = Driver::demo();
+    d.app().session.transcriber =
+        Some(std::sync::Arc::new(filmcraft_engine::speech::FixedTranscriber { transcript: Default::default(), id: "synthetic".into() }));
+    let before = d.app().session.project.clone();
+    let undo = d.app().session.history.undo.len();
+    let job = filmcraft_engine::Job { id: 997, label: "Download Speech Model: Synthetic".into(), progress: Default::default(), result: Default::default() };
+    job.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    job.progress.finished.store(true, std::sync::atomic::Ordering::Release);
+    d.app().session.jobs.push(job);
+    d.app().ui.speech_download = Some(filmcraft_ui_egui::state::SpeechDownload {
+        model: "whisper-small".into(),
+        document_epoch: d.app().session.document_epoch,
+        job: Some(997),
+        then_command: "transcript.generate".into(),
+        then_params: json!({"wait":false}),
+        ..Default::default()
+    });
+    d.frames(3);
+    assert!(d.app().ui.speech_download.is_none());
+    assert_eq!(d.app().session.jobs.len(), 1, "late cancellation must never start inference");
+    assert_eq!(d.app().session.project, before);
+    assert_eq!(d.app().session.history.undo.len(), undo);
+}

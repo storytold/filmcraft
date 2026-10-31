@@ -339,9 +339,11 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   Windows-ARM now compile candle too); release size and build time were not measured; the
   transcription is backgrounded in the desktop UI. Cross-platform validation remains pending.
 - **Estimate:** 0 h.
-- **Limits of the Parakeet TDT v3 recogniser** (details in the `filmcraft-speech` README): about
-  4 GB of memory (3.8 GB peak), CPU only; accuracy measured only on synthesized English speech,
-  recorded dialogue untested; numbers come out as digits; the transcript language is guessed for
+- **Limits of the Parakeet TDT v3 recogniser** (details in the `filmcraft-speech` README): CPU only;
+  downloaded weights occupy about 2.5 GB, with additional inference memory; peak memory remains
+  unmeasured in this integration. Whisper tiny and Parakeet passed a 22-word recorded-English
+  smoke test; broad recorded-dialogue accuracy remains unverified. Numbers come out as digits;
+  the transcript language is guessed for
   only 10 of its 25 languages (else `en`), and `language` does not steer recognition; clips over
   120 s are cut into chunks of at most 90 s with the decoder state reset at each cut.
 

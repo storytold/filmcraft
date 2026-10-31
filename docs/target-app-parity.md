@@ -161,7 +161,7 @@ Evidence for the cross-cutting rows:
 - **Plugins ~5%.** No VST3 / Audio Units, no OpenFX, no Premiere / After Effects plug-in API, no
   UXP panels (#325). Needs an owner decision (FFI). MCP, CLI and the control channel are ahead of
   Premiere's scripting.
-- **AI ~25%.** Speech to text (local Whisper, model downloaded on first use); text-to-speech
+- **AI ~25%.** Speech-to-text (local Whisper, model downloaded on first use); text-to-speech
   narration with Kokoro-82M landed 10-10 (#278, beyond Premiere); scene edit detection; Enhance
   Speech and Auto Reframe are DSP / heuristics. Missing: Object Mask (#406, #694), Generative
   Extend, media-intelligence search, caption translation, auto colour.

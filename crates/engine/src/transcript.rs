@@ -1068,20 +1068,22 @@ fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_p(p, "model").unwrap_or(filmcraft_speech::models::DEFAULT_MODEL);
     let m = filmcraft_speech::models::find(id).ok_or_else(|| speech_err(SpeechError::UnknownModel(id.into())))?;
     let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
-    if filmcraft_speech::models::installed(&dir, m) {
-        return Ok(json!({"model": m.id, "job": null, "installed": true, "dir": filmcraft_speech::models::model_dir(&dir, m).to_string_lossy()}));
-    }
     if !cfg!(feature = "speech-download") {
         return Err(bad(cmd, "model downloads are not available in this build (built without the `speech-download` feature)"));
     }
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(true);
     let job = crate::narration::new_job(s, format!("Download Speech Model: {}", m.name))?;
-    job.progress.total.store(filmcraft_speech::models::missing_bytes(&dir, m), std::sync::atomic::Ordering::Relaxed);
+    // Metadata only here: the worker checks cached files and counts missing bytes under its lease.
+    job.progress.total.store(m.size(), std::sync::atomic::Ordering::Relaxed);
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let target = filmcraft_speech::models::model_dir(&dir, m).to_string_lossy().to_string();
     let job_id = crate::narration::spawn(s, job, wait, "filmcraft-speech-download", move || {
         let t0 = web_time::Instant::now();
+        *prog.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = "Checking speech model files".into();
         let r = fetch_model(&dir, m, &prog);
+        if r.is_ok() {
+            prog.done.store(prog.total.load(std::sync::atomic::Ordering::Relaxed), std::sync::atomic::Ordering::Relaxed);
+        }
         crate::narration::finish(&prog, &res, r.map(|()| format!("{} installed", m.name)), t0);
     })?;
     if wait {
@@ -1098,6 +1100,9 @@ fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(feature = "speech-download")]
 fn fetch_model(dir: &std::path::Path, m: &'static filmcraft_speech::models::ModelInfo, prog: &filmcraft_export::Progress) -> std::result::Result<(), String> {
     use std::sync::atomic::Ordering;
+    if prog.cancel.load(Ordering::Relaxed) {
+        return Err("stopped: nothing was changed".into());
+    }
     let mut progress = |done: u64, total: u64, file: &str| {
         prog.done.store(done, Ordering::Relaxed);
         prog.total.store(total, Ordering::Relaxed);

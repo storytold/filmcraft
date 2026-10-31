@@ -23,7 +23,8 @@ pub(crate) fn request(app: &mut FilmcraftApp, command: &str, params: Value) -> b
     }
     let id = params.get("model").and_then(Value::as_str).unwrap_or(&app.session.prefs.media_analysis.whisper_model);
     let Some(m) = filmcraft_engine::transcript::find_model(id) else { return false };
-    let installed = filmcraft_engine::transcript::models_dir().is_some_and(|dir| filmcraft_engine::speech::models::installed(&dir, m));
+    // Only a size hint on the UI thread. The model-loading worker verifies every SHA-256.
+    let installed = filmcraft_engine::transcript::models_dir().is_some_and(|dir| filmcraft_engine::speech::models::cached(&dir, m));
     if installed {
         return false;
     }
@@ -82,11 +83,11 @@ pub fn dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     });
     if let Some((_, _, true, error, cancelled)) = &progress {
         d.job = None;
+        if *cancelled {
+            app.ui.speech_download = None;
+            return;
+        }
         match error {
-            Some(_) if *cancelled => {
-                app.ui.speech_download = None;
-                return;
-            }
             Some(e) => d.error = e.clone(),
             None => {
                 // downloaded: transcribe as asked
