@@ -4,6 +4,7 @@
 //! test binary: anything else asking `hevc_available` first would make the answer meaningless.
 #![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
+#[cfg(target_os = "windows")]
 use std::time::{Duration, Instant};
 
 use filmcraft_platform::nvenc::{hevc_hdr_probed, hevc_probed};
