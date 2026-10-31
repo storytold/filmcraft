@@ -109,6 +109,12 @@ pub struct TlState {
     /// display gain: scanning the whole source per clip per frame cost more than drawing.
     peak_max: HashMap<PeakKey, (usize, f32)>,
     zoom_anchor: Option<(f64, f32)>,
+    /// The scroll the view was left at in the last frame while playing: a different one this
+    /// frame means the user moved the view (wheel, swipe, scroll bar, zoom).
+    follow_seen: Option<f64>,
+    /// Playback stops following the playhead after the user moves the view, until the playhead
+    /// is back in view: following would pull the view straight back.
+    follow_held: bool,
     /// The zoom (points a second) the video thumbnails are laid out at while the view is zooming (#1094).
     thumb_pps: Option<f64>,
     /// Show Duplicate Frame Markers: the markers of a sequence, with the session revision, the
@@ -539,12 +545,24 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
     }
     // follow playhead while playing (Settings ▸ Timeline ▸ Timeline Playback Auto-Scrolling)
     let auto_scroll = app.session.prefs.timeline.auto_scroll.clone();
+    let tl = &mut app.tl;
+    if !app.playback.playing {
+        tl.follow_held = false;
+    } else if tl.follow_seen.is_some_and(|seen| seen != app.ui.timeline.target_scroll) {
+        tl.follow_held = true;
+    }
     if app.playback.playing && app.ui.timeline.follow && auto_scroll != "noScroll" {
         let v = &mut app.ui.timeline;
         let ph = app.session.playhead().seconds();
         let w = content.width() as f64;
         let px = (ph - v.scroll) * v.pps;
-        if auto_scroll == "smoothScroll" {
+        // the user moved the view: leave it there until the playhead comes back into it
+        if tl.follow_held && (0.0..=w * 0.95).contains(&px) {
+            tl.follow_held = false;
+        }
+        if tl.follow_held {
+            // left where the user put it
+        } else if auto_scroll == "smoothScroll" {
             // the playhead stays in the middle once it gets there
             if px > w * 0.5 || px < 0.0 {
                 v.target_scroll = (ph - w * 0.5 / v.pps).max(0.0);
@@ -581,6 +599,7 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
         }
         v.scroll = v.scroll.clamp(0.0, max_scroll(seconds, content.width(), v.pps));
         v.target_scroll = v.target_scroll.clamp(0.0, max_scroll(seconds, content.width(), v.target_pps));
+        app.tl.follow_seen = app.playback.playing.then_some(v.target_scroll);
     }
 }
 
@@ -1313,5 +1332,69 @@ mod waveform_zone_tests {
         assert_eq!(waveform_zone_height(49.0), 47.0);
         // never smaller than the minimum
         assert_eq!(waveform_zone_height(4.0), 8.0);
+    }
+}
+
+#[cfg(test)]
+mod follow_tests {
+    use super::*;
+
+    /// The demo project playing at 10 s, shown 1000 points wide at 100 points a second, with the
+    /// view where playback left it in the previous frame.
+    fn playing_app() -> (FilmcraftApp, ItemId, Sequence) {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let mut app = FilmcraftApp::new(s);
+        let seq_id = app.session.state.active_sequence.unwrap();
+        let seq = app.session.active_sequence().unwrap().clone();
+        app.session.set_playhead(Tick(10 * TICKS_PER_SECOND));
+        app.playback.playing = true;
+        app.session.prefs.timeline.auto_scroll = "pageScroll".into();
+        let v = &mut app.ui.timeline;
+        (v.fit_pending, v.fit_empty, v.pps, v.target_pps, v.scroll, v.target_scroll) = (false, None, 100.0, 100.0, 9.0, 9.0);
+        frame(&mut app, seq_id, &seq);
+        (app, seq_id, seq)
+    }
+
+    fn frame(app: &mut FilmcraftApp, seq_id: ItemId, seq: &Sequence) {
+        animate_view(app, &egui::Context::default(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 400.0)), seq_id, seq);
+    }
+
+    fn playhead_x(app: &FilmcraftApp) -> f64 {
+        (app.session.playhead().seconds() - app.ui.timeline.scroll) * app.ui.timeline.pps
+    }
+
+    /// A swipe (or wheel, scroll bar, zoom) during playback leaves the playhead behind the view:
+    /// the view stays where the user put it. Before, it snapped back so the playhead sat at the
+    /// left edge on every frame, and the playhead bounced off the left wall.
+    #[test]
+    fn a_view_moved_during_playback_stays_where_the_user_put_it() {
+        let (mut app, seq_id, seq) = playing_app();
+        (app.ui.timeline.scroll, app.ui.timeline.target_scroll) = (30.0, 30.0);
+        for _ in 0..3 {
+            frame(&mut app, seq_id, &seq);
+            assert_eq!(app.ui.timeline.scroll, 30.0, "the view stays where the swipe put it");
+        }
+    }
+
+    /// Once the playhead is back in view, playback follows it again.
+    #[test]
+    fn following_resumes_when_the_playhead_is_back_in_view() {
+        let (mut app, seq_id, seq) = playing_app();
+        (app.ui.timeline.scroll, app.ui.timeline.target_scroll) = (5.0, 5.0);
+        frame(&mut app, seq_id, &seq);
+        assert_eq!(app.ui.timeline.scroll, 5.0);
+        app.session.set_playhead(Tick(16 * TICKS_PER_SECOND));
+        frame(&mut app, seq_id, &seq);
+        assert!((0.0..100.0).contains(&playhead_x(&app)), "paged to the playhead: {}", playhead_x(&app));
+    }
+
+    /// Without a view move, playback pages to the playhead as before.
+    #[test]
+    fn playback_still_pages_to_the_playhead() {
+        let (mut app, seq_id, seq) = playing_app();
+        app.session.set_playhead(Tick(20 * TICKS_PER_SECOND));
+        frame(&mut app, seq_id, &seq);
+        assert!((0.0..100.0).contains(&playhead_x(&app)), "paged to the playhead: {}", playhead_x(&app));
     }
 }
