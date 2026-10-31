@@ -603,6 +603,139 @@ fn clear_keys_in_effect_controls_never_fall_through_to_the_clip() {
     }
 }
 
+/// An effect (or mask) selected on clip A, then clip B selected in the Timeline: Effect Controls
+/// shows B, and Backspace must remove nothing — it must not reach clip A, and not delete a clip
+/// (#1400 review).
+#[test]
+fn backspace_in_effect_controls_does_not_touch_a_clip_it_does_not_show() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clips: Vec<u64> = seq["video"][0]["items"].as_array().unwrap().iter().map(|i| i["clip"].as_u64().unwrap()).collect();
+    let (a, b) = (clips[0], clips[1]);
+    d.exec("effects.apply", json!({"clips": [a], "effect": "transform"}));
+    d.exec("timeline.select", json!({"clips": [a]}));
+    d.frames(2);
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    // A's Transform effect, its mask count; None once the effect is gone
+    let fx = |d: &mut Driver| {
+        d.app().session.active_sequence().unwrap().find_item(ClipId(a)).and_then(|(_, it)| it.effect("transform")).map_or(0, |e| e.masks.len())
+    };
+    let has_fx = |d: &mut Driver| d.app().session.active_sequence().unwrap().find_item(ClipId(a)).is_some_and(|(_, it)| it.effect("transform").is_some());
+    let keys = ["Backspace", "Delete", "Shift+Delete"];
+
+    // effect selected on A, clip B shown: no key removes A's effect or deletes any clip
+    d.exec("effects.select", json!({"clip": a, "effect": "transform"}));
+    assert!(d.app().session.state.selected_effect.is_some(), "the effect is selected");
+    d.exec("timeline.select", json!({"clips": [b]}));
+    d.frames(2);
+    assert!(d.app().session.state.selected_effect.is_some(), "the stale effect selection is still stored");
+    assert!(has_fx(&mut d), "A has the Transform effect");
+    for k in keys {
+        d.ok("ui.key", json!({"key": k}));
+        d.frames(3);
+        assert!(d.app().session.active_sequence().unwrap().find_item(ClipId(a)).is_some(), "{k} must not delete clip A");
+        assert!(d.app().session.active_sequence().unwrap().find_item(ClipId(b)).is_some(), "{k} must not delete clip B");
+        assert!(has_fx(&mut d), "{k} must not remove A's effect while B is shown");
+    }
+
+    // mask selected on A, clip B shown: same; back on A the mask is removed
+    d.exec("timeline.select", json!({"clips": [a]}));
+    d.frames(2);
+    d.exec("masks.add", json!({"clip": a, "effect": "transform", "shape": "ellipse"}));
+    d.frames(2);
+    assert!(d.app().session.state.selected_mask.is_some(), "the mask is selected");
+    d.exec("timeline.select", json!({"clips": [b]}));
+    d.frames(2);
+    assert!(d.app().session.state.selected_mask.is_some(), "the stale mask selection is still stored");
+    for k in keys {
+        d.ok("ui.key", json!({"key": k}));
+        d.frames(3);
+        assert!(d.app().session.active_sequence().unwrap().find_item(ClipId(a)).is_some(), "{k} must not delete clip A");
+        assert!(d.app().session.active_sequence().unwrap().find_item(ClipId(b)).is_some(), "{k} must not delete clip B");
+        assert_eq!(fx(&mut d), 1, "{k} must not remove A's mask while B is shown");
+    }
+    d.exec("timeline.select", json!({"clips": [a]}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(3);
+    assert_eq!(fx(&mut d), 0, "with A shown, Backspace removes the mask");
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(3);
+    assert_eq!(fx(&mut d), 0, "and a repeated press removes nothing else");
+    assert!(has_fx(&mut d), "A keeps its effect");
+    assert!(d.app().session.active_sequence().unwrap().find_item(ClipId(a)).is_some(), "A stays");
+
+    // (review follow-up) the panel also shows the audio of the selected video clip: an effect
+    // selected on that audio clip IS shown, so Backspace must remove it
+    let audio = {
+        let seq = d.exec("sequence.inspect", json!({}));
+        let v = &seq["video"][0]["items"][0];
+        seq["audio"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|t| t["items"].as_array().unwrap().clone())
+            .find(|i| i["link"] == v["link"])
+            .expect("the demo's first video clip has linked audio")["clip"]
+            .as_u64()
+            .unwrap()
+    };
+    d.exec("timeline.select", json!({"clips": [a]}));
+    d.frames(2);
+    d.exec("effects.apply", json!({"clips": [a], "effect": "parametric_eq"}));
+    d.frames(2);
+    assert_eq!(
+        d.app().session.active_sequence().unwrap().find_item(ClipId(audio)).map(|(_, it)| it.effects.iter().any(|e| e.effect == "parametric_eq")),
+        Some(true),
+        "Parametric EQ is on the linked audio"
+    );
+    d.exec("effects.select", json!({"clip": audio, "effect": "parametric_eq"}));
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(3);
+    assert_eq!(
+        d.app().session.active_sequence().unwrap().find_item(ClipId(audio)).map(|(_, it)| it.effects.iter().any(|e| e.effect == "parametric_eq")),
+        Some(false),
+        "Backspace removes the shown audio effect"
+    );
+    assert!(d.app().session.active_sequence().unwrap().find_item(ClipId(a)).is_some(), "the video clip stays");
+}
+
+/// Clear (Backspace) with a transition shown in Effect Controls removes the transition, as from the
+/// Timeline, leaving its clips; Ripple Delete is consumed (#1400 review).
+#[test]
+fn clear_in_effect_controls_removes_a_shown_transition() {
+    let mut d = Driver::demo();
+    let trn = {
+        let q = d.exec("sequence.inspect", json!({}));
+        let x = q["video"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|t| t["transitions"].as_array().unwrap().clone())
+            .find(|x| x["from"].as_u64().is_some() && x["to"].as_u64().is_some())
+            .expect("the demo has a transition between two clips");
+        x["id"].as_u64().unwrap()
+    };
+    d.click(&format!("timeline.transition.{trn}"));
+    d.frames(2);
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::EffectControls);
+    d.ok("ui.key", json!({"key": "Shift+Delete"}));
+    d.frames(3);
+    assert!(
+        d.app().session.active_sequence().unwrap().all_tracks().flat_map(|t| t.transitions.iter()).any(|x| x.id == filmcraft_project::TransitionId(trn)),
+        "Ripple Delete is consumed, the transition stays"
+    );
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(3);
+    assert!(
+        !d.app().session.active_sequence().unwrap().all_tracks().flat_map(|t| t.transitions.iter()).any(|x| x.id == filmcraft_project::TransitionId(trn)),
+        "Clear removes the transition"
+    );
+    let clips = d.app().session.active_sequence().unwrap().all_tracks().flat_map(|t| t.items.iter()).count();
+    assert!(clips > 1, "the clips stay");
+}
+
 /// Corner Pin gets a handle on each corner while it is the selected effect, on the corners of the
 /// picture; dragging one moves only that corner, and dragging inside the outline moves all four,
 /// each drag in one undo step (#776).
