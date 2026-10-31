@@ -221,6 +221,39 @@ fn plan_matches_reference_renderer() {
     }
 }
 
+/// A Transform effect with the shutter override is motion-blurred by the CPU effect only; the
+/// frame plan must not take it onto the GPU chain, where it came out sharp (#2961).
+#[test]
+fn plan_keeps_the_shutter_blur_of_a_moving_transform() {
+    use filmcraft_project::{Interpolation, Keyframe, Param};
+    let (mut p, _red, ocean, seq, map) = setup();
+    let clip = place(&mut p, seq, 0, ocean, 0, 48);
+    let mut e = filmcraft_project::find_effect("transform").unwrap().instance();
+    e.params.get_mut("shutter_override").unwrap().value = ParamValue::Bool(true);
+    e.params.get_mut("shutter_angle").unwrap().value = ParamValue::Float(360.0);
+    let v = |x: f64| ParamValue::Vec2(filmcraft_geom::Vec2::new(x, 90.0));
+    let a = Keyframe::new(Tick::ZERO, v(20.0));
+    let mut b = Keyframe::new(Tick::from_seconds_f64(1.0), v(1500.0));
+    b.interp = Interpolation::Linear;
+    e.params.insert("position".into(), Param { value: v(20.0), keyframes: vec![a, b] });
+    let s = p.sequence_mut(seq).unwrap();
+    let (_, it) = s.find_item_mut(clip).unwrap();
+    it.effects.push(e);
+    let r = FrameRate::FPS_24;
+    let opts = RenderOptions { scale: 0.5, ..Default::default() };
+    let t = r.tick_of(12);
+    let reference = render_sequence(&p, seq, t, opts, &map);
+    let planned = plan::execute_cpu(&plan::plan_frame(&p, seq, t, opts, &map));
+    let max = planned.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(max < 0.02, "the planned frame lost the shutter blur: max diff {max}");
+    // and the blur is really there: the same frame without the override differs from it
+    let it = p.sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1;
+    it.effect_mut("transform").unwrap().params.get_mut("shutter_override").unwrap().value = ParamValue::Bool(false);
+    let sharp = render_sequence(&p, seq, t, opts, &map);
+    let blur = sharp.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(blur > 0.02, "the override changes the picture ({blur})");
+}
+
 #[test]
 fn push_plan_preserves_reference_track_order_and_reverse() {
     let (mut p, red, ocean, seq, map) = setup();

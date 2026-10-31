@@ -389,6 +389,10 @@ impl FxOp {
                 FxOp::crop_rect(w, h, 0.0, 0.0, 0.0, 0.0, amt)
             }
             "transform" => {
+                // the shutter's motion blur is the CPU effect's (`vfx::distort::transform_fx`)
+                if b(e, "shutter_override") && f(e, "shutter_angle", cx) > 0.5 {
+                    return None;
+                }
                 let img = Image { w, h, px: Vec::new() };
                 let anchor = point(e, "anchor", cx, &img);
                 let pos = point(e, "position", cx, &img);
@@ -1149,5 +1153,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Transform with the shutter override on is motion-blurred by the CPU effect only; the GPU
+    /// plan has no blur, so it must not take the effect (#2961).
+    #[test]
+    fn transform_with_a_shutter_angle_is_left_to_the_cpu_effect() {
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        let mut e = find_effect("transform").unwrap().instance();
+        assert!(FxOp::eval(&e, &cx, 64, 48).is_some(), "a plain Transform is a GPU effect");
+        e.params.get_mut("shutter_override").unwrap().value = ParamValue::Bool(true);
+        e.params.get_mut("shutter_angle").unwrap().value = ParamValue::Float(180.0);
+        assert!(FxOp::eval(&e, &cx, 64, 48).is_none(), "a Transform with a shutter angle needs the CPU's motion blur");
+        e.params.get_mut("shutter_angle").unwrap().value = ParamValue::Float(0.0);
+        assert!(FxOp::eval(&e, &cx, 64, 48).is_some(), "no shutter angle, no blur to compute");
     }
 }
