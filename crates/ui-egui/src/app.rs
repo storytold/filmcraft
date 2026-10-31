@@ -318,6 +318,8 @@ impl FilmcraftApp {
         self.poll_jobs(ctx);
         capture::drain(self, ctx);
         capture::request_hidden_paint(self, ctx);
+        // also here: a document changed through the engine while no UI pass draws (a minimised window)
+        self.send_window_title(ctx);
     }
 
     /// Draw one real UI pass. Establish the UI clock offset once, run first-pass input handling,
@@ -510,7 +512,34 @@ impl eframe::App for FilmcraftApp {
         }
         self.ui_inner(ui, frame);
         self.finish_ime_reset_ui(&ctx);
+        self.send_window_title(&ctx);
     }
+}
+
+impl FilmcraftApp {
+    /// `<document>[ •] — FilmCraft`: what names the window, and the browser tab on the web (the pinned eframe
+    /// web backend ignores `ViewportCommand::Title`, so the web host sets `document.title` from this).
+    pub fn window_title(&self) -> String {
+        // the opened file's name, as a renamed file shows; the project's own name before it is saved
+        let stem = self.session.path.as_deref().and_then(|p| std::path::Path::new(p).file_stem()).map(|s| s.to_string_lossy().into_owned());
+        window_title(stem.as_deref().unwrap_or(&self.session.project.name), self.session.is_dirty())
+    }
+
+    /// The window (or, on the web, the browser tab) is named after the open document, `<name>[ •] — FilmCraft`;
+    /// sent when it changes (#2579).
+    fn send_window_title(&self, ctx: &egui::Context) {
+        let title = self.window_title();
+        let key = egui::Id::unique("window-title");
+        if ctx.data(|d| d.get_temp::<String>(key)).as_deref() != Some(title.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            ctx.data_mut(|d| d.insert_temp(key, title));
+        }
+    }
+}
+
+/// `<document>[ •] — FilmCraft`: the bullet marks unsaved changes.
+fn window_title(document: &str, dirty: bool) -> String {
+    format!("{document}{} — FilmCraft", if dirty { " •" } else { "" })
 }
 
 #[cfg(test)]
