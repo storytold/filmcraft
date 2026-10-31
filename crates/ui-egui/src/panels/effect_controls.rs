@@ -635,7 +635,12 @@ pub(crate) fn param_row(
     // click on the value itself starts typing, so the name is the double-click target)
     if mask.is_none() {
         let name = Rect::from_min_max(pos2(x, r.min.y), pos2(vx - 6.0, r.max.y));
-        app.auto.add(&format!("effectControls.{}.{}.name", e.effect, pkey), name, crate::i18n::t(pd.label));
+        // the instance index tells two copies of one effect apart; only the visible part of a row
+        // scrolled partly out of view is registered
+        let shown = name.intersect(ui.clip_rect());
+        if shown.is_positive() {
+            app.auto.add(&format!("effectControls.{}.{idx}.{}.name", e.effect, pkey), shown, crate::i18n::t(pd.label));
+        }
         if row.double_clicked() && row.interact_pointer_pos().is_some_and(|p| name.contains(p)) {
             actions.push(("effects.resetParam".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id})));
         }

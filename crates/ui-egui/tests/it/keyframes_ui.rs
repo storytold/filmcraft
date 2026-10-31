@@ -243,7 +243,7 @@ fn effect_controls_double_clicking_a_property_name_resets_it() {
     let (mut d, clip) = Driver::demo();
     d.exec("effects.setParam", json!({"clip": clip.id, "effect": "motion", "param": "scale", "value": 150.0}));
     d.frames(2);
-    let [x, y, w, h] = d.rect("effectControls.motion.scale.name");
+    let [x, y, w, h] = d.rect("effectControls.motion.0.scale.name");
     let (x, y) = (x + w * 0.3, y + h * 0.5);
     d.ok("ui.click", json!({"x": x, "y": y}));
     d.frames(3);
