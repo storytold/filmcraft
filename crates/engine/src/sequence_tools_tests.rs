@@ -683,6 +683,57 @@ fn unknown_marker_colours_are_rejected_not_stored_as_green() {
 }
 
 #[test]
+fn edit_marker_sets_every_field_in_one_undo_step_and_rejects_hostile_values() {
+    // #2416: the Edit Marker dialog's OK is one `markers.edit`
+    let mut s = demo();
+    let id = s.execute("markers.add", json!({"frame": 10})).unwrap()["marker"].as_u64().unwrap();
+    let marker = |s: &Session| s.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == id).unwrap().clone();
+    let before = s.project.to_json();
+    for p in [
+        json!({"marker": id, "durationFrames": -1}),
+        json!({"marker": id, "durationFrames": i64::MAX}),
+        json!({"marker": id, "durationFrames": "12"}),
+        json!({"marker": id, "durationFrames": 1.5}),
+        json!({"marker": id, "kind": "nope"}),
+        json!({"marker": id + 1000, "name": "x"}),
+    ] {
+        assert!(s.execute("markers.edit", p.clone()).is_err(), "{p} must be rejected");
+        assert_eq!(s.project.to_json(), before, "{p} must leave the project unchanged");
+    }
+    s.execute("markers.edit", json!({"marker": id, "name": "Intro", "comment": "tighten", "color": "Blue", "durationFrames": 48, "kind": "chapter"})).unwrap();
+    let m = marker(&s);
+    assert_eq!((m.name.as_str(), m.comment.as_str(), m.color, m.kind), ("Intro", "tighten", Label::Blue, MarkerKind::Chapter));
+    assert_eq!(m.duration, s.sequence_rate().tick_of(48));
+    s.undo();
+    assert_eq!(s.project.to_json(), before, "one undo restores the marker");
+    // a null duration is "unchanged", like a missing one
+    s.execute("markers.edit", json!({"marker": id, "durationFrames": null, "name": "n"})).unwrap();
+    assert_eq!(marker(&s).name, "n");
+}
+
+#[test]
+fn edit_marker_holds_source_markers_to_the_same_rules() {
+    // #2470 review: a Source marker's edit went around the `kind` and duration checks
+    let (mut s, bars) = fresh();
+    s.execute("source.open", json!({"item": bars})).unwrap();
+    let id = s.execute("markers.add", json!({"target": "source", "frame": 10})).unwrap()["marker"].as_u64().unwrap();
+    let before = s.project.to_json();
+    for p in [
+        json!({"target": "source", "marker": id, "kind": 42, "name": "x"}),
+        json!({"target": "source", "marker": id, "kind": "nope"}),
+        json!({"target": "source", "marker": id, "durationFrames": 10_000_001}),
+        json!({"target": "program", "marker": id, "kind": 42, "name": "x"}),
+    ] {
+        assert!(s.execute("markers.edit", p.clone()).is_err(), "{p} must be rejected");
+        assert_eq!(s.project.to_json(), before, "{p} must leave the project unchanged");
+    }
+    s.execute("markers.edit", json!({"target": "source", "marker": id, "kind": "chapter", "durationFrames": null})).unwrap();
+    let item = s.project.item(ItemId(bars)).unwrap();
+    let m = item.as_media().unwrap().markers.iter().find(|m| m.id.0 == id).unwrap();
+    assert_eq!(m.kind, MarkerKind::Chapter);
+}
+
+#[test]
 fn ripple_sequence_markers_follow_ripple_edits() {
     let mut s = demo();
     s.execute("markers.clearAll", json!({})).unwrap();
@@ -835,4 +886,92 @@ fn move_to_new_track_adds_it_in_one_undo_step() {
     assert!(s.execute("timeline.move", json!({"moves": [{"clip": 999_999, "track": "new", "time": 0}]})).is_err());
     assert_eq!(*s.active_sequence().unwrap(), before);
     assert_eq!(s.history.undo.len(), undo);
+}
+
+/// Lift and Extract put what they take off the timeline on the clipboard, cut at the In and Out
+/// points, from the targeted tracks only, with the sequence markers in the range when Copy Paste
+/// Includes Sequence Markers is on (#3019).
+#[test]
+fn lift_and_extract_put_the_range_on_the_clipboard() {
+    for cmd in ["sequence.lift", "sequence.extract"] {
+        let (mut s, item) = fresh();
+        place(&mut s, item, "V1", 0, 0, 48);
+        place(&mut s, item, "V2", 0, 0, 48);
+        for t in ["V2", "A2"] {
+            s.execute("timeline.setTargeting", json!({"track": t, "targeted": false})).unwrap();
+        }
+        s.execute("markers.copyPasteIncludesSequenceMarkers", json!({"on": true})).unwrap();
+        s.execute("markers.add", json!({"frame": 15, "name": "inside"})).unwrap();
+        s.execute("markers.add", json!({"frame": 30, "name": "after"})).unwrap();
+        s.execute("markers.markIn", json!({"frame": 12})).unwrap();
+        s.execute("markers.markOut", json!({"frame": 23})).unwrap();
+        assert_eq!(s.execute(cmd, json!({})).unwrap()["copied"], json!(2), "{cmd}: the V1 and A1 pieces");
+        s.execute("playhead.set", json!({"frame": 100})).unwrap();
+        s.execute("edit.paste", json!({})).unwrap_or_else(|e| panic!("{cmd} then edit.paste: {e:?}"));
+        let q = s.active_sequence().unwrap();
+        let at = f(&s, 100);
+        let pasted: Vec<_> = [&q.video_tracks[0], &q.audio_tracks[0]]
+            .iter()
+            .map(|t| t.items.iter().find(|i| i.start == at).unwrap_or_else(|| panic!("{cmd}: nothing pasted on {}", t.name)))
+            .collect();
+        for p in &pasted {
+            assert_eq!((p.duration, p.source_in), (f(&s, 12), f(&s, 12)), "{cmd}: the pasted piece is frames 12-23 of the media");
+        }
+        assert!(pasted[0].link.is_some() && pasted[0].link == pasted[1].link, "{cmd}: the pasted video and audio stay linked");
+        for t in [&q.video_tracks[1], &q.audio_tracks[1]] {
+            assert!(t.items.iter().all(|i| i.start != at), "{cmd}: nothing from the untargeted {} is pasted", t.name);
+        }
+        let pasted_markers: Vec<_> = q.markers.iter().filter(|m| m.start >= at).map(|m| (m.start, m.name.as_str())).collect();
+        assert_eq!(pasted_markers, vec![(f(&s, 103), "inside")], "{cmd}: only the marker inside the range comes along");
+    }
+}
+
+/// Over a range with no clips on the targeted tracks, Lift and Extract copy nothing and Paste still
+/// brings back what was copied before (#3019).
+#[test]
+fn lift_and_extract_over_no_clips_keep_the_clipboard() {
+    for cmd in ["sequence.lift", "sequence.extract"] {
+        let (mut s, item) = fresh();
+        let clips = place(&mut s, item, "V1", 0, 0, 48);
+        s.execute("timeline.select", json!({"clips": clips})).unwrap();
+        s.execute("edit.copy", json!({})).unwrap();
+        for t in ["V1", "A1"] {
+            s.execute("timeline.setTargeting", json!({"track": t, "targeted": false})).unwrap();
+        }
+        s.execute("markers.markIn", json!({"frame": 12})).unwrap();
+        s.execute("markers.markOut", json!({"frame": 23})).unwrap();
+        assert_eq!(s.execute(cmd, json!({})).unwrap()["copied"], json!(0), "{cmd}");
+        s.execute("playhead.set", json!({"frame": 100})).unwrap();
+        s.execute("edit.paste", json!({})).unwrap_or_else(|e| panic!("{cmd} then edit.paste: {e:?}"));
+        let q = s.active_sequence().unwrap();
+        let pasted = q.video_tracks[0].items.iter().find(|i| i.start == f(&s, 100)).map(|i| i.duration);
+        assert_eq!(pasted, Some(f(&s, 48)), "{cmd}: the earlier copy is pasted");
+    }
+}
+
+/// The Timeline's clip menu offered Reveal Nested Sequence on plain clips and Join Through Edits
+/// with no through edits; both failed when chosen. They are enabled when there is something to
+/// reveal or join.
+#[test]
+fn reveal_nested_and_join_through_edits_are_enabled_only_when_they_can_act() {
+    let mut s = demo();
+    let first = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    s.execute("timeline.select", json!({"clips": [first.0]})).unwrap();
+    s.execute("playhead.set", json!({"frame": 5})).unwrap();
+    assert!(!s.is_enabled("sequence.revealNested"), "a plain clip, nothing nested under the playhead");
+    assert!(!s.is_enabled("sequence.joinThroughEdits"), "the demo has no through edits");
+    // a nested clip to reveal
+    s.execute("clip.nest", json!({"name": "Nest"})).unwrap();
+    let nest = s.active_sequence().unwrap().all_tracks().flat_map(|t| &t.items).find(|i| s.project.sequence(i.item).is_some()).map(|i| i.id).unwrap();
+    s.execute("timeline.select", json!({"clips": [nest.0]})).unwrap();
+    assert!(s.is_enabled("sequence.revealNested"));
+    s.execute("sequence.revealNested", json!({})).unwrap();
+    // a through edit to join
+    let mut s = demo();
+    s.execute("playhead.set", json!({"frame": 30})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    assert!(s.is_enabled("sequence.joinThroughEdits"));
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    s.execute("sequence.joinThroughEdits", json!({})).unwrap();
+    assert!(!s.is_enabled("sequence.joinThroughEdits"), "all joined");
 }

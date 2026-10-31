@@ -42,7 +42,7 @@ use std::sync::{Arc, RwLock};
 pub use apv::ApvSource;
 pub use audio::AudioFileSource;
 pub use avi::AviSource;
-pub use gop::{FRAME_BUDGET, GopStats, cached_bytes, gop_stats, live_decoders};
+pub use gop::{FRAME_BUDGET, GopStats, cached_bytes, gop_stats, live_decoders, release_idle};
 pub use mkv::MkvSource;
 pub use mp4::Mp4Source;
 pub use mpeg::MpegSource;
@@ -77,7 +77,7 @@ impl From<CodecError> for filmcraft_media::MediaError {
 }
 
 /// Our own (pure-Rust) decoders, in the order they are tried.
-const BUILTIN_FACTORIES: [VideoDecoderFactory; 10] = [
+const BUILTIN_FACTORIES: [VideoDecoderFactory; 11] = [
     video::h264_factory,
     video::hevc_factory,
     video::vp8_factory,
@@ -88,6 +88,7 @@ const BUILTIN_FACTORIES: [VideoDecoderFactory; 10] = [
     video::dnx_factory,
     video::mjpeg_factory,
     video::mpeg2_factory,
+    video::raw_factory,
 ];
 
 fn factories() -> &'static RwLock<Vec<VideoDecoderFactory>> {
