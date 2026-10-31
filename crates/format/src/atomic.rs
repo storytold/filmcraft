@@ -43,20 +43,20 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
     let permissions = match fs::metadata(path) {
         Ok(meta) => Some(meta.permissions()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e),
+        Err(e) => return Err(with_stage(e, "reading destination metadata for", path)),
     };
     let tmp = temp_path(path);
     let r = (|| {
         {
             // closed before the rename
-            let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+            let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| with_stage(e, "creating staging file", &tmp))?;
             if let Some(permissions) = permissions.as_ref() {
-                f.set_permissions(permissions.clone())?;
+                f.set_permissions(permissions.clone()).map_err(|e| with_stage(e, "setting permissions on", &tmp))?;
             }
-            f.write_all(data)?;
-            f.sync_all()?;
+            f.write_all(data).map_err(|e| with_stage(e, "writing staging file", &tmp))?;
+            sync_file(&f, &tmp)?;
         }
-        fs::rename(&tmp, path)
+        fs::rename(&tmp, path).map_err(|e| with_stage(e, "publishing project to", path))
     })();
     if let Err(e) = r {
         let _ = fs::remove_file(&tmp);
@@ -66,12 +66,20 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Preserve an I/O error's category while adding the save stage and affected path.
+fn with_stage(error: io::Error, action: &str, path: &Path) -> io::Error {
+    io::Error::new(error.kind(), format!("{action} {}: {error}", path.display()))
+}
+
 /// Publish a complete new file without replacing an occupied final path, including a symlink.
 /// Bytes are staged and synced in the destination directory before no-clobber publication.
 /// A write failure leaves no partial final file; temporary-file cleanup is best effort.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn atomic_write_new(path: &Path, data: &[u8]) -> io::Result<()> {
-    atomic_write_new_with(path, |file| file.write_all(data).and_then(|_| file.sync_all()))
+    atomic_write_new_with(path, |file| {
+        file.write_all(data)?;
+        sync_file(file, path)
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -95,6 +103,34 @@ fn atomic_write_new_with(path: &Path, write: impl FnOnce(&mut File) -> io::Resul
     let _published = staged.persist_noclobber(path).map_err(|e| e.error)?;
     sync_dir(&dir);
     Ok(())
+}
+
+/// Flush a staged file when the filesystem supports durable sync. macOS SMB shares can write and
+/// atomically rename files but return `ENOTSUP` from `fsync`; refusing the save in that case loses
+/// the filesystem's available atomicity without gaining durability. Other sync errors still abort
+/// the save so full disks and I/O failures remain visible.
+fn sync_file(file: &File, path: &Path) -> io::Result<()> {
+    tolerate_unsupported_sync(file.sync_all(), path).map_err(|e| with_stage(e, "syncing staging file", path))
+}
+
+/// Accept only the filesystem's explicit "durable sync unsupported" result; every real I/O or
+/// storage error still aborts publication.
+fn tolerate_unsupported_sync(result: io::Result<()>, path: &Path) -> io::Result<()> {
+    match result {
+        Err(error) if unsupported_sync(&error) => {
+            log::warn!("{}: filesystem does not support durable file sync; continuing with atomic rename", path.display());
+            Ok(())
+        }
+        other => other,
+    }
+}
+
+/// Whether this platform reports that the writable filesystem cannot provide durable file sync.
+fn unsupported_sync(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Unsupported
+        // macOS reports ENOTSUP from fsync on writable SMB shares but classifies it as
+        // Uncategorized rather than ErrorKind::Unsupported.
+        || (cfg!(target_os = "macos") && error.raw_os_error() == Some(45))
 }
 
 /// Best-effort directory sync; directory handles are not uniformly readable or syncable.
@@ -234,5 +270,26 @@ mod tests {
         let d = tmpdir("missing");
         assert!(atomic_write(&d.join("nope/a.fcproj"), b"x").is_err());
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn unsupported_file_sync_does_not_block_atomic_publication() {
+        let path = Path::new("network-share.fcproj");
+        let unsupported = io::Error::from(io::ErrorKind::Unsupported);
+        assert!(tolerate_unsupported_sync(Err(unsupported), path).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_smb_enotsup_does_not_block_atomic_publication() {
+        let path = Path::new("smb-share.fcproj");
+        assert!(tolerate_unsupported_sync(Err(io::Error::from_raw_os_error(45)), path).is_ok());
+    }
+
+    #[test]
+    fn real_file_sync_errors_still_abort_publication() {
+        let path = Path::new("full-disk.fcproj");
+        let full = io::Error::from(io::ErrorKind::StorageFull);
+        assert_eq!(tolerate_unsupported_sync(Err(full), path).unwrap_err().kind(), io::ErrorKind::StorageFull);
     }
 }
