@@ -15,6 +15,7 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Id => Some(include_str!("id.tsv")),
         Language::It => Some(include_str!("it.tsv")),
         Language::Ko => Some(include_str!("ko.tsv")),
+        Language::Pl => Some(include_str!("pl.tsv")),
     }
 }
 
@@ -63,6 +64,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         (Language::Id, "Bahasa Indonesia"),
         (Language::It, "Italiano"),
         (Language::Ko, "한국어"),
+        (Language::Pl, "Polski"),
     ] {
         assert_eq!(l.name(), name);
     }
@@ -513,6 +515,7 @@ fn language_commands_switch_and_persist_without_a_document() {
         ("french", Language::Fr, "fr", "Français", Some(("app.language.german", "Deutsch"))),
         ("indonesian", Language::Id, "id", "Bahasa Indonesia", Some(("app.language.french", "Français"))),
         ("italian", Language::It, "it", "Italiano", Some(("app.language.indonesian", "Bahasa Indonesia"))),
+        ("polish", Language::Pl, "pl", "Polski", Some(("app.language.italian", "Italiano"))),
     ] {
         switch_and_check(&mut app, &ctx, name, lang, code, own, earlier);
     }
@@ -748,4 +751,25 @@ fn japanese_needs_an_installed_font() {
             }
         }
     });
+}
+
+#[test]
+fn polish_is_complete_and_renders_with_bundled_fonts() {
+    let (entries, errors) = catalog::parse_entries(include_str!("pl.tsv"));
+    assert!(errors.is_empty(), "{errors:?}");
+    let (spanish, _) = catalog::parse_entries(include_str!("es.tsv"));
+    let missing: Vec<&String> = spanish.iter().map(|(_, en, _)| en).filter(|en| !Language::Pl.has(en)).collect();
+    assert!(missing.is_empty(), "untranslated Polish entries: {missing:#?}");
+    for (en, pl) in [("File", "Plik"), ("Save As…", "Zapisz jako…"), ("Timeline", "Oś czasu"), ("Gaussian Blur", "Rozmycie gaussowskie")] {
+        assert_eq!(Language::Pl.tr(en), pl);
+    }
+    assert_eq!(Language::Pl.tr("Wakacje w górach.mp4"), "Wakacje w górach.mp4");
+    assert_eq!(Language::parse("pl"), Some(Language::Pl));
+    assert_eq!(locales(&["pl-PL"]), Language::Pl);
+    assert_eq!(locales(&["pl_PL.UTF-8", "en"]), Language::Pl);
+    // every Polish letter, even ones no entry uses yet, and every letter, curly quote, dash and
+    // ellipsis the entries use
+    let alphabet = "ĄĆĘŁŃÓŚŹŻąćęłńóśźż„”";
+    let letters = entries.iter().flat_map(|(_, _, pl)| pl.chars()).filter(|ch| ch.is_alphabetic() || "„”“‘’–—…".contains(*ch));
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Pl.name().chars()).chain(letters));
 }

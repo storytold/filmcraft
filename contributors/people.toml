@@ -27,6 +27,11 @@ real_name = "Ahmed Hosny"
 display_name = "Ahmed Hosny"
 sync_github_name = false
 
+[people.lewandowskit]
+real_name = "Tomasz Lewandowski"
+display_name = "Tomasz Lewandowski"
+sync_github_name = false
+
 [people.sanyamsingh001]
 display_name = "sanyamsingh001"
 sync_github_name = false
