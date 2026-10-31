@@ -355,11 +355,14 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         "luma_key" => {
             let th = f(e, "threshold", cx) / 100.0;
             let cut = f(e, "cutoff", cx) / 100.0;
+            let invert = b(e, "invert");
             img.px.par_chunks_mut(4).for_each(|p| {
                 if p[3] <= 0.0 {
                     return;
                 }
                 let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
+                // keying out brights measures Cutoff / Threshold from white: the same ramp, mirrored
+                let l = if invert { 1.0 - l } else { l };
                 let a = if l <= cut {
                     0.0
                 } else if l >= th.max(cut + 1e-3) {
@@ -977,6 +980,54 @@ mod tests {
         let sum1: f32 = img.px.iter().sum();
         assert!((sum0 - sum1).abs() / sum0 < 0.02, "{sum0} {sum1}");
         assert!(img.get(32, 32)[0] < 0.9 && img.get(24, 32)[0] > 0.01);
+    }
+
+    /// Key Out Brights measures the thresholds from white: a 75 % grey with Cutoff 60 / Threshold 80
+    /// is 25 % from white, below the Cutoff, so it is keyed out (alpha 0), not left at 0.25.
+    #[test]
+    fn luma_key_inverted_thresholds_are_measured_from_white() {
+        let alpha_at = |srgb: f32, invert: bool| {
+            let l = srgb_to_linear(srgb);
+            let mut img = Image::filled(1, 1, [l, l, l, 1.0]);
+            let mut e = find_effect("luma_key").unwrap().instance();
+            e.params.get_mut("threshold").unwrap().value = ParamValue::Float(80.0);
+            e.params.get_mut("cutoff").unwrap().value = ParamValue::Float(60.0);
+            e.params.get_mut("invert").unwrap().value = ParamValue::Bool(invert);
+            apply(&mut img, &e, &cx());
+            img.get(0, 0)[3]
+        };
+        assert!(alpha_at(0.75, true).abs() < 1e-4, "75 % is 25 % from white: keyed out, got {}", alpha_at(0.75, true));
+        // the ramp mirrored: opaque up to 20 %, transparent from 40 %, half way at 30 %
+        assert!(alpha_at(0.15, true) > 0.99, "darks stay");
+        assert!((alpha_at(0.30, true) - 0.5).abs() < 1e-3, "mid ramp: {}", alpha_at(0.30, true));
+        assert!(alpha_at(0.40, true).abs() < 1e-4);
+        // the normal ramp is unchanged (transparent to 60 %, half way at 70 %)
+        assert!((alpha_at(0.70, false) - 0.5).abs() < 1e-3);
+    }
+
+    /// Luma Key keys out darks by default; "Key Out Brights" keys out the light side instead, and a
+    /// project saved before the option existed keeps the old behaviour.
+    #[test]
+    fn luma_key_can_key_out_brights() {
+        let run = |invert: Option<bool>| {
+            let mut img = Image::new(2, 1);
+            img.px[0..4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+            img.px[4..8].copy_from_slice(&[0.01, 0.01, 0.01, 1.0]);
+            let mut e = find_effect("luma_key").unwrap().instance();
+            e.params.get_mut("threshold").unwrap().value = ParamValue::Float(40.0);
+            e.params.get_mut("cutoff").unwrap().value = ParamValue::Float(20.0);
+            match invert {
+                Some(v) => e.params.get_mut("invert").unwrap().value = ParamValue::Bool(v),
+                None => {
+                    e.params.remove("invert");
+                }
+            }
+            apply(&mut img, &e, &cx());
+            (img.get(0, 0)[3], img.get(1, 0)[3])
+        };
+        assert_eq!(run(Some(false)), (1.0, 0.0), "default keys out the dark grey");
+        assert_eq!(run(None), (1.0, 0.0), "a project without the param renders as before");
+        assert_eq!(run(Some(true)), (0.0, 1.0), "inverted keys out the white, keeps the grey");
     }
 
     #[test]

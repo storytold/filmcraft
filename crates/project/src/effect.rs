@@ -725,7 +725,12 @@ fn build_effects() -> Vec<EffectDef> {
                 fs("feather", "Edge Feather", 0.0, (0.0, 50.0), (0.0, 50.0), "", 1),
             ],
         ),
-        video("luma_key", "Luma Key", KEYING, vec![f("threshold", "Threshold", 0.0, 0.0, 100.0, "%"), f("cutoff", "Cutoff", 0.0, 0.0, 100.0, "%")]),
+        video(
+            "luma_key",
+            "Luma Key",
+            KEYING,
+            vec![f("threshold", "Threshold", 0.0, 0.0, 100.0, "%"), f("cutoff", "Cutoff", 0.0, 0.0, 100.0, "%"), b("invert", "Key Out Brights", false)],
+        ),
         video(
             "four_color_gradient",
             "4-Color Gradient",
