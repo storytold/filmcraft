@@ -27,6 +27,11 @@ fn interface_language_persists_and_rejects_hostile_values() {
     let dir = tmp_dir("interface-language");
     let path = dir.join("preferences.json");
     let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        set(&mut s, "general.interfaceLanguage", json!("zh-tw"));
+        assert_eq!(Preferences::load(&path).general.interface_language, "zh-tw");
+    }
     set(&mut s, "general.interfaceLanguage", json!("es"));
     assert_eq!(Preferences::load(&path).general.interface_language, "es");
     for value in [json!("xx"), json!("es-MX"), json!("de-DE"), json!("fr-FR"), json!(null), json!(-1), json!({}), json!("x".repeat(4096))] {

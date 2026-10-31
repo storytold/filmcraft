@@ -1130,7 +1130,8 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let clip = *clip;
             let mt = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
             let val = |eid: &str, p: &str| it.effect(eid).and_then(|e| e.param(p)).map(|p| p.value_at(mt));
-            let r = row(bui, tl!("Level"));
+            let volume_label = crate::i18n::tr_ctx("audio.volume", "Level");
+            let r = row(bui, volume_label);
             let mut vui = bui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - PROPS_VALUE_R, r.max.y - 4.0)))
@@ -1139,7 +1140,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let v = val("volume", "level").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let (_, nv) = crate::widgets::hot_number(
                 &mut vui,
-                tl!("Level"),
+                volume_label,
                 egui::Id::unique(("pp-vol", clip.0)),
                 v,
                 HotNumberOptions::new(0.1, (-96.0, 15.0), 1, " dB", &t),

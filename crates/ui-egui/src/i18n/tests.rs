@@ -1,5 +1,36 @@
 use super::*;
 
+struct RestoreCurrentLanguage(Language);
+
+impl Drop for RestoreCurrentLanguage {
+    fn drop(&mut self) {
+        set_current(self.0);
+    }
+}
+
+fn font_signature(ctx: &egui::Context) -> (std::collections::BTreeMap<egui::FontFamily, Vec<String>>, Vec<String>) {
+    let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+    output.textures_delta.clear();
+    ctx.fonts_mut(|fonts| {
+        let definitions = fonts.definitions();
+        let mut names: Vec<_> = definitions.font_data.keys().cloned().collect();
+        names.sort();
+        (definitions.families.clone(), names)
+    })
+}
+
+fn context_with_prior_japanese_stack() -> egui::Context {
+    let ctx = egui::Context::default();
+    let mut definitions = egui::FontDefinitions::default();
+    let name = "prior-japanese-font";
+    definitions.font_data.insert(name.into(), std::sync::Arc::new(egui::FontData::from_static(filmcraft_text::fonts::INTER_REGULAR)));
+    for stack in definitions.families.values_mut() {
+        stack.push(name.into());
+    }
+    ctx.set_fonts(definitions);
+    ctx
+}
+
 /// The catalog file of a language (none for English, the source language).
 fn catalog_text(l: Language) -> Option<&'static str> {
     match l {
@@ -14,6 +45,7 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Fr => Some(include_str!("fr.tsv")),
         Language::Id => Some(include_str!("id.tsv")),
         Language::It => Some(include_str!("it.tsv")),
+        Language::ZhTw => Some(include_str!("zh-tw.tsv")),
         Language::Ko => Some(include_str!("ko.tsv")),
     }
 }
@@ -190,6 +222,119 @@ fn chinese_switches_and_persists_or_is_refused_without_a_font() {
     assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::ZhCn);
     crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
     set_current(Language::En);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn traditional_chinese_switches_and_persists_or_is_refused_without_a_font() {
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let ctx = egui::Context::default();
+    let available = crate::theme::install_fonts(&ctx, Language::ZhTw);
+    let result = crate::menus::invoke(&mut app, &ctx, "app.language.traditionalChinese", serde_json::json!({}));
+    if !available {
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(app.ui.language, Language::En);
+        assert_eq!(app.session.prefs.general.interface_language, "system");
+        app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "zh-tw"})).unwrap();
+        app.apply_prefs(&ctx);
+        assert_eq!(app.ui.language, Language::En);
+        assert_eq!(app.ui.status, "No Traditional Chinese font is available; using English.");
+        set_current(Language::En);
+        return;
+    }
+    assert_eq!(result.unwrap(), serde_json::json!("zh-tw"));
+    assert_eq!((app.ui.language, current()), (Language::ZhTw, Language::ZhTw));
+    assert_eq!(app.session.prefs.general.interface_language, "zh-tw");
+    assert!(crate::menus::menu_items(&app).iter().any(|item| item.id == "app.language.traditionalChinese" && item.checked == Some(true)));
+    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+    let mut restarted = filmcraft_engine::Session::default();
+    restarted.prefs = serde_json::from_str(&prefs).unwrap();
+    assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::ZhTw);
+    crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+    let default_ctx = egui::Context::default();
+    assert!(crate::theme::install_fonts(&default_ctx, Language::En));
+    default_ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    let default_families = default_ctx.fonts_mut(|fonts| fonts.definitions().families.clone());
+    assert_eq!(ctx.fonts_mut(|fonts| fonts.definitions().families.clone()), default_families);
+    crate::menus::invoke(&mut app, &ctx, "app.language.traditionalChinese", serde_json::json!({})).unwrap();
+    // Font replacements take effect at the start of the next egui pass.
+    ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "en"})).unwrap();
+    app.apply_prefs(&ctx);
+    ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+    assert_eq!(app.ui.language, Language::En);
+    assert_eq!(ctx.fonts_mut(|fonts| fonts.definitions().families.clone()), default_families);
+    set_current(Language::En);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn traditional_chinese_font_failure_after_japanese_restores_english_stacks() {
+    let _missing_tc = crate::cjk::force_traditional_chinese_unavailable();
+    let restore_language = RestoreCurrentLanguage(current());
+    set_current(Language::Ja);
+
+    let mut session = filmcraft_engine::Session::default();
+    session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "ja"})).unwrap();
+    let mut app = crate::FilmcraftApp::new(session);
+    app.apply_prefs(&egui::Context::default());
+    // The initial Japanese preference is recorded even on hosts without a Japanese face.
+    // Seed the prior Japanese UI state and stack after that setup so this regression isolates
+    // the later failed Taiwan-font installation.
+    app.ui.language = Language::Ja;
+    set_current(Language::Ja);
+
+    let ctx = context_with_prior_japanese_stack();
+    assert!(font_signature(&ctx).1.iter().any(|name| name == "prior-japanese-font"));
+
+    app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "zh-tw"})).unwrap();
+    app.apply_prefs(&ctx);
+
+    assert_eq!(app.ui.language, Language::En);
+    assert_eq!(current(), Language::En);
+    assert_eq!(app.ui.status, "No Traditional Chinese font is available; using English.");
+    let english = egui::Context::default();
+    assert!(crate::theme::install_fonts(&english, Language::En));
+    assert_eq!(font_signature(&ctx), font_signature(&english), "failed TC installation must replace the previous Japanese stacks");
+    drop(restore_language);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn startup_traditional_chinese_font_failure_clears_the_previous_catalog_fonts() {
+    let _missing_tc = crate::cjk::force_traditional_chinese_unavailable();
+    let restore_language = RestoreCurrentLanguage(current());
+    set_current(Language::ZhTw);
+
+    let mut session = filmcraft_engine::Session::default();
+    session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "zh-tw"})).unwrap();
+    let mut app = crate::FilmcraftApp::new(session);
+    let ctx = context_with_prior_japanese_stack();
+    assert!(font_signature(&ctx).1.iter().any(|name| name == "prior-japanese-font"));
+    app.logic_inner(&ctx);
+
+    assert_eq!(app.ui.language, Language::En);
+    assert_eq!(current(), Language::En);
+    let english = egui::Context::default();
+    assert!(crate::theme::install_fonts(&english, Language::En));
+    assert_eq!(font_signature(&ctx), font_signature(&english), "startup fallback must install English stacks");
+    drop(restore_language);
+}
+
+#[test]
+fn traditional_chinese_saved_preference_is_native_only() {
+    let mut session = filmcraft_engine::Session::default();
+    session.prefs.general.interface_language = "zh-tw".into();
+    let mut app = crate::FilmcraftApp::new(session);
+    let expected = if cfg!(target_arch = "wasm32") { Language::En } else { Language::ZhTw };
+    assert_eq!(app.ui.language, expected);
+
+    if cfg!(target_arch = "wasm32") {
+        app.apply_prefs(&egui::Context::default());
+        assert_eq!(app.ui.language, Language::En, "wasm preference normalization must happen before font installation");
+        assert_eq!(current(), Language::En);
+    }
 }
 
 /// The crate's sources (`src/**/*.rs`), each cut at its test module.
@@ -542,9 +687,9 @@ fn system_language_follows_the_preferred_locales() {
         assert_eq!(l(&[tag]), Language::ZhCn, "{tag}");
     }
     for tag in ["zh-TW", "zh_TW.UTF-8", "zh-HK", "zh-MO", "zh-Hant", "zh-Hant-TW"] {
-        assert_eq!(l(&[tag]), Language::En, "{tag}: Traditional Chinese has no catalog");
+        assert_eq!(l(&[tag]), if cfg!(target_arch = "wasm32") { Language::En } else { Language::ZhTw }, "{tag}");
     }
-    assert_eq!(l(&["zh-TW", "ja-JP"]), Language::Ja);
+    assert_eq!(l(&["zh-TW", "ja-JP"]), if cfg!(target_arch = "wasm32") { Language::Ja } else { Language::ZhTw });
 }
 
 #[test]
@@ -729,7 +874,8 @@ fn japanese_needs_an_installed_font() {
         // (`rtl::install`) come after every other fallback by design, so they are left out.
         for family in crate::theme::font_families() {
             let mut stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
-            stack.retain(|n| !crate::rtl::is_system_face(n));
+            // Other scripts can follow the Japanese run without replacing its faces.
+            stack.retain(|name| !name.starts_with("interface-") && name != "system-chinese" && name != "system-korean" && !crate::rtl::is_system_face(name));
             if craft {
                 assert!(stack.last().is_some_and(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 assert!(!stack.iter().any(|n| n == JAPANESE_FONT), "{family:?}: {stack:?}");

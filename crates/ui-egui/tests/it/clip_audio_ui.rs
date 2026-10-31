@@ -6,7 +6,9 @@
 
 use std::sync::mpsc::{Sender, channel};
 
+use egui::accesskit::Role;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_project::{ClipId, TrackItem};
 use filmcraft_ui_egui::FilmcraftApp;
@@ -172,6 +174,31 @@ fn properties_show_the_audio_of_a_video_clip() {
     d.exec("timeline.select", json!({"clips": [pair.audio]}));
     d.rect("properties.volume.level.addKeyframe");
     assert!(d.find("properties.motion.scale.addKeyframe").is_none());
+}
+
+/// The Properties panel gives the audio Volume hot number the same contextual label as its row.
+#[test]
+fn properties_volume_accessible_name_uses_the_audio_context() {
+    let (mut d, pair) = Driver::demo(&["Properties"]);
+    d.exec("timeline.select", json!({"clips": [pair.audio]}));
+
+    // The draggable readout is not a text input until clicked. Enter its real editor state so the
+    // harness checks the TextEdit node that AccessKit exposes to assistive technology.
+    let id = egui::Id::unique(("pp-vol", pair.audio));
+    d.harness.ctx.data_mut(|data| {
+        data.insert_temp(id.with("editing"), "0.0".to_owned());
+        data.insert_temp(id.with("select-all"), false);
+    });
+    d.harness.state_mut().ui.language = filmcraft_ui_egui::i18n::Language::ZhTw;
+    d.frames(3);
+
+    assert_eq!(
+        d.harness.get_by_role_and_label(Role::TextInput, "音量").value().as_deref(),
+        Some("0.0"),
+        "the actual hot-number TextEdit has the contextual Volume name"
+    );
+    assert!(d.harness.query_by_label("層級").is_none(), "the generic translation is not exposed as the Volume field name");
+    filmcraft_ui_egui::i18n::set_current(filmcraft_ui_egui::i18n::Language::En);
 }
 
 #[test]

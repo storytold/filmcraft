@@ -223,6 +223,8 @@ pub(super) static CATEGORIES: &[Category] = &[
                     ("fr", "Français"),
                     ("id", "Bahasa Indonesia"),
                     ("it", "Italiano"),
+                    #[cfg(not(target_arch = "wasm32"))]
+                    ("zh-tw", "繁體中文（台灣）"),
                     ("ko", "한국어"),
                 ]),
                 true,
