@@ -517,12 +517,13 @@ fn tests() -> Result<(), String> {
 
 /// The missing-translations report (`i18n::tests::missing_translations_report` in
 /// `filmcraft-ui-egui`), printed to the log. A missing translation never fails a build, so
-/// neither does this. After `tests`, `workspace` selects the whole workspace as the test run did:
-/// `-p filmcraft-ui-egui` alone resolves features differently and recompiled for about 3 minutes.
+/// neither does this. After `tests`, `workspace` selects the packages and targets the test run
+/// did, so it reuses that build: `-p filmcraft-ui-egui --lib` alone resolves features differently
+/// and recompiled for about 3 minutes.
 fn i18n_report(workspace: bool) {
-    let package: &[&str] = if workspace { &["--workspace", "--quiet"] } else { &["-p", "filmcraft-ui-egui"] };
-    let filter = ["--lib", "--", "--exact", "i18n::tests::missing_translations_report", "--nocapture"];
-    if let Err(e) = run(Command::new(env!("CARGO")).arg("test").args(package).args(filter)) {
+    let selection: &[&str] = if workspace { &["--workspace", "--lib", "--bins", "--tests"] } else { &["-p", "filmcraft-ui-egui", "--lib"] };
+    let filter = ["--", "--exact", "i18n::tests::missing_translations_report", "--nocapture"];
+    if let Err(e) = run(Command::new(env!("CARGO")).arg("test").args(selection).args(filter)) {
         eprintln!("i18n report not printed: {e}");
     }
 }
