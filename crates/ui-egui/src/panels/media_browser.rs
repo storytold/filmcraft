@@ -37,10 +37,9 @@ pub struct MediaBrowserUi {
     pub hover: Option<(String, f32)>,
 }
 
-/// Cached directory listings (refreshed every few seconds or on Refresh).
+/// Thumbnail previews and the drag in progress (the listings are the engine's: `BrowserIo`).
 #[derive(Clone, Default)]
 struct Cache {
-    lists: BTreeMap<(String, String), (f64, Arc<Vec<Entry>>)>,
     /// Preview items for thumbnails of files not in the project: path → id.
     preview_ids: BTreeMap<String, u64>,
     preview: Arc<Project>,
@@ -50,7 +49,6 @@ struct Cache {
 }
 
 const PREVIEW_BASE: u64 = 1 << 44;
-const CACHE_SECS: f64 = 3.0;
 const ROW_H: f32 = 22.0;
 
 /// Temp-store key for the Media Browser cache: listings stay fresh for 3 s and preview texture ids start at `PREVIEW_BASE`.
@@ -65,20 +63,20 @@ fn with_cache<R>(ctx: &egui::Context, f: impl FnOnce(&mut Cache) -> R) -> R {
     })
 }
 
-/// Drop cached listings (Refresh, after navigation).
-pub fn refresh(ctx: &egui::Context) {
-    with_cache(ctx, |c| c.lists.clear());
+/// Read the listings and the drives again (Refresh, after navigation); the panel shows the old
+/// ones until the new ones are in.
+pub fn refresh(app: &FilmcraftApp) {
+    app.session.browser.io.expire();
 }
 
-fn listing(app: &FilmcraftApp, ctx: &egui::Context, dir: &str, filter: &str) -> Result<Arc<Vec<Entry>>, String> {
-    let now = ctx.input(|i| i.time);
-    let key = (dir.to_string(), filter.to_string());
-    if let Some(v) = with_cache(ctx, |c| c.lists.get(&key).filter(|(t, _)| now - *t < CACHE_SECS).map(|(_, v)| v.clone())) {
-        return Ok(v);
+/// A directory's entries, read off the UI thread (a slow or dead network share must not freeze
+/// the window): the last listing, or pending while the first read is going on.
+fn listing(app: &FilmcraftApp, ctx: &egui::Context, dir: &str, filter: &str) -> mb::Listing {
+    let l = app.session.browser.io.listing(&app.session.services, dir, filter);
+    if matches!(l, mb::Listing::Pending) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(150));
     }
-    let v = Arc::new(mb::list(&*app.session.services, dir, filter).map_err(|e| e.to_string())?);
-    with_cache(ctx, |c| c.lists.insert(key, (now, v.clone())));
-    Ok(v)
+    l
 }
 
 fn exec(app: &mut FilmcraftApp, ctx: &egui::Context, cmd: &str, p: Value) -> Option<Value> {
@@ -115,7 +113,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         icons::paint(ui.painter(), r.shrink(5.0), icon, if enabled { t.icon } else { t.text_faint });
         if resp.clicked() && enabled {
             exec(app, &ctx, "mediaBrowser.navigate", json!({id: true}));
-            refresh(&ctx);
+            refresh(app);
         }
         x += 26.0;
     }
@@ -134,7 +132,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if resp.lost_focus() {
         if ui.input(|i| i.key_pressed(egui::Key::Enter)) && path != dir {
             exec(app, &ctx, "mediaBrowser.navigate", json!({"path": path}));
-            refresh(&ctx);
+            refresh(app);
         }
         app.ui.media_browser.path_edit = None;
     }
@@ -215,7 +213,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     tree(app, ui, tree_r, &dir);
     let entries = listing(app, &ctx, &dir, &prefs.file_types);
     match entries {
-        Ok(entries) => {
+        mb::Listing::Ready(entries) => {
             if prefs.view == "thumbnails" {
                 thumbnails(app, ui, list_r, &entries);
             } else {
@@ -227,8 +225,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter().text(pos2(list_r.min.x + 6.0, rect.max.y - 12.0), Align2::LEFT_CENTER, &status, Tokens::ui(11.0), t.text_dim);
             app.auto.add("mediaBrowser.count", Rect::from_min_size(pos2(list_r.min.x, rect.max.y - 22.0), vec2(160.0, 20.0)), &status);
         }
-        Err(e) => {
+        mb::Listing::Failed(e) => {
             ui.painter().text(list_r.center(), Align2::CENTER_CENTER, tlf!("Cannot open {dir}: {e}", dir, e), Tokens::ui(11.5), t.text_dim);
+        }
+        mb::Listing::Pending => {
+            let msg = tlf!("Reading {dir}…", dir);
+            ui.painter().text(list_r.center(), Align2::CENTER_CENTER, &msg, Tokens::ui(11.5), t.text_dim);
+            app.auto.add("mediaBrowser.reading", Rect::from_center_size(list_r.center(), vec2(240.0, 20.0)), &msg);
         }
     }
     if prefs.view == "thumbnails" {
@@ -262,6 +265,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 fn tree(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, dir: &str) {
     let ctx = ui.ctx().clone();
     let roots = app.session.execute("mediaBrowser.roots", json!({})).unwrap_or_default();
+    let scanning = roots["scanning"].as_bool().unwrap_or(false);
+    if scanning || roots.to_string().contains("\"pending\":true") {
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(vec2(4.0, 0.0))).id_salt("mb-tree"));
     child.set_clip_rect(r.intersect(ui.clip_rect()));
     let mut go: Option<String> = None;
@@ -273,16 +280,29 @@ fn tree(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, dir: &str) {
             ("recent", tl!("Recent Directories"), Icon::Clock),
         ];
         for (key, title, icon) in sections {
-            let list: Vec<(String, String)> = roots[key]
+            // a drive that has not answered yet (a network share that is slow or gone) is listed
+            // as such, and not expanded: its listing would wait on it
+            let list: Vec<(String, String, bool)> = roots[key]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| Some((v["name"].as_str()?.to_string(), v["path"].as_str()?.to_string()))).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| Some((v["name"].as_str()?.to_string(), v["path"].as_str()?.to_string(), v["pending"].as_bool().unwrap_or(false))))
+                        .collect()
+                })
                 .unwrap_or_default();
             let hr = ui.label(egui::RichText::new(title).size(11.0).color(app.tokens.text_dim).strong());
             app.auto.add(&format!("mediaBrowser.tree.{key}"), hr.rect, title);
             if list.is_empty() {
-                ui.label(egui::RichText::new(tl!("  (none)")).size(10.5).color(app.tokens.text_faint));
+                let none = if scanning && matches!(key, "localDrives" | "network") { tl!("  (looking…)") } else { tl!("  (none)") };
+                ui.label(egui::RichText::new(none).size(10.5).color(app.tokens.text_faint));
             }
-            for (name, path) in list {
+            for (name, path, pending) in list {
+                if pending {
+                    let label = tlf!("{name} (not responding)", name);
+                    let r = ui.label(egui::RichText::new(format!("    {label}")).size(11.5).color(app.tokens.text_faint));
+                    app.auto.add(&format!("mediaBrowser.tree.{key}.{name}"), r.rect, &label);
+                    continue;
+                }
                 let expandable = matches!(key, "localDrives" | "network" | "favorites");
                 node(app, ui, &ctx, &name, &path, icon, 0, expandable, dir, key, &mut go);
             }
@@ -291,7 +311,7 @@ fn tree(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, dir: &str) {
     });
     if let Some(p) = go {
         exec(app, &ctx, "mediaBrowser.navigate", json!({"path": p}));
-        refresh(&ctx);
+        refresh(app);
     }
 }
 
@@ -361,7 +381,10 @@ fn node(
         }
     });
     if expandable && open {
-        let subs: Vec<Entry> = listing(app, ctx, path, "all").map(|v| v.iter().filter(|e| e.is_dir).cloned().collect()).unwrap_or_default();
+        let subs: Vec<Entry> = match listing(app, ctx, path, "all") {
+            mb::Listing::Ready(v) => v.iter().filter(|e| e.is_dir).cloned().collect(),
+            mb::Listing::Pending | mb::Listing::Failed(_) => Vec::new(),
+        };
         for s in subs {
             node(app, ui, ctx, &s.name, &s.path, Icon::Folder, depth + 1, true, cur, section, go);
         }
@@ -403,7 +426,7 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
     if resp.double_clicked() {
         if e.is_dir {
             exec(app, &ctx, "mediaBrowser.navigate", json!({"path": e.path}));
-            refresh(&ctx);
+            refresh(app);
         } else if matches!(e.kind, "project" | "caption") {
             exec(app, &ctx, "mediaBrowser.import", json!({"paths": [e.path]}));
         } else {
@@ -788,7 +811,7 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         close = true;
     }
     if item(app, ui, "refresh", tl!("Refresh"), true, None, "") {
-        refresh(&ctx);
+        refresh(app);
         app.session.browser.probes.clear();
         close = true;
     }
