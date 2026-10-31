@@ -31,18 +31,26 @@ struct DecodedAudioPacket {
 /// write them) move the average by less than this at every standard rate (#1700).
 const STANDARD_RATE_TOLERANCE: f64 = 0.005;
 
-/// A video track's nominal frame rate: the mean of the sample durations within a quarter frame of
-/// the median duration, read as the closest standard rate when close enough.
+/// A video track's nominal frame rate: the mean of the times from each picture to the next within
+/// a quarter frame of the median time, read as the closest standard rate when close enough. When
+/// the pictures share one time, the sample durations stand in for those times.
 ///
-/// A duration near the median is the same frame period as rounding has quantised it; one much
-/// longer belongs to a variable-rate frame and stays out of the mean. The mean sees through a
-/// millisecond rounder the median cannot: 30 fps over 90 kHz is 2970 and 3060 units in turn, whose
-/// median reads 30.303 fps but whose mean is 30 fps (#1700).
+/// A sample's duration steps its decode time, not its picture's: some phones (Android `VID….mp4`)
+/// advance decode times by 9 units of 90 kHz a sample while composition offsets show the pictures
+/// 1/60 s apart, and their durations read 10000 fps. A time near the median is the same frame
+/// period as rounding has quantised it; one much longer belongs to a variable-rate or dropped frame
+/// and stays out of the mean. The mean sees through a millisecond rounder the median cannot: 30 fps
+/// over 90 kHz is 2970 and 3060 units in turn, whose median reads 30.303 fps but whose mean is 30
+/// fps (#1700); so through 59.94 fps rounded to the timescale (1501 and 1502) and pictures just off
+/// their grid (#1282).
 fn nominal_rate(timescale: u32, samples: &[Sample]) -> Option<FrameRate> {
-    let mut durs: Vec<u32> = samples.iter().map(|s| s.duration).filter(|&d| d > 0).collect();
-    durs.sort_unstable();
+    let mut durs = picture_durations(samples.iter().map(|s| s.pts));
+    if durs.is_empty() {
+        durs = samples.iter().map(|s| s.duration).filter(|&d| d > 0).collect();
+        durs.sort_unstable();
+    }
     let &median = durs.get(durs.len() / 2)?;
-    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) * 4 <= median).map(|&d| f64::from(d)).collect();
+    let near: Vec<f64> = durs.iter().filter(|&&d| u64::from(d.abs_diff(median)) * 4 <= u64::from(median)).map(|&d| f64::from(d)).collect();
     let mean = near.iter().sum::<f64>() / near.len().max(1) as f64;
     if mean <= 0.0 {
         return None;
@@ -817,6 +825,22 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
         return None;
     }
     Some(Mp4Source::open(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+/// The time from each picture to the next (track units, sorted): the gaps between the sorted
+/// presentation times. Empty when fewer than two pictures have distinct times.
+fn picture_durations(pts: impl Iterator<Item = i64>) -> Vec<u32> {
+    let mut pts: Vec<i64> = pts.collect();
+    pts.sort_unstable();
+    let mut d: Vec<u32> = pts
+        .windows(2)
+        .filter_map(|w| match w {
+            [a, b] => u32::try_from(b.saturating_sub(*a)).ok().filter(|&d| d > 0),
+            _ => None,
+        })
+        .collect();
+    d.sort_unstable();
+    d
 }
 
 /// Put the video samples of a constant-rate file whose pictures sit just off its frame grid back
