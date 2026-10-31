@@ -17,7 +17,8 @@
 //! decodes) is left to the still decoders, which is what happened to every animated image before.
 
 use std::io::Cursor;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
@@ -25,7 +26,7 @@ use image::codecs::gif::GifDecoder;
 use image::codecs::png::PngDecoder;
 use image::{AnimationDecoder, Delay, Frames, ImageDecoder, Limits};
 
-use crate::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, VideoStreamInfo};
+use crate::{FrameCache, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, VideoStreamInfo};
 
 /// Most frames kept from one file (frames past this are dropped; the clip ends there).
 pub const MAX_FRAMES: usize = 10_000;
@@ -33,6 +34,22 @@ pub const MAX_FRAMES: usize = 10_000;
 pub const MAX_DECODED_BYTES: usize = 1 << 30;
 /// Most RGBA bytes in one animation canvas while its decoder produces a frame.
 const MAX_DECODED_FRAME_BYTES: usize = 512 << 20;
+
+/// Shared budget of decoded animated image frames (1 GiB, matching GOP cache budget).
+pub const ANIMATED_BUDGET: usize = 1 << 30;
+
+static CACHE: LazyLock<Arc<FrameCache<(u64, usize)>>> = LazyLock::new(|| Arc::new(FrameCache::new(ANIMATED_BUDGET)));
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Bytes of decoded animated image frames held right now (`perf.stats`).
+pub fn cached_bytes() -> usize {
+    CACHE.bytes()
+}
+
+/// Budget of decoded animated image frames (`perf.stats`).
+pub fn budget_bytes() -> usize {
+    CACHE.budget()
+}
 
 /// Animated image formats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,31 +99,21 @@ impl Format {
     }
 }
 
-/// An animation: its frames (full-canvas pictures) and when each one starts.
-pub struct AnimatedSource {
-    info: MediaInfo,
-    frames: Vec<Arc<VideoFrame>>,
-    /// Media time each frame starts at; ascending, `starts[0]` is zero.
-    starts: Vec<Tick>,
-}
-
-/// Decode `bytes` as an animated image. `None` when it is not an APNG, GIF, or animated WebP with
-/// at least two frames that decode (the caller then opens it as a still).
-pub fn open(name: &str, bytes: &[u8]) -> Option<Result<AnimatedSource>> {
-    let format = Format::sniff(bytes)?;
-    let frames = match format {
+/// Helper to open the appropriate decoder stream for `format` and `bytes`.
+fn decode_raw_frames<'a>(name: &str, format: Format, bytes: &'a [u8]) -> Option<Result<Frames<'a>>> {
+    match format {
         Format::Apng => {
             let mut d = PngDecoder::new(Cursor::new(bytes)).ok()?;
             if !d.is_apng().ok()? {
                 return None;
             }
             d.set_limits(Limits::default()).ok()?;
-            d.apng().ok()?.into_frames()
+            Some(Ok(d.apng().ok()?.into_frames()))
         }
         Format::Gif => {
             let mut d = GifDecoder::new(Cursor::new(bytes)).ok()?;
             d.set_limits(Limits::default()).ok()?;
-            d.into_frames()
+            Some(Ok(d.into_frames()))
         }
         Format::WebP => {
             let mut d = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
@@ -118,21 +125,67 @@ pub fn open(name: &str, bytes: &[u8]) -> Option<Result<AnimatedSource>> {
                 return Some(Err(MediaError::Unsupported(format!("{name}: animated WebP canvas exceeds the {MAX_DECODED_FRAME_BYTES}-byte frame limit"))));
             }
             d.set_limits(Limits::default()).ok()?;
-            d.into_frames()
+            Some(Ok(d.into_frames()))
         }
+    }
+}
+
+/// An animation: its timing table, encoded bytes, and cached frames (#2474).
+pub struct AnimatedSource {
+    info: MediaInfo,
+    /// Media time each frame starts at; ascending, `starts[0]` is zero.
+    starts: Vec<Tick>,
+    /// Unique id for this source in the cache.
+    id: u64,
+    /// Format: GIF, APNG, or WebP.
+    format: Format,
+    /// The file's encoded bytes, kept to decode evicted frames again.
+    bytes: Arc<[u8]>,
+    /// Decoder raw frame index that produced each merged frame.
+    raw_indices: Vec<usize>,
+    /// Frame cache holding decoded pictures.
+    cache: Arc<FrameCache<(u64, usize)>>,
+}
+
+impl Drop for AnimatedSource {
+    fn drop(&mut self) {
+        self.cache.retain(|&(id, _)| id != self.id);
+    }
+}
+
+/// Decode `bytes` as an animated image. `None` when it is not an APNG, GIF, or animated WebP with at least two
+/// frames that decode (the caller then opens it as a still).
+pub fn open(name: &str, bytes: &[u8]) -> Option<Result<AnimatedSource>> {
+    from_bytes_with_cache(name, Arc::from(bytes), CACHE.clone())
+}
+
+/// Open an animated image from `bytes`, using the shared process cache.
+pub fn from_bytes(name: &str, bytes: Arc<[u8]>) -> Option<Result<AnimatedSource>> {
+    from_bytes_with_cache(name, bytes, CACHE.clone())
+}
+
+/// Internal opener that accepts an explicit cache (for testing cache eviction with small budgets).
+pub fn from_bytes_with_cache(name: &str, bytes: Arc<[u8]>, cache: Arc<FrameCache<(u64, usize)>>) -> Option<Result<AnimatedSource>> {
+    let format = Format::sniff(&bytes)?;
+    let frames = match decode_raw_frames(name, format, &bytes)? {
+        Ok(f) => f,
+        Err(e) => return Some(Err(e)),
     };
-    AnimatedSource::from_frames(name, format, frames, bytes.len() as u64).map(Ok)
+    AnimatedSource::from_frames(name, format, bytes.clone(), frames, cache).map(Ok)
 }
 
 impl AnimatedSource {
-    /// Build a clip from decoded full-canvas frames, merging consecutive identical pictures.
-    fn from_frames(name: &str, format: Format, frames: Frames<'_>, file_size: u64) -> Option<Self> {
-        let mut pictures: Vec<(u32, u32, Vec<u8>)> = Vec::new();
+    fn from_frames(name: &str, format: Format, bytes: Arc<[u8]>, frames: Frames<'_>, cache: Arc<FrameCache<(u64, usize)>>) -> Option<Self> {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let mut last_picture: Option<(u32, u32, Vec<u8>)> = None;
         let mut durations: Vec<Tick> = Vec::new();
+        let mut raw_indices: Vec<usize> = Vec::new();
         let mut decoded_frames = 0usize;
         let mut decoded = 0usize;
         let mut has_alpha = false;
-        for frame in frames.take(MAX_FRAMES) {
+        let mut first_dim: Option<(u32, u32)> = None;
+        let mut count = 0usize;
+        for (raw_idx, frame) in frames.take(MAX_FRAMES).enumerate() {
             // a damaged frame ends the animation at the frames before it
             let Ok(frame) = frame else { break };
             decoded_frames = decoded_frames.saturating_add(1);
@@ -140,7 +193,7 @@ impl AnimatedSource {
             let buffer = frame.into_buffer();
             let (w, h) = buffer.dimensions();
             let rgba = buffer.into_raw();
-            if let (Some(last), Some(d)) = (pictures.last(), durations.last_mut())
+            if let (Some(last), Some(d)) = (&last_picture, durations.last_mut())
                 && (last.0, last.1) == (w, h)
                 && last.2 == rgba
             {
@@ -152,19 +205,27 @@ impl AnimatedSource {
                 break;
             }
             has_alpha = has_alpha || rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255);
-            pictures.push((w, h, rgba));
+            if first_dim.is_none() {
+                first_dim = Some((w, h));
+            }
+            cache.insert((id, count), Arc::new(VideoFrame::rgba8(w, h, rgba.clone())));
             durations.push(ticks);
+            raw_indices.push(raw_idx);
+            count += 1;
+            last_picture = Some((w, h, rgba));
         }
-        if pictures.len() < 2 && !(format == Format::WebP && decoded_frames >= 2) {
+        if count < 2 && !(format == Format::WebP && decoded_frames >= 2) {
+            cache.retain(|&(k_id, _)| k_id != id);
             return None;
         }
-        let (width, height) = pictures.first().map(|p| (p.0, p.1))?;
+        let (width, height) = first_dim?;
         let mut starts = Vec::with_capacity(durations.len());
         let mut t = Tick::ZERO;
         for d in &durations {
             starts.push(t);
             t = Tick(t.0.saturating_add(d.0));
         }
+        let file_size = bytes.len() as u64;
         let info = MediaInfo {
             name: name.to_string(),
             kind: MediaKind::Movie,
@@ -186,13 +247,12 @@ impl AnimatedSource {
             start_timecode: None,
             file_size: Some(file_size),
         };
-        let frames = pictures.into_iter().map(|(w, h, rgba)| Arc::new(VideoFrame::rgba8(w, h, rgba))).collect();
-        Some(Self { info, frames, starts })
+        Some(Self { info, starts, id, format, bytes, raw_indices, cache })
     }
 
     /// Number of distinct frames kept.
     pub fn frame_count(&self) -> usize {
-        self.frames.len()
+        self.starts.len()
     }
 
     /// Media time frame `i` starts at.
@@ -203,6 +263,47 @@ impl AnimatedSource {
     /// The frame shown at media time `t` (the first before the start, the last after the end).
     fn index_at(&self, t: Tick) -> usize {
         self.starts.partition_point(|s| *s <= t).saturating_sub(1)
+    }
+
+    /// Unique cache identifier for this source.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Whether frame `i` is in the cache right now.
+    pub fn is_cached(&self, i: usize) -> bool {
+        self.cache.get(&(self.id, i)).is_some()
+    }
+
+    /// Decode frame `target_idx` by streaming raw frames from `bytes` up to `target_raw`.
+    fn decode_frame(&self, target_idx: usize) -> Result<Arc<VideoFrame>> {
+        let target_raw =
+            *self.raw_indices.get(target_idx).ok_or_else(|| MediaError::Decode(format!("{}: frame index {target_idx} out of bounds", self.info.name)))?;
+        let frames = decode_raw_frames(&self.info.name, self.format, &self.bytes)
+            .ok_or_else(|| MediaError::Decode(format!("{}: failed to open animated image decoder", self.info.name)))??;
+        let mut current_frame: Option<Arc<VideoFrame>> = None;
+        let mut current_merged_idx = 0usize;
+        for (raw_idx, frame) in frames.take(MAX_FRAMES).enumerate() {
+            let Ok(frame) = frame else { break };
+            if let Some(&expected_raw) = self.raw_indices.get(current_merged_idx)
+                && raw_idx == expected_raw
+            {
+                let buffer = frame.into_buffer();
+                let (w, h) = buffer.dimensions();
+                let rgba = buffer.into_raw();
+                let video_frame = Arc::new(VideoFrame::rgba8(w, h, rgba));
+                if current_merged_idx == target_idx {
+                    current_frame = Some(video_frame.clone());
+                } else if current_merged_idx < target_idx && self.cache.get(&(self.id, current_merged_idx)).is_none() {
+                    self.cache.insert((self.id, current_merged_idx), video_frame);
+                }
+                current_merged_idx += 1;
+            }
+            if raw_idx == target_raw {
+                break;
+            }
+        }
+        current_frame.ok_or_else(|| MediaError::Decode(format!("{}: frame {target_idx} could not be decoded", self.info.name)))
     }
 }
 
@@ -243,7 +344,11 @@ impl MediaSource for AnimatedSource {
 
     /// Return the picture displayed at the requested media time.
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>> {
-        self.frames.get(self.index_at(req.time)).cloned().ok_or(MediaError::NoStream("video"))
+        let index = self.index_at(req.time);
+        if index >= self.starts.len() {
+            return Err(MediaError::NoStream("video"));
+        }
+        self.cache.get_or_insert_with((self.id, index), || self.decode_frame(index))
     }
 
     /// Animated image files do not provide audio.

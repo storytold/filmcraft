@@ -257,7 +257,7 @@ pub fn open_bytes(name: &str, bytes: Arc<[u8]>, extra: &[Opener]) -> Result<Shar
         return Ok(Arc::new(wav::WavSource::parse(name, bytes)?));
     }
     // APNG, animated GIF, and animated WebP play as movies (#402); single-frame files fall through to the stills
-    if let Some(r) = animated::open(name, &bytes) {
+    if let Some(r) = animated::from_bytes(name, bytes.clone()) {
         return Ok(Arc::new(r?));
     }
     if still::sniff(name, &bytes) {
