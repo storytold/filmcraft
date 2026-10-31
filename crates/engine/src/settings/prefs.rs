@@ -1,6 +1,20 @@
+use std::cell::Cell;
+
 use super::schema::{DARK_THEMES, LIGHT_THEMES, UI_SCALES};
 use super::{Deserialize, FrameRate, Serialize, Tick};
 use crate::shortcuts::Platform;
+
+thread_local! {
+    /// The computer this runs on, where the build target can't tell. See [`set_host_platform`].
+    static HOST_PLATFORM: Cell<Option<Platform>> = const { Cell::new(None) };
+}
+
+/// Tell the defaults which computer this is, for a browser build: its target is `wasm32` on every
+/// computer (#400). The web app calls this before it creates the session. A browser build has one
+/// thread, and nothing else needs this.
+pub fn set_host_platform(platform: Platform) {
+    HOST_PLATFORM.with(|host| host.set(Some(platform)));
+}
 
 // ------------------------------------------------------------------ category values
 
@@ -372,7 +386,7 @@ pub struct TimelinePrefs {
 /// What the mouse wheel does over the Timeline out of the box (#400): on macOS it moves the tracks
 /// up and down and on Windows the Timeline sideways, Premiere Pro's defaults there; Linux, where
 /// Premiere does not run, goes with Windows. The primary modifier swaps the two either way.
-pub fn default_mouse_scrolling(platform: Platform) -> &'static str {
+fn default_mouse_scrolling(platform: Platform) -> &'static str {
     if platform == Platform::Mac { "vertical" } else { "horizontal" }
 }
 
@@ -386,7 +400,7 @@ impl Default for TimelinePrefs {
             still_image_duration: 5.0,
             still_image_unit: "seconds".into(),
             auto_scroll: "pageScroll".into(),
-            mouse_scrolling: default_mouse_scrolling(Platform::current()).into(),
+            mouse_scrolling: default_mouse_scrolling(HOST_PLATFORM.with(Cell::get).unwrap_or_else(Platform::current)).into(),
             mono_media_tracks: "useFile".into(),
             stereo_media_tracks: "useFile".into(),
             surround_media_tracks: "useFile".into(),

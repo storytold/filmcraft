@@ -107,6 +107,18 @@ pub(crate) use raw_input::rewrite_native_window_input;
 pub use ime_reset::install_ime_reset_callbacks;
 pub(crate) use native_dialogs::EXPORT_SAVE_DIALOGS;
 
+/// The platform of the computer egui reports. In a browser, where the build target can't tell,
+/// eframe reads it from the user agent (#400).
+pub fn platform_of_os(os: egui::os::OperatingSystem) -> filmcraft_engine::shortcuts::Platform {
+    use egui::os::OperatingSystem as Os;
+    use filmcraft_engine::shortcuts::Platform;
+    match os {
+        Os::Mac => Platform::Mac,
+        Os::Windows => Platform::Windows,
+        _ => Platform::Linux,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialog {
     About,

@@ -59,18 +59,6 @@ pub(crate) use waveforms::request_peaks;
 #[cfg(test)]
 use waveforms::{source_peaks, waveform_display_gain};
 
-/// Timeline Mouse Scrolling's default on the computer egui reports. The web app asks here: a browser
-/// build's target is `wasm32` on every computer, so it can't tell by itself (#400).
-pub fn default_mouse_scrolling_on(os: egui::os::OperatingSystem) -> &'static str {
-    use egui::os::OperatingSystem as Os;
-    use filmcraft_engine::shortcuts::Platform;
-    filmcraft_engine::settings::default_mouse_scrolling(match os {
-        Os::Mac => Platform::Mac,
-        Os::Windows => Platform::Windows,
-        _ => Platform::Linux,
-    })
-}
-
 const TOP_H: f32 = 58.0; // timecode + toolbar (left) / ruler (right)
 const RULER_H: f32 = 44.0;
 const SCROLLBAR_H: f32 = 17.0;

@@ -10,7 +10,7 @@ use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::panels::timeline::{default_mouse_scrolling_on, max_scroll, timeline_extent};
+use filmcraft_ui_egui::panels::timeline::{max_scroll, timeline_extent};
 use serde_json::{Value, json};
 
 struct Driver {
@@ -191,15 +191,30 @@ fn the_wheel_starts_out_as_the_platform_has_it() {
     assert_eq!(d.view(), (7.0, 50.0, 0.0, 30.0), "Ctrl + wheel moves the tracks");
 }
 
-/// A browser's build target is `wasm32` on every computer, so the web app goes by the computer
-/// egui reports: a Mac in a browser starts out as a Mac does natively (#400).
+/// A browser's build target is `wasm32` on every computer, so the web app tells the engine which
+/// computer it is on: a Mac in a browser starts out, and resets, as a Mac does natively (#400).
 #[test]
-fn the_wheel_in_a_browser_starts_out_as_the_computer_has_it() {
+fn the_wheel_in_a_browser_starts_and_resets_as_the_computer_has_it() {
     use egui::os::OperatingSystem as Os;
-    assert_eq!(default_mouse_scrolling_on(Os::Mac), "vertical");
-    for os in [Os::Windows, Os::Nix, Os::Unknown] {
-        assert_eq!(default_mouse_scrolling_on(os), "horizontal", "{os:?}");
+    for (os, wheel, other) in [(Os::Mac, "vertical", "horizontal"), (Os::Windows, "horizontal", "vertical"), (Os::Nix, "horizontal", "vertical")] {
+        filmcraft_engine::settings::set_host_platform(filmcraft_ui_egui::platform_of_os(os));
+        let mut d = Driver::demo();
+        assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, wheel, "{os:?} at startup");
+        d.app().session.prefs.timeline.mouse_scrolling = other.into();
+        d.exec("prefs.reset", json!({"category": "timeline"}));
+        assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, wheel, "{os:?} after prefs.reset");
+        // Settings ▸ Timeline ▸ Reset…
+        d.app().session.prefs.timeline.mouse_scrolling = other.into();
+        d.ok("ui.menu.invoke", json!({"id": "app.settings.timeline"}));
+        d.frames(3);
+        d.ok("ui.click", json!({"id": "settings.reset"}));
+        d.frames(3);
+        d.ok("ui.click", json!({"id": "settings.ok"}));
+        d.frames(3);
+        assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, wheel, "{os:?} after Settings Reset");
     }
+    // one thread can run several tests
+    filmcraft_engine::settings::set_host_platform(filmcraft_engine::shortcuts::Platform::current());
 }
 
 /// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline
