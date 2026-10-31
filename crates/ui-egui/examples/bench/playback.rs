@@ -44,7 +44,20 @@ pub fn build_sequence(s: &mut Session, w: u32, h: u32, layers: &[(ItemId, f64, O
 
 /// As [`build_sequence`], with the effect ids of each layer (`per_layer[i]` on V(i+1)).
 pub fn build_sequence_fx(s: &mut Session, w: u32, h: u32, layers: &[(ItemId, f64, Option<(f64, f64)>, f64, f64)], per_layer: &[&[&str]], secs: f64) -> ItemId {
-    let rate = FrameRate::FPS_23_976;
+    build_sequence_rate(s, w, h, layers, per_layer, secs, FrameRate::FPS_23_976)
+}
+
+/// As [`build_sequence_fx`] at sequence frame rate `rate`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_sequence_rate(
+    s: &mut Session,
+    w: u32,
+    h: u32,
+    layers: &[(ItemId, f64, Option<(f64, f64)>, f64, f64)],
+    per_layer: &[&[&str]],
+    secs: f64,
+    rate: FrameRate,
+) -> ItemId {
     let sizes: Vec<(u32, u32)> = layers
         .iter()
         .map(|l| match s.project.item(l.0).map(|i| &i.kind) {
@@ -723,6 +736,17 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             }
             seq
         }
+        // your own clip (`FILMCRAFT_BENCH_CLIP=path`): a sequence of its size and frame rate, one clip on V1
+        "clip" => {
+            let path = std::env::var_os("FILMCRAFT_BENCH_CLIP")?;
+            let a = import(&mut s, Path::new(&path));
+            let v = match s.project.item(a).map(|i| &i.kind) {
+                Some(filmcraft_project::ItemKind::Media(m)) => m.info.video.clone()?,
+                _ => return None,
+            };
+            let secs = std::env::var("FILMCRAFT_BENCH_SECONDS").ok().and_then(|v| v.parse().ok()).unwrap_or(10.0);
+            build_sequence_rate(&mut s, v.width, v.height, &[(a, 100.0, None, 0.0, 100.0)], &[&[]], secs, v.frame_rate)
+        }
         "h264-2160" | "seek-storm-2160" => {
             let a = import(&mut s, &fixture("a2160.mp4")?);
             build_sequence(&mut s, 3840, 2160, &[(a, 100.0, None, 0.0, 100.0)], &[], 10.0)
@@ -766,6 +790,10 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
 /// `bench_playback` / `cargo xtask bench-playback`.
 pub fn cli_main() {
     let args = parse_args();
+    // the app registers the platform's hardware decoders at start-up; `FILMCRAFT_BENCH_HW=off` benches the software ones
+    if std::env::var("FILMCRAFT_BENCH_HW").as_deref() != Ok("off") {
+        filmcraft_platform::register();
+    }
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     println!(
         "FilmCraft playback bench: {} path, {} frame workers, {} cores, refresh {} Hz, {} s per play; load avg {}",
