@@ -1321,6 +1321,17 @@ fn set_param_rejects_colour_component_that_overflows_f32() {
     filmcraft_format::decode(&bytes).unwrap();
 }
 
+#[test]
+fn set_param_rejects_curve_coordinate_that_overflows_f32() {
+    let mut s = demo();
+    let a = v1(&s)[0].clone();
+    s.execute("effects.apply", json!({"clips": [a.id.0], "effect": "lumetri"})).unwrap();
+    let r = s.execute("effects.setParam", json!({"clip": a.id.0, "effect": "lumetri", "param": "curve_luma", "value": [[1e300, 0.5], [1.0, 1.0]]}));
+    assert!(r.is_err(), "an overflowing curve coordinate must be refused");
+    let bytes = filmcraft_format::encode(&s.project, false);
+    filmcraft_format::decode(&bytes).unwrap();
+}
+
 /// #2326 review: a video effect aimed only at an audio clip applies to nothing, so it is refused
 /// instead of committing an empty undo step that would clear redo.
 #[test]

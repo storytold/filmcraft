@@ -4243,7 +4243,12 @@ pub(crate) fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamVal
         ParamValue::Text(_) => ParamValue::Text(v.as_str()?.to_string()),
         ParamValue::Path(_) => ParamValue::Path(crate::masks::path_from_json(v)?),
         ParamValue::Curve(_) => {
-            ParamValue::Curve(v.as_array()?.iter().filter_map(|p| Some([p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])).collect())
+            let pts: Vec<[f32; 2]> = v.as_array()?.iter().filter_map(|p| Some([p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])).collect();
+            // a finite f64 such as 1e300 saturates to an infinite f32, which a saved project cannot reload
+            if !pts.iter().flatten().all(|x| x.is_finite()) {
+                return None;
+            }
+            ParamValue::Curve(pts)
         }
     })
 }
