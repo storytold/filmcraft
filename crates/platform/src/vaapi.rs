@@ -122,7 +122,7 @@ mod linux {
                     info.bit_depth_chroma
                 ));
             }
-            let geometry = Geometry { crop: info.crop, bits, color: info.color, par: info.par };
+            let geometry = Geometry { crop: info.crop, bits, color: info.color, par: info.par, chroma_422: false };
             let (front, codec, vendor) = match info.codec {
                 NalCodec::H264 => {
                     if bits != 8 {

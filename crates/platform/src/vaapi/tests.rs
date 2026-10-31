@@ -29,7 +29,7 @@ struct Recorder {
 
 impl Recorder {
     fn new(count: usize) -> Self {
-        let g = Geometry { crop: (0, 0, 2, 2), bits: 8, color: Default::default(), par: (1, 1) };
+        let g = Geometry { crop: (0, 0, 2, 2), bits: 8, color: Default::default(), par: (1, 1), chroma_422: false };
         let frame = biplanar::to_frame(&Biplanar { luma: &[128; 4], chroma: &[128; 2], stride: 2, rows: 2 }, &g).unwrap();
         Self { ids: (0..count as u32).map(|i| 0x100 + i).collect(), decoded: vec![false; count], pictures: 0, frame }
     }
