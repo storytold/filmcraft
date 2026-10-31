@@ -179,6 +179,12 @@ pub fn zoomed_thumbnail_tiles(
     tiles.into_iter().map(|(x, t)| (x0 + (x - x0) * r, tile_w * r, t)).collect()
 }
 
+/// Whether another clip of the sequence shares this clip's link; a clip whose partner is gone is not linked.
+fn has_link_partner(app: &FilmcraftApp, it: &TrackItem) -> bool {
+    let Some(link) = it.link else { return false };
+    app.session.active_sequence().is_some_and(|seq| seq.all_tracks().any(|t| t.items.iter().any(|o| o.link == Some(link) && o.id != it.id)))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_clip(
     app: &mut FilmcraftApp,
@@ -258,13 +264,12 @@ pub(super) fn draw_clip(
         if (it.speed - 1.0).abs() > 1e-6 || it.reverse {
             label = format!("{label} [{}%]", ((if it.reverse { -1.0 } else { 1.0 }) * it.speed * 100.0).round());
         }
-        clip_p.text(
-            pos2(body.min.x + 6.0, body.min.y + 8.5),
-            Align2::LEFT_CENTER,
-            label,
-            Tokens::ui(11.5),
-            if it.enabled { Color32::from_rgb(0xd9, 0xd9, 0xd9) } else { t.text_faint },
-        );
+        let name_color = if it.enabled { Color32::from_rgb(0xd9, 0xd9, 0xd9) } else { t.text_faint };
+        let name = clip_p.text(pos2(body.min.x + 6.0, body.min.y + 8.5), Align2::LEFT_CENTER, label, Tokens::ui(11.5), name_color);
+        // a clip linked to another in the sequence has its name underlined (#1347)
+        if has_link_partner(app, it) {
+            clip_p.line_segment([pos2(name.min.x, name.max.y), pos2(name.max.x, name.max.y)], Stroke::new(1.0, name_color));
+        }
     }
     // fx badge right-aligned in the header (italic-ish "fx")
     if (it.has_standard_effects() || it.has_modified_intrinsics()) && w > 40.0 {

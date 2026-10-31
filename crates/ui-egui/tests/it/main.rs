@@ -63,6 +63,7 @@ mod timecode_ui;
 mod timeline_drop_ui;
 mod timeline_escape_ui;
 mod timeline_gap_ui;
+mod timeline_link_marker_ui;
 mod timeline_marquee_ui;
 mod timeline_middle_pan_ui;
 mod timeline_option_drag_ui;
