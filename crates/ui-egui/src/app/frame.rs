@@ -53,8 +53,13 @@ impl FilmcraftApp {
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
+        // Windows: our own top row (menus + window buttons) in place of the OS title bar, except in full screen.
+        let titlebar_h = if header::titlebar_visible(self, &ctx) { header::TITLEBAR_HEIGHT } else { 0.0 };
+        if titlebar_h > 0.0 {
+            header::show_titlebar(self, ui, egui::Rect::from_min_size(full.min, egui::vec2(full.width(), titlebar_h)));
+        }
         let header_h = if self.ui.show_header { header::HEIGHT } else { 0.0 };
-        let header = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), header_h));
+        let header = egui::Rect::from_min_size(egui::pos2(full.min.x, full.min.y + titlebar_h), egui::vec2(full.width(), header_h));
         if self.ui.show_header {
             header::show(self, ui, header);
         }

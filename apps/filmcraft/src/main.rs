@@ -189,6 +189,8 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
             .with_title_shown(false)
+            // Windows: no OS title bar; the app draws its own top row with the menus and window buttons.
+            .with_decorations(!cfg!(windows))
             // Started for an agent (`--control`): open without taking the user's keyboard focus.
             .with_active(!agent)
             .with_icon(app_icon())
@@ -276,6 +278,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             app.dialog = None;
         }
         app.integrated_titlebar = cfg!(target_os = "macos");
+        app.custom_titlebar = cfg!(windows);
         if let Some(rs) = cc.wgpu_render_state.clone()
             && std::env::var_os("FILMCRAFT_CPU_COMPOSITE").is_none()
         {

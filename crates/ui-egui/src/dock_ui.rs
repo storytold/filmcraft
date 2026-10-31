@@ -142,6 +142,9 @@ impl FilmcraftApp {
         if self.integrated_titlebar {
             bounds.min.y += crate::header::HEIGHT;
         }
+        if crate::header::titlebar_visible(self, ctx) {
+            bounds.min.y += crate::header::TITLEBAR_HEIGHT;
+        }
         bounds
     }
 

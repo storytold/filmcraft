@@ -98,6 +98,7 @@ impl FilmcraftApp {
             quit_confirmed: false,
             fonts_ready: false,
             integrated_titlebar: false,
+            custom_titlebar: false,
             last_timeline_width: 1000.0,
             timeline_view_of: None,
             pending_timeline_drop: None,

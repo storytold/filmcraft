@@ -327,6 +327,9 @@ pub struct FilmcraftApp {
     pub quit_confirmed: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
+    /// The window has no OS title bar (Windows): the app draws its own top row with the menus and
+    /// the minimize / maximize / close buttons (`header::show_titlebar`); hidden in full screen.
+    pub custom_titlebar: bool,
     pub last_timeline_width: f32,
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).

@@ -12,6 +12,14 @@ use crate::theme::Tokens;
 
 /// Height of the header bar. With `integrated_titlebar` it sits in the macOS title-bar strip.
 pub const HEIGHT: f32 = 38.0;
+/// Height of the app-drawn title-bar row (menus left, window buttons right) used when
+/// `custom_titlebar` is set.
+pub const TITLEBAR_HEIGHT: f32 = 32.0;
+
+/// Is the app-drawn title-bar row showing? Only with `custom_titlebar`, and not in full screen.
+pub fn titlebar_visible(app: &FilmcraftApp, ctx: &egui::Context) -> bool {
+    app.custom_titlebar && !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
+}
 
 /// Draw the header bar; dragging starts a native window move and double-click toggles maximized.
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
@@ -60,7 +68,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let mut left_end = x;
     // In-window menus when there is no native menu bar.
-    if app.ui.show_menu_bar {
+    if app.ui.show_menu_bar && !titlebar_visible(app, ui.ctx()) {
         let menu_rect = Rect::from_min_max(pos2(x + 6.0, rect.min.y + 7.0), pos2(x + 520.0, rect.max.y - 7.0));
         let mut mu = ui.new_child(egui::UiBuilder::new().max_rect(menu_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
         mu.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
@@ -184,5 +192,78 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if area.response.clicked_elsewhere() && !(ws_resp.clicked() || wresp.clicked()) {
             ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
         }
+    }
+}
+
+/// The app-drawn title-bar row (Windows): the menus on the left, drag area in the middle and the
+/// minimize / maximize / close buttons on the right. Double-click toggles maximized.
+pub fn show_titlebar(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let p = ui.painter().clone();
+    p.rect_filled(rect, 0.0, t.header_bg);
+    let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+    let drag = ui.interact(rect, egui::Id::unique("titlebar-drag"), Sense::click_and_drag());
+    if drag.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    if drag.double_clicked() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+    }
+    // Window buttons, right to left: close, maximize / restore, minimize (46 pt wide, full height).
+    let mut rx = rect.max.x;
+    for (id, tip) in [("close", tl!("Close")), ("maximize", if maximized { tl!("Restore Down") } else { tl!("Maximize") }), ("minimize", tl!("Minimize"))] {
+        let r = Rect::from_min_max(pos2(rx - 46.0, rect.min.y), pos2(rx, rect.max.y));
+        rx -= 46.0;
+        let resp = ui.interact(r, egui::Id::unique(("titlebar", id)), Sense::click()).on_hover_text(tip);
+        app.auto.add(&format!("titlebar.{id}"), r, tip);
+        let close = id == "close";
+        if resp.hovered() {
+            p.rect_filled(r, 0.0, if close { Color32::from_rgb(196, 43, 28) } else { t.hover });
+        }
+        let col = if close && resp.hovered() {
+            Color32::WHITE
+        } else if resp.hovered() {
+            t.text
+        } else {
+            t.text_dim
+        };
+        let (c, h) = (r.center(), 5.0);
+        let stroke = Stroke::new(1.0, col);
+        match id {
+            "close" => {
+                p.line_segment([c + vec2(-h, -h), c + vec2(h, h)], stroke);
+                p.line_segment([c + vec2(-h, h), c + vec2(h, -h)], stroke);
+            }
+            "maximize" if maximized => {
+                p.rect_stroke(Rect::from_min_max(c + vec2(-h, -h + 2.0), c + vec2(h - 2.0, h)), 0.0, stroke, egui::StrokeKind::Middle);
+                p.line_segment([c + vec2(-h + 2.0, -h + 2.0), c + vec2(-h + 2.0, -h)], stroke);
+                p.line_segment([c + vec2(-h + 2.0, -h), c + vec2(h, -h)], stroke);
+                p.line_segment([c + vec2(h, -h), c + vec2(h, h - 2.0)], stroke);
+                p.line_segment([c + vec2(h, h - 2.0), c + vec2(h - 2.0, h - 2.0)], stroke);
+            }
+            "maximize" => {
+                p.rect_stroke(Rect::from_center_size(c, vec2(2.0 * h, 2.0 * h)), 0.0, stroke, egui::StrokeKind::Middle);
+            }
+            _ => {
+                p.line_segment([c + vec2(-h, 0.0), c + vec2(h, 0.0)], stroke);
+            }
+        }
+        if resp.clicked() {
+            let cmd = match id {
+                "close" => egui::ViewportCommand::Close,
+                "maximize" => egui::ViewportCommand::Maximized(!maximized),
+                _ => egui::ViewportCommand::Minimized(true),
+            };
+            ui.ctx().send_viewport_cmd(cmd);
+        }
+    }
+    // In-window menus on the left.
+    if app.ui.show_menu_bar {
+        let menu_rect = Rect::from_min_max(pos2(rect.min.x + 10.0, rect.min.y + 3.0), pos2((rx - 8.0).max(rect.min.x + 10.0), rect.max.y - 3.0));
+        let mut mu = ui.new_child(egui::UiBuilder::new().max_rect(menu_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        mu.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+        mu.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+        mu.style_mut().visuals.override_text_color = Some(t.text_dim);
+        crate::menus::menu_bar(app, &mut mu);
     }
 }
