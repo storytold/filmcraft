@@ -535,8 +535,22 @@ impl Out {
     }
 }
 
+/// Elements nested deeper than this are not descended into. Every other nestable-document
+/// walker in the repo is capped (AAF/OMF 32, store 200, comp 16, render 8); TTML was the one
+/// that walked a document of any depth. A file can nest a thousand `<div>`s, so the walk recursed
+/// a thousand times and the parser had no bound at all. (#2065)
+const MAX_NESTING: usize = 64;
+
 /// Collect a `<p>`'s (or `<span>`'s) text with `<i>`/`<b>`/`<u>` tags, collapsing whitespace.
 fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, fmt: Fmt, out: &mut Out) {
+    collect_at(n, styles, fmt, out, 0)
+}
+
+/// [`collect`], carrying the current nesting depth so it can stop at [`MAX_NESTING`].
+fn collect_at(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, fmt: Fmt, out: &mut Out, depth: usize) {
+    if depth > MAX_NESTING {
+        return;
+    }
     for c in n.children() {
         if c.is_text() {
             for ch in c.text().unwrap_or("").chars() {
@@ -566,12 +580,12 @@ fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, 
                     for t in &tags {
                         out.s.push_str(&format!("<{t}>"));
                     }
-                    collect(c, styles, f, out);
+                    collect_at(c, styles, f, out, depth + 1);
                     for t in tags.iter().rev() {
                         out.s.push_str(&format!("</{t}>"));
                     }
                 }
-                _ => collect(c, styles, fmt, out),
+                _ => collect_at(c, styles, fmt, out, depth + 1),
             }
         }
     }
@@ -660,12 +674,30 @@ fn times(n: roxmltree::Node, parent: Scope, tm: Timing, doc: &mut Document) -> T
 }
 
 fn walk(n: roxmltree::Node, parent: Scope, tm: &Timing, styles: &HashMap<String, Fmt>, speakers: &HashMap<String, String>, fmt: Fmt, doc: &mut Document) {
+    walk_at(n, parent, tm, styles, speakers, fmt, doc, 0)
+}
+
+/// [`walk`], carrying the current nesting depth so it can stop at [`MAX_NESTING`].
+fn walk_at(
+    n: roxmltree::Node,
+    parent: Scope,
+    tm: &Timing,
+    styles: &HashMap<String, Fmt>,
+    speakers: &HashMap<String, String>,
+    fmt: Fmt,
+    doc: &mut Document,
+    depth: usize,
+) {
+    if depth > MAX_NESTING {
+        doc.warnings.push(format!("TTML nested deeper than {MAX_NESTING} levels; the rest was skipped"));
+        return;
+    }
     for c in n.children().filter(|c| c.is_element()) {
         let f = style_of(c, styles, fmt);
         match c.tag_name().name() {
             "div" => {
                 let t = times(c, parent, *tm, doc);
-                walk(c, Scope { begin: t.begin.unwrap_or(parent.begin), end: t.end }, tm, styles, speakers, f, doc);
+                walk_at(c, Scope { begin: t.begin.unwrap_or(parent.begin), end: t.end }, tm, styles, speakers, f, doc, depth + 1);
             }
             "p" => {
                 let t = times(c, parent, *tm, doc);
@@ -748,6 +780,36 @@ mod tests {
             );
             assert!(crate::parse(xml.as_bytes(), crate::Format::Ttml).is_err(), "{params}");
         }
+    }
+
+    /// #2065: `walk` and `collect` took no depth parameter, so a document nested a thousand
+    /// levels deep was walked in full with no warning. Both now stop at `MAX_NESTING`.
+    #[test]
+    fn deep_nesting_is_bounded_and_warns() {
+        // A document nested past the cap is truncated rather than walked in full, and says so.
+        let deep = MAX_NESTING * 4;
+        let divs = "<div>".repeat(deep);
+        let closes = "</div>".repeat(deep);
+        let xml = format!(
+            r#"<tt xmlns="http://www.w3.org/ns/ttml"><body>{divs}<p begin="1s" end="2s">Hello</p>{closes}</body></tt>"#
+        );
+        let doc = crate::parse(xml.as_bytes(), crate::Format::Ttml).unwrap();
+        assert!(
+            doc.warnings.iter().any(|w| w.contains("nested deeper")),
+            "the cutoff is reported: {:?}",
+            doc.warnings
+        );
+        assert!(doc.cues.is_empty(), "the cue sits below the cap, so it is not reached: {:?}", doc.cues);
+
+        // Real captions nest a handful of levels, and those still import whole.
+        let divs = "<div>".repeat(4);
+        let closes = "</div>".repeat(4);
+        let xml = format!(
+            r#"<tt xmlns="http://www.w3.org/ns/ttml"><body>{divs}<p begin="1s" end="2s">Hello</p>{closes}</body></tt>"#
+        );
+        let doc = crate::parse(xml.as_bytes(), crate::Format::Ttml).unwrap();
+        assert_eq!(doc.cues.len(), 1, "nesting well under the cap still imports");
+        assert!(!doc.warnings.iter().any(|w| w.contains("nested deeper")), "{:?}", doc.warnings);
     }
 
     #[test]
