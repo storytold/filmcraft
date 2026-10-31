@@ -366,12 +366,23 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             app.ui.show_menu_bar = false;
         }
         if let Some((rx, ready, disabled)) = control {
+            // A listener that never came up is reported where a user or agent will see it:
+            // the status bar and `ui.inspect` → `control` (#3313).
+            if let Some(port) = control_port {
+                app.control_status =
+                    Some(filmcraft_ui_egui::ControlStatus { port, error: disabled.as_ref().map(control_server::DisabledWhy::reason) });
+            }
             app = if control_input_only { app.with_control_input_only(rx) } else { app.with_control(rx) };
-            // The token cause is shown in the app as a fully translated sentence (the English
-            // `reason()` stays for the log and the input-only error); a bind failure stays in the
-            // log for now — port-collision reporting is #3318's rework.
-            if let Some(control_server::DisabledWhy::Token) = &disabled {
-                app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
+            // Each cause is shown in the app as a fully translated sentence (the English
+            // `reason()` stays for the log and the input-only error).
+            match &disabled {
+                Some(control_server::DisabledWhy::Token) => {
+                    app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Token);
+                }
+                Some(control_server::DisabledWhy::Bind { port, error }) => {
+                    app = app.with_control_notice(filmcraft_ui_egui::ControlNotice::Bind { port: *port, error: error.clone() });
+                }
+                None => {}
             }
             // From here the app drains the queue on its first pass: stop rejecting requests.
             ready.store(true, Ordering::Relaxed);

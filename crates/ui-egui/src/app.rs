@@ -62,6 +62,7 @@ impl FilmcraftApp {
             thumb_used: HashMap::new(),
             control_rx: None,
             control_notice: None,
+            control_status: None,
             pending_panel_raise: None,
             control_input_only: false,
             native_window_focused: None,

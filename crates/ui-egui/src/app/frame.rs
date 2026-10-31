@@ -99,6 +99,10 @@ impl FilmcraftApp {
                         tl!("The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)")
                             .into()
                 }
+                crate::ControlNotice::Bind { port, error } => {
+                    self.ui.status =
+                        tlf!("The control server can't listen on 127.0.0.1:{port}: {error}", port = port, error = error).into()
+                }
             }
         }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
