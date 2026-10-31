@@ -126,6 +126,8 @@ fn marquee_clips(seq: &Sequence, layout: &Layout, r: Rect) -> Vec<ClipId> {
 fn drag_is_locked(session: &filmcraft_engine::Session, seq: &Sequence, drag: &Drag) -> bool {
     let clips = match drag {
         Drag::Move { clips, track_delta, .. } => return move_is_locked(seq, clips, *track_delta),
+        // an Option-trim edits this clip alone, so a linked partner on a locked track does not block it
+        Drag::Trim { clip, linked: false, .. } => return move_is_locked(seq, &[*clip], 0),
         Drag::Trim { clip, .. } | Drag::Stretch { clip, .. } | Drag::Remix { clip, .. } | Drag::Slip { clip, .. } | Drag::Slide { clip, .. } => vec![*clip],
         Drag::Roll { left, right, .. } => vec![*left, *right],
         Drag::Transition { id, .. } => return seq.all_tracks().any(|t| t.locked && t.transitions.iter().any(|tr| tr.id == *id)),
@@ -384,7 +386,8 @@ fn start_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response
                 let r = if mods.shift {
                     app.session.execute("timeline.razor", json!({"time": tt.0}))
                 } else {
-                    app.session.execute("timeline.razor", json!({"time": tt.0, "clip": clip.0}))
+                    // Option-click cuts the clicked clip alone, not its linked partners (#1945)
+                    app.session.execute("timeline.razor", json!({"time": tt.0, "clip": clip.0, "linked": !mods.alt}))
                 };
                 if let Err(e) = r {
                     app.ui.status = e.to_string();
@@ -1209,4 +1212,32 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     drop_targets(app, ui, seq, layout);
 
     app.auto.add("timeline.tracks", layout.content, "tracks");
+}
+
+#[cfg(test)]
+mod drag_lock_tests {
+    use super::*;
+
+    /// With the sound's track locked, an Option-trim of its picture (which leaves the sound alone)
+    /// is allowed; a linked trim, which would trim the sound, is not.
+    #[test]
+    fn an_unlinked_trim_ignores_a_locked_partner() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        let picture = q.video_tracks[0].items.iter().find(|c| c.link.is_some()).expect("the demo has a linked picture on V1").clone();
+        let sound_track = q.audio_tracks.iter().find(|t| t.items.iter().any(|a| a.link == picture.link)).expect("the demo picture's linked sound").id;
+        s.execute("timeline.setTrack", serde_json::json!({"track": sound_track.0, "locked": true})).unwrap();
+        let seq = s.active_sequence().unwrap().clone();
+        let trim = |linked| Drag::Trim {
+            clip: picture.id,
+            edge: filmcraft_edit::Edge::Out,
+            mode: filmcraft_edit::TrimMode::Regular,
+            delta: Tick::ZERO,
+            from: Tick::ZERO,
+            linked,
+        };
+        assert!(!drag_is_locked(&s, &seq, &trim(false)), "the picture alone is on an unlocked track");
+        assert!(drag_is_locked(&s, &seq, &trim(true)), "a linked trim would trim the locked sound");
+    }
 }
