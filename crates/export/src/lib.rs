@@ -13,6 +13,7 @@
 //! built-in presets.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+use std::cell::Cell;
 use std::io::Write;
 
 mod aac_out;
@@ -168,3 +169,79 @@ mod determinism_tests;
 
 #[cfg(test)]
 mod hdr_tests;
+
+thread_local! {
+    static EXPORT_ENCODE_SCOPE: Cell<u32> = const { Cell::new(0) };
+    #[cfg(test)]
+    static SEQUENTIAL_YUV: Cell<u32> = const { Cell::new(0) };
+}
+
+pub(crate) struct ExportEncodeScope;
+
+impl Drop for ExportEncodeScope {
+    fn drop(&mut self) {
+        EXPORT_ENCODE_SCOPE.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+/// The export overlap runs `encode` on the calling thread, which is not a Rayon
+/// worker, while a render job occupies the pool. Nested `par_chunks` from that
+/// thread waits for workers that are waiting for this scope (#1329).
+pub(crate) fn export_encode_scope() -> ExportEncodeScope {
+    EXPORT_ENCODE_SCOPE.with(|depth| depth.set(depth.get().saturating_add(1)));
+    ExportEncodeScope
+}
+
+pub(crate) fn avoid_nested_rayon() -> bool {
+    EXPORT_ENCODE_SCOPE.with(|depth| depth.get() > 0) || rayon::current_thread_index().is_some()
+}
+
+pub(crate) fn note_sequential_yuv() {
+    #[cfg(test)]
+    SEQUENTIAL_YUV.with(|hits| hits.set(hits.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+pub(crate) fn sequential_yuv_hits() -> u32 {
+    SEQUENTIAL_YUV.with(|hits| hits.get())
+}
+
+#[cfg(test)]
+mod yuv_pool_tests {
+    use super::{export_encode_scope, rgba_to_yuv420_8, sequential_yuv_hits};
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+    /// Encode runs on the export thread, which is not a pool worker, while the
+    /// overlap scope's render job holds the other workers. The conversion must
+    /// take the sequential walk there, and match the parallel result (#1329).
+    #[test]
+    fn conversion_inside_the_export_scope_matches_the_parallel_walk() {
+        for (w, h) in [(48usize, 20usize), (47, 21), (8, 1), (1, 8)] {
+            let rgba: Vec<u8> = (0..w * h * 4).map(|i| (i % 251) as u8).collect();
+            let (mut yp, mut up, mut vp) = (Vec::new(), Vec::new(), Vec::new());
+            let before = sequential_yuv_hits();
+            rgba_to_yuv420_8(&rgba, w, h, &mut yp, &mut up, &mut vp);
+            assert_eq!(sequential_yuv_hits(), before, "the plain call stays on the parallel walk");
+            let (y, u, v) = std::thread::scope(|scope| {
+                let handle = scope.spawn(|| {
+                    assert!(rayon::current_thread_index().is_none(), "the export thread is not a pool worker");
+                    let mut y = Vec::new();
+                    let mut u = Vec::new();
+                    let mut v = Vec::new();
+                    let hits = sequential_yuv_hits();
+                    rayon::in_place_scope(|s| {
+                        s.spawn(|_| {
+                            (0..4).into_par_iter().for_each(|_| std::thread::sleep(std::time::Duration::from_millis(5)));
+                        });
+                        let _guard = export_encode_scope();
+                        rgba_to_yuv420_8(&rgba, w, h, &mut y, &mut u, &mut v);
+                    });
+                    assert!(sequential_yuv_hits() > hits, "{w}x{h} did not take the sequential walk");
+                    (y, u, v)
+                });
+                handle.join().expect("export thread")
+            });
+            assert_eq!((y, u, v), (yp, up, vp), "{w}x{h}");
+        }
+    }
+}
