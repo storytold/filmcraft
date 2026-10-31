@@ -459,3 +459,42 @@ fn character_style_merge_preserves_default_calls_and_separate_clips() {
     }
     assert_eq!(s.history.undo.len(), n + 2, "distinct layers do not merge");
 }
+
+/// A user template's category: its own, else (when it has none or the default) the name of the
+/// subfolder it sits in (#3657).
+#[test]
+fn subfolder_name_is_the_category_of_a_user_template() {
+    let mut s = demo("gt-subfolder-cat");
+    let dir = filmcraft_engine_user_dir(&s);
+    let write = |rel: &str, category: &str, id: &str| {
+        let mut t = crate::graphic_templates::builtin_templates().remove(0);
+        t.id = id.into();
+        t.name = id.into();
+        t.category = category.into();
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, t.to_json()).unwrap();
+    };
+    write("Top.fcgt", "My Templates", "top-level");
+    write("Acme/Intro.fcgt", "My Templates", "acme-intro");
+    write("Acme/Outro.fcgt", "", "acme-outro");
+    write("Acme/Own.fcgt", "Lower Thirds", "acme-own");
+    write("Acme/deeper/Ignored.fcgt", "My Templates", "too-deep");
+    write(".hidden/Skipped.fcgt", "My Templates", "hidden");
+    let lib = crate::graphic_templates::library(&s);
+    let cat = |id: &str| lib.iter().find(|e| e.template.id == id).map(|e| e.template.category.clone());
+    assert_eq!(cat("top-level").as_deref(), Some("My Templates"));
+    assert_eq!(cat("acme-intro").as_deref(), Some("Acme"), "the folder is the category");
+    assert_eq!(cat("acme-outro").as_deref(), Some("Acme"));
+    assert_eq!(cat("acme-own").as_deref(), Some("Lower Thirds"), "an explicit category wins");
+    assert_eq!(cat("too-deep"), None, "only one folder level is read");
+    assert_eq!(cat("hidden"), None, "hidden folders are skipped");
+    let listed = s.execute("graphics.template.list", json!({"category": "Acme"})).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 2, "{listed}");
+    // it still applies by id
+    s.execute("graphics.template.apply", json!({"template": "acme-intro"})).unwrap();
+}
+
+fn filmcraft_engine_user_dir(s: &Session) -> std::path::PathBuf {
+    crate::graphic_templates::user_templates_dir(s).unwrap()
+}
