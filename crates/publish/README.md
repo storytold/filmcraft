@@ -40,15 +40,30 @@ are in [storytold/filmcraft#2626](https://github.com/storytold/filmcraft/issues/
   - `Control` reports progress and waits between attempts. Either one can cancel.
     `ThreadControl` sleeps in 100 ms steps and stops when a cancel flag is set.
 
-Error messages and `Debug` output never contain the access token or the session address, which
-authorizes the upload.
+- `oauth`: signing in with Google through
+  [OAuth 2.0 for installed apps](https://developers.google.com/identity/protocols/oauth2/native-app).
+  - `ClientConfig::from_google_json` reads the file Google Cloud downloads for a *Desktop app*
+    client. A Web application client, a non-Google client id, or endpoints that aren't Google's
+    are refused with a reason.
+  - `SignIn::start` (feature `net`) creates a random state and a PKCE verifier (RFC 7636, `S256`)
+    and listens on `127.0.0.1` on a free port. `SignIn::url` is the address to open in the
+    browser. Only the challenge goes there, never the verifier or the client secret.
+  - `Loopback::wait` waits for the browser's return, which it checks against the state. It
+    answers other requests (`/favicon.ico`) with 404 and stops on cancel or timeout. The page the
+    browser shows escapes everything that came from the request.
+  - `SignIn::exchange` trades the code for tokens, and `refresh` gets a new access token.
+    - A revoked or expired refresh token (`invalid_grant`) is `Unauthorized`: the user signs in
+      again.
+    - `Tokens::grants` tells whether the user left YouTube upload ticked on the consent page.
+
+Error messages and `Debug` output never contain tokens, the client secret, the PKCE verifier or
+the session address, which authorizes the upload.
 
 ## Not here yet
 
 These come next and use this crate:
-- signing in: the OAuth installed-app flow with PKCE and a loopback redirect, plus token refresh
 - token storage
-- the `publish.*` engine commands, with the upload as a job
+- the `publish.*` engine commands, with sign-in and upload as jobs
 - the Export page's *Publish to* section
 
 ## Tests
@@ -57,6 +72,17 @@ These come next and use this crate:
   - chunks, partial chunks, dropped connections, resume after a restart
   - `Retry-After`, backoff, giving up, stalls
   - every mapped error, hostile `Range` headers and response bodies, cancel
+- `src/oauth_tests.rs` covers:
+  - the RFC 7636 PKCE test vector
+  - client files, good and refused
+  - the browser address
+  - callbacks: wrong state, denied, malformed, hostile
+  - the token exchange and refresh form fields
+  - every token error, hostile token answers, percent-encoding
+- `tests/sign_in.rs` runs the whole sign-in on real sockets:
+  - A fake browser follows the address to the loopback listener.
+  - A fake token server checks the PKCE verifier against the challenge the browser carried.
+  - It also covers denial, an escaped hostile answer, cancel and timeout.
 - `tests/fake_server.rs` runs the real `UreqTransport` against a local fake upload server. The
   server cuts the connection in the middle of a chunk, answers `503 Retry-After: 1`, and a new
   uploader resumes from a saved session.

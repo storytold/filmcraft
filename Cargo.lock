@@ -2387,11 +2387,14 @@ dependencies = [
 name = "filmcraft-publish"
 version = "0.15.0"
 dependencies = [
+ "base64",
  "filmcraft-publish",
+ "getrandom 0.3.4",
  "rustls",
  "rustls-rustcrypto",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "ureq",
 ]

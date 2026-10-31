@@ -13,12 +13,16 @@ workspace = true
 default = []
 # The HTTPS transport (pure-Rust TLS: rustls + RustCrypto, OS certificate verification), the same
 # stack as filmcraft-speech's `download`. Off by default (and in wasm builds).
-net = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto"]
+net = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto", "dep:getrandom"]
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+base64 = "0.23"
+sha2 = "0.10"
+# PKCE verifiers and sign-in state come from the operating system's random source.
+getrandom = { version = "0.3", optional = true }
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"], optional = true }
 rustls = { version = "0.23", default-features = false, optional = true }
 rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }

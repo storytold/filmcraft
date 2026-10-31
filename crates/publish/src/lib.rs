@@ -6,23 +6,37 @@
 //! - [`youtube`]: YouTube Data API v3 uploads (`videos.insert`): the metadata checks YouTube applies,
 //!   the resumable session, and a chunked upload that resumes after a dropped connection, retries
 //!   server errors with exponential backoff and maps API errors to [`PublishError`].
+//! - [`oauth`]: signing in with Google (OAuth 2.0 for installed apps with PKCE and a loopback
+//!   redirect), the token exchange and refresh; (feature `net`) the loopback listener.
 //!
-//! Signing in (OAuth) and the engine commands build on this crate; see storytold/filmcraft#2626.
+//! The engine commands build on this crate; see storytold/filmcraft#2626.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod http;
+pub mod oauth;
+#[cfg(test)]
+mod oauth_tests;
+#[cfg(test)]
+mod test_support;
 pub mod youtube;
 #[cfg(test)]
 mod youtube_tests;
 
 use std::time::Duration;
 
-/// Why a publish step failed. Messages never contain access tokens or upload session addresses.
+/// Why a publish step failed. Messages never contain tokens, secrets or upload session addresses.
 #[derive(Debug, thiserror::Error)]
 pub enum PublishError {
     #[error("stopped")]
     Cancelled,
+    /// The OAuth client file or settings are unusable.
+    #[error("{0}")]
+    Config(String),
+    #[error("sign-in was cancelled in the browser")]
+    SignInDenied,
+    #[error("sign-in: {0}")]
+    SignIn(String),
     #[error("{0}")]
     InvalidMetadata(String),
     #[error("the file is empty")]

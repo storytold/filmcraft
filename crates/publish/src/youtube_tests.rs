@@ -1,66 +1,17 @@
 //! The upload protocol against scripted server replies (no network).
 
-use crate::http::{Method, Request, Response, Transport, TransportError};
+use crate::http::{Method, Response, TransportError};
+use crate::test_support::{Script, reply};
 use crate::youtube::{
     CHUNK_UNIT, MAX_CHUNK_SIZE, Privacy, UPLOAD_URL, UploadSession, UploadedVideo, Uploader, VideoMetadata, google_error, received_bytes, retry_after,
 };
 use crate::{Control, PublishError};
 use serde_json::json;
-use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::io::Cursor;
 use std::time::Duration;
 
 const SESSION: &str = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&upload_id=xyz";
 const TOKEN: &str = "ya29.test-token";
-
-/// One request as the server saw it.
-#[derive(Debug, Clone)]
-struct Seen {
-    method: Method,
-    url: String,
-    content_range: Option<String>,
-    authorization: Option<String>,
-    body: Vec<u8>,
-}
-
-/// Replies in order; every request is recorded.
-#[derive(Default)]
-struct Script {
-    replies: RefCell<VecDeque<Result<Response, TransportError>>>,
-    seen: RefCell<Vec<Seen>>,
-}
-
-impl Script {
-    fn new(replies: Vec<Result<Response, TransportError>>) -> Self {
-        Self { replies: RefCell::new(replies.into()), seen: RefCell::default() }
-    }
-
-    fn seen(&self) -> Vec<Seen> {
-        self.seen.borrow().clone()
-    }
-
-    fn ranges(&self) -> Vec<String> {
-        self.seen().into_iter().map(|s| s.content_range.unwrap_or_default()).collect()
-    }
-}
-
-impl Transport for Script {
-    fn send(&self, request: &Request<'_>) -> Result<Response, TransportError> {
-        self.seen.borrow_mut().push(Seen {
-            method: request.method,
-            url: request.url.into(),
-            content_range: request.header("content-range").map(str::to_string),
-            authorization: request.header("authorization").map(str::to_string),
-            body: request.body.to_vec(),
-        });
-        self.replies.borrow_mut().pop_front().unwrap_or_else(|| panic!("no reply scripted for request {}", self.seen.borrow().len()))
-    }
-}
-
-fn reply(status: u16, headers: &[(&str, &str)], body: &str) -> Result<Response, TransportError> {
-    Ok(Response { status, headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), body: body.as_bytes().to_vec() })
-}
 
 fn has(n: u64) -> Result<Response, TransportError> {
     reply(308, &[("Range", &format!("bytes=0-{}", n - 1))], "")
