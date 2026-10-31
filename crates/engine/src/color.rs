@@ -8,6 +8,11 @@
 //! Lumetri Presets (Effects panel): `lumetri.presets` lists them, `lumetri.applyPreset` adds a
 //! Lumetri Color configured as the preset to clips (one undo step), `lumetri.presetThumbnails`
 //! renders a folder's thumbnail grid (our Lumetri on the procedural preview picture) to a PNG.
+//!
+//! LUT folders: `.cube` / `.3dl` files under `FILMCRAFT_LUT_DIR` (a path list), `<exe dir>/LUTs`
+//! and `<data dir>/LUTs` are listed by `lut.folders` and offered in the Lumetri LUT menus grouped
+//! by subfolder; choosing one imports it into the project library (`lumetri.setInputLut {path}`),
+//! so the project stays self-contained.
 
 use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
 use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
@@ -56,6 +61,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         query("media.colorInfo", "Media Colour Info", r#"{"item":id}"#, color_info),
         spec("lut.import", "Import LUT…", &[], r#"{"path":str,"name":str?}"#, always, import),
         query("lut.list", "List LUTs", "{}", list),
+        query("lut.folders", "List LUT Folders", "{}", folders),
         spec("lut.remove", "Remove LUT", &[], r#"{"id":str}"#, always, remove),
         query("lut.export", "Export LUT", r#"{"lut":"lib:<id>"|"builtin:<id>","path":str,"format":"cube"|"3dl"?}"#, export),
         spec("lumetri.setInputLut", "Set Input LUT", &[], r#"{"clip":id?,"lut":"lib:<id>"|"builtin:<id>"|""?,"path":str?}"#, has_seq, |s, p| {
@@ -92,8 +98,18 @@ fn import_lut(s: &mut Session, path: &str, name: Option<&str>) -> Result<(String
     let lut = Lut::parse(&text, Some(fmt)).map_err(|e| bad("lut.import", format!("{path}: {e}")))?;
     let stem = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "LUT".into());
     let name = name.map(str::to_string).unwrap_or(stem);
-    // re-importing identical content reuses the entry
-    if let Some(l) = s.project.luts.iter().find(|l| *l.text == *text) {
+    // re-importing identical content reuses the entry, now from this path (so the LUT menus mark
+    // the folder file just picked)
+    if let Some(i) = s.project.luts.iter().position(|l| *l.text == *text) {
+        if s.project.luts.get(i).is_some_and(|l| l.source_path.as_deref() != Some(path)) {
+            s.edit("Import LUT", |pr, _| {
+                if let Some(l) = pr.luts.get_mut(i) {
+                    l.source_path = Some(path.to_string());
+                }
+                Ok(())
+            })?;
+        }
+        let l = s.project.luts.get(i).ok_or_else(|| bad("lut.import", "the LUT library changed"))?;
         return Ok((l.id.clone(), json!({"id": l.id, "ref": format!("lib:{}", l.id), "name": l.name, "reused": true})));
     }
     let info = json!({
@@ -119,6 +135,132 @@ fn import_lut(s: &mut Session, path: &str, name: Option<&str>) -> Result<(String
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("lut.import", "need `path`"))?.to_string();
     Ok(import_lut(s, &path, str_p(p, "name"))?.1)
+}
+
+/// A LUT file found in one of the [`lut_folders`]: `group` is its folder relative to the LUT
+/// folder (the folder's own name at the top level), `name` the file stem.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct FolderLut {
+    pub group: String,
+    pub name: String,
+    pub path: String,
+}
+
+/// At most this many files are listed, this deep: a LUT folder pointed at a whole drive must not
+/// stall the menu.
+const MAX_FOLDER_LUTS: usize = 2000;
+const MAX_FOLDER_DEPTH: usize = 4;
+/// At most this many directory entries are read under each LUT folder (LUTs or not, at every
+/// depth), so a folder of many other files is not read and sorted in full either.
+const MAX_FOLDER_ENTRIES: usize = 20_000;
+
+/// The LUT folders, in menu order: every entry of `FILMCRAFT_LUT_DIR` (a `PATH`-style list), then
+/// `LUTs` beside the executable, then `LUTs` in the data directory. Missing folders are fine.
+pub fn lut_folders() -> Vec<std::path::PathBuf> {
+    let mut v: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(list) = std::env::var_os("FILMCRAFT_LUT_DIR") {
+        v.extend(std::env::split_paths(&list).filter(|p| !p.as_os_str().is_empty()));
+    }
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("LUTs"))) {
+        v.push(dir);
+    }
+    if let Some(d) = crate::autosave::default_data_dir() {
+        v.push(d.join("LUTs"));
+    }
+    // a folder named twice is scanned once, at its first place
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|p| seen.insert(p.clone()));
+    v
+}
+
+/// The LUT files under `folders`, sorted by group then name (case-insensitively), each file once
+/// (a folder can also sit inside another). Hidden entries (a leading `.`) are skipped; unreadable
+/// folders are empty.
+pub fn scan_lut_folders(folders: &[std::path::PathBuf]) -> Vec<FolderLut> {
+    scan_lut_folders_within(folders, MAX_FOLDER_ENTRIES, MAX_FOLDER_LUTS)
+}
+
+/// [`scan_lut_folders`] reading at most `entries` directory entries under each folder and listing
+/// at most `luts` files.
+pub(crate) fn scan_lut_folders_within(folders: &[std::path::PathBuf], entries: usize, luts: usize) -> Vec<FolderLut> {
+    let mut w = LutWalk { budget: 0, max_luts: luts, out: Vec::new(), seen: std::collections::HashSet::new() };
+    for root in folders {
+        w.budget = entries;
+        walk_lut_folder(root, root, 0, &mut w);
+    }
+    let mut out = w.out;
+    out.sort_by_cached_key(|l| (l.group.to_lowercase(), l.name.to_lowercase(), l.path.clone()));
+    out
+}
+
+/// A LUT folder scan: `budget` is the directory entries still to read under the current folder,
+/// `seen` the files listed so far (a file reached from two folders keeps its first listing and
+/// counts once toward `max_luts`).
+struct LutWalk {
+    budget: usize,
+    max_luts: usize,
+    out: Vec<FolderLut>,
+    seen: std::collections::HashSet<std::path::PathBuf>,
+}
+
+fn walk_lut_folder(root: &std::path::Path, dir: &std::path::Path, depth: usize, w: &mut LutWalk) {
+    if depth > MAX_FOLDER_DEPTH || w.out.len() >= w.max_luts || w.budget == 0 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    // unreadable entries count too, so the read stops after `budget` entries whatever they are
+    let mut read = 0usize;
+    let mut entries: Vec<_> = rd.take(w.budget).inspect(|_| read = read.saturating_add(1)).flatten().collect();
+    w.budget = w.budget.saturating_sub(read);
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        if w.out.len() >= w.max_luts {
+            return;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = e.path();
+        if path.is_dir() {
+            walk_lut_folder(root, &path, depth.saturating_add(1), w);
+        } else if LutFormat::from_path(&name).is_some() && w.seen.insert(path.clone()) {
+            let group = match path.parent().and_then(|p| p.strip_prefix(root).ok()).filter(|r| !r.as_os_str().is_empty()) {
+                Some(rel) => rel.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect::<Vec<_>>().join(" / "),
+                None => root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "LUTs".into()),
+            };
+            let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or(name);
+            w.out.push(FolderLut { group, name: stem, path: path.to_string_lossy().to_string() });
+        }
+    }
+}
+
+/// The LUT folders' contents for the menus, rescanned at most every few seconds (the menu asks
+/// every frame while open; a folder of a few thousand files is a noticeable read).
+pub fn folder_luts() -> std::sync::Arc<Vec<FolderLut>> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    use std::time::Duration;
+    use web_time::Instant;
+    static CACHE: OnceLock<Mutex<Option<(Instant, Arc<Vec<FolderLut>>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut slot = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((at, luts)) = slot.as_ref()
+        && at.elapsed() < Duration::from_secs(3)
+    {
+        return luts.clone();
+    }
+    let luts = Arc::new(scan_lut_folders(&lut_folders()));
+    *slot = Some((Instant::now(), luts.clone()));
+    luts
+}
+
+fn folders(_: &mut Session, _: &Value) -> Result<Value> {
+    let folders = lut_folders();
+    let luts = scan_lut_folders(&folders);
+    Ok(json!({
+        "folders": folders.iter().map(|f| json!({"path": f.to_string_lossy(), "exists": f.is_dir()})).collect::<Vec<_>>(),
+        "luts": luts,
+    }))
 }
 
 fn list(s: &mut Session, _: &Value) -> Result<Value> {
@@ -167,23 +309,31 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
 pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(ClipId, usize)> {
+    let clip = lumetri_target(s, p, cmd)?;
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
-    let video = |c: &ClipId| seq.find_item(*c).is_some_and(|(t, _)| seq.track(t).is_some_and(|t| t.kind == TrackKind::Video));
     let has = |c: &ClipId| seq.find_item(*c).is_some_and(|(_, it)| it.effects.iter().any(|e| e.effect == "lumetri"));
-    let clip = match clip_p(p, "clip") {
-        Some(c) if video(&c) => c,
-        Some(_) => return Err(bad(cmd, "not a video clip")),
-        None => {
-            let sel: Vec<ClipId> = s.state.selection.iter().copied().filter(video).collect();
-            sel.iter().copied().find(has).or(sel.first().copied()).ok_or_else(|| bad(cmd, "select a video clip"))?
-        }
-    };
     if !has(&clip) {
         s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}))?;
     }
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let idx = seq.find_item(clip).and_then(|(_, it)| it.effects.iter().position(|e| e.effect == "lumetri")).ok_or_else(|| bad(cmd, "no Lumetri"))?;
     Ok((clip, idx))
+}
+
+/// The video clip [`lumetri_clip`] works on (`clip`, else the selected video clip with a Lumetri,
+/// else the first selected one), without changing anything.
+fn lumetri_target(s: &Session, p: &Value, cmd: &str) -> Result<ClipId> {
+    let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
+    let video = |c: &ClipId| seq.find_item(*c).is_some_and(|(t, _)| seq.track(t).is_some_and(|t| t.kind == TrackKind::Video));
+    let has = |c: &ClipId| seq.find_item(*c).is_some_and(|(_, it)| it.effects.iter().any(|e| e.effect == "lumetri"));
+    match clip_p(p, "clip") {
+        Some(c) if video(&c) => Ok(c),
+        Some(_) => Err(bad(cmd, "not a video clip")),
+        None => {
+            let sel: Vec<ClipId> = s.state.selection.iter().copied().filter(video).collect();
+            sel.iter().copied().find(has).or(sel.first().copied()).ok_or_else(|| bad(cmd, "select a video clip"))
+        }
+    }
 }
 
 /// Set a Lumetri parameter (inserting it when an older project's instance lacks it).
@@ -200,6 +350,8 @@ pub(crate) fn set_lumetri_param(s: &mut Session, clip: ClipId, idx: usize, param
 
 fn set_lut(s: &mut Session, p: &Value, param: &str) -> Result<Value> {
     let cmd = if param == "input_lut" { "lumetri.setInputLut" } else { "lumetri.setLook" };
+    // the target first: a bad `clip` or no selection must not import the path
+    let target = lumetri_target(s, p, cmd)?;
     let r = match (str_p(p, "path"), str_p(p, "lut")) {
         (Some(path), _) => {
             let path = path.to_string();
@@ -211,7 +363,7 @@ fn set_lut(s: &mut Session, p: &Value, param: &str) -> Result<Value> {
     if !r.is_empty() && filmcraft_render::luts::resolve(Some(&s.project), &r).is_none() {
         return Err(bad(cmd, format!("unknown LUT `{r}`")));
     }
-    let (clip, idx) = lumetri_clip(s, p, cmd)?;
+    let (clip, idx) = lumetri_clip(s, &json!({"clip": target.0}), cmd)?;
     set_lumetri_param(s, clip, idx, param, ParamValue::Text(r.clone()), if param == "input_lut" { "Input LUT" } else { "Creative Look" })?;
     Ok(json!({"clip": clip.0, "lut": r, "name": filmcraft_render::luts::label(Some(&s.project), &r)}))
 }

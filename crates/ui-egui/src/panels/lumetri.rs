@@ -290,7 +290,8 @@ fn open_section(
     open
 }
 
-/// LUT menu: None, built-ins, the project's LUT library, Browse… (file dialog → `lut.import`).
+/// LUT menu: None, built-ins, the project's LUT library, the LUT folders (`lut.folders`, grouped
+/// by subfolder; a pick imports the file into the library), Browse… (file dialog → `lut.import`).
 fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, param: &str, label: &str, input: bool, out: &mut Vec<(&'static str, Value)>) {
     let t = app.tokens;
     let cur = match e.param(param).map(|p| &p.value) {
@@ -318,6 +319,28 @@ fn lut_combo(ui: &mut egui::Ui, app: &mut FilmcraftApp, e: &EffectInstance, para
                 for (r, name) in &entries {
                     if ui.selectable_label(*r == cur, name).clicked() && *r != cur {
                         out.push((cmd, json!({"lut": r})));
+                    }
+                }
+                let folder = filmcraft_engine::color::folder_luts();
+                if !folder.is_empty() {
+                    // The current LUT came from a folder file when the library entry it refers
+                    // to was imported from that path.
+                    let cur_source = cur
+                        .strip_prefix("lib:")
+                        .and_then(|id| app.session.project.luts.iter().find(|l| l.id == id))
+                        .and_then(|l| l.source_path.as_deref())
+                        .map(|p| p.replace('\\', "/"));
+                    let mut group: Option<&str> = None;
+                    for l in folder.iter() {
+                        if group != Some(l.group.as_str()) {
+                            ui.separator();
+                            ui.label(egui::RichText::new(&l.group).color(t.text_dim).small());
+                            group = Some(l.group.as_str());
+                        }
+                        let selected = cur_source.as_deref() == Some(l.path.replace('\\', "/").as_str());
+                        if ui.selectable_label(selected, &l.name).clicked() && !selected {
+                            out.push((cmd, json!({"path": l.path})));
+                        }
                     }
                 }
                 ui.separator();
