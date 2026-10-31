@@ -498,6 +498,7 @@ pub type vaEndPicture = unsafe extern "C" fn(dpy: VADisplay, context: VAContextI
 pub type vaSyncSurface = unsafe extern "C" fn(dpy: VADisplay, render_target: VASurfaceID) -> VAStatus;
 pub type vaCreateImage = unsafe extern "C" fn(dpy: VADisplay, format: *mut VAImageFormat, width: c_int, height: c_int, image: *mut VAImage) -> VAStatus;
 pub type vaDestroyImage = unsafe extern "C" fn(dpy: VADisplay, image: VAImageID) -> VAStatus;
+pub type vaDeriveImage = unsafe extern "C" fn(dpy: VADisplay, surface: VASurfaceID, image: *mut VAImage) -> VAStatus;
 pub type vaGetImage =
     unsafe extern "C" fn(dpy: VADisplay, surface: VASurfaceID, x: c_int, y: c_int, width: c_uint, height: c_uint, image: VAImageID) -> VAStatus;
 pub type vaPutImage = unsafe extern "C" fn(
@@ -517,3 +518,54 @@ pub type vaMapBuffer = unsafe extern "C" fn(dpy: VADisplay, buf_id: VABufferID, 
 pub type vaUnmapBuffer = unsafe extern "C" fn(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
 /// `libva-drm.so.2`: the display of a DRM device (render node) file descriptor.
 pub type vaGetDisplayDRM = unsafe extern "C" fn(fd: c_int) -> VADisplay;
+
+// ---- DRM PRIME 2 surface export (va_drmcommon.h, va.h): the decoded picture as DMABUF objects,
+/// which a GPU importer (`VK_EXT_external_memory_dma_buf`) can take without a readback.
+///
+/// `VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2`: export a surface's underlying DMABUF objects.
+pub const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2: c_uint = 0x4000_0000;
+/// `VA_EXPORT_SURFACE_READ_ONLY`: the exported objects are read (`READ_WRITE` when we may write).
+pub const VA_EXPORT_SURFACE_READ_ONLY: c_uint = 0x0001;
+/// `VA_EXPORT_SURFACE_READ_WRITE`: the decoder wrote them, the importer only reads.
+pub const VA_EXPORT_SURFACE_READ_WRITE: c_uint = 0x0003;
+/// `VA_EXPORT_SURFACE_SEPARATE_LAYERS`: one layer per plane (NV12: two, P010: two).
+pub const VA_EXPORT_SURFACE_SEPARATE_LAYERS: c_uint = 0x0004;
+
+/// One DMABUF object of an exported surface: a file descriptor the caller owns (libva does not
+/// close it), its size and the DRM format modifier the driver decoded with.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VADRMPRIMEObject {
+    pub fd: c_int,
+    pub size: u32,
+    pub drm_format_modifier: u64,
+}
+
+/// One layer of an exported surface: its DRM format and, per plane, which object holds it, the
+/// offset inside that object and the pitch in bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VADRMPRIMESurfaceLayer {
+    pub drm_format: u32,
+    pub num_planes: u32,
+    pub object_index: [u32; 4],
+    pub offset: [u32; 4],
+    pub pitch: [u32; 4],
+}
+
+/// `VADRMPRIMESurfaceDescriptor` (va_drmcommon.h): what `vaExportSurfaceHandle` fills for a
+/// surface, up to four objects and four layers.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct VADRMPRIMESurfaceDescriptor {
+    /// Pixel format fourcc of the whole surface (`VA_FOURCC_*`).
+    pub fourcc: u32,
+    pub width: u32,
+    pub height: u32,
+    pub num_objects: u32,
+    pub objects: [VADRMPRIMEObject; 4],
+    pub num_layers: u32,
+    pub layers: [VADRMPRIMESurfaceLayer; 4],
+}
+pub type vaExportSurfaceHandle =
+    unsafe extern "C" fn(dpy: VADisplay, surface: VASurfaceID, mem_type: c_uint, flags: c_uint, descriptor: *mut VADRMPRIMESurfaceDescriptor) -> VAStatus;

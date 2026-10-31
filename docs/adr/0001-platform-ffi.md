@@ -157,3 +157,14 @@ VA-API's. The rules above hold: `libnvcuvid.so.1` and `libcuda.so.1` are loaded 
 the one `nvenc::device` already retains for encoding. Unlike VA-API, NVDEC parses the stream
 itself; its callbacks run inside our parse call and never unwind into C (they record the first
 error and return 0, and the decoder then fails over to software like any other backend).
+
+## Addendum (2026-10-24): VA-API surface export as DMABUF (Linux)
+
+The first half of zero-copy playback on Linux adds no `unsafe` module: `vaapi::va` gained
+`Display::export_surface` (`vaExportSurfaceHandle`, DRM PRIME 2). The declarations are transcribed
+from libva's MIT-licensed `va.h` / `va_drmcommon.h` and checked in `vaapi/abi_tests.rs`, as before.
+The driver hands over file descriptors; every one is owned (`OwnedFd`) before anything else is
+checked, so an error closes them all and none leaks. The driver's counts are clamped to the arrays
+and every plane's object index is checked. The public result (`SurfaceDmabuf`) is plain data and
+owned descriptors, no raw pointers. Nothing imports it yet, so the readback stays the only path and
+the fallback guarantee is unchanged.
