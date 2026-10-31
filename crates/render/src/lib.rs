@@ -61,6 +61,33 @@ impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {
 /// has one: the editor refuses the edit).
 pub const MAX_NEST_DEPTH: u32 = 8;
 
+/// How many nested sequence pictures one frame may draw, all levels together. A sequence can
+/// hold the next one on several tracks, so a small project file could otherwise ask for an
+/// exponential number of renders per frame; past the budget a nest draws nothing, like one past
+/// [`MAX_NEST_DEPTH`].
+pub const MAX_NEST_RENDERS: usize = 4096;
+
+thread_local! {
+    /// (inside a frame of the outermost sequence, nested pictures drawn so far)
+    static NEST_RENDERS: std::cell::Cell<(bool, usize)> = const { std::cell::Cell::new((false, 0)) };
+}
+
+/// Starts the nest budget of one frame of the outermost sequence and ends it when dropped.
+struct NestFrame;
+
+impl NestFrame {
+    fn begin() -> NestFrame {
+        NEST_RENDERS.with(|c| c.set((true, 0)));
+        NestFrame
+    }
+}
+
+impl Drop for NestFrame {
+    fn drop(&mut self) {
+        NEST_RENDERS.with(|c| c.set((false, 0)));
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct RenderOptions {
     /// Output scale relative to the sequence frame size (1.0 = full, 0.5 = ½ resolution…).
@@ -226,6 +253,7 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
 fn seq_canvas(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider, only: Option<usize>) -> Canvas {
     let (w, h) = output_size(seq, opts.scale);
     let mut canvas = Canvas::new(w, h);
+    let _frame = (opts.depth == 0).then(NestFrame::begin);
     if opts.depth > MAX_NEST_DEPTH {
         return canvas;
     }
@@ -688,6 +716,17 @@ pub(crate) fn base_layer(
             media_image(project, seq, item, t, MediaFrame { src: &src, frame: &frame, n }, want)
         }
         ItemKind::Sequence(nested) => {
+            // a single clip rendered on its own (Apply Match) starts its own budget
+            let used = NEST_RENDERS.with(|c| {
+                let (frame, n) = c.get();
+                let n = if frame || opts.depth > 0 { n + 1 } else { 1 };
+                c.set((frame, n));
+                n
+            });
+            if used > MAX_NEST_RENDERS {
+                let (nw, nh) = output_size(nested, want);
+                return Some(Image::new(nw, nh));
+            }
             let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false, working_output: true };
             match item.multicam_angle(nested) {
                 // a multi-camera clip shows its angle's track only (nothing for an audio-only angle)

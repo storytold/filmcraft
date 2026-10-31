@@ -360,3 +360,46 @@ fn a_nest_that_is_not_plain_is_still_drawn_right() {
         assert!(w < 0.01, "{what}: plan and reference differ by {w}");
     }
 }
+
+#[test]
+fn a_nest_fanned_out_on_every_level_stops_at_the_render_budget() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Count<'a>(&'a SourceMap, AtomicUsize);
+    impl SourceProvider for Count<'_> {
+        fn source(&self, item: ItemId) -> Option<SharedSource> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.source(item)
+        }
+    }
+    // S0 holds S1 on k tracks, S1 holds S2 on k tracks … S8 holds a matte: k^8 pictures of S8
+    // for one frame of S0, from a project that grows only linearly with k
+    let build = |k: usize| {
+        let mut r = Rig::new();
+        let red = r.matte(RED, 16, 16);
+        let mut inner = r.seq("S8", 16, 16, FrameRate::FPS_24);
+        r.put(inner, red, 48);
+        for i in (0..8).rev() {
+            let s =
+                r.p.new_sequence(&format!("S{i}"), SequenceSettings { width: 16, height: 16, frame_rate: FrameRate::FPS_24, ..Default::default() }, k, 1, None);
+            for t in 0..k {
+                let ti =
+                    r.p.make_track_item(inner, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(48)), FrameRate::FPS_24)
+                        .unwrap();
+                r.p.sequence_mut(s).unwrap().video_tracks[t].items.push(ti);
+            }
+            inner = s;
+        }
+        (r, inner)
+    };
+    // a modest fan-out is drawn in full
+    let (r, top) = build(2);
+    let c = Count(&r.map, AtomicUsize::new(0));
+    let img = render_sequence(&r.p, top, Tick(1000), RenderOptions::default(), &c);
+    assert_eq!(c.1.load(Ordering::Relaxed), 1 << 8);
+    assert!(close(img.get(8, 8), RED));
+    // a wide one stops at the budget instead of asking for 4^8 = 65,536 pictures
+    let (r, top) = build(4);
+    let c = Count(&r.map, AtomicUsize::new(0));
+    render_sequence(&r.p, top, Tick(1000), RenderOptions::default(), &c);
+    assert!(c.1.load(Ordering::Relaxed) <= MAX_NEST_RENDERS, "{} sources read", c.1.load(Ordering::Relaxed));
+}
