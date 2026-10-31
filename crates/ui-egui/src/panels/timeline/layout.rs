@@ -1,4 +1,4 @@
-use super::*;
+use super::{DIVIDER_H, FilmcraftApp, MASTER_H, Rect, Sequence, Tick, TimelineView, TrackId, TrackKind, pos2};
 
 /// Geometry of one visible track row.
 #[derive(Clone, Debug)]

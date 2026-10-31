@@ -215,7 +215,7 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(tl!("Preset:")).size(13.0).color(t.text_dim));
         let shown = if modified { tlf!("{active} (modified)", active) } else { active.clone() };
-        let r = egui::ComboBox::from_id_salt("shortcuts-preset").width(280.0).selected_text(shown).show_ui(ui, |ui| {
+        let r = craft_ui::ComboBox::from_id_salt("shortcuts-preset").width(280.0).selected_text(shown).show_ui(ui, |ui| {
             for name in builtin.iter().chain(custom.iter()) {
                 let r = ui.selectable_label(*name == active && !modified, name);
                 app.auto.add(&format!("shortcuts.preset.{name}"), r.rect, name);
@@ -283,7 +283,7 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(tl!("Commands:")).size(13.0).color(t.text_dim));
         let cur = app.shortcut_editor.context.clone();
-        let r = egui::ComboBox::from_id_salt("shortcuts-context")
+        let r = craft_ui::ComboBox::from_id_salt("shortcuts-context")
             .width(280.0)
             .selected_text(crate::i18n::t(if cur.is_empty() { APPLICATION } else { &cur }))
             .show_ui(ui, |ui| {

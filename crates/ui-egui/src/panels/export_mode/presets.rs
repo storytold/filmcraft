@@ -1,6 +1,6 @@
 use super::quick::list_row;
 use super::settings::check;
-use super::*;
+use super::{Align2, Color32, FileDialog, FilmcraftApp, Rect, Reg, Sense, Value, apply_preset, json, pos2, preset_key, settings_json, vec2};
 
 // ---------------------------------------------------------------------------------------------
 // Preset Manager

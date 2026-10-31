@@ -16,6 +16,10 @@ use filmcraft_time::Tick;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// Smallest full-size, opaque 8-bit Y'CbCr conversion that tabulates R' and B' per code pair
+/// (two tables of 65 536 values): below it the tables cost more than they save.
+const YUV8_PAIR_TABLE_MIN_PIXELS: usize = 1 << 18;
+
 /// Chroma subsampling of planar Y'CbCr.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Chroma {
@@ -410,6 +414,40 @@ impl VideoFrame {
                 let kg = 1.0 - kr - kb;
                 let (cr_r, cb_b) = (2.0 * (1.0 - kr), 2.0 * (1.0 - kb));
                 let (cr_g, cb_g) = (cr_r * kr / kg, cb_b * kb / kg);
+                let ch = h.div_ceil(1 << sy);
+                let fits = planes[0].len() >= w * h && planes[1].len() >= cw * ch && planes[2].len() >= cw * ch;
+                if n == 1 && alpha.is_none() && fits && r.w * r.h >= YUV8_PAIR_TABLE_MIN_PIXELS {
+                    // Full size and opaque (decoded video): R' depends on (Y', Cr) only and B' on
+                    // (Y', Cb), so their decoded values are tabulated once for all 65 536 code
+                    // pairs, with the very expressions the per-pixel loop below evaluates; G' is
+                    // decoded per pixel. Each value is the loop's `(0 + q * 1) * inv` exactly.
+                    let pair = |f: &(dyn Fn(f32, f32) -> f32 + Sync)| -> Vec<f32> {
+                        (0..1usize << 16).into_par_iter().map(|i| f(ytab[i >> 8], ctab[i & 255])).collect()
+                    };
+                    let rt = pair(&|yy, v| (0.0 + q(yy + cr_r * v) * 1.0) * inv);
+                    let bt = pair(&|yy, u| (0.0 + q(yy + cb_b * u) * 1.0) * inv);
+                    let opaque = (0.0f32 + 1.0) * inv;
+                    out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
+                        let y = r.y + ry;
+                        let cy = y >> sy;
+                        let (Some(ys), Some(us), Some(vs)) =
+                            (planes[0].get(y * w + r.x..y * w + r.x + r.w), planes[1].get(cy * cw..(cy + 1) * cw), planes[2].get(cy * cw..(cy + 1) * cw))
+                        else {
+                            row.fill(0.0);
+                            return;
+                        };
+                        for (rx, (o, &yc)) in row.as_chunks_mut::<4>().0.iter_mut().zip(ys).enumerate() {
+                            let cx = (r.x + rx) >> sx;
+                            let (yc, uc, vc) = (usize::from(yc), us.get(cx).copied().map_or(0, usize::from), vs.get(cx).copied().map_or(0, usize::from));
+                            let (yy, u, v) = (ytab[yc], ctab[uc], ctab[vc]);
+                            o[0] = rt[yc << 8 | vc];
+                            o[1] = (0.0 + q(yy - cr_g * v - cb_g * u) * 1.0) * inv;
+                            o[2] = bt[yc << 8 | uc];
+                            o[3] = opaque;
+                        }
+                    });
+                    return;
+                }
                 out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
                     let oy = r.y + ry;
                     for rx in 0..r.w {

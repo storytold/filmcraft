@@ -1,4 +1,8 @@
-use super::*;
+use super::{FilmcraftApp, menus};
+#[cfg(test)]
+use filmcraft_engine::Session;
+#[cfg(test)]
+use serde_json::json;
 
 impl FilmcraftApp {
     // ---------------------------------------------------------------- input

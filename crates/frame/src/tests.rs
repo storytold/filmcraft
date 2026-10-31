@@ -355,3 +355,46 @@ fn alpha_region_is_the_box_around_what_is_not_transparent() {
     };
     assert_eq!(short.alpha_region(1), None);
 }
+
+#[test]
+fn full_size_yuv8_tables_give_the_per_pixel_values_bit_for_bit() {
+    // 640x480 takes the per-code-pair tables; single rows (below the size that builds them) take the
+    // per-pixel loop: every value must match to the bit, for each subsampling, range, matrix and curve.
+    let (w, h) = (640usize, 480usize);
+    let mut seed = 0x2545_f491u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        (seed >> 24) as u8
+    };
+    let curve = filmcraft_color::DecodeTable::new(0.0, 1.0, 4096, |v| v.max(0.0).powf(2.4));
+    for chroma in [Chroma::C420, Chroma::C422, Chroma::C444] {
+        let (sx, sy) = chroma.shifts();
+        let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+        let y: Vec<u8> = (0..w * h).map(|_| next()).collect();
+        let u: Vec<u8> = (0..cw * ch).map(|_| next()).collect();
+        let v: Vec<u8> = (0..cw * ch).map(|_| next()).collect();
+        for range in [Range::Limited, Range::Full] {
+            for matrix in [Matrix::Bt601, Matrix::Bt709, Matrix::Bt2020Ncl] {
+                let f = VideoFrame {
+                    width: w as u32,
+                    height: h as u32,
+                    data: PixelData::Yuv8 { planes: [Arc::new(y.clone()), Arc::new(u.clone()), Arc::new(v.clone())], chroma, alpha: None },
+                    color: ColorInfo { matrix, range, ..ColorInfo::REC709 },
+                    par: (1, 1),
+                    pts: Tick::ZERO,
+                };
+                for decode in [None, Some(&curve)] {
+                    let (_, _, full) = f.to_linear_f32_decimated_with(1, decode);
+                    for row in [0, 1, 2, 239, 478, 479] {
+                        let (_, px) = f.to_linear_f32_region(1, decode, Region { x: 0, y: row, w, h: 1 });
+                        let want: Vec<u32> = px.iter().map(|x| x.to_bits()).collect();
+                        let got: Vec<u32> = full[row * w * 4..(row + 1) * w * 4].iter().map(|x| x.to_bits()).collect();
+                        assert!(want == got, "{chroma:?} {range:?} {matrix:?} decode {} row {row}", decode.is_some());
+                    }
+                }
+            }
+        }
+    }
+}

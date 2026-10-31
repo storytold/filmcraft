@@ -119,7 +119,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, space: Option<Colo
     let sr = Rect::from_min_size(pos2(r.max.x - scale_w - 6.0, r.min.y + 4.0), vec2(scale_w, 22.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sr));
     let mut scale = scale0;
-    let cb = egui::ComboBox::from_id_salt("scopes-scale").selected_text(crate::i18n::t(scale.label())).width(scale_w - 8.0).show_ui(&mut child, |ui| {
+    let cb = craft_ui::ComboBox::from_id_salt("scopes-scale").selected_text(crate::i18n::t(scale.label())).width(scale_w - 8.0).show_ui(&mut child, |ui| {
         for s in Scale::ALL {
             let r = ui.selectable_value(&mut scale, s, crate::i18n::t(s.label()));
             app.auto.add(&format!("scopes.menu.scale.{}", s.label().replace(' ', "")), r.rect, s.label());

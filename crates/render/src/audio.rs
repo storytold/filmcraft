@@ -81,28 +81,34 @@ pub fn track_input_live(
     sources: &dyn SourceProvider,
     ovs: &HashMap<(TrackId, String), Override>,
 ) -> AudioBuffer {
-    track_input_at(project, track, start, frames, sr, sources, ovs, 0)
+    track_input_at(project, track, Window { start, frames, sr }, sources, ovs, 0)
+}
+
+/// A run of `frames` samples starting at sample `start`, counted at `sr` samples per second.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Window {
+    pub start: i64,
+    pub frames: usize,
+    pub sr: u32,
 }
 
 /// [`track_input_live`] for a track `depth` nested sequences down from the one being mixed.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn track_input_at(
     project: &Project,
     track: &Track,
-    start: i64,
-    frames: usize,
-    sr: u32,
+    win: Window,
     sources: &dyn SourceProvider,
     ovs: &HashMap<(TrackId, String), Override>,
     depth: u32,
 ) -> AudioBuffer {
+    let Window { start, frames, sr } = win;
     let w = crate::mixer::width_of(track.channels);
     let live =
         ClipLive { vol: ovs.get(&(track.id, CLIP_LANE_VOLUME.to_string())).copied(), pan: ovs.get(&(track.id, CLIP_LANE_PAN.to_string())).copied(), depth };
     let range = TimeRange::from_bounds(Tick::from_units(start, sr as i64), Tick::from_units(start + frames as i64, sr as i64));
     let mut tbuf = AudioBuffer::silence(sr, w, frames);
     for item in track.items.iter().filter(|i| i.enabled && i.range().overlaps(&range)) {
-        mix_item(project, item, start, frames, sr, sources, &mut tbuf, 1.0, &live);
+        mix_item(project, item, win, sources, &mut tbuf, 1.0, &live);
     }
     // audio transitions: attenuate the covered region of each side
     for tr in &track.transitions {
@@ -127,10 +133,10 @@ pub(crate) fn track_input_at(
         let mut a = AudioBuffer::silence(sr, w, n);
         let mut b = AudioBuffer::silence(sr, w, n);
         if let Some(f) = &from {
-            mix_item(project, f, s0, n, sr, sources, &mut a, 1.0, &live);
+            mix_item(project, f, Window { start: s0, frames: n, sr }, sources, &mut a, 1.0, &live);
         }
         if let Some(tt) = &to {
-            mix_item(project, tt, s0, n, sr, sources, &mut b, 1.0, &live);
+            mix_item(project, tt, Window { start: s0, frames: n, sr }, sources, &mut b, 1.0, &live);
         }
         let dur = (tr.end() - tr.start).to_units_floor(sr as i64).max(1) as f32;
         let base = (s0 - tr.start.to_units_floor(sr as i64)) as f32;
@@ -182,18 +188,8 @@ pub fn pan_gains(pan: f32) -> (f32, f32) {
     ((a.cos() * k).min(1.0), (a.sin() * k).min(1.0))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn mix_item(
-    project: &Project,
-    item: &TrackItem,
-    start: i64,
-    frames: usize,
-    sr: u32,
-    sources: &dyn SourceProvider,
-    out: &mut AudioBuffer,
-    extra: f32,
-    live: &ClipLive,
-) {
+fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn SourceProvider, out: &mut AudioBuffer, extra: f32, live: &ClipLive) {
+    let Window { start, frames, sr } = win;
     let item_s0 = item.start.to_units_floor(sr as i64);
     let item_s1 = item.end().to_units_floor(sr as i64);
     let a0 = start.max(item_s0);
@@ -222,7 +218,7 @@ fn mix_item(
         };
         // The nested sequence is the clip's source: speed, reverse and clip effects apply to its
         // mix exactly as they do to a media clip's sound.
-        let read = |m0: i64, len: usize| Some(nested_mix(project, &q, m0, len, sr, sources, w, live.depth));
+        let read = |m0: i64, len: usize| Some(nested_mix(project, &q, Window { start: m0, frames: len, sr }, sources, w, live.depth));
         effected(item, &read, a0, n, sr, w)
     } else {
         let Some(src) = sources.source(item.item) else { return };
@@ -284,8 +280,8 @@ fn mix_item(
 /// `sr` (the rate of the sequence the nest is in), as `w` channels. The nested sequence is mixed at
 /// its own sample rate and converted when the two differ; time before its start is silent.
 /// `depth` is the nesting depth of the sequence the nest is in.
-#[allow(clippy::too_many_arguments)]
-fn nested_mix(project: &Project, nested: &Sequence, m0: i64, len: usize, sr: u32, sources: &dyn SourceProvider, w: usize, depth: u32) -> AudioBuffer {
+fn nested_mix(project: &Project, nested: &Sequence, win: Window, sources: &dyn SourceProvider, w: usize, depth: u32) -> AudioBuffer {
+    let Window { start: m0, frames: len, sr } = win;
     // a damaged project can claim any rate: keep the buffer below sized by a real one
     let own = nested.settings.sample_rate.clamp(1_000, 768_000);
     let sr = sr.max(1);

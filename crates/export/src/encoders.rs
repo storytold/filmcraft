@@ -1,8 +1,9 @@
-use super::convert::{rgba_to_yuv420_8, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv422_10, to_yuv444_10};
+use super::convert::{Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv422_10, to_yuv444_10};
 use super::format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
-use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, VideoEncoder};
+use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PrepareAhead, VideoEncoder};
 use super::stats::{Stage, timed};
-use super::*;
+use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat};
+use std::sync::{Arc, Mutex, PoisonError};
 
 struct MjpegEncoder {
     w: u16,
@@ -152,11 +153,11 @@ impl VideoEncoder for ProResEncoder {
         timed(Stage::Convert, || match (chroma, f.hdr) {
             (filmcraft_prores::ChromaFormat::Yuv444, hdr) => {
                 let (kr, kb) = if hdr.is_some() { self.signal.kr_kb() } else { (0.2126, 0.0722) };
-                to_yuv444_10(f.rgba, hdr, w, h, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr, fr.alpha.as_deref_mut())
+                to_yuv444_10(f.rgba, hdr, w, h, Matrix::new(kr, kb), Planes444 { y: &mut fr.y, cb: &mut fr.cb, cr: &mut fr.cr, alpha: fr.alpha.as_deref_mut() })
             }
             (_, Some(rgb)) => {
                 let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv422_10(rgb, w, h, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
+                rgbf_to_yuv422_10(rgb, w, h, Matrix::new(kr, kb), &mut fr.y, &mut fr.cb, &mut fr.cr)
             }
             (_, None) => rgba_to_yuv422_10(f.rgba, w, h, &mut fr.y, &mut fr.cb, &mut fr.cr),
         });
@@ -230,7 +231,7 @@ impl VideoEncoder for DnxEncoder {
         match f.hdr {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv422_10(rgb, f.width as usize, f.height as usize, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
+                rgbf_to_yuv422_10(rgb, f.width as usize, f.height as usize, Matrix::new(kr, kb), &mut fr.y, &mut fr.cb, &mut fr.cr)
             }
             None => rgba_to_yuv422_10(f.rgba, f.width as usize, f.height as usize, &mut fr.y, &mut fr.cb, &mut fr.cr),
         }
@@ -298,7 +299,7 @@ impl VideoEncoder for ApvEncoder {
         match f.hdr {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv422_10(rgb, w, h, kr, kb, &mut y422, &mut cb422, &mut cr422);
+                rgbf_to_yuv422_10(rgb, w, h, Matrix::new(kr, kb), &mut y422, &mut cb422, &mut cr422);
             }
             None => rgba_to_yuv422_10(f.rgba, w, h, &mut y422, &mut cb422, &mut cr422),
         }
@@ -358,6 +359,22 @@ struct H264Encoder {
     u: Vec<u8>,
     v: Vec<u8>,
     signal: ColorSignal,
+    /// 4:2:0 planes the render threads converted ahead ([`VideoEncoder::prepare_ahead`]), by
+    /// picture index.
+    ready: Arc<Mutex<std::collections::HashMap<u64, Yuv420>>>,
+}
+
+type Yuv420 = (Vec<u8>, Vec<u8>, Vec<u8>);
+
+/// The encoder input of `f`: 8-bit limited-range 4:2:0 in the export's colour signal.
+fn h264_input(f: &EncoderFrame, signal: ColorSignal, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
+    match f.hdr {
+        Some(rgb) => {
+            let (kr, kb) = signal.kr_kb();
+            rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, Matrix::new(kr, kb), y, u, v)
+        }
+        None => rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, y, u, v),
+    }
 }
 
 impl H264Encoder {
@@ -382,13 +399,23 @@ impl VideoEncoder for H264Encoder {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        timed(Stage::Convert, || match f.hdr {
-            Some(rgb) => {
-                let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, kr, kb, &mut self.y, &mut self.u, &mut self.v)
+        let ready = {
+            let mut ready = self.ready.lock().unwrap_or_else(PoisonError::into_inner);
+            let mine = ready.remove(&f.index);
+            // anything older belongs to a batch that was rendered and then not encoded
+            ready.retain(|&i, _| i > f.index);
+            mine
+        };
+        let (w, h) = (f.width as usize, f.height as usize);
+        let chroma = w.div_ceil(2) * h.div_ceil(2);
+        match ready.filter(|(y, u, v)| y.len() == w * h && u.len() == chroma && v.len() == chroma) {
+            Some((y, u, v)) => (self.y, self.u, self.v) = (y, u, v),
+            None => {
+                let (enc, y, u, v, signal) = (&self.enc, &mut self.y, &mut self.u, &mut self.v, self.signal);
+                // on the encoder's own threads: the global pool is busy rendering the next batch
+                timed(Stage::Convert, || enc.install(|| h264_input(f, signal, y, u, v)));
             }
-            None => rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, &mut self.y, &mut self.u, &mut self.v),
-        });
+        }
         let cw = (f.width as usize).div_ceil(2);
         let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
         let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
@@ -404,6 +431,14 @@ impl VideoEncoder for H264Encoder {
     }
     fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
         self.enc.pass_stats()
+    }
+    fn prepare_ahead(&self) -> Option<PrepareAhead> {
+        let (ready, signal) = (self.ready.clone(), self.signal);
+        Some(Arc::new(move |f: &EncoderFrame| {
+            let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+            timed(Stage::Convert, || h264_input(f, signal, &mut y, &mut u, &mut v));
+            ready.lock().unwrap_or_else(PoisonError::into_inner).insert(f.index, (y, u, v));
+        }))
     }
 }
 
@@ -457,7 +492,10 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
     }
     Some(
         filmcraft_h264enc::Encoder::new(cfg)
-            .map(|enc| Box::new(H264Encoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new(), signal: s.signal }) as Box<dyn VideoEncoder>)
+            .map(|enc| {
+                Box::new(H264Encoder { enc, w, h, rate, y: Vec::new(), u: Vec::new(), v: Vec::new(), signal: s.signal, ready: Default::default() })
+                    as Box<dyn VideoEncoder>
+            })
             .map_err(|e| ExportError::Encode(e.to_string())),
     )
 }

@@ -1246,6 +1246,8 @@ mod tests {
 
         let app = FilmcraftApp::new(filmcraft_engine::Session::default());
         let mut harness = Harness::builder().with_size(egui::vec2(1200.0, 700.0)).build_ui_state(|ui, app| menu_bar(app, ui), app);
+        // the app's fonts, which draw the macOS shortcut symbols (⇧⌘S) egui's default fonts lack
+        crate::theme::install(&harness.ctx, &harness.state().tokens);
         harness.run_steps(3);
         // Nothing open: hovering a title does not open it.
         harness.get_by_label("Edit").hover();

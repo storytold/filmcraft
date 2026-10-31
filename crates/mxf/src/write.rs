@@ -32,7 +32,10 @@ use std::collections::VecDeque;
 use std::io::{self, Seek, SeekFrom, Write};
 
 use crate::Rational;
-use labels::*;
+use labels::{
+    CE_709, CE_2020, CP_709, CP_2020, DEF_PICTURE, DEF_SOUND, DEF_TIMECODE, EC_MULTIPLE, INDEX_KEY, KLV_FILL, OP_ATOM, PRIMER, PRIMER_KEY, RIP_KEY, TC_709,
+    TC_HLG, TC_PQ, element_key, essence_container, op1a, partition_key, set_key,
+};
 
 /// A SMPTE ST 330 basic UMID (32 bytes): package identifiers.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -595,13 +598,24 @@ impl<W: Write + Seek> MxfWriter<W> {
         };
         let meta = me.metadata(Durations { essence: -1 });
         me.header_region = meta.len() + HEADER_RESERVE;
-        let pack = me.partition_pack(2, 1, 0, 0, 0, me.header_region as u64, 0, 0, 0);
+        let pack = me.partition_pack(PartitionFields {
+            kind: 2,
+            status: 1,
+            this: 0,
+            prev: 0,
+            footer: 0,
+            hbc: me.header_region as u64,
+            ibc: 0,
+            index_sid: 0,
+            body_sid: 0,
+        });
         let mut out = pack;
         out.extend_from_slice(&meta);
         fill(&mut out, HEADER_RESERVE);
         me.put(&out)?;
         me.body_partition = me.pos;
-        let body = me.partition_pack(3, 4, me.pos, 0, 0, 0, 0, 0, BODY_SID);
+        let body =
+            me.partition_pack(PartitionFields { kind: 3, status: 4, this: me.pos, prev: 0, footer: 0, hbc: 0, ibc: 0, index_sid: 0, body_sid: BODY_SID });
         me.put(&body)?;
         me.essence_start = me.pos;
         if clip {
@@ -659,8 +673,8 @@ impl<W: Write + Seek> MxfWriter<W> {
         v
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn partition_pack(&self, kind: u8, status: u8, this: u64, prev: u64, footer: u64, hbc: u64, ibc: u64, index_sid: u32, body_sid: u32) -> Vec<u8> {
+    fn partition_pack(&self, f: PartitionFields) -> Vec<u8> {
+        let PartitionFields { kind, status, this, prev, footer, hbc, ibc, index_sid, body_sid } = f;
         let mut v = Vec::with_capacity(160);
         v.extend_from_slice(&1u16.to_be_bytes());
         v.extend_from_slice(&3u16.to_be_bytes());
@@ -854,9 +868,21 @@ impl<W: Write + Seek> MxfWriter<W> {
                     ((a + b - 1) / b) as i64
                 }
             };
-            self.track_sets(&mut out, base + 1, 1, 0, tc_rate, DEF_TIMECODE, tc_dur, if material { Some("TC1") } else { None }, |s| {
-                s.u16(0x1502, tc.rounded_base()).i64(0x1501, tc.frames).u8(0x1503, tc.drop_frame as u8);
-            });
+            self.track_sets(
+                &mut out,
+                TrackSpec {
+                    uid0: base + 1,
+                    id: 1,
+                    number: 0,
+                    rate: tc_rate,
+                    def: DEF_TIMECODE,
+                    duration: tc_dur,
+                    name: if material { Some("TC1") } else { None },
+                },
+                |s| {
+                    s.u16(0x1502, tc.rounded_base()).i64(0x1501, tc.frames).u8(0x1503, tc.drop_frame as u8);
+                },
+            );
             let mut vi = 0;
             let mut ai = 0;
             for (k, t) in self.tracks.iter().enumerate() {
@@ -872,7 +898,16 @@ impl<W: Write + Seek> MxfWriter<W> {
                 };
                 let number = if material { 0 } else { u32::from_be_bytes(t.element_key[12..16].try_into().unwrap_or([0; 4])) };
                 let file = cfg.ids.file;
-                self.track_sets(&mut out, base + 4 + 3 * k as u32, t.id, number, cfg.edit_rate, def, d.essence, material.then_some(label.as_str()), |s| {
+                let spec = TrackSpec {
+                    uid0: base + 4 + 3 * k as u32,
+                    id: t.id,
+                    number,
+                    rate: cfg.edit_rate,
+                    def,
+                    duration: d.essence,
+                    name: material.then_some(label.as_str()),
+                };
+                self.track_sets(&mut out, spec, |s| {
                     let (src, src_track) = if material { (file, t.id) } else { (Umid([0; 32]), 0) };
                     s.i64(0x1201, 0).p(0x1101, &src.0).u32(0x1102, src_track);
                 });
@@ -962,19 +997,8 @@ impl<W: Write + Seek> MxfWriter<W> {
 
     /// A track, its sequence and its one component (`component` adds the component-specific
     /// properties: source clip or timecode).
-    #[allow(clippy::too_many_arguments)]
-    fn track_sets(
-        &self,
-        out: &mut Vec<u8>,
-        uid0: u32,
-        id: u32,
-        number: u32,
-        rate: Rational,
-        def: [u8; 16],
-        duration: i64,
-        name: Option<&str>,
-        component: impl FnOnce(&mut Set),
-    ) {
+    fn track_sets(&self, out: &mut Vec<u8>, spec: TrackSpec<'_>, component: impl FnOnce(&mut Set)) {
+        let TrackSpec { uid0, id, number, rate, def, duration, name } = spec;
         let (tu, su, cu) = (self.uid(uid0), self.uid(uid0 + 1), self.uid(uid0 + 2));
         let mut t = Set::new(0x3B, tu);
         t.u32(0x4801, id).u32(0x4804, number);
@@ -1119,7 +1143,17 @@ impl<W: Write + Seek> MxfWriter<W> {
         let meta = self.metadata(d);
         let index = self.index();
         let footer = self.pos;
-        let pack = self.partition_pack(4, 4, footer, self.body_partition, footer, meta.len() as u64, index.len() as u64, INDEX_SID, 0);
+        let pack = self.partition_pack(PartitionFields {
+            kind: 4,
+            status: 4,
+            this: footer,
+            prev: self.body_partition,
+            footer,
+            hbc: meta.len() as u64,
+            ibc: index.len() as u64,
+            index_sid: INDEX_SID,
+            body_sid: 0,
+        });
         let mut out = pack;
         out.extend_from_slice(&meta);
         out.extend_from_slice(&index);
@@ -1135,18 +1169,48 @@ impl<W: Write + Seek> MxfWriter<W> {
         let end = self.pos;
         // closed, complete header partition (same size as the provisional one)
         if meta.len() + 20 <= self.header_region {
-            let mut h = self.partition_pack(2, 4, 0, 0, footer, self.header_region as u64, 0, 0, 0);
+            let mut h = self.partition_pack(PartitionFields {
+                kind: 2,
+                status: 4,
+                this: 0,
+                prev: 0,
+                footer,
+                hbc: self.header_region as u64,
+                ibc: 0,
+                index_sid: 0,
+                body_sid: 0,
+            });
             h.extend_from_slice(&meta);
             fill(&mut h, self.header_region - meta.len());
             self.w.seek(SeekFrom::Start(self.base))?;
             self.w.write_all(&h)?;
         } else {
             // cannot happen (metadata sizes do not depend on the durations); keep the header open
-            let h = self.partition_pack(2, 1, 0, 0, footer, self.header_region as u64, 0, 0, 0);
+            let h = self.partition_pack(PartitionFields {
+                kind: 2,
+                status: 1,
+                this: 0,
+                prev: 0,
+                footer,
+                hbc: self.header_region as u64,
+                ibc: 0,
+                index_sid: 0,
+                body_sid: 0,
+            });
             self.w.seek(SeekFrom::Start(self.base))?;
             self.w.write_all(&h)?;
         }
-        let body = self.partition_pack(3, 4, self.body_partition, 0, footer, 0, 0, 0, BODY_SID);
+        let body = self.partition_pack(PartitionFields {
+            kind: 3,
+            status: 4,
+            this: self.body_partition,
+            prev: 0,
+            footer,
+            hbc: 0,
+            ibc: 0,
+            index_sid: 0,
+            body_sid: BODY_SID,
+        });
         self.w.seek(SeekFrom::Start(self.base + self.body_partition))?;
         self.w.write_all(&body)?;
         self.w.seek(SeekFrom::Start(self.base + end))?;
@@ -1210,4 +1274,28 @@ pub fn write_opatom_pcm(opts: &OpAtomPcm, samples: &[i32]) -> io::Result<Vec<u8>
     }
     w.push_sound(0, &pcm)?;
     Ok(w.finish()?.into_inner())
+}
+
+/// Fields of a partition pack that vary between the header, body and footer partitions.
+struct PartitionFields {
+    kind: u8,
+    status: u8,
+    this: u64,
+    prev: u64,
+    footer: u64,
+    hbc: u64,
+    ibc: u64,
+    index_sid: u32,
+    body_sid: u32,
+}
+
+/// Identity and timing of one track, its sequence and its component.
+struct TrackSpec<'a> {
+    uid0: u32,
+    id: u32,
+    number: u32,
+    rate: Rational,
+    def: [u8; 16],
+    duration: i64,
+    name: Option<&'a str>,
 }
