@@ -441,6 +441,67 @@ fn escape_mid_drag_reverts_the_field_and_keeps_the_dialog() {
 }
 
 #[test]
+fn enter_confirms_and_submits_clip_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+    d.click("speedDuration.speed");
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "A", "ctrl": true}));
+    d.ok("ui.type", json!({"text": "200"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "Enter closes the dialog and commits OK");
+    assert_eq!(d.v1(0).speed, 2.0, "the speed change was applied");
+}
+
+#[test]
+fn enter_on_focused_cancel_cancels_clip_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+    d.click("speedDuration.speed");
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "A", "ctrl": true}));
+    d.ok("ui.type", json!({"text": "200"}));
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["speed"], json!(200.0));
+    d.ok("ui.focus", json!({"id": "speedDuration.cancel"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "Enter on focused Cancel closes the dialog");
+    assert_eq!(d.v1(0).speed, 1.0, "Cancel leaves speed unchanged");
+}
+
+#[test]
+fn shortcuts_suppressed_while_clip_dialog_open() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+
+    // Timeline shortcut: Backspace (edit.clear) must not reach the timeline while the dialog is open
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_some(), "clip dialog remains open");
+    let seq = d.app().session.active_sequence().unwrap();
+    assert!(!seq.video_tracks[0].items.is_empty(), "selected clip is not deleted by Backspace shortcut");
+    assert_eq!(seq.video_tracks[0].items[0].id, c.id, "clip remains on timeline");
+
+    // Global shortcut: Space (playback.toggle) must not start playback while the dialog is open
+    assert!(!d.app().playback.playing, "playback is stopped initially");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(!d.app().playback.playing, "Space key does not trigger playback while clip dialog is open");
+    assert!(d.app().ui.clip_dialog.is_some(), "clip dialog remains open");
+}
+
+#[test]
 fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
     for audio in [false, true] {
         let mut d = Driver::new();

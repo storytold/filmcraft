@@ -38,12 +38,12 @@ use serde_json::{Value, json};
 use crate::FilmcraftApp;
 use crate::state::ClipDialogDraft;
 
-type Elems = Vec<(String, egui::Rect, String)>;
+type Elems = Vec<(String, egui::Response, String)>;
 
 fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: impl Into<String>) {
     let label = label.into();
     crate::widgets::accessible_name(r.clone(), label.clone());
-    elems.push((id.into(), r.rect, label));
+    elems.push((id.into(), r.clone(), label));
 }
 
 /// Dialog title and automation prefix of a command's dialog.
@@ -588,10 +588,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         });
     });
     for (id, r, l) in elems {
-        app.auto.add(&id, r, &l);
+        app.auto.add_response(&id, &r, &l);
     }
     if crate::widgets::escape_closes(ctx) {
         action = Some("cancel");
+    }
+    if action.is_none()
+        && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.pointer.any_down())
+        && !matches!(d.command.as_str(), "file.closeProject" | "app.quit")
+    {
+        action = Some("ok");
     }
     if action.is_some() {
         ctx.data_mut(|d| d.remove::<bool>(egui::Id::unique("nest-name-focused")));
