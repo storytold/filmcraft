@@ -16,7 +16,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     let Some(q) = app.session.active_sequence().cloned() else { return };
     let rate = q.settings.frame_rate;
     // preview (aspect of the output frame)
-    let r = app.ui.export.settings.resolve(q.settings.width, q.settings.height, rate, q.settings.sample_rate);
+    let r = app.ui.export.settings.resolve(q.settings.width, q.settings.height, rate, &q.settings);
     let pv_area = Rect::from_min_size(rect.min + vec2(14.0, 14.0), vec2(rect.width() - 28.0, (rect.height() * 0.42).max(160.0)));
     let pic = crate::panels::monitor::fit(pv_area, r.width as f32, r.height as f32);
     ui.painter().rect_filled(pic, 0.0, Color32::BLACK);
@@ -93,7 +93,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     }
     // summary
     let range = range_ticks(ex, &q);
-    let sum = ex.settings.summary(q.settings.width, q.settings.height, rate, q.settings.sample_rate, range.1 - range.0);
+    let sum = ex.settings.summary(q.settings.width, q.settings.height, rate, &q.settings, range.1 - range.0);
     child.add_space(8.0);
     let resp = egui::Frame::NONE
         .fill(t.field_bg)

@@ -1,6 +1,7 @@
 use super::{
-    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
-    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, pos2, vec2,
+    AudioCodec, AudioSettings, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
+    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, SourceAudio, TextOverlay, Tokens, apply_preset,
+    pos2, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -221,6 +222,8 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
         .active_sequence()
         .map(|q| (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate))
         .unwrap_or((1920, 1080, FrameRate::FPS_24, 48_000));
+    // what Audio ▸ Match Source follows: the sequence's sample rate and master track layout
+    let seq_audio = app.session.active_sequence().map(|q| SourceAudio::from(&q.settings)).unwrap_or(SourceAudio::from(seq_sr));
     let has_captions = app.session.active_sequence().is_some_and(|q| !q.caption_tracks.is_empty());
     // an HDR sequence exports HDR (H.265 Main 10 where the hardware encoder has it) unless SDR is asked for
     let seq_hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
@@ -300,6 +303,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
                         frame_rate: keep.frame_rate,
                         effects: keep.effects,
                         metadata: keep.metadata,
+                        audio: AudioSettings { match_source: keep.audio.match_source, ..Default::default() },
                         ..Default::default()
                     };
                 }
@@ -325,7 +329,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
             && s.format != Format::Gif
             && section(ui, &mut reg, &mut ex.open_sections, "audio", tl!("Audio"), &t)
         {
-            audio_section(ui, &mut reg, s, &t, seq_sr);
+            audio_section(ui, &mut reg, s, &t, seq_audio);
         }
         if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t) {
             row(ui, &t, tl!("Multiplexer"), |ui| {
@@ -639,7 +643,8 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxQuality", &mut s.max_render_quality, tl!("Use Maximum Render Quality")));
 }
 
-fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_sr: u32) {
+fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_audio: SourceAudio) {
+    let seq_sr = seq_audio.sample_rate;
     let audio_only = !s.has_video();
     if !audio_only {
         row(ui, t, "", |ui| check(ui, reg, "export.audio.include", &mut s.include_audio, tl!("Export Audio")));
@@ -666,22 +671,35 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             s.audio.codec = [AudioCodec::Aac, AudioCodec::Pcm, AudioCodec::Flac][i.min(2)];
         }
     });
+    // Match Source (#2700): sample rate and channels follow the sequence; the greyed controls show
+    // what the export will use. Turning it off starts from those values, as the video's does.
+    row(ui, t, "", |ui| {
+        let (rate, channels) = s.output_audio(seq_audio);
+        if check(ui, reg, "export.audio.matchSource", &mut s.audio.match_source, tl!("Match Source")) && !s.audio.match_source {
+            (s.audio.sample_rate, s.audio.channels) = (Some(rate), channels);
+        }
+    });
+    let matched = s.audio.match_source;
+    let (out_sr, out_channels) = s.output_audio(seq_audio);
     row(ui, t, tl!("Sample Rate"), |ui| {
         let rates: [Option<u32>; 5] = [None, Some(32_000), Some(44_100), Some(48_000), Some(96_000)];
         let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| tlf!("Match Source ({seq_sr} Hz)", seq_sr));
         let labels: Vec<(String, bool)> = rates.iter().map(|r| (lab(r), true)).collect();
-        if let Some(i) = combo(ui, reg, "export.audio.sampleRate", &lab(&s.audio.sample_rate), &labels, 180.0) {
-            s.audio.sample_rate = rates[i];
+        let cur = if matched { lab(&Some(out_sr)) } else { lab(&s.audio.sample_rate) };
+        if let Some(i) = ui.add_enabled_ui(!matched, |ui| combo(ui, reg, "export.audio.sampleRate", &cur, &labels, 180.0)).inner
+            && let Some(rate) = rates.get(i)
+        {
+            s.audio.sample_rate = *rate;
         }
     });
     row(ui, t, tl!("Channels"), |ui| {
         let names = [tl!("Mono"), tl!("Stereo"), "5.1"];
-        let cur = match s.audio.channels {
+        let cur = match if matched { out_channels } else { s.audio.channels } {
             1 => names[0],
             6 => names[2],
             _ => names[1],
         };
-        if let Some(i) = combo(ui, reg, "export.audio.channels", cur, &opts(&names), 120.0) {
+        if let Some(i) = ui.add_enabled_ui(!matched, |ui| combo(ui, reg, "export.audio.channels", cur, &opts(&names), 120.0)).inner {
             s.audio.channels = [1, 2, 6][i.min(2)];
         }
     });

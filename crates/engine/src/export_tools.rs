@@ -217,6 +217,16 @@ fn apply_nested_settings(settings: &mut ExportSettings, params: &Value, cmd: &st
     let Some(patch) = params.get("settings").filter(|value| value.is_object()) else { return Ok(()) };
     let mut value = serde_json::to_value(&*settings).map_err(|error| EngineError::Other(error.to_string()))?;
     merge(&mut value, patch);
+    // an explicit sample rate or channel count turns Audio ▸ Match Source off (unless the patch
+    // sets it too), so it is not silently overridden by the sequence's (a Match Source preset)
+    if let Some(audio) = patch.get("audio").and_then(Value::as_object)
+        && ["sample_rate", "sampleRate", "channels"].iter().any(|key| audio.get(*key).is_some_and(|v| !v.is_null()))
+        && !audio.contains_key("match_source")
+        && !audio.contains_key("matchSource")
+        && let Some(matched) = value.get_mut("audio").and_then(|a| a.get_mut("match_source"))
+    {
+        *matched = Value::Bool(false);
+    }
     *settings = serde_json::from_value(value).map_err(|error| bad(cmd, format!("settings: {error}")))?;
     // serde ignores unknown keys; detect misspelled or misplaced settings before returning.
     let known = serde_json::to_value(&*settings).map_err(|error| EngineError::Other(error.to_string()))?;
@@ -965,9 +975,9 @@ fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
     let q = project.sequence(seq).ok_or(EngineError::NoSequence)?;
     let range = filmcraft_export::export_range(&project, seq, &settings).map_err(|e| EngineError::Other(e.to_string()))?;
     let (w, h, rate, sr) = (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
-    let r = settings.resolve(w, h, rate, sr);
+    let r = settings.resolve(w, h, rate, &q.settings);
     let (f0, f1) = filmcraft_export::frame_span(r.rate, range);
-    let summary = settings.summary(w, h, rate, sr, range.duration);
+    let summary = settings.summary(w, h, rate, &q.settings, range.duration);
     Ok(json!({
         "preset": preset.map(|x| x.name),
         "settings": settings,

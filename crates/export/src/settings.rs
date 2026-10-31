@@ -229,11 +229,18 @@ pub struct AudioSettings {
     pub float: bool,
     /// FLAC compression level, 0 (fastest) to 8 (smallest). Every level is lossless.
     pub flac_level: u8,
+    /// Audio ▸ Match Source: take the sample rate and channel layout from the sequence (its
+    /// audio sample rate and master track layout), ignoring `sample_rate` and `channels`. The
+    /// AAC bitrate is not matched: the sequence mix is uncompressed, so it has no bitrate to
+    /// follow and `bitrate_kbps` applies as chosen. Missing in settings and presets saved before
+    /// it existed, so it reads as off there and they export exactly as before.
+    #[serde(default)]
+    pub match_source: bool,
 }
 
 impl Default for AudioSettings {
     fn default() -> Self {
-        AudioSettings { codec: AudioCodec::Auto, sample_rate: None, channels: 2, bitrate_kbps: 320, bits: 16, float: false, flac_level: 5 }
+        AudioSettings { codec: AudioCodec::Auto, sample_rate: None, channels: 2, bitrate_kbps: 320, bits: 16, float: false, flac_level: 5, match_source: false }
     }
 }
 
@@ -252,6 +259,47 @@ impl AudioSettings {
     pub fn set_sample_format(&mut self, f: SampleFormat) {
         self.bits = f.bits();
         self.float = f.is_float();
+    }
+
+    /// The output (sample rate, channels) for a source with `src` audio: the source's under
+    /// Match Source, else the chosen ones (a sample rate left unset is the source's too).
+    /// Channels are 1, 2 or 6, the layouts the exporters write.
+    pub fn resolve(&self, src: SourceAudio) -> (u32, u32) {
+        let (rate, channels) = if self.match_source { (src.sample_rate, src.channels) } else { (self.sample_rate.unwrap_or(src.sample_rate), self.channels) };
+        let channels = match channels {
+            0 | 1 => 1,
+            6.. => 6,
+            _ => 2,
+        };
+        (rate, channels)
+    }
+}
+
+/// The audio an export's Match Source settings follow: the sequence's sample rate and master
+/// track channel count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceAudio {
+    pub sample_rate: u32,
+    pub channels: u32,
+}
+
+impl From<u32> for SourceAudio {
+    /// A stereo source at `sample_rate`.
+    fn from(sample_rate: u32) -> Self {
+        SourceAudio { sample_rate, channels: 2 }
+    }
+}
+
+impl From<&filmcraft_project::SequenceSettings> for SourceAudio {
+    /// The sequence's audio: its sample rate and master track layout (Adaptive mixes to stereo).
+    fn from(s: &filmcraft_project::SequenceSettings) -> Self {
+        use filmcraft_project::AudioChannels;
+        let channels = match s.audio_master {
+            AudioChannels::Mono => 1,
+            AudioChannels::Surround51 => 6,
+            AudioChannels::Stereo | AudioChannels::Adaptive => 2,
+        };
+        SourceAudio { sample_rate: s.sample_rate, channels }
     }
 }
 
@@ -524,8 +572,9 @@ impl ExportSettings {
         self.format.is_image_sequence()
     }
 
-    /// Output size, rate, audio format and bitrate for a sequence of `seq_w`×`seq_h` at `seq_rate`.
-    pub fn resolve(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_sr: u32) -> Resolved {
+    /// Output size, rate, audio format and bitrate for a sequence of `seq_w`×`seq_h` at `seq_rate`
+    /// whose audio is `seq_audio` (a sample rate, or the sequence settings for its channels too).
+    pub fn resolve(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_audio: impl Into<SourceAudio>) -> Resolved {
         let (mut w, mut h) = match self.frame_size {
             Some((w, h)) => (w.max(2), h.max(2)),
             None => (((seq_w as f32 * self.scale).round() as u32).max(2), ((seq_h as f32 * self.scale).round() as u32).max(2)),
@@ -546,12 +595,8 @@ impl ExportSettings {
             _ => self.max_bitrate_kbps.filter(|m| *m >= target).unwrap_or_else(|| (u64::from(target) * 3 / 2).min(u64::from(u32::MAX)) as u32),
         };
         let keyint = self.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (fps * 2.0).round().max(1.0) as u32);
-        let channels = match self.audio.channels {
-            0 | 1 => 1,
-            6.. => 6,
-            _ => 2,
-        };
-        Resolved { width: w, height: h, rate, sample_rate: self.audio.sample_rate.unwrap_or(seq_sr), channels, target_kbps: target, max_kbps: max, keyint }
+        let (sample_rate, channels) = self.output_audio(seq_audio.into());
+        Resolved { width: w, height: h, rate, sample_rate, channels, target_kbps: target, max_kbps: max, keyint }
     }
 
     /// Whether the audio codec and container of this export store samples as `f`: PCM in WAV,
@@ -565,6 +610,22 @@ impl ExportSettings {
     }
 
     /// The audio codec actually used.
+    /// The output (sample rate, channels) for a source with `src` audio ([`AudioSettings::resolve`]),
+    /// except that AAC, which stores only the 13 MPEG-4 rates up to 96 kHz, takes a source rate it
+    /// can't store (a 192 kHz sequence under Match Source or an unset rate) at the nearest of those
+    /// below it instead of failing the export. A rate chosen explicitly is left for the encoder to refuse.
+    pub fn output_audio(&self, src: SourceAudio) -> (u32, u32) {
+        let (rate, channels) = self.audio.resolve(src);
+        let from_source = self.audio.match_source || self.audio.sample_rate.is_none();
+        if from_source && self.audio_codec() == AudioCodec::Aac && filmcraft_aac::sample_rate_index(rate).is_none() {
+            // SAMPLE_RATES runs from highest to lowest
+            let aac =
+                filmcraft_aac::SAMPLE_RATES.iter().copied().find(|r| *r <= rate).or_else(|| filmcraft_aac::SAMPLE_RATES.last().copied()).unwrap_or(48_000);
+            return (aac, channels);
+        }
+        (rate, channels)
+    }
+
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
             (Format::Flac, _) => AudioCodec::Flac,
@@ -595,7 +656,7 @@ impl ExportSettings {
     }
 
     /// Estimated output size in bytes for `duration` of a sequence (`seq_w`×`seq_h` at `seq_rate`).
-    pub fn estimate_bytes(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_sr: u32, duration: Tick) -> u64 {
+    pub fn estimate_bytes(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_sr: impl Into<SourceAudio>, duration: Tick) -> u64 {
         let r = self.resolve(seq_w, seq_h, seq_rate, seq_sr);
         let secs = duration.seconds().max(0.0);
         let fps = r.rate.num as f64 / r.rate.den as f64;
@@ -665,7 +726,8 @@ pub struct Summary {
 
 impl ExportSettings {
     /// Summary lines for a sequence of `seq_w`×`seq_h` at `seq_rate` / `seq_sr` exporting `duration`.
-    pub fn summary(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_sr: u32, duration: Tick) -> Summary {
+    pub fn summary(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_sr: impl Into<SourceAudio>, duration: Tick) -> Summary {
+        let seq_sr = seq_sr.into();
         let r = self.resolve(seq_w, seq_h, seq_rate, seq_sr);
         let mbps = |k: u32| format!("{:.2} Mbps", k as f64 / 1000.0);
         let video = if !self.has_video() {
