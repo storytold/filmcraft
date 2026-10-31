@@ -18,7 +18,7 @@ fn integer(value: JsValue) -> Option<u32> {
     if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 && n.fract() == 0.0 { Some(n as u32) } else { None }
 }
 
-fn color(frame: &JsValue, fallback: ColorInfo) -> Option<ColorInfo> {
+pub(super) fn color(frame: &JsValue, fallback: ColorInfo) -> Option<ColorInfo> {
     let c = get(frame, "colorSpace");
     let matrix = match get(&c, "matrix").as_string().as_deref() {
         Some("bt709") => Matrix::Bt709,

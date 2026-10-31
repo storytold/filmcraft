@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use filmcraft_isobmff::{CodecConfig, SampleEntry};
 
 pub use crate::hw_frame::{FrameCodec, FrameStreamInfo, PictureParams};
+pub use crate::hw_output::{OutputInspector, SampleOutput};
 use crate::video::{avcc_length_size, h264_disposable, hevc_disposable, hvcc_length_size_and_tid, sar_par, vui_color};
 use crate::{CodecError, Result};
 
@@ -44,6 +45,20 @@ pub fn hw_backend() -> Option<&'static str> {
     *BACKEND.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+static GPU_FRAMES: AtomicBool = AtomicBool::new(false);
+
+/// Whether hardware decoders may hand out pictures as GPU surfaces ([`filmcraft_frame::GpuPixels`])
+/// instead of CPU planes: set by `filmcraft_platform` once the renderer's device can open them,
+/// cleared when the GPU compositor is dropped (a GPU error) or by the platform on a device loss.
+pub fn set_gpu_frames(on: bool) {
+    GPU_FRAMES.store(on, Ordering::Relaxed);
+}
+
+/// See [`set_gpu_frames`].
+pub fn gpu_frames() -> bool {
+    GPU_FRAMES.load(Ordering::Relaxed)
+}
+
 /// Process-wide hardware decoding counters (they only grow; subtract two snapshots to measure an
 /// interval). Frames decoded in software are `GopStats::frames - frames`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,8 +72,12 @@ pub struct HwStats {
     pub declined: u64,
     /// Hardware decoders that failed mid-stream and continued in software.
     pub fallbacks: u64,
+    /// Of `frames`, the pictures handed out as GPU surfaces (zero-copy: no readback, the compositor
+    /// samples the decoder's memory).
+    pub zero_copy_frames: u64,
 }
 
+static ZERO_COPY: AtomicU64 = AtomicU64::new(0);
 static FRAMES: AtomicU64 = AtomicU64::new(0);
 static SESSIONS: AtomicU64 = AtomicU64::new(0);
 static DECLINED: AtomicU64 = AtomicU64::new(0);
@@ -71,12 +90,18 @@ pub fn hw_stats() -> HwStats {
         sessions: SESSIONS.load(Ordering::Relaxed),
         declined: DECLINED.load(Ordering::Relaxed),
         fallbacks: FALLBACKS.load(Ordering::Relaxed),
+        zero_copy_frames: ZERO_COPY.load(Ordering::Relaxed),
     }
 }
 
 /// A hardware decoder output `n` pictures.
 pub fn note_hw_frames(n: usize) {
     FRAMES.fetch_add(n as u64, Ordering::Relaxed);
+}
+
+/// A hardware decoder output `n` pictures as GPU surfaces (also counted by [`note_hw_frames`]).
+pub fn note_hw_zero_copy(n: usize) {
+    ZERO_COPY.fetch_add(n as u64, Ordering::Relaxed);
 }
 
 /// A hardware decoder was created.
@@ -208,7 +233,7 @@ impl StreamInfo {
 /// A NAL unit without the zero bytes after its last byte: a NAL unit never ends with 0x00
 /// (H.264 7.4.1, H.265 7.4.2), so they are trailing_zero_8bits some muxers keep (ffmpeg in `hvcC`), not
 /// part of the parameter set.
-fn without_trailing_zeros(nal: &[u8]) -> &[u8] {
+pub(crate) fn without_trailing_zeros(nal: &[u8]) -> &[u8] {
     let end = nal.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
     nal.get(..end).unwrap_or_default()
 }

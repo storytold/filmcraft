@@ -208,12 +208,16 @@ pub fn videotoolbox_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<fi
     }
 }
 
-/// The Media Foundation factory: a [`HybridDecoder`] around [`media_foundation::MfDecoder`] for
-/// H.264 / HEVC / VP9 / AV1 streams a Direct3D-aware decoder MFT can decode with DXVA on this
-/// system's GPU, `None` otherwise.
+/// Media Foundation H.264 / HEVC / VP9 hybrid decoder; None selects software when hardware cannot take the stream.
+/// AV1 stays in software until OutputInspector can account for its output.
 #[cfg(target_os = "windows")]
 pub fn media_foundation_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<filmcraft_codecs::Result<Box<dyn filmcraft_codecs::VideoDecoder>>> {
     if !filmcraft_codecs::hw::hardware_decoding() {
+        return None;
+    }
+    if matches!(entry.codec, filmcraft_isobmff::CodecConfig::Av1(_)) {
+        // AV1 output intent is unknown; decline before creating an unused MFT/session.
+        filmcraft_codecs::hw::note_hw_declined();
         return None;
     }
     let info = media_foundation::stream_info(entry)?;

@@ -125,8 +125,8 @@ fn op1a_reads_back_with_our_demuxer_and_decoders() {
         let msrc = filmcraft_codecs::open_bytes("x.mov", std::fs::read(&mov).unwrap().into()).unwrap();
         for f in [0i64, 5, 13, 23, 7] {
             let t = FrameRate::FPS_24.tick_of(f) + Tick(1);
-            let a = src.video_frame(FrameRequest::full(t)).unwrap().to_rgba8();
-            let b = msrc.video_frame(FrameRequest::full(t)).unwrap().to_rgba8();
+            let a = src.video_frame(FrameRequest::full(t)).unwrap().to_rgba8().unwrap();
+            let b = msrc.video_frame(FrameRequest::full(t)).unwrap().to_rgba8().unwrap();
             assert!(a == b, "{codec:?}: frame {f} differs from the MOV export");
         }
         let pcm = src.audio(0, 48_000, 48_000).unwrap();

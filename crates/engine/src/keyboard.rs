@@ -650,9 +650,11 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
         filmcraft_render::render_item(&s.project, target.item, target.time, 1.0, &provider)
     } else {
         let opts = filmcraft_render::RenderOptions { scale: 1.0, captions: true, ..Default::default() };
-        Some(filmcraft_render::render_sequence(&s.project, target.item, target.time, opts, &provider))
+        filmcraft_render::render_sequence(&s.project, target.item, target.time, opts, &provider).map(Some)
     };
-    if filmcraft_media::pending::take() {
+    let pending = filmcraft_media::pending::take();
+    let img = img.map_err(EngineError::Other)?;
+    if pending {
         return Err(EngineError::Other("the frame is still loading; export it again in a moment".into()));
     }
     let img = img.ok_or_else(|| bad("file.exportFrame", "cannot decode the Source video frame"))?;

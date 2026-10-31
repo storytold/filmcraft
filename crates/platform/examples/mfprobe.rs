@@ -46,7 +46,13 @@ fn main() {
                 }
             }
         }
-        n += d.flush().len();
+        match d.flush() {
+            Ok(frames) => n += frames.len(),
+            Err(error) => {
+                eprintln!("  flush failed: {error}");
+                return;
+            }
+        }
         let wall = t0.elapsed();
         let t = d.timings();
         let per = |x: std::time::Duration| x.as_secs_f64() * 1000.0 / t.frames.max(1) as f64;

@@ -39,6 +39,7 @@ fn software(s: &Stream) -> Box<dyn VideoDecoder> {
 /// after `reset` + reseek to each later sync sample, after a mid-stream `flush`, and a full pass
 /// after all the resets.
 fn parity(name: &str, s: &Stream) {
+    decoder_diagnostics(name);
     let Some(mut hw) = hardware(s) else { return };
     let mut sw = software(s);
     let a = decode_all(hw.as_mut(), &s.samples);
@@ -87,7 +88,7 @@ fn drained_decoder_restarts_only_at_idr(name: &str, s: &Stream) {
     let Some(idr) = (mid..s.samples.len()).find(|&i| s.sync[i] && is_idr(i)) else { return };
     let mut sw = software(s);
     let before: Vec<_> = s.samples[..mid].iter().flat_map(|(d, p)| mf.decode(d, *p).unwrap()).collect();
-    let drained = mf.flush();
+    let drained = mf.flush().unwrap();
     assert!(before.len() + drained.len() >= mid.saturating_sub(1), "{name}: flush returns the held pictures");
     if mid > 0 && !s.sync[mid] {
         assert!(mf.decode(&s.samples[mid].0, s.samples[mid].1).is_err(), "{name}: continuing mid-GOP after a flush is an error");
@@ -588,13 +589,33 @@ fn vp9_profile_2_10bit_is_bit_exact() {
 }
 
 #[test]
-fn av1_8bit_is_bit_exact() {
-    frame_parity("av1", &["640x360", "1920x1080", "3840x2160"]);
+fn av1_8bit_is_declined_to_software() {
+    av1_software_decline("av1");
 }
 
 #[test]
-fn av1_10bit_is_bit_exact() {
-    frame_parity("av1p10", &["640x360", "1920x1080", "3840x2160"]);
+fn av1_10bit_is_declined_to_software() {
+    av1_software_decline("av1p10");
+}
+
+fn av1_software_decline(codec: &str) {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let path = match frame_fixture(&ff, codec, "640x360") {
+        Some(path) => path,
+        None if !filmcraft_testkit::ffmpeg_has_encoder(&ff, "libaom-av1") => {
+            filmcraft_testkit::skip("AV1 software decline", "ffmpeg lacks libaom-av1");
+            return;
+        }
+        None => panic!("required AV1 fixture generation failed despite libaom-av1 support"),
+    };
+    let s = read_stream(&path);
+    let before = filmcraft_codecs::hw::hw_stats();
+    assert!(filmcraft_platform::media_foundation_factory(&s.entry).is_none(), "AV1 output intent requires software");
+    let after = filmcraft_codecs::hw::hw_stats();
+    // Shared counters may include concurrent factories; this call must add one decline.
+    assert!(after.declined > before.declined, "the factory decline must be counted");
+    let frames = decode_all(software(&s).as_mut(), &s.samples);
+    assert!(!frames.is_empty(), "declined AV1 remains decodable in software");
 }
 
 /// Damaged `av1C` sequence headers (bit flips, truncation): the backend declines or the decoder

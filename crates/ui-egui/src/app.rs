@@ -260,6 +260,10 @@ impl FilmcraftApp {
     fn logic_background(&mut self, ctx: &egui::Context, now: f64) {
         self.frames.set_context(ctx);
         self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
+        if let Some(error) = self.frames.take_error() {
+            log::error!("{error}");
+            self.ui.status = error;
+        }
         self.session.poll_persistence();
         panels::trim_monitor::advance_at(self, now);
         if self.session.trim_play.active() {

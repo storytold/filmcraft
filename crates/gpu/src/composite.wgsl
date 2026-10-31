@@ -1,8 +1,8 @@
 // FilmCraft GPU compositor.
 // Layers are drawn as transformed quads; the fragment shader samples the source (YUV planes or
 // RGBA) with manual bilinear filtering (textureLoad, so any float format works) and N×N
-// supersampling over the pixel footprint when minifying, converts to linear light, premultiplies
-// and scales by opacity. Normal layers blend into the Rgba16Float accumulator with fixed-function
+// supersampling over the pixel footprint when minifying. Sources reconstruct to linear premultiplied
+// working images before transformed sampling where supported; direct YUV sampling remains the capability fallback. Normal layers blend into the Rgba16Float accumulator with fixed-function
 // premultiplied "over"; Dissolve does too (each pixel is either dropped or drawn opaque). The other
 // blend modes (`fs_blend`) read the accumulator under the layer from a copy (`backdrop`) and write
 // the composited result, with the math of `filmcraft_render::blend::composite`.
@@ -11,10 +11,10 @@ struct U {
     m0: vec4<f32>,   // a b c d
     m1: vec4<f32>,   // e f out_w out_h
     src: vec4<f32>,  // src_w src_h chroma_w chroma_h
-    p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
+    p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv planar, 3 yuv with interleaved chroma), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
-    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, unused
+    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), source integer decimation, unused
     // Colour management of HDR / wide-gamut Y'CbCr (`filmcraft_color::InputTransform`, #965):
     q0: vec4<f32>,   // on, curve (0 sdr, 1 linear, 2 pq, 3 hlg), HLG OOTF scale (0: none), reference white cd/m²
     q1: vec4<f32>,   // HLG OOTF luma weights, gamut matrix on
@@ -182,8 +182,17 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     let cs = u.p2.z;
     let yc = load4(tex0, p).r * cs;
     let cp = p * u.src.zw / u.src.xy;
-    let cb = load4(tex1, cp).r * cs;
-    let cr = load4(tex2, cp).r * cs;
+    var cb: f32;
+    var cr: f32;
+    if kind == 3u {
+        // NV12 / P010: Cb and Cr interleaved in one texture (red, green)
+        let c = load4(tex1, cp);
+        cb = c.r * cs;
+        cr = c.g * cs;
+    } else {
+        cb = load4(tex1, cp).r * cs;
+        cr = load4(tex2, cp).r * cs;
+    }
     let y = (yc - u.p1.x) / u.p1.y;
     let b = (cb - u.p1.z) / u.p1.w;
     let r = (cr - u.p1.z) / u.p1.w;
@@ -362,12 +371,9 @@ fn linear_to_srgb(v: vec3<f32>) -> vec3<f32> {
     return select(hi, v * 12.92, v <= vec3(0.0031308));
 }
 
-// Effect sources are axis-aligned integer-decimated working images. Raster-interpolated source
-// coordinates can mix adjacent texels at a nominal pixel center, inventing alpha near zero.
-// Keep the regular transformed/minified layer path unchanged; only this source draw uses its
-// exact working-pixel position and the host's integer decimation.
+// Reconstruct at exact working-pixel centers before spatial sampling; interpolated vertex coordinates can invent alpha near zero.
 @fragment
-fn fs_fx_source(in: VOut) -> @location(0) vec4<f32> {
+fn fs_source(in: VOut) -> @location(0) vec4<f32> {
     return layer_color(in.pos.xy * u.p3.z);
 }
 

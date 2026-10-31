@@ -28,10 +28,9 @@ The web crate is empty on non-wasm targets, so `cargo test --workspace` and clip
 unaffected; `cargo xtask wasm` (part of `cargo xtask ci`) checks it, with `filmcraft-ui-egui`, for
 `wasm32-unknown-unknown`.
 
-URL flags: `?empty` (no demo project), `?norecover` (don't reopen the auto-saved project),
-`?fresh` (also don't restore media kept in OPFS), `?cpu` (CPU compositor), `?webgl` (WebGL2 only;
-the page reloads with it when WebGPU is present but fails to start), `?nowebcodecs` (decode with
-FilmCraft's own decoders only).
+URL flags: `?empty` (no demo project), `?norecover` (don't reopen the auto-saved project), `?fresh` (also don't restore media kept in OPFS), `?cpu` (CPU compositor), `?webgl` (WebGL2 only; the page reloads with it when WebGPU is present but fails to start), `?nowebcodecs` (FilmCraft's own decoders only).
+
+`?resident` opts into experimental WebCodecs frame retention/private GPU textures on WebGPU. Retained frames can accompany 4K seek stalls; leave this off for normal playback until ownership is bounded. Default WebCodecs output copies native YUV to CPU memory, closes the browser frame, then uses the shared GPU effects/compositor. `?cpu` and `?webgl` do not enable resident frames.
 
 If the app panics after start-up (or runs out of memory), `index.html` shows a "FilmCraft stopped
 working" overlay with the panic message and a Reload button instead of a frozen canvas, and sets

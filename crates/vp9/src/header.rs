@@ -368,11 +368,8 @@ fn read_tile_info(r: &mut BitReader, h: &mut FrameHeader) -> Result<()> {
     Ok(())
 }
 
-/// Parse the uncompressed header (6.2). `refs` gives the sizes of the eight reference slots.
-/// Updates the persistent state (probability contexts on reset, loop filter deltas,
-/// segmentation, colour configuration).
-pub fn parse_uncompressed(data: &[u8], st: &mut HeaderState, refs: &[Option<RefInfo>; 8]) -> Result<FrameHeader> {
-    let mut r = BitReader::new(data);
+/// State-independent prefix (6.2): display intent precedes reference-dependent dimensions.
+fn parse_prefix(r: &mut BitReader<'_>) -> Result<FrameHeader> {
     let mut h = FrameHeader::default();
     ensure!(r.read_bits(2)? == 2, "invalid frame marker");
     let lo = r.read_bits(1)? as u8;
@@ -385,13 +382,52 @@ pub fn parse_uncompressed(data: &[u8], st: &mut HeaderState, refs: &[Option<RefI
     if h.show_existing_frame {
         h.frame_to_show_map_idx = r.read_bits(3)? as u8;
         h.show_frame = true;
+        return Ok(h);
+    }
+    h.frame_type = r.read_bits(1)? as u8;
+    h.show_frame = r.read_flag()?;
+    h.error_resilient_mode = r.read_flag()?;
+    Ok(h)
+}
+
+/// Intended displayed pictures per chunk; headers only, not payload validity or decoder readiness.
+pub fn display_count(data: &[u8]) -> Result<usize> {
+    let frames = split_superframe(data);
+    // The decoder's splitter tolerates damaged indexes; accounting must cover each declared frame exactly.
+    if let Some(&marker) = data.last().filter(|&&b| b & 0xe0 == 0xc0) {
+        let size_bytes = usize::from((marker >> 3) & 3) + 1;
+        let count = usize::from(marker & 7) + 1;
+        let index_size = 2 + count * size_bytes;
+        if let Some(start) = data.len().checked_sub(index_size)
+            && data.get(start) == Some(&marker)
+        {
+            ensure!(frames.len() == count, "incomplete superframe index");
+            let mut total = 0usize;
+            for (frame, encoded) in frames.iter().zip(data[start + 1..data.len() - 1].chunks_exact(size_bytes)) {
+                let size = encoded.iter().rev().fold(0usize, |n, &b| (n << 8) | usize::from(b));
+                ensure!(size != 0 && size == frame.len(), "invalid superframe size");
+                total = total.saturating_add(size);
+            }
+            ensure!(total == start, "unindexed superframe payload");
+        }
+    }
+    let mut shown = 0;
+    for frame in frames {
+        let h = parse_prefix(&mut BitReader::new(frame))?;
+        shown += usize::from(h.show_frame);
+    }
+    Ok(shown)
+}
+
+/// Parse the uncompressed header (6.2). `refs`: eight reference-slot sizes. Updates persistent header state.
+pub fn parse_uncompressed(data: &[u8], st: &mut HeaderState, refs: &[Option<RefInfo>; 8]) -> Result<FrameHeader> {
+    let mut r = BitReader::new(data);
+    let mut h = parse_prefix(&mut r)?;
+    if h.show_existing_frame {
         h.uncompressed_size = r.position().div_ceil(8);
         return Ok(h);
     }
     st.last_frame_type = st.frame_type;
-    h.frame_type = r.read_bits(1)? as u8;
-    h.show_frame = r.read_flag()?;
-    h.error_resilient_mode = r.read_flag()?;
     if h.frame_type == KEY_FRAME {
         frame_sync_code(&mut r)?;
         h.color = color_config(&mut r, h.profile)?;
@@ -682,12 +718,12 @@ pub fn split_superframe(data: &[u8]) -> Vec<&[u8]> {
                     sz |= (data[p + b] as usize) << (8 * b);
                 }
                 p += sz_bytes;
-                if pos + sz > end {
+                let Some(next) = pos.checked_add(sz).filter(|&next| next <= end) else {
                     frames.push(&data[pos..end]);
                     return frames;
-                }
-                frames.push(&data[pos..pos + sz]);
-                pos += sz;
+                };
+                frames.push(&data[pos..next]);
+                pos = next;
             }
             return frames;
         }
@@ -698,6 +734,51 @@ pub fn split_superframe(data: &[u8]) -> Vec<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_intent_is_independent_of_reference_dimensions() {
+        // Prefix: marker 10, profile 00, show-existing, frame-type, show-frame, resilient.
+        for (prefix, count) in [(0b1000_0000, 0), (0b1000_0010, 1), (0b1000_0100, 0), (0b1000_0110, 1), (0b1000_1000, 1)] {
+            assert_eq!(display_count(&[prefix]).unwrap(), count);
+        }
+        assert!(display_count(&[]).is_err());
+        assert!(display_count(&[0]).is_err(), "invalid marker is unknown, not hidden");
+        assert!(display_count(&[0b1011_1000]).is_err(), "profile 3 reserved bit");
+    }
+
+    #[test]
+    fn display_count_covers_every_superframe_member() {
+        // Three one-byte prefixes: hidden inter + shown inter + show-existing; Annex B one-byte sizes.
+        const FRAMES: [u8; 3] = [0b1000_0100, 0b1000_0110, 0b1000_1000];
+        let marker = 0xc0 | (FRAMES.len() as u8 - 1);
+        let mut data = FRAMES.to_vec();
+        data.push(marker);
+        data.extend(std::iter::repeat_n(1, FRAMES.len()));
+        data.push(marker);
+        let expected = FRAMES.len() - 1; // The hidden inter frame has no display obligation.
+        assert_eq!(display_count(&data).unwrap(), expected);
+        data[FRAMES.len() + 1] = 2;
+        assert!(display_count(&data).is_err(), "oversized index entry cannot classify a partial frame");
+        data[FRAMES.len() + 1] = 0;
+        assert!(display_count(&data).is_err(), "zero-size index entry cannot classify a frame");
+        data[FRAMES.len() + 1] = 1;
+        data.insert(0, 0b1000_0010);
+        assert!(display_count(&data).is_err(), "unindexed visible input cannot disappear");
+    }
+
+    #[test]
+    fn superframe_sizes_cannot_overflow_the_payload_offset() {
+        // Annex B: two four-byte sizes, first 1 then u32::MAX. Offset 1 + second size overflows on 32-bit.
+        let marker = 0xc0 | (3 << 3) | 1;
+        let mut data = vec![0b1000_0010, 0b1000_0010, marker];
+        data.extend(1u32.to_le_bytes());
+        data.extend(u32::MAX.to_le_bytes());
+        data.push(marker);
+        assert!(display_count(&data).is_err());
+        let frames = split_superframe(&data);
+        assert_eq!(frames.len(), 2, "damaged second frame remains bounded by the payload");
+        assert!(frames.iter().all(|frame| frame.len() == 1));
+    }
 
     #[test]
     fn superframe_index() {

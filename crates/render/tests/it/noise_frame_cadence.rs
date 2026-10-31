@@ -21,7 +21,7 @@ fn render_noise(effect_id: &str, rate: FrameRate, frame: i64, amount: f64) -> Ve
         frame_rate: 24.0,
         working: filmcraft_color::WorkingSpace::Rec709,
     };
-    apply(&mut image, &effect, &context);
+    apply(&mut image, &effect, &context).unwrap();
     image.px
 }
 

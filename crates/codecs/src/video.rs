@@ -18,8 +18,8 @@ pub struct DecodedFrame {
 /// presentation order (a decoder with reordering may return zero or several per call).
 pub trait VideoDecoder: Send {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>>;
-    /// Drain pictures held for reordering (end of stream / before a seek).
-    fn flush(&mut self) -> Vec<DecodedFrame>;
+    /// Drain reordered pictures; failures must not publish unready or substitute earlier output.
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>>;
     /// Forget all state (called after seeking to a sync sample).
     fn reset(&mut self);
     fn name(&self) -> &str;
@@ -248,8 +248,8 @@ impl VideoDecoder for MjpegDecoder {
         let (w, h) = rgba.dimensions();
         Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(w, h, rgba.into_raw()), draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -338,8 +338,8 @@ impl VideoDecoder for H264Decoder {
         let pics = self.dec.decode(sample, pts).map_err(h264_error)?;
         Ok(pics.into_iter().map(Self::convert).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec.flush().into_iter().map(Self::convert).collect()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(self.dec.flush().into_iter().map(Self::convert).collect())
     }
     fn reset(&mut self) {
         if let Ok(d) = Self::make_inner(&self.avcc, self.threads) {
@@ -450,8 +450,8 @@ impl VideoDecoder for HevcDecoder {
         let pics = self.dec.decode(sample, pts).map_err(hevc_error)?;
         Ok(pics.into_iter().map(Self::convert).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec.flush().into_iter().map(Self::convert).collect()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(self.dec.flush().into_iter().map(Self::convert).collect())
     }
     fn reset(&mut self) {
         if self.hvcc.is_empty() {
@@ -582,8 +582,8 @@ impl VideoDecoder for Vp9Decoder {
         let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(pics.into_iter().filter_map(|p| self.convert(p)).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec.flush().into_iter().filter_map(|p| self.convert(p)).collect()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(self.dec.flush().into_iter().filter_map(|p| self.convert(p)).collect())
     }
     fn reset(&mut self) {
         self.dec.reset();
@@ -638,9 +638,9 @@ impl VideoDecoder for Vp8Decoder {
         let pic = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(pic.into_iter().map(Self::convert).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
         // no reordering: every picture comes out with its frame
-        Vec::new()
+        Ok(Vec::new())
     }
     fn reset(&mut self) {
         self.dec.reset();
@@ -671,6 +671,18 @@ pub struct Av1Decoder {
 impl Av1Decoder {
     pub fn new(config_obus: Vec<u8>) -> Av1Decoder {
         Av1Decoder { dec: filmcraft_av1::Decoder::new(), config_obus, primed: false }
+    }
+
+    fn convert_result(pictures: filmcraft_av1::Result<Vec<filmcraft_av1::Picture>>) -> Result<Vec<DecodedFrame>> {
+        pictures.map_err(|error| CodecError::Decode(error.to_string())).map(|pictures| {
+            pictures
+                .into_iter()
+                .map(|picture| {
+                    let pts = picture.pts;
+                    Self::convert(picture, pts)
+                })
+                .collect()
+        })
     }
 
     fn convert(p: filmcraft_av1::Picture, pts: i64) -> DecodedFrame {
@@ -711,24 +723,10 @@ impl VideoDecoder for Av1Decoder {
             }
         }
         // With frame threads pictures can come out of a later call; each carries its own pts.
-        let pics = self.dec.decode_pts(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
-        Ok(pics
-            .into_iter()
-            .map(|p| {
-                let pts = p.pts;
-                Self::convert(p, pts)
-            })
-            .collect())
+        Self::convert_result(self.dec.decode_pts(sample, pts))
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec
-            .flush()
-            .into_iter()
-            .map(|p| {
-                let pts = p.pts;
-                Self::convert(p, pts)
-            })
-            .collect()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Self::convert_result(self.dec.flush_result())
     }
     fn reset(&mut self) {
         self.dec = filmcraft_av1::Decoder::new();
@@ -749,6 +747,52 @@ pub fn av1_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
     match &e.codec {
         CodecConfig::Av1(c) => Some(Ok(Box::new(Av1Decoder::new(c.config_obus.clone())) as Box<dyn VideoDecoder>)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod av1_drain_tests {
+    use super::*;
+
+    #[test]
+    fn av1_failed_drain_preserves_the_original_cause() {
+        let cause = filmcraft_av1::Error::Invalid("injected queued AV1 frame failure");
+        let result = Av1Decoder::convert_result(Err(cause.clone()));
+        assert!(matches!(result, Err(CodecError::Decode(message)) if message == cause.to_string()));
+    }
+
+    #[test]
+    fn av1_drained_pictures_keep_their_own_timestamps() {
+        // Smallest even 4:2:0 picture; zero/positive/negative PTS cover timestamp boundaries.
+        let (width, height) = (2u32, 2u32);
+        let timestamps = [0, 1, -1];
+        let bt709_code = 1;
+        let pictures = timestamps
+            .into_iter()
+            .map(|pts| filmcraft_av1::Picture {
+                width,
+                height,
+                bit_depth: u8::BITS as u8,
+                subsampling_x: 1,
+                subsampling_y: 1,
+                mono_chrome: false,
+                planes: [vec![u8::MAX as u16; (width * height) as usize], vec![0; (width * height / 4) as usize], vec![0; (width * height / 4) as usize]],
+                color_primaries: bt709_code,
+                transfer_characteristics: bt709_code,
+                matrix_coefficients: bt709_code,
+                full_range: false,
+                pts,
+                draft: false,
+            })
+            .collect();
+        let frames = Av1Decoder::convert_result(Ok(pictures)).unwrap();
+        assert_eq!(frames.iter().map(|frame| frame.pts).collect::<Vec<_>>(), timestamps);
+        assert!(frames.iter().all(|frame| frame.frame.width == width && frame.frame.height == height));
+        assert!(
+            frames
+                .iter()
+                .all(|frame| matches!(&frame.frame.data, filmcraft_frame::PixelData::Yuv8 { planes, .. } if planes[0].iter().all(|sample| *sample == u8::MAX)))
+        );
     }
 }
 
@@ -785,8 +829,8 @@ impl VideoDecoder for ProResDecoder {
         };
         Ok(vec![DecodedFrame { pts, frame, draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -851,8 +895,8 @@ impl VideoDecoder for ApvDecoder {
         let f = filmcraft_apv::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(vec![DecodedFrame { pts, frame: apv_to_video_frame(f), draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -923,8 +967,8 @@ impl VideoDecoder for DnxDecoder {
         let f = filmcraft_dnx::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(vec![DecodedFrame { pts, frame: dnx_to_video_frame(f), draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -1025,8 +1069,8 @@ impl VideoDecoder for Mpeg2Decoder {
         let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
         Ok(pics.into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p), draft: false }).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.dec.flush().into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p), draft: false }).collect()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(self.dec.flush().into_iter().map(|p| DecodedFrame { pts: p.pts, frame: mpeg2_to_video_frame(p), draft: false }).collect())
     }
     fn reset(&mut self) {
         self.dec.reset();
@@ -1358,8 +1402,8 @@ impl VideoDecoder for RawVideoDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         Ok(vec![DecodedFrame { pts, frame: self.picture(sample)?, draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {

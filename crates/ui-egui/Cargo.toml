@@ -15,6 +15,7 @@ filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
+filmcraft-codecs = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-tts = { workspace = true }

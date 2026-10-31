@@ -186,18 +186,17 @@ pub fn scale_by(img: &mut Image, cov: &[f32]) {
 }
 
 /// Apply an effect limited to its masks (Premiere: a masked effect only applies inside the mask).
-pub fn apply_effect(img: &mut Image, e: &EffectInstance, cx: &crate::effects::FxCtx) {
+pub fn apply_effect(img: &mut Image, e: &EffectInstance, cx: &crate::effects::FxCtx) -> crate::Result<()> {
     if !e.enabled || e.masks.is_empty() {
-        crate::effects::apply(img, e, cx);
-        return;
+        return crate::effects::apply(img, e, cx);
     }
     let Some(cov) = effect_coverage(&e.masks, cx.t, cx.px_scale, img.w, img.h) else {
-        crate::effects::apply(img, e, cx);
-        return;
+        return crate::effects::apply(img, e, cx);
     };
     let original = img.clone();
-    crate::effects::apply(img, e, cx);
+    crate::effects::apply(img, e, cx)?;
     mix(img, &original, &cov);
+    Ok(())
 }
 
 /// Apply the masks of an item's Opacity effect to its layer (before Motion), if any.
