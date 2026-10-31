@@ -3663,3 +3663,8 @@
 	Flash Cue Point	Point de repère Flash
 	Invalid duration: {error}	Durée non valide : {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	Redémarrer
+	Later	Plus tard
+	Restart FilmCraft to use {language}	Redémarrez FilmCraft pour utiliser {language}
+	The interface language changes after a restart.	La langue de l'interface change après un redémarrage.

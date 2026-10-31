@@ -3631,3 +3631,8 @@
 	Flash Cue Point	Flash 큐 포인트
 	Invalid duration: {error}	잘못된 지속 시간: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	다시 시작
+	Later	나중에
+	Restart FilmCraft to use {language}	FilmCraft를 다시 시작하여 {language} 사용
+	The interface language changes after a restart.	인터페이스 언어는 다시 시작하면 변경됩니다.

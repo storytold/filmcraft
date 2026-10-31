@@ -3619,3 +3619,8 @@
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Der Kontrollserver ist deaktiviert: FILMCRAFT_CONTROL_TOKEN muss 64 zufällige Hexzeichen enthalten (siehe docs/control-protocol.md)
 
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	Neu starten
+	Later	Später
+	Restart FilmCraft to use {language}	FilmCraft neu starten, um {language} zu verwenden
+	The interface language changes after a restart.	Die Sprache der Oberfläche ändert sich nach einem Neustart.

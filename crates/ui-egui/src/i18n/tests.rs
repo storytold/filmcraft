@@ -178,6 +178,7 @@ fn missing_translations_report() {
 fn chinese_switches_and_persists_or_is_refused_without_a_font() {
     let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
     let ctx = egui::Context::default();
+    app.apply_prefs(&ctx); // a running app has applied its startup language
     let r = crate::menus::invoke(&mut app, &ctx, "app.language.chinese", serde_json::json!({}));
     if !chinese_font_available() {
         assert!(r.is_err(), "{r:?}");
@@ -187,13 +188,17 @@ fn chinese_switches_and_persists_or_is_refused_without_a_font() {
         app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "zh-cn"})).unwrap();
         app.apply_prefs(&ctx);
         assert_eq!(app.ui.language, Language::En);
+        assert!(app.restart_notice.is_none(), "a restart could not show it either");
         set_current(Language::En);
         return;
     }
     assert_eq!(r.unwrap(), serde_json::json!("zh-cn"));
-    assert_eq!(app.ui.language, Language::ZhCn);
     assert_eq!(app.session.prefs.general.interface_language, "zh-cn");
-    assert!(crate::menus::menu_items(&app).iter().any(|it| it.id == "app.language.chinese" && it.checked == Some(true)));
+    // the choice waits for a restart; a running app keeps its language and arms the notice
+    app.apply_prefs(&ctx);
+    assert_eq!(app.ui.language, Language::En);
+    assert_eq!(app.restart_notice.as_ref().map(|n| n.language), Some(Language::ZhCn));
+    assert!(crate::menus::menu_items(&app).iter().any(|it| it.id == "app.language.chinese" && it.checked == Some(false)));
     let prefs = serde_json::to_string(&app.session.prefs).unwrap();
     let mut restarted = filmcraft_engine::Session::default();
     restarted.prefs = serde_json::from_str(&prefs).unwrap();
@@ -443,96 +448,95 @@ fn tl_literals_are_found_and_unescaped() {
     assert_eq!(tl_literals(src), ["Save", "Say \"hi\"\n", "{n} file(s)"]);
 }
 
-type App = crate::FilmcraftApp;
-
-fn switch(app: &mut App, ctx: &egui::Context, cmd: &str) -> serde_json::Value {
-    crate::menus::invoke(app, ctx, cmd, serde_json::json!({})).unwrap()
-}
-
-/// The saved UI state round-trips the language (`code` is its serialized tag).
-fn assert_ui_persists(app: &App, lang: Language, code: &str) {
-    let saved = serde_json::to_string(&app.ui).unwrap();
-    assert!(saved.contains(&format!("\"language\":\"{code}\"")), "{saved}");
-    let restored: crate::state::UiState = serde_json::from_str(&saved).unwrap();
-    assert_eq!(restored.language, lang);
-}
-
-/// A restart with the saved prefs comes up in `lang`.
-fn assert_restart_keeps(app: &App, lang: Language) {
-    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
-    let mut restarted = filmcraft_engine::Session::default();
-    restarted.prefs = serde_json::from_str(&prefs).unwrap();
-    assert_eq!(App::new(restarted).ui.language, lang);
-}
-
-/// Only `checked_id` is checked among the language menu items.
-fn assert_only_checked(app: &App, checked_id: &str) {
-    for it in crate::menus::menu_items(app).iter().filter(|it| it.id.starts_with("app.language.")) {
-        assert_eq!(it.checked, Some(it.id == checked_id), "{}", it.id);
-    }
-}
-
-fn assert_menu_checked(app: &App, id: &str) {
-    assert!(crate::menus::menu_items(app).iter().any(|it| it.id == id && it.checked == Some(true)));
-}
-
-fn assert_labels(app: &App, labels: &[(&str, &str)]) {
-    let items = crate::menus::menu_items(app);
-    for (id, want) in labels {
-        assert_eq!(items.iter().find(|it| it.id == *id).map(|it| it.label.as_str()), Some(*want), "{id}");
-    }
-}
-
-/// Switch through the menu command and check everything a language change touches.
-/// `earlier` is a language name from an earlier step: it must still show in its own language.
-fn switch_and_check(app: &mut App, ctx: &egui::Context, name: &str, lang: Language, code: &str, own_name: &str, earlier: Option<(&str, &str)>) {
-    let result = switch(app, ctx, &format!("app.language.{name}"));
-    assert_eq!(result, serde_json::json!(code));
-    assert_eq!((app.ui.language, current()), (lang, lang));
-    assert_eq!(app.session.prefs.general.interface_language, code);
-    assert_only_checked(app, &format!("app.language.{name}"));
-    assert_labels(app, &[("file.saveAs", lang.tr("Save As…")), (&format!("app.language.{name}"), own_name)]);
-    if let Some((id, label)) = earlier {
-        assert_labels(app, &[(id, label)]);
-    }
-    assert_ui_persists(app, lang, code);
-    assert_restart_keeps(app, lang);
-}
-
+/// A language command saves the choice and arms the restart notice; the interface itself
+/// changes at the next start (like Premiere). The restarted apps below stand in for one.
 #[test]
-fn language_commands_switch_and_persist_without_a_document() {
-    let mut app = App::new(filmcraft_engine::Session::default());
+fn language_commands_take_effect_at_the_next_start() {
+    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
     let ctx = egui::Context::default();
+    app.apply_prefs(&ctx); // a running app has applied its startup language
+    let restarted_in = |app: &crate::FilmcraftApp| {
+        let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+        let mut restarted = filmcraft_engine::Session::default();
+        restarted.prefs = serde_json::from_str(&prefs).unwrap();
+        crate::FilmcraftApp::new(restarted)
+    };
+    // `id` is chosen, the preference is saved and the notice armed while the interface keeps
+    // the current language; the restarted app runs it.
+    let switch = |app: &mut crate::FilmcraftApp, id: &str, code: &str, language: Language| {
+        let result = crate::menus::invoke(app, &ctx, id, serde_json::json!({})).unwrap();
+        assert_eq!(result, serde_json::json!(code), "{id}");
+        assert_eq!(app.session.prefs.general.interface_language, code, "{id}");
+        app.apply_prefs(&ctx);
+        assert_ne!(app.ui.language, language, "{id} waits for a restart");
+        assert_eq!(app.restart_notice.as_ref().map(|n| n.language), Some(language), "{id}");
+        let restarted = restarted_in(app);
+        assert_eq!(restarted.ui.language, language, "{id} after a restart");
+        assert!(crate::menus::menu_items(&restarted).iter().any(|it| it.id == id && it.checked == Some(true)), "{id} checked after a restart");
+        restarted
+    };
     // Japanese needs an installed font (see `japanese_needs_an_installed_font`); skip that step without one
     if craft_japanese_font() || system_japanese_font().is_some() {
-        switch(&mut app, &ctx, "app.language.japanese");
-        assert_eq!(app.ui.language, Language::Ja);
-        assert_ui_persists(&app, Language::Ja, "ja");
+        let restarted = switch(&mut app, "app.language.japanese", "ja", Language::Ja);
+        let saved = serde_json::to_string(&restarted.ui).unwrap();
+        let restored: crate::state::UiState = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.language, Language::Ja);
     }
-    switch(&mut app, &ctx, "app.language.spanish");
-    assert_eq!(app.ui.language, Language::Es);
-    assert_restart_keeps(&app, Language::Es);
-    assert_menu_checked(&app, "app.language.spanish");
-    switch(&mut app, &ctx, "app.language.portuguese");
-    assert_eq!(app.ui.language, Language::PtBr);
-    assert_eq!(app.session.prefs.general.interface_language, "pt-br");
-    assert_menu_checked(&app, "app.language.portuguese");
-    for (name, lang, code, own, earlier) in [
-        ("ukrainian", Language::Uk, "uk", "Українська", None),
-        ("german", Language::De, "de", "Deutsch", Some(("app.language.spanish", "Español"))),
-        ("french", Language::Fr, "fr", "Français", Some(("app.language.german", "Deutsch"))),
-        ("indonesian", Language::Id, "id", "Bahasa Indonesia", Some(("app.language.french", "Français"))),
-        ("italian", Language::It, "it", "Italiano", Some(("app.language.indonesian", "Bahasa Indonesia"))),
-        ("czech", Language::Cs, "cs", "Čeština", Some(("app.language.italian", "Italiano"))),
-        ("polish", Language::Pl, "pl", "Polski", Some(("app.language.italian", "Italiano"))),
-        ("swedish", Language::Sv, "sv", "Svenska", Some(("app.language.italian", "Italiano"))),
-        ("turkish", Language::Tr, "tr", "Türkçe", Some(("app.language.italian", "Italiano"))),
-        ("bosnian", Language::Bs, "bs", "Bosanski", Some(("app.language.italian", "Italiano"))),
+    switch(&mut app, "app.language.spanish", "es", Language::Es);
+    switch(&mut app, "app.language.portuguese", "pt-br", Language::PtBr);
+    let restarted = switch(&mut app, "app.language.ukrainian", "uk", Language::Uk);
+    for item in crate::menus::menu_items(&restarted).iter().filter(|it| it.id.starts_with("app.language.")) {
+        assert_eq!(item.checked, Some(item.id == "app.language.ukrainian"), "{}", item.id);
+    }
+    let restarted = switch(&mut app, "app.language.german", "de", Language::De);
+    for it in crate::menus::menu_items(&restarted).iter().filter(|it| it.id.starts_with("app.language.")) {
+        assert_eq!(it.checked, Some(it.id == "app.language.german"), "{}", it.id);
+    }
+    // the menus are drawn in German, the language names in their own language
+    let items = crate::menus::menu_items(&restarted);
+    let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
+    assert_eq!(label("file.saveAs"), Some(Language::De.tr("Save As…")));
+    assert_eq!(label("app.language.spanish"), Some("Español"));
+    let restarted = switch(&mut app, "app.language.french", "fr", Language::Fr);
+    let items = crate::menus::menu_items(&restarted);
+    let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
+    assert_eq!(label("file.saveAs"), Some(Language::Fr.tr("Save As…")));
+    assert_eq!(label("app.language.german"), Some("Deutsch"));
+    let restarted = switch(&mut app, "app.language.indonesian", "id", Language::Id);
+    let items = crate::menus::menu_items(&restarted);
+    let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
+    assert_eq!(label("file.saveAs"), Some(Language::Id.tr("Save As…")));
+    assert_eq!(label("app.language.french"), Some("Français"));
+    assert_eq!(label("app.language.indonesian"), Some("Bahasa Indonesia"));
+    let restarted = switch(&mut app, "app.language.italian", "it", Language::It);
+    let items = crate::menus::menu_items(&restarted);
+    let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
+    assert_eq!(label("file.saveAs"), Some(Language::It.tr("Save As…")));
+    assert_eq!(label("app.language.indonesian"), Some("Bahasa Indonesia"));
+    assert_eq!(label("app.language.italian"), Some("Italiano"));
+    // the same coverage in the newer catalogs: chosen now, drawn after a restart
+    for (id, code, lang, own) in [
+        ("app.language.czech", "cs", Language::Cs, "Čeština"),
+        ("app.language.polish", "pl", Language::Pl, "Polski"),
+        ("app.language.swedish", "sv", Language::Sv, "Svenska"),
+        ("app.language.turkish", "tr", Language::Tr, "Türkçe"),
+        ("app.language.bosnian", "bs", Language::Bs, "Bosanski"),
     ] {
-        switch_and_check(&mut app, &ctx, name, lang, code, own, earlier);
+        let restarted = switch(&mut app, id, code, lang);
+        let items = crate::menus::menu_items(&restarted);
+        let label = |i: &str| items.iter().find(|it| it.id == i).map(|it| it.label.as_str());
+        assert_eq!(label("file.saveAs"), Some(lang.tr("Save As…")), "{id}");
+        assert_eq!(label(id), Some(own), "{id}");
+        assert_eq!(label("app.language.italian"), Some("Italiano"), "{id}");
+        let saved = serde_json::to_string(&restarted.ui).unwrap();
+        let restored: crate::state::UiState = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.language, lang, "{id}");
     }
-    switch(&mut app, &ctx, "app.language.english");
+    // choosing the running language again asks for nothing
+    crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+    app.apply_prefs(&ctx);
     assert_eq!(app.ui.language, Language::En);
+    assert!(app.restart_notice.is_none());
     set_current(Language::En);
 }
 
@@ -641,7 +645,10 @@ fn system_language_preference_uses_the_host_languages() {
     assert_eq!(current(), Language::Es);
     crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
     app.apply_prefs(&ctx);
-    assert_eq!((app.ui.language, app.session.prefs.general.interface_language.as_str()), (Language::En, "en"));
+    // the choice waits for a restart: the preference is saved, the notice armed, the
+    // interface stays Spanish
+    assert_eq!((app.ui.language, app.session.prefs.general.interface_language.as_str()), (Language::Es, "en"));
+    assert_eq!(app.restart_notice.as_ref().map(|n| n.language), Some(Language::En));
     let asked_before = asked.get();
     app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "ja"})).unwrap();
     app.apply_prefs(&ctx);

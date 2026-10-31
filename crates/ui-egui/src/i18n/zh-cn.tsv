@@ -3639,3 +3639,8 @@
 	Change the sequence to match the clip's settings?	是否更改序列以匹配剪辑的设置？
 	Change Sequence Settings	更改序列设置
 	Keep Existing Settings	保留现有设置
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	重启
+	Later	稍后
+	Restart FilmCraft to use {language}	重启 FilmCraft 以使用 {language}
+	The interface language changes after a restart.	界面语言将在重启后更改。

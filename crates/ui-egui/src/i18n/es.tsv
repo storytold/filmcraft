@@ -3664,3 +3664,8 @@
 	Change the sequence to match the clip's settings?	¿Cambiar la secuencia para que coincida con los ajustes del clip?
 	Change Sequence Settings	Cambiar ajustes de secuencia
 	Keep Existing Settings	Mantener los ajustes actuales
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	Reiniciar
+	Later	Más tarde
+	Restart FilmCraft to use {language}	Reinicia FilmCraft para usar {language}
+	The interface language changes after a restart.	El idioma de la interfaz cambia tras reiniciar.

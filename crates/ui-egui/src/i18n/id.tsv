@@ -3611,3 +3611,8 @@
 	Flash Cue Point	Titik Isyarat Flash
 	Invalid duration: {error}	Durasi tidak valid: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	Mulai ulang
+	Later	Nanti
+	Restart FilmCraft to use {language}	Mulai ulang FilmCraft untuk menggunakan {language}
+	The interface language changes after a restart.	Bahasa antarmuka berubah setelah memulai ulang.
