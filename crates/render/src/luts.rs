@@ -10,10 +10,11 @@
 //! Parsed LUTs are cached by content, so a library LUT is parsed once however many clips use it.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_color::{ColorSpace, Lut, Lut3d, LutFormat, Range};
-use filmcraft_project::Project;
+use filmcraft_project::{MAX_LUT_TEXT_BYTES, Project};
 
 /// A built-in LUT: id, label, and how it is made.
 pub struct Builtin {
@@ -80,12 +81,38 @@ impl Builtin {
     }
 }
 
-fn cache() -> &'static Mutex<HashMap<String, Arc<Lut>>> {
-    static C: OnceLock<Mutex<HashMap<String, Arc<Lut>>>> = OnceLock::new();
+/// Identity of immutable project LUT text. Pointer equality is intentional: an `Arc<str>` changes
+/// identity whenever a project edit replaces its text, while clones of an unchanged project share
+/// it. Keeping the Arc in the cache also prevents allocator-address reuse from aliasing old LUTs.
+#[derive(Clone, Debug)]
+struct LutText(Arc<str>);
+
+impl PartialEq for LutText {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for LutText {}
+
+impl Hash for LutText {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (Arc::as_ptr(&self.0) as *const ()).hash(state);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum CacheKey {
+    Builtin(String),
+    Library { text: LutText, format: String },
+}
+
+fn cache() -> &'static Mutex<HashMap<CacheKey, Arc<Lut>>> {
+    static C: OnceLock<Mutex<HashMap<CacheKey, Arc<Lut>>>> = OnceLock::new();
     C.get_or_init(Default::default)
 }
 
-fn cached(key: String, make: impl FnOnce() -> Option<Lut>) -> Option<Arc<Lut>> {
+fn cached(key: CacheKey, make: impl FnOnce() -> Option<Lut>) -> Option<Arc<Lut>> {
     if let Some(l) = cache().lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return Some(l.clone());
     }
@@ -103,23 +130,16 @@ pub fn resolve(project: Option<&Project>, spec: &str) -> Option<Arc<Lut>> {
     let spec = spec.trim();
     if let Some(id) = spec.strip_prefix("builtin:") {
         let b = builtins().iter().find(|b| b.id == id)?;
-        return cached(format!("builtin:{id}"), || Some(b.generate()));
+        return cached(CacheKey::Builtin(id.to_string()), || Some(b.generate()));
     }
     let id = spec.strip_prefix("lib:")?;
     let entry = project?.luts.iter().find(|l| l.id == id)?;
-    let key = format!("lib:{:016x}", hash(&entry.text));
+    if entry.text.len() > MAX_LUT_TEXT_BYTES {
+        return None;
+    }
+    let key = CacheKey::Library { text: LutText(entry.text.clone()), format: entry.format.clone() };
     let fmt = LutFormat::from_path(&format!("x.{}", entry.format));
     cached(key, || Lut::parse(&entry.text, fmt).ok())
-}
-
-fn hash(s: &str) -> u64 {
-    // FNV-1a
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for b in s.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    h ^ s.len() as u64
 }
 
 /// Human-readable name of a LUT reference (for panels).
@@ -168,5 +188,32 @@ mod tests {
         assert_eq!(l.apply([1.0, 0.0, 0.0]), [0.0, 0.0, 1.0]);
         assert_eq!(label(Some(&p), "lib:lut1"), "Swap");
         assert_eq!(label(Some(&p), "lib:x"), "x (missing)");
+    }
+
+    #[test]
+    fn library_cache_uses_retained_text_identity_without_rehashing_source() {
+        let text: Arc<str> = Lut::from_cube(Lut3d::from_fn(3, |c| c)).to_cube().into();
+        let a = CacheKey::Library { text: LutText(text.clone()), format: "cube".into() };
+        let b = CacheKey::Library { text: LutText(text), format: "cube".into() };
+        let c = CacheKey::Library { text: LutText(Arc::<str>::from(a_match_source_but_not_identity())), format: "cube".into() };
+        assert_eq!(a, b, "unchanged project snapshots share their LUT identity");
+        assert_ne!(a, c, "replacement text gets a new cache identity even when bytes match");
+    }
+
+    fn a_match_source_but_not_identity() -> String {
+        Lut::from_cube(Lut3d::from_fn(3, |c| c)).to_cube()
+    }
+
+    #[test]
+    fn oversized_embedded_lut_is_not_parsed() {
+        let mut p = Project::new("t");
+        p.luts.push(filmcraft_project::ProjectLut {
+            id: "too-big".into(),
+            name: "too-big".into(),
+            source_path: None,
+            format: "cube".into(),
+            text: "#".repeat(MAX_LUT_TEXT_BYTES + 1).into(),
+        });
+        assert!(resolve(Some(&p), "lib:too-big").is_none());
     }
 }

@@ -229,7 +229,7 @@ impl Frame {
 
     /// Copy the w x h luma window at (x0, y0) (clamped to the picture) into `out` (stride `os`).
     #[inline]
-    pub fn luma_window(&self, x0: i32, y0: i32, w: usize, h: usize, out: &mut [u8], os: usize) {
+    pub fn luma_window(&self, (x0, y0): (i32, i32), w: usize, h: usize, out: &mut [u8], os: usize) {
         let (width, height) = (self.width, self.height);
         for r in 0..h {
             let yy = (y0 + r as i32).clamp(0, height as i32 - 1) as usize;
@@ -241,7 +241,7 @@ impl Frame {
 
     /// Copy the w x h window of chroma component `c` at (x0, y0) (clamped) into `out`.
     #[inline]
-    pub fn chroma_window(&self, c: usize, x0: i32, y0: i32, w: usize, h: usize, out: &mut [u8], os: usize) {
+    pub fn chroma_window(&self, c: usize, (x0, y0): (i32, i32), w: usize, h: usize, out: &mut [u8], os: usize) {
         let (cw, ch) = (self.cwidth, self.cheight);
         for r in 0..h {
             let yy = (y0 + r as i32).clamp(0, ch as i32 - 1) as usize;
@@ -302,7 +302,10 @@ fn copy_line<const N: usize>(line: &[u8], x0: i32, out: &mut [u8], w: usize) {
 }
 
 /// Copy `out.len()` samples of `line` starting at x0, replicating edge samples outside the line.
-#[inline(always)]
+/// Kept out of line so the fixed-size path of `copy_line` stays an inline move rather than being
+/// merged with this variable-length copy into a libc memcpy call.
+#[cold]
+#[inline(never)]
 fn copy_clamped(line: &[u8], x0: i32, out: &mut [u8]) {
     let w = out.len();
     if x0 >= 0 && x0 as usize + w <= line.len() {
