@@ -1026,7 +1026,6 @@
 	Eyedropper (pick a color from the Program monitor)	Pipette (Farbe aus dem Programmmonitor aufnehmen)
 	Eyedropper: no picture to sample	Pipette: kein Bild zum Aufnehmen
 	Add/Remove Keyframe	Keyframe hinzufügen/entfernen
-	Temporal Interpolation	Zeitliche Interpolation
 	Linear	Linear
 	Bezier	Bézier
 	Auto Bezier	Automatische Bézier
@@ -1075,6 +1074,7 @@
 	All Caps	Großbuchstaben
 	Small Caps	Kapitälchen
 	Underline	Unterstrichen
+	Strikethrough	Durchgestrichen
 	OpenType	OpenType
 	Kerning	Unterschneidung
 	Ligatures	Ligaturen
@@ -1215,7 +1215,7 @@
 	New Bin	Neue Ablage
 	Find	Suchen
 	Automate to Sequence	Automatisch in Sequenz einfügen
-	Select items to clear	Wähle die zu löschenden Elemente aus
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Wähle einen Clip (oder einen verknüpften Clip) in der Timeline oder ein Element im Projektfenster aus, um es umzubenennen
 	User Order	Benutzerdefinierte Reihenfolge
 	Descending	Absteigend
 	Refresh Project	Projekt aktualisieren
@@ -3614,3 +3614,8 @@
 	Shows the version, community links and credits in a FilmCraft window.	Zeigt Version, Community-Links und Credits in einem FilmCraft-Fenster.
 	Couldn't open your web browser	Dein Webbrowser konnte nicht geöffnet werden
 	Open this address in your browser yourself:	Öffne diese Adresse selbst in deinem Browser:
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Der Kontrollserver ist deaktiviert: FILMCRAFT_CONTROL_TOKEN muss 64 zufällige Hexzeichen enthalten (siehe docs/control-protocol.md)
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).

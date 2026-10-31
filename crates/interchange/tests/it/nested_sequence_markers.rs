@@ -16,7 +16,7 @@ fn nest_project(clip_has_marker: bool) -> (filmcraft_project::Project, filmcraft
     let mut p = filmcraft_project::Project::new("P");
     let a = media(&mut p, "/m/a.mov", true, true, r);
     let nest = sequence(&mut p, "Inner", r, false);
-    clip(&mut p, nest, TrackKind::Video, 0, a, 0, 48, 0);
+    clip(&mut p, nest, TrackKind::Video, 0, a, 0..48, 0);
     {
         let q = p.sequence_mut(nest).unwrap();
         q.markers.push(Marker {
@@ -30,7 +30,7 @@ fn nest_project(clip_has_marker: bool) -> (filmcraft_project::Project, filmcraft
         });
     }
     let s = sequence(&mut p, "Outer", r, false);
-    let nest_clip = clip(&mut p, s, TrackKind::Video, 0, nest, 0, 48, 0);
+    let nest_clip = clip(&mut p, s, TrackKind::Video, 0, nest, 0..48, 0);
     if clip_has_marker {
         let q = p.sequence_mut(s).unwrap();
         let (_, it) = q.find_item_mut(nest_clip).unwrap();

@@ -167,10 +167,28 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         x += 28.0;
     }
 
-    // ---- style strip
-    let style_h = 30.0;
+    // ---- style strip: its controls wrap onto more rows in a narrow panel, so the strip is as tall
+    // as they were on the last frame (one 30 px row at least, half the panel at most)
+    let strip_id = egui::Id::unique(("caption-style-height", track.id.0));
+    let max_h = (rect.height() * 0.5).max(30.0);
+    let style_h = ui.ctx().data(|d| d.get_temp::<f32>(strip_id)).unwrap_or(30.0).clamp(30.0, max_h);
     let style_rect = Rect::from_min_max(pos2(rect.min.x + 10.0, rect.max.y - style_h), pos2(rect.max.x - 10.0, rect.max.y - 2.0));
-    style_strip(app, ui, style_rect, track_idx, &mut actions);
+    // when the wrapped controls are taller than the cap, the strip scrolls so every row stays reachable
+    let mut strip_ui = ui.new_child(egui::UiBuilder::new().max_rect(style_rect).id_salt("caption-style-strip"));
+    let scroll = egui::ScrollArea::vertical().id_salt(("caption-style-scroll", track.id.0)).auto_shrink([false, false]).show(&mut strip_ui, |ui| {
+        let r = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), style_h));
+        let used = style_strip(app, ui, r, track_idx, &mut actions);
+        // the strip's child doesn't advance this ui's cursor: claim its height so the scroll area knows it
+        ui.allocate_rect(Rect::from_min_size(r.min, vec2(r.width(), used.max(1.0))), Sense::hover());
+        used
+    });
+    let used = scroll.inner;
+    // capped like style_h, so controls taller than the cap don't request a repaint every frame
+    let wanted = (used + 6.0).clamp(30.0, max_h);
+    if (wanted - style_h).abs() > 0.5 {
+        ui.ctx().data_mut(|d| d.insert_temp(strip_id, wanted));
+        ui.ctx().request_repaint();
+    }
 
     // ---- segment list
     let list = Rect::from_min_max(pos2(rect.min.x + 6.0, bar.max.y + 8.0), pos2(rect.max.x - 6.0, style_rect.min.y - 6.0));
@@ -555,19 +573,32 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let c = rect.center();
         icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
         ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, tl!("Transcribe sequence"), Tokens::semibold(16.0), t.text);
-        let note = if filmcraft_speech_available(app) {
+        let available = filmcraft_speech_available(app);
+        let note = if available {
             tl!("Speech-to-text turns the dialogue into editable text.")
         } else {
             tl!("This build has no speech-to-text; import a transcript with transcript.set.")
         };
         ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, note, Tokens::ui(12.0), t.text_dim);
         let r = Rect::from_center_size(c + vec2(0.0, 26.0), vec2(200.0, 26.0));
-        let resp = ui.interact(r, egui::Id::unique("text.transcript.generate"), Sense::click());
-        ui.painter().rect_filled(r, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
+        // without speech-to-text the button is shown disabled: it looked ready and a click did
+        // nothing visible (the refusal only flashed in the status bar, #2402)
+        let resp = ui.interact(r, egui::Id::unique("text.transcript.generate"), if available { Sense::click() } else { Sense::hover() });
+        let fill = match (available, resp.hovered()) {
+            (false, _) => t.separator,
+            (true, true) => t.accent_hover,
+            (true, false) => t.accent,
+        };
+        ui.painter().rect_filled(r, 13.0, fill);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), if available { Color32::WHITE } else { t.text_dim });
         app.auto.add("text.transcript.generate", r, "Transcribe");
-        if resp.clicked() {
+        if let Some(e) = app.auto.elements.last_mut() {
+            e.enabled = Some(available);
+        }
+        if available && resp.clicked() {
             actions.push(("transcript.generate".into(), json!({})));
+        } else if !available {
+            resp.on_hover_text(note);
         }
         run(app, ui, actions);
         return;
@@ -655,12 +686,14 @@ fn filmcraft_speech_available(app: &FilmcraftApp) -> bool {
     app.session.transcriber.is_some() || filmcraft_engine::transcript::speech_available()
 }
 
-fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: usize, actions: &mut Vec<(String, Value)>) {
-    let Some(tr) = app.session.active_sequence().and_then(|q| q.caption_tracks.get(track_idx)).cloned() else { return };
+/// The track style controls in `r`, wrapping onto more rows when they don't fit; returns the
+/// height they took.
+fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: usize, actions: &mut Vec<(String, Value)>) -> f32 {
+    let Some(tr) = app.session.active_sequence().and_then(|q| q.caption_tracks.get(track_idx)).cloned() else { return 0.0 };
     let st = tr.style.clone();
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt("caption-style"));
-    child.horizontal_centered(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
+    child.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
         let r = craft_ui::ComboBox::from_id_salt(("caption-font", tr.id.0)).selected_text(&st.font).width(130.0).height(400.0).show_ui(ui, |ui| {
             if !filmcraft_text::fonts::system_scanned() {
                 filmcraft_text::fonts::scan_system();
@@ -679,6 +712,21 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             }
         });
         app.auto.add("text.captions.style.font", r.response.rect, "Caption font");
+        // the styles of the track's family, next to the font
+        let styles = filmcraft_text::families().into_iter().find(|(f, _)| f.eq_ignore_ascii_case(&st.font)).map(|(_, v)| v).unwrap_or_default();
+        let r = craft_ui::ComboBox::from_id_salt(("caption-font-style", tr.id.0)).selected_text(&st.font_style).width(100.0).height(300.0).show_ui(ui, |ui| {
+            for name in &styles {
+                let resp = ui.selectable_label(name.eq_ignore_ascii_case(&st.font_style), name);
+                let visible = resp.rect.intersect(ui.clip_rect());
+                if visible.is_positive() {
+                    app.auto.add(&format!("text.captions.style.fontStyle.option.{name}"), visible, name);
+                }
+                if resp.clicked() {
+                    actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "fontStyle": name})));
+                }
+            }
+        });
+        app.auto.add("text.captions.style.fontStyle", r.response.rect, "Caption font style");
         let mut size = st.size;
         let resp = ui.add(crate::widgets::number_drag(&mut size).range(8.0..=200.0).speed(0.5).suffix(" px"));
         app.auto.add("text.captions.style.size", resp.rect, "Caption size");
@@ -725,6 +773,7 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             }
         }
     });
+    child.min_rect().height()
 }
 
 fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {

@@ -1,5 +1,5 @@
 use super::layout::Layout;
-use super::*;
+use super::{ClipId, FilmcraftApp, Grab, Hit, Pos2, SNAP_PX, Sequence, Tick, Value, grab_at, json};
 
 /// Snap `t` to nearby candidates (edits, playhead, markers, in/out). Returns snapped tick.
 pub(in super::super) fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
@@ -46,6 +46,39 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
             c
         }
         None => t,
+    }
+}
+
+/// Where a dragged caption edge lands (#2192): [`snap`], or the nearest edge of a caption not in
+/// `exclude` (the captions being dragged) when that is closer.
+pub(in super::super) fn snap_caption(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
+    if !app.session.state.snapping {
+        return t;
+    }
+    let x = layout.x_of(t);
+    let caption = seq
+        .caption_tracks
+        .iter()
+        .flat_map(|tr| &tr.captions)
+        .filter(|c| !exclude.contains(&c.id))
+        .flat_map(|c| [c.start, c.end()])
+        .map(|c| ((layout.x_of(c) - x).abs(), c))
+        .filter(|(d, _)| *d < SNAP_PX)
+        .min_by(|a, b| a.0.total_cmp(&b.0));
+    // `snap` sets the indicator only when it snaps: that tells a snap onto `t` itself from none
+    let prev = app.tl.snap_x.take();
+    let clip = snap(app, seq, layout, t, &[]);
+    let clip_d = app.tl.snap_x.map(|sx| (sx - x).abs());
+    match (caption, clip_d) {
+        (Some((d, c)), cd) if cd.is_none_or(|cd| d < cd) => {
+            app.tl.snap_x = Some(layout.x_of(c));
+            c
+        }
+        (_, Some(_)) => clip,
+        _ => {
+            app.tl.snap_x = prev;
+            t
+        }
     }
 }
 

@@ -398,3 +398,156 @@ fn full_size_yuv8_tables_give_the_per_pixel_values_bit_for_bit() {
         }
     }
 }
+
+#[test]
+fn opaque_yuv8_to_srgb_bytes_is_the_linear_picture_in_srgb() {
+    use filmcraft_color::{Primaries, Transfer};
+    let mut seed = 0x9e37_79b9_u32;
+    let mut code = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        (seed >> 24) as u8
+    };
+    // small and odd sizes take the per-pixel loop of the float conversion, 640x480 its pair tables
+    for (w, h) in [(1usize, 1usize), (7, 5), (33, 17), (640, 480)] {
+        for chroma in [Chroma::C420, Chroma::C422, Chroma::C444] {
+            let (sx, sy) = chroma.shifts();
+            let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+            let mut plane = |n: usize| Arc::new((0..n).map(|_| code()).collect::<Vec<u8>>());
+            let planes = [plane(w * h), plane(cw * ch), plane(cw * ch)];
+            for matrix in [Matrix::Bt601, Matrix::Bt709, Matrix::Bt2020Ncl] {
+                for range in [Range::Limited, Range::Full] {
+                    for transfer in [Transfer::Bt709, Transfer::Srgb, Transfer::Linear, Transfer::Pq] {
+                        let f = VideoFrame {
+                            width: w as u32,
+                            height: h as u32,
+                            data: PixelData::Yuv8 { planes: planes.clone(), chroma, alpha: None },
+                            color: ColorInfo { matrix, transfer, primaries: Primaries::Bt709, range },
+                            par: (1, 1),
+                            pts: Tick::ZERO,
+                        };
+                        for n in [1, 2, 3, 4] {
+                            let (dw, dh, lin) = f.to_linear_f32_decimated(n);
+                            let mut want = vec![0u8; dw * dh * 4];
+                            linear_premul_to_srgb8(&lin, &mut want);
+                            assert!(f.to_opaque_srgb8(n) == Some(want), "{w}x{h} /{n} {chroma:?} {matrix:?} {range:?} {transfer:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // frames it leaves to the float path
+    let alpha = VideoFrame {
+        width: 2,
+        height: 2,
+        data: PixelData::Yuv8 {
+            planes: [Arc::new(vec![16; 4]), Arc::new(vec![128]), Arc::new(vec![128])],
+            chroma: Chroma::C420,
+            alpha: Some(Arc::new(vec![255; 4])),
+        },
+        color: Default::default(),
+        par: (1, 1),
+        pts: Tick::ZERO,
+    };
+    assert_eq!(alpha.to_opaque_srgb8(1), None);
+    assert_eq!(VideoFrame::rgba8(2, 2, vec![255; 16]).to_opaque_srgb8(1), None);
+    let short = VideoFrame {
+        data: PixelData::Yuv8 { planes: [Arc::new(vec![16; 3]), Arc::new(vec![128]), Arc::new(vec![128])], chroma: Chroma::C420, alpha: None },
+        ..alpha
+    };
+    assert_eq!(short.to_opaque_srgb8(1), None);
+}
+
+/// The conversion of an 8-bit Y'CbCr picture written out one pixel at a time, in the general
+/// loop's arithmetic: what [`VideoFrame::to_linear_f32_decimated_with`] gives at full size.
+fn yuv8_reference(f: &VideoFrame, decode: Option<&DecodeTable>) -> Vec<f32> {
+    let PixelData::Yuv8 { planes, chroma, alpha } = &f.data else { panic!("8-bit Y'CbCr only") };
+    let (w, h) = (f.width as usize, f.height as usize);
+    let (sx, sy) = chroma.shifts();
+    let cw = w.div_ceil(1 << sx);
+    let info = f.color;
+    let q = |v: f32| match decode {
+        Some(t) => t.lookup(v),
+        None => to_linear(((v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize) as f32 / 4095.0, info.transfer),
+    };
+    let (kr, kb) = info.matrix.kr_kb();
+    let kg = 1.0 - kr - kb;
+    let (cr_r, cb_b) = (2.0 * (1.0 - kr), 2.0 * (1.0 - kb));
+    let (cr_g, cb_g) = (cr_r * kr / kg, cb_b * kb / kg);
+    let mut out = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let c = (y >> sy) * cw + (x >> sx);
+            let yy = normalize_y(u32::from(planes[0][y * w + x]), 8, info.range);
+            let (u, v) = (normalize_c(u32::from(planes[1][c]), 8, info.range), normalize_c(u32::from(planes[2][c]), 8, info.range));
+            let a = alpha.as_ref().map_or(1.0, |al| f32::from(al[y * w + x]) / 255.0);
+            out.extend([(0.0 + q(yy + cr_r * v) * a), (0.0 + q(yy - cr_g * v - cb_g * u) * a), (0.0 + q(yy + cb_b * u) * a), (0.0 + a)]);
+        }
+    }
+    out
+}
+
+/// The one-to-one path gives every value of the pixel-by-pixel definition, bit for bit, for
+/// every chroma format, with and without alpha, in both ranges and with a decode table.
+#[test]
+fn a_full_size_yuv8_picture_converts_exactly_pixel_by_pixel() {
+    let mut s = 0x2545_f491_4f6c_dd1du64;
+    let mut byte = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s as u8
+    };
+    let pq = DecodeTable::new(0.0, 1.0, 4096, |v| f64::from(filmcraft_color::pq_eotf(v as f32)) * 100.0);
+    for (w, h) in [(1usize, 1usize), (2, 2), (3, 5), (37, 23), (64, 2)] {
+        for chroma in [Chroma::C420, Chroma::C422, Chroma::C444] {
+            let (sx, sy) = chroma.shifts();
+            let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
+            for (alpha, color) in [(false, ColorInfo::REC709), (true, ColorInfo { range: Range::Full, matrix: Matrix::Bt601, ..ColorInfo::SRGB_FULL })] {
+                let mut plane = |n: usize| Arc::new((0..n).map(|_| byte()).collect::<Vec<u8>>());
+                let planes = [plane(w * h), plane(cw * ch), plane(cw * ch)];
+                let f = VideoFrame {
+                    width: w as u32,
+                    height: h as u32,
+                    data: PixelData::Yuv8 { planes, chroma, alpha: alpha.then(|| plane(w * h)) },
+                    color,
+                    par: (1, 1),
+                    pts: Tick::ZERO,
+                };
+                for decode in [None, Some(&pq)] {
+                    let (_, _, got) = f.to_linear_f32_decimated_with(1, decode);
+                    let want = yuv8_reference(&f, decode);
+                    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(&got), bits(&want), "{w}x{h} {chroma:?} alpha {alpha} {color:?} decode {}", decode.is_some());
+                }
+            }
+        }
+    }
+}
+
+/// Planes shorter than the picture never make the conversion panic: the pixels whose samples
+/// are there come out as usual (also in a row the plane ends in), the others transparent.
+#[test]
+fn a_yuv8_picture_with_short_planes_converts_without_panicking() {
+    // 8x8 4:2:0 whose planes hold three and a half rows of luma, two of chroma and five of
+    // alpha: rows 0-2 are whole, row 3 has its first four pixels, the rest is transparent
+    let f = VideoFrame {
+        data: PixelData::Yuv8 {
+            planes: [Arc::new(vec![235; 28]), Arc::new(vec![128; 8]), Arc::new(vec![128; 8])],
+            chroma: Chroma::C420,
+            alpha: Some(Arc::new(vec![255; 40])),
+        },
+        color: ColorInfo::REC709,
+        ..VideoFrame::rgba8(8, 8, vec![0; 256])
+    };
+    let (_, _, px) = f.to_linear_f32_decimated(1);
+    assert_eq!(px.len(), 8 * 8 * 4);
+    let white = |p: &[f32]| p[3] == 1.0 && p[0] > 0.99;
+    let row = |y: usize| &px[y * 32..(y + 1) * 32];
+    assert!((0..3).all(|y| row(y).chunks(4).all(white)), "whole rows of samples: {:?}", row(0));
+    assert!(row(3)[..16].chunks(4).all(white), "the samples the last luma row holds: {:?}", row(3));
+    assert!(row(3)[16..].iter().all(|v| *v == 0.0), "the rest of that row is transparent: {:?}", row(3));
+    assert!((4..8).all(|y| row(y).iter().all(|v| *v == 0.0)), "rows without luma are transparent");
+}

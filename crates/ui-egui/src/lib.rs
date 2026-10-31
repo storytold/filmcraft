@@ -6,6 +6,15 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+/// FilmCraft as craft-update knows it, with its 128 px icon and accent colour: the update
+/// prompt shows both, and an AppImage's menu entry gets the icon.
+#[cfg(not(target_arch = "wasm32"))]
+pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
+    icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.filmcraft.png")),
+    accent: Some([0x8b, 0x5c, 0xf6]),
+    ..craft_update::suite::FILMCRAFT
+};
+
 /// A literal UI string in the language the interface is drawn in (`i18n::t`). Only literals: the
 /// i18n tests read every `tl!` literal in the crate and require a Spanish translation for it.
 macro_rules! tl {
@@ -119,6 +128,9 @@ pub enum Dialog {
     SequenceSettings,
     /// Set Transition Duration (double-click a transition in the Timeline).
     TransitionDuration,
+    /// Clip Mismatch Warning: the first clip put in an empty sequence doesn't match its settings
+    /// (Settings ▸ Timeline ▸ Show Clip Mismatch Warning dialog; `panels::clip_mismatch`).
+    ClipMismatch,
 }
 
 #[derive(Default)]
@@ -131,6 +143,8 @@ pub struct Playback {
     anchor_tick: Tick,
     /// Audio frames played at anchor (when the audio clock drives).
     pub audio_clock: bool,
+    /// A Text to Speech preview owns the audio output (it plays without `playing`).
+    pub tts_preview: bool,
     /// The audio clock's last reading and when (monotonic host s) it last moved: a device that stops
     /// consuming samples hands the clock back to the wall clock (see [`AUDIO_STALL_S`]).
     audio_seen: (u64, f64),
@@ -166,6 +180,16 @@ pub(crate) enum ImeComposition {
     Stale,
 }
 
+/// Why the control server is not serving although `--control` was given, for the status bar
+/// (#3436). The UI translates each cause as a whole sentence; the desktop app maps its
+/// `control_server::DisabledWhy` onto this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ControlNotice {
+    /// `FILMCRAFT_CONTROL_TOKEN` is missing or malformed. (A bind failure is only logged until
+    /// #3318 reworks port-collision reporting.)
+    Token,
+}
+
 pub struct FilmcraftApp {
     pub session: Session,
     pub ui: UiState,
@@ -182,6 +206,8 @@ pub struct FilmcraftApp {
     pub file_dialogs: panels::file_dialogs::FileDialogState,
     /// The native file dialog the host is showing ([`Self::pick`]).
     native_dialog: Option<native_dialogs::PendingDialog>,
+    /// A save dialog's answer waiting for Replace or Cancel ([`native_dialogs`]).
+    overwrite_prompt: Option<native_dialogs::PendingOverwrite>,
     pub auto: automation::Registry,
     /// Bumped when the custom text edit target is (re)created, a sequence/document context
     /// changes, or a control request replaces `gfxEdit`. It is the replacement epoch of the
@@ -212,6 +238,10 @@ pub struct FilmcraftApp {
     /// [`MAX_THUMB_TEXTURES`] are freed, least recently used first (#1682).
     thumb_used: HashMap<String, u64>,
     control_rx: Option<Receiver<ControlRequest>>,
+    /// Why the control server is not serving although `--control` was given (a malformed
+    /// `FILMCRAFT_CONTROL_TOKEN`, a port that cannot be bound): shown whenever the status bar is
+    /// idle (#3436). It is also in `filmcraft.log`; `None` when the server is running.
+    pub(crate) control_notice: Option<ControlNotice>,
     /// One explicit panel reveal; consumed by the custom renderer, never repeated per frame.
     pub(crate) pending_panel_raise: Option<PanelKind>,
     /// Explicit automation mode: native widget input and native menu commands are excluded.
@@ -311,6 +341,9 @@ pub struct FilmcraftApp {
     /// Items imported by an OS file drop, to place on the Timeline at the drop point this frame
     /// (in the coordinates of the viewport the files were dropped on).
     pending_timeline_drop: Option<(Vec<filmcraft_engine::project::ItemId>, egui::Pos2, egui::ViewportId)>,
+    /// The edit the Clip Mismatch Warning asks about (command, parameters); it runs with
+    /// `matchSequence` once answered.
+    clip_mismatch: Option<(String, serde_json::Value)>,
     /// Files being dragged over a window from the OS (count, pointer, viewport): the Timeline previews where they would land.
     file_drag_hover: Option<(usize, egui::Pos2, egui::ViewportId)>,
     /// Files dragged over or dropped on dock panels in their own OS windows last frame; the
@@ -326,7 +359,6 @@ pub struct FilmcraftApp {
     menu_sent: Vec<menus::MenuItem>,
     /// Keyboard Shortcuts dialog state.
     pub shortcut_editor: panels::shortcuts_dialog::EditorState,
-    pub toast: Option<(String, f64)>,
     pub tl: panels::timeline::TlState,
     pub(crate) transcript_cache: panels::transcript_cache::TranscriptCache,
     /// Commands from outside the UI (native menu bar), invoked on the UI thread.
