@@ -180,6 +180,12 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     }
 }
 
+/// The speed after J / L in the Program and Source monitors; the ladder is shared with dynamic
+/// trimming, see [`filmcraft_engine::trim::shuttle_speed`] (#3234).
+pub(crate) fn shuttle_speed(current: Option<f64>, dir: f64) -> f64 {
+    filmcraft_engine::trim::shuttle_speed(current, dir)
+}
+
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
@@ -354,10 +360,11 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.toggle_play(1.0);
             return Ok(json!({"playing": app.playback.playing}));
         }
-        // L / J: pressing again in the same direction doubles the speed, up to 8×
+        // L / J: pressing again in the same direction doubles the speed, up to 8×; the opposite key
+        // steps it back down (#3234)
         "playback.forward" | "playback.reverse" if targets_source(app, &params) => {
             let (clock, dir) = (&app.source_playback.clock, if id == "playback.forward" { 1.0 } else { -1.0 });
-            let speed = if clock.playing && clock.speed * dir > 0.0 { (clock.speed * 2.0).clamp(-8.0, 8.0) } else { dir };
+            let speed = shuttle_speed(clock.playing.then_some(clock.speed), dir);
             app.shuttle_source(speed)?;
             return Ok(json!({"playing": app.source_playback.clock.playing, "speed": app.source_playback.clock.speed}));
         }
@@ -376,12 +383,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             return app.session.execute("source.setPlayhead", json!({"time": time.0})).map_err(|e| e.to_string());
         }
         "playback.forward" => {
-            let s = if app.playback.playing && app.playback.speed > 0.0 { (app.playback.speed * 2.0).min(8.0) } else { 1.0 };
+            let s = shuttle_speed(app.playback.playing.then_some(app.playback.speed), 1.0);
             app.play(s);
             return Ok(json!({"speed": app.playback.speed}));
         }
         "playback.reverse" => {
-            let s = if app.playback.playing && app.playback.speed < 0.0 { (app.playback.speed * 2.0).max(-8.0) } else { -1.0 };
+            let s = shuttle_speed(app.playback.playing.then_some(app.playback.speed), -1.0);
             app.play(s);
             return Ok(json!({"speed": app.playback.speed}));
         }
@@ -1202,6 +1209,34 @@ mod parse_shortcut_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_opposite_shuttle_key_steps_the_speed_down() {
+        use super::shuttle_speed as step;
+        // L, L, L, L, L from a stop
+        let mut up = None;
+        let ladder: Vec<f64> = (0..5)
+            .map(|_| {
+                let s = step(up, 1.0);
+                up = Some(s);
+                s
+            })
+            .collect();
+        assert_eq!(ladder, [1.0, 2.0, 4.0, 8.0, 8.0]);
+        // J steps down, still forward, then turns around at 1x
+        assert_eq!(step(Some(8.0), -1.0), 4.0);
+        assert_eq!(step(Some(4.0), -1.0), 2.0);
+        assert_eq!(step(Some(2.0), -1.0), 1.0);
+        assert_eq!(step(Some(1.0), -1.0), -1.0);
+        // and the mirror image
+        assert_eq!(step(Some(-8.0), 1.0), -4.0);
+        assert_eq!(step(Some(-2.0), 1.0), -1.0);
+        assert_eq!(step(Some(-1.0), 1.0), 1.0);
+        // slower than 1x turns around, a stopped clock or odd speed starts at 1x
+        assert_eq!(step(Some(0.25), -1.0), -1.0);
+        assert_eq!(step(None, -1.0), -1.0);
+        assert_eq!(step(Some(f64::NAN), 1.0), 1.0);
+    }
+
     use super::*;
 
     /// A clipboard image is premultiplied inside `Color32`. The PNG writer expects straight

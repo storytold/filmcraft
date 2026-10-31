@@ -209,7 +209,11 @@ fn j_and_l_shuttle_the_source_both_ways_and_double_the_speed() {
         let r = menus::invoke(h.state_mut(), &ctx, "playback.forward", json!({})).unwrap();
         assert_eq!(r["speed"], speed);
     }
-    // J while running forward turns around at normal speed, then runs backward to the first frame
+    // J while running forward steps the speed down a notch, still forward (#3234), and turns around
+    // at normal speed, then runs backward to the first frame
+    for speed in [4.0, 2.0, 1.0] {
+        assert_eq!(menus::invoke(h.state_mut(), &ctx, "playback.reverse", json!({})).unwrap()["speed"], speed);
+    }
     h.state_mut().session.execute("source.setPlayhead", json!({"seconds":2})).unwrap();
     assert_eq!(menus::invoke(h.state_mut(), &ctx, "playback.reverse", json!({})).unwrap()["speed"], -1.0);
     let at = h.state().session.state.source_playhead;

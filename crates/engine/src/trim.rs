@@ -13,7 +13,7 @@
 //! ([`TrimShift`]) that count how far each side moved since the edit point was selected.
 //!
 //! **Dynamic trimming** ([`TrimPlayback`]): in trim mode J/L "play" the edit point — it moves at the
-//! shuttle speed (L forward, J backward, pressing again doubles the speed up to 8×, Shift = slow)
+//! shuttle speed (L forward, J backward, pressing again doubles the speed up to 8×, the opposite key steps it down, Shift = slow)
 //! and the sequence updates live. K stops and commits: the whole dynamic trim is **one** undo step.
 //! Space loops playback around the edit (Preferences ▸ Playback preroll/postroll). Everything is
 //! driven by a caller-supplied clock (`clock`, seconds): the UI passes its frame time, tests pass
@@ -462,9 +462,21 @@ fn frames_for(s: &Session, secs: f64) -> Tick {
     rate.tick_of(if secs < 0.0 { -mag } else { mag })
 }
 
+/// The speed after J (`dir` -1) or L (`dir` +1) while the shuttle runs at `current` (`None` when it is
+/// stopped), as in Premiere Pro: the same direction doubles the speed up to 8×, the opposite one steps
+/// it down a notch and keeps the direction (8× to 4× to 2× to 1×); at 1× or slower it turns around at
+/// 1× (#3234). The Program and Source monitors use the same ladder.
+pub fn shuttle_speed(current: Option<f64>, dir: f64) -> f64 {
+    match current.filter(|s| s.is_finite() && *s != 0.0) {
+        Some(s) if s * dir > 0.0 => (s * 2.0).clamp(-8.0, 8.0),
+        Some(s) if s.abs() > 1.0 => s.signum() * (s.abs() / 2.0).max(1.0),
+        _ => dir,
+    }
+}
+
 /// `trim.shuttle {direction: "forward"|"reverse", slow?, clock}` (L / J in trim mode): start a
-/// dynamic trim, speed it up (pressing the same direction again doubles the speed, up to 8×) or
-/// reverse it.
+/// dynamic trim, speed it up (pressing the same direction again doubles the speed, up to 8×), step it
+/// down (the opposite key) or, at 1×, reverse it.
 pub fn shuttle(s: &mut Session, p: &Value) -> Result<Value> {
     let clock = clock_p(p);
     let dir = direction_p(p);
@@ -486,13 +498,7 @@ pub fn shuttle(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let rate = s.sequence_rate();
     let d = s.trim_play.dynamic.as_mut().ok_or_else(|| EngineError::Other("dynamic trimming is not active".into()))?;
-    let speed = if slow {
-        0.25 * dir
-    } else if d.speed * dir > 0.0 && !d.at_limit {
-        (d.speed * 2.0).clamp(-8.0, 8.0)
-    } else {
-        dir
-    };
+    let speed = if slow { 0.25 * dir } else { shuttle_speed((!d.at_limit).then_some(d.speed), dir) };
     d.speed = speed;
     d.anchor_clock = clock;
     d.anchor_offset = d.offset;

@@ -247,7 +247,7 @@ fn dynamic_roll_forward_is_one_undo_step() {
 }
 
 #[test]
-fn pressing_l_again_doubles_speed_and_j_reverses() {
+fn pressing_l_again_doubles_speed_and_j_steps_down_then_reverses() {
     let mut s = demo();
     let (left, cut) = select_first_cut(&mut s, "roll");
     let rate = s.sequence_rate();
@@ -260,16 +260,21 @@ fn pressing_l_again_doubles_speed_and_j_reverses() {
     s.execute("trim.tick", json!({"clock": 1.0})).unwrap();
     let expect = a + frames(&s, 1.0);
     assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).unwrap().2, cut + rate.tick_of(expect));
-    // J: reverse at 1×
+    // J at 2×: one step down, still forward (#3234)
     let r = s.execute("trim.shuttle", json!({"direction": "reverse", "clock": 1.0})).unwrap();
+    assert_eq!(r["speed"], json!(1.0));
+    s.execute("trim.tick", json!({"clock": 1.5})).unwrap();
+    let expect = expect + frames(&s, 0.5);
+    // J at 1×: reverse at 1×
+    let r = s.execute("trim.shuttle", json!({"direction": "reverse", "clock": 1.5})).unwrap();
     assert_eq!(r["speed"], json!(-1.0));
-    s.execute("trim.tick", json!({"clock": 1.25})).unwrap();
+    s.execute("trim.tick", json!({"clock": 1.75})).unwrap();
     let back = expect - frames(&s, 0.25);
     assert_eq!(v1(&s).into_iter().find(|c| c.0 == left).unwrap().2, cut + rate.tick_of(back));
     // slow (Shift+J / Shift+L) = quarter speed
-    let r = s.execute("trim.shuttle", json!({"direction": "forward", "slow": true, "clock": 1.25})).unwrap();
+    let r = s.execute("trim.shuttle", json!({"direction": "forward", "slow": true, "clock": 1.75})).unwrap();
     assert_eq!(r["speed"], json!(0.25));
-    let r = s.execute("trim.shuttleStop", json!({"clock": 2.25})).unwrap();
+    let r = s.execute("trim.shuttleStop", json!({"clock": 2.75})).unwrap();
     assert_eq!(r["offsetFrames"], json!(back + frames(&s, 0.25)));
     assert_eq!(s.history.undo.last().unwrap().0, "Dynamic Rolling Edit");
 }
