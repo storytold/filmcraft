@@ -18,6 +18,7 @@ runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 command: filmcraft
 finish-args:
+  - --filesystem=xdg-data/ArtCraft/versions:ro
   # X11 shared memory (MIT-SHM). Without it the X11 fallback is slow or fails.
   - --share=ipc
   # Display: Wayland first; X11 only when no Wayland compositor is running.
@@ -38,9 +39,9 @@ finish-args:
   - --filesystem=/media
   - --filesystem=/run/media
   - --filesystem=/mnt
-  # Deliberately not granted: network (the optional --control server listens on 127.0.0.1 in
-  # the sandbox; `flatpak override --user --share=network ai.storyteller.filmcraft` exposes it
-  # to host agents) and host-wide filesystem access.
+  # Network: the update check reaches GitHub. The optional --control server still listens on
+  # 127.0.0.1 inside the sandbox. Host-wide filesystem access is still not granted.
+  - --share=network
 modules:
   - name: filmcraft
     buildsystem: simple
@@ -48,8 +49,8 @@ modules:
       - install -Dm755 bin/filmcraft /app/bin/filmcraft
       - install -Dm755 bin/filmcraft-cli /app/bin/filmcraft-cli
       - install -Dm644 share/applications/ai.storyteller.filmcraft.desktop /app/share/applications/ai.storyteller.filmcraft.desktop
-      # The same MIME file the deb/rpm install (no types of its own yet; the runtime's
-      # shared-mime-info already knows the video and audio formats).
+      # The same MIME file the deb/rpm install: it defines the .fcproj project type (the
+      # runtime's shared-mime-info already knows the video and audio formats).
       - install -Dm644 share/mime/packages/ai.storyteller.filmcraft.xml /app/share/mime/packages/ai.storyteller.filmcraft.xml
       # Already has the release's version and date substituted by package.sh.
       - install -Dm644 share/metainfo/ai.storyteller.filmcraft.metainfo.xml /app/share/metainfo/ai.storyteller.filmcraft.metainfo.xml

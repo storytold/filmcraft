@@ -228,6 +228,7 @@ pub fn thumbnail(preset: &LumetriPreset, w: usize, h: usize) -> Image {
         clip_name: "",
         project: None,
         env: None,
+        frame_rate: 24.0,
         working: filmcraft_color::WorkingSpace::Rec709,
     };
     apply(&mut img, &preset.instance(), &cx);

@@ -1,6 +1,6 @@
 //! Clean-room FLAC encoder (RFC 9639, Free Lossless Audio Codec).
 //!
-//! - [`Encoder`]: planar integer samples (8–24 bit, 1–8 channels) → a `.flac` stream: the
+//! - [`Encoder`]: planar integer samples (8–32 bit, 1–8 channels) → a `.flac` stream: the
 //!   [`Encoder::header`] (`fLaC`, STREAMINFO, a VORBIS_COMMENT naming the encoder), then frames of
 //!   a fixed block size. Each channel of each frame is coded as constant, verbatim, a fixed
 //!   polynomial predictor or linear prediction, whichever is smallest, with partitioned Rice codes;
@@ -61,7 +61,8 @@ pub struct EncoderConfig {
     pub sample_rate: u32,
     /// 1–8 (FLAC channel order: L R C LFE Ls Rs … for 5.1).
     pub channels: u8,
-    /// 8–24.
+    /// 8–32. At 32 bits stereo channels are coded independently: the side channel of
+    /// left/side, side/right and mid/side coding would need 33 bits.
     pub bits_per_sample: u8,
     /// Samples per channel per frame, 16–65535 (4096 by default).
     pub block_size: u16,
@@ -92,8 +93,8 @@ impl Encoder {
         if !(1..=8).contains(&cfg.channels) {
             return Err(Error::InvalidConfig("1 to 8 channels"));
         }
-        if !(8..=24).contains(&cfg.bits_per_sample) {
-            return Err(Error::InvalidConfig("8 to 24 bits per sample"));
+        if !(8..=32).contains(&cfg.bits_per_sample) {
+            return Err(Error::InvalidConfig("8 to 32 bits per sample"));
         }
         if !(1..=1_048_575).contains(&cfg.sample_rate) {
             return Err(Error::InvalidConfig("sample rate 1 to 1048575 Hz"));
@@ -110,7 +111,9 @@ impl Encoder {
             total_samples: 0,
             min_frame: 0,
             max_frame: 0,
-            md5: md5::Md5::default(),
+            // RFC 9639 requires an MD5 signature of the unencoded audio in STREAMINFO; this is an
+            // integrity checksum, not a password hash or a security boundary.
+            md5: md5::Md5::default(), // NOSONAR
         })
     }
 
@@ -170,8 +173,9 @@ impl Encoder {
         if planar.iter().any(|c| c.len() != n) {
             return Err(Error::UnequalChannels);
         }
-        let max = (1i32 << (self.cfg.bits_per_sample - 1)) - 1;
-        if let Some(&bad) = planar.iter().flat_map(|c| c.iter()).find(|&&s| s > max || s < -max - 1) {
+        // i64: at 32 bits the range is all of i32 (1 << 31 overflows i32)
+        let max = (1i64 << (self.cfg.bits_per_sample - 1)) - 1;
+        if let Some(&bad) = planar.iter().flat_map(|c| c.iter()).find(|&&s| i64::from(s) > max || i64::from(s) < -max - 1) {
             return Err(Error::SampleRange(bad));
         }
         for (p, c) in self.pending.iter_mut().zip(planar) {
@@ -217,7 +221,8 @@ impl Encoder {
         let effort = self.effort;
         let code = |x: &[i32], b: u8| predict::choose(x, b, effort);
         let data = match block {
-            [l, r] if effort.stereo => {
+            // the side channel takes one bit more than the samples: at most 32 (i32)
+            [l, r] if effort.stereo && bps < 32 => {
                 let side: Vec<i32> = l.iter().zip(r).map(|(&a, &b)| a - b).collect();
                 let mid: Vec<i32> = l.iter().zip(r).map(|(&a, &b)| (a + b) >> 1).collect();
                 let (cl, cr, cs, cm) = (code(l, bps), code(r, bps), code(&side, bps + 1), code(&mid, bps));

@@ -17,6 +17,7 @@ pub mod clip_ops;
 pub mod color;
 pub mod commands;
 pub mod demo;
+pub mod doc_path;
 pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
@@ -28,6 +29,8 @@ mod marker_export;
 pub mod masks;
 pub mod media_browser;
 pub mod media_pool;
+#[cfg(not(target_arch = "wasm32"))]
+mod media_queue;
 pub mod media_watch;
 pub mod mixer;
 pub mod multicam;
@@ -101,6 +104,14 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
+    /// Publish a complete new file only when the final path is unoccupied. Publication must
+    /// reject a concurrent collision; a prior existence check alone is insufficient.
+    /// Return `ErrorKind::AlreadyExists` for an occupied final path so the importer can retry
+    /// with a numbered name; return other errors without publishing a partial file.
+    /// Hosts without this operation fail closed.
+    fn write_file_new(&self, _path: &str, _data: &[u8]) -> std::io::Result<()> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "exclusive file creation is unavailable on this host"))
+    }
     /// Size of a file in bytes (an error when it is missing). Hosts should override this: the
     /// default reads the whole file.
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
@@ -157,6 +168,23 @@ impl Services for FsServices {
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
         filmcraft_format::atomic_write(std::path::Path::new(path), data)
+    }
+    fn write_file_new(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        let path = std::path::Path::new(path);
+        let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(dir).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                std::io::Error::new(std::io::ErrorKind::NotADirectory, format!("{} is not a directory: {error}", dir.display()))
+            } else {
+                error
+            }
+        })?;
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => return Err(std::io::ErrorKind::AlreadyExists.into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        filmcraft_format::atomic_write_new(path, data)
     }
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
         let m = std::fs::metadata(path)?;
@@ -215,6 +243,22 @@ impl History {
     }
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+    /// The History panel's Delete Redoable Actions: removes every step that Redo would bring
+    /// back. The project and the undo steps stay as they are. Returns how many steps were removed.
+    pub fn delete_redoable(&mut self) -> usize {
+        let n = self.redo.len();
+        self.redo.clear();
+        n
+    }
+    /// The History panel's Clear History: removes every undo and redo step. The project stays as
+    /// it is. Returns how many steps were removed.
+    pub fn clear(&mut self) -> usize {
+        let n = self.undo.len() + self.redo.len();
+        self.undo.clear();
+        self.redo.clear();
+        self.merge_key = None;
+        n
     }
 }
 
@@ -343,6 +387,10 @@ pub struct EditorState {
     /// Sequence ▸ Show Through Edits: the timeline marks cuts between continuous pieces of a clip.
     #[serde(default)]
     pub show_through_edits: bool,
+    /// Timeline Display Settings ▸ Show Duplicate Frame Markers: a stripe along the bottom of a
+    /// clip under the media frames another clip also shows.
+    #[serde(default)]
+    pub show_duplicate_frame_markers: bool,
     /// Markers ▸ Ripple Sequence Markers: ripple edits move (and delete) sequence markers too.
     #[serde(default)]
     pub ripple_sequence_markers: bool,
@@ -355,6 +403,16 @@ pub struct EditorState {
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
+    /// Transitions copied with the clipboard clips (#3450): those whose every clip is copied, with
+    /// their track kind and relative track index (start relative to the copied range, `from`/`to`
+    /// still the copied clips' original ids).
+    #[serde(skip)]
+    pub clipboard_transitions: Vec<(TrackKind, usize, filmcraft_project::Transition)>,
+    /// Captions copied from the Timeline, with their caption track's index (starts relative to the
+    /// copied range). Copying clips empties it and copying captions empties `clipboard`, so Paste
+    /// places whichever was copied last.
+    #[serde(skip)]
+    pub caption_clipboard: Vec<(usize, filmcraft_project::Caption)>,
     /// The last Edit ▸ Find… (Find Next continues it).
     #[serde(default)]
     pub find: Option<project_tools::FindState>,
@@ -380,6 +438,10 @@ pub struct Session {
     pub project: Arc<Project>,
     pub history: History,
     pub revision: u64,
+    /// Bumped whenever the session installs a different project document (`file.newProject`,
+    /// open/import/recovery/template). Frontends use it to discard UI state (text edits, IME
+    /// owners) that belongs to the replaced document even if item ids are reused.
+    pub document_epoch: u64,
     pub saved_revision: u64,
     pub path: Option<String>,
     pub state: EditorState,
@@ -498,6 +560,7 @@ impl Session {
             project: Arc::new(Project::new("Untitled")),
             history: History { limit: 200, ..Default::default() },
             revision: 1,
+            document_epoch: 0,
             saved_revision: 1,
             path: None,
             state: EditorState {
@@ -576,6 +639,8 @@ impl Session {
     pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
         let prefs_path = cfg.data_dir.join("preferences.json");
         self.prefs = autosave::Preferences::load(&prefs_path);
+        // a restart restores the persisted Selection Follows Playhead toggle (#3089)
+        self.state.selection_follows_playhead = self.prefs.timeline.selection_follows_playhead;
         self.prefs.apply_hardware_decoding();
         self.media.set_use_proxies(self.prefs.media.enable_proxies);
         self.shortcuts.set_dir(&cfg.data_dir);
@@ -648,6 +713,8 @@ impl Session {
     pub fn set_prefs(&mut self, p: autosave::Preferences) -> std::io::Result<()> {
         let cache_changed = self.prefs.media_cache != p.media_cache;
         self.prefs = p;
+        // the session mirrors the persisted Selection Follows Playhead toggle (#3089)
+        self.state.selection_follows_playhead = self.prefs.timeline.selection_follows_playhead;
         self.prefs.apply_hardware_decoding();
         if cache_changed {
             self.apply_media_cache();
@@ -691,7 +758,8 @@ impl Session {
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
-        if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
+        let journal = spec.journal && !commands::reports_only(id, &params);
+        if self.exec_depth == 0 && journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }
         if let Err(why) = self.enabled_for(spec, &params) {
@@ -701,6 +769,14 @@ impl Session {
             }
             return Err(e);
         }
+        // Only an editing command can introduce clips for the sequence-only scope. Loading a
+        // document or restoring an undo snapshot must not run recognition or change that snapshot.
+        let transcription_before = (self.exec_depth == 0
+            && spec.journal
+            && self.prefs.media_analysis.auto_transcribe
+            && self.prefs.media_analysis.auto_transcribe_scope == "sequenceClips"
+            && !matches!(id, "edit.undo" | "edit.redo" | "file.newProject" | "file.openDemoProject" | "file.open" | "file.revert" | "file.recover"))
+        .then(|| self.project.clone());
         self.exec_depth += 1;
         // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
         // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
@@ -712,8 +788,17 @@ impl Session {
             source_monitor::track_history(self);
         }
         // source graphics: an edited instance updates the shared layers and the other instances
-        if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
+        if r.is_ok() && journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
             graphic_templates::sync_source_graphics(self);
+        }
+        if r.is_ok()
+            && let Some(before) = transcription_before
+            && !Arc::ptr_eq(&before, &self.project)
+            && let Err(e) = transcript::auto_transcribe_sequence_clips(self, &before)
+        {
+            let message = format!("Automatic transcription: {e}");
+            self.log.push(panels::Level::Warning, id, message.clone());
+            self.events.push(Event::Toast { message, error: true });
         }
         if self.exec_depth == 0
             && let Err(e) = &r
@@ -723,7 +808,7 @@ impl Session {
         self.sync_persistence();
         // playback reads the newest snapshot (mixer moves, mutes… are heard while playing)
         self.previews.live.publish_project(self.project.clone());
-        if r.is_ok() && spec.journal {
+        if r.is_ok() && journal {
             self.journal.push((id.to_string(), params));
             if self.journal.len() > 10_000 {
                 self.journal.drain(..1000);
@@ -831,12 +916,29 @@ impl Session {
         }
     }
 
+    /// Every edit passes through here too: a transition whose clip the edit removed, or whose two
+    /// clips it moved apart, goes away (`filmcraft_edit::remove_orphan_transitions`), whichever
+    /// command made the edit. Sequences the edit did not touch are left as they are (the edit
+    /// cloned only what it changed, so this costs nothing for them).
+    fn drop_orphan_transitions(&self, edited: &mut Project) {
+        for (id, it) in &mut edited.items {
+            let filmcraft_project::ItemKind::Sequence(q) = &mut it.kind else { continue };
+            if matches!(self.project.items.get(id).map(|o| &o.kind), Some(filmcraft_project::ItemKind::Sequence(o)) if Arc::ptr_eq(o, q)) {
+                continue;
+            }
+            for t in Arc::make_mut(q).all_tracks_mut() {
+                filmcraft_edit::remove_orphan_transitions(t);
+            }
+        }
+    }
+
     /// Apply an undoable project edit. The closure gets a mutable copy; on error nothing changes.
     pub fn edit<R>(&mut self, label: &str, f: impl FnOnce(&mut Project, &mut EditorState) -> Result<R>) -> Result<R> {
         let mut p = (*self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
         self.refuse_self_nesting(&p)?;
+        self.drop_orphan_transitions(&mut p);
         let old = std::mem::replace(&mut self.project, Arc::new(p));
         self.history.undo.push((label.to_string(), old));
         if self.history.undo.len() > self.history.limit {
@@ -863,6 +965,7 @@ impl Session {
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
         self.refuse_self_nesting(&p)?;
+        self.drop_orphan_transitions(&mut p);
         self.project = Arc::new(p);
         self.state = st;
         self.drop_stale_gap();
@@ -1220,6 +1323,8 @@ mod autosave_tests;
 #[cfg(test)]
 mod avi_import_tests;
 #[cfg(test)]
+mod clip_mismatch_tests;
+#[cfg(test)]
 mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
@@ -1234,13 +1339,21 @@ mod file_tests;
 #[cfg(test)]
 mod gap_selection_tests;
 #[cfg(test)]
+mod history_tests;
+#[cfg(test)]
 mod image_sequence_tests;
 #[cfg(test)]
+mod individual_selection_tests;
+#[cfg(test)]
 mod interchange_auto_points_tests;
+#[cfg(test)]
+mod interchange_bin_tests;
 #[cfg(test)]
 mod keyboard_tests;
 #[cfg(test)]
 mod linked_speed_tests;
+#[cfg(test)]
+mod linked_trim_tests;
 #[cfg(test)]
 mod locked_clip_edits_tests;
 #[cfg(test)]
@@ -1288,6 +1401,8 @@ mod remix_tests;
 #[cfg(test)]
 mod ripple_delete_tests;
 #[cfg(test)]
+mod ripple_head_tests;
+#[cfg(test)]
 mod roll_linked_tests;
 #[cfg(test)]
 mod scopes_tests;
@@ -1304,6 +1419,8 @@ mod shortcuts_tests;
 #[cfg(test)]
 mod split_edit_ripple_trim_tests;
 #[cfg(test)]
+mod stored_paths_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod timeline_move_tests;
@@ -1317,6 +1434,8 @@ mod trim_tests;
 mod vfx_tests;
 #[cfg(test)]
 mod voiceover_tests;
+#[cfg(test)]
+mod work_area_tests;
 
 #[cfg(test)]
 mod source_placement_tests;

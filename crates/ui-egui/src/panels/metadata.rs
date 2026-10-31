@@ -1,5 +1,5 @@
 //! Metadata panel: the clip and file properties of the selected item (Project panel selection, or
-//! the clip selected in the Timeline when it has focus). Name, Label and the log fields
+//! the clip selected in the Timeline, retained while an inspector has focus). Name, Label and the log fields
 //! (Description, Scene, Shot, Log Note, Comment, Tape Name, Client, Camera Angle) are editable;
 //! each committed edit is one `metadata.set` (undoable, saved in the project).
 //!
@@ -7,7 +7,7 @@
 //! `metadata.label`, `metadata.section.<Clip|File>`.
 
 use egui::{Rect, RichText, Sense, vec2};
-use filmcraft_engine::panels::{Field, metadata_fields, metadata_target};
+use filmcraft_engine::panels::{Field, metadata_fields};
 use filmcraft_project::{ItemId, Label};
 use serde_json::json;
 
@@ -15,15 +15,28 @@ use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::theme::Tokens;
 
-/// The item the panel shows.
+use super::panel_state::InspectorSource;
+
+/// Remember the selection source even when both item inspectors are hidden.
+pub(crate) fn follow_selection(app: &mut FilmcraftApp) {
+    match app.ui.focused {
+        PanelKind::Project => app.ui.panels.inspector_source = InspectorSource::Project,
+        PanelKind::Timeline => app.ui.panels.inspector_source = InspectorSource::Timeline,
+        _ => {}
+    }
+}
+
+/// The item Metadata and Info show. Keep the preferred source while entering either inspector;
+/// an empty selection falls back to the other panel, as Metadata did before source retention.
 pub fn target(app: &FilmcraftApp) -> Option<ItemId> {
     let s = &app.session;
-    if app.ui.focused == PanelKind::Timeline
-        && let Some(c) = s.state.selection.first()
-    {
-        return metadata_target(s, &json!({"clip": c.0}));
+    let exists = |id: &ItemId| s.project.item(*id).is_some();
+    let project = s.state.project_selection.first().copied().filter(exists);
+    let timeline = s.state.selection.first().and_then(|clip| s.active_sequence()?.find_item(*clip).map(|(_, item)| item.item)).filter(exists);
+    match app.ui.panels.inspector_source {
+        InspectorSource::Project => project.or(timeline),
+        InspectorSource::Timeline => timeline.or(project),
     }
-    metadata_target(s, &json!({}))
 }
 
 pub fn field_id(name: &str) -> String {
@@ -65,7 +78,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if f.name == "Label" {
                     let cur = Label::from_name(&f.value).unwrap_or(Label::Violet);
                     let mut sel = cur;
-                    let r = egui::ComboBox::from_id_salt(("md-label", item.0))
+                    let r = craft_ui::ComboBox::from_id_salt(("md-label", item.0))
                         .selected_text(crate::i18n::t(cur.name()))
                         .width(ui.available_width().min(200.0))
                         .show_ui(ui, |ui| {
@@ -107,9 +120,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 /// An editable value: a text field whose edit is committed when it loses focus (Enter, Tab or a
 /// click elsewhere). Returns (field, new value) on commit.
 fn text_field(ui: &mut egui::Ui, item: ItemId, f: &Field, elems: &mut Vec<(String, Rect, String)>) -> Option<(String, String)> {
-    let id = egui::Id::new(("md-draft", item.0, f.name.clone()));
+    let id = egui::Id::unique(("md-draft", item.0, f.name.clone()));
     let mut draft: String = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| f.value.clone());
-    let r = ui.add(egui::TextEdit::singleline(&mut draft).desired_width(ui.available_width()).id_salt(("md-edit", item.0, f.name.clone())));
+    let r = crate::widgets::accessible_name(
+        ui.add(egui::TextEdit::singleline(&mut draft).desired_width(ui.available_width()).id_salt(("md-edit", item.0, f.name.clone()))),
+        f.name.clone(),
+    );
     elems.push((field_id(&f.name), r.rect, f.value.clone()));
     let mut out = None;
     if r.has_focus() {

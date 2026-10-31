@@ -1,3 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- shared-mime-info definitions for types the system database doesn't have.
+     Installed to /usr/share/mime/packages/ (update-mime-database runs on install).
+     The type name matches the macOS UTI's public.mime-type in packaging/macos/Info.plist.in. -->
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-filmcraft">
+    <comment>FilmCraft project</comment>
+    <sub-class-of type="application/json"/>
+    <icon name="ai.storyteller.filmcraft"/>
+    <glob pattern="*.fcproj"/>
+  </mime-type>
 </mime-info>

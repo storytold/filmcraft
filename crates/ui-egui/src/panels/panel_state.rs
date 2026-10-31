@@ -14,6 +14,18 @@ pub struct PanelsState {
     pub reference: ReferenceState,
     pub events: EventsState,
     pub progress: ProgressState,
+    /// Preferred selection for Metadata and Info; inspector focus does not replace it.
+    pub inspector_source: InspectorSource,
+}
+
+/// The last selection panel used by the item inspectors. Only the source is retained, so
+/// project changes, deletion and deselection always resolve against the current selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InspectorSource {
+    #[default]
+    Project,
+    Timeline,
 }
 
 /// Lumetri Scopes settings (the wrench / right-click menu and the footer).

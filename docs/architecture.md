@@ -240,7 +240,9 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   flag), so relinking and undo take effect at once. Media that can't be opened renders the offline
   slate (`render::offline`) instead of failing. With proxies enabled, an item with a proxy reads
   it through `ProxySource`, which reports the original's size. Export always uses
-  `MediaPool::full_res_provider`. See [project-files.md](project-files.md#media-offline-relinking-proxies-ingest).
+  `MediaPool::full_res_provider`. Background jobs (exports, Render Previews, proxies) open their
+  own copy of each file they can stream (`MediaPool::own_source`, `PoolProvider::own_sources`),
+  so they never take turns with the monitors on one decoder. See [project-files.md](project-files.md#media-offline-relinking-proxies-ingest).
 - **Seeking.** `codecs::Mp4Source` seeks to the preceding sync sample and decodes forward, caching
   every frame of the GOP. Sequential playback reuses the decoder. Decoders implement
   `codecs::VideoDecoder`. `register_video_decoder` puts a factory in front of the built-in ones, so a
@@ -298,6 +300,12 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   `filmcraft_export::register_format_probe`, so the H.265 format exists where an HEVC encoder does,
   and choosing it is the opt-in (the Hardware encoding toggle governs H.264 only). With no software
   H.265 encoder, what NVENC declines is counted and ends the export with an error that says why.
+  On macOS, `platform::hardware_encode` (VideoToolbox H.264, opt-in the same way, and H.265) is
+  registered likewise. It too takes the RGBA pictures as they are (`32BGRA` buffers tagged BT.709)
+  and VideoToolbox converts them to 4:2:0, so the encode thread only copies: converting on the CPU
+  there competed with the render of the next frames for the thread pool and cost more than the
+  hardware encode (20 ms a 1080p frame). A VideoToolbox that refuses RGB input on the first picture
+  gets the CPU's conversion into NV12 instead, and the export goes on.
 - **Compositor.** `render` is the reference for monitors, thumbnails and export. `render::plan`
   turns a frame into GPU layers, each with its opacity and blend mode. All 27 blend modes run on the
   GPU (`filmcraft-gpu`): Normal and Dissolve with fixed-function "over" blending, the others by
@@ -534,7 +542,8 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
   removeVertex / toggleVertexSmooth / roundCorners / select / list; `masks.add` takes a
   `cornerRadius` for a rounded rectangle); keyframe commands take `"mask": n`. The
   Program monitor overlay drags vertices, Bézier handles, the whole mask and the feather /
-  expansion handles; drags merge into one undo step.
+  expansion handles; a marquee from outside the shape or Shift-click selects several vertices,
+  which move together (`masks.moveVertex` `vertices`); drags merge into one undo step.
 - **Tracking** (`render::track`, `masks.track`): Shi–Tomasi features inside the mask, pyramidal
   Lucas–Kanade (4 levels, 15×15 window) with a forward–backward check, then RANSAC + least squares
   for Position / Position & Rotation / Position, Scale & Rotation (2D Procrustes). Each frame's
@@ -668,11 +677,11 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
 | `aac` | `filmcraft-aac` (AAC-LC, the audio settings' bitrate) | audio only: MPEG-4 audio `.m4a` (`isobmff`, priming in an edit list), or raw ADTS when the path ends in `.aac` |
-| `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24-bit | MXF OP1a (`filmcraft-mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
+| `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24/32-bit integer | MXF OP1a (`filmcraft-mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
 | `mxf-opatom` | as `mxf-op1a` | Avid-style MXF OP-Atom: clip-wrapped picture at `path`, one mono PCM file per channel (`<stem>_A1.mxf` …, `Report::extra_files`) |
 | `png`, `tiff`, `bmp`, `jpg` | `image` | numbered stills `<name>000.<ext>`, `<name>001.<ext>` … |
 | `tga`, `dpx`, `exr` | built in (`raster.rs`: uncompressed Targa 24/32-bit; DPX 10-bit RGB, SMPTE ST 268; OpenEXR half-float linear RGB(A), uncompressed scan lines) | numbered stills, as above |
-| `gif`, `wav`, `aiff` | built in / `image` | GIF / RIFF WAVE (`WAVE_FORMAT_EXTENSIBLE` for 5.1) / AIFF (16- or 24-bit PCM) |
+| `gif`, `wav`, `aiff` | built in / `image` | GIF / RIFF WAVE (`WAVE_FORMAT_EXTENSIBLE` for 5.1; `WAVE_FORMAT_IEEE_FLOAT` + `fact` for float) / AIFF (16-, 24- or 32-bit PCM; 32-bit float as AIFF-C `fl32`) |
 
 - **Reproducible.** The same project and settings give the same file on every machine. Frames render
   in batches of one per core, but the muxer gets them in fixed groups of 16 output frames
@@ -682,14 +691,17 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 - **Settings.** `ExportSettings` (serde, camelCase, every field optional) holds Video (frame size or
   Match Source, frame rate, Scale to Fit / Fill / Stretch, pixel aspect, field order — progressive
   only, profile / level, bitrate encoding, target / maximum / adaptive bitrate, keyframe distance,
-  maximum render quality), Audio (codec, sample rate, channels, AAC bitrate, PCM sample size),
+  maximum render quality), Audio (codec, sample rate, channels, AAC bitrate, PCM / FLAC sample size: `bits` 16, 24 or 32
+  and `float` for 32-bit float PCM in WAV, AIFF and QuickTime — `supports_sample_format` says
+  which a codec and container store, and Export mode greys out the rest),
   Multiplexer (audio channels: mono, stereo or 5.1, §5.1.1), Captions (burn-in or SRT / WebVTT sidecar), Effects (image / name / timecode
   overlays, video limiter, loudness normalization), Metadata (`udta` `©nam`, `©ART`, `©cpy`, `©des`,
   `©cmt`). `settings.summary()` / `estimate_bytes()` feed Export mode's Summary.
 - **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive
   H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920, ProRes,
   DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF). User presets and favourites persist in
-  `<data dir>/export-presets.json` (`export.presets.*`).
+  `<data dir>/export-presets.json` (`export.presets.*`). A `bitrateKbps` in `settings` turns the
+  adaptive bitrate off, as the flat parameter does, unless `adaptiveBitrate` comes with it.
 - **Queue.** `export.queue.add` snapshots the project and the resolved settings (several sequences
   or ranges add several items); `export.queue.start` encodes ready items one after another as
   ordinary jobs, advanced by `Session::poll_persistence` / `pump_jobs` (or synchronously with
@@ -768,4 +780,4 @@ native menus) in `apps/filmcraft`. [roadmap.md](roadmap.md) has the milestone st
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-10 | trivial | Status line and revision history added (craftrules progress-docs standard); milestone link points at docs/roadmap.md |
+| 2026-10-10 | trivial | Status line and revision history added; milestone link points at docs/roadmap.md |

@@ -13,7 +13,7 @@ symphonia bootstrap decoder in `filmcraft-codecs`.
 ```rust
 use filmcraft_flac::{Encoder, EncoderConfig, STREAMINFO_OFFSET};
 
-let mut cfg = EncoderConfig::new(48_000, 2, 24);   // rate, channels (1–8), bits (8–24)
+let mut cfg = EncoderConfig::new(48_000, 2, 24);   // rate, channels (1–8), bits (8–32)
 cfg.level = 8;                                     // 0 fastest … 8 smallest; 5 by default
 let mut enc = Encoder::new(cfg)?;
 let mut file = enc.header();                       // fLaC + STREAMINFO + VORBIS_COMMENT (vendor)
@@ -37,10 +37,11 @@ let last_len = enc.pending_samples();                               // duration 
 | Subframes | constant, verbatim, fixed predictors (order 0–4) and linear prediction (up to order 12), whichever is smallest |
 | Linear prediction | Tukey(0.5) windowed autocorrelation, Levinson–Durbin, 12/15-bit quantised coefficients with error feedback |
 | Residual | partitioned Rice codes (4- or 5-bit parameters), the partition order chosen per subframe |
-| Stereo | independent, left/side, side/right or mid/side per frame, whichever is smallest |
+| Stereo | independent, left/side, side/right or mid/side per frame, whichever is smallest (32-bit: independent only, a side channel would need 33 bits) |
 
-Not written: variable block sizes, wasted-bits shifts, escape-coded partitions, 32-bit samples,
-seek tables.
+Not written: variable block sizes, wasted-bits shifts, escape-coded partitions, seek tables.
+32-bit samples (frame headers point at STREAMINFO for the size) decode only in recent decoders (libFLAC 1.4+,
+ffmpeg 6+).
 
 | Level | LPC order | Rice partition order | Stereo decorrelation |
 |---|---|---|---|
