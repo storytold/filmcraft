@@ -156,8 +156,10 @@ pub struct Stream {
 impl Stream {
     /// Stream index of a `movi` chunk id (`00dc`, `01wb`…): its first two characters.
     fn number(id: &[u8; 4]) -> Option<usize> {
-        let d = |b: u8| (b as char).to_digit(16).map(|v| v as usize);
-        Some(d(id[0])? * 16 + d(id[1])?)
+        let has_hex_digit = id[..2].iter().any(|b| matches!(b, b'a'..=b'f' | b'A'..=b'F'));
+        let radix = if has_hex_digit { 16 } else { 10 };
+        let digits = std::str::from_utf8(&id[..2]).ok()?;
+        usize::from_str_radix(digits, radix).ok()
     }
 }
 
