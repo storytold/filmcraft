@@ -888,12 +888,13 @@ fn bokeh_and_focus_blur() {
 
 /// Bokeh Blur gathers through a kernel of whole-pixel weights (`bokeh_kernel`). It must give what
 /// the mean of the bilinear taps it replaced gave (that gather, kept here), at the image's edges
-/// too, for every shape, rotation and radius, and a radius larger than the image.
+/// too, for every shape, rotation and radius, and radii larger than the image (3e9: offsets past
+/// `i32`, which the kernel keeps within its reach).
 #[test]
 fn bokeh_kernel_matches_the_bilinear_taps() {
     let img = picture(37, 23);
     for (sides, rot, rr, rings) in
-        [(0u32, 0.0f32, 0.7f32, 1u32), (6, 0.35, 10.0, 10), (3, -1.3, 4.5, 5), (5, 7.0, 6.2, 7), (8, 2.0, 12.0, 12), (4, 0.0, 60.0, 12)]
+        [(0u32, 0.0f32, 0.7f32, 1u32), (6, 0.35, 10.0, 10), (3, -1.3, 4.5, 5), (5, 7.0, 6.2, 7), (8, 2.0, 12.0, 12), (4, 0.0, 60.0, 12), (6, 0.3, 3e9, 12)]
     {
         let mut taps: Vec<(f32, f32)> = vec![(0.0, 0.0)];
         for ring in 1..=rings as usize {
@@ -907,6 +908,7 @@ fn bokeh_kernel_matches_the_bilinear_taps() {
         }
         let kernel = bokeh_kernel(sides, rot, rr, rings);
         assert!(kernel.len() <= taps.len() * 4);
+        assert!(kernel.iter().all(|c| c.0.abs() <= KERNEL_REACH && c.1.abs() <= KERNEL_REACH), "offsets past the reach");
         assert!(close(kernel.iter().map(|c| c.2).sum::<f32>(), 1.0, 1e-5));
         let mut worst = 0f32;
         for y in 0..img.h {

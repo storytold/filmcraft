@@ -47,7 +47,7 @@ pub(crate) fn bokeh(img: &mut Image, levels: u32, boost: f32, th: f32, sides: u3
         for x in 0..w {
             let mut acc = [0f32; 4];
             for &(dx, dy, wt) in &kernel {
-                let p = src.get_clamped(x as isize + dx as isize, y as isize + dy as isize);
+                let p = src.get_clamped((x as isize).saturating_add(dx as isize), (y as isize).saturating_add(dy as isize));
                 for k in 0..4 {
                     acc[k] += p[k] * wt;
                 }
@@ -58,6 +58,10 @@ pub(crate) fn bokeh(img: &mut Image, levels: u32, boost: f32, th: f32, sides: u3
     *img = if levels > 0 { work.transformed(fw, fh, &Affine::scale(fw as f64 / work.w as f64, fh as f64 / work.h as f64)) } else { work };
 }
 
+/// How far (pixels) a Bokeh kernel offset reaches at most: more than any image is wide. A radius
+/// can be far larger (a huge amount on an image too small to halve).
+pub const KERNEL_REACH: i32 = 1 << 20;
+
 /// Bokeh Blur's iris gather as whole-pixel weights (`dx`, `dy`, weight; sorted by row, then
 /// column; the weights sum to 1): the mean of bilinear taps (`Image::sample_bilinear_clamped`) on
 /// `rings` rings out to radius `rr` around each pixel, the shape a regular `sides`-gon rotated by
@@ -67,7 +71,8 @@ pub(crate) fn bokeh(img: &mut Image, levels: u32, boost: f32, th: f32, sides: u3
 /// relative to the pixel, and how much each gets, is the same for every pixel; so is clamping at
 /// the image's edge, which moves a weight onto the edge pixel either way. Summing the weights per
 /// offset once gives each pixel about a fifth of the reads: 441 taps at radius 10 read 1764
-/// pixels, the kernel about 330. At most 4 entries a tap (2500 at 12 rings), however large `rr`.
+/// pixels, the kernel about 330. At most 4 entries a tap (2500 at 12 rings), however large `rr`;
+/// offsets stay within ±[`KERNEL_REACH`], so adding one to a pixel position can't overflow.
 pub fn bokeh_kernel(sides: u32, rot: f32, rr: f32, rings: u32) -> Vec<(i32, i32, f32)> {
     let rings = rings.min(12) as usize;
     let mut taps: Vec<(f32, f32)> = vec![(0.0, 0.0)];
@@ -87,8 +92,10 @@ pub fn bokeh_kernel(sides: u32, rot: f32, rr: f32, rings: u32) -> Vec<(i32, i32,
         let (dx, dy) = if dx.is_finite() && dy.is_finite() { (dx, dy) } else { (0.0, 0.0) };
         let (fx, fy) = (dx.floor(), dy.floor());
         let (tx, ty) = (dx - fx, dy - fy);
-        let (x0, y0) = (fx as i32, fy as i32);
-        let (x1, y1) = (x0.saturating_add(1), y0.saturating_add(1));
+        // farther than any image is wide reads its edge pixel either way
+        let reach = KERNEL_REACH as f32;
+        let (x0, y0) = (fx.clamp(-reach, reach) as i32, fy.clamp(-reach, reach) as i32);
+        let (x1, y1) = ((x0 + 1).min(KERNEL_REACH), (y0 + 1).min(KERNEL_REACH));
         cells.extend([(x0, y0, (1.0 - tx) * (1.0 - ty) * inv), (x1, y0, tx * (1.0 - ty) * inv), (x0, y1, (1.0 - tx) * ty * inv), (x1, y1, tx * ty * inv)]);
     }
     cells.sort_by_key(|c| (c.1, c.0));
