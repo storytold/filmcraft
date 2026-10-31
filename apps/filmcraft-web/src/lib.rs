@@ -171,6 +171,8 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                     }
                 });
                 webcodecs::install();
+                // This build can't tell which computer it runs on, and some defaults go by it (#400).
+                filmcraft_engine::settings::set_host_platform(filmcraft_ui_egui::platform_of_os(cc.egui_ctx.os()));
                 let mut session = Session::new(Arc::new(fs::WebServices));
                 let mut toast = None;
                 if let Some((name, bytes)) = recovered {

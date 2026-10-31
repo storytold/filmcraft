@@ -152,3 +152,52 @@ fn empty_monitor_space_deselects_layers_and_masks() {
         assert!(d.app().session.state.selected_mask.is_none(), "a click at ({x}, {y}) deselects the mask");
     }
 }
+
+/// The empty points of the Program panel: the picture's corner (with the clip scaled down, far from
+/// its box), beside or above the picture, and the empty end of the transport row under it.
+fn empty_monitor_points(d: &mut Driver) -> Vec<(f64, f64)> {
+    let pic = d.rect("program.picture");
+    let panel = d.rect("panel.Program");
+    let around = if pic[0] - panel[0] > 20.0 { (pic[0] - 8.0, pic[1] + pic[3] / 2.0) } else { (pic[0] + pic[2] / 2.0, pic[1] - 8.0) };
+    vec![(pic[0] + 6.0, pic[1] + 6.0), around, (panel[0] + 6.0, panel[1] + panel[3] - 18.0)]
+}
+
+/// The transform box (#639) lets go wherever a click on the Program panel lands on nothing, not
+/// only just beside the box; the clip it belongs to stays selected.
+#[test]
+fn empty_monitor_space_lets_go_of_the_transform_box() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let item = seq["video"][0]["items"][0].clone();
+    let clip = item["clip"].as_u64().unwrap();
+    d.exec("playhead.set", json!({"time": item["start"].as_i64().unwrap() + 1_000_000_000}));
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 30.0}));
+    d.frames(2);
+    for (x, y) in empty_monitor_points(&mut d) {
+        d.exec("effects.select", json!({"clip": clip, "effect": "motion"}));
+        d.frames(2);
+        d.rect("program.transform.box");
+        d.click_at(x, y);
+        assert!(d.app().session.state.selected_effect.is_none(), "a click at ({x}, {y}) lets go of the box");
+        assert!(d.app().session.state.selection.iter().any(|c| c.0 == clip), "a click at ({x}, {y}) keeps the clip selected");
+        assert!(d.ok("ui.elements", json!({"prefix": "program.transform.box"})).as_array().unwrap().is_empty(), "the box is gone");
+    }
+}
+
+/// A text layer being edited stops being edited on a click anywhere on the Program panel's empty
+/// space: the keys were still going into the text after a click beside the transport buttons.
+#[test]
+fn empty_monitor_space_ends_text_editing() {
+    let mut d = Driver::demo();
+    let at = d.exec("sequence.inspect", json!({}))["playhead"].as_i64().unwrap();
+    let clip = d.exec("graphics.newText", json!({"text": "Title", "time": at}))["clip"].as_u64().unwrap();
+    for (x, y) in empty_monitor_points(&mut d) {
+        d.app().ui.gfx_edit = Some(GfxEdit { clip, layer: 0, caret: 0, anchor: 0, ..Default::default() });
+        d.app().ui.focused = filmcraft_ui_egui::dock::PanelKind::Program;
+        d.frames(3);
+        assert!(d.app().ui.gfx_edit.is_some());
+        d.click_at(x, y);
+        assert!(d.app().ui.gfx_edit.is_none(), "a click at ({x}, {y}) ends the edit");
+    }
+}

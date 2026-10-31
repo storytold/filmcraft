@@ -74,12 +74,18 @@ fn composing_live(app: &FilmcraftApp, ctx: &egui::Context, target: ImeTarget) ->
 }
 
 /// A click on the Program monitor's empty space (the picture's, or around it): end the text edit
-/// and let go of the selected graphic layers and mask (#683).
+/// and let go of the selected graphic layers, mask and transform box (#683). The clip stays
+/// selected in the Timeline.
 pub(crate) fn deselect_on_monitor(app: &mut FilmcraftApp, ui: &egui::Ui) {
     end_edit(app, ui);
     app.session.state.graphic_layers.clear();
     if app.session.state.selected_mask.is_some()
         && let Err(e) = app.session.execute("masks.select", json!({"none": true}))
+    {
+        app.ui.status = e.to_string();
+    }
+    if app.session.state.selected_effect.is_some()
+        && let Err(e) = app.session.execute("effects.select", json!({"none": true}))
     {
         app.ui.status = e.to_string();
     }

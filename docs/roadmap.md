@@ -1,6 +1,6 @@
 # Roadmap detail
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (M8: Fujifilm F-Log / F-Log2 / F-Log2 C colour spaces) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (alpha gate: fixed UX issues leave the assemble and trim row) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Forward-looking plan: milestones with status, the current focus and what's next, with estimates in
 Opus 5.5 agent-hours (calibration in [target-app-parity.md](target-app-parity.md#calibration)).
@@ -29,7 +29,7 @@ workflow would make FilmCraft pre-alpha.
 | Workflow | Works end to end? | Evidence | Hours to pass |
 |---|---|---|---|
 | Ingest and organize media (import camera / phone / screen files, bins, metadata, proxies) | partial, not blocking | H.264 / HEVC / ProRes / DNx / MXF / AVCHD / MKV import with bit-exact decoders, Media Browser, bins, proxies, Link Media. Gaps: H.264 10-bit / 4:2:2 (Sony XAVC S-I, Canon XF-AVC) opens nowhere and HEVC 4:2:2 only through VideoToolbox (#626, [G3](gaps.md#g3-10-bit-and-422-camera-media-needs-hardware)); E-AC-3 (#647), AVI (#598), camera RAW | 0 (G3 is a beta item, 30–50 h) |
-| Assemble and trim a sequence (insert / overwrite, ripple / roll / slip / slide, razor, J/K/L, multicam) | yes | Edit algebra with undo tests, Trim Monitor, Premiere keyboard preset, multicam with audio sync; UX issues (#683, #648, #668) slow it down but don't stop it | 0 |
+| Assemble and trim a sequence (insert / overwrite, ripple / roll / slip / slide, razor, J/K/L, multicam) | yes | Edit algebra with undo tests, Trim Monitor, Premiere keyboard preset, multicam with audio sync | 0 |
 | Colour correct and grade (Lumetri, LUTs, scopes, colour management) | yes | Lumetri complete with CPU / WGSL parity tests, all Lumetri Scopes, LUT import, HDR export signalling checked with ffprobe | 0 |
 | Mix audio (levels, automation, Essential Sound, loudness) | yes on macOS | Mixer graph, automation, 53 effects, BS.1770 loudness matching ffmpeg; device reports are Windows / Linux (#605, #617) | 0 |
 | Titles and captions | yes | Text engine, graphic clips, templates, SRT / VTT / SCC / MCC / STL / TTML import-export, burn-in; Arabic titles broken (#395) | 0 |
@@ -87,5 +87,6 @@ the web app shell ([G20](gaps.md#g20-the-web-app-shell)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-30 | minor | Alpha gate: #683, #648 and #668 leave the assemble and trim row, checked on Windows only |
 | 2026-10-10 | minor | Alpha gate table added (craftrules core-workflow gate): six core workflows, all pass on macOS; stage stays alpha |
 | 2026-10-10 | major | Created: milestone table moved from ROADMAP.md (M5 and M9 remaining work updated), HW and L10N rows, beta milestones B1–B7, Current focus from the re-measure |

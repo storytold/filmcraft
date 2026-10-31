@@ -14,6 +14,13 @@ Tests: `crates/engine/src/keyboard_tests.rs` (no key used twice in one scope; be
 keyboard commands, with undo) and `crates/ui-egui/tests/it/keyboard_ui.rs` (no dangling ids in the
 tables, no conflicts in FilmCraft Default or the Premiere preset, keys pressed in the headless app).
 
+**Delete and Backspace go by the panel in focus (#404).** In the Project panel they remove the
+selected items and bins. In the Timeline, Program monitor and Properties they remove the Timeline's
+selection, and Shift+Delete ripple deletes it. Any other panel's own keys still apply (Backspace in
+History and Text); otherwise the keys do nothing there, so they never reach a selection in another
+panel. Edit ▸ Clear and Edit ▸ Ripple Delete in the menus are not limited this way, and neither is
+any other key bound to these commands in the shortcut editor.
+
 ## Keyboard-only commands (M3.12)
 
 Premiere has these as keys only (most are not in a menu). Modules: `filmcraft_engine::keyboard`

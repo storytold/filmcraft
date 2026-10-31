@@ -1,5 +1,20 @@
+use std::cell::Cell;
+
 use super::schema::{DARK_THEMES, LIGHT_THEMES, UI_SCALES};
 use super::{Deserialize, FrameRate, Serialize, Tick};
+use crate::shortcuts::Platform;
+
+thread_local! {
+    /// The computer this runs on, where the build target can't tell. See [`set_host_platform`].
+    static HOST_PLATFORM: Cell<Option<Platform>> = const { Cell::new(None) };
+}
+
+/// Tell the defaults which computer this is, for a browser build: its target is `wasm32` on every
+/// computer (#400). The web app calls this before it creates the session. A browser build has one
+/// thread, and nothing else needs this.
+pub fn set_host_platform(platform: Platform) {
+    HOST_PLATFORM.with(|host| host.set(Some(platform)));
+}
 
 // ------------------------------------------------------------------ category values
 
@@ -348,7 +363,7 @@ pub struct TimelinePrefs {
     pub still_image_unit: String,
     /// "Timeline Playback Auto-Scrolling": `noScroll` | `pageScroll` | `smoothScroll`.
     pub auto_scroll: String,
-    /// "Timeline Mouse Scrolling": `vertical` | `horizontal`.
+    /// "Timeline Mouse Scrolling": `vertical` | `horizontal`. See [`default_mouse_scrolling`].
     pub mouse_scrolling: String,
     /// Default Audio Tracks per media type: `useFile` | `mono` | `stereo` | `5.1` | `adaptive`.
     pub mono_media_tracks: String,
@@ -368,6 +383,13 @@ pub struct TimelinePrefs {
     pub drop_import_to_timeline: bool,
 }
 
+/// What the mouse wheel does over the Timeline out of the box (#400): on macOS it moves the tracks
+/// up and down and on Windows the Timeline sideways, Premiere Pro's defaults there; Linux, where
+/// Premiere does not run, goes with Windows. The primary modifier swaps the two either way.
+fn default_mouse_scrolling(platform: Platform) -> &'static str {
+    if platform == Platform::Mac { "vertical" } else { "horizontal" }
+}
+
 impl Default for TimelinePrefs {
     fn default() -> Self {
         Self {
@@ -378,7 +400,7 @@ impl Default for TimelinePrefs {
             still_image_duration: 5.0,
             still_image_unit: "seconds".into(),
             auto_scroll: "pageScroll".into(),
-            mouse_scrolling: "vertical".into(),
+            mouse_scrolling: default_mouse_scrolling(HOST_PLATFORM.with(Cell::get).unwrap_or_else(Platform::current)).into(),
             mono_media_tracks: "useFile".into(),
             stereo_media_tracks: "useFile".into(),
             surround_media_tracks: "useFile".into(),
@@ -435,5 +457,26 @@ pub fn timebase_rate(v: &str) -> FrameRate {
         "59.94" | "59.94df" => FrameRate::FPS_59_94,
         "60" => FrameRate::FPS_60,
         _ => FrameRate::FPS_29_97,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wheel_default_follows_the_platform() {
+        assert_eq!(default_mouse_scrolling(Platform::Mac), "vertical");
+        assert_eq!(default_mouse_scrolling(Platform::Windows), "horizontal");
+        assert_eq!(default_mouse_scrolling(Platform::Linux), "horizontal");
+        assert_eq!(TimelinePrefs::default().mouse_scrolling, default_mouse_scrolling(Platform::current()));
+    }
+
+    #[test]
+    fn a_saved_wheel_choice_outlasts_the_default() {
+        for saved in ["vertical", "horizontal"] {
+            let prefs: TimelinePrefs = serde_json::from_value(serde_json::json!({ "mouseScrolling": saved })).unwrap();
+            assert_eq!(prefs.mouse_scrolling, saved);
+        }
     }
 }

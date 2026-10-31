@@ -10,10 +10,12 @@ pub type Entry = (&'static str, &'static str, &'static str);
 
 /// FilmCraft additions to the per-command defaults: panel-specific shortcuts.
 pub const FILMCRAFT_PANEL: &[Entry] = &[
+    // Backspace and the forward-delete key (Delete on Windows and Linux keyboards) do the same:
+    // Project ▸ Clear in the Project panel, Edit ▸ Clear elsewhere (#243). Which panels Clear
+    // reaches from the keyboard is the UI's to say (#404).
+    ("project.delete", "Delete", "Project"),
     ("project.delete", "Backspace", "Project"),
-    // the forward-delete key (Delete on Windows and Linux keyboards) clears timeline clips too;
-    // application-wide it is Project ▸ Clear (#243)
-    ("edit.clear", "Delete", "Timeline"),
+    ("edit.clear", "Delete", ""),
     ("file.newBin", "Cmd+B", "Project"),
     ("edit.undo", "Left", "History"),
     ("edit.redo", "Right", "History"),
@@ -82,6 +84,8 @@ pub const PREMIERE: &[Entry] = &[
     ("edit.pasteInsert", "Cmd+Shift+V", ""),
     ("edit.clear", "Delete", ""),
     ("edit.clear", "Backspace", "Timeline"),
+    // a Mac keyboard's delete key is Backspace, and the Program monitor clears as the Timeline does (#404)
+    ("edit.clear", "Backspace", "Program"),
     ("edit.rippleDelete", "Shift+Delete", ""),
     ("edit.rippleDelete", "Alt+Backspace", "Timeline"),
     ("edit.duplicate", "Cmd+Shift+/", ""),
@@ -260,6 +264,7 @@ pub const PREMIERE: &[Entry] = &[
     ("file.newBinFromSelection", "Shift+B", "Project"),
     ("edit.paste", "Cmd+V", "Timeline"),
     ("edit.pasteInsert", "Cmd+Shift+V", "Timeline"),
+    ("project.delete", "Delete", "Project"),
     ("project.delete", "Backspace", "Project"),
     ("source.open", "Shift+O", "Project"),
     ("edit.undo", "Left", "History"),

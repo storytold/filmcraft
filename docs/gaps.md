@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (G13: optional binary transparency in animated GIF exports) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (G8: transform handles, the Button Editor, filmstrip thumbnails and deselect leave the missing list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -156,11 +156,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G8. UI fidelity: monitor handles, Effect Controls, docking
 
-- **Missing:** on-screen transform handles for Motion / Transform in the Program monitor (#639);
-  Effect Controls keyframe zoom bar, draggable divider, row lines (#640–#645); panel docking
-  rearrangement (#493); clicking empty space to deselect (#683); filmstrip thumbnails (#614);
-  marquee selection in the Project panel (#578); Freeform bins and middle-mouse pan (#579);
-  Program monitor Button Editor (+) (#431); keyframe curves for Position (#448); transition
+- **Missing:** Effect Controls keyframe zoom bar, draggable divider, row lines (#640–#645); panel
+  docking rearrangement (#493); marquee selection in the Project panel (#578); Freeform bins and
+  middle-mouse pan (#579); keyframe curves for Position (#448); transition
   editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize,
   drag the cut to move it with the transition; the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
   X11 (#457).
@@ -328,3 +326,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
+| 2026-10-30 | minor | G8: transform handles (#639), the Button Editor (#431), filmstrip thumbnails (#614) and deselect on empty space (#683) leave the missing list, checked on Windows only; estimate unchanged |

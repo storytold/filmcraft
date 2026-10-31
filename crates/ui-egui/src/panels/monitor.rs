@@ -272,6 +272,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     } else {
         (None, video_area)
     };
+    // A click anywhere on the Program panel around the picture lets go of what is selected on it
+    // (#683; in the picture the overlays do that). Under everything else on the panel, so the
+    // grid, the picture, the overlays and the controls come first.
+    if which == Which::Program && ui.interact(rect, egui::Id::unique((prefix, "background")), Sense::click()).clicked() {
+        crate::panels::graphics::deselect_on_monitor(app, ui);
+    }
     if let Some(g) = grid_area {
         crate::panels::multicam::grid(app, ui, g);
     }
@@ -339,11 +345,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     if which == Which::Program && app.playback.playing {
         let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
         ui.painter().circle_filled(pos2(video_area.min.x + 10.0, video_area.min.y + 10.0), 4.0, c);
-    }
-    // A click on the Program monitor around the picture lets go of what is selected on it (#683;
-    // in the picture the overlays do that). Under the picture and the overlays, so they come first.
-    if which == Which::Program && show_picture && ui.interact(video_area, egui::Id::unique((prefix, "background")), Sense::click()).clicked() {
-        crate::panels::graphics::deselect_on_monitor(app, ui);
     }
     // Click/drag in the picture: the Hand tool pans a magnified picture, otherwise focus.
     let pic_resp = ui.interact(pic, egui::Id::unique((prefix, "pic")), if show_picture { Sense::click_and_drag() } else { Sense::hover() });
