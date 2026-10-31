@@ -41,7 +41,12 @@ pub fn parse_wav(b: &[u8]) -> Option<(Vec<u8>, u16, u32, u16)> {
     while at + 8 <= b.len() {
         let id = &b[at..at + 4];
         let len = u32::from_le_bytes(b[at + 4..at + 8].try_into().ok()?) as usize;
-        let body = &b[at + 8..(at + 8).saturating_add(len).min(b.len())];
+        let body_start = at.checked_add(8)?;
+        let body_end = body_start.checked_add(len)?;
+        if body_end > b.len() {
+            return None;
+        }
+        let body = &b[body_start..body_end];
         if id == b"fmt " && body.len() >= 16 {
             let tag = u16::from_le_bytes([body[0], body[1]]);
             let ch = u16::from_le_bytes([body[2], body[3]]);
@@ -176,6 +181,13 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn truncated_wav_data_chunk_is_rejected() {
+        let mut w = wav_file(&[1, 2, 3, 4], 1, 48_000, 16);
+        w.truncate(w.len() - 2);
+        assert!(parse_wav(&w).is_none());
+    }
 
     #[test]
     fn wav_and_aiff_round_trip() {
