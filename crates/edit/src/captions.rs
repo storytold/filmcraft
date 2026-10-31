@@ -156,8 +156,9 @@ pub fn trim_caption(seq: &mut Sequence, id: ClipId, edge: Edge, delta: Tick, ctx
     let (prev, next) = neighbours(tr, id);
     let c = tr.caption_mut(id).ok_or(EditError::NoItem(id))?;
     let d = match edge {
-        Edge::In => delta.clamp(prev - c.start, c.duration - ctx.min_duration),
-        Edge::Out => delta.clamp(ctx.min_duration - c.duration, next - c.end()),
+        // bounds never cross: a caption already shorter than the minimum cannot shrink
+        Edge::In => delta.clamp((prev - c.start).min(Tick::ZERO), (c.duration - ctx.min_duration).max(Tick::ZERO)),
+        Edge::Out => delta.clamp((ctx.min_duration - c.duration).min(Tick::ZERO), (next - c.end()).max(Tick::ZERO)),
     };
     if d == Tick::ZERO {
         return Err(EditError::Nothing);

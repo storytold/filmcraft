@@ -3,7 +3,7 @@
 use filmcraft_bitstream::BitWriter;
 
 use crate::cabac::{BinSink, CabacEncoder, CabacEstimator, Contexts, CostTable};
-use crate::dsp::{sad, sad16, satd, ssd};
+use crate::dsp::{sad, sad8, sad16, satd, ssd};
 use crate::intra::{Edge4, Edge8, filter8, mode_available, pred_chroma, pred4x4, pred8x8, pred16x16};
 use crate::mbinfo::{MbInfo, MbKind, Mv, Part};
 use crate::nal::{SliceHeader, SliceType, nal};

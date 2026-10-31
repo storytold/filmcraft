@@ -111,8 +111,22 @@ impl ExportRenderer {
                 if wgpu::Instance::enabled_backend_features().is_empty() {
                     return None;
                 }
-                let instance = wgpu::Instance::default();
-                let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+                let instance = crate::adapter::native_instance();
+                // The GPU the app's window asks for: the high-performance one (`WGPU_POWER_PREF`
+                // overrides it, as for the window). With no preference the first adapter listed
+                // can be an integrated GPU whose read-back memory is uncached.
+                let power_preference = wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
+                // the adapter `request_adapter` would return, except where that one's driver is
+                // known to crash creating the device (`adapter::choose`); among the backends
+                // `WGPU_BACKEND` names, as for the window, when this instance has any of them
+                let mut adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+                if let Some(named) = wgpu::Backends::from_env()
+                    && adapters.iter().any(|a| named.contains(a.get_info().backend.into()))
+                {
+                    adapters.retain(|a| named.contains(a.get_info().backend.into()));
+                }
+                let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
+                log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
                 let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
@@ -205,8 +219,9 @@ mod tests {
         let seq =
             p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 1, 1, None);
         let r = filmcraft_time::FrameRate::FPS_24;
-        let _v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+        let v = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
         let a = p.make_track_item(t, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
         if transform {
             // Motion + opacity as fixed effects (the way the golden transform scene does it).
             if let Some(clip) = p.sequence_mut(seq).unwrap().video_tracks[0].items.last_mut() {
@@ -264,6 +279,7 @@ mod tests {
         let t = Tick::ZERO;
         let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
         let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+        assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "solid fixture must contain a visible picture");
         // The linear premultiplied accumulator should be very close to the CPU float image.
         assert_eq!((cpu.w, cpu.h), (gpu.w, gpu.h));
         let max: f32 = cpu.px.iter().zip(&gpu.px).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
@@ -282,7 +298,52 @@ mod tests {
         let t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
         let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
         let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+        assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "transformed fixture must contain a visible picture");
         assert_parity(&cpu, &gpu, "transformed");
+    }
+
+    #[test]
+    fn transformed_nested_picture_matches_cpu() {
+        let Some(mut renderer) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (nested GPU parity): no adapter");
+            return;
+        };
+        for textured in [false, true] {
+            let (mut p, inner, mut sources) = project(false);
+            let project = Arc::make_mut(&mut p);
+            let media = *sources.0.iter().find(|(_, s)| s.info().has_video()).unwrap().0;
+            let rate = filmcraft_time::FrameRate::FPS_24;
+            if textured {
+                let source = GeneratorSource::new(Generator::Demo(filmcraft_media::DemoScene::OceanSunset), 320, 180, rate, Tick(2 * TICKS_PER_SECOND));
+                let ItemKind::Media(clip) = &mut project.item_mut(media).unwrap().kind else { panic!("expected generated media") };
+                clip.info = source.info().clone();
+                clip.media = MediaRef::Generator(source.generator.clone());
+                sources.0.insert(media, Arc::new(source));
+            }
+            let range = TimeRange::new(Tick::ZERO, rate.tick_of(24));
+            // Keep the source partly outside the nest: a future flattened plan must still clip it.
+            project.sequence_mut(inner).unwrap().video_tracks[0].items[0].effect_mut("motion").unwrap().param_mut("position").unwrap().value =
+                filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(240.0, 90.0));
+            let outer = project.new_sequence("outer", project.sequence(inner).unwrap().settings.clone(), 1, 0, None);
+            let mut nest = project.make_track_item(inner, TrackKind::Video, Tick::ZERO, range, rate).unwrap();
+            let motion = nest.effect_mut("motion").unwrap();
+            motion.param_mut("position").unwrap().value = filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(185.0, 75.0));
+            motion.param_mut("scale").unwrap().value = filmcraft_project::ParamValue::Float(60.0);
+            motion.param_mut("uniform_scale").unwrap().value = filmcraft_project::ParamValue::Bool(false);
+            project.sequence_mut(outer).unwrap().video_tracks[0].items.push(nest);
+            for (rotation, width) in [(0.0, 60.0), (19.0, 60.0), (0.0, 30.0), (0.0, 120.0)] {
+                let motion = Arc::make_mut(&mut p).sequence_mut(outer).unwrap().video_tracks[0].items[0].effect_mut("motion").unwrap();
+                motion.param_mut("rotation").unwrap().value = filmcraft_project::ParamValue::Float(rotation);
+                motion.param_mut("scale_width").unwrap().value = filmcraft_project::ParamValue::Float(width);
+                for scale in [1.0, 0.5] {
+                    let opts = RenderOptions { scale, ..Default::default() };
+                    let cpu = filmcraft_render::render_sequence(&p, outer, Tick::ZERO, opts, &sources);
+                    assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "fixture must contain a visible picture");
+                    let gpu = renderer.render(&p, outer, Tick::ZERO, opts, &sources).expect("GPU rendered the nest");
+                    assert_parity(&cpu, &gpu, "transformed nest");
+                }
+            }
+        }
     }
 
     #[test]

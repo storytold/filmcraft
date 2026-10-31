@@ -231,6 +231,9 @@
 	APV 422-10	APV 422-10
 	APV 422-12	APV 422-12
 	Are you sure you want to discard your changes to '{file}'?	'{file}'의 변경 사항을 버릴까요?
+	Replace File	파일 바꾸기
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{folder}”에 “{file}” 파일이 이미 있습니다. 바꿀까요?
+	Replace	바꾸기
 	Arrange	배치
 	ArtCraft Website	ArtCraft 웹사이트
 	ASC CDL	ASC CDL
@@ -510,6 +513,10 @@
 	Center align text	텍스트 가운데 정렬
 	Center Channel Pan	센터 채널 팬
 	Center Gradient	중앙 그레이디언트
+	Center at Cut	컷 중앙
+	Start at Cut	컷 시작
+	End at Cut	컷 끝
+	Custom Start	사용자 정의 시작
 	Center Horizontally	가로 중앙
 	Center Input	센터 입력
 	Center Left	중앙 왼쪽
@@ -613,7 +620,7 @@
 	Close All Other Projects	다른 프로젝트 모두 닫기
 	Close All Projects	모든 프로젝트 닫기
 	Close Bin	빈 닫기
-	Close Gap	간격 닫기
+	Close Gap	빈 구간 제거
 	Close Other Timeline Panels	다른 타임라인 패널 닫기
 	Close Panel	패널 닫기
 	Close Project	프로젝트 닫기
@@ -1095,10 +1102,10 @@
 	Extend Selection Right	선택 영역 오른쪽으로 확장
 	Extend Selection Up	선택 영역 위로 확장
 	Extended Dynamic Range Monitoring	확장 다이내믹 레인지 모니터링
-	Extract	추출
-	Extract (')	추출(')
+	Extract	구간 삭제 (간격 닫기)
+	Extract (')	구간 삭제 (간격 닫기) (')
 	Extract Audio	오디오 추출
-	Extract selected text	선택한 텍스트 추출
+	Extract selected text	선택한 텍스트 구간 삭제 (간격 닫기)
 	Eyedropper (pick a color from the Program monitor)	스포이드(프로그램 모니터에서 색상 선택)
 	Eyedropper: no picture to sample	스포이드: 샘플링할 화면 없음
 	Face Detection (protect skin tones)	얼굴 감지(피부 톤 보호)
@@ -1195,7 +1202,7 @@
 	Flare Color	플레어 색상
 	Flash	플래시
 	Flash Cue Marker	Flash 큐 마커
-	Flatten	병합
+	Flatten	멀티카메라 클립 펼치기
 	Flicker	깜박임
 	Flicker Removal	깜박임 제거
 	Flickers	깜박임
@@ -1307,7 +1314,7 @@
 	Glow Width	광선 너비
 	Go Back	뒤로
 	Go Forward	앞으로
-	Go to Gap	간격으로 이동
+	Go to Gap	빈 구간으로 이동
 	Go to In	시작 표시로 이동
 	Go to In (Shift+I)	시작으로 이동(Shift+I)
 	Go to In Point	시작 표시(In)로 이동
@@ -1646,11 +1653,11 @@
 	Level 4	레벨 4
 	Levels	레벨
 	Libraries	라이브러리
-	Lift	들어올리기
-	Lift (;)	들어내기(;)
-	Lift selected text	선택한 텍스트 들어내기
+	Lift	구간 삭제 (간격 유지)
+	Lift (;)	구간 삭제 (간격 유지) (;)
+	Lift selected text	선택한 텍스트 구간 삭제 (간격 유지)
 	Lift Shadows	섀도 올리기
-	Lifted blacks, softer contrast, muted colour	들뜬 검정, 부드러운 대비, 차분한 색상
+	Lifted blacks, softer contrast, muted colour	검정 레벨을 높이고 대비를 부드럽게, 색은 차분하게
 	Ligatures	합자
 	Light	밝게
 	Light 1	조명 1
@@ -2656,7 +2663,7 @@
 	Saved preset “{name}”	사전 설정 “{name}” 저장됨
 	Saved template {path}	템플릿 저장됨: {path}
 	Saves the view, columns, sort, thumbnail and font size.	보기, 열, 정렬, 썸네일, 글꼴 크기를 저장합니다.
-	Scale	비율
+	Scale	배율
 	Scale (Degrees)	비율(도)
 	Scale Amount	비율 양
 	Scale Attribute Times	속성 시간 비율 조정
@@ -2719,7 +2726,7 @@
 	Select Camera 9	카메라 9 선택
 	Select Clip at Playhead	재생 헤드 위치 클립 선택
 	Select Find Box	찾기 상자 선택
-	Select items to clear	지울 항목 선택
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	이름을 바꾸려면 타임라인에서 클립(또는 연결된 클립) 하나나 프로젝트 패널에서 항목 하나를 선택하세요
 	Select Label Group	레이블 그룹 선택
 	Select Next Clip	다음 클립 선택
 	Select Next Graphic	다음 그래픽 선택
@@ -3119,7 +3126,6 @@
 	Temperature	색온도
 	Template Name:	템플릿 이름:
 	Template Properties	템플릿 속성
-	Temporal Interpolation	시간 보간
 	Text	텍스트
 	Text (graphics and captions)	텍스트(그래픽 및 자막)
 	Text Animator	텍스트 애니메이터
@@ -3297,6 +3303,7 @@
 	Ultra Key	울트라 키
 	Uncompressed (PCM)	비압축(PCM)
 	Underline	밑줄
+	Strikethrough	취소선
 	Undo	실행 취소
 	Undock Panel	패널 도킹 해제
 	Ungroup	그룹 해제
@@ -3592,7 +3599,6 @@
 	32 bit float	32비트 부동 소수점
 	FLAC stores whole-number samples only	FLAC은 정수 샘플만 저장합니다
 	MXF export writes integer PCM only	MXF 내보내기는 정수 PCM만 기록합니다
-	Opens in your web browser: {url}	웹 브라우저에서 엽니다: {url}
 	Saves this session's log and shows it in your file manager.	이 세션의 로그를 저장하고 파일 관리자에서 보여 줍니다.
 	Shows a report on this computer.	이 컴퓨터에 대한 보고서를 보여 줍니다.
 	Shows the version, community links and credits in a FilmCraft window.	FilmCraft 창에 버전, 커뮤니티 링크, 제작진을 보여 줍니다.
@@ -3604,3 +3610,24 @@
 	Open a sequence to search its graphics	그래픽을 검색하려면 시퀀스를 여세요
 	No text graphics in this sequence. Add text with the Type tool.	이 시퀀스에는 텍스트 그래픽이 없습니다. 문자 도구로 텍스트를 추가하세요.
 	No matching text.	일치하는 텍스트가 없습니다.
+	Enter a positive duration within the supported speed range.	지원되는 속도 범위 내에서 양수인 길이를 입력하세요.
+	Show Video Names	비디오 이름 표시
+	Show Audio Names	오디오 이름 표시
+	Video Names	비디오 이름
+	Audio Names	오디오 이름
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	제어 서버가 비활성화되었습니다: FILMCRAFT_CONTROL_TOKEN에는 64자리 무작위 16진수 문자가 필요합니다(docs/control-protocol.md 참조)
+
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	마커 편집…
+	In:	시작:
+	Marker Color:	마커 색상:
+	Options:	옵션:
+	Comment Marker	주석 마커
+	Chapter Marker	챕터 마커
+	Segmentation Marker	세그먼트 마커
+	Web Link	웹 링크
+	Flash Cue Point	Flash 큐 포인트
+	Invalid duration: {error}	잘못된 지속 시간: {error}
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).

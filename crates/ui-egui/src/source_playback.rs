@@ -3,12 +3,12 @@
 use std::sync::{Arc, Mutex};
 
 use filmcraft_engine::clip_ops::source_view;
-use filmcraft_project::ItemId;
+use filmcraft_project::{ItemId, ItemKind};
 use filmcraft_render::SourceProvider;
 use filmcraft_time::Tick;
 use serde_json::json;
 
-use crate::{AUDIO_RETRY_S, AUDIO_STALL_S, FilmcraftApp, Playback};
+use crate::{AUDIO_RETRY_S, AUDIO_STALL_S, FilmcraftApp, Playback, shuttle};
 
 #[derive(Default)]
 pub struct SourcePlayback {
@@ -68,9 +68,15 @@ impl FilmcraftApp {
     fn start_source_playback(&mut self, start: Option<Tick>, stop: Option<Tick>, speed: f64) -> Result<(), String> {
         let item = self.session.state.source_item.ok_or("Open a media file in the Source monitor first")?;
         let view = source_view(&self.session, item).ok_or("Source item is unavailable")?;
-        let media = self.session.project.item(view.media).and_then(|i| i.as_media()).ok_or("Source playback currently supports media files and subclips")?;
-        if media.offline {
-            return Err("Source media is offline: use Link Media first".into());
+        let pi = self.session.project.item(view.media).ok_or("Source playback currently supports media files, subclips and sequences")?;
+        match &pi.kind {
+            ItemKind::Media(media) => {
+                if media.offline {
+                    return Err("Source media is offline: use Link Media first".into());
+                }
+            }
+            ItemKind::Sequence(_) => {}
+            _ => return Err("Source playback currently supports media files, subclips and sequences".into()),
         }
         if view.end <= view.start {
             return Err("Source clip has no playable duration".into());
@@ -124,67 +130,103 @@ impl FilmcraftApp {
         }
         let Some(item) = self.source_playback.item else { return };
         let Some(view) = source_view(&self.session, item) else { return };
-        let Some(media) = self.session.project.item(view.media).and_then(|i| i.as_media()) else { return };
-        if !media.info.has_audio() {
-            self.source_playback.clock.audio_retry_at = 0.0;
-            return;
-        }
-        let project = self.session.project.clone();
-        let provider = self.session.media.provider(project, self.session.services.clone());
-        let Some(source) = provider.source(view.media) else {
-            self.ui.status = "Source audio is unavailable: check Link Media".into();
-            return;
-        };
         let Some(audio) = self.audio.as_mut() else { return };
+
         let sr = audio.sample_rate();
         if sr == 0 || audio.channels() == 0 {
             self.ui.status = "Source audio output has an invalid sample rate or channel count".into();
             return;
         }
-        let map = [self.session.prefs.audio_hardware.map_left, self.session.prefs.audio_hardware.map_right];
-        let mixdown = filmcraft_audio_dsp::channels::Mixdown::from_id(&self.session.prefs.audio.mixdown_type).unwrap_or_default();
-        let channels = media.interpret.audio_channels.as_ref().and_then(|m| m.clips.first()).cloned().unwrap_or_default();
-        // A seek gets its own failure slot: a late callback from the old stream cannot stop it.
-        self.source_playback.failure = Arc::new(Mutex::new(None));
-        let failure = self.source_playback.failure.clone();
-        let end = self
-            .source_playback
-            .clock
-            .stop_at
-            .unwrap_or_else(|| if self.source_playback.clock.looping { view.selected_range().end() } else { view.end })
-            .to_units_floor(i64::from(sr));
-        let mix = move |cursor: i64, buf: &mut [f32], ch: usize| {
-            buf.fill(0.0);
-            if ch == 0 || cursor >= end {
-                return;
-            }
-            let frames = (buf.len() / ch).min(usize::try_from(end.saturating_sub(cursor)).unwrap_or(0));
-            match source.audio(cursor, frames, sr) {
-                Ok(mut sound) => {
-                    if !channels.is_empty() {
-                        sound.channels = channels.iter().filter_map(|c| sound.channels.get(usize::from(*c)).cloned()).collect();
+        let Some(pi) = self.session.project.item(view.media) else { return };
+        let fill: Box<dyn FnMut(&mut [f32], usize) + Send> = match &pi.kind {
+            ItemKind::Media(media) => {
+                if !media.info.has_audio() {
+                    audio.stop();
+                    self.source_playback.clock.audio_retry_at = 0.0;
+                    return;
+                }
+                let project = self.session.project.clone();
+                let provider = self.session.media.provider(project, self.session.services.clone());
+                let Some(source) = provider.source(view.media) else {
+                    self.ui.status = "Source audio is unavailable: check Link Media".into();
+                    return;
+                };
+                let channels = media.interpret.audio_channels.as_ref().and_then(|m| m.clips.first()).cloned().unwrap_or_default();
+                let map = [self.session.prefs.audio_hardware.map_left, self.session.prefs.audio_hardware.map_right];
+                let mixdown = filmcraft_audio_dsp::channels::Mixdown::from_id(&self.session.prefs.audio.mixdown_type).unwrap_or_default();
+                // A seek gets its own failure slot: a late callback from the old stream cannot stop it.
+                self.source_playback.failure = Arc::new(Mutex::new(None));
+                let failure = self.source_playback.failure.clone();
+                let end = self
+                    .source_playback
+                    .clock
+                    .stop_at
+                    .unwrap_or_else(|| if self.source_playback.clock.looping { view.selected_range().end() } else { view.end })
+                    .to_units_floor(i64::from(sr));
+                let mix = move |cursor: i64, buf: &mut [f32], ch: usize| {
+                    buf.fill(0.0);
+                    if ch == 0 || cursor >= end {
+                        return;
                     }
-                    let sound = filmcraft_render::audio::to_layout(sound, filmcraft_audio_dsp::channels::Layout::Stereo, mixdown);
-                    let Some(left) = sound.channels.first() else { return };
-                    let right = sound.channels.get(1).unwrap_or(left);
-                    filmcraft_engine::settings::map_output(left, right, buf, ch, map);
-                }
-                Err(e) => {
-                    *failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("Source audio decoding failed: {e}"));
-                }
+                    let frames = (buf.len() / ch).min(usize::try_from(end.saturating_sub(cursor)).unwrap_or(0));
+                    match source.audio(cursor, frames, sr) {
+                        Ok(mut sound) => {
+                            if !channels.is_empty() {
+                                sound.channels = channels.iter().filter_map(|c| sound.channels.get(usize::from(*c)).cloned()).collect();
+                            }
+                            let sound = filmcraft_render::audio::to_layout(sound, filmcraft_audio_dsp::channels::Layout::Stereo, mixdown);
+                            let Some(left) = sound.channels.first() else { return };
+                            let right = sound.channels.get(1).unwrap_or(left);
+                            filmcraft_engine::settings::map_output(left, right, buf, ch, map);
+                        }
+                        Err(e) => {
+                            *failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("Source audio decoding failed: {e}"));
+                        }
+                    }
+                };
+
+                let cursor = self.session.state.source_playhead.to_units_floor(i64::from(sr));
+
+                audio.stop();
+                #[cfg(not(target_arch = "wasm32"))]
+                let fill = crate::play_ahead::spawn(mix, cursor, sr, audio.channels(), self.source_playback.clock.audio_stats.clone());
+                #[cfg(target_arch = "wasm32")]
+                let fill = {
+                    let (mix, mut cursor) = (mix, cursor);
+                    Box::new(move |buf: &mut [f32], ch: usize| {
+                        mix(cursor, buf, ch);
+                        cursor = cursor.saturating_add(i64::try_from(buf.len() / ch.max(1)).unwrap_or(0));
+                    })
+                };
+                fill
             }
-        };
-        audio.stop();
-        let cursor = self.session.state.source_playhead.to_units_floor(i64::from(sr));
-        #[cfg(not(target_arch = "wasm32"))]
-        let fill = crate::play_ahead::spawn(mix, cursor, sr, audio.channels(), self.source_playback.clock.audio_stats.clone());
-        #[cfg(target_arch = "wasm32")]
-        let fill = {
-            let (mix, mut cursor) = (mix, cursor);
-            Box::new(move |buf: &mut [f32], ch: usize| {
-                mix(cursor, buf, ch);
-                cursor = cursor.saturating_add(i64::try_from(buf.len() / ch.max(1)).unwrap_or(0));
-            })
+            ItemKind::Sequence(seq) => {
+                if seq.audio_tracks.iter().all(|t| t.items.is_empty()) {
+                    audio.stop();
+                    self.source_playback.clock.audio_retry_at = 0.0;
+                    return;
+                }
+                let Some((mix_rate, mix)) = shuttle::mix(&self.session, item, sr, self.source_playback.clock.speed) else {
+                    audio.stop();
+                    self.source_playback.clock.audio_retry_at = 0.0;
+                    return;
+                };
+                let cursor = self.session.state.source_playhead.to_units_floor(i64::from(mix_rate));
+
+                audio.stop();
+                #[cfg(not(target_arch = "wasm32"))]
+                let fill = crate::play_ahead::spawn(mix, cursor, sr, audio.channels(), self.source_playback.clock.audio_stats.clone());
+                #[cfg(target_arch = "wasm32")]
+                let fill = {
+                    let (mut mix, mut cursor) = (mix, cursor);
+                    Box::new(move |buf: &mut [f32], ch: usize| {
+                        mix(cursor, buf, ch);
+                        cursor = cursor.saturating_add(i64::try_from(buf.len() / ch.max(1)).unwrap_or(0));
+                    })
+                };
+                fill
+            }
+            _ => return,
         };
         match audio.start(fill) {
             Ok(_) => {
