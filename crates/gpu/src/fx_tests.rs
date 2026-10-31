@@ -710,6 +710,44 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
     }
 }
 
+/// A colour-managed layer (PQ media) with effects comes out the same with and without the GPU
+/// effect stage: the CPU fallback decodes it through the layer's input transform too.
+#[test]
+fn cpu_effect_fallback_keeps_the_input_transform() {
+    use filmcraft_color::{ColorInfo, ColorPipeline, ColorSpace, InputTransform, Primaries};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (256u32, 4u32);
+    let y: Vec<u16> = (0..h).flat_map(|_| (0..w).map(|x| (64 + x * 876 / 255) as u16)).collect();
+    let n = (w * h) as usize;
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(vec![480; n]), Arc::new(vec![560; n])], chroma: Chroma::C444, bits: 10, alpha: None };
+    let color = ColorInfo { matrix: Matrix::Bt2020Ncl, transfer: Transfer::Pq, primaries: Primaries::Bt2020, range: Range::Limited };
+    let frame = Arc::new(VideoFrame { width: w, height: h, data, color, par: (1, 1), pts: Default::default() });
+    let t = Arc::new(InputTransform::new(ColorSpace::from_info(&color), color.range, &ColorPipeline::REC709, None));
+    let e = effect("brightness_contrast", &[("brightness", fl(-10.0)), ("contrast", fl(20.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("brightness / contrast op");
+    let layer = PlanLayer {
+        fx: Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops: vec![op] })),
+        input: Some(t),
+        ..PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)
+    };
+    let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    for stage in [true, false] {
+        let mut c = GpuCompositor::new(&dev, &q);
+        if !stage {
+            c.fx = None;
+        }
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let (p99, mean, max) = stats8(&cpu, &gpu, &vec![true; n]);
+        eprintln!("PQ layer with effects, effect stage {stage}: p99 {p99}, mean {mean:.2}, max {max}");
+        assert!(p99 <= 6 && mean < 1.5, "stage {stage}: p99 {p99}, mean {mean}, max {max}");
+    }
+}
+
 /// The half-float upload is lossless for this input, so a 1:1 effect source draw must be too.
 /// Odd dimensions expose interpolation drift that can invent opacity before any effect runs.
 #[test]

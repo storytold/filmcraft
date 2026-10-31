@@ -46,6 +46,15 @@ impl FilmcraftApp {
             self.disable_gpu("device error");
             return None;
         }
+        // The resolve pass finishes a *sequence* frame: the sequence's working space → monitor
+        // (`colorman::display_transform`). A plain sequence's transform is the identity, and item
+        // frames (Source monitor, thumbnails) are already in their item's space.
+        let pipe = match key.target {
+            Target::Sequence(id) | Target::SequencePlan(id) => self.session.project.sequence(id).map(|q| q.settings.color),
+            _ => None,
+        };
+        // A CPU-rendered frame (`FramePlan::Image`) is already in monitor space.
+        let display = filmcraft_gpu::sequence_display(&plan.plan, pipe.and_then(|c| filmcraft_render::colorman::display_transform(&c).gpu_params()));
         let g = self.gpu.as_mut()?;
         if g.last_key == Some(key)
             && let Some(t) = g.texture
@@ -57,6 +66,7 @@ impl FilmcraftApp {
             return None;
         }
         let t0 = web_time::Instant::now();
+        g.compositor.set_display_transform(display);
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
             (view.clone(), size)
