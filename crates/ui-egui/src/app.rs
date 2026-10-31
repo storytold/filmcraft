@@ -108,7 +108,7 @@ impl FilmcraftApp {
             last_time: 0.0,
             bindings: Vec::new(),
             bindings_rev: 0,
-            menu_sent: Vec::new(),
+            menu_cache: menus::MenuCache::default(),
             shortcut_editor: Default::default(),
             toast: None,
             graphics_notice: None,

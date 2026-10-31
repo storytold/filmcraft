@@ -18,6 +18,13 @@ finishes. Transcript words and paragraphs are cached by project snapshot and act
 search highlights by query. Playhead movement reuses them; project edits, undo/redo and view changes
 refresh them. Highlight lookup is constant work per word, including searches with many matches.
 
+The native macOS menu bar is brought up to date every frame, but its rows (translated labels, menu
+paths, shortcuts, Window ▸ Workspaces and File ▸ Open Recent) are kept between frames and rebuilt
+only when the language, the shortcut set, Settings ▸ Labels, the workspaces or the recent projects
+change (`menus::MenuCache`). Enablement and checkmarks are still read every frame. Rebuilding the
+whole tree took about 0.4 ms a frame on an Apple M2 Max (5% of a 120 Hz frame, every frame of
+playback, scrubbing or a drag); the frame-by-frame check now takes about 0.01 ms.
+
 To measure a long transcript, run
 `cargo test -p filmcraft-ui-egui --test it transcript_ui::long_transcript_redraw_benchmark -- --ignored --nocapture`
 alone. It reports median and p95 redraw time for 10,000 words with an empty query and a query matching

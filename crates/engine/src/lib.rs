@@ -834,7 +834,7 @@ impl Session {
 
     /// Whether the command can run on the current selection (what the menus show).
     pub fn is_enabled(&self, id: &str) -> bool {
-        commands::find(id).is_some_and(|c| (c.enabled)(self).is_ok())
+        commands::find(id).is_some_and(|c| c.is_enabled(self))
     }
 
     /// What is open, to store beside the project when it is saved.

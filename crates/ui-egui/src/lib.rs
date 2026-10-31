@@ -345,8 +345,8 @@ pub struct FilmcraftApp {
     bindings: Vec<menus::KeyBinding>,
     /// Shortcut-set revision `bindings` were built from.
     bindings_rev: u64,
-    /// The menu tree last sent to `hooks.menu_changed` (the native menu bar).
-    menu_sent: Vec<menus::MenuItem>,
+    /// The menu tree for `hooks.menu_changed` (the native menu bar), kept between frames.
+    menu_cache: menus::MenuCache,
     /// Keyboard Shortcuts dialog state.
     pub shortcut_editor: panels::shortcuts_dialog::EditorState,
     pub toast: Option<(String, f64)>,

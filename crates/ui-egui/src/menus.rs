@@ -808,32 +808,161 @@ pub const MENUS: [&str; 9] = ["File", "Edit", "Clip", "Sequence", "Markers", "Gr
 pub const NATIVE_APP_MENU: [&str; 4] = ["Settings", "Hide FilmCraft", "Hide Others", "Quit FilmCraft"];
 
 pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
+    let mut v = menu_rows(app);
+    let live: Vec<Live> = v.iter().map(|it| Live::of(&it.id)).collect();
+    menu_state(app, &mut v, &live);
+    v
+}
+
+/// The rows of the menu tree: ids, translated labels, menu paths and shortcuts, with Window ▸
+/// Workspaces and File ▸ Open Recent spliced in. They are read only from what [`RowsFrom`] keeps
+/// a copy of, so [`MenuCache`] can tell when they are out of date. Enablement and checkmarks
+/// follow the selection, the playhead, the focused monitor and more: [`menu_state`] sets them.
+fn menu_rows(app: &FilmcraftApp) -> Vec<MenuItem> {
     let mut v = menu_items_for(&app.session);
     for it in &mut v {
         it.label = app.ui.language.tr(&it.label).to_string();
-        match it.id.as_str() {
-            "app.language.english" => it.checked = Some(app.ui.language == crate::i18n::Language::En),
-            "app.language.japanese" => it.checked = Some(app.ui.language == crate::i18n::Language::Ja),
-            "app.language.spanish" => it.checked = Some(app.ui.language == crate::i18n::Language::Es),
-            "app.language.portuguese" => it.checked = Some(app.ui.language == crate::i18n::Language::PtBr),
-            "app.language.ukrainian" => it.checked = Some(app.ui.language == crate::i18n::Language::Uk),
-            "app.language.chinese" => it.checked = Some(app.ui.language == crate::i18n::Language::ZhCn),
-            "app.language.german" => it.checked = Some(app.ui.language == crate::i18n::Language::De),
-            "app.language.russian" => it.checked = Some(app.ui.language == crate::i18n::Language::Ru),
-            "app.language.french" => it.checked = Some(app.ui.language == crate::i18n::Language::Fr),
-            "app.language.indonesian" => it.checked = Some(app.ui.language == crate::i18n::Language::Id),
-            "app.language.italian" => it.checked = Some(app.ui.language == crate::i18n::Language::It),
-            "app.language.korean" => it.checked = Some(app.ui.language == crate::i18n::Language::Ko),
-            _ => {}
-        }
-        if it.id.starts_with("view.") {
-            it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
-            it.enabled &= crate::panels::monitor_view::enabled(app, &it.id);
-        }
     }
     crate::panels::workspaces::menu(app, &mut v);
     open_recent(&mut v, &app.session, |n| app.ui.language.tr(n).to_string());
     v
+}
+
+/// Where a row's enablement and checkmark come from when they change without the rows changing.
+#[derive(Clone, Copy)]
+enum Live {
+    /// Nothing: set with the rows (frontend commands, panels, workspaces, recent projects).
+    Fixed,
+    /// An engine command: enabled when it can run now.
+    Command(&'static filmcraft_engine::CommandSpec),
+    /// A View item, engine command or not: also enabled and checked by the monitors' state.
+    View(Option<&'static filmcraft_engine::CommandSpec>),
+    /// Edit ▸ Language: checked for the interface language.
+    Language(crate::i18n::Language),
+}
+
+impl Live {
+    fn of(id: &str) -> Self {
+        use crate::i18n::Language;
+        let command = filmcraft_engine::find_command(id);
+        if id.starts_with("view.") {
+            return Self::View(command);
+        }
+        if let Some(c) = command {
+            return Self::Command(c);
+        }
+        let language = match id {
+            "app.language.english" => Language::En,
+            "app.language.japanese" => Language::Ja,
+            "app.language.spanish" => Language::Es,
+            "app.language.portuguese" => Language::PtBr,
+            "app.language.ukrainian" => Language::Uk,
+            "app.language.chinese" => Language::ZhCn,
+            "app.language.german" => Language::De,
+            "app.language.russian" => Language::Ru,
+            "app.language.french" => Language::Fr,
+            "app.language.indonesian" => Language::Id,
+            "app.language.italian" => Language::It,
+            "app.language.korean" => Language::Ko,
+            _ => return Self::Fixed,
+        };
+        Self::Language(language)
+    }
+}
+
+/// The live part of each row (`live` says which part that is): whether an engine command can run
+/// now, the View items' enablement and checkmarks, the Language checkmarks. Each value is set
+/// afresh, never from what the row held before, so the same rows can be refreshed every frame.
+fn menu_state(app: &FilmcraftApp, items: &mut [MenuItem], live: &[Live]) {
+    for (it, live) in items.iter_mut().zip(live) {
+        match *live {
+            Live::Fixed => {}
+            Live::Command(c) => it.enabled = c.is_enabled(&app.session),
+            Live::View(c) => {
+                it.enabled = c.is_none_or(|c| c.is_enabled(&app.session)) && crate::panels::monitor_view::enabled(app, &it.id);
+                it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
+            }
+            Live::Language(language) => it.checked = Some(app.ui.language == language),
+        }
+    }
+}
+
+/// Copies of everything [`menu_rows`] reads: the interface language (labels), the shortcut set
+/// (by its revision), Settings ▸ Labels (Edit ▸ Label names), the saved workspaces and the one in
+/// use (Window ▸ Workspaces and its checkmark) and the recent projects (File ▸ Open Recent).
+#[derive(PartialEq)]
+struct RowsFrom {
+    language: crate::i18n::Language,
+    shortcuts: u64,
+    labels: filmcraft_engine::settings::LabelPrefs,
+    workspaces: Vec<String>,
+    workspace: String,
+    recent: Vec<String>,
+}
+
+impl RowsFrom {
+    fn of(app: &FilmcraftApp) -> Self {
+        Self {
+            language: app.ui.language,
+            shortcuts: app.session.shortcuts.revision,
+            labels: app.session.prefs.labels.clone(),
+            workspaces: app.workspaces.saved.iter().map(|w| w.name.clone()).collect(),
+            workspace: app.ui.workspace.clone(),
+            recent: app.session.prefs.general.recent_projects.clone(),
+        }
+    }
+
+    /// Whether rows built from `self` are still `app`'s rows (compared in place, no copies).
+    fn matches(&self, app: &FilmcraftApp) -> bool {
+        self.language == app.ui.language
+            && self.shortcuts == app.session.shortcuts.revision
+            && self.labels == app.session.prefs.labels
+            && self.workspaces.iter().eq(app.workspaces.saved.iter().map(|w| &w.name))
+            && self.workspace == app.ui.workspace
+            && self.recent == app.session.prefs.general.recent_projects
+    }
+}
+
+/// The menu tree kept between frames for the native menu bar. Building it from scratch (several
+/// hundred rows of translated labels, shortcut lookups and small allocations) took about half a
+/// millisecond, every frame. The rows are rebuilt only when what they are made from changed;
+/// their enablement and checkmarks are still read every time, so nothing they show can lag.
+#[derive(Default)]
+pub struct MenuCache {
+    from: Option<RowsFrom>,
+    rows: Vec<MenuItem>,
+    /// Which part of each row [`menu_state`] refreshes, worked out when the rows are built.
+    live: Vec<Live>,
+    /// The tree as last handed out by [`MenuCache::changed`].
+    sent: Vec<MenuItem>,
+    /// How often the rows were built (tests).
+    pub(crate) builds: u64,
+}
+
+impl MenuCache {
+    /// The menu tree ([`menu_items`]) when it differs from the one this returned last time, else
+    /// `None`. While `text_field` (a text field has the keyboard, [`text_field_window`]) the
+    /// items it takes ([`edits_text`]) are enabled; they are engine commands, whose enablement
+    /// [`menu_state`] sets afresh every time, so they fall back once the field lets go.
+    pub fn changed(&mut self, app: &FilmcraftApp, text_field: bool) -> Option<&[MenuItem]> {
+        if !self.from.as_ref().is_some_and(|from| from.matches(app)) {
+            self.rows = menu_rows(app);
+            self.live = self.rows.iter().map(|it| Live::of(&it.id)).collect();
+            self.from = Some(RowsFrom::of(app));
+            self.builds += 1;
+        }
+        menu_state(app, &mut self.rows, &self.live);
+        if text_field {
+            for it in self.rows.iter_mut().filter(|it| edits_text(&it.id)) {
+                it.enabled = true;
+            }
+        }
+        if self.rows == self.sent {
+            return None;
+        }
+        self.sent.clone_from(&self.rows);
+        Some(&self.sent)
+    }
 }
 
 /// File ▸ Open Recent, after Open Project…: the recent projects (General ▸ `recentProjects`),

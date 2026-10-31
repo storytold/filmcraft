@@ -35,6 +35,14 @@ pub struct CommandSpec {
     pub journal: bool,
 }
 
+impl CommandSpec {
+    /// Whether the command can run on `s`'s current selection ([`Session::is_enabled`], for a
+    /// caller that already holds the spec: the menus ask several hundred of them every frame).
+    pub fn is_enabled(&self, s: &Session) -> bool {
+        (self.enabled)(s).is_ok()
+    }
+}
+
 macro_rules! cmd {
     ($id:literal, $label:literal, [$($m:literal),*], $sc:expr, $params:literal, $en:expr, $run:expr) => {
         CommandSpec { id: $id, label: $label, menu: &[$($m),*], shortcut: $sc, params: $params, enabled: $en, run: $run, journal: true }
