@@ -391,7 +391,7 @@ fn parse_inter_slice_params(r: &mut BitReader, sh: &mut SliceHeader, pps: &Pps, 
 /// Slice QP delta, chroma QP offsets and deblocking / in-loop filter controls.
 fn parse_qp_and_loop_filter(r: &mut BitReader, sh: &mut SliceHeader, pps: &Pps, sps: &Sps) -> Result<()> {
     sh.qp_delta = r.read_se()?;
-    let qp = pps.init_qp + sh.qp_delta;
+    let Some(qp) = pps.init_qp.checked_add(sh.qp_delta) else { return invalid("slice_qp_delta out of range") };
     let qp_bd = 6 * (sps.bit_depth_luma as i32 - 8);
     ensure!((-qp_bd..=51).contains(&qp), "SliceQpY {qp} out of range");
     if pps.slice_chroma_qp_offsets_present {
@@ -588,13 +588,13 @@ mod entry_point_tests {
     }
 
     /// An IDR slice header with one entry point of `offset_minus1` (32-bit field).
-    fn idr_slice(offset_minus1: u32) -> Vec<u8> {
+    fn idr_slice_qp(offset_minus1: u32, qp_delta: i32) -> Vec<u8> {
         let mut w = BitWriter::new();
         w.write_bit(true); // first_slice_segment_in_pic_flag
         w.write_bit(false); // no_output_of_prior_pics_flag
         w.write_ue(0); // pps id
         w.write_ue(2); // I slice
-        w.write_se(0); // slice_qp_delta
+        w.write_se(qp_delta); // slice_qp_delta
         w.write_ue(1); // num_entry_point_offsets
         w.write_ue(31); // offset_len_minus1
         w.write_bits(offset_minus1, 32);
@@ -603,15 +603,27 @@ mod entry_point_tests {
     }
 
     fn parse_slice(offset_minus1: u32) -> Result<SliceHeader> {
+        parse_slice_qp(offset_minus1, 0)
+    }
+
+    fn parse_slice_qp(offset_minus1: u32, qp_delta: i32) -> Result<SliceHeader> {
         let sps = std::sync::Arc::new(Sps::parse(&sps_bytes())?);
         let pps = std::sync::Arc::new(Pps::parse(&pps_bytes())?);
         let nal = NalHeader { nal_type: nal_type::IDR_W_RADL, layer_id: 0, temporal_id: 0 };
-        SliceHeader::parse(&idr_slice(offset_minus1), nal, |_| Ok((pps, sps)), None).map(|(sh, _, _)| sh)
+        SliceHeader::parse(&idr_slice_qp(offset_minus1, qp_delta), nal, |_| Ok((pps, sps)), None).map(|(sh, _, _)| sh)
     }
 
     #[test]
     fn a_slice_header_with_a_maximal_32_bit_entry_point_is_rejected() {
         assert_eq!(parse_slice(7).unwrap().entry_points, vec![8]);
         assert!(parse_slice(u32::MAX).is_err());
+    }
+
+    #[test]
+    fn a_slice_qp_delta_that_overflows_the_qp_is_an_error() {
+        assert_eq!(parse_slice_qp(0, -5).unwrap().qp_delta, -5);
+        for d in [i32::MAX, i32::MIN + 1, 26, -80] {
+            assert!(parse_slice_qp(0, d).is_err(), "slice_qp_delta {d}");
+        }
     }
 }

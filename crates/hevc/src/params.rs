@@ -724,7 +724,9 @@ impl Pps {
         let num_ref_idx_l0_default = r.read_ue_plus(1)?;
         let num_ref_idx_l1_default = r.read_ue_plus(1)?;
         ensure!(num_ref_idx_l0_default <= 15 && num_ref_idx_l1_default <= 15, "num_ref_idx_default_active out of range");
-        let init_qp = 26 + r.read_se()?;
+        // init_qp_minus26 is -(26 + QpBdOffsetY)..=25 and the bit depth is not known here: 16-bit video is the widest
+        let init_qp = r.read_se()?.saturating_add(26);
+        ensure!((-48..=51).contains(&init_qp), "init_qp_minus26 out of range");
         let constrained_intra_pred = r.read_flag()?;
         let transform_skip = r.read_flag()?;
         let cu_qp_delta_enabled = r.read_flag()?;
@@ -946,6 +948,9 @@ mod tests {
         assert!(err.to_string().contains("decoded-frame budget"));
     }
     fn pps_bits(num_ref_idx: u32, tiles: u32) -> Vec<u8> {
+        pps_bits_qp(num_ref_idx, tiles, 0)
+    }
+    fn pps_bits_qp(num_ref_idx: u32, tiles: u32, init_qp_minus26: i32) -> Vec<u8> {
         let mut w = filmcraft_bitstream::BitWriter::new();
         w.write_ue(0); // pps id
         w.write_ue(0); // sps id
@@ -956,7 +961,7 @@ mod tests {
         w.write_bit(false); // cabac_init_present
         w.write_ue(num_ref_idx);
         w.write_ue(num_ref_idx);
-        w.write_se(0); // init_qp
+        w.write_se(init_qp_minus26);
         w.write_bit(false); // constrained intra
         w.write_bit(false); // transform skip
         w.write_bit(false); // cu_qp_delta
@@ -985,6 +990,15 @@ mod tests {
         Pps::parse(&pps_bits(0, 0)).unwrap();
         assert!(Pps::parse(&pps_bits(m, 0)).is_err(), "num_ref_idx_default_active_minus1");
         assert!(Pps::parse(&pps_bits(0, m)).is_err(), "num_tile_columns_minus1");
+    }
+
+    #[test]
+    fn pps_init_qp_overflowing_or_out_of_range_is_an_error() {
+        assert_eq!(Pps::parse(&pps_bits_qp(0, 0, -10)).unwrap().init_qp, 16);
+        assert_eq!(Pps::parse(&pps_bits_qp(0, 0, 25)).unwrap().init_qp, 51);
+        for se in [i32::MAX, i32::MAX - 25, i32::MIN + 1, 26, -75] {
+            assert!(Pps::parse(&pps_bits_qp(0, 0, se)).is_err(), "init_qp_minus26 {se}");
+        }
     }
 
     /// 64x64 4:2:0 SPS; `huge` replaces the `ue(v)` field named by the test, `conf` the window.

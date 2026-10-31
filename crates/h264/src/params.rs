@@ -472,12 +472,12 @@ impl Sps {
             None => (0, 0, self.width(), self.height()),
             Some((l, r, t, b)) => {
                 let (cx, cy) = self.crop_unit();
-                (
-                    l.saturating_mul(cx),
-                    t.saturating_mul(cy),
-                    self.width().saturating_sub(l.saturating_add(r).saturating_mul(cx)).max(1),
-                    self.height().saturating_sub(t.saturating_add(b).saturating_mul(cy)).max(1),
-                )
+                let w = self.width().saturating_sub(l.saturating_add(r).saturating_mul(cx)).max(1);
+                let h = self.height().saturating_sub(t.saturating_add(b).saturating_mul(cy)).max(1);
+                // the origin stays inside the frame whatever the offsets say: the rectangle always fits
+                let x = l.saturating_mul(cx).min(self.width().saturating_sub(w));
+                let y = t.saturating_mul(cy).min(self.height().saturating_sub(h));
+                (x, y, w, h)
             }
         }
     }
@@ -783,5 +783,17 @@ mod tests {
         assert!(Sps::parse(&hostile_sps(66, 0, 0, 10, m, 0)).is_err(), "pic_height_in_map_units_minus1");
         assert!(Sps::parse(&hostile_sps(100, m, 0, 10, 8, 0)).is_err(), "bit_depth_minus8");
         assert!(Sps::parse(&hostile_sps(66, 0, 0, 10, 8, m)).is_err(), "frame_crop offsets");
+    }
+
+    #[test]
+    fn crop_rect_stays_inside_the_frame_when_the_offsets_exceed_it() {
+        let mut sps = Sps::parse(&hostile_sps(66, 0, 0, 10, 8, 0)).unwrap();
+        let (fw, fh) = (sps.width(), sps.height());
+        for crop in [(u32::MAX, 0, u32::MAX, 0), (1000, 1000, 1000, 1000), (u32::MAX, u32::MAX, u32::MAX, u32::MAX), (5, 0, 7, 0)] {
+            sps.frame_crop = Some(crop);
+            let (x, y, w, h) = sps.crop_rect();
+            assert!(w >= 1 && h >= 1, "{crop:?}");
+            assert!(x + w <= fw && y + h <= fh, "{crop:?} gave {:?} in {fw}x{fh}", (x, y, w, h));
+        }
     }
 }
