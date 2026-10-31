@@ -22,6 +22,7 @@ Implemented from the SMPTE documents (editions used):
 | SMPTE ST 386 | 2004 | D-10 (IMX) mapping: container label, sound element type |
 | SMPTE ST 2019-4 | 2009 | VC-3 (DNxHD / DNxHR) mapping |
 | SMPTE RDD 44 | 2017 | Apple ProRes mapping |
+| Adobe CinemaDNG Image Data Format Specification | 1.0.0.0 (September 2009), §7 | CinemaDNG in MXF: frame-wrapped DNG picture elements (element type 42h), the essence container labels for CFA / LinearRaw content, RGBA descriptor; the labels are the specification's **provisional** values from Adobe's experimental range (byte 9 = 0Fh), not SMPTE-registered |
 | SMPTE RP 224 / RP 210 | registers | labels: data definitions, picture coding, essence containers, operational patterns; property labels of the primer pack (writer) |
 | SMPTE ST 330 | 2011 | basic UMIDs of the written packages |
 
@@ -62,7 +63,10 @@ let pcm = mxf.read_pcm(&file, a, 48_000, 1920)?;       // planar f32, sample-exa
   orders by the bitstream (`filmcraft-codecs` uses the AVC picture order counts).
 - **Codecs.** From the picture essence coding label, then the essence container label, then the
   essence bytes: AVC / AVC-Intra, VC-3, ProRes (profile from the label), MPEG-2 (decoded in `filmcraft-codecs`),
-  MPEG-4 visual, JPEG 2000, DV, uncompressed.
+  MPEG-4 visual, JPEG 2000, DV, uncompressed, CinemaDNG (the CinemaDNG container labels, the
+  registered MXF-GC TIFF/EP container and TIFF/EP picture coding labels, a 42h picture element
+  type, or a TIFF header at the start of the essence; developed by `filmcraft-dng` in
+  `filmcraft-codecs`).
 - **Sound.** PCM chunks (frame- or clip-wrapped) with sample counts; `read_pcm` decodes
   little-endian 8/16/24/32-bit PCM (wave / AES3 descriptors) and ST 331 AES3 elements (D-10).
 - **Timecode.** The material package timecode component (start frame count, rounded base,
@@ -120,7 +124,10 @@ w.finish()?;
   element types 0x0C / 0x0D), ProRes (RDD 44: coding label profile byte, container `02 1C`),
   AVC byte stream (ST 381-3: container `02 10 60`, coding label from `profile_idc`; Annex B access
   units with in-band SPS / PPS — the AVC sub-descriptor is not written), Broadcast Wave PCM
-  (ST 382: container `02 06 01/02`, element types 0x01 / 0x02).
+  (ST 382: container `02 06 01/02`, element types 0x01 / 0x02), CinemaDNG (frame-wrapped DNG
+  datasets, element type 0x42, the provisional container label `0F 0A 0D 0B 02 7F 01/02 00`, an
+  RGBA descriptor with pixel layout and reference levels of the decoded 16-bit RGB picture and no
+  coding label; OP-Atom is refused because it is clip-wrapped here and DNG datasets cannot be).
 - `write_opatom_pcm(&OpAtomPcm, &[i32])` builds a complete in-memory OP-Atom PCM file (AAF media
   consolidation); `encode_pcm` interleaves planar f32 as little-endian PCM.
 
@@ -134,6 +141,11 @@ w.finish()?;
   timecode, DNxHR LB (±2), ProRes 422 (±1), MPEG-2 long GOP, XDCAM HD422 and D-10 (±4),
   OP-Atom VC-3 (clip-wrapped) and PCM, D-10 AES3 audio; PCM sample-exact in every file;
   truncated and corrupted files. `cargo xtask fixtures codecs` pre-generates them.
+- `crates/codecs/tests/cinemadng_mxf.rs`: OP1a CinemaDNG files from our writer wrapping DNG frames
+  from the `filmcraft-dng` test writer (CFA lossless JPEG and LinearRaw): every frame developed to
+  its known level in any order, frame rate, timecode, sample-exact sound; a non-DNG picture is
+  an error; truncation and mutation never panic. No tool we can run reads CinemaDNG MXF, so no
+  real camera file has been tested.
 - `src/write/tests.rs`: writer output read back by `open`: OP1a with two sound tracks pushed in
   uneven chunks (durations, codec label, aspect, PCM exact, index slices, closed partitions),
   29.97 sound per edit unit (1601/1602), a long-GOP AVC index (presentation order, key and B

@@ -9,13 +9,16 @@
 //!   nearest later frame before the first).
 //! - The frame rate is the caller's (Settings ▸ Media ▸ Indeterminate Media Timebase), except for
 //!   CinemaDNG: a frame rate and start time code in the first frame's tags are the sequence's.
+//! - DNG frames are developed with the item's camera raw settings ([`crate::raw`]), at reduced
+//!   resolution when the request's scale allows.
 
 use std::sync::Arc;
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
 use filmcraft_time::FrameRate;
 
-use crate::{FrameCache, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, VideoStreamInfo};
+use crate::raw::{RawInfo, RawSettings};
+use crate::{FrameCache, FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, SharedSource, VideoStreamInfo};
 
 /// Reads a file's bytes (the host's file access).
 pub type FrameLoader = Arc<dyn Fn(&str) -> std::io::Result<Vec<u8>> + Send + Sync>;
@@ -125,18 +128,27 @@ pub struct ImageSequenceSource {
     info: MediaInfo,
     frames: Vec<Option<String>>,
     loader: FrameLoader,
-    cache: FrameCache<usize>,
+    /// Developed frames by (index, reduced-resolution level; 0 unless camera raw).
+    cache: FrameCache<(usize, u8)>,
+    /// DNG frames: the raw settings they are developed with and the first frame's as-shot white.
+    raw: Option<RawInfo>,
 }
 
 impl ImageSequenceSource {
     /// `frames`: path per frame (`None`: missing). The first present frame is decoded now (size,
     /// alpha); the rest on demand.
     pub fn new(name: &str, frames: Vec<Option<String>>, rate: FrameRate, loader: FrameLoader) -> Result<Self> {
+        Self::with_settings(name, frames, rate, loader, RawSettings::default())
+    }
+
+    /// [`Self::new`] developing DNG frames with raw `settings` (other formats ignore them).
+    pub fn with_settings(name: &str, frames: Vec<Option<String>>, rate: FrameRate, loader: FrameLoader, settings: RawSettings) -> Result<Self> {
         let first = frames.iter().flatten().next().ok_or_else(|| MediaError::Offline(format!("{name}: no frames")))?.clone();
         let bytes = loader(&first).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound { MediaError::Offline(format!("{first}: {e}")) } else { MediaError::Io(format!("{first}: {e}")) }
         })?;
-        let (frame, has_alpha, pixel_format, timing) = decode_frame(&first, &bytes)?;
+        let (frame, has_alpha, pixel_format, timing) = decode_frame(&first, &bytes, &settings, 0)?;
+        let raw = timing.is_some().then(|| RawInfo { as_shot: crate::still::dng::as_shot(&bytes), settings });
         let (w, h) = (frame.width, frame.height);
         let (rate, start_timecode) = match timing {
             Some(info) => crate::still::dng::sequence_timing(&info, rate),
@@ -166,8 +178,8 @@ impl ImageSequenceSource {
             file_size: None,
         };
         let cache = FrameCache::new(256 << 20);
-        cache.insert(frames.iter().position(Option::is_some).unwrap_or(0), Arc::new(frame));
-        Ok(Self { info, frames, loader, cache })
+        cache.insert((frames.iter().position(Option::is_some).unwrap_or(0), 0), Arc::new(frame));
+        Ok(Self { info, frames, loader, cache, raw })
     }
 
     pub fn frame_count(&self) -> usize {
@@ -184,14 +196,16 @@ impl ImageSequenceSource {
         self.frames.get(i).and_then(|f| f.as_deref())
     }
 
-    fn decode(&self, i: usize) -> Result<Arc<VideoFrame>> {
-        if let Some(f) = self.cache.get(&i) {
+    fn decode(&self, i: usize, level: u8) -> Result<Arc<VideoFrame>> {
+        let level = if self.raw.is_some() { level } else { 0 };
+        if let Some(f) = self.cache.get(&(i, level)) {
             return Ok(f);
         }
         let path = self.frames.get(i).and_then(|f| f.as_deref()).ok_or(MediaError::NoStream("video"))?;
         let bytes = (self.loader)(path).map_err(|e| MediaError::Io(format!("{path}: {e}")))?;
-        let f = Arc::new(decode_frame(path, &bytes)?.0);
-        self.cache.insert(i, f.clone());
+        let settings = self.raw.map(|r| r.settings).unwrap_or_default();
+        let f = Arc::new(decode_frame(path, &bytes, &settings, level)?.0);
+        self.cache.insert((i, level), f.clone());
         Ok(f)
     }
 }
@@ -207,8 +221,9 @@ impl MediaSource for ImageSequenceSource {
         // the wanted frame, else the nearest earlier present frame, else the nearest later one
         let candidates = (0..=want).rev().chain(want + 1..n);
         let mut last_err = None;
+        let level = crate::raw::scale_level(req.scale);
         for i in candidates.filter(|&i| self.frames[i].is_some()).take(8) {
-            match self.decode(i) {
+            match self.decode(i, level) {
                 Ok(f) => return Ok(f),
                 Err(e) => last_err = Some(e),
             }
@@ -219,12 +234,22 @@ impl MediaSource for ImageSequenceSource {
     fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> Result<AudioBuffer> {
         Err(MediaError::NoStream("audio"))
     }
+
+    fn raw_info(&self) -> Option<RawInfo> {
+        self.raw
+    }
+
+    fn with_raw_settings(&self, settings: &RawSettings) -> Option<SharedSource> {
+        self.raw?;
+        let s = Self::with_settings(&self.info.name, self.frames.clone(), self.info.frame_rate(), self.loader.clone(), *settings).ok()?;
+        Some(Arc::new(s))
+    }
 }
 
 /// Decode one frame file: OpenEXR, Radiance HDR and DNG camera raw as linear floats (DNG with its metadata, for
 /// the sequence's timing), every other format through the still decoders as RGBA8. Returns the
 /// frame, whether it has alpha, and its pixel format for the media info.
-fn decode_frame(name: &str, bytes: &[u8]) -> Result<(VideoFrame, bool, String, Option<filmcraft_dng::Info>)> {
+fn decode_frame(name: &str, bytes: &[u8], settings: &RawSettings, level: u8) -> Result<(VideoFrame, bool, String, Option<filmcraft_dng::Info>)> {
     if crate::still::exr::sniff(bytes) {
         let d = crate::still::exr::decode(name, bytes)?;
         return Ok((d.frame, d.has_alpha, d.pixel_format, None));
@@ -234,7 +259,7 @@ fn decode_frame(name: &str, bytes: &[u8]) -> Result<(VideoFrame, bool, String, O
         return Ok((frame, false, "RGB 32-bit float (RGBE)".to_string(), None));
     }
     if crate::still::dng::sniff(bytes) {
-        let d = crate::still::dng::decode(name, bytes)?;
+        let d = crate::still::dng::decode_with(name, bytes, settings, level)?;
         return Ok((d.frame, false, d.pixel_format, Some(d.info)));
     }
     let img = crate::still::decode_raster(name, bytes)?;
