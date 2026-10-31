@@ -252,6 +252,326 @@ fn lossless_roundtrip_with_filmcraft_metadata() {
     assert_eq!(structure(&imp2.project, imp2.sequences[0], TrackKind::Video), structure(&p, s, TrackKind::Video));
 }
 
+/// Explicit sequence metadata is absent; the first video's FilmCraft media info supplies the size.
+#[test]
+fn sequence_dimensions_default_from_first_video_clip_media_info() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"portrait",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"portrait.mp4",
+                    "available_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":100}},
+                    "metadata":{"filmcraft":{"info":{"video":{"width":1080,"height":1920}}}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
+    let media_id = sequence.video_tracks[0].items[0].item;
+    let media = imp.project.item(media_id).unwrap().as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().map(|v| (v.width, v.height)), Some((1080, 1920)));
+}
+
+/// Image bounds supply portrait dimensions without any FilmCraft metadata.
+#[test]
+fn sequence_dimensions_default_from_first_video_clip_image_bounds() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"portrait",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"portrait.mp4",
+                    "available_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":100}},
+                    "available_image_bounds":{"OTIO_SCHEMA":"Box2d.1","min":{"x":0,"y":0},"max":{"x":1080,"y":1920}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
+    let media_id = sequence.video_tracks[0].items[0].item;
+    let media = imp.project.item(media_id).unwrap().as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().map(|v| (v.width, v.height)), Some((1080, 1920)));
+}
+
+/// Integral JSON floats preserve portrait dimensions for both the sequence and imported media.
+#[test]
+fn sequence_dimensions_accept_integral_float_media_metadata() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"portrait",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"portrait.mp4",
+                    "available_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":100}},
+                    "metadata":{"width":1080.0,"height":1920.0}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
+    let media_id = sequence.video_tracks[0].items[0].item;
+    let media = imp.project.item(media_id).unwrap().as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().map(|v| (v.width, v.height)), Some((1080, 1920)));
+}
+
+/// Invalid numeric dimensions retain the HD fallback rather than admitting unsafe frame sizes.
+#[test]
+fn sequence_dimensions_reject_invalid_metadata_widths() {
+    let template = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"portrait",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"portrait.mp4",
+                    "available_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":100}},
+                    "metadata":{"width":WIDTH,"height":1920}}}
+            ]}
+        ]}
+    }"#;
+
+    for width in ["1080.5", "-1", "0", "4294967296"] {
+        let document = template.replace("\"width\":WIDTH", &format!("\"width\":{width}"));
+        let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+        let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+        assert_eq!((sequence.settings.width, sequence.settings.height), (1920, 1080), "width={width}");
+    }
+}
+
+/// A present but empty media_references map does not fall back to the legacy field.
+#[test]
+fn empty_media_references_do_not_use_legacy_reference_dimensions() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"clip",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_references":{},
+                 "active_media_reference_key":"DEFAULT_MEDIA",
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"legacy.mp4",
+                    "metadata":{"filmcraft":{"info":{"video":{"width":1080,"height":1920}}}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1920, 1080));
+}
+
+/// Updates deduplicated default media dimensions when a later reference supplies them.
+#[test]
+fn later_same_path_metadata_updates_default_media_dimensions() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"first",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"shared.mp4",
+                    "metadata":{}}},
+                {"OTIO_SCHEMA":"Clip.2","name":"second",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"shared.mp4",
+                    "metadata":{"filmcraft":{"info":{"video":{"width":1080,"height":1920}}}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
+    let media = imp.project.item(sequence.video_tracks[0].items[0].item).unwrap().as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().map(|v| (v.width, v.height)), Some((1080, 1920)));
+}
+
+/// Adds a later video stream when an audio reference created the shared media item first.
+#[test]
+fn later_video_reference_adds_dimensions_to_audio_only_shared_media() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Audio","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"audio first",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"shared.mp4",
+                    "metadata":{}}}
+            ]},
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"video later",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"shared.mp4",
+                    "metadata":{"filmcraft":{"info":{"video":{"width":1080,"height":1920}}}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    let audio_item = sequence.audio_tracks[0].items[0].item;
+    let video_item = sequence.video_tracks[0].items[0].item;
+    assert_eq!(audio_item, video_item);
+    let media = imp.project.item(audio_item).unwrap().as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().map(|v| (v.width, v.height)), Some((1080, 1920)));
+    assert_eq!(media.info.kind, filmcraft_media::MediaKind::Movie);
+    assert_eq!(media.info.audio_streams.len(), 1);
+}
+
+/// Keeps the first explicit dimensions when later references to the same file disagree.
+#[test]
+fn first_explicit_same_path_dimensions_are_preserved() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"first",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"shared.mp4",
+                    "metadata":{"filmcraft":{"info":{"video":{"width":1920,"height":1080}}}}}},
+                {"OTIO_SCHEMA":"Clip.2","name":"second",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"shared.mp4",
+                    "metadata":{"filmcraft":{"info":{"video":{"width":1080,"height":1920}}}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1920, 1080));
+    let media = imp.project.item(sequence.video_tracks[0].items[0].item).unwrap().as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().map(|v| (v.width, v.height)), Some((1920, 1080)));
+}
+
+/// Preserves complete first-reference media info when it includes video on an audio track.
+#[test]
+fn first_audio_reference_complete_media_info_keeps_explicit_dimensions() {
+    let info = serde_json::to_value(media_info("shared.mp4", true, true, FrameRate::FPS_24, 60)).unwrap();
+    let document = serde_json::json!({
+        "OTIO_SCHEMA": "Timeline.1",
+        "tracks": {
+            "OTIO_SCHEMA": "Stack.1",
+            "children": [
+                {
+                    "OTIO_SCHEMA": "Track.1",
+                    "kind": "Audio",
+                    "children": [{
+                        "OTIO_SCHEMA": "Clip.2",
+                        "name": "audio first",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "start_time": {"OTIO_SCHEMA": "RationalTime.1", "rate": 24, "value": 0},
+                            "duration": {"OTIO_SCHEMA": "RationalTime.1", "rate": 24, "value": 24}
+                        },
+                        "media_reference": {
+                            "OTIO_SCHEMA": "ExternalReference.1",
+                            "target_url": "shared.mp4",
+                            "metadata": {"filmcraft": {"info": info}}
+                        }
+                    }]
+                },
+                {
+                    "OTIO_SCHEMA": "Track.1",
+                    "kind": "Video",
+                    "children": [{
+                        "OTIO_SCHEMA": "Clip.2",
+                        "name": "video later",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "start_time": {"OTIO_SCHEMA": "RationalTime.1", "rate": 24, "value": 0},
+                            "duration": {"OTIO_SCHEMA": "RationalTime.1", "rate": 24, "value": 24}
+                        },
+                        "media_reference": {
+                            "OTIO_SCHEMA": "ExternalReference.1",
+                            "target_url": "shared.mp4",
+                            "metadata": {"filmcraft": {"info": {"video": {"width": 1080, "height": 1920}}}}
+                        }
+                    }]
+                }
+            ]
+        }
+    });
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let (imp, _) = import(&bytes, Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    let media = imp.project.item(sequence.video_tracks[0].items[0].item).unwrap().as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().map(|v| (v.width, v.height)), Some((1920, 1080)));
+    assert_eq!(media.info.audio_streams.len(), 1);
+}
+
+/// Selects dimensions only from nested stacks that the importer can actually include.
+#[test]
+fn sequence_dimensions_skip_stacks_without_readable_source_ranges() {
+    let template = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Stack.1","name":"unreadable nested",NESTED_RANGE "children":[
+                    {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                        {"OTIO_SCHEMA":"Clip.2","name":"nested portrait",
+                         "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                         "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"portrait.mp4",
+                            "metadata":{"filmcraft":{"info":{"video":{"width":1080,"height":1920}}}}}}
+                    ]}
+                ]},
+                {"OTIO_SCHEMA":"Clip.2","name":"direct landscape",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"landscape.mp4",
+                    "metadata":{"filmcraft":{"info":{"video":{"width":1920,"height":1080}}}}}}
+            ]}
+        ]}
+    }"#;
+
+    for source_range in ["", r#""source_range":null,"#, r#""source_range":{},"#] {
+        let document = template.replace("NESTED_RANGE", source_range);
+        let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+        let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+        assert_eq!((sequence.settings.width, sequence.settings.height), (1920, 1080));
+        assert_eq!(sequence.video_tracks[0].items.len(), 1);
+    }
+
+    let nested_range = r#""source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},"#;
+    let document = template.replace("NESTED_RANGE", nested_range);
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
+    assert_eq!(sequence.video_tracks[0].items.len(), 2);
+    let nested = sequence.video_tracks[0].items[0].item;
+    let nested = imp.project.sequence(nested).unwrap();
+    assert_eq!((nested.settings.width, nested.settings.height), (1080, 1920));
+    assert_eq!(nested.video_tracks[0].items.len(), 1);
+}
+
+/// Empty clips are skipped when choosing the sequence's video dimensions.
+#[test]
+fn sequence_dimensions_skip_zero_duration_video_clips() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"empty landscape",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"empty.mp4",
+                    "available_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":100}},
+                    "metadata":{"filmcraft":{"info":{"video":{"width":1920,"height":1080}}}}}},
+                {"OTIO_SCHEMA":"Clip.2","name":"portrait",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"portrait.mp4",
+                    "available_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":100}},
+                    "metadata":{"filmcraft":{"info":{"video":{"width":1080,"height":1920}}}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
+    assert_eq!(sequence.video_tracks[0].items.len(), 1);
+}
+
 #[test]
 fn collections_and_bare_tracks() {
     let one = r#"{"OTIO_SCHEMA": "SerializableCollection.1", "name": "Bundle", "children": [
