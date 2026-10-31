@@ -1,5 +1,6 @@
 mod aaf_omf;
 mod api;
+mod cyclic_subclips;
 mod edl;
 mod fcp7;
 mod fcpxml;
@@ -9,5 +10,7 @@ mod media_marker_export;
 mod nested_sequence_markers;
 mod otio;
 mod point_markers;
+mod rates;
 mod support;
 mod uncarried_clips;
+mod wav_extensible;

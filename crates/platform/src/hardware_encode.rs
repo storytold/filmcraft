@@ -19,7 +19,7 @@ use filmcraft_export::{BitrateMode, EncodedPacket, EncoderFrame, ExportError, Ex
 use filmcraft_isobmff::{AvcConfig, HevcConfig, SampleEntry};
 use filmcraft_time::FrameRate;
 
-use crate::videotoolbox_encode::{ParamSets, VtCodec, VtConfig, VtEncoder, VtPacket, VtProfile, VtRate};
+use crate::videotoolbox_encode::{ParamSets, VtCodec, VtConfig, VtEncoder, VtInput, VtPacket, VtProfile, VtRate};
 
 /// The hardware encoder's configuration for an export, or why it is not used for it.
 pub fn config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result<VtConfig, String> {
@@ -137,10 +137,10 @@ pub fn videotoolbox_encoder_factory(
             return None;
         }
     };
-    match VtEncoder::new(config) {
-        Ok(vt) => {
+    match HardwareEncoder::open(config) {
+        Ok(enc) => {
             filmcraft_export::note_hw_encode_session();
-            Some(Ok(Box::new(HardwareEncoder { vt, y: Vec::new(), u: Vec::new(), v: Vec::new(), decoded: 0 })))
+            Some(Ok(Box::new(enc)))
         }
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
@@ -148,6 +148,18 @@ pub fn videotoolbox_encoder_factory(
             None
         }
     }
+}
+
+/// The session for `config`: one that takes the export's RGBA pictures as they are, so that
+/// VideoToolbox converts them to 4:2:0 and the encode thread only copies (the CPU conversion ran
+/// there before, where it competed with the render of the next frames for the thread pool and took
+/// longer than the hardware encode itself); when that cannot be created, the planar session with
+/// the CPU conversion. `rgba` stands for [`VtEncoder::with_rgba_input`] so tests can refuse it.
+fn open_with(config: VtConfig, rgba: impl FnOnce(VtConfig) -> Result<VtEncoder, String>) -> Result<VtEncoder, String> {
+    rgba(config.clone()).or_else(|why| {
+        log::info!("VideoToolbox RGBA input declined ({why}): converting to 4:2:0 on the CPU");
+        VtEncoder::new(config)
+    })
 }
 
 /// The `hvcC` configuration of an HEVC stream: VideoToolbox's own record when it wrote one.
@@ -163,6 +175,7 @@ fn hevc_config(p: &ParamSets) -> Result<HevcConfig, String> {
 /// [`VtEncoder`] as a `VideoEncoder`: RGBA pictures in, MP4 samples out.
 pub struct HardwareEncoder {
     vt: VtEncoder,
+    /// The planar path's conversion buffers (empty while VideoToolbox converts the RGBA pictures).
     y: Vec<u8>,
     u: Vec<u8>,
     v: Vec<u8>,
@@ -171,6 +184,35 @@ pub struct HardwareEncoder {
 }
 
 impl HardwareEncoder {
+    /// The encoder for `config` (see [`open_with`]), or why there is none.
+    pub fn open(config: VtConfig) -> Result<Self, String> {
+        Ok(Self::around(open_with(config, VtEncoder::with_rgba_input)?))
+    }
+
+    fn around(vt: VtEncoder) -> Self {
+        HardwareEncoder { vt, y: Vec::new(), u: Vec::new(), v: Vec::new(), decoded: 0 }
+    }
+
+    /// Whether VideoToolbox converts the RGBA pictures itself (else the CPU converts them to 4:2:0 first).
+    pub fn takes_rgba(&self) -> bool {
+        self.vt.input() == VtInput::Bgra
+    }
+
+    /// Replace the RGB session by a planar one for the rest of the export. Only for a session that
+    /// has produced nothing yet (the first picture), so the stream starts over from its first frame.
+    fn fall_back_to_planar(&mut self, why: &str) -> filmcraft_export::Result<()> {
+        log::info!("VideoToolbox did not take an RGBA picture ({why}): converting to 4:2:0 on the CPU");
+        self.vt = VtEncoder::new(self.vt.config().clone()).map_err(ExportError::Encode)?;
+        Ok(())
+    }
+
+    /// Convert on the CPU and submit to the planar session.
+    fn encode_planar(&mut self, f: &EncoderFrame) -> filmcraft_export::Result<Vec<VtPacket>> {
+        let (w, h) = (f.width as usize, f.height as usize);
+        filmcraft_export::timed(filmcraft_export::Stage::Convert, || filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v));
+        self.vt.encode(f.index, &self.y, &self.u, &self.v).map_err(ExportError::Encode)
+    }
+
     /// MP4 samples from compressed frames. Without frame reordering every frame is presented at
     /// its decode time, so composition offsets are 0; a frame whose time is not `n × duration`
     /// after the first (a dropped or reordered frame) is an error, never a file with wrong times.
@@ -225,8 +267,25 @@ impl VideoEncoder for HardwareEncoder {
         if f.rgba.len() < w.saturating_mul(h).saturating_mul(4) {
             return Err(ExportError::Encode("the RGBA picture is smaller than its size".into()));
         }
-        filmcraft_export::timed(filmcraft_export::Stage::Convert, || filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v));
-        let packets = self.vt.encode(f.index, &self.y, &self.u, &self.v).map_err(ExportError::Encode)?;
+        let packets = if self.takes_rgba() {
+            match self.vt.encode_rgba(f.index, f.rgba) {
+                Ok((packets, copied)) => {
+                    // the CPU's share of the conversion: the copy into the input buffer
+                    filmcraft_export::note_stage(filmcraft_export::Stage::Convert, copied);
+                    packets
+                }
+                // Whether this VideoToolbox converts RGB itself is only known from the first picture
+                // (the session is created without complaint either way). Nothing has come out of it
+                // yet, so the export goes on from this frame with the planar path, the CPU converting.
+                Err(why) if f.index == 0 => {
+                    self.fall_back_to_planar(&why)?;
+                    self.encode_planar(f)?
+                }
+                Err(why) => return Err(ExportError::Encode(why)),
+            }
+        } else {
+            self.encode_planar(f)?
+        };
         filmcraft_export::note_hw_encode_frame();
         // the muxer needs the parameter sets after the first group of pictures
         if f.index == 0 {
@@ -241,5 +300,113 @@ impl VideoEncoder for HardwareEncoder {
     fn flush(&mut self) -> filmcraft_export::Result<Vec<EncodedPacket>> {
         let packets = self.vt.flush().map_err(ExportError::Encode)?;
         self.samples(packets)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const W: u32 = 320;
+    const H: u32 = 180;
+
+    fn config() -> VtConfig {
+        VtConfig {
+            width: W,
+            height: H,
+            timescale: 30,
+            frame_duration: 1,
+            keyframe_interval: 30,
+            profile: VtProfile::High,
+            rate: VtRate::Vbr { target_kbps: 2000, max_kbps: 3000 },
+        }
+    }
+
+    /// A gradient picture with a bar at `i`.
+    fn picture(i: u64) -> Vec<u8> {
+        let (w, h) = (W as usize, H as usize);
+        let mut px = vec![255u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let o = (y * w + x) * 4;
+                px[o] = (x * 255 / w) as u8;
+                px[o + 1] = (y * 255 / h) as u8;
+                px[o + 2] = if x / 10 == i as usize { 255 } else { 40 };
+            }
+        }
+        px
+    }
+
+    /// Three pictures through the `VideoEncoder` adapter: one compressed frame each.
+    fn encodes_three(enc: &mut HardwareEncoder) {
+        let mut packets = Vec::new();
+        for i in 0..3u64 {
+            let px = picture(i);
+            packets.extend(enc.encode(&EncoderFrame { width: W, height: H, rgba: &px, hdr: None, index: i }).expect("encode"));
+        }
+        packets.extend(enc.flush().expect("flush"));
+        assert_eq!(packets.len(), 3);
+        assert!(packets[0].key);
+    }
+
+    #[test]
+    fn rgba_input_is_tried_first() {
+        let mut attempted = false;
+        let opened = open_with(config(), |c| {
+            attempted = true;
+            assert_eq!((c.width, c.height), (W, H));
+            VtEncoder::with_rgba_input(c)
+        });
+        assert!(attempted);
+        match opened {
+            Ok(vt) => assert_eq!(vt.input(), VtInput::Bgra),
+            Err(why) => eprintln!("SKIPPED: no VideoToolbox hardware encoder ({why})"),
+        }
+    }
+
+    /// Where the RGB session cannot be created, the planar one takes the export (the CPU converts).
+    #[test]
+    fn refused_rgba_input_falls_back_to_the_planar_session() {
+        let opened = open_with(config(), |_| Err("no RGB input (test)".into()));
+        let Ok(vt) = opened else {
+            eprintln!("SKIPPED: no VideoToolbox hardware encoder");
+            return;
+        };
+        assert_eq!(vt.input(), VtInput::Nv12);
+        let mut enc = HardwareEncoder::around(vt);
+        assert!(!enc.takes_rgba());
+        encodes_three(&mut enc);
+    }
+
+    /// Where the RGB session refuses the first picture, the encoder starts over with a planar session
+    /// and the export goes on from its first frame.
+    #[test]
+    fn a_refused_first_picture_restarts_with_the_planar_session() {
+        let Ok(vt) = VtEncoder::with_rgba_input(config()) else {
+            eprintln!("SKIPPED: no VideoToolbox hardware encoder");
+            return;
+        };
+        let mut enc = HardwareEncoder::around(vt);
+        assert!(enc.takes_rgba());
+        enc.fall_back_to_planar("test").expect("the planar session opens");
+        assert!(!enc.takes_rgba());
+        encodes_three(&mut enc);
+    }
+
+    /// A picture the RGB session fails after the first frame is an error, not a silent restart (the
+    /// stream already has frames the planar session could not continue).
+    #[test]
+    fn a_later_failure_is_an_error() {
+        let Ok(vt) = VtEncoder::with_rgba_input(config()) else {
+            eprintln!("SKIPPED: no VideoToolbox hardware encoder");
+            return;
+        };
+        let mut enc = HardwareEncoder::around(vt);
+        let px = picture(0);
+        enc.encode(&EncoderFrame { width: W, height: H, rgba: &px, hdr: None, index: 0 }).expect("first frame");
+        // a short picture is refused before it reaches VideoToolbox; so is one of another size
+        assert!(enc.encode(&EncoderFrame { width: W, height: H, rgba: &px[..100], hdr: None, index: 1 }).is_err());
+        assert!(enc.encode(&EncoderFrame { width: W + 2, height: H, rgba: &px, hdr: None, index: 1 }).is_err());
+        assert!(enc.takes_rgba(), "no restart after the first frame");
     }
 }
