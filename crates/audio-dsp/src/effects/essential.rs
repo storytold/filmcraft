@@ -279,7 +279,9 @@ impl AudioEffect for DeReverb {
             for k in 0..bins {
                 let p = re[k] * re[k] + im[k] * im[k];
                 let psd = alpha * st.psd[k] + (1.0 - alpha) * p;
-                st.psd[k] = if psd < 1e-30 { 0.0 } else { psd };
+                // Range test: tiny values and NaN/inf (one bad input sample) clear the state
+                // instead of poisoning the recursion and its history ring.
+                st.psd[k] = if (1e-30..=f32::MAX).contains(&psd) { psd } else { 0.0 };
                 // Late reverb predicted from the PSD `delay` frames ago (the ring slot we are
                 // about to overwrite holds exactly that frame).
                 let late = if warm { decay * st.hist[base + k] } else { 0.0 };
@@ -583,10 +585,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dereverb_suppresses_tail() {
+    /// Voice bursts (0.1 s every 0.5 s) with a statistical late-reverb tail (DRR about 0 dB).
+    fn reverberant_bursts(n: usize) -> (Vec<f32>, usize, usize) {
         let sr = SR as f64;
-        let n = SR as usize * 6;
         let period = (0.5 * sr) as usize;
         let on = (0.1 * sr) as usize;
         let dry_src = harmonic_voice(n, 180.0, 0.25);
@@ -605,6 +606,53 @@ mod tests {
                 d + (rng.uniform() as f64 * 3f64.sqrt() * e.sqrt()) as f32
             })
             .collect();
+        (x, period, on)
+    }
+
+    /// After one NaN or infinite input sample DeReverb's gain reduction comes back: the tail
+    /// suppression matches a run without the bad sample (not just finite output).
+    #[test]
+    fn dereverb_gain_reduction_recovers_after_non_finite_sample() {
+        let n = SR as usize * 6;
+        let (x, period, on) = reverberant_bursts(n);
+        let run = |bad: Option<f32>| {
+            let mut fx = DeReverb::new(SR, 1);
+            fx.set_param("amount", 100.0);
+            fx.reset();
+            let mut y = x.clone();
+            if let Some(b) = bad {
+                y[SR as usize * 2 + 777] = b;
+            }
+            for blk in y.chunks_mut(512) {
+                fx.process(&mut [blk]);
+            }
+            y.split_off(DeReverb::new(SR, 1).latency())
+        };
+        // Tail-to-burst energy ratio (dB) over the last two seconds (latency already removed).
+        let tail_ratio = |v: &[f32]| {
+            let (mut b, mut g) = (0.0f64, 0.0f64);
+            for (i, s) in v.iter().enumerate().skip(SR as usize * 4) {
+                let p = (*s as f64) * (*s as f64);
+                if i % period < on { b += p } else { g += p }
+            }
+            10.0 * (g / b).log10()
+        };
+        let clean = run(None);
+        let x = &x[..clean.len()];
+        let reduction = tail_ratio(x) - tail_ratio(&clean);
+        assert!(reduction >= 4.0, "clean run reduces the tail by only {reduction} dB");
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let y = run(Some(bad));
+            assert!(y[SR as usize * 4..].iter().all(|v| v.is_finite()), "{bad}: output not finite");
+            let got = tail_ratio(x) - tail_ratio(&y);
+            assert!((got - reduction).abs() < 0.5, "{bad}: tail reduction {got} dB after the bad sample, {reduction} dB without");
+        }
+    }
+
+    #[test]
+    fn dereverb_suppresses_tail() {
+        let n = SR as usize * 6;
+        let (x, period, on) = reverberant_bursts(n);
         let mut fx = DeReverb::new(SR, 1);
         fx.set_param("amount", 100.0);
         fx.reset();

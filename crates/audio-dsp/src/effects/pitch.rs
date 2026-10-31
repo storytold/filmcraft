@@ -135,6 +135,9 @@ fn shift_frame(spec_re: &mut [f32], spec_im: &mut [f32], st: &mut PvState, sc: &
         let delta = target - p as isize;
         let prev_rot = if (0..bins as isize).contains(&target) { st.rot[target as usize] } else { 0.0 };
         let rot = wrap(prev_rot + (ratio - 1.0) * f * expect);
+        // A NaN or inf input sample leaves a non-finite previous spectrum; `rot` is accumulated
+        // across frames, so it must not keep the NaN.
+        let rot = if rot.is_finite() { rot } else { 0.0 };
         // mag·e^{i(φ+rot)} = X·e^{i·rot}: one sin_cos per region instead of one per bin.
         let (s, c) = rot.sin_cos();
         for k in start..end {
