@@ -1,8 +1,8 @@
 //! Right-to-left scripts (Arabic, Hebrew) in the interface: fallback fonts and reading order.
 //!
-//! Fonts: like [`crate::cjk`], the craft-fonts faces for these scripts (`Arab`, `Hebr`) become the
-//! last fallbacks of every UI font family. A build without them looks up one installed face per
-//! script once (Noto Sans Arabic, SF Arabic, Segoe UI…) and reuses it across theme changes.
+//! Fonts: like [`crate::cjk`], the craft-fonts faces for these scripts (`Arab`, `Hebr`, and the
+//! left-to-right `Geor`, which needs the same fallback) become the last fallbacks of every UI
+//! font family. A build without them looks up one installed face per script once (Noto Sans Arabic, SF Arabic, Segoe UI…) and reuses it across theme changes.
 //!
 //! Reading order: the egui 0.37 fork performs UAX #9 shaping, run ordering and bracket mirroring.
 //! [`Lines`] lays out document text (captions) with one logical `LayoutJob` and
@@ -17,7 +17,7 @@ use egui::{Align, Color32, FontData, FontDefinitions, FontId, Galley, Painter, R
 use filmcraft_text::fonts::{CraftFont, Face};
 use unicode_bidi::{BidiClass, BidiInfo, bidi_class};
 
-/// A right-to-left script: its ISO 15924 code (as in the craft-fonts manifest), letters a face
+/// A script without letters in the UI fonts: its ISO 15924 code (as in the craft-fonts manifest), letters a face
 /// must cover, and installed families to prefer, best first.
 struct Script {
     code: &'static str,
@@ -47,9 +47,10 @@ const SCRIPTS: &[Script] = &[
         sample: "אבגדהוזחטיכךלמםנןסעפףצץקרשת",
         preferred: &["Noto Sans Hebrew", "SF Hebrew", "Arial Hebrew", "Segoe UI", "Arial", "Tahoma", "DejaVu Sans"],
     },
+    Script { code: "Geor", sample: "აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ", preferred: &[] },
 ];
 
-/// The craft-fonts faces for right-to-left scripts (empty unless built with `CRAFT_FONTS_DIR`).
+/// The craft-fonts faces for these scripts (empty unless built with `CRAFT_FONTS_DIR`).
 pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static CraftFont> {
     filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.iter().any(|s| SCRIPTS.iter().any(|x| x.code == *s)))
 }
