@@ -230,3 +230,87 @@ fn hevc_422_10bit_matches_ffmpeg_when_the_hardware_takes_it() {
         assert!(planes[0][..] == raw[..y] && planes[1][..] == raw[y..y + c] && planes[2][..] == raw[y + c..], "frame {i} differs from ffmpeg");
     }
 }
+
+/// #1750: interlaced H.264, which neither the Apple-silicon media engine nor our software decoder
+/// decodes, goes to VideoToolbox's software decoder. Its frames are checked against ffmpeg's: the
+/// right count, order and full (woven) frame size, every frame within 35 dB PSNR, also after a
+/// reset and a reseek to a later sync sample, and without B-frames a bit-exact luma plane.
+///
+/// Not bit-exact: in MBAFF streams Apple's decoder and ffmpeg's disagree on the chroma of some
+/// inter-predicted frames, and with B-frames (implicit weighted bi-prediction, temporal direct) on
+/// the luma of a few as well, by a few levels (worst about 36 dB PSNR on these fixtures).
+#[test]
+fn interlaced_h264_is_close_to_ffmpeg() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let (w, h) = (640usize, 360usize);
+    // (fixture, x264 options, luma must be bit-exact)
+    let cases = [
+        ("h264_mbaff_tff_p.mp4", "tff=1:bframes=0:keyint=12:scenecut=0", true),
+        ("h264_mbaff_bff_p.mp4", "bff=1:bframes=0:keyint=12:scenecut=0", true),
+        ("h264_mbaff_tff_b.mp4", "tff=1:bframes=3:keyint=12:min-keyint=12:scenecut=0", false),
+    ];
+    for (name, opts, luma_exact) in cases {
+        let args = [
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=640x360:r=25:d=2,noise=alls=12:allf=t",
+            "-c:v",
+            "libx264",
+            "-flags",
+            "+ildct+ilme",
+            "-x264opts",
+            opts,
+            "-pix_fmt",
+            "yuv420p",
+        ];
+        let Some(path) = fixture(&ff, name, &args) else { continue };
+        let s = read_stream(&path);
+        assert!(NalStreamInfo::from_entry(&s.entry).unwrap().unwrap().interlaced, "{name}: the fixture is interlaced");
+        let mut vt = match filmcraft_platform::videotoolbox_factory(&s.entry) {
+            Some(Ok(d)) => d,
+            Some(Err(e)) => panic!("{name}: factory error: {e}"),
+            // declined: a failure where VideoToolbox decodes H.264 at all (the progressive fixture)
+            None => {
+                let progressive = named(&ff, "h264_high.mp4").map(|p| read_stream(&p));
+                assert!(
+                    progressive.is_none_or(|p| filmcraft_platform::videotoolbox_factory(&p.entry).is_none()),
+                    "{name}: VideoToolbox declined interlaced H.264 but takes progressive H.264"
+                );
+                eprintln!("SKIPPED: no VideoToolbox H.264 decoder");
+                continue;
+            }
+        };
+        let o =
+            std::process::Command::new(&ff).args(["-v", "error", "-i", path.to_str().unwrap(), "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"]).output().unwrap();
+        let reference: Vec<&[u8]> = o.stdout.chunks_exact(w * h * 3 / 2).collect();
+        let check = |what: &str, f: &filmcraft_codecs::DecodedFrame, r: &[u8]| {
+            let filmcraft_frame::PixelData::Yuv8 { planes, chroma, .. } = &f.frame.data else { panic!("{what}: 8-bit planes") };
+            assert_eq!(*chroma, filmcraft_frame::Chroma::C420, "{what}");
+            assert_eq!((f.frame.width as usize, f.frame.height as usize), (w, h), "{what}: woven frames, not fields");
+            if luma_exact {
+                assert!(planes[0][..] == r[..w * h], "{what}: luma differs from ffmpeg");
+            }
+            let ours: Vec<u8> = planes.iter().flat_map(|p| p.iter().copied()).collect();
+            let mse = ours.iter().zip(r).map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2)).sum::<f64>() / ours.len() as f64;
+            let psnr = if mse == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64 * 255.0 / mse).log10() };
+            assert!(psnr >= 35.0, "{what}: {psnr:.1} dB from ffmpeg");
+        };
+        let out = decode_all(vt.as_mut(), &s.samples);
+        assert_eq!(out.len(), reference.len(), "{name}: frame count");
+        assert!(out.len() >= 50, "{name}: {} frames", out.len());
+        assert!(out.windows(2).all(|p| p[0].pts < p[1].pts), "{name}: presentation order");
+        for (i, (f, r)) in out.iter().zip(&reference).enumerate() {
+            check(&format!("{name} frame {i}"), f, r);
+        }
+        // reset, then reseek to the last sync sample: the frames from there on are ffmpeg's last ones
+        let k = (1..s.samples.len()).rev().find(|&i| s.sync[i]).expect("more than one GOP");
+        vt.reset();
+        let tail = decode_all(vt.as_mut(), &s.samples[k..]);
+        let skip = reference.len() - tail.len();
+        assert!(!tail.is_empty() && skip > 0, "{name}: {} frames after the reseek", tail.len());
+        for (i, f) in tail.iter().enumerate() {
+            check(&format!("{name} frame {} after the reseek", skip + i), f, reference[skip + i]);
+        }
+    }
+}
