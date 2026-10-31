@@ -74,7 +74,7 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 ## Summary
 
 **Hardware dimension: ~45%, 120–200 h.** Ahead of Premiere: hardware decode on Linux (VA-API,
-NVDEC) and FreeBSD builds. Behind, by user impact: zero-copy upload; GPU effects beyond 35
+NVDEC) and FreeBSD builds. Behind, by user impact: zero-copy upload; GPU effects beyond 38
 (Lumetri curves / wheels / HSL, keys, masks, transitions); Quick Sync and AMD encoders on Windows;
 VideoToolbox Main 10 HDR encode; 10-bit / 4:2:2 decode off macOS; HDR display; external video
 I/O and control surfaces (need hardware we don't own). Calibration: one decode backend ~3–5 h,
