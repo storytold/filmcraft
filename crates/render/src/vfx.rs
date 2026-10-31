@@ -53,6 +53,15 @@ pub trait FxEnv: Sync {
     fn clip_offset(&self) -> f64;
     fn frame_rate(&self) -> f64;
     fn media_timecode(&self) -> String;
+    /// The sequence time now in `display` (Feet + Frames, Frames, ...); `None` when the host can't
+    /// format it, and the burn-in falls back to the sequence timecode.
+    fn sequence_time(&self, _display: TimeDisplay) -> Option<String> {
+        None
+    }
+    /// The clip's media time now in `display`; `None` falls back to [`FxEnv::media_timecode`].
+    fn media_time(&self, _display: TimeDisplay) -> Option<String> {
+        None
+    }
     fn file_name(&self) -> String;
     fn sequence_name(&self) -> String;
     /// Full-resolution sequence frame size.
@@ -143,6 +152,14 @@ impl FxEnv for ItemEnv<'_> {
     fn media_timecode(&self) -> String {
         let s = &self.seq.settings;
         format_time(self.item.source_time_at(self.t), s.frame_rate, s.drop_frame, TimeDisplay::Timecode, s.sample_rate as i64)
+    }
+    fn sequence_time(&self, display: TimeDisplay) -> Option<String> {
+        let s = &self.seq.settings;
+        Some(format_time(self.t, s.frame_rate, s.drop_frame, display, s.sample_rate as i64))
+    }
+    fn media_time(&self, display: TimeDisplay) -> Option<String> {
+        let s = &self.seq.settings;
+        Some(format_time(self.item.source_time_at(self.t), s.frame_rate, s.drop_frame, display, s.sample_rate as i64))
     }
     fn file_name(&self) -> String {
         self.project.item(self.item.item).map(|p| p.name.clone()).unwrap_or_default()
