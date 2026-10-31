@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-interchange"
-description = "FilmCraft interchange: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), FCPXML and OpenTimelineIO import/export"
+description = "FilmCraft interchange: CMX 3600 EDL, Final Cut Pro 7 XML (xmeml), FCPXML and OpenTimelineIO import/export, Kdenlive (MLT XML) import"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

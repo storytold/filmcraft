@@ -6,6 +6,7 @@ mod fcp7;
 mod fcpxml;
 mod file_urls;
 mod media_marker_export;
+mod mlt;
 mod nested_sequence_markers;
 mod otio;
 mod point_markers;
