@@ -168,8 +168,9 @@ impl FilmcraftApp {
                 let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
                 let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
                 let text = format!("{verb}… {label}");
-                // room from the start for 100 % and a time under an hour, so the first estimate fits
-                let room = format!("{verb}… 100%{}", panels::left_text(std::time::Duration::from_secs(3599)));
+                // room from the start for 100 % and the longest time shown (99:59:59), so no estimate
+                // moves the start of the text
+                let room = format!("{verb}… 100%{}", panels::left_text(std::time::Duration::from_secs(100 * 3600 - 1)));
                 let width = [&text, &room].map(|s| widgets::tabular_text(p, s, &font, t.text_dim).1).into_iter().fold(old.map_or(0.0, |o| o.width), f32::max);
                 panels::JobText { job: job.id, at: now, text, label, width }
             }
@@ -270,14 +271,8 @@ mod job_status_tests {
         let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
         let job = filmcraft_engine::Job { id: 7, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
         let progress = job.progress.clone();
-        // 250 units a second of 1 000 000 (readings from the near future, which the real clock reading
-        // every frame does not disturb): 3995 s left
         progress.total.store(1_000_000, Ordering::Relaxed);
-        let t0 = web_time::Instant::now() + Duration::from_secs(60);
-        for i in 0..=50u64 {
-            progress.done.store(i * 25, Ordering::Relaxed);
-            progress.eta_at(t0 + Duration::from_millis(i * 100));
-        }
+        progress.done.store(460_000, Ordering::Relaxed);
         app.session.jobs.push(job);
         let (ctx, t) = (egui::Context::default(), Tokens::for_kind(crate::theme::ThemeKind::Dark));
         let sb = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 24.0));
@@ -287,13 +282,24 @@ mod job_status_tests {
             ctx.run_ui(egui::RawInput::default(), |ui| start = app.job_status(ui, sb, &t)).textures_delta.clear();
             (start, app.job_text.as_ref().map(|s| s.label.clone()))
         };
+        // before any estimate
+        let (first, label) = draw(&mut app, 8.0);
+        assert_eq!(label.as_deref(), Some("46%"));
+        // 100 units a second (readings from the near future, which the real clock reading every frame
+        // does not disturb): 5395 s left, over an hour
+        let t0 = web_time::Instant::now() + Duration::from_secs(60);
+        for i in 0..=50u64 {
+            progress.done.store(460_000 + i * 10, Ordering::Relaxed);
+            progress.eta_at(t0 + Duration::from_millis(i * 100));
+        }
         let (start, label) = draw(&mut app, 10.0);
-        assert_eq!(label.as_deref(), Some("0% · 1:06:35 left"));
-        // half as much left: under an hour, but not shown before a second has passed
-        progress.total.store(500_000, Ordering::Relaxed);
+        assert_eq!(label.as_deref(), Some("46% · 1:29:55 left"));
+        assert_eq!(start, first, "the first estimate, over an hour, starts where the text without one did");
+        // a smaller total: under an hour, but not shown before a second has passed
+        progress.total.store(600_000, Ordering::Relaxed);
         assert_eq!(draw(&mut app, 10.5), (start, label));
         let (later, label) = draw(&mut app, 11.0);
-        assert_eq!(label.as_deref(), Some("0% · 33:15 left"));
+        assert_eq!(label.as_deref(), Some("77% · 23:15 left"));
         assert_eq!(later, start, "the shorter text starts where the longer one did");
     }
 }

@@ -64,10 +64,15 @@ impl Pace {
         if span < MIN_SPAN || d1 <= d0 {
             return None;
         }
-        let left = match self.batches() {
-            // on time: the speed between batches, counting down since the last one landed
-            Some((per_second, gap, since)) if since <= gap.saturating_mul(LATE) => (remaining as f64 / per_second - since.as_secs_f64()).max(0.0),
-            // a batch is overdue (or the count moves too seldom to tell): the speed up to now
+        // on time: the speed between batches, counting down since the last one landed
+        let countdown = self
+            .batches()
+            .filter(|(_, gap, since)| *since <= gap.saturating_mul(LATE))
+            .map(|(per_second, _, since)| remaining as f64 / per_second - since.as_secs_f64());
+        let left = match countdown {
+            Some(left) if left > 0.0 => left,
+            // a batch is overdue, the countdown ran out with work left, or the count moves too
+            // seldom to tell: the speed up to now
             _ => remaining as f64 / ((d1 - d0) as f64 / span.as_secs_f64()),
         };
         // `try_from_secs_f64` refuses what a `Duration` cannot hold; that is "more than the cap" here
@@ -197,6 +202,22 @@ mod tests {
         let ends: Vec<f64> = batched(40.0, 20_000).into_iter().filter(|r| r.0 >= 20.0).map(|(s, e)| s + e.unwrap_or(f64::NAN)).collect();
         let (lo, hi) = ends.iter().fold((f64::MAX, f64::MIN), |(lo, hi), e| (lo.min(*e), hi.max(*e)));
         assert!(hi - lo < 5.0 && (lo - 2500.0).abs() < 5.0, "the end moved between {lo} and {hi}");
+    }
+
+    #[test]
+    fn the_last_batch_never_shows_nothing_left_before_it_lands() {
+        // batches of 16 every 2 s; at 20 s 160 of 176 are done, and the last batch is a little late
+        let t0 = Instant::now();
+        let mut p = Pace::default();
+        for i in 0..=200u64 {
+            p.observe(at(t0, i as f64 * 0.1), (i / 20) * 16);
+        }
+        for i in 201..=260u64 {
+            p.observe(at(t0, i as f64 * 0.1), 160);
+            let left = p.eta(16).map(|d| d.as_secs_f64());
+            // the countdown runs out at 22 s; until the batch was overdue at 26 s it said 0
+            assert!(left.is_some_and(|l| l > 0.0), "{:.1} s in: {left:?} left of 16 units", i as f64 * 0.1);
+        }
     }
 
     #[test]
