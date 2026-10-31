@@ -137,11 +137,19 @@ impl StreamDecoder {
         }
     }
 
-    /// Conceals `n` samples (a multiple of 2.5 ms).
+    /// Longest concealment or FEC span accepted per call: 120 ms, the longest Opus packet.
+    fn max_span(&self) -> usize {
+        self.rate as usize * 3 / 25
+    }
+
+    /// Conceals `n` samples (a multiple of 2.5 ms, at most 120 ms).
     pub fn conceal(&mut self, n: usize, out: &mut Vec<f32>) -> Result<usize> {
         let f2_5 = self.rate as usize / 400;
         if n == 0 || !n.is_multiple_of(f2_5) {
             return Err(Error::InvalidArgument("concealment length must be a multiple of 2.5 ms"));
+        }
+        if n > self.max_span() {
+            return Err(Error::InvalidArgument("concealment length exceeds 120 ms"));
         }
         let start = out.len();
         out.resize(start + n * self.channels, 0.0);
@@ -155,7 +163,11 @@ impl StreamDecoder {
     }
 
     /// Decodes the in-band FEC (LBRR) of `packet` for the previous (lost) packet of `n` samples.
+    /// `n` is at most 120 ms.
     pub fn decode_fec(&mut self, packet: &[u8], n: usize, out: &mut Vec<f32>) -> Result<usize> {
+        if n > self.max_span() {
+            return Err(Error::InvalidArgument("FEC length exceeds 120 ms"));
+        }
         let p = Packet::parse(packet)?;
         let pfs = p.toc.frame_samples(self.rate);
         if n < pfs || p.toc.mode == Mode::CeltOnly || self.mode == Some(Mode::CeltOnly) {

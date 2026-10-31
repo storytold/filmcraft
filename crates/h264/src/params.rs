@@ -154,7 +154,7 @@ pub struct HrdParameters {
 }
 
 fn parse_hrd(r: &mut BitReader) -> Result<HrdParameters> {
-    let cpb_cnt = r.read_ue()? + 1;
+    let cpb_cnt = r.read_ue_plus(1)?;
     ensure!(cpb_cnt <= 32, "cpb_cnt_minus1 out of range");
     let mut h = HrdParameters { cpb_cnt, bit_rate_scale: r.read_bits(4)? as u8, cpb_size_scale: r.read_bits(4)? as u8, ..Default::default() };
     for _ in 0..cpb_cnt {
@@ -357,8 +357,8 @@ impl Sps {
             if chroma_format_idc == 3 {
                 separate_colour_plane = r.read_flag()?;
             }
-            bit_depth_luma = r.read_ue()? + 8;
-            bit_depth_chroma = r.read_ue()? + 8;
+            bit_depth_luma = r.read_ue_plus(8)?;
+            bit_depth_chroma = r.read_ue_plus(8)?;
             ensure!(bit_depth_luma <= 14 && bit_depth_chroma <= 14, "bit depth out of range");
             bypass = r.read_flag()?;
             seq_scaling_matrix_present = r.read_flag()?;
@@ -367,7 +367,7 @@ impl Sps {
                 scaling_lists = parse_scaling_lists(&mut r, count, None)?;
             }
         }
-        let log2_max_frame_num = r.read_ue()? + 4;
+        let log2_max_frame_num = r.read_ue_plus(4)?;
         ensure!(log2_max_frame_num <= 16, "log2_max_frame_num out of range");
         let pic_order_cnt_type = r.read_ue()?;
         ensure!(pic_order_cnt_type <= 2, "pic_order_cnt_type out of range");
@@ -377,7 +377,7 @@ impl Sps {
         let mut offset_for_top_to_bottom_field = 0;
         let mut offset_for_ref_frame = Vec::new();
         if pic_order_cnt_type == 0 {
-            log2_max_poc_lsb = r.read_ue()? + 4;
+            log2_max_poc_lsb = r.read_ue_plus(4)?;
             ensure!(log2_max_poc_lsb <= 16, "log2_max_pic_order_cnt_lsb out of range");
         } else if pic_order_cnt_type == 1 {
             delta_pic_order_always_zero = r.read_flag()?;
@@ -392,8 +392,8 @@ impl Sps {
         let max_num_ref_frames = r.read_ue()?;
         ensure!(max_num_ref_frames <= 16, "max_num_ref_frames out of range");
         let gaps_in_frame_num_allowed = r.read_flag()?;
-        let pic_width_in_mbs = r.read_ue()? + 1;
-        let pic_height_in_map_units = r.read_ue()? + 1;
+        let pic_width_in_mbs = r.read_ue_plus(1)?;
+        let pic_height_in_map_units = r.read_ue_plus(1)?;
         ensure!(pic_width_in_mbs <= 1024 && pic_height_in_map_units <= 1024, "picture too large");
         let frame_mbs_only = r.read_flag()?;
         let mb_adaptive_frame_field = if !frame_mbs_only { r.read_flag()? } else { false };
@@ -433,7 +433,9 @@ impl Sps {
         };
         if let Some((l, rr, t, b)) = sps.frame_crop {
             let (cx, cy) = sps.crop_unit();
-            ensure!((l + rr) * cx < sps.width() && (t + b) * cy < sps.height(), "frame cropping exceeds picture size");
+            let ok = l.checked_add(rr).and_then(|h| h.checked_mul(cx)).is_some_and(|w| w < sps.width())
+                && t.checked_add(b).and_then(|v| v.checked_mul(cy)).is_some_and(|h| h < sps.height());
+            ensure!(ok, "frame cropping exceeds picture size");
         }
         Ok(sps)
     }
@@ -470,7 +472,12 @@ impl Sps {
             None => (0, 0, self.width(), self.height()),
             Some((l, r, t, b)) => {
                 let (cx, cy) = self.crop_unit();
-                (l * cx, t * cy, self.width() - (l + r) * cx, self.height() - (t + b) * cy)
+                (
+                    l.saturating_mul(cx),
+                    t.saturating_mul(cy),
+                    self.width().saturating_sub(l.saturating_add(r).saturating_mul(cx)).max(1),
+                    self.height().saturating_sub(t.saturating_add(b).saturating_mul(cy)).max(1),
+                )
             }
         }
     }
@@ -733,5 +740,48 @@ mod tests {
         assert_eq!((sps.width(), sps.height()), (176, 144));
         assert_eq!(sps.pic_order_cnt_type, 2);
         assert_eq!(sps.crop_rect(), (0, 0, 176, 144));
+    }
+    /// Baseline SPS with the given `ue(v)` overrides for the fields hostile streams can max out.
+    fn hostile_sps(profile: u32, bit_depth: u32, log2_frame_num: u32, w: u32, h: u32, crop: u32) -> Vec<u8> {
+        let mut bw = BitWriter::new();
+        bw.write_bits(profile, 8);
+        bw.write_bits(0, 8);
+        bw.write_bits(30, 8);
+        bw.write_ue(0); // sps id
+        if profile == 100 {
+            bw.write_ue(1); // chroma_format_idc
+            bw.write_ue(bit_depth);
+            bw.write_ue(bit_depth);
+            bw.write_bit(false); // bypass
+            bw.write_bit(false); // scaling matrix
+        }
+        bw.write_ue(log2_frame_num);
+        bw.write_ue(2); // poc type
+        bw.write_ue(1); // max_num_ref_frames
+        bw.write_bit(false);
+        bw.write_ue(w);
+        bw.write_ue(h);
+        bw.write_bit(true); // frame_mbs_only
+        bw.write_bit(true); // direct_8x8
+        bw.write_bit(crop != 0);
+        if crop != 0 {
+            for _ in 0..4 {
+                bw.write_ue(crop);
+            }
+        }
+        bw.write_bit(false); // vui
+        bw.rbsp_trailing();
+        bw.finish()
+    }
+
+    #[test]
+    fn sps_huge_ue_fields_are_errors_not_overflow() {
+        let m = u32::MAX;
+        assert!(Sps::parse(&hostile_sps(66, 0, 0, 10, 8, 0)).is_ok());
+        assert!(Sps::parse(&hostile_sps(66, 0, m, 10, 8, 0)).is_err(), "log2_max_frame_num_minus4");
+        assert!(Sps::parse(&hostile_sps(66, 0, 0, m, 8, 0)).is_err(), "pic_width_in_mbs_minus1");
+        assert!(Sps::parse(&hostile_sps(66, 0, 0, 10, m, 0)).is_err(), "pic_height_in_map_units_minus1");
+        assert!(Sps::parse(&hostile_sps(100, m, 0, 10, 8, 0)).is_err(), "bit_depth_minus8");
+        assert!(Sps::parse(&hostile_sps(66, 0, 0, 10, 8, m)).is_err(), "frame_crop offsets");
     }
 }

@@ -252,10 +252,19 @@ impl FilmcraftApp {
         // Timeline's sequence tabs), drawn before its bodies, carry that window too.
         self.auto.windows =
             self.ui.dock.floating.iter().enumerate().map(|(index, window)| (DockArea::<PanelKind>::window_viewport(area_id(), window.id), index)).collect();
-        let mut content =
-            FilmContent { app: self, seqs, seq_width, tokens: t, seq_actions: Vec::new(), menu: None, bodies: Vec::new(), restore_workspace: false };
+        let mut content = FilmContent {
+            app: self,
+            seqs,
+            seq_width,
+            tokens: t,
+            seq_actions: Vec::new(),
+            menu: None,
+            seq_menu_viewport: egui::ViewportId::ROOT,
+            bodies: Vec::new(),
+            restore_workspace: false,
+        };
         let output = area.show_content(&mut child, &layout, &style, &mut content);
-        let FilmContent { seq_actions, mut menu, bodies, restore_workspace, .. } = content;
+        let FilmContent { seq_actions, mut menu, seq_menu_viewport, bodies, restore_workspace, .. } = content;
         ctx.data_mut(|data| data.insert_temp(bodies_id(), bodies));
         if let Some(panel) = output.focused {
             self.ui.focused = panel;
@@ -295,7 +304,7 @@ impl FilmcraftApp {
                 SeqAction::Close(id) => self.session.execute("sequence.close", json!({"item": id})),
                 SeqAction::Move(id, index) => self.session.execute("sequence.moveTab", json!({"item": id, "index": index})),
                 SeqAction::Menu(id, pos) => {
-                    menu = Some((PanelKind::Timeline, pos));
+                    menu = Some((PanelKind::Timeline, pos, seq_menu_viewport));
                     self.ui.focused = PanelKind::Timeline;
                     if self.session.state.active_sequence.map(|item| item.0) == Some(id) {
                         Ok(Value::Null)
@@ -308,13 +317,23 @@ impl FilmcraftApp {
                 self.ui.status = error.to_string();
             }
         }
-        if let Some((panel, pos)) = menu {
+        if let Some((panel, pos, viewport)) = menu {
             let frame = ctx.cumulative_frame_nr();
             ctx.data_mut(|data| {
-                data.insert_temp(egui::Id::unique("panel-menu"), (panel, pos));
+                data.insert_temp(egui::Id::unique("panel-menu"), (panel, pos, viewport));
                 data.insert_temp(egui::Id::unique("panel-menu-opened"), frame);
             });
         }
+        // a menu left in a window that has since closed has nowhere to draw
+        ctx.data_mut(|data| {
+            let id = egui::Id::unique("panel-menu");
+            let gone = data
+                .get_temp::<(PanelKind, egui::Pos2, egui::ViewportId)>(id)
+                .is_some_and(|(_, _, owner)| owner != egui::ViewportId::ROOT && !self.auto.windows.iter().any(|(viewport, _)| *viewport == owner));
+            if gone {
+                data.remove::<(PanelKind, egui::Pos2, egui::ViewportId)>(id);
+            }
+        });
         let hits = DockArea::<PanelKind>::hit_rects(&ctx, area_id());
         self.register_dock_hits(&hits);
         panels::panel_menu_popup(self, ui);
@@ -443,7 +462,9 @@ struct FilmContent<'a> {
     tokens: Tokens,
     seq_actions: Vec<SeqAction>,
     /// The ≡ button clicked: its panel and where its menu opens.
-    menu: Option<(PanelKind, egui::Pos2)>,
+    menu: Option<(PanelKind, egui::Pos2, egui::ViewportId)>,
+    /// The viewport of the Timeline tab strip whose sequence tab menu was opened this pass.
+    seq_menu_viewport: egui::ViewportId,
     bodies: Vec<(PanelKind, Rect, egui::LayerId)>,
     /// Restore Workspace chosen in a tab's menu; it replaces the layout after the dock area is drawn.
     restore_workspace: bool,
@@ -480,6 +501,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
     /// A native floating window drew its last body: its end-of-pass IME check, for the Program
     /// monitor's text editor when it is there.
     fn window_drawn(&mut self, ui: &mut egui::Ui) {
+        panels::panel_menu_area(self.app, ui);
         self.app.finish_ime_window(ui.ctx());
     }
 
@@ -548,7 +570,11 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         let menu = Rect::from_min_max(egui::pos2((header.max.x - MENU_W).max(header.min.x), header.min.y), header.max);
         if *active == PanelKind::Timeline && !self.seqs.open.is_empty() {
             let strip = Rect::from_min_max(header.min, egui::pos2(menu.min.x, header.max.y));
-            self.seq_actions.extend(dock::sequence_tabs(ui, strip, &self.seqs, &t, &mut self.app.auto));
+            let actions = dock::sequence_tabs(ui, strip, &self.seqs, &t, &mut self.app.auto);
+            if actions.iter().any(|a| matches!(a, SeqAction::Menu(..))) {
+                self.seq_menu_viewport = ui.ctx().viewport_id();
+            }
+            self.seq_actions.extend(actions);
         }
         let rect = Rect::from_center_size(menu.center(), vec2(18.0, 18.0));
         let response = ui.interact(rect, egui::Id::unique(("panel-menu-button", active.id())), Sense::click());
@@ -559,7 +585,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         dock::paint_widget_focus(ui.painter(), &response, &t);
         if response.clicked() {
             self.app.ui.focused = *active;
-            self.menu = Some((*active, rect.left_bottom()));
+            self.menu = Some((*active, rect.left_bottom(), ui.ctx().viewport_id()));
         }
     }
 }

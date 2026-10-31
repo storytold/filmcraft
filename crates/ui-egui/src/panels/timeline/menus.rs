@@ -1,4 +1,4 @@
-use super::{ClipId, FilmcraftApp, MarkerId, Sequence, TrackId, TrackItem, Value, json};
+use super::{ClipId, FilmcraftApp, MarkerId, Rect, Sense, Sequence, TrackId, TrackItem, Value, json};
 
 /// The clip context menu: groups (separated by rules) of (label, command id). Entries marked `…`
 /// open their dialog through `menus::invoke`, like the same item in the Clip menu.
@@ -9,6 +9,13 @@ pub(super) fn marker_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut 
         ui.close();
         return;
     };
+    let label = crate::i18n::t("Edit Marker…");
+    let r = ui.button(label);
+    app.auto.add("timeline.markerMenu.markers.edit", r.rect, label);
+    if r.clicked() {
+        super::marker_dialog::open(app, ctx, marker.id);
+        ui.close();
+    }
     crate::panels::misc::marker_label_menu(app, ui, &marker, "timeline.markerMenu");
     ui.separator();
     for (label, cmd) in [("Clear Selected Marker", "markers.clearCurrent"), ("Clear Markers", "markers.clearAll")] {
@@ -139,6 +146,96 @@ pub(super) fn edit_point_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &
             app.ui.status = e.to_string();
         }
         ui.close();
+    }
+}
+
+/// The menu of a right-click on the header column away from any track: the Add Tracks and Delete
+/// Tracks dialogs. Automation ids `timeline.tracks.menu.<item>`.
+pub(super) fn track_column_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picked: &mut Option<(String, Value)>) {
+    for (key, text, command) in [("addTracks", tl!("Add Tracks…"), "sequence.addTracks"), ("deleteTracks", tl!("Delete Tracks…"), "sequence.deleteTracks")]
+    {
+        let button = ui.add_enabled(app.session.is_enabled(command), egui::Button::new(text));
+        app.auto.add(&format!("timeline.tracks.menu.{key}"), button.rect, text);
+        if button.clicked() {
+            *picked = Some((command.to_string(), json!({})));
+            ui.close();
+        }
+    }
+}
+
+/// The menu of a right-clicked ruler (not on a marker): the In and Out points and the marker, at
+/// the playhead. Groups of (label, command id); automation ids `timeline.rulerMenu.<command>`.
+const RULER_MENU: &[&[(&str, &str)]] = &[
+    &[("Mark In", "markers.markIn"), ("Mark Out", "markers.markOut"), ("Mark Clip", "markers.markClip"), ("Mark Selection", "markers.markSelection")],
+    &[("Go to In", "markers.goToIn"), ("Go to Out", "markers.goToOut")],
+    &[("Clear In", "markers.clearIn"), ("Clear Out", "markers.clearOut"), ("Clear In and Out", "markers.clearInOut")],
+    &[("Add Marker", "markers.add")],
+];
+
+pub(super) fn ruler_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
+    for (i, group) in RULER_MENU.iter().enumerate() {
+        if i > 0 {
+            ui.separator();
+        }
+        for &(label, cmd) in *group {
+            let label = crate::i18n::t(label);
+            let r = ui.add_enabled(app.session.is_enabled(cmd), egui::Button::new(label));
+            app.auto.add(&format!("timeline.rulerMenu.{cmd}"), r.rect, label);
+            if r.clicked() {
+                if let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({})) {
+                    app.ui.status = e;
+                }
+                ui.close();
+            }
+        }
+    }
+}
+
+/// The menu of a right-clicked track header: add or delete tracks here, or through the dialogs of
+/// Sequence ▸ Add Tracks… / Delete Tracks… (#1117). The command picked goes to `picked`; automation
+/// ids `timeline.track.<V1|A1…>.menu.<item>`.
+fn track_header_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, label: &str, track: TrackId, video: bool, picked: &mut Option<(String, Value)>) {
+    let mut item = |ui: &mut egui::Ui, key: &str, text: &str, command: &str, params: Value| {
+        let button = ui.add_enabled(app.session.is_enabled(command), egui::Button::new(text));
+        app.auto.add(&format!("timeline.track.{label}.menu.{key}"), button.rect, text);
+        if button.clicked() {
+            *picked = Some((command.to_string(), params));
+            ui.close();
+        }
+    };
+    let after = if video { json!({"video": 1, "audio": 0, "videoAfter": label}) } else { json!({"video": 0, "audio": 1, "audioAfter": label}) };
+    item(ui, "addTrack", tl!("Add Track"), "sequence.addTracks", after);
+    item(ui, "addTracks", tl!("Add Tracks…"), "sequence.addTracks", json!({}));
+    ui.separator();
+    item(ui, "deleteTrack", tl!("Delete Track"), "sequence.deleteTrack", json!({"track": track.0}));
+    item(ui, "deleteTracks", tl!("Delete Tracks…"), "sequence.deleteTracks", json!({}));
+}
+
+/// Opens the track header menu on a right-click anywhere on `visible`, a header, even over its
+/// buttons, which take only the click.
+pub(super) fn track_header_popup(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    visible: Rect,
+    label: &str,
+    track: TrackId,
+    video: bool,
+    picked: &mut Option<(String, Value)>,
+) {
+    let menu_resp = ui.interact(visible, egui::Id::unique(("hdr-menu", track.0)), Sense::click());
+    let mut menu = egui::Popup::context_menu(&menu_resp);
+    if ui.input(|i| i.pointer.secondary_clicked()) && ui.rect_contains_pointer(visible) {
+        menu = menu.open_memory(egui::SetOpenCommand::Bool(true));
+    }
+    menu.show(|ui| track_header_menu(app, ui, label, track, video, picked));
+}
+
+/// Runs the command picked in a track header's menu, if any.
+pub(super) fn run_track_menu(app: &mut FilmcraftApp, ui: &egui::Ui, picked: Option<(String, Value)>) {
+    if let Some((cmd, params)) = picked
+        && let Err(e) = crate::menus::invoke(app, &ui.ctx().clone(), &cmd, params)
+    {
+        app.ui.status = e;
     }
 }
 

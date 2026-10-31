@@ -33,7 +33,7 @@ stays a binary of its own in `tests/`. Select one file's tests with its module p
 | Engine / command | `crates/engine/src/tests.rs` | run commands on the demo project, assert the sequence, undo/redo, disabled cases |
 | Render | `crates/render/src/tests.rs` | compositing, opacity, Motion, cross dissolve midpoint, ½-res vs full, GPU plan vs reference, audio mix, audio-effect continuity |
 | Multi-camera / sync | `crates/audio-dsp/src/sync.rs`, `crates/engine/src/multicam_tests.rs`, `crates/ui-egui/tests/it/multicam_ui.rs` | audio offsets within one sample: Rust-generated multi-mic speech (gains −20…+10 dB, SNR 40/25/10/3 dB, zero-phase colouring, fractional delays, a 0 dB-SNR room with a −4 dB echo) and ffmpeg-made camera/recorder files (pink-noise bursts, independent noise; exact lags recovered); timecode (± hours) and marker sync within a frame; Merge Clips; timeline Synchronize keeps frame-aligned starts; multicam structure, angle render (PSNR vs the camera), Switch Audio mix = the angle's track, live switching from a simulated playback clock (cuts, healing, one undo step), Ctrl+N cuts, flatten (frames identical), save/load; 20 angles: paging (auto / 2×2 / 3×3), page-relative keys, absolute cameras beyond 16, a page decoding only its angles at the cell scale (recording source), Auto-Adjust scale, Selection Top Down; headless: page arrows, angle 17–20 cells, grid-only view, Edit Cameras thumbnails; `perf_grid_of_four_1080p_angles` (ignored) prints the grid cost |
-| Project panel and Media Browser (M12.7) | `crates/engine/src/{project_panel,media_browser}_tests.rs`, `crates/ui-egui/tests/it/project_panel_ui.rs` | view settings and their preference round trip; Metadata Display columns (custom fields, Freeform keys hidden), numeric vs text sorting, view presets (save / save as / restore / rename / delete, ten slots, persisted in `preferences.json`); Freeform moves keeping offsets, snapping, Align to Grid, Clip Size, stacks, arrangements, Reset (each one undo step, saved in the project); bin rename / nesting; the Media Browser against a fake filesystem (folders first, hidden and unsupported files left out, file-type filter, back / forward / up, recent directories, Favorites, import of a selection or a folder, Open in Source Monitor, ingest, probe columns). Headless: List view (sort by header, drag a column wider, inline rename), Icon view (hover scrub + I / O set the clip's In / Out, Shift+] / [), Freeform (drag a card, stack from the card menu, options dialog), panel menu, Metadata Display dialog, view presets, bins in place / tab / window, footer buttons, Media Browser navigation, Favorites, import, Shift+O, Edit Columns…, thumbnails, drag to the Timeline (`FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` writes `project-*.png`, `media-browser-*.png`) |
+| Project panel and Media Browser (M12.7) | `crates/engine/src/{project_panel,media_browser}_tests.rs`, `crates/ui-egui/tests/it/project_panel_ui.rs` | view settings and their preference round trip; Metadata Display columns (custom fields, Freeform keys hidden), numeric vs text sorting, view presets (save / save as / restore / rename / delete, ten slots, persisted in `preferences.json`); Freeform moves keeping offsets, snapping, Align to Grid, Clip Size, stacks, arrangements, Reset (each one undo step, saved in the project); bin rename / nesting; the Media Browser against a fake filesystem (folders first, hidden and unsupported files left out, file-type filter, back / forward / up, recent directories, Favorites, import of a selection or a folder, Open in Source Monitor, ingest, probe columns). Headless: List view (sort by header, drag a column wider, inline rename), Icon view (hover scrub + I / O set the clip's In / Out, Shift+] / [), Freeform (drag a card, stack from the card menu, options dialog, middle-drag pan that moves no card), panel menu, Metadata Display dialog, view presets, bins in place / tab / window, footer buttons, Media Browser navigation, Favorites, import, Shift+O, Edit Columns…, thumbnails, drag to the Timeline (`FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` writes `project-*.png`, `media-browser-*.png`) |
 | Menu long tail (M3.11) | `crates/render/src/scene.rs`, `crates/engine/src/{scene_detect,sequence_extras,project_tools}_tests.rs`, `crates/interchange/src/ale.rs`, `crates/project/src/find.rs`, `crates/ui-egui/tests/it/menus_ui.rs` | Scene Edit Detection on synthetic frames (hard cuts vs pans, flashes, sensitivity) and on generated movies with known cut points (our own ProRes render of demo scenes; an ffmpeg-made H.264 concat of testsrc2 / SMPTE bars / Mandelbrot): cuts with linked audio, clip markers, subclips, one undo step, background job and cancel; Normalize Mix Track to a target peak; Simplify Sequence; Find / Find Next and search bins; Automate to Sequence (overlap, transitions, insert, unnumbered markers); ALE round trip; Project Settings and scratch disks; menu order and shortcuts against Premiere's; the dialogs by automation id |
 | Mixer | `crates/render/src/mixer_tests.rs`, `crates/engine/src/mixer_tests.rs` | sample-exact fader gain and pan laws, automation at block boundaries (bit-identical however requests are cut), solo/mute/solo-safe, sends and submix routing, latency-compensation alignment, render-vs-playback identity, Touch ramp-back, recorder modes (Latch/Touch/Write), thinning, Audio Gain, transition curves; `perf_24_tracks_3_effects_realtime_factor` prints the realtime factor |
 | 5.1 / multichannel | `crates/audio-dsp/src/channels.rs`, `crates/render/src/mixer_tests.rs`, `crates/export/src/surround_tests.rs`, `crates/engine/src/mixer_tests.rs`, `crates/ui-egui/tests/it/audio51_ui.rs` | BS.775 downmix / upmix coefficients exact, mixdown types; 5.1 panner point gains equal-power (Σg² = 1 over a 21×21 grid × 3 centre settings), speaker positions exact, 5.1 through the default puck bit-exact identity; graph: stereo/mono tracks into a 5.1 Mix (L/R, C, rear right, room centre −6 dB each, LFE = mean), 5.1 track through a 5.1 Mix and folded into stereo, a 5.1 submix, `pan51` automation block-invariant, six-channel meters; export: 6-ch WAV (`WAVE_FORMAT_EXTENSIBLE`, mask 0x3F) and ProRes MOV (6 × 24-bit PCM) decoded by ffmpeg **sample-exact**, ffprobe `channels` 6 / `channel_layout` 5.1; AAC 5.1 in MP4: every decoded channel's own tone ≥ 30 dB above the others' (no swapped channels), stereo export of a 5.1 Mix = BS.775 within 2·10⁻⁶; `sequence.settings {mix}`, `file.newSequence {mix, trackType}`, panner lanes, Write pass records the puck; UI: puck drag (one undo step), Center / LFE, six meter bars |
@@ -47,6 +47,44 @@ stays a binary of its own in `tests/`. Select one file's tests with its module p
 | Performance | `*/tests/{,it/}perf.rs` (`#[ignore]`) | §5 |
 
 Commit `*.proptest-regressions` files so failing cases are re-run.
+
+### 32-bit parser regressions
+
+The `hostile_lengths` unit tests in `bitstream`, `vp9` and `av1` cover #2801: NAL and superframe
+offset overflow, tile-size increment overflow and truncating an OBU's LEB128 size to `usize`.
+They also check valid payloads, truncated inputs and bit mutations. The NAL splitter rejects
+prefix widths outside 1–4 bytes with `BitError::InvalidNalLengthSize`, including zero (which
+would otherwise make no progress). These tests need no external media or ffmpeg.
+The bitstream tests exercise the `craft-media` re-export, so they also guard the shared
+implementation when its pinned revision changes.
+
+A native 64-bit run does not reproduce the original overflows. Run the tests on
+`wasm32-wasip1` with a WASI runner as well as natively; `cargo xtask wasm` only checks compilation
+for the browser target. For example, with Node.js supporting the `node:wasi` preview1 API:
+
+```sh
+rustup target add wasm32-wasip1
+cat > /tmp/filmcraft-wasi-runner.cjs <<'EOF'
+const { WASI } = require('node:wasi');
+const fs = require('node:fs');
+(async () => {
+  const args = process.argv.slice(2);
+  const wasi = new WASI({ version: 'preview1', args, env: process.env });
+  const module = await WebAssembly.compile(fs.readFileSync(args[0]));
+  const instance = await WebAssembly.instantiate(module, { wasi_snapshot_preview1: wasi.wasiImport });
+  process.exitCode = wasi.start(instance);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+EOF
+export CARGO_TARGET_WASM32_WASIP1_RUNNER="node /tmp/filmcraft-wasi-runner.cjs"
+cargo test -p filmcraft-bitstream -p filmcraft-vp9 -p filmcraft-av1 --lib \
+  --no-default-features --target wasm32-wasip1 hostile_lengths -- --test-threads=1
+# Repeat with --release: wrapping arithmetic is also dangerous without overflow checks.
+```
+
+The runner forwards the WASI exit code to Node.js so Cargo also fails when a test fails.
+The bitstream regression tests use only the standard library and need no proptest dependency.
+The tests wrap parser calls in `catch_unwind`; on WASI an aborting panic still fails the
+test process, so a trapped regression cannot count as a pass.
 
 ## 2. ffmpeg oracle tests
 
@@ -315,7 +353,7 @@ cargo xtask bench-playback --json target/bench-playback.json # machine-readable 
 | `stack3-blend` | `stack3` with V2 in Screen and V3 in Overlay (blend modes on the GPU) |
 | `h264-2160` | one 2160p23.976 H.264 clip |
 | `demo` | the built-in demo project (procedural footage, transitions, effects) |
-| `after-preview` | 1080p H.264 + Lumetri/Sharpen/Levels/Tint: a live play, Render Effects In to Out, then two plays of the green segment |
+| `after-preview` | 1080p H.264 + Lumetri/Sharpen/Levels/Tint: a live play, Render In to Out, then two plays of the green segment |
 | `seek-storm` | 40 jumps to random frames 150 ms apart (scrubbing), time until the exact frame shows |
 
 Options: `--res full,half,quarter`, `--cpu` (CPU compositor + texture conversion instead of the
