@@ -181,6 +181,7 @@ fn main() -> eframe::Result {
 /// The main window's options; built for each start attempt (they hold a one-shot hook).
 fn native_options(agent: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
+        persist_window: !agent,
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
             .with_inner_size([1600.0, 980.0])
@@ -204,6 +205,7 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
+        discard_legacy_widget_memory(&cc.egui_ctx);
         filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
         created.store(true, Ordering::Relaxed);
         // Start the control server before anything touches recovery state: `file.recover`
@@ -547,6 +549,12 @@ fn prepare_dialog(dialog: filmcraft_ui_egui::native_dialogs::FileDialog) -> film
     }
 }
 
+/// Discard widget state read by older eframe builds before installing FilmCraft's preferences.
+/// The native window record lives in eframe storage and is unaffected by this context reset.
+fn discard_legacy_widget_memory(ctx: &egui::Context) {
+    ctx.memory_mut(|memory| *memory = egui::Memory::default());
+}
+
 /// The project dialogs' filter patterns (`EDIT.FCPROJ` included).
 #[cfg(target_os = "linux")]
 fn project_patterns() -> Vec<String> {
@@ -555,6 +563,15 @@ fn project_patterns() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn startup_discards_legacy_widget_memory() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("legacy-widget-state");
+        ctx.data_mut(|data| data.insert_persisted(id, 42_u32));
+        assert_eq!(ctx.data_mut(|data| data.get_persisted::<u32>(id)), Some(42));
+        super::discard_legacy_widget_memory(&ctx);
+        assert_eq!(ctx.data_mut(|data| data.get_persisted::<u32>(id)), None);
+    }
     /// Start-up registers the hardware decoders whether or not anything is logged (no logger is
     /// installed here, as in a normal run).
     #[test]

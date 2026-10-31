@@ -419,6 +419,10 @@ impl FilmcraftApp {
 }
 
 impl eframe::App for FilmcraftApp {
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     /// Snapshot this callback's fresh surface geometry, optionally synthesize macOS ctrl-click
     /// and agent input, and offer at most one queued synthetic step. A step already preserved by
     /// hidden logic callbacks is not appended twice; a real UI pass clears it.

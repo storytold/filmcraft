@@ -1,11 +1,13 @@
 # FilmCraft Roadmap
 
+> **Review follow-up (2026-10-26):** Startup discards any legacy egui widget memory before app initialization; the separate native window record remains available. Regression coverage added; parity scores and estimates unchanged.
+
 - UI.6: Compact Source and Program monitors separate timecodes from view settings and retain Source drag choices. Transport controls use the shared toolbar sizing helper, with overflow actions in an operable More menu and a scrolling fallback at tiny widths.
 - UI.3: Panel tabs, edge splits, tab reordering and floating groups use the shared docking model and drop resolver. Floating geometry is saved with named workspaces while legacy layout JSON remains readable. Dock dividers use bounded shared geometry and keyboard-accessible resize handles. Tools and dock tabs expose actual widget focus, paint focus outlines, and support keyboard traversal/activation. Control input reaches focused widgets in background windows; optional input isolation supports unattended validation. Existing workspace trees and saved layout formats are retained.
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** trivial (startup discards legacy egui widget memory; progress log: windows reopen at their last size or maximized at any interface size, storytold/egui#3) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -107,6 +109,10 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 ## Progress log
 
+- 2026-10-26: Startup discards any legacy egui widget memory before app initialization; the separate native window record remains available. Regression coverage added; scores and estimates unchanged.
+
+- **2026-10-26:** Windows reopen at their last size, or maximized, at any interface size (such as 150%), and Restore after a maximized restart returns to the last normal size. On GNOME Wayland, where the compositor draws no frame, a native Wayland window (`FILMCRAFT_WAYLAND=1`; by default FilmCraft opens through XWayland, where GNOME draws the frame) gets standard minimize, maximize and close buttons. Shared change: storytold/egui#3; checked on Linux only.
+
 - **2026-10-22:** ProRes 4444 / XQ alpha slices include the final singleton run code required by RDD 36:2022. Six HD fixtures rejected by native macOS decoding now pass; syntax regression tests cover final runs and slice widths ([details](crates/prores/README.md#alpha-bitstream-conformance), EffectCraft #293).
 
 - **2026-10-12:** Transform's motion-blur shutter on adjustment layers uses the sequence frame rate instead of 24 fps, so a 360° shutter in a 60 fps sequence spans one frame, not 2.5 (#1088)
@@ -168,6 +174,8 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | trivial | Startup discards any legacy egui widget memory before app initialization; the separate native window record remains available. Scores and estimates unchanged. |
+| 2026-10-26 | trivial | Progress log: windows reopen at their last size or maximized at any interface size; standard caption buttons on native GNOME Wayland windows, `FILMCRAFT_WAYLAND=1` (storytold/egui#3) |
 | 2026-10-22 | minor | ProRes alpha: write the final singleton run code; 4444/XQ HD clips that failed native macOS decoding now decode, with syntax regression tests (EffectCraft #293) |
 | 2026-10-13 | minor | Language table: German covers the whole interface (~100%) |
 | 2026-10-12 | trivial | Progress log: Transform shutter on adjustment layers (#1088) |
