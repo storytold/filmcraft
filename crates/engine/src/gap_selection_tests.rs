@@ -304,3 +304,70 @@ fn close_gap_without_a_selected_gap_refuses_without_editing() {
     assert!(std::sync::Arc::ptr_eq(&before, &s.project));
     assert_eq!(s.history.undo.len(), undo);
 }
+
+/// Select Clip at Playhead over empty space selects the gap on the targeted track (#3304), so
+/// Clear closes it right after, as in Premiere Pro.
+#[test]
+fn select_clip_at_playhead_selects_the_gap_under_the_playhead() {
+    let mut s = Session::default();
+    let [(picture1, _), (picture2, sound2)] = two_clips(&mut s, [0, 96]);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let v1 = s.active_sequence().unwrap().video_tracks[0].id;
+    s.execute("timeline.setTargeting", json!({"track": v1.0, "targeted": true})).unwrap();
+    s.set_playhead(f(60));
+    let before = s.project.clone();
+
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert_eq!(s.state.gap_selection, Some(GapSelection { track: v1, range: filmcraft_time::TimeRange::from_bounds(f(48), f(96)) }));
+    assert!(s.state.selection.is_empty());
+
+    s.execute("edit.clear", json!({})).unwrap();
+    assert_eq!(range(&s, picture2), (f(48), f(96)), "the next clip moves up into the gap");
+    assert_eq!(range(&s, sound2), (f(48), f(96)));
+    assert_eq!(s.undo().as_deref(), Some("Ripple Delete"));
+    assert_eq!(*s.project, *before);
+
+    // over a clip it selects the clip and drops the stale gap
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert!(s.state.gap_selection.is_some());
+    s.set_playhead(f(10));
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert!(s.state.gap_selection.is_none());
+    assert!(s.state.selection.contains(&picture1));
+
+    // past the last clip there is no gap: nothing selected
+    s.set_playhead(f(400));
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert!(s.state.gap_selection.is_none() && s.state.selection.is_empty());
+}
+
+/// Select Next / Previous Clip are clip navigation: over a gap they leave nothing selected rather
+/// than selecting the gap (which Clear would then close).
+#[test]
+fn select_next_and_previous_clip_do_not_select_a_gap() {
+    let mut s = Session::default();
+    two_clips(&mut s, [0, 96]);
+    let rate = s.sequence_rate();
+    let v1 = s.active_sequence().unwrap().video_tracks[0].id;
+    s.execute("timeline.setTargeting", json!({"track": v1.0, "targeted": true})).unwrap();
+    s.set_playhead(rate.tick_of(60));
+    for id in ["timeline.selectNextClip", "timeline.selectPrevClip"] {
+        s.execute(id, json!({})).unwrap();
+        assert!(s.state.gap_selection.is_none() && s.state.selection.is_empty(), "{id}");
+    }
+}
+
+#[test]
+fn select_clip_at_playhead_skips_a_gap_on_a_locked_track() {
+    let mut s = Session::default();
+    two_clips(&mut s, [0, 96]);
+    let rate = s.sequence_rate();
+    let v1 = s.active_sequence().unwrap().video_tracks[0].id;
+    s.execute("timeline.setTargeting", json!({"track": v1.0, "targeted": true})).unwrap();
+    s.execute("timeline.setTrack", json!({"track": "V1", "locked": true})).unwrap();
+    s.execute("timeline.setTrack", json!({"track": "A1", "locked": true})).unwrap();
+    s.set_playhead(rate.tick_of(60));
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert!(s.state.gap_selection.is_none());
+}

@@ -126,13 +126,34 @@ fn reveal_nested(s: &mut Session) -> Result<Value> {
 // ------------------------------------------------------------------ selection
 
 fn select_clip_at_playhead(s: &mut Session) -> Result<Value> {
+    select_at_playhead(s, true)
+}
+
+/// `with_gap`: fall back to the gap under the playhead when no clip is there. Select Next / Previous
+/// Clip pass `false`: they are clip navigation, and must not leave a gap that Clear would close.
+fn select_at_playhead(s: &mut Session, with_gap: bool) -> Result<Value> {
     let t = s.playhead();
     let tg = s.targeting().targeted;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let ids: Vec<ClipId> = seq.all_tracks().filter(|tr| tg.contains(&tr.id)).filter_map(|tr| tr.item_at(t).map(|i| i.id)).collect();
+    // No clip under the playhead on the targeted tracks: select the gap there instead (first
+    // targeted, unlocked track that has one), as Premiere Pro does, so Clear / Ripple Delete
+    // closes it right after (#3304).
+    let gap = if with_gap && ids.is_empty() {
+        seq.all_tracks()
+            .filter(|tr| tg.contains(&tr.id) && !tr.locked)
+            .find_map(|tr| edit::through::track_gaps(tr).into_iter().find(|g| g.contains(t)).map(|range| crate::GapSelection { track: tr.id, range }))
+    } else {
+        None
+    };
+    s.state.gap_selection = gap;
     s.state.selection = with_links(s, &ids);
     s.state.edit_points.clear();
     s.state.caption_selection.clear();
+    if s.state.gap_selection.is_some() {
+        s.state.transition_selection.clear();
+        s.state.trim_shift = Default::default();
+    }
     Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
 }
 
@@ -140,7 +161,7 @@ fn select_clip_at_playhead(s: &mut Session) -> Result<Value> {
 /// track; with nothing selected, the clips at the playhead on the targeted tracks.
 fn select_step(s: &mut Session, next: bool) -> Result<Value> {
     if s.state.selection.is_empty() {
-        return select_clip_at_playhead(s);
+        return select_at_playhead(s, false);
     }
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     // one anchor per track: the last (first) selected item
