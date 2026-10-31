@@ -34,6 +34,43 @@ use crate::common::{
 use crate::xml::{child, children, elements, num};
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
 
+/// Transform coordinates use display pixels. Anchors are clip-local percentages of image
+/// height; positions are container-local percentages of frame height. Fit is applied before
+/// the transform in FCPXML, whereas FilmCraft's Scale is absolute unless scale_to_frame is set.
+#[derive(Clone, Copy)]
+struct Framing {
+    source: (f64, f64),
+    source_par: f64,
+    fit: f64,
+}
+
+impl Framing {
+    fn new(p: &Project, item: ItemId, frame: (u32, u32), par: (u32, u32)) -> Option<Self> {
+        let source = p.source_size(item)?;
+        if source.0 == 0 || source.1 == 0 || frame.0 == 0 || frame.1 == 0 {
+            return None;
+        }
+        let frame_par = filmcraft_project::par_ratio(par);
+        let source_par = filmcraft_project::par_ratio(p.source_par(item).unwrap_or(par));
+        let source = (f64::from(source.0), f64::from(source.1));
+        let frame = (f64::from(frame.0), f64::from(frame.1));
+        let fit = (frame.0 * frame_par / (source.0 * source_par)).min(frame.1 / source.1);
+        Some(Self { source, source_par, fit })
+    }
+
+    fn anchor(self, v: &str) -> Vec2 {
+        let (x, y) = pair(v);
+        Vec2::new(self.source.0 / 2.0 + x * self.source.1 / (100.0 * self.source_par), self.source.1 / 2.0 - y * self.source.1 / 100.0)
+    }
+
+    fn anchor_xml(self, v: &ParamValue) -> String {
+        let a = v.as_vec2().unwrap_or(Vec2::new(f64::NAN, f64::NAN));
+        let x = if a.x.is_nan() { 0.0 } else { (a.x - self.source.0 / 2.0) * self.source_par / self.source.1 * 100.0 };
+        let y = if a.y.is_nan() { 0.0 } else { -(a.y - self.source.1 / 2.0) / self.source.1 * 100.0 };
+        format!("{} {}", num(x), num(y))
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Rational time
 // ---------------------------------------------------------------------------------------------
@@ -131,7 +168,7 @@ struct Imp<'a, 'i, 'r> {
     b: Builder,
     opts: &'a ImportOptions,
     report: &'r mut Report,
-    formats: HashMap<String, (FrameRate, u32, u32)>,
+    formats: HashMap<String, (FrameRate, u32, u32, (u32, u32))>,
     asset_nodes: HashMap<String, Node<'a, 'i>>,
     assets: HashMap<String, Asset>,
     media_nodes: HashMap<String, Node<'a, 'i>>,
@@ -161,6 +198,7 @@ struct ClipPlacement {
 struct Ctx {
     seq_rate: FrameRate,
     frame: (u32, u32),
+    par: (u32, u32),
 }
 
 pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> Result<Imported> {
@@ -202,7 +240,11 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
                     };
                     let w = r.attribute("width").and_then(|v| v.parse().ok()).unwrap_or(1920);
                     let h = r.attribute("height").and_then(|v| v.parse().ok()).unwrap_or(1080);
-                    imp.formats.insert(id.into(), (rate, w, h));
+                    let par = filmcraft_project::sane_par((
+                        r.attribute("paspH").and_then(|v| v.parse().ok()).unwrap_or(1),
+                        r.attribute("paspV").and_then(|v| v.parse().ok()).unwrap_or(1),
+                    ));
+                    imp.formats.insert(id.into(), (rate, w, h, par));
                 }
                 "asset" => {
                     imp.asset_nodes.insert(id.into(), r);
@@ -276,7 +318,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let rate = fmt.map(|f| f.0).unwrap_or_default();
         let spec = MediaSpec {
             duration: attr_time(n, "duration"),
-            video: has_video.then(|| fmt.map(|(r, w, h)| (w, h, r)).unwrap_or((1920, 1080, rate))),
+            video: has_video.then(|| fmt.map(|(r, w, h, _)| (w, h, r)).unwrap_or((1920, 1080, rate))),
             audio: has_audio.then(|| {
                 (n.attribute("audioRate").and_then(parse_audio_rate).unwrap_or(48_000), n.attribute("audioChannels").and_then(|c| c.parse().ok()).unwrap_or(2))
             }),
@@ -298,6 +340,9 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                 it
             }
         };
+        if let Some(v) = self.b.p.item_mut(item).and_then(|i| i.as_media_mut()).and_then(|m| m.info.video.as_mut()) {
+            v.par = fmt.map_or((1, 1), |f| f.3);
+        }
         let a = Asset { item, start, has_video, has_audio };
         self.assets.insert(id.into(), a.clone());
         Some(a)
@@ -324,9 +369,10 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
     }
 
     fn sequence(&mut self, s: Node<'a, 'i>, name: &str, bin: Option<BinId>) -> ItemId {
-        let (rate, w, h) = s.attribute("format").and_then(|f| self.formats.get(f)).copied().unwrap_or((FrameRate::default(), 1920, 1080));
+        let (rate, w, h, par) = s.attribute("format").and_then(|f| self.formats.get(f)).copied().unwrap_or((FrameRate::default(), 1920, 1080, (1, 1)));
         let df = s.attribute("tcFormat") == Some("DF");
         let mut settings = settings_for(rate, w, h, df);
+        settings.par = par;
         if let Some(sr) = s.attribute("audioRate").and_then(parse_audio_rate) {
             settings.sample_rate = sr;
         }
@@ -334,7 +380,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let mut seq = empty_sequence(settings);
         let tc_start = attr_time(s, "tcStart").unwrap_or(Tick::ZERO);
         seq.start_timecode = rate.frame_at(tc_start);
-        let ctx = Ctx { seq_rate: rate, frame: (w, h) };
+        let ctx = Ctx { seq_rate: rate, frame: (w, h), par };
         self.b.ensure_tracks(&mut seq, TrackKind::Video, 1);
         self.b.ensure_tracks(&mut seq, TrackKind::Audio, 1);
         if let Some(spine) = child(s, "spine") {
@@ -553,13 +599,26 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         // keyframe time (element-local) -> media time
         let kt = |t: Tick| src_in + scaled(t - local_start, speed);
         let (fw, fh) = (ctx.frame.0 as f64, ctx.frame.1 as f64);
+        let framing = Framing::new(&self.b.p, ti.item, ctx.frame, ctx.par);
+        if kind == TrackKind::Video {
+            // Same fit flag used by the renderer and the adjust-conform importer (#2300).
+            ti.scale_to_frame = child(el, "adjust-conform").and_then(|n| n.attribute("type")) != Some("none");
+            if let Some(mode) = child(el, "adjust-conform").and_then(|n| n.attribute("type"))
+                && !matches!(mode, "fit" | "none")
+            {
+                self.report.warn("unsupported FCPXML spatial conform imported as fit");
+            }
+            if framing.is_none() {
+                self.report.warn("FCPXML framing has missing or zero dimensions; clip-local anchor cannot be resolved");
+            }
+        }
         let _ = ctx.seq_rate;
         for a in elements(el) {
             match (a.tag_name().name(), kind) {
                 ("adjust-transform", TrackKind::Video) => {
                     let to_px = move |v: &str| {
                         let (x, y) = pair(v);
-                        Vec2::new(fw / 2.0 + x * fh / 100.0, fh / 2.0 - y * fh / 100.0)
+                        Vec2::new(fw / 2.0 + x * fh / (100.0 * filmcraft_project::par_ratio(ctx.par)), fh / 2.0 - y * fh / 100.0)
                     };
                     if let Some(p) = self.kparam(a, "position", &kt, |v| ParamValue::Vec2(to_px(v)))
                         && (p.is_animated() || p.value.as_vec2().is_some_and(|v| (v.x - fw / 2.0).abs() > 1e-9 || (v.y - fh / 2.0).abs() > 1e-9))
@@ -580,8 +639,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
                     if let Some(p) = self.kparam(a, "rotation", &kt, |v| ParamValue::Float(-v.trim().parse::<f64>().unwrap_or(0.0))) {
                         set_param(ti, "motion", "rotation", p);
                     }
-                    if let Some(p) = self.kparam(a, "anchor", &kt, |v| ParamValue::Vec2(to_px(v)))
-                        && p.value.as_vec2().is_some_and(|v| (v.x - fw / 2.0).abs() > 1e-9 || (v.y - fh / 2.0).abs() > 1e-9)
+                    if let Some(framing) = framing
+                        && let Some(p) = self.kparam(a, "anchor", &kt, |v| ParamValue::Vec2(framing.anchor(v)))
                     {
                         set_param(ti, "motion", "anchor", p);
                     }
@@ -693,7 +752,7 @@ struct Res {
 struct Exp<'a, 'r> {
     p: &'a Project,
     report: &'r mut Report,
-    formats: Vec<(String, FrameRate, u32, u32)>,
+    formats: Vec<(String, FrameRate, u32, u32, (u32, u32))>,
     assets: HashMap<ItemId, Res>,
     medias: HashMap<ItemId, Res>,
     effects: HashMap<String, Res>,
@@ -701,6 +760,7 @@ struct Exp<'a, 'r> {
     /// Resource XML fragments, written before the library.
     res_out: Vec<String>,
     building: Vec<ItemId>,
+    framing_error: Option<String>,
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
@@ -715,10 +775,14 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
         next: 1,
         res_out: Vec::new(),
         building: Vec::new(),
+        framing_error: None,
     };
-    let fmt = x.format(seq.settings.frame_rate, seq.settings.width, seq.settings.height);
+    let fmt = x.format(seq.settings.frame_rate, seq.settings.width, seq.settings.height, seq.settings.par);
     let name = opts.name.clone().unwrap_or_else(|| p.item(seq_id).map(|i| i.name.clone()).unwrap_or_default());
     let body = x.sequence_xml(seq_id, &fmt, 4);
+    if let Some(error) = x.framing_error {
+        return Err(Error::Other(error));
+    }
     let mut out =
         format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE fcpxml>\n<fcpxml version=\"{}\">\n  <resources>\n", opts.fcpxml_version.as_str());
     for r in &x.res_out {
@@ -750,18 +814,21 @@ impl Exp<'_, '_> {
         r
     }
 
-    fn format(&mut self, rate: FrameRate, w: u32, h: u32) -> String {
-        if let Some(f) = self.formats.iter().find(|f| f.1 == rate && f.2 == w && f.3 == h) {
+    fn format(&mut self, rate: FrameRate, w: u32, h: u32, par: (u32, u32)) -> String {
+        let par = filmcraft_project::sane_par(par);
+        if let Some(f) = self.formats.iter().find(|f| f.1 == rate && f.2 == w && f.3 == h && f.4 == par) {
             return f.0.clone();
         }
         let id = self.rid();
         self.res_out.push(format!(
-            "    <format id=\"{id}\" name=\"FFVideoFormat{h}p{}\" frameDuration=\"{}/{}s\" width=\"{w}\" height=\"{h}\"/>\n",
+            "    <format id=\"{id}\" name=\"FFVideoFormat{h}p{}\" frameDuration=\"{}/{}s\" width=\"{w}\" height=\"{h}\" paspH=\"{}\" paspV=\"{}\"/>\n",
             rate.label().replace('.', ""),
             rate.den,
-            rate.num
+            rate.num,
+            par.0,
+            par.1
         ));
-        self.formats.push((id.clone(), rate, w, h));
+        self.formats.push((id.clone(), rate, w, h, par));
         id
     }
 
@@ -774,7 +841,7 @@ impl Exp<'_, '_> {
             return String::new();
         };
         let name = self.p.item(item).map(|i| i.name.clone()).unwrap_or_default();
-        let fmt = m.info.video.as_ref().map(|v| self.format(m.interpret.frame_rate.unwrap_or(v.frame_rate), v.width, v.height));
+        let fmt = m.info.video.as_ref().map(|v| self.format(m.interpret.frame_rate.unwrap_or(v.frame_rate), v.width, v.height, m.pixel_aspect()));
         let id = self.rid();
         let mrate = m.info.video.as_ref().map(|v| v.frame_rate).unwrap_or(rate);
         let start = m.info.start_timecode.map(|f| mrate.tick_of(f)).unwrap_or(Tick::ZERO);
@@ -809,7 +876,7 @@ impl Exp<'_, '_> {
             self.report.warn("missing nested sequence skipped");
             return String::new();
         };
-        let fmt = self.format(s.settings.frame_rate, s.settings.width, s.settings.height);
+        let fmt = self.format(s.settings.frame_rate, s.settings.width, s.settings.height, s.settings.par);
         let id = self.rid();
         self.medias.insert(item, Res { id: id.clone() });
         self.building.push(item);
@@ -1072,8 +1139,8 @@ impl Exp<'_, '_> {
         let to_local = |t: Tick| -> Tick {
             if it.speed == 0.0 || it.frame_hold.is_some() { local } else { local + Tick(((t - it.source_in).0 as f64 / it.speed).round() as i64) }
         };
-        if kind == TrackKind::Video {
-            self.transform(it, seq, &to_local, &mut children);
+        if kind == TrackKind::Video && !r.is_empty() {
+            self.transform(it, base, seq, &to_local, &mut children);
         }
         if let Some(a) = audio.or((kind == TrackKind::Audio).then_some(it)) {
             if param_modified(a, "volume", "level") || a.gain_db != 0.0 {
@@ -1139,16 +1206,29 @@ impl Exp<'_, '_> {
         }
     }
 
-    fn transform(&mut self, it: &TrackItem, seq: &Sequence, to_local: &dyn Fn(Tick) -> Tick, out: &mut Vec<String>) {
+    fn transform(&mut self, it: &TrackItem, base: ItemId, seq: &Sequence, to_local: &dyn Fn(Tick) -> Tick, out: &mut Vec<String>) {
         let rate = seq.settings.frame_rate;
-        let (fw, fh) = (seq.settings.width as f64, seq.settings.height as f64);
+        let (fw, fh) = (f64::from(seq.settings.width), f64::from(seq.settings.height.max(1)));
+        let framing = Framing::new(self.p, it.item, (seq.settings.width, seq.settings.height), seq.settings.par)
+            .or_else(|| Framing::new(self.p, base, (seq.settings.width, seq.settings.height), seq.settings.par));
+        let fit = framing.map_or(1.0, |f| f.fit);
+        if framing.is_none() {
+            self.framing_error = Some(format!(
+                "Cannot export FCPXML framing for clip \"{}\": source or sequence dimensions are missing or zero; repair media metadata or sequence dimensions",
+                it.name
+            ));
+        }
+        // Explicit fit is intentional: FCP 12.4 did not honor none in the reporter's file.
+        out.push("<adjust-conform type=\"fit\"/>".into());
+        let scale_factor = if it.scale_to_frame { 1.0 } else { 1.0 / fit };
+        let anchor = |v: &ParamValue| framing.map_or_else(|| "0 0".into(), |f| f.anchor_xml(v));
         let pos = |v: &ParamValue| {
             let p = v.as_vec2().unwrap_or(Vec2::new(f64::NAN, f64::NAN));
-            let x = if p.x.is_nan() { 0.0 } else { (p.x - fw / 2.0) / fh * 100.0 };
+            let x = if p.x.is_nan() { 0.0 } else { (p.x - fw / 2.0) * filmcraft_project::par_ratio(seq.settings.par) / fh * 100.0 };
             let y = if p.y.is_nan() { 0.0 } else { -(p.y - fh / 2.0) / fh * 100.0 };
             format!("{} {}", num(x), num(y))
         };
-        let changed = ["position", "scale", "rotation", "anchor"].iter().any(|p| param_modified(it, "motion", p));
+        let changed = (scale_factor - 1.0).abs() > 1e-9 || ["position", "scale", "rotation", "anchor"].iter().any(|p| param_modified(it, "motion", p));
         if changed {
             if param_modified(it, "motion", "scale_width") || param(it, "motion", "uniform_scale").and_then(|p| p.value.as_bool()) == Some(false) {
                 self.report.warn("non-uniform scale is not exported to FCPXML");
@@ -1158,14 +1238,20 @@ impl Exp<'_, '_> {
             for (id, attr, f) in [
                 ("position", "position", &pos as &dyn Fn(&ParamValue) -> String),
                 ("scale", "scale", &|v: &ParamValue| {
-                    let s = v.as_f64().unwrap_or(100.0) / 100.0;
+                    let s = v.as_f64().unwrap_or(100.0) / 100.0 * scale_factor;
                     format!("{} {}", num(s), num(s))
                 }),
                 ("rotation", "rotation", &|v: &ParamValue| num(-v.as_f64().unwrap_or(0.0))),
-                ("anchor", "anchor", &pos),
+                ("anchor", "anchor", &anchor),
             ] {
-                let Some(p) = param(it, "motion", id) else { continue };
-                if !param_modified(it, "motion", id) {
+                let default_scale = Param::new(ParamValue::Float(100.0));
+                let p = if it.effect("motion").is_some_and(|m| m.enabled) { param(it, "motion", id) } else { None };
+                let p = match p {
+                    Some(p) => p,
+                    None if id == "scale" => &default_scale,
+                    None => continue,
+                };
+                if !param_modified(it, "motion", id) && !(id == "scale" && (scale_factor - 1.0).abs() > 1e-9) {
                     continue;
                 }
                 attrs.push(format!(" {attr}=\"{}\"", f(&p.value)));

@@ -66,6 +66,33 @@ available images and exposes missing paths through Link Media; saving and reopen
 Effect-backed generators and video sources other than the default `srcID="1"` are skipped with a
 warning.
 
+## FCPXML framing
+
+Spatial conform defaults to fit in FCPXML. Exports write explicit `adjust-conform type="fit"`
+and express Motion Scale relative to the fitted source size, including keyframes. FilmCraft's
+absolute scale is divided by the display-space fit factor; clips already using Scale to Frame
+Size retain their relative scale. For example, a 480 × 360 source scaled to 200% in a 960 × 720
+sequence exports Scale `1 1`, and 290% exports `1.45 1.45`.
+
+Anchor is relative to the source's centre in percentages of its image height, whereas Position
+is relative to the sequence's centre and frame height. Source and sequence pixel aspect ratios
+are preserved. Offline files with recorded dimensions, subclips and nested sequences use their
+actual source dimensions; missing or zero source/frame dimensions fail export with a repairable
+error rather than silently changing framing. Centre-first anchor animation is retained.
+
+Imports map absent/fit conform to Scale to Frame Size and `none` to native size. Export normalizes
+both representations to fit, preserving rendered placement rather than the conform flag itself.
+This shares the importer semantics proposed in #2300, but intentionally does not preserve its
+`none` export assertion: the #2639 reporter found `none` ineffective in Final Cut Pro 12.4.
+Other conform modes currently warn and import as fit. Non-uniform scaling remains unsupported.
+
+The regression tests check the reporter's numeric values and source-to-frame corner placement
+through the public exporter/importer and FilmCraft renderer. Final Cut Pro application playback
+has not been verified locally. Coordinate definitions follow Apple's public
+[transform](https://developer.apple.com/documentation/professional-video-applications/adjust-transform)
+and [spatial conform](https://developer.apple.com/documentation/professional-video-applications/adjust-conform)
+documentation.
+
 ## Nested sequences
 
 For the formats Premiere Pro exports (FCP7 XML, OTIO, EDL, AAF, OMF) a nested sequence is written
