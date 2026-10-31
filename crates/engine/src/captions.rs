@@ -451,6 +451,29 @@ pub fn commands() -> Vec<CommandSpec> {
                 Ok(json!({"caption": id.0}))
             },
         ),
+        spec("captions.copyStyle", "Copy Caption Style", &[], None, r#"{"track":id|"C1"}"#, has_caption_track, |s, p| {
+            let tid = track_param(s, &p).ok_or_else(|| bad("captions.copyStyle", "track not found"))?;
+            let style = s.active_sequence()
+                .and_then(|q| q.caption_track(tid))
+                .ok_or(EngineError::NoSequence)?
+                .style.clone();
+            s.state.caption_style_clipboard = Some(style.clone());
+            Ok(serde_json::to_value(&style).unwrap_or_default())
+        }),
+        spec("captions.pasteStyle", "Paste Caption Style", &[], None, r#"{"track":id|"C1"}"#, has_caption_track, |s, p| {
+            let style = s.state.caption_style_clipboard.clone().ok_or_else(|| bad("captions.pasteStyle", "no style copied yet"))?;
+            let tid = track_param(s, &p).ok_or_else(|| bad("captions.pasteStyle", "track not found"))?;
+            s.edit("Paste Caption Style", |proj, st| {
+                let seq = st.active_sequence.ok_or(EngineError::NoSequence)?;
+                if let Some(t) = proj.sequence_mut(seq).and_then(|q| q.caption_track_mut(tid)) {
+                    t.style = style.clone();
+                    Ok(())
+                } else {
+                    Err(bad("captions.pasteStyle", "track not found"))
+                }
+            })?;
+            Ok(serde_json::json!({"ok": true}))
+        }),
         spec("captions.split", "Split Caption", &[], None, r#"{"caption":id?,"time":ticks?}"#, has_captions, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
             let explicit = u64_p(p, "caption").map(ClipId);

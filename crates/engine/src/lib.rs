@@ -416,6 +416,9 @@ pub struct EditorState {
     /// The last Edit ▸ Find… (Find Next continues it).
     #[serde(default)]
     pub find: Option<project_tools::FindState>,
+    /// Caption style clipboard for Copy/Paste Style (#2330).
+    #[serde(skip)]
+    pub caption_style_clipboard: Option<filmcraft_project::CaptionStyle>,
 }
 
 /// Events for frontends (drained each frame).
