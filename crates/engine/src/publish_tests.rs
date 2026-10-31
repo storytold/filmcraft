@@ -292,6 +292,74 @@ fn an_upload_refreshes_the_token_once_and_sends_the_whole_file() {
     assert!(!s.jobs.iter().any(|j| j.to_json().to_string().contains("ya29")), "no token in any job");
 }
 
+/// An export job the test finishes by hand.
+fn export_job(s: &mut Session) -> crate::Job {
+    let export = new_job(s, "Export film".into());
+    s.jobs.push(export.clone());
+    export
+}
+
+fn end_export(export: &crate::Job, result: std::result::Result<filmcraft_export::Report, String>) {
+    *export.result.lock().unwrap() = Some(result);
+    export.progress.finished.store(true, Ordering::Relaxed);
+}
+
+#[test]
+fn an_upload_after_an_export_waits_for_the_file() {
+    let fake = Fake::start();
+    let (mut s, dir) = signed_in("after-export", &fake);
+    let export = export_job(&mut s);
+    let planned = dir.join("film.mp4").to_string_lossy().into_owned();
+    assert!(!Path::new(&planned).exists(), "the export hasn't written it yet");
+    let r = s.execute("publish.youtube.upload", json!({"path": planned, "title": "Trip", "afterJob": export.id})).unwrap();
+    let id = r["job"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(job(&s, id)["status"], WAITING_FOR_EXPORT);
+    fake.g(|g| assert_eq!(g.refreshes, 0, "nothing goes to Google before the file exists"));
+
+    let (path, data) = video(&dir, 300_000);
+    let report = filmcraft_export::Report { path, frames: 24, seconds: 1.0, bytes: data.len() as u64, render_fps: 24.0, extra_files: Vec::new() };
+    end_export(&export, Ok(report));
+    let j = finished(&s, id);
+    assert_eq!(j["result"]["path"], "https://www.youtube.com/watch?v=engineVid_1", "{j}");
+    assert_eq!(j["progress"], 1.0);
+    fake.g(|g| assert_eq!(g.received, data));
+}
+
+#[test]
+fn a_failed_or_unknown_export_uploads_nothing() {
+    let fake = Fake::start();
+    let (mut s, dir) = signed_in("export-failed", &fake);
+    let planned = dir.join("film.mp4").to_string_lossy().into_owned();
+
+    let export = export_job(&mut s);
+    let r = s.execute("publish.youtube.upload", json!({"path": planned, "title": "Trip", "afterJob": export.id})).unwrap();
+    end_export(&export, Err("cancelled".into()));
+    let j = finished(&s, r["job"].as_u64().unwrap());
+    assert_eq!(j["result"]["error"], "the export was cancelled, so nothing was uploaded", "{j}");
+
+    let export = export_job(&mut s);
+    let r = s.execute("publish.youtube.upload", json!({"path": planned, "title": "Trip", "afterJob": export.id})).unwrap();
+    end_export(&export, Err("disk full".into()));
+    let j = finished(&s, r["job"].as_u64().unwrap());
+    assert_eq!(j["result"]["error"], "the export failed (disk full), so nothing was uploaded", "{j}");
+
+    // Cancelling the upload while it waits leaves the export alone.
+    let export = export_job(&mut s);
+    let r = s.execute("publish.youtube.upload", json!({"path": planned, "title": "Trip", "afterJob": export.id})).unwrap();
+    let id = r["job"].as_u64().unwrap();
+    s.execute("jobs.cancel", json!({"job": id})).unwrap();
+    assert_eq!(finished(&s, id)["result"]["error"], "stopped");
+    assert!(!export.progress.cancel.load(Ordering::Relaxed));
+
+    let e = s.execute("publish.youtube.upload", json!({"path": planned, "title": "Trip", "afterJob": 999})).unwrap_err();
+    assert!(e.to_string().contains("no job 999"), "{e}");
+    fake.g(|g| {
+        assert_eq!(g.refreshes, 0);
+        assert!(g.received.is_empty());
+    });
+}
+
 #[test]
 fn a_refused_access_token_is_refreshed_and_the_upload_goes_on() {
     let fake = Fake::start();

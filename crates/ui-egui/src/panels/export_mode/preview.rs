@@ -190,10 +190,21 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
         if let Some(job) = active_job {
             job.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         } else {
-            let r = app.session.execute("file.exportMedia", export_params(app));
-            match r {
-                Ok(v) => app.ui.status = tlf!("Exporting {path}", path = v["path"].as_str().unwrap_or("")),
-                Err(e) => app.ui.status = e.to_string(),
+            if let Some(why) = super::youtube::not_ready(app) {
+                // checked first: the export would run and then nothing would be uploaded
+                app.ui.status = why;
+                app.ui.export.destination = super::YOUTUBE.into();
+            } else {
+                let r = app.session.execute("file.exportMedia", export_params(app));
+                match r {
+                    Ok(v) => {
+                        app.ui.status = tlf!("Exporting {path}", path = v["path"].as_str().unwrap_or(""));
+                        if let Some(job) = v["job"].as_u64() {
+                            super::youtube::upload_after(app, job, v["path"].as_str().unwrap_or_default());
+                        }
+                    }
+                    Err(e) => app.ui.status = e.to_string(),
+                }
             }
         }
     }

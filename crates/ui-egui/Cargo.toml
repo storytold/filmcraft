@@ -58,6 +58,8 @@ filmcraft-interchange = { workspace = true }
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }
 tempfile = "3"
+# The Export page's YouTube destination shows only in builds that can publish.
+filmcraft-engine = { workspace = true, features = ["publish"] }
 
 # build.rs bakes contributors/contributors.json into the binary (About ▸ Contributors).
 [build-dependencies]

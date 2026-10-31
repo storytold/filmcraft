@@ -120,7 +120,7 @@ impl FilmcraftApp {
     /// render completes. Runs every frame, with or without the status bar.
     pub(super) fn poll_jobs(&mut self, ctx: &egui::Context) -> Option<filmcraft_engine::Job> {
         use std::sync::atomic::Ordering;
-        let running = self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned();
+        let running = shown_job(&self.session.jobs);
         // Play after rendering previews.
         if let Some((id, from)) = self.watched_render
             && let Some(j) = self.session.jobs.iter().find(|j| j.id == id)
@@ -144,8 +144,7 @@ impl FilmcraftApp {
 
     /// The running job for drawing only; polling/play-after-render stays in logic.
     fn running_job(&self) -> Option<filmcraft_engine::Job> {
-        use std::sync::atomic::Ordering;
-        self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned()
+        shown_job(&self.session.jobs)
     }
 
     /// Right side of the status bar: the running job (export / render previews) with a progress
@@ -160,7 +159,15 @@ impl FilmcraftApp {
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
-        let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+        let verb = if job.label.starts_with("Rendering") {
+            crate::i18n::t(&job.label).to_string()
+        } else if job.label.starts_with("Uploading") {
+            tl!("Uploading").to_string()
+        } else if job.label.starts_with("Signing in") {
+            tl!("Signing in").to_string()
+        } else {
+            tl!("Exporting").to_string()
+        };
         let progress = p.text(
             egui::pos2(bar.min.x - 8.0, sb.center().y),
             egui::Align2::RIGHT_CENTER,
@@ -244,4 +251,15 @@ impl FilmcraftApp {
             self.ui_error = None;
         }
     }
+}
+
+/// The job the status bar shows: the newest one still running, except an upload still waiting
+/// for its export (the export is the one making progress then).
+fn shown_job(jobs: &[filmcraft_engine::Job]) -> Option<filmcraft_engine::Job> {
+    use std::sync::atomic::Ordering;
+    let waiting = |j: &filmcraft_engine::Job| {
+        *j.progress.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) == filmcraft_engine::publish::WAITING_FOR_EXPORT
+    };
+    let running = || jobs.iter().rev().filter(|j| !j.progress.finished.load(Ordering::Relaxed));
+    running().find(|j| !waiting(j)).or_else(|| running().next()).cloned()
 }

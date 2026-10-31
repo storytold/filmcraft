@@ -7,7 +7,7 @@
 //! | `publish.youtube.setClient` | read a *Desktop app* OAuth client file downloaded from Google Cloud and keep a copy |
 //! | `publish.youtube.signIn` | a job: open Google's sign-in in the browser ([`crate::Event::OpenUrl`]) and wait for it to come back |
 //! | `publish.youtube.signOut` | forget the account |
-//! | `publish.youtube.upload` | a job: upload a file with its title, description, tags and privacy (private by default) |
+//! | `publish.youtube.upload` | a job: upload a file with its title, description, tags and privacy (private by default); with `afterJob`, once that export has written the file |
 //!
 //! Both files live in `<data dir>/publish/`: `youtube-client.json` (the client file as Google
 //! downloads it) and `youtube-account.json` (the refresh token, owner-only on Unix). The access
@@ -36,6 +36,9 @@ const MAX_CLIENT_FILE: u64 = 64 * 1024;
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
 /// The access token is refreshed this long before Google says it expires.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(60);
+/// The status of an upload job waiting for its export (`afterJob`). The status bar shows the
+/// export instead of a job in this state.
+pub const WAITING_FOR_EXPORT: &str = "Waiting for the export";
 
 /// Publishing state shared by the session and its jobs.
 #[derive(Default)]
@@ -45,6 +48,13 @@ pub struct State {
     pub(crate) dir: Option<PathBuf>,
     pub(crate) client: Option<ClientConfig>,
     pub(crate) upload_url: Option<String>,
+}
+
+impl State {
+    /// Keep the client and account files in `dir` instead of `<data dir>/publish`.
+    pub fn set_dir(&mut self, dir: impl Into<PathBuf>) {
+        self.dir = Some(dir.into());
+    }
 }
 
 /// An access token and when to stop using it.
@@ -207,18 +217,24 @@ fn upload(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad(cmd, "need `path`: the video file to upload"))?.to_string();
     let meta: VideoMetadata = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
     meta.validate().map_err(|e| bad(cmd, e.to_string()))?;
-    let file = std::fs::metadata(&path).map_err(|e| bad(cmd, format!("can't read {path}: {e}")))?;
-    if !file.is_file() || file.len() == 0 {
-        return Err(bad(cmd, format!("{path} is not a video file")));
-    }
+    // With `afterJob` the export writes the file later; it is checked once the export is done.
+    let after = match p.get("afterJob").filter(|v| !v.is_null()) {
+        Some(v) => {
+            let id = v.as_u64().ok_or_else(|| bad(cmd, "`afterJob` is a job id"))?;
+            Some(s.jobs.iter().find(|j| j.id == id).cloned().ok_or_else(|| bad(cmd, format!("no job {id}")))?)
+        }
+        None => {
+            video_size(&path).map_err(|e| bad(cmd, e.to_string()))?;
+            None
+        }
+    };
     let client = load_client(s).map_err(|e| bad(cmd, e))?;
     let dir = dir(s).ok_or_else(|| bad(cmd, "no data directory"))?;
     let account = load_account(&dir, &client).ok_or_else(|| bad(cmd, "sign in to YouTube first (publish.youtube.signIn)"))?;
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
     let job = new_job(s, format!("Uploading “{}” to YouTube", meta.title.trim()));
-    job.progress.total.store(file.len(), Ordering::Relaxed);
-    set_status(&job.progress, "Starting the upload");
-    let upload = Upload { path, meta, size: file.len(), client, account, dir, upload_url: s.publish.upload_url.clone(), access: s.publish.access.clone() };
+    set_status(&job.progress, if after.is_some() { WAITING_FOR_EXPORT } else { "Starting the upload" });
+    let upload = Upload { path, meta, after, client, account, dir, upload_url: s.publish.upload_url.clone(), access: s.publish.access.clone() };
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let id = spawn(s, job, wait, "filmcraft-youtube-upload", move || {
         let t0 = web_time::Instant::now();
@@ -227,16 +243,27 @@ fn upload(s: &mut Session, p: &Value) -> Result<Value> {
             // Google revoked or expired the refresh token: the user signs in again.
             forget_account(&upload.dir, &upload.access);
         }
-        finish(&prog, &res, r.map(|url| (format!("Uploaded to YouTube: {url}"), url)), t0, upload.size);
+        let bytes = prog.total.load(Ordering::Relaxed);
+        finish(&prog, &res, r.map(|url| (format!("Uploaded to YouTube: {url}"), url)), t0, bytes);
     })?;
     Ok(json!({"job": id}))
+}
+
+/// The size of a file that can be uploaded.
+fn video_size(path: &str) -> std::result::Result<u64, PublishError> {
+    let file = std::fs::metadata(path).map_err(|e| PublishError::Config(format!("can't read {path}: {e}")))?;
+    if !file.is_file() || file.len() == 0 {
+        return Err(PublishError::Config(format!("{path} is not a video file")));
+    }
+    Ok(file.len())
 }
 
 /// One upload job's inputs.
 struct Upload {
     path: String,
     meta: VideoMetadata,
-    size: u64,
+    /// The export that writes the file.
+    after: Option<crate::Job>,
     client: ClientConfig,
     account: Account,
     dir: PathBuf,
@@ -247,19 +274,23 @@ struct Upload {
 impl Upload {
     /// The video's address. A refused access token is refreshed once.
     fn run(&self, prog: &Progress) -> std::result::Result<String, PublishError> {
+        let path = self.wait_for_export(prog)?;
+        let size = video_size(&path)?;
+        prog.total.store(size, Ordering::Relaxed);
+        set_status(prog, "Starting the upload");
         let transport = default_transport().ok_or_else(|| PublishError::Config("this build can't publish".into()))?;
         let transport = &*transport;
         let mut control = JobControl { prog };
         let mut token = self.access_token(transport, false)?;
         let mut refreshed = false;
         let session = loop {
-            match self.uploader(transport, &token).start(&self.meta, self.size, content_type(&self.path), &mut control) {
+            match self.uploader(transport, &token).start(&self.meta, size, content_type(&path), &mut control) {
                 Err(PublishError::Unauthorized) if !refreshed => (token, refreshed) = (self.access_token(transport, true)?, true),
                 r => break r?,
             }
         };
         let video = loop {
-            match self.send(transport, &token, &session, &mut control) {
+            match self.send(transport, &token, &path, &session, &mut control) {
                 Err(PublishError::Unauthorized) if !refreshed => (token, refreshed) = (self.access_token(transport, true)?, true),
                 r => break r?,
             }
@@ -267,8 +298,35 @@ impl Upload {
         Ok(video)
     }
 
-    fn send(&self, transport: &dyn Transport, token: &str, session: &UploadSession, control: &mut JobControl) -> std::result::Result<String, PublishError> {
-        let mut file = std::fs::File::open(&self.path)?;
+    /// The file to upload: the export's own path once it has finished (the `path` param without
+    /// `afterJob`). A failed or cancelled export uploads nothing.
+    fn wait_for_export(&self, prog: &Progress) -> std::result::Result<String, PublishError> {
+        let Some(export) = &self.after else { return Ok(self.path.clone()) };
+        while !export.progress.finished.load(Ordering::Relaxed) {
+            if prog.cancel.load(Ordering::Relaxed) {
+                return Err(PublishError::Cancelled);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        match export.result.lock().unwrap_or_else(PoisonError::into_inner).clone() {
+            Some(Ok(report)) if !report.path.is_empty() => Ok(report.path),
+            Some(Ok(_)) => Ok(self.path.clone()),
+            // `filmcraft_export::ExportError::Cancelled`, as the export queue reads it too
+            Some(Err(e)) if e == "cancelled" => Err(PublishError::Config("the export was cancelled, so nothing was uploaded".into())),
+            Some(Err(e)) => Err(PublishError::Config(format!("the export failed ({e}), so nothing was uploaded"))),
+            None => Err(PublishError::Config("the export stopped, so nothing was uploaded".into())),
+        }
+    }
+
+    fn send(
+        &self,
+        transport: &dyn Transport,
+        token: &str,
+        path: &str,
+        session: &UploadSession,
+        control: &mut JobControl,
+    ) -> std::result::Result<String, PublishError> {
+        let mut file = std::fs::File::open(path)?;
         set_status(control.prog, "Uploading");
         Ok(self.uploader(transport, token).upload(session, &mut file, control)?.watch_url())
     }
@@ -395,7 +453,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "publish.youtube.upload",
             "Upload to YouTube",
-            r#"{"path":str,"title":str,"description":str?,"tags":[str]?,"categoryId":str?,"privacy":"private|unlisted|public"=private,"madeForKids":bool=false,"wait":bool=false}"#,
+            r#"{"path":str,"title":str,"description":str?,"tags":[str]?,"categoryId":str?,"privacy":"private|unlisted|public"=private,"madeForKids":bool=false,"afterJob":int?,"wait":bool=false}"#,
             upload,
         ),
     ]
