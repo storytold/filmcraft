@@ -721,3 +721,56 @@ fn a_cancelled_export_uploads_nothing() {
     assert_eq!(d.app().ui.export.youtube.last_upload, "the export was cancelled, so nothing was uploaded");
     assert!(d.has("export.youtube.lastUpload"));
 }
+
+/// Video or Short: the choice applies its export preset, the panel says what YouTube will make of
+/// the file, and Export refuses a "Short" YouTube would show as a video.
+#[test]
+fn a_youtube_short_gets_a_vertical_preset_and_at_most_three_minutes() {
+    let mut d = Driver::new("youtube-short");
+    let client = client_file(&d);
+    d.exec("publish.youtube.setClient", json!({"path": client}));
+    let account = json!({"clientId": CLIENT_ID, "refreshToken": "1//test"});
+    std::fs::write(d.dir.join("data").join("publish").join("youtube-account.json"), account.to_string()).unwrap();
+    d.ok("ui.set", json!({"mode": "export"}));
+    d.ok("ui.set", json!({"export": {"destination": "youtube", "youtube": {"enabled": true}}}));
+    d.frames(2);
+    assert_eq!(d.app().ui.export.youtube.kind, "video");
+    assert!(!d.has("export.youtube.kindNote"), "a 16:9 video needs no note");
+
+    d.click("export.youtube.kind");
+    d.click("export.youtube.kind.option.1");
+    assert_eq!(d.app().ui.export.youtube.kind, "short");
+    let preset = d.app().ui.export.preset.clone();
+    assert!(preset.ends_with("1080×1920"), "{preset}");
+    assert_eq!(d.app().ui.export.settings.frame_size, Some((1080, 1920)));
+    let note = d.ok("ui.elements", json!({"prefix": "export.youtube.kindNote"}))[0]["label"].as_str().unwrap().to_string();
+    assert!(note.starts_with("YouTube shows a vertical"), "{note}");
+    d.snapshot("export-youtube-short");
+
+    // over three minutes: not a Short, so Export says why and exports nothing
+    d.ok("ui.set", json!({"export": {"range": "custom", "customStart": 0.0, "customEnd": 200.0}}));
+    d.frames(2);
+    let note = d.ok("ui.elements", json!({"prefix": "export.youtube.kindNote"}))[0]["label"].as_str().unwrap().to_string();
+    assert_eq!(note, "A Short can be at most 3 minutes long; this export is 3:20");
+    d.click("export.button");
+    assert_eq!(d.app().ui.status, "A Short can be at most 3 minutes long; this export is 3:20");
+    assert!(d.app().session.jobs.is_empty());
+
+    // a landscape preset isn't a Short either
+    d.ok("ui.set", json!({"export": {"range": "custom", "customStart": 0.0, "customEnd": 10.0}}));
+    d.ok("ui.set", json!({"export": {"preset": "YouTube 1080p Full HD"}}));
+    d.frames(2);
+    let note = d.ok("ui.elements", json!({"prefix": "export.youtube.kindNote"}))[0]["label"].as_str().unwrap().to_string();
+    assert_eq!(note, "A Short needs a vertical or square frame; this export is 1920×1080");
+
+    // Video applies YouTube's 16:9 preset; a vertical export of a "video" is still a Short to YouTube
+    d.click("export.youtube.kind");
+    d.click("export.youtube.kind.option.0");
+    assert_eq!(d.app().ui.export.youtube.kind, "video");
+    assert_eq!(d.app().ui.export.preset, "YouTube 1080p Full HD");
+    assert!(!d.has("export.youtube.kindNote"));
+    d.ok("ui.set", json!({"export": {"preset": "Social Vertical 1080×1920"}}));
+    d.frames(2);
+    let note = d.ok("ui.elements", json!({"prefix": "export.youtube.kindNote"}))[0]["label"].as_str().unwrap().to_string();
+    assert!(note.ends_with("so YouTube will show it as a Short."), "{note}");
+}

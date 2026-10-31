@@ -222,7 +222,7 @@ pub(super) fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
 }
 
 /// The export range in sequence ticks (for the summary).
-fn range_ticks(ex: &ExportUi, q: &filmcraft_engine::project::Sequence) -> (Tick, Tick) {
+pub(super) fn range_ticks(ex: &ExportUi, q: &filmcraft_engine::project::Sequence) -> (Tick, Tick) {
     let fd = q.settings.frame_rate.frame_duration();
     let end = q.duration().max(fd);
     match ex.range.as_str() {

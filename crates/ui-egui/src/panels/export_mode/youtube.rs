@@ -1,5 +1,5 @@
 use super::settings::{check, combo, row};
-use super::{FileDialog, FilmcraftApp, Rect, Reg, Value, json, vec2};
+use super::{FileDialog, FilmcraftApp, Rect, Reg, Value, apply_preset, json, vec2};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------------------------
@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 pub struct YoutubeUi {
     /// Upload after the export.
     pub enabled: bool,
+    /// `video` | `short`: what the export is made for. Choosing one applies its export preset;
+    /// YouTube itself makes a square or vertical video of at most 3 minutes a Short.
+    pub kind: String,
     /// Empty: the file name.
     pub title: String,
     pub description: String,
@@ -38,6 +41,7 @@ impl Default for YoutubeUi {
     fn default() -> Self {
         YoutubeUi {
             enabled: false,
+            kind: VIDEO.into(),
             title: String::new(),
             description: String::new(),
             tags: String::new(),
@@ -52,6 +56,39 @@ impl Default for YoutubeUi {
 }
 
 const PRIVACY: [(&str, &str); 3] = [("private", "Private"), ("unlisted", "Unlisted"), ("public", "Public")];
+
+pub const VIDEO: &str = "video";
+pub const SHORT: &str = "short";
+const KINDS: [(&str, &str); 2] = [(VIDEO, "Video (16:9)"), (SHORT, "Short (9:16)")];
+/// The export preset each kind applies: the first one the library has (YouTube's own Shorts
+/// preset where it exists, else the vertical social one).
+const VIDEO_PRESETS: [&str; 1] = ["YouTube 1080p Full HD"];
+const SHORT_PRESETS: [&str; 2] = ["YouTube Shorts 1080×1920", "Social Vertical 1080×1920"];
+/// YouTube shows a square or vertical video up to this long as a Short
+/// (<https://support.google.com/youtube/answer/15424877>).
+const SHORT_MAX_SECONDS: f64 = 180.0;
+
+/// The export's frame size and length in seconds.
+fn shape(app: &FilmcraftApp) -> Option<(u32, u32, f64)> {
+    let q = app.session.active_sequence()?;
+    let r = app.ui.export.settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
+    let (start, end) = super::preview::range_ticks(&app.ui.export, q);
+    Some((r.width, r.height, (end - start).seconds()))
+}
+
+/// Why YouTube won't show this export as a Short, if it won't.
+fn not_a_short(shape: Option<(u32, u32, f64)>) -> Option<String> {
+    let (w, h, seconds) = shape?;
+    if h < w {
+        return Some(tlf!("A Short needs a vertical or square frame; this export is {w}×{h}", w, h));
+    }
+    // a frame's rounding over three minutes still counts as three minutes
+    if seconds > SHORT_MAX_SECONDS + 0.05 {
+        let s = seconds.ceil() as u64;
+        return Some(tlf!("A Short can be at most 3 minutes long; this export is {d}", d = format!("{}:{:02}", s / 60, s % 60)));
+    }
+    None
+}
 
 /// `publish.youtube.status`, asked once and again after each change.
 fn status(app: &mut FilmcraftApp) -> Value {
@@ -115,6 +152,9 @@ pub(super) fn not_ready(app: &mut FilmcraftApp) -> Option<String> {
     if title(app).is_empty() {
         return Some(tl!("Give the YouTube video a title").to_string());
     }
+    if app.ui.export.youtube.kind == SHORT {
+        return not_a_short(shape(app));
+    }
     None
 }
 
@@ -148,6 +188,7 @@ fn field(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut String, name: &str,
 
 enum Action {
     ChooseClient,
+    Kind(&'static str),
     SignIn,
     CancelSignIn,
     SignOut,
@@ -161,6 +202,7 @@ pub(super) fn youtube_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     let signing_in = running(app, app.ui.export.youtube.sign_in_job);
     let uploading = running(app, app.ui.export.youtube.upload_job);
     let file_name = app.ui.export.file_name.clone();
+    let shape = shape(app);
     let mut action = None;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 10.0))).id_salt("export-youtube"));
     let yt = &mut app.ui.export.youtube;
@@ -201,6 +243,29 @@ pub(super) fn youtube_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
 
         // the video
         ui.label(egui::RichText::new(tl!("Video")).color(t.text_dim).size(12.0));
+        row(ui, &t, tl!("Type"), |ui| {
+            let selected = KINDS.iter().find(|(k, _)| *k == yt.kind).map_or(KINDS[0].1, |(_, l)| *l);
+            let options: Vec<(String, bool)> = KINDS.iter().map(|(_, l)| (l.to_string(), true)).collect();
+            if let Some(i) = combo(ui, &mut reg, "export.youtube.kind", selected, &options, 160.0)
+                && let Some((k, _)) = KINDS.get(i)
+            {
+                action = Some(Action::Kind(k));
+            }
+        });
+        // what YouTube will make of the file: a Short that isn't one, or a video that is one
+        let short = shape.is_some() && not_a_short(shape).is_none();
+        let note = match (yt.kind == SHORT, not_a_short(shape)) {
+            (true, Some(why)) => Some((why, t.danger)),
+            (true, None) => Some((tl!("YouTube shows a vertical or square video of up to 3 minutes as a Short.").to_string(), t.text_dim)),
+            (false, _) if short => {
+                Some((tl!("This export is vertical or square and at most 3 minutes long, so YouTube will show it as a Short.").to_string(), t.text_dim))
+            }
+            (false, _) => None,
+        };
+        if let Some((text, color)) = note {
+            let r = ui.label(egui::RichText::new(&text).color(color).size(11.5));
+            reg.add("export.youtube.kindNote", r.rect, text);
+        }
         row(ui, &t, tl!("Title"), |ui| field(ui, &mut reg, "export.youtube.title", &mut yt.title, tl!("Title"), &file_name));
         row(ui, &t, tl!("Description"), |ui| {
             let r = crate::widgets::accessible_name(
@@ -244,6 +309,16 @@ pub(super) fn youtube_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Re
     reg.flush(app);
     let result = match action {
         None => return,
+        Some(Action::Kind(kind)) => {
+            app.ui.export.youtube.kind = kind.into();
+            let presets: &[&str] = if kind == SHORT { &SHORT_PRESETS } else { &VIDEO_PRESETS };
+            if let Some(name) = presets.iter().find(|n| app.session.export_presets.find(n).is_some())
+                && apply_preset(app, name)
+            {
+                app.ui.status = tlf!("Export preset: {name}", name = crate::i18n::t(name));
+            }
+            return;
+        }
         Some(Action::ChooseClient) => {
             app.pick_ui(FileDialog::open_file(tl!("OAuth client file"), &["json"]), |app, paths| {
                 if let Some(path) = paths.into_iter().next() {
