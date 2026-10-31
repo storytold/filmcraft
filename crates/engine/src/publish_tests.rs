@@ -326,6 +326,24 @@ fn an_upload_after_an_export_waits_for_the_file() {
     fake.g(|g| assert_eq!(g.received, data));
 }
 
+/// The export marks itself finished a moment before it stores its report (as
+/// `filmcraft_export::export` does): the upload waits for the report instead of reading nothing.
+#[test]
+fn an_upload_waits_for_the_report_of_a_finished_export() {
+    let fake = Fake::start();
+    let (mut s, dir) = signed_in("report-late", &fake);
+    let export = export_job(&mut s);
+    let (path, data) = video(&dir, 300_000);
+    let r = s.execute("publish.youtube.upload", json!({"path": path, "title": "Trip", "afterJob": export.id})).unwrap();
+    export.progress.finished.store(true, Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(400));
+    let report = filmcraft_export::Report { path, frames: 24, seconds: 1.0, bytes: data.len() as u64, render_fps: 24.0, extra_files: Vec::new() };
+    *export.result.lock().unwrap() = Some(Ok(report));
+    let j = finished(&s, r["job"].as_u64().unwrap());
+    assert_eq!(j["result"]["path"], "https://www.youtube.com/watch?v=engineVid_1", "{j}");
+    fake.g(|g| assert_eq!(g.received, data));
+}
+
 #[test]
 fn a_failed_or_unknown_export_uploads_nothing() {
     let fake = Fake::start();

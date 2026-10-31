@@ -39,6 +39,8 @@ const EXPIRY_MARGIN: Duration = Duration::from_secs(60);
 /// The status of an upload job waiting for its export (`afterJob`). The status bar shows the
 /// export instead of a job in this state.
 pub const WAITING_FOR_EXPORT: &str = "Waiting for the export";
+/// How long a finished export may take to store its report before the upload gives up.
+const REPORT_GRACE: Duration = Duration::from_secs(10);
 
 /// Publishing state shared by the session and its jobs.
 #[derive(Default)]
@@ -302,19 +304,27 @@ impl Upload {
     /// `afterJob`). A failed or cancelled export uploads nothing.
     fn wait_for_export(&self, prog: &Progress) -> std::result::Result<String, PublishError> {
         let Some(export) = &self.after else { return Ok(self.path.clone()) };
-        while !export.progress.finished.load(Ordering::Relaxed) {
+        // The report, not `finished`, ends the export: an export marks itself finished a moment
+        // before its job stores the report.
+        let mut finished_at = None;
+        let report = loop {
+            if let Some(r) = export.result.lock().unwrap_or_else(PoisonError::into_inner).clone() {
+                break r;
+            }
             if prog.cancel.load(Ordering::Relaxed) {
                 return Err(PublishError::Cancelled);
             }
+            if export.progress.finished.load(Ordering::Relaxed) && finished_at.get_or_insert_with(web_time::Instant::now).elapsed() > REPORT_GRACE {
+                return Err(PublishError::Config("the export stopped, so nothing was uploaded".into()));
+            }
             std::thread::sleep(Duration::from_millis(100));
-        }
-        match export.result.lock().unwrap_or_else(PoisonError::into_inner).clone() {
-            Some(Ok(report)) if !report.path.is_empty() => Ok(report.path),
-            Some(Ok(_)) => Ok(self.path.clone()),
+        };
+        match report {
+            Ok(report) if !report.path.is_empty() => Ok(report.path),
+            Ok(_) => Ok(self.path.clone()),
             // `filmcraft_export::ExportError::Cancelled`, as the export queue reads it too
-            Some(Err(e)) if e == "cancelled" => Err(PublishError::Config("the export was cancelled, so nothing was uploaded".into())),
-            Some(Err(e)) => Err(PublishError::Config(format!("the export failed ({e}), so nothing was uploaded"))),
-            None => Err(PublishError::Config("the export stopped, so nothing was uploaded".into())),
+            Err(e) if e == "cancelled" => Err(PublishError::Config("the export was cancelled, so nothing was uploaded".into())),
+            Err(e) => Err(PublishError::Config(format!("the export failed ({e}), so nothing was uploaded"))),
         }
     }
 
