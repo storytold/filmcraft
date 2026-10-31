@@ -788,19 +788,19 @@ fn param_value_widget(
                 filmcraft_text::fonts::scan_system();
             }
             let fams = filmcraft_text::families();
+            let font_prefs = app.session.prefs.fonts.clone();
             let salt = ("ec-font", clip.0, idx, pd.id);
             // the value column can be narrower than the usual drop-down; keep the button inside it
             let w = 150.0_f32.min(vui.available_width()).max(40.0);
             let prefix = format!("effectControls.text.{}.{}.option", idx, pd.id);
             let combo = if pd.id == "font" {
                 craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
-                    for (f, _) in &fams {
-                        let r = ui.selectable_label(f == current, f);
-                        app.auto.add(&format!("{prefix}.{f}"), r.rect, f);
-                        if r.clicked() {
-                            set = Some(json!(f));
-                        }
+                    let out =
+                        crate::panels::graphics::font_menu(ui, &fams, current, &font_prefs, &mut |f, rect| app.auto.add(&format!("{prefix}.{f}"), rect, f));
+                    if let Some(f) = out.picked {
+                        set = Some(json!(f));
                     }
+                    actions.extend(out.actions);
                 })
             } else {
                 let family = match e.param("font").map(|p| &p.value) {

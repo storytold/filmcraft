@@ -181,6 +181,8 @@ pub struct Preferences {
     pub project_panel: crate::project_panel::ProjectPanelPrefs,
     /// Media Browser: Favorites, recent directories, file types, view, columns.
     pub media_browser: crate::media_browser::MediaBrowserPrefs,
+    /// Font pickers: favourite and recently used families.
+    pub fonts: FontPrefs,
 }
 
 impl Default for Preferences {
@@ -208,7 +210,69 @@ impl Default for Preferences {
             voice_over: Default::default(),
             project_panel: Default::default(),
             media_browser: Default::default(),
+            fonts: Default::default(),
         }
+    }
+}
+
+/// Most recently used fonts kept in [`FontPrefs::recent`].
+pub const RECENT_FONTS_MAX: usize = 5;
+/// Longest family name kept in [`FontPrefs`] (bytes).
+pub const FONT_NAME_MAX: usize = 256;
+/// Cap on [`FontPrefs::favourites`] (preferences are untrusted input).
+pub const FAVOURITE_FONTS_MAX: usize = 500;
+
+/// Font pickers' favourites (star) and recently used families, shared by every picker.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FontPrefs {
+    /// Starred families, in the order they were starred.
+    pub favourites: Vec<String>,
+    /// Last used families, newest first (at most [`RECENT_FONTS_MAX`]).
+    pub recent: Vec<String>,
+}
+
+impl FontPrefs {
+    /// Drop empty and (case-insensitive) duplicate names and enforce the caps; preferences come
+    /// from files and `prefs.set`, which are untrusted.
+    pub fn sanitize(&mut self) {
+        fn tidy(v: &mut Vec<String>, max: usize) {
+            let mut seen = std::collections::HashSet::new();
+            v.retain(|f| !f.is_empty() && f.len() <= FONT_NAME_MAX && seen.insert(f.to_ascii_lowercase()));
+            v.truncate(max);
+        }
+        tidy(&mut self.favourites, FAVOURITE_FONTS_MAX);
+        tidy(&mut self.recent, RECENT_FONTS_MAX);
+    }
+
+    pub fn is_favourite(&self, family: &str) -> bool {
+        self.favourites.iter().any(|f| f.eq_ignore_ascii_case(family))
+    }
+
+    /// Star or unstar `family` (`on` = None toggles). Empty names are ignored.
+    pub fn set_favourite(&mut self, family: &str, on: Option<bool>) {
+        if family.is_empty() || family.len() > FONT_NAME_MAX {
+            return;
+        }
+        let was = self.is_favourite(family);
+        let on = on.unwrap_or(!was);
+        if on && !was {
+            if self.favourites.len() < FAVOURITE_FONTS_MAX {
+                self.favourites.push(family.to_string());
+            }
+        } else if !on && was {
+            self.favourites.retain(|f| !f.eq_ignore_ascii_case(family));
+        }
+    }
+
+    /// Move `family` to the front of the recent list (deduplicated, capped).
+    pub fn push_recent(&mut self, family: &str) {
+        if family.is_empty() || family.len() > FONT_NAME_MAX {
+            return;
+        }
+        self.recent.retain(|f| !f.eq_ignore_ascii_case(family));
+        self.recent.insert(0, family.to_string());
+        self.recent.truncate(RECENT_FONTS_MAX);
     }
 }
 
@@ -404,6 +468,7 @@ impl Preferences {
         self.playback.postroll_seconds = secs(self.playback.postroll_seconds);
         self.trim.large_trim_offset = self.trim.large_trim_offset.clamp(1, 1000);
         self.labels.sanitize_labels();
+        self.fonts.sanitize();
         self.appearance.sync_color_theme();
         self.version = settings::PREFS_VERSION;
     }

@@ -658,6 +658,7 @@ fn filmcraft_speech_available(app: &FilmcraftApp) -> bool {
 fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: usize, actions: &mut Vec<(String, Value)>) {
     let Some(tr) = app.session.active_sequence().and_then(|q| q.caption_tracks.get(track_idx)).cloned() else { return };
     let st = tr.style.clone();
+    let font_prefs = app.session.prefs.fonts.clone();
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt("caption-style"));
     child.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
@@ -666,17 +667,18 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
                 filmcraft_text::fonts::scan_system();
             }
             // names starting with '.' are macOS-private system faces (UI/fallback fonts, some without a space glyph)
-            for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.')) {
-                let resp = ui.selectable_label(f.eq_ignore_ascii_case(&st.font), &f);
+            let clip = ui.clip_rect();
+            let out = crate::panels::graphics::font_menu(ui, &filmcraft_text::families(), &st.font, &font_prefs, &mut |f, rect| {
                 // An edge row may be only partly visible; automation must click its visible portion.
-                let visible = resp.rect.intersect(ui.clip_rect());
+                let visible = rect.intersect(clip);
                 if visible.is_positive() {
-                    app.auto.add(&format!("text.captions.style.font.option.{f}"), visible, &f);
+                    app.auto.add(&format!("text.captions.style.font.option.{f}"), visible, f);
                 }
-                if resp.clicked() {
-                    actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "font": f})));
-                }
+            });
+            if let Some(f) = out.picked {
+                actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "font": f})));
             }
+            actions.extend(out.actions);
         });
         app.auto.add("text.captions.style.font", r.response.rect, "Caption font");
         let mut size = st.size;

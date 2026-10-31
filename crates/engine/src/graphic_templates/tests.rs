@@ -362,7 +362,7 @@ fn replace_fonts_in_project() {
     let c = clip_of(&s.execute("graphics.newText", json!({"text": "Serif", "font": "Noto Serif"})).unwrap());
     s.execute("graphics.setCharStyle", json!({"clip": c.0, "start": 0, "end": 2, "style": {"font": "Noto Serif"}})).unwrap();
     let used = s.execute("graphics.fonts.used", json!({})).unwrap();
-    assert!(used.as_array().unwrap().iter().any(|f| f["family"] == "Noto Serif" && f["missing"] == false), "{used}");
+    assert!(used.as_array().unwrap().iter().any(|f| f["family"] == "Noto Serif" && f["missing"] == false && f["substituted"] == false), "{used}");
     let r = s.execute("file.replaceFonts", json!({"from": "Noto Serif", "to": "JetBrains Mono"})).unwrap();
     assert_eq!(r["replaced"], 2);
     let used = s.execute("graphics.fonts.used", json!({})).unwrap();
@@ -458,4 +458,88 @@ fn character_style_merge_preserves_default_calls_and_separate_clips() {
         s.execute("graphics.setCharStyle", json!({"clip":b.0,"layer":layer,"start":0,"end":5,"style":{"size":150},"merge":true})).unwrap();
     }
     assert_eq!(s.history.undo.len(), n + 2, "distinct layers do not merge");
+}
+
+/// Issue #3359: a style the family lacks is reported as substituted, not silently accepted.
+#[test]
+fn fonts_used_flags_substituted_style() {
+    struct OnlyBold;
+    impl filmcraft_text::fonts::FontSource for OnlyBold {
+        fn faces(&self) -> Vec<filmcraft_text::fonts::FaceInfo> {
+            vec![filmcraft_text::fonts::FaceInfo {
+                family: "Subst Only Bold Eng".into(),
+                style: "Bold".into(),
+                weight: 700,
+                italic: false,
+                index: 0,
+                data: filmcraft_text::fonts::FaceData::Static(filmcraft_text::fonts::INTER_BOLD),
+                origin: "test",
+            }]
+        }
+    }
+    filmcraft_text::fonts::add_source(&OnlyBold);
+    let mut s = demo("gt-fonts-subst");
+    s.execute("graphics.newText", json!({"text": "X", "font": "Subst Only Bold Eng", "fontStyle": "Light"})).unwrap();
+    s.execute("graphics.newText", json!({"text": "Y", "font": "Subst Only Bold Eng", "fontStyle": "Bold", "newClip": true})).unwrap();
+    let used = s.execute("graphics.fonts.used", json!({})).unwrap();
+    let row = |st: &str| used.as_array().unwrap().iter().find(|f| f["family"] == "Subst Only Bold Eng" && f["style"] == st).cloned();
+    let light = row("Light").unwrap_or_else(|| panic!("{used}"));
+    assert_eq!((light["missing"].clone(), light["substituted"].clone()), (json!(false), json!(true)), "{used}");
+    let bold = row("Bold").unwrap_or_else(|| panic!("{used}"));
+    assert_eq!((bold["missing"].clone(), bold["substituted"].clone()), (json!(false), json!(false)), "{used}");
+}
+
+/// Issue #3577: favourites and recent fonts live in the preferences.
+#[test]
+fn font_favourites_and_recent() {
+    let mut s = demo("gt-fonts-fav");
+    let r = s.execute("graphics.fonts.favourite", json!({"family": "Noto Serif"})).unwrap();
+    assert_eq!(r["favourites"], json!(["Noto Serif"]));
+    let r = s.execute("graphics.fonts.favourite", json!({"family": "noto serif", "on": true})).unwrap();
+    assert_eq!(r["favourites"], json!(["Noto Serif"]), "no duplicates, case-insensitive");
+    assert_eq!(s.prefs.fonts.favourites, ["Noto Serif"]);
+    let r = s.execute("graphics.fonts.favourite", json!({"family": "Noto Serif"})).unwrap();
+    assert_eq!(r["favourites"], json!([]), "toggles off");
+    for f in ["A", "B", "C", "D", "E", "F", "B"] {
+        s.execute("graphics.fonts.recent", json!({"family": f})).unwrap();
+    }
+    assert_eq!(s.prefs.fonts.recent, ["B", "F", "E", "D", "C"], "deduplicated, newest first, capped at 5");
+}
+
+#[test]
+fn font_prefs_round_trip() {
+    let mut p = crate::autosave::Preferences::default();
+    p.fonts.set_favourite("Inter", None);
+    p.fonts.push_recent("Inter");
+    let back: crate::autosave::Preferences = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    assert_eq!(back.fonts, p.fonts);
+    let old: crate::autosave::Preferences = serde_json::from_str("{}").unwrap();
+    assert_eq!(old.fonts, Default::default());
+}
+
+#[test]
+fn font_prefs_are_sanitized_when_set_or_loaded() {
+    let many: Vec<String> = (0..2000).map(|i| if i % 2 == 0 { "Inter".to_string() } else { format!("F{i}") }).collect();
+    let check = |f: &crate::autosave::FontPrefs| {
+        assert!(f.recent.len() <= crate::autosave::RECENT_FONTS_MAX, "{}", f.recent.len());
+        assert!(f.favourites.len() <= crate::autosave::FAVOURITE_FONTS_MAX);
+        assert_eq!(f.recent.iter().filter(|x| *x == "Inter").count(), 1);
+        assert!(f.favourites.iter().all(|x| !x.is_empty()));
+    };
+    let mut with_empty = many.clone();
+    with_empty.push(String::new());
+    let loaded = crate::autosave::Preferences::from_value(json!({"fonts": {"recent": many, "favourites": with_empty}}));
+    check(&loaded.fonts);
+    let mut s = demo("gt-fonts-sanitize");
+    s.execute("prefs.set", json!({"key": "fonts.recent", "value": many})).unwrap();
+    check(&s.prefs.fonts);
+}
+
+#[test]
+fn font_commands_ignore_oversized_names() {
+    let mut s = demo("gt-fonts-long");
+    let long = "x".repeat(crate::autosave::FONT_NAME_MAX + 1);
+    s.execute("graphics.fonts.favourite", json!({"family": long})).unwrap();
+    s.execute("graphics.fonts.recent", json!({"family": long})).unwrap();
+    assert!(s.prefs.fonts.favourites.is_empty() && s.prefs.fonts.recent.is_empty());
 }

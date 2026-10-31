@@ -433,14 +433,17 @@ pub fn template_controls(
                     Some(ParamValue::Text(s)) => s,
                     _ => String::new(),
                 };
+                let font_prefs = app.session.prefs.fonts.clone();
                 let r = craft_ui::ComboBox::from_id_salt(("gfx-tpl-font", clip.0, c.id.as_str())).selected_text(&fam).width(170.0).height(360.0).show_ui(
                     &mut vui,
                     |ui| {
-                        for (f, _) in filmcraft_text::families() {
-                            if ui.selectable_label(f == fam, &f).clicked() {
-                                set(json!(f), actions);
-                            }
+                        let out = crate::panels::graphics::font_menu(ui, &filmcraft_text::families(), &fam, &font_prefs, &mut |name, rect| {
+                            autos.push((format!("{id}.option.{name}"), rect, name.to_string()))
+                        });
+                        if let Some(f) = out.picked {
+                            set(json!(f), actions);
                         }
+                        actions.extend(out.actions);
                     },
                 );
                 autos.push((id, r.response.rect, c.name.clone()));
@@ -745,13 +748,17 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.label(tl!("Fonts used in the project:"));
             egui::Grid::new("gfx-fonts-used").striped(true).num_columns(3).show(ui, |ui| {
                 for (f, st, n) in &used {
-                    let missing = filmcraft_text::resolve(f, st).missing;
-                    ui.label(if missing {
+                    let r = filmcraft_text::resolve(f, st);
+                    ui.label(if r.missing {
                         egui::RichText::new(tlf!("{f} (missing)", f)).color(Color32::from_rgb(0xff, 0xa0, 0x60))
                     } else {
                         egui::RichText::new(f)
                     });
-                    ui.label(st);
+                    if r.substituted {
+                        ui.label(egui::RichText::new(tlf!("{st} (substituted)", st)).color(Color32::from_rgb(0xff, 0xa0, 0x60)));
+                    } else {
+                        ui.label(st);
+                    }
                     ui.label(format!("{n}"));
                     ui.end_row();
                 }

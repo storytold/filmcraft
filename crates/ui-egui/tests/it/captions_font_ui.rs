@@ -96,6 +96,57 @@ fn caption_font_picker_sets_the_track_font() {
     assert_eq!(d.font(track), "Noto Serif");
 }
 
+/// #3577: picking a family records it as recent, and a starred family is listed first.
+#[test]
+fn caption_font_picker_has_favourites_and_recent() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let track = d.ok("engine.execute", json!({"command": "captions.newTrack", "params": {"format": "Subtitle"}}))["track"].as_u64().unwrap();
+    d.ok("engine.execute", json!({"command": "captions.add", "params": {"track": track, "text": "Hello", "seconds": 1.0}}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "text.tab.Captions"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "text.captions.style.font"}));
+    d.frames(3);
+    // star a family from the list (the bundled Inter is on screen at the top of the list or near it)
+    let stars: Vec<String> = d.ids("text.captions.style.font.option.").into_iter().filter(|i| i.ends_with(".favourite")).collect();
+    let star = stars.iter().find(|i| i.contains("option.Inter.")).or(stars.first()).expect("a star").clone();
+    let family = star.trim_start_matches("text.captions.style.font.option.").trim_end_matches(".favourite").to_string();
+    d.ok("ui.click", json!({"id": star}));
+    d.frames(3);
+    let fonts = d.ok("engine.execute", json!({"command": "graphics.fonts.favourite", "params": {"family": "Zzz Nothing", "on": false}}));
+    assert_eq!(fonts["favourites"], json!([family]), "{fonts}");
+    // a click inside the popup may close it: reopen; the starred family is the first row of the list
+    if d.ids("text.captions.style.font.option.").is_empty() {
+        d.ok("ui.click", json!({"id": "text.captions.style.font"}));
+        d.frames(3);
+    }
+    let rows = |d: &mut Driver| -> Vec<String> {
+        let p = "text.captions.style.font.option.";
+        d.ids(p).into_iter().filter(|i| !i.ends_with(".favourite") && !i.ends_with("favouritesOnly") && !i.starts_with(&format!("{p}recent."))).collect()
+    };
+    assert_eq!(rows(&mut d).first(), Some(&format!("text.captions.style.font.option.{family}")));
+    // the Favourites-only filter leaves just the starred family
+    d.ok("ui.click", json!({"id": "text.captions.style.font.option.favouritesOnly"}));
+    d.frames(3);
+    if rows(&mut d).is_empty() {
+        d.ok("ui.click", json!({"id": "text.captions.style.font"}));
+        d.frames(3);
+    }
+    assert_eq!(rows(&mut d), vec![format!("text.captions.style.font.option.{family}")]);
+    d.ok("ui.click", json!({"id": "text.captions.style.font.option.favouritesOnly"}));
+    d.frames(3);
+    if rows(&mut d).is_empty() {
+        d.ok("ui.click", json!({"id": "text.captions.style.font"}));
+        d.frames(3);
+    }
+    // picking a row records it as recent
+    d.ok("ui.click", json!({"id": format!("text.captions.style.font.option.{family}")}));
+    d.frames(3);
+    let fonts = d.ok("engine.execute", json!({"command": "graphics.fonts.recent", "params": {"family": ""}}));
+    assert_eq!(fonts["recent"], json!([family]), "{fonts}");
+}
+
 /// Every text shape on screen, with the colour of its first run.
 fn painted_text(d: &Driver) -> Vec<(String, egui::Color32)> {
     fn walk(s: &egui::Shape, out: &mut Vec<(String, egui::Color32)>) {

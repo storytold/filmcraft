@@ -444,6 +444,10 @@ pub struct Resolved {
     pub synth_italic: bool,
     /// The requested family was not found (Premiere shows such fonts as missing).
     pub missing: bool,
+    /// The family exists but lacks the requested style, and the nearest face differs in weight or
+    /// italic from what was asked for (beyond synthetic bold / italic), e.g. "Light" in a family
+    /// that only ships Bold.
+    pub substituted: bool,
 }
 
 fn style_wants(style: &str) -> (u16, bool) {
@@ -483,8 +487,12 @@ pub fn resolve(family: &str, style: &str) -> Resolved {
             return r;
         }
     }
-    let mut r = resolve_in(DEFAULT_FAMILY, style).unwrap_or(Resolved { face: 0, synth_bold: false, synth_italic: false, missing: true });
+    let mut r = resolve_in(DEFAULT_FAMILY, style).unwrap_or(Resolved { face: 0, synth_bold: false, synth_italic: false, missing: true, substituted: false });
     r.missing = !family.is_empty() && !family.eq_ignore_ascii_case(DEFAULT_FAMILY);
+    if r.missing {
+        // the requested family is not installed: that is reported as missing, not as a style swap
+        r.substituted = false;
+    }
     r
 }
 
@@ -495,14 +503,18 @@ fn resolve_in(family: &str, style: &str) -> Option<Resolved> {
         return None;
     }
     if let Some(f) = fam.iter().find(|f| f.info.style.eq_ignore_ascii_case(style)) {
-        return Some(Resolved { face: f.id, synth_bold: false, synth_italic: false, missing: false });
+        return Some(Resolved { face: f.id, synth_bold: false, synth_italic: false, missing: false, substituted: false });
     }
     let (w, it) = style_wants(style);
     let best = fam.iter().min_by_key(|f| {
         let italic_pen = if f.info.italic == it { 0 } else { 1000 };
         italic_pen + (f.info.weight as i32 - w as i32).unsigned_abs()
     })?;
-    Some(Resolved { face: best.id, synth_bold: w >= 600 && best.info.weight <= 500, synth_italic: it && !best.info.italic, missing: false })
+    let synth_bold = w >= 600 && best.info.weight <= 500;
+    let synth_italic = it && !best.info.italic;
+    let weight_off = best.info.weight != w && !synth_bold;
+    let italic_off = best.info.italic && !it;
+    Some(Resolved { face: best.id, synth_bold, synth_italic, missing: false, substituted: weight_off || italic_off })
 }
 
 /// Whether a family name reads as a serif face (Noto Serif, Shippori Mincho, …), to pick a Mincho
@@ -566,6 +578,49 @@ mod tests {
         // Inter Bold Italic: nearest is Italic (400) → synth bold
         let bi = resolve("Inter", "Bold Italic");
         assert!(face(bi.face).info.italic && bi.synth_bold && !bi.synth_italic);
+    }
+
+    /// Issue #3359: a style the family lacks resolves to the nearest weight, and says so.
+    #[test]
+    fn missing_style_is_flagged_substituted() {
+        let fam = "Subst Only Bold";
+        struct OnlyBold;
+        impl FontSource for OnlyBold {
+            fn faces(&self) -> Vec<FaceInfo> {
+                vec![FaceInfo {
+                    family: "Subst Only Bold".into(),
+                    style: "Bold".into(),
+                    weight: 700,
+                    italic: false,
+                    index: 0,
+                    data: FaceData::Static(INTER_BOLD),
+                    origin: "test",
+                }]
+            }
+        }
+        add_source(&OnlyBold);
+        let r = resolve(fam, "Light");
+        assert!(r.substituted && !r.missing, "{r:?}");
+        let r = resolve(fam, "Bold");
+        assert!(!r.substituted && !r.missing, "{r:?}");
+        assert!(!resolve("Inter", "Regular").substituted);
+        assert!(!resolve("Noto Serif", "Bold Italic").substituted, "synthesised, not substituted");
+    }
+
+    /// #3359 review: an empty family means the default family, so it reports the same as "Inter".
+    #[test]
+    fn empty_family_reports_like_the_default_family() {
+        // installed fonts can add Inter styles (another test may have scanned the system), so the
+        // styles Inter lacks are looked up rather than assumed
+        let styles = ["Thin", "Light", "ExtraLight", "Black", "Thin Italic", "Regular", "Bold"];
+        for style in styles {
+            let (e, i) = (resolve("", style), resolve("Inter", style));
+            assert_eq!((e.face, e.missing, e.substituted), (i.face, i.missing, i.substituted), "{style}");
+        }
+        if !styles.iter().any(|s| resolve("Inter", s).substituted) {
+            eprintln!("every probe style is installed for Inter: the check above only compares equal values");
+        }
+        assert!(!resolve("No Such Font Family 123", "Light").substituted, "a missing family is missing, not substituted");
     }
 
     #[test]

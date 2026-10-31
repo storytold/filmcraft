@@ -39,6 +39,7 @@ use crate::theme::Tokens;
 use crate::widgets::HotNumberOptions;
 
 mod canvas;
+mod font_menu;
 mod handles;
 mod ime;
 mod layer_identity;
@@ -49,6 +50,7 @@ mod text_edit;
 pub use canvas::visible_layers;
 pub(crate) use canvas::{frame_to_screen, unscale};
 use canvas::{screen_scale, sp};
+pub(crate) use font_menu::font_menu;
 pub(crate) use handles::handle_points;
 #[cfg(test)]
 use ime::graphics_ime_target;

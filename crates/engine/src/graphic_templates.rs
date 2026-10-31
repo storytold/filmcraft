@@ -1140,11 +1140,42 @@ fn list_fonts_used(s: &mut Session, _: &Value) -> Result<Value> {
         fonts_used(s)
             .into_iter()
             .map(|(f, st, n)| {
-                let missing = filmcraft_text::resolve(&f, &st).missing;
-                json!({"family": f, "style": st, "uses": n, "missing": missing})
+                let r = filmcraft_text::resolve(&f, &st);
+                json!({"family": f, "style": st, "uses": n, "missing": r.missing, "substituted": r.substituted})
             })
             .collect(),
     ))
+}
+
+fn font_prefs_json(s: &Session) -> Value {
+    json!({"favourites": s.prefs.fonts.favourites, "recent": s.prefs.fonts.recent})
+}
+
+fn save_font_prefs(s: &mut Session, fonts: crate::autosave::FontPrefs) -> Result<Value> {
+    if fonts != s.prefs.fonts {
+        let mut prefs = s.prefs.clone();
+        prefs.fonts = fonts;
+        s.set_prefs(prefs).map_err(|e| EngineError::Other(format!("saving preferences: {e}")))?;
+    }
+    Ok(font_prefs_json(s))
+}
+
+fn font_favourite(s: &mut Session, p: &Value) -> Result<Value> {
+    let Some(family) = str_p(p, "family").filter(|f| !f.is_empty()) else {
+        return Ok(font_prefs_json(s));
+    };
+    let mut fonts = s.prefs.fonts.clone();
+    fonts.set_favourite(family, bool_p(p, "on"));
+    save_font_prefs(s, fonts)
+}
+
+fn font_recent(s: &mut Session, p: &Value) -> Result<Value> {
+    let Some(family) = str_p(p, "family").filter(|f| !f.is_empty()) else {
+        return Ok(font_prefs_json(s));
+    };
+    let mut fonts = s.prefs.fonts.clone();
+    fonts.push_recent(family);
+    save_font_prefs(s, fonts)
 }
 
 pub fn commands() -> Vec<CommandSpec> {
@@ -1259,6 +1290,8 @@ pub fn commands() -> Vec<CommandSpec> {
             replace_fonts,
         ),
         query("graphics.fonts.used", "List Fonts Used", "{}", list_fonts_used),
+        query("graphics.fonts.favourite", "Favourite Font", r#"{"family":str,"on":bool? (default: toggle)}"#, font_favourite),
+        query("graphics.fonts.recent", "Use Font", r#"{"family":str (moves it to the front of the recent fonts)}"#, font_recent),
     ]
 }
 

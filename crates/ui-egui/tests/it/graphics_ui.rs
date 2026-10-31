@@ -506,7 +506,7 @@ fn effect_controls_font_and_style_are_drop_downs_that_apply() {
     d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
     d.frames(4);
     let fams = filmcraft_text::families();
-    let fam = fams.iter().map(|(f, _)| f.clone()).find(|f| f != "Inter").expect("another family");
+    let fam = fams.iter().map(|(f, _)| f.clone()).find(|f| f != "Inter" && !f.starts_with('.')).expect("another family");
     let font = d
         .ok("ui.elements", json!({"prefix": "effectControls.text."}))
         .as_array()
