@@ -343,36 +343,10 @@ pub(crate) fn cineon_value(v: f32, p: &CineonParams) -> f32 {
 }
 
 /// Noise (and Noise (Legacy)): per-frame random noise added in display space, with grain size.
+/// The parameters are evaluated and applied by [`crate::gpufx::FxOp`], which the GPU effect stage
+/// runs too.
 pub fn noise(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let amt = fv(e, "amount", cx) / 100.0;
-    if amt <= 0.0 {
-        return;
+    if let Some(op) = crate::gpufx::FxOp::eval(e, cx, img.w, img.h) {
+        op.apply(img);
     }
-    let colored = bv(e, "color");
-    let clip = bv(e, "clip");
-    let grain = (fv(e, "grain_size", cx).max(1.0) * cx.px_scale).max(1.0);
-    let frame = crate::effects::noise_frame_seed(cx);
-    let w = img.w;
-    img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-        for x in 0..w {
-            let p = &mut row[x * 4..x * 4 + 4];
-            let a = p[3];
-            if a <= 0.0 {
-                continue;
-            }
-            let (gx, gy) = ((x as f32 / grain) as usize, (y as f32 / grain) as usize);
-            let h = |z: u64| crate::effects::hash3(gx, gy, z) - 0.5;
-            let n0 = h(frame);
-            let ns = if colored { [n0, h(frame + 7777), h(frame + 99_991)] } else { [n0; 3] };
-            let c = enc([p[0] / a, p[1] / a, p[2] / a]);
-            let mut o = [c[0] + ns[0] * amt, c[1] + ns[1] * amt, c[2] + ns[2] * amt];
-            if clip {
-                o = o.map(|v| v.clamp(0.0, 1.0));
-            }
-            let o = dec(o);
-            p[0] = o[0] * a;
-            p[1] = o[1] * a;
-            p[2] = o[2] * a;
-        }
-    });
 }
