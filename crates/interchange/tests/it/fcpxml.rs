@@ -192,6 +192,112 @@ fn assert_connected_audio_markers_and_bins(p: &Project, s: &Sequence, r: FrameRa
     assert!(matches!(&m.media, MediaRef::File { path } if path == "/proj/boats.mov"));
 }
 
+/// Titles as DaVinci Resolve and Final Cut Pro write them (#2194): a connected title over a clip
+/// and a title in the primary storyline import as graphic clips with editable text.
+#[test]
+fn titles_import_as_text_graphics() {
+    let d = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.10">
+  <resources>
+    <format id="r1" frameDuration="1001/24000s" width="1920" height="1080"/>
+    <asset id="r2" name="Pier" start="0s" duration="{d240}" hasVideo="1" format="r1">
+      <media-rep kind="original-media" src="file:///Media/pier.mov"/>
+    </asset>
+    <effect id="r3" name="Basic Title" uid=".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti"/>
+  </resources>
+  <library>
+    <event name="Resolve">
+      <project name="Titles">
+        <sequence format="r1" tcStart="0s">
+          <spine>
+            <asset-clip ref="r2" name="Pier" offset="0s" start="0s" duration="{d48}">
+              <title ref="r3" lane="1" name="Lower Third" offset="{d12}" start="0s" duration="{d24}">
+                <param name="Position" key="9999/999166631/999166633/1/100/101" value="0 -400"/>
+                <text>
+                  <text-style ref="ts1">Hello&#10;World</text-style>
+                </text>
+                <text-style-def id="ts1">
+                  <text-style font="Helvetica" fontSize="72" fontFace="Bold" fontColor="1 0.5 0 1" italic="1" alignment="left" strokeColor="0 0 0 1" strokeWidth="3" shadowColor="0 0 0 0.5" shadowOffset="8 315" shadowBlurRadius="4"/>
+                </text-style-def>
+              </title>
+            </asset-clip>
+            <title ref="r3" name="End Card" offset="{d48}" start="0s" duration="{d24}">
+              <text>
+                <text-style ref="ts2">The </text-style>
+                <text-style ref="ts3">End</text-style>
+              </text>
+              <text-style-def id="ts2"><text-style font="Futura" fontSize="54"/></text-style-def>
+              <text-style-def id="ts3"><text-style font="Futura" fontSize="54" bold="1"/></text-style-def>
+              <adjust-blend amount="0.5"/>
+            </title>
+            <title ref="r3" name="Empty" offset="{d72}" start="0s" duration="{d24}"/>
+            <title ref="r3" name="Instant" offset="{d72}" start="0s" duration="0s"><text><text-style>Hi</text-style></text></title>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>"#,
+        d12 = ft(12),
+        d24 = ft(24),
+        d48 = ft(48),
+        d72 = ft(72),
+        d240 = ft(240),
+    );
+    let (imp, rep) = import(d.as_bytes(), Format::Fcpxml, None).unwrap();
+    let p = &imp.project;
+    let s = p.sequence(only_seq(&imp)).unwrap();
+    let r = FrameRate::FPS_23_976;
+    let layer = |it: &filmcraft_project::TrackItem| it.effects.iter().find(|e| e.effect == "graphic_text").cloned().expect("a text layer");
+    let value = |e: &filmcraft_project::EffectInstance, k: &str| e.params[k].value.clone();
+
+    // the connected title: on V2, over the clip, with its text and style
+    let lower = s.video_tracks[1].items.iter().find(|i| i.name == "Lower Third").expect("the connected title on V2");
+    assert_eq!((lower.start, lower.duration), (r.tick_of(12), r.tick_of(24)));
+    assert!(matches!(p.item(lower.item).unwrap().kind, ItemKind::Graphic { width: 1920, height: 1080, .. }));
+    let l = layer(lower);
+    assert_eq!(value(&l, "text"), ParamValue::Text("Hello\nWorld".into()));
+    assert_eq!(value(&l, "font"), ParamValue::Text("Helvetica".into()));
+    assert_eq!(value(&l, "font_style"), ParamValue::Text("Bold".into()));
+    assert_eq!(value(&l, "size"), ParamValue::Float(72.0));
+    assert_eq!(value(&l, "fill_color"), ParamValue::Color([1.0, 0.5, 0.0, 1.0]));
+    assert_eq!(value(&l, "faux_italic"), ParamValue::Bool(true));
+    assert_eq!(value(&l, "align"), ParamValue::Choice(0));
+    assert_eq!((value(&l, "stroke"), value(&l, "stroke_width")), (ParamValue::Bool(true), ParamValue::Float(3.0)));
+    assert_eq!(value(&l, "shadow"), ParamValue::Bool(true));
+    assert_eq!(value(&l, "shadow_opacity"), ParamValue::Float(50.0));
+    assert_eq!(value(&l, "shadow_angle"), ParamValue::Float(135.0), "FCP's 315° is Premiere's 135°: down and to the right");
+    assert_eq!((value(&l, "shadow_distance"), value(&l, "shadow_blur")), (ParamValue::Float(8.0), ParamValue::Float(4.0)));
+    // Position "0 -400": 400 px below the centre (two lines centred there)
+    let pos = value(&l, "position").as_vec2().unwrap();
+    assert!((pos.x - 960.0).abs() < 1e-9, "{pos:?}");
+    let expected_baseline = 540.0 + 400.0 - 72.0 * 1.21 / 2.0 + 72.0 * 0.35;
+    assert!((pos.y - expected_baseline).abs() < 1e-9, "{pos:?}");
+
+    // the primary-storyline title: on V1 after the clip, its runs joined, opacity from adjust-blend
+    let end = s.video_tracks[0].items.iter().find(|i| i.name == "End Card").expect("the storyline title on V1");
+    assert_eq!((end.start, end.duration), (r.tick_of(48), r.tick_of(24)));
+    let e = layer(end);
+    assert_eq!(value(&e, "text"), ParamValue::Text("The End".into()));
+    assert_eq!(value(&e, "font"), ParamValue::Text("Futura".into()));
+    assert_eq!(value(&e, "align"), ParamValue::Choice(1), "centred by default");
+    assert_eq!(end.effect("opacity").unwrap().param("opacity").unwrap().value, ParamValue::Float(50.0));
+    // both titles share one graphic item
+    assert_eq!(lower.item, end.item);
+
+    // a title without text is skipped and reported; mixed run styles and the template are reported
+    assert!(s.video_tracks.iter().flat_map(|t| &t.items).all(|i| i.name != "Empty"));
+    assert!(rep.mentions("title \"Empty\" has no text"), "{rep}");
+    // a title without a duration too
+    assert!(s.video_tracks.iter().flat_map(|t| &t.items).all(|i| i.name != "Instant"));
+    assert!(rep.mentions("title \"Instant\" has no duration"), "{rep}");
+    assert!(rep.mentions("title \"End Card\": its runs have different styles"), "{rep}");
+    assert!(rep.mentions("(Basic Title) was imported as editable text"), "{rep}");
+    assert!(!rep.mentions("not supported and were skipped"), "{rep}");
+}
+
 #[test]
 fn hostile_lane_numbers_do_not_create_sparse_tracks() {
     let d = doc().replace("lane=\"-1\"", "lane=\"-2147483648\"").replace("lane=\"1\"", "lane=\"2147483647\"");
