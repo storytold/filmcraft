@@ -6,7 +6,7 @@ fn invalid_preview_scales_are_rejected_without_allocating() {
     s.execute("file.newSequence", serde_json::json!({"width":160,"height":90})).unwrap();
     for scale in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::MAX] {
         assert!(s.render_program(scale).is_none());
-        assert!(s.render_program_working(scale).is_none());
+        assert!(s.render_program_working(scale).is_err());
     }
     assert!(s.try_render_program_at(f32::NAN, Tick::ZERO).unwrap_err().to_string().contains("finite"), "the reason is reported");
     assert_eq!(s.render_program(0.5).unwrap().w, 80);

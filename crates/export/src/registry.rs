@@ -107,7 +107,7 @@ pub fn encoder_registered(f: EncoderFactory) -> bool {
 /// compositor (`filmcraft-gpu`), registered by the app or CLI at startup. `render` returns the
 /// frame exactly as [`filmcraft_render::render_sequence`] would (same size, premultiplied
 /// linear-light RGBA), or `None` to let the CPU render this frame (no adapter, a plan the GPU
-/// cannot draw, any internal error): the CPU renderer is the reference and the fallback.
+/// cannot draw). Terminal frame errors propagate; the CPU renderer remains the fallback.
 pub trait FrameRenderer: Send {
     fn render(
         &mut self,
@@ -116,7 +116,7 @@ pub trait FrameRenderer: Send {
         t: Tick,
         opts: filmcraft_render::RenderOptions,
         sources: &dyn SourceProvider,
-    ) -> Option<filmcraft_render::Image>;
+    ) -> std::result::Result<Option<filmcraft_render::Image>, String>;
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).

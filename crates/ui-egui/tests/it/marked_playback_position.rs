@@ -6,6 +6,8 @@ use serde_json::json;
 
 #[test]
 fn program_range_playback_rests_on_inclusive_out_frame() {
+    const STEP_DT: f32 = 0.25;
+    const MAX_STEPS: usize = 40;
     let mut session = Session::default();
     session.execute("file.openDemoProject", json!({})).unwrap();
     let rate = session.sequence_rate();
@@ -14,17 +16,28 @@ fn program_range_playback_rests_on_inclusive_out_frame() {
     session.execute("markers.markIn", json!({"time": 0})).unwrap();
     session.execute("markers.markOut", json!({"time": out.0})).unwrap();
 
-    let mut harness = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(0.25).build_eframe(move |_cc| FilmcraftApp::new(session));
+    let wall = std::time::Instant::now();
+    let mut harness = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_step_dt(STEP_DT).build_eframe(move |_cc| FilmcraftApp::new(session));
     harness.step();
     let ctx = harness.ctx.clone();
+    let mut time = ctx.input(|input| input.time);
+    let mut previous_wall = std::time::Duration::ZERO;
+    // Playback can use host time; include it in egui time when work delays a simulated pass.
+    let mut step_playback = |harness: &mut Harness<FilmcraftApp>| {
+        let elapsed = wall.elapsed();
+        time += (elapsed - previous_wall).as_secs_f64() + f64::from(STEP_DT);
+        previous_wall = elapsed;
+        harness.input_mut().time = Some(time);
+        harness.step();
+    };
 
     for command in ["playback.inToOut", "playback.toOut"] {
         harness.state_mut().session.set_playhead(Tick::ZERO);
         menus::invoke(harness.state_mut(), &ctx, command, json!({"monitor": "program"})).unwrap();
         assert_eq!(harness.state().playback.stop_at, Some(out + fd));
         assert_eq!(harness.state().playback.rest_at, Some(out));
-        for _ in 0..40 {
-            harness.step();
+        for _ in 0..MAX_STEPS {
+            step_playback(&mut harness);
             if !harness.state().playback.playing {
                 break;
             }
@@ -38,8 +51,8 @@ fn program_range_playback_rests_on_inclusive_out_frame() {
     let duration = harness.state().session.active_sequence().unwrap().duration();
     harness.state_mut().session.set_playhead(duration - rate.tick_of(6));
     menus::invoke(harness.state_mut(), &ctx, "playback.forward", json!({"monitor": "program"})).unwrap();
-    for _ in 0..40 {
-        harness.step();
+    for _ in 0..MAX_STEPS {
+        step_playback(&mut harness);
         if !harness.state().playback.playing {
             break;
         }

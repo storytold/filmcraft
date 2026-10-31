@@ -156,7 +156,7 @@ fn reference(p: &Project, seq: ItemId, t: Tick, opts: RenderOptions, map: &Sourc
     let tc = format_time(t, s.settings.frame_rate, s.settings.drop_frame, TimeDisplay::Timecode, s.settings.sample_rate as i64);
     for track in &s.video_tracks {
         let Some(item) = track.item_at(t) else { continue };
-        if let Some((layer, op, bl)) = item_layer(p, s, item, t, opts, map, &tc) {
+        if let Some((layer, op, bl)) = item_layer(p, s, item, t, opts, map, &tc).unwrap() {
             blend::composite(&mut canvas, &layer, op, bl);
         }
     }
@@ -177,12 +177,12 @@ fn check(what: &str, specs: &[Spec], scale: f32) {
         let t = FPS.tick_of(f);
         // twice: the second render starts from recycled buffers
         for round in 0..2 {
-            let got = render_sequence(&p, seq, t, opts, &map);
+            let got = render_sequence(&p, seq, t, opts, &map).unwrap();
             let want = reference(&p, seq, t, opts, &map);
             same_bits(&got, &want, &format!("{what} (frame {f}, render {round})"));
             pool::recycle_f32(got.px);
             // and as the monitor's bytes, straight from the frame where it is one picture alone
-            let bytes = render_sequence_rgba8(&p, seq, t, opts, &map);
+            let bytes = render_sequence_rgba8(&p, seq, t, opts, &map).unwrap();
             assert!(bytes == (want.w, want.h, want.over_black_with_alpha_rgba8()), "{what} (frame {f}, render {round}): monitor bytes");
         }
     }
@@ -233,14 +233,14 @@ fn which_layers_take_a_shortcut() {
     let s = p.sequence(seq).expect("sequence");
     let (opts, t) = (RenderOptions::default(), FPS.tick_of(3));
     let layer = |track: usize, allow: bool| {
-        item_layer_ex(&p, s, s.video_tracks[track].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: allow })
+        item_layer_ex(&p, s, s.video_tracks[track].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: allow }).unwrap()
     };
     // a camera frame has no alpha: opaque, the whole picture, converted when it is needed
     assert!(matches!(layer(0, true), Some(Layer::Frame { .. })));
     // alone, it stays that frame up to the monitor's bytes; under a banner it is converted
     let canvas = |specs: &[Spec]| {
         let (p, seq, map) = scene(specs);
-        seq_canvas(&p, p.sequence(seq).expect("sequence"), t, opts, &map, None).frame.is_some()
+        seq_canvas(&p, p.sequence(seq).expect("sequence"), t, opts, &map, None).unwrap().frame.is_some()
     };
     assert!(canvas(&[Spec::new(camera(W, H))]));
     assert!(!canvas(&[Spec::new(camera(W, H)), Spec::new(banner(W, H, (0, H - 9, W, H)))]));
@@ -255,7 +255,7 @@ fn which_layers_take_a_shortcut() {
     // a transparent banner is an empty region
     let (p, seq, map) = scene(&[Spec::new(banner(W, H, (0, 0, 0, 0)))]);
     let s = p.sequence(seq).expect("sequence");
-    match item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: true }) {
+    match item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: true }).unwrap() {
         Some(Layer::Region { image, .. }) => assert_eq!((image.w, image.h, image.px.len()), (0, 0, 0)),
         _ => panic!("a transparent banner is an empty region"),
     }
@@ -264,7 +264,7 @@ fn which_layers_take_a_shortcut() {
         let (p, seq, map) = scene(&[spec]);
         let s = p.sequence(seq).expect("sequence");
         assert!(matches!(
-            item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: true }),
+            item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: true }).unwrap(),
             Some(Layer::Full { opaque: false, .. })
         ));
     }
@@ -304,14 +304,14 @@ fn a_rectangle_mixes_like_the_padded_layer_in_every_blend_mode() {
 #[test]
 fn a_region_layer_expands_to_the_whole_layer() {
     let image = Image { w: 3, h: 2, px: (0..24).map(|i| i as f32 + 1.0).collect() };
-    let (full, op, bl) = Layer::Region { image, x: 2, y: 1, opacity: 0.5, blend: Blend::Multiply }.into_full(6, 4);
+    let (full, op, bl) = Layer::Region { image, x: 2, y: 1, opacity: 0.5, blend: Blend::Multiply }.into_full(6, 4).unwrap();
     assert_eq!((full.w, full.h, op, bl), (6, 4, 0.5, Blend::Multiply));
     assert_eq!(&full.px[((6 + 2) * 4)..((6 + 5) * 4)], &(1..=12).map(|i| i as f32).collect::<Vec<_>>()[..]);
     assert_eq!(&full.px[((2 * 6 + 2) * 4)..((2 * 6 + 5) * 4)], &(13..=24).map(|i| i as f32).collect::<Vec<_>>()[..]);
     assert_eq!(full.px.iter().filter(|v| **v != 0.0).count(), 24);
     // a region that sticks out is cut, not a panic
     let sticks = Image { w: 4, h: 3, px: vec![1.0; 48] };
-    let (full, ..) = Layer::Region { image: sticks, x: 4, y: 2, opacity: 1.0, blend: Blend::Normal }.into_full(6, 4);
+    let (full, ..) = Layer::Region { image: sticks, x: 4, y: 2, opacity: 1.0, blend: Blend::Normal }.into_full(6, 4).unwrap();
     assert_eq!(full.px.len(), 6 * 4 * 4);
     // only the two columns and two rows inside the output are copied, none wrapped into the next row
     assert_eq!(full.px.iter().filter(|v| **v == 1.0).count(), 2 * 2 * 4);
@@ -331,13 +331,13 @@ fn hdr_media_is_planned_for_the_gpu_with_its_colour_management() {
         let f = Arc::new(VideoFrame { color, ..(*camera(W, H)).clone() });
         let (p, seq, map) = scene(&[Spec::new(f)]);
         let opts = RenderOptions::default();
-        let plan = plan::plan_frame(&p, seq, Tick::ZERO, opts, &map);
+        let plan = plan::plan_frame(&p, seq, Tick::ZERO, opts, &map).unwrap();
         let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("{name}: not a layer plan") };
         assert_eq!(layers.len(), 1, "{name}");
         assert!(matches!(layers[0].frame.data, PixelData::Yuv8 { .. }), "{name}: converted on the CPU");
         assert!(layers[0].input.is_some(), "{name}: no colour management for the GPU");
-        let reference = render_sequence(&p, seq, Tick::ZERO, opts, &map);
-        let got = plan::execute_cpu(&plan);
+        let reference = render_sequence(&p, seq, Tick::ZERO, opts, &map).unwrap();
+        let got = plan::execute_cpu(&plan).unwrap();
         let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
         assert!(max < 1e-4, "{name}: plan differs from the reference by {max}");
     }
