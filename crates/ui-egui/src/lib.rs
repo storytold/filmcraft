@@ -168,6 +168,11 @@ pub struct Playback {
     /// Resting playhead for an inclusive marked range; unlike stop_at, this
     /// names the last visible frame, not the following playback boundary.
     pub rest_at: Option<Tick>,
+    /// Where the Timeline draws the playhead while playing, and when (monotonic host s): it moves
+    /// with the wall clock every frame and eases toward the playback clock, so it glides instead
+    /// of jumping a frame at a time or by a device buffer. The session playhead stays on the
+    /// frame shown.
+    smooth_playhead: Option<(Tick, f64)>,
 }
 
 /// Incoming composition identity for the Program monitor. Interrupted compositions remain
