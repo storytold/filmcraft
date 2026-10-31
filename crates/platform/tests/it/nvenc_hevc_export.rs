@@ -29,7 +29,7 @@ fn project(w: u32, h: u32, frames: i64) -> (Arc<Project>, filmcraft_project::Ite
     let clip = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -39,7 +39,7 @@ fn project(w: u32, h: u32, frames: i64) -> (Arc<Project>, filmcraft_project::Ite
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 1, None);
@@ -114,7 +114,11 @@ fn delta(before: filmcraft_export::HwEncodeStats) -> (u64, u64, u64) {
 fn hevc_exports_play_everywhere() {
     let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     filmcraft_platform::register();
-    assert_eq!(filmcraft_export::available(Format::Hevc), hevc_available(), "the format is available iff NVENC can encode HEVC");
+    // The format is offered wherever *any* registered HEVC encoder can open a session: NVENC, and on
+    // Windows Media Foundation as well. The rest of this file drives NVENC's factory directly, so it
+    // says nothing about which of the two a real export reaches.
+    let mf_hevc = filmcraft_platform::media_foundation::encode::hevc_available();
+    assert_eq!(filmcraft_export::available(Format::Hevc), hevc_available() || mf_hevc, "the format is available iff a registered HEVC encoder can take it");
     if !hevc_available() {
         eprintln!("SKIPPED: no NVENC HEVC here");
         return;
@@ -225,6 +229,22 @@ fn sizes_that_are_not_multiples_of_the_coding_block_are_cropped_back() {
     }
 }
 
+fn assert_hdr_factory_outcomes(base: &ExportSettings, rate: FrameRate) {
+    // HDR (PQ / HLG) is taken as Main 10 where the GPU has 10-bit HEVC, declined (counted, with the reason) where it has not
+    for signal in [ColorSignal::PQ, ColorSignal::HLG] {
+        let before = hw_encode_stats();
+        let r = factory(Format::Hevc, 640, 360, rate, &ExportSettings { signal, ..base.clone() });
+        if filmcraft_platform::nvenc::hevc_hdr_available() {
+            assert!(matches!(r, Some(Ok(_))), "{signal:?}");
+            assert_eq!(delta(before), (0, 1, 0), "{signal:?}");
+        } else if hevc_available() {
+            let Some(Err(e)) = r else { panic!("{signal:?}: expected a declined request") };
+            assert!(e.to_string().contains("10-bit"), "{signal:?}: {e}");
+            assert_eq!(delta(before), (0, 0, 1), "{signal:?}");
+        }
+    }
+}
+
 #[test]
 fn what_nvenc_cannot_do_is_an_error_that_says_why() {
     let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -253,19 +273,7 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
         assert!(e.to_string().contains("NVENC"), "{what}: {e}");
         assert_eq!(delta(before), (0, 0, 1), "{what}: counted as declined, no session");
     }
-    // HDR (PQ / HLG) is taken as Main 10 where the GPU has 10-bit HEVC, declined (counted, with the reason) where it has not
-    for signal in [ColorSignal::PQ, ColorSignal::HLG] {
-        let before = hw_encode_stats();
-        let r = factory(Format::Hevc, 640, 360, rate, &ExportSettings { signal, ..base.clone() });
-        if filmcraft_platform::nvenc::hevc_hdr_available() {
-            assert!(matches!(r, Some(Ok(_))), "{signal:?}");
-            assert_eq!(delta(before), (0, 1, 0), "{signal:?}");
-        } else if hevc_available() {
-            let Some(Err(e)) = r else { panic!("{signal:?}: expected a declined request") };
-            assert!(e.to_string().contains("10-bit"), "{signal:?}: {e}");
-            assert_eq!(delta(before), (0, 0, 1), "{signal:?}");
-        }
-    }
+    assert_hdr_factory_outcomes(&base, rate);
     // interlaced output is refused by the export's own validation, before any encoder is asked
     let (p, seq, m) = project(640, 360, 6);
     let before = hw_encode_stats();
@@ -273,11 +281,18 @@ fn what_nvenc_cannot_do_is_an_error_that_says_why() {
     assert!(export(&p, seq, &s, &m, &Progress::default()).is_err());
     assert_eq!(delta(before), (0, 0, 0));
 
-    if !hevc_available() {
-        // no HEVC encoder: the export's own "encoder not available" error, nothing written, no panic
+    if !filmcraft_export::available(Format::Hevc) {
+        // no HEVC encoder at all: the export's own "encoder not available" error, nothing written, no panic
         let err = export(&p, seq, &hevc(tmp("none.mp4")), &m, &Progress::default()).expect_err("no encoder").to_string();
         assert!(err.contains("encoder not available"), "{err}");
-        eprintln!("SKIPPED the NVENC-limit cases: no NVENC HEVC here");
+        eprintln!("SKIPPED the NVENC-limit cases: no HEVC encoder here");
+        return;
+    }
+    if !hevc_available() {
+        // NVENC has no HEVC encoder here, so a real export reaches Media Foundation instead. What
+        // NVENC would accept is therefore not what this machine does, and the limits below have
+        // nothing to say about it.
+        eprintln!("SKIPPED the NVENC-limit cases: Media Foundation can encode HEVC here");
         return;
     }
     // sizes outside what the GPU's HEVC encoder takes, through the real export

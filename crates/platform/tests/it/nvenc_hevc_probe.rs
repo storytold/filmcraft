@@ -20,10 +20,20 @@ fn the_probe_runs_once_and_registers_the_format() {
     assert_eq!(first, again);
     assert!(warm < Duration::from_millis(50), "the answer is cached: {warm:?}");
 
-    // `register` makes `available(Hevc)` follow the probe; registering again changes nothing
+    // `register` makes `available(Hevc)` follow the probe; registering again changes nothing. Another
+    // registered HEVC encoder (Media Foundation on Windows) can make the format available on its
+    // own, so with NVENC out that is what decides it rather than this probe.
     assert!(!filmcraft_export::available(Format::Hevc) || first);
     filmcraft_platform::register();
     filmcraft_platform::register();
-    assert_eq!(filmcraft_export::available(Format::Hevc), first);
+    if first {
+        assert!(filmcraft_export::available(Format::Hevc), "NVENC can encode HEVC, so the format is available");
+    } else {
+        assert_eq!(
+            filmcraft_export::available(Format::Hevc),
+            filmcraft_platform::media_foundation::encode::hevc_available(),
+            "with NVENC out, Media Foundation is the only thing that can offer H.265"
+        );
+    }
     assert!(filmcraft_export::available(Format::H264));
 }
