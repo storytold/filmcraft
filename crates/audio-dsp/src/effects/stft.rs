@@ -70,6 +70,14 @@ impl StftChannel {
     }
 }
 
+/// Hop, gain and FFT pairing shared by every frame of one STFT effect run.
+#[derive(Clone, Copy)]
+pub(crate) struct Plan {
+    pub hop: usize,
+    pub scale: f32,
+    pub pairing: Pairing,
+}
+
 /// Stream `len` samples of every channel through its `StftChannel`, sample-major. At a frame
 /// boundary `bins(ch, first, re, im)` edits that channel's half spectrum (bins 0..=n/2);
 /// `first` is set for the first channel that frames on this sample. Neighbouring channels that
@@ -81,11 +89,10 @@ pub(crate) fn stream(
     spec: &mut Spectral,
     channels: &mut [&mut [f32]],
     len: usize,
-    hop: usize,
-    scale: f32,
-    pairing: Pairing,
+    plan: Plan,
     bins: &mut impl FnMut(usize, bool, &mut [f32], &mut [f32]),
 ) {
+    let Plan { hop, scale, pairing } = plan;
     let nch = channels.len().min(stft.len());
     let half = spec.re2.len();
     for i in 0..len {
@@ -312,12 +319,12 @@ mod tests {
         let mut joint = src.clone();
         {
             let mut chans: Vec<&mut [f32]> = joint.iter_mut().map(|c| c.as_mut_slice()).collect();
-            stream(&mut stft, &mut spec, &mut chans, len, hop, scale, Pairing::Full, &mut gain);
+            stream(&mut stft, &mut spec, &mut chans, len, Plan { hop, scale, pairing: Pairing::Full }, &mut gain);
         }
         for ch in 0..3 {
             let mut single = vec![StftChannel::new(n)];
             let mut y = src[ch].clone();
-            stream(&mut single, &mut spec, &mut [&mut y], len, hop, scale, Pairing::Full, &mut |_, first, re, im| gain(ch, first, re, im));
+            stream(&mut single, &mut spec, &mut [&mut y], len, Plan { hop, scale, pairing: Pairing::Full }, &mut |_, first, re, im| gain(ch, first, re, im));
             let peak = y.iter().fold(0.0f32, |a, v| a.max(v.abs()));
             let dev = y.iter().zip(&joint[ch]).fold(0.0f32, |a, (p, q)| a.max((p - q).abs()));
             assert!(peak > 0.1 && dev < 1e-5 * peak, "channel {ch}: deviation {dev}");

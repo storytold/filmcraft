@@ -8,7 +8,7 @@
 //! (low phasiness). Duration is unchanged. At ratio 1 the output is the input delayed by the
 //! frame size.
 
-use super::stft::{Pairing, Spectral, StftChannel, fft_size, stream};
+use super::stft::{Pairing, Plan, Spectral, StftChannel, fft_size, stream};
 use crate::{AudioEffect, ParamSpec, ParamValues, Unit, block_len, param_plumbing};
 use std::f32::consts::PI;
 
@@ -185,7 +185,7 @@ impl AudioEffect for PitchShifter {
         let (state, sc, target_ratio) = (&mut self.state, &mut self.scratch, self.target_ratio);
         let mut ratio = self.ratio;
         let mut frame_ratio = ratio;
-        stream(&mut self.stft, &mut self.spec, channels, len, hop, scale, Pairing::SynthesisOnly, &mut |ch, first, re, im| {
+        stream(&mut self.stft, &mut self.spec, channels, len, Plan { hop, scale, pairing: Pairing::SynthesisOnly }, &mut |ch, first, re, im| {
             if first {
                 frame_ratio = ratio;
                 ratio += (target_ratio - ratio) * 0.5;
