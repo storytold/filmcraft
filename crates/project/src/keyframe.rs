@@ -231,7 +231,13 @@ impl Param {
     fn set_at_force(&mut self, t: Tick, value: ParamValue) {
         match self.keyframes.binary_search_by_key(&t, |k| k.time) {
             Ok(i) => self.keyframes[i].value = value,
-            Err(i) => self.keyframes.insert(i, Keyframe::new(t, value)),
+            Err(i) => {
+                let mut k = Keyframe::new(t, value);
+                if let Some(prev) = i.checked_sub(1).and_then(|p| self.keyframes.get(p)) {
+                    k.interp = prev.interp;
+                }
+                self.keyframes.insert(i, k);
+            }
         }
     }
 
@@ -415,6 +421,16 @@ mod tests {
         assert_eq!(p.f64_at(Tick(500)), 10.0);
         p.keyframes[0].interp = Interpolation::Hold;
         assert_eq!(p.f64_at(Tick(99)), 0.0);
+    }
+
+    #[test]
+    fn add_keyframe_inside_hold_keeps_curve() {
+        let mut p = Param::new(ParamValue::Float(0.0));
+        p.toggle_animation(Tick(0));
+        p.set_at(Tick(100), ParamValue::Float(10.0));
+        p.keyframes[0].interp = Interpolation::Hold;
+        p.add_keyframe(Tick(50));
+        assert_eq!(p.f64_at(Tick(75)), 0.0);
     }
 
     #[test]
