@@ -151,6 +151,8 @@ fn inline(text: &str) -> String {
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix('<')
             && let Some(end) = after.find('>')
+            // Only a well-formed tag is markup; "1 < 2 and 3 > 2" and "a<b and c>d" are text.
+            && is_tag_body(&after[..end])
         {
             let tag = after[..end].trim().to_ascii_lowercase();
             let (closing, name) = match tag.strip_prefix('/') {
@@ -186,6 +188,36 @@ fn inline(text: &str) -> String {
         out.push_str("</span>");
     }
     out
+}
+
+/// Whether `body` (between `<` and `>`) is one tag token: optional `/`, a name of ASCII
+/// letters/digits starting with a letter, then optional whitespace-separated `name="value"` attributes.
+fn is_tag_body(body: &str) -> bool {
+    let body = body.trim();
+    let body = match body.strip_prefix('/') {
+        Some(closing) => closing.trim_start(),
+        None => body.strip_suffix('/').unwrap_or(body).trim_end(),
+    };
+    if !body.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let name_len = body.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(body.len());
+    let mut rest = &body[name_len..];
+    while !rest.is_empty() {
+        let Some(attrs) = rest.strip_prefix(|c: char| c.is_ascii_whitespace()) else { return false };
+        let attrs = attrs.trim_start();
+        if attrs.is_empty() {
+            return true;
+        }
+        let key_len = attrs.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | ':' | '_'))).unwrap_or(attrs.len());
+        if key_len == 0 {
+            return false;
+        }
+        let Some(val) = attrs[key_len..].strip_prefix("=\"") else { return false };
+        let Some(close) = val.find('"') else { return false };
+        rest = &val[close + 1..];
+    }
+    true
 }
 
 fn is_ncname(s: &str) -> bool {
