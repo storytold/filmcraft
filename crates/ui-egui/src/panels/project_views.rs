@@ -236,6 +236,11 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
 }
 
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
+    // the menu acts on the whole selection when the clicked item is part of it, as in Premiere
+    // (a right-click on a selected item kept only that one, so Create Proxies… made one, #2352)
+    let selection = &app.session.state.project_selection;
+    let targets: Vec<u64> = if selection.contains(&id) { selection.iter().map(|i| i.0).collect() } else { vec![id.0] };
+    let all = json!({"items": targets});
     let sel = || json!({"items": [id.0]});
     if ui.button(tl!("Rename")).clicked() {
         actions.push(("projectPanel.rename".into(), json!({"item": id.0})));
@@ -292,7 +297,7 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         let labels = app.session.prefs.labels.clone();
         for l in filmcraft_project::Label::ALL {
             if crate::menus::label_choice(ui, &mut app.auto, &labels, l, "project.itemMenu.label").clicked() {
-                actions.push(("project.select".into(), json!({"items": [id.0]})));
+                actions.push(("project.select".into(), all.clone()));
                 actions.push(("edit.label".into(), json!({"label": l.name()})));
                 ui.close();
             }
@@ -308,27 +313,34 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
     }
     if matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_project::MediaRef::File { .. })) {
         ui.separator();
-        for (label, cmd) in [(tl!("Link Media…"), "media.linkMedia"), (tl!("Make Offline…"), "media.makeOffline")] {
+        // Make Offline… takes the selection; Link Media… lists every missing clip, starting on this one
+        for (label, cmd, items) in [(tl!("Link Media…"), "media.linkMedia", sel()), (tl!("Make Offline…"), "media.makeOffline", all.clone())] {
             if ui.button(label).clicked() {
-                actions.push(("project.select".into(), sel()));
+                actions.push(("project.select".into(), items));
                 actions.push((cmd.into(), json!({})));
                 ui.close();
             }
         }
-        ui.menu_button(tl!("Proxy"), |ui| {
-            for (label, cmd) in [
-                (tl!("Create Proxies…"), "media.createProxies"),
-                (tl!("Attach Proxies…"), "media.attachProxies"),
-                (tl!("Reconnect Full Resolution Media…"), "media.reconnectFullRes"),
-                (tl!("Detach Proxies"), "media.detachProxies"),
+        let r = ui.menu_button(tl!("Proxy"), |ui| {
+            for (key, label, cmd) in [
+                ("createProxies", tl!("Create Proxies…"), "media.createProxies"),
+                ("attachProxies", tl!("Attach Proxies…"), "media.attachProxies"),
+                ("reconnectFullRes", tl!("Reconnect Full Resolution Media…"), "media.reconnectFullRes"),
+                ("detachProxies", tl!("Detach Proxies"), "media.detachProxies"),
             ] {
-                if ui.button(label).clicked() {
-                    actions.push(("project.select".into(), json!({"items": [id.0]})));
+                let b = ui.button(label);
+                app.auto.add(&format!("project.itemMenu.proxy.{key}"), b.rect, label);
+                if b.clicked() {
+                    // Attach Proxies… / Reconnect Full Resolution Media… work on one item (the first
+                    // selected): that is the clicked one
+                    let items = if matches!(cmd, "media.attachProxies" | "media.reconnectFullRes") { sel() } else { all.clone() };
+                    actions.push(("project.select".into(), items));
                     actions.push((cmd.into(), json!({})));
                     ui.close();
                 }
             }
         });
+        app.auto.add("project.itemMenu.proxy", r.response.rect, tl!("Proxy"));
     }
     ui.separator();
     if ui.button(tl!("Clear")).clicked() {
