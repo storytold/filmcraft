@@ -298,6 +298,9 @@ pub fn section_header(ui: &mut Ui, id: egui::Id, title: &str, open: bool, t: &To
 /// A small pill toggle button with text (e.g. "M", "S" on track headers).
 pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: Color32, t: &Tokens, id: egui::Id) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
+    // Clip to `rect` so that when `rect` is already intersected with a scroll area boundary,
+    // the button never bleeds into adjacent tracks (#2538).
+    let p = ui.painter().with_clip_rect(rect);
     let bg = if on {
         on_color
     } else if resp.hovered() {
@@ -305,11 +308,11 @@ pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: 
     } else {
         Color32::TRANSPARENT
     };
-    ui.painter().rect_filled(rect, 2.0, bg);
+    p.rect_filled(rect, 2.0, bg);
     if !on {
-        ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
+        p.rect_stroke(rect, 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
     }
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, letter, Tokens::semibold(10.5), if on { Color32::BLACK } else { t.text_dim });
+    p.text(rect.center(), Align2::CENTER_CENTER, letter, Tokens::semibold(10.5), if on { Color32::BLACK } else { t.text_dim });
     resp
 }
 
