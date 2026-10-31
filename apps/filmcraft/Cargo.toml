@@ -27,14 +27,16 @@ filmcraft-gpu = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-platform = { workspace = true }
 egui = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "clipboard", "wayland", "x11"] }
 serde_json = { workspace = true }
+# Constant-time comparison of control-channel credentials.
+subtle = "2.6"
 log = { workspace = true }
 rfd = { workspace = true }
 cpal = "0.16"
 # Files and images on the system clipboard for Paste (#611); egui already uses it for text.
 arboard = "3"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { workspace = true, features = ["clock"] }
 sys-locale = "0.3"
 # Help menu / About / Discord links in the system browser (MIT; as PhotoCraft).
 open = "5"
@@ -42,7 +44,7 @@ open = "5"
 [dev-dependencies]
 glob = "0.3"
 # graphics.rs: enumerate the real adapters in a test.
-pollster = "0.4"
+pollster = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.21"
@@ -52,6 +54,9 @@ objc2 = "0.6"
 # Same winit as eframe: macOS event-loop options (no app activation when driven by an agent).
 winit = { version = "0.30", default-features = false }
 
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+winit = { version = "0.30", default-features = false, features = ["x11"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Settings ▸ Appearance ▸ Sync with system: the XDG desktop portal's colour scheme. The zbus the
 # portal file dialogs (rfd) and accesskit already use.
@@ -60,3 +65,6 @@ zbus = "5.19"
 # Icon + VERSIONINFO for filmcraft.exe (build.rs); only needed when building on Windows.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+craft-update = { workspace = true }

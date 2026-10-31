@@ -35,6 +35,102 @@ fn journaled(s: &mut Session) -> u64 {
     s.persistence.as_ref().unwrap().status.journaled_revision
 }
 
+fn discard_fixture(tag: &str) -> (Session, std::path::PathBuf) {
+    let d = temp_dir(tag);
+    let mut s = Session::default();
+    start(&mut s, &d);
+    let candidates = ["first", "second", "third"]
+        .into_iter()
+        .map(|id| {
+            let dir = d.join(id);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("snapshot.fcproj"), b"retained snapshot").unwrap();
+            autosave::RecoveryCandidate { id: id.into(), dir, meta: Default::default() }
+        })
+        .collect();
+    s.persistence.as_mut().unwrap().candidates = candidates;
+    (s, d)
+}
+
+fn block_discard(dir: &std::path::Path) {
+    // An ordinary file cannot be removed as a directory, on Windows or Unix.
+    std::fs::remove_dir_all(dir).unwrap();
+    std::fs::write(dir, b"occupied directory path").unwrap();
+}
+
+fn recovery_ids(s: &mut Session) -> Vec<String> {
+    s.execute("file.recoveryList", json!({})).unwrap().as_array().unwrap().iter().map(|v| v["id"].as_str().unwrap().to_owned()).collect()
+}
+
+#[test]
+fn discard_failure_preserves_candidates_and_allows_retry() {
+    let (mut s, d) = discard_fixture("discard-first-error");
+    block_discard(&d.join("first"));
+    assert!(s.execute("file.discardRecovery", json!({"all": true})).is_err());
+    assert_eq!(recovery_ids(&mut s), ["first", "second", "third"]);
+    assert!(s.is_enabled("file.discardRecovery"));
+    assert!(d.join("second/snapshot.fcproj").exists());
+    assert!(d.join("third/snapshot.fcproj").exists());
+    std::fs::remove_file(d.join("first")).unwrap();
+    std::fs::create_dir(d.join("first")).unwrap();
+    assert_eq!(s.execute("file.discardRecovery", json!({"all": true})).unwrap()["discarded"], 3);
+    assert!(recovery_ids(&mut s).is_empty());
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn discard_failure_keeps_only_not_yet_deleted_candidates() {
+    let (mut s, d) = discard_fixture("discard-second-error");
+    block_discard(&d.join("second"));
+    assert!(s.execute("file.discardRecovery", json!({"all": true})).is_err());
+    assert_eq!(recovery_ids(&mut s), ["second", "third"]);
+    assert!(!d.join("first").exists());
+    assert!(d.join("third/snapshot.fcproj").exists());
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn discard_selected_failure_keeps_unselected_candidates() {
+    let (mut s, d) = discard_fixture("discard-selected-error");
+    block_discard(&d.join("second"));
+    assert!(s.execute("file.discardRecovery", json!({"id": "second"})).is_err());
+    assert_eq!(recovery_ids(&mut s), ["first", "second", "third"]);
+    assert!(d.join("first/snapshot.fcproj").exists());
+    assert!(d.join("third/snapshot.fcproj").exists());
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn discard_default_failure_does_not_select_another_candidate() {
+    let (mut s, d) = discard_fixture("discard-default-error");
+    block_discard(&d.join("first"));
+    let error = s.execute("file.discardRecovery", json!({})).unwrap_err().to_string();
+    assert!(error.contains("first"), "{error}");
+    assert_eq!(recovery_ids(&mut s), ["first", "second", "third"]);
+    assert!(d.join("second/snapshot.fcproj").exists());
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn discard_selection_and_unknown_id_preserve_other_candidates() {
+    let (mut s, d) = discard_fixture("discard-selection");
+    assert!(s.execute("file.discardRecovery", json!({"id": "unknown"})).is_err());
+    assert_eq!(recovery_ids(&mut s), ["first", "second", "third"]);
+    assert_eq!(s.execute("file.discardRecovery", json!({"id": "second"})).unwrap()["discarded"], 1);
+    assert_eq!(recovery_ids(&mut s), ["first", "third"]);
+    assert!(!d.join("second").exists());
+    assert_eq!(s.execute("file.discardRecovery", json!({})).unwrap()["discarded"], 1);
+    assert_eq!(recovery_ids(&mut s), ["third"]);
+    assert!(!d.join("first").exists());
+    assert!(d.join("third/snapshot.fcproj").exists());
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 #[test]
 fn preferences_get_set_and_persist() {
     let d = temp_dir("prefs");
@@ -133,6 +229,110 @@ fn quitting_with_unsaved_changes_keeps_them_for_next_launch() {
     assert!(c.recovery_candidates().is_empty(), "discarded for good");
     c.shutdown();
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A disabled or unwritable replacement journal must never consume the original recovery copy.
+fn recovery_preserves_original(tag: &str, block: Option<&str>, journal_enabled: bool) {
+    let d = temp_dir(tag);
+    let old_dir = autosave::recovery_root(&d).join("1-1");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let project = (*demo().project).clone();
+    let bytes = filmcraft_format::encode(&project, false);
+    let original = old_dir.join("snapshot.fcproj");
+    std::fs::write(&original, &bytes).unwrap();
+
+    let mut s = Session::default();
+    let mut cfg = autosave::AutosaveConfig::new(&d);
+    cfg.journal_debounce = std::time::Duration::from_secs(60);
+    s.start_autosave(cfg).unwrap();
+    s.execute("prefs.set", json!({"key": "autoSave.recoveryJournal", "value": journal_enabled})).unwrap();
+    if let Some(name) = block {
+        // A directory where the atomic write needs a file reliably fails on Windows and Unix.
+        std::fs::create_dir(s.persistence.as_ref().unwrap().session_dir.join(name)).unwrap();
+    }
+    let result = s.execute("file.recover", json!({"id": "1-1"}));
+    assert!(original.is_file(), "failed replacement must preserve the original snapshot");
+    assert_eq!(std::fs::read(&original).unwrap(), bytes);
+    assert_eq!(s.recovery_candidates().len(), 1, "the original must remain discoverable");
+    assert!(s.persistence.as_ref().unwrap().is_running(), "ordinary journal errors must not mark the worker stopped");
+    assert!(result.is_err(), "lack of a confirmed replacement must be reported");
+    assert_eq!(*s.project, project, "the recovered project remains open for Save As");
+    assert!(s.is_dirty());
+    s.shutdown();
+    let found = autosave::scan_candidates(&d, None);
+    assert!(found.iter().any(|c| c.id == "1-1"), "another launch can still recover the original");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn recovery_keeps_original_when_snapshot_write_fails() {
+    recovery_preserves_original("recover-snapshot-fails", Some("snapshot.fcproj"), true);
+}
+
+#[test]
+fn recovery_keeps_original_when_metadata_write_fails() {
+    recovery_preserves_original("recover-meta-fails", Some("session.json"), true);
+}
+
+#[test]
+fn recovery_keeps_original_when_journal_is_disabled() {
+    recovery_preserves_original("recover-journal-disabled", None, false);
+}
+
+#[test]
+fn recovery_can_retry_after_a_failed_journal_write() {
+    let d = temp_dir("recover-retry");
+    let old_dir = autosave::recovery_root(&d).join("1-1");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let project = (*demo().project).clone();
+    std::fs::write(old_dir.join("snapshot.fcproj"), filmcraft_format::encode(&project, false)).unwrap();
+    let mut s = Session::default();
+    let mut cfg = autosave::AutosaveConfig::new(&d);
+    cfg.journal_debounce = std::time::Duration::from_secs(60);
+    s.start_autosave(cfg).unwrap();
+    let obstruction = s.persistence.as_ref().unwrap().session_dir.join("snapshot.fcproj");
+    std::fs::create_dir(&obstruction).unwrap();
+    assert!(s.execute("file.recover", json!({"id": "1-1"})).is_err());
+    assert!(old_dir.join("snapshot.fcproj").is_file());
+    std::fs::remove_dir(&obstruction).unwrap();
+    s.execute("file.recover", json!({"id": "1-1"})).unwrap();
+    assert!(!old_dir.exists());
+    assert!(s.recovery_candidates().is_empty());
+    let replacement = std::fs::read(&obstruction).unwrap();
+    assert_eq!(filmcraft_format::decode(&replacement).unwrap().project, project);
+    assert_eq!(journaled(&mut s), s.revision);
+    s.shutdown();
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn recovery_cleanup_failure_reports_open_project_and_safe_retry() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let d = temp_dir("recover-cleanup-failure");
+    let old_dir = autosave::recovery_root(&d).join("1-1");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let project = filmcraft_project::Project::default();
+    let original = old_dir.join("snapshot.fcproj");
+    std::fs::write(&original, filmcraft_format::encode(&project, false)).unwrap();
+    // Permit the loader's read while denying deletion of this old snapshot.
+    let held = std::fs::OpenOptions::new().read(true).share_mode(3).open(&original).unwrap();
+    let mut s = Session::default();
+    start(&mut s, &d);
+    let error = s.execute("file.recover", json!({"id": "1-1"})).unwrap_err().to_string();
+    assert_eq!(*s.project, project, "recovery already installed the project");
+    assert!(s.is_dirty());
+    assert_eq!(recovery_ids(&mut s), ["1-1"], "failed cleanup must keep the candidate listed");
+    let replacement = &s.persistence.as_ref().unwrap().session_dir;
+    assert!(replacement.join("snapshot.fcproj").is_file());
+    assert!(replacement.join("session.json").is_file());
+    assert!(error.contains("Recovered project is open") && error.contains("new recovery copy is confirmed"), "{error}");
+    assert!(error.contains("candidate remains listed") && error.contains("Save As"), "{error}");
+    assert!(error.contains("if the original recovery copy remains intact") && error.contains("unsaved edits"), "{error}");
+    drop(held);
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
 }
 
 #[test]
