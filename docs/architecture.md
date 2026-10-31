@@ -338,7 +338,7 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
 - **Frame scheduling.** `crates/ui-egui/src/frames.rs` runs a small pool of worker threads with
   prioritised jobs: the frame on screen first, then playback prefetch, then thumbnails. The UI never
   decodes. It shows the exact frame when it is ready and holds the nearest cached frame meanwhile.
-  Play waits for the first frames (`PREROLL_FRAMES`, at most 0.5 s) before starting the clock.
+  Play waits for the first frames (`PREROLL_FRAMES`, at most `PREROLL_TIMEOUT_S` = 0.1 s) before starting the clock.
   Every refresh, `schedule_playback` asks for the next frames and drops (or cancels, through
   `filmcraft_media::cancel`) jobs for frames the playhead has passed; a new on-screen frame
   replaces the one asked for before (scrubbing); Stop cancels the prefetch. When frames cost more

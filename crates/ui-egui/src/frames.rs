@@ -433,13 +433,16 @@ pub fn prefetch_depth(speed: f64) -> i64 {
 
 /// Playback starts its clock once this many frames from the playhead are ready, or after
 /// [`PREROLL_TIMEOUT_S`]: otherwise the first frames after Play are due before any decoder had a
-/// chance to produce them (a seek decodes from the previous keyframe).
+/// chance to produce them (a seek decodes from the previous keyframe). Frames that are not ready
+/// when the clock starts are dropped to keep to it.
 pub const PREROLL_FRAMES: i64 = 6;
 
 /// Seconds before a scrubbed-to frame whose frames a seek still decodes in full (see
 /// [`FrameServer::request`]); earlier non-reference pictures are skipped on the way.
 pub const SCRUB_KEEP_S: f64 = 2.0;
-pub const PREROLL_TIMEOUT_S: f64 = 0.5;
+/// How long Play waits for those frames before it starts the clock and the sound anyway (s).
+/// Waiting longer made Play feel like it lagged the key press (#3600).
+pub const PREROLL_TIMEOUT_S: f64 = 0.1;
 
 /// Which frames playback asks for, given the per-frame render cost (s), the displayed frame rate
 /// and the worker count: `(lead, stride)`. While the workers keep up, every frame from the
