@@ -50,7 +50,7 @@ fn nominal_rate(timescale: u32, samples: &[Sample]) -> Option<FrameRate> {
         durs.sort_unstable();
     }
     let &median = durs.get(durs.len() / 2)?;
-    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) * 4 <= median).map(|&d| f64::from(d)).collect();
+    let near: Vec<f64> = durs.iter().filter(|&&d| u64::from(d.abs_diff(median)) * 4 <= u64::from(median)).map(|&d| f64::from(d)).collect();
     let mean = near.iter().sum::<f64>() / near.len().max(1) as f64;
     if mean <= 0.0 {
         return None;

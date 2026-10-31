@@ -479,6 +479,14 @@ fn frame_rate_of_pictures_just_off_their_grid() {
     assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
 }
 
+/// A picture far after the others (a gap of about 2^31 units) is left out of the mean rather than
+/// overflowing the comparison with the median (a panic in a checked build).
+#[test]
+fn frame_rate_ignores_a_gap_of_2_to_the_31() {
+    let src = timed_prores("a.mov", &(0..24).map(|k| (1500, if k == 23 { 2_000_000_000 } else { 0 })).collect::<Vec<_>>());
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
+}
+
 /// 60 fps pictures that shift 10 units once, halfway: one picture 1510 units after the one before.
 #[test]
 fn frame_rate_of_pictures_shifted_once() {
