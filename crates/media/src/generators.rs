@@ -571,7 +571,7 @@ mod tests {
         assert_eq!((a.width, a.height), (480, 270));
         let b =
             render(&Generator::Demo(DemoScene::OceanSunset), 480, 270, FrameRate::FPS_23_976.tick_of(23).seconds() as f32, 23, FrameRate::FPS_23_976).unwrap();
-        assert_eq!(a.to_rgba8(), b);
+        assert_eq!(a.to_rgba8().unwrap(), b);
     }
 
     #[test]

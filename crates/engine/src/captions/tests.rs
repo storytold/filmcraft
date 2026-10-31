@@ -82,8 +82,9 @@ fn captions_import_edit_export_and_burn_in() {
         s.playhead(),
         filmcraft_render::RenderOptions { scale: 0.25, captions: true, ..Default::default() },
         &s.media.provider(s.project.clone(), s.services.clone()),
-    );
-    let cpu = filmcraft_render::plan::execute_cpu(&plan);
+    )
+    .unwrap();
+    let cpu = filmcraft_render::plan::execute_cpu(&plan).unwrap();
     let pd = cpu.px.iter().zip(&with.px).filter(|(a, b)| (*a - *b).abs() > 0.02).count();
     assert!(pd < cpu.px.len() / 200, "the GPU plan matches the CPU render ({pd})");
 

@@ -382,8 +382,7 @@ pub struct GpuState {
     pub size: (u32, u32),
     /// Composite time of the last frame (ms).
     pub last_ms: f32,
-    /// Set by the device's uncaptured-error handler: the GPU path failed (validation, lost
-    /// device, out of memory). The app then drops it and composites on the CPU.
+    /// Set by device error/loss callbacks; preview drops the compositor and uses CPU rendering.
     pub broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Largest texture side the device accepts.
     pub max_texture: u32,

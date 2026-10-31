@@ -611,7 +611,7 @@ impl MediaSource for ProxySource {
             return Ok(f);
         }
         // different aspect: resample (nearest) to the original's aspect at the proxy's width
-        let src = f.to_rgba8();
+        let src = f.to_rgba8().map_err(MediaError::FrameAccess)?;
         let (w, h) = (f.width as usize, want_h.max(1) as usize);
         let mut out = vec![0u8; w * h * 4];
         for y in 0..h {
@@ -745,12 +745,12 @@ mod tests {
         pool.insert_file(item, "/media/cam/a.mov", Arc::new(PartlyDecodable(info)));
         let src = pool.cached(item).unwrap();
         let at = |t| src.video_frame(FrameRequest { time: filmcraft_time::Tick(t), scale: 1.0 });
-        assert_eq!(at(0).unwrap().to_rgba8(), vec![7; 16]);
+        assert_eq!(at(0).unwrap().to_rgba8().unwrap(), vec![7; 16]);
         assert!(matches!(at(1), Err(MediaError::Decode(_))));
         assert!(pool.offline_status(item).is_none(), "nothing unsupported yet");
         let f = at(2).unwrap();
         assert_eq!((f.width, f.height), (16, 8));
-        assert_eq!(f.to_rgba8(), filmcraft_render::offline::slate_rgba8(16, 8, "a.mov", OfflineReason::Unreadable));
+        assert_eq!(f.to_rgba8().unwrap(), filmcraft_render::offline::slate_rgba8(16, 8, "a.mov", OfflineReason::Unreadable));
         let st = pool.offline_status(item).unwrap();
         assert_eq!((st.reason, st.path.as_str(), st.error.as_str()), (OfflineReason::Unreadable, "/media/cam/a.mov", "H.264: field pictures"));
         assert_eq!(src.audio(0, 4, 48_000).unwrap().channels.len(), 3);
@@ -767,6 +767,7 @@ mod tests {
     const LOADING: u8 = 3;
     const CANCELLED: u8 = 4;
     const NO_VIDEO: u8 = 5;
+    const FRAME_ACCESS: u8 = 6;
     impl Flaky {
         fn set(&self, mode: u8) {
             self.1.store(mode, Ordering::Relaxed);
@@ -787,6 +788,7 @@ mod tests {
                     MediaError::Decode("still decoding".into())
                 }
                 CANCELLED => MediaError::Cancelled,
+                FRAME_ACCESS => filmcraft_codecs::CodecError::FrameAccess("GPU readback failed".into()).into(),
                 _ => MediaError::NoStream("video"),
             })
         }
@@ -807,7 +809,7 @@ mod tests {
     }
 
     fn is_slate(r: &filmcraft_media::Result<Arc<VideoFrame>>, name: &str) -> bool {
-        r.as_ref().is_ok_and(|f| f.to_rgba8() == filmcraft_render::offline::slate_rgba8(16, 8, name, OfflineReason::Unreadable))
+        r.as_ref().is_ok_and(|f| f.to_rgba8().unwrap() == filmcraft_render::offline::slate_rgba8(16, 8, name, OfflineReason::Unreadable))
     }
 
     /// #626 follow-up to #762: a damaged file (frames failing again and again) shows the
@@ -826,7 +828,7 @@ mod tests {
             assert!(is_slate(&frame(&mon), &name));
             // recovery clears it, and one failure after that is transient again
             src.set(OK);
-            assert_eq!(frame(&mon).unwrap().to_rgba8(), vec![7; 16]);
+            assert_eq!(frame(&mon).unwrap().to_rgba8().unwrap(), vec![7; 16]);
             src.set(DAMAGED);
             assert!(frame(&mon).is_err());
             src.set(OK);
@@ -841,7 +843,20 @@ mod tests {
         }
     }
 
-    /// Pictures still on their way (the web build's pending reads) never count as damage.
+    /// GPU access failures stay terminal through codec -> media -> monitor.
+    #[test]
+    fn frame_access_errors_never_show_or_count_toward_the_damaged_slate() {
+        let (pool, item, src) = flaky();
+        let mon = pool.monitor_source(item, src.clone());
+        src.set(FRAME_ACCESS);
+        for _ in 0..DAMAGED_AFTER * 2 {
+            assert!(matches!(frame(&mon), Err(MediaError::FrameAccess(why)) if why == "GPU readback failed"));
+        }
+        src.set(DAMAGED);
+        assert!(matches!(frame(&mon), Err(MediaError::Decode(_))));
+    }
+
+    /// Pending reads do not count as media damage.
     #[test]
     fn still_decoding_frames_never_show_the_slate() {
         let (pool, item, src) = flaky();
@@ -897,7 +912,7 @@ mod tests {
         let item = ItemId(r["items"][0].as_u64().unwrap());
         let src = s.media.source_for(&s.project, item, &*s.services).unwrap();
         let f = src.video_frame(FrameRequest { time: filmcraft_time::Tick::ZERO, scale: 1.0 }).unwrap();
-        assert_eq!(f.to_rgba8(), filmcraft_render::offline::slate_rgba8(64, 32, "h264_444_64x32.mp4", OfflineReason::Unreadable));
+        assert_eq!(f.to_rgba8().unwrap(), filmcraft_render::offline::slate_rgba8(64, 32, "h264_444_64x32.mp4", OfflineReason::Unreadable));
         let st = s.media.offline_status(item).unwrap();
         assert_eq!(st.reason, OfflineReason::Unreadable);
         assert!(st.error.contains("H.264") && st.error.contains("chroma_format_idc 3"), "{}", st.error);

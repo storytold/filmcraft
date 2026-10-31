@@ -15,6 +15,281 @@ use super::*;
 use crate::video::DecodedFrame;
 use std::collections::VecDeque;
 
+#[derive(Debug)]
+struct AccountedSurface;
+
+impl filmcraft_frame::GpuSurface for AccountedSurface {
+    fn size(&self) -> (u32, u32) {
+        (2, 2)
+    }
+    fn byte_len(&self) -> usize {
+        2 * 2 * 4
+    }
+    fn id(&self) -> u64 {
+        1
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn download(&self) -> Result<filmcraft_frame::PixelData, String> {
+        Ok(filmcraft_frame::PixelData::RgbaF32(Arc::new(vec![0.0; 2 * 2 * 4])))
+    }
+}
+
+#[test]
+fn materialization_updates_local_and_shared_charges_without_cache_reentry() {
+    use filmcraft_frame::{Chroma, GpuPixels, PixelData};
+    let gpu_bytes = 2 * 2 * 4;
+    let cpu_bytes = 2 * 2 * 4 * size_of::<f32>();
+    let pool = Arc::new(Pool::new(usize::MAX, Duration::ZERO, FRAME_BUDGET));
+    let cache = GopCache::in_pool(None, pool.clone());
+    let mut state = cache.shared.state.lock().unwrap();
+    let frame = VideoFrame { data: PixelData::Gpu(GpuPixels::new(Arc::new(AccountedSurface), Chroma::C420, 8)), ..VideoFrame::rgba8(2, 2, vec![0; gpu_bytes]) };
+    cache.store_finished(&mut state, 0, frame, false);
+    let retained = state.cached(0, false).unwrap().clone();
+    assert_eq!((state.bytes.bytes(), pool.bytes.bytes()), (gpu_bytes, gpu_bytes));
+    retained.cpu().unwrap(); // Completion runs while this cache lock is held.
+    assert_eq!((state.bytes.bytes(), pool.bytes.bytes()), (gpu_bytes + cpu_bytes, gpu_bytes + cpu_bytes));
+    cache.store_finished(&mut state, 0, VideoFrame::rgba8(2, 2, vec![0; gpu_bytes]), false);
+    assert_eq!((state.bytes.bytes(), pool.bytes.bytes()), (gpu_bytes, gpu_bytes));
+    state.release_frames(|| true);
+    assert_eq!((state.bytes.bytes(), pool.bytes.bytes()), (0, 0));
+    assert!(retained.cpu().is_ok(), "cache release must preserve externally retained pixels");
+}
+
+#[derive(Debug)]
+struct UnreadableSurface;
+
+#[test]
+fn late_payload_eviction_and_shared_drop_release_local_and_pool_charges() {
+    use filmcraft_frame::{Chroma, GpuPixels, PixelData};
+    let gpu_bytes = 2 * 2 * 4;
+    let cpu_bytes = 2 * 2 * 4 * size_of::<f32>();
+    let pool = Arc::new(Pool::new(usize::MAX, Duration::ZERO, gpu_bytes * 2));
+    let first = GopCache::in_pool(None, pool.clone());
+    let second = GopCache::in_pool(None, pool.clone());
+    let frame = VideoFrame { data: PixelData::Gpu(GpuPixels::new(Arc::new(AccountedSurface), Chroma::C420, 8)), ..VideoFrame::rgba8(2, 2, vec![0; gpu_bytes]) };
+    let (local, retained) = {
+        let mut state = first.shared.state.lock().unwrap();
+        first.store_finished(&mut state, 0, frame, false);
+        (state.bytes.clone(), state.cached(0, false).unwrap().clone())
+    };
+    {
+        let mut state = second.shared.state.lock().unwrap();
+        second.store_finished(&mut state, 0, VideoFrame::rgba8(2, 2, vec![0; gpu_bytes]), false);
+    }
+    assert_eq!(pool.bytes.bytes(), gpu_bytes * 2);
+    retained.cpu().unwrap();
+    assert_eq!((local.bytes(), pool.bytes.bytes()), (gpu_bytes + cpu_bytes, gpu_bytes * 2 + cpu_bytes));
+    // Completion updates totals; the next explicit pool trim evicts the idle first cache.
+    pool.trim_frames(&second.shared);
+    assert_eq!((local.bytes(), pool.bytes.bytes()), (0, gpu_bytes));
+    assert!(first.shared.state.lock().unwrap().frames.is_empty());
+    assert!(retained.cpu().is_ok());
+    {
+        let mut state = first.shared.state.lock().unwrap();
+        first.store_finished(&mut state, 0, (*retained).clone(), false);
+    }
+    assert_eq!((local.bytes(), pool.bytes.bytes()), (gpu_bytes + cpu_bytes, gpu_bytes + cpu_bytes));
+    let shared = Arc::downgrade(&first.shared);
+    drop(first);
+    assert!(shared.upgrade().is_none());
+    assert_eq!((local.bytes(), pool.bytes.bytes()), (0, 0));
+    assert!(retained.cpu().is_ok());
+}
+
+impl filmcraft_frame::GpuSurface for UnreadableSurface {
+    fn size(&self) -> (u32, u32) {
+        (2, 2)
+    }
+    fn byte_len(&self) -> usize {
+        0
+    }
+    fn download(&self) -> Result<filmcraft_frame::PixelData, String> {
+        Err("GPU readback failed".into())
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn id(&self) -> u64 {
+        0
+    }
+}
+
+#[test]
+fn failed_frame_access_is_typed_and_never_cached() {
+    use filmcraft_frame::{Chroma, GpuPixels, PixelData};
+    let surface = Arc::new(UnreadableSurface);
+    let (width, height) = filmcraft_frame::GpuSurface::size(&*surface);
+    let frame = VideoFrame {
+        width,
+        height,
+        data: PixelData::Gpu(GpuPixels::new(surface, Chroma::C420, u8::BITS)),
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: filmcraft_time::Tick::ZERO,
+    };
+    let crop = Region { x: 0, y: 0, w: usize::try_from(width / 2).unwrap(), h: usize::try_from(height).unwrap() };
+    // Partial crop and quarter-turn each require unavailable CPU pixels.
+    for cache in [GopCache::new(None).with_crop(Some(crop)), GopCache::new(None).with_rotation(1)] {
+        let mut state = cache.shared.state.lock().unwrap();
+        let previous_max = state.out_max;
+        let output = vec![DecodedFrame { pts: 0, frame: frame.clone(), draft: false }];
+        let error = cache.store_output(&mut state, output).unwrap_err();
+        assert!(matches!(filmcraft_media::MediaError::from(error), filmcraft_media::MediaError::FrameAccess(why) if why == "GPU readback failed"));
+        assert!(state.frames.is_empty());
+        assert_eq!(state.bytes.bytes(), 0);
+        assert_eq!(state.out_max, previous_max);
+    }
+}
+
+struct FailingOutputSamples {
+    samples: Samples,
+    failing_pts: i64,
+    unreadable: Arc<std::sync::atomic::AtomicBool>,
+    at_flush: bool,
+    fail_drain: bool,
+}
+
+struct FailingOutputDecoder {
+    inner: Box<dyn VideoDecoder>,
+    failing_pts: i64,
+    unreadable: Arc<std::sync::atomic::AtomicBool>,
+    at_flush: bool,
+    fail_drain: bool,
+    held: Vec<DecodedFrame>,
+}
+
+impl FailingOutputDecoder {
+    fn picture(&self, mut d: DecodedFrame) -> DecodedFrame {
+        use filmcraft_frame::{Chroma, GpuPixels, GpuSurface, PixelData};
+        let surface = Arc::new(UnreadableSurface);
+        let (w, h) = surface.size();
+        let index = (d.pts / 1000) as u8;
+        d.frame = VideoFrame::rgba8(w, h, [index, 0, 0, 255].repeat((w * h) as usize));
+        d.frame.pts = filmcraft_time::Tick(d.pts);
+        if d.pts == self.failing_pts && self.unreadable.load(Ordering::Relaxed) {
+            d.frame.data = PixelData::Gpu(GpuPixels::new(surface, Chroma::C420, u8::BITS));
+        }
+        d
+    }
+}
+
+impl VideoDecoder for FailingOutputDecoder {
+    fn decode(&mut self, data: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+        let decoded = self.inner.decode(data, pts)?;
+        let mut out = Vec::new();
+        for d in decoded {
+            if self.at_flush && d.pts == self.failing_pts {
+                self.held.push(d);
+            } else {
+                out.push(self.picture(d));
+            }
+        }
+        Ok(out)
+    }
+    fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+        let mut out = self.inner.flush()?;
+        out.append(&mut self.held);
+        if self.fail_drain && self.unreadable.load(Ordering::Relaxed) {
+            return Err(CodecError::Decode("injected drain failure".into()));
+        }
+        Ok(out.into_iter().map(|d| self.picture(d)).collect())
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+        self.held.clear();
+    }
+    fn name(&self) -> &str {
+        "frame-access failure"
+    }
+}
+
+impl VideoSamples for FailingOutputSamples {
+    fn count(&self) -> usize {
+        self.samples.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.samples.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.samples.sync_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.samples.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.samples.read(i)
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        Ok(Box::new(FailingOutputDecoder {
+            inner: self.samples.make_decoder()?,
+            failing_pts: self.failing_pts,
+            unreadable: self.unreadable.clone(),
+            at_flush: self.at_flush,
+            fail_drain: self.fail_drain,
+            held: Vec::new(),
+        }))
+    }
+}
+
+#[test]
+fn a_repeated_frame_access_failure_never_returns_an_older_picture() {
+    // Predecessor, middle picture and end picture: fail during decode or the final drain.
+    const SAMPLE_COUNT: usize = 3;
+    for at_flush in [false, true] {
+        for rotate in [false, true] {
+            let samples = samples(SAMPLE_COUNT, SAMPLE_COUNT, 0, false);
+            let failing_index = if at_flush { SAMPLE_COUNT - 1 } else { SAMPLE_COUNT / 2 };
+            let failing_pts = samples.pts(failing_index);
+            let s = FailingOutputSamples { samples, failing_pts, unreadable: Arc::new(std::sync::atomic::AtomicBool::new(true)), at_flush, fail_drain: false };
+            let cache = if rotate {
+                GopCache::new(None).with_rotation(1)
+            } else {
+                let (w, h) = filmcraft_frame::GpuSurface::size(&UnreadableSurface);
+                GopCache::new(None).with_crop(Some(Region { x: 0, y: 0, w: (w / 2) as usize, h: h as usize }))
+            };
+            assert_eq!(index_of(&cache.frame(&s, s.pts(0)).unwrap()), 0);
+            let resets = s.samples.resets.load(Ordering::Relaxed);
+            for attempt in 0..2 {
+                let result = cache.frame(&s, failing_pts);
+                assert!(
+                    matches!(&result, Err(CodecError::FrameAccess(why)) if why == "GPU readback failed"),
+                    "flush={at_flush}, rotate={rotate}, attempt={attempt}: {result:?}"
+                );
+            }
+            assert!(s.samples.resets.load(Ordering::Relaxed) > resets, "retry must replay the consumed picture");
+            s.unreadable.store(false, Ordering::Relaxed);
+            let recovered = cache.frame(&s, failing_pts).unwrap();
+            assert_eq!(index_of(&recovered), failing_index);
+            assert_eq!(recovered.pts, filmcraft_time::Tick(failing_pts));
+            assert_eq!(index_of(&cache.frame(&s, s.pts(SAMPLE_COUNT - 1)).unwrap()), SAMPLE_COUNT - 1);
+            assert_eq!(index_of(&cache.frame(&s, s.pts(0)).unwrap()), 0);
+        }
+    }
+}
+
+#[test]
+fn a_repeated_flush_failure_never_returns_an_older_picture() {
+    // Cached predecessor + middle picture + final picture held until drain.
+    const SAMPLE_COUNT: usize = 3;
+    let samples = samples(SAMPLE_COUNT, SAMPLE_COUNT, 0, false);
+    let failing_pts = samples.pts(SAMPLE_COUNT - 1);
+    let s = FailingOutputSamples { samples, failing_pts, unreadable: Arc::new(std::sync::atomic::AtomicBool::new(true)), at_flush: true, fail_drain: true };
+    let cache = GopCache::new(None);
+    assert_eq!(index_of(&cache.frame(&s, s.pts(0)).unwrap()), 0);
+    for _ in 0..2 {
+        assert!(matches!(cache.frame(&s, failing_pts), Err(CodecError::Decode(why)) if why == "injected drain failure"));
+    }
+    {
+        let _nested = DecodingGuard::enter(&cache as *const GopCache as usize);
+        assert!(matches!(cache.frame(&s, failing_pts), Err(CodecError::Decode(why)) if why == "injected drain failure"));
+    }
+    s.unreadable.store(false, Ordering::Relaxed);
+    assert_eq!(index_of(&cache.frame(&s, failing_pts).unwrap()), SAMPLE_COUNT - 1);
+    assert_eq!(index_of(&cache.frame(&s, s.pts(0)).unwrap()), 0);
+}
+
 /// `n` samples, a sync sample every `gop`, pts = 1000 · index (no reordering).
 struct Samples {
     n: usize,
@@ -55,8 +330,8 @@ impl VideoDecoder for Dec {
         }
         Ok(out)
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.held.drain(..).map(picture).collect()
+    fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+        Ok(self.held.drain(..).map(picture).collect())
     }
     fn reset(&mut self) {
         self.resets.fetch_add(1, Ordering::Relaxed);
@@ -149,7 +424,7 @@ impl VideoDecoder for ParDec {
         std::hint::black_box(rows);
         self.0.decode(sample, pts)
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
+    fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
         self.0.flush()
     }
     fn reset(&mut self) {
@@ -479,7 +754,7 @@ fn a_burst_of_single_requests_does_not_keep_every_clips_frames() {
         assert_eq!(index_of(&c[k].frame(&s[k], 10_000).expect("frame")), 10);
         std::thread::sleep(Duration::from_millis(5));
     }
-    let held = pool.bytes.load(Ordering::Relaxed);
+    let held = pool.bytes.bytes();
     assert!(held <= 40 + 11 * 4, "{held} bytes held after a burst over {n} clips");
 }
 
@@ -501,7 +776,7 @@ fn intra_caches_give_up_their_spare_decoders_too() {
 fn idle_caches_give_up_their_frames_beyond_the_shared_budget() {
     // 1×1 RGBA pictures: 4 bytes each, a shared budget of ten of them
     let pool = Arc::new(Pool::new(usize::MAX, Duration::ZERO, 40));
-    let held = || pool.bytes.load(Ordering::Relaxed);
+    let held = || pool.bytes.bytes();
     let (a, b) = (samples(300, 250, 0, false), samples(300, 250, 0, false));
     let (ca, cb) = (GopCache::in_pool(None, pool.clone()), GopCache::in_pool(None, pool.clone()));
     // the only cache keeps what its own budget allows
@@ -514,7 +789,7 @@ fn idle_caches_give_up_their_frames_beyond_the_shared_budget() {
     assert!((0..=5).all(|i| index_of(&cb.frame(&b, i * 1000).expect("cached")) as i64 == i));
     assert_eq!(b.decodes.load(Ordering::Relaxed), decodes, "the clip in use lost nothing");
     let st = ca.shared.state.lock().unwrap();
-    assert_eq!((st.frames.len(), st.bytes), (4, 16));
+    assert_eq!((st.frames.len(), st.bytes.bytes()), (4, 16));
     assert_eq!(st.frames.keys().next(), Some(&7_000));
     drop(st);
     // an evicted frame decodes again
@@ -531,7 +806,7 @@ fn caches_in_use_keep_their_frames_whatever_the_shared_budget() {
     let (ca, cb) = (GopCache::in_pool(None, pool.clone()), GopCache::in_pool(None, pool.clone()));
     assert_eq!(index_of(&ca.frame(&a, 10_000).expect("frame")), 10);
     assert_eq!(index_of(&cb.frame(&b, 10_000).expect("frame")), 10);
-    assert_eq!(pool.bytes.load(Ordering::Relaxed), 88);
+    assert_eq!(pool.bytes.bytes(), 88);
     let decodes = a.decodes.load(Ordering::Relaxed);
     assert_eq!(index_of(&ca.frame(&a, 0).expect("cached")), 0);
     assert_eq!(a.decodes.load(Ordering::Relaxed), decodes);
@@ -548,8 +823,8 @@ impl VideoDecoder for Big {
         px.resize((BIG.0 * BIG.1 * 4) as usize, (pts / 1000) as u8);
         Ok(vec![DecodedFrame { pts, frame: VideoFrame::rgba8(BIG.0, BIG.1, px), draft: false }])
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -644,8 +919,8 @@ impl VideoDecoder for OpenGopDec {
         let start = *self.run_start.get_or_insert(pts);
         Ok(if pts < start { Vec::new() } else { vec![picture((pts, false))] })
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        Vec::new()
+    fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+        Ok(Vec::new())
     }
     fn reset(&mut self) {
         self.resets.fetch_add(1, Ordering::Relaxed);
@@ -722,8 +997,8 @@ impl VideoDecoder for Burst {
         }
         Ok(self.held.drain(..).map(|p| picture((p, false))).collect())
     }
-    fn flush(&mut self) -> Vec<DecodedFrame> {
-        self.held.drain(..).map(|p| picture((p, false))).collect()
+    fn flush(&mut self) -> crate::Result<Vec<DecodedFrame>> {
+        Ok(self.held.drain(..).map(|p| picture((p, false))).collect())
     }
     fn reset(&mut self) {
         self.resets.fetch_add(1, Ordering::Relaxed);
@@ -796,29 +1071,29 @@ fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
     for k in 0..3 {
         assert_eq!(index_of(&c[k].frame(&s[k], 10_000).expect("frame")), 10);
     }
-    assert!(pool.bytes.load(Ordering::Relaxed) > 0);
+    assert!(pool.bytes.bytes() > 0);
     assert_eq!(pool.decoders.load(Ordering::Relaxed), 3);
 
     // a cache another thread holds (it is decoding) keeps its frames and decoder
     let busy = c[2].shared.state.lock().unwrap();
-    let held_bytes = busy.bytes;
+    let held_bytes = busy.bytes.bytes();
     pool.release_idle();
-    assert_eq!(busy.bytes, held_bytes);
+    assert_eq!(busy.bytes.bytes(), held_bytes);
     assert!(busy.decoder.is_some() && !busy.frames.is_empty());
     drop(busy);
     for k in 0..2 {
         let st = c[k].shared.state.lock().unwrap();
-        assert!(st.frames.is_empty() && st.drafts.is_empty() && st.bytes == 0 && st.decoder.is_none() && st.spare.is_empty());
+        assert!(st.frames.is_empty() && st.drafts.is_empty() && st.bytes.bytes() == 0 && st.decoder.is_none() && st.spare.is_empty());
     }
-    assert_eq!(pool.bytes.load(Ordering::Relaxed), held_bytes, "only the busy cache still counts");
+    assert_eq!(pool.bytes.bytes(), held_bytes, "only the busy cache still counts");
     assert_eq!(pool.decoders.load(Ordering::Relaxed), 1);
 
     // an emptied cache decodes again from its sync sample, and a second release is harmless
     assert_eq!(index_of(&c[0].frame(&s[0], 20_000).expect("frame")), 20);
-    assert_eq!(pool.bytes.load(Ordering::Relaxed), held_bytes + c[0].shared.state.lock().unwrap().bytes);
+    assert_eq!(pool.bytes.bytes(), held_bytes + c[0].shared.state.lock().unwrap().bytes.bytes());
     // the cache that was in use is idle now: nothing is left, and a second release is harmless
     pool.release_idle();
     pool.release_idle();
-    assert_eq!(pool.bytes.load(Ordering::Relaxed), 0);
+    assert_eq!(pool.bytes.bytes(), 0);
     assert_eq!(pool.decoders.load(Ordering::Relaxed), 0);
 }

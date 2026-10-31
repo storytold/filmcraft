@@ -164,7 +164,7 @@ fn mp4_faststart_preserves_video_and_audio_for_every_output() {
             }
             let src = filmcraft_codecs::open_bytes(&path, bytes.into()).unwrap();
             for frame in [0, 3, 5] {
-                let rgba = src.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(frame))).unwrap().to_rgba8();
+                let rgba = src.video_frame(FrameRequest::full(FrameRate::FPS_24.tick_of(frame))).unwrap().to_rgba8().unwrap();
                 assert!(rgba[0] > 230 && rgba[1] < 30 && rgba[2] < 30, "{mode}.{ext}: frame {frame}");
             }
             let audio = src.audio(0, 12_000, 48_000).unwrap();
@@ -522,7 +522,7 @@ fn gif_palette_quantization_preserves_isolated_transparency_and_dark_pixels() {
     let pipe = pipeline::Pipeline::new(p.clone(), seq, &settings, false).unwrap();
     let expected: Vec<Vec<[u8; 4]>> = (0..2)
         .map(|i| {
-            let rgba = pipe.frame(i, &sources).0;
+            let rgba = pipe.frame(i, &sources).unwrap().0;
             let pixels: Vec<_> = rgba.as_chunks::<4>().0.iter().map(|&[r, g, b, a]| if a < 128 { [0; 4] } else { [r, g, b, 255] }).collect();
             let colors: std::collections::HashSet<_> = pixels.iter().copied().collect();
             assert!(colors.len() >= 257, "frame {i}: only {} post-conversion colors", colors.len());
@@ -921,7 +921,7 @@ fn frame_size_rate_and_scaling() {
     let src = filmcraft_codecs::open_bytes("square.mp4", bytes).unwrap();
     let v = src.info().video.clone().unwrap();
     assert_eq!((v.width, v.height), (256, 256));
-    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8().unwrap();
     let at = |x: usize, y: usize| &f[(y * 256 + x) * 4..(y * 256 + x) * 4 + 3];
     assert!(at(128, 128)[0] > 200, "picture in the middle: {:?}", at(128, 128));
     assert!(at(128, 10)[0] < 40, "letterbox bar on top: {:?}", at(128, 10));
@@ -945,7 +945,7 @@ fn frame_size_rate_and_scaling() {
     export(&p, seq, &s, &m, &Progress::default()).unwrap();
     let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
     let src = filmcraft_codecs::open_bytes("fill.mov", bytes).unwrap();
-    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8().unwrap();
     assert!(f[(5 * 200 + 100) * 4] > 200, "filled to the top edge");
 }
 
@@ -1017,7 +1017,7 @@ fn two_pass_and_cbr_h264() {
         assert_eq!(prog.done.load(Ordering::Relaxed), 24 * passes);
         let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
         let src = filmcraft_codecs::open_bytes("x.mp4", bytes).unwrap();
-        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
+        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8().unwrap();
         assert!((f[2] as i32 - 204).abs() < 12 && (f[1] as i32 - 127).abs() < 12, "{mode:?}: {:?}", &f[..4]);
     }
 }
@@ -1050,7 +1050,7 @@ fn crf_h264() {
         let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
         sizes.push(bytes.len());
         let src = filmcraft_codecs::open_bytes("x.mp4", bytes).unwrap();
-        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
+        let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8().unwrap();
         assert!((f[2] as i32 - 204).abs() < 12 && (f[1] as i32 - 127).abs() < 12, "CRF {crf}: {:?}", &f[..4]);
     }
     assert!(sizes[0] > sizes[1], "CRF 10 {} bytes, CRF 40 {} bytes", sizes[0], sizes[1]);

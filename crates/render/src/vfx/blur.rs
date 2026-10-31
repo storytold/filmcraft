@@ -133,11 +133,18 @@ fn variable_blur(img: &mut Image, max_sigma: f32, amount: impl Fn(usize, usize) 
 
 /// Compound Blur: blur amount per pixel from a blur layer's luminance (another track, or this
 /// layer's own luminance when the Blur Layer is None).
-pub fn compound(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+pub fn compound(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> crate::Result<()> {
     let max = fv(e, "max", cx) * cx.px_scale * 0.5;
     let invert = bv(e, "invert");
     let layer = chv(e, "layer") as usize;
-    let track = if layer > 0 { cx.env.and_then(|env| env.track(layer - 1).map(|t| (t, env.layer_to_output()))) } else { None };
+    let track = if layer > 0 {
+        match cx.env {
+            Some(env) => env.track(layer - 1)?.map(|t| (t, env.layer_to_output())),
+            None => None,
+        }
+    } else {
+        None
+    };
     let stretch = bv(e, "stretch");
     let own = img.clone();
     let (iw, ih) = (img.w as f64, img.h as f64);
@@ -159,6 +166,7 @@ pub fn compound(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         };
         if invert { 1.0 - l } else { l }
     });
+    Ok(())
 }
 
 /// Focus Blur: sharp inside a radial or linear focus area, blurring smoothly outside it.

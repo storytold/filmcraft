@@ -23,14 +23,7 @@ and other OS integration do not go in it.
 
 Containment rules:
 
-1. The crate does not use `lints.workspace = true`. Its own `[lints]` table copies the workspace
-   lints except `unsafe_code = "deny"` (not `forbid`), and adds
-   `clippy::undocumented_unsafe_blocks = "deny"`. Only the FFI modules (`videotoolbox`, `media_foundation::gpu` / `media_foundation::mft`,
-   `nvenc::ffi` / `nvenc::session` / `nvenc::device` on Windows and 64-bit Linux, and `vaapi::va` on Linux) carry `#[allow(unsafe_code)]`; the rest of the crate
-   (the fallback logic in `hybrid`, the decoder logic in `media_foundation`, `annexb`, `biplanar`,
-   the encoder logic in `nvenc`, H.264 and H.265 alike) has no `unsafe`. NVENC's H.265 support
-   added no `unsafe` module: it reuses `nvenc::ffi` and `nvenc::session` (new data declarations and
-   a second codec-configuration member of an existing union).
+1. The crate does not use `lints.workspace = true`. Its own `[lints]` table copies the workspace lints except `unsafe_code = "deny"` (not `forbid`), and adds `clippy::undocumented_unsafe_blocks = "deny"`. Only the FFI modules (`videotoolbox`, `media_foundation::gpu` / `media_foundation::mft` / `media_foundation::interop` ([proposed ADR 0002](0002-zero-copy-decode-interop.md)), `nvenc::ffi` / `nvenc::session` / `nvenc::device` on Windows and 64-bit Linux, and `vaapi::va` on Linux) carry `#[allow(unsafe_code)]`; the rest of the crate (the fallback logic in `hybrid`, the decoder logic in `media_foundation`, `annexb`, `biplanar`, the encoder logic in `nvenc`, H.264 and H.265 alike) has no `unsafe`. NVENC's H.265 support added no `unsafe` module: it reuses `nvenc::ffi` and `nvenc::session` (new data declarations and a second codec-configuration member of an existing union).
 2. Every `unsafe` block has a `// SAFETY:` comment saying why it is sound.
 3. The public API is safe: no `pub unsafe fn`, no raw pointers or FFI types in public signatures;
    failures are `Result`s. The crate keeps the never-crash `deny(clippy::unwrap_used, …)`

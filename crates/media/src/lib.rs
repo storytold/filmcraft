@@ -42,6 +42,9 @@ pub enum MediaError {
     Io(String),
     #[error("decode error: {0}")]
     Decode(String),
+    /// Decoded pixels unavailable; not evidence of damaged media.
+    #[error("frame access error: {0}")]
+    FrameAccess(String),
     #[error("no {0} stream")]
     NoStream(&'static str),
     #[error("media offline: {0}")]

@@ -91,8 +91,7 @@ impl VideoEncoder for NvencEncoder {
             Codec::Hevc => {
                 // `Nvenc::new` built and validated the record, so there is always one for HEVC
                 let mut e = SampleEntry::hevc(self.enc.hevc_config().cloned().unwrap_or_default(), w, h);
-                // HDR: `colr` (BT.2020 + PQ / HLG) and, for PQ, `mdcv` / `clli`, as the software H.264 encoder does
-                // (nclx, whatever the container: readers take it from either). SDR stays as it was, with the VUI only.
+                // nclx for SDR/HDR; PQ also carries mdcv/clli. Readers use these boxes across containers.
                 self.signal.apply_to(&mut e, false);
                 e
             }
