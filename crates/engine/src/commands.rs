@@ -3144,15 +3144,9 @@ fn build() -> Vec<CommandSpec> {
                 .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                 .unwrap_or_default();
             let clips = with_links(s, &[c]);
-            // clamp across all linked partners, then slide them by the common delta
-            s.edit_sequence("Slide", |q, ctx, _| {
-                let unlocked: Vec<ClipId> =
-                    clips.iter().copied().filter(|id| q.find_item(*id).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| !tr.locked))).collect();
-                if unlocked.is_empty() {
-                    return Err(edit::EditError::Locked.into());
-                }
-                Ok(edit::slide_items(q, &unlocked, d, ctx)?)
-            })?;
+            // Probe every linked partner before moving any of them: a locked partner must not be
+            // filtered out, leaving its picture or sound behind while the other member slides.
+            s.edit_sequence("Slide", |q, ctx, _| Ok(edit::slide_items(q, &clips, d, ctx)?))?;
             Ok(Value::Null)
         }),
         cmd!("timeline.rateStretch", "Rate Stretch", [], None, r#"{"clip":id,"edge":"in|out","delta":ticks,"linked":bool?}"#, has_seq, |s, p| {
