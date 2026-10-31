@@ -14,12 +14,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     crate::panels::multicam::show_dialog(app, ctx);
     crate::panels::multicam::show_edit_cameras(app, ctx);
     crate::panels::monitor_view::dialogs(app, ctx);
+    crate::panels::misc::marker_dialog(app, ctx);
     crate::panels::graphics::dialogs(app, ctx);
     crate::panels::workspaces::dialogs(app, ctx);
     crate::panels::voiceover::show(app, ctx);
     crate::panels::remix::show(app, ctx);
     crate::links::show_failed(app, ctx);
     crate::panels::interchange_export::show(app, ctx);
+    crate::panels::caption_export::show(app, ctx);
     crate::panels::frame_export::show(app, ctx);
     crate::panels::project_dialogs::show(app, ctx);
     crate::panels::media_browser::dialogs(app, ctx);
@@ -78,6 +80,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         Dialog::SequenceSettings => {
             if !crate::panels::sequence_settings::show(app, ctx) && app.dialog == Some(d) {
+                app.dialog = None;
+            }
+            return;
+        }
+        Dialog::ClipMismatch => {
+            if !crate::panels::clip_mismatch::show(app, ctx) && app.dialog == Some(d) {
                 app.dialog = None;
             }
             return;

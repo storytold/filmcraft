@@ -441,6 +441,20 @@ pub const PREROLL_FRAMES: i64 = 6;
 pub const SCRUB_KEEP_S: f64 = 2.0;
 pub const PREROLL_TIMEOUT_S: f64 = 0.5;
 
+/// How many revisions behind the project a playing monitor's picture may be while the frame due
+/// is not ready at the current one (#1673). A value dragged during playback makes a revision per
+/// UI pass, so no frame was ever ready at the current revision and the picture froze until the
+/// mouse rested; frames of the last few changes are what the monitor shows meanwhile.
+pub const PLAYING_REVISION_LAG: u64 = 64;
+
+/// The frames [`FrameServer::recent`] looks for, in order: nearest frame first (`key.frame`, then
+/// the ones already played: lower frames, or higher ones when `dir` < 0), newest revision first.
+fn recent_keys(key: FrameKey, dir: i64, max_back: i64, lag: u64) -> impl Iterator<Item = FrameKey> {
+    let back = if dir < 0 { -1 } else { 1 };
+    (0..=max_back.max(0))
+        .flat_map(move |d| (0..=lag.min(key.revision)).map(move |r| FrameKey { frame: key.frame - d * back, revision: key.revision - r, ..key }))
+}
+
 /// Which frames playback asks for, given the per-frame render cost (s), the displayed frame rate
 /// and the worker count: `(lead, stride)`. While the workers keep up, every frame from the
 /// playhead on (`(1, 1)`). When they cannot (CPU effects slower than real time), `lead` is the
@@ -517,6 +531,11 @@ impl FrameServer {
         }
     }
 
+    /// Whether finished jobs wake the UI ([`Self::set_context`] has run).
+    pub fn wakes_ui(&self) -> bool {
+        self.repaint.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
     /// Collect a [`JobRecord`] per finished job (benchmarks); `take_records` drains them.
     pub fn set_profiling(&self, on: bool) {
         self.shared.profiling.store(on, Ordering::Relaxed);
@@ -575,6 +594,24 @@ impl FrameServer {
             let k = FrameKey { frame: key.frame - d, ..key };
             g.get(&k).map(|p| (k, p))
         })
+    }
+
+    /// While playing: the cached frame closest to `key.frame` on the side already played (within
+    /// `max_back` frames; `dir` -1 plays in reverse, so higher frames lie behind) at the newest
+    /// revision from `key.revision` back to `lag` revisions before it, image or plan as
+    /// `key.target` renders (#1673). `None` when there is none.
+    pub fn recent(&self, key: FrameKey, dir: i64, max_back: i64, lag: u64) -> Option<FrameKey> {
+        let keys = recent_keys(key, dir, max_back, lag);
+        match key.target {
+            Target::SequencePlan(_) => {
+                let g = self.shared.plans.lock().unwrap_or_else(|e| e.into_inner());
+                keys.into_iter().find(|k| g.map.contains_key(k))
+            }
+            _ => {
+                let c = self.shared.done.lock().unwrap_or_else(|e| e.into_inner());
+                keys.into_iter().find(|k| c.map.contains_key(k))
+            }
+        }
     }
 
     /// Queue a job unless it is cached, queued or in flight.
@@ -681,7 +718,14 @@ impl FrameServer {
         }
         let (target, rev, cur) = (key.target, key.revision, key.frame);
         let span = (lead + ahead * stride) * step + 26;
-        self.retain_queue(|k| k.target != target || (k.revision == rev && (k.frame - cur) * dir >= 0 && (k.frame - cur).abs() < span));
+        let ahead_of = |k: &FrameKey| (k.frame - cur) * dir >= 0 && (k.frame - cur).abs() < span;
+        // Queued jobs of an older revision are dropped, but one already rendering a frame still
+        // ahead is left to finish (#1673): a value dragged during playback asks for a new
+        // revision on every pass, and cancelling those jobs each time left nothing ever ready.
+        self.retain_jobs(
+            |k| k.target != target || (k.revision == rev && ahead_of(k)),
+            |k| k.target != target || (k.revision.saturating_add(PLAYING_REVISION_LAG) >= rev && k.revision <= rev && ahead_of(k)),
+        );
     }
 
     /// Whether playback can start at `key`: the next [`PREROLL_FRAMES`] frames (up to `last`)
@@ -700,9 +744,14 @@ impl FrameServer {
     /// Jobs already running for such frames are cancelled: a worker blocked behind a decoder
     /// would otherwise go on to decode a frame playback has passed, possibly from its keyframe.
     pub fn retain_queue(&self, keep: impl Fn(&FrameKey) -> bool) {
-        self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| keep(&j.key));
+        self.retain_jobs(&keep, &keep);
+    }
+
+    /// [`Self::retain_queue`] with one test for queued jobs and another for running ones.
+    fn retain_jobs(&self, keep_queued: impl Fn(&FrameKey) -> bool, keep_running: impl Fn(&FrameKey) -> bool) {
+        self.shared.queue.lock().unwrap_or_else(PoisonError::into_inner).retain(|j| keep_queued(&j.key));
         for (k, c, _) in self.shared.in_flight.lock().unwrap_or_else(PoisonError::into_inner).iter() {
-            if !keep(k) {
+            if !keep_running(k) {
                 c.store(true, Ordering::Relaxed);
             }
         }
@@ -1066,7 +1115,8 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
     let opts = filmcraft_render::RenderOptions { scale: job.scale, captions: true, ..Default::default() };
     let img = match job.key.target {
         Target::Sequence(seq) | Target::SequencePlan(seq) | Target::SequenceLive(seq) => {
-            Some(filmcraft_render::render_sequence(&job.project, seq, job.time, opts, &provider))
+            let (w, h, px) = filmcraft_render::render_sequence_rgba8(&job.project, seq, job.time, opts, &provider);
+            return (Rgba { w, h, px }, false);
         }
         Target::Item(item) => filmcraft_render::render_item(&job.project, item, job.time, job.scale, &provider),
         Target::MulticamGrid(item, side, page) => {
@@ -1086,7 +1136,7 @@ fn render_job(job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Services>, pr
 
 #[cfg(test)]
 mod tests {
-    use super::{PlaybackMeter, Target, background_work, playback_plan};
+    use super::{FrameKey, PlaybackMeter, Target, background_work, playback_plan, recent_keys};
     use filmcraft_project::ItemId;
 
     #[test]
@@ -1131,6 +1181,18 @@ mod tests {
         assert!(!draft_playback(false, 0.5, true), "a paused frame is never draft");
         assert!(!draft_playback(true, 0.5, false), "off unless enabled");
         assert!(!filmcraft_engine::autosave::Preferences::default().playback.draft_decode, "off by default");
+    }
+
+    /// #1673: the recent-frame fallback looks at frames already played, newest revision first.
+    #[test]
+    fn recent_frames_lie_on_the_played_side() {
+        let key = FrameKey { target: Target::Sequence(ItemId(1)), frame: 10, size: 1000, revision: 5, draft: false };
+        let fwd: Vec<(i64, u64)> = recent_keys(key, 1, 2, 1).map(|k| (k.frame, k.revision)).collect();
+        assert_eq!(fwd, [(10, 5), (10, 4), (9, 5), (9, 4), (8, 5), (8, 4)]);
+        let rev: Vec<(i64, u64)> = recent_keys(key, -1, 2, 1).map(|k| (k.frame, k.revision)).collect();
+        assert_eq!(rev, [(10, 5), (10, 4), (11, 5), (11, 4), (12, 5), (12, 4)]);
+        // no revision before the first
+        assert_eq!(recent_keys(FrameKey { revision: 0, ..key }, 1, 0, 64).count(), 1);
     }
 
     #[test]
