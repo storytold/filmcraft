@@ -85,21 +85,76 @@ fn round5(v: i16) -> u8 {
     ((v + 16) >> 5).clamp(0, 255) as u8
 }
 
+/// ITU-T H.264 6-tap on eight i16 lanes. A first pass stays in -2550..=10710.
+#[inline(always)]
+fn tap6_i16x8(a: wide::i16x8, b: wide::i16x8, c: wide::i16x8, d: wide::i16x8, e: wide::i16x8, f: wide::i16x8) -> wide::i16x8 {
+    let five = wide::i16x8::splat(5);
+    let twenty = wide::i16x8::splat(20);
+    a - b * five + c * twenty + d * twenty - e * five + f
+}
+
+/// Load eight consecutive samples as `i16x8` (no `unsafe`; `src` must hold at least 8 bytes).
+#[inline(always)]
+fn load8_u8_i16(src: &[u8]) -> wide::i16x8 {
+    wide::i16x8::from([
+        src[0] as i16,
+        src[1] as i16,
+        src[2] as i16,
+        src[3] as i16,
+        src[4] as i16,
+        src[5] as i16,
+        src[6] as i16,
+        src[7] as i16,
+    ])
+}
+
 /// Horizontal 6-tap (unclipped) for `BW` outputs: out[c] uses row[c..c + 6].
+/// Widths of 8 and 16 use `wide::i16x8`; width 4 stays scalar because an 8-lane load would read past the window.
 #[inline(always)]
 fn htap_row<const BW: usize>(row: &[u8], out: &mut [i16; 16]) {
     let row = &row[..BW + 5];
-    for c in 0..BW {
+    let mut c = 0;
+    while c + 8 <= BW {
+        let v = tap6_i16x8(
+            load8_u8_i16(&row[c..]),
+            load8_u8_i16(&row[c + 1..]),
+            load8_u8_i16(&row[c + 2..]),
+            load8_u8_i16(&row[c + 3..]),
+            load8_u8_i16(&row[c + 4..]),
+            load8_u8_i16(&row[c + 5..]),
+        );
+        let lanes: [i16; 8] = v.into();
+        out[c..c + 8].copy_from_slice(&lanes);
+        c += 8;
+    }
+    while c < BW {
         out[c] = tap6_16(row[c], row[c + 1], row[c + 2], row[c + 3], row[c + 4], row[c + 5]);
+        c += 1;
     }
 }
 
 /// Vertical 6-tap (unclipped) over six rows at columns 0..BW.
+/// Widths of 8 and 16 use `wide::i16x8`; width 4 stays scalar.
 #[inline(always)]
 fn vtap_row<const BW: usize>(rows: [&[u8]; 6], out: &mut [i16; 16]) {
     let [a, b, c, d, e, f] = rows.map(|r| &r[..BW]);
-    for i in 0..BW {
+    let mut i = 0;
+    while i + 8 <= BW {
+        let v = tap6_i16x8(
+            load8_u8_i16(&a[i..]),
+            load8_u8_i16(&b[i..]),
+            load8_u8_i16(&c[i..]),
+            load8_u8_i16(&d[i..]),
+            load8_u8_i16(&e[i..]),
+            load8_u8_i16(&f[i..]),
+        );
+        let lanes: [i16; 8] = v.into();
+        out[i..i + 8].copy_from_slice(&lanes);
+        i += 8;
+    }
+    while i < BW {
         out[i] = tap6_16(a[i], b[i], c[i], d[i], e[i], f[i]);
+        i += 1;
     }
 }
 
@@ -540,6 +595,67 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn six_tap_simd_matches_scalar() {
+        let mut seed = 0x9e37_79b9u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 24) as u8
+        };
+        let check = |n: usize, row: &[u8], rows: [&[u8]; 6]| {
+            let mut simd = [0i16; 16];
+            let mut scalar = [0i16; 16];
+            let run = match n {
+                16 => {
+                    htap_row::<16>(row, &mut simd);
+                    for c in 0..16 {
+                        scalar[c] = tap6_16(row[c], row[c + 1], row[c + 2], row[c + 3], row[c + 4], row[c + 5]);
+                    }
+                    assert_eq!(simd[..16], scalar[..16], "htap_row n=16");
+                    vtap_row::<16>(rows, &mut simd);
+                    for i in 0..16 {
+                        scalar[i] = tap6_16(rows[0][i], rows[1][i], rows[2][i], rows[3][i], rows[4][i], rows[5][i]);
+                    }
+                    assert_eq!(simd[..16], scalar[..16], "vtap_row n=16");
+                }
+                8 => {
+                    htap_row::<8>(row, &mut simd);
+                    for c in 0..8 {
+                        scalar[c] = tap6_16(row[c], row[c + 1], row[c + 2], row[c + 3], row[c + 4], row[c + 5]);
+                    }
+                    assert_eq!(simd[..8], scalar[..8], "htap_row n=8");
+                    vtap_row::<8>(rows, &mut simd);
+                    for i in 0..8 {
+                        scalar[i] = tap6_16(rows[0][i], rows[1][i], rows[2][i], rows[3][i], rows[4][i], rows[5][i]);
+                    }
+                    assert_eq!(simd[..8], scalar[..8], "vtap_row n=8");
+                }
+                _ => {
+                    htap_row::<4>(row, &mut simd);
+                    for c in 0..4 {
+                        scalar[c] = tap6_16(row[c], row[c + 1], row[c + 2], row[c + 3], row[c + 4], row[c + 5]);
+                    }
+                    assert_eq!(simd[..4], scalar[..4], "htap_row n=4");
+                    vtap_row::<4>(rows, &mut simd);
+                    for i in 0..4 {
+                        scalar[i] = tap6_16(rows[0][i], rows[1][i], rows[2][i], rows[3][i], rows[4][i], rows[5][i]);
+                    }
+                    assert_eq!(simd[..4], scalar[..4], "vtap_row n=4");
+                }
+            };
+            let _ = run;
+        };
+        for n in [4usize, 8, 16] {
+            let mut row = vec![0u8; n + 5];
+            for x in &mut row {
+                *x = next();
+            }
+            let owned: [Vec<u8>; 6] = std::array::from_fn(|_| (0..n).map(|_| next()).collect());
+            let refs: [&[u8]; 6] = std::array::from_fn(|i| owned[i].as_slice());
+            check(n, &row, refs);
         }
     }
 
