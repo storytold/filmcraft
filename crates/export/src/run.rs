@@ -66,6 +66,35 @@ fn capped_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
     rayon::ThreadPoolBuilder::new().num_threads(cap).thread_name(|i| format!("filmcraft-export-{i}")).build().ok()
 }
 
+/// Run `f`, a background job's exports, on a pool of its own: `max_threads` threads (0 = one per
+/// core). From a plain thread an export renders on the global pool, where the monitors render
+/// their frames: those then queue behind the export's work for as long as it runs. Each thread
+/// runs the hook of [`crate::register_background_thread_start`] as it starts (the platform layer
+/// lowers its priority). Runs `f` where it is called in the browser, or when no pool can be made.
+pub fn on_own_threads<T: Send>(max_threads: u32, f: impl FnOnce() -> T + Send) -> T {
+    match own_pool(max_threads) {
+        Some(pool) => pool.install(f),
+        None => f(),
+    }
+}
+
+fn own_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
+    if cfg!(target_arch = "wasm32") {
+        return None;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let n = match usize::try_from(max_threads) {
+        Ok(0) | Err(_) => cores,
+        Ok(cap) => cap.min(cores),
+    };
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .thread_name(|i| format!("filmcraft-export-{i}"))
+        .start_handler(|_| super::registry::background_thread_start())
+        .build()
+        .ok()
+}
+
 /// Run an export (blocking; call from a worker thread). With `settings.max_threads` set it runs on
 /// a pool of that many threads, so its rendering and software encoding use at most that many cores.
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {

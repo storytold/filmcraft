@@ -19,7 +19,8 @@ Using it needs FFI into C / Objective-C APIs, which is `unsafe` Rust. The bindin
 
 Allow `unsafe` in exactly one crate, `crates/platform` (`filmcraft-platform`, layer L5), for one
 job: OS media FFI (hardware decoding, and hardware encoding through NVENC). Audio output, dialogs, menus
-and other OS integration do not go in it.
+and other OS integration do not go in it. [ADR 0002](0002-background-thread-priority.md) adds one
+more use under the same rules: lowering the scheduling priority of background job threads.
 
 Containment rules:
 
@@ -77,6 +78,11 @@ The media allowances are on module declarations in
 They apply to the module's contents, rather than to individual blocks; the cursor allowance is
 on the Windows function itself. There is no crate-wide `allow(unsafe_code)`.
 `vaapi::ffi` and `nvdec::ffi` contain public declarations but do not carry an unsafe allowance.
+
+Added after this audit: [`thread_priority`](../../crates/platform/src/thread_priority.rs) (macOS,
+Windows and Linux; [ADR 0002](0002-background-thread-priority.md)) carries `#[allow(unsafe_code)]`
+on its module declaration in `lib.rs`. `pthread_set_qos_class_self_np`, `SetThreadPriority` or
+`setpriority` lowers a background job thread there.
 
 ### Callbacks into Rust and panic handling
 

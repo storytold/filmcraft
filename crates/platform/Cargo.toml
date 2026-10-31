@@ -35,6 +35,9 @@ filmcraft-time = { workspace = true }
 log = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# pthread_set_qos_class_self_np for background job threads (thread_priority; MIT OR Apache-2.0,
+# already in the lockfile)
+libc = "0.2"
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"
@@ -52,6 +55,7 @@ windows = { version = "0.62", features = [
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
@@ -59,6 +63,9 @@ windows = { version = "0.62", features = [
 # wgpu), so building needs no libva headers and a system without libva simply decodes in software.
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.8"
+# getpriority / setpriority for background job threads (thread_priority; MIT OR Apache-2.0, already
+# in the lockfile)
+libc = "0.2"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
