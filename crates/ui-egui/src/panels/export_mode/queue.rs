@@ -40,7 +40,16 @@ pub(super) fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect
                             tlf!("Encoding {n}%", n = format!("{:.0}", it["progress"].as_f64().unwrap_or(0.0) * 100.0)) + &crate::panels::eta_suffix(it),
                             t.accent,
                         ),
-                        "done" => (tl!("Done").to_string(), t.render_green),
+                        "done" => {
+                            // Show elapsed time for finished jobs (#2045).
+                            let label = match it["elapsedSecs"].as_f64() {
+                                Some(s) if s >= 3600.0 => tlf!("Done in {h}h {m}m", h = (s / 3600.0) as u32, m = ((s % 3600.0) / 60.0) as u32),
+                                Some(s) if s >= 60.0 => tlf!("Done in {m}m {s}s", m = (s / 60.0) as u32, s = (s % 60.0) as u32),
+                                Some(s) => tlf!("Done in {s}s", s = s as u32),
+                                None => tl!("Done").to_string(),
+                            };
+                            (label, t.render_green)
+                        }
                         "failed" => (tlf!("Failed: {e}", e = it["error"].as_str().unwrap_or("")), t.danger),
                         _ => (tl!("Cancelled").to_string(), t.text_faint),
                     };
