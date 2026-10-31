@@ -7,7 +7,7 @@
 //!   the resumable session, and a chunked upload that resumes after a dropped connection, retries
 //!   server errors with exponential backoff and maps API errors to [`PublishError`].
 //! - [`oauth`]: signing in with Google (OAuth 2.0 for installed apps with PKCE and a loopback
-//!   redirect), the token exchange and refresh; (feature `net`) the loopback listener.
+//!   redirect), the token exchange and refresh; (desktop builds, not wasm) the loopback listener.
 //!
 //! The engine commands build on this crate; see storytold/filmcraft#2626.
 

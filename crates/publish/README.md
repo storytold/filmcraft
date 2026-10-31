@@ -47,7 +47,7 @@ are in [storytold/filmcraft#2626](https://github.com/storytold/filmcraft/issues/
   - `ClientConfig::from_google_json` reads the file Google Cloud downloads for a *Desktop app*
     client. A Web application client, a non-Google client id, or endpoints that aren't Google's
     are refused with a reason.
-  - `SignIn::start` (feature `net`) creates a random state and a PKCE verifier (RFC 7636, `S256`)
+  - `SignIn::start` (desktop builds; not in wasm) creates a random state and a PKCE verifier (RFC 7636, `S256`)
     and listens on `127.0.0.1` on a free port. `SignIn::url` is the address to open in the
     browser. Only the challenge goes there, never the verifier or the client secret.
   - `Loopback::wait` waits for the browser's return, which it checks against the state. It
@@ -61,10 +61,21 @@ are in [storytold/filmcraft#2626](https://github.com/storytold/filmcraft/issues/
 Error messages and `Debug` output never contain tokens, the client secret, the PKCE verifier or
 the session address, which authorizes the upload.
 
-## Not here yet
+## Where it is used
 
 The engine's `publish.youtube.*` commands (sign-in and upload as jobs, the account kept in the
-app's data folder) use this crate. Next is the Export page's *Publish to* section.
+app's data folder) and the Export page's YouTube destination use this crate, behind the engine's
+and the app's `publish` feature (off by default).
+
+## Limitations
+
+- YouTube is the only platform.
+- Signing out forgets the refresh token but doesn't revoke it at Google.
+- An upload interrupted by quitting the app starts again from the beginning: `UploadSession` can
+  resume it, but the engine doesn't keep the session across restarts yet.
+- The export queue (Send to Queue) doesn't upload; only Export does.
+- Each user needs their own *Desktop app* OAuth client from Google Cloud until an official client
+  exists (storytold/filmcraft#2626).
 
 ## Tests
 

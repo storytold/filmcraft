@@ -7,12 +7,14 @@
 //! | `publish.youtube.setClient` | read a *Desktop app* OAuth client file downloaded from Google Cloud and keep a copy |
 //! | `publish.youtube.signIn` | a job: open Google's sign-in in the browser ([`crate::Event::OpenUrl`]) and wait for it to come back |
 //! | `publish.youtube.signOut` | forget the account |
+//! | `publish.youtube.check` | whether `publish.youtube.upload` would take these details now (account, title, description, tags), without uploading: the Export page asks before it writes a file |
 //! | `publish.youtube.upload` | a job: upload a file with its title, description, tags and privacy (private by default); with `afterJob`, once that export has written the file |
 //!
 //! Both files live in `<data dir>/publish/`: `youtube-client.json` (the client file as Google
 //! downloads it) and `youtube-account.json` (the refresh token, owner-only on Unix). The access
 //! token stays in memory. No command, job or log line shows a token or the client secret.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -41,6 +43,11 @@ const EXPIRY_MARGIN: Duration = Duration::from_secs(60);
 pub const WAITING_FOR_EXPORT: &str = "Waiting for the export";
 /// How long a finished export may take to store its report before the upload gives up.
 const REPORT_GRACE: Duration = Duration::from_secs(10);
+/// An access token refused this soon after it was fetched is not refreshed again: the refusal is
+/// about the account or the channel, not the token's age.
+const FRESH_TOKEN: Duration = Duration::from_secs(300);
+/// Most access tokens one upload fetches (a long upload outlives several).
+const MAX_REFRESHES: u32 = 24;
 
 /// Publishing state shared by the session and its jobs.
 #[derive(Default)]
@@ -50,6 +57,8 @@ pub struct State {
     pub(crate) dir: Option<PathBuf>,
     pub(crate) client: Option<ClientConfig>,
     pub(crate) upload_url: Option<String>,
+    /// Tests: [`FRESH_TOKEN`] unless set.
+    pub(crate) fresh_token: Option<Duration>,
 }
 
 impl State {
@@ -217,8 +226,7 @@ fn upload(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(unavailable(cmd));
     }
     let path = str_p(p, "path").ok_or_else(|| bad(cmd, "need `path`: the video file to upload"))?.to_string();
-    let meta: VideoMetadata = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
-    meta.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    let meta = metadata(p, cmd)?;
     // With `afterJob` the export writes the file later; it is checked once the export is done.
     let after = match p.get("afterJob").filter(|v| !v.is_null()) {
         Some(v) => {
@@ -230,25 +238,60 @@ fn upload(s: &mut Session, p: &Value) -> Result<Value> {
             None
         }
     };
-    let client = load_client(s).map_err(|e| bad(cmd, e))?;
-    let dir = dir(s).ok_or_else(|| bad(cmd, "no data directory"))?;
-    let account = load_account(&dir, &client).ok_or_else(|| bad(cmd, "sign in to YouTube first (publish.youtube.signIn)"))?;
+    let (client, dir, account) = signed_in(s, cmd)?;
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
     let job = new_job(s, format!("Uploading “{}” to YouTube", meta.title.trim()));
     set_status(&job.progress, if after.is_some() { WAITING_FOR_EXPORT } else { "Starting the upload" });
-    let upload = Upload { path, meta, after, client, account, dir, upload_url: s.publish.upload_url.clone(), access: s.publish.access.clone() };
+    let upload = Upload {
+        path,
+        meta,
+        after,
+        client,
+        account,
+        dir,
+        upload_url: s.publish.upload_url.clone(),
+        access: s.publish.access.clone(),
+        fresh_token: s.publish.fresh_token.unwrap_or(FRESH_TOKEN),
+        revoked: Cell::new(false),
+    };
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let id = spawn(s, job, wait, "filmcraft-youtube-upload", move || {
         let t0 = web_time::Instant::now();
         let r = upload.run(&prog);
-        if matches!(r, Err(PublishError::Unauthorized)) {
-            // Google revoked or expired the refresh token: the user signs in again.
+        if upload.revoked.get() {
+            // Google refused the refresh token (revoked or expired): the user signs in again. A
+            // 401 from the upload API alone keeps the account.
             forget_account(&upload.dir, &upload.access);
         }
         let bytes = prog.total.load(Ordering::Relaxed);
         finish(&prog, &res, r.map(|url| (format!("Uploaded to YouTube: {url}"), url)), t0, bytes);
     })?;
     Ok(json!({"job": id}))
+}
+
+/// The video's details as YouTube will take them.
+fn metadata(p: &Value, cmd: &str) -> Result<VideoMetadata> {
+    let meta: VideoMetadata = serde_json::from_value(p.clone()).map_err(|e| bad(cmd, e.to_string()))?;
+    meta.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    Ok(meta)
+}
+
+/// The client and the signed-in account.
+fn signed_in(s: &Session, cmd: &str) -> Result<(ClientConfig, PathBuf, Account)> {
+    let client = load_client(s).map_err(|e| bad(cmd, e))?;
+    let dir = dir(s).ok_or_else(|| bad(cmd, "no data directory"))?;
+    let account = load_account(&dir, &client).ok_or_else(|| bad(cmd, "sign in to YouTube first (publish.youtube.signIn)"))?;
+    Ok((client, dir, account))
+}
+
+fn check(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "publish.youtube.check";
+    if !AVAILABLE {
+        return Err(unavailable(cmd));
+    }
+    metadata(p, cmd)?;
+    signed_in(s, cmd)?;
+    Ok(json!({"ok": true}))
 }
 
 /// The size of a file that can be uploaded.
@@ -271,10 +314,21 @@ struct Upload {
     dir: PathBuf,
     upload_url: Option<String>,
     access: Arc<Mutex<Option<Access>>>,
+    fresh_token: Duration,
+    /// Set when Google refused the refresh token itself.
+    revoked: Cell<bool>,
+}
+
+/// The access token an upload sends, and when it was fetched (None: taken from the cache).
+struct Token {
+    value: String,
+    fetched: Option<web_time::Instant>,
+    refreshes: u32,
 }
 
 impl Upload {
-    /// The video's address. A refused access token is refreshed once.
+    /// The video's address. A refused access token is refreshed, unless it was fetched moments ago;
+    /// an upload longer than a token's life (about an hour) refreshes as often as it needs.
     fn run(&self, prog: &Progress) -> std::result::Result<String, PublishError> {
         let path = self.wait_for_export(prog)?;
         let size = video_size(&path)?;
@@ -284,20 +338,29 @@ impl Upload {
         let transport = &*transport;
         let mut control = JobControl { prog };
         let mut token = self.access_token(transport, false)?;
-        let mut refreshed = false;
         let session = loop {
-            match self.uploader(transport, &token).start(&self.meta, size, content_type(&path), &mut control) {
-                Err(PublishError::Unauthorized) if !refreshed => (token, refreshed) = (self.access_token(transport, true)?, true),
+            match self.uploader(transport, &token.value).start(&self.meta, size, content_type(&path), &mut control) {
+                Err(PublishError::Unauthorized) if self.may_refresh(&token) => token = self.refresh(transport, token.refreshes)?,
                 r => break r?,
             }
         };
         let video = loop {
-            match self.send(transport, &token, &path, &session, &mut control) {
-                Err(PublishError::Unauthorized) if !refreshed => (token, refreshed) = (self.access_token(transport, true)?, true),
+            match self.send(transport, &token.value, &path, &session, &mut control) {
+                Err(PublishError::Unauthorized) if self.may_refresh(&token) => token = self.refresh(transport, token.refreshes)?,
                 r => break r?,
             }
         };
         Ok(video)
+    }
+
+    fn may_refresh(&self, token: &Token) -> bool {
+        token.refreshes < MAX_REFRESHES && token.fetched.is_none_or(|at| at.elapsed() >= self.fresh_token)
+    }
+
+    fn refresh(&self, transport: &dyn Transport, refreshes: u32) -> std::result::Result<Token, PublishError> {
+        let mut token = self.access_token(transport, true)?;
+        token.refreshes = refreshes.saturating_add(1);
+        Ok(token)
     }
 
     /// The file to upload: the export's own path once it has finished (the `path` param without
@@ -349,23 +412,28 @@ impl Upload {
         }
     }
 
-    /// The cached access token, or a new one from the refresh token.
-    fn access_token(&self, transport: &dyn Transport, force: bool) -> std::result::Result<String, PublishError> {
+    /// The cached access token, or a new one from the refresh token. A refusal here (`invalid_grant`
+    /// or no upload scope) means the account must sign in again: [`Self::revoked`].
+    fn access_token(&self, transport: &dyn Transport, force: bool) -> std::result::Result<Token, PublishError> {
         if !force {
             let cached = self.access.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(a) = cached.as_ref()
                 && a.client_id == self.client.client_id
                 && web_time::Instant::now() < a.until
             {
-                return Ok(a.token.clone());
+                return Ok(Token { value: a.token.clone(), fetched: None, refreshes: 0 });
             }
         }
-        let tokens = oauth::refresh(transport, &self.client, &self.account.refresh_token)?;
-        if !tokens.grants(UPLOAD_SCOPE) {
-            return Err(PublishError::Unauthorized);
-        }
+        let tokens = match oauth::refresh(transport, &self.client, &self.account.refresh_token) {
+            Ok(tokens) if tokens.grants(UPLOAD_SCOPE) => tokens,
+            Ok(_) | Err(PublishError::Unauthorized) => {
+                self.revoked.set(true);
+                return Err(PublishError::Unauthorized);
+            }
+            Err(e) => return Err(e),
+        };
         remember(&self.access, &self.client, &tokens);
-        Ok(tokens.access_token)
+        Ok(Token { value: tokens.access_token, fetched: Some(web_time::Instant::now()), refreshes: 0 })
     }
 }
 
@@ -460,6 +528,12 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("publish.youtube.setClient", "Set YouTube OAuth Client", r#"{"path":str}"#, set_client),
         spec("publish.youtube.signIn", "Sign In to YouTube", r#"{"timeoutSeconds":f64=300,"wait":bool=false}"#, sign_in),
         spec("publish.youtube.signOut", "Sign Out of YouTube", "{}", sign_out),
+        spec(
+            "publish.youtube.check",
+            "Check YouTube Upload Details",
+            r#"{"title":str,"description":str?,"tags":[str]?,"categoryId":str?,"privacy":"private|unlisted|public"=private,"madeForKids":bool=false}"#,
+            check,
+        ),
         spec(
             "publish.youtube.upload",
             "Upload to YouTube",

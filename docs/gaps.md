@@ -1,13 +1,13 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-01 · **Change:** minor (G21 publishing to YouTube added, off by default) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
 [target-app-parity.md](target-app-parity.md); estimates are Opus 5.5 agent-hours, calibrated there.
 When you close or shrink a gap, update its entry, its parity doc and the revision history.
 
-Summary by kind: **feature gaps** G1, G2, G12, G13, G18, G19; **UI / UX** G8; **file formats**
+Summary by kind: **feature gaps** G1, G2, G12, G13, G18, G19, G21; **UI / UX** G8; **file formats**
 G2, G10, G13, G15; **codecs** G3, G10; **hardware** G5; **localization** G14; **stability and
 platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement** G1, G6, G7;
 **web** G20.
@@ -34,6 +34,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G18 | Effects depth: approximations and missing behaviour | feature | no | 60–110 h |
 | G19 | Speech to text off in release builds | feature, AI | no | 5–10 h |
 | G20 | The web app shell | platforms | no | 40–80 h |
+| G21 | Publishing: YouTube only, off by default | feature | no | 30–60 h |
 
 ## G1. Nothing compares our output with Premiere's
 
@@ -340,6 +341,16 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Missing:** file access, WebCodecs decode, audio in the browser build beyond what exists.
 - **Estimate:** 40–80 h. Doc: [web.md](web.md).
 
+## G21. Publishing: YouTube only, off by default
+
+- **There:** with the `publish` feature, Export uploads to YouTube (video or Short, private by
+  default), resuming after a dropped connection (`crates/publish`, `publish.youtube.*`, #2626).
+- **Missing:** the feature is off by default and each user needs their own Google Cloud OAuth
+  client; no other platform (TikTok, Vimeo, Instagram…); no upload from the export queue; an
+  upload interrupted by quitting starts again; signing out doesn't revoke the token at Google;
+  the refresh token is a file in the data folder, not in the OS keychain.
+- **Estimate:** 30–60 h (official client and verification, keychain, queue, other platforms).
+
 ## Revision history
 
 | Date | Change | Summary |
@@ -352,3 +363,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-21 | minor | G10: PSD stills import the flattened composite, 8/16-bit grayscale and RGB (#2116) |
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
+| 2026-11-01 | minor | G21: publishing to YouTube from the Export page, behind the `publish` feature (#2626) |

@@ -702,6 +702,12 @@ fn a_cancelled_export_uploads_nothing() {
     );
     d.frames(2);
     assert!(d.has("export.youtube.signOut"), "signed in");
+    // details YouTube would refuse stop Export before it writes a file
+    d.app().ui.export.youtube.description = "1 > 0".into();
+    d.click("export.button");
+    assert!(d.app().ui.status.contains("can't contain"), "{}", d.app().ui.status);
+    assert!(d.app().session.jobs.is_empty());
+    d.app().ui.export.youtube.description = "Crete".into();
     d.click("export.button");
     let jobs: Vec<Value> = d.app().session.jobs.iter().map(|j| j.to_json()).collect();
     assert_eq!(jobs.len(), 2, "{jobs:?}");

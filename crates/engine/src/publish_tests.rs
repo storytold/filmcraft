@@ -16,6 +16,10 @@ struct Google {
     revoked: bool,
     /// Refuse the first upload start made with this access token.
     reject_token: Option<String>,
+    /// Refuse the first chunk sent with this access token (it expired during the upload).
+    reject_chunk_token: Option<String>,
+    /// Refuse every upload start (the account can't upload, whatever the token).
+    reject_always: bool,
     challenge: String,
     title: String,
     privacy: String,
@@ -136,7 +140,7 @@ fn serve(stream: TcpStream, g: &mut Google, base: &str) -> std::io::Result<()> {
     }
     if method == "POST" && target.starts_with("/upload/youtube/v3/videos?") {
         let token = header("authorization").trim_start_matches("Bearer ").to_string();
-        if g.reject_token.as_deref() == Some(token.as_str()) {
+        if g.reject_always || g.reject_token.as_deref() == Some(token.as_str()) {
             g.reject_token = None;
             return answer("401 Unauthorized", "", r#"{"error":{"code":401,"message":"Invalid Credentials","errors":[{"reason":"authError"}]}}"#);
         }
@@ -148,7 +152,12 @@ fn serve(stream: TcpStream, g: &mut Google, base: &str) -> std::io::Result<()> {
         return answer("200 OK", &format!("Location: {base}/upload/session?upload_id=1\r\n"), "");
     }
     if method == "PUT" {
+        let token = header("authorization").trim_start_matches("Bearer ").to_string();
         let range = header("content-range");
+        if !range.starts_with("bytes */") && g.reject_chunk_token.as_deref() == Some(token.as_str()) {
+            g.reject_chunk_token = None;
+            return answer("401 Unauthorized", "", r#"{"error":{"code":401,"message":"Invalid Credentials","errors":[{"reason":"authError"}]}}"#);
+        }
         if !range.starts_with("bytes */") {
             g.received.extend_from_slice(&body);
         }
@@ -344,6 +353,28 @@ fn an_upload_waits_for_the_report_of_a_finished_export() {
     fake.g(|g| assert_eq!(g.received, data));
 }
 
+/// `publish.youtube.check` refuses what `upload` would refuse, without a file or a job.
+#[test]
+fn check_applies_the_upload_rules_without_uploading() {
+    let fake = Fake::start();
+    let (mut s, _) = signed_in("check", &fake);
+    assert_eq!(s.execute("publish.youtube.check", json!({"title": "Trip", "description": "Crete", "tags": ["sea"]})).unwrap()["ok"], true);
+    for bad in [
+        json!({"title": "Trip", "description": "1 > 0"}),
+        json!({"title": "x".repeat(101)}),
+        json!({"title": "Trip", "description": "x".repeat(5001)}),
+        json!({"title": "Trip", "tags": ["x".repeat(501)]}),
+        json!({"title": "  "}),
+    ] {
+        assert!(s.execute("publish.youtube.check", bad.clone()).is_err(), "{bad}");
+    }
+    assert!(s.jobs.is_empty());
+    s.execute("publish.youtube.signOut", json!({})).unwrap();
+    let e = s.execute("publish.youtube.check", json!({"title": "Trip"})).unwrap_err();
+    assert!(e.to_string().contains("sign in to YouTube first"), "{e}");
+    fake.g(|g| assert_eq!(g.refreshes, 0, "nothing goes to Google"));
+}
+
 #[test]
 fn a_failed_or_unknown_export_uploads_nothing() {
     let fake = Fake::start();
@@ -381,16 +412,56 @@ fn a_failed_or_unknown_export_uploads_nothing() {
 #[test]
 fn a_refused_access_token_is_refreshed_and_the_upload_goes_on() {
     let fake = Fake::start();
-    fake.g(|g| g.reject_token = Some("ya29.n1".into()));
+    fake.g(|g| g.reject_token = Some("ya29.cached".into()));
     let (mut s, dir) = signed_in("refused", &fake);
+    // a token from earlier in the session, which Google has stopped taking
+    let until = web_time::Instant::now() + Duration::from_secs(600);
+    *s.publish.access.lock().unwrap() = Some(Access { token: "ya29.cached".into(), client_id: CLIENT_ID.into(), until });
     let (path, data) = video(&dir, 1000);
     let r = s.execute("publish.youtube.upload", json!({"path": path, "title": "Trip", "wait": true})).unwrap();
     let j = finished(&s, r["job"].as_u64().unwrap());
     assert!(j["result"]["path"].is_string(), "{j}");
     fake.g(|g| {
-        assert_eq!(g.refreshes, 2);
+        assert_eq!(g.refreshes, 1);
         assert_eq!(g.received, data);
     });
+}
+
+/// An upload that outlives its access token refreshes again during the chunks, however many
+/// times it already refreshed.
+#[test]
+fn a_long_upload_refreshes_the_token_again() {
+    let fake = Fake::start();
+    fake.g(|g| {
+        g.reject_token = Some("ya29.n1".into());
+        g.reject_chunk_token = Some("ya29.n2".into());
+    });
+    let (mut s, dir) = signed_in("long", &fake);
+    s.publish.fresh_token = Some(Duration::ZERO);
+    let (path, data) = video(&dir, 1000);
+    let r = s.execute("publish.youtube.upload", json!({"path": path, "title": "Trip", "wait": true})).unwrap();
+    let j = finished(&s, r["job"].as_u64().unwrap());
+    assert_eq!(j["result"]["path"], "https://www.youtube.com/watch?v=engineVid_1", "{j}");
+    fake.g(|g| {
+        assert_eq!(g.refreshes, 3, "the start and a chunk each got a new token");
+        assert_eq!(g.received, data);
+    });
+}
+
+/// A 401 for a token fetched moments ago is about the account, not the token: no refresh loop,
+/// and the refresh token (which Google just accepted) is kept.
+#[test]
+fn a_refusal_of_a_fresh_token_keeps_the_account() {
+    let fake = Fake::start();
+    fake.g(|g| g.reject_always = true);
+    let (mut s, dir) = signed_in("fresh-refused", &fake);
+    let (path, _) = video(&dir, 1000);
+    let r = s.execute("publish.youtube.upload", json!({"path": path, "title": "Trip", "wait": true})).unwrap();
+    let j = finished(&s, r["job"].as_u64().unwrap());
+    assert_eq!(j["result"]["error"], "the account needs to sign in again", "{j}");
+    fake.g(|g| assert_eq!(g.refreshes, 1));
+    assert_eq!(s.execute("publish.youtube.status", json!({})).unwrap()["signedIn"], true);
+    assert!(dir.join("publish").join(ACCOUNT_FILE).exists());
 }
 
 #[test]

@@ -141,7 +141,21 @@ fn title(app: &FilmcraftApp) -> String {
     if typed.is_empty() { app.ui.export.file_name.trim().to_string() } else { typed.to_string() }
 }
 
-/// Why Export can't upload to YouTube now (it would export the file and then fail), if it can't.
+/// The video's details as `publish.youtube.check` and `publish.youtube.upload` take them.
+fn details(app: &FilmcraftApp) -> Value {
+    let yt = &app.ui.export.youtube;
+    let tags: Vec<&str> = yt.tags.split(',').map(str::trim).filter(|t| !t.is_empty()).collect();
+    json!({
+        "title": title(app),
+        "description": yt.description,
+        "tags": tags,
+        "privacy": yt.privacy,
+        "madeForKids": yt.made_for_kids,
+    })
+}
+
+/// Why Export can't upload to YouTube now (it would export the file and then fail), if it can't:
+/// the account and the details go through the same checks as the upload.
 pub(super) fn not_ready(app: &mut FilmcraftApp) -> Option<String> {
     if !app.ui.export.youtube.enabled || !available(app) {
         return None;
@@ -151,6 +165,9 @@ pub(super) fn not_ready(app: &mut FilmcraftApp) -> Option<String> {
     }
     if title(app).is_empty() {
         return Some(tl!("Give the YouTube video a title").to_string());
+    }
+    if let Err(e) = app.session.execute("publish.youtube.check", details(app)) {
+        return Some(e.to_string());
     }
     if app.ui.export.youtube.kind == SHORT {
         return not_a_short(shape(app));
@@ -163,17 +180,9 @@ pub(super) fn upload_after(app: &mut FilmcraftApp, export: u64, path: &str) {
     if !app.ui.export.youtube.enabled || !available(app) {
         return;
     }
-    let yt = &app.ui.export.youtube;
-    let tags: Vec<&str> = yt.tags.split(',').map(str::trim).filter(|t| !t.is_empty()).collect();
-    let p = json!({
-        "path": path,
-        "title": title(app),
-        "description": yt.description,
-        "tags": tags,
-        "privacy": yt.privacy,
-        "madeForKids": yt.made_for_kids,
-        "afterJob": export,
-    });
+    let mut p = details(app);
+    p["path"] = json!(path);
+    p["afterJob"] = json!(export);
     match app.session.execute("publish.youtube.upload", p) {
         Ok(v) => app.ui.export.youtube.upload_job = v["job"].as_u64(),
         Err(e) => app.ui.status = e.to_string(),
