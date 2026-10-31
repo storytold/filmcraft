@@ -2,8 +2,8 @@
 
 OS media integration for FilmCraft (layer L5): hardware video decoding through the operating
 system's codecs, behind `filmcraft_codecs::VideoDecoder`, and hardware H.264 and H.265 (HEVC)
-encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and, on macOS, the call
-that lowers the priority of background job threads, and nothing else. It is the one crate of the
+encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and the call that lowers
+the priority of background job threads, and nothing else. It is the one crate of the
 workspace allowed to contain `unsafe`, under the rules of
 [ADR 0001](../../docs/adr/0001-platform-ffi.md), [ADR 0002](../../docs/adr/0002-background-thread-priority.md)
 and [AGENTS.md](../../AGENTS.md) §0.3.
