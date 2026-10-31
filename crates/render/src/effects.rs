@@ -376,7 +376,13 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let cs = [color(e, "c1", cx), color(e, "c2", cx), color(e, "c3", cx), color(e, "c4", cx)];
             let op = f(e, "opacity", cx) / 100.0;
             let (w, h) = (img.w as f32, img.h as f32);
-            let pts = [(0.25 * w, 0.25 * h), (0.75 * w, 0.25 * h), (0.25 * w, 0.75 * h), (0.75 * w, 0.75 * h)];
+            // a point left at its NaN default sits a quarter in from its corner of the frame
+            let at = |id: &str, fx: f32, fy: f32| {
+                let v = e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or(Vec2::new(f64::NAN, f64::NAN));
+                let px = |v: f64, frac: f32, size: f32| if v.is_finite() { v as f32 * cx.px_scale } else { frac * size };
+                (px(v.x, fx, w), px(v.y, fy, h))
+            };
+            let pts = [at("p1", 0.25, 0.25), at("p2", 0.75, 0.25), at("p3", 0.25, 0.75), at("p4", 0.75, 0.75)];
             let blend_exp = 1.0 + f(e, "blend", cx) / 100.0;
             fill_over(img, op, |x, y| {
                 let mut acc = [0.0f32; 3];

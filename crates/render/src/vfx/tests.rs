@@ -488,6 +488,34 @@ fn track_matte_uses_the_other_tracks_alpha_and_luma() {
     assert!(close(o.get(1, 1)[3], 1.0, 1e-3) && close(o.get(6, 1)[3], 0.0, 1e-4));
 }
 
+/// 4-Color Gradient has a position for each colour (#3682); the old fixed ones are the defaults.
+#[test]
+fn four_color_gradient_points_default_to_the_old_positions_and_move() {
+    let (w, h) = (40usize, 24usize);
+    let base = Image::filled(w, h, [0.0, 0.0, 0.0, 1.0]);
+    let (fw, fh) = (w as f64, h as f64);
+    let old = run("four_color_gradient", &inst("four_color_gradient"), &base, &cx());
+    // a project saved before the points existed has no such params
+    let mut legacy = inst("four_color_gradient");
+    for id in ["p1", "p2", "p3", "p4"] {
+        assert!(legacy.params.remove(id).is_some(), "no {id}");
+    }
+    assert_eq!(max_diff(&old, &run("four_color_gradient", &legacy, &base, &cx())), 0.0, "a project without the points renders as before");
+    // the defaults are the corners of the inner quarter box the gradient always used
+    let mut explicit = inst("four_color_gradient");
+    for (id, (x, y)) in [("p1", (0.25, 0.25)), ("p2", (0.75, 0.25)), ("p3", (0.25, 0.75)), ("p4", (0.75, 0.75))] {
+        set(&mut explicit, id, ParamValue::Vec2(Vec2::new(x * fw, y * fh)));
+    }
+    assert!(max_diff(&old, &run("four_color_gradient", &explicit, &base, &cx())) < 1e-5, "the default points are the old positions");
+    // moving the fourth point pulls its colour across the frame
+    let mut moved = inst("four_color_gradient");
+    set(&mut moved, "p4", ParamValue::Vec2(Vec2::new(0.25 * fw, 0.75 * fh)));
+    let m = run("four_color_gradient", &moved, &base, &cx());
+    assert!(max_diff(&old, &m) > 0.05, "moving Point 4 changes the picture");
+    let (a, b) = (old.get(w / 4, 3 * h / 4), m.get(w / 4, 3 * h / 4));
+    assert!(a[0] - b[0] > 0.3, "the pixel at the moved point loses Color 3's red to Color 4 (blue): {a:?} {b:?}");
+}
+
 #[test]
 fn keyers_known_values() {
     // Ultra Key: pure green screen → transparent, grey foreground → opaque

@@ -731,9 +731,14 @@ fn build_effects() -> Vec<EffectDef> {
             "4-Color Gradient",
             GENERATE,
             vec![
+                // NaN: the gradient's own position (a quarter in from each corner of the frame)
+                pt("p1", "Point 1", f64::NAN, f64::NAN),
                 col("c1", "Color 1", [1.0, 1.0, 0.0, 1.0]),
+                pt("p2", "Point 2", f64::NAN, f64::NAN),
                 col("c2", "Color 2", [0.0, 1.0, 0.0, 1.0]),
+                pt("p3", "Point 3", f64::NAN, f64::NAN),
                 col("c3", "Color 3", [1.0, 0.0, 1.0, 1.0]),
+                pt("p4", "Point 4", f64::NAN, f64::NAN),
                 col("c4", "Color 4", [0.0, 0.0, 1.0, 1.0]),
                 f("blend", "Blend", 100.0, 1.0, 1000.0, ""),
                 f("opacity", "Opacity", 100.0, 0.0, 100.0, "%"),
