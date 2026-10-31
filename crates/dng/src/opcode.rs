@@ -789,7 +789,9 @@ mod tests {
         assert!(close(g(7, 7), 4.0), "replicated past the map");
         // a map larger than its parameters is an error
         let mut data = vec![0.25f32; 4];
-        assert!(run1(9, [area([0, 0, 2, 2, 0, 1, 1, 1]), u(&[1000, 1000]), d(&[0.1, 0.1, 0.0, 0.0]), u(&[1]), f(&[1.0])].concat(), &mut data, 2, 2, 1).is_err());
+        assert!(
+            run1(9, [area([0, 0, 2, 2, 0, 1, 1, 1]), u(&[1000, 1000]), d(&[0.1, 0.1, 0.0, 0.0]), u(&[1]), f(&[1.0])].concat(), &mut data, 2, 2, 1).is_err()
+        );
     }
 
     #[test]
