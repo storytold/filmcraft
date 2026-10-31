@@ -195,12 +195,13 @@ fn panel_shortcuts_override_application_ones_with_focus() {
 fn delete_clears_timeline_clips_and_project_items() {
     // #243: with the Timeline focused, Delete (the forward-delete key, labelled Delete on Windows
     // and Linux keyboards) resolved to Project ▸ Clear and left the selected clips in place.
+    // #404: with any other panel focused, it still did, and took the selected Project items.
     let s = Session::default();
     let del = Chord::parse("Delete").unwrap();
     for p in [Platform::Mac, Platform::Windows] {
         assert_eq!(s.shortcuts.resolve(&del, Some("Timeline"), p).unwrap().command, "edit.clear", "{p:?}");
         assert_eq!(s.shortcuts.resolve(&del, Some("Project"), p).unwrap().command, "project.delete", "{p:?}");
-        assert_eq!(s.shortcuts.resolve(&del, None, p).unwrap().command, "project.delete", "{p:?}");
+        assert_eq!(s.shortcuts.resolve(&del, None, p).unwrap().command, "edit.clear", "{p:?}");
     }
 }
 

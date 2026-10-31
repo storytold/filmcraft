@@ -383,6 +383,59 @@ fn delete_key_clears_the_selected_timeline_clip() {
     assert!(items(&mut d).iter().any(|i| i["clip"].as_u64() == Some(clip)), "and undo brings it back");
 }
 
+/// The first Project panel row that is an item, and how many there are.
+fn project_items(d: &mut Driver) -> (u64, usize) {
+    let rows = d.exec("project.items", json!({"recursive": true}))["rows"].as_array().unwrap().clone();
+    let items: Vec<u64> = rows.iter().filter_map(|r| r["item"].as_u64()).collect();
+    (items[0], items.len())
+}
+
+#[test]
+fn delete_keys_act_on_the_focused_panel_only() {
+    // #404: with another panel focused, Delete removed the item selected in the Project panel and
+    // Backspace the clip selected in the Timeline, both of them out of sight of that panel.
+    for preset in ["FilmCraft Default", PREMIERE_PRESET] {
+        let mut d = Driver::new();
+        d.exec("shortcuts.loadPreset", json!({"name": preset}));
+        d.frames(2);
+        let first_clip = |d: &mut Driver| d.exec("sequence.inspect", json!({}))["video"][0]["items"][0]["clip"].as_u64().unwrap();
+        let clip = first_clip(&mut d);
+        let (item, count) = project_items(&mut d);
+        let select = |d: &mut Driver| {
+            d.exec("project.select", json!({"items": [item]}));
+            d.exec("timeline.select", json!({"clips": [clip]}));
+        };
+        select(&mut d);
+        let project = d.app().session.project.clone();
+        for panel in ["Source", "Effects", "Effect Controls", "Markers", "Metadata", "Essential Graphics", "Info"] {
+            d.focus(panel);
+            for key in ["Delete", "Backspace", "Shift+Delete"] {
+                d.key(key);
+                assert_eq!(*d.app().session.project, *project, "{preset}: {key} with {panel} focused changes nothing");
+            }
+        }
+        // the Timeline's and the Program monitor's Delete take the clip and leave the Project panel alone
+        for panel in ["Timeline", "Program"] {
+            d.focus(panel);
+            d.key("Delete");
+            assert_ne!(first_clip(&mut d), clip, "{preset}: Delete with {panel} focused removes the clip");
+            assert_eq!(project_items(&mut d).1, count, "{preset}: and no Project item");
+            d.key("Cmd+Z");
+            assert_eq!(first_clip(&mut d), clip);
+            select(&mut d);
+        }
+        // the Project panel's takes the item, by either key
+        d.focus("Project");
+        for key in ["Delete", "Backspace"] {
+            d.key(key);
+            assert_eq!(project_items(&mut d).1, count - 1, "{preset}: {key} with the Project panel focused removes the item");
+            d.key("Cmd+Z");
+            assert_eq!(project_items(&mut d).1, count);
+            select(&mut d);
+        }
+    }
+}
+
 #[test]
 fn shift_delete_ripple_deletes_with_the_timeline_focused() {
     // #680: the Timeline's own `Delete` (Clear) was tried before the app-wide `Shift+Delete`

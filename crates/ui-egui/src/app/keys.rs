@@ -132,6 +132,12 @@ impl FilmcraftApp {
     /// Run the commands of the bindings `match_shortcuts` fired, as the focused panel scopes them.
     fn fire_shortcuts(&mut self, ctx: &egui::Context, fire: Vec<String>) {
         for mut id in fire {
+            if matches!(id.as_str(), "edit.clear" | "edit.rippleDelete" | "project.delete") {
+                match clear_command(self.ui.focused, &id) {
+                    Some(command) => id = command.into(),
+                    None => continue,
+                }
+            }
             // Select All / Deselect All act on the Project panel's items when it has focus (#168).
             // Select All takes only what the shown bin lists, not the whole project (#456).
             if self.ui.focused == PanelKind::Project && id == "edit.selectAll" {
@@ -172,6 +178,20 @@ impl FilmcraftApp {
     }
 }
 
+/// What a Clear or Ripple Delete shortcut runs with `focused` in focus: it removes what that panel
+/// selected, and `None` means the panel has nothing the key may remove. The key used to reach past
+/// the panel in focus, into the Project panel's selection or the Timeline's (#404). This goes by
+/// the panel and not by the binding, so a saved or custom key set that still binds Delete to
+/// `project.delete` application-wide does the same. The menus name their target and are not affected.
+fn clear_command(focused: PanelKind, id: &str) -> Option<&'static str> {
+    let ripple = id == "edit.rippleDelete";
+    match focused {
+        PanelKind::Project => (!ripple).then_some("project.delete"),
+        PanelKind::Timeline | PanelKind::Program | PanelKind::Properties => Some(if ripple { "edit.rippleDelete" } else { "edit.clear" }),
+        _ => None,
+    }
+}
+
 /// The windowing layer (egui-winit, and egui's web backend) reports the clipboard shortcuts as
 /// `Event::Copy` / `Event::Cut` / `Event::Paste` instead of key presses: Ctrl+C/X/V on Windows and
 /// Linux, plus Ctrl+Insert, Shift+Insert and Shift+Delete on Windows. The shortcut bindings only
@@ -209,6 +229,27 @@ fn clipboard_events_as_keys(events: &mut Vec<egui::Event>, modifiers: egui::Modi
 /// with a modifier are not what a text field or an IME consumes, so they keep working.
 fn lets_text_field_keep(modifiers: egui::Modifiers, text_focused: bool) -> bool {
     text_focused && menus::specificity(modifiers) == 0
+}
+
+#[cfg(test)]
+mod clear_command_tests {
+    use super::{PanelKind, clear_command};
+
+    #[test]
+    fn clear_keys_go_by_the_panel_in_focus() {
+        for id in ["edit.clear", "project.delete"] {
+            assert_eq!(clear_command(PanelKind::Project, id), Some("project.delete"), "{id}");
+            for panel in [PanelKind::Timeline, PanelKind::Program, PanelKind::Properties] {
+                assert_eq!(clear_command(panel, id), Some("edit.clear"), "{id} in {panel:?}");
+            }
+            for panel in [PanelKind::Source, PanelKind::Effects, PanelKind::EffectControls, PanelKind::Markers, PanelKind::Text] {
+                assert_eq!(clear_command(panel, id), None, "{id} in {panel:?}");
+            }
+        }
+        assert_eq!(clear_command(PanelKind::Timeline, "edit.rippleDelete"), Some("edit.rippleDelete"));
+        assert_eq!(clear_command(PanelKind::Project, "edit.rippleDelete"), None, "items have no time to ripple");
+        assert_eq!(clear_command(PanelKind::Effects, "edit.rippleDelete"), None);
+    }
 }
 
 #[cfg(test)]

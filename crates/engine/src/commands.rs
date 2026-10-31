@@ -3590,7 +3590,7 @@ fn build() -> Vec<CommandSpec> {
                 p.get("items").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ItemId)).collect()).unwrap_or_default();
             Ok(Value::Null)
         }),
-        cmd!("project.delete", "Clear", [], Some("Delete"), r#"{"items":[id]?}"#, has_project_selection, |s, p| {
+        cmd!("project.delete", "Clear", [], None, r#"{"items":[id]?}"#, has_project_selection, |s, p| {
             let asked: Vec<ItemId> = p
                 .get("items")
                 .and_then(Value::as_array)
