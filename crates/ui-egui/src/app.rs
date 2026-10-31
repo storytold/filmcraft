@@ -36,6 +36,7 @@ impl FilmcraftApp {
             ui: UiState { language, ..UiState::default() },
             tokens: Tokens::for_kind(ThemeKind::Dark),
             frames,
+            scope_worker: scope_worker::ScopeWorker::new(),
             playback: Playback { speed: 1.0, ..Default::default() },
             source_playback: Default::default(),
             audio: None,

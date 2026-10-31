@@ -779,6 +779,24 @@ is the ~9 % of decoder cycles above, plus a quarter / sixteenth of the texture u
 frame jobs wait for the decoder less (decode ms/job 212 → 67 at 1/2, 98 → 44 at 1/4 in the busy
 round). On an idle machine the 4K clip needs about two cores.
 
+### Lumetri Scopes: UI pass time, 2160p PQ (`egui_kittest`)
+
+A 4K50 HEVC Main 10 PQ clip (ffmpeg `testsrc2`, `target/fixtures`) in a Rec. 2100 PQ sequence,
+the Lumetri Scopes panel showing (HDR waveform): the playhead steps one frame at a time and each UI
+pass is timed (60 steps, release build, 1600×980 harness; hardware decoding is not registered in
+the harness, so the clip decodes in software). Ryzen 7 5800X3D, load average ~5. Measured once,
+before and after the scope worker on the same tree (the 11 PRs of the HDR / playback series
+merged); a temporary test, not committed.
+
+| | UI pass p50 | p95 | max |
+|---|---|---|---|
+| scopes closed | 3.4–3.6 ms | 8–11 ms | 13–29 ms |
+| scopes open, before (signal and scopes in the UI pass) | 24.1 ms | 780.5 ms | 968.5 ms |
+| scopes open, after (scope worker) | 3.3 ms | 10.5 ms | 19.4 ms |
+
+Before, each new frame rendered the working-space picture (decoding the source) inside the UI
+pass; after, the UI pass with the scopes open costs what it costs without them.
+
 ## What M4.9 changed
 
 1. **Deblocking** (25–30 % of 4K decode time before): the edge filter runs on all 16 luma / 8
