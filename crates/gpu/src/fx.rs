@@ -295,11 +295,8 @@ impl FxStage {
             && l.max_compute_workgroups_per_dimension >= 1
     }
 
-    pub(crate) fn new(device: &wgpu::Device, composite: &wgpu::ShaderModule, layer_bgl: &wgpu::BindGroupLayout) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("filmcraft-fx"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("fx.wgsl").into()),
-        });
+    pub(crate) fn new(device: &wgpu::Device, wgsl: &str, composite: &wgpu::ShaderModule, layer_bgl: &wgpu::BindGroupLayout) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("filmcraft-fx"), source: wgpu::ShaderSource::Wgsl(wgsl.into()) });
         let tex = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
