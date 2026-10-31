@@ -1,0 +1,8 @@
+asset:        ka.tsv
+title:        Georgian interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-10-12 by devius
+notes:        Original English-to-Georgian interface translations using clean-room NLE vocabulary, consistent with the WordCraft and GridCraft Georgian catalogs.
