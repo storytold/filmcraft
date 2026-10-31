@@ -2384,6 +2384,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-publish"
+version = "0.15.0"
+dependencies = [
+ "filmcraft-publish",
+ "rustls",
+ "rustls-rustcrypto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ureq",
+]
+
+[[package]]
 name = "filmcraft-render"
 version = "0.15.0"
 dependencies = [

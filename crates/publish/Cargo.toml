@@ -1,0 +1,28 @@
+[package]
+name = "filmcraft-publish"
+description = "FilmCraft publishing: upload exported media to video platforms (YouTube resumable uploads), over a transport trait with the HTTPS client behind the `net` feature"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# The HTTPS transport (pure-Rust TLS: rustls + RustCrypto, OS certificate verification), the same
+# stack as filmcraft-speech's `download`. Off by default (and in wasm builds).
+net = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"], optional = true }
+rustls = { version = "0.23", default-features = false, optional = true }
+rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
+
+[dev-dependencies]
+# The integration tests drive the real HTTP transport against a local fake server.
+filmcraft-publish = { path = ".", features = ["net"] }
