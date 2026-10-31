@@ -27,16 +27,23 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.floatPanel", "Undock Panel", [], None),
     uic!("window.closePanel", "Close Panel", [], None),
     uic!("app.language.english", "English", ["Edit", "Language"], None),
-    uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
-    uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
-    uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
-    uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
-    uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
-    uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
-    uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
-    uic!("app.language.french", "Français", ["Edit", "Language"], None),
+    // Alphabetical by the language's own name after English; Cyrillic, then CJK names follow
+    // the Latin ones. Settings ▸ General ▸ Interface Language lists them the same way.
     uic!("app.language.indonesian", "Bahasa Indonesia", ["Edit", "Language"], None),
+    uic!("app.language.bosnian", "Bosanski", ["Edit", "Language"], None),
+    uic!("app.language.czech", "Čeština", ["Edit", "Language"], None),
+    uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
+    uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
+    uic!("app.language.french", "Français", ["Edit", "Language"], None),
     uic!("app.language.italian", "Italiano", ["Edit", "Language"], None),
+    uic!("app.language.polish", "Polski", ["Edit", "Language"], None),
+    uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
+    uic!("app.language.swedish", "Svenska", ["Edit", "Language"], None),
+    uic!("app.language.turkish", "Türkçe", ["Edit", "Language"], None),
+    uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
+    uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
+    uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
+    uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
     uic!("app.language.korean", "한국어", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
@@ -117,6 +124,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.audio", "Audio", ["Window", "Workspaces"], Some("Alt+Shift+5")),
     uic!("window.workspace.captionsandgraphics", "Captions and Graphics", ["Window", "Workspaces"], Some("Alt+Shift+6")),
     uic!("window.workspace.allpanels", "All Panels", ["Window", "Workspaces"], None),
+    uic!("window.workspace.vertical", "Vertical", ["Window", "Workspaces"], None),
     uic!("window.workspace.reset", "Reset to Saved Layout", ["Window", "Workspaces"], Some("Alt+Shift+0")),
     uic!("window.workspace.saveChanges", "Save Changes to this Workspace", ["Window", "Workspaces"], None),
     uic!("window.workspace.saveAs", "Save as New Workspace…", ["Window", "Workspaces"], None),
@@ -180,10 +188,43 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     }
 }
 
+/// Edit ▸ Select All while a text field has the keyboard (the Project panel's search, a name being
+/// typed) selects that field's text, not the timeline clips: on macOS the native menu takes Cmd+A
+/// before the field sees the key. The selection is set on the field's state, so it holds however
+/// late in the pass the command runs (menu inbox or control channel); the field clamps the end to
+/// its text. False when no text field has the keyboard.
+fn select_all_in_text_field(ctx: &egui::Context) -> bool {
+    use egui::text::{CCursor, CCursorRange};
+    let Some(id) = ctx.memory(|m| m.focused()) else { return false };
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return false };
+    state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(usize::MAX))));
+    state.store(ctx, id);
+    true
+}
+
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // A focused text field takes Select All before the Project panel redirect below, or the
+    // Project search box would select items.
+    if id == "edit.selectAll" && select_all_in_text_field(ctx) {
+        return Ok(Value::Null);
+    }
+    // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
+    // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
+    // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
+    if app.ui.focused == PanelKind::Project && id == "edit.selectAll" {
+        let (cmd, params) = crate::panels::project::select_all_command(app);
+        return invoke(app, ctx, &cmd, params);
+    }
+    if app.ui.focused == PanelKind::Project && id == "edit.deselectAll" {
+        return invoke(app, ctx, "project.deselectAll", params);
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
+    }
+    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch Warning asks first
+    if matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
+        return Ok(json!({"dialog": "clipMismatch"}));
     }
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
@@ -202,7 +243,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             | "app.language.french"
             | "app.language.indonesian"
             | "app.language.italian"
+            | "app.language.bosnian"
             | "app.language.korean"
+            | "app.language.czech"
+            | "app.language.polish"
+            | "app.language.swedish"
+            | "app.language.turkish"
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -227,7 +273,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             "app.language.french" => crate::i18n::Language::Fr,
             "app.language.indonesian" => crate::i18n::Language::Id,
             "app.language.italian" => crate::i18n::Language::It,
+            "app.language.bosnian" => crate::i18n::Language::Bs,
             "app.language.korean" => crate::i18n::Language::Ko,
+            "app.language.czech" => crate::i18n::Language::Cs,
+            "app.language.polish" => crate::i18n::Language::Pl,
+            "app.language.swedish" => crate::i18n::Language::Sv,
+            "app.language.turkish" => crate::i18n::Language::Tr,
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -420,7 +471,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         "view.zoomIn" | "view.zoomOut" => {
             let f = if id == "view.zoomIn" { 1.6 } else { 1.0 / 1.6 };
             let ph = app.session.playhead().seconds();
-            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width);
+            let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
+            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width, seconds);
             return Ok(Value::Null);
         }
         "view.zoomToSequence" => {
@@ -467,6 +519,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::interchange_export::open(app, ctx, id);
+        }
+        // File ▸ Export ▸ Captions… (and the Text panel's Export captions…) opens the caption export
+        // settings (#3365); with a path it exports directly.
+        "captions.export" if params.get("path").is_none() => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            return crate::panels::caption_export::open(app, ctx, &params);
         }
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
         "file.exportMedia" if params.get("path").is_none() => {
@@ -598,7 +656,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         || (id == "file.saveCopy" && params.get("path").is_none())
         || (id == "file.open" && params.get("path").is_none())
         || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
-        || (matches!(id, "captions.import" | "captions.export") && params.get("path").is_none())
+        || (id == "captions.import" && params.get("path").is_none())
         || (id == "graphics.newFromFile" && params.get("path").is_none())
         || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none())
     {
@@ -629,6 +687,10 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
 /// the keyboard, in the main window or a floating panel's own window, the field gets the key
 /// and the project command does not run.
 pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Result<Value, String> {
+    // Select All of a graphic's text is already handled in `invoke`
+    if text_field_window(ctx).is_none() && app.ui.gfx_edit.is_some() && matches!(id, "edit.copy" | "edit.cut" | "edit.paste") {
+        return Ok(graphic_text_command(app, ctx, id));
+    }
     let (Some(window), Some(text)) = (text_field_window(ctx), text_command(id, ctx.os().is_mac())) else {
         return invoke(app, ctx, id, json!({}));
     };
@@ -653,6 +715,31 @@ pub fn text_field_window(ctx: &egui::Context) -> Option<egui::ViewportId> {
 /// menu keeps such items enabled while one has the keyboard, whatever the project allows.
 pub fn edits_text(id: &str) -> bool {
     text_command(id, false).is_some()
+}
+
+/// Whether the graphic text being edited takes the menu command `id` ([`activate_native`]): Copy,
+/// Cut and Paste go to its text instead of copying or pasting the graphic clip (#1953). Select All
+/// already selects its text in [`invoke`], and Undo stays the project's, as each text edit is one.
+/// The native menu keeps these enabled while a graphic's text is edited.
+pub fn edits_graphic_text(id: &str) -> bool {
+    matches!(id, "edit.copy" | "edit.cut" | "edit.paste" | "edit.selectAll")
+}
+
+/// Hand a native Edit command to the graphic text being edited (main window). The editor gives the
+/// keyboard to any other focused widget (a Text Properties button) and takes it back once nothing
+/// has it, so that widget lets go first and the text receives the event in the next frame.
+fn graphic_text_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Value {
+    let editor = egui::Id::unique(crate::panels::graphics::TEXT_EDIT_ID);
+    if let Some(other) = ctx.memory(|m| m.focused()).filter(|f| *f != editor) {
+        ctx.memory_mut(|m| m.surrender_focus(other));
+    }
+    match id {
+        "edit.paste" => ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::RequestPaste),
+        "edit.cut" => app.synthetic.push(egui::Event::Cut),
+        _ => app.synthetic.push(egui::Event::Copy),
+    }
+    ctx.request_repaint();
+    Value::Null
 }
 
 /// What a focused text field does for an Edit menu command.
@@ -817,8 +904,16 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.french" => it.checked = Some(app.ui.language == crate::i18n::Language::Fr),
             "app.language.indonesian" => it.checked = Some(app.ui.language == crate::i18n::Language::Id),
             "app.language.italian" => it.checked = Some(app.ui.language == crate::i18n::Language::It),
+            "app.language.bosnian" => it.checked = Some(app.ui.language == crate::i18n::Language::Bs),
             "app.language.korean" => it.checked = Some(app.ui.language == crate::i18n::Language::Ko),
+            "app.language.czech" => it.checked = Some(app.ui.language == crate::i18n::Language::Cs),
+            "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
+            "app.language.swedish" => it.checked = Some(app.ui.language == crate::i18n::Language::Sv),
+            "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),
             _ => {}
+        }
+        if let Some(on) = engine_toggle(&app.session, &it.id) {
+            it.checked = Some(on);
         }
         if it.id.starts_with("view.") {
             it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
@@ -828,6 +923,21 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     crate::panels::workspaces::menu(app, &mut v);
     open_recent(&mut v, &app.session, |n| app.ui.language.tr(n).to_string());
     v
+}
+
+/// Checkmark state of the engine's on/off menu commands (`{"on":bool?}`, toggled when invoked from a
+/// menu without parameters). None = not one of them.
+fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> {
+    let st = &session.state;
+    Some(match id {
+        "sequence.snap" => st.snapping,
+        "sequence.linkedSelection" => st.linked_selection,
+        "sequence.selectionFollowsPlayhead" => st.selection_follows_playhead,
+        "sequence.showThroughEdits" => st.show_through_edits,
+        "markers.rippleSequenceMarkers" => st.ripple_sequence_markers,
+        "markers.copyPasteIncludesSequenceMarkers" => st.copy_paste_sequence_markers,
+        _ => return None,
+    })
 }
 
 /// File ▸ Open Recent, after Open Project…: the recent projects (General ▸ `recentProjects`),
@@ -1097,6 +1207,12 @@ pub fn label_color(labels: &filmcraft_engine::settings::LabelPrefs, l: filmcraft
     egui::Color32::from_rgb(r, g, b)
 }
 
+/// The left gutter of a menu row that can carry a checkmark or a label swatch: the label is pushed
+/// right by these spaces and the mark is painted in the room they leave, centred 10 points from the
+/// row's left edge. The two agree at the default font and size; one constant keeps every gutter
+/// (menu bar, right-click menus) the same width.
+const GUTTER: &str = "      ";
+
 /// A label choice in a right-click Label menu (Project panel items, Timeline clips; #786), drawn
 /// as Edit ▸ Label draws it: the user's name for the label with a swatch of its colour in the
 /// left gutter. Registered for automation as `<prefix>.<Label>` (the label's built-in name).
@@ -1109,10 +1225,18 @@ pub fn label_choice(
 ) -> egui::Response {
     let name = labels.name(l);
     let text = crate::i18n::t(&name);
-    let r = ui.button(format!("      {text}"));
+    let r = ui.button(format!("{GUTTER}{text}"));
     auto.add(&format!("{prefix}.{}", l.name()), r.rect, text);
     paint_swatch(ui, r.rect, label_color(labels, l));
     r
+}
+
+/// A checkmark in the left gutter of the menu row `row`.
+fn paint_check(ui: &egui::Ui, row: egui::Rect) {
+    let c = row.left_center() + egui::vec2(10.0, 0.0);
+    let st = egui::Stroke::new(1.5, ui.visuals().text_color());
+    ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], st);
+    ui.painter().line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], st);
 }
 
 /// A label swatch in the left gutter of the menu row `row`.
@@ -1122,31 +1246,65 @@ fn paint_swatch(ui: &egui::Ui, row: egui::Rect, color: egui::Color32) {
     ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color), egui::StrokeKind::Inside);
 }
 
+/// Where a menu item's hover hint opens, from the point the pointer entered the item: +x right,
+/// +y down, in points. The hint's top-left corner goes there, so 0, 18 puts it just below the
+/// arrow cursor, lined up with its tip.
+const HINT_NUDGE: egui::Vec2 = egui::vec2(0.0, 18.0);
+
+/// A hover hint that opens like a menu: below the pointer, where the hover began, and stays put
+/// while the pointer moves within the same item.
+fn hint_at_pointer(ui: &egui::Ui, r: &egui::Response, hint: String) {
+    let key = r.id.with("hint-at");
+    let Some(pointer) = r.hover_pos().filter(|_| r.hovered()) else {
+        ui.data_mut(|d| d.remove::<egui::Pos2>(key));
+        return;
+    };
+    let at = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(key, || pointer));
+    let mut tip = egui::Tooltip::for_enabled(r);
+    tip.popup = tip.popup.at_position(at + HINT_NUDGE).align(egui::RectAlign::BOTTOM_START).gap(0.0);
+    tip.show(|ui| {
+        ui.set_max_width(ui.spacing().tooltip_width);
+        ui.label(hint);
+    });
+}
+
 fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Registry, labels: &filmcraft_engine::settings::LabelPrefs) -> bool {
     // Checkmarks and label swatches each occupy the same left gutter.
     let swatch = label_menu_swatch(&it.id, labels);
-    let label = if it.checked.is_some() || swatch.is_some() { format!("      {}", it.label) } else { it.label.clone() };
+    let label = if it.checked.is_some() || swatch.is_some() { format!("{GUTTER}{}", it.label) } else { it.label.clone() };
     let mut b = egui::Button::new(label);
     if let Some(s) = &it.shortcut {
         b = b.shortcut_text(shortcut_text(s));
     }
-    let mut r = ui.add_enabled(it.enabled, b);
-    // Help items say whether they open the web browser (and which address) or stay in FilmCraft
+    let r = ui.add_enabled(it.enabled, b);
+    // Help items show the address they open, or say what they do inside FilmCraft
     if let Some(hint) = crate::links::menu_hint(&it.id) {
-        r = r.on_hover_text(hint);
+        hint_at_pointer(ui, &r, hint);
     }
     auto.add(&format!("menu.{}", it.id), r.rect, &it.label);
     if let Some(color) = swatch {
         paint_swatch(ui, r.rect, color);
     }
     if it.checked == Some(true) {
-        let c = r.rect.left_center() + egui::vec2(10.0, 0.0);
-        let col = ui.visuals().text_color();
-        let st = egui::Stroke::new(1.5, col);
-        ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], st);
-        ui.painter().line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], st);
+        paint_check(ui, r.rect);
     }
     r.clicked()
+}
+
+/// A row of a right-click menu with the menu bar's checkmark gutter, so it lines up with the
+/// checkable rows around it. `checked` is as in [`MenuItem::checked`]: `None` is a command,
+/// reported to accessibility as a plain button; `Some` is a checkable row, reported with its state
+/// and showing the checkmark when true.
+pub fn checked_entry(ui: &mut egui::Ui, label: &str, enabled: bool, checked: Option<bool>) -> egui::Response {
+    let r = ui.add_enabled(enabled, egui::Button::new(format!("{GUTTER}{label}")));
+    r.widget_info(|| match checked {
+        Some(checked) => egui::WidgetInfo::selected(egui::Role::Button, enabled, checked, label),
+        None => egui::WidgetInfo::labeled(egui::Role::Button, enabled, label),
+    });
+    if checked == Some(true) {
+        paint_check(ui, r.rect);
+    }
+    r
 }
 
 #[cfg(test)]

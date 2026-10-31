@@ -158,9 +158,9 @@ pub fn idct8(d: &[i32; 64]) -> [i32; 64] {
 /// Per-QP quantiser tables.
 pub struct QuantTables {
     /// mf4[qp%6][pos]
-    pub mf4: [[i32; 16]; 6],
+    pub mf4: [[u32; 16]; 6],
     pub v4: [[i32; 16]; 6],
-    pub mf8: [[i64; 64]; 6],
+    pub mf8: [[u32; 64]; 6],
     pub v8: [[i32; 64]; 6],
 }
 
@@ -173,14 +173,14 @@ impl QuantTables {
         let norm8 = [512.0, 578.0, 320.0, 578.0, 512.0, 578.0, 320.0, 578.0f64];
         for q in 0..6 {
             for i in 0..16 {
-                mf4[q][i] = QUANT4[q][pos_class4(i)];
+                mf4[q][i] = QUANT4[q][pos_class4(i)] as u32;
                 v4[q][i] = DEQUANT4[q][pos_class4(i)];
             }
             for i in 0..64 {
                 let v = DEQUANT8[q][pos_class8(i)];
                 v8[q][i] = v;
                 let (x, y) = (i & 7, i >> 3);
-                mf8[q][i] = ((1u64 << 36) as f64 / (norm8[x] * norm8[y] * v as f64)).round() as i64;
+                mf8[q][i] = ((1u64 << 36) as f64 / (norm8[x] * norm8[y] * v as f64)).round() as u32;
             }
         }
         QuantTables { mf4, v4, mf8, v8 }
@@ -210,15 +210,19 @@ impl Deadzone {
 #[inline]
 pub fn quant4(c: &mut [i32; 16], qt: &QuantTables, qp: u8, dz: Deadzone, skip_dc: bool) -> u32 {
     let qbits = 15 + (qp / 6) as u32;
-    let f = ((1i64 << qbits) * dz.f256) >> 8;
+    let f = (((1i64 << qbits) * dz.f256) >> 8) as u32;
     let mf = &qt.mf4[(qp % 6) as usize];
+    let dc = c[0];
     let mut nz = 0;
-    let start = if skip_dc { 1 } else { 0 };
-    for i in start..16 {
-        let v = c[i];
-        let a = ((v.unsigned_abs() as i64 * mf[i] as i64 + f) >> qbits) as i32;
-        c[i] = if v < 0 { -a } else { a };
+    for (v, &m) in c.iter_mut().zip(mf) {
+        // Residual coefficients stay below 2^14; the clamp keeps the u32 product from overflowing on any input.
+        let a = ((v.unsigned_abs().min(0xffff) * m + f) >> qbits) as i32;
         nz += (a != 0) as u32;
+        *v = if *v < 0 { -a } else { a };
+    }
+    if skip_dc {
+        nz -= (c[0] != 0) as u32;
+        c[0] = dc;
     }
     nz
 }
@@ -238,14 +242,17 @@ pub fn dequant4(c: &mut [i32; 16], qt: &QuantTables, qp: u8, skip_dc: bool) {
 /// Quantise an 8x8 block (raster), returns non-zero count.
 pub fn quant8(c: &mut [i32; 64], qt: &QuantTables, qp: u8, dz: Deadzone) -> u32 {
     let qbits = 22 + (qp / 6) as u32;
-    let f = ((1i64 << qbits) * dz.f256) >> 8;
+    let f = (((1i64 << qbits) * dz.f256) >> 8) as u32;
     let mf = &qt.mf8[(qp % 6) as usize];
     let mut nz = 0;
-    for i in 0..64 {
-        let v = c[i];
-        let a = ((v.unsigned_abs() as i64 * mf[i] + f) >> qbits) as i32;
-        c[i] = if v < 0 { -a } else { a };
+    for (v, &m) in c.iter_mut().zip(mf) {
+        // |v| * m needs up to 36 bits. Splitting |v| at bit 8 keeps both partial products in u32, and
+        // (256 * hi + lo) >> qbits == (hi + (lo >> 8)) >> (qbits - 8) keeps the result exact.
+        // Residual coefficients stay below 2^21; the clamp keeps the sums from overflowing on any input.
+        let x = v.unsigned_abs().min(0xff_ffff);
+        let a = (((x >> 8) * m + (((x & 0xff) * m + f) >> 8)) >> (qbits - 8)) as i32;
         nz += (a != 0) as u32;
+        *v = if *v < 0 { -a } else { a };
     }
     nz
 }
@@ -343,6 +350,99 @@ pub fn dequant_chroma_dc(c: &[i32; 4], qt: &QuantTables, qpc: u8) -> [i32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn quant4_i64(c: &mut [i32; 16], qp: u8, dz: Deadzone, skip_dc: bool) -> u32 {
+        let qbits = 15 + (qp / 6) as u32;
+        let f = ((1i64 << qbits) * dz.f256) >> 8;
+        let mut nz = 0;
+        for i in (skip_dc as usize)..16 {
+            let v = c[i];
+            let a = ((v.unsigned_abs() as i64 * QUANT4[(qp % 6) as usize][pos_class4(i)] as i64 + f) >> qbits) as i32;
+            c[i] = if v < 0 { -a } else { a };
+            nz += (a != 0) as u32;
+        }
+        nz
+    }
+
+    fn mf8_i64() -> [[i64; 64]; 6] {
+        let norm8 = [512.0, 578.0, 320.0, 578.0, 512.0, 578.0, 320.0, 578.0f64];
+        std::array::from_fn(|q| {
+            std::array::from_fn(|i| {
+                let v = DEQUANT8[q][pos_class8(i)] as f64;
+                ((1u64 << 36) as f64 / (norm8[i & 7] * norm8[i >> 3] * v)).round() as i64
+            })
+        })
+    }
+
+    fn quant8_i64(c: &mut [i32; 64], mf8: &[[i64; 64]; 6], qp: u8, dz: Deadzone) -> u32 {
+        let qbits = 22 + (qp / 6) as u32;
+        let f = ((1i64 << qbits) * dz.f256) >> 8;
+        let mut nz = 0;
+        for i in 0..64 {
+            let v = c[i];
+            let a = ((v.unsigned_abs() as i64 * mf8[(qp % 6) as usize][i] + f) >> qbits) as i32;
+            c[i] = if v < 0 { -a } else { a };
+            nz += (a != 0) as u32;
+        }
+        nz
+    }
+
+    const DEADZONES: [Deadzone; 3] = [Deadzone::INTRA, Deadzone::INTER, Deadzone { f256: 128 }];
+
+    #[test]
+    fn quant4_matches_i64() {
+        let qt = QuantTables::new();
+        for qp in 0..52u8 {
+            for dz in DEADZONES {
+                // Every magnitude below 2^16 (4x4 residual coefficients stay below 2^14) at every position.
+                for base in (0..1 << 16).step_by(16) {
+                    for rot in [0, 5, 10] {
+                        let mut c: [i32; 16] = std::array::from_fn(|i| {
+                            let v = base + (i + rot) as i32 % 16;
+                            if (i ^ (base as usize / 16)) & 1 == 0 { v } else { -v }
+                        });
+                        let mut r = c;
+                        let skip_dc = base & 16 != 0;
+                        let nz = quant4(&mut c, &qt, qp, dz, skip_dc);
+                        assert_eq!(nz, quant4_i64(&mut r, qp, dz, skip_dc), "qp {qp} base {base}");
+                        assert_eq!(c, r, "qp {qp} base {base}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quant8_matches_i64() {
+        let qt = QuantTables::new();
+        let mf8 = mf8_i64();
+        assert!(qt.mf8.iter().flatten().all(|&m| m <= 0xffff));
+        let mut seed = 1u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            seed
+        };
+        for qp in 0..52u8 {
+            for dz in DEADZONES {
+                // Every magnitude below 2^21 (8x8 residual coefficients stay below 2^20), rotated over positions.
+                for (n, base) in (0..1 << 21).step_by(64).enumerate() {
+                    let mut c: [i32; 64] = std::array::from_fn(|i| {
+                        let v = base + ((i + n * 7) % 64) as i32;
+                        if (i + n) & 1 == 0 { v } else { -v }
+                    });
+                    let mut r = c;
+                    assert_eq!(quant8(&mut c, &qt, qp, dz), quant8_i64(&mut r, &mf8, qp, dz), "qp {qp} base {base}");
+                    assert_eq!(c, r, "qp {qp} base {base}");
+                }
+                for _ in 0..2000 {
+                    let mut c: [i32; 64] = std::array::from_fn(|_| (rnd() >> 10) as i32 - (1 << 21));
+                    let mut r = c;
+                    assert_eq!(quant8(&mut c, &qt, qp, dz), quant8_i64(&mut r, &mf8, qp, dz), "qp {qp}");
+                    assert_eq!(c, r, "qp {qp}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn roundtrip_4x4_low_qp() {

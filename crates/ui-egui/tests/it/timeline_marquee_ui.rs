@@ -184,3 +184,131 @@ fn escape_cancels_the_box_and_restores_the_selection() {
     d.frames(2);
     assert!(d.selected(a) && !d.selected(b), "Escape put back the selection the drag began with");
 }
+
+/// Only the primary button draws the box: a right-button drag over clips selects none of them.
+#[test]
+fn a_right_button_drag_draws_no_box() {
+    let mut d = Driver::demo();
+    let (a, b, ra, rb, start) = d.setup();
+    d.exec("timeline.select", json!({"clips": []}));
+    let modifiers = d.modifiers;
+    let secondary = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers };
+    d.send(egui::Event::PointerMoved(start));
+    d.send(secondary(start, true));
+    let over_b = egui::pos2(rb.center().x, start.y + 2.0);
+    d.move_to(start, over_b);
+    let over_a = egui::pos2(ra.center().x, start.y + 2.0);
+    d.move_to(over_b, over_a);
+    assert!(!d.selected(a) && !d.selected(b), "a right-button drag selected clips");
+    d.send(secondary(over_a, false));
+    d.frames(2);
+    assert!(!d.selected(a) && !d.selected(b));
+}
+
+#[test]
+fn scrolling_mid_drag_keeps_the_box_anchored_to_the_content() {
+    let mut d = Driver::demo();
+    // scrolled right a little, so the view can move back while the box is open
+    d.ok("ui.set", json!({"timeline": {"scroll": 10.0}}));
+    d.frames(40);
+    let (_, b, _, rb, start) = d.setup();
+    d.exec("timeline.select", json!({"clips": []}));
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    let over_b = egui::pos2(rb.center().x, start.y + 2.0);
+    d.move_to(start, over_b);
+    assert!(d.selected(b), "the box reaches the last clip before the view scrolls");
+    // scroll the content right by more than the clip is wide, the pointer held still: the clip ends
+    // up past where the box began on screen, but the box's corner moved with the content
+    let shift_px = rb.width() + 40.0;
+    let pps = d.harness.state().ui.timeline.pps as f32;
+    d.ok("ui.set", json!({"timeline": {"scroll": 10.0 - (shift_px / pps) as f64}}));
+    d.frames(60);
+    let rb_now = d.rect(&format!("timeline.clip.{b}"));
+    assert!(rb_now.min.x > start.x + 10.0, "the clip really moved past the screen position the drag began at");
+    assert!(d.selected(b), "scrolling does not drop the clip from the box");
+    d.button(over_b, false);
+    d.frames(2);
+    assert!(d.selected(b), "the release keeps what the box showed");
+}
+
+impl Driver {
+    fn wheel(&mut self, dy: f32) {
+        self.send(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Wheel,
+            delta: egui::vec2(0.0, dy),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        });
+    }
+
+    fn selection(&self) -> Vec<ClipId> {
+        let mut s = self.harness.state().session.state.selection.clone();
+        s.sort();
+        s
+    }
+}
+
+/// Review of #3583: the audio tracks scroll on their own, so a box begun on them keeps its corner
+/// on them while the wheel scrolls them under a pointer held still.
+#[test]
+fn scrolling_the_audio_tracks_mid_drag_keeps_the_box_on_them() {
+    let mut d = Driver::demo();
+    d.exec("sequence.addTracks", json!({"audio": 12}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.frames(4);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let items = seq["audio"][0]["items"].as_array().unwrap().clone();
+    let b = items[items.len() - 1]["clip"].as_u64().unwrap();
+    let rb = d.rect(&format!("timeline.clip.{b}"));
+    let start = egui::pos2(rb.max.x + 12.0, rb.center().y);
+    assert_eq!(d.ok("ui.timeline.hit", json!({"x": start.x, "y": start.y}))["hit"], "empty", "the drag starts on empty space");
+    let ah = d.harness.state().ui.timeline.audio_track_h;
+    d.exec("timeline.select", json!({"clips": []}));
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    // into the last clip of Audio 1 and down onto the track below it
+    let over = egui::pos2(rb.center().x, start.y + ah);
+    d.move_to(start, over);
+    assert!(d.selected(b), "the box reaches the clip before the tracks scroll");
+    // wheel down over the audio tracks: they move up most of a track, the pointer held still
+    let dy = (ah * 0.75).round();
+    d.wheel(-dy);
+    d.frames(2);
+    assert_eq!(d.harness.state().ui.timeline.a_scroll, dy, "the audio tracks scrolled");
+    let rb_now = d.rect(&format!("timeline.clip.{b}"));
+    assert!(rb_now.max.y < start.y, "the clip really moved up past where the drag began: {rb_now:?}");
+    assert!(d.selected(b), "the box's corner moved up with the clip it began beside");
+    d.button(over, false);
+    d.frames(2);
+    assert!(d.selected(b), "the release keeps what the box showed");
+}
+
+/// Review of #3583: a wheel turn mid-drag changes the scroll after the tracks were laid out for the
+/// frame; the box follows the tracks as drawn, not the scroll they have yet to be drawn at. At the
+/// lowest video scroll, wheeling further must not stretch the box over the tracks above, even for a frame.
+#[test]
+fn a_wheel_turn_past_the_end_of_the_video_scroll_does_not_move_the_box() {
+    let mut d = Driver::demo();
+    let (_, b, _, _, start) = d.setup();
+    assert_eq!(d.harness.state().ui.timeline.v_scroll, 0.0);
+    let left = d.rect("timeline.tracks").min.x + 20.0;
+    d.exec("timeline.select", json!({"clips": []}));
+    d.send(egui::Event::PointerMoved(start));
+    d.button(start, true);
+    // along Video 1 to the start of the view
+    let over = egui::pos2(left, start.y + 2.0);
+    d.move_to(start, over);
+    assert!(d.selected(b));
+    let before = d.selection();
+    // the video tracks are already as low as they go: the wheel cannot scroll them
+    d.wheel(-400.0);
+    assert_eq!(d.selection(), before, "the box did not reach the tracks above for the frame of the wheel turn");
+    d.frames(2);
+    assert_eq!(d.harness.state().ui.timeline.v_scroll, 0.0);
+    assert_eq!(d.selection(), before);
+    d.button(over, false);
+    d.frames(2);
+    assert_eq!(d.selection(), before, "the release keeps what the box showed");
+}

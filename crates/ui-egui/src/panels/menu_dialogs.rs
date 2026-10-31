@@ -985,3 +985,15 @@ pub fn search_bin_rows(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_command_with_a_menu_dialog_can_be_bound() {
+        // project.matteColor recolours the selected matte and needs a colour: the engine refuses it
+        // without one, so its parameter is required and its dialog is reached from the matte itself
+        crate::panels::clip_dialogs::tests::assert_dialog_commands_bindable("menu_dialogs::meta", |id| meta(id).is_some(), &["project.matteColor"]);
+    }
+}

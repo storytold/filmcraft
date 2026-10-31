@@ -26,7 +26,7 @@ kerning and ligatures, bidi, line breaking, all drawn as vectors in linear light
 
 | Group | Properties (parameter ids) |
 |---|---|
-| Text | `text` (Source Text), `font`, `font_style`, `size` (px), `align` (Left/Center/Right/Justify), `tracking` (1/1000 em), `kerning`, `ligatures`, `leading` (px added to the natural line height), `baseline_shift`, `faux_bold`, `faux_italic`, `caps` (Normal/All Caps/Small Caps), `underline`, `box_width` (0 = point text, else paragraph text wrapped at that width), `box_height` (paragraph text: lines that do not fit are not shown; 0 = as tall as the text) |
+| Text | `text` (Source Text), `font`, `font_style`, `size` (px), `align` (Left/Center/Right/Justify), `tracking` (1/1000 em), `kerning`, `ligatures`, `leading` (px added to the natural line height), `baseline_shift`, `faux_bold`, `faux_italic`, `caps` (Normal/All Caps/Small Caps), `underline`, `strikethrough`, `box_width` (0 = point text, else paragraph text wrapped at that width), `box_height` (paragraph text: lines that do not fit are not shown; 0 = as tall as the text) |
 | Shape | `shape` (Rectangle/Ellipse/Polygon/Path), `size` [w, h], `sides`, `corner_radius` (one radius for all four corners, at most half the shorter side; on the Program monitor, drag one of the four small circles just inside a selected rectangle's corners), `points` (path vertices relative to the layer origin) |
 | Appearance | `fill`, `fill_color`; `stroke`, `stroke_color`, `stroke_width`, `stroke_type` (Outer/Center/Inner) and the same for `stroke2`; `background`, `background_color`, `background_opacity`, `background_size` (padding), `background_radius`; `shadow`, `shadow_color`, `shadow_opacity`, `shadow_angle` (135° = down-right), `shadow_distance`, `shadow_size`, `shadow_blur` |
 | Transform | `position` (graphic canvas px), `anchor` (layer px), `scale`, `scale_width`, `uniform_scale`, `rotation`, `opacity` |
@@ -60,6 +60,12 @@ A text layer is one of two types, as in Premiere Pro (behaviour observed in Prem
   and Anchor Point change together). It is picked before anything under it: a shape dragged by
   its exact centre moves its anchor, not the shape, and the top-left handle of a new paragraph
   box is reached only after moving the anchor.
+- **Several layers.** With the Selection tool, Shift-click adds a layer of the selected graphic
+  to the selection or takes it out again, Cmd/Ctrl-click takes it out, and a plain click selects
+  only it. Dragging any selected layer moves all of them together, snapping by their combined
+  outline, as one undo step (`graphics.moveLayers`); Shift-dragging an unselected layer adds it
+  first. Drawing a marquee to select layers is not supported yet. A selected layer that is
+  hidden (eye off) stays selected but is not dragged: only shown layers move.
 - **Switching type.** Properties ▸ Text ▸ wrench ▸ **Text Properties** ▸ Text Layer Type
   (`graphics.setTextType`). To point text: the wrapped lines become real lines (also those the
   box hid). To paragraph text: the box is fitted to the text. Either way the text stays where it
@@ -93,7 +99,8 @@ Timecode and Clip Name effects also draw with the text engine.
 | `graphics.setTextType` | Text Properties ▸ Text Layer Type | `clip`, `layer`, `type` (`point` / `paragraph`); the text stays where it is |
 | `graphics.setText` | typing on the monitor | `clip`, `layer`, `text`, `merge` (coalesce one typing session into one undo step) |
 | `graphics.set` | Properties panel | `clip`, `layer`, `props` {parameter id or camelCase alias: value; choices by index or name}, `time`, `merge` + `begin` (a drag is one undo step: send `merge: true` on every change and `begin: true` on the first change of each press) |
-| `graphics.selectLayer` | layer list / monitor click | `clip`, `layers` |
+| `graphics.selectLayer` | layer list / monitor click (Shift-click adds or removes) | `clip`, `layers` |
+| `graphics.moveLayers` | dragging selected layers on the Program monitor | `clip`, `layers` (default: the selected layers), `delta` `[dx, dy]` in graphic pixels — one undo step; pinned layers keep following their targets (moved together with its target, a pinned layer moves once, with it) |
 | `graphics.deleteLayer`, `graphics.arrangeLayer` | layer list | `clip`, `layer`, `to` (front/back/forward/backward/index) |
 | `graphics.align` | Align and Transform | `align` (left/hcenter/right/top/vcenter/bottom), `to` (frame/group/selection), `layers` |
 | `graphics.alignFrame.<how>` | Align to Video Frame ▸ Left / Center Horizontally / Right / Top / Center Vertically / Bottom | each selected layer to the frame |
@@ -139,7 +146,7 @@ With a graphic clip selected, the Properties panel (and Essential Graphics) show
 **Align and Transform** (six align buttons, two distribute buttons, position, anchor, scale,
 rotation, opacity), **Text** (Source Text field, font family and style, size, paragraph alignment,
 tracking, leading, baseline shift, box width and height, faux bold / faux italic / all caps /
-small caps / underline, kerning and ligatures; the wrench in the section's header opens **Text
+small caps / underline / strikethrough, kerning and ligatures; the wrench in the section's header opens **Text
 Properties**: Text Layer Type and Ligatures), **Shape**, and **Appearance** (fill, two strokes, background,
 shadow). Automation ids: `graphics.layers.<n>`, `graphics.prop.<parameter id>`,
 `graphics.align.<how>`, `graphics.distribute.<axis>`, `graphics.sourceText`, `graphics.NewTextLayer`,
@@ -150,7 +157,7 @@ shadow). Automation ids: `graphics.layers.<n>`, `graphics.prop.<parameter id>`,
 ## Per-character styles
 
 Select characters with the Type tool and change font, style, size, colour, faux bold / italic,
-underline, tracking, baseline shift or caps in the Properties panel: the change applies to the
+underline, strikethrough, tracking, baseline shift or caps in the Properties panel: the change applies to the
 selection only (`graphics.setCharStyle`). Styles are stored on the layer as runs of characters
 (`EffectInstance::layer.runs`, character offsets, sorted and non-overlapping) and follow the text
 when it is edited (typed characters take the style of the character before them). The text engine
@@ -159,7 +166,7 @@ lines grow to fit the largest run, and each run can have its own fill colour.
 
 | Command | Params |
 |---|---|
-| `graphics.setCharStyle` | `clip`, `layer`, `start`, `end` (characters; default the whole text), `style` {`font`, `fontStyle`, `size`, `color`, `bold`, `italic`, `underline`, `tracking`, `baselineShift`, `caps`}, `clear` (remove styles from the range) |
+| `graphics.setCharStyle` | `clip`, `layer`, `start`, `end` (characters; default the whole text), `style` {`font`, `fontStyle`, `size`, `color`, `bold`, `italic`, `underline`, `strikethrough`, `tracking`, `baselineShift`, `caps`}, `clear` (remove styles from the range) |
 
 ## Responsive design
 
@@ -175,6 +182,14 @@ first and last part of a graphic: when the clip is trimmed or extended, keyframe
 keep their timing from the clip start, those inside the outro from the clip end, and the middle is
 stretched or squeezed (`graphic_design::remap_time`). Trimming the head keeps the intro playing
 from the new start.
+
+*What the remap covers.* Responsive Design – Time remaps the keyframes of the graphic's **layers**
+(text, shapes, their appearance and transforms). The clip's **own effects and masks** (Opacity,
+Motion, a Gaussian Blur you add to the graphic clip, ...) are not remapped: like on any clip they
+use media time, so a keyframe stays at its media time when the graphic is trimmed or extended (a
+head trim advances the clip's source-in, so a keyframe at media 4 s sits 3 s from the new start
+after a 1 s head trim). To make an animation follow the intro / outro, keyframe the layer (or the
+graphic's own layer opacity), not the clip effect.
 
 **Rolls and crawls.** `graphics.setRoll {mode: off | roll | crawlLeft | crawlRight,
 startOffScreen, endOffScreen, prerollFrames, easeInFrames, easeOutFrames, postrollFrames}` (the
@@ -204,7 +219,11 @@ documented, versioned JSON (`filmcraft_project::gtemplate`):
 | `resources.fonts` | optional embedded font files (base64) with their licence; registered on install |
 
 Placing a template on a sequence of another size scales and centres its layers (pin distances
-scale too).
+scale too). Scale and Scale Width, including their keyframes, use the same fit factor. Layers
+with Uniform Scale off therefore keep their authored proportions: a 3840×2160 template placed
+on a 1920×1080 sequence scales both axes by 0.5. Keyframe times and interpolation stay unchanged.
+Imported layers that omit either scale parameter use its definition default before fitting;
+explicit values and keyframes are retained and scaled.
 
 **FilmCraft never reads or imports Adobe `.mogrt` files** (or any other application's template
 packages): Install refuses `.mogrt` paths without opening them, and the reader rejects ZIP
@@ -246,7 +265,7 @@ panel state and the Type-tool selection.
 
 | Command | Menu | Params |
 |---|---|---|
-| `graphics.upgradeCaption` | Graphics and Titles ▸ Upgrade Caption to Graphic | `captions` (default: the selection, else the one under the playhead): each caption becomes a graphic clip on a video track with the track style (font, size, colour, background, outline, alignment, position); `<i>`/`<b>`/`<u>` become character styles; one undo step |
+| `graphics.upgradeCaption` | Graphics and Titles ▸ Upgrade Caption to Graphic | `captions` (default: the selection, else the one under the playhead): each caption becomes a graphic clip on a video track with the track style (font and font style, size, colour, background, outline, alignment, position); `<i>`/`<b>`/`<u>` become character styles; one undo step |
 | `graphics.upgradeToSourceGraphic` | Graphics and Titles ▸ Upgrade to Source Graphic | `clip`: the graphic gets its own project item (shown in the Project panel); every clip of that item shares its layers — editing one updates the others in the same undo step (`project.source_graphics`) |
 | `file.replaceFonts` | Graphics and Titles ▸ Replace Fonts in Projects… | `from` (family or {family, style}), `to`, `toStyle`: graphic layers, character styles, source graphics and caption tracks |
 | `graphics.fonts.used` | (query) | fonts in use with counts and whether they are missing |

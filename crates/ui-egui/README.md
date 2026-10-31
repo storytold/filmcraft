@@ -3,6 +3,16 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Export range warnings
+
+The Export panel shows the selected range's length in sequence frames and seconds beside Range
+(`export.range.duration`). When Source In/Out covers just one sequence frame and at least one
+mark is set, `export.range.warning` explains how to export the whole sequence instead (#3364).
+The warning is advisory: exporting one frame remains valid. Entire Source, Work Area and Custom
+ranges do not show this warning. `export_ui::single_frame_in_out_warning_updates_with_range_and_marks`
+checks the warning and duration as marks and range selections change; the same test can render
+`export-single-frame-warning.png` with `FILMCRAFT_UI_SNAPSHOT_DIR`.
+
 ## Control input limits
 
 The control channel bounds `ui.click` to 10 clicks and `ui.drag` to 1024 movement steps (#2784).
@@ -19,17 +29,19 @@ Dragging a video or audio transition over a compatible clip shows its actual tim
 selected cut and an In/Out label. Shared cuts center the span; isolated edges use a one-sided
 span. The preview uses the engine's read-only transition planner, including Timeline duration
 preferences, and release dispatches `effects.apply` with the same edge. Locked tracks and
-incompatible clip types show no valid transition preview. Ordinary effects retain their clip
-outline. `timeline.transitionDropPreview` exposes the span and edge to automation.
+incompatible clip types show no valid transition preview. The drop snaps to Start at Cut, Center
+at Cut or End at Cut by where the pointer is relative to the cut. Ordinary effects retain their
+clip outline. `timeline.transitionDropPreview` exposes the span and alignment to automation.
 
-`transition_drop_ui` covers both edges of short video/audio clips, hover without project edits,
-the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to render screenshots with wgpu.
+`transition_drop_ui` covers the three alignments on video/audio cuts and a one-sided clip edge,
+hover without project edits, the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to
+render screenshots with wgpu.
 
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified
-Chinese, German, Russian, French, Indonesian, Korean and Italian (all but Ukrainian and Russian cover
-the whole interface; those two cover the core menus). The language is stored in the engine's `general.interfaceLanguage` preference,
+Chinese, German, Russian, French, Indonesian, Korean, Italian, Czech, Polish, Swedish and Turkish (all but Ukrainian cover
+the whole interface; Ukrainian covers the core menus). The language is stored in the engine's `general.interfaceLanguage` preference,
 restored on startup, and also available in Settings > General.
 Its default, System Language (`system`), follows the operating system: the first of the user's
 preferred languages that the interface has (the host supplies them through
@@ -43,10 +55,11 @@ fills translated templates, and `i18n::t` translates names from registries. Plac
 (including user filenames containing braces) are inserted literally. Catalog translations are
 original work using ordinary language, without proprietary localisation resources.
 
-Spanish, Japanese, Simplified Chinese, French, Brazilian Portuguese and German cover menus, panels, dialogs, settings and registry labels. Searches accept both the
+Spanish, Japanese, Simplified Chinese, French, Brazilian Portuguese, German and Russian cover
+menus, panels, dialogs, settings and registry labels. Searches accept both the
 translated label and its English source, including Unicode capitals. Project content, command ids
 and preference values retain their original values. Engine errors, CLI and MCP messages remain
-English. Ukrainian and Russian currently cover the core menus; they fall back to English elsewhere.
+English. Ukrainian currently covers the core menus; it falls back to English elsewhere.
 
 A string a catalog lacks shows in English, so a missing translation never fails a test or a
 build. `cargo xtask i18n-report` prints each language's missing strings (menus, `tl!` literals and
@@ -118,3 +131,16 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+### Editable clip duration
+
+The Clip Speed / Duration dialog lets you type a duration as timecode. Duration and
+Speed describe the same source span: editing either updates the other. Duration uses
+the sequence frame rate; invalid, zero, or out-of-range durations cannot be applied.
+The field is available to automation as `speedDuration.duration`. OK uses the existing
+speed command, including its linked-clip, ripple, neighbour, and Undo behaviour;
+Cancel discards the draft. The selected clip's duration is the reference when more
+than one clip is selected, matching the existing Speed control.
+
+`clip_dialogs_ui::duration_text_edits_speed_and_rejects_invalid_input` exercises real
+text input, validation, application, Cancel, and Undo/Redo.

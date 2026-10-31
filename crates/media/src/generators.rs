@@ -167,7 +167,7 @@ impl MediaSource for GeneratorSource {
             return Err(MediaError::NoStream("audio"));
         }
         let mut out = AudioBuffer::silence(sample_rate, 2, frames);
-        let sr = sample_rate as f32;
+        let sr = f64::from(sample_rate.max(1));
         let total = self.info.duration.to_units_floor(sample_rate as i64);
         let frame_rate = self.info.frame_rate().sane();
         for i in 0..frames {
@@ -175,7 +175,8 @@ impl MediaSource for GeneratorSource {
             if n < 0 || n >= total {
                 continue;
             }
-            let t = n as f32 / sr;
+            // f64 time: in f32 a phase tens of seconds in has milliradians of error, heard as hiss
+            let t = n as f64 / sr;
             let (l, r) = audio_sample(&self.generator, t, n, sample_rate, frame_rate);
             out.channels[0][i] = l;
             out.channels[1][i] = r;
@@ -188,6 +189,21 @@ fn db(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
 
+/// `sin(2π · hz · t)` with the phase wrapped in f64, exact however late `t` is.
+fn osc(hz: f64, t: f64) -> f32 {
+    ((hz * t).fract() * std::f64::consts::TAU).sin() as f32
+}
+
+/// Band-limited noise: random values `rate` times a second, joined by a smooth curve, so it
+/// rustles instead of hissing like per-sample white noise (#1265).
+fn soft_noise(t: f64, rate: f64) -> f32 {
+    let x = t * rate;
+    let i = x.floor();
+    let f = (x - i) as f32;
+    let (a, b) = (hash(i as i64), hash(i as i64 + 1));
+    a + (b - a) * f * f * (3.0 - 2.0 * f)
+}
+
 fn hash(n: i64) -> f32 {
     let mut x = n as u64 ^ 0x9E37_79B9_7F4A_7C15;
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -196,29 +212,29 @@ fn hash(n: i64) -> f32 {
     (x >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
 }
 
-fn audio_sample(g: &Generator, t: f32, n: i64, sample_rate: u32, frame_rate: FrameRate) -> (f32, f32) {
+fn audio_sample(g: &Generator, t: f64, n: i64, sample_rate: u32, frame_rate: FrameRate) -> (f32, f32) {
     match g {
         Generator::BarsAndTone => {
-            let s = (TAU * 1000.0 * t).sin() * db(-20.0);
+            let s = osc(1000.0, t) * db(-20.0);
             (s, s)
         }
         Generator::Tone { hz, db: d } => {
-            let s = (TAU * hz * t).sin() * db(*d);
+            let s = osc(f64::from(*hz), t) * db(*d);
             (s, s)
         }
         Generator::CountingLeader => {
             // 1 kHz beep for one frame at each second mark (the "2-pop" style beep).
             let in_frame = sample_rate != 0
                 && i128::from(n.rem_euclid(i64::from(sample_rate))) * i128::from(frame_rate.num) < i128::from(sample_rate) * i128::from(frame_rate.den);
-            let s = if in_frame { (TAU * 1000.0 * t).sin() * db(-20.0) } else { 0.0 };
+            let s = if in_frame { osc(1000.0, t) * db(-20.0) } else { 0.0 };
             (s, s)
         }
-        Generator::Demo(scene) => demo_audio(*scene, t, n),
+        Generator::Demo(scene) => demo_audio(*scene, t),
         _ => (0.0, 0.0),
     }
 }
 
-fn demo_audio(scene: DemoScene, t: f32, n: i64) -> (f32, f32) {
+fn demo_audio(scene: DemoScene, t: f64) -> (f32, f32) {
     // A slow pad: chord tones with gentle detune + scene texture.
     let chord: &[f32] = match scene {
         DemoScene::OceanSunset => &[220.0, 277.18, 329.63, 440.0],
@@ -228,26 +244,27 @@ fn demo_audio(scene: DemoScene, t: f32, n: i64) -> (f32, f32) {
         DemoScene::Plasma => &[130.81, 196.0, 261.63, 311.13],
         DemoScene::Forest => &[174.61, 220.0, 261.63, 349.23],
     };
-    let env = 0.6 + 0.4 * (TAU * t / 8.0).sin();
+    let env = 0.6 + 0.4 * osc(1.0 / 8.0, t);
     let mut l = 0.0;
     let mut r = 0.0;
     for (i, f) in chord.iter().enumerate() {
-        let ph = TAU * f * t;
-        let trem = 0.8 + 0.2 * (TAU * (0.2 + i as f32 * 0.07) * t).sin();
-        l += (ph * 1.002).sin() * trem;
-        r += (ph * 0.998).sin() * trem;
+        let f = f64::from(*f);
+        let trem = 0.8 + 0.2 * osc(0.2 + i as f64 * 0.07, t);
+        l += osc(f * 1.002, t) * trem;
+        r += osc(f * 0.998, t) * trem;
     }
-    let noise = hash(n)
+    // scene texture (surf, rustle, city hum): soft noise well below the pad
+    let noise = soft_noise(t, 600.0)
         * match scene {
-            DemoScene::OceanSunset => 0.25 * (0.5 + 0.5 * (TAU * t / 6.0).sin()).powi(2),
-            DemoScene::Forest => 0.05,
-            DemoScene::CityNight => 0.08,
-            _ => 0.02,
+            DemoScene::OceanSunset => 0.08 * (0.5 + 0.5 * osc(1.0 / 6.0, t)).powi(2),
+            DemoScene::Forest => 0.02,
+            DemoScene::CityNight => 0.03,
+            _ => 0.01,
         };
     // A soft kick in the city/plasma scenes to make waveforms interesting.
     let beat = if matches!(scene, DemoScene::CityNight | DemoScene::Plasma) {
         let bt = (t * 2.0).fract() / 2.0;
-        (TAU * 55.0 * bt).sin() * (-bt * 18.0).exp() * 0.9
+        osc(55.0, bt) * (-bt as f32 * 18.0).exp() * 0.9
     } else {
         0.0
     };
@@ -586,6 +603,37 @@ mod tests {
         assert!((peak - db(-20.0)).abs() < 1e-3);
     }
 
+    /// #1265: the demo sound is a pad with a soft texture, not hiss: per-sample white noise has a
+    /// second difference as large as the signal itself
+    #[test]
+    fn demo_audio_has_no_hiss() {
+        for scene in DemoScene::ALL {
+            let g = GeneratorSource::new(Generator::Demo(scene), 64, 36, FrameRate::FPS_24, Tick(60 * TICKS_PER_SECOND));
+            let a = g.audio(48_000, 48_000, 48_000).unwrap();
+            let x = &a.channels[0];
+            let rms = |v: &mut dyn Iterator<Item = f32>| {
+                let (s, n) = v.fold((0.0f64, 0usize), |(s, n), y| (s + f64::from(y * y), n + 1));
+                (s / n.max(1) as f64).sqrt()
+            };
+            let signal = rms(&mut x.iter().copied());
+            let rough = rms(&mut x.windows(3).map(|w| w[2] - 2.0 * w[1] + w[0]));
+            assert!(signal > 0.01 && rough / signal < 0.1, "{scene:?}: {rough} / {signal}");
+        }
+    }
+
+    /// Tones stay exact late in long media (f32 time put milliradians of phase noise in at 50 s).
+    #[test]
+    fn tone_phase_is_exact_late() {
+        let g = GeneratorSource::new(Generator::Tone { hz: 1000.0, db: 0.0 }, 0, 0, FrameRate::FPS_24, Tick(60 * TICKS_PER_SECOND));
+        let n0 = 48_000 * 50 + 7;
+        let a = g.audio(n0, 480, 48_000).unwrap();
+        for (i, y) in a.channels[0].iter().enumerate() {
+            let t = (n0 + i as i64) as f64 / 48_000.0;
+            let want = (std::f64::consts::TAU * 1000.0 * t).sin();
+            assert!((f64::from(*y) - want).abs() < 1e-4, "sample {i}: {y} vs {want}");
+        }
+    }
+
     #[test]
     fn counting_leader_beeps_last_exactly_one_source_frame() {
         let sample_rate = 48_000;
@@ -708,5 +756,27 @@ mod tests {
     fn oversized_generator_frames_are_rejected_before_allocation() {
         let err = render(&Generator::BlackVideo, 32_768, 32_768, 0.0, 0, FrameRate::FPS_24).unwrap_err();
         assert!(err.to_string().contains("limit"), "{err}");
+    }
+
+    /// #1947: the counting leader's beep at each second mark lasts one frame of its own rate,
+    /// not a fixed 1/24 s: 800 samples at 60 fps and 48 kHz, 2000 at 24 fps, 1920 at 25 fps.
+    #[test]
+    fn counting_leader_beep_lasts_one_frame_of_its_rate() {
+        for (rate, beep) in [(FrameRate::FPS_60, 800usize), (FrameRate::FPS_24, 2000), (FrameRate::FPS_25, 1920), (FrameRate::FPS_29_97, 1602)] {
+            let g = GeneratorSource::new(Generator::CountingLeader, 64, 36, rate, Tick(3 * TICKS_PER_SECOND));
+            let a = g.audio(0, 96_000, 48_000).unwrap();
+            let l = &a.channels[0];
+            let last_nonzero = |from: usize, to: usize| (from..to).rev().find(|&i| l[i] != 0.0);
+            // the first beep: sound up to its last sample, silence from there to the next second
+            assert!(
+                last_nonzero(0, 48_000).is_some_and(|i| i + 1 >= beep - 1 && i < beep),
+                "{rate}: first beep ends at {:?}, expected {beep}",
+                last_nonzero(0, 48_000)
+            );
+            assert!(l[beep..48_000].iter().all(|&v| v == 0.0), "{rate}: silence after the beep");
+            // the second beep too
+            assert!(l[48_000..48_000 + beep - 2].iter().any(|&v| v != 0.0), "{rate}: a beep at the second mark");
+            assert!(l[48_000 + beep..96_000].iter().all(|&v| v == 0.0), "{rate}: silence after it");
+        }
     }
 }
