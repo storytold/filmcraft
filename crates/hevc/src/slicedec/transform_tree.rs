@@ -188,12 +188,14 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let avail =
             |pic: &PicState<S>, xn: i32, yn: i32| -> bool { pic.zavail(xl, yl, xn, yn, addr) && (!constrained || pic.blk_at(xn, yn).flags & F_INTRA != 0) };
         let plane = &self.pic.planes[c];
+        // window line of component line y (y >= the window's first line wherever it is read)
+        let yb = self.pic.line0(c);
         let r = &mut self.refs_buf;
         // corner
         if avail(self.pic, xl - 1, yl - 1) {
             al[0] = true;
             at[0] = true;
-            let v = plane[(y0 - 1) as usize * stride + (x0 - 1) as usize].to_u16();
+            let v = plane[((y0 - 1) as usize - yb) * stride + (x0 - 1) as usize].to_u16();
             r.left[0] = v;
             r.top[0] = v;
         }
@@ -203,12 +205,12 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             if avail(self.pic, xl - 1, yn * sc) {
                 for i in 0..unit {
                     al[1 + k + i] = true;
-                    r.left[1 + k + i] = plane[(yn as usize + i) * stride + (x0 - 1) as usize].to_u16();
+                    r.left[1 + k + i] = plane[(yn as usize + i - yb) * stride + (x0 - 1) as usize].to_u16();
                 }
             }
             let xn = x0 + k as i32;
             if avail(self.pic, xn * sc, yl - 1) {
-                let o = (y0 - 1) as usize * stride + xn as usize;
+                let o = ((y0 - 1) as usize - yb) * stride + xn as usize;
                 for i in 0..unit {
                     at[1 + k + i] = true;
                     r.top[1 + k + i] = plane[o + i].to_u16();
@@ -221,7 +223,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         if c == 0 {
             intra::filter(r, mode, n, self.sps.strong_intra_smoothing, true, bd);
         }
-        let off = y0 as usize * stride + x0 as usize;
+        let off = (y0 as usize - yb) * stride + x0 as usize;
         intra::predict(r, mode, n, c == 0, bd, &mut self.pic.planes[c][off..], stride);
     }
 
@@ -470,7 +472,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let bypass = self.cu_transquant_bypass;
         let dst = self.cu_intra && c == 0 && n == 4;
         let (stride, max) = (if c == 0 { self.pic.width } else { self.pic.cwidth }, (1i32 << bd) - 1);
-        let off = y0 as usize * stride + x0 as usize;
+        let yb = self.pic.line0(c);
+        let off = (y0 as usize - yb) * stride + x0 as usize;
         let plane = &mut self.pic.planes[c];
         let bd_shift = 20 - bd;
         if !bypass && !ts && max_x == 0 && max_y == 0 && !dst {

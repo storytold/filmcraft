@@ -50,7 +50,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let (bx0, by0) = ((x0 >> 2) as usize, (y0 >> 2) as usize);
         let bx1 = (((x0 + w) as usize).min(self.pic.width).div_ceil(4)).max(bx0);
         let by1 = (((y0 + h) as usize).min(self.pic.height).div_ceil(4)).max(by0);
-        for by in by0..by1 {
+        let yb = self.pic.y_base >> 2;
+        for by in by0 - yb..by1 - yb {
             for b in &mut self.pic.blk[by * self.pic.w4 + bx0..by * self.pic.w4 + bx1] {
                 f(b);
             }
@@ -192,9 +193,10 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
     /// Mark the left (vertical) and top (horizontal) edges of a rectangle.
     pub(super) fn mark_edges(&mut self, x0: i32, y0: i32, w: i32, h: i32, v: u8, hz: u8) {
         let w4 = self.pic.w4;
-        let (bx0, by0) = ((x0 >> 2) as usize, (y0 >> 2) as usize);
+        let yb = self.pic.y_base >> 2;
+        let (bx0, by0) = ((x0 >> 2) as usize, (y0 >> 2) as usize - yb);
         if v != 0 {
-            let by1 = ((y0 + h) as usize).min(self.pic.height).div_ceil(4);
+            let by1 = ((y0 + h) as usize).min(self.pic.height).div_ceil(4) - yb;
             for by in by0..by1 {
                 self.pic.blk[by * w4 + bx0].edges |= v;
             }
@@ -253,10 +255,11 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let mut r = filmcraft_bitstream::BitReader::new(&data[start..]);
         let (sy, sc) = (self.pic.bd_y - bl, self.pic.bd_c - bc);
         let w = self.pic.width;
+        let (ly0, cy0) = (y0 as usize - self.pic.line0(0), y0 as usize / 2 - self.pic.line0(1));
         for y in 0..n {
             for x in 0..n {
                 let v = r.read_bits(bl)? as u16;
-                self.pic.planes[0][(y0 as usize + y) * w + x0 as usize + x] = S::from_u16(v << sy);
+                self.pic.planes[0][(ly0 + y) * w + x0 as usize + x] = S::from_u16(v << sy);
             }
         }
         let cw = self.pic.cwidth;
@@ -264,7 +267,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             for y in 0..n / 2 {
                 for x in 0..n / 2 {
                     let v = r.read_bits(bc)? as u16;
-                    self.pic.planes[c][(y0 as usize / 2 + y) * cw + x0 as usize / 2 + x] = S::from_u16(v << sc);
+                    self.pic.planes[c][(cy0 + y) * cw + x0 as usize / 2 + x] = S::from_u16(v << sc);
                 }
             }
         }
