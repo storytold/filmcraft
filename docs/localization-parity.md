@@ -101,6 +101,7 @@ creative effect names, and the shared `Subtitle` key (caption format and graphic
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-31 | minor | Brazilian Portuguese: the 68 strings added on main since the catalog was written are translated (update check, Graphics settings, sequence/clip mismatch warnings, FLAC/HEVC export notes, panel docking, Work Area Bar); 3,651 entries |
 | 2026-10-30 | minor | Bosnian (bs, Latin, Ijekavian) covers the whole interface: 3,610 entries, Edit ▸ Language ▸ Bosanski, every `bs-*` locale; AI-assisted, not native-reviewed |
 | 2026-10-26 | minor | Swedish (sv) covers the whole interface (all 3,581 strings); System Language picks it for `sv-*` locales |
 | 2026-10-23 | minor | Missing translations never fail a test or build (they show in English); `cargo xtask i18n-report`, also run by `cargo xtask ci`, lists them per language |
