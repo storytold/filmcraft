@@ -252,6 +252,7 @@ pub(super) static CATEGORIES: &[Category] = &[
             b("general.showCompatibilityIssues", "Show system compatibility issues at startup", false),
             b("general.showProjectBinInTab", "Show \"Project:\" and \"Bin:\" in Project panel tab", false),
             b("general.showMaskTrackerPreview", "Show Mask Tracker Preview", false),
+            b("general.showDiscordButton", "Show Discord Button", true),
         ],
     },
     Category {
