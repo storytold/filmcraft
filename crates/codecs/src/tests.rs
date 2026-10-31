@@ -752,6 +752,15 @@ fn check_opus(name: &str, channels: usize, expr: &str, extra: &[&str], container
         eprintln!("libopus decoder unavailable; skipping {name}");
         return;
     };
+    if container == "Matroska" {
+        let reader = crate::Src(Arc::new(filmcraft_media::reader::MemReader(b.clone())));
+        let file = filmcraft_matroska::open(&reader).unwrap();
+        let track = file.tracks.iter().find(|t| t.kind == filmcraft_matroska::TrackKind::Audio).unwrap();
+        let filmcraft_matroska::Codec::Opus { head } = &track.codec else { panic!("expected Opus fixture") };
+        let head = filmcraft_opus::OpusHead::parse(head).unwrap();
+        let delay = (track.codec_delay_ns as u128 * 48_000 + 500_000_000) / 1_000_000_000;
+        assert_eq!(delay, head.pre_skip as u128, "oracle fixture CodecDelay must agree with the 48 kHz OpusHead pre-skip");
+    }
     let src = crate::open_bytes(name, b).expect("open");
     let info = src.info().clone();
     assert_eq!(info.container, container);
@@ -798,8 +807,17 @@ fn opus_webm_stereo() {
 
 #[test]
 fn opus_mkv_mono_speechlike_16k() {
-    // Low bitrate VoIP mode exercises SILK/hybrid; the input rate is 16 kHz but Opus still outputs 48 kHz.
-    check_opus("tones_opus_voip.mkv", 1, "aevalsrc=0.4*sin(2*PI*220*t)*(0.6+0.4*sin(2*PI*3*t)):s=16000", &["-b:a", "16k", "-application", "voip"], "Matroska");
+    // Keep the 16 kHz input and low-bitrate SILK/hybrid case, but explicitly feed the encoder
+    // at Opus's 48 kHz clock. Older ffmpeg muxers otherwise write CodecDelay at the input
+    // clock while OpusHead pre-skip is at 48 kHz (104 vs 312 samples), making the oracle
+    // contradict the container. A fresh cache name avoids reusing that malformed fixture.
+    check_opus(
+        "tones_opus_voip_48k_clock.mkv",
+        1,
+        "aevalsrc=0.4*sin(2*PI*220*t)*(0.6+0.4*sin(2*PI*3*t)):s=16000",
+        &["-b:a", "16k", "-application", "voip", "-ar", "48000"],
+        "Matroska",
+    );
 }
 
 #[test]

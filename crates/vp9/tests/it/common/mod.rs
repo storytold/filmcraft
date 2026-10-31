@@ -114,7 +114,38 @@ pub const FIXTURES: &[Fixture] = &[
     fx!("sharpness", "testsrc2", 352, 288, 8, NOISE, P420, ["-b:v", "400k", "-sharpness", "5", "-frame-parallel", "0"]),
     fx!("fade_intra_heavy", "testsrc2", 352, 288, 20, "fade=in:0:15", P420, ["-b:v", "400k", "-g", "8", "-frame-parallel", "0"]),
     fx!("hd_1080p", "testsrc2", 1920, 1080, 3, NOISE, P420, ["-b:v", "4M", "-speed", "5", "-deadline", "realtime"]),
-    // Two temporal layers: every other frame refreshes no reference slot (draft mode test).
+    // Each inter frame is followed by a key frame, so making it disposable cannot change
+    // any later prediction. The draft test rewrites the refresh mask, not encoder heuristics.
+    fx!(
+        "draft_pairs",
+        "testsrc2",
+        352,
+        288,
+        20,
+        NOISE,
+        P420,
+        [
+            "-g",
+            "2",
+            "-keyint_min",
+            "2",
+            "-lag-in-frames",
+            "0",
+            "-auto-alt-ref",
+            "0",
+            "-error-resilient",
+            "1",
+            "-speed",
+            "8",
+            "-deadline",
+            "realtime",
+            "-crf",
+            "40",
+            "-b:v",
+            "0"
+        ]
+    ),
+    // Encoder-requested temporal layers; disposable-frame choices depend on libvpx's version.
     fx!(
         "temporal_layers",
         "testsrc2",
