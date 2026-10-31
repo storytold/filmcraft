@@ -22,6 +22,7 @@
 //! | `clip.volumeUp` / `clip.volumeDown` | Increase / Decrease Clip Volume (1 dB) | ] / [ |
 //! | `clip.volumeUpMany` / `clip.volumeDownMany` | Increase / Decrease Clip Volume Many (Settings ▸ Audio ▸ Large Volume Adjustment) | Shift+] / Shift+[ |
 //! | `clip.nudgeVolumeUp1` … `clip.nudgeVolumeDown3` | Nudge Volume ±1 dB / ±3 dB | |
+//! | `clip.adjustAudio` | (the Properties panel's Level and Pan with several audio clips selected) | |
 //! | `audio.toggleScrubbing` | Toggle Audio During Scrubbing | Shift+S |
 //! | `graphics.fontSizeUp` … `graphics.fontSizeDown5` | Increase / Decrease Font Size by One / Five Units | Cmd+Alt+Right … Cmd+Alt+Shift+Left |
 //! | `graphics.leadingUp` … `graphics.leadingDown5` | Increase / Decrease Leading by One / Five Units | Alt+Up … Alt+Shift+Down |
@@ -40,7 +41,7 @@ use filmcraft_project::{ClipId, ItemKind, ParamValue, Sequence, TrackId, TrackKi
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, has_selection, has_seq, item_p, slip_together, time_p, with_links};
+use crate::commands::{CommandSpec, always, bad, bool_p, has_selection, has_seq, item_p, slip_together, target_clips_p, time_p, with_links};
 use crate::{EngineError, Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -396,41 +397,114 @@ const VOLUME_MAX_DB: f64 = 15.0;
 
 /// Change the Volume level of the selected audio clips by `db` (keyframed levels shift as a whole).
 pub fn adjust_clip_volume(s: &mut Session, db: f64) -> Result<Value> {
-    let clips = with_links(s, &s.state.selection.clone());
-    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let audio: Vec<ClipId> =
-        clips.into_iter().filter(|c| seq.find_item(*c).and_then(|(t, _)| seq.track(t)).is_some_and(|t| t.kind == TrackKind::Audio)).collect();
+    s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let audio = audio_clips_of(s, &s.state.selection.clone());
     if audio.is_empty() {
         return Err(EngineError::Other("select audio clips".into()));
     }
+    let label = if db > 0.0 { "Increase Clip Volume" } else { "Decrease Clip Volume" };
+    shift_audio_param(s, &audio, AudioParam::Volume, db, label, None)?;
+    Ok(json!({"levels": audio_values(s, &audio, AudioParam::Volume)}))
+}
+
+/// A clip audio parameter that [`shift_audio_param`] moves by a difference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioParam {
+    /// Volume ▸ Level, in dB.
+    Volume,
+    /// Panner ▸ Balance, −100 (left) to 100 (right).
+    Pan,
+}
+
+impl AudioParam {
+    /// The effect, its parameter and the range a shifted value is clamped to.
+    fn target(self) -> (&'static str, &'static str, f64, f64) {
+        match self {
+            AudioParam::Volume => ("volume", "level", VOLUME_MIN_DB, VOLUME_MAX_DB),
+            AudioParam::Pan => ("panner", "balance", -100.0, 100.0),
+        }
+    }
+}
+
+/// Shift `param` of each of `clips` by `delta`, as one undo step (`merge`: joined with the last step
+/// of the same key, a drag): every clip keeps its own value plus `delta`, keyframes included, clamped
+/// to the parameter's range, so the differences between the clips stay. Clips without the effect are
+/// left alone.
+fn shift_audio_param(s: &mut Session, clips: &[ClipId], param: AudioParam, delta: f64, label: &str, merge: Option<&str>) -> Result<()> {
+    let (effect, pid, lo, hi) = param.target();
     let shift = |v: &ParamValue| match v {
-        ParamValue::Float(x) => ParamValue::Float((x + db).clamp(VOLUME_MIN_DB, VOLUME_MAX_DB)),
+        ParamValue::Float(x) => ParamValue::Float((x + delta).clamp(lo, hi)),
         o => o.clone(),
     };
-    let label = if db > 0.0 { "Increase Clip Volume" } else { "Decrease Clip Volume" };
-    s.edit_sequence(label, |q, _, _| {
-        for c in &audio {
+    s.edit_sequence_as(label, merge, |q, _, _| {
+        for c in clips {
             let Some((_, it)) = q.find_item_mut(*c) else { continue };
-            let Some(p) = it.effect_mut("volume").and_then(|e| e.param_mut("level")) else { continue };
+            let Some(p) = it.effect_mut(effect).and_then(|e| e.param_mut(pid)) else { continue };
             p.value = shift(&p.value);
             for k in &mut p.keyframes {
                 k.value = shift(&k.value);
             }
         }
         Ok(())
-    })?;
-    let levels: Vec<Value> = s
-        .active_sequence()
-        .map(|q| {
-            audio
-                .iter()
-                .filter_map(|c| q.find_item(*c))
-                .filter_map(|(_, it)| it.effect("volume").and_then(|e| e.params.get("level")).and_then(|p| p.value.as_f64()))
-                .map(|v| json!(v))
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(json!({"levels": levels}))
+    })
+}
+
+/// `param`'s static value on each of `clips` that has it, in order.
+fn audio_values(s: &Session, clips: &[ClipId], param: AudioParam) -> Vec<Value> {
+    let (effect, pid, _, _) = param.target();
+    let Some(q) = s.active_sequence() else { return Vec::new() };
+    clips
+        .iter()
+        .filter_map(|c| q.find_item(*c))
+        .filter_map(|(_, it)| it.effect(effect).and_then(|e| e.params.get(pid)).and_then(|p| p.value.as_f64()))
+        .map(|v| json!(v))
+        .collect()
+}
+
+/// The audio clips among `clips` and, when linked selection is on, their linked partners: what the
+/// clip volume keys and the Properties panel act on.
+pub fn audio_clips_of(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
+    let Some(seq) = s.active_sequence() else { return Vec::new() };
+    with_links(s, clips).into_iter().filter(|c| seq.find_item(*c).and_then(|(t, _)| seq.track(t)).is_some_and(|t| t.kind == TrackKind::Audio)).collect()
+}
+
+/// `clip.adjustAudio {clips?, volumeDb?, pan?, merge?, begin?}`: the Properties panel's Level and
+/// Pan with several audio clips selected (#3710). Each clip moves by the same difference.
+fn adjust_audio_command(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "clip.adjustAudio";
+    let picked = target_clips_p(s, p, C)?.unwrap_or_else(|| s.state.selection.clone());
+    let audio = audio_clips_of(s, &picked);
+    if audio.is_empty() {
+        return Err(bad(C, "select audio clips"));
+    }
+    let delta = |k: &str| -> Result<Option<f64>> {
+        match p.get(k).filter(|v| !v.is_null()) {
+            None => Ok(None),
+            Some(v) => v.as_f64().filter(|d| d.is_finite()).map(Some).ok_or_else(|| bad(C, format!("`{k}` must be a finite number"))),
+        }
+    };
+    let changes: Vec<(AudioParam, f64)> =
+        [(AudioParam::Volume, delta("volumeDb")?), (AudioParam::Pan, delta("pan")?)].into_iter().filter_map(|(a, d)| d.map(|d| (a, d))).collect();
+    if changes.is_empty() {
+        return Err(bad(C, "give `volumeDb` or `pan`"));
+    }
+    // `merge`: a drag of the Level or Pan is one undo step (#201); `begin` starts a new one
+    if bool_p(p, "begin").unwrap_or(false) {
+        s.history.merge_key = None;
+    }
+    let mut ids: Vec<u64> = audio.iter().map(|c| c.0).collect();
+    ids.sort_unstable();
+    let mut out = json!({"clips": audio.iter().map(|c| c.0).collect::<Vec<_>>()});
+    for (param, d) in changes {
+        let (label, key) = match param {
+            AudioParam::Volume => ("Change Clip Volume", "volume"),
+            AudioParam::Pan => ("Change Clip Pan", "pan"),
+        };
+        let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("adjustAudio:{key}:{ids:?}"));
+        shift_audio_param(s, &audio, param, d, label, merge.as_deref())?;
+        out[if param == AudioParam::Volume { "levels" } else { "balances" }] = json!(audio_values(s, &audio, param));
+    }
+    Ok(out)
 }
 
 // ------------------------------------------------------------------ graphics
@@ -778,6 +852,14 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("clip.nudgeVolumeUp3", "Nudge Volume +3dB", None, "{}", has_selection, |s, _| adjust_clip_volume(s, 3.0)),
         spec("clip.nudgeVolumeDown1", "Nudge Volume -1dB", None, "{}", has_selection, |s, _| adjust_clip_volume(s, -1.0)),
         spec("clip.nudgeVolumeDown3", "Nudge Volume -3dB", None, "{}", has_selection, |s, _| adjust_clip_volume(s, -3.0)),
+        spec(
+            "clip.adjustAudio",
+            "Adjust Clip Volume and Pan",
+            None,
+            r#"{"clips":[id]? (default: the selection; linked audio follows when linked selection is on),"volumeDb":f64? (added to each clip's Volume level, keyframes too),"pan":f64? (added to each clip's Panner balance),"merge":bool?,"begin":bool?}"#,
+            has_selection,
+            adjust_audio_command,
+        ),
         spec("audio.toggleScrubbing", "Toggle Audio During Scrubbing", Some("Shift+S"), "{}", always, |s, _| {
             let on = !s.prefs.audio.scrub_audio;
             s.execute("prefs.set", json!({"key": "audio.scrubAudio", "value": on}))?;
