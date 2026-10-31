@@ -1,0 +1,9 @@
+asset:        docs/window-controls/gnome-wayland.png
+title:        FilmCraft window controls on GNOME Wayland
+author:       @danielmigueltejedor with Codex
+source:       original work; isolated compositor, synthetic demo content or empty home screen
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT
+added:        2026-10-21 by @danielmigueltejedor
+notes:        No personal documents or desktop content. Screenshot includes only the application window.
+sha256:       3f18bd032689c14db4a563a0752e8bf3290b72182159929d3c724659fc56d525
