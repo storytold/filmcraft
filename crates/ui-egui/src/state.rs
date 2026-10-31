@@ -429,6 +429,20 @@ pub struct KeyframeRef {
     pub time: filmcraft_time::Tick,
 }
 
+/// The Keyframe Easing editor's working copy: the segment from `target` to the keyframe at
+/// `next_time`. `interp` is an `effects.setInterpolation` name; influences are 0.01..=1.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EasingDraft {
+    pub target: KeyframeRef,
+    pub next_time: filmcraft_time::Tick,
+    pub interp: String,
+    pub out_influence: f64,
+    pub in_influence: f64,
+    /// Advanced page (interpolation type and numeric influences) instead of the Simple curve.
+    #[serde(default)]
+    pub advanced: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
@@ -593,6 +607,10 @@ pub struct UiState {
     /// open when Some). See `panels::clip_dialogs`.
     #[serde(default)]
     pub clip_dialog: Option<ClipDialogDraft>,
+    /// Keyframe Easing editor (right-click a keyframe ▸ Easing Editor…; open when Some). See
+    /// `panels::easing_editor`.
+    #[serde(default)]
+    pub easing: Option<EasingDraft>,
     /// M3.11 menu items: their dialog, Dynamic Audio Waveforms, the Media Browser selection. See
     /// `panels::menu_dialogs`.
     #[serde(default)]
@@ -1034,6 +1052,7 @@ impl Default for UiState {
             text_props_dialog: None,
             workspace_dialog: None,
             clip_dialog: None,
+            easing: None,
             extras: Default::default(),
             gfx_templates: Default::default(),
             panels: Default::default(),
