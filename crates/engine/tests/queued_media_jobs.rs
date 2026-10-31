@@ -64,10 +64,15 @@ fn queued_proxy_jobs_start_no_threads_before_their_turn() {
             r["job"]["job"].as_u64().or_else(|| r["job"].as_u64()).unwrap_or_else(|| panic!("{r}"))
         })
         .collect();
+    let t0 = Instant::now();
+    while STARTED.load(Ordering::SeqCst) == 0 && t0.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     std::thread::sleep(Duration::from_millis(500));
     let started = STARTED.load(Ordering::SeqCst);
     open_gate();
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    assert!(started >= 1, "the first proxy job started no pool threads");
     assert!(started <= cores, "{started} pool threads for one running job and two waiting ({cores} cores)");
     let done = wait_for(&mut s, &jobs, Duration::from_secs(120));
     assert!(done.len() == 3 && done.iter().all(|j| j["finished"] == true && j["result"]["error"].is_null()), "{done:?}");
