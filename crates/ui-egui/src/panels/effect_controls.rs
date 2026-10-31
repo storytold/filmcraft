@@ -1030,6 +1030,7 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
+    let audio_group = filmcraft_engine::keyboard::audio_clips_of(&app.session, &app.session.state.selection);
     let Some((clip, it, kind)) = clips.first().cloned() else {
         crate::dock::placeholder(ui, rect, &t, tl!("Select a clip to see its properties"));
         return;
@@ -1192,6 +1193,19 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let clip = *clip;
             let mt = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
             let val = |eid: &str, p: &str| it.effect(eid).and_then(|e| e.param(p)).map(|p| p.value_at(mt));
+            // several audio clips selected: the shown clip's Level and Pan change every one of them
+            // by the same amount, as the clip volume keys do (#3710)
+            let group = (audio_group.len() > 1).then(|| audio_group.iter().map(|c| c.0).collect::<Vec<_>>());
+            // a group's change is a difference that `clip.adjustAudio` clamps clip by clip: the fields
+            // must not clamp it to the shown clip's range, or the others stop when it reaches its bound
+            const GROUP_RANGE: (f64, f64) = (-1000.0, 1000.0);
+            let (level_range, pan_range) = if group.is_some() { (GROUP_RANGE, GROUP_RANGE) } else { ((-96.0, 15.0), (-100.0, 100.0)) };
+            if let Some(ids) = &group {
+                let (r, _) = bui.allocate_exact_size(vec2(bui.available_width(), 22.0), Sense::hover());
+                let text = tlf!("Level and Pan change all {n} selected audio clips", n = ids.len());
+                bui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(11.5), t.text_dim);
+                app.auto.add("properties.audioGroup", r, &ids.len().to_string());
+            }
             let r = row(bui, tl!("Level"));
             let mut vui = bui.new_child(
                 egui::UiBuilder::new()
@@ -1199,15 +1213,19 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             let v = val("volume", "level").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let (_, nv) = crate::widgets::hot_number(
+            let (resp, nv) = crate::widgets::hot_number(
                 &mut vui,
                 tl!("Level"),
                 egui::Id::unique(("pp-vol", clip.0)),
                 v,
-                HotNumberOptions::new(0.1, (-96.0, 15.0), 1, " dB", &t),
+                HotNumberOptions::new(0.1, level_range, 1, " dB", &t),
             );
+            app.auto.add("properties.volume", resp.rect, "Level");
             if let Some(nv) = nv {
-                actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "volume", "param": "level", "value": nv})));
+                actions.push(match &group {
+                    Some(ids) => ("clip.adjustAudio".into(), json!({"clips": ids, "volumeDb": nv - v})),
+                    None => ("effects.setParam".into(), json!({"clip": clip.0, "effect": "volume", "param": "level", "value": nv})),
+                });
             }
             properties_nav(app, bui, r, clip, it, mt, "volume", "level", &mut actions);
             let r = row(bui, tl!("Pan"));
@@ -1217,15 +1235,14 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             let v = val("panner", "balance").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let (_, nv) = crate::widgets::hot_number(
-                &mut vui,
-                tl!("Pan"),
-                egui::Id::unique(("pp-pan", clip.0)),
-                v,
-                HotNumberOptions::new(0.5, (-100.0, 100.0), 0, "", &t),
-            );
+            let (resp, nv) =
+                crate::widgets::hot_number(&mut vui, tl!("Pan"), egui::Id::unique(("pp-pan", clip.0)), v, HotNumberOptions::new(0.5, pan_range, 0, "", &t));
+            app.auto.add("properties.pan", resp.rect, "Pan");
             if let Some(nv) = nv {
-                actions.push(("effects.setParam".into(), json!({"clip": clip.0, "effect": "panner", "param": "balance", "value": nv})));
+                actions.push(match &group {
+                    Some(ids) => ("clip.adjustAudio".into(), json!({"clips": ids, "pan": nv - v})),
+                    None => ("effects.setParam".into(), json!({"clip": clip.0, "effect": "panner", "param": "balance", "value": nv})),
+                });
             }
         }
         // speed footer
@@ -1251,7 +1268,8 @@ pub(crate) fn row_fill(r: Rect) -> Rect {
 }
 
 /// Run the panel's actions (also the Lumetri Color panel's). Parameter changes made
-/// while the mouse button is down (a drag) share one undo step, which the first change of each
+/// while the mouse button is down (a drag; `effects.setParam`, and `clip.adjustAudio` when several
+/// audio clips change together) share one undo step, which the first change of each
 /// press begins (#201); typed values and clicks stay separate steps. A drag value only changes once
 /// the mouse moves, after the press frame, so the press that already began a step is remembered by
 /// its start time. That memory is refreshed on every frame the button stays down — including frames
@@ -1264,7 +1282,7 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
     let begun = ctx.data(|d| d.get_temp::<Option<f64>>(key)).flatten();
     let mut wrote = false;
     for (cmd, mut p) in actions {
-        if cmd == "effects.setParam" && down {
+        if (cmd == "effects.setParam" || cmd == "clip.adjustAudio") && down {
             if p.get("merge").is_none() {
                 p["merge"] = json!(true);
             }

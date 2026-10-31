@@ -284,6 +284,73 @@ fn clip_volume_keys_and_scrub_toggle() {
     assert_eq!(s.prefs.audio.scrub_audio, !on);
 }
 
+fn pan(s: &Session, id: u64) -> f64 {
+    clip(s, id).effect("panner").unwrap().params["balance"].value.as_f64().unwrap()
+}
+
+fn level_keys(s: &Session, id: u64) -> Vec<f64> {
+    clip(s, id).effect("volume").unwrap().params["level"].keyframes.iter().filter_map(|k| k.value.as_f64()).collect()
+}
+
+/// #3710: the Properties panel's Level and Pan with several audio clips selected. Every clip moves
+/// by the same amount (its keyframes too), values clamp at the parameter's range, a drag (`merge`)
+/// is one undo step, and bad parameters are refused.
+#[test]
+fn adjust_audio_moves_every_selected_clip_by_the_same_amount() {
+    let mut s = demo();
+    let (first, start, end) = items(&s, TrackKind::Audio, 0)[0];
+    let third = Tick((end.0 - start.0) / 3);
+    s.execute("timeline.razor", json!({"clip": first, "time": (start + third).0})).unwrap();
+    let second = items(&s, TrackKind::Audio, 0)[1].0;
+    s.execute("timeline.razor", json!({"clip": second, "time": (start + third + third).0})).unwrap();
+    let ids: Vec<u64> = items(&s, TrackKind::Audio, 0).iter().take(3).map(|i| i.0).collect();
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    let c_start = clip(&s, c).start;
+    // different levels, and keyframes on the third
+    s.execute("effects.setParam", json!({"clip": a, "effect": "volume", "param": "level", "value": -3.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": b, "effect": "volume", "param": "level", "value": 0.0})).unwrap();
+    for (t, v) in [(c_start.0, 2.0), (c_start.0 + third.0 / 2, 8.0)] {
+        s.execute("effects.setParam", json!({"clip": c, "effect": "volume", "param": "level", "value": v, "keyframe": true, "time": t})).unwrap();
+    }
+    s.execute("effects.setParam", json!({"clip": a, "effect": "panner", "param": "balance", "value": 80.0})).unwrap();
+    let before = (level(&s, a), level(&s, b), level_keys(&s, c));
+
+    s.execute("timeline.select", json!({"clips": ids})).unwrap();
+    let r = s.execute("clip.adjustAudio", json!({"volumeDb": -2.0})).unwrap();
+    assert_eq!(r["clips"].as_array().unwrap().len(), 3, "{r}");
+    assert_eq!((level(&s, a), level(&s, b)), (-5.0, -2.0), "each keeps its own level, moved by the same amount");
+    assert_eq!(level_keys(&s, c), vec![0.0, 6.0], "keyframes move too");
+
+    // Pan: clamped at the range; the clips the command names, not the selection
+    s.execute("clip.adjustAudio", json!({"clips": [a, b], "pan": 30.0})).unwrap();
+    assert_eq!((pan(&s, a), pan(&s, b)), (100.0, 30.0));
+
+    // a drag: one undo step for every change with `merge`, from the first (`begin`)
+    s.undo();
+    s.execute("clip.adjustAudio", json!({"volumeDb": 1.0, "merge": true, "begin": true})).unwrap();
+    s.execute("clip.adjustAudio", json!({"volumeDb": 1.5, "merge": true})).unwrap();
+    assert_eq!((level(&s, a), level(&s, b)), (-2.5, 0.5));
+    s.undo();
+    assert_eq!((level(&s, a), level(&s, b)), (-5.0, -2.0), "the drag undoes in one step");
+    s.undo();
+    assert_eq!((level(&s, a), level(&s, b), level_keys(&s, c)), before);
+
+    // Level and Pan in one call are one undo step
+    let pans = (pan(&s, a), pan(&s, b));
+    s.execute("clip.adjustAudio", json!({"volumeDb": -1.0, "pan": -10.0})).unwrap();
+    assert_eq!((level(&s, a), pan(&s, b)), (before.0 - 1.0, pans.1 - 10.0));
+    s.undo();
+    assert_eq!((level(&s, a), level(&s, b), pan(&s, a), pan(&s, b)), (before.0, before.1, pans.0, pans.1), "volume and pan undo together");
+
+    // refused: nothing to change, a non-number, no audio clip
+    for bad in [json!({}), json!({"volumeDb": "loud"}), json!({"clips": [], "volumeDb": 1.0})] {
+        assert!(s.execute("clip.adjustAudio", bad.clone()).is_err(), "{bad}");
+    }
+    let v = items(&s, TrackKind::Video, 0)[0].0;
+    s.state.linked_selection = false;
+    assert!(s.execute("clip.adjustAudio", json!({"clips": [v], "volumeDb": 1.0})).is_err(), "a video clip alone has no audio to change");
+}
+
 #[test]
 fn text_layer_keys_change_size_leading_alignment_and_position() {
     let mut s = demo();
