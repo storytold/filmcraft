@@ -670,6 +670,13 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if response.changed() {
                 cx.set("vertical", json!(value));
             }
+            // 縦中横: half-width digits and short Latin set side by side in one cell (vertical only).
+            let mut tcy = pv(e, "tate_chu_yoko", mt).as_bool().unwrap_or(false);
+            let response = vui.add_enabled(vertical, egui::Checkbox::new(&mut tcy, tl!("Tate-Chu-Yoko")));
+            cx.auto("tate_chu_yoko", response.rect, "Tate-Chu-Yoko");
+            if response.changed() {
+                cx.set("tate_chu_yoko", json!(tcy));
+            }
             cx.number(ui, tl!("Text Box Width"), NumberField { id: "box_width", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
             cx.number(ui, tl!("Text Box Height"), NumberField { id: "box_height", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
             let (_, mut vui) = cx.row(ui, tl!("Style"));
