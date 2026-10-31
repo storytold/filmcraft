@@ -2,9 +2,11 @@
 
 OS media integration for FilmCraft (layer L5): hardware video decoding through the operating
 system's codecs, behind `filmcraft_codecs::VideoDecoder`, and hardware H.264 and H.265 (HEVC)
-encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and nothing else.
-It is the one crate of the workspace allowed to contain `unsafe`, under the rules of
-[ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) §0.3.
+encoding, behind `filmcraft_export::VideoEncoder`. It holds OS media FFI and, on macOS, the call
+that lowers the priority of background job threads, and nothing else. It is the one crate of the
+workspace allowed to contain `unsafe`, under the rules of
+[ADR 0001](../../docs/adr/0001-platform-ffi.md), [ADR 0002](../../docs/adr/0002-background-thread-priority.md)
+and [AGENTS.md](../../AGENTS.md) §0.3.
 
 ```rust
 // at startup (the desktop app, filmcraft-cli, the bench)
@@ -275,6 +277,18 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
   known from a submission counter (`n % gop == 0`). The sample entry carries `colr` (nclx BT.2020,
   PQ / HLG, limited), and for PQ `mdcv` and `clli`; 8-bit SDR HEVC is unchanged and has no `colr`
   (the VUI carries its description, as in the software H.264 path).
+
+## Background job threads (macOS)
+
+`register()` installs a call to `thread_priority::lower_current_thread` (a refusal is logged) as
+the export crate's background-thread hook (`filmcraft_export::register_background_thread_start`). Each thread of an
+export's, the export queue's, Render Previews' or a proxy job's pool
+(`filmcraft_export::on_own_threads`) runs it as it starts and drops to the lowest relative
+priority (−15) of the default QoS class, so the monitors' frame workers (default class at 0) and
+the main thread (user-interactive) get the cores first while the machine is busy. Not the utility
+class: macOS runs that on the efficiency cores first, which made an export 15 % slower on an idle
+machine. Threads those threads create start at the default class at 0 again, so decoders an export
+opens keep their priority. Windows and Linux are not covered yet ([ADR 0002](../../docs/adr/0002-background-thread-priority.md)).
 
 ## Guarantees
 
