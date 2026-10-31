@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Align2, ClipId, Color32, EffectInstance, FilmcraftApp, HotNumberOptions, Icon, ParamValue, Pos2, Rect, Sense, Stroke, TextPropsDialog, Tick, Tokens,
+    TrackItem, Value, graphic, icons, json, layer_display_name, layer_indices, pos2, selected_graphic, vec2,
+};
 use filmcraft_project::graphic_design::char_style_at;
 
 // ---------------------------------------------------------------------------------------------
@@ -792,7 +795,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut ok = false;
     let name = |paragraph: bool| if paragraph { tl!("Paragraph Text") } else { tl!("Point Text") };
     let id = egui::Id::unique("gfx-text-properties");
-    egui::Window::new(tl!("Text Properties")).id(id).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
+    crate::dialog_style::Window::new(&app.tokens, tl!("Text Properties")).id(id).collapsible(false).resizable(false).centered(ctx).show(ctx, |ui| {
         ui.label(tl!("Text Layer Type"));
         let r = craft_ui::ComboBox::from_id_salt("gfx-text-type").selected_text(name(d.paragraph)).width(190.0).show_ui(ui, |ui| {
             for paragraph in [false, true] {
@@ -810,11 +813,11 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         let r = ui.checkbox(&mut d.ligatures, tl!("Ligatures"));
         elems.push(("graphics.textProperties.ligatures".into(), r.rect, "Ligatures"));
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let r = ui.button(tl!("Cancel"));
+        crate::dialog_style::actions(ui, |ui| {
+            let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
             elems.push(("graphics.textProperties.cancel".into(), r.rect, "Cancel"));
             close |= r.clicked();
-            let r = ui.button(tl!("OK"));
+            let r = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
             elems.push(("graphics.textProperties.ok".into(), r.rect, "OK"));
             ok |= r.clicked();
         });
@@ -846,6 +849,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
+    use filmcraft_geom::Vec2;
     use filmcraft_project::graphic_design::{CharStyle, LayerExtra, apply_char_style};
 
     use super::*;

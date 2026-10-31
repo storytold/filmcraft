@@ -144,3 +144,17 @@ than one clip is selected, matching the existing Speed control.
 
 `clip_dialogs_ui::duration_text_edits_speed_and_rejects_invalid_input` exercises real
 text input, validation, application, Cancel, and Undo/Redo.
+
+## Shared application dialogs
+
+Application dialogs use `dialog_style::Window` with the current `Tokens`, or the shared
+frame/header helpers for custom and blocking containers. Headers follow `header_bg` and
+`text_dim`; bodies and secondary buttons use the active theme surfaces, and primary buttons
+follow the user's accent with a contrasting foreground. Corners remain rounded. The helper
+only paints the window's title/body frames; it never swaps Context styles, including during
+popup rendering or unwinding.
+
+Action groups are right-aligned. The explicit visual order is primary action then Cancel
+(or Save, Don't Save, Cancel), keeping the established Export Frame and Windows prompt order
+consistent across these dialogs. Recovery and Preferences preserve their separate auxiliary
+actions. Floating Project/bin panels and operating-system file pickers retain their own chrome.

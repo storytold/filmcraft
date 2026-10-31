@@ -93,7 +93,7 @@ pub fn history_dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         return;
     }
     let mut close = !app.session.history.can_redo();
-    egui::Window::new(tl!("Delete Redoable Actions"))
+    crate::dialog_style::Window::new(&app.tokens, tl!("Delete Redoable Actions"))
         .id(key.with("window"))
         .collapsible(false)
         .resizable(false)
@@ -101,11 +101,11 @@ pub fn history_dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         .default_pos(crate::widgets::dialog_center(ctx))
         .show(ctx, |ui| {
             ui.label(tl!("Delete the dimmed actions after the current state? They cannot be redone."));
-            ui.horizontal(|ui| {
-                let r = ui.button(tl!("Cancel"));
+            crate::dialog_style::actions(ui, |ui| {
+                let r = ui.add(crate::dialog_style::secondary(&app.tokens, tl!("Cancel")));
                 app.auto.add("history.deleteRedoable.cancel", r.rect, "Cancel");
                 close |= r.clicked();
-                let r = ui.button(tl!("OK"));
+                let r = ui.add(crate::dialog_style::primary(&app.tokens, tl!("OK")));
                 app.auto.add("history.deleteRedoable.ok", r.rect, "OK");
                 if r.clicked() {
                     if let Err(e) = app.session.execute("history.deleteRedoable", serde_json::json!({})) {
@@ -211,7 +211,7 @@ pub(crate) fn marker_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut keep = true;
     let mut ok = false;
     let mut elems: Vec<(String, Rect, String)> = Vec::new();
-    egui::Window::new(tl!("Marker"))
+    crate::dialog_style::Window::new(&app.tokens, tl!("Marker"))
         .id(egui::Id::unique("Edit Marker"))
         .collapsible(false)
         .resizable(false)
