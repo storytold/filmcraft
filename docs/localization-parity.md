@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (German covers the whole interface; Czech and Polish interface catalogs; Swedish and Russian cover the whole interface; Turkish catalog; Bosnian covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-31 · **Change:** minor (Brazilian Portuguese: the 68 strings added on main since the catalog was written are translated; previously minor: German covers the whole interface; Czech and Polish interface catalogs; Swedish and Russian cover the whole interface; Turkish catalog; Bosnian covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Per-language status of FilmCraft's interface. Premiere 26.5.2 ships 10 interface languages (the
 installed bundle's `.lproj` folders): German, English, Spanish, French, Italian, Japanese, Korean,
@@ -47,7 +47,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | Hindi | hi | 0 (0%) | — | **no Devanagari shaping in the interface** | — | none | 30–50 h (shaping in UI + catalog + fonts) |
 | Arabic | ar | 0 (0%) | — | **no RTL interface layout**; fallback fonts and shaping in the interface, captions in reading order, other text in egui's left-to-right run order; titles broken (#395) | — | none | 40–70 h |
 | French | fr | 3,526 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial (#498) | review |
-| Portuguese (Brazil) | pt-br | 3,541 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial (#859) | review |
+| Portuguese (Brazil) | pt-br | 3,651 (same entries as Spanish, plus the macOS Settings item and the 68 strings added on main since) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial (#859) | review |
 | Indonesian | id | 3,541 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts); System Language also maps the legacy `in` code | not recorded; welcome | partial (#867) | review |
 | Japanese | ja | 3,487 (99.7%) | as zh-cn; system-font kanji may pick the Chinese fallback (#547) | CJK fonts, vertical title text | not recorded | partial | 4–8 h + review |
 | German | de | 3,590 (same entries as Spanish) | as Spanish | Latin (bundled fonts) | menus yes (#630); the rest not recorded, welcome | partial | review |
