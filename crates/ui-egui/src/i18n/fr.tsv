@@ -71,6 +71,10 @@
 	Captions and Graphics	Sous-titres et graphiques
 	Captions…	Sous-titres…
 	Caribbean	Caraïbes
+	Center at Cut	Centré sur la coupe
+	Start at Cut	Début sur la coupe
+	End at Cut	Fin sur la coupe
+	Custom Start	Début personnalisé
 	Center Horizontally	Centrer horizontalement
 	Center Vertically	Centrer verticalement
 	Cerulean	Céruléen
@@ -450,6 +454,9 @@
 	Recover	Récupérer
 	Not Now	Pas maintenant
 	Are you sure you want to discard your changes to '{file}'?	Voulez-vous vraiment ignorer vos modifications de « {file} » ?
+	Replace File	Remplacer le fichier
+	“{file}” already exists in “{folder}”. Do you want to replace it?	« {file} » existe déjà dans « {folder} ». Voulez-vous le remplacer ?
+	Replace	Remplacer
 	Yes	Oui
 	No	Non
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	Ajoutez des médias à votre projet. Déposez des fichiers n'importe où dans la fenêtre ou choisissez une source ci-dessous.
@@ -991,7 +998,6 @@
 	Eyedropper (pick a color from the Program monitor)	Pipette (prélever une couleur dans le moniteur programme)
 	Eyedropper: no picture to sample	Pipette : aucune image à échantillonner
 	Add/Remove Keyframe	Ajouter/supprimer une image clé
-	Temporal Interpolation	Interpolation temporelle
 	Linear	Linéaire
 	Bezier	Bézier
 	Auto Bezier	Bézier auto
@@ -1040,6 +1046,7 @@
 	All Caps	Tout en capitales
 	Small Caps	Petites capitales
 	Underline	Souligné
+	Strikethrough	Barré
 	OpenType	OpenType
 	Kerning	Crénage
 	Ligatures	Ligatures
@@ -1180,7 +1187,7 @@
 	New Bin	Nouveau chutier
 	Find	Rechercher
 	Automate to Sequence	Automatiser vers la séquence
-	Select items to clear	Sélectionnez les éléments à effacer
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Sélectionnez un clip (ou un clip lié) dans la timeline, ou un élément dans le panneau Projet, pour le renommer
 	User Order	Ordre utilisateur
 	Descending	Décroissant
 	Refresh Project	Actualiser le projet
@@ -3627,3 +3634,32 @@
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) nécessite un encodeur matériel (NVENC sur les GPU NVIDIA, VideoToolbox sur macOS) ; aucun n'a été trouvé sur cet ordinateur, et FilmCraft n'a pas encore d'encodeur H.265 logiciel. Choisissez plutôt H.264 ou ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 nécessite un encodeur matériel ; aucun n'a été trouvé sur cet ordinateur, et FilmCraft n'a pas encore d'encodeur AV1 logiciel.
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Décodage matériel : Auto utilise le décodeur vidéo du système (VideoToolbox sur macOS, Media Foundation sur Windows, VA-API pour H.264 et HEVC sous Linux) pour les flux qu'il prend en charge, et le décodeur de FilmCraft pour tout le reste ou en cas d'échec du matériel. Un média déjà ouvert garde son décodeur jusqu'à sa réouverture.
+	Check for Updates…	Rechercher les mises à jour…
+	Checking for updates…	Recherche de mises à jour…
+	Could not check for updates:\n{error}	Impossible de rechercher les mises à jour :\n{error}
+	FilmCraft {version} is currently the newest version available.	FilmCraft {version} est actuellement la version la plus récente disponible.
+	Looks for a newer FilmCraft release and offers to update.	Rechercher une version plus récente de FilmCraft et proposer la mise à jour.
+	Set Work Area Bar In Point	Définir le point d'entrée de la barre de zone de travail
+	Set Work Area Bar Out Point	Définir le point de sortie de la barre de zone de travail
+	Transparency Grid	Grille de transparence
+	Enter a positive duration within the supported speed range.	Saisissez une durée positive dans la plage de vitesses prise en charge.
+	Show Video Names	Afficher les noms des vidéos
+	Show Audio Names	Afficher les noms audio
+	Video Names	Noms des vidéos
+	Audio Names	Noms audio
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Le serveur de contrôle est désactivé : FILMCRAFT_CONTROL_TOKEN doit contenir 64 caractères hexadécimaux aléatoires (voir docs/control-protocol.md)
+
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	Modifier le marqueur…
+	In:	Entrée :
+	Marker Color:	Couleur du marqueur :
+	Options:	Options :
+	Comment Marker	Marqueur de commentaire
+	Chapter Marker	Marqueur de chapitre
+	Segmentation Marker	Marqueur de segmentation
+	Web Link	Lien web
+	Flash Cue Point	Point de repère Flash
+	Invalid duration: {error}	Durée non valide : {error}
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).

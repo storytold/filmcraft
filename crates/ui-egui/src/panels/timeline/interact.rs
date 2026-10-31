@@ -1,11 +1,11 @@
 use super::clips::paint_hatch;
-use super::layout::{Layout, max_scroll, new_track_at};
-use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu};
+use super::layout::{Layout, max_scroll, min_pps, new_track_at};
+use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, ruler_menu};
 use super::snap::{snap, snap_playhead};
 use super::{
-    Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, Pos2, Pressed, Rect, Sense, Sequence, Stroke, StrokeKind,
-    Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2, selection_trim_kind,
-    vec2,
+    Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
+    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2,
+    selection_trim_kind, vec2,
 };
 
 pub(super) fn preview_drag(
@@ -34,7 +34,14 @@ pub(super) fn preview_drag(
         }
         Drag::Remix { clip, delta, .. } => {
             if let Some((_, it)) = seq.find_item(*clip) {
-                out.insert(*clip, (it.start, it.duration + *delta, None));
+                // #1424: the preview must carry an edited item like Trim and Roll do. Without it
+                // the body shrinks while the waveform still maps through the original item, which
+                // squeezes the whole waveform into the new width until the remix commits. The
+                // commit keeps start and source_in and only changes duration, so clone and match.
+                let mut e = it.clone();
+                e.duration = (e.duration + *delta).max(Tick(1));
+                out.insert(*clip, (e.start, e.duration, None));
+                edited.insert(*clip, e);
             }
         }
         Drag::Trim { clip, edge, delta, linked, .. } => {
@@ -108,6 +115,29 @@ pub(super) fn move_transition_preview(app: &FilmcraftApp, seq: &Sequence, trn: &
     }
     let &(dest, delta) = lands.first()?;
     lands.iter().skip(1).all(|l| *l == (dest, delta)).then(|| (trn.start + delta, trn.end() + delta, dest))
+}
+
+impl MarqueeAnchor {
+    pub(super) fn new(layout: &Layout, t: Tick, (v_scroll, a_scroll): (f32, f32), p: Pos2) -> Self {
+        let video = p.y < layout.split_y;
+        MarqueeAnchor { t, y: p.y, scroll: if video { v_scroll } else { a_scroll }, video }
+    }
+
+    /// The box from this corner, wherever it is on screen now, to the pointer at `p`. It follows
+    /// the rows as `layout` placed them, not the view's scroll a wheel turn has already changed.
+    pub(super) fn rect_to(&self, layout: &Layout, p: Pos2) -> Rect {
+        // the video tracks move down as `v_scroll` grows, the audio tracks up as `a_scroll` grows
+        let mut y = if self.video { self.y + (layout.v_scroll - self.scroll) } else { self.y - (layout.a_scroll - self.scroll) };
+        // video scrolling away under a pointer that is still over the video area must not reach into the audio rows
+        if self.video && p.y < layout.split_y {
+            y = y.min(layout.split_y - 1.0);
+        }
+        // nor audio scrolling away under a pointer still below the divider into the video rows
+        if !self.video && p.y >= layout.split_y {
+            y = y.max(layout.split_y + 1.0);
+        }
+        Rect::from_two_pos(pos2(layout.x_of(self.t), y), p)
+    }
 }
 
 /// The clips a marquee rectangle touches, on the tracks it crosses.
@@ -197,7 +227,12 @@ pub(crate) fn wheel_input(ctx: &egui::Context) -> WheelInput {
 
 /// Puts the playhead where the pointer is on the ruler: what a press does before any drag (#1090).
 fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Pos2, shift: bool) {
-    app.stop();
+    // A press on the ruler stops playback, but it must not close a scrub stream that is already
+    // open: `stop()` drops the output stream, and the grain a frame later has to open the device
+    // again (slow on WASAPI, #2633). A press while nothing runs has nothing to stop.
+    // The Source monitor runs on its own clock and `stop()` leaves it alone, so it stops first;
+    app.stop_source();
+    app.stop_for_scrub();
     let mut tt = seq.settings.frame_rate.snap_nearest(layout.tick_at(p.x).max(Tick::ZERO));
     if shift || app.session.prefs.timeline.snap_playhead {
         tt = snap_playhead(app, seq, layout, tt);
@@ -228,7 +263,7 @@ fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &
             let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
             let anchor_t = layout.tick_at(p.x).seconds();
             let v = &mut app.ui.timeline;
-            v.target_pps = (v.target_pps * f).clamp(0.05, 24_000.0);
+            v.target_pps = (v.target_pps * f).clamp(min_pps(seq.duration().seconds(), app.last_timeline_width), 24_000.0);
             app.tl.zoom_anchor = Some((anchor_t, p.x));
         } else if w.delta != egui::Vec2::ZERO {
             let wheel_sideways = (app.session.prefs.timeline.mouse_scrolling == "horizontal") != w.command;
@@ -327,13 +362,22 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
     let mods = ctx.input(|i| i.modifiers);
     let roll_ripple = app.session.prefs.trim.selection_tool_roll_ripple;
     // ---- press: act on what was under the pointer when the button went down (#259)
-    if !app.tl.cancelled && (resp.drag_started() || (resp.clicked() && app.tl.drag.is_none())) {
+    // (the primary button selects, moves, trims and cuts, the middle one pans; a right-button drag
+    // starts nothing)
+    let press_began = resp.drag_started_by(egui::PointerButton::Primary) || resp.drag_started_by(egui::PointerButton::Middle);
+    if !app.tl.cancelled && (press_began || (resp.clicked() && app.tl.drag.is_none())) {
         let pressed = match app.tl.pressed.take() {
             Some(pr) => pr,
             // a press and release in the same frame is never stored: it happened where egui says
             None => {
                 let Some(p) = resp.interact_pointer_pos() else { return true };
-                Pressed { pos: p, tick: layout.tick_at(p.x), grab: grab_at(seq, layout, p, tool, mods, roll_ripple) }
+                Pressed {
+                    pos: p,
+                    tick: layout.tick_at(p.x),
+                    grab: grab_at(seq, layout, p, tool, mods, roll_ripple),
+                    v_scroll: layout.v_scroll,
+                    a_scroll: layout.a_scroll,
+                }
             }
         };
         let (p, t) = (pressed.pos, pressed.tick);
@@ -343,7 +387,7 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
             Grab::Volume { .. } if resp.clicked() && !adding => Grab::Other(pressed.grab.hit()),
             g => g,
         };
-        start_drag(app, ctx, resp, seq, layout, grab, p, t);
+        start_drag(app, ctx, resp, seq, layout, grab, p, t, (pressed.v_scroll, pressed.a_scroll));
     }
 
     false
@@ -352,7 +396,17 @@ fn press_action(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respon
 /// What a press does: the drag it starts (or the tool's click action), the playhead jump a
 /// ruler press makes, and the selection a tool change makes first.
 #[allow(clippy::too_many_arguments)]
-fn start_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response, seq: &Sequence, layout: &Layout, grab: Grab, p: Pos2, t: Tick) {
+fn start_drag(
+    app: &mut FilmcraftApp,
+    ctx: &egui::Context,
+    resp: &egui::Response,
+    seq: &Sequence,
+    layout: &Layout,
+    grab: Grab,
+    p: Pos2,
+    t: Tick,
+    scroll: (f32, f32),
+) {
     let tool = app.ui.tool;
     let mods = ctx.input(|i| i.modifiers);
     let rate = seq.settings.frame_rate;
@@ -363,17 +417,21 @@ fn start_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response
         // `pressed`, so the pan starts from where the button went down
         _ if resp.drag_started_by(egui::PointerButton::Middle) => {
             let last = ctx.input(|i| i.pointer.press_origin()).unwrap_or(p);
-            Some(Drag::Pan { last, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll })
+            let tv = &app.ui.timeline;
+            Some(Drag::Pan { last, start_scroll: tv.target_scroll, start_v: tv.v_scroll, audio: last.y >= layout.split_y, start_a: tv.a_scroll })
         }
         (_, Grab::Other(Hit::Ruler)) => Some(Drag::Scrub { initial: app.session.playhead() }),
         (_, Grab::Other(Hit::WorkArea { edge })) => {
             seq.work_area.filter(|_| resp.drag_started()).map(|w| Drag::WorkArea { edge, from: t, start: w.start, end: w.end() })
         }
-        (Tool::Hand, _) => Some(Drag::Pan { last: p, start_scroll: app.ui.timeline.target_scroll, start_v: app.ui.timeline.v_scroll }),
+        (Tool::Hand, _) => {
+            let tv = &app.ui.timeline;
+            Some(Drag::Pan { last: p, start_scroll: tv.target_scroll, start_v: tv.v_scroll, audio: p.y >= layout.split_y, start_a: tv.a_scroll })
+        }
         (Tool::Zoom, _) => {
             if resp.clicked() {
                 let f = if mods.alt { 1.0 / 2.0 } else { 2.0 };
-                app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(0.05, 24_000.0);
+                app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(min_pps(seq.duration().seconds(), app.last_timeline_width), 24_000.0);
                 app.tl.zoom_anchor = Some((t.seconds(), p.x));
             }
             None
@@ -397,12 +455,14 @@ fn start_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response
             let fwd = tool == Tool::TrackSelectForward;
             let ids: Vec<u64> = seq
                 .all_tracks()
-                .filter(|tr| !mods.shift || tr.id == track)
+                // a locked track is skipped: its clips cannot move, and they would block the drag
+                .filter(|tr| !tr.locked && (!mods.shift || tr.id == track))
                 .flat_map(|tr| tr.items.iter())
                 .filter(|i| if fwd { i.end() > t } else { i.start < t })
                 .map(|i| i.id.0)
                 .collect();
             let _ = app.session.execute("timeline.select", json!({"clips": ids}));
+            select_track_select_captions(app, seq, t, fwd, mods.shift);
             // as in Premiere Pro, a drag with the tool moves what it just selected
             if resp.drag_started() {
                 let clips = app.session.state.selection.clone();
@@ -487,7 +547,12 @@ fn start_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response
         // the video and audio tracks, #683)
         (_, Grab::Other(hit @ (Hit::Empty { .. } | Hit::None))) if layout.content.contains(p) => {
             if resp.drag_started() {
-                Some(Drag::Marquee { start: p, before: app.session.state.selection.clone(), add: mods.shift || mods.command, individual: mods.alt })
+                Some(Drag::Marquee {
+                    start: MarqueeAnchor::new(layout, t, scroll, p),
+                    before: app.session.state.selection.clone(),
+                    add: mods.shift || mods.command,
+                    individual: mods.alt,
+                })
             } else {
                 app.session.state.selection.clear();
                 app.session.state.edit_points.clear();
@@ -522,6 +587,27 @@ fn start_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Response
     }
 }
 
+/// Track Select Forward (Backward) also selects the captions that end after (start before) `t`, so
+/// the subtitles go with the clips and stay in sync. Shift keeps to the clicked track, which has no
+/// captions, and a locked caption track keeps its captions.
+fn select_track_select_captions(app: &mut FilmcraftApp, seq: &Sequence, t: Tick, fwd: bool, shift: bool) {
+    if shift {
+        return;
+    }
+    let picked = |c: &&filmcraft_project::Caption| if fwd { c.end() > t } else { c.start < t };
+    let captions: Vec<u64> = seq.caption_tracks.iter().filter(|tr| !tr.locked).flat_map(|tr| tr.captions.iter()).filter(picked).map(|c| c.id.0).collect();
+    let _ = app.session.execute("captions.select", json!({"captions": captions, "add": true}));
+}
+
+/// The captions a Track Select drag moves with its clips, in the same undo step. None when the drop
+/// copies (Option) or inserts (Cmd): an insert already carries the sync-locked caption tracks.
+fn track_select_drag_captions(app: &FilmcraftApp, copying: bool, inserting: bool) -> Vec<u64> {
+    if copying || inserting || !matches!(app.ui.tool, Tool::TrackSelectForward | Tool::TrackSelectBackward) {
+        return Vec::new();
+    }
+    app.session.state.caption_selection.iter().map(|c| c.0).collect()
+}
+
 /// Escape cancels an ongoing drag or press (#580): the release commits nothing.
 fn escape_cancel(app: &mut FilmcraftApp, ctx: &egui::Context) {
     // Escape cancels an ongoing drag or press (#580): the release commits nothing
@@ -531,16 +617,15 @@ fn escape_cancel(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 Drag::Scrub { initial } => {
                     app.session.set_playhead(initial);
                 }
-                Drag::Volume(v) => {
-                    if v.changed() {
-                        let _ = app.session.execute("edit.undo", json!({}));
-                    }
+                Drag::Volume(v) if v.changed() => {
+                    let _ = app.session.execute("edit.undo", json!({}));
                 }
-                Drag::Pan { start_scroll, start_v, .. } => {
+                Drag::Pan { start_scroll, start_v, start_a, .. } => {
                     let v = &mut app.ui.timeline;
                     v.target_scroll = start_scroll;
                     v.scroll = start_scroll;
                     v.v_scroll = start_v;
+                    v.a_scroll = start_a;
                 }
                 // the live box (#1028) already changed the selection: put back the one the drag began with
                 Drag::Marquee { before, .. } => {
@@ -578,13 +663,19 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 app.session.set_playhead(tt);
                 Some(Drag::Scrub { initial })
             }
-            Drag::Pan { last, start_scroll, start_v } => {
+            Drag::Pan { last, start_scroll, start_v, audio, start_a } => {
                 let dx = p.x - last.x;
                 let v = &mut app.ui.timeline;
                 v.target_scroll = (v.target_scroll - dx as f64 / v.pps).max(0.0);
                 v.scroll = v.target_scroll;
-                app.ui.timeline.v_scroll += p.y - last.y;
-                Some(Drag::Pan { last: p, start_scroll, start_v })
+                // the tracks follow the pointer: the video tracks hang from the divider (scrolling
+                // brings higher ones down), the audio tracks start at it, as with the wheel
+                if audio {
+                    v.a_scroll -= p.y - last.y;
+                } else {
+                    v.v_scroll += p.y - last.y;
+                }
+                Some(Drag::Pan { last: p, start_scroll, start_v, audio, start_a })
             }
             Drag::Move { clips, grab_tick, start_track, .. } => {
                 let raw = rate.snap_nearest(t_here - grab_tick);
@@ -671,7 +762,7 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
             }
             Drag::Volume(v) => Some(Drag::Volume(crate::panels::timeline_volume::drag(app, ui, seq, layout, v, p.y))),
             Drag::Marquee { start, before, add, individual } => {
-                let r = Rect::from_two_pos(start, p);
+                let r = start.rect_to(layout, p);
                 ui.painter().rect_filled(r, 0.0, Color32::from_white_alpha(18));
                 ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_white_alpha(140)), StrokeKind::Inside);
                 // the clips in the box are selected as it grows and shrinks; only the release runs
@@ -696,6 +787,14 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
             }
             !blocked
         });
+        // the trim cursor stays for the whole drag of an edge: the hover feedback above stops once
+        // a drag is in progress (#1780)
+        if matches!(
+            app.tl.drag,
+            Some(Drag::Trim { .. } | Drag::Roll { .. } | Drag::Stretch { .. } | Drag::Remix { .. } | Drag::Transition { edge: Some(_), .. })
+        ) {
+            ctx.set_cursor_icon(CursorIcon::ResizeColumn);
+        }
         // auto-scroll when dragging near the edges
         if !matches!(app.tl.drag, Some(Drag::Pan { .. }) | Some(Drag::ZoomBar { .. }) | Some(Drag::Volume(_))) {
             let v = &mut app.ui.timeline;
@@ -730,7 +829,9 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                         .filter_map(|c| seq.find_item(*c).map(|(tid, it)| json!({"clip": c.0, "track": to(tid), "time": (it.start + offset).max(Tick::ZERO).0})))
                         .collect();
                     // Option held while dropping copies (Premiere: Option-drag duplicates)
-                    Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copy || mods.alt})))
+                    let copying = copy || mods.alt;
+                    let captions = track_select_drag_captions(app, copying, mods.command);
+                    Some(app.session.execute("timeline.move", json!({"moves": moves, "insert": mods.command, "linked": false, "copy": copying, "captions": captions})))
                 }
                 Drag::Trim { clip, edge, mode, delta, linked, .. } if delta != Tick::ZERO => Some(app.session.execute(
                     "timeline.trim",
@@ -757,7 +858,7 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                     // egui ends a drag on Escape: that cancels the box, as in the Project panel
                     match resp.interact_pointer_pos() {
                         Some(end) if !ctx.input(|i| i.key_pressed(egui::Key::Escape)) => {
-                            let ids: Vec<u64> = marquee_clips(seq, layout, Rect::from_two_pos(start, end)).iter().map(|c| c.0).collect();
+                            let ids: Vec<u64> = marquee_clips(seq, layout, start.rect_to(layout, end)).iter().map(|c| c.0).collect();
                             Some(app.session.execute("timeline.select", json!({"clips": ids, "add": add, "linked": !individual})))
                         }
                         _ => None,
@@ -772,6 +873,44 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
             app.tl.drag = None;
         }
     }
+}
+
+/// #1887: the rows a Project drop fills, with their automation ids: the picture from the video
+/// destination up, the sound from the audio destination down (one track per audio clip the item
+/// places), as `timeline.place` lays them out. `row` is the track under the pointer, `new_track`
+/// the track the drop adds in the empty space above or below them (drawn for its first lane only).
+/// `(vlanes, alanes)` is how many video and audio tracks the drop fills ([`filmcraft_engine::Session::placement_lanes`]).
+fn drop_preview_bands(
+    seq: &Sequence,
+    layout: &Layout,
+    (vlanes, alanes): (usize, usize),
+    row: Option<&super::layout::Row>,
+    new_track: Option<(TrackKind, Rect)>,
+) -> Vec<(Rect, String)> {
+    // first track index of each kind, `None` = a new track the drop adds
+    let dests = match (row, new_track) {
+        (Some(row), _) => match row.kind {
+            TrackKind::Video => (Some(row.index), Some(if row.index < seq.audio_tracks.len() { row.index } else { 0 })),
+            TrackKind::Audio => (Some(if row.index < seq.video_tracks.len() { row.index } else { 0 }), Some(row.index)),
+        },
+        (None, Some((TrackKind::Video, _))) => (None, (seq.video_tracks.len() < seq.audio_tracks.len()).then_some(seq.video_tracks.len())),
+        (None, Some((TrackKind::Audio, _))) => ((seq.audio_tracks.len() < seq.video_tracks.len()).then_some(seq.audio_tracks.len()), None),
+        (None, None) => return Vec::new(),
+    };
+    let mut bands = Vec::new();
+    for (kind, first, lanes, letter) in [(TrackKind::Video, dests.0, vlanes, 'V'), (TrackKind::Audio, dests.1, alanes, 'A')] {
+        for lane in 0..lanes {
+            let band = match first {
+                Some(i) => i.checked_add(lane).and_then(|i| layout.rows.iter().find(|r| r.kind == kind && r.index == i)).map(|r| r.rect),
+                None => new_track.filter(|(k, _)| *k == kind && lane == 0).map(|(_, band)| band),
+            };
+            if let Some(band) = band {
+                let n = first.map_or(seq.tracks(kind).len(), |i| i.saturating_add(lane)).saturating_add(1);
+                bands.push((band, format!("timeline.dropPreview.{letter}{n}")));
+            }
+        }
+    }
+    bands
 }
 
 /// Project items, graphics templates, effects and OS files dragged over the Timeline: the
@@ -807,11 +946,15 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 carries && source.is_none_or(|s| if *kind == TrackKind::Video { s.video } else { s.audio })
             },
         );
-        if let Some(band) = row.as_ref().map(|r| r.rect).or(new_track.map(|(_, band)| band)) {
+        // #1887: a preview on every track the drop fills, not only the one under the pointer
+        let range = source.map_or(filmcraft_time::TimeRange::new(Tick::ZERO, dur), |s| s.range);
+        let lanes = app.session.placement_lanes(item, range, source.is_none_or(|s| s.video), source.is_none_or(|s| s.audio));
+        for (k, (band, id)) in drop_preview_bands(seq, layout, lanes, row.as_ref(), new_track).iter().enumerate() {
             let r = Rect::from_min_max(pos2(layout.x_of(t), band.min.y + 1.0), pos2(layout.x_of(t + dur), band.max.y - 1.0));
             ui.painter().rect_filled(r, 3.0, Color32::from_white_alpha(40));
             ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
-            if mods.command {
+            app.auto.add(id, r, "tracks");
+            if mods.command && k == 0 {
                 ui.painter().text(r.left_top() + vec2(4.0, -2.0), Align2::LEFT_BOTTOM, tl!("Insert"), Tokens::ui(10.0), Color32::WHITE);
             }
         }
@@ -844,8 +987,8 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 params["video"] = json!(source.video);
                 params["audio"] = json!(source.audio);
             }
-            if let Err(e) = app.session.execute("timeline.place", params) {
-                app.ui.status = e.to_string();
+            if let Err(e) = crate::panels::clip_mismatch::execute(app, "timeline.place", params) {
+                app.ui.status = e;
             }
             crate::panels::clear_drag(ui);
         }
@@ -891,8 +1034,8 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             // one command, one undo step: the files go end to end from the drop point
             let ids: Vec<u64> = items.iter().map(|i| i.0).collect();
             let params = json!({"items": ids, "track": vt, "audioTrack": at, "time": start.0, "insert": false});
-            if let Err(e) = app.session.execute("timeline.place", params) {
-                app.ui.status = e.to_string();
+            if let Err(e) = crate::panels::clip_mismatch::execute(app, "timeline.place", params) {
+                app.ui.status = e;
             }
         }
     }
@@ -935,24 +1078,39 @@ fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                 _ => None,
             });
             let edge = if p.x - layout.x_of(it.start) < layout.x_of(it.end()) - p.x { "in" } else { "out" };
-            let params = json!({"effect": effect, "clip": clip.0, "edge": edge});
+            let mut params = json!({"effect": effect, "clip": clip.0, "edge": edge});
             if let Some(kind) = transition_kind {
                 if let Ok((_, tr)) = filmcraft_engine::commands::preview_transition(&app.session, &params, kind) {
-                    let r = Rect::from_min_max(pos2(layout.x_of(tr.start), row.rect.min.y + 1.0), pos2(layout.x_of(tr.end()), row.rect.max.y - 1.0));
-                    let painter = ui.painter().with_clip_rect(layout.content);
-                    painter.rect_filled(r, 2.0, app.tokens.accent.gamma_multiply(0.35));
-                    paint_hatch(&painter, r.intersect(layout.content));
-                    painter.rect_stroke(r, 2.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+                    // Snap the drop to the cut: Start at Cut, Center at Cut or End at Cut, by
+                    // where the pointer is relative to it (beyond half the transition's span).
                     let cut = if edge == "in" { it.start } else { it.end() };
-                    let x = layout.x_of(cut);
-                    painter.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new(3.0, app.tokens.accent));
-                    // Keep the edge label readable even when the clip/transition is only a few pixels wide.
-                    let label = if edge == "in" { tl!("In") } else { tl!("Out") };
-                    let label_width = painter.layout_no_wrap(label.to_string(), Tokens::ui(11.0), app.tokens.accent).size().x + 8.0;
-                    let label_rect = Rect::from_center_size(pos2(p.x, row.rect.top() + 10.0), vec2(label_width, 15.0));
-                    painter.rect_filled(label_rect, 2.0, app.tokens.panel_bg);
-                    painter.text(label_rect.center(), Align2::CENTER_CENTER, label, Tokens::ui(11.0), app.tokens.accent);
-                    app.auto.add("timeline.transitionDropPreview", r.intersect(layout.content), edge);
+                    let half = tr.duration.mul_ratio(1, 2);
+                    let align = if layout.tick_at(p.x) < cut - half {
+                        filmcraft_edit::transitions::Alignment::End
+                    } else if layout.tick_at(p.x) > cut + half {
+                        filmcraft_edit::transitions::Alignment::Start
+                    } else {
+                        filmcraft_edit::transitions::Alignment::Center
+                    };
+                    params["align"] = json!(align.id());
+                    if let Ok((_, tr)) = filmcraft_engine::commands::preview_transition(&app.session, &params, kind) {
+                        let r = Rect::from_min_max(pos2(layout.x_of(tr.start), row.rect.min.y + 1.0), pos2(layout.x_of(tr.end()), row.rect.max.y - 1.0));
+                        let painter = ui.painter().with_clip_rect(layout.content);
+                        painter.rect_filled(r, 2.0, app.tokens.accent.gamma_multiply(0.35));
+                        paint_hatch(&painter, r.intersect(layout.content));
+                        painter.rect_stroke(r, 2.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+                        let x = layout.x_of(cut);
+                        painter.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new(3.0, app.tokens.accent));
+                        // Keep the alignment label readable even when the transition is only a few pixels wide.
+                        let label = filmcraft_edit::transitions::alignment(&tr, cut, seq.settings.frame_rate.frame_duration()).label();
+                        let shown = crate::i18n::t(label);
+                        let label_width = painter.layout_no_wrap(shown.to_string(), Tokens::ui(11.0), app.tokens.accent).size().x + 8.0;
+                        let label_rect = Rect::from_center_size(pos2(p.x, row.rect.top() + 10.0), vec2(label_width, 15.0));
+                        painter.rect_filled(label_rect, 2.0, app.tokens.panel_bg);
+                        painter.text(label_rect.center(), Align2::CENTER_CENTER, shown, Tokens::ui(11.0), app.tokens.accent);
+                        // Automation stays in English so tests and the control channel match a fixed label.
+                        app.auto.add("timeline.transitionDropPreview", r.intersect(layout.content), label);
+                    }
                 }
             } else {
                 let r = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.min.y), pos2(layout.x_of(it.end()), row.rect.max.y));
@@ -1006,7 +1164,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
         if matches!(grab, Grab::Other(Hit::Ruler)) {
             scrub_playhead(app, seq, layout, p, mods.shift);
         }
-        app.tl.pressed = Some(Pressed { pos: p, tick: layout.tick_at(p.x), grab });
+        app.tl.pressed = Some(Pressed { pos: p, tick: layout.tick_at(p.x), grab, v_scroll: layout.v_scroll, a_scroll: layout.a_scroll });
     }
 
     wheel_scroll(app, ui, rect, layout, seq);
@@ -1036,6 +1194,14 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
         {
             app.ui.status = e.to_string();
         }
+    }
+
+    // ---- double-click a marker on the ruler: the Edit Marker dialog (#3023)
+    if resp.double_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Some(marker) = marker_under_pointer(seq, layout, p)
+    {
+        super::marker_dialog::open(app, &ctx, marker.id);
     }
 
     // ---- double-click a transition: Set Transition Duration (Premiere)
@@ -1106,6 +1272,18 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
         }
         ctx.data_mut(|d| d.insert_temp(marker_menu_id, marker.map(|m| m.id)));
     }
+    // on the ruler away from a marker, the ruler's own menu, not the clip menu of an earlier press
+    let ruler_menu_id = egui::Id::unique("timeline.rulerMenu.open");
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let on_ruler = layout.ruler.contains(p) && marker_under_pointer(seq, layout, p).is_none();
+        ctx.data_mut(|d| d.insert_temp(ruler_menu_id, on_ruler));
+        if on_ruler {
+            ctx.data_mut(|d| d.insert_temp::<Option<EditPointTarget>>(edit_point_menu_id, None));
+            ctx.data_mut(|d| d.insert_temp(gap_menu_id, false));
+        }
+    }
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
         && let Hit::Clip { clip, edge, track } = hit(seq, layout, p)
@@ -1138,6 +1316,10 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
             ui.set_min_width(220.0);
             if let Some(marker) = ctx.data(|d| d.get_temp::<Option<MarkerId>>(marker_menu_id)).flatten() {
                 marker_menu(app, &ctx, ui, marker);
+                return;
+            }
+            if ctx.data(|d| d.get_temp::<bool>(ruler_menu_id)).unwrap_or(false) {
+                ruler_menu(app, &ctx, ui);
                 return;
             }
             if let Some(target) = ctx.data(|d| d.get_temp::<Option<EditPointTarget>>(edit_point_menu_id)).flatten() {
@@ -1211,4 +1393,42 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     drop_targets(app, ui, seq, layout);
 
     app.auto.add("timeline.tracks", layout.content, "tracks");
+}
+
+#[cfg(test)]
+mod marquee_tests {
+    use super::*;
+
+    fn layout(v_scroll: f32, a_scroll: f32) -> Layout {
+        let content = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 600.0));
+        let ruler = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 20.0));
+        Layout { content, ruler, rows: Vec::new(), pps: 100.0, scroll: 0.0, split_y: 300.0, v_scroll, a_scroll }
+    }
+
+    /// Review of #3583: a video corner scrolled down past the divider, with the pointer still over the
+    /// video tracks, must not reach into the audio tracks; once the pointer enters them it does.
+    #[test]
+    fn a_video_corner_scrolled_below_the_divider_stays_out_of_the_audio_tracks() {
+        let anchor = MarqueeAnchor::new(&layout(0.0, 0.0), Tick::ZERO, (0.0, 0.0), pos2(50.0, 100.0));
+        let l = layout(500.0, 0.0);
+        let r = anchor.rect_to(&l, pos2(200.0, 150.0));
+        assert!(r.max.y < l.split_y, "the box ends above the divider: {r:?}");
+        let r = anchor.rect_to(&l, pos2(200.0, 400.0));
+        assert!(r.max.y >= 400.0, "the pointer in the audio tracks reaches them: {r:?}");
+    }
+
+    /// Review of #3583: the audio tracks scroll on their own (`a_scroll` moves them up); a corner
+    /// pressed among them moves with them, and the video scroll does not move it.
+    #[test]
+    fn an_audio_corner_moves_with_the_audio_scroll() {
+        let anchor = MarqueeAnchor::new(&layout(30.0, 10.0), Tick::ZERO, (30.0, 10.0), pos2(0.0, 420.0));
+        let r = anchor.rect_to(&layout(80.0, 60.0), pos2(200.0, 520.0));
+        assert_eq!(r, Rect::from_min_max(pos2(0.0, 370.0), pos2(200.0, 520.0)));
+        // scrolled up past the divider, with the pointer still below it: it stays out of the video tracks
+        let l = layout(0.0, 400.0);
+        let r = anchor.rect_to(&l, pos2(200.0, 350.0));
+        assert!(r.min.y > l.split_y, "the box starts below the divider: {r:?}");
+        let r = anchor.rect_to(&l, pos2(200.0, 100.0));
+        assert!(r.min.y <= 100.0, "the pointer in the video tracks reaches them: {r:?}");
+    }
 }

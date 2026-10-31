@@ -13,7 +13,7 @@ mod cdf;
 mod decoder;
 mod frame;
 mod grain;
-pub mod header;
+mod header;
 mod inter;
 mod inter_info;
 mod intra;
@@ -29,7 +29,7 @@ mod tile;
 mod transform;
 
 pub use decoder::Decoder;
-pub use header::{ColorConfig, FrameHeader, SequenceHeader};
+pub use header::{ColorConfig, SequenceHeader};
 pub use stats::{DecodeStats, Stage};
 
 /// Decoder errors.

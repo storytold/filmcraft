@@ -204,11 +204,16 @@ impl<'a> TileDecoder<'a> {
     /// tokens (6.4.24): reads and dequantizes the coefficients into `self.coefs`. Returns the end
     /// of block position and the number of leading coefficient rows that may be non-zero.
     fn tokens(&mut self, bd: &mut BoolDecoder, b: &Blk, t: &TxBlock) -> (usize, usize) {
+        if self.s.counting { self.tokens_impl::<true>(bd, b, t) } else { self.tokens_impl::<false>(bd, b, t) }
+    }
+
+    fn tokens_impl<const COUNTING: bool>(&mut self, bd: &mut BoolDecoder, b: &Blk, t: &TxBlock) -> (usize, usize) {
         let TxBlock { plane, start_x, start_y, tx_sz, tx_type } = *t;
         let seg_eob = 16usize << (tx_sz << 1);
         let sc = scan(tx_sz, tx_type);
         let nb = neighbors(tx_sz, tx_type);
         let bands: &[u8] = if tx_sz == 0 { &COEFBAND_4X4 } else { &COEFBAND_8X8PLUS };
+        let (sc, nb, bands) = (&sc[..seg_eob], &nb[..seg_eob], &bands[..seg_eob]);
         let ptype = (plane > 0) as usize;
         let rtype = b.is_inter as usize;
         let probs = &self.fc.coef[tx_sz as usize][ptype][rtype];
@@ -216,7 +221,6 @@ impl<'a> TileDecoder<'a> {
         let q = self.s.seg_q[b.seg_id as usize][ptype];
         let dq_shift = (tx_sz == TX_32X32) as u32;
         let pareto = pareto_full();
-        let counting = self.s.counting;
         let log2n = 2 + tx_sz as usize;
         let bit_depth = self.bit_depth;
         let mut max_row = 0usize;
@@ -225,6 +229,7 @@ impl<'a> TileDecoder<'a> {
         let tc = &mut self.token_cache;
         let coefs = &mut self.coefs;
         let counts = &mut self.strip.counts;
+        let (more_counts, token_counts) = (&mut counts.more_coefs[tx_sz as usize][ptype][rtype], &mut counts.token[tx_sz as usize][ptype][rtype]);
         while c < seg_eob {
             let pos = sc[c] as usize;
             let band = bands[c] as usize;
@@ -237,8 +242,8 @@ impl<'a> TileDecoder<'a> {
             let p = &probs[band][ctx];
             if check_eob {
                 let more = bd.read_bool(p[0]);
-                if counting {
-                    counts.more_coefs[tx_sz as usize][ptype][rtype][band][ctx][more as usize] += 1;
+                if COUNTING {
+                    more_counts[band][ctx][more as usize] += 1;
                 }
                 if !more {
                     break;
@@ -246,8 +251,8 @@ impl<'a> TileDecoder<'a> {
             }
             if !bd.read_bool(p[1]) {
                 tc[pos] = 0;
-                if counting {
-                    counts.token[tx_sz as usize][ptype][rtype][band][ctx][0] += 1;
+                if COUNTING {
+                    token_counts[band][ctx][0] += 1;
                 }
                 check_eob = false;
                 c += 1;
@@ -257,21 +262,21 @@ impl<'a> TileDecoder<'a> {
             let token: usize;
             let coef: i64;
             if !bd.read_bool(p[2]) {
-                if counting {
-                    counts.token[tx_sz as usize][ptype][rtype][band][ctx][1] += 1;
+                if COUNTING {
+                    token_counts[band][ctx][1] += 1;
                 }
                 token = 1;
                 coef = 1;
             } else {
-                if counting {
-                    counts.token[tx_sz as usize][ptype][rtype][band][ctx][2] += 1;
+                if COUNTING {
+                    token_counts[band][ctx][2] += 1;
                 }
                 let pp = &pareto[p[2].max(1) as usize - 1];
                 token = read_large_token(bd, pp);
                 coef = read_coef(bd, token, bit_depth);
             }
             tc[pos] = ENERGY_CLASS[token];
-            let sign = bd.read_bool(128);
+            let sign = bd.read_bool_half();
             let qv = if pos == 0 { q[0] } else { q[1] } as i64;
             let d = ((coef * qv) >> dq_shift) as i32;
             coefs[pos] = if sign { d.wrapping_neg() } else { d };

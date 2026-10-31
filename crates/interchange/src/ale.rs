@@ -22,7 +22,7 @@
 //! heading's `FPS`, `End` exclusive. Values never contain tabs or line breaks (they are replaced by
 //! spaces). Lines end with CR LF (Avid's own files); the reader accepts LF and CR too.
 
-use filmcraft_project::{ItemId, ItemKind, MediaRef, Project};
+use filmcraft_project::{ItemId, MediaRef, Project};
 use filmcraft_time::{FrameRate, Tick, format_timecode_frames, parse_timecode};
 
 /// A parsed or to-be-written ALE file.
@@ -77,12 +77,9 @@ fn video_format(height: u32) -> &'static str {
 /// frame rate is the first video item's (24 fps when there is none).
 pub fn export_items(p: &Project, items: &[ItemId]) -> AleDoc {
     let media_of = |id: ItemId| -> Option<(&filmcraft_project::MediaClip, Tick, Tick)> {
-        let it = p.item(id)?;
-        match &it.kind {
-            ItemKind::Media(m) => Some((m, Tick::ZERO, m.duration())),
-            ItemKind::Subclip { parent, range, .. } => p.item(*parent)?.as_media().map(|m| (m, range.start, range.duration)),
-            _ => None,
-        }
+        let (_, m, range) = p.resolve_media(id)?;
+        let (start, dur) = range.map_or((Tick::ZERO, m.duration()), |r| (r.start, r.duration));
+        Some((m, start, dur))
     };
     let rows_src: Vec<ItemId> = items.iter().copied().filter(|i| media_of(*i).is_some()).collect();
     let first_video = rows_src.iter().find_map(|i| media_of(*i).and_then(|(m, ..)| m.info.video.as_ref().map(|v| (v.frame_rate, v.height))));
@@ -203,7 +200,7 @@ pub fn row_range(doc: &AleDoc, row: usize) -> Option<(Tick, Tick)> {
 mod tests {
     use super::*;
     use filmcraft_media::{AudioStreamInfo, MediaInfo, MediaKind, VideoStreamInfo};
-    use filmcraft_project::{Label, MediaClip};
+    use filmcraft_project::{ItemKind, Label, MediaClip};
     use filmcraft_time::TimeRange;
 
     fn media(p: &mut Project, name: &str, rate: FrameRate, seconds: i64, tc: Option<i64>, audio: u32) -> ItemId {
@@ -294,5 +291,29 @@ mod tests {
         assert_eq!(fps_text(FrameRate::FPS_59_94), "59.94");
         assert_eq!(video_format(576), "PAL");
         assert_eq!(video_format(2160), "CUSTOM");
+    }
+
+    #[test]
+    fn exports_chained_subclips_and_skips_cyclic_subclips_without_hanging() {
+        let mut p = Project::new("ALE");
+        let r = FrameRate::FPS_23_976;
+        let a = media(&mut p, "Clip.mp4", r, 10, Some(86_400), 2);
+        let sub1 =
+            p.add_item("Sub 1", Label::Iris, ItemKind::Subclip { parent: a, range: TimeRange::new(r.tick_of(24), r.tick_of(48)), restrict_trims: false }, None);
+        let sub2 = p.add_item(
+            "Sub 2",
+            Label::Iris,
+            ItemKind::Subclip { parent: sub1, range: TimeRange::new(r.tick_of(10), r.tick_of(20)), restrict_trims: false },
+            None,
+        );
+        // Cyclic subclip
+        let cycle = p.add_item("Cycle", Label::Iris, ItemKind::Subclip { parent: ItemId(999), range: TimeRange::default(), restrict_trims: false }, None);
+        p.item_mut(cycle).unwrap().kind = ItemKind::Subclip { parent: cycle, range: TimeRange::default(), restrict_trims: false };
+
+        let doc = export_items(&p, &[sub2, cycle]);
+        // Chained subclip succeeds, cyclic subclip is cleanly skipped
+        assert_eq!(doc.rows.len(), 1);
+        assert_eq!(doc.get(0, "Name"), Some("Sub 2"));
+        assert_eq!(doc.get(0, "Source File"), Some("/media/Clip.mp4"));
     }
 }

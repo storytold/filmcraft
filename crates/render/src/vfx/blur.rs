@@ -17,25 +17,16 @@ fn poly_radius(n: u32, theta: f32, rot: f32) -> f32 {
     (std::f32::consts::PI / n as f32).cos() / a.cos()
 }
 
-/// Bokeh Blur: a lens-iris shaped gather blur with highlight boost (bright points bloom into
-/// iris-shaped discs). Large radii run on a reduced image (the result is smooth).
-pub fn bokeh(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let r = fv(e, "amount", cx) * cx.px_scale;
-    if r < 0.5 {
-        return;
-    }
-    let sides = [0u32, 3, 4, 5, 6, 8][chv(e, "shape").min(5) as usize];
-    let rot = fv(e, "rotation", cx).to_radians();
-    let boost = fv(e, "highlight", cx) / 100.0 * 6.0;
-    let th = fv(e, "threshold", cx) / 100.0;
+/// Bokeh Blur (`gpufx::FxOp::Bokeh`, evaluated there): a lens-iris shaped gather blur with
+/// highlight boost (bright points bloom into iris-shaped discs), on the image halved `levels`
+/// times (large radii: the result is smooth) and scaled back up.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bokeh(img: &mut Image, levels: u32, boost: f32, th: f32, sides: u32, rot: f32, rr: f32, rings: u32) {
     let (fw, fh) = (img.w, img.h);
     let mut work = img.clone();
-    let mut down = 1.0f32;
-    while r / down > 12.0 && work.w >= 8 && work.h >= 8 {
+    for _ in 0..levels {
         work = work.downsample2();
-        down *= 2.0;
     }
-    let rr = r / down;
     // boost highlights (energy, not weight: bright points stay bright after averaging)
     if boost > 0.0 {
         work.px.par_chunks_mut(4).for_each(|p| {
@@ -49,7 +40,7 @@ pub fn bokeh(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             }
         });
     }
-    let rings = (rr.ceil() as usize).clamp(1, 12);
+    let rings = rings as usize;
     let mut taps: Vec<(f32, f32)> = vec![(0.0, 0.0)];
     for ring in 1..=rings {
         let rad = rr * ring as f32 / rings as f32;
@@ -77,7 +68,7 @@ pub fn bokeh(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             }
         }
     });
-    *img = if down > 1.0 { work.transformed(fw, fh, &Affine::scale(fw as f64 / work.w as f64, fh as f64 / work.h as f64)) } else { work };
+    *img = if levels > 0 { work.transformed(fw, fh, &Affine::scale(fw as f64 / work.w as f64, fh as f64 / work.h as f64)) } else { work };
 }
 
 /// Blur one channel of an image (0..3) with a Gaussian.

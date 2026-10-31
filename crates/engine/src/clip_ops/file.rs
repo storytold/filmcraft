@@ -145,7 +145,12 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
         Some(tc) => Some(parse_timecode(tc, rate, false, 0).map_err(|e| bad("file.newOfflineFile", format!("timecode: {e:?}")))?),
         None => None,
     };
-    let file_name = str_p(p, "fileName").map(str::to_string).filter(|n| !n.is_empty()).unwrap_or_else(|| "Offline.mov".into());
+    // A name, never a path: the item's media path is what Make Offline ▸ delete would remove.
+    let file_name = str_p(p, "fileName")
+        .and_then(|n| n.rsplit(['/', '\\', ':']).next())
+        .filter(|n| !n.is_empty() && *n != "." && *n != "..")
+        .map(str::to_string)
+        .unwrap_or_else(|| "Offline.mov".into());
     let name = str_p(p, "name").map(str::to_string).filter(|n| !n.is_empty()).unwrap_or_else(|| file_name.clone());
     let info = filmcraft_media::MediaInfo {
         name: file_name.clone(),

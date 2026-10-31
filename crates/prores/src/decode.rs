@@ -130,7 +130,7 @@ pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> 
         .checked_add(chroma.checked_mul(2).ok_or(Error::Invalid("chroma plane count overflows"))?)
         .and_then(|n| if hdr.alpha == AlphaType::None { Some(n) } else { n.checked_add(luma) })
         .ok_or(Error::Invalid("frame plane count overflows"))?;
-    if !samples.checked_mul(std::mem::size_of::<u16>()).is_some_and(|n| n <= MAX_FRAME_BYTES) {
+    if samples.checked_mul(std::mem::size_of::<u16>()).is_none_or(|n| n > MAX_FRAME_BYTES) {
         return Err(Error::Invalid("frame dimensions exceed the decoder memory limit"));
     }
     let interlaced = hdr.interlace != Interlace::Progressive;
