@@ -49,7 +49,12 @@ impl FilmcraftApp {
                 let cmd = if id == "file.saveCopy" { "file.saveCopy" } else { "file.saveAs" };
                 self.pick(FileDialog::SaveProject { name: suggested }, move |app, paths| {
                     let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                    app.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string())
+                    let r = app.session.execute(cmd, json!({"path": path})).map_err(|e| e.to_string());
+                    match &r {
+                        Ok(_) => crate::menus::saved_status(app, cmd, &path),
+                        Err(e) => app.ui.status = e.clone(),
+                    }
+                    r
                 })
             }
             "file.open" => self.pick(FileDialog::OpenProject, |app, paths| {

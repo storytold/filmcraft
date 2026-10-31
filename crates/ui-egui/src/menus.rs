@@ -610,9 +610,16 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     {
         return app.file_dialog(id, &params);
     }
+    let save_path = params.get("path").and_then(Value::as_str).map(str::to_string);
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
         app.ui.status = e.clone();
+    }
+    if r.is_ok() {
+        let path = save_path.or_else(|| app.session.path.clone());
+        if let Some(path) = path {
+            saved_status(app, id, &path);
+        }
     }
     if r.is_ok() && matches!(id, "playhead.start" | "playhead.end") {
         crate::panels::timeline::reveal_playhead(app, ctx);
@@ -628,6 +635,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         put_clip_names_on_system_clipboard(app, ctx);
     }
     r
+}
+
+/// Tell the status bar where a project save went (File ▸ Save, Save As, Save a Copy).
+pub(crate) fn saved_status(app: &mut FilmcraftApp, id: &str, path: &str) {
+    match id {
+        "file.save" | "file.saveAs" => app.ui.status = tlf!("Project saved to {path}", path),
+        "file.saveCopy" => app.ui.status = tlf!("Copy of the project saved to {path}", path),
+        _ => {}
+    }
 }
 
 /// Run the command `id` chosen in the native menu bar, which takes the Edit menu's key
