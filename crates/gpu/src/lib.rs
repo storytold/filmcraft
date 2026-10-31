@@ -277,6 +277,11 @@ fn prepare_layers(layers: &[PlanLayer]) -> PreparedPlan {
 
 impl GpuCompositor {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        Self::with_fx_source(device, queue, include_str!("fx.wgsl"))
+    }
+
+    /// Builds the effect stage from `fx_source`, so a test can give it a shader that won't compile.
+    fn with_fx_source(device: &wgpu::Device, queue: &wgpu::Queue, fx_source: &str) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("filmcraft-composite"),
             source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()),
@@ -388,23 +393,11 @@ impl GpuCompositor {
             view_formats: &[],
         });
         let dummy = dummy_tex.create_view(&Default::default());
-        // The effect stage's pipelines can still be invalid on a device that passes the limits
-        // check (Rgba32Float is not renderable everywhere, e.g. software Vulkan/GL). Validation
-        // errors would panic, so they are captured: without the stage, effects render on the CPU.
-        let fx = fx::FxStage::supported(device)
-            .then(|| {
-                let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-                let stage = fx::FxStage::new(device, &shader, &layer_bgl);
-                match poll_now(scope.pop()) {
-                    Some(None) => Some(stage),
-                    Some(Some(e)) => {
-                        log::warn!("GPU effects unavailable on this device, rendering them on the CPU: {e}");
-                        None
-                    }
-                    None => None,
-                }
-            })
-            .flatten();
+        // The effect stage's pipelines can still fail on a device that passes the limits check:
+        // Rgba32Float is not renderable everywhere (e.g. software Vulkan/GL), and the backend's
+        // shader compiler can reject them. Those errors would panic, so they are captured: without
+        // the stage, effects render on the CPU.
+        let fx = fx::FxStage::supported(device).then(|| capture_fx_errors(device, || fx::FxStage::new(device, fx_source, &shader, &layer_bgl))).flatten();
         Self {
             device: device.clone(),
             queue: queue.clone(),
@@ -1213,6 +1206,28 @@ struct SrcInfo {
 
 /// Floats in a layer's uniform block (`U` in `composite.wgsl`: 13 vec4).
 const UNIFORM_FLOATS: usize = 52;
+
+/// The effect stage from `build`, or `None` with the reason logged if wgpu reported an error while
+/// building it. A scope only takes errors of its own kind, and wgpu reports a shader the backend's
+/// compiler rejects as an internal error (though its text says "Validation Error").
+fn capture_fx_errors(device: &wgpu::Device, build: impl FnOnce() -> fx::FxStage) -> Option<fx::FxStage> {
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let stage = build();
+    let mut usable = true;
+    // wgpu panics unless scopes pop innermost first
+    for popped in [poll_now(validation.pop()), poll_now(internal.pop())] {
+        match popped {
+            Some(None) => {}
+            Some(Some(e)) => {
+                log::warn!("GPU effects unavailable on this device, rendering them on the CPU: {e}");
+                usable = false;
+            }
+            None => usable = false,
+        }
+    }
+    usable.then_some(stage)
+}
 
 /// Poll a future once: wgpu's native error scopes resolve immediately. `None` if it is still
 /// pending (then the caller assumes the worst).
