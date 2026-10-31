@@ -223,8 +223,10 @@ pub struct AudioSegment {
 
 /// Audio segments of sequence `seq_id`: cut at every audio clip and audio transition edge. The
 /// hash covers the mix-wide state (master volume/effects, every track's mute/solo/volume/pan/
-/// effects) and, per track, the clip or transition heard, relative to the segment start. Effect
-/// tails (delay, reverb) carried across a cut from the previous segment are not part of the hash.
+/// effects) and, per track, the clip or transition heard, relative to the segment start. When the
+/// mixer's inserts ring on (reverb, echo; [`crate::mixer::effect_tail`]) and the previous segment
+/// ends within that tail, its hash is part of this one too, so a preview never keeps a stale tail
+/// of what came before it (#2731).
 pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
     let Some(seq) = project.sequence(seq_id) else { return Vec::new() };
     let sr = seq.settings.sample_rate.max(1) as i64;
@@ -253,7 +255,9 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
     }
     // submixes (routing, inserts, automation) affect every segment
     global.json(&seq.submix_tracks);
-    let mut out = Vec::new();
+    // samples the mixer's effect tails reach past their input (0 = no insert rings on)
+    let tail = crate::mixer::effect_tail(seq).to_units_floor(sr);
+    let mut out: Vec<AudioSegment> = Vec::new();
     for w in cuts.windows(2) {
         let (a, b) = (w[0], w[1]);
         if b <= a {
@@ -262,6 +266,9 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
         let t = Tick::from_units(a, sr);
         let mut h = Fnv128(global.0);
         h.json(&(b - a));
+        if let Some(prev) = out.last().filter(|p| tail > 0 && a.saturating_sub(p.first_sample.saturating_add(p.samples)) < tail) {
+            h.json(&("tail", a.saturating_sub(prev.first_sample.saturating_add(prev.samples)), &prev.hash));
+        }
         let mut heard = false;
         for (ti, tr) in seq.audio_tracks.iter().enumerate() {
             if tr.muted || (any_solo && !tr.solo) {

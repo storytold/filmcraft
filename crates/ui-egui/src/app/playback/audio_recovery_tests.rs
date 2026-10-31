@@ -328,3 +328,84 @@ fn a_device_that_appears_mid_playback_starts_sounding() {
     assert!(app.playback.audio_clock);
     app.stop();
 }
+
+/// #2731: at the sequence end a track reverb keeps sounding until its tail has decayed (the
+/// playhead resting on the last frame); without one, playback stops right there.
+#[test]
+fn track_effect_tails_ring_out_past_the_sequence_end() {
+    use std::sync::atomic::AtomicU64;
+    struct Clocked(Arc<AtomicU64>);
+    impl AudioOut for Clocked {
+        fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn stop(&mut self) {}
+        fn sample_rate(&self) -> u32 {
+            48_000
+        }
+        fn played_frames(&self) -> Option<u64> {
+            Some(self.0.load(Ordering::Relaxed))
+        }
+    }
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+    let inter: Vec<f32> = (0..48_000).flat_map(|i| [(0.2 * (std::f64::consts::TAU * 440.0 * i as f64 / 48_000.0).sin()) as f32; 2]).collect();
+    let bytes: Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&inter, 48_000).into();
+    let item = filmcraft_engine::commands::import_bytes(&mut session, "/tail-tone.wav", bytes, None).unwrap();
+    session.execute("timeline.place", json!({"item":item.0,"audioTrack":"A1","seconds":0.0})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    let played = Arc::new(AtomicU64::new(0));
+    app.audio = Some(Box::new(Clocked(played.clone())));
+    let ctx = egui::Context::default();
+    let end = app.session.active_sequence().unwrap().duration();
+    let last = end - app.session.sequence_rate().frame_duration();
+    let from = Tick::from_seconds_f64(0.5);
+    let run = |app: &mut FilmcraftApp, seconds_played: f64| {
+        played.store((seconds_played * 48_000.0) as u64, Ordering::Relaxed);
+        app.advance_playback(&ctx);
+    };
+    let start = |app: &mut FilmcraftApp| {
+        app.session.set_playhead(from);
+        app.play(1.0);
+        app.end_preroll(0.0);
+        assert!(app.playback.audio_clock);
+    };
+    // dry: stops on the last frame at the end
+    played.store(0, Ordering::Relaxed);
+    start(&mut app);
+    assert_eq!(app.playback.ring_out, Tick::ZERO);
+    run(&mut app, (end - from).seconds() + 0.05);
+    assert!(!app.playback.playing, "no effect tail: playback stops at the end");
+    assert_eq!(app.session.playhead(), last);
+    // a post-fader reverb on A1 rings on past the end
+    app.session.execute("mixer.addInsert", json!({"strip":"A1","effect":"studio_reverb"})).unwrap();
+    app.session.execute("mixer.setInsert", json!({"strip":"A1","slot":0,"postFader":true})).unwrap();
+    played.store(0, Ordering::Relaxed);
+    start(&mut app);
+    let ring = app.playback.ring_out;
+    assert!(ring > Tick::from_seconds_f64(0.5), "reverb tail {ring:?}");
+    run(&mut app, (end - from).seconds() + 0.05);
+    assert!(app.playback.playing, "the reverb tail is still sounding");
+    assert_eq!(app.session.playhead(), last, "the playhead rests on the last frame");
+    run(&mut app, (end - from).seconds() + ring.seconds() * 0.9);
+    assert!(app.playback.playing);
+    run(&mut app, (end - from).seconds() + ring.seconds() + 0.05);
+    assert!(!app.playback.playing, "stops once the tail has rung out");
+    // a longer decay set while the tail rings out is heard to its end
+    played.store(0, Ordering::Relaxed);
+    start(&mut app);
+    run(&mut app, (end - from).seconds() + 0.05);
+    assert!(app.playback.playing);
+    app.session.execute("mixer.setInsert", json!({"strip":"A1","slot":0,"params":{"decay":100.0}})).unwrap();
+    run(&mut app, (end - from).seconds() + ring.seconds() + 0.05);
+    assert!(app.playback.playing, "the longer tail is still sounding");
+    assert!(app.playback.ring_out > ring, "{:?}", app.playback.ring_out);
+    let longer = app.playback.ring_out;
+    run(&mut app, (end - from).seconds() + longer.seconds() + 0.05);
+    assert!(!app.playback.playing, "stops once the longer tail has rung out");
+    assert_eq!(app.session.playhead(), last);
+    // replaying from the end starts over from the beginning, as before
+    app.play(1.0);
+    assert_eq!(app.session.playhead(), Tick::ZERO);
+    app.stop();
+}

@@ -447,7 +447,7 @@ fn mixer_slots(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: Trac
                 ui.set_min_width(180.0);
                 match fx {
                     Some(e) => {
-                        if crate::panels::audio_fx_editor::has_editor(&e.effect) {
+                        if crate::panels::audio_fx_editor::can_edit(&e.effect) {
                             let r0 = ui.button(tl!("Edit…"));
                             app.auto.add(&format!("{ap}.fx.{k}.edit"), r0.rect, "Edit…");
                             if r0.clicked() {
@@ -510,7 +510,7 @@ fn mixer_slots(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: Trac
             });
             if resp.double_clicked()
                 && let Some(e) = fx
-                && crate::panels::audio_fx_editor::has_editor(&e.effect)
+                && crate::panels::audio_fx_editor::can_edit(&e.effect)
             {
                 open_editor = Some(crate::panels::audio_fx_editor::FxTarget::Insert { strip: id.0, slot: k });
             }
