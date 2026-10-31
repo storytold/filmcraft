@@ -1920,7 +1920,6 @@ dependencies = [
 name = "filmcraft-av1"
 version = "0.14.0"
 dependencies = [
- "filmcraft-bitstream",
  "filmcraft-testkit",
  "rayon",
  "rustix 1.1.5",

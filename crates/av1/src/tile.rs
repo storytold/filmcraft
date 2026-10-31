@@ -3,7 +3,7 @@
 
 use crate::Result;
 use crate::cdf::Cdfs;
-use crate::frame::{MiInfo, Mv};
+use crate::frame::Mv;
 use crate::header::{FrameHeader, NONE, SequenceHeader};
 use crate::intra::{IntraParams, is_directional_mode, predict_intra, round2_signed};
 use crate::spec_tables::{
@@ -18,12 +18,13 @@ use crate::spec_tables::{
     MROW_SCAN_8X16, MROW_SCAN_16X4, MROW_SCAN_16X8, MROW_SCAN_16X16, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, NUM_BASE_LEVELS, PALETTE_COLOR_CONTEXT,
     PALETTE_COLOR_HASH_MULTIPLIERS, PALETTE_COLORS, PALETTE_NUM_NEIGHBORS, PARTITION_HORZ, PARTITION_HORZ_4, PARTITION_HORZ_A, PARTITION_HORZ_B,
     PARTITION_NONE, PARTITION_SPLIT, PARTITION_SUBSIZE, PARTITION_VERT, PARTITION_VERT_4, PARTITION_VERT_A, PARTITION_VERT_B, QM_OFFSET, QUANTIZER_MATRIX,
-    RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_WIENER, SEG_LVL_SKIP, SGR_PARAMS, SGRPROJ_PARAMS_BITS, SGRPROJ_PRJ_BITS, SGRPROJ_PRJ_SUBEXP_K, SIG_REF_DIFF_OFFSET,
-    SIG_REF_DIFF_OFFSET_NUM, SIMPLE, SMOOTH_H_PRED, SMOOTH_PRED, SMOOTH_V_PRED, SPLIT_TX_SIZE, SUPERRES_NUM, TX_4X4, TX_4X8, TX_4X16, TX_8X4, TX_8X8, TX_8X16,
-    TX_8X32, TX_16X4, TX_16X8, TX_16X16, TX_16X32, TX_16X64, TX_32X8, TX_32X16, TX_32X32, TX_32X64, TX_64X16, TX_64X32, TX_64X64, TX_CLASS_2D, TX_CLASS_HORIZ,
-    TX_CLASS_VERT, TX_HEIGHT, TX_HEIGHT_LOG2, TX_MODE_SELECT, TX_SET_DCTONLY, TX_SET_INTER_1, TX_SET_INTER_2, TX_SET_INTER_3, TX_SET_INTRA_1, TX_SET_INTRA_2,
-    TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_SIZES, TX_SIZES_ALL, TX_TYPE_IN_SET_INTER, TX_TYPE_IN_SET_INTRA, TX_TYPE_INTER_INV_SET1, TX_TYPE_INTER_INV_SET2,
-    TX_TYPE_INTER_INV_SET3, TX_TYPE_INTRA_INV_SET1, TX_TYPE_INTRA_INV_SET2, TX_WIDTH, TX_WIDTH_LOG2, UV_CFL_PRED, V_ADST, V_DCT, V_FLIPADST, V_PRED,
+    RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_WIENER, SEG_LVL_SKIP, SGR_PARAMS, SGRPROJ_PARAMS_BITS, SGRPROJ_PRJ_BITS, SGRPROJ_PRJ_SUBEXP_K, SGRPROJ_XQD_MAX,
+    SGRPROJ_XQD_MID, SGRPROJ_XQD_MIN, SIG_REF_DIFF_OFFSET, SIG_REF_DIFF_OFFSET_NUM, SIMPLE, SMOOTH_H_PRED, SMOOTH_PRED, SMOOTH_V_PRED, SPLIT_TX_SIZE,
+    SUPERRES_NUM, TX_4X4, TX_4X8, TX_4X16, TX_8X4, TX_8X8, TX_8X16, TX_8X32, TX_16X4, TX_16X8, TX_16X16, TX_16X32, TX_16X64, TX_32X8, TX_32X16, TX_32X32,
+    TX_32X64, TX_64X16, TX_64X32, TX_64X64, TX_CLASS_2D, TX_CLASS_HORIZ, TX_CLASS_VERT, TX_HEIGHT, TX_HEIGHT_LOG2, TX_MODE_SELECT, TX_SET_DCTONLY,
+    TX_SET_INTER_1, TX_SET_INTER_2, TX_SET_INTER_3, TX_SET_INTRA_1, TX_SET_INTRA_2, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_SIZES, TX_SIZES_ALL, TX_TYPE_IN_SET_INTER,
+    TX_TYPE_IN_SET_INTRA, TX_TYPE_INTER_INV_SET1, TX_TYPE_INTER_INV_SET2, TX_TYPE_INTER_INV_SET3, TX_TYPE_INTRA_INV_SET1, TX_TYPE_INTRA_INV_SET2, TX_WIDTH,
+    TX_WIDTH_LOG2, UV_CFL_PRED, V_ADST, V_DCT, V_FLIPADST, V_PRED, WIENER_TAPS_K, WIENER_TAPS_MAX, WIENER_TAPS_MID, WIENER_TAPS_MIN,
 };
 use crate::state::{FrameShared, TileState};
 use crate::symbol::SymbolDecoder;
@@ -71,7 +72,6 @@ pub(crate) struct Block {
     pub palette_colors_v: [u16; 8],
     pub tx_size: usize,
     pub ref_frame: [i8; 2],
-    pub mv: [Mv; 2],
     pub interp_filter: [u8; 2],
     pub motion_mode: u8,
     pub comp_group_idx: u8,
@@ -199,8 +199,8 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         self.delta_lf = [0; 4];
         for plane in 0..self.fs.num_planes {
             for pass in 0..2 {
-                self.ref_sgr_xqd[plane][pass] = [-32, 31][pass];
-                self.ref_lr_wiener[plane][pass] = [3, -7, 15];
+                self.ref_sgr_xqd[plane][pass] = SGRPROJ_XQD_MID[pass] as i32;
+                self.ref_lr_wiener[plane][pass] = WIENER_TAPS_MID.map(i32::from);
             }
         }
         let sb128 = self.seq().use_128x128_superblock;
@@ -296,31 +296,14 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 };
                 self.sd.read_symbol(cdf)
             } else if has_cols || has_rows {
-                let pcdf: Vec<u16> = match bsl {
-                    2 => self.cdf.partition_w16[ctx].to_vec(),
-                    3 => self.cdf.partition_w32[ctx].to_vec(),
-                    4 => self.cdf.partition_w64[ctx].to_vec(),
-                    _ => self.cdf.partition_w128[ctx].to_vec(),
+                let pcdf: &[u16] = match bsl {
+                    2 => &self.cdf.partition_w16[ctx],
+                    3 => &self.cdf.partition_w32[ctx],
+                    4 => &self.cdf.partition_w64[ctx],
+                    _ => &self.cdf.partition_w128[ctx],
                 };
-                // pcdf holds cumulative values; P(k) = cdf[k] - cdf[k-1] (cdf[-1] = 0)
-                let pr = |k: usize| pcdf[k] as i32 - if k == 0 { 0 } else { pcdf[k - 1] as i32 };
-                let psum = if has_cols {
-                    // split_or_horz
-                    let mut s = pr(PARTITION_VERT) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_VERT_A) + pr(PARTITION_VERT_B);
-                    if bsize != BLOCK_128X128 {
-                        s += pr(PARTITION_VERT_4);
-                    }
-                    s
-                } else {
-                    let mut s = pr(PARTITION_HORZ) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_HORZ_B) + pr(PARTITION_VERT_A);
-                    if bsize != BLOCK_128X128 {
-                        s += pr(PARTITION_HORZ_4);
-                    }
-                    s
-                };
-                // The spec's inverse-CDF convention: cdf values count down from 32768.
-                let _ = psum;
-                let bit = self.read_split_bool(&pcdf, has_cols, bsize);
+                let psum = split_psum(pcdf, has_cols, bsize);
+                let bit = self.read_split_bool(psum);
                 if has_cols {
                     if bit { PARTITION_SPLIT } else { PARTITION_HORZ }
                 } else if bit {
@@ -396,18 +379,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
 
     /// split_or_horz / split_or_vert: a binary symbol whose probability is derived from the
     /// partition CDF (8.3.2). Returns true for PARTITION_SPLIT.
-    fn read_split_bool(&mut self, pcdf: &[u16], split_or_horz: bool, bsize: usize) -> bool {
-        // The spec gives cdf values as P(X <= k) * 32768 (increasing); the probability of
-        // partition k is cdf[k] - cdf[k - 1].
-        let pr = |k: usize| pcdf[k] as i32 - if k == 0 { 0 } else { pcdf[k - 1] as i32 };
-        let mut psum = if split_or_horz {
-            pr(PARTITION_VERT) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_VERT_A) + pr(PARTITION_VERT_B)
-        } else {
-            pr(PARTITION_HORZ) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_HORZ_B) + pr(PARTITION_VERT_A)
-        };
-        if bsize != BLOCK_128X128 {
-            psum += if split_or_horz { pr(PARTITION_VERT_4) } else { pr(PARTITION_HORZ_4) };
-        }
+    fn read_split_bool(&mut self, psum: i32) -> bool {
         let mut cdf = [((1i32 << 15) - psum) as u16, 1 << 15, 0];
         // no adaptation: the array is constructed for this read only
         let save = self.sd.disable_update;
@@ -788,5 +760,18 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
     }
 }
 
-#[allow(dead_code)]
-fn _unused(_: &MiInfo) {}
+/// Probability of the split_or_horz / split_or_vert outcome (spec 8.3.2): the spec gives cdf
+/// values as P(X <= k) * 32768 (increasing); the probability of partition k is
+/// cdf[k] - cdf[k - 1].
+fn split_psum(pcdf: &[u16], split_or_horz: bool, bsize: usize) -> i32 {
+    let pr = |k: usize| pcdf[k] as i32 - if k == 0 { 0 } else { pcdf[k - 1] as i32 };
+    let mut psum = if split_or_horz {
+        pr(PARTITION_VERT) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_VERT_A) + pr(PARTITION_VERT_B)
+    } else {
+        pr(PARTITION_HORZ) + pr(PARTITION_SPLIT) + pr(PARTITION_HORZ_A) + pr(PARTITION_HORZ_B) + pr(PARTITION_VERT_A)
+    };
+    if bsize != BLOCK_128X128 {
+        psum += if split_or_horz { pr(PARTITION_VERT_4) } else { pr(PARTITION_HORZ_4) };
+    }
+    psum
+}
