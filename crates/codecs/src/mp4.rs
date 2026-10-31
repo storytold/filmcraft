@@ -499,6 +499,18 @@ impl MediaSource for Mp4Source {
         Ok(f)
     }
 
+    /// The frame as decoded, with the display matrix's rotation left to the caller (#3467). The
+    /// time lookup is `video_at`'s.
+    fn video_frame_unturned(&self, req: FrameRequest) -> Result<(Arc<VideoFrame>, u8), MediaError> {
+        let ti = self.vtrack.ok_or_else(|| CodecError::Unsupported("no video".into()))?;
+        let t = req.time.max(Tick::ZERO);
+        let ts = self.file.tracks[ti].timescale as i64;
+        let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
+        let at = |t: Tick| crate::gop::lookup_time(t, 1, ts, rate, self.snap);
+        let late = filmcraft_media::cancel::catch_up().map(|m| at(t - m));
+        Ok(self.video.frame_late_unturned(&Mp4Video { src: self, track: ti }, at(t), late)?)
+    }
+
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
         self.audio_stream(0, start, frames, sample_rate)
     }

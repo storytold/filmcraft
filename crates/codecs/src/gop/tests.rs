@@ -819,6 +819,97 @@ fn long_gop_continue_does_not_restart_for_the_next_frame() {
     assert!(s.decodes.load(Ordering::Relaxed) - decodes <= 8 + 2);
 }
 
+/// #3467: a rotated stream's frames are cached raw while the decoder runs (the lock held), and
+/// only the frames requests take are rotated, off the lock; the result replaces the raw frame.
+#[test]
+fn rotation_waits_for_the_frames_requests_take() {
+    let s = samples(60, 30, 0, false);
+    let c = GopCache::new(None).with_rotation(1);
+    let raw = |c: &GopCache| c.shared.state.lock().unwrap().raw.iter().map(|p| p / 1000).collect::<Vec<_>>();
+    let cached = |c: &GopCache, i: i64| c.shared.state.lock().unwrap().frames.get(&(i * 1000)).cloned().expect("cached");
+    let f5 = c.frame(&s, 5_000).expect("frame");
+    assert_eq!(index_of(&f5), 5);
+    // decoding up to frame 5 rotated none of the frames before it
+    assert_eq!(raw(&c), vec![0, 1, 2, 3, 4]);
+    assert!(Arc::ptr_eq(&cached(&c, 5), &f5));
+    // a cache hit finishes the raw frame once; the next hit gets that same frame
+    let f3 = c.frame(&s, 3_000).expect("frame");
+    assert_eq!(index_of(&f3), 3);
+    assert_eq!(raw(&c), vec![0, 1, 2, 4]);
+    assert!(Arc::ptr_eq(&c.frame(&s, 3_000).expect("frame"), &f3));
+    assert_eq!(s.decodes.load(Ordering::Relaxed), 6);
+    // without crop or rotation nothing waits
+    let plain = GopCache::new(None);
+    assert_eq!(index_of(&plain.frame(&s, 5_000).expect("frame")), 5);
+    assert!(raw(&plain).is_empty());
+}
+
+/// #3467: a rotated frame really is turned, whether it is decoded for the request or taken raw
+/// from the cache later.
+#[test]
+fn raw_frames_taken_from_the_cache_come_out_rotated() {
+    struct Wide(Samples);
+    struct WideDec(Box<dyn VideoDecoder>);
+    impl VideoDecoder for WideDec {
+        fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+            Ok(self.0.decode(sample, pts)?.into_iter().map(widen).collect())
+        }
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            self.0.flush().into_iter().map(widen).collect()
+        }
+        fn reset(&mut self) {
+            self.0.reset()
+        }
+        fn name(&self) -> &str {
+            "wide"
+        }
+        fn intra_only(&self) -> bool {
+            self.0.intra_only()
+        }
+    }
+    // 2×1: the index in the left pixel, 255 in the right one
+    fn widen(d: DecodedFrame) -> DecodedFrame {
+        let i = index_of(&d.frame) as u8;
+        DecodedFrame { frame: VideoFrame::rgba8(2, 1, vec![i, 0, 0, 255, 255, 255, 255, 255]), ..d }
+    }
+    impl VideoSamples for Wide {
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+        fn pts(&self, i: usize) -> i64 {
+            self.0.pts(i)
+        }
+        fn sync_before(&self, i: usize) -> usize {
+            self.0.sync_before(i)
+        }
+        fn sample_at(&self, t: i64) -> Option<usize> {
+            self.0.sample_at(t)
+        }
+        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+            self.0.read(i)
+        }
+        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+            Ok(Box::new(WideDec(self.0.make_decoder()?)))
+        }
+    }
+    // long-GOP and intra-only (ProRes, DNx) decoding alike
+    for intra in [false, true] {
+        let s = Wide(samples(30, 30, 0, intra));
+        let c = GopCache::new(None).with_rotation(1);
+        // frame 4 is decoded for the request, frame 2 taken raw from the cache afterwards
+        for i in [4usize, 2] {
+            let f = c.frame(&s, i as i64 * 1000).expect("frame");
+            assert_eq!((f.width, f.height), (1, 2), "intra {intra} frame {i}");
+            // a clockwise quarter turn puts the left pixel on top
+            assert_eq!(f.to_rgba8()[..4], [i as u8, 0, 0, 255], "intra {intra} frame {i}");
+        }
+        // left to the caller, the turn is not done: frame 3 comes as decoded, then turned on request
+        let (f, turns) = c.frame_late_unturned(&s, 3000, None).expect("frame");
+        assert_eq!((f.width, f.height, turns), (2, 1, 1), "intra {intra}");
+        assert_eq!((c.frame(&s, 3000).expect("frame").width, turns), (1, 1), "intra {intra}");
+    }
+}
+
 #[test]
 fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
     let pool = Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET).tiered(RECENT, HARD_DECODERS));
