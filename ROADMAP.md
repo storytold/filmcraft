@@ -5,7 +5,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -72,7 +72,7 @@ Evidence for every row: [docs/target-app-parity.md](docs/target-app-parity.md#by
 
 ## Languages
 
-Premiere ships 10 interface languages. Measured from our catalogs (3,498 strings):
+Premiere ships 10 interface languages. Measured from our catalogs (3,593 strings, last measured 2026-10-19):
 
 | Language | Status | Strings |
 |---|---|---|
@@ -85,12 +85,15 @@ Premiere ships 10 interface languages. Measured from our catalogs (3,498 strings
 | Portuguese (Brazil) | partial (whole interface; native review welcome) | ~100% |
 | Indonesian | partial (whole interface; native review welcome) | ~100% |
 | Italian | partial (whole interface; native review welcome) | ~100% |
+| Bosnian | partial (whole interface; AI-assisted, native review welcome) | ~100% |
 | Korean | partial (whole interface; needs an installed Hangul font; native review welcome) | ~100% |
+| Czech | partial (whole interface; native review needed) | 100% |
+| Russian | partial (whole interface; native review welcome) | ~100% |
 | Japanese | partial (whole interface) | 99.7% |
 | German | partial (whole interface; menus native-reviewed, the rest welcome) | ~100% |
 | Vietnamese | none | 0% |
 
-Also shipped: Ukrainian (menus only, 10%). Detail: [docs/localization-parity.md](docs/localization-parity.md).
+Also shipped: Swedish (whole interface; native review welcome, ~100%), Ukrainian (menus only, 10%) and Polish (whole interface; AI-drafted, native review welcome). Detail: [docs/localization-parity.md](docs/localization-parity.md).
 
 ## Upcoming
 
@@ -109,9 +112,10 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 - **2026-10-22:** ProRes 4444 / XQ alpha slices include the final singleton run code required by RDD 36:2022. Six HD fixtures rejected by native macOS decoding now pass; syntax regression tests cover final runs and slice widths ([details](crates/prores/README.md#alpha-bitstream-conformance), EffectCraft #293).
 
+- **2026-10-20:** the on/off items of the Sequence and Markers menus (Snap in Timeline, Linked Selection, Selection Follows Playhead, Show Through Edits, Ripple Sequence Markers, Copy Paste Includes Sequence Markers) show their checkmark, so choosing one visibly turns it on or off (#2623)
 - **2026-10-12:** Transform's motion-blur shutter on adjustment layers uses the sequence frame rate instead of 24 fps, so a 360° shutter in a 60 fps sequence spans one frame, not 2.5 (#1088)
 - **2026-10-10 (changed media):** Settings ▸ Media ▸ Automatically refresh growing files works: media files that change on disk while the project is open (a recording still being written, a render written over the file a clip uses) are read again every *Refresh growing files every* seconds and as soon as the window comes back to the front: the new length, picture and identity, without an undo step (`media.refreshChanged`, `media_watch`).
-- **2026-10-10 (re-measure):** full parity re-measure against Premiere Pro 26.5.2: menu label diff 338 / 366 (92%), installed bundle listings (10 UI languages, exporter and codec frameworks), 188 open issues. Breadth ~86% (file formats now counted), ready ~55%, stage **alpha**; progress docs reorganized per the craftrules standard ([target-app-parity](docs/target-app-parity.md), [gaps](docs/gaps.md), [roadmap](docs/roadmap.md), [codec](docs/codec-parity.md), [file-format](docs/file-format-parity.md), [hardware](docs/hardware-parity.md), [UI](docs/ui-parity.md), [localization](docs/localization-parity.md)).
+- **2026-10-10 (re-measure):** full parity re-measure against Premiere Pro 26.5.2: menu label diff 338 / 366 (92%), installed bundle listings (10 UI languages, exporter and codec frameworks), 188 open issues. Breadth ~86% (file formats now counted), ready ~55%, stage **alpha**; progress docs reorganized ([target-app-parity](docs/target-app-parity.md), [gaps](docs/gaps.md), [roadmap](docs/roadmap.md), [codec](docs/codec-parity.md), [file-format](docs/file-format-parity.md), [hardware](docs/hardware-parity.md), [UI](docs/ui-parity.md), [localization](docs/localization-parity.md)).
 - **2026-10-10:** ~75 community PRs merged: GPU export rendering (Auto) with Vignette, Video Limiter and Lumetri basic / creative / vignette on the GPU (#421); Linux NVDEC H.264 / HEVC decode (#549); text-to-speech narrations with Kokoro-82M (#278); Japanese for the whole interface (#449) and Ukrainian menus (#407); ALSA default-device fallback (#254, fixes #23); drop import into the timeline (#517); system appearance (#505); timecode scrub editing (#576); NVENC RGBA input (#486); marker CSV export (#454); many fixes (#526–#575).
 - **2026-10-09:** release 0.5.0. NVENC H.265 export on Windows, Main and Main 10 HDR (#328, #360); NVENC H.264 export (#386); VA-API H.264 / HEVC decode (#358); Source monitor playback (#423); multi-stream container audio, schema v13 (#361); New Sequence and Sequence Settings dialogs (#269, #355); Spanish for the panels (#238); background decoders and memory stress tests (#385, #381).
 - **2026-10-08 (Source range dragging):** implicit full-clip In/Out, video-only/audio-only/linked both controls, picture/waveform drag gestures and one-command undoable timeline placement. Shared Source/Program draggable frame-bounded handles and range translation, cancellation, Source marker/navigation routing and marked-range playback/looping.
@@ -169,12 +173,14 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-22 | minor | ProRes alpha: write the final singleton run code; 4444/XQ HD clips that failed native macOS decoding now decode, with syntax regression tests (EffectCraft #293) |
+| 2026-10-19 | minor | Language table: Czech (#1156, 100%) |
+| 2026-10-20 | trivial | Progress log: checkmarks on the Sequence and Markers menu toggles (#2623) |
 | 2026-10-13 | minor | Language table: German covers the whole interface (~100%) |
 | 2026-10-12 | trivial | Progress log: Transform shutter on adjustment layers (#1088) |
 | 2026-10-11 | minor | Language table: German ships the menus (#630, 10.6%) |
 | 2026-10-10 | minor | Readiness-by-audience table with hours to ~95% per audience |
 | 2026-10-10 | minor | Headline adds mainstream practitioner (~55%) and essentials user (~60%); ready for real work ~55% -> ~56% (formula written out, same inputs); beta distance ~19 points |
 | 2026-10-10 | minor | Stage banner links the core-workflow gate (all six workflows pass on macOS; stays alpha) |
-| 2026-10-10 | major | Restructured to the craftrules progress-docs shape: stage banner, headline numbers, dimension / feature / language tables, upcoming; re-measured against Premiere 26.5.2 (breadth ~87 → ~86%, ready ~50–60% → ~55%); honest assessment and scorecard moved to docs/target-app-parity.md, "Where we are lacking" to docs/gaps.md, milestones to docs/roadmap.md, interface localization to docs/localization-parity.md |
+| 2026-10-10 | major | Progress docs restructured: stage banner, headline numbers, dimension / feature / language tables, upcoming; re-measured against Premiere 26.5.2 (breadth ~87 → ~86%, ready ~50–60% → ~55%); honest assessment and scorecard moved to docs/target-app-parity.md, "Where we are lacking" to docs/gaps.md, milestones to docs/roadmap.md, interface localization to docs/localization-parity.md |
 | 2026-10-08 | minor | Log entries for HEVC export, Source playback and range dragging |
 | 2026-10-05 | major | Honest assessment added: checklist ~87% vs ready for real work ~50–60% |

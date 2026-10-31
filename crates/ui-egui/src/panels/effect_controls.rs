@@ -44,7 +44,7 @@ fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
 // The press frame can include movement before the button went down. Start from the press
 // origin so that only gesture motion enters the preview, including same-frame movement.
 fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::Vec2) -> egui::Vec2 {
-    if response.drag_started() {
+    if response.drag_started_by(egui::PointerButton::Primary) {
         response
             .interact_pointer_pos()
             .zip(ui.input(|i| i.pointer.press_origin()))
@@ -126,6 +126,44 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
     out
 }
 
+/// An effect (or preset) dragged from the Effects panel and released over this panel is applied to
+/// the clip shown here, so it need not be aimed at the clip in the Timeline (#2326). Transitions
+/// need an edge, so they stay Timeline drops.
+fn drop_effect(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, clips: &[(ClipId, TrackItem, TrackKind)]) {
+    let Some(effect) = crate::panels::dragged_effect(ui) else { return };
+    let is_transition = filmcraft_project::find_effect(&effect)
+        .is_some_and(|d| matches!(d.kind, filmcraft_project::EffectKind::VideoTransition | filmcraft_project::EffectKind::AudioTransition));
+    let ctx = ui.ctx().clone();
+    let over = ctx.pointer_hover_pos().is_some_and(|p| rect.contains(p) && ctx.layer_id_at(p) == Some(ui.layer_id()));
+    if is_transition || !over {
+        return;
+    }
+    app.auto.add("effectControls.dropTarget", rect, "drop an effect here");
+    ui.painter().rect_stroke(rect.shrink(1.0), 3.0, Stroke::new(2.0, app.tokens.accent), egui::StrokeKind::Inside);
+    if !ctx.input(|i| i.pointer.any_released()) {
+        return;
+    }
+    // the video clip first; its linked audio clip takes audio effects the video clip refuses
+    let mut result = Err(filmcraft_engine::EngineError::NoSequence);
+    for (clip, _, _) in clips {
+        let params_clips = json!([clip.0]);
+        result = if let Some(name) = effect.strip_prefix("preset:") {
+            app.session.execute("presets.apply", json!({"preset": name, "clips": params_clips}))
+        } else if let Some(name) = effect.strip_prefix(crate::panels::LUMETRI_PRESET_PREFIX) {
+            app.session.execute("lumetri.applyPreset", json!({"name": name, "clips": params_clips}))
+        } else {
+            app.session.execute("effects.apply", json!({"effect": effect, "clips": params_clips}))
+        };
+        if result.is_ok() {
+            break;
+        }
+    }
+    if let Err(e) = result {
+        app.ui.status = e.to_string();
+    }
+    crate::panels::clear_drag(ui);
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let clips = selected_clips(app);
@@ -140,6 +178,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         crate::dock::placeholder(ui, rect, &t, tl!("(no clip selected)"));
         return;
     };
+    drop_effect(app, ui, rect, &clips);
     // Keep the immutable project snapshot alive while UI commands mutate the session.
     // Cloning a sequence here copies every clip and effect on every redraw.
     let project = app.session.project.clone();
@@ -194,7 +233,24 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let (hr, _) = bui.allocate_exact_size(vec2(body.width(), 18.0), Sense::hover());
             let heading = if *kind == TrackKind::Video { tl!("Video") } else { tl!("Audio") };
             bui.painter().text(pos2(hr.min.x + 8.0, hr.center().y), Align2::LEFT_CENTER, heading, Tokens::semibold(11.5), t.text_dim);
-            let mt_now = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+            // a graphic with Responsive Design – Time: its clip effects below keep media time (#3361)
+            if *kind == TrackKind::Video && it.graphic.as_deref().is_some_and(|g| g.has_responsive_time()) {
+                let hint = tl!("Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time");
+                let ir = Rect::from_center_size(pos2(hr.max.x - 14.0, hr.center().y), vec2(18.0, 18.0));
+                // a small button: keyboard-focusable, with an accessible name, tooltip on hover or focus
+                let resp = bui.put(ir, egui::Button::new("").frame(false));
+                icons::paint(bui.painter(), ir.shrink(2.0), Icon::Info, t.text_dim);
+                if resp.ctx.has_accesskit_node(resp.id) {
+                    resp.ctx.accesskit_node_builder(resp.id, |node| node.set_label(hint));
+                }
+                if resp.has_focus() {
+                    resp.show_tooltip_text(hint);
+                } else {
+                    resp.on_hover_text(hint);
+                }
+                app.auto.add("effectControls.graphicTimeHint", ir, hint);
+            }
+            let mt_now = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
             // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
             let mut order: Vec<usize> = (0..it.effects.len()).collect();
             order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
@@ -314,7 +370,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     {
         let f = ((pos.x - lane.min.x) / lane.width()).clamp(0.0, 1.0) as f64;
         let tk = rate.snap_nearest(it.start + Tick((f * it.duration.0 as f64) as i64));
-        app.stop();
+        app.stop_for_scrub();
         app.session.set_playhead(tk);
     }
     // the divider: a line the height of the panel, a resize cursor and a wider grab area
@@ -646,7 +702,7 @@ pub(crate) fn param_row(
                 actions.push(("playhead.set".into(), json!({"time": tl.0})));
             }
             resp.context_menu(|ui| {
-                keyframe_menu(app, ui, KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }, actions);
+                keyframe_menu(app, ui, KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }, k.interp, actions);
             });
         }
     }
@@ -742,11 +798,58 @@ fn param_value_widget(
         (ParamKind::Path, _) => {
             crate::panels::masks::path_value(app, vui, clip, idx, mask, actions);
         }
+        // a text layer's Font and Font Style pick from the installed families and styles, as the
+        // Text panel's drop-downs do (#3539)
+        (ParamKind::Text, ParamValue::Text(current)) if e.effect == filmcraft_project::graphic::TEXT_LAYER && matches!(pd.id, "font" | "font_style") => {
+            if !filmcraft_text::fonts::system_scanned() {
+                filmcraft_text::fonts::scan_system();
+            }
+            let fams = filmcraft_text::families();
+            let salt = ("ec-font", clip.0, idx, pd.id);
+            // the value column can be narrower than the usual drop-down; keep the button inside it
+            let w = 150.0_f32.min(vui.available_width()).max(40.0);
+            let prefix = format!("effectControls.text.{}.{}.option", idx, pd.id);
+            let combo = if pd.id == "font" {
+                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
+                    for (f, _) in &fams {
+                        let r = ui.selectable_label(f == current, f);
+                        app.auto.add(&format!("{prefix}.{f}"), r.rect, f);
+                        if r.clicked() {
+                            set = Some(json!(f));
+                        }
+                    }
+                })
+            } else {
+                let family = match e.param("font").map(|p| &p.value) {
+                    Some(ParamValue::Text(f)) => f.as_str(),
+                    _ => "",
+                };
+                let mut styles: Vec<&str> =
+                    fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(family)).map(|(_, s)| s.iter().map(String::as_str).collect()).unwrap_or_default();
+                for extra in ["Bold", "Italic", "Bold Italic"] {
+                    if !styles.contains(&extra) {
+                        styles.push(extra);
+                    }
+                }
+                craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).show_ui(vui, |ui| {
+                    for st in styles {
+                        let r = ui.selectable_label(st == current, st);
+                        app.auto.add(&format!("{prefix}.{st}"), r.rect, st);
+                        if r.clicked() {
+                            set = Some(json!(st));
+                        }
+                    }
+                })
+            };
+            let r = crate::widgets::accessible_name(combo.response, crate::i18n::t(pd.label));
+            app.auto.add(&format!("effectControls.text.{}.{}", idx, pd.id), r.rect, pd.label);
+        }
         (ParamKind::Text, ParamValue::Text(s)) if !pd.id.ends_with("_lut") => {
             // edited in a buffer; committed (one undo step) when the field loses focus
             let mut buf = vui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| s.clone());
             let r = crate::widgets::accessible_name(vui.add(egui::TextEdit::singleline(&mut buf).desired_width(160.0)), crate::i18n::t(pd.label));
             app.auto.add(&format!("effectControls.text.{}.{}", idx, pd.id), r.rect, pd.label);
+            crate::widgets::select_all_on_focus(vui, &r, &buf);
             if r.lost_focus() {
                 if buf != *s {
                     set = Some(json!(buf));
@@ -758,6 +861,35 @@ fn param_value_widget(
                 vui.data_mut(|d| d.remove::<String>(id));
             }
         }
+        // Lumetri's Input LUT / Look LUT: the Lumetri Color panel's menu (it showed only the name, #1123)
+        (ParamKind::Text, ParamValue::Text(cur)) => {
+            let input = pd.id == "input_lut";
+            let auto_id = format!("effectControls.{}.{}", e.effect, pkey);
+            let (rect, pick) = crate::panels::lumetri::lut_menu(vui, app, ("fx-lut", clip.0, idx, pkey), cur, input, 160.0, &auto_id);
+            app.auto.add(&auto_id, rect, pd.label);
+            match pick {
+                Some(crate::panels::lumetri::LutPick::Lut(r)) => set = Some(json!(r)),
+                Some(crate::panels::lumetri::LutPick::Browse) => {
+                    let (param, clip, mask, label) = (pd.id.to_string(), clip.0, mask, pd.label);
+                    app.pick_ui(crate::native_dialogs::FileDialog::open_file(tl!("LUT"), &["cube", "3dl"]), move |app, paths| {
+                        let Some(path) = paths.into_iter().next() else { return };
+                        // importing into the LUT library and setting the parameter undo as one step
+                        let r = app.session.edit_group(label, |s| {
+                            let r = s.execute("lut.import", json!({"path": path}))?["ref"].clone();
+                            let mut p = json!({"clip": clip, "effect": idx, "param": param, "value": r});
+                            if let Some(k) = mask {
+                                p["mask"] = json!(k);
+                            }
+                            s.execute("effects.setParam", p)
+                        });
+                        if let Err(err) = r {
+                            app.ui.status = err.to_string();
+                        }
+                    });
+                }
+                None => {}
+            }
+        }
         _ => {
             vui.label(param_text(&app.session.project, pd.id, value));
         }
@@ -766,36 +898,50 @@ fn param_value_widget(
 }
 
 /// Shared by the lane diamonds and graph points: commands use media time and preserve the mask.
-fn keyframe_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, target: KeyframeRef, actions: &mut Vec<(String, Value)>) {
+/// The rows and their order are Premiere's (Cut, Copy and Paste have no keyframe command yet, and
+/// Select All waits for Clear to act on the whole selection); `current` is the keyframe's
+/// interpolation, the checked row.
+fn keyframe_menu(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    target: KeyframeRef,
+    current: filmcraft_project::Interpolation,
+    actions: &mut Vec<(String, Value)>,
+) {
+    use filmcraft_project::Interpolation;
     let mut params = json!({"clip": target.clip, "effect": target.effect, "param": target.param, "mediaTime": target.time.0});
     if let Some(mask) = target.mask {
         params["mask"] = json!(mask);
     }
-    ui.label(egui::RichText::new(tl!("Temporal Interpolation")).color(app.tokens.text_dim));
-    for (label, key) in [
-        (tl!("Linear"), "linear"),
-        (tl!("Bezier"), "bezier"),
-        (tl!("Auto Bezier"), "autoBezier"),
-        (tl!("Continuous Bezier"), "continuousBezier"),
-        (tl!("Hold"), "hold"),
-        (tl!("Ease In"), "easeIn"),
-        (tl!("Ease Out"), "easeOut"),
-    ] {
-        let response = ui.button(label);
-        app.auto.add(&format!("effectControls.keyframeMenu.{key}"), response.rect, label);
-        if response.clicked() {
-            let mut params = params.clone();
-            params["interpolation"] = json!(key);
-            actions.push(("effects.setInterpolation".into(), params));
-            ui.close();
-        }
-    }
-    ui.separator();
-    let response = ui.button(tl!("Clear"));
+    // A selected keyframe stands for the whole selection, as when dragging it (#1916).
+    let interpolated = if app.ui.keyframe_selection.contains(&target) { json!({"keyframes": app.ui.keyframe_selection}) } else { params.clone() };
+    let response = crate::menus::checked_entry(ui, tl!("Clear"), true, None);
     app.auto.add("effectControls.keyframeMenu.clear", response.rect, "Clear");
     if response.clicked() {
-        actions.push(("effects.deleteKeyframe".into(), params));
+        actions.push(("effects.deleteKeyframe".into(), params.clone()));
         ui.close();
+    }
+    for group in [
+        &[
+            (tl!("Linear"), "linear", Interpolation::Linear),
+            (tl!("Bezier"), "bezier", Interpolation::Bezier),
+            (tl!("Auto Bezier"), "autoBezier", Interpolation::AutoBezier),
+            (tl!("Continuous Bezier"), "continuousBezier", Interpolation::ContinuousBezier),
+            (tl!("Hold"), "hold", Interpolation::Hold),
+        ][..],
+        &[(tl!("Ease In"), "easeIn", Interpolation::EaseIn), (tl!("Ease Out"), "easeOut", Interpolation::EaseOut)],
+    ] {
+        ui.separator();
+        for &(label, key, interpolation) in group {
+            let response = crate::menus::checked_entry(ui, label, true, Some(current == interpolation));
+            app.auto.add(&format!("effectControls.keyframeMenu.{key}"), response.rect, label);
+            if response.clicked() {
+                let mut params = interpolated.clone();
+                params["interpolation"] = json!(key);
+                actions.push(("effects.setInterpolation".into(), params));
+                ui.close();
+            }
+        }
     }
 }
 
@@ -818,7 +964,7 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let e = it.effects[idx].clone();
     let Some(def) = e.def() else { return };
     let ph = app.session.playhead();
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let mut actions = Vec::new();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut bui, |ui| {
         let mut groups: Vec<&str> = Vec::new();
@@ -889,7 +1035,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     let ph = app.session.playhead();
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let mut actions: Vec<(String, Value)> = Vec::new();
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 8.0))).id_salt("props"));
     // header: clip name + menu
@@ -932,6 +1078,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         open
     };
+    let mut open_speed = false;
     // the sections scroll: a short panel would otherwise cut Audio and the speed button off (#1322)
     egui::ScrollArea::vertical().id_salt("props-scroll").auto_shrink([false, false]).show(&mut bui, |bui| {
         // keep the rows (and their keyframe arrows) clear of the scrollbar at the panel edge
@@ -1043,7 +1190,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             && section(bui, app, "Audio", it.effects.iter().position(|e| e.effect == "volume").map(|i| (i, clip.0)), &mut actions)
         {
             let clip = *clip;
-            let mt = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+            let mt = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
             let val = |eid: &str, p: &str| it.effect(eid).and_then(|e| e.param(p)).map(|p| p.value_at(mt));
             let r = row(bui, tl!("Level"));
             let mut vui = bui.new_child(
@@ -1088,8 +1235,13 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         bui.painter().rect_stroke(br, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
         bui.painter().text(br.center(), Align2::CENTER_CENTER, tlf!("Speed {n}%", n = format!("{:.0}", it.speed * 100.0)), Tokens::ui(12.0), t.text);
         app.auto.add("properties.speed", br, "Speed");
+        open_speed = bresp.clicked();
     });
     run(app, ui.ctx(), actions);
+    // the footer button reads out the clip's speed and opens Clip ▸ Speed/Duration…, as in Premiere
+    if open_speed && let Err(e) = crate::menus::invoke(app, ui.ctx(), "clip.speedDuration", json!({})) {
+        app.ui.status = e;
+    }
 }
 
 /// Where a row's highlight (hover, selection) is painted: the row less its first point, which is
@@ -1309,7 +1461,7 @@ fn draw_graph_keyframes(
             let r = Rect::from_center_size(c, vec2(10.0, 10.0));
             let resp = ui.interact(r.expand(2.0), id, Sense::click_and_drag());
             resp.context_menu(|ui| {
-                keyframe_menu(app, ui, KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }, actions);
+                keyframe_menu(app, ui, KeyframeRef { clip: clip.0, effect: idx, param: pd.id.to_string(), mask, time: k.time }, k.interp, actions);
             });
             let auto_id = match (comps.len(), ci) {
                 (1, _) => format!("effectControls.{}.graph.keyframe.{}", pd.id, k.time.0),
@@ -1761,5 +1913,102 @@ mod graph_drag_tests {
         assert!(new.x > old.x, "dragging the X keyframe up raises X: {old:?} -> {new:?}");
         assert_eq!(new.y, old.y);
         assert_eq!(changed.keyframes[1], before.keyframes[1]);
+    }
+}
+
+#[cfg(test)]
+mod frame_hold_tests {
+    //! #1675: on a Frame Hold clip with Hold Filters off the effects keep animating through the
+    //! hold, so the panels that show effect values read them where the render does, as Effect
+    //! Controls does, and not on the held frame.
+    use super::*;
+    use crate::panels::audio_fx_editor::FxTarget;
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::{Keyframe, Param};
+
+    #[derive(Clone, Copy, Debug)]
+    enum Panel {
+        Lumetri,
+        Masks,
+        TransformHandles,
+        AudioFxEditor,
+    }
+
+    fn animate(it: &mut TrackItem, effect: &str, param: &str, from: ParamValue, to: ParamValue) {
+        let (a, b) = (it.moving_source_time_at(it.start), it.moving_source_time_at(it.end() - Tick(1)));
+        let e = it.effects.iter_mut().find(|e| e.effect == effect).unwrap();
+        e.params.insert(param.into(), Param { value: from.clone(), keyframes: vec![Keyframe::new(a, from), Keyframe::new(b, to)] });
+    }
+
+    /// A V1 clip and an A1 clip under the playhead, their effects animated from
+    /// their In to their Out, each held on its In (`Some(hold_filters)`) or not held.
+    fn app(hold: Option<bool>) -> FilmcraftApp {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let v = s.active_sequence().unwrap().video_tracks[0].items[0].clone();
+        // away from the In, where the held and the moving times meet
+        let ph = v.start + Tick(v.duration.0 / 2);
+        s.execute("playhead.set", json!({"time": ph.0})).unwrap();
+        let a = s.active_sequence().unwrap().audio_tracks.iter().find_map(|t| t.item_at(ph)).unwrap().id;
+        s.execute("effects.apply", json!({"clips": [v.id.0], "effect": "lumetri"})).unwrap();
+        s.execute("effects.apply", json!({"clips": [a.0], "effect": "parametric_eq"})).unwrap();
+        s.execute("timeline.select", json!({"clips": [v.id.0]})).unwrap();
+        s.execute("masks.add", json!({"clip": v.id.0, "effect": "opacity", "shape": "ellipse"})).unwrap();
+        s.execute("effects.select", json!({"clip": v.id.0, "effect": "motion"})).unwrap();
+        if let Some(hold_filters) = hold {
+            s.execute("clip.frameHoldOptions", json!({"clips": [v.id.0], "holdOn": "in", "holdFilters": hold_filters})).unwrap();
+        }
+        let seq = s.state.active_sequence.unwrap();
+        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+        let it = q.find_item_mut(v.id).unwrap().1;
+        animate(it, "motion", "position", ParamValue::Vec2(Vec2::new(400.0, 300.0)), ParamValue::Vec2(Vec2::new(800.0, 500.0)));
+        animate(it, "lumetri", "saturation", ParamValue::Float(50.0), ParamValue::Float(150.0));
+        let it = q.find_item_mut(a).unwrap().1;
+        animate(it, "parametric_eq", "b1_gain", ParamValue::Float(-12.0), ParamValue::Float(12.0));
+        // Frame Hold Options takes video clips; an imported edit list can hold an audio clip
+        if let Some(hold_filters) = hold {
+            (it.frame_hold, it.hold_filters) = (Some(it.source_in), hold_filters);
+        }
+        let index = it.effects.iter().position(|e| e.effect == "parametric_eq").unwrap();
+        let mut app = FilmcraftApp::new(s);
+        app.ui.audio_fx_editors.push(FxTarget::Clip { clip: a.0, index });
+        app
+    }
+
+    /// What `panel` draws, after a few frames (the editor window sizes itself on the first one).
+    fn observe(mut app: FilmcraftApp, panel: Panel) -> String {
+        let q = app.session.active_sequence().unwrap();
+        let frame = (q.settings.width, q.settings.height);
+        let pic = Rect::from_min_size(pos2(0.0, 0.0), vec2(640.0, 360.0));
+        // a selected mask and a selected effect exclude each other
+        if let Panel::Masks = panel {
+            let clip = app.session.state.selection[0];
+            app.session.execute("masks.select", json!({"clip": clip.0, "effect": "opacity", "mask": 0})).unwrap();
+        }
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &app.tokens);
+        let mut shapes = String::new();
+        for i in 0..3 {
+            app.auto.begin_frame();
+            let mut out = ctx.run_ui(egui::RawInput { time: Some(f64::from(i) * 0.1), ..Default::default() }, |ui| match panel {
+                Panel::Lumetri => crate::panels::lumetri::show(&mut app, ui, Rect::from_min_size(pos2(0.0, 0.0), vec2(360.0, 900.0))),
+                Panel::Masks => crate::panels::masks::monitor_overlay(&mut app, ui, pic, frame),
+                Panel::TransformHandles => crate::panels::transform_handles::monitor_overlay(&mut app, ui, pic, frame),
+                Panel::AudioFxEditor => crate::panels::audio_fx_editor::show(&mut app, ui.ctx()),
+            });
+            out.textures_delta.clear();
+            shapes = format!("{:?}", out.shapes);
+        }
+        shapes
+    }
+
+    #[test]
+    fn panels_show_effect_values_where_the_render_takes_them_on_a_frame_hold() {
+        for panel in [Panel::Lumetri, Panel::Masks, Panel::TransformHandles, Panel::AudioFxEditor] {
+            let moving = observe(app(None), panel);
+            let held = observe(app(Some(true)), panel);
+            assert!(moving != held, "{panel:?}: with Hold Filters on it shows the held frame's values");
+            assert!(observe(app(Some(false)), panel) == moving, "{panel:?}: with Hold Filters off it shows the values it shows without the hold");
+        }
     }
 }

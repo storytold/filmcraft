@@ -80,6 +80,83 @@ What remains per live decoder is unchanged: the H.264 decoder publishes each mac
 picture as its own allocations (`Frame::make_row`, five per row), which is where the 290 MB per
 decoder comes from.
 
+## Results (VideoToolbox export takes the RGBA pictures as they are, #3030, before → after)
+
+Export ▸ Hardware encoding on macOS handed VideoToolbox NV12 planes converted on the CPU by the
+encode thread (`rgba_to_yuv420_8`), and that conversion, not the hardware encode, was the export's
+critical path: the encode thread is the one serial thread of an export, its `par_chunks_mut`
+conversion is injected into the rayon pool while the pool renders the next batch, and so a 1080p
+conversion took 20–27 ms a frame (5 ms with an idle pool). `perf.stats` `export.stages` of a
+60 s export: `convertMs` 29.6 s of `encodeMs` 30.3 s, with `renderMs` 30.6 s and `waitMs` 0.1 s
+(encode-bound), the media engine idle most of the time, CPU 570 %, GPU 1 %. Now the encoder
+takes the export's RGBA pictures in `32BGRA` buffers tagged BT.709 and VideoToolbox converts
+them, as NVENC has since #486; the encode thread copies 8 MB a frame (0.3–0.4 ms) and waits for
+the render (`waitMs` 18–25 s: render-bound). A VideoToolbox that refuses RGB input on the first
+picture gets the NV12 path back, so the output never depends on it.
+
+Apple M2 Max (12 cores, 64 GB, macOS 26.6), 2026-10-23, a shared machine with other agents'
+builds running (1-minute load average 57–170 across the runs, noted per pair). The timeline is
+the #3030 shape: 60 s 1080p23.976 sequence, a 1080p H.264 clip on V1, a 4K H.264 clip on V2 as a
+40 % picture-in-picture, stereo WAV on A1 (ffmpeg `testsrc2` + noise fixtures), exported to
+H.264 20 Mb/s + AAC through `filmcraft-cli … run`, hardware decoding on. Before / after binaries
+alternated (A/B/A/B/A/B), median of three; `convert`, `encode`, `render`, `wait` are the export's
+own stage timers (render overlaps encode, so they do not add up to the wall time).
+
+| Export ▸ Hardware encoding on, CPU render | before (3 runs) | **after** (3 runs) |
+|---|---|---|
+| wall, median | 35.8 s (33.7 / 35.8 / 44.9) | **29.4 s** (26.8 / 29.4 / 35.5) |
+| encode thread: convert | 29–39 s (20–27 ms a frame) | **0.46–0.59 s** (0.3–0.4 ms a frame) |
+| encode thread: whole encode stage | 30–40 s | **1.9–6.6 s** |
+| wait for the render | 0.05–0.8 s | 18–25 s |
+| render (parallel, overlapped) | 30–40 s | 23–35 s |
+| CPU, mean (process) | 433–566 % | 497–604 % over a shorter run (CPU-seconds 191–194 → 158–178) |
+| output | 1439 frames, 148.8 MB | 1439 frames, 149.6 MB |
+
+Per pair (before → after, 1-minute load at the start): 44.9 → 26.8 s (57 → 80), 35.8 → 35.5 s
+(61 → 67), 33.7 → 29.4 s (120 → 148); the second pair ran into a load spike during the "after"
+run (67 → 120). The wall time now follows the CPU render alone. The same export with the
+built-in encoder is untouched: the same bytes before and after (MD5 `12f18e96…`, 86 and 91 s at
+load 54–182).
+
+| Export ▸ GPU Rendering on, Hardware encoding on | before (3 runs) | **after** (3 runs) |
+|---|---|---|
+| wall, median | 22.2 s (18.4 / 22.2 / 23.6) | **18.7 s** (18.5 / 18.7 / 19.7) |
+| encode thread: convert | 6.3–11.8 s (4–8 ms a frame: the pool is freer) | **0.46–0.47 s** |
+| wait for the render | 7.5–9.1 s | 14–15 s |
+| CPU, mean (process) | 241–289 % | **216–219 %** |
+| GPU, mean (`ioreg` device utilization) | 12–14 % | 12–14 % |
+
+Load 87–137 throughout, steadier than the CPU-render rows. Here too the export is now bound by
+the render (GPU plan + read-back + the CPU's 8-bit conversion), which #2119 and #1284 address.
+
+Re-measured 2026-10-29 on a quieter machine (load 12–38), `main` `0f87f001` against this change,
+same timeline (V2 at motion scale 40 %, H.264 20 Mb/s CBR), three alternating pairs each: with
+the CPU render the conversion took 13 ms a frame before and 0.31 ms after, and the wall time went
+22.3 → 20.1 s (−10 %), because at this load the encode stage (19.5 s) barely outran the render
+(19.9 s); with GPU rendering the wall time stayed 15.2 → 14.9 s (the render's) and CPU-seconds
+fell 44.7 → 36.5 (−18 %). The conversion is injected into a pool that is rendering, so what this
+change saves grows with how busy the machine is: about 10 % of the wall time on a quiet machine,
+more under load.
+
+Output check: both hardware files decode with ffmpeg without a complaint, 1439 frames, video
+60.018 s / audio 60.032 s like the software export, BT.709 limited range tagged. Against the
+planar path's output, VideoToolbox's own conversion gives the same luma within encoder noise
+(Y 46.8 dB; the planar path against the software export is 46.1 dB) and a lower chroma PSNR on
+this hard-edged synthetic pattern (Cb 38.8, Cr 35.9 dB; bias 0.1–0.2 codes, 2.8 % of chroma
+samples more than 4 codes apart, all at the colour-bar and checkerboard edges): VideoToolbox
+filters chroma where our conversion box-averages 2×2, not a shift (a one-sample shift of either
+path scores 24–29 dB) and not a range or matrix difference. On smooth content (a 5 s
+`mandelbrot` 1080p over a 4K `gradients` picture-in-picture) the two paths are 49.9 / 47.0 /
+47.3 dB apart, encoder noise. `rgba_pictures_encode_like_the_cpu_conversion` holds both paths to
+> 30 dB against our conversion in every plane and < 2 codes apart on average (measured 52 / 41 /
+37 dB and 0.2 / 0.6 / 0.8 codes).
+
+Sessions: under LLDB with auto-continuing breakpoints on `VTCompressionSessionCreate` and
+`VTCompressionSessionInvalidate`, two consecutive exports in one `filmcraft-cli run` created 3
+sessions (the HEVC availability probe and one per export) and invalidated every one (6 hits: ours
+and the framework's at release); the test that exports at other frame rates, cancels an export
+from another thread and exports again created 6 and invalidated 12.
+
 ## Results (CPU compositor: layer rectangles, an opaque bottom layer and recycled images, before → after)
 
 The CPU compositor is what export runs. In a profile of a 9:29 export it took about a third of the
@@ -138,6 +215,32 @@ layers and effects the GPU is 2.4× (1080p) to 3.2× (4K) faster, with a third t
 CPU. GPU rendering is nevertheless **Off by default** (opt-in per export) until it has been
 measured on Windows and macOS: the GPU result matches the CPU within the compositor's parity
 tolerance, not bit for bit, and Off keeps exports byte-reproducible on every machine. (The 4K row used the same scene with the sequence, clip and positions scaled to 4K.)
+
+### On a laptop with integrated and discrete graphics
+
+The export renderer asked wgpu for an adapter with no power preference, which takes the first one
+listed. On a laptop with an Intel integrated GPU (Arrow Lake, Mesa ANV) listed before an NVIDIA RTX 50
+series GPU (Linux, NVIDIA driver) that is the integrated GPU, and its read-back memory is uncached: the
+compositor read a 1080p half-float frame there two bytes at a time, which took 650 ms (2 ms on the
+NVIDIA GPU), and with four renderers reading at once 1.3 s per frame. GPU
+rendering made exports more than ten times slower than the CPU. Now the export renders on the
+high-performance GPU, the one the app's window asks for (`WGPU_POWER_PREF` overrides both), and every
+read-back copies each row out of the mapped buffer in one go before reading it sample by sample (85
+ms for the same frame on the integrated GPU).
+
+Same laptop, `cargo xtask bench --sections export --repeat 2 --hw auto` (GPU rendering Auto and
+NVENC; ProRes has no hardware encoder), best of 2, 2026-10-24:
+
+| scene | before | after (RTX 5090) | after, integrated GPU forced (`WGPU_POWER_PREF=low`) |
+|---|---|---|---|
+| `h264` | 61.7 s | **1.42 s** | 7.97 s |
+| `h264_fx` | 65.3 s | **1.56 s** | 14.21 s |
+| `prores` | 61.1 s | **4.63 s** | 7.53 s |
+
+The CPU path (`--hw off`) is unchanged: `h264_fx` 11.76 s before, 11.57 s after. With layers and
+effects, GPU rendering and NVENC now export 7.4 times as fast as the CPU compositor and the built-in
+encoder on this machine. On the integrated GPU alone the read-back still costs more than the GPU
+saves (`h264_fx` 14.21 s against 11.57 s on the CPU), but no longer ten times as much.
 
 ### Memory after an export
 
@@ -343,6 +446,34 @@ the encoder's hand-off). Only NVENC, whose encode is light on the CPU, comes clo
 1080p case (4.99 s against 4.00 s). The effects case on NVENC is render-bound (`waitMs` 13 s of 27 s: the
 encoder waits for the renderer), as expected. 1080p exports use 70-160 MB more (the second batch of 16
 frames); 4K exports use less than before because the batch is smaller (8 for SDR, 2 for HDR instead of 16).
+
+## Results (playback while an export of the same file runs, shared → own decoders)
+
+An export, Render Previews and proxy jobs read the media pool's sources, the ones the monitors
+read. Each source has one GOP cache, so one decoder, behind a lock: playing a clip while it was
+exported made the monitor and the export take turns on that decoder, which seeked from the
+export's frame to the playhead's and back for every request. Background jobs now open their own
+copy of each file they can stream (`MediaPool::own_source`, `PoolProvider::own_sources`) and drop
+it when they end; generators, image sequences, offline media and files a host can only read whole
+still share the pool's source.
+
+Release builds of the same commit, 2026-10-30, Apple M4 Max (16 cores), a 90 s 3840×2160 60 fps
+H.264 High clip at 78 Mbit/s (VideoToolbox hardware decoding), driven over the control channel:
+12 s of Program-monitor playback while an H.264 export of the same clip runs (hardware encoding),
+two runs each.
+
+| | shared | **own** |
+|---|---|---|
+| frames shown / dropped | 46/669, 45/670 | **550/165, 715/1** |
+| monitor decode p95 | 282, 288 ms | **30, 24 ms** |
+| decoder seeks in the 12 s | 121, 114 | **0, 0** |
+| decoder time in the 12 s | 10.7, 10.5 s | **6.2, 5.0 s** |
+| hardware decoding sessions | 1 | **2** |
+| export, with the playback | 94.8, 97.6 s | **90.3, 89.7 s** |
+| export alone | 89.3, 91.5 s | **88.4, 82.0 s** |
+
+The export's copy costs a second decoder and up to one more GOP cache of frames (384 MB at most)
+while it runs. A monitor playing a different file than the export dropped no frames either way.
 
 ## Results (CPU H.264 export: encoder work and colour conversion, before → after)
 
@@ -925,3 +1056,52 @@ decode 2642 / 2925 → 2506 / 2064; playback 5246 / 7903 → 3379 / 3121; scrub 
 Not feasible / not done: reduced-resolution decode for H.264 / HEVC (inter prediction needs
 full-resolution references, so it cannot be bit-exact; ½/¼ playback already decimates after
 decode); AV1 internals untouched (measured only); export encoders not optimised.
+
+## Results (#2633: a playhead press re-opened the audio device, Windows)
+
+Reported on Windows: the Timeline playhead felt laggy and jumped on every click and drag, on an
+empty sequence too. The Timeline UI is not the cost (~3 ms a pass, below); the stalls were audio
+device opens on the UI thread.
+
+`ScrubAudio` plays a grain while the playhead moves with a button held (default on,
+`audio.scrubAudio`), and `scrub_playhead` called `app.stop()` on every press. The press path runs
+twice in one drag, so the stream the first grain had just opened was torn down two frames later and
+opened again. `CpalOut::config` also listed `supported_output_configs()` on every open, even when
+the settings ask for the rate the device already runs at.
+
+Measured on this machine (Realtek WASAPI, cpal 0.16). "Warm" is a stream built while another one is
+already playing; "cold" is the first stream after the audio engine went idle, which is the normal
+case between two gestures:
+
+| step | warm | cold |
+|---|---|---|
+| `default_output_device` | 2.7 ms | 3.6 ms |
+| `default_output_config` | 1.1 ms | 0.9 ms |
+| `supported_output_configs` | 191.3 ms | - |
+| `build_output_stream` | 19.3-23.1 ms | **558.7 ms** (494.9-1039.3) |
+
+The configuration list was measured once, warm: it is the driver enumerating what it supports, not
+the audio engine starting. A cold drag's ~1.5 s of freeze is 2 x (558.7 + 191.3) ms, so the list
+costs the same there.
+
+So caching the device or its configuration buys nothing: the cost is `IAudioClient::Initialize`
+starting the Windows audio engine, and it is paid once per stream.
+
+Timeline UI pass, empty 3V/3A sequence at 1600x980 (`egui_kittest`): idle p50 2.2 ms / max 3.6; a
+120-step playhead drag p50 3.1 ms / max 6.9. The whole frame is cheap, so the device open was the
+only stall.
+
+Fixed:
+
+- the press path opened the device twice per drag (once, then `app.stop()` closed it two frames
+  later and the next grain opened it again): the press stops a transport only when one runs;
+- `config()` listed every supported configuration (~190 ms) even when the settings ask for the rate
+  the device already runs at: the device default is taken as is then.
+
+A cold drag went from ~1.5 s of frozen playhead (two opens of 558 + 191 ms) to ~0.6 s (one open of
+558 ms). That last open is still on the UI thread; moving it off is the next step of #2633.
+
+Test: `crates/ui-egui/tests/it/scrub_stop_ui.rs` — a press that only moves the playhead closes no
+stream, and a press while playing still stops the transport. `apps/filmcraft` (`audio::tests`) —
+the device default rate needs no configuration search.
+

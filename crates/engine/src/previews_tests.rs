@@ -67,13 +67,20 @@ fn job_ok(s: &Session, v: &Value) {
     assert!(j["result"].get("error").is_none(), "{j}");
 }
 
+/// Render the (yellow) Tint segment: Enter leaves yellow segments live, so render the selection.
+fn render_tint(s: &mut Session, tint: ClipId) -> Value {
+    s.state.selection = vec![tint];
+    let v = s.execute("sequence.renderSelection", json!({"wait": true})).unwrap();
+    job_ok(s, &v);
+    v
+}
+
 #[test]
 fn render_turns_green_edit_invalidates_and_undo_restores() {
     let (mut s, a) = session("undo");
     assert_eq!(states(&s), vec!["yellow", "none"]);
-    let v = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
-    assert_eq!(v["segments"], 1, "only the segment with an effect");
-    job_ok(&s, &v);
+    let v = render_tint(&mut s, a);
+    assert_eq!(v["segments"], 1, "only the segment with the selected clip");
     assert_eq!(states(&s), vec!["green", "none"]);
     assert_eq!(s.previews.count(), 1);
     // playback reads preview frames for the rendered segment only
@@ -153,16 +160,16 @@ fn spans(s: &Session) -> Vec<(i64, i64, BarState)> {
     s.previews.bar(&s.project, s.state.active_sequence.unwrap()).iter().map(|b| (r.frame_at(b.start), r.frame_at(b.end), b.state)).collect()
 }
 
-/// #424: Render Effects In to Out renders the frames between In and Out, not every segment that
-/// In/Out touches; a later render fills only the gaps, and Delete Render Files In to Out removes
-/// only the files holding marked frames.
+/// #424: Render In to Out renders the frames between In and Out, not every segment that In/Out
+/// touches; a later render fills only the gaps, and Delete Render Files In to Out removes only the
+/// files holding marked frames.
 #[test]
 fn render_in_to_out_renders_only_the_marked_frames() {
     use BarState::{Green, None as NoBar, Yellow};
     let (mut s, _) = session_with("range", Generator::CountingLeader);
     let seq = s.state.active_sequence.unwrap();
     set_marks(&mut s, Some((6, 11)));
-    let v = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
+    let v = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
     job_ok(&s, &v);
     assert_eq!(v["frames"], 6, "frames 6..=11, not the whole 24-frame segment: {v}");
     assert_eq!(spans(&s), vec![(0, 6, Yellow), (6, 12, Green), (12, 24, Yellow), (24, 48, NoBar)]);
@@ -189,28 +196,27 @@ fn render_in_to_out_renders_only_the_marked_frames() {
     // the files survive re-indexing the folder (as on reopening the project)
     s.previews.set_dir(s.previews.dir());
     assert_eq!(spans(&s)[1], (6, 12, Green));
-    // In/Out over the whole sequence: only the two gaps around the part are rendered
+    // In/Out over the whole sequence: only the two gaps around the part, and the second segment
     set_marks(&mut s, None);
-    let v = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
+    let v = s.execute("sequence.renderInToOut", json!({"wait": true})).unwrap();
     job_ok(&s, &v);
-    assert_eq!((v["segments"].as_i64(), v["frames"].as_i64()), (Some(2), Some(18)), "{v}");
-    assert_eq!(states(&s), vec!["green", "none"]);
-    assert_eq!(s.previews.count(), 3);
+    assert_eq!((v["segments"].as_i64(), v["frames"].as_i64()), (Some(3), Some(18 + 24)), "{v}");
+    assert_eq!(states(&s), vec!["green", "green"]);
+    assert_eq!(s.previews.count(), 4);
     let prev = s.previews.frame(&s.media, &s.project, seq, 20, 1.0).expect("frame 20 has a preview").to_rgba8();
     assert!(max_diff(&live(&s, 20), &prev) <= 4);
     // Delete Render Files In to Out keeps the parts outside In/Out
     set_marks(&mut s, Some((7, 8)));
     let v = s.execute("sequence.deleteRenderFilesInToOut", json!({})).unwrap();
     assert_eq!(v["deleted"], 1);
-    assert_eq!(spans(&s), vec![(0, 6, Green), (6, 12, Yellow), (12, 24, Green), (24, 48, NoBar)]);
+    assert_eq!(spans(&s), vec![(0, 6, Green), (6, 12, Yellow), (12, 48, Green)]);
     let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
 }
 
 #[test]
 fn previews_survive_save_and_open() {
-    let (mut s, _) = session("save");
-    let v = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
-    job_ok(&s, &v);
+    let (mut s, a) = session("save");
+    render_tint(&mut s, a);
     let folder = tmp("save-project");
     std::fs::create_dir_all(&folder).unwrap();
     let path = folder.join("Film.fcproj").to_string_lossy().to_string();
@@ -235,11 +241,10 @@ fn saving_without_previews_creates_no_previews_folder() {
     assert_eq!(s.previews.dir().unwrap(), folder.join("FilmCraft Previews").join("Film"));
     assert!(!folder.join("FilmCraft Previews").exists());
     // the first render creates it
-    let (mut r, _) = session("save-empty-render");
+    let (mut r, a) = session("save-empty-render");
     r.execute("file.save", json!({"path": path})).unwrap();
     assert!(!folder.join("FilmCraft Previews").exists());
-    let v = r.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
-    job_ok(&r, &v);
+    render_tint(&mut r, a);
     assert!(folder.join("FilmCraft Previews").join("Film").is_dir());
     assert_eq!(states(&r), vec!["green", "none"]);
     let _ = std::fs::remove_dir_all(&folder);
@@ -277,6 +282,63 @@ fn render_selection_and_audio_previews() {
     let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
 }
 
+/// #1220: Enter (Render Effects In to Out) renders red segments only, as in Premiere. Yellow
+/// segments play in real time; rendering them made Enter on a 49-minute 4K sequence of plain phone
+/// clips encode 126 000 frames of ProRes.
+#[test]
+fn enter_renders_only_red_segments() {
+    use crate::previews::RenderMode;
+    use filmcraft_render::preview::Need;
+    assert!(RenderMode::EffectsInToOut.renders(Need::Render));
+    assert!(!RenderMode::EffectsInToOut.renders(Need::Realtime));
+    assert!(!RenderMode::EffectsInToOut.renders(Need::None));
+    for need in [Need::None, Need::Realtime, Need::Render] {
+        assert!(RenderMode::InToOut.renders(need));
+        assert!(RenderMode::Selection.renders(need));
+    }
+    // a sequence with yellow and no-bar segments only: nothing to render, no job, no folder
+    let (mut s, _) = session("enter-yellow");
+    assert_eq!(states(&s), vec!["yellow", "none"]);
+    let v = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
+    assert!(v["job"].is_null(), "{v}");
+    assert_eq!(states(&s), vec!["yellow", "none"]);
+    assert_eq!(s.previews.count(), 0);
+    assert!(!s.previews.dir().unwrap().exists(), "no previews folder for nothing rendered");
+}
+
+/// #1220 end to end: on a red and a yellow segment, Enter starts a job for the red one only.
+#[test]
+fn enter_renders_the_red_segment_and_leaves_the_yellow_one() {
+    let mut s = Session::default();
+    s.previews.set_dir(Some(tmp("enter-red")));
+    let r = FrameRate::FPS_24;
+    let mut p = (*s.project).clone();
+    let matte = GeneratorSource::new(Generator::ColorMatte { color: [0.2, 0.5, 0.8, 1.0] }, 1920, 1080, r, Tick(TICKS_PER_SECOND));
+    let matte = crate::demo::add_generator(&mut p, &s.media, matte, "Matte", Label::Iris, None);
+    // 1080p, where four heavy effects cost more than a frame lasts (red) and a Tint does not
+    let seq = p.new_sequence("Seq", SequenceSettings { width: 1920, height: 1080, frame_rate: r, ..Default::default() }, 1, 1, None);
+    let clip = |p: &mut filmcraft_project::Project, at: i64, fx: &[&str]| {
+        let mut it = p.make_track_item(matte, TrackKind::Video, r.tick_of(at), TimeRange::new(r.tick_of(at), r.tick_of(2)), r).unwrap();
+        for e in &mut it.effects {
+            filmcraft_project::resolve_auto_points(e, (1920, 1080), (1920, 1080));
+        }
+        it.effects.extend(fx.iter().map(|f| find_effect(f).unwrap().instance()));
+        it
+    };
+    let red = clip(&mut p, 0, &["gaussian_blur", "sharpen", "lumetri", "noise"]);
+    let yellow = clip(&mut p, 2, &["tint"]);
+    p.sequence_mut(seq).unwrap().video_tracks[0].items = vec![red, yellow];
+    s.project = Arc::new(p);
+    s.state.active_sequence = Some(seq);
+    s.state.open_sequences = vec![seq];
+    assert_eq!(states(&s), vec!["red", "yellow"]);
+    let v = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
+    job_ok(&s, &v);
+    assert_eq!((v["segments"].as_i64(), v["frames"].as_i64()), (Some(1), Some(2)), "{v}");
+    assert_eq!(states(&s), vec!["green", "yellow"]);
+    let _ = std::fs::remove_dir_all(s.previews.dir().unwrap());
+}
+
 #[test]
 fn render_commands_are_registered_like_premiere() {
     let f = |id| crate::commands::find(id).unwrap();
@@ -308,9 +370,8 @@ fn bar_state_serializes_lowercase() {
 /// files, and a file only a whole-file reader could open is refused rather than loaded.
 #[test]
 fn preview_files_are_streamed_not_read_whole() {
-    let (mut s, _) = session("stream");
-    let v = s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).unwrap();
-    job_ok(&s, &v);
+    let (mut s, a) = session("stream");
+    render_tint(&mut s, a);
     let seq = s.state.active_sequence.unwrap();
     assert!(s.previews.frame(&s.media, &s.project, seq, 5, 1.0).is_some(), "a rendered frame plays from its file");
     // a still image opens only from its whole bytes: as a preview file it is not opened

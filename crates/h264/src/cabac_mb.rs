@@ -56,7 +56,7 @@ impl SliceDecoder<'_> {
             } else {
                 self.decode_mb_cabac(&mut c)?;
             }
-            self.pic.mb_done(addr);
+            self.pic.mb_done(addr)?;
             ensure!(!c.overrun(), "CABAC read past end of slice data");
             if c.decode_terminate() == 1 {
                 break;
@@ -467,11 +467,13 @@ impl SliceDecoder<'_> {
             }
             if t8 {
                 let (blk, ls, dq) = self.luma8_dst(b8);
+                let mut ac = false;
                 Self::residual_block_cabac::<5>(c, 0, |k, v| {
                     let p = ZIGZAG8[k] as usize;
+                    ac |= p != 0;
                     blk[p] = dq.apply(v, ls[p]);
                 });
-                self.mark_luma8(b8);
+                self.mark_luma8(b8, ac);
                 let st = self.mb_mut();
                 for r in [by8 * 4 + bx8, by8 * 4 + bx8 + 1, (by8 + 1) * 4 + bx8, (by8 + 1) * 4 + bx8 + 1] {
                     st.nnz[r] = 1;
@@ -482,20 +484,23 @@ impl SliceDecoder<'_> {
                     let raster = by * 4 + bx;
                     let inc = self.cbf_luma_cond(bx as i32 - 1, by as i32, intra) + 2 * self.cbf_luma_cond(bx as i32, by as i32 - 1, intra);
                     let (blk, ls, dq) = self.luma4_dst(raster);
+                    let mut ac = false;
                     let n = if kind == MbKind::I16x16 {
                         Self::residual_block_cabac::<1>(c, inc, |k, v| {
                             let p = ZIGZAG4[k + 1] as usize;
+                            ac = true;
                             blk[p] = dq.apply(v, ls[p]);
                         })
                     } else {
                         Self::residual_block_cabac::<2>(c, inc, |k, v| {
                             let p = ZIGZAG4[k] as usize;
+                            ac |= p != 0;
                             blk[p] = dq.apply(v, ls[p]);
                         })
                     };
                     self.mb_mut().nnz[raster] = n;
                     if n > 0 {
-                        self.mark_luma4(raster);
+                        self.mark_luma4(raster, ac);
                     }
                 }
             }
@@ -524,7 +529,7 @@ impl SliceDecoder<'_> {
                     });
                     self.mb_mut().nnz_c[comp][b] = n;
                     if n > 0 {
-                        self.mark_chroma_ac(comp, b);
+                        self.mark_chroma_ac(comp, b, true);
                     }
                 }
             }

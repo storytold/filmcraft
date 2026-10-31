@@ -67,6 +67,7 @@ impl Driver {
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
         s.execute("file.newSequence", json!({"name": "Native", "width": 1280, "height": 720, "fps": 24})).unwrap();
+        s.prefs.timeline.clip_mismatch_warning = false;
         s.execute("source.open", json!({"item": source})).unwrap();
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(s).with_control(rx);
@@ -165,6 +166,61 @@ fn a_native_windows_header_elements_carry_its_window() {
     for tab in tabs {
         assert_eq!(tab["window"], body["window"], "{tab}");
     }
+}
+
+/// The ≡ menu of a panel in its own OS window opens in that window, not in the main one (#3633).
+#[test]
+fn a_native_windows_panel_menu_opens_in_its_window() {
+    let mut d = Driver::new(5);
+    d.float("Timeline", [900.0, 120.0, 680.0, 420.0]);
+    let body = d.element("panel.Timeline");
+    let at = rect(&d.element("panel.menu.Timeline")).center();
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    WINDOW.with(|w| w.borrow_mut().focused = true);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(at)]);
+    window_frame(&mut d, vec![button(true)]);
+    window_frame(&mut d, vec![button(false)]);
+    d.frames(3);
+    let items = d.elements("panel.menu.Timeline.undock");
+    assert_eq!(items.len(), 1, "the menu is open: {items:?}");
+    assert_eq!(items[0]["window"], body["window"], "the menu is in the floating window: {}", items[0]);
+}
+
+/// A floating panel's menu stays inside its window when that is narrower than the menu, and a click in
+/// another window dismisses it (#3633 review).
+#[test]
+fn a_floating_panel_menu_fits_its_window_and_closes_on_a_click_elsewhere() {
+    let mut d = Driver::new(5);
+    d.float("Timeline", [900.0, 120.0, 160.0, 420.0]);
+    let at = rect(&d.element("panel.menu.Timeline")).center();
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    WINDOW.with(|w| w.borrow_mut().focused = true);
+    window_frame(&mut d, vec![egui::Event::PointerMoved(at)]);
+    window_frame(&mut d, vec![button(true)]);
+    window_frame(&mut d, vec![button(false)]);
+    d.frames(3);
+    let scroll = d.elements("panel.menu.scroll");
+    assert_eq!(scroll.len(), 1, "the menu is open: {scroll:?}");
+    let r = rect(&scroll[0]);
+    assert!(r.max.x <= 160.0 + 0.5, "the menu fits the 160 pt window: {r:?}");
+    // a click in the main window
+    let main = egui::pos2(60.0, 600.0);
+    d.pointer(main, Some(true));
+    d.pointer(main, Some(false));
+    d.frames(3);
+    assert!(d.elements("panel.menu.Timeline.undock").is_empty(), "a click in another window closes the menu");
+}
+
+/// A main-window panel's ≡ menu opens in the main window while another panel is in its own OS window (#3633).
+#[test]
+fn a_main_window_panel_menu_stays_in_the_main_window() {
+    let mut d = Driver::new(5);
+    d.float("Timeline", [900.0, 120.0, 680.0, 420.0]);
+    d.ok("ui.click", json!({"id": "panel.menu.Program"}));
+    d.frames(3);
+    let items = d.elements("panel.menu.Program.undock");
+    assert_eq!(items.len(), 1, "the menu is open: {items:?}");
+    assert!(items[0]["window"].is_null(), "the menu is in the main window: {}", items[0]);
 }
 
 /// The Save changes? prompt of Quit blocks the panels in native windows as Settings does, so

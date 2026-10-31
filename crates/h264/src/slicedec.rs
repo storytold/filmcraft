@@ -12,6 +12,8 @@ use crate::slice::{SliceHeader, SliceType};
 use crate::tables::{BLK4_XY, QPC_TABLE, RASTER_TO_BLK4, ZIGZAG4, ZIGZAG8};
 use crate::transform::{self, Dequant, LevelScale};
 use filmcraft_bitstream::BitReader;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Per-slice data kept with the picture (deblocking, motion field export).
 #[derive(Clone, Debug, Default)]
@@ -42,6 +44,10 @@ pub struct PicState {
     rows_published: usize,
     /// Draft mode for a non-reference picture: rows are published without deblocking.
     pub skip_deblock: bool,
+    /// Checked once per macroblock row: when set, slice decoding stops ([`Decoder::reset`]).
+    ///
+    /// [`Decoder::reset`]: crate::Decoder::reset
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl PicState {
@@ -61,6 +67,7 @@ impl PicState {
             rows_deblocked: 0,
             rows_published: 0,
             skip_deblock: false,
+            cancel: None,
         }
     }
 
@@ -82,18 +89,33 @@ impl PicState {
         self.skip_deblock = false;
     }
 
-    /// Record a decoded macroblock and deblock / publish rows that became final.
+    /// Record a decoded macroblock and deblock / publish rows that became final. Fails when the
+    /// picture was cancelled.
     #[inline]
-    pub fn mb_done(&mut self, addr: usize) {
+    pub fn mb_done(&mut self, addr: usize) -> Result<()> {
         self.decoded_mbs += 1;
         let r = addr / self.mb_w;
         self.row_count[r] += 1;
         if self.row_count[r] as usize >= self.mb_w && r == self.rows_recon {
-            while self.rows_recon < self.mb_h && self.row_count[self.rows_recon] as usize >= self.mb_w {
-                self.rows_recon += 1;
-            }
-            self.flush_rows(false);
+            return self.rows_done();
         }
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn rows_done(&mut self) -> Result<()> {
+        if self.cancelled() {
+            return invalid("decoding cancelled");
+        }
+        while self.rows_recon < self.mb_h && self.row_count[self.rows_recon] as usize >= self.mb_w {
+            self.rows_recon += 1;
+        }
+        self.flush_rows(false);
+        Ok(())
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))
     }
 
     /// Deblock and publish rows. With `finished`, everything remaining is processed (also rows with
@@ -165,15 +187,28 @@ pub(crate) struct Scratch {
     pub coef_c: [[i32; 64]; 2],
     /// Luma blocks with coefficients: raster 4x4 bits, or b8 bits in 8x8 mode.
     pub blk_nz: u16,
+    /// Subset of `blk_nz` with a non-zero AC coefficient (the others take the DC-only transform).
+    pub blk_ac: u16,
     /// Chroma blocks with coefficients (bit per raster 2x2 block).
     pub c_nz: [u8; 2],
+    /// Subset of `c_nz` with a non-zero AC coefficient.
+    pub c_ac: [u8; 2],
     pub pred: [[u8; 256]; 2],
     pub pred_c: [[[u8; 64]; 2]; 2],
 }
 
 impl Scratch {
     pub fn new() -> Box<Self> {
-        Box::new(Scratch { coef: [0; 256], coef_c: [[0; 64]; 2], blk_nz: 0, c_nz: [0; 2], pred: [[0; 256]; 2], pred_c: [[[0; 64]; 2]; 2] })
+        Box::new(Scratch {
+            coef: [0; 256],
+            coef_c: [[0; 64]; 2],
+            blk_nz: 0,
+            blk_ac: 0,
+            c_nz: [0; 2],
+            c_ac: [0; 2],
+            pred: [[0; 256]; 2],
+            pred_c: [[[0; 64]; 2]; 2],
+        })
     }
 }
 
@@ -896,8 +931,14 @@ impl<'a> SliceDecoder<'a> {
         let Some(blk) = self.s.coef.get_mut(raster * 16..).and_then(<[i32]>::first_chunk_mut::<16>) else {
             return;
         };
-        transform::idct4_add(blk, &mut self.pic.planes.y[py * stride + px..], stride);
-        blk.fill(0);
+        let dst = &mut self.pic.planes.y[py * stride + px..];
+        if self.s.blk_ac & (1 << raster) == 0 {
+            transform::idct_dc_add::<4>(blk[0], dst, stride);
+            blk[0] = 0;
+        } else {
+            transform::idct4_add(blk, dst, stride);
+            blk.fill(0);
+        }
     }
 
     fn add_luma_block8(&mut self, b8: usize) {
@@ -910,8 +951,14 @@ impl<'a> SliceDecoder<'a> {
         let Some(blk) = self.s.coef.get_mut(b8 * 64..).and_then(<[i32]>::first_chunk_mut::<64>) else {
             return;
         };
-        transform::idct8_add(blk, &mut self.pic.planes.y[py * stride + px..], stride);
-        blk.fill(0);
+        let dst = &mut self.pic.planes.y[py * stride + px..];
+        if self.s.blk_ac & (1 << b8) == 0 {
+            transform::idct_dc_add::<8>(blk[0], dst, stride);
+            blk[0] = 0;
+        } else {
+            transform::idct8_add(blk, dst, stride);
+            blk.fill(0);
+        }
     }
 
     fn add_chroma(&mut self) {
@@ -930,10 +977,17 @@ impl<'a> SliceDecoder<'a> {
                     continue;
                 };
                 let plane = if c == 0 { &mut self.pic.planes.cb } else { &mut self.pic.planes.cr };
-                transform::idct4_add(blk, &mut plane[py * stride + px..], stride);
-                blk.fill(0);
+                let dst = &mut plane[py * stride + px..];
+                if self.s.c_ac[c] & (1 << b) == 0 {
+                    transform::idct_dc_add::<4>(blk[0], dst, stride);
+                    blk[0] = 0;
+                } else {
+                    transform::idct4_add(blk, dst, stride);
+                    blk.fill(0);
+                }
             }
             self.s.c_nz[c] = 0;
+            self.s.c_ac[c] = 0;
         }
     }
 
@@ -1008,6 +1062,7 @@ impl<'a> SliceDecoder<'a> {
         intra::pred_chroma(&mut self.pic.planes.cr, cs, cx, cy, mode, av);
         self.add_chroma();
         self.s.blk_nz = 0;
+        self.s.blk_ac = 0;
     }
 
     /// Add the residual of an inter MB (prediction already written).
@@ -1023,6 +1078,7 @@ impl<'a> SliceDecoder<'a> {
         }
         self.add_chroma();
         self.s.blk_nz = 0;
+        self.s.blk_ac = 0;
     }
 
     /// Write I_PCM samples.
@@ -1090,9 +1146,11 @@ impl<'a> SliceDecoder<'a> {
         (blk, ls, Dequant::new4(qp))
     }
 
-    /// Luma 4x4 block `raster` has coefficients.
-    pub fn mark_luma4(&mut self, raster: usize) {
+    /// Luma 4x4 block `raster` has coefficients; `ac` adds an AC coefficient (the block then needs the
+    /// full transform, not the DC-only path).
+    pub fn mark_luma4(&mut self, raster: usize, ac: bool) {
         self.s.blk_nz |= 1 << raster;
+        self.s.blk_ac |= (ac as u16) << raster;
         self.pic.mbs[self.mb_addr].nz_mask |= 1 << raster;
     }
 
@@ -1105,9 +1163,11 @@ impl<'a> SliceDecoder<'a> {
         (blk, ls, Dequant::new8(qp))
     }
 
-    /// Luma 8x8 block `b8` has coefficients.
-    pub fn mark_luma8(&mut self, b8: usize) {
+    /// Luma 8x8 block `b8` has coefficients; `ac` adds an AC coefficient (the block then needs the
+    /// full transform, not the DC-only path).
+    pub fn mark_luma8(&mut self, b8: usize, ac: bool) {
         self.s.blk_nz |= 1 << b8;
+        self.s.blk_ac |= (ac as u16) << b8;
         let (bx, by) = ((b8 & 1) * 2, (b8 >> 1) * 2);
         let m = (0b11u16 << (by * 4 + bx)) | (0b11u16 << ((by + 1) * 4 + bx));
         self.pic.mbs[self.mb_addr].nz_mask |= m;
@@ -1154,9 +1214,11 @@ impl<'a> SliceDecoder<'a> {
         (blk, ls, Dequant::new4(qpc))
     }
 
-    /// Chroma AC block `b` of component `c` has coefficients.
-    pub fn mark_chroma_ac(&mut self, c: usize, b: usize) {
+    /// Chroma AC block `b` of component `c` has coefficients; `ac` adds an AC coefficient (the block
+    /// then needs the full transform, not the DC-only path).
+    pub fn mark_chroma_ac(&mut self, c: usize, b: usize, ac: bool) {
         self.s.c_nz[c] |= 1 << b;
+        self.s.c_ac[c] |= (ac as u8) << b;
     }
 
     // ------------------------------------------------------------------------------------------
@@ -1359,39 +1421,44 @@ impl<'a> SliceDecoder<'a> {
             }
             if t8 {
                 let mut any = false;
+                let mut ac = false;
                 for i4 in 0..4 {
                     let raster = (by8 + (i4 >> 1)) * 4 + bx8 + (i4 & 1);
                     let nc = self.nc_luma(raster);
                     let (blk, ls, dq) = self.luma8_dst(b8);
                     let tc = cavlc::residual_block(r, 0, 15, 16, nc, |k, v| {
                         let p = ZIGZAG8[4 * k + i4] as usize;
+                        ac |= p != 0;
                         blk[p] = dq.apply(v, ls[p]);
                     })?;
                     self.mb_mut().nnz[raster] = tc;
                     any |= tc > 0;
                 }
                 if any {
-                    self.mark_luma8(b8);
+                    self.mark_luma8(b8, ac);
                 }
             } else {
                 for i4 in 0..4 {
                     let raster = (by8 + (i4 >> 1)) * 4 + bx8 + (i4 & 1);
                     let nc = self.nc_luma(raster);
                     let (blk, ls, dq) = self.luma4_dst(raster);
+                    let mut ac = false;
                     let tc = if kind == MbKind::I16x16 {
                         cavlc::residual_block(r, 0, 14, 15, nc, |k, v| {
                             let p = ZIGZAG4[k + 1] as usize;
+                            ac = true;
                             blk[p] = dq.apply(v, ls[p]);
                         })?
                     } else {
                         cavlc::residual_block(r, 0, 15, 16, nc, |k, v| {
                             let p = ZIGZAG4[k] as usize;
+                            ac |= p != 0;
                             blk[p] = dq.apply(v, ls[p]);
                         })?
                     };
                     self.mb_mut().nnz[raster] = tc;
                     if tc > 0 {
-                        self.mark_luma4(raster);
+                        self.mark_luma4(raster, ac);
                     }
                 }
             }
@@ -1415,7 +1482,7 @@ impl<'a> SliceDecoder<'a> {
                     })?;
                     self.mb_mut().nnz_c[c][b] = tc;
                     if tc > 0 {
-                        self.mark_chroma_ac(c, b);
+                        self.mark_chroma_ac(c, b, true);
                     }
                 }
             }
@@ -1436,7 +1503,7 @@ impl<'a> SliceDecoder<'a> {
                 for _ in 0..run {
                     self.start_mb(addr);
                     self.decode_skip()?;
-                    self.pic.mb_done(addr);
+                    self.pic.mb_done(addr)?;
                     addr += 1;
                 }
                 if run > 0 && !r.more_rbsp_data() {
@@ -1446,7 +1513,7 @@ impl<'a> SliceDecoder<'a> {
             }
             self.start_mb(addr);
             self.decode_mb_cavlc(r)?;
-            self.pic.mb_done(addr);
+            self.pic.mb_done(addr)?;
             addr += 1;
             if !r.more_rbsp_data() {
                 break;

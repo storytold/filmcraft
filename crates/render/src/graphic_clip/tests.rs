@@ -327,3 +327,40 @@ fn tight_image_matches_full_render() {
         }
     }
 }
+
+/// #3361: Responsive Design – Time remaps the keyframes of the graphic's *layers* only. The clip's
+/// own effects and masks (Opacity, Motion, ...) are read at plain media time, like on any clip,
+/// so trimming a graphic with an outro moves a layer's outro animation with the clip end but not a
+/// keyframe on the clip's own effect. Documented in docs/graphics.md.
+#[test]
+fn responsive_time_remaps_layer_keyframes_not_the_clips_own_effects() {
+    use filmcraft_project::graphic_design::GraphicMeta;
+    let sec = Tick::from_seconds_f64;
+    let mut layer = new_shape_layer(0, Vec2::new(200.0, 150.0), Vec2::new(100.0, 100.0), vec![]);
+    // layer opacity fades 100 → 0 over the designed outro (4 s .. 5 s)
+    let p = layer.params.get_mut("opacity").expect("opacity");
+    p.put_keyframe(sec(4.0), ParamValue::Float(100.0));
+    p.put_keyframe(sec(5.0), ParamValue::Float(0.0));
+    let mut item = graphic_item(vec![layer]);
+    // the same fade on the clip's own (intrinsic) Opacity effect, at media times
+    let own = item.effect_mut("opacity").expect("intrinsic opacity");
+    let p = own.params.get_mut("opacity").expect("opacity");
+    p.put_keyframe(sec(4.0), ParamValue::Float(100.0));
+    p.put_keyframe(sec(5.0), ParamValue::Float(0.0));
+    // designed 5 s with a 1 s outro, then trimmed to 3 s
+    item.graphic = Some(Box::new(GraphicMeta { outro: sec(1.0), design_duration: sec(5.0), ..Default::default() }));
+    item.duration = sec(3.0);
+    // half way through the trimmed clip's outro (clip time 2.5 s of 3 s)
+    let mt = sec(2.5);
+    let (t, _, _) = graphic_time(&item, mt);
+    assert_eq!(t, sec(4.5), "the layer reads its keyframes half way through the designed outro");
+    let layer_opacity = item_layer_specs(&item, mt, (400, 300))[0].1.transform.opacity;
+    assert!((layer_opacity - 0.5).abs() < 1e-4, "layer fade is half done: {layer_opacity}");
+    // the clip's own Opacity is read at media time: 2.5 s is before its keyframes, so still 100 %
+    assert_eq!(crate::opacity_blend(&item, item.effect_time_at(mt)).0, 1.0);
+    // a head trim advances source_in; the clip's keyframes stay at their media times (4.5 s: half)
+    item.source_in = sec(2.0);
+    let own_at = |item: &TrackItem, clip_t: f64| crate::opacity_blend(item, item.effect_time_at(sec(clip_t))).0;
+    assert!((own_at(&item, 2.5) - 0.5).abs() < 1e-4, "media 4.5 s: {}", own_at(&item, 2.5));
+    assert!((own_at(&item, 0.0) - 1.0).abs() < 1e-4, "media 2 s: {}", own_at(&item, 0.0));
+}

@@ -69,6 +69,10 @@
 	Captions and Graphics	Subtítulos y gráficos
 	Captions…	Subtítulos…
 	Caribbean	Caribe
+	Center at Cut	Centrado en el corte
+	Start at Cut	Inicio en el corte
+	End at Cut	Fin en el corte
+	Custom Start	Inicio personalizado
 	Center Horizontally	Centrar horizontalmente
 	Center Vertically	Centrar verticalmente
 	Cerulean	Cerúleo
@@ -452,6 +456,9 @@
 	Recover	Recuperar
 	Not Now	Ahora no
 	Are you sure you want to discard your changes to '{file}'?	¿Seguro que quieres descartar los cambios en '{file}'?
+	Replace File	Reemplazar archivo
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}” ya existe en “{folder}”. ¿Quieres reemplazarlo?
+	Replace	Reemplazar
 	Yes	Sí
 	No	No
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	Añade medios a tu proyecto. Suelta archivos en cualquier parte de la ventana o elige un origen abajo.
@@ -999,7 +1006,6 @@
 	Eyedropper (pick a color from the Program monitor)	Cuentagotas (tomar un color del monitor de programa)
 	Eyedropper: no picture to sample	Cuentagotas: no hay imagen de la que tomar el color
 	Add/Remove Keyframe	Añadir/quitar fotograma clave
-	Temporal Interpolation	Interpolación temporal
 	Linear	Lineal
 	Bezier	Bézier
 	Auto Bezier	Bézier automático
@@ -1048,6 +1054,7 @@
 	All Caps	Todo mayúsculas
 	Small Caps	Versalitas
 	Underline	Subrayado
+	Strikethrough	Tachado
 	OpenType	OpenType
 	Kerning	Ajuste entre pares
 	Ligatures	Ligaduras
@@ -1188,7 +1195,7 @@
 	New Bin	Nueva bandeja
 	Find	Buscar
 	Automate to Sequence	Automatizar a secuencia
-	Select items to clear	Selecciona los elementos que quieres borrar
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Selecciona un clip (o un clip vinculado) en la línea de tiempo, o un elemento en el panel Proyecto, para cambiarle el nombre
 	User Order	Orden del usuario
 	Descending	Descendente
 	Refresh Project	Actualizar proyecto
@@ -3614,7 +3621,6 @@
 	Export the labels to a preset file…	Exportar las etiquetas a un archivo de ajuste preestablecido…
 	Show the presets folder	Mostrar la carpeta de ajustes preestablecidos
 	Delete this preset	Eliminar este ajuste preestablecido
-	Opens in your web browser: {url}	Se abre en el navegador web: {url}
 	Saves this session's log and shows it in your file manager.	Guarda el registro de esta sesión y lo muestra en el explorador de archivos.
 	Shows a report on this computer.	Muestra un informe sobre este equipo.
 	Shows the version, community links and credits in a FilmCraft window.	Muestra la versión, los enlaces de la comunidad y los créditos en una ventana de FilmCraft.
@@ -3626,5 +3632,35 @@
 	Open a sequence to search its graphics	Abre una secuencia para buscar en sus gráficos
 	No text graphics in this sequence. Add text with the Type tool.	Esta secuencia no tiene gráficos con texto. Añade texto con la herramienta Texto.
 	No matching text.	Ningún texto coincide.
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	Editar marcador…
+	In:	Entrada:
+	Marker Color:	Color del marcador:
+	Options:	Opciones:
+	Comment Marker	Marcador de comentario
+	Chapter Marker	Marcador de capítulo
+	Segmentation Marker	Marcador de segmentación
+	Web Link	Vínculo web
+	Flash Cue Point	Punto de referencia Flash
+	Invalid duration: {error}	Duración no válida: {error}
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) necesita un codificador por hardware (NVENC en GPU NVIDIA, VideoToolbox en macOS); no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador H.265 por software. Elija H.264 o ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 necesita un codificador por hardware; no se encontró ninguno en este equipo y FilmCraft aún no tiene un codificador AV1 por software.
+	Enter a positive duration within the supported speed range.	Introduce una duración positiva dentro del rango de velocidad admitido.
+	Show Video Names	Mostrar nombres de vídeo
+	Show Audio Names	Mostrar nombres de audio
+	Video Names	Nombres de vídeo
+	Audio Names	Nombres de audio
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	El servidor de control está desactivado: FILMCRAFT_CONTROL_TOKEN debe contener 64 caracteres hexadecimales aleatorios (ver docs/control-protocol.md)
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Clip Mismatch Warning dialog.
+	Clip Mismatch Warning	Aviso de discrepancia de clip
+	This clip does not match the sequence settings.	Este clip no coincide con los ajustes de la secuencia.
+	Clip: {settings}	Clip: {settings}
+	Sequence: {settings}	Secuencia: {settings}
+	Change the sequence to match the clip's settings?	¿Cambiar la secuencia para que coincida con los ajustes del clip?
+	Change Sequence Settings	Cambiar ajustes de secuencia
+	Keep Existing Settings	Mantener los ajustes actuales
