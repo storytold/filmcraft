@@ -35,11 +35,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         let active = group.contains(&app.ui.tool);
         if active {
-            ui.painter().rect_filled(Rect::from_center_size(r.center(), vec2(26.0, 26.0)), 4.0, t.accent);
+            ui.painter().rect_filled(Rect::from_center_size(r.center(), vec2(28.0, 28.0)), 4.0, t.accent);
         } else if resp.hovered() {
             ui.painter().rect_filled(r, 4.0, t.hover);
         }
-        icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(17.0, 17.0)), current.icon(), if active { egui::Color32::WHITE } else { t.icon });
+        icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(20.0, 20.0)), current.icon(), if active { egui::Color32::WHITE } else { t.icon });
         if resp.has_focus() {
             ui.painter().rect_stroke(r.shrink(2.0), 4.0, egui::Stroke::new(1.5, t.focus), egui::StrokeKind::Inside);
         }

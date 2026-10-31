@@ -42,7 +42,7 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
         None => {}
     }
     app.auto.add("timeline.timecode", tc_rect, &tc);
-    // toolbar: 30 × 30 buttons, "on" = #4b4b4b fill
+    // toolbar: 28 × 28 buttons with 18 pt icons
     let mut x = rect.min.x + 12.0;
     let y = rect.min.y + 26.0;
     let toggles: [(Icon, &str, bool, bool, &str); 6] = [
@@ -57,12 +57,14 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
         let r = Rect::from_min_size(pos2(x, y), vec2(28.0, 28.0));
         let resp = ui.interact(r, egui::Id::unique(("tl-toggle", key)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("timeline.toggle.{key}"), r, tip);
+        // the same look as the shared icon toggle (widgets::icon_toggle)
         if toggle && on {
-            p.rect_filled(r, 4.0, t.pressed);
-        } else if resp.hovered() {
-            p.rect_filled(r, 4.0, t.hover);
+            p.rect_filled(r, t.radius_sm, t.toggle_on);
         }
-        icons::paint(&p, r.shrink(7.0), icon, if toggle && on { t.text } else { t.text_dim });
+        if resp.hovered() {
+            p.rect_filled(r, t.radius_sm, if toggle && on { t.toggle_on } else { t.hover });
+        }
+        icons::paint(&p, r.shrink(5.0), icon, if toggle && on { t.text } else { t.text_dim });
         if resp.clicked() {
             let _ = match key {
                 "nest" => app.session.execute("sequence.nestSequences", json!({})),
