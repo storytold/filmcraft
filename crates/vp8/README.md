@@ -1,8 +1,12 @@
 # filmcraft-vp8
 
-Clean-room, pure-Rust (no `unsafe`) VP8 decoder, implemented from RFC 6386, *VP8 Data Format and
-Decoding Guide*, sections 1-19. It is an L0 crate: it depends only on `thiserror`, and builds for
-`wasm32-unknown-unknown`.
+Clean-room, pure-Rust VP8 decoder, implemented from RFC 6386, *VP8 Data Format and Decoding
+Guide*, sections 1-19. The crate itself has no `unsafe`. It is an L0 crate: it depends on
+`thiserror` and `filmcraft-simd`, whose per-architecture NEON and SSE2 modules are, besides
+`platform`, the only `unsafe` in the workspace, under
+[ADR 0002](../../docs/adr/0002-simd-crate-and-unsafe-policy.md). VP8 uses its NEON kernels (inter
+prediction, the inverse DCT, the loop filter) on aarch64. Scalar versions run on other targets,
+including `wasm32-unknown-unknown`, which it builds for.
 
 The constant tables (coefficient and mode probabilities and their update probabilities, the
 subblock mode contexts, quantizer lookups, MV probabilities, interpolation filters...) were
@@ -36,17 +40,18 @@ of `tests/it/conformance.rs`.
 ```rust
 use filmcraft_vp8::Decoder;
 
-let mut dec = Decoder::new();
+let mut dec = Decoder::new(); // all cores; Decoder::with_threads(1): on the calling thread
 for (pts, frame) in frames {      // one IVF frame / WebM block / MP4 sample each
     let skippable = dec.is_disposable(frame); // could this frame be left out (catching up)?
-    if let Some(pic) = dec.decode(frame, pts)? {
+    for pic in dec.decode(frame, pts)? {
+        // the pictures finished so far, in order (with threads, of earlier frames too):
         // pic.width / pic.height, pic.chroma_width / chroma_height,
         // pic.y / pic.u / pic.v: tight 8-bit 4:2:0 planes, pic.pts, pic.key,
-        // pic.color_space (0: BT.601 YUV)
+        // pic.color_space (0: BT.601 YUV); none for a hidden (altref) frame
     }
-    // None: a hidden (altref) frame
 }
-dec.reset(); // forget the reference frames (seek): decoding resumes at the next key frame
+let rest = dec.flush(); // end of stream: the pictures still in flight
+dec.reset(); // forget the reference frames and the frames in flight (seek): decoding resumes at the next key frame
 let stats = dec.stats(); // frames, key frames, hidden frames
 
 // Random access points

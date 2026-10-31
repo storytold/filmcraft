@@ -40,13 +40,27 @@ struct McSource {
     y_step: i32,
 }
 
-/// Start position (1/1024-sample units) and size of a block predicted without reference scaling.
+/// Start position (1/1024-sample units), size and bit depth of a block predicted without
+/// reference scaling.
 #[derive(Clone, Copy)]
 struct McBlock {
     x: i32,
     y: i32,
     w: usize,
     h: usize,
+    bd: u32,
+}
+
+/// Where a prediction from one reference may go without the prediction buffer.
+#[derive(Clone, Copy)]
+enum Direct<'a> {
+    /// Nowhere: into the buffer.
+    None,
+    /// The single prediction, put into the frame.
+    Put,
+    /// The second prediction of a COMPOUND_AVERAGE block, averaged with the first (the buffer
+    /// given, stride PRED_STRIDE) into the frame.
+    Avg(&'a [i32]),
 }
 
 /// Warp used to predict a block from one reference.
@@ -236,31 +250,15 @@ impl TileDecoder<'_, '_> {
 
     /// Block inter prediction process (7.11.3.4) into `pred` (stride PRED_STRIDE); `tmp` holds
     /// the intermediate (horizontally filtered) rows.
-    fn block_inter_prediction(&self, src: McSource, (w, h): (usize, usize), filters: [u8; 2], rnd: (u32, u32, u32), pred: &mut [i32], tmp: &mut [i32]) {
+    fn block_inter_prediction(&self, src: McSource, (w, h): (usize, usize), filters: [u8; 2], rnd: (u32, u32, u32), pred: &mut [i32], tmp: &mut [i16]) {
         let McSource { plane, ref_idx, x, y, x_step, y_step } = src;
         let refp = self.ref_plane(ref_idx, plane);
         let (last_x, last_y) = self.ref_plane_dims(ref_idx, plane);
-        let mut fh = filters[1] as usize;
-        if w <= 4 {
-            if fh == EIGHTTAP || fh == EIGHTTAP_SHARP {
-                fh = 4;
-            } else if fh == EIGHTTAP_SMOOTH {
-                fh = 5;
-            }
-        }
-        let mut fv = filters[0] as usize;
-        if h <= 4 {
-            if fv == EIGHTTAP || fv == EIGHTTAP_SHARP {
-                fv = 4;
-            } else if fv == EIGHTTAP_SMOOTH {
-                fv = 5;
-            }
-        }
+        let (fh, fv) = filter_sets(filters, w, h);
         let unit = 1 << SCALE_SUBPEL_BITS;
         if x_step == unit && y_step == unit {
-            let hf = &SUBPEL_FILTERS[fh][((x >> 6) & SUBPEL_MASK as i32) as usize];
-            let vf = &SUBPEL_FILTERS[fv][((y >> 6) & SUBPEL_MASK as i32) as usize];
-            mc_unscaled(refp, (last_x, last_y), McBlock { x, y, w, h }, (hf, vf), rnd, pred, tmp);
+            let (hf, vf) = (&SUBPEL_FILTERS[fh][phase(x)], &SUBPEL_FILTERS[fv][phase(y)]);
+            mc_unscaled(refp, (last_x, last_y), McBlock { x, y, w, h, bd: self.fs.bit_depth }, (hf, vf), rnd, pred, tmp);
             return;
         }
         let inter_h = ((((h as i32 - 1) * y_step + (1 << SCALE_SUBPEL_BITS) - 1) >> SCALE_SUBPEL_BITS) + 8) as usize;
@@ -275,7 +273,7 @@ impl TileDecoder<'_, '_> {
                 for t in 0..8 {
                     s += filt[t] as i32 * row[(bx + t as i32).clamp(0, last_x) as usize] as i32;
                 }
-                tmp[r * w + c] = round2(s, rnd.0);
+                tmp[r * w + c] = round2(s, rnd.0) as i16;
             }
         }
         for r in 0..h {
@@ -285,7 +283,7 @@ impl TileDecoder<'_, '_> {
                 let base = (p >> 10) as usize;
                 let mut s = 0i32;
                 for t in 0..8 {
-                    s += filt[t] as i32 * tmp[(base + t) * w + c];
+                    s += filt[t] as i32 * tmp[(base + t) * w + c] as i32;
                 }
                 pred[r * PRED_STRIDE + c] = round2(s, rnd.1);
             }
@@ -410,8 +408,10 @@ impl TileDecoder<'_, '_> {
         }
         let mut preds = [std::mem::take(&mut self.pred_buf[0]), std::mem::take(&mut self.pred_buf[1])];
         let mut tmp = std::mem::take(&mut self.mc_tmp);
+        // The prediction went straight into the frame (`predict_direct`).
+        let mut direct = false;
         for ref_list in 0..1 + is_compound as usize {
-            self.predict_from_reference(blk, mi_i, ref_list, rnd, &mut preds[ref_list], &mut tmp);
+            direct |= self.predict_from_reference(blk, mi_i, ref_list, rnd, &mut preds, &mut tmp);
         }
         let ct = self.b.compound_type;
         if ct == COMPOUND_WEDGE && blk.plane == 0 {
@@ -421,7 +421,9 @@ impl TileDecoder<'_, '_> {
         } else if ct == COMPOUND_DIFFWTD && blk.plane == 0 {
             self.fill_diffwtd_mask(blk, &preds, (bd - 8) + rnd.2);
         }
-        self.store_prediction(blk, &preds, cand_refs, rnd.2);
+        if !direct {
+            self.store_prediction(blk, &preds, cand_refs, rnd.2);
+        }
         self.pred_buf = preds;
         self.mc_tmp = tmp;
         if self.b.motion_mode as usize == OBMC {
@@ -456,7 +458,17 @@ impl TileDecoder<'_, '_> {
     }
 
     /// Predicts `blk` from one reference list of the candidate at `mi_i` into `pred`.
-    fn predict_from_reference(&self, blk: PredBlock, mi_i: usize, ref_list: usize, rnd: (u32, u32, u32), pred: &mut [i32], tmp: &mut [i32]) {
+    ///
+    /// Returns true when the prediction went straight into the frame instead (`predict_direct`).
+    fn predict_from_reference(
+        &mut self,
+        blk: PredBlock,
+        mi_i: usize,
+        ref_list: usize,
+        rnd: (u32, u32, u32),
+        preds: &mut [Vec<i32>; 2],
+        tmp: &mut [i16],
+    ) -> bool {
         let PredBlock { plane, x, y, w, h } = blk;
         let fh = &self.fs.fh;
         let ref_frame = self.t.mi.ref_frame[mi_i][ref_list];
@@ -468,15 +480,66 @@ impl TileDecoder<'_, '_> {
             let filters = self.t.mi.interp_filter[mi_i];
             let (sx, sy, stx, sty) = self.mv_scaling(plane, ref_idx, x as i32, y as i32, mv);
             let src = McSource { plane, ref_idx, x: sx, y: sy, x_step: stx, y_step: sty };
+            let is_compound = self.t.mi.ref_frame[mi_i][1] > INTRA_FRAME as i8;
+            let is_inter_intra = self.b.is_inter && self.b.ref_frame[1] == INTRA_FRAME as i8;
+            let [first, pred] = preds;
+            let mode = if !is_compound && !is_inter_intra {
+                Direct::Put
+            } else if ref_list == 1 && self.b.compound_type == COMPOUND_AVERAGE {
+                Direct::Avg(first.as_slice())
+            } else {
+                Direct::None
+            };
+            if self.predict_direct(blk, src, filters, rnd, mode) {
+                return true;
+            }
+            let pred = if ref_list == 0 { first } else { pred };
             self.block_inter_prediction(src, (w, h), filters, rnd, pred, tmp);
         } else {
             let params = if warp == WarpKind::Local { self.b.local_warp_params } else { fh.gm_params[ref_frame as usize] };
             for i8 in 0..=((h - 1) >> 3) {
                 for j8 in 0..=((w - 1) >> 3) {
-                    self.block_warp(&params, ref_idx, blk, (i8, j8), rnd, pred);
+                    self.block_warp(&params, ref_idx, blk, (i8, j8), rnd, &mut preds[ref_list]);
                 }
             }
         }
+        false
+    }
+
+    /// The unscaled prediction `src` of `blk` written straight into the frame as `mode` says:
+    /// whole-sample single predictions copied, the others filtered by the vector kernel (both
+    /// passes in one) when every sample its filters read is inside the reference. False when it
+    /// went nowhere.
+    fn predict_direct(&mut self, blk: PredBlock, src: McSource, filters: [u8; 2], rnd: (u32, u32, u32), mode: Direct) -> bool {
+        let McSource { plane, ref_idx, x: sx, y: sy, x_step, y_step } = src;
+        let PredBlock { x, y, w, h, .. } = blk;
+        let unit = 1 << SCALE_SUBPEL_BITS;
+        if matches!(mode, Direct::None) || x_step != unit || y_step != unit {
+            return false;
+        }
+        let fs = self.fs;
+        let Some(r) = usize::try_from(ref_idx).ok().and_then(|i| fs.refs.get(i)).and_then(|r| r.as_ref()) else {
+            return false;
+        };
+        let (refp, bd) = (&r.buf.planes[plane], fs.bit_depth);
+        let (last_x, last_y) = self.ref_plane_dims(ref_idx, plane);
+        if matches!(mode, Direct::Put) && phase(sx) == 0 && phase(sy) == 0 {
+            copy_whole_samples(refp, (last_x, last_y), (sx >> 10, sy >> 10), (w, h), &mut self.t.cur.planes[plane], (x, y));
+            return true;
+        }
+        let Some(window) = filter_window(refp, last_x, last_y, sx, sy, w, h) else {
+            return false;
+        };
+        let (fh, fv) = filter_sets(filters, w, h);
+        let (hf, vf) = (&SUBPEL_FILTERS[fh][phase(sx)], &SUBPEL_FILTERS[fv][phase(sy)]);
+        let pl = &mut self.t.cur.planes[plane];
+        let (ss, ds, max) = (refp.stride, pl.stride, ((1u32 << bd) - 1) as u16);
+        let dst = pl.tail_mut(x, y);
+        let out = match mode {
+            Direct::Avg(first) => filmcraft_simd::Av1McOut::Avg { first, fs: PRED_STRIDE, dst, ds, max, shift: 1 + rnd.2 },
+            _ => filmcraft_simd::Av1McOut::Put { dst, ds, max },
+        };
+        filmcraft_simd::av1_mc((window, ss), (hf, vf), (w, h), bd, (rnd.0, rnd.1), out)
     }
 
     /// Wedge compound mask (7.11.3.11) for the luma block.
@@ -709,47 +772,80 @@ impl TileDecoder<'_, '_> {
 
 const IDENTITY_TAPS: [i16; 8] = [0, 0, 0, 128, 0, 0, 0, 0];
 
-/// Horizontal pass of one row for a block `W` wide: taps outer, columns inner, fixed width so
-/// the row stays in registers.
-#[inline(always)]
-fn hpass<const W: usize>(src: &[u16], hf: &[i16; 8], out: &mut [i32], half: i32, sh: u32) {
-    let mut acc = [half; W];
-    for t in 0..8 {
-        let f = hf[t] as i32;
-        let Some(p) = src.get(t..).and_then(|s| s.first_chunk::<W>()) else {
-            return;
-        };
-        for j in 0..W {
-            acc[j] += f * p[j] as i32;
+/// The w x h reference samples at whole-sample position (x0, y0), edges clamped, into `dst` at
+/// (dx, dy): block inter prediction (7.11.3.4) of an unscaled single prediction whose filter
+/// phases are both 0. Phase 0 of every filter is the identity, and InterRound0 + InterRound1
+/// = 2 * FILTER_BITS for a single prediction (InterPostRound 0), so the prediction is the
+/// reference sample itself.
+pub(crate) fn copy_whole_samples(
+    refp: &Plane,
+    (last_x, last_y): (i32, i32),
+    (x0, y0): (i32, i32),
+    (w, h): (usize, usize),
+    dst: &mut Plane,
+    (dx, dy): (usize, usize),
+) {
+    if x0 < 0 || x0 + w as i32 > last_x + 1 {
+        for r in 0..h {
+            let row = refp.row((y0 + r as i32).clamp(0, last_y) as usize);
+            for (k, o) in dst.row_from_mut(dy + r, dx)[..w].iter_mut().enumerate() {
+                *o = row[(x0 + k as i32).clamp(0, last_x) as usize];
+            }
         }
-    }
-    let Some(o) = out.first_chunk_mut::<W>() else {
         return;
-    };
-    for j in 0..W {
-        o[j] = acc[j] >> sh;
+    }
+    let x0 = x0 as usize;
+    match w {
+        2 => copy_rows::<2>(refp, last_y, (x0, y0), h, dst, (dx, dy)),
+        4 => copy_rows::<4>(refp, last_y, (x0, y0), h, dst, (dx, dy)),
+        8 => copy_rows::<8>(refp, last_y, (x0, y0), h, dst, (dx, dy)),
+        16 => copy_rows::<16>(refp, last_y, (x0, y0), h, dst, (dx, dy)),
+        32 => copy_rows::<32>(refp, last_y, (x0, y0), h, dst, (dx, dy)),
+        64 => copy_rows::<64>(refp, last_y, (x0, y0), h, dst, (dx, dy)),
+        128 => copy_rows::<128>(refp, last_y, (x0, y0), h, dst, (dx, dy)),
+        _ => {
+            for r in 0..h {
+                let row = refp.row((y0 + r as i32).clamp(0, last_y) as usize);
+                dst.row_from_mut(dy + r, dx)[..w].copy_from_slice(&row[x0..x0 + w]);
+            }
+        }
     }
 }
 
-/// Vertical pass of one output row from 8 intermediate rows (`rows`, stride `W`).
-#[inline(always)]
-fn vpass<const W: usize>(rows: &[i32], vf: &[i16; 8], out: &mut [i32], half: i32, sh: u32) {
-    let mut acc = [half; W];
-    for t in 0..8 {
-        let f = vf[t] as i32;
-        let Some(p) = rows.get(t * W..).and_then(|s| s.first_chunk::<W>()) else {
-            return;
-        };
-        for j in 0..W {
-            acc[j] += f * p[j];
+/// [`copy_whole_samples`] of `W`-wide rows inside the reference: copies of a fixed length (a
+/// call to memmove per row otherwise).
+fn copy_rows<const W: usize>(refp: &Plane, last_y: i32, (x0, y0): (usize, i32), h: usize, dst: &mut Plane, (dx, dy): (usize, usize)) {
+    for r in 0..h {
+        let src = refp.row((y0 + r as i32).clamp(0, last_y) as usize).get(x0..).and_then(|s| s.first_chunk::<W>());
+        if let (Some(src), Some(d)) = (src, dst.row_from_mut(dy + r, dx).first_chunk_mut::<W>()) {
+            *d = *src;
         }
     }
-    let Some(o) = out.first_chunk_mut::<W>() else {
-        return;
+}
+
+/// The filter phase (0..16) of a position in 1/1024 samples.
+fn phase(p: i32) -> usize {
+    ((p >> 6) & SUBPEL_MASK as i32) as usize
+}
+
+/// The horizontal and vertical filter sets (7.11.3.4) of a w x h block with interp_filter
+/// `filters` (vertical first): blocks 4 or fewer samples across use the 4-tap sets.
+fn filter_sets(filters: [u8; 2], w: usize, h: usize) -> (usize, usize) {
+    let narrow = |f: usize, n: usize| match f {
+        EIGHTTAP | EIGHTTAP_SHARP if n <= 4 => 4,
+        EIGHTTAP_SMOOTH if n <= 4 => 5,
+        f => f,
     };
-    for j in 0..W {
-        o[j] = acc[j] >> sh;
-    }
+    (narrow(filters[1] as usize, w), narrow(filters[0] as usize, h))
+}
+
+/// The reference samples from (x0 - 3, y0 - 3) of the block at (x, y) (1/1024 samples), when every
+/// sample its filters read is inside the plane (no edge clamping): what [`filmcraft_simd::av1_mc`]
+/// takes.
+fn filter_window(refp: &Plane, last_x: i32, last_y: i32, x: i32, y: i32, w: usize, h: usize) -> Option<&[u16]> {
+    let (x0, y0) = ((x >> 10) - 3, (y >> 10) - 3);
+    let inside = x0 >= 0 && y0 >= 0 && x0 + w as i32 + 7 <= last_x + 1 && y0 + h as i32 + 7 <= last_y + 1;
+    inside.then(|| refp.tail(x0 as usize, y0 as usize))
 }
 
 /// Block inter prediction without reference scaling: every column / row uses the same filter
@@ -761,9 +857,14 @@ fn mc_unscaled(
     (hf, vf): (&[i16; 8], &[i16; 8]),
     rnd: (u32, u32, u32),
     pred: &mut [i32],
-    tmp: &mut [i32],
+    tmp: &mut [i16],
 ) {
-    let McBlock { x, y, w, h } = blk;
+    let McBlock { x, y, w, h, bd } = blk;
+    if let Some(src) = filter_window(refp, last_x, last_y, x, y, w, h)
+        && filmcraft_simd::av1_mc((src, refp.stride), (hf, vf), (w, h), bd, (rnd.0, rnd.1), filmcraft_simd::Av1McOut::Pred { out: pred, os: PRED_STRIDE })
+    {
+        return;
+    }
     let x0 = (x >> 10) - 3;
     let y0 = (y >> 10) - 3;
     let h_copy = *hf == IDENTITY_TAPS;
@@ -772,76 +873,100 @@ fn mc_unscaled(
     let (r_lo, r_hi) = if v_copy { (3, 3 + h) } else { (0, h + 7) };
     let inside = x0 >= 0 && x0 + w as i32 + 7 <= last_x + 1;
     let mut edge = [0u16; 128 + 8];
-    let mut acc = [0i32; 128];
     let (r0, r1) = (rnd.0, rnd.1);
-    let (half0, half1) = (1i32 << (r0 - 1), 1i32 << (r1 - 1));
+    let half1 = 1i32 << (r1 - 1);
     for r in r_lo..r_hi {
         let ry = (y0 + r as i32).clamp(0, last_y) as usize;
         let row = refp.row(ry);
         let src: &[u16] = if inside {
             &row[x0 as usize..x0 as usize + w + 7]
         } else {
-            for (k, e) in edge[..w + 7].iter_mut().enumerate() {
-                *e = row[(x0 + k as i32).clamp(0, last_x) as usize];
+            // Sample k is row[clamp(x0 + k, 0, last_x)]: the left edge sample repeated, the
+            // samples inside, the right edge sample repeated.
+            let n = w + 7;
+            let lo = (-x0).clamp(0, n as i32) as usize;
+            let hi = (last_x + 1 - x0).clamp(lo as i32, n as i32) as usize;
+            edge[..lo].fill(row[0]);
+            if lo < hi {
+                edge[lo..hi].copy_from_slice(&row[(x0 + lo as i32) as usize..(x0 + hi as i32) as usize]);
             }
-            &edge[..w + 7]
+            edge[hi..n].fill(row[last_x as usize]);
+            &edge[..n]
         };
         let out = &mut tmp[r * w..r * w + w];
         if h_copy {
             // Round2(128 * v, InterRound0) is exact.
             for (o, &v) in out.iter_mut().zip(&src[3..3 + w]) {
-                *o = (v as i32) << (7 - r0);
+                *o = ((v as i32) << (7 - r0)) as i16;
             }
         } else {
-            match w {
-                2 => hpass::<2>(src, hf, out, half0, r0),
-                4 => hpass::<4>(src, hf, out, half0, r0),
-                8 => hpass::<8>(src, hf, out, half0, r0),
-                16 => hpass::<16>(src, hf, out, half0, r0),
-                32 => hpass::<32>(src, hf, out, half0, r0),
-                64 => hpass::<64>(src, hf, out, half0, r0),
-                _ => {
-                    let acc = &mut acc[..w];
-                    acc.fill(0);
-                    for t in 0..8 {
-                        let f = hf[t] as i32;
-                        for (a, &v) in acc.iter_mut().zip(&src[t..t + w]) {
-                            *a += f * v as i32;
-                        }
-                    }
-                    for (o, &a) in out.iter_mut().zip(acc.iter()) {
-                        *o = (a + half0) >> r0;
-                    }
-                }
-            }
+            filmcraft_simd::subpel_h(src, hf, out, r0);
         }
     }
     for r in 0..h {
         let out = &mut pred[r * PRED_STRIDE..r * PRED_STRIDE + w];
         if v_copy {
             for (o, &v) in out.iter_mut().zip(&tmp[(r + 3) * w..(r + 4) * w]) {
-                *o = (128 * v + half1) >> r1;
+                *o = (128 * v as i32 + half1) >> r1;
             }
         } else {
-            let rows = &tmp[r * w..(r + 8) * w];
-            match w {
-                2 => vpass::<2>(rows, vf, out, half1, r1),
-                4 => vpass::<4>(rows, vf, out, half1, r1),
-                8 => vpass::<8>(rows, vf, out, half1, r1),
-                16 => vpass::<16>(rows, vf, out, half1, r1),
-                32 => vpass::<32>(rows, vf, out, half1, r1),
-                64 => vpass::<64>(rows, vf, out, half1, r1),
-                _ => {
-                    let acc = &mut acc[..w];
-                    acc.fill(0);
-                    for t in 0..8 {
-                        let f = vf[t] as i32;
-                        for (a, &v) in acc.iter_mut().zip(&tmp[(r + t) * w..(r + t + 1) * w]) {
-                            *a += f * v;
-                        }
-                    }
-                    for (o, &a) in out.iter_mut().zip(acc.iter()) {
-                        *o = (a + half1) >> r1;
+            filmcraft_simd::subpel_v(&tmp[r * w..(r + 8) * w], w, vf, out, r1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The horizontal subpel pass, rounded by InterRound0, stays within 16 bits for every
+    /// filter phase at every bit depth, so the intermediate rows can be i16.
+    #[test]
+    fn subpel_intermediates_fit_16_bits() {
+        for bd in [8, 10, 12] {
+            let (r0, _, _) = rounding(false, bd);
+            let max = (1i32 << bd) - 1;
+            for taps in SUBPEL_FILTERS.iter().flatten() {
+                let hi: i32 = taps.iter().map(|&t| (t as i32).max(0) * max).sum();
+                let lo: i32 = taps.iter().map(|&t| (t as i32).min(0) * max).sum();
+                let half = 1 << (r0 - 1);
+                assert!((hi + half) >> r0 <= i16::MAX as i32 && (lo + half) >> r0 >= i16::MIN as i32, "bd {bd} taps {taps:?}");
+            }
+            assert!(max << (7 - r0) <= i16::MAX as i32);
+        }
+    }
+
+    /// A whole-sample single prediction copied straight into the frame equals the filter path's
+    /// (phase 0 is the identity for every filter), inside the reference and past every edge.
+    #[test]
+    fn whole_sample_copies_match_the_filter_path() {
+        assert!(SUBPEL_FILTERS.iter().all(|f| f[0] == IDENTITY_TAPS));
+        let (rw, rh) = (40usize, 24usize);
+        let mut refp = Plane::new(rw, rh);
+        for (i, v) in refp.data.iter_mut().enumerate() {
+            *v = (((i as u64 * 2_654_435_761) >> 7) & 1023) as u16;
+        }
+        let (last_x, last_y) = (rw as i32 - 1, rh as i32 - 1);
+        let rnd = rounding(false, 10);
+        for (w, h) in [(2, 2), (4, 4), (8, 4), (16, 8), (32, 16), (12, 4)] {
+            for x0 in [-40, -9, -1, 0, 3, 24, 38, 50] {
+                for y0 in [-30, -2, 0, 5, 20, 30] {
+                    let mut pred = vec![0i32; PRED_STRIDE * h];
+                    let mut tmp = vec![0i16; w * (h + 7)];
+                    mc_unscaled(
+                        &refp,
+                        (last_x, last_y),
+                        McBlock { x: x0 << 10, y: y0 << 10, w, h, bd: 10 },
+                        (&IDENTITY_TAPS, &IDENTITY_TAPS),
+                        rnd,
+                        &mut pred,
+                        &mut tmp,
+                    );
+                    let mut dst = Plane::new(64, 32);
+                    copy_whole_samples(&refp, (last_x, last_y), (x0, y0), (w, h), &mut dst, (3, 2));
+                    for r in 0..h {
+                        let want: Vec<u16> = pred[r * PRED_STRIDE..][..w].iter().map(|&p| p as u16).collect();
+                        assert_eq!(&dst.row(2 + r)[3..3 + w], &want[..], "{w}x{h} at ({x0}, {y0}) row {r}");
                     }
                 }
             }

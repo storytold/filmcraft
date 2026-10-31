@@ -19,12 +19,19 @@ panic path, and fix a crash before building on top of it. The cross-app standard
    fallback that is truly correct (never one that silently corrupts a project). An unfinished feature
    returns an "unsupported" error. The only exception is a call that is provably infallible from local
    code alone (a literal that always parses): a single-item `#[allow(clippy::expect_used)]` with the reason.
-3. **No `unsafe`** (`unsafe_code = "forbid"` for the workspace). The single exception is
+3. **No `unsafe`** (`unsafe_code = "forbid"` for the workspace). There are two exceptions. One is
    `crates/platform`, which needs `unsafe` to call the operating system's media APIs (hardware
    video decoding through VideoToolbox, Media Foundation / Direct3D 11, VA-API and NVDEC; hardware encoding) and does nothing else. It
    uses `unsafe_code = "deny"` with `#[allow(unsafe_code)]` only on its FFI modules, a
    `// SAFETY:` comment on every `unsafe` block, a safe `Result`-returning public API, and the
-   pure-Rust decoder as the tested fallback ([ADR 0001](docs/adr/0001-platform-ffi.md)).
+   pure-Rust decoder as the tested fallback ([ADR 0001](docs/adr/0001-platform-ffi.md)). The other is
+   `crates/simd`, which needs `unsafe` only to enter the baseline vector instruction sets (NEON, SSE2)
+   and for vector loads and stores at offsets its safe entry points bounds-check up front, and does
+   nothing else. It uses `unsafe_code = "deny"` with `#[allow(unsafe_code)]` only on its
+   per-architecture modules, a `// SAFETY:` comment on every `unsafe` block, `bytemuck` for
+   whole-array copies, a safe public API whose kernels decline (return `false`) rather than panic,
+   and a bit-identical scalar twin plus mutation tests for every kernel
+   ([ADR 0002](docs/adr/0002-simd-crate-and-unsafe-policy.md)).
 4. **Every input-derived number is hostile.** Media files, project and interchange files, presets, fonts,
    CLI / MCP / control-channel parameters and UI state are untrusted. Index and slice with `get()` (or
    validate bounds once, up front, for a hot loop); slice strings only at char boundaries; use

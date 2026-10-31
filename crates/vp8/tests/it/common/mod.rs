@@ -190,7 +190,9 @@ pub fn ivf_frames(data: &[u8]) -> Vec<&[u8]> {
 /// Decode every frame; the pictures in display order.
 pub fn decode_all(frames: &[&[u8]]) -> Vec<Picture> {
     let mut dec = Decoder::new();
-    frames.iter().enumerate().filter_map(|(i, f)| dec.decode(f, i as i64).expect("decode")).collect()
+    let mut pictures: Vec<Picture> = frames.iter().enumerate().flat_map(|(i, f)| dec.decode(f, i as i64).expect("decode")).collect();
+    pictures.extend(dec.flush());
+    pictures
 }
 
 /// A picture as I420 bytes.

@@ -38,6 +38,17 @@ fn r2(v: i32) -> i32 {
     (v + 2) >> 2
 }
 
+/// Writes `f(i, j)` to sample (i, j) of the `size` x `size` block at `o` (rows `stride` apart).
+/// Generic in `f`, so that each mode's formula is inlined into the loop.
+#[inline(always)]
+fn fill_block(buf: &mut [u16], o: usize, stride: usize, size: usize, f: impl Fn(usize, usize) -> i32) {
+    for i in 0..size {
+        for j in 0..size {
+            buf[o + i * stride + j] = f(i, j) as u16;
+        }
+    }
+}
+
 /// Gathers (and pads, per 8.5.1.1) the above row, top-left corner and left column.
 fn gather_neighbours(buf: &[u16], stride: usize, x_off: usize, x: usize, y: usize, e: &IntraEdge) -> Neighbours {
     let size = 4usize << e.tx_size;
@@ -179,52 +190,46 @@ fn dc_value(n: &Neighbours, e: &IntraEdge) -> i32 {
 
 /// Predict a `4 << tx_size` square block at (`x`, `y`) of a plane buffer. `buf` is addressed as
 /// `buf[y * stride + x - x_off]` (the buffer may be a tile-column strip starting at column `x_off`).
+// Out of line: inlined into the residual pass, it costs the token loop around it 3%.
+#[inline(never)]
 pub fn predict(buf: &mut [u16], stride: usize, x_off: usize, x: usize, y: usize, mode: u8, e: &IntraEdge) {
     let size = 4usize << e.tx_size;
     let n = gather_neighbours(buf, stride, x_off, x, y, e);
     let a = |i: isize| n.a(i);
     let max = (1i32 << e.bit_depth) - 1;
     let o = y * stride + x - x_off;
-    let mut put = |i: usize, j: usize, v: i32| buf[o + i * stride + j] = v as u16;
-    let mut fill = |f: &dyn Fn(usize, usize) -> i32| {
-        for i in 0..size {
-            for j in 0..size {
-                put(i, j, f(i, j));
-            }
-        }
-    };
     match mode {
-        V_PRED => fill(&|_, j| a(j as isize)),
-        H_PRED => fill(&|i, _| n.left[i]),
+        V_PRED => fill_block(buf, o, stride, size, |_, j| a(j as isize)),
+        H_PRED => fill_block(buf, o, stride, size, |i, _| n.left[i]),
         D207_PRED => {
             let p = pred_d207(&n, size);
-            fill(&|i, j| p[i][j]);
+            fill_block(buf, o, stride, size, |i, j| p[i][j]);
         }
-        D45_PRED => fill(&|i, j| {
+        D45_PRED => fill_block(buf, o, stride, size, |i, j| {
             let k = (i + j) as isize;
             if i + j + 2 < 2 * size { r2(a(k) + 2 * a(k + 1) + a(k + 2)) } else { a(2 * size as isize - 1) }
         }),
-        D63_PRED => fill(&|i, j| {
+        D63_PRED => fill_block(buf, o, stride, size, |i, j| {
             let k = (i / 2 + j) as isize;
             if i & 1 == 1 { r2(a(k) + 2 * a(k + 1) + a(k + 2)) } else { r1(a(k) + a(k + 1)) }
         }),
         D117_PRED => {
             let p = pred_d117(&n, size);
-            fill(&|i, j| p[i][j]);
+            fill_block(buf, o, stride, size, |i, j| p[i][j]);
         }
         D135_PRED => {
             let p = pred_d135(&n, size);
-            fill(&|i, j| p[i][j]);
+            fill_block(buf, o, stride, size, |i, j| p[i][j]);
         }
         D153_PRED => {
             let p = pred_d153(&n, size);
-            fill(&|i, j| p[i][j]);
+            fill_block(buf, o, stride, size, |i, j| p[i][j]);
         }
-        TM_PRED => fill(&|i, j| (a(j as isize) + n.left[i] - a(-1)).clamp(0, max)),
+        TM_PRED => fill_block(buf, o, stride, size, |i, j| (a(j as isize) + n.left[i] - a(-1)).clamp(0, max)),
         _ => {
             // DC_PRED
             let v = dc_value(&n, e);
-            fill(&|_, _| v);
+            fill_block(buf, o, stride, size, |_, _| v);
         }
     }
 }

@@ -46,9 +46,13 @@ pub struct FrameShared<'a> {
 
 /// Output of one tile column: samples, mode info and segment ids of its columns.
 pub struct Strip {
+    /// The tile column being decoded into the strip.
     pub mi_col_start: usize,
     pub mi_col_end: usize,
-    /// Mode info, (mi_col_end - mi_col_start) x MiRows.
+    /// Mode info and segment ids, `mi_stride` x MiRows from mode info column `mi_x0`: one tile
+    /// column, or the whole frame when tile columns are decoded one after another into it.
+    pub mi_x0: usize,
+    pub mi_stride: usize,
     pub mi: Vec<MiInfo>,
     pub seg_ids: Vec<u8>,
     pub planes: [Vec<u16>; 3],
@@ -61,6 +65,50 @@ pub struct Strip {
     pub scaled_blocks: u64,
     pub intra_blocks: u64,
     pub inter_blocks: u64,
+}
+
+impl Strip {
+    /// A strip storing mode info columns `x0..x1` (in whole superblocks of samples), set to
+    /// decode the tile column `cs..ce`.
+    fn new(s: &FrameShared, cs: usize, ce: usize, x0: usize, x1: usize) -> Strip {
+        let h = s.h;
+        let mi_rows = h.mi_rows as usize;
+        let (ss_x, ss_y) = (h.color.subsampling_x as usize, h.color.subsampling_y as usize);
+        let strip_w = (x1 - x0).div_ceil(8) * 64;
+        let strip_h = h.sb64_rows as usize * 64;
+        let px0 = x0 * 8;
+        let uv_len = (strip_w >> ss_x) * (strip_h >> ss_y);
+        // Unfilled: decoding writes every sample and mode info of the tile area before anything
+        // reads it, and nothing reads past it (predictions clamp to the decoded area).
+        let planes = [s.pools.samples.take_any(strip_w * strip_h, 0), s.pools.samples.take_any(uv_len, 0), s.pools.samples.take_any(uv_len, 0)];
+        let mi_w = x1 - x0;
+        Strip {
+            mi_col_start: cs,
+            mi_col_end: ce,
+            mi_x0: x0,
+            mi_stride: mi_w,
+            mi: s.pools.mi.take_any(mi_w * mi_rows, MiInfo::default()),
+            seg_ids: vec![0; mi_w * mi_rows],
+            planes,
+            strides: [strip_w, strip_w >> ss_x, strip_w >> ss_x],
+            x_off: [px0, px0 >> ss_x, px0 >> ss_x],
+            counts: Box::default(),
+            compound_blocks: 0,
+            scaled_blocks: 0,
+            intra_blocks: 0,
+            inter_blocks: 0,
+        }
+    }
+
+    /// A strip with the geometry of the whole frame, for decoding the tile columns one after
+    /// another into it: a tile writes only its own columns and reads no samples or mode info
+    /// of another tile column (left neighbours across the tile edge are unavailable, 6.4.3,
+    /// and above-right samples stay within the block), so this decodes like separate strips
+    /// and needs no assembly afterwards.
+    pub fn whole_frame(s: &FrameShared) -> Strip {
+        let mi_cols = s.h.mi_cols as usize;
+        Strip::new(s, 0, mi_cols, 0, mi_cols)
+    }
 }
 
 /// Per-block state (the variables of 6.4.4 - 6.4.20).
@@ -115,10 +163,9 @@ pub struct TileDecoder<'a> {
     near_mv: [Mv; 2],
     best_mv: [Mv; 2],
     // Scratch.
-    coefs: Vec<i32>,
-    token_cache: Vec<u8>,
+    coefs: Box<[i32; 1024]>,
+    token_cache: Box<[u8; 1024]>,
     pred: Vec<u16>,
-    pred2: Vec<u16>,
     mc_tmp: Vec<u16>,
     mc_win: Vec<u16>,
     /// First error met while decoding (e.g. a block referencing an unusable reference frame).
@@ -126,32 +173,26 @@ pub struct TileDecoder<'a> {
 }
 
 impl<'a> TileDecoder<'a> {
+    /// A decoder for the tile column `mi_col_start..mi_col_end` with a strip of its own.
     pub fn new(s: &'a FrameShared<'a>, mi_col_start: usize, mi_col_end: usize) -> Self {
+        let strip = Strip::new(s, mi_col_start, mi_col_end, mi_col_start, mi_col_end);
+        Self::with_strip(s, strip)
+    }
+
+    /// A decoder for the tile column `mi_col_start..mi_col_end` writing into `strip`, which spans
+    /// the column (see [`Strip::whole_frame`]).
+    pub fn in_strip(s: &'a FrameShared<'a>, mi_col_start: usize, mi_col_end: usize, mut strip: Strip) -> Self {
+        strip.mi_col_start = mi_col_start;
+        strip.mi_col_end = mi_col_end;
+        Self::with_strip(s, strip)
+    }
+
+    fn with_strip(s: &'a FrameShared<'a>, strip: Strip) -> Self {
         let h = s.h;
         let (mi_cols, mi_rows) = (h.mi_cols as usize, h.mi_rows as usize);
         let (ss_x, ss_y) = (h.color.subsampling_x as usize, h.color.subsampling_y as usize);
         let sb_rows = h.sb64_rows as usize;
         let sb_cols = h.sb64_cols as usize;
-        let strip_w = (mi_col_end - mi_col_start).div_ceil(8) * 64;
-        let strip_h = sb_rows * 64;
-        let x0 = mi_col_start * 8;
-        let uv_len = (strip_w >> ss_x) * (strip_h >> ss_y);
-        let planes = [s.pools.samples.take(strip_w * strip_h, 0), s.pools.samples.take(uv_len, 0), s.pools.samples.take(uv_len, 0)];
-        let mi_w = mi_col_end - mi_col_start;
-        let strip = Strip {
-            mi_col_start,
-            mi_col_end,
-            mi: s.pools.mi.take(mi_w * mi_rows, MiInfo::default()),
-            seg_ids: vec![0; mi_w * mi_rows],
-            planes,
-            strides: [strip_w, strip_w >> ss_x, strip_w >> ss_x],
-            x_off: [x0, x0 >> ss_x, x0 >> ss_x],
-            counts: Box::default(),
-            compound_blocks: 0,
-            scaled_blocks: 0,
-            intra_blocks: 0,
-            inter_blocks: 0,
-        };
         let an = sb_cols * 16 + 16;
         let ln = sb_rows * 16 + 16;
         TileDecoder {
@@ -176,20 +217,19 @@ impl<'a> TileDecoder<'a> {
             nearest_mv: [Mv::ZERO; 2],
             near_mv: [Mv::ZERO; 2],
             best_mv: [Mv::ZERO; 2],
-            coefs: vec![0; 1024],
-            token_cache: vec![0; 1024],
+            coefs: Box::new([0; 1024]),
+            token_cache: Box::new([0; 1024]),
             pred: vec![0; 64 * 64],
-            pred2: vec![0; 64 * 64],
             // Scaled prediction reads up to 5x the block height (8.5.2.3), unscaled h + 7 rows.
             mc_tmp: vec![0; if s.refs.iter().flatten().any(|r| r.x_scale != 1 << 14 || r.y_scale != 1 << 14) { 64 * (64 * 5 + 16) } else { 64 * 71 }],
-            mc_win: vec![0; 71 * 71],
+            mc_win: vec![0; 71 * 71 + 1],
             error: None,
         }
     }
 
     #[inline]
     fn mi_at(&self, r: usize, c: usize) -> &MiInfo {
-        &self.strip.mi[r * (self.strip.mi_col_end - self.strip.mi_col_start) + c - self.strip.mi_col_start]
+        &self.strip.mi[r * self.strip.mi_stride + c - self.strip.mi_x0]
     }
 
     /// decode_tile (6.4.2) for one tile of this column. Returns false if the data ran out badly.
@@ -305,13 +345,12 @@ impl<'a> TileDecoder<'a> {
         };
         let bh = NUM_8X8_HIGH[b.size as usize] as usize;
         let bw = NUM_8X8_WIDE[b.size as usize] as usize;
-        let mi_w = self.strip.mi_col_end - self.strip.mi_col_start;
         let (y1, x1) = ((r + bh).min(self.mi_rows), (c + bw).min(self.strip.mi_col_end));
         for y in r..y1 {
-            let row = y * mi_w;
+            let row = y * self.strip.mi_stride;
             for x in c..x1 {
-                self.strip.mi[row + x - self.strip.mi_col_start] = info;
-                self.strip.seg_ids[row + x - self.strip.mi_col_start] = b.seg_id;
+                self.strip.mi[row + x - self.strip.mi_x0] = info;
+                self.strip.seg_ids[row + x - self.strip.mi_x0] = b.seg_id;
             }
         }
     }

@@ -607,6 +607,12 @@ pub fn vp9_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
 }
 
 /// Our pure-Rust VP8 decoder (RFC 6386; #432): WebM / Matroska `V_VP8` and MP4 `vp08`.
+/// Worker threads of the VP8 decoders made for background work (thumbnails, proxies): none, the
+/// calling thread does it all. Its frame pipeline takes at least 5 threads (a token reader, and a
+/// reconstruction and a loop filter thread for each plane), and the frame workers already decode
+/// different files in parallel.
+const BACKGROUND_VP8_THREADS: usize = 1;
+
 pub struct Vp8Decoder {
     dec: filmcraft_vp8::Decoder,
 }
@@ -618,8 +624,10 @@ impl Default for Vp8Decoder {
 }
 
 impl Vp8Decoder {
+    /// A decoder on every core, or (made for background work) on the calling thread alone.
     pub fn new() -> Self {
-        Self { dec: filmcraft_vp8::Decoder::new() }
+        let threads = if filmcraft_media::cancel::background() { BACKGROUND_VP8_THREADS } else { filmcraft_vp8::default_threads() };
+        Self { dec: filmcraft_vp8::Decoder::with_threads(threads) }
     }
 
     fn convert(p: filmcraft_vp8::Picture) -> DecodedFrame {
@@ -635,18 +643,21 @@ impl Vp8Decoder {
 
 impl VideoDecoder for Vp8Decoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
-        let pic = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
-        Ok(pic.into_iter().map(Self::convert).collect())
+        let pics = self.dec.decode(sample, pts).map_err(|e| CodecError::Decode(e.to_string()))?;
+        Ok(pics.into_iter().map(Self::convert).collect())
     }
     fn flush(&mut self) -> Vec<DecodedFrame> {
-        // no reordering: every picture comes out with its frame
-        Vec::new()
+        // no reordering, but with frame threads the last pictures are still in flight
+        self.dec.flush().into_iter().map(Self::convert).collect()
     }
     fn reset(&mut self) {
         self.dec.reset();
     }
     fn name(&self) -> &str {
         "FilmCraft VP8"
+    }
+    fn thread_limited(&self) -> bool {
+        self.dec.threads() < filmcraft_vp8::default_threads()
     }
     fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
         Some(filmcraft_vp8::is_keyframe(sample))
@@ -1367,5 +1378,23 @@ impl VideoDecoder for RawVideoDecoder {
     }
     fn intra_only(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod vp8_thread_tests {
+    use super::{VideoDecoder, Vp8Decoder};
+    use filmcraft_media::cancel::with_background;
+
+    /// A VP8 decoder made for background work runs on the calling thread and says so, so a
+    /// request for a monitor replaces it; one made for playback gets every core.
+    #[test]
+    fn background_vp8_decoders_start_no_threads() {
+        let bg = with_background(true, Vp8Decoder::new);
+        assert_eq!(bg.dec.threads(), 1);
+        let full = with_background(false, Vp8Decoder::new);
+        assert_eq!(full.dec.threads(), filmcraft_vp8::default_threads());
+        assert!(!full.thread_limited());
+        assert_eq!(bg.thread_limited(), filmcraft_vp8::default_threads() > 1);
     }
 }

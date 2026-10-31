@@ -7,6 +7,7 @@ use crate::spec_tables::{
 };
 use crate::state::FrameState;
 use crate::stats::{DecodeStats, Stage, Timer};
+use filmcraft_simd::{LfSize, LfThresh};
 
 /// Luma rows per band of the row-parallel filters: whole 64x64 CDEF filter blocks, and no
 /// transform block crosses a band edge.
@@ -29,21 +30,26 @@ pub(crate) fn apply(fs: &mut FrameState, stats: &mut DecodeStats, pool: &crate::
         loop_filter(fs, pool);
     }
     stats.add(Stage::LoopFilter, t.lap());
-    let cdef = if draft { None } else { crate::cdef::apply(fs, pool) };
+    let mut cur = std::mem::take(&mut fs.cur);
+    let f: &FrameState = fs;
+    let superres = f.fh.use_superres;
+    // The rows of UpscaledCurrFrame loop restoration reads around its stripes, before CDEF
+    // filters the frame in place.
+    let edges = (f.fh.lr.uses_lr && !draft).then(|| {
+        if superres { crate::restoration::save_stripe_edges(f, &crate::restoration::upscale(f, &cur)) } else { crate::restoration::save_stripe_edges(f, &cur) }
+    });
+    if !draft {
+        crate::cdef::apply(f, &mut cur, pool);
+    }
     stats.add(Stage::Cdef, t.lap());
-    let (up_cur, up_cdef) = if fs.fh.use_superres {
-        let c = crate::restoration::upscale(fs, &fs.cur);
-        let d = cdef.as_ref().map(|f| crate::restoration::upscale(fs, f));
-        (c, d)
-    } else {
-        (std::mem::take(&mut fs.cur), cdef)
-    };
+    if superres {
+        cur = crate::restoration::upscale(f, &cur);
+    }
     stats.add(Stage::Superres, t.lap());
-    fs.cur = if fs.fh.lr.uses_lr && !draft {
-        crate::restoration::loop_restoration(fs, &up_cur, up_cdef.as_ref().unwrap_or(&up_cur), pool)
-    } else {
-        up_cdef.unwrap_or(up_cur)
-    };
+    if let Some(edges) = &edges {
+        crate::restoration::loop_restoration(f, &mut cur, edges, pool);
+    }
+    fs.cur = cur;
     stats.add(Stage::Restoration, t.lap());
 }
 
@@ -119,14 +125,21 @@ fn filter_band(fs: &FrameState, plane: usize, (start, end): (usize, usize), band
         let row_step = if plane == 0 { 1 } else { 1 << fs.ssy };
         let col_step = if plane == 0 { 1 } else { 1 << fs.ssx };
         let mi_cols = fs.fh.mi_cols as usize;
-        let mut row = rows.start;
-        while row < rows.end {
-            let mut col = 0;
-            while col < mi_cols {
-                edge(fs, band, above.as_deref_mut(), plane, pass, row, col);
-                col += col_step;
+        // Neighbouring edges along an edge line with the same filter go to the vector kernels
+        // as one run: vertical edges in strips of two mode info rows (8 lines, a whole vector)
+        // taken column by column, so the walk stays within a few rows of memory; horizontal
+        // edges along whole rows.
+        if pass == 0 {
+            for top in rows.clone().step_by(2 * row_step) {
+                let strip = top..(top + 2 * row_step).min(rows.end);
+                for col in (0..mi_cols).step_by(col_step) {
+                    edge_line(fs, band, above.as_deref_mut(), plane, pass, strip.clone().step_by(row_step).map(|row| (row, col)));
+                }
             }
-            row += row_step;
+        } else {
+            for row in rows.step_by(row_step) {
+                edge_line(fs, band, above.as_deref_mut(), plane, pass, (0..mi_cols).step_by(col_step).map(|col| (row, col)));
+            }
         }
     };
     edges(band, None, 0, r0..r1);
@@ -143,9 +156,41 @@ fn filter_band(fs: &FrameState, plane: usize, (start, end): (usize, usize), band
     above.data.iter().zip(&before).enumerate().filter(|(_, (a, b))| a != b).map(|(i, (&a, _))| (i, a)).collect()
 }
 
-/// One loop filter edge (7.14.2) at mode info position (row, col): 4 lines of samples across
-/// it. `above` holds the rows above `band` for horizontal edges on the band's top row.
-fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane: usize, pass: usize, row: usize, col: usize) {
+/// The edges at mode info positions `cells`, neighbours along one edge line: runs of them with
+/// the same filter are filtered together.
+#[inline(always)]
+fn edge_line(fs: &FrameState, band: &mut RowBand, mut above: Option<&mut RowBand>, plane: usize, pass: usize, cells: impl Iterator<Item = (usize, usize)>) {
+    let mut run: Option<((usize, usize), usize, EdgeFilter)> = None;
+    for at in cells {
+        let f = edge_filter(fs, plane, pass, at.0, at.1);
+        match (&mut run, f) {
+            (Some((_, n, g)), Some(f)) if *g == f => *n += 1,
+            _ => {
+                if let Some((first, n, g)) = run {
+                    filter_run(fs, band, above.as_deref_mut(), (plane, pass), first, n, g);
+                }
+                run = f.map(|f| (at, 1, f));
+            }
+        }
+    }
+    if let Some((first, n, g)) = run {
+        filter_run(fs, band, above, (plane, pass), first, n, g);
+    }
+}
+
+/// The filter of a loop filter edge (7.14.2 - 7.14.5).
+#[derive(Clone, Copy, PartialEq)]
+struct EdgeFilter {
+    size: LfSize,
+    limit: i32,
+    blimit: i32,
+    thresh: i32,
+}
+
+/// The filter of the loop filter edge at mode info position (row, col) (7.14.2), or None when
+/// it isn't filtered.
+#[inline(always)]
+fn edge_filter(fs: &FrameState, plane: usize, pass: usize, row: usize, col: usize) -> Option<EdgeFilter> {
     let (sub_x, sub_y) = if plane == 0 { (0, 0) } else { (fs.ssx, fs.ssy) };
     let (dx, dy) = if pass == 0 { (1i32, 0i32) } else { (0, 1) };
     let x = col * 4;
@@ -154,7 +199,7 @@ fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane:
     let col = col | sub_x;
     let on_screen = !(x >= fs.fh.frame_width as usize || y >= fs.fh.frame_height as usize || (pass == 0 && x == 0) || (pass == 1 && y == 0));
     if !on_screen {
-        return;
+        return None;
     }
     let xp = x >> sub_x;
     let yp = y >> sub_y;
@@ -163,7 +208,7 @@ fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane:
     let tx_sz = fs.lf_tx_size(plane, row >> sub_y, col >> sub_x);
     let is_tx_edge = if pass == 0 { xp.is_multiple_of(TX_WIDTH[tx_sz] as usize) } else { yp.is_multiple_of(TX_HEIGHT[tx_sz] as usize) };
     if !is_tx_edge {
-        return;
+        return None;
     }
     let mi = &fs.mi;
     let i = mi.idx(row, col);
@@ -177,7 +222,7 @@ fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane:
         yp.is_multiple_of(4 * NUM_4X4_BLOCKS_HIGH[plane_size] as usize)
     };
     if !(is_block_edge || !skip || is_intra) {
-        return;
+        return None;
     }
     let prev_tx_sz = fs.lf_tx_size(plane, prev_row >> sub_y, prev_col >> sub_x);
     // filter size (7.14.3)
@@ -188,16 +233,32 @@ fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane:
         (lvl, limit, blimit, thresh) = strength(fs, prev_row, prev_col, plane, pass);
     }
     if lvl == 0 {
-        return;
+        return None;
     }
-    let t = LfThresh::new(limit, blimit, thresh, fs.bit_depth);
-    let chroma = plane > 0;
+    Some(EdgeFilter { size: LfSize::new(filter_size, plane > 0), limit, blimit, thresh })
+}
+
+/// `edges` neighbouring loop filter edges of `plane` in `pass` with filter `f` from mode info
+/// position `first` (row, col): 4 lines of samples across each. `above` holds the rows above `band` for
+/// horizontal edges on the band's top row.
+fn filter_run(
+    fs: &FrameState,
+    band: &mut RowBand,
+    above: Option<&mut RowBand>,
+    (plane, pass): (usize, usize),
+    (row, col): (usize, usize),
+    edges: usize,
+    f: EdgeFilter,
+) {
+    let (sub_x, sub_y) = if plane == 0 { (0, 0) } else { (fs.ssx, fs.ssy) };
+    let (xp, yp) = ((col * 4) >> sub_x, (row * 4) >> sub_y);
+    let t = LfThresh::new(f.limit, f.blimit, f.thresh, fs.bit_depth);
+    let lines = 4 * edges;
     let stride = band.stride;
     if let Some(above) = above.filter(|_| pass == 1 && yp == band.y0) {
         // The p side is in the rows above the band: filter each line in a copy that spans both.
         let (n_above, n_band) = (above.data.len() / stride.max(1), band.data.len() / stride.max(1));
-        for k in 0..4 {
-            let x = xp + k;
+        for x in xp..xp + lines {
             let mut line = [0u16; 2 * LF_LINE];
             for j in 1..=n_above.min(LF_LINE) {
                 line[LF_LINE - j] = above.data[(n_above - j) * stride + x];
@@ -205,7 +266,7 @@ fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane:
             for j in 0..n_band.min(LF_LINE) {
                 line[LF_LINE + j] = band.data[j * stride + x];
             }
-            sample_filter(&mut line, LF_LINE, 1, chroma, filter_size, t);
+            filmcraft_simd::deblock_line(&mut line, LF_LINE, 1, f.size, &t);
             for j in 1..=n_above.min(LF_LINE) {
                 above.data[(n_above - j) * stride + x] = line[LF_LINE - j];
             }
@@ -215,10 +276,11 @@ fn edge(fs: &FrameState, band: &mut RowBand, above: Option<&mut RowBand>, plane:
         }
         return;
     }
-    let (step, along) = if pass == 0 { (1, stride) } else { (stride, 1) };
     let base = (yp - band.y0) * stride + xp;
-    for k in 0..4 {
-        sample_filter(band.data, base + k * along, step, chroma, filter_size, t);
+    if pass == 0 {
+        filmcraft_simd::deblock_vertical(band.data, base, stride, lines, f.size, &t);
+    } else {
+        filmcraft_simd::deblock_horizontal(band.data, base, stride, lines, f.size, &t);
     }
 }
 
@@ -265,114 +327,4 @@ fn strength(fs: &FrameState, row: usize, col: usize, plane: usize, pass: usize) 
     let blimit = 2 * (lvl + 2) + limit;
     let thresh = lvl >> 4;
     (lvl, limit, blimit, thresh)
-}
-
-/// Per-edge thresholds of the sample filter, scaled to the bit depth.
-#[derive(Clone, Copy)]
-struct LfThresh {
-    limit: i32,
-    blimit: i32,
-    thresh: i32,
-    /// Flatness threshold 1 << (BitDepth - 8).
-    flat: i32,
-    /// 0x80 << (BitDepth - 8) and 1 << (BitDepth - 1).
-    off: i32,
-    half: i32,
-}
-
-impl LfThresh {
-    fn new(limit: i32, blimit: i32, thresh: i32, bd: u32) -> LfThresh {
-        let sh = bd - 8;
-        LfThresh { limit: limit << sh, blimit: blimit << sh, thresh: thresh << sh, flat: 1 << sh, off: 0x80 << sh, half: 1 << (bd - 1) }
-    }
-}
-
-/// Sample filtering process (7.14.6) for one line across the edge: `base` indexes q0 and
-/// `step` is the distance between samples across the edge.
-#[inline(always)]
-fn sample_filter(d: &mut [u16], base: usize, step: usize, chroma: bool, filter_size: usize, t: LfThresh) {
-    let at = |d: &[u16], k: isize| -> i32 { d[(base as isize + k * step as isize) as usize] as i32 };
-    let (q0, q1, p0, p1) = (at(d, 0), at(d, 1), at(d, -1), at(d, -2));
-    let lim = t.limit;
-    // filter mask (7.14.6.2)
-    if (p1 - p0).abs() > lim || (q1 - q0).abs() > lim || (p0 - q0).abs() * 2 + (p1 - q1).abs() / 2 > t.blimit {
-        return;
-    }
-    let hev = (p1 - p0).abs() > t.thresh || (q1 - q0).abs() > t.thresh;
-    let mut flat = false;
-    if filter_size > 4 {
-        let (q2, p2) = (at(d, 2), at(d, -3));
-        if (p2 - p1).abs() > lim || (q2 - q1).abs() > lim {
-            return;
-        }
-        let tf = t.flat;
-        flat = (p1 - p0).abs() <= tf && (q1 - q0).abs() <= tf && (p2 - p0).abs() <= tf && (q2 - q0).abs() <= tf;
-        if !chroma {
-            // filterLen >= 8
-            let (q3, p3) = (at(d, 3), at(d, -4));
-            if (p3 - p2).abs() > lim || (q3 - q2).abs() > lim {
-                return;
-            }
-            flat = flat && (p3 - p0).abs() <= tf && (q3 - q0).abs() <= tf;
-        }
-    }
-    if !flat {
-        // narrow filter (7.14.6.3)
-        let c = |v: i32| v.clamp(-t.half, t.half - 1);
-        let off = t.off;
-        let (ps1, ps0, qs0, qs1) = (p1 - off, p0 - off, q0 - off, q1 - off);
-        let mut filter = if hev { c(ps1 - qs1) } else { 0 };
-        filter = c(filter + 3 * (qs0 - ps0));
-        let filter1 = c(filter + 4) >> 3;
-        let filter2 = c(filter + 3) >> 3;
-        d[base] = (c(qs0 - filter1) + off) as u16;
-        d[base - step] = (c(ps0 + filter2) + off) as u16;
-        if !hev {
-            let f = (filter1 + 1) >> 1;
-            d[base + step] = (c(qs1 - f) + off) as u16;
-            d[base - 2 * step] = (c(ps1 + f) + off) as u16;
-        }
-        return;
-    }
-    if chroma {
-        wide::<2, 1, 3>(d, base, step);
-    } else if filter_size == 8 {
-        wide::<3, 0, 3>(d, base, step);
-    } else {
-        let tf = t.flat;
-        let q0 = at(d, 0);
-        let p0 = at(d, -1);
-        let flat2 = (4..7).all(|k| (at(d, k) - q0).abs() <= tf && (at(d, -k - 1) - p0).abs() <= tf);
-        if flat2 { wide::<6, 1, 4>(d, base, step) } else { wide::<3, 0, 3>(d, base, step) }
-    }
-}
-
-/// Wide filter process (7.14.6.4) with n = N, the 2-weight taps |j| <= N2 and log2Size = LOG2.
-#[inline(always)]
-fn wide<const N: usize, const N2: usize, const LOG2: u32>(d: &mut [u16], base: usize, step: usize) {
-    // v[k] = sample at offset k - (N + 1) from q0, k in 0 .. 2N + 2
-    let mut v = [0i32; 14];
-    let first = base - (N + 1) * step;
-    for (k, x) in v[..2 * N + 2].iter_mut().enumerate() {
-        *x = d[first + k * step] as i32;
-    }
-    // e[m] = v[clamp(m - N, 0, 2N + 1)]: the clamped tap positions as one array, so
-    // F[i] = sum_{jj = 0}^{2N} e[i + 1 + jj] * (2 if |jj - N| <= N2 else 1), a sliding window.
-    let mut e = [0i32; 25];
-    for (m, x) in e[..4 * N + 1].iter_mut().enumerate() {
-        *x = v[m.saturating_sub(N).min(2 * N + 1)];
-    }
-    let mut f = [0i32; 12];
-    let mut win: i32 = e[1..2 * N + 2].iter().sum();
-    for i in 0..2 * N {
-        if i > 0 {
-            win += e[i + 1 + 2 * N] - e[i];
-        }
-        let centre: i32 = e[i + 1 + N - N2..=i + 1 + N + N2].iter().sum();
-        f[i] = (win + centre + (1 << (LOG2 - 1))) >> LOG2;
-    }
-    let out = base - N * step;
-    for i in 0..2 * N {
-        d[out + i * step] = f[i] as u16;
-    }
 }

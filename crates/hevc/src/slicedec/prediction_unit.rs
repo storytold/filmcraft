@@ -150,30 +150,35 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                     continue;
                 }
             }
+            let stride = if c == 0 { self.pic.width } else { self.pic.cwidth };
+            let dst = &mut self.pic.planes[c][y as usize * stride + x as usize..];
+            let mut mc = |l: usize, out: inter::McOut<S>| {
+                let frame = &self.refs[l][f.ref_idx[l] as usize].frame;
+                if c == 0 {
+                    inter::mc_luma::<S>(frame, (x, y), f.mv[l], (bw, bh), out, &mut self.mc);
+                } else {
+                    inter::mc_chroma::<S>(frame, c - 1, (x, y), f.mv[l], (bw, bh), out, &mut self.mc);
+                }
+            };
+            let Some(pwt) = pwt else {
+                // Default weighting, written into the picture by the second (or only) prediction.
+                if bi {
+                    mc(0, inter::McOut::Pred(&mut self.pred0));
+                    mc(1, inter::McOut::Bi(&self.pred0, dst, stride));
+                } else {
+                    mc(if f.pred(0) { 0 } else { 1 }, inter::McOut::Put(dst, stride));
+                }
+                continue;
+            };
             let mut lists = [false; 2];
             for l in 0..2 {
                 if !f.pred(l) {
                     continue;
                 }
                 lists[l] = true;
-                let frame = &self.refs[l][f.ref_idx[l] as usize].frame;
                 let buf = if l == 0 || !bi { &mut self.pred0 } else { &mut self.pred1 };
-                if c == 0 {
-                    inter::mc_luma::<S>(frame, (x, y), f.mv[l], (bw, bh), buf, &mut self.mc);
-                } else {
-                    inter::mc_chroma::<S>(frame, c - 1, (x, y), f.mv[l], (bw, bh), buf, &mut self.mc);
-                }
+                mc(l, inter::McOut::Pred(buf));
             }
-            let stride = if c == 0 { self.pic.width } else { self.pic.cwidth };
-            let dst = &mut self.pic.planes[c][y as usize * stride + x as usize..];
-            let Some(pwt) = pwt else {
-                if bi {
-                    inter::put_bi(&self.pred0, &self.pred1, bw, bh, bd, dst, stride);
-                } else {
-                    inter::put_uni(&self.pred0, bw, bh, bd, dst, stride);
-                }
-                continue;
-            };
             let shift1 = 14 - bd;
             let log2wd = if c == 0 { pwt.luma_log2_denom } else { pwt.chroma_log2_denom } + shift1;
             let get = |l: usize| -> (i32, i32) {

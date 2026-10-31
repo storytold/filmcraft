@@ -36,6 +36,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("geom", 0),
     ("color", 0),
     ("bitstream", 0),
+    ("simd", 0),
     ("isobmff", 0),
     ("avi", 0),
     ("matroska", 0),
@@ -93,7 +94,7 @@ const LAYERS: &[(&str, u8)] = &[
 ];
 
 /// L0 crates that are not codecs/containers (no `bitstream`-only restriction).
-const L0_FOUNDATION: &[&str] = &["time", "geom", "color", "bitstream", "testkit"];
+const L0_FOUNDATION: &[&str] = &["time", "geom", "color", "bitstream", "simd", "testkit"];
 
 /// Allowed same-layer edges (from, to).
 const SAME_LAYER: &[(&str, &str)] = &[
@@ -166,8 +167,8 @@ fn layers() -> Result<(), String> {
             }
             let Some(dl) = layer_of(d) else { continue };
             let (a, b) = (short(&name), short(d));
-            if l == 0 && !L0_FOUNDATION.contains(&a) && b != "bitstream" {
-                errors.push(format!("{a} (L0 codec/container) may depend only on bitstream, found {b}"));
+            if l == 0 && !L0_FOUNDATION.contains(&a) && b != "bitstream" && b != "simd" {
+                errors.push(format!("{a} (L0 codec/container) may depend only on bitstream and simd, found {b}"));
             } else if dl > l {
                 errors.push(format!("{a} (L{l}) depends upward on {b} (L{dl})"));
             } else if dl == l && l > 0 && !SAME_LAYER.contains(&(a, b)) {

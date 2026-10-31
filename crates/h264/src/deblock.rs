@@ -137,6 +137,7 @@ fn filter8(v: &mut [u8; 8], bs: u8, alpha: i32, beta: i32, tc0: i32, chroma: boo
 }
 
 /// Edge filter parameters for `n` lines; `bs[i]` / `tc0[i]` apply to lines `i * n / 4 .. (i + 1) * n / 4`.
+#[cfg(test)]
 struct EdgeParams {
     bs: [u8; 4],
     tc0: [i32; 4],
@@ -147,6 +148,7 @@ struct EdgeParams {
 /// Filter one edge for `N` lines at once (lane `i` = line `i` across the edge). `s[k][i]` holds
 /// sample p3 p2 p1 p0 q0 q1 q2 q3 (k = 0..8) of line `i`. Branch-free per lane, so the loops
 /// vectorise; bit-exact with [`filter8`] applied to every line (8.7.2.3 / 8.7.2.4).
+#[cfg(test)]
 #[inline(always)]
 fn filter_lanes<const N: usize>(s: &mut [[i16; N]; 8], ep: &EdgeParams, chroma: bool) {
     let per = N / 4;
@@ -226,6 +228,7 @@ fn filter_lanes<const N: usize>(s: &mut [[i16; N]; 8], ep: &EdgeParams, chroma: 
 }
 
 /// Filter a vertical edge whose q0 column is at `x`, for `N` lines starting at row `y`.
+#[cfg(test)]
 #[inline(always)]
 fn filter_vertical<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y: usize, ep: &EdgeParams, chroma: bool) {
     // Each line's eight samples as one little-endian word: byte k = sample k (p3 .. q3).
@@ -254,6 +257,7 @@ fn filter_vertical<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y: u
 }
 
 /// Filter a horizontal edge whose q0 row is `y`, for `N` columns starting at `x`.
+#[cfg(test)]
 #[inline(always)]
 fn filter_horizontal<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y: usize, ep: &EdgeParams, chroma: bool) {
     let base = (y - 4) * stride + x;
@@ -278,14 +282,45 @@ fn filter_horizontal<const N: usize>(pix: &mut [u8], stride: usize, x: usize, y:
     }
 }
 
-/// Boundary strengths `[dir][edge][segment]`; dir 0 = vertical edges (x), 1 = horizontal edges (y).
+/// Deblock one macroblock (macroblocks must be processed in raster order).
+#[allow(clippy::needless_range_loop)]
+pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
+    let q = &pic.mbs[addr];
+    if q.slice_num == u32::MAX {
+        return;
+    }
+    let sq = &pic.slices[q.slice_num as usize];
+    if sq.disable_deblocking_filter_idc == 1 {
+        return;
+    }
+    let (mx, my) = (addr % mb_w, addr / mb_w);
+    let usable = |n: Option<usize>| -> Option<usize> {
+        let n = n?;
+        let st = &pic.mbs[n];
+        if st.slice_num == u32::MAX || (sq.disable_deblocking_filter_idc == 2 && st.slice_num != q.slice_num) {
+            return None;
+        }
+        Some(n)
+    };
+    let left = usable(if mx > 0 { Some(addr - 1) } else { None });
+    let top = usable(if my > 0 { Some(addr - mb_w) } else { None });
+    let bs = if q.kind.is_intra() { intra_bs(q.transform_8x8, [left, top]) } else { inter_bs(pic, q, sq, [left, top]) };
+    let qp_of = |st: &MbState| if st.kind == MbKind::IPcm { 0 } else { st.qp as i32 };
+    let p_qp = [left, top].map(|n| n.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc)));
+    let m = MbEdges { bs, offsets: FilterOffsets { alpha: sq.alpha_offset, beta: sq.beta_offset }, mx, my, q_qp: qp_of(q), q_qpc: q.qpc, p_qp };
+    filter_luma_edges(&mut pic.planes, &m);
+    filter_chroma_edges(&mut pic.planes, &m);
+}
+
+/// bS[dir][edge][segment]; dir 0 = vertical edges (x), 1 = horizontal edges (y).
 type MbBs = [[[u8; 4]; 4]; 2];
 
-/// Boundary strengths of an intra macroblock (8.7.2.1).
-fn intra_mb_bs(t8: bool, left: Option<usize>, top: Option<usize>) -> MbBs {
+/// bS of an intra macroblock's edges: 4 on the macroblock edges with a usable neighbour
+/// (`neighbors`: left, top), 3 inside.
+fn intra_bs(t8: bool, neighbors: [Option<usize>; 2]) -> MbBs {
     let mut bs = [[[0u8; 4]; 4]; 2];
-    for (dir, neighbor) in [left, top].into_iter().enumerate() {
-        if neighbor.is_some() {
+    for dir in 0..2 {
+        if neighbors[dir].is_some() {
             bs[dir][0] = [4; 4];
         }
         for e in 1..4 {
@@ -297,55 +332,50 @@ fn intra_mb_bs(t8: bool, left: Option<usize>, top: Option<usize>) -> MbBs {
     bs
 }
 
-/// Boundary strengths of the macroblock edge between neighbour `p` and the inter macroblock `q`.
-fn inter_outer_edge_bs(pic: &PicState, p: &MbState, q: &MbState, qm: &[Motion; 16], dir: usize) -> [u8; 4] {
-    if p.kind.is_intra() {
-        return [4; 4];
-    }
-    let pids = ref_ids8(p, &pic.slices[p.slice_num as usize]);
-    let mut out = [0u8; 4];
-    for (k, o) in out.iter_mut().enumerate() {
-        let (rq, rp) = if dir == 0 { (k * 4, k * 4 + 3) } else { (k, 12 + k) };
-        *o = if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&block_motion(p, &pids, rp), &qm[rq]) };
-    }
-    out
-}
-
-/// Boundary strengths of internal edge `e` (1..4) of the inter macroblock `q`.
-fn inter_inner_edge_bs(q: &MbState, qm: &[Motion; 16], dir: usize, e: usize) -> [u8; 4] {
-    let mut out = [0u8; 4];
-    for (k, o) in out.iter_mut().enumerate() {
-        let (rq, rp) = if dir == 0 { (k * 4 + e, k * 4 + e - 1) } else { (e * 4 + k, e * 4 + k - 4) };
-        *o = if (q.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&qm[rp], &qm[rq]) };
-    }
-    out
-}
-
-/// Boundary strengths of an inter macroblock (8.7.2.1).
-fn inter_mb_bs(pic: &PicState, q: &MbState, sq: &SliceInfo, left: Option<usize>, top: Option<usize>) -> MbBs {
+/// bS of an inter macroblock `q` (slice `sq`) with usable neighbours `neighbors` (left, top).
+fn inter_bs(pic: &PicState, q: &MbState, sq: &SliceInfo, neighbors: [Option<usize>; 2]) -> MbBs {
     let mut bs = [[[0u8; 4]; 4]; 2];
-    let t8 = q.transform_8x8;
     let qids = ref_ids8(q, sq);
     let q_uniform = (0..2).all(|l| {
         let r = q.ref_idx[l];
         r[1] == r[0] && r[2] == r[0] && r[3] == r[0] && q.mv[l].iter().all(|m| *m == q.mv[l][0])
     });
-    let qm: [Motion; 16] = std::array::from_fn(|r| block_motion(q, &qids, r));
-    for (dir, neighbor) in [left, top].into_iter().enumerate() {
-        if let Some(n) = neighbor {
-            bs[dir][0] = inter_outer_edge_bs(pic, &pic.mbs[n], q, &qm, dir);
+    for dir in 0..2 {
+        if let Some(n) = neighbors[dir] {
+            let p = &pic.mbs[n];
+            if p.kind.is_intra() {
+                bs[dir][0] = [4; 4];
+            } else {
+                let pids = ref_ids8(p, &pic.slices[p.slice_num as usize]);
+                for k in 0..4 {
+                    let (rq, rp) = if dir == 0 { (k * 4, k * 4 + 3) } else { (k, 12 + k) };
+                    bs[dir][0][k] = if (p.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 {
+                        2
+                    } else {
+                        motion_bs(&block_motion(p, &pids, rp), &block_motion(q, &qids, rq))
+                    };
+                }
+            }
         }
         if q_uniform && q.nz_mask == 0 {
             // one motion for the whole MB and no coefficients: all internal edges have bS 0
             continue;
         }
         for e in 1..4 {
-            if !(t8 && e % 2 == 1) {
-                bs[dir][e] = inter_inner_edge_bs(q, &qm, dir, e);
+            if !(q.transform_8x8 && e % 2 == 1) {
+                bs[dir][e] = inter_inner_edge_bs(q, &qids, dir, e);
             }
         }
     }
     bs
+}
+
+/// bS of the four segments of internal edge `e` (1..4) of an inter macroblock.
+fn inter_inner_edge_bs(q: &MbState, qids: &[[u32; 2]; 4], dir: usize, e: usize) -> [u8; 4] {
+    std::array::from_fn(|k| {
+        let (rq, rp) = if dir == 0 { (k * 4 + e, k * 4 + e - 1) } else { (e * 4 + k, e * 4 + k - 4) };
+        if (q.nz_mask >> rp) & 1 != 0 || (q.nz_mask >> rq) & 1 != 0 { 2 } else { motion_bs(&block_motion(q, qids, rp), &block_motion(q, qids, rq)) }
+    })
 }
 
 /// Slice-level filter offsets (`FilterOffsetA` / `FilterOffsetB`).
@@ -356,12 +386,15 @@ struct FilterOffsets {
 }
 
 /// Edge filter parameters for neighbouring QPs `qpp` / `qpq` (8.7.2.2).
-fn edge_params(qpp: i32, qpq: i32, b: [u8; 4], off: FilterOffsets) -> EdgeParams {
+fn edge_params(qpp: i32, qpq: i32, b: [u8; 4], off: FilterOffsets) -> filmcraft_simd::H264Edge {
     let qpav = (qpp + qpq + 1) >> 1;
     let index_a = (qpav + off.alpha).clamp(0, 51) as usize;
     let index_b = (qpav + off.beta).clamp(0, 51) as usize;
-    let tc = |b: u8| if (1..4).contains(&b) { TC0[index_a][b as usize - 1] as i32 } else { 0 };
-    EdgeParams { bs: b, tc0: [tc(b[0]), tc(b[1]), tc(b[2]), tc(b[3])], alpha: ALPHA[index_a] as i32, beta: BETA[index_b] as i32 }
+    // tC0 by bS: TC0's row for bS 1..=3, none for 0 and 4 (8-bit tables: alpha < 256, beta < 19,
+    // tC0 < 26).
+    let [t1, t2, t3] = TC0[index_a];
+    let tc = [0, t1, t2, t3, 0];
+    filmcraft_simd::H264Edge { bs: b, tc0: b.map(|b| tc[(b as usize).min(4)]), alpha: ALPHA[index_a], beta: BETA[index_b] }
 }
 
 /// Everything the per-plane edge filters need to know about one macroblock.
@@ -392,76 +425,45 @@ fn filter_luma_edges(planes: &mut Planes, m: &MbEdges) {
                 continue;
             }
             if dir == 0 {
-                filter_vertical::<16>(&mut planes.y, width, m.mx * 16 + e * 4, m.my * 16, &ep, false);
+                filmcraft_simd::h264_deblock(&mut planes.y, width, (m.mx * 16 + e * 4, m.my * 16), true, false, &ep);
             } else {
-                filter_horizontal::<16>(&mut planes.y, width, m.mx * 16, m.my * 16 + e * 4, &ep, false);
+                filmcraft_simd::h264_deblock(&mut planes.y, width, (m.mx * 16, m.my * 16 + e * 4), false, false, &ep);
             }
         }
     }
 }
 
 /// Filter the chroma (4:2:0) edges of one macroblock: edges at chroma samples 0 and 4 use the bS of
-/// luma edges 0 and 2.
+/// luma edges 0 and 2; the Cb and Cr edges are filtered together when their QPs (so their
+/// parameters) are the same.
 fn filter_chroma_edges(planes: &mut Planes, m: &MbEdges) {
     let cwidth = planes.cwidth;
-    for c in 0..2 {
-        for dir in 0..2 {
-            for ce in 0..2 {
-                let e = ce * 2;
-                if m.bs[dir][e] == [0; 4] {
-                    continue;
+    for dir in 0..2 {
+        for ce in 0..2 {
+            let e = ce * 2;
+            if m.bs[dir][e] == [0; 4] {
+                continue;
+            }
+            let (x, y) = if dir == 0 { (m.mx * 8 + ce * 4, m.my * 8) } else { (m.mx * 8, m.my * 8 + ce * 4) };
+            let qpp = |c: usize| if e == 0 { m.p_qp[dir].map(|p| p.1[c]).unwrap_or(m.q_qpc[c]) } else { m.q_qpc[c] } as i32;
+            let (qpp, qpq) = ([qpp(0), qpp(1)], [m.q_qpc[0] as i32, m.q_qpc[1] as i32]);
+            if qpp[0] == qpp[1] && qpq[0] == qpq[1] {
+                let ep = edge_params(qpp[0], qpq[0], m.bs[dir][e], m.offsets);
+                if ep.alpha != 0 && ep.beta != 0 {
+                    filmcraft_simd::h264_deblock_chroma_pair(&mut planes.cb, &mut planes.cr, cwidth, (x, y), dir == 0, &ep);
                 }
-                let qpp = if e == 0 { m.p_qp[dir].map(|p| p.1[c]).unwrap_or(m.q_qpc[c]) } else { m.q_qpc[c] } as i32;
-                let ep = edge_params(qpp, m.q_qpc[c] as i32, m.bs[dir][e], m.offsets);
+                continue;
+            }
+            for c in 0..2 {
+                let ep = edge_params(qpp[c], qpq[c], m.bs[dir][e], m.offsets);
                 if ep.alpha == 0 || ep.beta == 0 {
                     continue;
                 }
                 let plane = if c == 0 { &mut planes.cb } else { &mut planes.cr };
-                if dir == 0 {
-                    filter_vertical::<8>(plane, cwidth, m.mx * 8 + ce * 4, m.my * 8, &ep, true);
-                } else {
-                    filter_horizontal::<8>(plane, cwidth, m.mx * 8, m.my * 8 + ce * 4, &ep, true);
-                }
+                filmcraft_simd::h264_deblock(plane, cwidth, (x, y), dir == 0, true, &ep);
             }
         }
     }
-}
-
-/// Deblock one macroblock (macroblocks must be processed in raster order).
-pub fn deblock_mb(pic: &mut PicState, addr: usize, mb_w: usize) {
-    let q = &pic.mbs[addr];
-    if q.slice_num == u32::MAX {
-        return;
-    }
-    let sq = &pic.slices[q.slice_num as usize];
-    if sq.disable_deblocking_filter_idc == 1 {
-        return;
-    }
-    let (mx, my) = (addr % mb_w, addr / mb_w);
-    let usable = |n: Option<usize>| -> Option<usize> {
-        let n = n?;
-        let st = &pic.mbs[n];
-        if st.slice_num == u32::MAX || (sq.disable_deblocking_filter_idc == 2 && st.slice_num != q.slice_num) {
-            return None;
-        }
-        Some(n)
-    };
-    let left = usable(if mx > 0 { Some(addr - 1) } else { None });
-    let top = usable(if my > 0 { Some(addr - mb_w) } else { None });
-    let bs = if q.kind.is_intra() { intra_mb_bs(q.transform_8x8, left, top) } else { inter_mb_bs(pic, q, sq, left, top) };
-    let qp_of = |st: &MbState| if st.kind == MbKind::IPcm { 0 } else { st.qp as i32 };
-    let neighbor_qp = |n: Option<usize>| n.map(|n| (qp_of(&pic.mbs[n]), pic.mbs[n].qpc));
-    let edges = MbEdges {
-        bs,
-        offsets: FilterOffsets { alpha: sq.alpha_offset, beta: sq.beta_offset },
-        mx,
-        my,
-        q_qp: qp_of(q),
-        q_qpc: q.qpc,
-        p_qp: [neighbor_qp(left), neighbor_qp(top)],
-    };
-    filter_luma_edges(&mut pic.planes, &edges);
-    filter_chroma_edges(&mut pic.planes, &edges);
 }
 
 #[cfg(test)]
@@ -524,6 +526,34 @@ mod tests {
             };
             assert_eq!(&got[..], &want[..n], "iteration {iter}: bs {bs:?} indexA {index_a} indexB {index_b}");
         }
+    }
+
+    /// Cb and Cr with different chroma QPs are each filtered with their own parameters (as when
+    /// both planes have that QP), not paired.
+    #[test]
+    fn chroma_planes_with_different_qps() {
+        use crate::picture::Frame;
+        let run = |qpc: [u8; 2]| {
+            let mut pic = PicState::new(std::sync::Arc::new(Frame::new(1, 0, 2, 1)));
+            let mut seed = 0x5eed_c0deu32;
+            for p in [&mut pic.planes.y, &mut pic.planes.cb, &mut pic.planes.cr] {
+                for v in p.iter_mut() {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    // small steps, which the filters smooth
+                    *v = 120 + (seed >> 29) as u8;
+                }
+            }
+            pic.slices.push(SliceInfo { disable_deblocking_filter_idc: 0, alpha_offset: 0, beta_offset: 0, ref_ids: [vec![], vec![]] });
+            for m in &mut pic.mbs {
+                *m = MbState { slice_num: 0, kind: MbKind::I16x16, qp: 30, qpc, ..MbState::default() };
+            }
+            deblock_mb(&mut pic, 1, 2);
+            (pic.planes.cb, pic.planes.cr)
+        };
+        let ((cb, cr), (cb_a, cr_a), (_, cr_b)) = (run([18, 27]), run([18, 18]), run([27, 27]));
+        assert_ne!(cr_a, cr_b, "the two QPs must filter differently for the test to mean anything");
+        assert_eq!(cb, cb_a);
+        assert_eq!(cr, cr_b);
     }
 }
 

@@ -22,9 +22,10 @@ use crate::video::{DecodedFrame, VideoDecoder};
 /// How far back the alpha decoder looks for a key frame when it resynchronises.
 const MAX_RESYNC: usize = 600;
 /// Decoded alpha pictures waiting for their colour picture, and colour pictures waiting for their
-/// alpha (VP8 / VP9 pictures come out in order, so a few are plenty; past that a picture goes out opaque
-/// rather than stall).
-const MAX_PENDING: usize = 8;
+/// alpha (VP8 / VP9 pictures come out in order; past that a picture goes out opaque rather than
+/// stall). More than the frames a frame-threaded decoder keeps in flight (up to 12 for VP8): the
+/// small alpha frames come out far ahead of their colour ones.
+const MAX_PENDING: usize = 16;
 
 /// Where each sample's alpha frame is stored.
 pub(crate) struct AlphaLayer {

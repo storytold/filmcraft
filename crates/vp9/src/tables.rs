@@ -202,45 +202,74 @@ pub fn scan(tx_size: u8, tx_type: u8) -> &'static [u16] {
     }
 }
 
-/// Coefficient context neighbours (9.3.2, `nb`) for every scan position of a transform size and
-/// type: `[c] = (nb0, nb1)` positions in the block.
-pub fn neighbors(tx_size: u8, tx_type: u8) -> &'static [(u16, u16)] {
-    use std::sync::OnceLock;
-    static T: OnceLock<Vec<Vec<(u16, u16)>>> = OnceLock::new();
-    let all = T.get_or_init(|| {
-        let mut v = Vec::new();
-        for tx in 0..4u8 {
-            for ty in 0..4u8 {
-                let sc = scan(tx, ty);
-                let n = 4usize << tx;
-                let mut nb = vec![(0u16, 0u16); sc.len()];
-                for (c, &pos) in sc.iter().enumerate().skip(1) {
-                    let pos = pos as usize;
-                    let (i, j) = (pos / n, pos % n);
-                    nb[c] = if i > 0 && j > 0 {
-                        let a = ((i - 1) * n + j) as u16;
-                        let a2 = (i * n + j - 1) as u16;
-                        // Only the 4x4..16x16 scans depend on the type; 32x32 is always DCT_DCT.
-                        let ty = if tx == 3 { DCT_DCT } else { ty };
-                        match ty {
-                            DCT_ADST => (a, a),
-                            ADST_DCT => (a2, a2),
-                            _ => (a, a2),
-                        }
-                    } else if i > 0 {
-                        let a = ((i - 1) * n + j) as u16;
-                        (a, a)
-                    } else {
-                        let a = (i * n + j - 1) as u16;
-                        (a, a)
-                    };
-                }
-                v.push(nb);
+/// One scan position of a transform block: the coefficient it reads, the two neighbours whose
+/// token energy gives the context of the next ones (9.3.2, `nb`) and its band (6.4.24).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanPos {
+    pub pos: u16,
+    pub nb: [u16; 2],
+    pub band: u8,
+}
+
+/// The scan of `sc` for a `4 << tx` square transform of type `ty`, with neighbours and bands.
+const fn scan_table<const N: usize>(sc: &[u16; N], tx: usize, ty: u8) -> [ScanPos; N] {
+    let n = 4usize << tx;
+    let mut t = [ScanPos { pos: 0, nb: [0, 0], band: 0 }; N];
+    let mut c = 0;
+    while c < N {
+        let pos = sc[c] as usize;
+        let (i, j) = (pos / n, pos % n);
+        let nb = if c == 0 {
+            [0, 0]
+        } else if i > 0 && j > 0 {
+            let a = ((i - 1) * n + j) as u16;
+            let a2 = (i * n + j - 1) as u16;
+            match ty {
+                DCT_ADST => [a, a],
+                ADST_DCT => [a2, a2],
+                _ => [a, a2],
             }
-        }
-        v
-    });
-    &all[(tx_size * 4 + tx_type) as usize]
+        } else if i > 0 {
+            let a = ((i - 1) * n + j) as u16;
+            [a, a]
+        } else {
+            let a = (i * n + j - 1) as u16;
+            [a, a]
+        };
+        let band = if tx == 0 { COEFBAND_4X4[c] } else { COEFBAND_8X8PLUS[c] };
+        t[c] = ScanPos { pos: pos as u16, nb, band };
+        c += 1;
+    }
+    t
+}
+
+static DEFAULT_TABLE_4X4: [ScanPos; 16] = scan_table(&DEFAULT_SCAN_4X4, 0, DCT_DCT);
+static COL_TABLE_4X4: [ScanPos; 16] = scan_table(&COL_SCAN_4X4, 0, DCT_ADST);
+static ROW_TABLE_4X4: [ScanPos; 16] = scan_table(&ROW_SCAN_4X4, 0, ADST_DCT);
+static DEFAULT_TABLE_8X8: [ScanPos; 64] = scan_table(&DEFAULT_SCAN_8X8, 1, DCT_DCT);
+static COL_TABLE_8X8: [ScanPos; 64] = scan_table(&COL_SCAN_8X8, 1, DCT_ADST);
+static ROW_TABLE_8X8: [ScanPos; 64] = scan_table(&ROW_SCAN_8X8, 1, ADST_DCT);
+static DEFAULT_TABLE_16X16: [ScanPos; 256] = scan_table(&DEFAULT_SCAN_16X16, 2, DCT_DCT);
+static COL_TABLE_16X16: [ScanPos; 256] = scan_table(&COL_SCAN_16X16, 2, DCT_ADST);
+static ROW_TABLE_16X16: [ScanPos; 256] = scan_table(&ROW_SCAN_16X16, 2, ADST_DCT);
+// 32x32 transforms are always DCT_DCT.
+static DEFAULT_TABLE_32X32: [ScanPos; 1024] = scan_table(&DEFAULT_SCAN_32X32, 3, DCT_DCT);
+
+/// The scan of a transform size and type with each position's context neighbours and band, in
+/// the order of `scan`.
+pub fn scan_positions(tx_size: u8, tx_type: u8) -> &'static [ScanPos] {
+    match (tx_size, tx_type) {
+        (0, ADST_DCT) => &ROW_TABLE_4X4,
+        (0, DCT_ADST) => &COL_TABLE_4X4,
+        (0, _) => &DEFAULT_TABLE_4X4,
+        (1, ADST_DCT) => &ROW_TABLE_8X8,
+        (1, DCT_ADST) => &COL_TABLE_8X8,
+        (1, _) => &DEFAULT_TABLE_8X8,
+        (2, ADST_DCT) => &ROW_TABLE_16X16,
+        (2, DCT_ADST) => &COL_TABLE_16X16,
+        (2, _) => &DEFAULT_TABLE_16X16,
+        _ => &DEFAULT_TABLE_32X32,
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +289,63 @@ mod tests {
         assert_eq!(leaves(&MV_CLASS_TREE), (0..11).collect::<Vec<i8>>());
         assert_eq!(leaves(&PARTITION_TREE), (0..4).collect::<Vec<i8>>());
         assert_eq!(leaves(&INTER_MODE_TREE), (0..4).collect::<Vec<i8>>());
+    }
+
+    /// Coefficient context neighbours (9.3.2, `nb`) for every scan position of a transform size and
+    /// type: `[c] = (nb0, nb1)` positions in the block.
+    fn neighbors(tx_size: u8, tx_type: u8) -> &'static [(u16, u16)] {
+        use std::sync::OnceLock;
+        static T: OnceLock<Vec<Vec<(u16, u16)>>> = OnceLock::new();
+        let all = T.get_or_init(|| {
+            let mut v = Vec::new();
+            for tx in 0..4u8 {
+                for ty in 0..4u8 {
+                    let sc = scan(tx, ty);
+                    let n = 4usize << tx;
+                    let mut nb = vec![(0u16, 0u16); sc.len()];
+                    for (c, &pos) in sc.iter().enumerate().skip(1) {
+                        let pos = pos as usize;
+                        let (i, j) = (pos / n, pos % n);
+                        nb[c] = if i > 0 && j > 0 {
+                            let a = ((i - 1) * n + j) as u16;
+                            let a2 = (i * n + j - 1) as u16;
+                            // Only the 4x4..16x16 scans depend on the type; 32x32 is always DCT_DCT.
+                            let ty = if tx == 3 { DCT_DCT } else { ty };
+                            match ty {
+                                DCT_ADST => (a, a),
+                                ADST_DCT => (a2, a2),
+                                _ => (a, a2),
+                            }
+                        } else if i > 0 {
+                            let a = ((i - 1) * n + j) as u16;
+                            (a, a)
+                        } else {
+                            let a = (i * n + j - 1) as u16;
+                            (a, a)
+                        };
+                    }
+                    v.push(nb);
+                }
+            }
+            v
+        });
+        &all[(tx_size * 4 + tx_type) as usize]
+    }
+
+    #[test]
+    fn scan_positions_match_the_neighbour_derivation() {
+        for tx in 0..4u8 {
+            for ty in 0..4u8 {
+                let t = scan_positions(tx, ty);
+                let sc = scan(tx, ty);
+                let nb = neighbors(tx, ty);
+                assert_eq!(t.len(), sc.len());
+                for (c, e) in t.iter().enumerate() {
+                    let band = if tx == 0 { COEFBAND_4X4[c] } else { COEFBAND_8X8PLUS[c] };
+                    assert_eq!(*e, ScanPos { pos: sc[c], nb: [nb[c].0, nb[c].1], band }, "tx {tx} type {ty} c {c}");
+                }
+            }
+        }
     }
 
     #[test]

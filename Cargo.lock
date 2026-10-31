@@ -1921,6 +1921,7 @@ name = "filmcraft-av1"
 version = "0.14.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-simd",
  "filmcraft-testkit",
  "rayon",
  "rustix 1.1.5",
@@ -2208,6 +2209,7 @@ name = "filmcraft-h264"
 version = "0.14.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-simd",
  "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
@@ -2228,6 +2230,7 @@ name = "filmcraft-hevc"
 version = "0.14.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-simd",
  "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
@@ -2413,6 +2416,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-simd"
+version = "0.14.0"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "filmcraft-speech"
 version = "0.14.0"
 dependencies = [
@@ -2530,6 +2540,7 @@ dependencies = [
 name = "filmcraft-vp8"
 version = "0.14.0"
 dependencies = [
+ "filmcraft-simd",
  "filmcraft-testkit",
  "thiserror 2.0.21",
 ]
@@ -2539,6 +2550,7 @@ name = "filmcraft-vp9"
 version = "0.14.0"
 dependencies = [
  "filmcraft-bitstream",
+ "filmcraft-simd",
  "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",

@@ -5,7 +5,7 @@ use crate::Result;
 use crate::cdf::Cdfs;
 use crate::frame::{MiInfo, Mv};
 use crate::header::{FrameHeader, NONE, SequenceHeader};
-use crate::intra::{IntraParams, is_directional_mode, predict_intra, round2_signed};
+use crate::intra::{IntraParams, IntraScratch, is_directional_mode, predict_intra, round2_signed};
 use crate::spec_tables::{
     AC_QLOOKUP, ADJUSTED_TX_SIZE, ADST_FLIPADST, BLOCK_4X4, BLOCK_8X8, BLOCK_64X64, BLOCK_128X128, BLOCK_INVALID, BR_CDF_SIZE, CFL_SIGN_NEG, CFL_SIGN_ZERO,
     COEFF_BASE_CTX_OFFSET, COEFF_BASE_POS_CTX_OFFSET, COEFF_BASE_RANGE, COMPOUND_AVERAGE, DC_PRED, DC_QLOOKUP, DCT_DCT, DCT_FLIPADST, DEFAULT_SCAN_4X4,
@@ -25,7 +25,7 @@ use crate::spec_tables::{
     TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_SIZES, TX_SIZES_ALL, TX_TYPE_IN_SET_INTER, TX_TYPE_IN_SET_INTRA, TX_TYPE_INTER_INV_SET1, TX_TYPE_INTER_INV_SET2,
     TX_TYPE_INTER_INV_SET3, TX_TYPE_INTRA_INV_SET1, TX_TYPE_INTRA_INV_SET2, TX_WIDTH, TX_WIDTH_LOG2, UV_CFL_PRED, V_ADST, V_DCT, V_FLIPADST, V_PRED,
 };
-use crate::state::{FrameShared, TileState};
+use crate::state::{FrameShared, TileState, fill_span};
 use crate::symbol::SymbolDecoder;
 use crate::transform::inverse_transform_2d;
 
@@ -115,6 +115,8 @@ pub(crate) struct TileDecoder<'a, 'f> {
     pub nb: crate::inter_info::Neighbours,
     /// Quant[] for the current transform block (raster order, stride per Adjusted size).
     quant: Vec<i32>,
+    /// Positions (in `quant`) of the nonzero coefficients the last coeffs( ) read.
+    nonzero: Vec<u16>,
     dequant: Vec<i32>,
     residual: Vec<i32>,
     color_map_y: Vec<u8>,
@@ -123,7 +125,10 @@ pub(crate) struct TileDecoder<'a, 'f> {
     pub pred_buf: [Vec<i32>; 2],
     pub mask: Vec<i32>,
     /// Intermediate rows of the sub-pixel filters (up to 2 x 128 + 8 rows of 128 with 2:1 scaled references).
-    pub mc_tmp: Vec<i32>,
+    /// Rows of the horizontal subpel filter before the vertical one: 16 bits hold them at
+    /// every bit depth (see `inter::tests::subpel_intermediates_fit_16_bits`).
+    pub mc_tmp: Vec<i16>,
+    intra: Box<IntraScratch>,
     /// Coefficient levels of the current transform block, padded (see TX_PAD).
     levels: Vec<u8>,
 }
@@ -163,6 +168,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             mvs: Default::default(),
             nb: Default::default(),
             quant: vec![0; 1024],
+            nonzero: Vec::with_capacity(1024),
             dequant: vec![0; 64 * 64],
             residual: vec![0; 64 * 64],
             color_map_y: vec![0; 64 * 64],
@@ -171,6 +177,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             pred_buf: [vec![0; 128 * 128], vec![0; 128 * 128]],
             mask: vec![0; 128 * 128],
             mc_tmp: vec![0; (2 * 128 + 8) * 128],
+            intra: IntraScratch::new(),
             levels: vec![0; (32 + TX_PAD) * (32 + TX_PAD)],
         }
     }
@@ -466,18 +473,18 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             for y in 0..rows {
                 let i = mi.idx(r + y, c);
                 let span = i..i + cols;
-                mi.y_mode[span.clone()].fill(b.y_mode as u8);
+                fill_span(&mut mi.y_mode[span.clone()], b.y_mode as u8);
                 if set_uv {
-                    mi.uv_mode[span.clone()].fill(b.uv_mode as u8);
+                    fill_span(&mut mi.uv_mode[span.clone()], b.uv_mode as u8);
                 }
-                mi.ref_frame[span.clone()].fill(b.ref_frame);
-                mi.written[span.clone()].fill(true);
+                fill_span(&mut mi.ref_frame[span.clone()], b.ref_frame);
+                fill_span(&mut mi.written[span.clone()], true);
                 if b.is_inter {
                     if !b.use_intrabc {
-                        mi.comp_group_idx[span.clone()].fill(b.comp_group_idx);
-                        mi.compound_idx[span.clone()].fill(b.compound_idx);
+                        fill_span(&mut mi.comp_group_idx[span.clone()], b.comp_group_idx);
+                        fill_span(&mut mi.compound_idx[span.clone()], b.compound_idx);
                     }
-                    mi.interp_filter[span.clone()].fill(b.interp_filter);
+                    fill_span(&mut mi.interp_filter[span.clone()], b.interp_filter);
                     for m in mi.mv[span].iter_mut() {
                         m[0] = mvs[0];
                         if is_compound {
@@ -498,20 +505,20 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         for y in 0..rows {
             let i = mi.idx(r + y, c);
             let span = i..i + cols;
-            mi.is_inter[span.clone()].fill(b.is_inter);
-            mi.skip_mode[span.clone()].fill(b.skip_mode);
-            mi.skip[span.clone()].fill(b.skip);
-            mi.tx_size[span.clone()].fill(b.tx_size as u8);
-            mi.mi_size[span.clone()].fill(b.mi_size as u8);
-            mi.segment_id[span.clone()].fill(b.segment_id as u8);
+            fill_span(&mut mi.is_inter[span.clone()], b.is_inter);
+            fill_span(&mut mi.skip_mode[span.clone()], b.skip_mode);
+            fill_span(&mut mi.skip[span.clone()], b.skip);
+            fill_span(&mut mi.tx_size[span.clone()], b.tx_size as u8);
+            fill_span(&mut mi.mi_size[span.clone()], b.mi_size as u8);
+            fill_span(&mut mi.segment_id[span.clone()], b.segment_id as u8);
             if !mi.palette_size[0].is_empty() {
-                mi.palette_size[0][span.clone()].fill(b.palette_size_y as u8);
-                mi.palette_size[1][span.clone()].fill(b.palette_size_uv as u8);
-                mi.palette_colors[0][span.clone()].fill(b.palette_colors_y);
-                mi.palette_colors[1][span.clone()].fill(b.palette_colors_u);
+                fill_span(&mut mi.palette_size[0][span.clone()], b.palette_size_y as u8);
+                fill_span(&mut mi.palette_size[1][span.clone()], b.palette_size_uv as u8);
+                fill_span(&mut mi.palette_colors[0][span.clone()], b.palette_colors_y);
+                fill_span(&mut mi.palette_colors[1][span.clone()], b.palette_colors_u);
             }
-            mi.delta_lf[span.clone()].fill(dlf);
-            mi.motion_mode[span].fill(b.motion_mode);
+            fill_span(&mut mi.delta_lf[span.clone()], dlf);
+            fill_span(&mut mi.motion_mode[span], b.motion_mode);
         }
         Ok(())
     }

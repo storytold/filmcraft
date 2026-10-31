@@ -41,6 +41,40 @@ impl FrameShared {
     }
 }
 
+/// `d.fill(v)` for the short runs of per-4x4 block state (1 to 16 units, as a rule a power of
+/// two): fixed-size stores instead of a call to memset.
+#[inline(always)]
+pub(crate) fn fill_span<T: Copy>(d: &mut [T], v: T) {
+    match d.len() {
+        1 => {
+            if let Some(e) = d.first_mut() {
+                *e = v;
+            }
+        }
+        2 => {
+            if let Some(c) = d.first_chunk_mut::<2>() {
+                *c = [v; 2];
+            }
+        }
+        4 => {
+            if let Some(c) = d.first_chunk_mut::<4>() {
+                *c = [v; 4];
+            }
+        }
+        8 => {
+            if let Some(c) = d.first_chunk_mut::<8>() {
+                *c = [v; 8];
+            }
+        }
+        16 => {
+            if let Some(c) = d.first_chunk_mut::<16>() {
+                *c = [v; 16];
+            }
+        }
+        _ => d.fill(v),
+    }
+}
+
 /// A byte per 4x4 unit of a plane (LoopfilterTxSizes), possibly for a region only.
 #[derive(Clone, Default)]
 pub(crate) struct Grid8 {
@@ -64,6 +98,21 @@ impl Grid8 {
     pub fn set(&mut self, row: usize, col: usize, v: u8) {
         if col >= self.ox && col < self.ox + self.stride && row >= self.oy && row < self.oy + self.rows {
             self.data[(row - self.oy) * self.stride + col - self.ox] = v;
+        }
+    }
+    /// `set` of the `h` x `w` units from (row, col): each row's part inside the grid in one fill.
+    #[inline]
+    pub fn fill(&mut self, row: usize, col: usize, h: usize, w: usize, v: u8) {
+        let c0 = col.max(self.ox);
+        let c1 = (col + w).min(self.ox + self.stride);
+        if c0 >= c1 {
+            return;
+        }
+        for r in row.max(self.oy)..(row + h).min(self.oy + self.rows) {
+            let o = (r - self.oy) * self.stride;
+            if let Some(d) = self.data.get_mut(o + c0 - self.ox..o + c1 - self.ox) {
+                fill_span(d, v);
+            }
         }
     }
     fn copy_into(&self, dst: &mut Grid8) {
@@ -139,9 +188,10 @@ impl TileState {
         }
     }
 
+    /// The transform size of the `h` x `w` 4x4 units from (row, col) of `plane`.
     #[inline]
-    pub fn set_lf_tx_size(&mut self, plane: usize, row: usize, col: usize, v: u8) {
-        self.lf_tx_size[plane].set(row, col, v);
+    pub fn set_lf_tx_size(&mut self, plane: usize, row: usize, col: usize, h: usize, w: usize, v: u8) {
+        self.lf_tx_size[plane].fill(row, col, h, w, v);
     }
 }
 
@@ -289,6 +339,45 @@ impl FrameState {
             if s != -1 {
                 *d = s;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_span_fills_like_fill() {
+        for len in 0..40 {
+            let mut a = vec![1u8; len];
+            fill_span(&mut a, 9);
+            assert!(a.iter().all(|&v| v == 9), "len {len}");
+        }
+    }
+
+    /// Grid8::fill sets the units a loop of `set`s would, dropping those outside the region.
+    #[test]
+    fn grid_fill_matches_set_per_unit() {
+        let mut seed = 0x6ed5_1a3bu32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as usize
+        };
+        for _ in 0..2000 {
+            let (ox, oy, stride, rows) = (next() % 5, next() % 5, 1 + next() % 20, 1 + next() % 20);
+            let new = || Grid8 { data: vec![0; stride * rows], ox, oy, stride, rows };
+            let (mut a, mut b) = (new(), new());
+            let (row, col, h, w) = (next() % 30, next() % 30, next() % 17, next() % 17);
+            a.fill(row, col, h, w, 7);
+            for r in row..row + h {
+                for c in col..col + w {
+                    b.set(r, c, 7);
+                }
+            }
+            assert_eq!(a.data, b.data, "region {ox},{oy} {stride}x{rows}, rect {col},{row} {w}x{h}");
         }
     }
 }

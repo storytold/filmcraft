@@ -11,7 +11,11 @@
 //! ```no_run
 //! let mut dec = filmcraft_vp8::Decoder::new();
 //! let frame: Vec<u8> = Vec::new(); // one IVF / WebM frame
-//! if let Some(pic) = dec.decode(&frame, 0).unwrap() {
+//! for pic in dec.decode(&frame, 0).unwrap() {
+//!     println!("{}x{}", pic.width, pic.height);
+//! }
+//! // at the end of the stream: the pictures of frames still in flight
+//! for pic in dec.flush() {
 //!     println!("{}x{}", pic.width, pic.height);
 //! }
 //! ```
@@ -29,7 +33,7 @@ mod spec_tables;
 mod tables;
 mod transform;
 
-pub use decoder::{DecodeStats, Decoder};
+pub use decoder::{DecodeStats, Decoder, default_threads};
 pub use error::{Error, Result};
 
 /// A decoded picture: 8-bit 4:2:0, planes tight (stride = width).

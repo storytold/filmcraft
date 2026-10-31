@@ -98,8 +98,9 @@ fn inter_frame_without_key_frame_is_an_error() {
     let mut dec = Decoder::new();
     assert!(matches!(dec.decode(frames[1], 1), Err(Error::MissingReference(_))));
     // and decoding works from the next key frame on; after a reset again only from a key frame
-    assert!(dec.decode(frames[0], 0).unwrap().is_some());
-    assert!(dec.decode(frames[1], 1).unwrap().is_some());
+    let mut n = dec.decode(frames[0], 0).unwrap().len();
+    n += dec.decode(frames[1], 1).unwrap().len();
+    assert_eq!(n + dec.flush().len(), 2);
     dec.reset();
     assert!(matches!(dec.decode(frames[2], 2), Err(Error::MissingReference(_))));
     assert!(filmcraft_vp8::is_keyframe(frames[0]) && !filmcraft_vp8::is_keyframe(frames[1]));

@@ -1,12 +1,14 @@
 //! CABAC slice data and macroblock layer parsing (7.3.4, 7.3.5 with 9.3 binarisations and context
 //! index derivations).
 
-use crate::cabac::Cabac;
+use crate::cabac::{Cabac, Engine, NUM_CTX};
 use crate::error::{Result, ensure, invalid};
 use crate::mbtypes::{MbTypeInfo, Part, SubMbInfo, b_mb_type, b_sub_mb_type, intra_mb_type, p_mb_type, p_sub_mb_type};
 use crate::picture::MbKind;
 use crate::slice::SliceType;
 use crate::slicedec::{MbCur, SliceDecoder};
+use crate::tables::{ZIGZAG4, ZIGZAG8};
+use crate::transform::Dequant;
 
 /// Table 9-43: significant_coeff_flag ctxIdxInc for 8x8 frame blocks.
 #[rustfmt::skip]
@@ -375,77 +377,6 @@ impl SliceDecoder<'_> {
         (st.nnz_c[comp][y * 2 + x] != 0) as usize
     }
 
-    /// residual_block_cabac for ctxBlockCat `cat` (0..=5). Coefficients are written to `coeff`
-    /// in list order (indices 0..max_num). `cbf_inc` is the coded_block_flag ctxIdxInc (ignored for cat 5).
-    /// Returns the number of non-zero coefficients.
-    fn residual_block_cabac(&mut self, c: &mut Cabac, coeff: &mut [i32], cat: usize, max_num: usize, cbf_inc: usize) -> u8 {
-        if cat != 5 && c.decode_decision(85 + CAT_OFFSET[cat].0 + cbf_inc) == 0 {
-            return 0;
-        }
-        let (sig_base, last_base, abs_base) =
-            if cat == 5 { (402, 417, 426) } else { (105 + CAT_OFFSET[cat].1, 166 + CAT_OFFSET[cat].1, 227 + CAT_OFFSET[cat].2) };
-        let (sig_tab, last_tab): (&[u8], &[u8]) = match cat {
-            3 => (&CHROMA_DC_CTX, &CHROMA_DC_CTX),
-            5 => (&SIG8_FRAME, &LAST8),
-            _ => (&IDENT_CTX, &IDENT_CTX),
-        };
-        // significance map: positions of the significant coefficients in scan order
-        let mut pos = [0u8; 64];
-        let mut n = 0usize;
-        let last_i = max_num - 1;
-        let mut found_last = false;
-        for i in 0..last_i {
-            if c.decode_decision(sig_base + sig_tab[i] as usize) == 1 {
-                pos[n] = i as u8;
-                n += 1;
-                if c.decode_decision(last_base + last_tab[i] as usize) == 1 {
-                    found_last = true;
-                    break;
-                }
-            }
-        }
-        if !found_last {
-            pos[n] = last_i as u8;
-            n += 1;
-        }
-        let mut eq1 = 0usize;
-        let mut gt1 = 0usize;
-        let gt1_cap = if cat == 3 { 3 } else { 4 };
-        for &p in pos[..n].iter().rev() {
-            let inc0 = if gt1 != 0 { 0 } else { (1 + eq1).min(4) };
-            let mut abs = 1i32;
-            if c.decode_decision(abs_base + inc0) == 1 {
-                let ctx = abs_base + 5 + gt1.min(gt1_cap);
-                let mut prefix = 1;
-                while prefix < 14 && c.decode_decision(ctx) == 1 {
-                    prefix += 1;
-                }
-                abs = prefix + 1;
-                if prefix == 14 {
-                    let mut k = 0;
-                    let mut suf = 0i32;
-                    while c.decode_bypass() == 1 {
-                        suf += 1 << k;
-                        k += 1;
-                        if k > 24 {
-                            break;
-                        }
-                    }
-                    while k > 0 {
-                        k -= 1;
-                        suf += (c.decode_bypass() as i32) << k;
-                    }
-                    abs += suf;
-                }
-                gt1 += 1;
-            } else {
-                eq1 += 1;
-            }
-            coeff[p as usize] = if c.decode_bypass() == 1 { -abs } else { abs };
-        }
-        n as u8
-    }
-
     fn residual_cabac(&mut self, c: &mut Cabac, cbp: u8) -> Result<()> {
         let kind = self.mb().kind;
         let intra = kind.is_intra();
@@ -453,7 +384,7 @@ impl SliceDecoder<'_> {
         if kind == MbKind::I16x16 {
             let inc = self.cbf_dc_cond(self.nb[0], 0, intra) + 2 * self.cbf_dc_cond(self.nb[1], 0, intra);
             let mut lv = [0i32; 16];
-            if self.residual_block_cabac(c, &mut lv, 0, 16, inc) > 0 {
+            if residual_block_cabac::<0, 16>(c, inc, |k, v| lv[k & 15] = v) > 0 {
                 self.mb_mut().cbf_dc |= 1;
                 self.put_luma_dc(&lv);
             }
@@ -464,27 +395,43 @@ impl SliceDecoder<'_> {
                 continue;
             }
             if t8 {
-                let mut lv = [0i32; 64];
-                self.residual_block_cabac(c, &mut lv, 5, 64, 0);
+                // dequantised straight into the block (8.5.13.1), as are the 4x4 blocks below
+                let ls = &self.ls.ls8[if intra { 0 } else { 1 }][(self.qp % 6) as usize];
+                let dq = Dequant::new8(self.qp);
+                let Some(blk) = self.s.coef.get_mut(b8 * 64..).and_then(|c| c.first_chunk_mut::<64>()) else { continue };
+                let n = residual_block_cabac::<5, 64>(c, 0, |k, v| {
+                    let p = ZIGZAG8[k & 63] as usize & 63;
+                    blk[p] = dq.apply(v, ls[p]);
+                });
                 let st = self.mb_mut();
                 for r in [by8 * 4 + bx8, by8 * 4 + bx8 + 1, (by8 + 1) * 4 + bx8, (by8 + 1) * 4 + bx8 + 1] {
                     st.nnz[r] = 1;
                 }
-                self.put_luma8(b8, &lv);
+                if n > 0 {
+                    self.s.blk_nz |= 1 << b8;
+                    self.pic.mbs[self.mb_addr].nz_mask |= (0b11u16 << (by8 * 4 + bx8)) | (0b11u16 << ((by8 + 1) * 4 + bx8));
+                }
             } else {
+                let ls = &self.ls.ls4[if intra { 0 } else { 3 }][(self.qp % 6) as usize];
+                let dq = Dequant::new4(self.qp);
                 for i4 in 0..4 {
                     let (bx, by) = (bx8 + (i4 & 1), by8 + (i4 >> 1));
                     let raster = by * 4 + bx;
                     let inc = self.cbf_luma_cond(bx as i32 - 1, by as i32, intra) + 2 * self.cbf_luma_cond(bx as i32, by as i32 - 1, intra);
-                    let mut lv = [0i32; 16];
+                    let Some(blk) = self.s.coef.get_mut(raster * 16..).and_then(|c| c.first_chunk_mut::<16>()) else { continue };
+                    let mut put = |k: usize, v: i32| {
+                        let p = ZIGZAG4[k & 15] as usize & 15;
+                        blk[p] = dq.apply(v, ls[p]);
+                    };
                     let n = if kind == MbKind::I16x16 {
-                        self.residual_block_cabac(c, &mut lv[1..], 1, 15, inc)
+                        residual_block_cabac::<1, 15>(c, inc, |k, v| put(k + 1, v))
                     } else {
-                        self.residual_block_cabac(c, &mut lv, 2, 16, inc)
+                        residual_block_cabac::<2, 16>(c, inc, put)
                     };
                     self.mb_mut().nnz[raster] = n;
                     if n > 0 {
-                        self.put_luma4(raster, &lv, kind == MbKind::I16x16);
+                        self.s.blk_nz |= 1 << raster;
+                        self.pic.mbs[self.mb_addr].nz_mask |= 1 << raster;
                     }
                 }
             }
@@ -495,7 +442,7 @@ impl SliceDecoder<'_> {
                 let bit = 1 + comp as u8;
                 let inc = self.cbf_dc_cond(self.nb[0], bit, intra) + 2 * self.cbf_dc_cond(self.nb[1], bit, intra);
                 let mut lv = [0i32; 4];
-                if self.residual_block_cabac(c, &mut lv, 3, 4, inc) > 0 {
+                if residual_block_cabac::<3, 4>(c, inc, |k, v| lv[k & 3] = v) > 0 {
                     self.mb_mut().cbf_dc |= 1 << bit;
                     self.put_chroma_dc(comp, &lv);
                 }
@@ -503,14 +450,21 @@ impl SliceDecoder<'_> {
         }
         if cbp_c == 2 {
             for comp in 0..2 {
+                let qpc = self.chroma_qp(self.qp, comp);
+                let ls = &self.ls.ls4[if intra { 1 + comp } else { 4 + comp }][(qpc % 6) as usize];
+                let dq = Dequant::new4(qpc);
                 for b in 0..4 {
                     let (bx, by) = ((b & 1) as i32, (b >> 1) as i32);
                     let inc = self.cbf_chroma_ac_cond(comp, bx - 1, by, intra) + 2 * self.cbf_chroma_ac_cond(comp, bx, by - 1, intra);
-                    let mut lv = [0i32; 16];
-                    let n = self.residual_block_cabac(c, &mut lv[1..], 4, 15, inc);
+                    let Some(blk) = self.s.coef_c[comp].get_mut(b * 16..).and_then(|c| c.first_chunk_mut::<16>()) else { continue };
+                    // scan positions 1..16, dequantised straight into the block (8.5.12.1)
+                    let n = residual_block_cabac::<4, 15>(c, inc, |k, v| {
+                        let p = ZIGZAG4[(k + 1) & 15] as usize & 15;
+                        blk[p] = dq.apply(v, ls[p]);
+                    });
                     self.mb_mut().nnz_c[comp][b] = n;
                     if n > 0 {
-                        self.put_chroma_ac(comp, b, &lv);
+                        self.s.c_nz[comp] |= 1 << b;
                     }
                 }
             }
@@ -685,4 +639,86 @@ impl SliceDecoder<'_> {
         }
         if c.decode_decision(67) == 0 { 2 } else { 3 }
     }
+}
+
+/// residual_block_cabac for ctxBlockCat `CAT` (0..=5) with maxNumCoeff `MAX`: `store(i, level)`
+/// receives each non-zero coefficient with its index i in the list (0..MAX). `cbf_inc` is the
+/// coded_block_flag ctxIdxInc (ignored for cat 5). Returns the number of non-zero coefficients.
+#[inline(always)]
+fn residual_block_cabac<const CAT: usize, const MAX: usize>(c: &mut Cabac, cbf_inc: usize, store: impl FnMut(usize, i32)) -> u8 {
+    // the engine in a local, so that it stays in registers across the bins
+    let mut e = c.e;
+    let n = residual_block::<CAT, MAX>(&mut e, &mut c.ctx, cbf_inc, store);
+    c.e = e;
+    n
+}
+
+/// [`residual_block_cabac`] on the engine `e` and the contexts `ctx`.
+#[inline(always)]
+fn residual_block<const CAT: usize, const MAX: usize>(e: &mut Engine, ctx: &mut [u8; NUM_CTX], cbf_inc: usize, mut store: impl FnMut(usize, i32)) -> u8 {
+    let (cat, max_num) = (CAT, MAX);
+    if cat != 5 && e.decision(ctx, 85 + CAT_OFFSET[cat].0 + cbf_inc) == 0 {
+        return 0;
+    }
+    let (sig_base, last_base, abs_base) = if cat == 5 { (402, 417, 426) } else { (105 + CAT_OFFSET[cat].1, 166 + CAT_OFFSET[cat].1, 227 + CAT_OFFSET[cat].2) };
+    let (sig_tab, last_tab): (&[u8], &[u8]) = match cat {
+        3 => (&CHROMA_DC_CTX, &CHROMA_DC_CTX),
+        5 => (&SIG8_FRAME, &LAST8),
+        _ => (&IDENT_CTX, &IDENT_CTX),
+    };
+    // significance map: positions of the significant coefficients in scan order
+    let mut pos = [0u8; 64];
+    let mut n = 0usize;
+    let last_i = max_num - 1;
+    let mut found_last = false;
+    for i in 0..last_i {
+        if e.decision(ctx, sig_base + sig_tab[i] as usize) == 1 {
+            pos[n] = i as u8;
+            n += 1;
+            if e.decision(ctx, last_base + last_tab[i] as usize) == 1 {
+                found_last = true;
+                break;
+            }
+        }
+    }
+    if !found_last {
+        pos[n] = last_i as u8;
+        n += 1;
+    }
+    let mut eq1 = 0usize;
+    let mut gt1 = 0usize;
+    let gt1_cap = if cat == 3 { 3 } else { 4 };
+    for &p in pos[..n].iter().rev() {
+        let inc0 = if gt1 != 0 { 0 } else { (1 + eq1).min(4) };
+        let mut abs = 1i32;
+        if e.decision(ctx, abs_base + inc0) == 1 {
+            let gt1_ctx = abs_base + 5 + gt1.min(gt1_cap);
+            let mut prefix = 1;
+            while prefix < 14 && e.decision(ctx, gt1_ctx) == 1 {
+                prefix += 1;
+            }
+            abs = prefix + 1;
+            if prefix == 14 {
+                let mut k = 0;
+                let mut suf = 0i32;
+                while e.bypass() == 1 {
+                    suf += 1 << k;
+                    k += 1;
+                    if k > 24 {
+                        break;
+                    }
+                }
+                while k > 0 {
+                    k -= 1;
+                    suf += (e.bypass() as i32) << k;
+                }
+                abs += suf;
+            }
+            gt1 += 1;
+        } else {
+            eq1 += 1;
+        }
+        store(p as usize, if e.bypass() == 1 { -abs } else { abs });
+    }
+    n as u8
 }

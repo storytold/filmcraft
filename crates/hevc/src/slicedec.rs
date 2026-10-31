@@ -124,6 +124,11 @@ pub struct PicState<S> {
     /// Reconstructed (pre-SAO) planes.
     pub planes: [Vec<S>; 3],
     pub blk: Vec<Blk>,
+    /// Per 4x4 block row, `w4.div_ceil(64)` words: bit bx set where a transform or prediction
+    /// block edge runs along the left (`vedges`) or top (`hedges`) of 4x4 block bx, as in its
+    /// `Blk::edges`: the deblocking visits only those.
+    pub vedges: Vec<u64>,
+    pub hedges: Vec<u64>,
     pub mvf: Vec<MvField>,
     /// Index into `slices` per CTB (u32::MAX = not decoded).
     pub ctb_slice: Vec<u32>,
@@ -140,6 +145,9 @@ pub struct PicState<S> {
     /// Scaling factors [sizeId][matrixId] when scaling lists are enabled.
     pub scaling: Option<Arc<Vec<Vec<u8>>>>,
     pub deblocking_enabled_anywhere: bool,
+    /// Whether some block of the picture keeps its samples through the in-loop filters
+    /// (`F_NOFILTER`: pcm_loop_filter_disabled_flag or cu_transquant_bypass).
+    pub any_nofilter: bool,
     /// Draft mode: no deblocking or SAO.
     pub draft: bool,
 }
@@ -173,6 +181,8 @@ impl<S: Sample> PicState<S> {
             bd_c,
             planes: [vec![gy; width * height], vec![gc; cwidth * cheight], vec![gc; cwidth * cheight]],
             blk: vec![Blk::default(); w4 * h4],
+            vedges: vec![0; w4.div_ceil(64) * h4],
+            hedges: vec![0; w4.div_ceil(64) * h4],
             mvf: vec![MvField::default(); w4 * h4],
             ctb_slice: vec![u32::MAX; wctb * hctb],
             ctb_addr: vec![u32::MAX; wctb * hctb],
@@ -186,6 +196,7 @@ impl<S: Sample> PicState<S> {
             ds_ctx: None,
             scaling,
             deblocking_enabled_anywhere: false,
+            any_nofilter: false,
             draft: false,
         }
     }
@@ -216,14 +227,26 @@ impl<S: Sample> PicState<S> {
     }
 }
 
+/// The bits of 0..32 spread to the even bit positions.
+static SPREAD: [u16; 32] = {
+    let mut t = [0u16; 32];
+    let mut v = 0;
+    while v < 32 {
+        let mut i = 0;
+        while i < 5 {
+            t[v] |= (((v >> i) & 1) << (2 * i)) as u16;
+            i += 1;
+        }
+        v += 1;
+    }
+    t
+};
+
+/// The z-scan (Morton) index of 4x4 block (x, y) of a CTB (x, y < 32): their bits interleaved,
+/// x in the even positions.
 #[inline]
 fn morton(x: u32, y: u32) -> u32 {
-    let mut r = 0;
-    for i in 0..5 {
-        r |= ((x >> i) & 1) << (2 * i);
-        r |= ((y >> i) & 1) << (2 * i + 1);
-    }
-    r
+    SPREAD[(x & 31) as usize] as u32 | (SPREAD[(y & 31) as usize] as u32) << 1
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -558,5 +581,25 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
         self.pic.sao[rs as usize] = p;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The table-driven z-scan index interleaves the bits as the bit-by-bit definition does.
+    #[test]
+    fn morton_interleaves_the_bits() {
+        for x in 0..32u32 {
+            for y in 0..32u32 {
+                let mut r = 0;
+                for i in 0..5 {
+                    r |= ((x >> i) & 1) << (2 * i);
+                    r |= ((y >> i) & 1) << (2 * i + 1);
+                }
+                assert_eq!(morton(x, y), r, "({x}, {y})");
+            }
+        }
     }
 }
