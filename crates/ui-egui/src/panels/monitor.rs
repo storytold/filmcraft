@@ -190,14 +190,22 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     }
 }
 
+fn drop_indicator(app: &FilmcraftApp, ui: &mut egui::Ui, video_area: Rect, which: Which, t: &Tokens) {
+    if which == Which::Program && app.playback.playing {
+        let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
+        ui.painter().circle_filled(pos2(video_area.min.x + 10.0, video_area.min.y + 10.0), 4.0, c);
+    }
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
     let stacked_controls = rect.width() < 540.0;
     let separate_source_drag = which == Which::Source && stacked_controls && rect.width() < 310.0;
     let source_drag_h = if separate_source_drag { 26.0 } else { 0.0 };
-    let controls_h = 28.0 + 24.0 + 15.0 + 36.0 + if stacked_controls { 26.0 } else { 0.0 } + source_drag_h;
-    let video_area = Rect::from_min_max(rect.min + vec2(4.0, 4.0), pos2(rect.max.x - 4.0, rect.max.y - controls_h));
+    let cinema = app.ui.fullscreen_program && which == Which::Program;
+    let (controls_h, pad) = if cinema { (0.0, 0.0) } else { (28.0 + 24.0 + 15.0 + 36.0 + if stacked_controls { 26.0 } else { 0.0 } + source_drag_h, 4.0) };
+    let video_area = Rect::from_min_max(rect.min + vec2(pad, pad), pos2(rect.max.x - pad, rect.max.y - controls_h));
     // the Source monitor's time ruler starts at `origin` (a subclip restricted to its range)
     let mut origin = Tick::ZERO;
     let (target, frame_size, rate, time, duration, drop_frame, mark_in, mark_out, name) = match which {
@@ -266,8 +274,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let prefix = if which == Which::Program { "program" } else { "source" };
     let mv = monitor_view::view(app, which).clone();
     let display = mv.display_mode().unwrap_or(DisplayMode::Composite);
-    // Multi-Camera view: the angle grid on the left, the program on the right
-    let multicam = which == Which::Program && mv.multicam;
+    // Multi-Camera view: the angle grid on the left, the program on the right (bypassed in cinema)
+    let multicam = !cinema && which == Which::Program && mv.multicam;
     // without the preview monitor the grid takes the whole picture area
     let grid_only = multicam && !app.session.state.multicam_view.show_preview;
     let (grid_area, video_area) = if grid_only {
@@ -281,7 +289,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     if let Some(g) = grid_area {
         crate::panels::multicam::grid(app, ui, g);
     }
-    ui.painter().rect_filled(video_area, 0.0, t.panel_bg);
+    ui.painter().rect_filled(video_area, 0.0, if cinema { egui::Color32::BLACK } else { t.panel_bg });
     let has_video = frame_size.0 > 0;
     // Source waveform modes: Audio Waveform (or an audio-only clip) and the video/waveform split.
     let source_item = if which == Which::Source { app.session.state.source_item } else { None };
@@ -314,8 +322,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         (None, video_area)
     };
     let picture_area = video_area;
-    // Comparison View: the reference frame on the left, the current frame on the right.
-    let compare = which == Which::Program && show_picture && display == DisplayMode::Comparison;
+    // Comparison View: the reference frame on the left, the current frame on the right (bypassed in cinema).
+    let compare = !cinema && which == Which::Program && show_picture && display == DisplayMode::Comparison;
     let (ref_area, video_area) = if compare {
         let mid = video_area.center().x;
         let bar_h = 22.0;
@@ -329,7 +337,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     // ---- picture, at its display aspect (non-square pixels are stretched on screen)
     let ppp = ctx.pixels_per_point();
     let display_w = (frame_size.0 as f64 * monitor_view::pixel_aspect(app, which)) as f32;
-    let pic = if compare {
+    let pic = if compare || cinema {
         fit(video_area, display_w, frame_size.1 as f32)
     } else if show_picture {
         monitor_view::picture_rect(video_area, display_w, frame_size.1 as f32, &mv, ppp)
@@ -337,14 +345,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         video_area
     };
     let saved_clip = ui.clip_rect();
-    ui.set_clip_rect(saved_clip.intersect(if mv.zoom.is_some() && !compare { video_area } else { picture_area.expand(12.0) }));
+    ui.set_clip_rect(saved_clip.intersect(if mv.zoom.is_some() && !compare && !cinema { video_area } else { picture_area.expand(12.0) }));
     if show_picture {
         draw_picture(app, ui, which, &mv, PictureCtx { target, frame_size, rate, time, duration, drop_frame, compare, ref_area, pic, video_area, prefix });
     }
-    // Dropped-frame indicator (Program only)
-    if which == Which::Program && app.playback.playing {
-        let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
-        ui.painter().circle_filled(pos2(video_area.min.x + 10.0, video_area.min.y + 10.0), 4.0, c);
+    drop_indicator(app, ui, video_area, which, &t);
+    if cinema {
+        ui.set_clip_rect(saved_clip);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        return;
     }
     // A click on the Program monitor around the picture lets go of what is selected on it (#683;
     // in the picture the overlays do that). Under the picture and the overlays, so they come first.

@@ -482,6 +482,15 @@ pub struct UiState {
     pub dark: bool,
     /// Lumetri scopes visible in the Program monitor area.
     pub show_scopes: bool,
+    /// Cinema mode: the Program monitor fills the whole window and the cursor is hidden.
+    #[serde(default)]
+    pub fullscreen_program: bool,
+    /// The window was already fullscreen before cinema mode started.
+    #[serde(skip)]
+    pub cinema_was_fullscreen: bool,
+    /// The panel that had focus before cinema mode started.
+    #[serde(skip)]
+    pub cinema_prev_focus: Option<PanelKind>,
     /// Transient status line shown in the footer.
     pub status: String,
     /// A link the web browser couldn't open, shown with its address until closed
@@ -1073,6 +1082,9 @@ impl Default for UiState {
             keys: Default::default(),
             project_panel: Default::default(),
             media_browser: Default::default(),
+            fullscreen_program: false,
+            cinema_was_fullscreen: false,
+            cinema_prev_focus: None,
         }
     }
 }

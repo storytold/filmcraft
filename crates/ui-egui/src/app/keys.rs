@@ -12,6 +12,16 @@ impl FilmcraftApp {
             self.bindings = menus::bindings(self);
             self.bindings_rev = self.session.shortcuts.revision;
         }
+        // Esc exits cinema mode unconditionally, even when a dialog or text field has focus.
+        if self.ui.fullscreen_program && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.ui.fullscreen_program = false;
+            let restore = self.ui.cinema_was_fullscreen;
+            if let Some(prev) = self.ui.cinema_prev_focus.take() {
+                self.ui.focused = prev;
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(restore));
+            return;
+        }
         // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
         // other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = self.divider_focused(ctx);
