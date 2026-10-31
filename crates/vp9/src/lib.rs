@@ -17,7 +17,6 @@
 //! }
 //! ```
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod boolcoder;
@@ -36,7 +35,7 @@ mod tables;
 mod tile;
 mod transform;
 #[rustfmt::skip]
-#[allow(dead_code, clippy::all)]
+#[allow(dead_code)]
 mod transform_gen;
 
 pub use decoder::{DecodeStats, Decoder};

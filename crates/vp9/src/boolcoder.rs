@@ -75,6 +75,26 @@ impl<'a> BoolDecoder<'a> {
         bit
     }
 
+    /// `read_bool(128)`: the split is `1 + ((range - 1) >> 1) == (range + 1) >> 1`.
+    #[inline(always)]
+    pub fn read_bool_half(&mut self) -> bool {
+        if self.count < 8 {
+            self.fill();
+        }
+        let split = (self.range + 1) >> 1;
+        let bigsplit = (split as u64) << 56;
+        let bit = self.value >= bigsplit;
+        let m = (bit as u64).wrapping_neg();
+        self.value -= bigsplit & m;
+        let m32 = m as u32;
+        self.range = ((self.range - split) & m32) | (split & !m32);
+        let shift = self.range.leading_zeros() - 24;
+        self.range <<= shift;
+        self.value <<= shift;
+        self.count -= shift as i32;
+        bit
+    }
+
     /// read_literal (9.2.4).
     pub fn read_literal(&mut self, n: u32) -> u32 {
         let mut x = 0;

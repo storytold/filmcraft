@@ -6,6 +6,23 @@
 <dict>
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
+  <!-- UI translations are embedded in Rust; declare them for AppKit's system dialogs (open and
+       save panels, overwrite confirmation). Keep in sync with the interface languages. -->
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>de</string>
+    <string>es</string>
+    <string>fr</string>
+    <string>id</string>
+    <string>it</string>
+    <string>ja</string>
+    <string>ko</string>
+    <string>pt-BR</string>
+    <string>ru</string>
+    <string>uk</string>
+    <string>zh-Hans</string>
+  </array>
   <key>CFBundleDisplayName</key>
   <string>FilmCraft</string>
   <key>CFBundleName</key>
@@ -48,6 +65,24 @@
   <string>FilmCraft uses the microphone to record voice-over onto the timeline.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © the FilmCraft authors. MIT OR Apache-2.0.</string>
+
+  <!-- Finder opens a project by this claim. The exported type alone is not enough:
+       without it Launch Services reports that FilmCraft cannot open a FilmCraft Project (#1229). -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>FilmCraft Project</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>ai.storyteller.filmcraft.project</string>
+      </array>
+    </dict>
+  </array>
 
   <!-- Filmcraft's own format. -->
   <key>UTExportedTypeDeclarations</key>

@@ -58,6 +58,11 @@ pub trait AudioInput: Send {
     fn error(&self) -> Option<String> {
         None
     }
+    /// Peak level (linear, per device channel) of what was captured since the last call, without
+    /// consuming it; empty when nothing new arrived. Feeds the mixer's input meter while recording.
+    fn take_peaks(&mut self) -> Vec<f32> {
+        Vec::new()
+    }
     /// Drop everything captured so far: the next sample read is "now".
     fn discard(&mut self);
     fn stop(&mut self);
@@ -188,6 +193,19 @@ impl VoiceOver {
     }
     fn input(&mut self) -> &mut Box<dyn AudioInput> {
         self.input.get_or_insert_with(|| Box::new(SyntheticInput::clicks()))
+    }
+}
+
+/// While recording, post the input's peaks since the last call to the live mixer's input meter
+/// (the UI calls this once per frame before reading the meters).
+pub fn post_input_meter(s: &mut Session) {
+    if !s.voiceover.recording() {
+        return;
+    }
+    let Some(input) = s.voiceover.input.as_mut() else { return };
+    let peaks = input.take_peaks();
+    if !peaks.is_empty() {
+        s.previews.live.post_input_meter(&peaks);
     }
 }
 
@@ -396,8 +414,10 @@ pub(crate) fn media_dir(s: &Session, p: &Value, fallback: &str) -> String {
     if let Some(d) = str_p(p, "dir") {
         return d.to_string();
     }
-    if let Some(d) = s.project.settings.scratch.captured.clone().filter(|d| !d.is_empty()) {
-        return d;
+    if let Some(d) =
+        crate::project_tools::trusted_scratch(s.project.settings.scratch.captured.as_deref(), s.path.as_deref(), &s.prefs.auto_save.scratch_folders)
+    {
+        return d.to_string_lossy().into_owned();
     }
     if let Some(d) = s.path.as_deref().and_then(|x| std::path::Path::new(x).parent()).filter(|d| !d.as_os_str().is_empty()) {
         return d.to_string_lossy().into_owned();
@@ -442,16 +462,25 @@ fn stop(s: &mut Session, p: &Value) -> Result<Value> {
     let have = s.voiceover.captured.len();
     s.voiceover.captured.try_reserve(want.saturating_sub(have)).map_err(|e| bad("audio.voiceover.stop", format!("unable to allocate the recording: {e}")))?;
     s.voiceover.pending_stop = Some(t_stop);
-    let input = s.voiceover.input();
-    input.stop();
-    let got = input.read(want.saturating_sub(have));
-    let input_error = input.error();
+    let (got, input_error) = {
+        let input = s.voiceover.input();
+        input.stop();
+        let got = input.read(want.saturating_sub(have));
+        let input_error = input.error();
+        if input_error.is_some() {
+            input.discard();
+        }
+        (got, input_error)
+    };
     let ch = rec.channel as usize;
     if let Some(c) = got.get(ch).or(got.first()) {
         s.voiceover.captured.extend_from_slice(c);
     }
     if let Some(error) = input_error {
-        return Err(bad("audio.voiceover.stop", format!("input failed: {error}")));
+        s.voiceover.rec = None;
+        s.voiceover.pending_stop = None;
+        s.voiceover.captured.clear();
+        return Err(bad("audio.voiceover.stop", format!("input failed: {error}; check Settings > Audio Hardware and select a working input, then retry")));
     }
     s.voiceover.captured.resize(want, 0.0);
     let skip = r0.saturating_sub(c0).clamp(0, want as i64) as usize;
