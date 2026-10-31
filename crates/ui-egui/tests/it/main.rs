@@ -68,6 +68,7 @@ mod timeline_middle_pan_ui;
 mod timeline_option_drag_ui;
 mod timeline_scroll_ui;
 mod timeline_tabs_ui;
+mod timeline_tool_pointer_ui;
 mod timeline_track_height_ui;
 mod timeline_transition_move_ui;
 mod timeline_trim_ui;

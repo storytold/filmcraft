@@ -254,6 +254,47 @@ pub enum Drag {
 const TRACK_HEADER_TINT: f32 = 0.18;
 const TRACK_LANE_TINT: f32 = 0.10;
 
+/// Every tool but Selection (the arrow) shows its own icon as the pointer, wherever it acts.
+pub(crate) fn tool_draws_pointer(tool: Tool) -> bool {
+    tool != Tool::Selection
+}
+
+/// The tool's icon on the pointer, outlined so it reads over clips of any colour: its centre is
+/// where a click lands, except for the icons with a tip or a lens, where that point is.
+pub(crate) fn paint_tool_pointer(ctx: &egui::Context, tool: Tool, at: Pos2) {
+    const SIZE: f32 = 22.0;
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("tool-pointer")));
+    // the icon's click point on its 16 point grid
+    let (gx, gy) = match tool {
+        Tool::Pen => (8.0, 2.0),
+        Tool::TrackSelectForward => (2.0, 3.0),
+        Tool::TrackSelectBackward => (14.0, 3.0),
+        Tool::Zoom => (6.8, 6.8),
+        _ => (8.0, 8.0),
+    };
+    let r = Rect::from_center_size(at - vec2(gx - 8.0, gy - 8.0) * (SIZE / 16.0), vec2(SIZE, SIZE));
+    for d in [vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0)] {
+        icons::paint(&painter, r.translate(d), tool.icon(), Color32::BLACK);
+    }
+    icons::paint(&painter, r, tool.icon(), Color32::WHITE);
+}
+
+/// The tracks the Razor's preview line crosses at the pointer over `clip`: the clip's own and its
+/// linked clips' tracks, or every track with Shift, leaving out locked ones (what `timeline.razor`
+/// cuts).
+pub fn razor_line_tracks(app: &FilmcraftApp, clip: ClipId, shift: bool) -> Vec<TrackId> {
+    let (Some(layout), Some(seq)) = (app.tl.layout.as_ref(), app.session.active_sequence()) else { return Vec::new() };
+    let unlocked = |t: &TrackId| seq.track(*t).is_some_and(|t| !t.locked);
+    if shift {
+        return layout.rows.iter().map(|r| r.track).filter(unlocked).collect();
+    }
+    filmcraft_engine::commands::with_links(&app.session, &[clip])
+        .into_iter()
+        .filter_map(|c| seq.find_item(c).map(|(track, _)| track))
+        .filter(unlocked)
+        .collect()
+}
+
 fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
     crate::panels::settings::label_color(app, l)
 }
@@ -1136,5 +1177,36 @@ mod ruler_tests {
         }
         let (minor, label) = ruler_steps(1.0, i64::MAX);
         assert!(minor >= 1 && label >= 1 && label % minor == 0, "an unrepresentable rate: tick {minor}, label {label}");
+    }
+}
+
+#[cfg(test)]
+mod tool_pointer_tests {
+    use super::*;
+
+    /// The box the pointer painted for `tool` at `at` covers, outline included.
+    fn painted(tool: Tool, at: Pos2) -> Rect {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| paint_tool_pointer(ui.ctx(), tool, at));
+        out.textures_delta.clear();
+        out.shapes.iter().map(|s| s.shape.visual_bounding_rect()).fold(Rect::NOTHING, Rect::union)
+    }
+
+    #[test]
+    fn the_icons_with_a_tip_have_it_on_the_pointer() {
+        let at = pos2(300.0, 200.0);
+        // outline and stroke reach about two points past the tip
+        assert!((painted(Tool::Pen, at).min.y - at.y).abs() < 3.0, "the Pen's tip is where a click lands: {:?}", painted(Tool::Pen, at));
+        assert!((painted(Tool::TrackSelectForward, at).min.x - at.x).abs() < 3.0);
+        assert!((painted(Tool::TrackSelectBackward, at).max.x - at.x).abs() < 3.0);
+    }
+
+    #[test]
+    fn the_symmetric_icons_stay_centred_on_the_pointer() {
+        let at = pos2(300.0, 200.0);
+        for tool in [Tool::Razor, Tool::Slip, Tool::Slide, Tool::Ripple, Tool::Rolling, Tool::Ellipse] {
+            let c = painted(tool, at).center();
+            assert!((c - at).length() < 2.5, "{tool:?} is centred at {c:?}");
+        }
     }
 }
