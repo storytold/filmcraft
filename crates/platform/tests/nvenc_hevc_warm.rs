@@ -1,12 +1,17 @@
-//! `register` asks the NVENC HEVC probe on a thread of its own, so the first draw of Export's format
-//! list does not open an encoder session on the UI thread. Its own test binary: anything else asking
-//! `hevc_available` first would make the wait meaningless.
-#![cfg(target_os = "windows")]
+//! Windows: `register` asks the NVENC HEVC probe on a thread of its own, so the first draw of Export's
+//! format list does not open an encoder session on the UI thread. Linux: `register` leaves the probe
+//! alone, because a probe still inside the driver when a short CLI exits hangs the process. Its own
+//! test binary: anything else asking `hevc_available` first would make the answer meaningless.
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use std::time::{Duration, Instant};
 
-use filmcraft_platform::nvenc::{hevc_available, hevc_hdr_available, hevc_hdr_probed, hevc_probed};
+use filmcraft_platform::nvenc::{hevc_hdr_probed, hevc_probed};
 
+#[cfg(target_os = "windows")]
+use filmcraft_platform::nvenc::{hevc_available, hevc_hdr_available};
+
+#[cfg(target_os = "windows")]
 #[test]
 fn register_answers_the_hevc_question_in_the_background() {
     assert!(!hevc_probed() && !hevc_hdr_probed(), "nothing has asked yet");
@@ -29,4 +34,13 @@ fn register_answers_the_hevc_question_in_the_background() {
     let answer = hevc_available();
     filmcraft_platform::register();
     assert_eq!(hevc_available(), answer);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn register_does_not_start_the_hevc_probes_on_linux() {
+    assert!(!hevc_probed() && !hevc_hdr_probed(), "nothing has asked yet");
+    filmcraft_platform::register();
+    assert!(!hevc_probed(), "register() must not probe HEVC on Linux");
+    assert!(!hevc_hdr_probed(), "register() must not probe Main 10 on Linux");
 }

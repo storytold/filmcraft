@@ -3,7 +3,7 @@
 //! pictures that come out of our own HEVC decoder are 10-bit and close to them (smooth ramps keep far more
 //! than 256 levels, bright code values survive), the VUI and the HDR10 SEI messages are right, and
 //! hostile inputs are errors. Skips (with SKIPPED) only on a machine without a 10-bit HEVC encoder.
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use filmcraft_bitstream::unescape_rbsp;
 use filmcraft_export::{ColorSignal, rgbf_to_yuv420_10};
