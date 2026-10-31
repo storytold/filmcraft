@@ -62,6 +62,7 @@ mod source_playback_ui;
 mod timecode_ui;
 mod timeline_drop_ui;
 mod timeline_escape_ui;
+mod timeline_fade_handles_ui;
 mod timeline_gap_ui;
 mod timeline_marquee_ui;
 mod timeline_middle_pan_ui;

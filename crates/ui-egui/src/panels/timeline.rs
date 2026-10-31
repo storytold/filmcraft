@@ -151,6 +151,14 @@ pub enum Drag {
     Scrub {
         initial: Tick,
     },
+    /// A fade handle at a clip's top corner dragged inward: `frames` long, the length of the default
+    /// transition that release applies at that edge (#1385).
+    Fade {
+        clip: ClipId,
+        edge: filmcraft_edit::Edge,
+        audio: bool,
+        frames: i64,
+    },
     Move {
         clips: Vec<ClipId>,
         grab_tick: Tick,
