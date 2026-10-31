@@ -1,7 +1,9 @@
 //! Headless UI tests of scrolling the Timeline: what the wheel does with each modifier, how far
 //! the view can go, and the zoom scroll bar. Premiere Pro 26.5.2 on macOS, checked in the app: the
 //! wheel moves the tracks up and down, Cmd + wheel moves the Timeline sideways, Option + wheel
-//! zooms, and the view stops ten minutes past the end of the sequence.
+//! zooms, and the view stops ten minutes past the end of the sequence. Adobe's Timeline
+//! preferences page: Timeline Mouse Scrolling is Vertical on macOS and Horizontal on Windows; its
+//! Timeline navigation page: the wheel over the zoom scroll bar zooms, centred on the playhead.
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -97,11 +99,25 @@ impl Driver {
     /// The demo sequence with enough tracks to scroll both halves, at a known zoom.
     fn tall() -> Driver {
         let mut d = Driver::demo();
+        // the macOS default, whatever this runs on (the other is checked on its own below)
+        d.app().session.prefs.timeline.mouse_scrolling = "vertical".into();
         d.exec("sequence.addTracks", json!({"video": 12, "audio": 12}));
         d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
         d.frames(4);
         assert_eq!(d.view(), (4.0, 50.0, 0.0, 0.0));
         d
+    }
+
+    /// Turn the wheel over a named element (a track header, the zoom scroll bar), with modifiers.
+    fn wheel_on(&mut self, id: &str, dx: f64, dy: f64, modifiers: Value) {
+        self.ok("ui.scroll", json!({"id": id, "dx": dx, "dy": dy, "modifiers": modifiers}));
+        self.frames(3);
+    }
+
+    /// (video track height, audio track height).
+    fn heights(&mut self) -> (f32, f32) {
+        let v = &self.app().ui.timeline;
+        (v.video_track_h, v.audio_track_h)
     }
 
     fn seconds(&mut self) -> f64 {
@@ -168,8 +184,9 @@ fn cmd_wheel_moves_the_timeline_sideways_and_option_wheel_zooms() {
 /// sideways and Cmd + wheel moves the tracks.
 #[test]
 fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
+    let want = if cfg!(target_os = "macos") { "vertical" } else { "horizontal" };
+    assert_eq!(filmcraft_engine::settings::TimelinePrefs::default().mouse_scrolling, want, "Premiere's default: Vertical on macOS, Horizontal on Windows");
     let mut d = Driver::tall();
-    assert_eq!(d.app().session.prefs.timeline.mouse_scrolling, "vertical", "Premiere's default on macOS");
     d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
     d.wheel(0.2, 0.0, -100.0, none());
     assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
@@ -177,6 +194,82 @@ fn the_mouse_scrolling_setting_swaps_wheel_and_cmd_wheel() {
     assert_eq!(d.view(), (6.0, 50.0, 40.0, 0.0));
     d.wheel(0.2, 0.0, 20.0, json!({"alt": true}));
     assert!((d.view().1 - 60.0).abs() < 1e-6, "Option + wheel zooms either way");
+}
+
+/// Adobe: "By positioning the mouse over the bar, you can scroll the mouse wheel to expand and
+/// contract the bar", and "expanding and contracting the bar is centered on the playhead".
+#[test]
+fn the_wheel_over_the_zoom_scroll_bar_zooms_about_the_playhead() {
+    let mut d = Driver::tall();
+    // the playhead a long way left of the bar's middle, where the pointer is
+    d.exec("playhead.set", json!({"seconds": 6.0}));
+    d.frames(3);
+    let playhead_x = |scroll: f64, pps: f64| (6.0 - scroll) * pps;
+    let before = playhead_x(4.0, 50.0);
+    d.wheel_on("timeline.zoomBar.track", 0.0, 20.0, none());
+    let (scroll, pps, v, a) = d.view();
+    assert!((pps - 60.0).abs() < 1e-6, "zoomed in by a fifth: {pps}");
+    assert!((playhead_x(scroll, pps) - before).abs() < 0.5, "the playhead stays where it was: {scroll}");
+    assert_eq!((v, a), (0.0, 0.0), "the tracks did not move");
+    d.wheel_on("timeline.zoomBar.track", 0.0, -20.0, none());
+    let (scroll, pps, ..) = d.view();
+    assert!((pps - 48.0).abs() < 1e-6, "and out again: {pps}");
+    assert!((playhead_x(scroll, pps) - before).abs() < 0.5);
+    // the mouse scrolling setting and Cmd change nothing here
+    d.app().session.prefs.timeline.mouse_scrolling = "horizontal".into();
+    d.wheel_on("timeline.zoomBar.track", 0.0, 20.0, json!({"command": true}));
+    assert!((d.view().1 - 57.6).abs() < 1e-6);
+    // with the playhead out of view, about the middle of the view
+    d.exec("playhead.set", json!({"seconds": 600.0}));
+    d.frames(3);
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
+    d.frames(3);
+    let width = d.rect("timeline.tracks")[2] as f64;
+    let middle = 4.0 + width / 2.0 / 50.0;
+    // the pointer near the bar's left end, well away from the middle
+    let bar = d.rect("timeline.zoomBar.track");
+    d.ok("ui.scroll", json!({"x": bar[0] + 20.0, "y": bar[1] + bar[3] / 2.0, "dx": 0.0, "dy": 20.0}));
+    d.frames(3);
+    let (scroll, pps, ..) = d.view();
+    assert!((scroll + width / 2.0 / pps - middle).abs() < 0.02, "the middle stays: {scroll}");
+}
+
+/// Premiere: Shift or Option + wheel over the track headers makes the tracks taller or shorter
+/// (FilmCraft has one height for the video tracks and one for the audio tracks); over the tracks
+/// themselves Shift + wheel still scrolls sideways and Option + wheel still zooms.
+#[test]
+fn shift_or_option_wheel_over_the_track_headers_changes_the_track_height() {
+    let mut d = Driver::tall();
+    let (vh, ah) = d.heights();
+    d.wheel_on("timeline.track.V1.target", 0.0, 40.0, json!({"shift": true}));
+    assert_eq!(d.heights(), (vh + 10.0, ah), "a notch up: the video tracks 10 points taller");
+    assert_eq!(d.view(), (4.0, 50.0, 0.0, 0.0), "nothing scrolled or zoomed");
+    // macOS hands Shift + wheel over as a sideways wheel
+    d.wheel_on("timeline.track.V1.target", -40.0, 0.0, json!({"shift": true}));
+    assert_eq!(d.heights(), (vh, ah));
+    d.wheel_on("timeline.track.A1.target", 0.0, -40.0, json!({"alt": true}));
+    assert_eq!(d.heights(), (vh, ah - 10.0), "Option: the audio tracks 10 points shorter");
+    assert_eq!(d.view(), (4.0, 50.0, 0.0, 0.0));
+    // no shorter than the smallest a drag allows, no taller than the largest
+    d.wheel_on("timeline.track.A1.target", 0.0, -1e5, json!({"alt": true}));
+    assert_eq!(d.heights().1, 22.0);
+    d.wheel_on("timeline.track.V1.target", 0.0, 1e5, json!({"shift": true}));
+    assert_eq!(d.heights().0, 220.0);
+    // over header space where no track shows (the timecode, with tracks scrolled out of view above
+    // it; the Mix row, with tracks out of view below it) nothing changes
+    let at = d.heights();
+    let tc = d.rect("timeline.timecode");
+    let tracks = d.rect("timeline.tracks");
+    for (x, y) in [(tc[0] + 10.0, tc[1] + tc[3] / 2.0), (tc[0] + 10.0, tracks[1] + tracks[3] - 17.0)] {
+        for m in [json!({"shift": true}), json!({"alt": true})] {
+            d.ok("ui.scroll", json!({"x": x, "y": y, "dx": 0.0, "dy": -40.0, "modifiers": m}));
+            d.frames(3);
+            assert_eq!(d.heights(), at, "at {x},{y} with {m}");
+        }
+    }
+    // the plain wheel over a header still moves the tracks up and down
+    d.wheel_on("timeline.track.V1.target", 0.0, 40.0, none());
+    assert_eq!(d.view().2, 40.0);
 }
 
 /// The view cannot leave the Timeline: scrolled 39 minutes past a 26 second sequence, nothing was

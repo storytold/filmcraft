@@ -1,11 +1,11 @@
 use super::clips::paint_hatch;
-use super::layout::{Layout, max_scroll, new_track_at};
+use super::layout::{Layout, max_scroll, new_track_at, zoom_bar_rect};
 use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu};
 use super::snap::{snap, snap_playhead};
 use super::{
     Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, Pos2, Pressed, Rect, Sense, Sequence, Stroke, StrokeKind,
-    Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2, selection_trim_kind,
-    vec2,
+    TRACK_H_MAX, TRACK_H_MIN, TRACK_H_PER_WHEEL_POINT, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at,
+    marker_under_pointer, pos2, selection_trim_kind, vec2,
 };
 
 pub(super) fn preview_drag(
@@ -209,27 +209,63 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
     app.session.set_playhead(tt);
 }
 
-/// Wheel input over the Timeline, as in Premiere Pro on macOS (checked in 26.5.2): the wheel
-/// moves the tracks under the pointer, Cmd + wheel the Timeline sideways, Option + wheel
-/// zooms about the pointer.
+/// Wheel input over the Timeline, as in Premiere Pro (macOS checked in 26.5.2): the wheel moves
+/// the tracks under the pointer, Cmd + wheel the Timeline sideways, Option + wheel zooms about the
+/// pointer; over the zoom scroll bar the wheel zooms about the playhead, and Shift or Option +
+/// wheel over a track header makes that kind of track taller or shorter.
 fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &Layout, seq: &Sequence) {
     let ctx = ui.ctx().clone();
-    // ---- wheel, as in Premiere Pro on macOS (checked in 26.5.2):
-    //   wheel            the tracks under the pointer, up and down
-    //   Cmd + wheel      the Timeline, sideways
-    //   Option + wheel   zoom about the pointer
-    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the first two. A sideways
-    // gesture (trackpad swipe, tilt wheel, Shift + wheel) always scrolls sideways; a pinch zooms.
+    // ---- wheel, as in Premiere Pro (macOS checked in 26.5.2):
+    //   wheel                   the tracks under the pointer, up and down
+    //   Cmd (Ctrl) + wheel      the Timeline, sideways
+    //   Option (Alt) + wheel    zoom about the pointer
+    //   wheel over the zoom scroll bar          zoom about the playhead
+    //   Shift or Option + wheel over a header   that kind of track taller or shorter
+    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the first two; it is
+    // Premiere's default on Windows (and ours off macOS). A sideways gesture (trackpad swipe, tilt
+    // wheel, Shift + wheel over the tracks) always scrolls sideways; a pinch zooms.
     if ui.rect_contains_pointer(rect)
         && let Some(p) = ctx.pointer_hover_pos()
     {
         let w = wheel_input(&ctx);
-        if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
-            let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
-            let anchor_t = layout.tick_at(p.x).seconds();
+        let pinch = (w.pinch - 1.0).abs() > 1e-4;
+        // macOS turns Shift + wheel into a sideways wheel before anyone sees it: take either axis
+        let notch = if w.delta.y.abs() >= w.delta.x.abs() { w.delta.y } else { w.delta.x };
+        let on_zoom_bar = zoom_bar_rect(rect, layout.content).contains(p) && notch != 0.0 && (w.delta.y.abs() >= w.delta.x.abs() || w.shift);
+        let resizing = p.x < layout.content.min.x && (w.shift || w.alt) && !pinch;
+        if resizing {
+            // only a row that shows: one scrolled out of view lies under the captions, the Mix row or the divider
+            let kind = if layout.video_band.contains(p.y) {
+                Some(TrackKind::Video)
+            } else if layout.audio_band.contains(p.y) {
+                Some(TrackKind::Audio)
+            } else {
+                None
+            };
+            let row = layout.rows.iter().find(|r| Some(r.kind) == kind && r.rect.y_range().contains(p.y));
+            // FilmCraft keeps one height for all video tracks and one for all audio tracks; over
+            // header space with no track the wheel does nothing
+            if let Some(r) = row {
+                let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
+                *h = (*h + notch * TRACK_H_PER_WHEEL_POINT).clamp(TRACK_H_MIN, TRACK_H_MAX);
+            }
+        } else if pinch || (w.alt && w.delta.y != 0.0) || on_zoom_bar {
+            let f = if pinch { w.pinch as f64 } else { (1.0_f64 + if on_zoom_bar { notch } else { w.delta.y } as f64 * 0.01).clamp(0.5, 2.0) };
+            let anchor = if on_zoom_bar && !w.alt && !pinch {
+                // about the playhead, or the middle of the view when the playhead is out of it
+                let ph = app.session.playhead();
+                let x = layout.x_of(ph);
+                if layout.content.x_range().contains(x) {
+                    (ph.seconds(), x)
+                } else {
+                    (layout.tick_at(layout.content.center().x).seconds(), layout.content.center().x)
+                }
+            } else {
+                (layout.tick_at(p.x).seconds(), p.x)
+            };
             let v = &mut app.ui.timeline;
             v.target_pps = (v.target_pps * f).clamp(0.05, 24_000.0);
-            app.tl.zoom_anchor = Some((anchor_t, p.x));
+            app.tl.zoom_anchor = Some(anchor);
         } else if w.delta != egui::Vec2::ZERO {
             let wheel_sideways = (app.session.prefs.timeline.mouse_scrolling == "horizontal") != w.command;
             let sideways = if w.delta.x.abs() > w.delta.y.abs() {

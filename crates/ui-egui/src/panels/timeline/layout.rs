@@ -1,4 +1,4 @@
-use super::{DIVIDER_H, FilmcraftApp, MASTER_H, Rect, Sequence, Tick, TimelineView, TrackId, TrackKind, pos2};
+use super::{DIVIDER_H, FilmcraftApp, MASTER_H, Rect, SCROLLBAR_H, Sequence, Tick, TimelineView, TrackId, TrackKind, pos2};
 
 /// Geometry of one visible track row.
 #[derive(Clone, Debug)]
@@ -20,6 +20,9 @@ pub struct Layout {
     pub scroll: f64,
     /// The y of the divider between the video tracks (above) and the audio tracks (below).
     pub split_y: f32,
+    /// Where the video and the audio rows show (a row scrolled out of view lies outside its span).
+    pub video_band: egui::Rangef,
+    pub audio_band: egui::Rangef,
 }
 
 impl Layout {
@@ -32,6 +35,11 @@ impl Layout {
     pub fn row_at(&self, y: f32) -> Option<&Row> {
         self.rows.iter().find(|r| r.rect.min.y <= y && y < r.rect.max.y)
     }
+}
+
+/// The zoom scroll bar along the bottom of the Timeline, under the tracks.
+pub(super) fn zoom_bar_rect(rect: Rect, content: Rect) -> Rect {
+    Rect::from_min_max(pos2(content.min.x, rect.max.y - SCROLLBAR_H + 2.0), pos2(content.max.x, rect.max.y - 2.0))
 }
 
 /// #483: where a drop at `y` adds a track: the empty space above the top video track (a video

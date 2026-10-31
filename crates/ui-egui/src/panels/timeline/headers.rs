@@ -1,7 +1,7 @@
 use super::layout::Row;
 use super::{
-    Align2, Color32, CursorIcon, FilmcraftApp, Icon, MASTER_H, Rect, Sense, Sequence, Stroke, StrokeKind, TRACK_HEADER_TINT, Tokens, TrackKind, Value, json,
-    label_color, pos2, vec2,
+    Align2, Color32, CursorIcon, FilmcraftApp, Icon, MASTER_H, Rect, Sense, Sequence, Stroke, StrokeKind, TRACK_H_MAX, TRACK_H_MIN, TRACK_HEADER_TINT, Tokens,
+    TrackKind, Value, json, label_color, pos2, vec2,
 };
 
 /// A Premiere track-header button (patch / target): highlight-blue fill when on, full track height.
@@ -171,7 +171,7 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
             if eresp.dragged() {
                 let d = eresp.drag_delta().y * if r.kind == TrackKind::Video { -1.0 } else { 1.0 };
                 let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
-                *h = (*h + d).clamp(22.0, 220.0);
+                *h = (*h + d).clamp(TRACK_H_MIN, TRACK_H_MAX);
             }
         }
         let resp = ui.interact(

@@ -47,6 +47,7 @@ use interact::{interact, move_transition_preview, preview_drag};
 use layout::new_track_at;
 pub(crate) use layout::reveal_playhead;
 use layout::video_row_tops;
+use layout::zoom_bar_rect;
 pub use layout::{Layout, Row, max_scroll, scroll_to_reveal, timeline_extent, zoom_about};
 #[cfg(test)]
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
@@ -62,6 +63,11 @@ use waveforms::{source_peaks, waveform_display_gain};
 const TOP_H: f32 = 58.0; // timecode + toolbar (left) / ruler (right)
 const RULER_H: f32 = 44.0;
 const SCROLLBAR_H: f32 = 17.0;
+/// Track height gained per point of Shift or Option + wheel over a track header (a wheel notch is 40 points).
+const TRACK_H_PER_WHEEL_POINT: f32 = 0.25;
+/// The shortest and tallest a track gets by hand (dragging its header edge, or the wheel).
+const TRACK_H_MIN: f32 = 22.0;
+const TRACK_H_MAX: f32 = 220.0;
 const DIVIDER_H: f32 = 5.0;
 const MASTER_H: f32 = 34.0;
 /// The selected gap between two clips (#648, #668).
@@ -315,7 +321,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let rect = Rect::from_min_max(pos2(content.min.x, top), pos2(content.max.x, top + ah));
         rows.push(Row { track: tr.id, kind: TrackKind::Audio, index: i, rect, lane: app.ui.timeline.track_lanes.contains_key(&tr.id.0) });
     }
-    let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll, split_y };
+    let layout = Layout { content, ruler, rows: rows.clone(), pps, scroll, split_y, video_band: video_area.y_range(), audio_band: audio_area.y_range() };
     app.tl.layout = Some(layout.clone());
 
     // ---- backgrounds
@@ -425,13 +431,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 
     // ---- scroll bars
-    zoom_scrollbar(
-        app,
-        ui,
-        Rect::from_min_max(pos2(content.min.x, rect.max.y - SCROLLBAR_H + 2.0), pos2(content.max.x, rect.max.y - 2.0)),
-        seq.duration().seconds(),
-        &t,
-    );
+    zoom_scrollbar(app, ui, zoom_bar_rect(rect, content), seq.duration().seconds(), &t);
     vertical_scrollbar(
         ui,
         Rect::from_min_max(pos2(content.max.x, video_area.min.y), pos2(rect.max.x, video_area.max.y)),
@@ -1051,6 +1051,8 @@ mod new_track_tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: 200.0,
+            video_band: egui::Rangef::new(0.0, 200.0),
+            audio_band: egui::Rangef::new(205.0, 500.0),
         };
         let at = |y| new_track_at(&seq, &layout, y, 50.0, 50.0);
         assert_eq!(at(40.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 150.0)))));
@@ -1091,6 +1093,8 @@ mod new_track_tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: 150.0,
+            video_band: egui::Rangef::new(0.0, 150.0),
+            audio_band: egui::Rangef::new(155.0, 500.0),
         };
         assert_eq!(new_track_at(&seq, &layout, 10.0, 50.0, 50.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 50.0)))));
         // scrolled to the bottom, V1..V3 fill the area as before
