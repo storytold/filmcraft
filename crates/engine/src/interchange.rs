@@ -48,7 +48,7 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
 
 /// Import a document: merge its bins, media and sequences into the project (one undo step), then
 /// link each media file that exists on disk. Returns the new sequences.
-pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Result<Value> {
+pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, bin: Option<filmcraft_project::BinId>) -> Result<Value> {
     let p = std::path::Path::new(path);
     let opts = ImportOptions {
         base_dir: p.parent().map(|d| d.to_string_lossy().to_string()),
@@ -83,7 +83,7 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
     let seqs = s.edit(&format!("Import {name}"), |proj, _| {
-        let seqs = filmcraft_interchange::merge_into(proj, fragment, None);
+        let seqs = filmcraft_interchange::merge_into(proj, fragment, bin);
         // A document that sets only some Motion parameters leaves the others at their "auto"
         // (NaN) defaults. Resolve them as placing a clip does, for every format. A media file's
         // picture size is only what the document says so far (an EDL says nothing: the importer
