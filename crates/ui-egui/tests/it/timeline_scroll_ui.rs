@@ -372,3 +372,97 @@ fn turning_animations_off_zooms_and_scrolls_in_one_step() {
     d.frames(2);
     assert!(animation_time(&mut d) > 0.0);
 }
+
+/// #3306: on Windows and Linux a trackpad pinch is Ctrl + wheel from the trackpad. Spreading
+/// zooms in and pinching zooms out, as the macOS pinch does, while Ctrl + a mouse wheel keeps
+/// scrolling the Timeline sideways.
+#[test]
+fn a_trackpad_pinch_sent_as_ctrl_wheel_zooms_the_timeline() {
+    let mut d = Driver::tall();
+    let tracks = d.rect("timeline.tracks");
+    let over_tracks = egui::pos2(tracks[0] + tracks[2] * 0.5, tracks[1] + tracks[3] * 0.2);
+    let pinch = |d: &mut Driver, dy: f32, source: egui::MouseWheelSource, unit: egui::MouseWheelUnit| {
+        d.harness.input_mut().events.push(egui::Event::PointerMoved(over_tracks));
+        d.harness.input_mut().events.push(egui::Event::MouseWheel {
+            unit,
+            source,
+            delta: egui::vec2(0.0, dy),
+            modifiers: egui::Modifiers::CTRL,
+            phase: egui::TouchPhase::Move,
+        });
+        d.frames(3);
+        d.view().1
+    };
+    use egui::{MouseWheelSource as Src, MouseWheelUnit as Unit};
+    let spread = pinch(&mut d, 40.0, Src::Trackpad, Unit::Point);
+    assert!(spread > 50.0, "spreading zooms in: {spread}");
+    let back = pinch(&mut d, -40.0, Src::Trackpad, Unit::Point);
+    assert!((back - 50.0).abs() < 1e-3, "pinching zooms out by the same factor: {back}");
+    assert!(pinch(&mut d, -40.0, Src::Momentum, Unit::Point) < 50.0, "the tail of a pinch too");
+    // what Windows and Linux send: the source is Unknown; a trackpad gives points
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0}}));
+    d.frames(3);
+    assert!(pinch(&mut d, 40.0, Src::Unknown, Unit::Point) > 50.0, "points, source unknown");
+    // whole lines are a mouse wheel: no zoom, even with Ctrl held
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0}}));
+    d.frames(3);
+    assert_eq!(pinch(&mut d, -1.0, Src::Unknown, Unit::Line), 50.0, "a wheel notch does not zoom");
+    // a high-resolution mouse wheel turns in fractions of a line (source Unknown): it scrolls
+    // sideways with Ctrl held, as the whole-line wheel does
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
+    d.frames(3);
+    assert_eq!(pinch(&mut d, -0.25, Src::Unknown, Unit::Line), 50.0, "a fractional line does not zoom");
+    assert!(d.view().0 > 4.0, "and it scrolls the Timeline sideways");
+    // a mouse wheel with Ctrl held is still the sideways scroll
+    d.ok("ui.set", json!({"timeline": {"pps": 50.0, "scroll": 4.0}}));
+    d.frames(3);
+    d.wheel(0.2, 0.0, -100.0, json!({"ctrl": true}));
+    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0));
+}
+
+/// #3306 review: a sideways trackpad swipe with Ctrl held has no vertical part, so it is not a
+/// pinch: it scrolls the Timeline sideways like any sideways gesture.
+#[test]
+fn a_sideways_trackpad_swipe_with_ctrl_held_scrolls_instead_of_dropping() {
+    let mut d = Driver::tall();
+    let tracks = d.rect("timeline.tracks");
+    let over_tracks = egui::pos2(tracks[0] + tracks[2] * 0.5, tracks[1] + tracks[3] * 0.2);
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(over_tracks));
+    d.harness.input_mut().events.push(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        source: egui::MouseWheelSource::Trackpad,
+        delta: egui::vec2(-100.0, 0.0),
+        modifiers: egui::Modifiers::CTRL,
+        phase: egui::TouchPhase::Move,
+    });
+    d.frames(3);
+    assert_eq!(d.view(), (6.0, 50.0, 0.0, 0.0), "scrolled 2 s later, zoom unchanged");
+}
+
+/// #3306 review: a Ctrl-held trackpad gesture is a pinch only when it is mostly vertical; a mostly
+/// horizontal swipe with a little vertical drift scrolls sideways.
+#[test]
+fn a_mostly_horizontal_ctrl_swipe_scrolls_even_with_a_little_vertical_drift() {
+    for drift in [1.0, -3.0, 20.0, 100.0, -100.0] {
+        let mut d = Driver::tall();
+        let tracks = d.rect("timeline.tracks");
+        let over_tracks = egui::pos2(tracks[0] + tracks[2] * 0.5, tracks[1] + tracks[3] * 0.2);
+        d.harness.input_mut().events.push(egui::Event::PointerMoved(over_tracks));
+        d.harness.input_mut().events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            source: egui::MouseWheelSource::Unknown,
+            delta: egui::vec2(-100.0, drift),
+            modifiers: egui::Modifiers::CTRL,
+            phase: egui::TouchPhase::Move,
+        });
+        d.frames(3);
+        let (scroll, pps, ..) = d.view();
+        assert_eq!(pps, 50.0, "drift {drift}: no zoom");
+        if drift.abs() == 100.0 {
+            // a tie is not a pinch either: the swipe scrolls (by its vertical part, as any tie does)
+            assert_ne!(scroll, 4.0, "drift {drift}: a tie scrolls");
+        } else {
+            assert!(scroll > 4.0, "drift {drift}: scrolled sideways, at {scroll}");
+        }
+    }
+}
