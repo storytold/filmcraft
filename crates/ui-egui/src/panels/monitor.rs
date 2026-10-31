@@ -323,6 +323,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     // ---- picture, at its display aspect (non-square pixels are stretched on screen)
     let ppp = ctx.pixels_per_point();
     let display_w = (frame_size.0 as f64 * monitor_view::pixel_aspect(app, which)) as f32;
+    // a picture magnified past the area gets scroll bars along the bottom and right (#2685)
+    let (video_area, scroll_h, scroll_v) = monitor_view::scroll_layout(video_area, display_w, frame_size.1 as f32, &mv, ppp, show_picture && !compare);
     let pic = if compare {
         fit(video_area, display_w, frame_size.1 as f32)
     } else if show_picture {
@@ -367,6 +369,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         monitor_view::guides(app, ui, which, video_area, pic, frame_size);
     }
     ui.set_clip_rect(saved_clip);
+    monitor_view::scrollbars(app, ui, which, video_area, pic, scroll_h, scroll_v);
     if let Some((top, left)) = ruler_rects {
         monitor_view::rulers(app, ui, which, top, left, video_area, pic, frame_size);
     }
