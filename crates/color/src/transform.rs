@@ -260,38 +260,49 @@ impl InputTransform {
         self.apply(rgb.map(|v| self.table.lookup(v)))
     }
 
-    /// The transform as plain numbers for a shader, which evaluates the curve and the BT.2390
-    /// EETF directly instead of sampling the tables. `None` for what a shader does not do: log
-    /// curves and the camera-gamut compression.
+    /// The transform as plain numbers for a shader, which evaluates the curve, the HLG OOTF, the
+    /// gamut matrix, the BT.2390 EETF and the gamut compression stage by stage. The one curve it
+    /// does not evaluate is a log one: for that it samples the CPU's own decode table
+    /// ([`gpu_lut`](Self::gpu_lut)) through [`lut`](GpuInputParams::lut).
     pub fn gpu_params(&self) -> Option<GpuInputParams> {
         let curve = match self.source.curve() {
             Curve::Sdr | Curve::Srgb => GpuCurve::Sdr,
             Curve::Linear => GpuCurve::Linear,
             Curve::Pq => GpuCurve::Pq,
             Curve::Hlg => GpuCurve::Hlg,
-            Curve::Log(_) => return None,
+            Curve::Log(_) => GpuCurve::Lut,
         };
-        if self.compress {
-            return None;
-        }
+        let lut = (curve == GpuCurve::Lut).then_some((self.table.lo, self.table.hi, self.table.values.len() as u32));
         Some(GpuInputParams {
             curve,
             hlg: self.hlg,
             matrix: (!self.identity_matrix).then_some(self.matrix),
             tone: self.tone.as_ref().map(|t| (t.src_peak_nits as f32, t.dst_peak_nits as f32)),
             desaturate: self.desaturate,
+            lut,
+            compress: self.compress,
         })
+    }
+
+    /// The per-channel decode table a shader samples for a log curve ([`GpuCurve::Lut`]): the same
+    /// numbers [`convert`](Self::convert) interpolates, so the two agree up to the shader's own
+    /// interpolation. None for a curve the shader evaluates itself.
+    pub fn gpu_lut(&self) -> Option<&[f32]> {
+        matches!(self.source.curve(), Curve::Log(_)).then_some(self.table.values.as_slice())
     }
 }
 
 /// How a shader decodes a channel ([`decode_channel`] without the table): SDR with the sRGB curve,
-/// linear, PQ in working units (cd/m² over [`REFERENCE_WHITE_NITS`]), HLG to scene light.
+/// linear, PQ in working units (cd/m² over [`REFERENCE_WHITE_NITS`]), HLG to scene light, or a log
+/// curve, which the CPU also decodes through a table: the shader samples the same table from a
+/// lookup texture ([`InputTransform::gpu_lut`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuCurve {
     Sdr,
     Linear,
     Pq,
     Hlg,
+    Lut,
 }
 
 /// [`InputTransform`] for a shader ([`InputTransform::gpu_params`]), stage by stage as
@@ -307,6 +318,11 @@ pub struct GpuInputParams {
     pub tone: Option<(f32, f32)>,
     /// Luma weights to desaturate into the working gamut with ([`desaturate_into_gamut`]).
     pub desaturate: Option<[f32; 3]>,
+    /// A log curve: the decode table's domain and length (`lo`, `hi`, entries) for the lookup
+    /// texture [`InputTransform::gpu_lut`] hands over. None for a curve the shader evaluates itself.
+    pub lut: Option<(f32, f32, u32)>,
+    /// Camera-gamut compression ([`gamut_compress`]) after the matrix.
+    pub compress: bool,
 }
 
 /// Whether gamut `a` lies inside gamut `b` (so no compression is needed going a → b).
@@ -389,6 +405,37 @@ impl OutputTransform {
             curve => l.map(|v| encode_channel(v as f64, curve, Range::Full).clamp(0.0, 1.0) as f32),
         }
     }
+
+    /// The transform as plain numbers for a shader, which runs [`apply`](Self::apply)'s stages
+    /// (BT.2390 tone mapping, the working → target matrix, desaturation into the target gamut) and
+    /// encodes the target's SDR curve itself. `None` for a target the shader does not encode (an
+    /// HDR export target), which stays on the CPU.
+    pub fn gpu_params(&self) -> Option<GpuOutputParams> {
+        if self.target.curve() != Curve::Sdr {
+            return None;
+        }
+        Some(GpuOutputParams {
+            target: self.target,
+            matrix: (!self.identity_matrix).then_some(self.matrix),
+            tone: self.tone.as_ref().map(|t| (t.src_peak_nits as f32, t.dst_peak_nits as f32)),
+            compress: self.compress,
+        })
+    }
+}
+
+/// [`OutputTransform`] as plain numbers for a shader ([`OutputTransform::gpu_params`]): the stages
+/// after the compositor — tone mapping, working → target matrix, gamut desaturation, in the order
+/// [`OutputTransform::apply`] runs them — with the target's SDR curve left to the shader's resolve.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuOutputParams {
+    /// The target colour space (SDR: the shader's resolve is the sRGB curve).
+    pub target: ColorSpace,
+    /// Working → target primaries (row-major), when they differ.
+    pub matrix: Option<[[f32; 3]; 3]>,
+    /// BT.2390 tone mapping (source peak, target peak) in cd/m², on max(R,G,B) as a ratio.
+    pub tone: Option<(f32, f32)>,
+    /// Target luma weights to desaturate into the target gamut with ([`desaturate_into_gamut`]).
+    pub compress: Option<[f32; 3]>,
 }
 
 /// Convenience: a log colour space → display Rec. 709 (tone mapped), used for the built-in
@@ -511,22 +558,40 @@ mod tests {
     }
 
     #[test]
-    fn gpu_params_cover_display_referred_media_only() {
-        // HLG / PQ / BT.2020 into Rec. 709: every stage the shader has (#965)
-        let p = |cs| InputTransform::new(cs, Range::Limited, &ColorPipeline::REC709, None).gpu_params();
-        let hlg = p(ColorSpace::Rec2100Hlg).unwrap();
+    fn gpu_params_cover_every_curve_and_stage() {
+        // HLG / PQ / BT.2020 into Rec. 709: every stage the shader evaluates itself (#965)
+        let p = |cs| InputTransform::new(cs, Range::Limited, &ColorPipeline::REC709, None);
+        let hlg = p(ColorSpace::Rec2100Hlg).gpu_params().unwrap();
         assert_eq!(hlg.curve, GpuCurve::Hlg);
         assert!(hlg.hlg.is_some() && hlg.matrix.is_some() && hlg.desaturate.is_some());
         assert_eq!(hlg.tone, Some((HDR_PEAK_NITS as f32, REFERENCE_WHITE_NITS as f32)));
-        let pq = InputTransform::new(ColorSpace::Rec2100Pq, Range::Limited, &ColorPipeline::REC709, Some(4000.0)).gpu_params().unwrap();
-        assert_eq!((pq.curve, pq.hlg, pq.tone), (GpuCurve::Pq, None, Some((4000.0, REFERENCE_WHITE_NITS as f32))));
-        let sdr2020 = p(ColorSpace::Rec2020).unwrap();
+        assert!((hlg.lut, hlg.compress) == (None, false));
+        let pq = p(ColorSpace::Rec2100Pq).gpu_params().unwrap();
+        assert_eq!((pq.curve, pq.hlg, pq.tone), (GpuCurve::Pq, None, Some((HDR_PEAK_NITS as f32, REFERENCE_WHITE_NITS as f32))));
+        let sdr2020 = p(ColorSpace::Rec2020).gpu_params().unwrap();
         assert_eq!((sdr2020.curve, sdr2020.tone), (GpuCurve::Sdr, None));
         assert!(sdr2020.matrix.is_some() && sdr2020.desaturate.is_some());
-        // log curves and camera-gamut compression stay on the CPU
+        // log curves: the shader samples the CPU's own table, and a camera gamut's compression
+        // runs there too (the stage at the end of `InputTransform::apply`)
         for cs in ColorSpace::ALL.into_iter().filter(|c| c.is_log()) {
-            assert_eq!(p(cs), None, "{cs:?}");
+            let t = p(cs);
+            let g = t.gpu_params().unwrap_or_else(|| panic!("{cs:?} has no shader form"));
+            assert_eq!(g.curve, GpuCurve::Lut, "{cs:?}");
+            let (lo, hi, n) = g.lut.expect("a log curve has a table");
+            let lut = t.gpu_lut().expect("a log curve has a table");
+            assert_eq!((lo, hi, n as usize), (-0.1, 1.1, lut.len()), "{cs:?}");
+            assert!(g.compress, "{cs:?}: a camera gamut wider than 709 gets compressed");
+            // the sampled table is the transform's own: the shader and `convert` agree
+            let signal = 0.5f32;
+            let i = ((signal - lo) / (hi - lo)).clamp(0.0, 1.0) * (lut.len() - 1) as f32;
+            let k = (i as usize).min(lut.len() - 2);
+            let f = i - k as f32;
+            let sampled = lut[k] + (lut[k + 1] - lut[k]) * f;
+            assert!((t.table.lookup(signal) - sampled).abs() < 1e-6, "{cs:?}");
         }
+        // the shader form of a log source is what `gpu_input` needs to plan it on the GPU
+        assert!(p(ColorSpace::SLog3SGamut3Cine).gpu_lut().is_some());
+        assert!(p(ColorSpace::Rec709).gpu_lut().is_none());
     }
 
     #[test]
@@ -549,5 +614,21 @@ mod tests {
         assert!((hi[0] - 1.0).abs() < 0.01);
         // plain pipeline is an identity
         assert!(OutputTransform::display(&ColorPipeline::REC709).is_identity());
+    }
+
+    #[test]
+    fn output_gpu_params_cover_the_display_transform() {
+        // a plain pipeline: the shader's sRGB resolve is the whole transform
+        let plain = OutputTransform::display(&ColorPipeline::REC709).gpu_params().unwrap();
+        assert!(plain.matrix.is_none() && plain.tone.is_none() && plain.compress.is_none());
+        // an HDR working space on a SDR monitor: tone mapping, the working → 709 matrix and the
+        // gamut compression, the stages the resolve pass runs
+        let hdr = OutputTransform::display(&self::hdr(WorkingSpace::Rec2100Hlg)).gpu_params().unwrap();
+        assert_eq!(hdr.target, ColorSpace::Rec709);
+        assert!(hdr.matrix.is_some() && hdr.compress.is_some());
+        assert_eq!(hdr.tone, Some((HDR_PEAK_NITS as f32, REFERENCE_WHITE_NITS as f32)));
+        // an HDR export target has no shader encode yet: it stays on the CPU
+        let export = OutputTransform::new(&self::hdr(WorkingSpace::Rec2100Hlg), ColorSpace::Rec2100Pq);
+        assert!(export.gpu_params().is_none());
     }
 }

@@ -55,13 +55,19 @@ pub fn input_transform(cs: ColorSpace, range: Range, pipe: &ColorPipeline, peak_
 }
 
 /// The input transform of a frame the GPU compositor can colour manage itself (#965): a Y'CbCr
-/// frame of display-referred HDR or wide-gamut media (PQ, HLG, BT.2020, P3) on a plain pipeline,
-/// whose working → monitor transform is the identity. None for log media (camera-gamut
-/// compression), RGB frames and other pipelines, which [`decode`] converts on the CPU.
+/// frame whose signal → working space stages the shader runs (the curves it evaluates itself, a log
+/// curve through the CPU's own decode table, the gamut matrix, the tone map, the camera-gamut
+/// compression). The sequence's working → monitor transform runs in the compositor's resolve pass
+/// ([`OutputTransform::gpu_params`]), so an HDR working space is fine; when the resolve pass cannot
+/// finish it, the whole frame stays on the CPU. None for RGB frames and for a transform with no
+/// shader form, which [`decode`] converts on the CPU.
 pub fn gpu_input(project: &Project, item: ItemId, pipe: &ColorPipeline, cs: ColorSpace, frame: &VideoFrame) -> Option<Arc<InputTransform>> {
-    if !pipe.is_plain() || !matches!(frame.data, filmcraft_frame::PixelData::Yuv8 { .. } | filmcraft_frame::PixelData::Yuv16 { .. }) {
+    if !matches!(frame.data, filmcraft_frame::PixelData::Yuv8 { .. } | filmcraft_frame::PixelData::Yuv16 { .. }) {
         return None;
     }
+    // The compositor's resolve pass finishes the frame with the sequence's display transform:
+    // when the shader cannot encode that, the whole frame stays on the CPU.
+    display_transform(pipe).gpu_params()?;
     let t = input_transform(cs, frame.color.range, pipe, source_peak_nits(project, item));
     t.gpu_params().map(|_| t)
 }
