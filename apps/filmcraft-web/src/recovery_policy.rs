@@ -1,5 +1,5 @@
 //! When the web recovery snapshot is written or marked clean (pure, so it is tested natively in
-//! `tests/recovery_policy.rs`; the OPFS side lives in [`crate::recovery`]).
+//! `tests/it/recovery_policy.rs`; the OPFS side lives in [`crate::recovery`]).
 //!
 //! - A dirty project is snapshotted at most every [`INTERVAL_S`] seconds, once per revision. A write
 //!   that fails is retried after the interval, without waiting for another edit (#197).

@@ -77,8 +77,8 @@ pub fn encode(image: &Image, format: StillFormat, depth: u8) -> Result<Vec<u8>> 
             StillFormat::Tiff => Format::TiffSequence,
             _ => Format::BmpSequence,
         };
-        // 8-bit TIFF stays RGB, as Export Frame wrote it before; 16-bit output keeps alpha.
-        return crate::encode_still(f, rgba, w, h, false);
+        // 8-bit TIFF and BMP stay RGB, as Export Frame wrote them before; PNG and 16-bit output keep alpha.
+        return crate::encode_still(f, rgba, w, h, format == StillFormat::Png);
     }
     let capacity = samples.checked_mul(2).ok_or_else(bad)?;
     let mut bytes = Vec::with_capacity(capacity);
