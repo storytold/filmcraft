@@ -14,7 +14,8 @@ use crate::{Codec, PictureInfo, Unit};
 enum Mode {
     /// MPEG-1/2 video: one coded frame (a frame picture or two field pictures) per unit.
     MpegVideo,
-    /// H.264 / HEVC: one PES packet (with a timestamp) per unit; NAL types give the flags.
+    /// H.264 / HEVC: one access unit per unit (the first of a PES packet keeps its timestamps);
+    /// NAL types give the flags.
     Nal { hevc: bool },
     /// Framed audio with self-describing frame headers.
     Audio(AudioSync),
@@ -91,6 +92,9 @@ pub(crate) struct Splitter {
     open: Option<Open>,
     pub units: Vec<Unit>,
     pub skipped: u64,
+    /// Units beyond [`MAX_UNITS`] were dropped.
+    pub truncated: bool,
+    max_units: usize,
     // MPEG video state
     header_start: Option<u64>,
     seq_in_unit: bool,
@@ -174,7 +178,20 @@ pub struct FrameInfo {
 
 const ADTS_RATES: [u32; 13] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
 
-/// Parse the frame header at the start of `b` (MPEG audio, ADTS, AC-3, E-AC-3).
+/// Bytes of the audio frame whose header starts `b` (MPEG audio, ADTS, LATM, AC-3, E-AC-3), or
+/// `None` without a valid header there. For containers that store frames in chunks that need not
+/// follow them (AVI): the frames are found again with it.
+pub fn frame_bytes(codec: &Codec, b: &[u8]) -> Option<usize> {
+    let sync = match codec {
+        Codec::MpegAudio => AudioSync::Mpa,
+        Codec::AacAdts => AudioSync::Adts,
+        Codec::AacLatm => AudioSync::Loas,
+        Codec::Ac3 | Codec::Eac3 => AudioSync::Ac3,
+        _ => return None,
+    };
+    frame_len(sync, b)
+}
+
 pub fn frame_info(codec: &Codec, b: &[u8]) -> Option<FrameInfo> {
     match codec {
         Codec::MpegAudio => {
@@ -206,7 +223,8 @@ pub fn frame_info(codec: &Codec, b: &[u8]) -> Option<FrameInfo> {
                 // E-AC-3: fscod(2) numblkscod(2) acmod(3) lfeon(1)
                 let fscod = b[4] >> 6;
                 let (rate, blocks) = if fscod == 3 {
-                    ([24_000, 22_050, 16_000, 0][((b[4] >> 4) & 3) as usize], 6)
+                    // fscod2 3 is reserved (no sample rate)
+                    (*[24_000, 22_050, 16_000].get(((b[4] >> 4) & 3) as usize)?, 6)
                 } else {
                     ([48_000, 44_100, 32_000][fscod as usize], [1, 2, 3, 6][((b[4] >> 4) & 3) as usize])
                 };
@@ -216,7 +234,8 @@ pub fn frame_info(codec: &Codec, b: &[u8]) -> Option<FrameInfo> {
             let fscod = b[4] >> 6;
             let rate = *[48_000u32, 44_100, 32_000].get(fscod as usize)?;
             // bsi: bsid(5) bsmod(3) acmod(3) [cmixlev(2)] [surmixlev(2)] [dsurmod(2)] lfeon(1)
-            let acmod = b[6] >> 5;
+            let b6 = *b.get(6)?;
+            let acmod = b6 >> 5;
             let mut bit = 3; // bits of byte 6 consumed
             if acmod & 1 != 0 && acmod != 1 {
                 bit += 2;
@@ -227,7 +246,7 @@ pub fn frame_info(codec: &Codec, b: &[u8]) -> Option<FrameInfo> {
             if acmod == 2 {
                 bit += 2;
             }
-            let word = u16::from_be_bytes([b[6], *b.get(7)?]);
+            let word = u16::from_be_bytes([b6, *b.get(7)?]);
             let lfe = (word >> (15 - bit)) & 1;
             Some(FrameInfo { sample_rate: rate, channels: AC3_CHANNELS[acmod as usize] + lfe as u32, samples: 1536, variant: bsid })
         }
@@ -243,6 +262,62 @@ fn eac3_joins_unit(b: &[u8]) -> bool {
         _ => false,
     }
 }
+
+/// Bytes of an SEI NAL scanned for a recovery point message; a longer NAL is judged by its start.
+const SEI_WINDOW: usize = 2048;
+
+/// Whether an H.264 SEI NAL (`nal` is the NAL header byte and the payload, as in the stream)
+/// holds a recovery point message (payloadType 6, H.264 D.1.7) with recovery_frame_cnt 0.
+pub fn sei_has_recovery_point(nal: &[u8]) -> bool {
+    // undo emulation prevention so that payload sizes are in RBSP bytes
+    let mut b = Vec::with_capacity(nal.len());
+    let mut zeros = 0;
+    for &x in nal.iter().skip(1) {
+        if zeros >= 2 && x == 3 {
+            zeros = 0;
+            continue;
+        }
+        zeros = if x == 0 { zeros + 1 } else { 0 };
+        b.push(x);
+    }
+    // payloadType / payloadSize: bytes of 0xFF followed by the last byte
+    let read = |i: &mut usize| {
+        let mut v = 0usize;
+        while let Some(&x) = b.get(*i) {
+            *i += 1;
+            v = v.saturating_add(x as usize);
+            if x != 0xFF {
+                break;
+            }
+        }
+        v
+    };
+    let mut i = 0;
+    // each message takes at least two bytes, so the loop ends at the end of the NAL
+    while i + 2 <= b.len() {
+        let ty = read(&mut i);
+        let size = read(&mut i);
+        // recovery_frame_cnt is ue(v): a leading 1 bit is the value 0, i.e. decoding from here is
+        // correct at once. A count above 0 (gradual intra refresh) is not a safe seek point.
+        if ty == 6 && b.get(i).is_some_and(|x| x & 0x80 != 0) {
+            return true;
+        }
+        i = i.saturating_add(size);
+    }
+    false
+}
+
+/// Shortest E-AC-3 syncframe accepted. A real syncframe holds the 6 header bytes read here plus
+/// bsi and audio blocks (the smallest real ones are tens of bytes), so shorter "frames"
+/// (`0B 77 00 01` is 4 bytes) are noise; they would otherwise turn every 4 input bytes into a
+/// 64-byte `Unit`.
+const EAC3_MIN_FRAME: usize = 8;
+
+/// Most units one stream may index. A `Unit` is 64 bytes, so this bounds a stream's table to
+/// 512 MiB. It is 47 hours of 48 kHz AAC (the densest audio, 46.9 units/s), 9 hours of 240 fps
+/// video: far beyond any real file, while a hostile file (a unit per 7 input bytes) cannot grow
+/// the table without limit.
+pub(crate) const MAX_UNITS: usize = 1 << 23;
 
 /// Full-bandwidth channels per AC-3 audio coding mode (A/52 Table 5.8).
 const AC3_CHANNELS: [u32; 8] = [2, 1, 2, 3, 3, 4, 4, 5];
@@ -275,7 +350,8 @@ fn frame_len(sync: AudioSync, b: &[u8]) -> Option<usize> {
                 ac3_frame_bytes(b[4] >> 6, b[4] & 0x3F)
             } else if bsid <= 16 {
                 // E-AC-3: frmsiz
-                Some(((((b[2] & 7) as usize) << 8) | b[3] as usize) * 2 + 2)
+                let len = ((((b[2] & 7) as usize) << 8) | b[3] as usize) * 2 + 2;
+                (len >= EAC3_MIN_FRAME).then_some(len)
             } else {
                 None
             }
@@ -295,6 +371,8 @@ impl Splitter {
             open: None,
             units: Vec::new(),
             skipped: 0,
+            truncated: false,
+            max_units: MAX_UNITS,
             header_start: None,
             seq_in_unit: false,
             gop: None,
@@ -359,6 +437,10 @@ impl Splitter {
         if end <= o.start || o.pos == u64::MAX {
             return;
         }
+        if self.units.len() >= self.max_units {
+            self.truncated = true;
+            return;
+        }
         let size = (end - o.start).min(u32::MAX as u64) as u32;
         self.units.push(Unit { pts: o.pts, dts: o.dts, key: o.key, disposable: o.disposable, size, pos: o.pos, offset: o.offset, picture: o.picture });
     }
@@ -368,7 +450,12 @@ impl Splitter {
         if data.is_empty() {
             return;
         }
-        self.chunks.push_back((pos, self.es_pos));
+        // PES-delimited modes resolve a unit's position from `pos` right here and never look a
+        // chunk up again, so remembering chunks there would only grow without bound (NAL streams
+        // keep theirs: an access unit can start inside a PES; `keep_from` prunes them)
+        if matches!(self.mode, Mode::MpegVideo | Mode::Audio(_) | Mode::Nal { .. }) {
+            self.chunks.push_back((pos, self.es_pos));
+        }
         if let Some(o) = self.open.as_mut()
             && o.pos == u64::MAX
             && o.start == self.es_pos
@@ -428,35 +515,83 @@ impl Splitter {
         let mut i = 0;
         let mut blocked = None;
         while let Some(k) = self.next_start_code(i) {
-            // NAL header byte(s) needed
-            if k + 5 > self.buf.len() {
+            // NAL header byte(s) and the first byte of the slice header needed
+            if k + if hevc { 6 } else { 5 } > self.buf.len() {
                 blocked = Some(k);
                 break;
             }
-            let h = self.buf[k + 3];
-            let (key, vcl, non_ref) = if hevc {
+            // a four-byte start code begins with the zero_byte that belongs to its NAL
+            let at = self.buf_start + k as u64 - (k > 0 && self.buf.get(k - 1) == Some(&0)) as u64;
+            let (Some(&h), Some(&h1)) = (self.buf.get(k + 3), self.buf.get(k + if hevc { 5 } else { 4 })) else {
+                blocked = Some(k);
+                break;
+            };
+            let (key, vcl, non_ref, au_start) = if hevc {
                 let t = (h >> 1) & 0x3F;
                 (
                     (16..=23).contains(&t),
                     t < 32,
                     // sub-layer non-reference pictures (TRAIL_N, TSA_N, STSA_N, RADL_N, RASL_N)
                     t < 16 && t.is_multiple_of(2),
+                    // first_slice_segment_in_pic_flag, or a NAL that precedes the first slice
+                    // (VPS, SPS, PPS, AUD, prefix SEI, 41..=44, 48..=55; H.265 7.4.2.4.4)
+                    if t < 32 { h1 & 0x80 != 0 } else { matches!(t, 32..=35 | 39 | 41..=44 | 48..=55) },
                 )
             } else {
                 let t = h & 0x1F;
-                (t == 5, (1..=5).contains(&t), h & 0x60 == 0)
+                (
+                    t == 5,
+                    (1..=5).contains(&t),
+                    h & 0x60 == 0,
+                    // first_mb_in_slice == 0 (ue(v) "1"), or a NAL that precedes the first slice
+                    // (SEI, SPS, PPS, AUD, 14..=18; H.264 7.4.1.2.3)
+                    match t {
+                        1 | 2 | 5 => h1 & 0x80 != 0,
+                        6..=9 | 14..=18 => true,
+                        _ => false,
+                    },
+                )
             };
+            let mut recovery = false;
+            if !hevc && h & 0x1F == 6 {
+                // the whole SEI NAL is needed to find a recovery point message among others
+                let end = self.next_start_code(k + 3);
+                if end.is_none() && self.buf.len() - k < SEI_WINDOW {
+                    blocked = Some(k);
+                    break;
+                }
+                let nal = self.buf.get(k + 3..end.unwrap_or(self.buf.len())).unwrap_or(&[]);
+                recovery = sei_has_recovery_point(nal);
+            }
+            // a unit holds one access unit: a new one starts at the first NAL that cannot belong
+            // to the slices already seen (a unit opened later than this NAL is left alone)
+            if au_start && self.open.as_ref().is_some_and(|o| o.vcl && at > o.start) {
+                self.begin_access_unit(at);
+            }
             if let Some(o) = self.open.as_mut()
-                && vcl
+                && at >= o.start
             {
-                o.key |= key;
-                // disposable while every slice is non-reference
-                o.disposable = if o.vcl { o.disposable && non_ref } else { non_ref };
-                o.vcl = true;
+                // a recovery point is a random-access point (the pictures before its recovery
+                // frame count completes may be imperfect)
+                o.key |= recovery;
+                if vcl {
+                    o.key |= key;
+                    // disposable while every slice is non-reference
+                    o.disposable = if o.vcl { o.disposable && non_ref } else { non_ref };
+                    o.vcl = true;
+                }
             }
             i = k + 3;
         }
         self.keep_tail(i, blocked);
+    }
+
+    /// Close the open unit and start the next access unit at `at`: it has no timestamp (the PES
+    /// timestamps belong to the first access unit of the packet).
+    fn begin_access_unit(&mut self, at: u64) {
+        self.close(at);
+        let (pos, offset) = self.locate(at).unwrap_or((u64::MAX, 0));
+        self.open = Some(Open { start: at, pos, offset, pts: None, dts: None, key: false, disposable: false, vcl: false, picture: None });
     }
 
     /// Drop the scanned part of the window: keep from a start code waiting for more bytes, or
@@ -610,11 +745,14 @@ impl Splitter {
                     match next {
                         Some(d) => {
                             self.skipped += d as u64;
-                            self.trim(self.buf.len() - (i + 1 + d));
+                            // Keep a cursor into the current window rather than draining its
+                            // prefix for every false sync candidate.
+                            self.next_frame = Some(at + 1 + d as u64);
                         }
                         None => {
                             self.skipped += (self.buf.len() - i - 1) as u64;
-                            self.trim(0);
+                            // A split header can begin in the final few bytes; compact once.
+                            self.trim(7);
                             return;
                         }
                     }
@@ -685,5 +823,62 @@ mod tests {
         assert_eq!(frame_info(&Codec::Eac3, &es).map(|f| f.samples), Some(1536));
         // AC-3 frames are never joined
         assert!(!eac3_joins_unit(&[0x0B, 0x77, 0x40, 0, 0, 8 << 3]));
+    }
+
+    #[test]
+    fn ac3_header_prefix_of_six_bytes_is_not_indexed_out_of_bounds() {
+        // exactly the six bytes frame_len() guarantees: byte 6 (acmod) is missing
+        assert_eq!(frame_info(&Codec::Ac3, &[0x0B, 0x77, 0, 0, 0x1E, 0x40]), None);
+        assert_eq!(frame_info(&Codec::Ac3, &[0x0B, 0x77, 0, 0, 0x1E, 0x40, 0]), None);
+    }
+
+    #[test]
+    fn eac3_reserved_sample_rate_is_refused() {
+        // fscod 3 and fscod2 3: no sample rate
+        let mut f = vec![0x0B, 0x77, 0, 7, 0xF0, 16 << 3];
+        f.resize(16, 0);
+        assert_eq!(frame_info(&Codec::Eac3, &f), None);
+        f[4] = 0xE0; // fscod2 2: 16 kHz
+        assert_eq!(frame_info(&Codec::Eac3, &f).map(|i| i.sample_rate), Some(16_000));
+    }
+
+    #[test]
+    fn four_byte_eac3_frames_make_no_units() {
+        let es: Vec<u8> = [0x0B, 0x77, 0x00, 0x01].repeat(10_000);
+        let mut s = Splitter::new(&Codec::Eac3);
+        s.feed(0, &es);
+        s.finish();
+        assert!(s.units.is_empty(), "{} units from 40000 noise bytes", s.units.len());
+    }
+
+    #[test]
+    fn pes_delimited_modes_do_not_retain_chunks() {
+        for codec in [Codec::LpcmBluray, Codec::Unknown(0x99)] {
+            let mut s = Splitter::new(&codec);
+            for k in 0..5000u64 {
+                s.pes_start(Some(k as i64), None);
+                s.feed(k * 188, &[0x11; 184]);
+            }
+            s.finish();
+            assert!(s.chunks.len() <= 2, "{codec:?}: {} chunks retained", s.chunks.len());
+            assert_eq!(s.units.len(), 5000, "{codec:?}");
+            assert!(s.units.iter().enumerate().all(|(k, u)| u.pos == k as u64 * 188 && u.offset == 0), "{codec:?}");
+        }
+    }
+
+    #[test]
+    fn unit_table_is_capped() {
+        let frame = |k: u8| {
+            let mut v = vec![0x0B, 0x77, 0, 7, (3 << 4) | (2 << 1), 16 << 3];
+            v.resize(16, k);
+            v
+        };
+        let mut s = Splitter::new(&Codec::Eac3);
+        s.max_units = 10;
+        let es: Vec<u8> = (0..100).flat_map(frame).collect();
+        s.feed(0, &es);
+        s.finish();
+        assert_eq!(s.units.len(), 10);
+        assert!(s.truncated);
     }
 }

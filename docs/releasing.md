@@ -50,6 +50,7 @@ signing jobs are refused, and the draft-release job, which needs them, is skippe
 | Windows on ARM64 | `filmcraft-<v>-windows-arm64.msi`, `filmcraft-<v>-windows-arm64-portable.zip` | `windows-latest` (cross-compiled) |
 | Linux x86_64 | `filmcraft-<v>-linux-x86_64.{AppImage,deb,rpm,tar.gz}` | `ubuntu-22.04` |
 | Linux aarch64 | `filmcraft-<v>-linux-aarch64.{AppImage,deb,rpm,tar.gz}` | `ubuntu-22.04-arm` |
+| Linux riscv64 | `filmcraft-<v>-linux-riscv64.tar.gz` | `ubuntu-24.04`, cross-compiled (glibc 2.39+; CLI smoke-tested under QEMU) |
 | AppImage updates | `filmcraft-<v>-linux-{x86_64,aarch64}.AppImage.zsync` | with the AppImage |
 | Flatpak | `filmcraft-<v>-linux-x86_64.flatpak`, `filmcraft-<v>-linux-aarch64.flatpak` | `ubuntu-24.04`, `ubuntu-24.04-arm` (repackaged Linux tarball) |
 | FreeBSD 14 x86_64 | `filmcraft-<v>-freebsd-x86_64.tar.gz` | FreeBSD 14.3 VM on `ubuntu-latest` |
@@ -58,8 +59,8 @@ signing jobs are refused, and the draft-release job, which needs them, is skippe
 `filmcraft --version` and `filmcraft-cli --version` print the version from `Cargo.toml`.
 
 **Fonts.** Every build job checks out [craft-fonts](https://github.com/storytold/craft-fonts) at a
-pinned commit (the `ref:` of its craft-fonts checkout step, marked `# bump deliberately`) and builds
-with `CRAFT_FONTS_DIR` and `CRAFT_FONTS_REQUIRED=1`, so releases embed its Japanese fonts and fail
+pinned commit (`craft-fonts-ref` in `.github/workflows/release.yml` and `freebsd.yml`) and builds
+with `CRAFT_FONTS_DIR` and `CRAFT_FONTS_REQUIRED=1`, so releases embed its fonts and fail
 rather than ship without them (the web build embeds only the UI font, to stay small). The packages
 carry each embedded font's licence (`copy_font_licences` in `packaging/env.sh`). Bump the pins
 deliberately, in every job at once.
@@ -89,7 +90,9 @@ check the bundle and the DMG on your own Mac (`packaging/macos/package.sh`).
 `packaging/windows/package.ps1 -Arch x64|x86|arm64` builds with `+crt-static`, so neither the MSI
 nor the portable zip needs the Visual C++ redistributable.
 
-- `filmcraft.wxs` (WiX) is a per-machine install into Program Files with a Start Menu shortcut and
+- `filmcraft.wxs` (WiX) is a dual-scope package: per-user by default into
+  `%LOCALAPPDATA%\Programs\ArtCraft\FilmCraft`, per-machine into `Program Files\ArtCraft\FilmCraft` (`Program Files (x86)` for the 32-bit build)
+  (see `packaging/windows/INSTALLATION.md`). It has a Start Menu shortcut and
   an App Paths entry (Win+R `filmcraft`). Same-version upgrades are allowed, so release candidates
   replace each other.
 - The ARM64 build is cross-compiled on the x64 runner. `.github/workflows/windows-arm64.yml`

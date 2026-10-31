@@ -111,3 +111,19 @@ fn shared_names_resolve_by_track_kind() {
     let it = s.active_sequence().unwrap().find_item(ClipId(v)).unwrap().1.clone();
     assert!(it.effects.iter().any(|e| e.effect == "invert"));
 }
+
+/// #696: applying an audio effect to the video side of an A/V pair lands on the linked audio.
+#[test]
+fn audio_effect_on_video_clip_applies_to_linked_audio() {
+    let mut s = demo();
+    let seq = s.active_sequence().unwrap();
+    let v = seq.video_tracks[0].items[0].clone();
+    let a = seq.audio_tracks[0].items.iter().find(|i| i.link == v.link).expect("linked audio").clone();
+    let n0 = a.effects.len();
+    s.execute("effects.apply", json!({"clips": [v.id.0], "effect": "parametric_eq"})).unwrap();
+    let a = s.active_sequence().unwrap().find_item(a.id).unwrap().1.clone();
+    let v = s.active_sequence().unwrap().find_item(v.id).unwrap().1.clone();
+    assert_eq!(a.effects.len(), n0 + 1);
+    assert_eq!(a.effects.last().unwrap().effect, "parametric_eq");
+    assert!(v.effects.iter().all(|e| e.effect != "parametric_eq"), "EQ stays off the picture clip");
+}

@@ -74,11 +74,20 @@ fn item_of(r: &Value) -> ItemId {
 
 #[test]
 fn import_as_image_sequence_with_missing_frames() {
-    let dir = tmp_dir("imgseq-import");
+    check_image_sequence_with_missing_frames("shot_");
+}
+
+#[test]
+fn import_unicode_image_sequence_with_missing_frames() {
+    check_image_sequence_with_missing_frames("é");
+}
+
+fn check_image_sequence_with_missing_frames(prefix: &str) {
+    let dir = tmp_dir(&format!("imgseq-import-{prefix}"));
     let mut s = demo();
     s.execute("prefs.set", json!({"key": "media.indeterminateTimebase", "value": "25"})).unwrap();
     // frames 1..=6 with 4 missing, plus an unrelated file
-    let paths = write_frames(&dir, "shot_", &[1, 2, 3, 5, 6], "png");
+    let paths = write_frames(&dir, prefix, &[1, 2, 3, 5, 6], "png");
     write_frames(&dir, "other_", &[1], "png");
     let r = s.execute("file.import", json!({"paths": [paths[0]], "imageSequence": true})).unwrap();
     let id = item_of(&r);
@@ -135,6 +144,71 @@ fn import_image_sequences_setting_detects_a_numbered_still() {
     // the last frame alone is no sequence
     let r = s.execute("file.import", json!({"paths": [paths[2]]})).unwrap();
     assert_eq!(s.project.item(item_of(&r)).unwrap().as_media().unwrap().info.kind, MediaKind::Still);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A CinemaDNG frame: 24 × 16 RGGB, 12-bit lossless JPEG behind a preview, a flat grey at `level`
+/// (white balanced by the as-shot neutral), 23.976 fps, time code 01:00:00:00 + `frame`.
+fn cinemadng_frame(level: f64, frame: u8) -> Vec<u8> {
+    use filmcraft_dng::tiff::tags;
+    use filmcraft_dng::writer::{Compression, Options, Value, write};
+    let (w, h) = (24, 16);
+    let neutral = [0.6, 1.0, 0.7];
+    let px: Vec<u16> =
+        (0..w * h).map(|i| (level * [neutral[0], neutral[1], neutral[1], neutral[2]][(i / w % 2) * 2 + i % 2] * 4000.0 + 95.0).round() as u16).collect();
+    let o = Options {
+        width: w,
+        height: h,
+        bits: 12,
+        preview: true,
+        compression: Compression::LosslessJpeg { predictor: 1, components: 2, restart_lines: 0, pt: 0 },
+        raw_tags: vec![(tags::BLACK_LEVEL, Value::Short(vec![95])), (tags::WHITE_LEVEL, Value::Short(vec![4095]))],
+        main_tags: vec![
+            (tags::AS_SHOT_NEUTRAL, Value::rationals(&neutral)),
+            (tags::FRAME_RATE, Value::SRational(vec![(24_000, 1001)])),
+            (tags::TIME_CODES, Value::Byte(vec![frame, 0, 0, 0x01, 0, 0, 0, 0])),
+        ],
+        ..Default::default()
+    };
+    write(&px, &o)
+}
+
+#[test]
+fn import_cinemadng_folder_as_one_clip() {
+    let dir = tmp_dir("cinemadng-import");
+    let mut s = demo();
+    s.execute("prefs.set", json!({"key": "media.indeterminateTimebase", "value": "25"})).unwrap();
+    let paths: Vec<String> = (0..4u8)
+        .map(|i| {
+            let p = dir.join(format!("A001_C002_0101AB_{:06}.dng", i));
+            std::fs::write(&p, cinemadng_frame(0.1 + 0.2 * f64::from(i), i)).unwrap();
+            p.to_string_lossy().to_string()
+        })
+        .collect();
+    let r = s.execute("file.import", json!({"paths": [paths[0]], "imageSequence": true})).unwrap();
+    let id = item_of(&r);
+    assert_eq!(r["imageSequences"][0]["frames"], 4);
+    let m = s.project.item(id).unwrap().as_media().unwrap().clone();
+    assert_eq!(m.info.kind, MediaKind::ImageSequence);
+    assert_eq!(m.info.frame_rate(), FrameRate::FPS_23_976, "the CinemaDNG FrameRate tag, not the timebase setting");
+    assert_eq!(m.info.duration, FrameRate::FPS_23_976.tick_of(4));
+    assert_eq!(m.info.start_timecode, Some(3600 * 24), "01:00:00:00 at 24 nominal");
+    let v = m.info.video.as_ref().unwrap();
+    assert_eq!((v.width, v.height), (24, 16));
+    let src = s.media.source_for(&s.project, id, &*s.services).unwrap();
+    for i in 0..4 {
+        let f = src.video_frame(FrameRequest::full(FrameRate::FPS_23_976.tick_of(i))).unwrap();
+        let filmcraft_frame::PixelData::RgbaF32(px) = &f.data else { panic!("linear float frames") };
+        let want = 0.1 + 0.2 * i as f32;
+        for k in 0..3 {
+            assert!((px[(8 * 24 + 8) * 4 + k] - want).abs() < 2e-3, "frame {i} channel {k}: {}", px[(8 * 24 + 8) * 4 + k]);
+        }
+    }
+    // one frame on its own is a still
+    let r = s.execute("file.import", json!({"paths": [paths[3]]})).unwrap();
+    let still = s.project.item(item_of(&r)).unwrap().as_media().unwrap();
+    assert_eq!(still.info.kind, MediaKind::Still);
+    assert_eq!(still.info.video.as_ref().unwrap().codec, "DNG");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

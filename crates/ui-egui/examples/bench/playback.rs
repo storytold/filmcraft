@@ -347,11 +347,16 @@ impl Bench {
             }
         }
         for r in &recs {
-            rep.latency.push(ms(r.finished - r.queued));
-            rep.service.push(ms(r.finished - r.started));
-            rep.job_cpu.push(ms(r.cpu));
-            rep.src_wall.push(ms(r.source_wall));
-            rep.src_cpu.push(ms(r.source_cpu));
+            // Preroll jobs run before the play clock; counting them as on-clock latency made
+            // the LongGOP seek look like a mid-play stall (`lat.max` ≈ `preroll_ms`).
+            let on_clock = r.queued >= anchor && due_at.contains_key(&r.key.frame) && r.key.target == target;
+            if on_clock {
+                rep.latency.push(ms(r.finished - r.queued));
+                rep.service.push(ms(r.finished - r.started));
+                rep.job_cpu.push(ms(r.cpu));
+                rep.src_wall.push(ms(r.source_wall));
+                rep.src_cpu.push(ms(r.source_cpu));
+            }
             if !due_at.contains_key(&r.key.frame) || r.key.target != target {
                 rep.wasted_jobs += 1;
             }
@@ -430,17 +435,8 @@ impl Bench {
     /// - `drags` playhead drags: the playhead moves `drag_frames` frames, one step per display
     ///   refresh (each refresh asks for the frame under the playhead, superseding the previous
     ///   request), then stops; time from the stop until the frame under it is on screen.
-    pub fn scrub(
-        &self,
-        s: &Session,
-        seq: ItemId,
-        display: &mut Display,
-        scale: f32,
-        seeks: usize,
-        drags: usize,
-        drag_frames: i64,
-        timeout: Duration,
-    ) -> ScrubReport {
+    pub fn scrub(&self, s: &Session, seq: ItemId, display: &mut Display, scale: f32, plan: ScrubPlan) -> ScrubReport {
+        let ScrubPlan { seeks, drags, drag_frames, timeout } = plan;
         let q = s.project.sequence(seq).expect("seq");
         let rate = q.settings.frame_rate;
         let frames = rate.frame_at(q.duration()).max(1);
@@ -501,6 +497,15 @@ impl Bench {
         rep.gop = filmcraft_codecs::gop_stats() - gop0;
         rep
     }
+}
+
+/// What [`Bench::scrub`] does: seek and drag counts, drag length in frames, per-request timeout.
+#[derive(Clone, Copy)]
+pub struct ScrubPlan {
+    pub seeks: usize,
+    pub drags: usize,
+    pub drag_frames: i64,
+    pub timeout: Duration,
 }
 
 /// Result of [`Bench::scrub`].
@@ -808,10 +813,15 @@ pub fn cli_main() {
                         // Live play (effects rendered per frame), render previews, then play twice.
                         reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("live")));
                         let t0 = Instant::now();
-                        s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).expect("render previews");
-                        eprintln!("  rendered previews in {:.1}s (load {})", t0.elapsed().as_secs_f64(), load_avg());
-                        reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("1st after")));
-                        reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("2nd after")));
+                        // every segment, not only red ones: the bench compares playing previews with playing live
+                        match s.execute("sequence.renderInToOut", json!({"wait": true})) {
+                            Ok(_) => {
+                                eprintln!("  rendered previews in {:.1}s (load {})", t0.elapsed().as_secs_f64(), load_avg());
+                                reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("1st after")));
+                                reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("2nd after")));
+                            }
+                            Err(e) => eprintln!("  rendering previews failed, so no runs after it: {e}"),
+                        }
                         s.previews.delete(None);
                     }
                     _ => reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("play"))),

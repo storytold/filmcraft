@@ -1,7 +1,13 @@
 //! Probability tables (a "frame context"), syntax element counters and the backward adaptation
 //! processes of section 8.4.
 
-use crate::tables::*;
+use crate::tables::{
+    BINARY_TREE, COUNT_SAT, DEFAULT_COEF_PROBS, DEFAULT_COMP_MODE_PROB, DEFAULT_COMP_REF_PROB, DEFAULT_INTER_MODE_PROBS, DEFAULT_INTERP_FILTER_PROBS,
+    DEFAULT_IS_INTER_PROB, DEFAULT_MV_BITS_PROB, DEFAULT_MV_CLASS_PROBS, DEFAULT_MV_CLASS0_BIT_PROB, DEFAULT_MV_CLASS0_FR_PROBS, DEFAULT_MV_CLASS0_HP_PROB,
+    DEFAULT_MV_FR_PROBS, DEFAULT_MV_HP_PROB, DEFAULT_MV_JOINT_PROBS, DEFAULT_MV_SIGN_PROB, DEFAULT_PARTITION_PROBS, DEFAULT_SINGLE_REF_PROB, DEFAULT_SKIP_PROB,
+    DEFAULT_TX_PROBS, DEFAULT_UV_MODE_PROBS, DEFAULT_Y_MODE_PROBS, INTER_MODE_TREE, INTERP_FILTER_TREE, INTRA_MODE_TREE, MAX_UPDATE_FACTOR, MV_CLASS_TREE,
+    MV_FR_TREE, MV_JOINT_TREE, PARTITION_TREE, SMALL_TOKEN_TREE, TX_SIZE_8_TREE, TX_SIZE_16_TREE, TX_SIZE_32_TREE,
+};
 
 /// coef_probs[txSz][plane > 0][is_inter][band][ctx][node].
 pub type CoefProbs = [[[[[[u8; 3]; 6]; 6]; 2]; 2]; 4];
@@ -135,6 +141,17 @@ macro_rules! add_nested {
             add_nested!(x, y, 2);
         }
     };
+    ($a:expr, $b:expr, 6) => {
+        for (x, y) in $a.iter_mut().zip($b.iter()) {
+            for (x, y) in x.iter_mut().zip(y.iter()) {
+                for (x, y) in x.iter_mut().zip(y.iter()) {
+                    for (x, y) in x.iter_mut().zip(y.iter()) {
+                        add_nested!(x, y, 2);
+                    }
+                }
+            }
+        }
+    };
 }
 
 impl Counts {
@@ -160,24 +177,13 @@ impl Counts {
         add_nested!(self.mv_bits, o.mv_bits, 3);
         add_nested!(self.mv_fr, o.mv_fr, 2);
         add_nested!(self.mv_hp, o.mv_hp, 2);
-        for (a, b) in self.token.iter_mut().zip(o.token.iter()) {
-            for (a, b) in a.iter_mut().zip(b.iter()) {
-                for (a, b) in a.iter_mut().zip(b.iter()) {
-                    for (a, b) in a.iter_mut().zip(b.iter()) {
-                        add_nested!(a, b, 2);
-                    }
-                }
-            }
-        }
-        for (a, b) in self.more_coefs.iter_mut().zip(o.more_coefs.iter()) {
-            for (a, b) in a.iter_mut().zip(b.iter()) {
-                for (a, b) in a.iter_mut().zip(b.iter()) {
-                    for (a, b) in a.iter_mut().zip(b.iter()) {
-                        add_nested!(a, b, 2);
-                    }
-                }
-            }
-        }
+        self.add_coef_counts(o);
+    }
+
+    /// Accumulate the per-coefficient token and more_coefs counts of another tile.
+    fn add_coef_counts(&mut self, o: &Counts) {
+        add_nested!(self.token, o.token, 6);
+        add_nested!(self.more_coefs, o.more_coefs, 6);
     }
 }
 

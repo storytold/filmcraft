@@ -18,6 +18,7 @@ use crate::icons::{self, Icon};
 use crate::panels::monitor_view;
 use crate::state::{DisplayMode, PlaybackRes};
 use crate::theme::Tokens;
+use crate::widgets::ZoomThumbPart;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Which {
@@ -25,10 +26,177 @@ pub enum Which {
     Program,
 }
 
+/// What the monitor's picture block draws this frame.
+struct PictureCtx {
+    target: Target,
+    frame_size: (u32, u32),
+    rate: filmcraft_time::FrameRate,
+    time: Tick,
+    duration: Tick,
+    drop_frame: bool,
+    compare: bool,
+    ref_area: Option<Rect>,
+    pic: Rect,
+    video_area: Rect,
+    prefix: &'static str,
+}
+
+/// The picture block: schedules this frame's render request (GPU or CPU), shows the texture
+/// that is ready, and draws the safe margins, comparison reference and display-mode label.
+fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &crate::state::MonitorView, pc: PictureCtx) {
+    let PictureCtx { target, frame_size, rate, time, duration, drop_frame, compare, ref_area, pic, video_area, prefix } = pc;
+    let t = app.tokens;
+    let ctx = ui.ctx().clone();
+    let display = mv.display_mode().unwrap_or(DisplayMode::Composite);
+    let display_w = (frame_size.0 as f64 * monitor_view::pixel_aspect(app, which)) as f32;
+    let ppp = ctx.pixels_per_point();
+    if mv.transparency_grid {
+        monitor_view::transparency_grid(ui.painter(), pic, ui.clip_rect());
+    } else {
+        ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
+    }
+    let playing = if which == Which::Program { app.playback.playing } else { app.source_playback.clock.playing };
+    let res = mv.effective_res(playing);
+    // frame pixels per screen pixel along the axis that needs the most of them
+    let screen_scale = (pic.width() * ppp / frame_size.0.max(1) as f32).max(pic.height() * ppp / frame_size.1.max(1) as f32).min(1.0);
+    let scale = quantize_scale(res.scale().min(screen_scale.max(1.0 / 32.0)));
+    let frame = rate.frame_at(time);
+    let rev = match target {
+        Target::Item(i) => app.item_revision(i),
+        _ => app.session.revision,
+    };
+    let size_key = (scale * 1000.0) as u32;
+    let channel = display.is_channel();
+    // the GPU compositor's output is opaque, so the Transparency Grid takes the CPU frames
+    let grid = mv.transparency_grid && !channel;
+    let use_gpu = which == Which::Program && app.gpu.is_some() && !channel && !grid && !crate::panels::menu_dialogs::software_renderer(app);
+    // render previews are opaque, so the grid and Display Mode ▸ Alpha take live renders
+    let live = grid || display == DisplayMode::Alpha;
+    let cpu_target = target;
+    let target = match (use_gpu, target) {
+        (true, Target::Sequence(s)) => Target::SequencePlan(s),
+        (false, Target::Sequence(s)) if live => Target::SequenceLive(s),
+        (_, t) => t,
+    };
+    // Draft decoding (opt-in): only while playing at 1/2 resolution or lower.
+    let draft = crate::frames::draft_playback(playing, scale, app.session.prefs.playback.draft_decode);
+    let key = FrameKey { target, frame, size: size_key, revision: rev, draft };
+    let project = app.session.project.clone();
+    let speed = if which == Which::Program { app.playback.speed } else { app.source_playback.clock.speed };
+    // while playing, which way: frames on the other side of the playhead are not due yet
+    let dir = playing.then(|| play_direction(speed));
+    if playing {
+        let preroll = which == Which::Program && app.playback.preroll.is_some();
+        app.frames.schedule_playback(key, rate, scale, &project, speed, preroll);
+        if preroll {
+            app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, rate.frame_at(duration) - 1);
+        }
+    } else {
+        app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
+    }
+    let asked = asked_before(app, prefix, key, playing);
+    let tex_name = if channel {
+        format!("monitor-{prefix}-{display:?}")
+    } else if grid {
+        format!("monitor-{prefix}-grid")
+    } else {
+        format!("monitor-{prefix}")
+    };
+    let (shown, on_screen) = if use_gpu {
+        let found = app
+            .frames
+            .get_plan(&key)
+            .map(|p| (key, p))
+            .or_else(|| app.frames.nearest_plan(key, 6))
+            .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))))
+            .or_else(|| playing_recent(app, key, dir).and_then(|k| app.frames.get_plan(&k).map(|p| (k, p))));
+        match found {
+            Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
+            None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
+        }
+    } else if grid {
+        let recent = playing_recent(app, key, dir);
+        cpu_texture_as(app, &ctx, &tex_name, key, &asked, recent, display, true)
+    } else {
+        let recent = playing_recent(app, key, dir);
+        cpu_texture(app, &ctx, &tex_name, key, &asked, recent, display)
+    };
+    let exact = on_screen == Some(key);
+    if which == Which::Program {
+        app.program_shown = on_screen;
+    }
+    if !playing && !exact {
+        app.monitor_inexact = true;
+    }
+    if playing {
+        let clock = if which == Which::Program { &mut app.playback } else { &mut app.source_playback.clock };
+        if std::mem::take(&mut clock.hidden) {
+            clock.meter.resync(frame, exact);
+        } else {
+            clock.meter.refresh(frame, exact);
+        }
+    }
+    if let Some(tex) = shown {
+        ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    if let Some(ra) = ref_area {
+        // the reference frame (CPU path)
+        let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
+        let rtarget = match cpu_target {
+            Target::Sequence(s) if mv.transparency_grid => Target::SequenceLive(s),
+            t => t,
+        };
+        let rkey = FrameKey { target: rtarget, frame: rf, size: size_key, revision: rev, draft: false };
+        app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
+        let rpic = fit(ra, display_w, frame_size.1 as f32);
+        if mv.transparency_grid {
+            monitor_view::transparency_grid(ui.painter(), rpic, ui.clip_rect());
+        } else {
+            ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
+        }
+        let (reference, _) = if mv.transparency_grid {
+            cpu_texture_as(app, &ctx, &format!("monitor-{prefix}-ref-grid"), rkey, &[], None, DisplayMode::Composite, true)
+        } else {
+            cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], None, DisplayMode::Composite)
+        };
+        if let Some(tex) = reference {
+            ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        }
+        app.auto.add("program.compare.reference", rpic, "reference frame");
+        let bar = Rect::from_min_max(pos2(ra.min.x, ra.max.y + 2.0), pos2(video_area.max.x, ra.max.y + 22.0));
+        monitor_view::compare_bar(app, ui, bar, rate, drop_frame);
+    }
+    if mv.safe_margins {
+        for (f, c) in [(0.9, Color32::from_white_alpha(120)), (0.8, Color32::from_white_alpha(90))] {
+            let r = Rect::from_center_size(pic.center(), pic.size() * f);
+            ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, c), StrokeKind::Middle);
+        }
+        let c = pic.center();
+        ui.painter().line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
+        ui.painter().line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
+    }
+    if display != DisplayMode::Composite && !compare {
+        let label = match display {
+            DisplayMode::Composite => tl!("Composite"),
+            DisplayMode::Alpha => tl!("Alpha"),
+            DisplayMode::Red => tl!("Red"),
+            DisplayMode::Green => tl!("Green"),
+            DisplayMode::Blue => tl!("Blue"),
+            DisplayMode::AudioWaveform => tl!("Audio Waveform"),
+            DisplayMode::Comparison => tl!("Comparison"),
+            DisplayMode::VideoAndWaveform => tl!("Video and Waveform"),
+        };
+        ui.painter().text(pos2(video_area.max.x - 8.0, video_area.min.y + 6.0), Align2::RIGHT_TOP, label, Tokens::ui(10.0), t.text_dim);
+    }
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
-    let controls_h = 28.0 + 24.0 + 36.0;
+    let stacked_controls = rect.width() < 540.0;
+    let separate_source_drag = which == Which::Source && stacked_controls && rect.width() < 310.0;
+    let source_drag_h = if separate_source_drag { 26.0 } else { 0.0 };
+    let controls_h = 28.0 + 24.0 + 15.0 + 36.0 + if stacked_controls { 26.0 } else { 0.0 } + source_drag_h;
     let video_area = Rect::from_min_max(rect.min + vec2(4.0, 4.0), pos2(rect.max.x - 4.0, rect.max.y - controls_h));
     // the Source monitor's time ruler starts at `origin` (a subclip restricted to its range)
     let mut origin = Tick::ZERO;
@@ -127,7 +295,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         (video_area, None)
     };
     if let (Some(wa), Some(item)) = (wave_area, source_item) {
-        monitor_view::waveform(app, ui, wa, item, time, duration, mark_in, mark_out);
+        let shown = ruler_shown(mv.time_zoom, origin, duration);
+        monitor_view::waveform(app, ui, wa, item, time, shown, mark_in, mark_out);
     }
     let show_picture = has_video && !wave_only && !grid_only;
     // Rulers along the top and left of the picture area.
@@ -170,109 +339,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let saved_clip = ui.clip_rect();
     ui.set_clip_rect(saved_clip.intersect(if mv.zoom.is_some() && !compare { video_area } else { picture_area.expand(12.0) }));
     if show_picture {
-        ui.painter().rect_filled(pic, 0.0, t.monitor_bg);
-        let playing = if which == Which::Program { app.playback.playing } else { app.source_playback.clock.playing };
-        let res = mv.effective_res(playing);
-        // frame pixels per screen pixel along the axis that needs the most of them
-        let screen_scale = (pic.width() * ppp / frame_size.0.max(1) as f32).max(pic.height() * ppp / frame_size.1.max(1) as f32).min(1.0);
-        let scale = quantize_scale(res.scale().min(screen_scale.max(1.0 / 32.0)));
-        let frame = rate.frame_at(time);
-        let rev = match target {
-            Target::Item(i) => app.item_revision(i),
-            _ => app.session.revision,
-        };
-        let size_key = (scale * 1000.0) as u32;
-        let channel = display.is_channel();
-        let use_gpu = which == Which::Program && app.gpu.is_some() && !channel && !crate::panels::menu_dialogs::software_renderer(app);
-        let cpu_target = target;
-        let target = match (use_gpu, target) {
-            (true, Target::Sequence(s)) => Target::SequencePlan(s),
-            (_, t) => t,
-        };
-        // Draft decoding (opt-in): only while playing at 1/2 resolution or lower.
-        let draft = crate::frames::draft_playback(playing, scale, app.session.prefs.playback.draft_decode);
-        let key = FrameKey { target, frame, size: size_key, revision: rev, draft };
-        let project = app.session.project.clone();
-        if playing {
-            let preroll = which == Which::Program && app.playback.preroll.is_some();
-            let speed = if which == Which::Program { app.playback.speed } else { app.source_playback.clock.speed };
-            app.frames.schedule_playback(key, rate, scale, &project, speed, preroll);
-            if preroll {
-                app.playback.preroll_ready = app.frames.preroll_ready(key, app.playback.speed, rate.frame_at(duration) - 1);
-            }
-        } else {
-            app.frames.request(key, rate.tick_of(frame), scale, &project, 0);
-        }
-        let asked = asked_before(app, prefix, key, playing);
-        let tex_name = if channel { format!("monitor-{prefix}-{display:?}") } else { format!("monitor-{prefix}") };
-        let (shown, on_screen) = if use_gpu {
-            let found = app
-                .frames
-                .get_plan(&key)
-                .map(|p| (key, p))
-                .or_else(|| app.frames.nearest_plan(key, 6))
-                .or_else(|| asked.iter().find_map(|k| app.frames.get_plan(k).map(|p| (*k, p))));
-            match found {
-                Some((k, plan)) => (app.gpu_present(k, &plan).map(|(id, _)| id), Some(k)),
-                None => (app.gpu.as_ref().and_then(|g| g.texture), app.gpu.as_ref().and_then(|g| g.last_key)),
-            }
-        } else {
-            cpu_texture(app, &ctx, &tex_name, key, &asked, display)
-        };
-        let exact = on_screen == Some(key);
-        if which == Which::Program {
-            app.program_shown = on_screen;
-        }
-        if !playing && !exact {
-            app.monitor_inexact = true;
-        }
-        if playing {
-            let clock = if which == Which::Program { &mut app.playback } else { &mut app.source_playback.clock };
-            if std::mem::take(&mut clock.hidden) {
-                clock.meter.resync(frame, exact);
-            } else {
-                clock.meter.refresh(frame, exact);
-            }
-        }
-        if let Some(tex) = shown {
-            ui.painter().image(tex, pic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-        }
-        if let Some(ra) = ref_area {
-            // the reference frame (CPU path)
-            let rf = rate.frame_at(Tick(mv.compare_ref.unwrap_or(time.0)));
-            let rkey = FrameKey { target: cpu_target, frame: rf, size: size_key, revision: rev, draft: false };
-            app.frames.request(rkey, rate.tick_of(rf), scale, &project, 1);
-            let rpic = fit(ra, display_w, frame_size.1 as f32);
-            ui.painter().rect_filled(rpic, 0.0, t.monitor_bg);
-            if let (Some(tex), _) = cpu_texture(app, &ctx, &format!("monitor-{prefix}-ref"), rkey, &[], DisplayMode::Composite) {
-                ui.painter().image(tex, rpic, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-            }
-            app.auto.add("program.compare.reference", rpic, "reference frame");
-            let bar = Rect::from_min_max(pos2(ra.min.x, ra.max.y + 2.0), pos2(video_area.max.x, ra.max.y + 22.0));
-            monitor_view::compare_bar(app, ui, bar, rate, drop_frame);
-        }
-        if mv.safe_margins {
-            for (f, c) in [(0.9, Color32::from_white_alpha(120)), (0.8, Color32::from_white_alpha(90))] {
-                let r = Rect::from_center_size(pic.center(), pic.size() * f);
-                ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, c), StrokeKind::Middle);
-            }
-            let c = pic.center();
-            ui.painter().line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
-            ui.painter().line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::from_white_alpha(120)));
-        }
-        if display != DisplayMode::Composite && !compare {
-            let label = match display {
-                DisplayMode::Composite => tl!("Composite"),
-                DisplayMode::Alpha => tl!("Alpha"),
-                DisplayMode::Red => tl!("Red"),
-                DisplayMode::Green => tl!("Green"),
-                DisplayMode::Blue => tl!("Blue"),
-                DisplayMode::AudioWaveform => tl!("Audio Waveform"),
-                DisplayMode::Comparison => tl!("Comparison"),
-                DisplayMode::VideoAndWaveform => tl!("Video and Waveform"),
-            };
-            ui.painter().text(pos2(video_area.max.x - 8.0, video_area.min.y + 6.0), Align2::RIGHT_TOP, label, Tokens::ui(10.0), t.text_dim);
-        }
+        draw_picture(app, ui, which, &mv, PictureCtx { target, frame_size, rate, time, duration, drop_frame, compare, ref_area, pic, video_area, prefix });
     }
     // Dropped-frame indicator (Program only)
     if which == Which::Program && app.playback.playing {
@@ -281,19 +348,27 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     }
     // A click on the Program monitor around the picture lets go of what is selected on it (#683;
     // in the picture the overlays do that). Under the picture and the overlays, so they come first.
-    if which == Which::Program && show_picture && ui.interact(video_area, egui::Id::new((prefix, "background")), Sense::click()).clicked() {
+    if which == Which::Program && show_picture && ui.interact(video_area, egui::Id::unique((prefix, "background")), Sense::click()).clicked() {
         crate::panels::graphics::deselect_on_monitor(app, ui);
     }
     // Click/drag in the picture: the Hand tool pans a magnified picture, otherwise focus.
-    let pic_resp = ui.interact(pic, egui::Id::new((prefix, "pic")), if show_picture { Sense::click_and_drag() } else { Sense::hover() });
+    let pic_resp = ui.interact(pic, egui::Id::unique((prefix, "pic")), if show_picture { Sense::click_and_drag() } else { Sense::hover() });
     app.auto.add(&format!("{prefix}.picture"), pic.intersect(video_area), "picture");
-    if show_picture {
-        monitor_view::pan_input(app, ui, which, video_area, pic);
+    // (Comparison View always fits both frames)
+    if show_picture && !compare {
+        monitor_view::zoom_pan_input(app, ui, which, video_area, pic, display_w, ppp);
     }
     if which == Which::Program && show_picture {
-        eyedropper(app, ui, &pic_resp, pic, target, rate, time);
-        crate::panels::graphics::monitor_overlay(app, ui, pic, frame_size);
-        crate::panels::masks::monitor_overlay(app, ui, pic, frame_size);
+        // an armed eyedropper owns clicks on the picture: the overlays would sit on top and take
+        // them (the selected clip's transform handles cover it, #1023)
+        if app.ui.eyedropper.is_some() {
+            eyedropper(app, ui, &pic_resp, pic, target, rate, time);
+        } else {
+            crate::panels::graphics::monitor_overlay(app, ui, pic, frame_size);
+            crate::panels::masks::monitor_overlay(app, ui, pic, frame_size);
+            crate::panels::motion_path::monitor_overlay(app, ui, pic, frame_size);
+            crate::panels::transform_handles::monitor_overlay(app, ui, pic, frame_size);
+        }
     }
     if show_picture {
         monitor_view::guides(app, ui, which, video_area, pic, frame_size);
@@ -302,7 +377,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     if let Some((top, left)) = ruler_rects {
         monitor_view::rulers(app, ui, which, top, left, video_area, pic, frame_size);
     }
-    if which == Which::Source && show_picture && pic_resp.drag_started() && app.ui.tool != crate::state::Tool::Hand {
+    if which == Which::Source && show_picture && pic_resp.drag_started_by(egui::PointerButton::Primary) && app.ui.tool != crate::state::Tool::Hand {
         crate::panels::source_drag::begin(app, ui, true, true);
     }
     if pic_resp.double_clicked() && which == Which::Source {
@@ -311,11 +386,47 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     }
 
     // ---- controls row: timecode | zoom | res | wrench | duration
+    let dur_tc = format_time(mark_out.map(|o| o + rate.frame_duration()).unwrap_or(duration) - range_start, rate, drop_frame, TimeDisplay::Timecode, 48000);
+    let (bar, zoom_bar) = controls_row(app, ui, rect, which, time, rate, drop_frame, origin, &dur_tc);
+
+    // ---- mini timeline / scrub bar
+    follow_playhead(app, which, origin, duration, time);
+    time_zoom_bar(app, ui, zoom_bar, which, origin, duration, rate);
+    mini_timeline(app, ui, bar, which, origin, time, duration, rate, mark_in, mark_out);
+
+    // ---- transport buttons
+    let row3 = Rect::from_min_size(pos2(rect.min.x, zoom_bar.max.y + 4.0), vec2(rect.width(), 32.0));
+    transport(app, ui, row3, which);
+}
+
+/// The controls row under the picture: timecode, duration, zoom, resolution, the wrench menu
+/// and the source-drag controls. Returns the mini-timeline and zoom bars below it.
+#[allow(clippy::too_many_arguments)]
+fn controls_row(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    rect: Rect,
+    which: Which,
+    time: Tick,
+    rate: filmcraft_time::FrameRate,
+    drop_frame: bool,
+    origin: Tick,
+    dur_tc: &str,
+) -> (Rect, Rect) {
+    let t = app.tokens;
+    let ctx = ui.ctx().clone();
+    let mv = monitor_view::view(app, which).clone();
+    let prefix = if which == Which::Program { "program" } else { "source" };
+    let stacked_controls = rect.width() < 540.0;
+    let separate_source_drag = which == Which::Source && stacked_controls && rect.width() < 310.0;
+    let source_drag_h = if separate_source_drag { 26.0 } else { 0.0 };
+    let controls_h = 28.0 + 24.0 + 15.0 + 36.0 + if stacked_controls { 26.0 } else { 0.0 } + source_drag_h;
+    // ---- controls row: timecode | zoom | res | wrench | duration
     let row1 = Rect::from_min_size(pos2(rect.min.x + 14.0, rect.max.y - controls_h + 2.0), vec2(rect.width() - 28.0, 26.0));
     let tc = format_time(time, rate, drop_frame, TimeDisplay::Timecode, 48000);
     let tc_rect = Rect::from_min_size(row1.min, vec2(110.0, row1.height()));
     let min = if which == Which::Program { Tick::ZERO } else { origin };
-    match crate::widgets::timecode_field(ui, egui::Id::new((prefix, "timecode")), tc_rect, &tc, time, min, rate, drop_frame, t.timecode) {
+    match crate::widgets::timecode_field(ui, egui::Id::unique((prefix, "timecode")), tc_rect, &tc, time, min, rate, drop_frame, t.timecode) {
         Some(Ok(to)) => {
             let cmd = if which == Which::Program { "playhead.set" } else { "source.setPlayhead" };
             if let Err(e) = app.session.execute(cmd, json!({"time": to.0})) {
@@ -326,23 +437,40 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         None => {}
     }
     app.auto.add(&format!("{prefix}.timecode"), tc_rect, &tc);
-    let dur_tc = format_time(mark_out.map(|o| o + rate.frame_duration()).unwrap_or(duration) - range_start, rate, drop_frame, TimeDisplay::Timecode, 48000);
-    ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, &dur_tc, Tokens::timecode(), t.text_dim);
-    // zoom + resolution dropdowns centred-ish
-    let zr = Rect::from_min_size(pos2(row1.min.x + 116.0, row1.min.y), vec2(70.0, 24.0));
+    ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, dur_tc, Tokens::timecode(), t.text_dim);
+    // At compact widths, timecodes and view settings need separate rows.
+    let settings_y = row1.min.y + if stacked_controls { 26.0 } else { 0.0 };
+    let zoom_x = if stacked_controls && which == Which::Source && !separate_source_drag {
+        row1.min.x
+    } else if stacked_controls {
+        row1.center().x - 83.0
+    } else {
+        row1.min.x + 116.0
+    };
+    let zr = Rect::from_min_size(pos2(zoom_x, settings_y), vec2(70.0, 24.0));
     let zoom_label = match mv.zoom {
         None => tl!("Fit").to_string(),
         Some(z) => format!("{}%", (z * 100.0).round() as i32),
     };
-    let zresp = crate::widgets::dropdown_text(ui, zr, &zoom_label, &t, egui::Id::new((prefix, "zoom")));
+    let zresp = crate::widgets::dropdown_text(ui, zr, &zoom_label, &t, egui::Id::unique((prefix, "zoom")));
     app.auto.add(&format!("{prefix}.zoom"), zr, "Select Zoom Level");
     monitor_view::zoom_menu(app, &zresp, which);
     let res = mv.res;
-    let rr = Rect::from_min_size(pos2(row1.max.x - 196.0, row1.min.y), vec2(62.0, 24.0));
+    let resolution_x = if stacked_controls && which == Which::Source && !separate_source_drag {
+        row1.max.x - 90.0
+    } else if stacked_controls {
+        zr.max.x + 6.0
+    } else {
+        row1.max.x - 196.0
+    };
+    let rr = Rect::from_min_size(pos2(resolution_x, settings_y), vec2(62.0, 24.0));
     if which == Which::Source && rr.min.x > zr.max.x + 12.0 {
-        crate::panels::source_drag::controls(app, ui, Rect::from_min_max(pos2(zr.max.x + 6.0, row1.min.y), pos2(rr.min.x - 6.0, row1.min.y + 24.0)));
+        crate::panels::source_drag::controls(app, ui, Rect::from_min_max(pos2(zr.max.x + 6.0, settings_y), pos2(rr.min.x - 6.0, settings_y + 24.0)));
     }
-    let rresp = crate::widgets::dropdown_text(ui, rr, crate::i18n::t(res.label()), &t, egui::Id::new((prefix, "res")));
+    if separate_source_drag {
+        crate::panels::source_drag::controls(app, ui, Rect::from_min_size(pos2(row1.center().x - 52.0, settings_y + 26.0), vec2(104.0, 24.0)));
+    }
+    let rresp = crate::widgets::dropdown_text(ui, rr, crate::i18n::t(res.label()), &t, egui::Id::unique((prefix, "res")));
     app.auto.add(&format!("{prefix}.resolution"), rr, "Select Playback Resolution");
     egui::Popup::menu(&rresp).show(|ui| {
         for r in PlaybackRes::ALL {
@@ -351,11 +479,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             }
         }
     });
-    let wr = Rect::from_min_size(pos2(rr.max.x + 6.0, row1.min.y + 1.0), vec2(22.0, 22.0));
-    let wresp = ui.interact(wr, egui::Id::new((prefix, "wrench")), Sense::click());
+    let wr = Rect::from_min_size(pos2(rr.max.x + 6.0, settings_y + 1.0), vec2(22.0, 22.0));
+    let wresp = ui.interact(wr, egui::Id::unique((prefix, "wrench")), Sense::click());
     icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add(&format!("{prefix}.settings"), wr, "Settings");
-    egui::Popup::menu(&wresp).show(|ui| {
+    // stays open while options are toggled; a choice (a display mode, a resolution, an action) or a
+    // click outside closes it
+    egui::Popup::menu(&wresp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(240.0);
         monitor_view::wrench_items(app, ui, which);
         let mv = monitor_view::view_mut(app, which);
@@ -397,6 +527,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
                 for (k, label) in [("auto", tl!("Automatic")), ("2x2", "2 × 2"), ("3x3", "3 × 3"), ("4x4", "4 × 4")] {
                     if ui.selectable_label(v.layout_name() == k, label).clicked() {
                         let _ = app.session.execute("multicam.gridLayout", json!({"layout": k}));
+                        ui.close();
                     }
                 }
             });
@@ -406,13 +537,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
             }
         }
     });
-    // ---- mini timeline / scrub bar
-    let bar = Rect::from_min_size(pos2(rect.min.x + 14.0, row1.max.y + 2.0), vec2(rect.width() - 28.0, 22.0));
-    mini_timeline(app, ui, bar, which, origin, time, duration, rate, mark_in, mark_out);
-
-    // ---- transport buttons
-    let row3 = Rect::from_min_size(pos2(rect.min.x, bar.max.y + 4.0), vec2(rect.width(), 32.0));
-    transport(app, ui, row3, which);
+    let bar = Rect::from_min_size(pos2(rect.min.x + 14.0, settings_y + 28.0 + source_drag_h), vec2(rect.width() - 28.0, 22.0));
+    let zoom_bar = Rect::from_min_size(pos2(bar.min.x, bar.max.y + 2.0), vec2(bar.width(), 13.0));
+    (bar, zoom_bar)
 }
 
 /// How many of a paused monitor's latest requests are remembered ([`asked_before`]): about a
@@ -444,27 +571,57 @@ fn asked_before(app: &mut FilmcraftApp, prefix: &str, key: FrameKey, playing: bo
     before
 }
 
+/// 1 when playing forward, -1 backward.
+fn play_direction(speed: f64) -> i64 {
+    if speed < 0.0 { -1 } else { 1 }
+}
+
+/// While playing, a frame to show when the one due is not ready at the project's revision: the
+/// same frame (or one just played) rendered for one of the last few revisions (#1673).
+fn playing_recent(app: &FilmcraftApp, key: FrameKey, dir: Option<i64>) -> Option<FrameKey> {
+    dir.and_then(|dir| app.frames.recent(key, dir, 6, crate::frames::PLAYING_REVISION_LAG))
+}
+
 /// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one before
-/// it, else the newest ready one of `asked` (see [`asked_before`]), with the display mode's
-/// channel mapping. Returns the texture and the frame it shows.
+/// it, else the newest ready one of `asked` (see [`asked_before`]), else `recent` (while playing),
+/// with the display mode's channel mapping. Returns the texture and the frame it shows.
 fn cpu_texture(
     app: &mut FilmcraftApp,
     ctx: &egui::Context,
     name: &str,
     key: FrameKey,
     asked: &[FrameKey],
+    recent: Option<FrameKey>,
     mode: DisplayMode,
+) -> (Option<egui::TextureId>, Option<FrameKey>) {
+    cpu_texture_as(app, ctx, name, key, asked, recent, mode, false)
+}
+
+/// [`cpu_texture`], keeping the frame's alpha when `alpha` is set (the Transparency Grid).
+#[allow(clippy::too_many_arguments)]
+fn cpu_texture_as(
+    app: &mut FilmcraftApp,
+    ctx: &egui::Context,
+    name: &str,
+    key: FrameKey,
+    asked: &[FrameKey],
+    recent: Option<FrameKey>,
+    mode: DisplayMode,
+    alpha: bool,
 ) -> (Option<egui::TextureId>, Option<FrameKey>) {
     let found = app
         .frames
         .get(&key)
         .map(|img| (key, img))
         .or_else(|| (1..=6).map(|d| FrameKey { frame: key.frame.saturating_sub(d), ..key }).find_map(|k| app.frames.get(&k).map(|img| (k, img))))
-        .or_else(|| asked.iter().find_map(|k| app.frames.get(k).map(|img| (*k, img))));
+        .or_else(|| asked.iter().find_map(|k| app.frames.get(k).map(|img| (*k, img))))
+        .or_else(|| recent.and_then(|k| app.frames.get(&k).map(|img| (k, img))));
     match found {
         Some((k, img)) => {
             let tex = if mode.is_channel() {
                 app.texture_for_mapped(ctx, name, k, &img, |i| monitor_view::channel_view(i, mode))
+            } else if alpha {
+                app.texture_with_alpha(ctx, name, k, &img)
             } else {
                 app.texture_for(ctx, name, k, &img)
             };
@@ -495,7 +652,7 @@ const EYEDROPPER_SCALE: f32 = 0.5;
 fn eyedropper(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response, pic: Rect, target: Target, rate: filmcraft_time::FrameRate, time: Tick) {
     let Some(armed) = app.ui.eyedropper.clone() else { return };
     let ctx = ui.ctx().clone();
-    let pending_id = egui::Id::new("eyedropper-pending");
+    let pending_id = egui::Id::unique("eyedropper-pending");
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.ui.eyedropper = None;
         ctx.data_mut(|d| d.remove::<EyedropperPick>(pending_id));
@@ -578,6 +735,137 @@ pub fn fit(area: Rect, w: f32, h: f32) -> Rect {
     Rect::from_center_size(area.center(), vec2(w * s, h * s))
 }
 
+/// The narrowest the time zoom bar's thumb gets, the same as on the Timeline's zoom scroll bar:
+/// room for its two handles and a part between them to grab.
+const MIN_ZOOM_THUMB_W: f32 = 34.0;
+
+/// The fewest frames the time ruler can be zoomed in to.
+const MIN_ZOOM_FRAMES: i64 = 5;
+
+/// A monitor's time zoom range as (start, end) fractions of the clip or sequence, made usable (it
+/// can come from `ui.set`): anything empty, reversed or not a number is the whole length.
+fn time_zoom_range(zoom: Option<[f64; 2]>) -> (f64, f64) {
+    let (s, e) = zoom.map(|[s, e]| (s.clamp(0.0, 1.0), e.clamp(0.0, 1.0))).unwrap_or((0.0, 1.0));
+    if s < e { (s, e) } else { (0.0, 1.0) }
+}
+
+/// The times (start, end) of `origin..end` that the time ruler shows at the zoom range `zoom`.
+fn ruler_shown(zoom: Option<[f64; 2]>, origin: Tick, end: Tick) -> (Tick, Tick) {
+    let (s, e) = time_zoom_range(zoom);
+    let len = end.0.saturating_sub(origin.0).max(0) as f64;
+    let at = |f: f64| Tick(origin.0.saturating_add((f * len) as i64));
+    (if s > 0.0 { at(s) } else { origin }, if e < 1.0 { at(e) } else { end })
+}
+
+/// While the monitor plays, a zoomed time ruler follows the playhead `time` the way the Timeline
+/// does (Settings ▸ Timeline ▸ Timeline Playback Auto-Scrolling): with page scrolling, a playhead
+/// running off the right edge or jumping before the left one brings it back near the left edge;
+/// with smooth scrolling it stays in the middle once it gets there. The range keeps its width.
+fn follow_playhead(app: &mut FilmcraftApp, which: Which, origin: Tick, end: Tick, time: Tick) {
+    let playing = if which == Which::Program { app.playback.playing } else { app.source_playback.clock.playing };
+    let mode = app.session.prefs.timeline.auto_scroll.as_str();
+    let zoom = monitor_view::view(app, which).time_zoom;
+    let len = end.0.saturating_sub(origin.0);
+    if !playing || mode == "noScroll" || zoom.is_none() || len <= 0 {
+        return;
+    }
+    let (s, e) = time_zoom_range(zoom);
+    let span = e - s;
+    let f = time.0.saturating_sub(origin.0) as f64 / len as f64;
+    let across = (f - s) / span;
+    let start = if mode == "smoothScroll" {
+        (!(0.0..=0.5).contains(&across)).then_some(f - span * 0.5)
+    } else {
+        (!(0.0..=0.95).contains(&across)).then_some(f - span * 0.05)
+    };
+    if let Some(ns) = start.map(|ns| ns.clamp(0.0, 1.0 - span)) {
+        monitor_view::view_mut(app, which).time_zoom = Some([ns, (ns + span).min(1.0)]);
+    }
+}
+
+/// The zoom scroll bar under the time ruler. Its thumb is the part of the clip or sequence
+/// (`origin..end`) the ruler shows: drag a handle at either end to zoom, the middle to scroll, or
+/// press beside the thumb to bring it there. A thumb filling the bar shows all of it.
+fn time_zoom_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Which, origin: Tick, end: Tick, rate: filmcraft_time::FrameRate) {
+    let t = app.tokens;
+    let prefix = if which == Which::Program { "program" } else { "source" };
+    let len = end.0.saturating_sub(origin.0);
+    let min_span = if len > 0 { (rate.frame_duration().0.saturating_mul(MIN_ZOOM_FRAMES) as f64 / len as f64).min(1.0) } else { 1.0 };
+    let (s, e) = time_zoom_range(monitor_view::view(app, which).time_zoom);
+    let span = e - s;
+    let w = (span as f32 * bar.width()).clamp(MIN_ZOOM_THUMB_W.min(bar.width()), bar.width());
+    let travel = (bar.width() - w).max(0.0);
+    let range = (1.0 - span).max(0.0);
+    let left = bar.min.x + if range > 0.0 { (s / range).clamp(0.0, 1.0) as f32 * travel } else { 0.0 };
+    let per_point = if travel > 0.5 { range / travel as f64 } else { 0.0 };
+    let thumb = Rect::from_min_max(pos2(left, bar.min.y), pos2(left + w, bar.max.y));
+    let p = ui.painter();
+    p.rect_filled(bar, bar.height() / 2.0, t.separator);
+    let hover = ui.rect_contains_pointer(thumb);
+    p.rect_filled(thumb, thumb.height() / 2.0, if hover { t.scroll_thumb_hover } else { t.scroll_thumb });
+    for x in [thumb.min.x + thumb.height() / 2.0, thumb.max.x - thumb.height() / 2.0] {
+        p.circle_filled(pos2(x, thumb.center().y), 4.5, t.panel_bg);
+        p.circle_stroke(pos2(x, thumb.center().y), 4.5, Stroke::new(1.5, t.icon_active));
+    }
+    app.auto.add(&format!("{prefix}.zoomBar"), thumb, "zoom scroll bar");
+    app.auto.add(&format!("{prefix}.zoomBar.track"), bar, "zoom scroll bar track");
+    let resp = ui.interact(bar, egui::Id::unique((prefix, "zoomBar")), Sense::click_and_drag());
+    // the start that brings the thumb's middle under `x`
+    let jump = |x: f32| ((x - bar.min.x - w / 2.0) as f64 * per_point).clamp(0.0, range);
+    let mut set = None;
+    if resp.clicked()
+        && per_point > 0.0
+        && let Some(ns) = resp.interact_pointer_pos().filter(|pos| !thumb.contains(*pos)).map(|pos| jump(pos.x))
+    {
+        set = Some((ns, ns + span));
+    }
+    // (a drag is known to be one only after the pointer has moved: what was grabbed is what was
+    // under the pointer when the button went down)
+    let drag_id = egui::Id::unique((prefix, "zoomBar-drag"));
+    if resp.drag_started_by(egui::PointerButton::Primary)
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
+    {
+        let mut start = s;
+        let part = ZoomThumbPart::at(thumb, pos);
+        if part == ZoomThumbPart::Beside && per_point > 0.0 {
+            start = jump(pos.x);
+            set = Some((start, start + span));
+        }
+        let mode = match part {
+            ZoomThumbPart::Left => 1u8,
+            ZoomThumbPart::Right => 2,
+            ZoomThumbPart::Beside | ZoomThumbPart::Middle => 0,
+        };
+        ui.data_mut(|d| d.insert_temp(drag_id, (pos.x, start, mode)));
+    }
+    if resp.dragged_by(egui::PointerButton::Primary)
+        && let Some((grab, start, mode)) = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id))
+    {
+        match mode {
+            // the thumb's middle: scroll, the thumb staying under the pointer
+            0 => {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let ns = (start + (pos.x - grab) as f64 * per_point).clamp(0.0, range);
+                    set = Some((ns, ns + span));
+                }
+            }
+            // a handle: zoom, the other end staying where it is
+            _ => {
+                let dx = resp.drag_delta().x as f64 / bar.width().max(1.0) as f64;
+                set = Some(if mode == 1 { ((s + dx).clamp(0.0, (e - min_span).max(0.0)), e) } else { (s, (e + dx).clamp((s + min_span).min(1.0), 1.0)) });
+            }
+        }
+    }
+    if resp.drag_stopped() {
+        ui.data_mut(|d| d.remove::<(f32, f64, u8)>(drag_id));
+    }
+    let handle_grabbed = ui.data(|d| d.get_temp::<(f32, f64, u8)>(drag_id)).is_some_and(|(_, _, mode)| mode != 0);
+    crate::widgets::zoom_thumb_cursor(ui, &resp, thumb, handle_grabbed);
+    if let Some((s, e)) = set {
+        monitor_view::view_mut(app, which).time_zoom = (s > 0.0 || e < 1.0).then_some([s, e.min(1.0)]);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn mini_timeline(
     app: &mut FilmcraftApp,
@@ -593,23 +881,43 @@ fn mini_timeline(
 ) {
     let t = app.tokens;
     let duration = end;
-    let dur = (end - origin).0.max(1) as f64;
-    let xof = |tk: Tick| bar.min.x + (((tk - origin).0 as f64 / dur) as f32).clamp(0.0, 1.0) * bar.width();
-    let resp = ui.interact(bar, egui::Id::new((which as u8, "scrub")), Sense::click_and_drag());
+    // the part the zoom bar shows
+    let shown = ruler_shown(monitor_view::view(app, which).time_zoom, origin, end);
+    let dur = (shown.1 - shown.0).0.max(1) as f64;
+    let xof = |tk: Tick| bar.min.x + (((tk - shown.0).0 as f64 / dur) as f32).clamp(0.0, 1.0) * bar.width();
+    // a time off a zoomed ruler is not drawn (past either end of it all, it sits at that end)
+    let shows = |tk: Tick| (tk >= shown.0 || shown.0 <= origin) && (tk <= shown.1 || shown.1 >= end);
+    let resp = ui.interact(bar, egui::Id::unique((which as u8, "scrub")), Sense::click_and_drag());
     app.auto.add(if which == Which::Program { "program.scrubBar" } else { "source.scrubBar" }, bar, "scrub bar");
-    let interaction = crate::panels::source_range::interact(app, ui, bar, which);
+    let interaction = crate::panels::source_range::interact(app, ui, bar, which, shown);
     let p = ui.painter();
-    // ticks: minor 4 pt, major 10 pt, ~20 pt spacing
-    let n = ((bar.width() / 20.0) as i32).max(2);
-    for i in 0..=n {
-        let x = bar.min.x + bar.width() * i as f32 / n as f32;
-        let h = if i % 5 == 0 { 8.0 } else { 3.5 };
-        p.line_segment([pos2(x, bar.max.y - h), pos2(x, bar.max.y)], Stroke::new(1.0, t.text_faint));
+    // ticks: minor 3.5 pt high, major 8 pt, on whole frames chosen as on the Timeline's ruler (minor
+    // at least 12 pt apart, major at least 110 pt), so they spread out and fill in as the ruler zooms
+    let frame_px = rate.frame_duration().0 as f64 / dur * f64::from(bar.width());
+    let base = rate.timecode_base();
+    let steps: Vec<i64> =
+        [1, 2, 5, 10, base / 2].into_iter().chain([1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600].map(|k| base.saturating_mul(k))).collect();
+    let major = steps.iter().copied().find(|s| *s > 0 && *s as f64 * frame_px >= 110.0).unwrap_or(base.saturating_mul(3600)).max(1);
+    // a step that divides the major one, so every major tick is on a minor one
+    let minor = steps.iter().copied().find(|s| *s > 0 && major % s == 0 && *s as f64 * frame_px >= 12.0).unwrap_or(major);
+    let mut f = rate.frame_at(shown.0) / minor * minor;
+    // (bounded: a ruler too short for its ticks shows the first few hundred)
+    for _ in 0..512 {
+        let x = bar.min.x + ((rate.tick_of(f).0 as f64 - shown.0.0 as f64) / dur) as f32 * bar.width();
+        if x > bar.max.x + 0.5 {
+            break;
+        }
+        if x >= bar.min.x - 0.5 {
+            let h = if f % major == 0 { 8.0 } else { 3.5 };
+            p.line_segment([pos2(x, bar.max.y - h), pos2(x, bar.max.y)], Stroke::new(1.0, t.text_faint));
+        }
+        f = f.saturating_add(minor);
     }
-    let a = xof(interaction.range.map(|r| r.start).unwrap_or(mark_in.unwrap_or(origin)));
+    let a_t = interaction.range.map(|r| r.start).unwrap_or(mark_in.unwrap_or(origin));
     // Out includes its frame; both the shading and its bracket end at the following boundary.
-    let b = xof(interaction.range.map(|r| r.end()).unwrap_or_else(|| mark_out.map(|o| Tick(o.0.saturating_add(rate.frame_duration().0))).unwrap_or(duration)))
-        .max(a);
+    let b_t = interaction.range.map(|r| r.end()).unwrap_or_else(|| mark_out.map(|o| Tick(o.0.saturating_add(rate.frame_duration().0))).unwrap_or(duration));
+    let a = xof(a_t);
+    let b = xof(b_t).max(a);
     if mark_in.is_some() || mark_out.is_some() {
         p.rect_filled(Rect::from_min_max(pos2(a, bar.min.y + 8.0), pos2(b, bar.max.y)), 0.0, Color32::from_rgba_unmultiplied(0x5c, 0x5c, 0x5c, 128));
     }
@@ -618,8 +926,8 @@ fn mini_timeline(
         let top = bar.min.y + 8.0;
         let bottom = bar.max.y;
         let mid = (top + bottom) * 0.5;
-        for (x, direction, hot) in [(a, 1.0_f32, interaction.in_hot), (b, -1.0_f32, interaction.out_hot)] {
-            if hot || (direction > 0.0 && mark_in.is_none()) || (direction < 0.0 && mark_out.is_none()) {
+        for (x, direction, hot, edge) in [(a, 1.0_f32, interaction.in_hot, a_t), (b, -1.0_f32, interaction.out_hot, b_t)] {
+            if hot || !shows(edge) || (direction > 0.0 && mark_in.is_none()) || (direction < 0.0 && mark_out.is_none()) {
                 continue;
             }
             let point = |offset: f32, y: f32| pos2(x + direction * offset, y);
@@ -647,7 +955,7 @@ fn mini_timeline(
         Which::Source => app.session.state.source_item.and_then(|i| filmcraft_engine::clip_ops::source_view(&app.session, i)).map(|v| v.markers),
     };
     if let Some(markers) = markers {
-        for m in &markers {
+        for m in markers.iter().filter(|m| shows(m.start)) {
             let x = xof(m.start);
             let c = m.color.marker_rgb();
             let c = Color32::from_rgb(c[0], c[1], c[2]);
@@ -659,15 +967,17 @@ fn mini_timeline(
             ));
         }
     }
-    let x = xof(time);
-    // playhead: blue triangle over a line
-    let hy = bar.max.y - 11.0;
-    p.add(egui::Shape::convex_polygon(
-        vec![pos2(x - 5.5, hy), pos2(x + 5.5, hy), pos2(x + 5.5, hy + 5.0), pos2(x, hy + 9.0), pos2(x - 5.5, hy + 5.0)],
-        t.playhead,
-        Stroke::NONE,
-    ));
-    p.line_segment([pos2(x, hy + 8.0), pos2(x, bar.max.y)], Stroke::new(1.0, t.playhead));
+    if shows(time) {
+        let x = xof(time);
+        // playhead: blue triangle over a line
+        let hy = bar.max.y - 11.0;
+        p.add(egui::Shape::convex_polygon(
+            vec![pos2(x - 5.5, hy), pos2(x + 5.5, hy), pos2(x + 5.5, hy + 5.0), pos2(x, hy + 9.0), pos2(x - 5.5, hy + 5.0)],
+            t.playhead,
+            Stroke::NONE,
+        ));
+        p.line_segment([pos2(x, hy + 8.0), pos2(x, bar.max.y)], Stroke::new(1.0, t.playhead));
+    }
     if interaction.in_hot {
         crate::panels::source_range::trim_cue(p, a, bar, 4.0);
     }
@@ -675,10 +985,10 @@ fn mini_timeline(
         crate::panels::source_range::trim_cue(p, b, bar, -4.0);
     }
     let scrub = interaction.scrub.or_else(|| {
-        if !interaction.handled && (resp.dragged() || resp.clicked()) {
+        if !interaction.handled && (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked()) {
             resp.interact_pointer_pos().map(|pos| {
                 let f = ((pos.x - bar.min.x) / bar.width().max(1.0)).clamp(0.0, 1.0) as f64;
-                rate.snap(origin + Tick((f * dur) as i64))
+                rate.snap(shown.0 + Tick((f * dur) as i64))
             })
         } else {
             None
@@ -687,7 +997,7 @@ fn mini_timeline(
     if let Some(tk) = scrub {
         match which {
             Which::Program => {
-                app.stop();
+                app.stop_for_scrub();
                 app.session.set_playhead(tk);
             }
             Which::Source => {
@@ -710,6 +1020,10 @@ fn set_transport_visible(hidden: &mut Vec<String>, command: &str, visible: bool)
     }
 }
 
+/// Width and height of a transport button.
+const TRANSPORT_BUTTON: f32 = 28.0;
+
+/// Draw a monitor's Source or Program transport. Row buttons use `transport_button`; overflow-menu entries call `invoke_transport` directly.
 fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which) {
     let t = app.tokens;
     let src = which == Which::Source;
@@ -734,9 +1048,11 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
             (Icon::MarkIn, "markers.markIn", tl!("Mark In (I)")),
             (Icon::MarkOut, "markers.markOut", tl!("Mark Out (O)")),
             (Icon::GoToIn, "markers.goToIn", tl!("Go to In (Shift+I)")),
+            (Icon::PrevEdit, "playhead.prevEdit", tl!("Go to Previous Edit Point")),
             (Icon::StepBack, "playhead.stepBack", tl!("Step Back 1 Frame (Left)")),
             (if app.playback.playing { Icon::Pause } else { Icon::Play }, "playback.toggle", tl!("Play-Stop Toggle (Space)")),
             (Icon::StepFwd, "playhead.stepForward", tl!("Step Forward 1 Frame (Right)")),
+            (Icon::NextEdit, "playhead.nextEdit", tl!("Go to Next Edit Point")),
             (Icon::GoToOut, "markers.goToOut", tl!("Go to Out (Shift+O)")),
             (Icon::Lift, "sequence.lift", tl!("Lift (;)")),
             (Icon::Extract, "sequence.extract", tl!("Extract (')")),
@@ -746,79 +1062,162 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     };
     let mut buttons = buttons;
     if !src {
-        // Optional control, discoverable through the editor without changing existing layouts.
         buttons.push((Icon::Loop, "playback.loop", tl!("Loop")));
     }
     let hidden = monitor_view::view(app, which).transport_hidden.clone();
-    let bw = 30.0;
-    let total = buttons.iter().filter(|(_, cmd, _)| transport_visible(&hidden, cmd)).count() as f32 * bw;
-    let mut x = row.center().x - total / 2.0;
-    let ctx = ui.ctx().clone();
+    let all_buttons = buttons.clone();
+    buttons.retain(|(_, command, _)| transport_visible(&hidden, command));
     let prefix = if src { "source" } else { "program" };
-    for &(icon, cmd, tip) in &buttons {
-        if !transport_visible(&hidden, cmd) {
-            continue;
-        }
-        let r = Rect::from_min_size(pos2(x, row.min.y + 2.0), vec2(bw - 2.0, 26.0));
-        let resp = ui.interact(r, egui::Id::new((prefix, cmd)), Sense::click()).on_hover_text(tip);
-        app.auto.add(&format!("{prefix}.transport.{cmd}"), r, tip);
-        let is_play = cmd.ends_with("play") || cmd == "playback.toggle";
-        if resp.hovered() {
-            ui.painter().rect_filled(r, 4.0, t.hover);
-        }
-        let sz = if is_play { 16.0 } else { 14.0 };
-        let on = cmd == "media.toggleProxies" && app.session.media.use_proxies();
-        let col = if on {
-            t.accent
-        } else if resp.hovered() {
-            t.tab_text_active
-        } else {
-            t.icon
-        };
-        icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(sz, sz)), icon, col);
-        if resp.clicked() {
-            let r = match cmd {
-                "src.markIn" => app.session.execute("markers.markIn", json!({"target": "source"})).map_err(|e| e.to_string()),
-                "src.markOut" => app.session.execute("markers.markOut", json!({"target": "source"})).map_err(|e| e.to_string()),
-                "src.goIn" | "src.goOut" | "src.stepBack" | "src.stepFwd" => {
-                    source_nav(app, cmd);
-                    Ok(serde_json::Value::Null)
+    if row.width() >= 30.0 {
+        // Keep the existing button-editor affordance only when it has its own space.
+        // Customize this monitor's transport separately from the other monitor.
+        let r = Rect::from_min_size(pos2(row.max.x - 30.0, row.min.y + 5.0), vec2(22.0, 22.0));
+        let resp = ui.interact(r, egui::Id::unique((prefix, "btn-editor")), Sense::click()).on_hover_text(tl!("Button Editor"));
+        app.auto.add(&format!("{prefix}.transport.editor"), r, "Button Editor");
+        icons::paint(ui.painter(), r.shrink(5.0), Icon::Plus, if resp.hovered() { t.tab_text_active } else { t.text_dim });
+        let mut edited_hidden = hidden.clone();
+        let editor_width = (ui.ctx().content_rect().width() - 10.0).clamp(1.0, 225.0);
+        let editor_height = (ui.ctx().content_rect().height() - 16.0).max(1.0);
+        egui::Popup::menu(&resp).width(editor_width).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            ui.set_width(editor_width);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            let scroll = egui::ScrollArea::vertical().id_salt((prefix, "editor-scroll")).max_height(editor_height).show(ui, |ui| {
+                for &(_, cmd, tip) in &all_buttons {
+                    let mut visible = transport_visible(&edited_hidden, cmd);
+                    let checkbox = ui.checkbox(&mut visible, tip);
+                    app.auto.add(&format!("{prefix}.transport.editor.{cmd}"), checkbox.rect, tip);
+                    if checkbox.changed() {
+                        set_transport_visible(&mut edited_hidden, cmd, visible);
+                    }
                 }
-
-                "exportFrame" => crate::menus::invoke(app, &ctx, "file.exportFrame", json!({"monitor": if src { "source" } else { "program" }})),
-                c => crate::menus::invoke(app, &ctx, c, json!({"monitor": if src { "source" } else { "program" }})),
-            };
-            if let Err(e) = r {
-                app.ui.status = e;
-            }
+                ui.separator();
+                let reset = ui.button(tl!("Reset"));
+                app.auto.add(&format!("{prefix}.transport.editor.reset"), reset.rect, "Reset");
+                if reset.clicked() {
+                    edited_hidden = crate::state::MonitorView::default().transport_hidden;
+                }
+            });
+            app.auto.add(&format!("{prefix}.transport.editor.scroll"), scroll.inner_rect, "Button editor");
+        });
+        if edited_hidden != hidden {
+            monitor_view::view_mut(app, which).transport_hidden = edited_hidden;
         }
-        x += bw;
     }
-    // Customize this monitor's transport separately from the other monitor.
-    let r = Rect::from_min_size(pos2(row.max.x - 30.0, row.min.y + 4.0), vec2(22.0, 22.0));
-    let resp = ui.interact(r, egui::Id::new((prefix, "btn-editor")), Sense::click()).on_hover_text(tl!("Button Editor"));
-    app.auto.add(&format!("{prefix}.transport.editor"), r, "Button Editor");
-    icons::paint(ui.painter(), r.shrink(5.0), Icon::Plus, if resp.hovered() { t.tab_text_active } else { t.text_dim });
-    let mut edited_hidden = hidden.clone();
-    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        ui.set_min_width(225.0);
-        for &(_, cmd, tip) in &buttons {
-            let mut visible = transport_visible(&edited_hidden, cmd);
-            let checkbox = ui.checkbox(&mut visible, tip);
-            app.auto.add(&format!("{prefix}.transport.editor.{cmd}"), checkbox.rect, tip);
-            if checkbox.changed() {
-                set_transport_visible(&mut edited_hidden, cmd, visible);
+    let available = (row.width() - 46.0).max(0.0);
+    let widths = vec![TRANSPORT_BUTTON; buttons.len()];
+    // roomy spacing when every button fits with it, tight spacing before any goes to the overflow menu
+    let count = buttons.len() as f32;
+    let gap = if count * TRANSPORT_BUTTON + (count - 1.0).max(0.0) * 6.0 <= available { 6.0 } else { 2.0 };
+    let Some(fit) = craft_ui::layout::fit_toolbar(&widths, available, gap, TRANSPORT_BUTTON) else {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_max(row.min, pos2((row.right() - 30.0).max(row.left()), row.bottom()))), |ui| {
+            egui::ScrollArea::horizontal().id_salt((prefix, "transport-scroll")).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (icon, command, label) in &buttons {
+                        let (rect, _) = ui.allocate_exact_size(vec2(TRANSPORT_BUTTON, TRANSPORT_BUTTON), Sense::hover());
+                        if transport_button(app, ui, rect, prefix, *icon, command, label) {
+                            invoke_transport(app, ui.ctx(), which, command);
+                        }
+                    }
+                });
+            });
+        });
+        return;
+    };
+    let pitch = TRANSPORT_BUTTON + gap;
+    let total = fit.shown.len() as f32 * pitch - gap + if fit.overflow.is_empty() { 0.0 } else { pitch };
+    let mut x = row.center().x - 15.0 - total.max(TRANSPORT_BUTTON) / 2.0;
+    for (index, _) in &fit.shown {
+        let Some((icon, command, label)) = buttons.get(*index) else { continue };
+        let rect = Rect::from_min_size(pos2(x, row.min.y + 2.0), vec2(TRANSPORT_BUTTON, TRANSPORT_BUTTON));
+        if transport_button(app, ui, rect, prefix, *icon, command, label) {
+            invoke_transport(app, ui.ctx(), which, command);
+        }
+        x += pitch;
+    }
+    if !fit.overflow.is_empty() {
+        let rect = Rect::from_min_size(pos2(x, row.min.y + 2.0), vec2(TRANSPORT_BUTTON, TRANSPORT_BUTTON));
+        let response = ui.interact(rect, egui::Id::unique((prefix, "transport-more")), Sense::click()).on_hover_text(tl!("More transport controls"));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("More transport controls")));
+        if response.hovered() {
+            ui.painter().rect_filled(rect, 4.0, t.hover);
+        }
+        for offset in [-6.0, 0.0, 6.0] {
+            ui.painter().circle_filled(rect.center() + vec2(offset, 0.0), 2.0, t.icon);
+        }
+        if response.has_focus() {
+            ui.painter().rect_stroke(rect.shrink(2.0), 2.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+        }
+        app.auto.add_response(&format!("{prefix}.transport.more"), &response, "More transport controls");
+        egui::Popup::menu(&response).show(|ui| {
+            for index in &fit.overflow {
+                let Some((_, command, label)) = buttons.get(*index) else { continue };
+                let selected = match *command {
+                    "media.toggleProxies" => Some(app.session.media.use_proxies()),
+                    "playback.loop" => Some(transport_loop_on(app, which == Which::Source)),
+                    "playback.toggle" => Some(app.playback.playing),
+                    "source.playback.toggle" => Some(app.source_playback.clock.playing),
+                    _ => None,
+                };
+                let response = if let Some(selected) = selected { ui.selectable_label(selected, *label) } else { ui.button(*label) };
+                app.auto.add_response(&format!("{prefix}.transport.{command}"), &response, label);
+                if response.clicked() {
+                    invoke_transport(app, ui.ctx(), which, command);
+                    ui.close();
+                }
             }
+        });
+    }
+}
+
+/// Whether the Source (`source`) or Program monitor is looping.
+fn transport_loop_on(app: &FilmcraftApp, source: bool) -> bool {
+    if source { app.source_playback.clock.looping } else { app.playback.looping }
+}
+
+fn transport_is_lit(command: &str, proxies_enabled: bool, loop_enabled: bool) -> bool {
+    match command {
+        "media.toggleProxies" => proxies_enabled,
+        "playback.loop" => loop_enabled,
+        _ => false,
+    }
+}
+
+/// Draw one transport button with a unique id, automation registration, hover fill, proxy accent and a larger play icon; returns whether it was clicked.
+fn transport_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, prefix: &str, icon: Icon, command: &str, label: &str) -> bool {
+    let t = app.tokens;
+    let response = ui.interact(rect, egui::Id::unique((prefix, command)), Sense::click()).on_hover_text(label);
+    app.auto.add_response(&format!("{prefix}.transport.{command}"), &response, label);
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 4.0, t.hover);
+    }
+    let size = if matches!(command, "playback.toggle" | "source.playback.toggle") { 20.0 } else { 18.0 };
+    // Loop shows as active (accent) while looping is on; both monitors use this command id, so check the prefix.
+    let loop_enabled = transport_loop_on(app, prefix.starts_with("source"));
+    let color = if transport_is_lit(command, app.session.media.use_proxies(), loop_enabled) {
+        t.accent
+    } else if response.hovered() {
+        t.tab_text_active
+    } else {
+        t.icon
+    };
+    icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(size, size)), icon, color);
+    response.clicked()
+}
+
+fn invoke_transport(app: &mut FilmcraftApp, ctx: &egui::Context, which: Which, command: &str) {
+    let source = which == Which::Source;
+    let result = match command {
+        "src.markIn" => app.session.execute("markers.markIn", json!({"target": "source"})).map_err(|error| error.to_string()),
+        "src.markOut" => app.session.execute("markers.markOut", json!({"target": "source"})).map_err(|error| error.to_string()),
+        "src.goIn" | "src.goOut" | "src.stepBack" | "src.stepFwd" => {
+            source_nav(app, command);
+            Ok(serde_json::Value::Null)
         }
-        ui.separator();
-        let reset = ui.button(tl!("Reset"));
-        app.auto.add(&format!("{prefix}.transport.editor.reset"), reset.rect, "Reset");
-        if reset.clicked() {
-            edited_hidden = crate::state::MonitorView::default().transport_hidden;
-        }
-    });
-    if edited_hidden != hidden {
-        monitor_view::view_mut(app, which).transport_hidden = edited_hidden;
+        "exportFrame" => crate::menus::invoke(app, ctx, "file.exportFrame", json!({"monitor": if source { "source" } else { "program" }})),
+        command => crate::menus::invoke(app, ctx, command, json!({"monitor": if source { "source" } else { "program" }})),
+    };
+    if let Err(error) = result {
+        app.ui.status = error;
     }
 }
 
@@ -888,11 +1287,36 @@ mod tests {
         set_transport_visible(&mut program, "playback.loop", true);
         set_transport_visible(&mut program, "playback.loop", true);
         assert!(transport_visible(&program, "playback.loop"));
-        assert!(program.is_empty(), "enabling twice must not leave hidden entries");
+        assert!(!program.iter().any(|id| id == "playback.loop"), "enabling twice must not leave hidden entries");
         set_transport_visible(&mut program, "playhead.stepForward", false);
         set_transport_visible(&mut program, "playhead.stepForward", false);
-        assert_eq!(program, vec!["playhead.stepForward"]);
+        assert_eq!(program.iter().filter(|id| *id == "playhead.stepForward").count(), 1);
         assert!(transport_visible(&source, "playhead.stepForward"));
+    }
+
+    #[test]
+    fn loop_command_turns_the_monitor_loop_state_on_and_off() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let ctx = egui::Context::default();
+        for (source, params) in [(false, json!({"monitor": "program"})), (true, json!({"monitor": "source"}))] {
+            assert!(!transport_is_lit("playback.loop", false, transport_loop_on(&app, source)));
+            crate::menus::invoke(&mut app, &ctx, "playback.loop", params.clone()).unwrap();
+            assert!(transport_is_lit("playback.loop", false, transport_loop_on(&app, source)), "on after one toggle (source: {source})");
+            assert!(transport_loop_on(&app, source) != transport_loop_on(&app, !source), "only that monitor loops");
+            crate::menus::invoke(&mut app, &ctx, "playback.loop", params).unwrap();
+            assert!(!transport_is_lit("playback.loop", false, transport_loop_on(&app, source)), "off after the second (source: {source})");
+        }
+    }
+
+    #[test]
+    fn loop_transport_is_lit_only_while_looping() {
+        assert!(!transport_is_lit("playback.loop", false, false));
+        assert!(transport_is_lit("playback.loop", false, true));
+
+        assert!(!transport_is_lit("media.toggleProxies", false, true));
+        assert!(transport_is_lit("media.toggleProxies", true, false));
+
+        assert!(!transport_is_lit("playback.toggle", true, true));
     }
 
     #[test]

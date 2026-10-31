@@ -3,18 +3,20 @@
 //! and Save Arrangement…. Drafts live in `UiState::project_panel.dialog` (serde, so agents fill
 //! them with `ui.set`); OK runs one engine command.
 
-use egui::Align2;
+use crate::widgets::CenteredDialog as _;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::panels::project::ProjectDialog;
 
 fn push(app: &mut FilmcraftApp, id: &str, r: &egui::Response, label: &str) {
+    crate::widgets::accessible_name(r.clone(), label);
     app.auto.add(id, r.rect, label);
 }
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.project_panel.dialog.clone() else { return };
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("project-dialog-before-drag"), &mut d);
     let mut close = false;
     let mut run: Option<(String, Value)> = None;
     let title = match &d {
@@ -24,7 +26,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ProjectDialog::FreeformOptions { .. } => tl!("Freeform View Options"),
         ProjectDialog::SaveArrangement { .. } => tl!("Save Arrangement"),
     };
-    let mut win = egui::Window::new(title).id(egui::Id::new("project-dialog")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]);
+    let mut win = egui::Window::new(title).id(egui::Id::unique("project-dialog")).collapsible(false).resizable(false).centered(ctx);
     // a fixed size keeps the two-list dialog from shifting while its lists settle
     if matches!(d, ProjectDialog::MetadataDisplay { .. }) {
         win = win.fixed_size(egui::vec2(480.0, 470.0));
@@ -35,7 +37,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ProjectDialog::SavePresetAs { name } => {
                 ui.horizontal(|ui| {
                     ui.label(tl!("Name:"));
-                    let r = ui.add(egui::TextEdit::singleline(name).desired_width(240.0));
+                    let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(name).desired_width(240.0)), "Name");
                     push(app, "projectDialog.name", &r, "Name");
                 });
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -50,11 +52,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ProjectDialog::FreeformOptions { options } => {
                 egui::Grid::new("ff-options").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                     ui.label(tl!("Grid spacing:"));
-                    let r = ui.add(egui::DragValue::new(&mut options.grid).range(4.0..=200.0).suffix(" pt"));
+                    let r = ui.add(crate::widgets::number_drag(&mut options.grid).range(4.0..=200.0).suffix(" pt"));
                     push(app, "projectDialog.grid", &r, "Grid spacing");
                     ui.end_row();
                     ui.label(tl!("Default clip size:"));
-                    let r = ui.add(egui::DragValue::new(&mut options.card_size).range(48.0..=480.0).suffix(" pt"));
+                    let r = ui.add(crate::widgets::number_drag(&mut options.card_size).range(48.0..=480.0).suffix(" pt"));
                     push(app, "projectDialog.cardSize", &r, "Default clip size");
                     ui.end_row();
                 });
@@ -73,7 +75,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ProjectDialog::SaveArrangement { name, bin } => {
                 ui.horizontal(|ui| {
                     ui.label(tl!("Name:"));
-                    let r = ui.add(egui::TextEdit::singleline(name).desired_width(240.0));
+                    let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(name).desired_width(240.0)), "Name");
                     push(app, "projectDialog.name", &r, "Name");
                 });
                 if ok_cancel(app, ui, &mut close) && !name.trim().is_empty() {
@@ -82,7 +84,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         }
     });
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if crate::widgets::escape_closes(ctx) {
         close = true;
     }
     if let Some((cmd, p)) = run {
@@ -123,7 +125,8 @@ fn metadata_display(app: &mut FilmcraftApp, ui: &mut egui::Ui, columns: &mut Vec
     let all = filmcraft_engine::project_panel::all_columns(&app.session.project);
     ui.horizontal(|ui| {
         ui.label(tl!("Show:"));
-        let r = ui.add(egui::TextEdit::singleline(filter).hint_text(tl!("Search fields")).desired_width(220.0));
+        let r =
+            crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(filter).hint_text(tl!("Search fields")).desired_width(220.0)), "Search fields");
         push(app, "projectDialog.filter", &r, "Search fields");
     });
     ui.add_space(4.0);
@@ -216,7 +219,7 @@ fn manage_presets(app: &mut FilmcraftApp, ui: &mut egui::Ui, selected: &mut usiz
     let filled = presets.get(*selected).is_some_and(Option::is_some);
     ui.horizontal(|ui| {
         ui.label(tl!("Name:"));
-        let r = ui.add_enabled(filled, egui::TextEdit::singleline(name).desired_width(200.0));
+        let r = crate::widgets::accessible_name(ui.add_enabled(filled, egui::TextEdit::singleline(name).desired_width(200.0)), "Name");
         push(app, "projectDialog.name", &r, "Name");
         let b = ui.add_enabled(filled, egui::Button::new(tl!("Rename")));
         push(app, "projectDialog.rename", &b, "Rename");

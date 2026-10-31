@@ -1,6 +1,6 @@
 //! The export audio path: the sequence mix at the output sample rate, folded to the output
 //! channel count, with Export ▸ Effects ▸ Loudness Normalization (a BS.1770-4 measuring pass over
-//! the export range, then a linear gain and a look-ahead true-peak limiter).
+//! the export range, then bounded gain refinement through a look-ahead true-peak limiter).
 //!
 //! The limiter's look-ahead delays its output; [`AudioOut`] mixes that many samples ahead (silence
 //! past the end of the range) and drops the first ones, so the exported audio stays aligned with
@@ -20,6 +20,7 @@ use crate::{ExportError, ExportSettings, Result};
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
 pub struct LoudnessReport {
     pub measured_lufs: f64,
+    /// Applied gain before the limiter, including bounded loudness correction.
     pub gain_db: f64,
 }
 
@@ -84,9 +85,60 @@ impl AudioOut {
         }
         let measured = meter.integrated();
         let gain_db = filmcraft_audio_dsp::normalize_gain_db(measured, ln.target_lufs);
-        self.gain = 10f64.powf(gain_db / 20.0) as f32;
-        self.loudness = Some(LoudnessReport { measured_lufs: measured, gain_db });
+        // Limiting changes integrated loudness. Measure the actual limited signal and
+        // refine its INPUT gain; the peak ceiling remains in force on every pass.
+        // Four trials and at most 9 dB of extra drive bound both work and compression.
+        let start = self.out;
+        let mut trial_gain = gain_db;
+        let mut best_gain = gain_db;
+        let mut best_error = f64::INFINITY;
+        let mut previous = None;
+        if measured.is_finite() && ln.target_lufs.is_finite() {
+            for _ in 0..4 {
+                self.rewind(start, trial_gain);
+                let mut limited = filmcraft_audio_dsp::LoudnessMeter::new(self.sr as f64, self.channels);
+                while self.out < self.end {
+                    if cancel() {
+                        self.rewind(start, best_gain);
+                        return Err(ExportError::Cancelled);
+                    }
+                    let until = self.out.saturating_add(self.sr as i64).min(self.end);
+                    if let Some(buf) = self.pull(until, sources) {
+                        let refs: Vec<&[f32]> = buf.iter().map(Vec::as_slice).collect();
+                        limited.process(&refs);
+                    }
+                }
+                let achieved = limited.integrated();
+                if !achieved.is_finite() {
+                    break;
+                }
+                let error = ln.target_lufs - achieved;
+                if error.abs() < best_error {
+                    best_error = error.abs();
+                    best_gain = trial_gain;
+                }
+                // Stop on convergence or a ceiling-limited plateau. An impossible target
+                // must not cause unbounded passes or ever bypass the limiter.
+                if error.abs() <= 0.1 || previous.is_some_and(|last: f64| (achieved - last).abs() < 0.02) {
+                    break;
+                }
+                previous = Some(achieved);
+                trial_gain += error.clamp(-3.0, 3.0);
+            }
+        }
+        self.rewind(start, best_gain);
+        self.loudness = Some(LoudnessReport { measured_lufs: measured, gain_db: best_gain });
         Ok(())
+    }
+
+    /// Restore the output cursor and limiter history between measuring passes and delivery.
+    fn rewind(&mut self, start: i64, gain_db: f64) {
+        self.out = start;
+        self.next_in = start;
+        self.gain = 10f64.powf(gain_db / 20.0) as f32;
+        if let Some(limiter) = self.limiter.as_mut() {
+            limiter.reset();
+        }
     }
 
     /// Mix `n` samples from `pos`, folded to the output channels (silence past the range end).

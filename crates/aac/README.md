@@ -48,6 +48,9 @@ from bitrate/quality), `tns`, `ms_stereo`, `window_shape` (sine/KBD), `adts` (pr
 | 7 | 0 + PCE | C L R Ls Rs Cs LFE (PCE in the ASC; repeated in every AU when ADTS-framed) |
 | 8 | 7 | C Lc Rc L R Ls Rs LFE |
 
+The decoder also reads configurations 11 (6.1: C L R Ls Rs Cs LFE) and 12 (7.1: C L R Ls Rs Lsr Rsr
+LFE) from ISO/IEC 14496-3 Amd 4; ffmpeg 9 writes 7.1 AAC as configuration 12.
+
 `Decoder::layout()` reports the element layout (it follows a PCE for configuration 0).
 
 ## Encoder

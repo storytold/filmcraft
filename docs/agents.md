@@ -23,6 +23,7 @@ and write wherever the user can.
 
 ```sh
 cargo build --release -p filmcraft-cli -p filmcraft
+export FILMCRAFT_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 ./target/release/filmcraft --control 9876 &      # only for the bridge server
 claude                                           # approve the project MCP servers when asked
 ```
@@ -37,19 +38,35 @@ claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraf
 { "mcpServers": { "filmcraft": { "command": "/abs/path/filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"] } } }
 ```
 
+### Effect parameter replies
+
+`effects.setParam` returns `{"keyframes": n, "param": id, "value": value}` on success.
+The keyframe count is zero for a static parameter: this is a successful static edit,
+not a failure. `param` identifies the edited parameter and `value` reports the accepted
+value; a choice supplied by name is returned as its numeric option index. An animated
+edit reports the value written at the requested time, rather than the static fallback.
+For example, setting opacity `blend` to `"Screen"` returns
+`{"keyframes": 0, "param": "blend", "value": 8}`.
+
+`effects.addKeyframe` toggles: it returns `{"added": true, "mediaTime": t}` when it added a keyframe and
+`{"added": false, "mediaTime": t}` when it removed the one already there; `mediaTime` is where the keyframe
+is, to find it again. An explicit `time` keeps its place, outside the clip too, as in `effects.setParam`;
+only the playhead (when no `time` is given) is held to the clip's last tick. `effects.deleteKeyframe`
+returns `{"removed": true}` or `{"removed": false}` (no keyframe sat exactly at `mediaTime`).
+
 ### From an installed release
 
 The release packages ship `filmcraft-cli` alongside the desktop app, so no build is needed:
 
 | Install | CLI |
 |---|---|
-| Windows (MSI) | `C:\Program Files\FilmCraft\filmcraft-cli.exe` by default (wherever you installed it otherwise), not on `PATH` |
+| Windows (MSI) | `%LOCALAPPDATA%\Programs\ArtCraft\FilmCraft\filmcraft-cli.exe` by default (`C:\Program Files\ArtCraft\FilmCraft\filmcraft-cli.exe` for an all-users install, under `Program Files (x86)` instead for the 32-bit build, or wherever you installed it otherwise), not on `PATH` |
 | Linux (deb, rpm) | `/usr/bin/filmcraft-cli` |
 | macOS | the separate `filmcraft-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
 
 ```sh
-# Windows, default install folder
-claude mcp add filmcraft -- "C:\Program Files\FilmCraft\filmcraft-cli.exe" mcp
+# Windows (PowerShell), default install folder
+claude mcp add filmcraft -- "$env:LOCALAPPDATA\Programs\ArtCraft\FilmCraft\filmcraft-cli.exe" mcp
 # Linux, or macOS with the CLI unzipped onto PATH
 claude mcp add filmcraft -- filmcraft-cli mcp
 ```
@@ -110,6 +127,9 @@ progress and stop it:
 
 - The export runs as the same background job `jobs.list` shows. The session is locked only for short
   polls, so other requests (`ping`, `doc_inspect`, `jobs.list`, …) are answered while it encodes.
+- `file.exportMedia` with `wait: true`, an export job in `jobs.list` and each `export.queue.list`
+  item carry `offlineMedia`: the offline items the export drew the placeholder for (see §2b), `[]`
+  when none. The export itself still succeeds; deciding what to do about it is up to the caller.
 - Every job in `jobs.list`, and every encoding item of `export.queue.list`, carries `etaSeconds`: the
   time left at the job's speed over the last 15 seconds, `null` until a second of progress has been
   measured (a loudness pass, a seek) and once it is done. The app shows it as `37% · 2:05 left` in the
@@ -120,9 +140,18 @@ progress and stop it:
 - `notifications/cancelled` for the request stops the encode at the next batch (`jobs.cancel`),
   deletes the partial output (the movie, or the frames and caption sidecar written so far) and sends
   no response, as the MCP cancellation utility asks.
-- Without `wait` the command returns `{job, path}` at once, as before: poll `jobs.list` and stop it
-  with `jobs.cancel`. Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
+- Without `wait` the command returns `{job, path, poll: "jobs.list", cancel: "jobs.cancel"}` at
+  once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
+  with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
+- `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
+  strings, empty when none). If the default or explicitly selected In/Out range covers one
+  sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
+  The export still succeeds, including with `wait: true` over MCP or the bridge. Explicit custom,
+  work-area and entire-sequence ranges are unchanged and do not warn. Queue additions collect
+  warnings from the newly added ranges. `filmcraft-cli export` (including `--queue`)
+  also prints the warning on stderr and suggests `--range entire`; the warning does not change
+  the exit status. Frame counts here use the sequence rate, even when the export rate differs.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
@@ -130,29 +159,31 @@ progress and stop it:
 ## 2. Control channel
 
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one
-JSON request per line and get one JSON reply per line. Full method table:
+JSON request per line and get one JSON reply per line. Set a fresh `FILMCRAFT_CONTROL_TOKEN` for the
+desktop session as above; the CLI / MCP bridge must inherit the same variable. Raw requests must
+include it as `token` on every line (replace the placeholders below). Full setup and method table:
 [control-protocol.md](control-protocol.md).
 
 ```jsonc
-{"id":1,"method":"engine.commands"}
-{"id":2,"method":"engine.execute","params":{"command":"file.openDemoProject"}}
-{"id":3,"method":"engine.execute","params":{"command":"playhead.set","params":{"seconds":2}}}
-{"id":4,"method":"engine.execute","params":{"command":"sequence.addEdit"}}
-{"id":5,"method":"engine.execute","params":{"command":"effects.apply","params":{"effect":"Gaussian Blur"}}}
-{"id":6,"method":"ui.elements","params":{"prefix":"tools."}}
-{"id":7,"method":"ui.click","params":{"id":"tools.Razor"}}
-{"id":8,"method":"ui.key","params":{"key":"Cmd+Z"}}
-{"id":9,"method":"ui.screenshot","params":{"path":"/tmp/timeline.png","panel":"Timeline"}}
+{"id":1,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"engine.commands"}
+{"id":2,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"engine.execute","params":{"command":"file.openDemoProject"}}
+{"id":3,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"engine.execute","params":{"command":"playhead.set","params":{"seconds":2}}}
+{"id":4,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"engine.execute","params":{"command":"sequence.addEdit"}}
+{"id":5,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"engine.execute","params":{"command":"effects.apply","params":{"effect":"Gaussian Blur"}}}
+{"id":6,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"ui.elements","params":{"prefix":"tools."}}
+{"id":7,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"ui.click","params":{"id":"tools.Razor"}}
+{"id":8,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"ui.key","params":{"key":"Cmd+Z"}}
+{"id":9,"token":"<FILMCRAFT_CONTROL_TOKEN>","method":"ui.screenshot","params":{"path":"/tmp/timeline.png","panel":"Timeline"}}
 ```
 
 Replies look like `{"id":4,"ok":true,"result":{"cuts":2}}` or `{"id":7,"ok":false,"error":"…"}`.
 Minimal client:
 
 ```python
-import json, socket
+import json, os, socket
 s = socket.create_connection(("127.0.0.1", 9876)); f = s.makefile("rw")
 def call(method, **params):
-    f.write(json.dumps({"id": 1, "method": method, "params": params}) + "\n"); f.flush()
+    f.write(json.dumps({"id": 1, "token": os.environ["FILMCRAFT_CONTROL_TOKEN"], "method": method, "params": params}) + "\n"); f.flush()
     return json.loads(f.readline())
 print(call("engine.execute", command="sequence.inspect"))
 ```
@@ -166,6 +197,10 @@ Notes:
   an "invalid parameters" error, never a different track.
   In `timeline.place`, `track` is where the picture goes and `audioTrack` where the sound goes;
   an audio track given as `track` places the sound alone, on that track.
+  The clip lands on the frame grid: its start and its end (`time + duration`) each snap to the
+  nearest frame.
+- `sequence.inspect` reports `durationFrames` as the number of frames export renders: a sequence
+  that ends partway through a frame counts that frame.
 - `engine.execute` also runs UI-only commands (`tool.razor`, `playback.toggle`,
   `window.workspace.color`, `window.panel.<name>`).
 - A command that works on the selection is disabled ("no clips selected", "select a clip in the
@@ -212,6 +247,15 @@ filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the runnin
 strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 (`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.
 `--save` writes back to `--project`; `--save-as path` writes elsewhere.
+
+Media that is offline when it is needed (the file is missing, was made offline, or can't be read)
+renders as the "media not found" placeholder. `export` and `render` then name each such item on
+stderr (`item 8 a.mp4 (missing): /path/a.mp4`) and exit 1 after writing the output, so a moved or
+unmounted media folder doesn't pass as a good render. `--allow-offline` accepts the placeholder
+frames: the warning stays and the exit status is 0. The export result lists the same items as
+`offlineMedia` (`[{item, name, path, status, error}]`, `status` as in `media.status`: `missing`,
+`offline` or `unreadable`), and `[]` when every clip it drew was online; check before exporting with
+`exec media.status` or `exec media.findMissing`.
 
 `markers.exportCsv {path}` exports all markers in the active sequence, including colours hidden
 in the UI and markers outside In/Out, sorted by start then id. The UTF-8 CSV has a header and CRLF

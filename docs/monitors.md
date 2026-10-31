@@ -11,14 +11,15 @@ focused monitor (Program by default). Code: `crates/ui-egui/src/panels/monitor_v
 | `view.playbackRes.<full\|half\|quarter\|eighth\|sixteenth>` | View ▸ Playback Resolution | render scale while playing |
 | `view.pausedRes.<…>` | View ▸ Paused Resolution | render scale while stopped (default Full) |
 | `view.highQualityPlayback` | View ▸ High Quality Playback | play at the paused resolution when it is higher |
-| `view.display.<composite\|alpha\|red\|green\|blue>` | View ▸ Display Mode | composite, or one channel as greyscale (colour channels premultiplied) |
+| `view.display.<composite\|alpha\|red\|green\|blue>` | View ▸ Display Mode | composite, or one channel as greyscale (colour channels premultiplied). The channel modes render on the CPU instead of the GPU compositor, and Alpha renders the sequence live instead of using render previews (they are flattened over black), so playback in them is slower |
 | `view.display.multicam` | Display Mode ▸ Multi-Camera | the Program's multi-camera view (`multicam.toggleView`) |
 | `view.display.audioWaveform`, `view.display.videoAndWaveform` | Display Mode ▸ Audio Waveform / Video and Audio Waveform Split | Source Monitor: the clip's waveform (click to move the source playhead); audio-only clips always show it |
 | `view.display.comparison` | Display Mode ▸ Comparison View | Program: the reference frame (left) beside the current frame; the reference starts at the playhead and is stepped or reset with the buttons under it, or `view.compare.setReference {time\|seconds}` |
-| `view.magnification.<fit\|10\|25\|50\|75\|100\|150\|200\|400\|800\|1600>` | View ▸ Magnification and the zoom dropdown | 100% = one frame pixel per screen pixel; scroll or drag with the Hand tool to pan |
+| `view.magnification.<fit\|10\|25\|50\|75\|100\|150\|200\|400\|800\|1600>` | View ▸ Magnification and the zoom dropdown | 100% = one frame pixel per screen pixel. The mouse wheel (or a pinch) over a monitor zooms about the pointer, from Fit too, within 10%–1600%; drag with the middle mouse button, or with the Hand tool, to pan; Fit resets both. Each monitor keeps its own zoom and pan |
 | `view.showRulers`, `view.showGuides`, `view.lockGuides`, `view.clearGuides` | View | toggles take `{"enabled": bool}` |
 | `view.addGuide` | View ▸ Add Guide… | dialog, or `{"orientation": "vertical\|horizontal", "position": px}` |
 | `view.snapInProgramMonitor` | View ▸ Snap in Program Monitor | graphic moves snap to the frame edges / centre and the guides (6 pt) |
+| `view.transparencyGrid` | wrench menu ▸ Transparency Grid | a gray and white checkerboard (8 pt squares) behind the picture shows its transparent areas; off by default, each monitor keeps its own; takes `{"enabled": bool}`. The Program monitor renders on the CPU while the grid is on |
 | `view.safeMargins` | Guide Templates ▸ Safe Margins | action- and title-safe boxes |
 | `view.guideTemplates.save`, `.manage`, `.apply`, `.delete` | Guide Templates ▸ Save Guides as Template… / Manage Guides… | templates are stored in the user preferences (`guides.templates`) |
 
@@ -54,7 +55,7 @@ Commands: `source.playback.play`, `source.playback.stop`, `source.playback.toggl
 available through the UI command registry, CLI bridge and MCP. `playback.toggle`,
 `playback.forward`, `playback.reverse`, `playback.slowForward` and `playback.slowReverse` also
 accept `monitor: "source"|"program"` to override focus. `ui.inspect.sourcePlayback` reports playing,
-audioClock and playhead. Test: `cargo test --release -p filmcraft-ui-egui --test source_playback_ui`.
+audioClock and playhead. Test: `cargo test --release -p filmcraft-ui-egui --test it source_playback_ui::`.
 
 ## Drag a marked Source range to the timeline
 
@@ -75,7 +76,7 @@ Automation ids: `source.drag.video`, `source.drag.audio`, `source.drag.both`, `s
 and `source.waveform`. Placement dispatches `timeline.place` with `sourceIn`, `duration`, `video`
 and `audio`; the stream flags default to true for existing callers. Engine tests cover range
 bounds, stream choices, linked placement, invalid parameters and undo/redo. UI tests exercise
-actual drags: `cargo test --release -p filmcraft-ui-egui --test source_drag_ui`.
+actual drags: `cargo test --release -p filmcraft-ui-egui --test it source_drag_ui::`.
 
 Ctrl+Shift+X (Cmd+Shift+X on macOS) clears In/Out on the focused Source clip, including split
 points, and restores the implicit full span. It is undoable and leaves Program marks unchanged.
@@ -123,6 +124,20 @@ playhead-blue color and translucent gray band. Runtime review remains Windows-on
 The playhead has drag priority above the range band and trim handles, including a full-span
 selection. Drag it to scrub; the unoccupied upper ruler can also scrub. Drag the gray band away
 from the playhead to translate the marked range.
+
+## Zoom the time ruler
+
+Under each monitor's time ruler is a zoom scroll bar like the Timeline's. Its thumb is the part of
+the clip or sequence the ruler shows: drag a handle at either end to zoom in or out, drag the
+middle to scroll, or press beside the thumb to move it there. A thumb filling the bar shows the
+whole duration; the ruler zooms in as far as five frames. The playhead, markers, In/Out and ticks
+follow the part shown, and clicking or scrubbing the ruler sets a time within it; what lies
+outside it is not drawn. While the monitor plays, a zoomed ruler follows the playhead as the
+Timeline does (Settings ▸ Timeline ▸ Timeline Playback Auto-Scrolling): it pages when the playhead
+runs off the right edge or jumps before the left one, or keeps the playhead in the middle with
+smooth scrolling, and keeps its width; scrubbing and clicking never move it. Each monitor keeps its own range in its view state (`time_zoom`: start
+and end as fractions of the duration, `null` for all of it). Automation ids: `<monitor>.zoomBar`
+(the thumb) and `<monitor>.zoomBar.track`.
 
 ## Export Frame
 

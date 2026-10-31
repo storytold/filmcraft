@@ -1,35 +1,45 @@
 //! CDEF (7.15).
 
-use crate::frame::{FrameBuf, Plane};
-use crate::spec_tables::*;
+use crate::frame::{FrameBuf, RowBand};
+use crate::par::Pool;
+use crate::postfilter::bands;
+use crate::spec_tables::{CDEF_DIRECTIONS, CDEF_PRI_TAPS, CDEF_SEC_TAPS, CDEF_UV_DIR, DIV_TABLE};
 use crate::state::FrameState;
 
 /// Run CDEF on `fs.cur`; returns the CdefFrame, or None when no block is filtered (CdefFrame
-/// equals CurrFrame).
-pub(crate) fn apply(fs: &FrameState) -> Option<FrameBuf> {
+/// equals CurrFrame). Bands of 64 luma rows (whole 8x8 blocks) are filtered in parallel: every
+/// block reads only CurrFrame and writes only its own samples.
+pub(crate) fn apply(fs: &FrameState, pool: &Pool) -> Option<FrameBuf> {
     let fh = &fs.fh;
     if fh.coded_lossless || fh.allow_intrabc || !fs.seq.enable_cdef {
         return None;
     }
     let (mi_rows, mi_cols) = (fh.mi_rows as usize, fh.mi_cols as usize);
     let mut out = fs.cur.clone();
-    let mut any = false;
-    let mut r = 0;
-    while r < mi_rows {
-        let mut c = 0;
-        while c < mi_cols {
-            let idx = fs.cdef_idx(r & !15, c & !15);
-            if idx >= 0 && cdef_block(fs, &mut out, r, c, idx as usize) {
-                any = true;
+    let ranges = bands(pool, mi_rows * 4);
+    let mut planes = out.row_bands(&ranges);
+    let any = pool.map_mut(&mut planes, |b, band| {
+        let (start, end) = ranges[b];
+        let mut any = false;
+        let mut r = start / 4;
+        while r < mi_rows.min(end / 4) {
+            let mut c = 0;
+            while c < mi_cols {
+                let idx = fs.cdef_idx(r & !15, c & !15);
+                if idx >= 0 && cdef_block(fs, band, r, c, idx as usize) {
+                    any = true;
+                }
+                c += 2;
             }
-            c += 2;
+            r += 2;
         }
-        r += 2;
-    }
-    any.then_some(out)
+        any
+    });
+    drop(planes);
+    any.contains(&true).then_some(out)
 }
 
-fn cdef_block(fs: &FrameState, out: &mut FrameBuf, r: usize, c: usize, idx: usize) -> bool {
+fn cdef_block(fs: &FrameState, out: &mut [RowBand; 3], r: usize, c: usize, idx: usize) -> bool {
     let mi = &fs.mi;
     let sk = |rr: usize, cc: usize| -> bool { if rr < mi.rows && cc < mi.cols { mi.skip[mi.idx(rr, cc)] } else { true } };
     let skip = sk(r, c) && sk(r + 1, c) && sk(r, c + 1) && sk(r + 1, c + 1);
@@ -45,7 +55,7 @@ fn cdef_block(fs: &FrameState, out: &mut FrameBuf, r: usize, c: usize, idx: usiz
     let var_str = if (var >> 6) != 0 { (31 - ((var >> 6) as u32).leading_zeros()).min(12) as i32 } else { 0 };
     pri = if var != 0 { (pri * (4 + var_str) + 8) >> 4 } else { 0 };
     let damping = cp.damping as i32 + coeff_shift as i32;
-    filter(fs, out, 0, r, c, pri, sec, damping, dir);
+    filter(fs, out, 0, (r, c), Strength { pri, sec, damping, dir });
     if fs.num_planes == 1 {
         return true;
     }
@@ -53,8 +63,9 @@ fn cdef_block(fs: &FrameState, out: &mut FrameBuf, r: usize, c: usize, idx: usiz
     let sec = (cp.uv_sec[idx] << coeff_shift) as i32;
     let dir = if pri == 0 { 0 } else { CDEF_UV_DIR[fs.ssx][fs.ssy][y_dir] as usize };
     let damping = cp.damping as i32 + coeff_shift as i32 - 1;
-    filter(fs, out, 1, r, c, pri, sec, damping, dir);
-    filter(fs, out, 2, r, c, pri, sec, damping, dir);
+    let st = Strength { pri, sec, damping, dir };
+    filter(fs, out, 1, (r, c), st);
+    filter(fs, out, 2, (r, c), st);
     true
 }
 
@@ -124,8 +135,17 @@ fn constrain(diff: i32, threshold: i32, adj: u32) -> i32 {
     if diff < 0 { -mag } else { mag }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn filter(fs: &FrameState, out: &mut FrameBuf, plane: usize, r: usize, c: usize, pri: i32, sec: i32, damping: i32, dir: usize) {
+/// Primary/secondary strengths, damping and direction for one plane of one 8x8 block.
+#[derive(Clone, Copy)]
+struct Strength {
+    pri: i32,
+    sec: i32,
+    damping: i32,
+    dir: usize,
+}
+
+fn filter(fs: &FrameState, out: &mut [RowBand; 3], plane: usize, (r, c): (usize, usize), st: Strength) {
+    let Strength { pri, sec, damping, dir } = st;
     if pri == 0 && sec == 0 {
         // Every tap contributes 0 and the clamp to [min, max] keeps x: CdefFrame = CurrFrame.
         return;
@@ -169,7 +189,7 @@ fn filter(fs: &FrameState, out: &mut FrameBuf, plane: usize, r: usize, c: usize,
     let sec_taps = [CDEF_SEC_TAPS[pri_tap][0] as i32, CDEF_SEC_TAPS[pri_tap][1] as i32];
     let adj = |t: i32| if t == 0 { 0 } else { (damping - (31 - (t as u32).leading_zeros()) as i32).max(0) as u32 };
     let (pri_adj, sec_adj) = (adj(pri), adj(sec));
-    let dst = &mut out.planes[plane];
+    let dst = &mut out[plane];
     if all_avail {
         // Every tap is available: whole rows at a time (constrain() with threshold 0 is 0).
         let mut taps = [(0isize, 0i32, 0i32, 0u32); 12];
@@ -230,7 +250,12 @@ fn filter(fs: &FrameState, out: &mut FrameBuf, plane: usize, r: usize, c: usize,
 /// CDEF of a block whose taps are all available, `W` samples per row. Samples (at most 12
 /// bits), differences and the weighted tap sum all fit in i16, which doubles the SIMD width.
 #[inline(always)]
-fn filter_rows<const W: usize>(buf: &[i32; PAD_STRIDE * PAD_STRIDE], taps: &[(isize, i32, i32, u32); 12], dst: &mut Plane, (y0, x0, h): (usize, usize, usize)) {
+fn filter_rows<const W: usize>(
+    buf: &[i32; PAD_STRIDE * PAD_STRIDE],
+    taps: &[(isize, i32, i32, u32); 12],
+    dst: &mut RowBand,
+    (y0, x0, h): (usize, usize, usize),
+) {
     let mut b16 = [0i16; PAD_STRIDE * PAD_STRIDE];
     for (d, &s) in b16.iter_mut().zip(buf.iter()) {
         *d = s as i16;

@@ -1,0 +1,16 @@
+[package]
+name = "filmcraft-vp8"
+description = "Clean-room pure-Rust VP8 decoder (RFC 6386)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+filmcraft-testkit = { workspace = true }

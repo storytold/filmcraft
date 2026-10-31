@@ -231,7 +231,7 @@ fn tracking_session() -> (Session, ClipId) {
     let item = p.add_item(
         "moving",
         filmcraft_project::Label::Iris,
-        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: filmcraft_project::MediaRef::Generator(g.generator.clone()),
             info: info.clone(),
             interpret: Default::default(),
@@ -241,7 +241,7 @@ fn tracking_session() -> (Session, ClipId) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let seq = p.new_sequence("s", filmcraft_project::SequenceSettings { width: 320, height: 240, frame_rate: rate, ..Default::default() }, 1, 0, None);
@@ -316,4 +316,122 @@ fn tracking_runs_in_the_background_and_can_be_cancelled() {
     let n = s.execute("masks.list", json!({})).unwrap()["masks"][0]["pathKeyframes"].as_array().unwrap().len();
     assert!(n < 48, "stopped early ({n} keyframes)");
     assert!(s.execute("masks.track", json!({"direction": "backward"})).is_err(), "nothing before the first frame");
+}
+
+/// #813: a rectangle mask with rounded corners (created rounded, or rounded afterwards) cuts the
+/// clip's corners away while the edges stay where they were; one undo step, every keyframe.
+#[test]
+fn rounded_rectangle_masks_cut_their_corners() {
+    let (mut s, clip) = demo();
+    // a 960×540 opacity mask in the middle of the 1920×1080 frame, rounded by 200 px
+    s.execute("masks.add", json!({"clip": clip.0, "shape": "rectangle", "center": [960, 540], "size": [960, 540], "cornerRadius": 200})).unwrap();
+    s.execute("masks.set", json!({"feather": 0})).unwrap();
+    let list = s.execute("masks.list", json!({})).unwrap();
+    assert_eq!(list["masks"][0]["path"]["vertices"].as_array().unwrap().len(), 8);
+    let img = s.render_program(0.25).unwrap();
+    // just inside the rectangle's corner: cut away; middle of an edge and the centre: kept
+    let corner = px(&img, 0.26, 0.26);
+    assert!(corner[0] + corner[1] + corner[2] < 1e-4, "rounded corner cut: {corner:?}");
+    assert!(px(&img, 0.5, 0.26)[3] > 0.99, "top edge kept");
+    assert!(px(&img, 0.5, 0.5)[3] > 0.99, "inside kept");
+
+    // round an existing 4-point mask: same picture, one undo step back to sharp corners
+    s.undo();
+    s.undo();
+    s.execute("masks.add", json!({"clip": clip.0, "shape": "polygon", "center": [960, 540], "size": [960, 540]})).unwrap();
+    s.execute("masks.set", json!({"feather": 0})).unwrap();
+    let sharp = s.render_program(0.25).unwrap();
+    assert!(px(&sharp, 0.26, 0.26)[3] > 0.99, "a sharp corner keeps the clip");
+    let r = s.execute("masks.roundCorners", json!({"radius": 200})).unwrap();
+    assert_eq!(r["corners"], 4);
+    assert_eq!(s.render_program(0.25).unwrap().px, img.px, "rounding afterwards = creating rounded");
+    // nothing left to round; bad radii are refused without changing the mask
+    assert!(s.execute("masks.roundCorners", json!({"radius": 50})).is_err());
+    for radius in [json!(0), json!(-5), json!("big"), json!(null)] {
+        assert!(s.execute("masks.roundCorners", json!({"radius": radius})).is_err(), "{radius}");
+    }
+    s.undo();
+    assert_eq!(s.render_program(0.25).unwrap().px, sharp.px, "one undo step restores the sharp corners");
+}
+
+#[test]
+fn rounding_an_animated_mask_rounds_every_keyframe_and_only_the_chosen_corners() {
+    let (mut s, clip) = demo();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    s.set_playhead(it.start);
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "polygon", "center": [400, 400], "size": [200, 200]})).unwrap();
+    s.execute("effects.toggleAnimation", json!({"clip": clip.0, "effect": "opacity", "mask": 0, "param": "path"})).unwrap();
+    let rate = s.active_sequence().unwrap().settings.frame_rate;
+    s.set_playhead(it.start + rate.tick_of(10));
+    s.execute("masks.translate", json!({"delta": [300, 0]})).unwrap();
+    // only vertices 0 and 2 (top-left, bottom-right), out-of-range indices ignored
+    let r = s.execute("masks.roundCorners", json!({"radius": 30, "vertices": [0, 2, 99]})).unwrap();
+    assert_eq!(r["corners"], 2);
+    let m = &s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().find(|e| e.effect == "opacity").unwrap().masks[0];
+    assert_eq!(m.path.keyframes.len(), 2);
+    for k in &m.path.keyframes {
+        let filmcraft_project::ParamValue::Path(p) = &k.value else { panic!("path keyframe") };
+        assert_eq!(p.len(), 6, "both keyframes rounded the same corners");
+        assert_eq!(p.vertices.iter().filter(|v| v.is_corner()).count(), 2, "vertices 1 and 3 stay sharp");
+    }
+    // halfway the path still interpolates (equal vertex counts)
+    let l = s.execute("masks.list", json!({"time": (it.start + rate.tick_of(5)).0})).unwrap();
+    let v = l["masks"][0]["path"]["vertices"].as_array().unwrap();
+    assert_eq!(v.len(), 6);
+    assert!((v[0]["p"][0].as_f64().unwrap() - 450.0).abs() < 1e-6, "{}", v[0]);
+}
+
+/// `path_to_json` → `path_from_json` keeps the Bézier tangents (they used to come back as zero, so
+/// a pen mask's dragged-out curves were committed as corners; #853).
+#[test]
+fn path_json_round_trip_keeps_tangents() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::mask::{MaskPath, MaskVertex};
+    let path = MaskPath {
+        vertices: vec![
+            MaskVertex { p: Vec2::new(10.0, 20.0), t_in: Vec2::new(-5.0, 0.0), t_out: Vec2::new(5.0, 0.0) },
+            MaskVertex::corner(Vec2::new(80.0, 20.0)),
+            MaskVertex { p: Vec2::new(40.0, 90.0), t_in: Vec2::new(3.0, -4.0), t_out: Vec2::new(-3.0, 4.0) },
+        ],
+        closed: true,
+    };
+    assert_eq!(crate::masks::path_from_json(&crate::masks::path_to_json(&path)), Some(path.clone()));
+    // the serialized project form still parses
+    assert_eq!(crate::masks::path_from_json(&serde_json::to_value(&path).unwrap()), Some(path));
+}
+
+/// `masks.moveVertex` with `vertices` moves several points by the same delta in one edit (the
+/// Program monitor's multi-vertex drag, #3150); a bad index leaves every vertex where it was.
+#[test]
+fn move_vertex_moves_a_list_of_vertices_together() {
+    let (mut s, _) = demo();
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "polygon", "center": [400, 400], "size": [200, 200]})).unwrap();
+    let pts = |s: &mut Session| -> Vec<(f64, f64)> {
+        let l = s.execute("masks.list", json!({})).unwrap();
+        l["masks"][0]["path"]["vertices"].as_array().unwrap().iter().map(|v| (v["p"][0].as_f64().unwrap(), v["p"][1].as_f64().unwrap())).collect()
+    };
+    let before = pts(&mut s);
+    let n = s.history.undo.len();
+    // two frames of one drag, a vertex listed twice moves once
+    for _ in 0..2 {
+        s.execute("masks.moveVertex", json!({"vertices": [0, 2, 2], "delta": [10, -5], "merge": "vertex-1"})).unwrap();
+    }
+    assert_eq!(s.history.undo.len(), n + 1, "one undo step for the drag");
+    let after = pts(&mut s);
+    for i in [0, 2] {
+        assert_eq!(after[i], (before[i].0 + 20.0, before[i].1 - 10.0), "vertex {i}");
+    }
+    for i in [1, 3] {
+        assert_eq!(after[i], before[i], "vertex {i} stays");
+    }
+    // an index past the last vertex moves nothing
+    let e = s.execute("masks.moveVertex", json!({"vertices": [1, 9], "delta": [10, 0]})).unwrap_err().to_string();
+    assert!(e.contains("no vertex 9"), "{e}");
+    assert_eq!(pts(&mut s), after);
+    // a list moves points, by a delta
+    assert!(s.execute("masks.moveVertex", json!({"vertices": [1], "to": [0, 0]})).is_err());
+    assert!(s.execute("masks.moveVertex", json!({"vertices": [1], "handle": "in", "delta": [1, 0]})).is_err());
+    assert!(s.execute("masks.moveVertex", json!({"vertices": "1", "delta": [1, 0]})).is_err());
+    s.undo();
+    assert_eq!(pts(&mut s), before);
 }

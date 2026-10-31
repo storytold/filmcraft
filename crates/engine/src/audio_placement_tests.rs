@@ -60,7 +60,7 @@ fn placing_media_with_two_streams_expands_tracks_and_keeps_stream_indices() {
     let item = p.add_item(
         "two streams",
         filmcraft_project::Label::Iris,
-        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: filmcraft_project::MediaRef::Generator(filmcraft_media::Generator::BarsAndTone),
             info,
             interpret: Default::default(),
@@ -70,7 +70,7 @@ fn placing_media_with_two_streams_expands_tracks_and_keeps_stream_indices() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let (vdest, adest) = {
@@ -79,9 +79,20 @@ fn placing_media_with_two_streams_expands_tracks_and_keeps_stream_indices() {
     };
     s.project = std::sync::Arc::new(p);
     s.state.active_sequence = Some(seq);
-    let ids =
-        crate::commands::place_item(&mut s, item, TimeRange::new(Tick::ZERO, rate.tick_of(24)), Tick::ZERO, Some(vdest), Some(adest), false, "test", None)
-            .unwrap();
+    let ids = crate::commands::place_item(
+        &mut s,
+        crate::commands::ItemPlacement {
+            item,
+            range: TimeRange::new(Tick::ZERO, rate.tick_of(24)),
+            at: Tick::ZERO,
+            vdest: Some(vdest),
+            adest: Some(adest),
+            insert: false,
+            label: "test",
+            audio_split: None,
+        },
+    )
+    .unwrap();
     assert_eq!(ids.len(), 3);
     let q = s.project.sequence(seq).unwrap();
     assert_eq!(q.audio_tracks.len(), 2);
@@ -106,7 +117,7 @@ fn clip_peaks_measure_the_stream_the_clip_plays() {
     let item = p.add_item(
         "two streams",
         filmcraft_project::Label::Iris,
-        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: filmcraft_project::MediaRef::Generator(filmcraft_media::Generator::BarsAndTone),
             info,
             interpret: Default::default(),
@@ -116,7 +127,7 @@ fn clip_peaks_measure_the_stream_the_clip_plays() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let (vdest, adest) = {
@@ -125,9 +136,20 @@ fn clip_peaks_measure_the_stream_the_clip_plays() {
     };
     s.project = std::sync::Arc::new(p);
     s.state.active_sequence = Some(seq);
-    let ids =
-        crate::commands::place_item(&mut s, item, TimeRange::new(Tick::ZERO, rate.tick_of(24)), Tick::ZERO, Some(vdest), Some(adest), false, "test", None)
-            .unwrap();
+    let ids = crate::commands::place_item(
+        &mut s,
+        crate::commands::ItemPlacement {
+            item,
+            range: TimeRange::new(Tick::ZERO, rate.tick_of(24)),
+            at: Tick::ZERO,
+            vdest: Some(vdest),
+            adest: Some(adest),
+            insert: false,
+            label: "test",
+            audio_split: None,
+        },
+    )
+    .unwrap();
     let q = s.project.sequence(seq).unwrap();
     let (a, b) = (q.audio_tracks[0].items[0].id, q.audio_tracks[1].items[0].id);
     assert!(ids.contains(&a) && ids.contains(&b));
@@ -166,6 +188,32 @@ fn missing_audio_tracks_are_cloned_from_the_destination() {
     // enough tracks already: nothing is added
     let again = ensure_audio_tracks(&mut p, seq, 0, have + 3, "test").unwrap();
     assert_eq!(again, ids);
+}
+
+/// #823: a container with two PCM tracks imports both streams, and overwrite places linked clips.
+#[test]
+fn import_keeps_every_audio_stream_and_places_linked_clips() {
+    use filmcraft_isobmff::{Brand, Mp4Writer, PcmConfig, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+    for (rate, value) in [(48_000u32, 8192i16), (24_000, -16384)] {
+        let entry = SampleEntry::pcm(PcmConfig { bits: 16, float: false, big_endian: false, signed: true, channels: 1, sample_rate: rate as f64 });
+        let track = mux.add_track(TrackConfig::new(entry, rate)).unwrap();
+        let data: Vec<u8> = (0..rate / 10).flat_map(|_| value.to_le_bytes()).collect();
+        mux.write_sample(track, WriteSample { data: &data, duration: rate / 10, composition_offset: 0, is_sync: true }).unwrap();
+    }
+    let bytes = mux.finish().unwrap().into_inner();
+    let mut s = Session::default();
+    let item = crate::commands::import_bytes(&mut s, "/two-audio.mov", bytes.into(), None).unwrap();
+    let streams = s.project.item(item).unwrap().as_media().unwrap().info.audio_streams.len();
+    assert_eq!(streams, 2);
+    s.execute("file.newSequence", json!({"name": "S", "fromItem": item.0, "video": 1, "audio": 1})).unwrap();
+    let seq = s.state.active_sequence.unwrap();
+    let q = s.project.sequence(seq).unwrap();
+    assert_eq!(q.audio_tracks.len(), 2);
+    let (a, b) = (&q.audio_tracks[0].items[0], &q.audio_tracks[1].items[0]);
+    assert_eq!((a.audio_stream, b.audio_stream), (0, 1));
+    assert_eq!(a.link, b.link);
+    assert!(a.link.is_some());
 }
 
 #[test]

@@ -51,6 +51,11 @@ pub(crate) fn edge_geometry(seq: &Sequence, layout: &Layout, track: TrackId, cli
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hit {
     Ruler,
+    /// The work area bar on the ruler; `edge` is its start (`In`) or end (`Out`) when the press is
+    /// on one of its ends (dragging it moves that end), `None` on its middle (dragging moves it).
+    WorkArea {
+        edge: Option<Edge>,
+    },
     Clip {
         track: TrackId,
         clip: ClipId,
@@ -74,15 +79,63 @@ pub fn marker_rect(layout: &Layout, start: Tick) -> Rect {
     Rect::from_center_size(pos2(layout.x_of(start), layout.ruler.min.y + 8.0), vec2(10.0, 13.0))
 }
 
-/// The start of the marker whose pentagon is under `pos` on the ruler (the topmost, i.e. last
-/// drawn, when several overlap). A press there puts the playhead on the marker, so Markers ▸ Clear
-/// Selected Marker removes it (#695).
+/// The visible duration band, shared by painting and hit testing (#1143).
+pub fn marker_range_rect(layout: &Layout, marker: &filmcraft_project::Marker) -> Option<Rect> {
+    (marker.duration > Tick::ZERO).then(|| {
+        let y = layout.ruler.min.y + 2.0;
+        Rect::from_min_max(pos2(layout.x_of(marker.start), y), pos2(layout.x_of(marker.start + marker.duration), y + 8.0)).intersect(layout.ruler)
+    })
+}
+
+/// The topmost marker under the pointer, including its range band. Preserve its id when opening
+/// a context menu: several markers can share a start, and the playhead can move while it is open.
+pub fn marker_under_pointer<'a>(seq: &'a Sequence, layout: &Layout, pos: Pos2) -> Option<&'a filmcraft_project::Marker> {
+    if !layout.ruler.contains(pos) {
+        return None;
+    }
+    seq.markers.iter().rev().find(|m| marker_rect(layout, m.start).contains(pos) || marker_range_rect(layout, m).is_some_and(|r| r.contains(pos)))
+}
+
+/// A press on a marker puts the playhead on its start for Clear Selected Marker (#695).
 pub fn marker_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Tick> {
-    seq.markers.iter().rev().map(|m| m.start).find(|t| marker_rect(layout, *t).contains(pos))
+    marker_under_pointer(seq, layout, pos).map(|m| m.start)
+}
+
+/// Where the Timeline ruler draws (and hit-tests) the work area bar, between the markers row and
+/// the time labels.
+pub fn work_area_rect(layout: &Layout, area: filmcraft_time::TimeRange) -> Rect {
+    let y = layout.ruler.min.y + 14.0;
+    Rect::from_min_max(pos2(layout.x_of(area.start), y), pos2(layout.x_of(area.end()), y + 6.0))
+}
+
+/// The part of the work area bar under the pointer: an end (an edge zone, narrower on a short
+/// bar so its middle stays grabbable) or its middle.
+pub fn work_area_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Option<Edge>> {
+    let r = work_area_rect(layout, seq.work_area?);
+    let zone = zone(r.width())?;
+    if !r.expand2(vec2(zone, 1.0)).contains(pos) || !layout.ruler.contains(pos) {
+        return None;
+    }
+    Some(if (pos.x - r.min.x).abs() <= zone {
+        Some(Edge::In)
+    } else if (r.max.x - pos.x).abs() <= zone {
+        Some(Edge::Out)
+    } else {
+        None
+    })
+}
+
+/// The top of a transition's box on a track row: below the clip's name strip, and from the top of
+/// the track when it is compact (a short track would leave a sliver too thin to read or grab).
+pub fn transition_top(row: Rect) -> f32 {
+    if row.height() < 50.0 { row.min.y + 1.0 } else { row.min.y + 17.0 }
 }
 
 pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     if layout.ruler.contains(pos) {
+        if let Some(edge) = work_area_at(seq, layout, pos) {
+            return Hit::WorkArea { edge };
+        }
         return Hit::Ruler;
     }
     if !layout.content.contains(pos) {
@@ -93,7 +146,7 @@ pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     for trn in &tr.transitions {
         let x0 = layout.x_of(trn.start);
         let x1 = layout.x_of(trn.end());
-        if pos.x >= x0 && pos.x <= x1 && pos.y > row.rect.min.y + 17.0 {
+        if pos.x >= x0 && pos.x <= x1 && pos.y > transition_top(row.rect) {
             // the ends are edge zones, narrower on a short transition so its middle stays grabbable
             let zone = EDGE_PX.min((x1 - x0) / 3.0);
             let edge = if pos.x - x0 <= zone {
@@ -339,6 +392,8 @@ mod tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: TOP + 60.0,
+            v_scroll: 0.0,
+            a_scroll: 0.0,
         };
         (seq, layout, track)
     }
@@ -435,6 +490,57 @@ mod tests {
         assert_eq!(marker_at(&seq, &l, pos2(310.0, 10.0)), None);
         assert_eq!(marker_at(&seq, &l, pos2(301.7, 30.0)), None);
         assert_eq!(marker_at(&seq, &l, pos2(f32::NAN, 10.0)), None);
+    }
+
+    #[test]
+    fn range_bands_hit_the_last_drawn_marker_and_stay_on_the_ruler() {
+        let (mut seq, layout, _) = fixture(clips());
+        for id in [9, 10] {
+            seq.markers.push(filmcraft_project::Marker {
+                id: filmcraft_project::MarkerId(id),
+                start: Tick::from_seconds_f64(3.0),
+                duration: Tick::from_seconds_f64(2.0),
+                name: String::new(),
+                comment: String::new(),
+                kind: filmcraft_project::MarkerKind::Comment,
+                color: Label::Green,
+            });
+        }
+        let band = marker_range_rect(&layout, &seq.markers[1]).unwrap();
+        let at = band.center();
+        assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 10);
+        assert_eq!(marker_at(&seq, &layout, at), Some(seq.markers[1].start));
+        assert!(marker_under_pointer(&seq, &layout, at + vec2(0.0, 20.0)).is_none());
+        assert!(marker_under_pointer(&seq, &layout, pos2(f32::NAN, at.y)).is_none());
+        seq.markers[1].duration = Tick(-1);
+        assert!(marker_range_rect(&layout, &seq.markers[1]).is_none());
+        assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 9);
+    }
+
+    #[test]
+    fn the_work_area_bar_has_two_ends_and_a_middle() {
+        let (mut seq, l, _) = fixture(clips());
+        // hidden, the bar's row is plain ruler
+        assert_eq!(hit(&seq, &l, pos2(300.0, 17.0)), Hit::Ruler);
+        seq.work_area = Some(filmcraft_time::TimeRange::from_bounds(Tick::from_seconds_f64(2.0), Tick::from_seconds_f64(5.0)));
+        let y = work_area_rect(&l, seq.work_area.unwrap()).center().y;
+        assert_eq!(hit(&seq, &l, pos2(197.0, y)), Hit::WorkArea { edge: Some(Edge::In) });
+        assert_eq!(hit(&seq, &l, pos2(204.0, y)), Hit::WorkArea { edge: Some(Edge::In) });
+        assert_eq!(hit(&seq, &l, pos2(350.0, y)), Hit::WorkArea { edge: None });
+        assert_eq!(hit(&seq, &l, pos2(503.0, y)), Hit::WorkArea { edge: Some(Edge::Out) });
+        assert_eq!(hit(&seq, &l, pos2(510.0, y)), Hit::Ruler, "past its end zone");
+        // the markers row and the time labels stay ruler
+        assert_eq!(hit(&seq, &l, pos2(350.0, 8.0)), Hit::Ruler);
+        assert_eq!(hit(&seq, &l, pos2(350.0, 30.0)), Hit::Ruler);
+        assert_eq!(grab_at(&seq, &l, pos2(350.0, y), Tool::Selection, Modifiers::NONE, false), Grab::Other(Hit::WorkArea { edge: None }));
+        // a bar a few px wide keeps its middle third; hostile points grab nothing
+        seq.work_area = Some(filmcraft_time::TimeRange::from_bounds(Tick::from_seconds_f64(2.0), Tick::from_seconds_f64(2.09)));
+        assert_eq!(hit(&seq, &l, pos2(204.5, y)), Hit::WorkArea { edge: None });
+        assert_eq!(hit(&seq, &l, pos2(f32::NAN, y)), Hit::None);
+        for pps in [0.0, f64::NAN, f64::INFINITY] {
+            let broken = Layout { pps, ..l.clone() };
+            assert!(!matches!(hit(&seq, &broken, pos2(204.5, y)), Hit::WorkArea { edge: Some(_) }), "pps {pps}");
+        }
     }
 
     use egui::Modifiers;

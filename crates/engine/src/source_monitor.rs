@@ -226,11 +226,15 @@ pub(crate) fn route(s: &mut Session, id: &str, p: &Value) -> Result<Option<Value
             let name = text(p, "name", id)?.map(str::to_string);
             let comment = text(p, "comment", id)?.map(str::to_string);
             let color = color(p, id)?;
-            let duration = if p.get("durationFrames").is_some() { Some(duration(p, &view, id)?) } else { None };
+            let duration = if p.get("durationFrames").is_some_and(|v| !v.is_null()) { Some(duration(p, &view, id)?) } else { None };
+            let kind = crate::commands::marker_kind_p(p)?;
             s.edit("Edit Source Marker", |pr, _| {
                 let m = marker_list(pr, view.media)?.iter_mut().find(|m| m.id == marker).ok_or_else(|| bad(id, "no such Source marker"))?;
                 if let Some(name) = name {
                     m.name = name;
+                }
+                if let Some(kind) = kind {
+                    m.kind = kind;
                 }
                 if let Some(comment) = comment {
                     m.comment = comment;
@@ -274,7 +278,7 @@ fn text<'a>(p: &'a Value, key: &str, id: &str) -> Result<Option<&'a str>> {
     p.get(key).map(|v| v.as_str().ok_or_else(|| bad(id, format!("{key} must be text")))).transpose()
 }
 fn color(p: &Value, id: &str) -> Result<Option<Label>> {
-    text(p, "color", id)?.map(|t| Label::from_name(t).ok_or_else(|| bad(id, "unknown marker color"))).transpose()
+    crate::commands::marker_color_p(p, id)
 }
 fn duration(p: &Value, view: &crate::clip_ops::SourceView, id: &str) -> Result<Tick> {
     let Some(v) = p.get("durationFrames") else { return Ok(Tick::ZERO) };

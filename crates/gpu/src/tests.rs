@@ -4,7 +4,7 @@ use filmcraft_render::Blend;
 use filmcraft_render::plan::execute_cpu;
 
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
+    let instance = crate::adapter::native_instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }
@@ -23,6 +23,7 @@ fn yuv_code_range_uniforms() {
                 chroma: (1, 1),
                 size: (1, 1),
                 color: filmcraft_color::ColorInfo { range, ..filmcraft_color::ColorInfo::REC709 },
+                input: None,
             };
             let u = GpuCompositor::uniforms(&src, &Affine::IDENTITY, 1.0, Blend::Normal, (1, 1));
             // Full: 0..2^bits-1, neutral 2^(bits-1). Limited: BT.709 8-bit codes * 2^(bits-8).
@@ -115,20 +116,22 @@ fn gpu_matches_cpu_plan() {
         1.0,
         24,
         filmcraft_time::FrameRate::FPS_24,
-    );
+    )
+    .unwrap();
     let rgba = Arc::new(VideoFrame::rgba8(320, 180, pixels));
     let (w, h) = (320usize, 180usize);
     let plan = FramePlan::Layers {
         width: w,
         height: h,
         layers: vec![
-            PlanLayer { frame: yuv_frame(640, 360), matrix: Affine::scale(0.5, 0.5), opacity: 1.0, blend: Blend::Normal, fx: None },
+            PlanLayer { frame: yuv_frame(640, 360), matrix: Affine::scale(0.5, 0.5), opacity: 1.0, blend: Blend::Normal, fx: None, input: None },
             PlanLayer {
                 frame: rgba,
                 matrix: Affine::motion(Vec2::new(200.0, 100.0), Vec2::new(0.4, 0.4), 12.0, Vec2::new(160.0, 90.0)),
                 opacity: 0.7,
                 blend: Blend::Normal,
                 fx: None,
+                input: None,
             },
         ],
     };
@@ -287,8 +290,8 @@ fn prepared_upload_matches_inline_conversion() {
         width: w as usize,
         height: h as usize,
         layers: vec![
-            PlanLayer { frame: yuv16, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None },
-            PlanLayer { frame: rgbaf, matrix: Affine::scale(0.5, 0.5), opacity: 0.8, blend: Blend::Normal, fx: None },
+            PlanLayer { frame: yuv16, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None },
+            PlanLayer { frame: rgbaf, matrix: Affine::scale(0.5, 0.5), opacity: 0.8, blend: Blend::Normal, fx: None, input: None },
         ],
     };
     let image = FramePlan::Image(filmcraft_render::Image { w: w as usize, h: h as usize, px: f32_layer });
@@ -317,8 +320,11 @@ fn upload_cache_keeps_buffers_alive() {
     let mut c = GpuCompositor::new(&dev, &q);
     let px = Arc::new(vec![200u8; 16 * 8 * 4]);
     let frame = Arc::new(VideoFrame { width: 16, height: 8, data: PixelData::Rgba8(px.clone()), ..(*yuv_frame(16, 8)).clone() });
-    let plan =
-        FramePlan::Layers { width: 16, height: 8, layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None }] };
+    let plan = FramePlan::Layers {
+        width: 16,
+        height: 8,
+        layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }],
+    };
     c.composite(&plan);
     drop(plan);
     assert!(Arc::strong_count(&px) > 1, "cached upload must own its pixel buffer");
@@ -459,7 +465,8 @@ fn gpu_draws_yuv_alpha_plane_like_the_cpu() {
         1.0,
         24,
         filmcraft_time::FrameRate::FPS_24,
-    );
+    )
+    .unwrap();
     let background = Arc::new(VideoFrame::rgba8(320, 180, pixels));
     for bits in [8, 10, 12] {
         let mut c = GpuCompositor::new(&dev, &q);
@@ -467,8 +474,8 @@ fn gpu_draws_yuv_alpha_plane_like_the_cpu() {
             width: w,
             height: h,
             layers: vec![
-                PlanLayer { frame: background.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None },
-                PlanLayer { frame: yuv_alpha_frame(320, 180, bits), matrix: Affine::IDENTITY, opacity: 0.9, blend: Blend::Normal, fx: None },
+                PlanLayer { frame: background.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None },
+                PlanLayer { frame: yuv_alpha_frame(320, 180, bits), matrix: Affine::IDENTITY, opacity: 0.9, blend: Blend::Normal, fx: None, input: None },
             ],
         };
         let cpu = execute_cpu(&plan).over_black_rgba8();
@@ -484,7 +491,7 @@ fn gpu_draws_yuv_alpha_plane_like_the_cpu() {
         let bg = execute_cpu(&FramePlan::Layers {
             width: w,
             height: h,
-            layers: vec![PlanLayer { frame: background.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None }],
+            layers: vec![PlanLayer { frame: background.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }],
         })
         .over_black_rgba8();
         let (l, r, b0) = (at(&gpu, 1), at(&gpu, w - 2), at(&bg, 1));
@@ -499,4 +506,193 @@ fn fast_half_float_conversion_matches_the_reference_for_every_value() {
         let (fast, slow) = (f16_to_f32_fast(h), f16_to_f32(h));
         assert!(fast.to_bits() == slow.to_bits() || (fast.is_nan() && slow.is_nan()), "{h:#06x}: {fast} vs {slow}");
     }
+}
+
+/// HDR and wide-gamut Y'CbCr on a Rec. 709 sequence (#965): the shader's colour management
+/// (curve, HLG OOTF, BT.2020 → 709 matrix, BT.2390 tone mapping, desaturation) matches the CPU
+/// running the same `InputTransform`.
+#[test]
+fn hdr_input_gpu_matches_cpu() {
+    use filmcraft_color::{ColorInfo, ColorPipeline, ColorSpace, InputTransform, Matrix, Primaries, Transfer};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    // a 10-bit luma ramp (to the top code) under neutral, saturated and extreme chroma, 4:4:4
+    let (w, h) = (256u32, 6u32);
+    let chroma = [(512, 512), (300, 760), (760, 300), (64, 512), (960, 960), (512, 64)];
+    let y: Vec<u16> = (0..h).flat_map(|_| (0..w).map(|x| (64 + x * 876 / 255) as u16)).collect();
+    let cb: Vec<u16> = (0..h).flat_map(|r| std::iter::repeat_n(chroma[r as usize].0, w as usize)).collect();
+    let cr: Vec<u16> = (0..h).flat_map(|r| std::iter::repeat_n(chroma[r as usize].1, w as usize)).collect();
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+    let hdr = |transfer| ColorInfo { matrix: Matrix::Bt2020Ncl, transfer, primaries: Primaries::Bt2020, range: Range::Limited };
+    let cases = [
+        ("HLG", hdr(Transfer::Hlg), None),
+        ("PQ", hdr(Transfer::Pq), None),
+        ("PQ 4000 cd/m²", hdr(Transfer::Pq), Some(4000.0)),
+        ("BT.2020 SDR", ColorInfo { primaries: Primaries::Bt2020, ..ColorInfo::REC709 }, None),
+    ];
+    for (name, color, peak) in cases {
+        let frame = Arc::new(VideoFrame { width: w, height: h, data: data.clone(), color, par: (1, 1), pts: Default::default() });
+        let cs = ColorSpace::from_info(&color);
+        let t = Arc::new(InputTransform::new(cs, color.range, &ColorPipeline::REC709, peak));
+        assert!(t.gpu_params().is_some(), "{name}");
+        let layer = PlanLayer { input: Some(t), ..PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal) };
+        let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        // and the stage does something: the default decode of the same frame is far off
+        let plain = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+        c.composite(&plain);
+        let (_, _, unmanaged) = c.read_output().expect("readback");
+        let apart = cpu.iter().zip(&unmanaged).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        eprintln!("{name}: max error {error}, unmanaged differs by up to {apart}");
+        assert!(error <= 2, "{name}: GPU differs from the CPU by up to {error} codes");
+        assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
+    }
+}
+
+/// Regression for #3418: several threads creating instances and devices, using them and dropping
+/// them at once deadlocked inside the NVIDIA driver (Vulkan loader critical section in
+/// `vkDestroyDevice` against other devices' `create_texture`/`submit`, plus WGL threads started by
+/// GL-enabled instances). Each thread makes its own instance and device, as concurrent windows and exports do.
+#[test]
+fn many_threads_create_use_and_drop_devices_at_once() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    const THREADS: usize = 16;
+    const ROUNDS: usize = 4;
+    let (tx, rx) = mpsc::channel();
+    for _ in 0..THREADS {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut used = 0usize;
+            for _ in 0..ROUNDS {
+                let Some((device, queue)) = device() else { break };
+                let tex = device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::RED), store: wgpu::StoreOp::Store },
+                    })],
+                    ..Default::default()
+                }));
+                queue.submit([enc.finish()]);
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                used += 1;
+                drop((view, tex, queue, device));
+            }
+            let _ = tx.send(used);
+        });
+    }
+    drop(tx);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    for i in 0..THREADS {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(rx.recv_timeout(left).is_ok(), "only {i} of {THREADS} threads finished within 120 s: device setup deadlocked");
+    }
+}
+
+/// Require an adapter for the explicit lifecycle regressions; absence is not a passing skip.
+fn retained_readback_compositor() -> GpuCompositor {
+    let (dev, q) = device().expect("GPU adapter required for explicit readback regression");
+    let mut compositor = GpuCompositor::new(&dev, &q);
+    compositor.accum_readback_buf = Some((
+        dev.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback-cleanup-regression"),
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        }),
+        256,
+    ));
+    compositor
+}
+
+/// Failed buffers must leave the cache; a new copy must recreate usable staging storage.
+fn assert_readback_retired_and_rendering_recovers(compositor: &mut GpuCompositor) {
+    assert!(compositor.accum_readback_buf.is_none(), "failed staging buffer remained cached");
+    let plan = FramePlan::Layers { width: 1, height: 1, layers: vec![] };
+    let (width, height, rgba) = compositor.render_export_prepared(&plan, None).expect("readback recovers with new staging storage");
+    assert_eq!((width, height, rgba.len()), (1, 1, 4));
+    assert!(compositor.accum_readback_buf.is_some(), "successful readback must retain its cache");
+    let again = compositor.read_accumulator().expect("successful staging storage remains reusable");
+    assert_eq!(again, (width, height, rgba));
+}
+
+/// A wait failure after a real completed map must not retain the failed staging storage.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_after_failed_wait() {
+    let mut compositor = retained_readback_compositor();
+    assert!(
+        compositor
+            .map_accumulator_with_wait((1, 1, 256), |device, rx| {
+                assert!(wait_mapped(device, rx).is_some());
+                None
+            })
+            .is_none()
+    );
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+}
+
+/// Reject hostile conversion dimensions without retaining a successfully mapped buffer.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_after_rejected_conversion() {
+    let mut compositor = retained_readback_compositor();
+    assert!(compositor.map_accumulator((u32::MAX, u32::MAX, 256)).is_none());
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+}
+
+/// Retire a still-pending map before the next copy/readback attempt uses the cache.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_pending_map_after_failed_wait() {
+    let mut compositor = retained_readback_compositor();
+    assert!(compositor.map_accumulator_with_wait((1, 1, 256), |_, _| None).is_none());
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+}
+
+/// Real callback rejection may already leave native storage unmapped; do not unmap it twice.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_rejected_native_map() {
+    let mut compositor = retained_readback_compositor();
+    let errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let observed = errors.clone();
+    compositor.device.on_uncaptured_error(Arc::new(move |error| {
+        observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(format!("{error}"));
+    }));
+    compositor.accum_readback_buf.as_ref().unwrap().0.destroy();
+    assert!(
+        compositor
+            .map_accumulator_with_wait((1, 1, 256), |device, rx| {
+                device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }).unwrap();
+                assert!(matches!(rx.recv_timeout(MAP_TIMEOUT), Ok(Err(_))), "expected an actual rejected map callback");
+                None
+            })
+            .is_none()
+    );
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+    assert!(
+        !errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|error| error.contains("Buffer is not mapped")),
+        "cleanup attempted to unmap an already rejected mapping"
+    );
 }

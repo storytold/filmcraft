@@ -29,6 +29,9 @@ pub enum Icon {
     StepFwd,
     GoToIn,
     GoToOut,
+    /// Go to Previous / Next Edit Point: a triangle towards a cut (an I-beam: two clip edges meeting).
+    PrevEdit,
+    NextEdit,
     MarkIn,
     MarkOut,
     Marker,
@@ -73,6 +76,8 @@ pub enum Icon {
     Close,
     Fullscreen,
     Export,
+    /// An arrow down into a tray (Import).
+    Import,
     Gear,
     Info,
     Captions,
@@ -360,6 +365,18 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             ]);
             pen.fill(&[(3.0, 3.5), (10.0, 8.0), (3.0, 12.5)]);
         }
+        PrevEdit => {
+            pen.line(&[(4.0, 3.0), (4.0, 13.0)]);
+            pen.line(&[(2.0, 3.0), (6.0, 3.0)]);
+            pen.line(&[(2.0, 13.0), (6.0, 13.0)]);
+            pen.fill(&[(13.5, 3.5), (7.5, 8.0), (13.5, 12.5)]);
+        }
+        NextEdit => {
+            pen.line(&[(12.0, 3.0), (12.0, 13.0)]);
+            pen.line(&[(10.0, 3.0), (14.0, 3.0)]);
+            pen.line(&[(10.0, 13.0), (14.0, 13.0)]);
+            pen.fill(&[(2.5, 3.5), (8.5, 8.0), (2.5, 12.5)]);
+        }
         MarkIn => pen.line(&[
             (10.5, 2.5),
             (8.5, 2.5),
@@ -580,6 +597,11 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Export => {
             pen.line(&[(8.0, 10.0), (8.0, 2.0)]);
             pen.line(&[(5.0, 5.0), (8.0, 2.0), (11.0, 5.0)]);
+            pen.line(&[(3.0, 8.0), (3.0, 14.0), (13.0, 14.0), (13.0, 8.0)]);
+        }
+        Import => {
+            pen.line(&[(8.0, 2.0), (8.0, 10.0)]);
+            pen.line(&[(5.0, 7.0), (8.0, 10.0), (11.0, 7.0)]);
             pen.line(&[(3.0, 8.0), (3.0, 14.0), (13.0, 14.0), (13.0, 8.0)]);
         }
         Gear => {
@@ -826,6 +848,8 @@ mod tests {
         StepFwd,
         GoToIn,
         GoToOut,
+        PrevEdit,
+        NextEdit,
         MarkIn,
         MarkOut,
         Marker,
@@ -870,6 +894,7 @@ mod tests {
         Close,
         Fullscreen,
         Export,
+        Import,
         Gear,
         Info,
         Captions,

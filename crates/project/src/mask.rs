@@ -1,9 +1,12 @@
-//! Effect masks (Premiere's per-effect masks: ellipse, 4-point polygon, free-draw Bézier).
+//! Effect masks (Premiere's per-effect masks: ellipse, 4-point polygon or rounded rectangle,
+//! free-draw Bézier).
 //!
 //! Every mask is a closed cubic Bézier path in **clip pixel space** (full-resolution source
 //! pixels, the space of effect point parameters). An ellipse is four smooth vertices with circular
-//! tangents and a polygon is vertices with zero-length tangents, so all three tools produce the same
-//! [`MaskPath`] and the same rasterizer, keyframe interpolation and tracker apply to each.
+//! tangents, a polygon is vertices with zero-length tangents and a rounded corner is a pair of
+//! vertices joined by a circular-arc cubic ([`MaskPath::with_rounded_corners`]), so all the tools
+//! produce the same [`MaskPath`] and the same rasterizer, keyframe interpolation and tracker apply
+//! to each.
 //!
 //! A mask has a keyframable *Mask Path* (vertex-wise interpolation when the vertex counts match,
 //! hold otherwise), *Feather* (falloff width in pixels, centred on the edge), *Opacity* (%),
@@ -78,6 +81,86 @@ impl MaskPath {
     /// An axis-aligned rectangle (Premiere's 4-point polygon mask default).
     pub fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Self {
         Self::polygon(&[Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)])
+    }
+
+    /// An axis-aligned rectangle with corners rounded by `radius` (Premiere 26's rounded
+    /// rectangle mask). `radius` ≤ 0 (or not finite) gives the plain 4-point [`MaskPath::rect`].
+    pub fn rounded_rect(x0: f64, y0: f64, x1: f64, y1: f64, radius: f64) -> Self {
+        let r = Self::rect(x0, y0, x1, y1);
+        if radius.is_finite() && radius > 0.0 { r.with_rounded_corners(radius, &[0, 1, 2, 3]) } else { r }
+    }
+
+    /// Indices of the sharp corners [`MaskPath::with_rounded_corners`] can round: corner vertices
+    /// of a closed path whose two segments are straight lines.
+    pub fn roundable_corners(&self) -> Vec<usize> {
+        let n = self.vertices.len();
+        if !self.closed || n < 3 {
+            return Vec::new();
+        }
+        (0..n)
+            .filter(|&i| {
+                let (Some(prev), Some(v), Some(next)) = (self.vertices.get((i + n - 1) % n), self.vertices.get(i), self.vertices.get((i + 1) % n)) else {
+                    return false;
+                };
+                v.is_corner() && is_zero(&prev.t_out) && is_zero(&next.t_in)
+            })
+            .collect()
+    }
+
+    /// The path with each listed corner replaced by a circular fillet of `radius`: two vertices on
+    /// the adjacent edges joined by a cubic arc (handles `4/3·tan(φ/4)·r` for a turn of φ, so a
+    /// right angle gets the [`KAPPA`] quarter circle). The fillet is shrunk so it never takes more
+    /// than half of either edge. Every listed roundable corner ([`MaskPath::roundable_corners`])
+    /// becomes two vertices, coincident when its geometry is degenerate (a straight or reversing
+    /// corner, a zero-length edge), so applying the same list to each keyframe of an animated path
+    /// keeps the vertex counts equal. Other indices (out of range, curved, repeated) are left alone.
+    pub fn with_rounded_corners(&self, radius: f64, corners: &[usize]) -> Self {
+        let n = self.vertices.len();
+        let mut round = vec![false; n];
+        for &i in corners {
+            if let Some(r) = round.get_mut(i) {
+                *r = true;
+            }
+        }
+        let roundable = self.roundable_corners();
+        round.iter_mut().enumerate().for_each(|(i, r)| *r &= roundable.binary_search(&i).is_ok());
+        let radius = if radius.is_finite() { radius.clamp(0.0, 1e7) } else { 0.0 };
+        let mut vertices = Vec::with_capacity(n.saturating_mul(2));
+        for (i, v) in self.vertices.iter().enumerate() {
+            if !round.get(i).copied().unwrap_or(false) {
+                vertices.push(*v);
+                continue;
+            }
+            let (Some(prev), Some(next)) = (self.vertices.get((i + n - 1) % n), self.vertices.get((i + 1) % n)) else {
+                vertices.push(*v);
+                continue;
+            };
+            let (a, b) = (v.p - prev.p, next.p - v.p);
+            let (la, lb) = (a.length(), b.length());
+            let fillet = (la > 1e-9 && lb > 1e-9 && radius > 0.0).then(|| (a * (1.0 / la), b * (1.0 / lb))).and_then(|(u, w)| {
+                // turn angle φ between the incoming and outgoing directions
+                let phi = (u.x * w.x + u.y * w.y).clamp(-1.0, 1.0).acos();
+                if !(1e-6..std::f64::consts::PI - 1e-6).contains(&phi) {
+                    return None;
+                }
+                let tan_half = (phi / 2.0).tan();
+                let d = (radius * tan_half).min(la / 2.0).min(lb / 2.0);
+                let r = d / tan_half;
+                let h = 4.0 / 3.0 * (phi / 4.0).tan() * r;
+                Some((u, w, d, h))
+            });
+            match fillet {
+                Some((u, w, d, h)) => {
+                    vertices.push(MaskVertex { p: v.p - u * d, t_in: Vec2::ZERO, t_out: u * h });
+                    vertices.push(MaskVertex { p: v.p + w * d, t_in: w * -h, t_out: Vec2::ZERO });
+                }
+                None => {
+                    vertices.push(MaskVertex::corner(v.p));
+                    vertices.push(MaskVertex::corner(v.p));
+                }
+            }
+        }
+        Self { vertices, closed: self.closed }
     }
 
     pub fn len(&self) -> usize {
@@ -438,5 +521,60 @@ mod tests {
         let s = serde_json::to_string(&m).unwrap();
         let back: Mask = serde_json::from_str(&s).unwrap();
         assert_eq!(back, m);
+    }
+
+    #[test]
+    fn rounded_rect_corners_are_quarter_circles() {
+        let p = MaskPath::rounded_rect(0.0, 0.0, 100.0, 60.0, 20.0);
+        assert_eq!(p.len(), 8);
+        // top-left corner: a quarter circle of radius 20 about (20, 20); the edges stay straight
+        let pts = p.flatten(0.01);
+        let mut on_arc = 0;
+        for q in &pts {
+            let (cx, cy) = (q.x.clamp(20.0, 80.0), q.y.clamp(20.0, 40.0));
+            let d = ((q.x - cx).powi(2) + (q.y - cy).powi(2)).sqrt();
+            if (q.x - cx).abs() > 1e-9 && (q.y - cy).abs() > 1e-9 {
+                on_arc += 1;
+                assert!((d - 20.0).abs() < 0.03, "{q:?} is {d} from its corner centre");
+            }
+            assert!(q.x >= -1e-9 && q.x <= 100.0 + 1e-9 && q.y >= -1e-9 && q.y <= 60.0 + 1e-9, "{q:?} outside the rectangle");
+        }
+        assert!(on_arc >= 8, "the corners are curved: {on_arc} arc points");
+        // the sharp corner itself is cut away
+        assert!(pts.iter().all(|q| q.x + q.y > 5.0), "the corner at (0, 0) is rounded off");
+        // radius 0 is the plain rectangle
+        assert_eq!(MaskPath::rounded_rect(0.0, 0.0, 10.0, 5.0, 0.0), MaskPath::rect(0.0, 0.0, 10.0, 5.0));
+    }
+
+    #[test]
+    fn rounding_clamps_to_half_an_edge_and_ignores_curves_and_hostile_input() {
+        // a radius larger than the shape gives a stadium: fillets meet at the edges' midpoints
+        let p = MaskPath::rounded_rect(0.0, 0.0, 100.0, 40.0, 1e9);
+        assert_eq!(p.len(), 8);
+        for v in &p.vertices {
+            assert!(v.p.x.is_finite() && v.p.y.is_finite());
+        }
+        assert!(p.vertices.iter().any(|v| (v.p - Vec2::new(0.0, 20.0)).length() < 1e-9), "{:?}", p.vertices);
+        // a triangle: the 60° turns get fillets tangent to both edges, within the triangle
+        let tri = MaskPath::polygon(&[Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(50.0, 86.6)]);
+        let r = tri.with_rounded_corners(10.0, &tri.roundable_corners());
+        assert_eq!(r.len(), 6);
+        assert!(r.vertices.iter().all(|v| v.p.y >= -1e-9));
+        // an ellipse has no sharp corners; NaN / negative radii and bad indices change nothing harmful
+        let e = MaskPath::ellipse(Vec2::new(50.0, 50.0), Vec2::new(30.0, 20.0));
+        assert!(e.roundable_corners().is_empty());
+        assert_eq!(e.with_rounded_corners(10.0, &[0, 1, 2, 3]), e);
+        let sq = MaskPath::rect(0.0, 0.0, 10.0, 10.0);
+        assert_eq!(sq.with_rounded_corners(5.0, &[usize::MAX, 99]), sq);
+        for bad in [f64::NAN, f64::INFINITY, -3.0, 0.0] {
+            let q = sq.with_rounded_corners(bad, &[0]);
+            assert_eq!(q.len(), 5, "a listed corner always splits in two");
+            assert!(q.vertices.iter().all(|v| v.is_corner() && v.p.x.is_finite()));
+        }
+        // a collinear vertex splits into two coincident corners, keeping vertex counts stable
+        let line = MaskPath::polygon(&[Vec2::new(0.0, 0.0), Vec2::new(5.0, 0.0), Vec2::new(10.0, 0.0), Vec2::new(5.0, 5.0)]);
+        let q = line.with_rounded_corners(2.0, &[1]);
+        assert_eq!(q.len(), 5);
+        assert_eq!(q.vertices[1].p, q.vertices[2].p);
     }
 }

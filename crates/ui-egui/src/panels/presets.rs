@@ -10,6 +10,7 @@ use serde_json::json;
 
 use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
+use crate::native_dialogs::FileDialog;
 use crate::state::SavePresetDraft;
 use crate::theme::Tokens;
 
@@ -25,7 +26,8 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
         if resp.hovered() {
             ui.painter().rect_filled(r, 0.0, t.hover);
         }
-        let x = r.min.x + 30.0;
+        // inside the Presets folder: icon and label one level deeper than it (#2329)
+        let x = r.min.x + crate::panels::effects::tree_x(1) + 18.0;
         icons::paint(
             ui.painter(),
             Rect::from_center_size(pos2(x, r.center().y), vec2(13.0, 13.0)),
@@ -36,7 +38,7 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
         app.auto.add(&format!("effects.preset.{}", p.name), r, &p.name);
         let tip = crate::i18n::t(if p.description.is_empty() { &p.name } else { &p.description }).to_string();
         let resp = resp.on_hover_text(tip);
-        if resp.drag_started() {
+        if resp.drag_started_by(egui::PointerButton::Primary) {
             crate::panels::start_drag_effect(ui, &format!("preset:{}", p.name));
         }
         if resp.double_clicked() {
@@ -66,12 +68,23 @@ pub fn run(app: &mut FilmcraftApp, cmd: &str, name: &str) {
         "presets.apply" => app.session.execute(cmd, json!({"preset": name})),
         "presets.delete" => app.session.execute(cmd, json!({"name": name})),
         "presets.export" => {
-            let Some(path) = app.hooks.pick_save_as.as_mut().and_then(|f| f(tl!("Effect presets"), &["json"], &format!("{name}.json"))) else { return };
-            app.session.execute(cmd, json!({"path": path, "names": [name]}))
+            let name = name.to_string();
+            app.pick_ui(FileDialog::save_as(tl!("Effect presets"), &["json"], &format!("{name}.json")), move |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return };
+                if let Err(e) = app.session.execute("presets.export", json!({"path": path, "names": [name]})) {
+                    app.ui.status = e.to_string();
+                }
+            });
+            return;
         }
         "presets.import" => {
-            let Some(path) = app.hooks.pick_open_file.as_mut().and_then(|f| f(tl!("Effect presets"), &["json"])) else { return };
-            app.session.execute(cmd, json!({"path": path}))
+            app.pick_ui(FileDialog::open_file(tl!("Effect presets"), &["json"]), |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return };
+                if let Err(e) = app.session.execute("presets.import", json!({"path": path})) {
+                    app.ui.status = e.to_string();
+                }
+            });
+            return;
         }
         _ => return,
     };
@@ -90,12 +103,12 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut close = false;
     let mut apply = false;
-    egui::Window::new(tl!("Save Preset")).id(egui::Id::new("Save Preset")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(
+    egui::Window::new(tl!("Save Preset")).id(egui::Id::unique("Save Preset")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(
         ctx,
         |ui| {
             ui.horizontal(|ui| {
                 ui.label(tl!("Name:"));
-                let r = ui.text_edit_singleline(&mut d.name);
+                let r = crate::widgets::accessible_name(ui.text_edit_singleline(&mut d.name), tl!("Name"));
                 app.auto.add("savePreset.name", r.rect, "Name");
             });
             ui.add_space(4.0);
@@ -114,7 +127,7 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.add_space(4.0);
             ui.label(tl!("Description:"));
-            let r = ui.text_edit_multiline(&mut d.description);
+            let r = crate::widgets::accessible_name(ui.text_edit_multiline(&mut d.description), tl!("Description"));
             app.auto.add("savePreset.description", r.rect, "Description");
             ui.add_space(6.0);
             ui.horizontal(|ui| {

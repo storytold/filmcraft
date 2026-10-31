@@ -3,7 +3,10 @@
 //! transform. The maths lives in `filmcraft_color::transform`.
 //!
 //! A sequence whose pipeline is "plain" (Rec. 709 working space without wide gamut) and media
-//! whose metadata says Rec. 709 / sRGB / linear take the original fast path unchanged.
+//! whose metadata says Rec. 709 / sRGB / linear take the original fast path unchanged. On such a
+//! sequence, display-referred HDR and wide-gamut Y'CbCr (PQ, HLG, BT.2020, P3) stays on the GPU
+//! path as well, with its input transform run in the compositor's shader ([`gpu_input`]); log
+//! media and the other pipelines are converted here, on the CPU.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -51,6 +54,18 @@ pub fn input_transform(cs: ColorSpace, range: Range, pipe: &ColorPipeline, peak_
     t
 }
 
+/// The input transform of a frame the GPU compositor can colour manage itself (#965): a Y'CbCr
+/// frame of display-referred HDR or wide-gamut media (PQ, HLG, BT.2020, P3) on a plain pipeline,
+/// whose working → monitor transform is the identity. None for log media (camera-gamut
+/// compression), RGB frames and other pipelines, which [`decode`] converts on the CPU.
+pub fn gpu_input(project: &Project, item: ItemId, pipe: &ColorPipeline, cs: ColorSpace, frame: &VideoFrame) -> Option<Arc<InputTransform>> {
+    if !pipe.is_plain() || !matches!(frame.data, filmcraft_frame::PixelData::Yuv8 { .. } | filmcraft_frame::PixelData::Yuv16 { .. }) {
+        return None;
+    }
+    let t = input_transform(cs, frame.color.range, pipe, source_peak_nits(project, item));
+    t.gpu_params().map(|_| t)
+}
+
 /// Decode a frame of `item` (box-decimated by `n`) into the working space of `pipe`.
 pub fn decode(project: &Project, item: ItemId, frame: &VideoFrame, n: usize, pipe: &ColorPipeline) -> Image {
     let cs = source_space(project, item, frame);
@@ -76,14 +91,16 @@ pub fn decode(project: &Project, item: ItemId, frame: &VideoFrame, n: usize, pip
 
 /// Working space → monitor (SDR BT.709) for a non-plain pipeline; no-op otherwise.
 pub fn to_display(img: &mut Image, pipe: &ColorPipeline) {
-    if pipe.is_plain() {
+    if display_is_identity(pipe) {
         return;
     }
     let o = display_transform(pipe);
-    if o.is_identity() {
-        return;
-    }
     img.map_rgb(|c, _, _| o.apply(c));
+}
+
+/// Whether [`to_display`] leaves every picture as it is.
+pub fn display_is_identity(pipe: &ColorPipeline) -> bool {
+    pipe.is_plain() || display_transform(pipe).is_identity()
 }
 
 pub fn display_transform(pipe: &ColorPipeline) -> Arc<OutputTransform> {
@@ -130,7 +147,7 @@ mod tests {
                 proxy: None,
                 identity: None,
             };
-            let id = p.add_item("hdr", Label::Iris, ItemKind::Media(clip), None);
+            let id = p.add_item("hdr", Label::Iris, ItemKind::Media(Box::new(clip)), None);
             (p, id)
         };
         let out = |hdr: Option<HdrMetadata>, nits: f32| {

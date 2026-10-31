@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (new file: ROADMAP's "Where we are lacking" re-measured against Premiere Pro 26.5.2 and the open issue list) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -27,8 +27,8 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | G11 | No plugin hosting | ecosystem | no | 200–400 h |
 | G12 | AI features | AI | no | 150–300 h |
 | G13 | Delivery formats | file format | no | 60–110 h |
-| G14 | Localization: 8 of the 12 key languages missing | localization | no | 150–230 h |
-| G15 | Interchange never validated in Avid / Pro Tools; slow XML import | file format | partly | 20–40 h |
+| G14 | Localization: 3 of the 12 key languages missing | localization | no | 150–230 h |
+| G15 | Interchange never validated in Avid / Pro Tools | file format | partly | 20–40 h |
 | G16 | Performance reports on 0.5.0 | performance | partly | 30–60 h |
 | G17 | Audio device and playback reliability | stability | partly | 20–40 h |
 | G18 | Effects depth: approximations and missing behaviour | feature | no | 60–110 h |
@@ -79,6 +79,15 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G4. Crashes at start-up, and no test CI on pull requests
 
+- **Have:** a graphics start-up fallback (#820): after two starts in a row that died within 15 s
+  of launch without painting (a driver crash in wgpu instance / device creation; hangs, later
+  crashes and concurrent instances don't count), the next launch moves on to DirectX 12 only
+  (Windows), then a software adapter (WARP, lavapipe, llvmpipe) with CPU compositing, and keeps
+  the mode that works; a start-up error wgpu reports moves on in the same process. A fallback mode
+  shows a notice with Use Default Graphics; `--graphics default|dx12|software` picks a mode by
+  hand. An explicit `WGPU_BACKEND` stays in charge. On Windows, a GPU that Vulkan lists through two
+  installed versions of one driver (GPUs on different driver packages) draws with the newer one
+  instead of dying inside the stale one (`filmcraft_gpu::adapter`).
 - **Missing:** a launch that never fails, and CI that runs the gates.
 - **Evidence:** open issues: macOS 12 Monterey aborts on a missing VideoToolbox symbol (#468,
   #661, #655), Intel UHD graphics (`igvk64.dll`, #512), Windows 11 does not run or fails after setup
@@ -87,9 +96,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   `cargo test` or `cargo xtask ci` on a pull request**, so 243 PRs merged since 10-05 were gated by
   contributors' local runs (main needed "green again after the batch merges" on 10-10).
 - **Impact:** a user who cannot start the app gets zero value; regressions land unnoticed.
-- **Done when:** weak-linked or runtime-loaded OS symbols on old macOS, a software / safe-mode
-  start when the GPU adapter fails, a PR workflow running `cargo xtask ci` on macOS, Windows and
-  Linux, and a crash-report triage pass. **40–80 h.**
+- **Done when:** weak-linked or runtime-loaded OS symbols on old macOS, ~~a software / safe-mode
+  start when the GPU adapter fails~~ (done, #820), a PR workflow running `cargo xtask ci`
+  on macOS, Windows and Linux, and a crash-report triage pass. **40–80 h.**
 
 ## G5. Hardware acceleration is partial
 
@@ -110,6 +119,12 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G6. No real-world media corpus or workflow acceptance tests
 
+- **Done:** first scripted MCP workflows (#835, `apps/filmcraft-cli/tests/it/workflows.rs`): the
+  `filmcraft-cli mcp` binary imports ffmpeg-made phone-like VFR H.264 + AAC MP4 and long-GOP
+  H.264 Matroska with two audio tracks (AAC, AC-3), edits (extract, audio gain, title; ripple
+  trims, colour matte, cross dissolve), exports H.264 MP4, and saves a project that a new process
+  exports as ProRes; ffprobe / ffmpeg check streams, frame count, duration, frame placement, A/V
+  sync, title pixels, dissolve mix and audio levels. Skipped without ffmpeg.
 - **Missing:** a pinned corpus of phone, camera and screen recordings (variable frame rate,
   damaged files, long GOP, odd containers, multi-track audio), each with an import → edit → export
   round trip checked against an ffprobe / ffmpeg oracle; scripted MCP sessions that do real jobs
@@ -117,8 +132,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Evidence:** export stopped producing frames with iPhone HEVC clips on Linux (#480); WebM shows
   black (#432); only the first audio track imported (#397, #416, #601; multi-stream support landed
   in #361, reporters not yet confirmed); bitrate target produced 6.1 Mb/s for 40 (#371).
-- **Done when:** corpus fetched pinned and sha256-verified (as PhotoCraft's `cargo xtask corpus`,
-  craftrules `standards/test-corpora.md`), runs nightly, ≥ 50 files. **40–70 h.**
+- **Done when:** corpus fetched pinned and sha256-verified (as PhotoCraft's `cargo xtask corpus`), runs nightly, ≥ 50 files. **40–70 h.**
 
 ## G7. No measured parity tool in CI
 
@@ -127,8 +141,13 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   `plan/premiere/menus.json`; presence and placement reported separately (same path, elsewhere,
   missing), app / Help / recent / account / macOS items out of scope, a markdown checklist, and
   `--min` to fail below a presence threshold. Without a reference it prints our inventory only.
-- **Missing:** the other areas (commands, effects, transitions, panels, preferences, formats),
-  fidelity tiers (exact, approximate, stub), a CI job, and a committed `docs/parity-checklist.md`.
+  `--area effects` and `--area transitions` (#831) measure the Effects panel the same way: the
+  effects and transitions the engine's effect definitions list (`examples/effect_catalog.rs` in
+  `filmcraft-project`) against a reference of folder paths or bare names (default the local
+  `plan/premiere/effects.json` / `transitions.json`), placement by folder, Presets and the other
+  area out of scope.
+- **Missing:** the other areas (commands, panels, preferences, formats), fidelity tiers (exact,
+  approximate, stub), a CI job, and a committed `docs/parity-checklist.md`.
 - **Evidence:** the 92% menu figure in this pass came from an ad hoc label-matching script; it has
   not yet been re-measured with the tool.
 - **Estimate:** 8–17 h left (the menu snapshot is local-only, so CI needs a committed, Adobe-free
@@ -138,16 +157,19 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Missing:** on-screen transform handles for Motion / Transform in the Program monitor (#639);
   Effect Controls keyframe zoom bar, draggable divider, row lines (#640–#645); panel docking
-  rearrangement (#493); clicking empty space to deselect (#683); filmstrip thumbnails (#614);
-  marquee selection in the Project panel (#578); Freeform bins and middle-mouse pan (#579);
+  rearrangement (#493); filmstrip thumbnails (#614);
+  Freeform bins and middle-mouse pan (#579);
   Program monitor Button Editor (+) (#431); keyframe curves for Position (#448); transition
-  editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize;
-  the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
+  editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize,
+  drag the cut to move it with the transition; the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
   X11 (#457).
 - **Estimate:** 120–200 h. Doc: [ui-parity.md](ui-parity.md).
 
 ## G9. Windows and Linux at run time
 
+- **Have:** files given at launch (terminal, Open With, file associations) open whatever the case
+  of `.fcproj` and are made absolute, and arguments that are not Unicode no longer stop the start;
+  `filmcraft-cli import` stores no Windows `\\?\` paths (#850).
 - **Missing:** routine runtime testing off macOS. Linux playback stutter (#617), Wayland title
   bar (#433), case-sensitive extensions (#593), "Report an issue" link (#642), Windows bins cannot
   be left (#587), Sequence Settings won't open on Windows (#586, #351), old hardware (#491).
@@ -156,17 +178,41 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G10. Container and codec gaps on import
 
 - **Have:** E-AC-3 (Dolby Digital Plus) in MP4, MOV, Matroska and MPEG-TS (#647): independent
-  substream, 1–6 blocks per syncframe, spectral extension.
-- **Missing:** E-AC-3 adaptive hybrid transform, enhanced coupling and the extra channels of 7.1
-  dependent substreams (played as the 5.1 core), AVI (#598; listed as an extension but no
-  demuxer), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2, FLAC in MP4 (#603), camera RAW (R3D
+  substream, 1–6 blocks per syncframe, spectral extension. MP1 / MP2 (MPEG audio Layer I / II):
+  own decoder (#809) in raw files, MP4 and MOV (#800), MPEG-TS / PS and Matroska (`A_MPEG/L1` and `L2`, #1402), including the
+  bit rate / mode combinations ISO/IEC 11172-3 disallows but ffmpeg writes (its mono default is
+  384 kbit/s). Radiance HDR (`.hdr`) stills and image sequences (#1407): RGBE as linear float, flat
+  and run-length scan lines, any axis order. OpenEXR stills and image
+  sequences (#828): scan-line, uncompressed / RLE / ZIPS / ZIP, half / float / uint, RGB(A) or
+  luminance, decoded to linear float frames and bit-exact against ffmpeg; PXR24 (lossy 24-bit
+  float, 16 lines per chunk) decodes too, bit-exact against OpenEXR (via OpenImageIO, #828). PSD stills and
+  image sequences as their flattened composite (Premiere's Merge All Layers): Grayscale and RGB,
+  8 or 16 bits (kept at 8), uncompressed or PackBits, with the merged transparency unblended
+  from white.
+- **Missing:** free-format MPEG audio, E-AC-3 adaptive hybrid
+  transform, enhanced coupling and the extra channels of 7.1 dependent substreams (played as the
+  5.1 core), WMV / ASF, DV / DVCPRO / DV100, MPEG-4 Part 2, camera RAW (R3D
   incl. R3D NE, ARRIRAW, Sony RAW / X-OCN, Canon RAW, BRAW, ProRes RAW; #345, #383), JPEG 2000 /
-  JPEG XS MXF, Cinema DNG; stills: PSD, EXR, DPX, Targa, HEIF / HEIC, Radiance HDR, AI / EPS;
-  transparent video (#402); Sony start timecode in `rtmd` (#460); stereo 3D flag (#500); MKV
-  multi-audio (#601).
+  JPEG XS MXF, the rest of CinemaDNG (lossy / JPEG XL DNG, MXF-wrapped, opcode lists, Raw
+  settings; DNG frames and folders import since #1065); stills: PSD layers (Merged Layers, Individual Layers, layers as a sequence) and PSB / CMYK / Lab / indexed / 32-bit / ZIP-compressed documents, EXR beyond scan-line RLE / ZIP / PXR24 (PIZ, B44, DWA,
+  tiled, multi-part, deep), HEIF / HEIC,
+  AI / EPS, and the rarer DPX layout, run-length encoding (Targa and DPX stills and sequences import
+  since #821, packed 10/12-bit and Y'CbCr DPX since #841, deeper than 8 bits kept at 8); transparent
+  video (#402); Sony start timecode in `rtmd` (#460); stereo 3D flag (#500); MKV multi-audio (#601);
+  EXIF Orientation on uncompressed / PackBits YCbCr TIFF and DNG stills and on the export image
+  overlay (`load_overlay` in `crates/export/src/pipeline.rs`); JPEG, PNG, WebP and other TIFF stills
+  apply it since #1583, except a WebP or PNG whose EXIF chunk starts with an `Exif\0\0` prefix
+  (decoded unturned). Projects saved before #1583 keep the stored size of a portrait still: one
+  already placed in a sequence shows upright but scaled up by the photo's aspect ratio (4/3 for a
+  4:3 shot) and off-centre (turned twice if it was rotated by hand); reset the clip's Motion or
+  place it again.
 - **Estimate:** 120–200 h (camera RAW alone 60–100 h, and some SDKs have licences we cannot use:
   clean-room from public specs only where specs exist). Docs: [codec-parity.md](codec-parity.md),
   [file-format-parity.md](file-format-parity.md).
+- **Have:** Matroska AAC / MP3 / AC-3 / E-AC-3 sample-aligned with the signal the encoder was
+  given (the exact `CodecDelay` is trimmed, not the 1 ms-rounded one; #790).
+- **Have:** AVI / OpenDML import (#598; Motion JPEG, H.264, HEVC, uncompressed video; PCM, MP3,
+  MP2, AC-3 audio) and FLAC audio in MP4 / MOV (#603; the decoder gets its STREAMINFO from `dfLa`).
 
 ## G11. No plugin hosting
 
@@ -187,52 +233,100 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 ## G13. Delivery formats
 
 - **Missing:** AV1 export (software or hardware), MPEG-2 / DVD / Blu-ray, DCP, JPEG 2000 MXF,
-  AS-10 / AS-11, XDCAM HD MXF, P2, OpenEXR sequences, MP3 and AAC-only audio,
-  ProRes 4444 / XQ in the export UI (#342; the encoder has the profiles), interlaced encoding,
-  smart render, HEVC software encoder (HEVC exists only where a hardware encoder does).
-- **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779).
+  AS-10 / AS-11, XDCAM HD MXF, P2, PIZ / PXR24 / B44 / DWA OpenEXR compression, MP3 audio,
+  interlaced encoding, smart render, HEVC software encoder (HEVC exists only where a hardware
+  encoder does).
+- **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
+  sequences (half float, linear; uncompressed, RLE, ZIPS or ZIP; #806, #874); AAC Audio
+  (audio-only `.m4a`, or ADTS `.aac`; #814); ProRes 4444 / 4444 XQ in the export UI (#342).
+- **GIF transparency:** Include Alpha Channel preserves binary transparency (#3396), with an
+  explicit 128/255 alpha threshold; decoded synthetic animation tests cover moving transparent
+  regions and clearing prior frames. Partial transparency remains a GIF limitation. See the
+  [export README](../crates/export/README.md). No readiness estimate changes.
 - **Estimate:** 60–110 h. Doc: [file-format-parity.md](file-format-parity.md).
 
-## G14. Localization: 8 of the 12 key languages missing
+## G14. Localization: 3 of the 12 key languages missing (Hindi, Arabic, Vietnamese)
 
-- **Have:** Spanish, Japanese and Simplified Chinese catalogs cover ~99.6–99.9% of the ~3,500
-  cataloged strings; Portuguese (Brazil) and Ukrainian ~10% (menus).
-- **Missing:** Hindi, Arabic (no RTL interface layout; Arabic titles reported broken, #395),
-  French (#498), Indonesian, German (#490), Korean (#508; needs Hangul fonts in craft-fonts),
-  Vietnamese, Portuguese beyond menus; Premiere also ships Italian and Russian. Engine errors,
-  CLI and MCP stay English. No language has a recorded native-speaker review.
+- **Have:** Spanish, Japanese, Simplified Chinese, French (#498, #804), Portuguese (Brazil) (#859,
+  #866), Indonesian (#867, #878), Korean (#508), Italian, German (#630), Russian, Czech, Polish,
+  Swedish, Turkish and Bosnian catalogs cover the whole interface (about 99–100% of the cataloged
+  strings); Ukrainian is menus only (~10%).
+- **Missing:** Hindi, Arabic (no RTL interface layout or catalog; the interface has Arabic and Hebrew
+  fallback fonts and shows captions in reading order, but other names and fields keep egui's
+  left-to-right run order; Arabic titles reported broken, #395),
+  Vietnamese (no catalog on main). These three are the languages with no catalog at all, which
+  is what the heading counts. Engine errors,
+  CLI and MCP stay English. Apart from the German menus (#630), no language has a recorded
+  native-speaker review.
+- **Done:** Indonesian (#867): `id.tsv` covers 3,562 of 3,610 strings (98.7%), in Edit ▸
+  Language, Settings ▸ General and the native macOS menu; System Language picks it for `id-*` (and
+  legacy `in-*`) locales. Native-speaker review welcome.
+- **Done:** Italian: `it.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸ Language,
+  Settings ▸ General and the native macOS menu; System Language picks it for `it-*` locales.
+  Native-speaker review welcome.
+- **Done:** German: `de.tsv` has every entry of the Spanish catalog (~100%), beyond the menus of
+  #630 (panels, dialogs, effects and their parameters, settings, status messages). The menus are
+  native-reviewed; review of the rest welcome.
+- **Done:** Russian: `ru.tsv` has every entry of the Spanish catalog (100% of the reference
+  catalog), translated from the English sources with Premiere-style Russian vocabulary
+  (последовательность, корзина, дорожка, визуализация); Edit ▸ Language, Settings ▸ General and
+  System Language (`ru-*`) reach it, a font test covers
+  the Russian alphabet including «ё». Native-speaker review welcome.
+- **Done:** Turkish: `tr.tsv` has every entry of the Spanish catalog (~100%), in Edit ▸ Language,
+  Settings ▸ General and the native macOS menu; System Language picks it for `tr-*` locales.
+  Native-speaker review welcome.
 - **Estimate:** 150–230 h. Doc: [localization-parity.md](localization-parity.md).
 
-## G15. Interchange never validated in Avid / Pro Tools; slow XML import
+## G15. Interchange never validated in Avid / Pro Tools
 
-- **Missing:** AAF and OMF exports have never been opened in Media Composer or Pro Tools; FCP7 XML
-  / OTIO import of a Premiere sequence took 97 s / 66 s for three media files (#461); `file.import`
-  merges into existing project content in headless round trips (#592).
+- **Missing:** AAF and OMF exports have never been opened in Media Composer or Pro Tools; `file.import`
+  merges into existing project content in headless round trips unless `replace:true` is passed (#592).
+- **Done:** FCP7 XML / OTIO / EDL / AAF import links media through the streaming reader instead of
+  reading each file whole into memory (#461).
 - **Estimate:** 20–40 h (needs a human with Avid / Pro Tools, both installed on the owner's Mac).
 
 ## G16. Performance reports on 0.5.0
 
 - **Missing:** steady UI under load. Constant lag after 0.4 → 0.5 (#525), ~100% CPU (#523). AV1
-  software decode is ~4 fps at 1080p single-threaded; 8K is not real time.
+  software decode of a single-tile stream is bound by its serial tile decode (65–80 % of a
+  frame; no row-level frame threading, references are waited for as whole frames); 8K is not
+  real time.
 - **Done:** Render (Effects) In to Out renders only the frames between In and Out, as partial
   previews named by segment hash and relative frames, instead of every segment In/Out touches
-  (#424); Render Audio still renders whole audio segments.
+  (#424); Render Audio still renders whole audio segments. AV1 software decode runs deblocking,
+  CDEF and loop restoration in parallel 64-row bands, bit-exact (#847; 1080p GOP 1.16–1.30×,
+  low delay 1.28×, 2160p 1.14× at 16 threads). VP9 software decode loop-filters a frame as a
+  wavefront over superblock rows on the decoder's pool instead of on one thread, bit-identical,
+  1.2–1.5× faster with 16 threads (#980).
 - **Estimate:** 30–60 h. Doc: [performance.md](performance.md).
 
 ## G17. Audio device and playback reliability
 
 - **Evidence:** Asus Xonar DX output broken (#605), no audio (#602), audio cuts out with
   overlapping clips (#336), buggy audio (#410), Linux stutter (#617). No ASIO; cpal only.
+- **Have:** a stream the device drops while playing (an ALSA xrun cpal reports as `POLLERR`, an
+  unplugged device) is restarted with the same rate, channels, clock and mixer position, so sound
+  resumes instead of playback going silent (at most 3 restarts in 10 s); a panicking mixer plays
+  silence (#840).
 - **Estimate:** 20–40 h.
 
 ## G18. Effects depth: approximations and missing behaviour
 
-- **Missing:** Warp Stabilizer is 2-D (Premiere's is 3-D subspace), Morph Cut approximate, Lumetri
-  HDR-aware maths, multicam paging beyond 16 angles, redesigned 26.0 mask tools (rounded corners,
-  constrained lines).
-- **Have:** Optical Flow time interpolation synthesises motion-compensated in-between frames (dense
-  coarse-to-fine Lucas–Kanade, CPU; #780); Transform shutter angle motion blur (#415); Ultra Key
-  Setting applied as a parameter preset (#458).
+- **Missing:** Warp Stabilizer is 2-D (Premiere's is 3-D subspace), Morph Cut has no face tracking
+  (and occlusion edges are soft), Lumetri HDR-aware maths,
+  redesigned 26.0 mask tools (a stored, re-editable
+  corner radius: rounding bakes fillets into the path, so a rounded corner cannot be re-rounded later).
+- **Have:** multicam sources with more than 16 angles are paged 4 × 4 in the Multi-Camera view;
+  Optical Flow time interpolation synthesises motion-compensated in-between frames (dense
+  coarse-to-fine Lucas–Kanade, CPU; #780); Morph Cut morphs the subject along that optical flow
+  instead of cross-dissolving (CPU; #805); Transform shutter angle motion blur (#415); Ultra Key
+  Setting applied as a parameter preset (#458); rectangle and polygon masks round their corners
+  with circular fillets (`masks.add` `cornerRadius`, `masks.roundCorners`, every path keyframe;
+  #813), from an on-monitor corner-roundness handle with a live preview (one undo step per drag;
+  #844); Shift snaps pen mask segments and dragged-out Bézier handles to 45° steps (#853), and
+  Shift constrains vertex and whole-mask drags to 45° steps from the press point (#1408); a
+  marquee or Shift-click selects several vertices on the Program monitor, and dragging any of
+  them moves them all in one undo step (#3150).
 - **Estimate:** 60–110 h.
 
 ## G19. Speech to text off in release builds
@@ -243,12 +337,18 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G20. The web app shell
 
-- **Missing:** file access, WebCodecs decode, audio in the browser build beyond what exists;
-  image-sequence export downloads drop frames in Chrome (#378).
+- **Missing:** file access, WebCodecs decode, audio in the browser build beyond what exists.
 - **Estimate:** 40–80 h. Doc: [web.md](web.md).
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-30 | minor | G14: three key languages have no catalog (Hindi, Arabic, Vietnamese); Korean, Italian, German and Russian are near-complete; Ukrainian is menus only; G13 GIF transparency retained |
+| 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461) |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
+| 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
+| 2026-10-12 | minor | G10: OpenEXR PXR24 import |
+| 2026-10-21 | minor | G10: PSD stills import the flattened composite, 8/16-bit grayscale and RGB (#2116) |
+| 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
+| 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |

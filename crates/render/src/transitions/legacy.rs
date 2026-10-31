@@ -56,7 +56,6 @@ pub(super) fn apply(e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Option<
         id,
         "cross_dissolve"
             | "cross_dissolve_legacy"
-            | "morph_cut"
             | "film_dissolve"
             | "film_dissolve_legacy"
             | "additive_dissolve"
@@ -93,7 +92,7 @@ fn legacy(id: &str, e: &EffectInstance, a: &Image, b: &Image, p: f32) -> Image {
     let aspect = (a.w as f32) / (a.h as f32).max(1.0);
     let pd = p as f64;
     match id {
-        "cross_dissolve" | "morph_cut" => masked(a, b, |_, _| p),
+        "cross_dissolve" => masked(a, b, |_, _| p),
         "film_dissolve" => {
             // blend in a gamma-2.2-like space for a filmic, less-dippy dissolve
             let mut out = Image::new(a.w, a.h);

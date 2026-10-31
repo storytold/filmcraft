@@ -54,6 +54,11 @@ pub(super) fn apply(id: &str, t: &Tx) -> Option<Image> {
                 }
             })
         }
+        // a jump cut smoothed by morphing: both frames are warped along the dense optical flow
+        // between them and blended, so the subject moves from its place in the outgoing shot to
+        // its place in the incoming one instead of showing twice; where the frames do not
+        // correspond (no consistent motion) it is the cross dissolve
+        "morph_cut" => crate::flow::interpolate(t.a, t.b, p),
         "luma_fade" => {
             let soft = t.frac("softness").clamp(0.005, 1.0) * 0.5;
             let from_b = t.choice("source") == 1;

@@ -26,7 +26,7 @@ pub mod transitions;
 
 use std::collections::HashMap;
 
-use filmcraft_project::{ClipId, ItemId, Sequence, Track, TrackId, TrackItem, Transition, TransitionId};
+use filmcraft_project::{ClipId, ItemId, Sequence, Track, TrackId, TrackItem, Transition, TransitionAlign, TransitionId};
 use filmcraft_time::{Tick, TimeRange};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -176,13 +176,16 @@ pub fn track_range_empty(track: &Track, range: TimeRange) -> bool {
     !track.items.iter().any(|i| i.range().overlaps(&range))
 }
 
-/// Drop transitions whose clips no longer exist or are no longer adjacent to them.
+/// Drop transitions whose clips no longer exist or are no longer adjacent to them (a transition
+/// between two clips must sit on their cut: the outgoing clip's end = the incoming clip's start).
+/// A one-sided fade needs only its clip. `Session::edit` runs this on every sequence an edit
+/// changed, so commands need not call it themselves.
 pub fn remove_orphan_transitions(track: &mut Track) {
     let ids: HashMap<ClipId, (Tick, Tick)> = track.items.iter().map(|i| (i.id, (i.start, i.end()))).collect();
-    track.transitions.retain(|tr| {
-        let from_ok = tr.from.is_none_or(|f| ids.contains_key(&f));
-        let to_ok = tr.to.is_none_or(|t| ids.contains_key(&t));
-        from_ok && to_ok && (tr.from.is_some() || tr.to.is_some())
+    track.transitions.retain(|tr| match (tr.from, tr.to) {
+        (Some(f), Some(t)) => matches!((ids.get(&f), ids.get(&t)), (Some(&(_, end)), Some(&(start, _))) if end == start),
+        (Some(c), None) | (None, Some(c)) => ids.contains_key(&c),
+        (None, None) => false,
     });
 }
 
@@ -196,22 +199,57 @@ fn transition_anchor(track: &Track, tr: &Transition) -> Option<Tick> {
 }
 
 /// Keep transitions on their edit points after an edit moved cuts (ripple trim, roll, slide, ripple
-/// speed change): each transition shifts by as much as its anchor clip edge moved.
+/// speed change): each transition shifts by as much as its anchor clip edge moved. A transition
+/// between two clips stays within them, whether its cut moved or one of the clips got shorter
+/// ([`keep_within_clips`]).
 fn transitions_follow_cuts(before: &Sequence, after: &mut Sequence) {
+    let frame = after.settings.frame_rate.frame_duration();
     for track in after.all_tracks_mut() {
         let Some(old) = before.track(track.id) else { continue };
-        let shifts: Vec<Tick> = track
+        let shifts: Vec<(Tick, Option<(Tick, Tick, Tick)>)> = track
             .transitions
             .iter()
-            .map(|tr| match (transition_anchor(old, tr), transition_anchor(track, tr)) {
-                (Some(a), Some(b)) => b - a,
-                _ => Tick::ZERO,
+            .map(|tr| {
+                let d = match (transition_anchor(old, tr), transition_anchor(track, tr)) {
+                    (Some(a), Some(b)) => b - a,
+                    _ => Tick::ZERO,
+                };
+                (d, clips_span(track, tr))
             })
             .collect();
-        for (tr, d) in track.transitions.iter_mut().zip(shifts) {
+        for (tr, (d, within)) in track.transitions.iter_mut().zip(shifts) {
             tr.start += d;
+            if let Some(span) = within {
+                keep_within_clips(tr, span, frame);
+            }
         }
     }
+}
+
+/// The two clips of a transition between clips as (first clip's start, cut, second clip's end),
+/// while they still overlap the cut's span.
+fn clips_span(track: &Track, tr: &Transition) -> Option<(Tick, Tick, Tick)> {
+    match (tr.from.and_then(|c| track.item(c)), tr.to.and_then(|c| track.item(c))) {
+        (Some(f), Some(t)) if f.start < t.end() => Some((f.start, t.start, t.end())),
+        _ => None,
+    }
+}
+
+/// Move a transition that reaches past its two clips (`span`, from [`clips_span`]) back inside
+/// them, shortened when the clips are now shorter than it. Its stored alignment follows where that
+/// leaves it on the cut, as `transitions::set_span` stores it (interchange): Custom Start has no
+/// variant.
+fn keep_within_clips(tr: &mut Transition, (lo, cut, hi): (Tick, Tick, Tick), frame: Tick) {
+    if tr.start >= lo && tr.end() <= hi {
+        return;
+    }
+    tr.duration = tr.duration.min(hi - lo);
+    tr.start = tr.start.clamp(lo, hi - tr.duration);
+    tr.align = match transitions::alignment(tr, cut, frame) {
+        transitions::Alignment::Start => TransitionAlign::StartAtCut,
+        transitions::Alignment::End => TransitionAlign::EndAtCut,
+        transitions::Alignment::Center | transitions::Alignment::Custom => TransitionAlign::CenterAtCut,
+    };
 }
 
 /// Keep a clip's one-sided transitions (a fade in from nothing, a fade out to nothing) on its edges
@@ -234,6 +272,18 @@ fn fades_follow_edges(track: &mut Track, clip: ClipId) {
     }
 }
 
+/// Keep each transition between `clip` and its neighbor within the two clips after a regular trim
+/// or a non-ripple speed change made `clip` shorter ([`keep_within_clips`]).
+fn transitions_stay_within_clips(track: &mut Track, clip: ClipId, frame: Tick) {
+    let spans: Vec<Option<(Tick, Tick, Tick)>> =
+        track.transitions.iter().map(|tr| clips_span(track, tr).filter(|_| tr.from == Some(clip) || tr.to == Some(clip))).collect();
+    for (tr, span) in track.transitions.iter_mut().zip(spans) {
+        if let Some(span) = span {
+            keep_within_clips(tr, span, frame);
+        }
+    }
+}
+
 fn place(track: &mut Track, item: TrackItem) {
     let idx = track.items.partition_point(|i| i.start <= item.start);
     track.items.insert(idx, item);
@@ -245,6 +295,15 @@ fn place(track: &mut Track, item: TrackItem) {
 
 fn track_mut(seq: &mut Sequence, id: TrackId) -> Result<&mut Track> {
     seq.track_mut(id).ok_or(EditError::NoTrack(id))
+}
+
+/// The clip's track, or [`EditError::Locked`] when that track may not change.
+fn unlocked_track(seq: &Sequence, clip: ClipId) -> Result<TrackId> {
+    let (tid, _) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
+    if seq.track(tid).ok_or(EditError::NoTrack(tid))?.locked {
+        return Err(EditError::Locked);
+    }
+    Ok(tid)
 }
 
 /// Overwrite edits: each item replaces material on its track.
@@ -460,6 +519,9 @@ pub fn ripple_delete_items(seq: &mut Sequence, items: &[ClipId]) -> Result<Vec<T
             }
             shift_track_from(tr, span.end(), -span.duration);
         }
+        for ct in work.caption_tracks.iter_mut().filter(|c| !c.locked && c.sync_lock) {
+            captions::extract_range(ct, *span);
+        }
     }
     *seq = work;
     Ok(spans)
@@ -500,10 +562,19 @@ pub fn close_gap(seq: &mut Sequence, track: TrackId, t: Tick) -> Result<()> {
 /// Move items by (track, time) offsets with overwrite (default drag) or insert (Cmd-drag) semantics.
 /// `moves`: (item, destination track, new start).
 pub fn move_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_mode: bool, ctx: &mut EditCtx) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for (clip, _, _) in moves {
+        if !seen.insert(*clip) {
+            return Err(EditError::Other(format!("clip {} is listed more than once in this move", clip.0)));
+        }
+    }
     let mut work = seq.clone();
     let mut placed = Vec::new();
     for (c, dest, start) in moves {
-        let (_, it) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        let (src, it) = work.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        if work.track(src).is_some_and(|t| t.locked) {
+            return Err(EditError::Locked);
+        }
         let mut it = it.clone();
         if work.track(*dest).ok_or(EditError::NoTrack(*dest))?.locked {
             return Err(EditError::Locked);
@@ -547,16 +618,22 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
         it.start = (*start).max(Tick::ZERO);
         placed.push((*dest, it));
     }
-    // worked out on the original ids, then moved over to the copies
+    // worked out on the original ids, then moved over to the copies (only transitions whose every
+    // clip is copied travel; one whose partner stays with the originals is not duplicated)
     let carried = carried_transitions(&work, &placed);
     let mut ids = HashMap::new();
     let mut links = HashMap::new();
+    let mut groups = HashMap::new();
     for (_, it) in &mut placed {
         let id = ClipId(ctx.alloc());
         ids.insert(it.id, id);
         it.id = id;
         if let Some(l) = it.link {
             it.link = Some(*links.entry(l).or_insert_with(|| ctx.alloc()));
+        }
+        // copies of grouped clips form a group of their own, never one with the originals
+        if let Some(g) = it.group {
+            it.group = Some(*groups.entry(g).or_insert_with(|| ctx.alloc()));
         }
     }
     // a copy whose linked partner is not copied is not linked
@@ -584,9 +661,10 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     Ok(out)
 }
 
-/// The transitions that travel with a move (#227, #374): those whose clips all move, onto one
-/// track and by one offset (a fade at a moved clip's edge, or the cut between two clips that move
-/// together), shifted to where those clips land.
+/// The transitions that travel with a move (#227, #374): only those whose every clip moves, onto
+/// one track and by one offset (a fade at a moved clip's edge, or the cut between two clips that
+/// move together), shifted to where those clips land. A transition whose partner stays behind is
+/// dropped, as in Premiere (the drag preview leaves it where it is until the release).
 fn carried_transitions(seq: &Sequence, placed: &[(TrackId, TrackItem)]) -> Vec<(TrackId, Transition)> {
     let landing = |c: ClipId| {
         let (dest, it) = placed.iter().find(|(_, it)| it.id == c)?;
@@ -595,9 +673,14 @@ fn carried_transitions(seq: &Sequence, placed: &[(TrackId, TrackItem)]) -> Vec<(
     };
     let mut carried = Vec::new();
     for tr in seq.all_tracks().filter(|t| !t.locked).flat_map(|t| t.transitions.iter()) {
-        let lands: Option<Vec<(TrackId, Tick)>> = [tr.from, tr.to].into_iter().flatten().map(landing).collect();
-        let Some((&(dest, delta), rest)) = lands.as_deref().and_then(<[_]>::split_first) else { continue };
-        if rest.iter().all(|l| *l == (dest, delta)) {
+        let endpoints: Vec<ClipId> = [tr.from, tr.to].into_iter().flatten().collect();
+        let lands: Vec<(TrackId, Tick)> = endpoints.iter().filter_map(|c| landing(*c)).collect();
+        // every clip it sits on must move, onto one track by one offset, or the transition is
+        // dropped with the delete below (a partner that stayed behind ends the move)
+        if lands.len() == endpoints.len()
+            && let Some(&(dest, delta)) = lands.first()
+            && lands.iter().skip(1).all(|l| *l == (dest, delta))
+        {
             carried.push((dest, Transition { start: tr.start + delta, ..tr.clone() }));
         }
     }
@@ -613,6 +696,13 @@ fn media_len(ctx: &EditCtx, item: &TrackItem) -> Option<Tick> {
 
 /// Media available before a clip's source In (its head handle, media ticks).
 fn head(ctx: &EditCtx, item: &TrackItem) -> Tick {
+    // media with no length (an image, graphic, or adjustment layer, ..) has no set time,
+    // therefore head limit does not apply, like its tail.
+    // its source_in may go below 0, which keeps its keyframes true to timeline position (#3367).
+    // checked before frame hold, so a held one with a negative source_in still has no limit.
+    if (ctx.media_duration)(item.item).is_none() {
+        return Tick::MAX;
+    }
     if item.frame_hold.is_some() {
         return item.source_in;
     }
@@ -633,7 +723,8 @@ fn neighbours(track: &Track, id: ClipId) -> (Tick, Tick) {
 
 /// Compute the clamped delta a trim may apply (for UI feedback while dragging).
 pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, ctx: &EditCtx) -> Result<Tick> {
-    let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
+    let tid = unlocked_track(seq, clip)?;
+    let (_, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
     let (prev_end, next_start) = neighbours(tr, clip);
     let media = media_len(ctx, it);
@@ -703,6 +794,7 @@ pub fn move_edge(it: &mut TrackItem, edge: Edge, d: Tick, move_start: bool) {
 /// Trim one edge of an item (Selection-tool edge drag = Regular; Ripple tool = Ripple).
 /// Linked partners should be trimmed by the caller with the same delta.
 pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    unlocked_track(seq, clip)?;
     let d = clamp_trim(seq, clip, edge, mode, delta, ctx)?;
     if d == Tick::ZERO {
         return Ok(d);
@@ -744,8 +836,12 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
             }
         }
         transitions_follow_cuts(seq, &mut work);
-    } else if let Ok(track) = track_mut(&mut work, tid) {
-        fades_follow_edges(track, clip);
+    } else {
+        let frame = work.settings.frame_rate.frame_duration();
+        if let Ok(track) = track_mut(&mut work, tid) {
+            fades_follow_edges(track, clip);
+            transitions_stay_within_clips(track, clip, frame);
+        }
     }
     work.check().map_err(EditError::Other)?;
     *seq = work;
@@ -759,6 +855,9 @@ pub fn trim(seq: &mut Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta:
 /// overwrite material on a sync-locked track, or when such a linked clip has no room to follow.
 pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
     let Some(&first) = clips.first() else { return Ok(Tick::ZERO) };
+    for c in clips {
+        unlocked_track(seq, *c)?;
+    }
     let mut d = delta;
     for c in clips {
         let x = clamp_trim(seq, *c, edge, TrimMode::Ripple, d, ctx)?;
@@ -861,6 +960,8 @@ pub fn ripple_trim_group(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta
 
 /// Rolling edit between two adjacent items on one track: moves the cut by `delta`.
 pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    unlocked_track(seq, left)?;
+    unlocked_track(seq, right)?;
     let (_, l) = seq.find_item(left).ok_or(EditError::NoItem(left))?;
     let (_, r) = seq.find_item(right).ok_or(EditError::NoItem(right))?;
     if l.end() != r.start {
@@ -869,6 +970,10 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
     let mut d = delta;
     // left out-point limits
     d = d.max(-(l.duration - ctx.min_duration)).min(r.duration - ctx.min_duration);
+    // a transition on this cut moves with it and stays within the two clips
+    for x in seq.all_tracks().flat_map(|t| &t.transitions).filter(|x| x.from == Some(left) && x.to == Some(right)) {
+        d = d.max((l.start - x.start).min(Tick::ZERO)).min((r.end() - x.end()).max(Tick::ZERO));
+    }
     // a reversed clip consumes media from the opposite end, so its media limit is the other one
     if l.reverse {
         d = d.min(Tick((head(ctx, l).0 as f64 / l.speed.abs()).floor() as i64));
@@ -908,10 +1013,19 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
 
 /// Slip: change which part of the media an item shows without moving it.
 pub fn slip(seq: &mut Sequence, clip: ClipId, delta_media: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    unlocked_track(seq, clip)?;
     let (_, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let used = src_of(it.duration, it.speed);
     let max_in = media_len(ctx, it).map(|m| m - used).unwrap_or(Tick::MAX);
-    let lo = if it.frame_hold.is_some() { Tick::ZERO } else { (ctx.media_start)(it.item) };
+    let lo = if (ctx.media_duration)(it.item).is_none() {
+        // media with no length has no set time, therefore no floor either.
+        // its source_in can already be below 0 from a left extension (#3367).
+        Tick::MIN
+    } else if it.frame_hold.is_some() {
+        Tick::ZERO
+    } else {
+        (ctx.media_start)(it.item)
+    };
     let new_in = (it.source_in + delta_media).clamp(lo, max_in.max(lo));
     let d = new_in - it.source_in;
     let (_, it) = seq.find_item_mut(clip).ok_or(EditError::NoItem(clip))?;
@@ -921,6 +1035,7 @@ pub fn slip(seq: &mut Sequence, clip: ClipId, delta_media: Tick, ctx: &mut EditC
 
 /// Slide: move an item between its neighbours, trimming them to keep the gapless span.
 pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -> Result<Tick> {
+    unlocked_track(seq, clip)?;
     let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let it = it.clone();
     let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
@@ -999,27 +1114,65 @@ pub fn slide_items(seq: &mut Sequence, clips: &[ClipId], delta: Tick, ctx: &mut 
     Ok(d)
 }
 
-/// Rate stretch: change an item's duration by dragging an edge, adjusting speed to keep the same media.
-pub fn rate_stretch(seq: &mut Sequence, clip: ClipId, edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<f64> {
+/// How far `clip` can rate-stretch on `edge` without overlapping a neighbour or going shorter than
+/// one frame. Linked partners use this so they all take the tightest room.
+pub fn clamp_rate_stretch(seq: &Sequence, clip: ClipId, edge: Edge, delta: Tick, ctx: &EditCtx) -> Result<Tick> {
     let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
     let (prev_end, next_start) = neighbours(tr, clip);
-    let src_len = it.source_out() - it.source_in;
-    let d = match edge {
+    Ok(match edge {
         Edge::Out => delta.clamp(-(it.duration - ctx.min_duration), next_start - it.end()),
         Edge::In => delta.clamp(-(it.start - prev_end), it.duration - ctx.min_duration),
-    };
-    let new_dur = match edge {
-        Edge::Out => it.duration + d,
-        Edge::In => it.duration - d,
-    };
-    let speed = src_len.0 as f64 / new_dur.0 as f64;
-    let (_, it) = seq.find_item_mut(clip).ok_or(EditError::NoItem(clip))?;
-    if edge == Edge::In {
-        it.start += d;
+    })
+}
+
+/// Rate stretch: change an item's duration by dragging an edge, adjusting speed to keep the same media.
+pub fn rate_stretch(seq: &mut Sequence, clip: ClipId, edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<f64> {
+    rate_stretch_items(seq, &[clip], edge, delta, ctx)
+}
+
+/// Rate stretch a clip and its linked partners as one edit: the tightest neighbour on any member
+/// clamps them all, so they keep one speed. A neighbour on the sound track cannot leave the picture
+/// stretching further (and the pair still linked at different rates).
+pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delta: Tick, ctx: &mut EditCtx) -> Result<f64> {
+    // clips on locked tracks are left as they are; with every clip locked the edit is refused
+    let mut open = Vec::with_capacity(clips.len());
+    for &c in clips {
+        match unlocked_track(seq, c) {
+            Ok(_) => open.push(c),
+            Err(EditError::Locked) => {}
+            Err(e) => return Err(e),
+        }
     }
-    it.duration = new_dur;
-    it.speed = speed;
+    if open.is_empty() {
+        return Err(EditError::Locked);
+    }
+    let clips = open.as_slice();
+    let mut d = delta;
+    for c in clips {
+        let x = clamp_rate_stretch(seq, *c, edge, d, ctx)?;
+        if x.0.signum() != d.0.signum() {
+            d = Tick::ZERO;
+        } else if x.abs() < d.abs() {
+            d = x;
+        }
+    }
+    let mut speed = 1.0;
+    for c in clips {
+        let (_, it) = seq.find_item(*c).ok_or(EditError::NoItem(*c))?;
+        let src_len = it.source_out() - it.source_in;
+        let new_dur = match edge {
+            Edge::Out => it.duration + d,
+            Edge::In => it.duration - d,
+        };
+        speed = src_len.0 as f64 / new_dur.0 as f64;
+        let (_, it) = seq.find_item_mut(*c).ok_or(EditError::NoItem(*c))?;
+        if edge == Edge::In {
+            it.start += d;
+        }
+        it.duration = new_dur;
+        it.speed = speed;
+    }
     Ok(speed)
 }
 
@@ -1037,6 +1190,9 @@ pub fn set_speed(seq: &mut Sequence, clip: ClipId, speed: f64, reverse: bool, ri
 pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse: bool, ripple: bool, ctx: &mut EditCtx) -> Result<()> {
     if !(speed.is_finite() && speed > 0.0) {
         return Err(EditError::Other("speed must be positive".into()));
+    }
+    for clip in clips {
+        unlocked_track(seq, *clip)?;
     }
     let mut work = seq.clone();
     // per member track: where its later material starts, and by how much the member's length changed
@@ -1061,6 +1217,12 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
         it.speed = speed;
         it.reverse = reverse;
         it.duration = new_dur;
+        let frame = work.settings.frame_rate.frame_duration();
+        let track = work.track_mut(tid).ok_or(EditError::NoTrack(tid))?;
+        fades_follow_edges(track, *clip);
+        if !ripple {
+            transitions_stay_within_clips(track, *clip, frame);
+        }
         origins.push((tid, old_end, delta));
     }
     let main_from = origins.first().map(|o| o.1).unwrap_or_default();

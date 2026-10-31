@@ -42,6 +42,8 @@ pub fn from_codec_config(codec: &CodecConfig) -> Option<ColorCodes> {
         CodecConfig::Avc(c) => avc(c),
         CodecConfig::Hevc(c) => hevc(c),
         CodecConfig::Av1(c) => av1(&c.config_obus),
+        // VP8 has no colour signalling: its one colour space is BT.601 YUV, studio swing (RFC 6386 9.2)
+        CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"vp08" => Some(ColorCodes { primaries: 2, transfer: 2, matrix: 6, full_range: Some(false) }),
         _ => None,
     }
 }

@@ -40,8 +40,12 @@ the control channel and MCP agents can do the same.
 Recognition goes through the `Transcriber` trait (`crates/speech`). The built-in recogniser is
 OpenAI's Whisper, run in pure Rust on [candle](https://github.com/huggingface/candle) on the CPU,
 with timestamp decoding, language detection and word times from cross-attention alignment (see the
-`filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
-statistics (`filmcraft_speech::diarize`); no model is involved.
+`filmcraft_speech::whisper` module docs). The alignment makes words contiguous (each word ends where
+the next starts) and places a start that follows a pause late, so the word bounds are then measured
+against the audio (`filmcraft_speech::vad`): a pause of 0.2 s or more inside a word's span ends
+the word and starts the next one after the pause, and silence at the edges is trimmed. That is
+what `transcript.removePauses` and the extract / lift cuts see. Speakers are labelled by
+clustering per-chunk MFCC statistics (`filmcraft_speech::diarize`); no model is involved.
 
 Both are **optional features**, off by default and never built for the web:
 
@@ -53,7 +57,15 @@ Both are **optional features**, off by default and never built for the web:
 Without `whisper`, and with no recogniser installed, `transcript.generate` and Transcribe Sequence
 are disabled, with "speech-to-text is not available in this build" as the reason (`describe`,
 `command_list {"enabled_only": true}` and the menus show it); with Automatically transcribe clips
-on, `file.import` reports the same reason as a `transcription: …` entry in its `errors`.
+on with the all-imported scope, `file.import` reports the same reason as a `transcription: …`
+entry in its `errors`.
+
+The default sequence-only scope waits until enabled audio is placed in a sequence (including
+Source Insert/Overwrite, timeline placement, paste and sequence expansion). It transcribes the
+underlying media once, preserving any existing transcript, and includes the new transcript in
+the placement's undo step. Undo/Redo and opening or recovering a project do not run recognition.
+If recognition fails, the clips stay placed and a warning appears in the Events panel and a toast.
+
 Without `speech-download`, `transcript.downloadModel` is disabled the same way. Transcripts can
 still be imported with `transcript.set` and edited with every other command. Hosts and tests can
 install any recogniser in `Session::transcriber`, which enables transcription in any build.
@@ -85,3 +97,7 @@ Apple-silicon laptop CPU).
 - Transcription runs synchronously inside the command (no background job or progress bar yet).
 - Track items that refer to a subclip are looked up by the subclip's id, so a transcript made for
   the parent media is not shown through subclip clips yet.
+- Word bounds are only moved across pauses. A start that the alignment places late inside
+  continuous speech (no pause of 0.2 s between the two words) stays where it is, so the word
+  before it can hold the beginning of the next one: the audio level gives no boundary to move it
+  to. Words that the alignment places a whole sentence away are not moved back either.

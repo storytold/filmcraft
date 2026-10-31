@@ -56,12 +56,12 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
 
 /// Save the current layout as the saved layout of `name`.
 fn save(app: &mut FilmcraftApp, name: &str) -> Result<(), String> {
-    let layout = serde_json::to_value(&app.ui.dock).map_err(|e| e.to_string())?;
+    let entry = dock::SavedWorkspace::new(name, &app.ui.dock)?;
     let mut next = app.workspaces.clone();
     let saved = &mut next.saved;
     match saved.iter_mut().find(|s| s.name == name) {
-        Some(s) => s.layout = layout,
-        None => saved.push(dock::SavedWorkspace { name: name.to_string(), layout }),
+        Some(s) => *s = entry,
+        None => saved.push(entry),
     }
     next.current = name.to_string();
     app.set_workspaces(next)
@@ -167,7 +167,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.workspace_dialog.clone() else { return };
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     let mut push = |id: &str, r: &egui::Response, label: &str| elems.push((id.to_string(), r.rect, label.to_string()));
-    let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let mut close = crate::widgets::escape_closes(ctx);
     let mut act: Option<(&str, Value)> = None;
     let names = dock::names(&app.workspaces);
     let changed: Vec<String> = app.workspaces.saved.iter().map(|s| s.name.clone()).collect();
@@ -175,9 +175,13 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         WorkspaceDialog::SaveAs { .. } => ("New Workspace", tl!("New Workspace")),
         WorkspaceDialog::Edit { .. } => ("Edit Workspaces", tl!("Edit Workspaces")),
     };
-    egui::Window::new(shown).id(egui::Id::new(title)).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
-        ctx,
-        |ui| match &mut d {
+    egui::Window::new(shown)
+        .id(egui::Id::unique(title))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .show(ctx, |ui| match &mut d {
             WorkspaceDialog::SaveAs { name } => {
                 ui.horizontal(|ui| {
                     ui.label(tl!("Name:"));
@@ -209,7 +213,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let own = sel.as_deref().is_some_and(|s| !is_builtin(s));
                 ui.horizontal(|ui| {
                     ui.label(tl!("Name:"));
-                    let r = ui.add_enabled(own, egui::TextEdit::singleline(name));
+                    let r = crate::widgets::accessible_name(ui.add_enabled(own, egui::TextEdit::singleline(name)), "Name");
                     push("workspaces.edit.name", &r, "Name");
                     let r = ui.add_enabled(own && sel.as_deref() != Some(name.trim()), egui::Button::new(tl!("Rename")));
                     push("workspaces.edit.rename", &r, "Rename");
@@ -240,8 +244,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     close |= r.clicked();
                 });
             }
-        },
-    );
+        });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
