@@ -48,6 +48,11 @@ pub const CRAFT_ORIGIN: &str = "craft-fonts";
 /// The default family for new text.
 pub const DEFAULT_FAMILY: &str = "Inter";
 
+/// Whether the font at `index` of `data` maps `c` to a glyph (false when it can't be parsed).
+pub fn maps_char(data: &[u8], index: u32, c: char) -> bool {
+    FontRef::from_index(data, index).ok().and_then(|f| f.charmap().map(c)).is_some_and(|g| g.to_u32() != 0)
+}
+
 /// Index of a face in the database.
 pub type FaceId = usize;
 
@@ -226,6 +231,17 @@ impl Face {
             .as_ref()
             .map(FaceBytes::get)
     }
+    /// The font file's bytes, shared rather than copied: the bytes the database read and keeps
+    /// with the face (or the static data), as one more reference to them. Read on first use; None
+    /// if the file is missing or unreadable. Prefer this to [`Face::data`] to hand a face to a
+    /// consumer that keeps it (egui's `FontData::from_blob`).
+    pub fn shared_bytes(&self) -> Option<Arc<dyn AsRef<[u8]> + Send + Sync>> {
+        self.bytes()?;
+        match self.bytes.get()?.as_ref()? {
+            FaceBytes::Static(b) => Some(Arc::new(*b)),
+            FaceBytes::Shared(b) => Some(b.clone()),
+        }
+    }
     /// A copy of the font file's bytes (None if it is missing or unreadable).
     pub fn data(&self) -> Option<Vec<u8>> {
         self.bytes().map(<[u8]>::to_vec)
@@ -247,6 +263,28 @@ impl Face {
     }
     pub fn has_char(&self, c: char) -> bool {
         self.glyph(c).is_some()
+    }
+    /// The code points the face maps to a glyph, as sorted, merged inclusive ranges. Like
+    /// [`Face::covers_text`], a face whose file is not loaded yet is read into a temporary buffer
+    /// that is dropped afterwards.
+    pub fn coverage(&self) -> Vec<(u32, u32)> {
+        fn ranges(font: &FontRef<'_>) -> Vec<(u32, u32)> {
+            let mut cps: Vec<u32> = font.charmap().mappings().filter(|(_, g)| g.to_u32() != 0).map(|(cp, _)| cp).collect();
+            cps.sort_unstable();
+            let mut out: Vec<(u32, u32)> = Vec::new();
+            for cp in cps {
+                match out.last_mut() {
+                    Some(last) if cp <= last.1.saturating_add(1) => last.1 = last.1.max(cp),
+                    _ => out.push((cp, cp)),
+                }
+            }
+            out
+        }
+        if let (FaceData::File(p), None) = (&self.info.data, self.bytes.get()) {
+            let Ok(data) = std::fs::read(p) else { return Vec::new() };
+            return FontRef::from_index(&data, self.info.index).map(|f| ranges(&f)).unwrap_or_default();
+        }
+        self.font().map(|f| ranges(&f)).unwrap_or_default()
     }
     /// Whether the face covers every character of `text`. Unlike [`Face::has_char`], a face whose
     /// file is not loaded yet is read into a temporary buffer that is dropped afterwards, so
@@ -651,9 +689,41 @@ mod tests {
         let f = Face { id: 0, info, bytes: OnceLock::new(), shaper: OnceLock::new() };
         assert!(f.covers_text("A\u{416}"));
         assert!(!f.covers_text("A\u{5d0}"));
+        let ranges = f.coverage();
+        let has = |c: char| ranges.iter().any(|&(a, b)| (a..=b).contains(&u32::from(c)));
+        assert!(has('A') && has('\u{416}') && !has('\u{5d0}'), "{ranges:?}");
+        assert!(ranges.windows(2).all(|w| w[0].1.saturating_add(1) < w[1].0), "sorted and merged: {ranges:?}");
         assert!(f.bytes.get().is_none(), "probing coverage must not cache the file");
         assert!(f.data().is_some());
         assert!(f.bytes.get().is_some());
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// `shared_bytes` reads the file once and then hands out the bytes the face keeps (no copy),
+    /// even after the file is gone: a caller can share them for as long as it holds them.
+    #[test]
+    fn shared_bytes_are_read_once_and_not_copied() {
+        let path = std::env::temp_dir().join(format!("filmcraft-face-bytes-{}.ttf", std::process::id()));
+        std::fs::write(&path, INTER_REGULAR).expect("write temp font");
+        let info = FaceInfo {
+            family: "Inter".into(),
+            style: "Regular".into(),
+            weight: 400,
+            italic: false,
+            index: 0,
+            data: FaceData::File(path.clone()),
+            origin: "system",
+        };
+        let f = Face { id: 0, info, bytes: OnceLock::new(), shaper: OnceLock::new() };
+        let first = f.shared_bytes().expect("readable font");
+        let _ = std::fs::remove_file(&path);
+        let second = f.shared_bytes().expect("kept bytes");
+        let kept = f.bytes().map(<[u8]>::as_ptr);
+        assert_eq!(Some((*first).as_ref().as_ptr()), kept, "the face's own bytes, not a copy");
+        assert_eq!(Some((*second).as_ref().as_ptr()), kept, "the same bytes, not a second read or a copy");
+        assert_eq!((*second).as_ref().len(), INTER_REGULAR.len());
+        assert!(f.has_char('A'), "the kept bytes serve the face after its file is gone");
+        let bundled = face(0).shared_bytes().expect("bundled face");
+        assert_eq!((*bundled).as_ref().as_ptr(), INTER_REGULAR.as_ptr(), "static data is shared, not copied");
     }
 }

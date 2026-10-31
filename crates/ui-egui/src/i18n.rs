@@ -17,9 +17,9 @@
 //! a font already installed on the system ([`system_japanese_font`]); with neither, switching to
 //! Japanese is refused with a message.
 //!
-//! Simplified Chinese uses the Chinese fallback `theme::install` always adds (craft-fonts Hans/Hant
-//! faces, otherwise one installed system face, see `cjk.rs`); without one, switching to Chinese is
-//! refused the same way ([`chinese_font_available`]).
+//! Simplified Chinese uses the Chinese fallback of `cjk.rs` (craft-fonts Hans/Hant faces, otherwise
+//! one installed system face, read the first time Chinese is painted); without one, switching to
+//! Chinese is refused the same way ([`chinese_font_available`]).
 
 mod catalog;
 
@@ -289,28 +289,15 @@ const PREFERRED_JAPANESE: &[&str] = &[
     "VL Gothic",
 ];
 
-const JAPANESE_FONT: &str = "system-japanese";
+pub(crate) const JAPANESE_FONT: &str = "system-japanese";
 
 /// A Japanese font already installed on this system, for the interface (none is bundled). Looked up
 /// once per process: the system font folders are scanned on first use (name tables only), then the
-/// chosen face's file is read. `None` on the web and on systems without a Japanese font.
+/// chosen face's file is read into the font database, whose bytes egui shares (no copy; see
+/// `fallback_fonts`). `None` on the web and on systems without a Japanese font.
 pub fn system_japanese_font() -> Option<Arc<egui::FontData>> {
-    static FONT: OnceLock<Option<Arc<egui::FontData>>> = OnceLock::new();
-    FONT.get_or_init(|| {
-        filmcraft_text::fonts::scan_system();
-        let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
-        let covers = |f: &filmcraft_text::fonts::Face| f.covers_text(JAPANESE_SAMPLE);
-        // within a family, the face closest to regular weight
-        let by_weight = |f: &&Arc<filmcraft_text::fonts::Face>| f.info.weight.abs_diff(400);
-        let preferred =
-            PREFERRED_JAPANESE.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name) && covers(f)).min_by_key(by_weight));
-        let face = preferred.or_else(|| faces.iter().filter(|f| covers(f)).min_by_key(by_weight))?;
-        // kept for the life of the process (one font, read once) so installing it again after a
-        // theme change shares the bytes instead of copying the whole file
-        let bytes: &'static [u8] = Box::leak(face.data()?.into_boxed_slice());
-        Some(Arc::new(egui::FontData::from_blob(Arc::new(bytes), face.info.index)))
-    })
-    .clone()
+    static FONT: crate::fallback_fonts::SystemFace = crate::fallback_fonts::SystemFace::new(JAPANESE_SAMPLE, PREFERRED_JAPANESE);
+    FONT.font_data()
 }
 
 /// Whether the craft-fonts build input (empty unless built with `CRAFT_FONTS_DIR`) supplies a
@@ -341,16 +328,17 @@ pub fn install_japanese_font(ctx: &egui::Context) -> bool {
     true
 }
 
-/// Whether the interface can show Simplified Chinese: `theme::install` always adds a Chinese
-/// fallback face when there is one (craft-fonts Hans/Hant faces, otherwise an installed system
-/// face, see `cjk.rs`), so nothing needs installing here. False on systems without either.
+/// Whether the interface can show Simplified Chinese: there is a Chinese fallback face (craft-fonts
+/// Hans/Hant faces, which `theme::install` adds, otherwise an installed system face, read the first
+/// time Chinese is painted; see `cjk.rs`), so nothing needs installing here. False on systems
+/// without either.
 pub fn chinese_font_available() -> bool {
     crate::cjk::available()
 }
 
-/// Whether the interface can show Korean: `theme::install` adds an installed system Hangul face
-/// (Malgun Gothic, Apple SD Gothic Neo, Noto Sans CJK KR…, see `cjk.rs`) when there is one; none
-/// is bundled. False on systems (and the web) without one.
+/// Whether the interface can show Korean: there is an installed system Hangul face (Malgun Gothic,
+/// Apple SD Gothic Neo, Noto Sans CJK KR…, see `cjk.rs`), read the first time Hangul is painted;
+/// none is bundled. False on systems (and the web) without one.
 pub fn korean_font_available() -> bool {
     crate::cjk::korean_available()
 }

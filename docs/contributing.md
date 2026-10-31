@@ -96,15 +96,21 @@ glyphs skip when it is empty; when you touch fonts, run the gates both with and 
 Chinese media names and track labels use the `Hans` / `Hant` craft-fonts faces after the Japanese
 fallbacks in every UI font family, regardless of interface language (Japanese and Chinese share code
 points, so Japanese text keeps Japanese glyph forms; the Chinese faces cover hanzi the Japanese ones lack). Without those build inputs,
-native builds look up an installed Chinese face (for example Microsoft YaHei or Noto Sans CJK SC)
-once and reuse it across theme changes. No system font files are bundled or copied into the app.
+native builds use an installed Chinese face (for example Microsoft YaHei or Noto Sans CJK SC). The
+installed faces the interface falls back to (that one, the Hangul face every build uses, and the
+Arabic and Hebrew ones below) are read the first time the interface paints a character that needs
+them, not at start-up: egui asks `crates/ui-egui/src/fallback_fonts.rs` for a face while it lays
+out a character no installed font has, and after each pass it looks at the painted text, reads the
+face, installs the fonts again (each face in its place in the fallback order) and has egui redo the
+pass before the frame is shown. A face is read once and egui shares the font database's bytes, so
+the file is in memory once. No system font files are bundled or copied into the app.
 Web builds depend on the font faces selected by `crates/text/build.rs`; they cannot scan system fonts.
 `theme::tests::chinese_names_render_in_every_theme_and_font_family` verifies Chinese glyphs in the
 timeline's proportional, monospace, medium and semibold families under all three themes.
 
 Arabic and Hebrew work the same way (`crates/ui-egui/src/rtl.rs`): the `Arab` / `Hebr` craft-fonts
-faces, else one installed face per script (for example Noto Sans Arabic, SF Arabic or Segoe UI),
-are the last fallbacks of every UI font family. egui shapes each font run (letters join) but lays
+faces, else one installed face per script (for example Noto Sans Arabic, SF Arabic or Segoe UI,
+read when first needed), are the last fallbacks of every UI font family. egui shapes each font run (letters join) but lays
 runs out left to right with no bidi pass, so captions on the timeline and in the Text panel are laid
 out in reading order by `rtl::Lines` (UAX #9 via unicode-bidi, each right-to-left word its own layout
 section). A caption being edited shows egui's logical order, since `TextEdit` places the caret by

@@ -49,6 +49,7 @@ pub mod credits;
 pub mod dock;
 mod dock_ui;
 pub use dock_ui::area_id as dock_area_id;
+mod fallback_fonts;
 /// Thumbnail textures kept before the least recently used are freed (each is up to 320 px wide).
 const MAX_THUMB_TEXTURES: usize = 512;
 

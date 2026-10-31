@@ -1,8 +1,9 @@
 //! Right-to-left scripts (Arabic, Hebrew) in the interface: fallback fonts and reading order.
 //!
 //! Fonts: like [`crate::cjk`], the craft-fonts faces for these scripts (`Arab`, `Hebr`) become the
-//! last fallbacks of every UI font family. A build without them looks up one installed face per
-//! script once (Noto Sans Arabic, SF Arabic, Segoe UI…) and reuses it across theme changes.
+//! last fallbacks of every UI font family. A build without them uses one installed face per script
+//! (Noto Sans Arabic, SF Arabic, Segoe UI…), read the first time the interface paints text in it
+//! ([`crate::fallback_fonts`]).
 //!
 //! Reading order: the egui 0.37 fork performs UAX #9 shaping, run ordering and bracket mirroring.
 //! [`Lines`] lays out document text (captions) with one logical `LayoutJob` and
@@ -10,87 +11,64 @@
 //! word-by-word reversal would reverse Arabic/Hebrew twice. Text being edited keeps egui's logical
 //! order: `TextEdit` maps the caret by character index.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use egui::epaint::text::{LayoutJob, TextDirection, TextFormat};
 use egui::{Align, Color32, FontData, FontDefinitions, FontId, Galley, Painter, Rect, Vec2, pos2};
 use filmcraft_text::fonts::{CraftFont, Face};
 use unicode_bidi::{BidiClass, BidiInfo, bidi_class};
 
-/// A right-to-left script: its ISO 15924 code (as in the craft-fonts manifest), letters a face
-/// must cover, and installed families to prefer, best first.
-struct Script {
-    code: &'static str,
-    sample: &'static str,
-    preferred: &'static [&'static str],
-}
+use crate::fallback_fonts::Fallback;
 
-const SCRIPTS: &[Script] = &[
-    Script {
-        code: "Arab",
-        sample: "ابتثجحخدذرزسشصضطظعغفقكلمنهويءآأؤإئةى،؟",
-        preferred: &[
-            "Noto Sans Arabic UI",
-            "Noto Sans Arabic",
-            "SF Arabic",
-            "Geeza Pro",
-            "Segoe UI",
-            "Noto Naskh Arabic UI",
-            "Noto Naskh Arabic",
-            "Tahoma",
-            "Arial",
-            "DejaVu Sans",
-        ],
-    },
-    Script {
-        code: "Hebr",
-        sample: "אבגדהוזחטיכךלמםנןסעפףצץקרשת",
-        preferred: &["Noto Sans Hebrew", "SF Hebrew", "Arial Hebrew", "Segoe UI", "Arial", "Tahoma", "DejaVu Sans"],
-    },
-];
+/// The right-to-left scripts, by ISO 15924 code (as in the craft-fonts manifest).
+const CODES: [&str; 2] = ["Arab", "Hebr"];
 
 /// The craft-fonts faces for right-to-left scripts (empty unless built with `CRAFT_FONTS_DIR`).
 pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static CraftFont> {
-    filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.iter().any(|s| SCRIPTS.iter().any(|x| x.code == *s)))
+    filmcraft_text::fonts::CRAFT_FONTS.iter().filter(|f| f.scripts.iter().any(|s| CODES.contains(s)))
 }
 
-/// Installed faces for the scripts craft-fonts does not cover, looked up once per process (native
-/// builds only). A face that covers several scripts (Segoe UI) is added once.
-fn system_fonts() -> &'static [(String, Arc<FontData>)] {
-    static FONTS: OnceLock<Vec<(String, Arc<FontData>)>> = OnceLock::new();
-    FONTS.get_or_init(|| {
-        if cfg!(target_arch = "wasm32") {
-            return Vec::new();
-        }
-        let missing: Vec<&Script> = SCRIPTS.iter().filter(|s| !craft_fonts().any(|f| f.scripts.contains(&s.code))).collect();
-        if missing.is_empty() {
-            return Vec::new();
-        }
-        filmcraft_text::fonts::scan_system();
-        let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
-        let by_weight = |f: &&Arc<Face>| f.info.weight.abs_diff(400);
-        let mut chosen: Vec<&Arc<Face>> = Vec::new();
-        let mut out = Vec::new();
-        for s in missing {
-            if chosen.iter().any(|f| f.covers_text(s.sample)) {
-                continue;
-            }
-            let covers = |f: &&Arc<Face>| f.covers_text(s.sample);
-            let preferred =
-                s.preferred.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name)).filter(covers).min_by_key(by_weight));
-            let Some(face) = preferred.or_else(|| faces.iter().filter(covers).min_by_key(by_weight)) else {
-                continue;
-            };
-            let Some(data) = face.data() else {
-                continue;
-            };
-            let font = FontData::from_blob(Arc::new(data), face.info.index);
-            out.push((format!("system-{}", s.code.to_lowercase()), Arc::new(font)));
-            chosen.push(face);
-        }
-        out
-    })
+fn without_craft(code: &str) -> bool {
+    !craft_fonts().any(|f| f.scripts.contains(&code))
 }
+
+fn without_craft_arabic() -> bool {
+    without_craft("Arab")
+}
+
+fn without_craft_hebrew() -> bool {
+    without_craft("Hebr")
+}
+
+/// The installed Arabic face, for builds without the craft-fonts `Arab` face: Arabic, its
+/// supplements and presentation forms.
+pub(crate) static ARABIC: Fallback = Fallback::new(
+    "system-arab",
+    "ابتثجحخدذرزسشصضطظعغفقكلمنهويءآأؤإئةى،؟",
+    &[
+        "Noto Sans Arabic UI",
+        "Noto Sans Arabic",
+        "SF Arabic",
+        "Geeza Pro",
+        "Segoe UI",
+        "Noto Naskh Arabic UI",
+        "Noto Naskh Arabic",
+        "Tahoma",
+        "Arial",
+        "DejaVu Sans",
+    ],
+    &['\u{600}'..='\u{6ff}', '\u{750}'..='\u{77f}', '\u{870}'..='\u{8ff}', '\u{fb50}'..='\u{fdff}', '\u{fe70}'..='\u{fefc}', '\u{1ee00}'..='\u{1eeff}'],
+    without_craft_arabic,
+);
+
+/// The installed Hebrew face (craft-fonts has none).
+pub(crate) static HEBREW: Fallback = Fallback::new(
+    "system-hebr",
+    "אבגדהוזחטיכךלמםנןסעפףצץקרשת",
+    &["Noto Sans Hebrew", "SF Hebrew", "Arial Hebrew", "Segoe UI", "Arial", "Tahoma", "DejaVu Sans"],
+    &['\u{590}'..='\u{5ff}', '\u{fb1d}'..='\u{fb4f}'],
+    without_craft_hebrew,
+);
 
 /// Append the right-to-left faces (craft-fonts, else installed ones) after the other fallbacks of
 /// every font family. Their letters are in no other UI font, so their place among the fallbacks
@@ -104,9 +82,17 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
         fonts.font_data.insert(name.clone(), Arc::new(FontData::from_static(f.bytes)));
         names.push(name);
     }
-    for (name, font) in system_fonts() {
-        fonts.font_data.insert(name.clone(), font.clone());
-        names.push(name.clone());
+    // installed faces once read ([`crate::fallback_fonts`]); a face that covers both scripts
+    // (Segoe UI) is added once
+    let mut added: Vec<&Arc<Face>> = Vec::new();
+    for fallback in [&ARABIC, &HEBREW] {
+        let (Some(font), Some(face)) = (fallback.font_data(), fallback.face.face()) else { continue };
+        if added.iter().any(|f| Arc::ptr_eq(f, face)) {
+            continue;
+        }
+        added.push(face);
+        fonts.font_data.insert(fallback.name.into(), font);
+        names.push(fallback.name.to_string());
     }
     for stack in fonts.families.values_mut() {
         for name in &names {
@@ -120,7 +106,7 @@ pub(crate) fn install(fonts: &mut FontDefinitions) {
 /// Whether `name` is an installed right-to-left face added by [`install`].
 #[cfg(test)]
 pub(crate) fn is_system_face(name: &str) -> bool {
-    system_fonts().iter().any(|(n, _)| n == name)
+    [&ARABIC, &HEBREW].iter().any(|f| f.name == name)
 }
 
 /// Whether `text` has a right-to-left letter (Arabic, Hebrew…), the only text [`Lines`] reorders.
@@ -228,8 +214,10 @@ mod tests {
     fn lines_draw_arabic_in_reading_order() {
         let ctx = egui::Context::default();
         let mut fonts = FontDefinitions::default();
+        // read as when the interface first paints Arabic
+        let installed = ARABIC.read();
         install(&mut fonts);
-        if !craft_fonts().any(|f| f.scripts.contains(&"Arab")) && !system_fonts().iter().any(|(name, _)| name == "system-arab") {
+        if !craft_fonts().any(|f| f.scripts.contains(&"Arab")) && !installed {
             eprintln!("SKIPPED: no craft-fonts or installed Arabic font");
             return;
         }

@@ -416,8 +416,17 @@ pub fn font_families() -> Vec<FontFamily> {
 
 /// Install the Latin UI fonts, Chinese fallback (craft-fonts or an installed face), Japanese
 /// craft-fonts, Arabic and Hebrew fallbacks (craft-fonts or installed faces, `crate::rtl`) and
-/// egui visuals. Document names keep their glyphs in every interface language.
+/// egui visuals. Document names keep their glyphs in every interface language: installed faces
+/// are read the first time the interface paints text that needs them (`crate::fallback_fonts`).
 pub fn install(ctx: &egui::Context, t: &Tokens) {
+    ctx.set_fonts(font_definitions());
+    ctx.add_plugin(crate::fallback_fonts::Watch::new());
+    apply_visuals(ctx, t);
+}
+
+/// The interface fonts [`install`] sets: the Latin UI fonts, the craft-fonts, and the installed
+/// fallback faces read so far.
+pub(crate) fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_REGULAR)));
     fonts.font_data.insert("inter-medium".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_MEDIUM)));
@@ -432,8 +441,7 @@ pub fn install(ctx: &egui::Context, t: &Tokens) {
     add_craft_fonts(&mut fonts);
     crate::cjk::install(&mut fonts);
     crate::rtl::install(&mut fonts);
-    ctx.set_fonts(fonts);
-    apply_visuals(ctx, t);
+    fonts
 }
 
 /// Name of the egui font for a craft-fonts entry.
@@ -602,67 +610,88 @@ mod tests {
         assert!(v(t.playhead) > v(pink) && v(t.timecode) > v(pink) && v(t.track_target) < v(pink), "lighter and darker as the default blues are");
     }
 
-    /// Chinese media and track names must render even when the interface stays in English.
-    /// Compare the rasterized glyphs with the missing-glyph box, including custom weight families.
-    #[test]
-    fn chinese_names_render_in_every_theme_and_font_family() {
-        const CHINESE: &str = "中文旁白音乐声轨测试简体汉语繁體漢語车";
-        filmcraft_text::fonts::scan_system();
-        let available = filmcraft_text::fonts::all_faces()
+    /// Paint `text` in every font family in one frame and assert the frame shows real glyphs, not
+    /// the missing-glyph box: installed fallback faces are read during that frame, so this is the
+    /// text's first appearance.
+    fn assert_first_frame_draws(ctx: &egui::Context, text: &str, what: &str) {
+        let fonts: Vec<FontId> = font_families().into_iter().map(|f| FontId::new(13.0, f)).collect();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for font in &fonts {
+                ui.label(egui::RichText::new(text).font(font.clone()));
+            }
+        });
+        out.textures_delta.clear();
+        let galleys: Vec<Arc<egui::Galley>> = out
+            .shapes
             .iter()
-            .any(|f| matches!(f.info.origin, "system" | filmcraft_text::fonts::CRAFT_ORIGIN) && f.covers_text(CHINESE));
-        if !available {
-            eprintln!("SKIPPED: no craft-fonts or installed Chinese font");
-            return;
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == text => Some(t.galley.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(galleys.len(), fonts.len(), "{what}: one label per family");
+        for galley in galleys {
+            let Some(font) = galley.job.sections.first().map(|s| s.format.font_id.clone()) else { continue };
+            // U+10FFFF is in no font: the face egui draws missing glyphs with
+            let missing = ctx.fonts_mut(|f| f.layout_no_wrap("\u{10ffff}".into(), font.clone(), Color32::WHITE).rows[0].glyphs[0].uv_rect);
+            let drawn: Vec<_> = galley.rows.iter().flat_map(|r| &r.glyphs).filter(|g| !g.uv_rect.is_nothing()).collect();
+            // right-to-left words are shaped (letters joined) and padded with empty glyphs; every
+            // other character draws one glyph of its own
+            if !crate::rtl::has_rtl(text) {
+                assert_eq!(drawn.len(), text.chars().filter(|c| *c != ' ').count(), "{what}: an empty glyph in {font:?}");
+            }
+            assert!(!drawn.is_empty(), "{what}: nothing drawn in {font:?}");
+            for glyph in drawn {
+                assert_ne!(glyph.uv_rect, missing, "{what}: missing {} in {font:?} on the first frame", glyph.chr);
+            }
         }
-        let ctx = egui::Context::default();
-        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
-            install(&ctx, &Tokens::for_kind(kind));
-            ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
-            ctx.fonts_mut(|fonts| {
-                for family in font_families() {
-                    let font = FontId::new(13.0, family);
-                    let missing = fonts.layout_no_wrap("\u{fffd}".into(), font.clone(), Color32::WHITE);
-                    let missing_uv = missing.rows[0].glyphs[0].uv_rect;
-                    let names = fonts.layout_no_wrap(CHINESE.into(), font.clone(), Color32::WHITE);
-                    assert_eq!(names.rows.iter().map(|r| r.glyphs.len()).sum::<usize>(), CHINESE.chars().count());
-                    for glyph in names.rows.iter().flat_map(|r| &r.glyphs) {
-                        assert!(!glyph.uv_rect.is_nothing(), "empty {} in {font:?}", glyph.chr);
-                        assert_ne!(glyph.uv_rect, missing_uv, "missing {} in {kind:?} / {font:?}", glyph.chr);
-                    }
-                }
-            });
-        }
-        // the layouts above put glyphs in the atlas: take that update so it isn't dropped unapplied
         ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
     }
 
-    /// Typed, pasted or IME-composed Hangul draws real glyphs, not the missing-glyph box (artcraft#2093).
+    /// Chinese media and track names must render even when the interface stays in English, from the
+    /// first frame that shows them, in every theme and font family (custom weights included).
+    #[test]
+    fn chinese_names_render_in_every_theme_and_font_family() {
+        const CHINESE: &str = "中文旁白音乐声轨测试简体汉语繁體漢語车";
+        if !crate::cjk::available() {
+            eprintln!("SKIPPED: no craft-fonts or installed Chinese font");
+            return;
+        }
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            let ctx = egui::Context::default();
+            install(&ctx, &Tokens::for_kind(kind));
+            assert_first_frame_draws(&ctx, CHINESE, &format!("{kind:?}"));
+        }
+    }
+
+    /// Typed, pasted or IME-composed Hangul draws real glyphs, not the missing-glyph box
+    /// (artcraft#2093), from the first frame that shows it.
     #[test]
     fn korean_text_renders_with_an_installed_korean_font() {
         const KOREAN: &str = "한국어 입력 테스트";
-        filmcraft_text::fonts::scan_system();
-        // `covers_text`, not `has_char`: probing keeps no font file loaded (see `cjk::find_system_font`)
-        let available = filmcraft_text::fonts::all_faces().iter().any(|f| f.info.origin == "system" && f.covers_text(KOREAN));
-        if !available {
+        if !crate::cjk::korean_available() {
             eprintln!("SKIPPED: no installed Korean font");
             return;
         }
         let ctx = egui::Context::default();
         install(&ctx, &Tokens::for_kind(ThemeKind::Dark));
-        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
-        ctx.fonts_mut(|fonts| {
-            for family in font_families() {
-                let font = FontId::new(13.0, family);
-                let missing = fonts.layout_no_wrap("\u{fffd}".into(), font.clone(), Color32::WHITE);
-                let missing_uv = missing.rows[0].glyphs[0].uv_rect;
-                let text = fonts.layout_no_wrap(KOREAN.into(), font.clone(), Color32::WHITE);
-                for glyph in text.rows.iter().flat_map(|r| &r.glyphs).filter(|g| g.chr != ' ') {
-                    assert_ne!(glyph.uv_rect, missing_uv, "missing {} in {font:?}", glyph.chr);
-                }
+        assert_first_frame_draws(&ctx, KOREAN, "Hangul");
+    }
+
+    /// Arabic and Hebrew names draw from the first frame too (craft-fonts' Arabic, or installed faces).
+    #[test]
+    fn right_to_left_names_render_on_the_first_frame() {
+        let arabic = crate::rtl::craft_fonts().any(|f| f.scripts.contains(&"Arab")) || crate::rtl::ARABIC.face.face().is_some();
+        let hebrew = crate::rtl::craft_fonts().any(|f| f.scripts.contains(&"Hebr")) || crate::rtl::HEBREW.face.face().is_some();
+        for (text, available) in [("طبقةمرحبا", arabic), ("שכבה", hebrew)] {
+            if !available {
+                eprintln!("SKIPPED: no font for {text}");
+                continue;
             }
-        });
-        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+            let ctx = egui::Context::default();
+            install(&ctx, &Tokens::for_kind(ThemeKind::Dark));
+            assert_first_frame_draws(&ctx, text, text);
+        }
     }
 
     /// Built with craft-fonts: every font family ends with the Japanese faces (BIZ UDPGothic
@@ -677,9 +706,9 @@ mod tests {
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             for (family, stack) in &defs.families {
-                // installed faces come after the craft run: right-to-left ones (Hebrew is not in
-                // craft-fonts) and the Hangul face (none is in craft-fonts)
-                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n) && n.as_str() != crate::cjk::KOREAN_FACE).collect();
+                // installed faces come after the craft run (Hebrew and Hangul are not in craft-fonts),
+                // once read
+                let stack: Vec<&String> = stack.iter().filter(|n| !crate::fallback_fonts::FALLBACKS.iter().any(|f| f.name == n.as_str())).collect();
                 let first = stack.iter().position(|n| n.starts_with("craft:")).unwrap_or(stack.len());
                 assert!(first > 0 && stack[first..].iter().all(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 let first_japanese = stack.iter().find(|n| n.starts_with("craft:BIZ") || n.starts_with("craft:Shippori"));
