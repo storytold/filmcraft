@@ -886,6 +886,52 @@ fn bokeh_and_focus_blur() {
     assert!((0..4).all(|k| close(a[k], b[k], 1e-4)));
 }
 
+/// Bokeh Blur gathers through a kernel of whole-pixel weights (`bokeh_kernel`). It must give what
+/// the mean of the bilinear taps it replaced gave (that gather, kept here), at the image's edges
+/// too, for every shape, rotation and radius, and a radius larger than the image.
+#[test]
+fn bokeh_kernel_matches_the_bilinear_taps() {
+    let img = picture(37, 23);
+    for (sides, rot, rr, rings) in
+        [(0u32, 0.0f32, 0.7f32, 1u32), (6, 0.35, 10.0, 10), (3, -1.3, 4.5, 5), (5, 7.0, 6.2, 7), (8, 2.0, 12.0, 12), (4, 0.0, 60.0, 12)]
+    {
+        let mut taps: Vec<(f32, f32)> = vec![(0.0, 0.0)];
+        for ring in 1..=rings as usize {
+            let rad = rr * ring as f32 / rings as f32;
+            let n = (ring * 8).max(6);
+            for i in 0..n {
+                let th = std::f32::consts::TAU * (i as f32 + 0.5 * (ring % 2) as f32) / n as f32;
+                let pr = rad * blur::poly_radius(sides, th, rot);
+                taps.push((th.cos() * pr, th.sin() * pr));
+            }
+        }
+        let kernel = bokeh_kernel(sides, rot, rr, rings);
+        assert!(kernel.len() <= taps.len() * 4);
+        assert!(close(kernel.iter().map(|c| c.2).sum::<f32>(), 1.0, 1e-5));
+        let mut worst = 0f32;
+        for y in 0..img.h {
+            for x in 0..img.w {
+                let mut want = [0f32; 4];
+                for &(dx, dy) in &taps {
+                    let p = img.sample_bilinear_clamped(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
+                    for k in 0..4 {
+                        want[k] += p[k] / taps.len() as f32;
+                    }
+                }
+                let mut got = [0f32; 4];
+                for &(dx, dy, wt) in &kernel {
+                    let p = img.get_clamped(x as isize + dx as isize, y as isize + dy as isize);
+                    for k in 0..4 {
+                        got[k] += p[k] * wt;
+                    }
+                }
+                worst = (0..4).map(|k| (want[k] - got[k]).abs()).fold(worst, f32::max);
+            }
+        }
+        assert!(worst < 2e-5, "{sides} sides, {rot} rad, radius {rr}: off by {worst}");
+    }
+}
+
 #[test]
 fn echo_combines_operators() {
     let a = Image::filled(1, 1, [0.2, 0.4, 0.1, 1.0]);
