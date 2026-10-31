@@ -376,12 +376,12 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"item": item.0, "clip": clip, "narration": n}))
 }
 
-fn new_job(s: &mut Session, label: String) -> crate::Job {
+pub(crate) fn new_job(s: &mut Session, label: String) -> crate::Job {
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     crate::Job { id, label, progress: Default::default(), result: Default::default() }
 }
 
-fn spawn(s: &mut Session, job: crate::Job, wait: bool, name: &str, run: impl FnOnce() + Send + 'static) -> Result<u64> {
+pub(crate) fn spawn(s: &mut Session, job: crate::Job, wait: bool, name: &str, run: impl FnOnce() + Send + 'static) -> Result<u64> {
     let id = job.id;
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);

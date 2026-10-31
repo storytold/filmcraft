@@ -94,7 +94,7 @@ impl Pkce {
     }
 
     /// 32 random bytes as base64url: 43 characters.
-    #[cfg(feature = "net")]
+    #[cfg(not(target_family = "wasm"))]
     pub fn generate() -> Result<Self, PublishError> {
         Ok(Self { verifier: random_text()? })
     }
@@ -106,7 +106,7 @@ impl Pkce {
 }
 
 /// 32 random bytes from the operating system as base64url.
-#[cfg(feature = "net")]
+#[cfg(not(target_family = "wasm"))]
 fn random_text() -> Result<String, PublishError> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|e| PublishError::SignIn(format!("no random source: {e}")))?;
@@ -147,7 +147,7 @@ impl SignIn {
     }
 
     /// A sign-in answered on a new loopback listener, with a random state and PKCE verifier.
-    #[cfg(feature = "net")]
+    #[cfg(not(target_family = "wasm"))]
     pub fn start(client: &ClientConfig, scope: &str) -> Result<(Self, Loopback), PublishError> {
         let loopback = Loopback::bind()?;
         let sign_in = Self::new(client, scope, &loopback.redirect_uri()?, &random_text()?, Pkce::generate()?);
@@ -331,10 +331,10 @@ pub(crate) fn parse_query(query: &str) -> Option<Vec<(String, String)>> {
     params.into_iter().map(|p| p.split_once('=').map_or_else(|| Some((decode(p)?, String::new())), |(k, v)| Some((decode(k)?, decode(v)?)))).collect()
 }
 
-#[cfg(feature = "net")]
+#[cfg(not(target_family = "wasm"))]
 pub use loopback::Loopback;
 
-#[cfg(feature = "net")]
+#[cfg(not(target_family = "wasm"))]
 mod loopback {
     use super::SignIn;
     use crate::PublishError;

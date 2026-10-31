@@ -51,6 +51,17 @@ pub trait Transport {
     fn send(&self, request: &Request<'_>) -> Result<Response, TransportError>;
 }
 
+/// Whether this build has the HTTPS transport (feature `net`).
+pub const AVAILABLE: bool = cfg!(feature = "net");
+
+/// The HTTPS transport, when this build has one (feature `net`).
+pub fn default_transport() -> Option<Box<dyn Transport>> {
+    #[cfg(feature = "net")]
+    return Some(Box::new(UreqTransport::default()));
+    #[cfg(not(feature = "net"))]
+    None
+}
+
 #[cfg(feature = "net")]
 pub use net::UreqTransport;
 

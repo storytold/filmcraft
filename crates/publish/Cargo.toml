@@ -13,7 +13,7 @@ workspace = true
 default = []
 # The HTTPS transport (pure-Rust TLS: rustls + RustCrypto, OS certificate verification), the same
 # stack as filmcraft-speech's `download`. Off by default (and in wasm builds).
-net = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto", "dep:getrandom"]
+net = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto"]
 
 [dependencies]
 serde = { workspace = true }
@@ -21,11 +21,14 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 base64 = "0.23"
 sha2 = "0.10"
-# PKCE verifiers and sign-in state come from the operating system's random source.
-getrandom = { version = "0.3", optional = true }
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"], optional = true }
 rustls = { version = "0.23", default-features = false, optional = true }
 rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
+
+# Signing in (PKCE verifiers and sign-in state from the operating system's random source, and a
+# loopback listener) needs a desktop build.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+getrandom = "0.3"
 
 [dev-dependencies]
 # The integration tests drive the real HTTP transport against a local fake server.

@@ -44,6 +44,7 @@ pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
 pub mod proxies;
+pub mod publish;
 pub mod relink;
 pub mod remix;
 pub mod scene_detect;
@@ -432,6 +433,8 @@ pub enum Event {
     OpenSource(ItemId),
     /// Show this item in the Project panel (Reveal in Project).
     RevealInProject(ItemId),
+    /// Open this address in the user's browser (Google's sign-in page, `publish.youtube.signIn`).
+    OpenUrl(String),
 }
 
 pub struct Session {
@@ -452,6 +455,8 @@ pub struct Session {
     pub journal: Vec<(String, Value)>,
     /// Background jobs (exports, render previews…).
     pub jobs: Vec<Job>,
+    /// Publishing: the access token in memory, shared with upload jobs (`publish.*`).
+    pub publish: publish::State,
     /// Export job → the offline items it drew the slate for, filled when the export finishes
     /// (#1054; `offlineMedia` in `file.exportMedia` and queue results).
     pub export_offline: std::collections::HashMap<u64, Arc<std::sync::Mutex<Vec<media_pool::OfflineMedia>>>>,
@@ -575,6 +580,7 @@ impl Session {
             events: Vec::new(),
             journal: Vec::new(),
             jobs: Vec::new(),
+            publish: Default::default(),
             export_offline: Default::default(),
             prefs: Default::default(),
             prefs_path: None,

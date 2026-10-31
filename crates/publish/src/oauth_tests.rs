@@ -49,7 +49,7 @@ fn pkce_matches_rfc_7636() {
     assert_eq!(format!("{:?}", Pkce::from_verifier(VERIFIER).unwrap()), "Pkce { .. }");
 }
 
-#[cfg(feature = "net")]
+#[cfg(not(target_family = "wasm"))]
 #[test]
 fn generated_secrets_are_random_and_valid() {
     let a = Pkce::generate().unwrap();
