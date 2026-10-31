@@ -24,8 +24,10 @@ pub mod download_pacing;
 pub mod fs;
 pub mod import;
 pub mod opfs;
+pub mod page_config;
 pub mod recovery;
 pub mod recovery_policy;
+pub mod web_config;
 pub mod webcodecs;
 
 use std::cell::RefCell;
@@ -138,6 +140,8 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     set_info("frameWorkers", json!("cooperative"));
     set_info("opfs", json!(opfs::available()));
 
+    // Optional page config (`./filmcraft-config.json`): the start-up option.
+    page_config::load().await;
     // Media kept in OPFS by earlier sessions come back under their paths (recovery).
     let restored = if opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
     let recovered = if query_flag("fresh") || query_flag("norecover") { None } else { recovery::load_snapshot().await };
@@ -146,7 +150,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     api::install()?;
     import::install_drop_handlers()?;
 
-    let demo = !query_flag("empty");
+    let demo = web_config::open_demo(query_flag("empty"), query_flag("demo"), page_config::startup());
     let mut web_options = eframe::WebOptions::default();
     // `?webgl`: WebGL2 only. The page reloads with it when starting on WebGPU fails (an adapter
     // whose device can't be created, a driver the browser rejects…); see `index.html`.

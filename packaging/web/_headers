@@ -11,3 +11,11 @@
 
 /index.html
   Cache-Control: no-cache
+
+/filmcraft-config.json
+  Cache-Control: no-cache
+
+# The same file when FilmCraft is hosted under a path prefix (`/tools/filmcraft/`): the rules
+# above match from the site root only, so keep one matching rule per prefix or this splat.
+/*/filmcraft-config.json
+  Cache-Control: no-cache
