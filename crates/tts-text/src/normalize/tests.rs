@@ -145,19 +145,22 @@ fn money() {
     assert_eq!(words("$1.00", Lang::EnUs), "one dollar");
     assert_eq!(words("$1.5", Lang::EnUs), "one dollar and fifty cents");
     assert_eq!(words("$2.5", Lang::EnUs), "two dollars and fifty cents");
-    assert_eq!(words("$0.5", Lang::EnUs), "zero dollars and fifty cents");
+    assert_eq!(words("$0.5", Lang::EnUs), "fifty cents");
     assert_eq!(words("$1.05", Lang::EnUs), "one dollar and five cents");
     assert_eq!(words("The price is $1.5.", Lang::EnUs), words("The price is $1.50.", Lang::EnUs));
     assert_eq!(words("£1.5", Lang::EnGb), "one pound and fifty pence");
     assert_eq!(words("€1.5", Lang::EnUs), "one euro and fifty cents");
     assert_eq!(words("$5.05", Lang::EnUs), "five dollars and five cents");
-    assert_eq!(words("$0.75", Lang::EnUs), "zero dollars and seventy-five cents");
+    assert_eq!(words("$0.75", Lang::EnUs), "seventy-five cents");
     assert_eq!(words("$1,234.56", Lang::EnUs), "one thousand two hundred thirty-four dollars and fifty-six cents");
     assert_eq!(words("€2", Lang::EnUs), "two euros");
     assert_eq!(words("€1", Lang::EnUs), "one euro");
     assert_eq!(words("£2.50", Lang::EnUs), "two pounds and fifty pence");
     assert_eq!(words("£1", Lang::EnUs), "one pound");
-    assert_eq!(words("$0.50", Lang::EnUs), "zero dollars and fifty cents");
+    assert_eq!(words("$0.50", Lang::EnUs), "fifty cents");
+    assert_eq!(words("$0.99", Lang::EnUs), "ninety-nine cents");
+    assert_eq!(words("$0.01", Lang::EnUs), "one cent");
+    assert_eq!(words("$0", Lang::EnUs), "zero dollars");
 }
 
 #[test]
