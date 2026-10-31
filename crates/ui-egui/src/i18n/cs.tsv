@@ -1,4 +1,5 @@
 # Czech (cs) catalog. Columns separated by TAB: context <TAB> source <TAB> translation.
+	Selection order: {position} of {total}	Pořadí výběru: {position} z {total}
 #
 # Clean-room, AI-assisted translation from the meaning of English source keys using Czech desktop UI
 # and video-editing terminology. Product names, shortcuts, units and file formats keep their spelling.

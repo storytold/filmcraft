@@ -1186,17 +1186,9 @@ fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
     if p.get("audio").is_some() && audio && has_audio && a.is_none() {
         return Err(bad("timeline.place", "no audio destination: add or enable an audio track"));
     }
-    let full = full_duration(s, pi);
-    let (mi, mo) = match &pi.kind {
-        ItemKind::Media(m) => (m.mark_in, m.mark_out.map(|o| o + pi.frame_rate().frame_duration())),
-        ItemKind::Subclip { range, .. } => (Some(range.start), Some(range.end())),
-        _ => (None, None),
-    };
-    let sin = sin_param.or(mi).unwrap_or_default();
-    let dur = match dur_param {
-        Some(d) => d,
-        None => mo.unwrap_or(full) - sin,
-    };
+    let (start, end) = placement_bounds(s, pi);
+    let sin = sin_param.unwrap_or(start);
+    let dur = dur_param.unwrap_or_else(|| end - sin);
     // The clip goes on the frame grid: its start and its end (`time + duration`) each snap to the
     // nearest frame, so a sub-frame `time` never pushes the end past the one asked for and the
     // sequence never ends between frames (#1101).
@@ -1240,9 +1232,21 @@ fn place_items(s: &mut Session, p: &Value, items: &Value) -> Result<Value> {
         return Err(bad("timeline.place", format!("`items` needs 1 to {MAX_PLACE_ITEMS} item ids")));
     }
     let mut at = sequence_time_p(s, p, "", "timeline.place")?.unwrap_or(s.playhead());
+    let new_video = p.get("track").and_then(Value::as_str).is_some_and(|v| v.eq_ignore_ascii_case("new"));
+    let new_audio = p.get("audioTrack").and_then(Value::as_str).is_some_and(|v| v.eq_ignore_ascii_case("new"));
+    let enabled_video = bool_p(p, "video").unwrap_or(true);
+    let enabled_audio = bool_p(p, "audio").unwrap_or(true);
+    if (new_video || new_audio)
+        && !ids.iter().any(|id| {
+            let (video, audio) = s.project.source_streams(*id);
+            (new_video && video && enabled_video) || (new_audio && audio && enabled_audio)
+        })
+    {
+        return Err(bad("timeline.place", "no new track to add: the items have no picture or sound for it"));
+    }
     s.edit_group("Place Clips", |s| {
         let mut placed = Vec::new();
-        // "new" adds a track for the first item only; the rest follow it on that track
+        // "new" waits for the first item carrying that stream; later items reuse its track.
         let mut base = p.clone();
         for item in ids {
             let mut one = base.clone();
@@ -1253,6 +1257,13 @@ fn place_items(s: &mut Session, p: &Value, items: &Value) -> Result<Value> {
                 }
                 o.insert("item".into(), json!(item.0));
                 o.insert("time".into(), json!(at.0));
+            }
+            let (video, audio) = s.project.source_streams(item);
+            for (key, carries) in [("track", video && enabled_video), ("audioTrack", audio && enabled_audio)] {
+                if !carries && one.get(key).and_then(Value::as_str).is_some_and(|v| v.eq_ignore_ascii_case("new")) {
+                    // Keep the pending destination in base for the next compatible item.
+                    one[key] = Value::Null;
+                }
             }
             let r = place_one(s, &one)?;
             let clips: Vec<ClipId> = r["clips"].as_array().map(|a| a.iter().filter_map(|c| c.as_u64().map(ClipId)).collect()).unwrap_or_default();
@@ -1419,8 +1430,17 @@ pub(crate) fn place_item(s: &mut Session, placement: ItemPlacement<'_>) -> Resul
     })
 }
 
-/// How long an item runs on the Timeline without In/Out marks: its duration, or for a still (and a
-/// generator without a length) Settings ▸ Timeline ▸ Still Image Default Duration.
+/// Default source span for Project placement and its drag preview (including marks and still duration).
+pub fn placement_bounds(s: &Session, pi: &filmcraft_project::ProjectItem) -> (Tick, Tick) {
+    let (start, end) = match &pi.kind {
+        ItemKind::Media(m) => (m.mark_in.unwrap_or_default(), m.mark_out.map(|o| o + pi.frame_rate().frame_duration())),
+        ItemKind::Subclip { range, .. } => return (range.start, range.end()),
+        _ => (Tick::ZERO, None),
+    };
+    (start, end.unwrap_or_else(|| full_duration(s, pi)))
+}
+
+/// How long an item runs without In/Out marks, including the configured still/generator duration.
 pub(crate) fn full_duration(s: &Session, pi: &filmcraft_project::ProjectItem) -> Tick {
     match &pi.kind {
         ItemKind::Media(m)

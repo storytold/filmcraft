@@ -921,7 +921,7 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
     let rate = seq.settings.frame_rate;
     let mods = ctx.input(|i| i.modifiers);
     // ---- drops: project items and effects
-    if let Some(item) = crate::panels::dragged_project_item(ui)
+    if crate::panels::dragged_project_item(ui).is_some()
         && let Some(p) = ctx.pointer_hover_pos()
         && layout.content.contains(p)
         && app.timeline_drop_target(ui.ctx(), p)
@@ -934,23 +934,45 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             })
         });
         let t = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x).max(Tick::ZERO)), &[]);
-        let still = app.session.prefs.timeline.still_duration(rate);
-        let is_still = app.session.project.item(item).and_then(|i| i.as_media()).is_some_and(|m| m.info.kind == filmcraft_media::MediaKind::Still);
-        let dur = source
-            .map(|s| s.range.duration)
-            .unwrap_or_else(|| app.session.project.item(item).map(|i| i.duration()).filter(|d| d.0 > 0 && !is_still).unwrap_or(still));
+        let items = crate::panels::dragged_items(ui);
+        // Magnetic targets can lie between frames; mirror placement's start/end snapping and minimum length.
+        let placement_end = |at: Tick, duration: Tick| {
+            let start = rate.snap_nearest(at);
+            let end = rate.snap_nearest(at + duration);
+            start + rate.snap_nearest(end - start).max(rate.frame_duration())
+        };
+        let end = source.map(|s| placement_end(t, s.range.duration)).unwrap_or_else(|| {
+            items.iter().filter_map(|id| app.session.project.item(*id)).fold(t, |at, item| {
+                let (start, end) = filmcraft_engine::commands::placement_bounds(&app.session, item);
+                placement_end(at, (end - start).max(Tick::ZERO))
+            })
+        });
+        let start = rate.snap_nearest(t);
         // #483: in the empty space above the top video track or below the last audio track, a new track
         let new_track = if row.is_some() { None } else { new_track_at(seq, layout, p.y, app.ui.timeline.video_track_h, app.ui.timeline.audio_track_h) }.filter(
             |(kind, _)| {
-                let carries = app.session.project.item(item).is_some_and(|i| if *kind == TrackKind::Video { i.has_video() } else { i.has_audio() });
+                let carries =
+                    items.iter().any(|id| app.session.project.item(*id).is_some_and(|i| if *kind == TrackKind::Video { i.has_video() } else { i.has_audio() }));
                 carries && source.is_none_or(|s| if *kind == TrackKind::Video { s.video } else { s.audio })
             },
         );
         // #1887: a preview on every track the drop fills, not only the one under the pointer
-        let range = source.map_or(filmcraft_time::TimeRange::new(Tick::ZERO, dur), |s| s.range);
-        let lanes = app.session.placement_lanes(item, range, source.is_none_or(|s| s.video), source.is_none_or(|s| s.audio));
+        let lanes = source.map_or_else(
+            || {
+                items.iter().filter_map(|id| app.session.project.item(*id)).fold((0, 0), |(v, a), item| {
+                    let (start, end) = filmcraft_engine::commands::placement_bounds(&app.session, item);
+                    let range = filmcraft_time::TimeRange::new(start, (end - start).max(Tick::ZERO));
+                    let (video, audio) = app.session.placement_lanes(item.id, range, true, true);
+                    (v.max(video), a.max(audio))
+                })
+            },
+            |s| app.session.placement_lanes(s.item, s.range, s.video, s.audio),
+        );
         for (k, (band, id)) in drop_preview_bands(seq, layout, lanes, row.as_ref(), new_track).iter().enumerate() {
-            let r = Rect::from_min_max(pos2(layout.x_of(t), band.min.y + 1.0), pos2(layout.x_of(t + dur), band.max.y - 1.0));
+            let r = Rect::from_min_max(pos2(layout.x_of(start), band.min.y + 1.0), pos2(layout.x_of(end), band.max.y - 1.0));
+            if k == 0 {
+                app.auto.add("timeline.projectDropPreview", r, "Project drop preview");
+            }
             ui.painter().rect_filled(r, 3.0, Color32::from_white_alpha(40));
             ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
             app.auto.add(id, r, "tracks");
@@ -971,11 +993,6 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         if ctx.input(|i| i.pointer.any_released())
             && let Some((vt, at)) = target
         {
-            // dragging one of several selected project items places them all, back to back, as one edit
-            let items = match source {
-                None => crate::panels::dragged_selection(app, item),
-                Some(_) => vec![item],
-            };
             let mut params = json!({"track": vt, "audioTrack": at, "time": t.0, "insert": mods.command});
             match items.as_slice() {
                 [one] => params["item"] = json!(one.0),

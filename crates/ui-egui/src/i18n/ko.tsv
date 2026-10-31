@@ -1,4 +1,5 @@
 # Korean (ko) catalog. Columns, separated by a TAB:  context <TAB> source <TAB> translation
+	Selection order: {position} of {total}	선택 순서: {total}개 중 {position}번째
 # (format documented in the header of es.tsv).
 #
 # Clean-room: every entry was written from the plain meaning of the English text using ordinary

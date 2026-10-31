@@ -1,4 +1,5 @@
 # French (fr) catalog. Same format as `es.tsv`: context <TAB> source <TAB> translation.
+	Selection order: {position} of {total}	Ordre de sélection : {position} sur {total}
 #
 # Clean-room: every entry was written from the plain meaning of the English text using ordinary
 # French video-editing vocabulary. No proprietary localisation resource, string table or product UI

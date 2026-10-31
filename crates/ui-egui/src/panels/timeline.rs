@@ -815,13 +815,13 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let _ = app.session.execute("file.openDemoProject", json!({}));
     }
     // accept drops from the project panel
-    if let Some(item) = crate::panels::dragged_project_item(ui)
+    if crate::panels::dragged_project_item(ui).is_some()
         && ui.rect_contains_pointer(rect)
         && ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| app.timeline_drop_target(ui.ctx(), pos))
         && ui.input(|i| i.pointer.any_released())
     {
         // a multi-selection makes the sequence from its first item and follows it, back to back, in one undo step
-        let items: Vec<u64> = crate::panels::dragged_selection(app, item).iter().map(|i| i.0).collect();
+        let items: Vec<u64> = crate::panels::dragged_items(ui).iter().map(|i| i.0).collect();
         if let Err(e) = app.session.execute("file.newSequence", json!({"fromItems": items})) {
             app.ui.status = e.to_string();
         }

@@ -1,4 +1,5 @@
 # Brazilian Portuguese (pt-br) catalog. Same format as `es.tsv`: context <TAB> source <TAB> translation.
+	Selection order: {position} of {total}	Ordem de seleção: {position} de {total}
 #
 # Clean-room: every entry was written from the plain meaning of the English text using ordinary
 # Brazilian Portuguese video-editing vocabulary. No proprietary localisation resource, string table
