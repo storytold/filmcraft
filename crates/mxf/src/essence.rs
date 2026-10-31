@@ -201,6 +201,38 @@ pub fn aes3_element_samples(v: &[u8]) -> usize {
     declared.min((v.len() - 4) / 32)
 }
 
+/// De-interleave `bps`-byte little-endian samples (`B` = `bps`), one pass per channel.
+fn decode_planes<const B: usize>(v: &[u8], frame_bytes: usize, out: &mut [Vec<f32>], scale: f32) {
+    for (c, o) in out.iter_mut().enumerate() {
+        let off = c * B;
+        o.extend(v.chunks_exact(frame_bytes).map(|f| {
+            let mut s = [0u8; B];
+            s.copy_from_slice(&f[off..off + B]);
+            let x = match B {
+                1 => (s[0] as i32 - 128) << 24,
+                2 => i32::from_le_bytes([0, 0, s[0], s[1]]),
+                3 => i32::from_le_bytes([0, s[0], s[1], s[2]]),
+                _ => i32::from_le_bytes([s[0], s[1], s[2], s[3]]),
+            };
+            (x >> (32 - 8 * B)) as f32 * scale
+        }));
+    }
+}
+
+/// Decode ST 331 sample frames (without the element header; 32 bytes each, the trailing partial
+/// frame is ignored) into `channels` planar channels, at most eight.
+pub(crate) fn decode_aes3_frames(frames: &[u8], channels: usize) -> Vec<Vec<f32>> {
+    let mut out: Vec<Vec<f32>> = (0..channels).map(|_| Vec::with_capacity(frames.len() / 32)).collect();
+    for f in frames.as_chunks::<32>().0 {
+        for (c, o) in out.iter_mut().enumerate().take(8) {
+            let w = u32::from_le_bytes([f[c * 4], f[c * 4 + 1], f[c * 4 + 2], f[c * 4 + 3]]);
+            let s = (((w >> 4) & 0xFF_FFFF) << 8) as i32 >> 8;
+            o.push(s as f32 / 8_388_608.0);
+        }
+    }
+    out
+}
+
 /// Decode PCM chunk bytes into planar f32 (`channels` channels).
 ///
 /// `Pcm`: interleaved little-endian signed integers of `bits` (8-bit is unsigned, per WAVE),
@@ -219,20 +251,14 @@ pub fn decode_pcm(v: &[u8], format: SoundFormat, channels: usize, bits: u32, fra
             }
             // `frame_bytes >= bps * ch`, so the output is bounded by the bytes actually supplied.
             let n = v.len() / frame_bytes;
-            let mut out = vec![Vec::with_capacity(n); ch];
             let scale = 1.0 / (1u64 << (8 * bps - 1)) as f32;
-            for i in 0..n {
-                let f = &v[i * frame_bytes..];
-                for (c, o) in out.iter_mut().enumerate() {
-                    let s = &f[c * bps..c * bps + bps];
-                    let x = match bps {
-                        1 => (s[0] as i32 - 128) << 24,
-                        2 => i32::from_le_bytes([0, 0, s[0], s[1]]),
-                        3 => i32::from_le_bytes([0, s[0], s[1], s[2]]),
-                        _ => i32::from_le_bytes([s[0], s[1], s[2], s[3]]),
-                    };
-                    o.push((x >> (32 - 8 * bps)) as f32 * scale);
-                }
+            // `vec![Vec::with_capacity(n); ch]` would clone empty vectors without the capacity.
+            let mut out: Vec<Vec<f32>> = (0..ch).map(|_| Vec::with_capacity(n)).collect();
+            match bps {
+                1 => decode_planes::<1>(v, frame_bytes, &mut out, scale),
+                2 => decode_planes::<2>(v, frame_bytes, &mut out, scale),
+                3 => decode_planes::<3>(v, frame_bytes, &mut out, scale),
+                _ => decode_planes::<4>(v, frame_bytes, &mut out, scale),
             }
             Ok(out)
         }
@@ -243,16 +269,7 @@ pub fn decode_pcm(v: &[u8], format: SoundFormat, channels: usize, bits: u32, fra
                 return Err(crate::Error::Invalid("an AES3 element has at most eight channels".into()));
             }
             let n = aes3_element_samples(v);
-            let mut out = vec![Vec::with_capacity(n); ch];
-            for i in 0..n {
-                for (c, o) in out.iter_mut().enumerate().take(8) {
-                    let p = 4 + (i * 8 + c) * 4;
-                    let w = u32::from_le_bytes([v[p], v[p + 1], v[p + 2], v[p + 3]]);
-                    let s = (((w >> 4) & 0xFF_FFFF) << 8) as i32 >> 8;
-                    o.push(s as f32 / 8_388_608.0);
-                }
-            }
-            Ok(out)
+            Ok(decode_aes3_frames(&v[4.min(v.len())..][..n * 32], ch))
         }
         SoundFormat::Other => Err(crate::Error::Unsupported("sound coding".into())),
     }
@@ -323,5 +340,49 @@ mod tests {
         assert_eq!(p, vec![vec![-1.0], vec![0.5]]);
         // truncated: no panic, no samples
         assert!(decode_pcm(&e[..10], SoundFormat::Aes3Element, 2, 24, 0).unwrap()[0].is_empty());
+    }
+
+    /// The per-sample loop `decode_pcm` used before the per-width passes.
+    fn decode_pcm_reference(v: &[u8], ch: usize, bits: u32, frame_bytes: usize) -> Vec<Vec<f32>> {
+        let bps = (bits as usize).div_ceil(8);
+        let n = v.len() / frame_bytes;
+        let mut out = vec![Vec::with_capacity(n); ch];
+        let scale = 1.0 / (1u64 << (8 * bps - 1)) as f32;
+        for i in 0..n {
+            let f = &v[i * frame_bytes..];
+            for (c, o) in out.iter_mut().enumerate() {
+                let s = &f[c * bps..c * bps + bps];
+                let x = match bps {
+                    1 => (s[0] as i32 - 128) << 24,
+                    2 => i32::from_le_bytes([0, 0, s[0], s[1]]),
+                    3 => i32::from_le_bytes([0, s[0], s[1], s[2]]),
+                    _ => i32::from_le_bytes([s[0], s[1], s[2], s[3]]),
+                };
+                o.push((x >> (32 - 8 * bps)) as f32 * scale);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn decode_pcm_matches_the_per_sample_reference() {
+        let mut seed = 0x1234_5678_u32;
+        let v: Vec<u8> = (0..4099)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) as u8
+            })
+            .collect();
+        for (bits, ch, pad) in [(8, 1, 0), (8, 2, 2), (16, 1, 0), (16, 2, 0), (16, 6, 3), (24, 1, 0), (24, 2, 0), (24, 3, 5), (32, 2, 0), (32, 1, 4)] {
+            let bps = (bits as usize).div_ceil(8);
+            let fb = bps * ch + pad;
+            let got = decode_pcm(&v, SoundFormat::Pcm, ch, bits, fb).unwrap();
+            let want = decode_pcm_reference(&v, ch, bits, fb);
+            assert_eq!(got.len(), want.len());
+            for (g, w) in got.iter().zip(&want) {
+                assert!(g.iter().map(|x| x.to_bits()).eq(w.iter().map(|x| x.to_bits())), "{bits}-bit, {ch} channels, {pad} pad");
+                assert_eq!(g.capacity(), v.len() / fb);
+            }
+        }
     }
 }

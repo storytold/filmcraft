@@ -229,15 +229,7 @@ impl Image {
             return Vec::new();
         }
         let mut out = vec![0u8; self.w * self.h * 4];
-        let lut = filmcraft_color::linear_to_srgb_u8_table();
-        out.par_chunks_mut(self.w * 4).zip(self.px.par_chunks(self.w * 4)).for_each(|(o, s)| {
-            for (o, s) in o.as_chunks_mut::<4>().0.iter_mut().zip(s.as_chunks::<4>().0) {
-                o[0] = filmcraft_color::linear_to_srgb_u8_in(lut, s[0]);
-                o[1] = filmcraft_color::linear_to_srgb_u8_in(lut, s[1]);
-                o[2] = filmcraft_color::linear_to_srgb_u8_in(lut, s[2]);
-                o[3] = 255;
-            }
-        });
+        out.par_chunks_mut(self.w * 4).zip(self.px.par_chunks(self.w * 4)).for_each(|(o, s)| over_black_row(s, o, false));
         out
     }
 
@@ -249,14 +241,40 @@ impl Image {
             return Vec::new();
         }
         let mut out = vec![0u8; self.w * self.h * 4];
-        out.par_chunks_mut(self.w * 4).zip(self.px.par_chunks(self.w * 4)).for_each(|(o, s)| {
-            for (o, s) in o.as_chunks_mut::<4>().0.iter_mut().zip(s.as_chunks::<4>().0) {
-                o[0] = filmcraft_color::linear_to_srgb_u8(s[0]);
-                o[1] = filmcraft_color::linear_to_srgb_u8(s[1]);
-                o[2] = filmcraft_color::linear_to_srgb_u8(s[2]);
-                o[3] = (s[3].clamp(0.0, 1.0) * 255.0).round() as u8;
-            }
-        });
+        out.par_chunks_mut(self.w * 4).zip(self.px.par_chunks(self.w * 4)).for_each(|(o, s)| over_black_row(s, o, true));
         out
     }
+}
+
+/// Pixels per batch of [`over_black_row`].
+const BATCH: usize = 64;
+
+/// One row of [`Image::over_black_rgba8`] (`alpha` false: the fourth byte is 255) or
+/// [`Image::over_black_with_alpha_rgba8`]. A batch's table indices are computed first, in a loop
+/// that vectorises, and looked up after; per value this is
+/// [`filmcraft_color::linear_to_srgb_u8`], and [`alpha_u8`] for the alpha.
+pub(crate) fn over_black_row(s: &[f32], o: &mut [u8], alpha: bool) {
+    let lut = filmcraft_color::linear_to_srgb_u8_table();
+    let mut ix = [0u16; BATCH * 4];
+    for (s, o) in s.chunks(BATCH * 4).zip(o.chunks_mut(BATCH * 4)) {
+        let ix = &mut ix[..s.len()];
+        for (i, v) in ix.iter_mut().zip(s) {
+            *i = filmcraft_color::linear_to_srgb_index(*v);
+        }
+        for ((o, i), s) in o.as_chunks_mut::<4>().0.iter_mut().zip(ix.as_chunks::<4>().0).zip(s.as_chunks::<4>().0) {
+            o[0] = lut[i[0] as usize & 4095];
+            o[1] = lut[i[1] as usize & 4095];
+            o[2] = lut[i[2] as usize & 4095];
+            o[3] = if alpha { alpha_u8(s[3]) } else { 255 };
+        }
+    }
+}
+
+/// `(a.clamp(0.0, 1.0) * 255.0).round() as u8` without the `round` library call: below 255 the
+/// fraction is exact, so it rounds half away from zero the same way (NaN gives 0 both ways).
+#[inline]
+pub(crate) fn alpha_u8(a: f32) -> u8 {
+    let x = a.clamp(0.0, 1.0) * 255.0;
+    let i = x as i32;
+    (i + i32::from(x - i as f32 >= 0.5)) as u8
 }

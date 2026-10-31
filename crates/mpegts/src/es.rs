@@ -14,7 +14,8 @@ use crate::{Codec, PictureInfo, Unit};
 enum Mode {
     /// MPEG-1/2 video: one coded frame (a frame picture or two field pictures) per unit.
     MpegVideo,
-    /// H.264 / HEVC: one PES packet (with a timestamp) per unit; NAL types give the flags.
+    /// H.264 / HEVC: one access unit per unit (the first of a PES packet keeps its timestamps);
+    /// NAL types give the flags.
     Nal { hevc: bool },
     /// Framed audio with self-describing frame headers.
     Audio(AudioSync),
@@ -262,6 +263,50 @@ fn eac3_joins_unit(b: &[u8]) -> bool {
     }
 }
 
+/// Bytes of an SEI NAL scanned for a recovery point message; a longer NAL is judged by its start.
+const SEI_WINDOW: usize = 2048;
+
+/// Whether an H.264 SEI NAL (`nal` is the NAL header byte and the payload, as in the stream)
+/// holds a recovery point message (payloadType 6, H.264 D.1.7) with recovery_frame_cnt 0.
+pub fn sei_has_recovery_point(nal: &[u8]) -> bool {
+    // undo emulation prevention so that payload sizes are in RBSP bytes
+    let mut b = Vec::with_capacity(nal.len());
+    let mut zeros = 0;
+    for &x in nal.iter().skip(1) {
+        if zeros >= 2 && x == 3 {
+            zeros = 0;
+            continue;
+        }
+        zeros = if x == 0 { zeros + 1 } else { 0 };
+        b.push(x);
+    }
+    // payloadType / payloadSize: bytes of 0xFF followed by the last byte
+    let read = |i: &mut usize| {
+        let mut v = 0usize;
+        while let Some(&x) = b.get(*i) {
+            *i += 1;
+            v = v.saturating_add(x as usize);
+            if x != 0xFF {
+                break;
+            }
+        }
+        v
+    };
+    let mut i = 0;
+    // each message takes at least two bytes, so the loop ends at the end of the NAL
+    while i + 2 <= b.len() {
+        let ty = read(&mut i);
+        let size = read(&mut i);
+        // recovery_frame_cnt is ue(v): a leading 1 bit is the value 0, i.e. decoding from here is
+        // correct at once. A count above 0 (gradual intra refresh) is not a safe seek point.
+        if ty == 6 && b.get(i).is_some_and(|x| x & 0x80 != 0) {
+            return true;
+        }
+        i = i.saturating_add(size);
+    }
+    false
+}
+
 /// Shortest E-AC-3 syncframe accepted. A real syncframe holds the 6 header bytes read here plus
 /// bsi and audio blocks (the smallest real ones are tens of bytes), so shorter "frames"
 /// (`0B 77 00 01` is 4 bytes) are noise; they would otherwise turn every 4 input bytes into a
@@ -470,35 +515,83 @@ impl Splitter {
         let mut i = 0;
         let mut blocked = None;
         while let Some(k) = self.next_start_code(i) {
-            // NAL header byte(s) needed
-            if k + 5 > self.buf.len() {
+            // NAL header byte(s) and the first byte of the slice header needed
+            if k + if hevc { 6 } else { 5 } > self.buf.len() {
                 blocked = Some(k);
                 break;
             }
-            let h = self.buf[k + 3];
-            let (key, vcl, non_ref) = if hevc {
+            // a four-byte start code begins with the zero_byte that belongs to its NAL
+            let at = self.buf_start + k as u64 - (k > 0 && self.buf.get(k - 1) == Some(&0)) as u64;
+            let (Some(&h), Some(&h1)) = (self.buf.get(k + 3), self.buf.get(k + if hevc { 5 } else { 4 })) else {
+                blocked = Some(k);
+                break;
+            };
+            let (key, vcl, non_ref, au_start) = if hevc {
                 let t = (h >> 1) & 0x3F;
                 (
                     (16..=23).contains(&t),
                     t < 32,
                     // sub-layer non-reference pictures (TRAIL_N, TSA_N, STSA_N, RADL_N, RASL_N)
                     t < 16 && t.is_multiple_of(2),
+                    // first_slice_segment_in_pic_flag, or a NAL that precedes the first slice
+                    // (VPS, SPS, PPS, AUD, prefix SEI, 41..=44, 48..=55; H.265 7.4.2.4.4)
+                    if t < 32 { h1 & 0x80 != 0 } else { matches!(t, 32..=35 | 39 | 41..=44 | 48..=55) },
                 )
             } else {
                 let t = h & 0x1F;
-                (t == 5, (1..=5).contains(&t), h & 0x60 == 0)
+                (
+                    t == 5,
+                    (1..=5).contains(&t),
+                    h & 0x60 == 0,
+                    // first_mb_in_slice == 0 (ue(v) "1"), or a NAL that precedes the first slice
+                    // (SEI, SPS, PPS, AUD, 14..=18; H.264 7.4.1.2.3)
+                    match t {
+                        1 | 2 | 5 => h1 & 0x80 != 0,
+                        6..=9 | 14..=18 => true,
+                        _ => false,
+                    },
+                )
             };
+            let mut recovery = false;
+            if !hevc && h & 0x1F == 6 {
+                // the whole SEI NAL is needed to find a recovery point message among others
+                let end = self.next_start_code(k + 3);
+                if end.is_none() && self.buf.len() - k < SEI_WINDOW {
+                    blocked = Some(k);
+                    break;
+                }
+                let nal = self.buf.get(k + 3..end.unwrap_or(self.buf.len())).unwrap_or(&[]);
+                recovery = sei_has_recovery_point(nal);
+            }
+            // a unit holds one access unit: a new one starts at the first NAL that cannot belong
+            // to the slices already seen (a unit opened later than this NAL is left alone)
+            if au_start && self.open.as_ref().is_some_and(|o| o.vcl && at > o.start) {
+                self.begin_access_unit(at);
+            }
             if let Some(o) = self.open.as_mut()
-                && vcl
+                && at >= o.start
             {
-                o.key |= key;
-                // disposable while every slice is non-reference
-                o.disposable = if o.vcl { o.disposable && non_ref } else { non_ref };
-                o.vcl = true;
+                // a recovery point is a random-access point (the pictures before its recovery
+                // frame count completes may be imperfect)
+                o.key |= recovery;
+                if vcl {
+                    o.key |= key;
+                    // disposable while every slice is non-reference
+                    o.disposable = if o.vcl { o.disposable && non_ref } else { non_ref };
+                    o.vcl = true;
+                }
             }
             i = k + 3;
         }
         self.keep_tail(i, blocked);
+    }
+
+    /// Close the open unit and start the next access unit at `at`: it has no timestamp (the PES
+    /// timestamps belong to the first access unit of the packet).
+    fn begin_access_unit(&mut self, at: u64) {
+        self.close(at);
+        let (pos, offset) = self.locate(at).unwrap_or((u64::MAX, 0));
+        self.open = Some(Open { start: at, pos, offset, pts: None, dts: None, key: false, disposable: false, vcl: false, picture: None });
     }
 
     /// Drop the scanned part of the window: keep from a start code waiting for more bytes, or

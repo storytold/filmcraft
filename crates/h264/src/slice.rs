@@ -284,9 +284,9 @@ impl SliceHeader {
         let mut num_ref_idx_active = [pps.num_ref_idx_l0_default_active, pps.num_ref_idx_l1_default_active];
         if !slice_type.is_intra() {
             if r.read_flag()? {
-                num_ref_idx_active[0] = r.read_ue()? + 1;
+                num_ref_idx_active[0] = r.read_ue_plus(1)?;
                 if slice_type.is_b() {
-                    num_ref_idx_active[1] = r.read_ue()? + 1;
+                    num_ref_idx_active[1] = r.read_ue_plus(1)?;
                 }
             }
             let max = if field_pic { 32 } else { 16 };

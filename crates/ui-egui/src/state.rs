@@ -69,25 +69,26 @@ impl Tool {
             Tool::VerticalType => "Vertical Type Tool",
         }
     }
-    pub fn shortcut(self) -> &'static str {
-        match self {
-            Tool::Selection => "V",
-            Tool::TrackSelectForward => "A",
-            Tool::TrackSelectBackward => "Shift+A",
-            Tool::Ripple => "B",
-            Tool::Rolling => "N",
-            Tool::RateStretch => "R",
-            Tool::Remix => "",
-            Tool::Razor => "C",
-            Tool::Slip => "Y",
-            Tool::Slide => "U",
-            Tool::Pen => "P",
-            Tool::Rectangle | Tool::Ellipse => "",
-            Tool::Hand => "H",
-            Tool::Zoom => "Z",
-            Tool::Type => "T",
-            Tool::VerticalType => "",
-        }
+    /// Shortcut command used by the keyboard editor for this tool, if any.
+    pub fn command_id(self) -> Option<&'static str> {
+        Some(match self {
+            Tool::Selection => "tool.selection",
+            Tool::TrackSelectForward => "tool.trackSelectForward",
+            Tool::TrackSelectBackward => "tool.trackSelectBackward",
+            Tool::Ripple => "tool.ripple",
+            Tool::Rolling => "tool.rolling",
+            Tool::RateStretch => "tool.rateStretch",
+            Tool::Remix => "tool.remix",
+            Tool::Razor => "tool.razor",
+            Tool::Slip => "tool.slip",
+            Tool::Slide => "tool.slide",
+            Tool::Pen => "tool.pen",
+            Tool::Rectangle | Tool::Ellipse => return None,
+            Tool::Hand => "tool.hand",
+            Tool::Zoom => "tool.zoom",
+            Tool::Type => "tool.type",
+            Tool::VerticalType => "tool.verticalType",
+        })
     }
     pub fn icon(self) -> Icon {
         match self {
@@ -194,7 +195,13 @@ pub struct TimelineView {
     #[serde(default)]
     pub thumbnail_mode: ThumbnailMode,
     pub show_waveforms: bool,
-    /// Follow playhead during playback (page scroll).
+    /// The wrench menu's Show Video Names / Show Audio Names: the name strip of the clips on video
+    /// and audio tracks (on by default; off leaves the clip picture or waveform uncovered).
+    #[serde(default = "yes")]
+    pub show_video_names: bool,
+    #[serde(default = "yes")]
+    pub show_audio_names: bool,
+    /// Follow during playback (page scroll).
     pub follow: bool,
     pub fit_pending: bool,
     /// The playhead the view last saw: a jump while stopped (Home, End, edit points) scrolls to it.
@@ -233,6 +240,8 @@ impl Default for TimelineView {
             show_thumbnails: true,
             thumbnail_mode: ThumbnailMode::Head,
             show_waveforms: true,
+            show_video_names: true,
+            show_audio_names: true,
             follow: true,
             fit_pending: true,
             seen_playhead: None,
@@ -346,8 +355,9 @@ impl Default for MonitorView {
             safe_margins: false,
             transparency_grid: false,
             show_transport: true,
-            // The optional Loop button is available from the editor without altering default layouts.
-            transport_hidden: vec!["playback.loop".into()],
+            // Optional buttons (Loop, Go to Previous/Next Edit Point) are available from the editor
+            // without altering default layouts, as in Premiere.
+            transport_hidden: vec!["playback.loop".into(), "playhead.prevEdit".into(), "playhead.nextEdit".into()],
             multicam: false,
             display: DisplayMode::Composite,
             compare_ref: None,
@@ -531,6 +541,10 @@ pub struct UiState {
     /// Delete Tracks dialog draft.
     #[serde(default)]
     pub delete_tracks: DeleteTracksDraft,
+    /// File ▸ Export ▸ Captions…: the file format chosen last (its extension, e.g. `vtt`), offered
+    /// first the next time.
+    #[serde(default)]
+    pub caption_export_format: Option<String>,
     /// Sequence Settings dialog draft.
     #[serde(default)]
     pub sequence_settings: SequenceSettingsDraft,
@@ -579,6 +593,9 @@ pub struct UiState {
     /// Open guide dialog (Add Guide / Save Guides as Template / Manage Guides).
     #[serde(default)]
     pub guide_dialog: Option<GuideDialog>,
+    /// Open Edit Marker dialog (double-click a marker, or Edit Marker… in its menu).
+    #[serde(default)]
+    pub marker_dialog: Option<MarkerDraft>,
     /// Open Text Properties dialog (the wrench in the Properties panel's Text section).
     #[serde(default)]
     pub text_props_dialog: Option<TextPropsDialog>,
@@ -804,6 +821,25 @@ pub enum ColorDialog {
     Sequence { working_space: String, wide_gamut: bool, auto_tone_map: bool },
 }
 
+/// The Edit Marker dialog (#2416): the marker it edits and its fields as typed. `duration` is a
+/// timecode, `color` a label name, `kind` a `markers.edit` kind. `sequence` and `generation` (the
+/// session's `document_epoch`) tie it to where it was opened: in another project, or the same
+/// file opened again, the same marker id is another marker. `duration0` is the duration as the dialog opened, so OK leaves a duration it
+/// cannot show exactly (part of a frame) alone unless it was edited.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarkerDraft {
+    pub sequence: u64,
+    pub generation: u64,
+    pub duration0: String,
+    pub marker: u64,
+    pub name: String,
+    pub comment: String,
+    pub duration: String,
+    pub color: String,
+    pub kind: String,
+}
+
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1010,6 +1046,7 @@ impl Default for UiState {
             audio_gain: AudioGainDraft::default(),
             add_tracks: AddTracksDraft::default(),
             delete_tracks: DeleteTracksDraft::default(),
+            caption_export_format: None,
             sequence_settings: SequenceSettingsDraft::default(),
             transition_duration: TransitionDurationDraft::default(),
             gfx_edit: None,
@@ -1026,6 +1063,7 @@ impl Default for UiState {
             multicam_record: true,
             edit_cameras: None,
             guide_dialog: None,
+            marker_dialog: None,
             text_props_dialog: None,
             workspace_dialog: None,
             clip_dialog: None,
