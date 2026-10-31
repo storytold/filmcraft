@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Symbolic (single-colour, #foreground-color) icon for the Gnome Shell system tray.
+     Must be monochrome with fill="currentColor" so the shell can recolour it for
+     light, dark and high-contrast themes.
+     Based on the filmcraft-small.svg silhouette (original work, CC0 / public domain). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Film-strip outline -->
+  <rect x="1" y="3" width="14" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+  <!-- Sprocket holes top -->
+  <rect x="3"  y="1" width="2" height="2" rx="0.5" fill="currentColor"/>
+  <rect x="7"  y="1" width="2" height="2" rx="0.5" fill="currentColor"/>
+  <rect x="11" y="1" width="2" height="2" rx="0.5" fill="currentColor"/>
+  <!-- Sprocket holes bottom -->
+  <rect x="3"  y="13" width="2" height="2" rx="0.5" fill="currentColor"/>
+  <rect x="7"  y="13" width="2" height="2" rx="0.5" fill="currentColor"/>
+  <rect x="11" y="13" width="2" height="2" rx="0.5" fill="currentColor"/>
+  <!-- Play triangle -->
+  <polygon points="6,6 11,8 6,10" fill="currentColor"/>
+</svg>
