@@ -1174,6 +1174,22 @@ pub fn commands() -> Vec<CommandSpec> {
             s.state.graphic_layers = layers;
             Ok(Value::Null)
         }),
+        spec("graphics.duplicateLayer", "Duplicate Graphic Layer", &[], None, r#"{"clip":id?,"layer":n?}"#, has_graphic, |s, p| {
+            // Clone the effect at the given index and insert it after the original (#2265).
+            let clip = target_clip(s, p).ok_or_else(|| bad("graphics.duplicateLayer", "no graphic clip"))?;
+            let (_, ei) = layer_effect_index(s, clip, p)?;
+            s.edit_sequence("Duplicate Graphic Layer", |q, _, st| {
+                let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+                if ei >= it.effects.len() {
+                    return Err(EngineError::Edit(filmcraft_edit::EditError::NoItem(clip)));
+                }
+                let cloned = it.effects[ei].clone();
+                it.effects.insert(ei + 1, cloned);
+                st.graphic_layers.clear();
+                Ok(())
+            })?;
+            Ok(Value::Null)
+        }),
         spec("graphics.deleteLayer", "Delete Graphic Layer", &[], None, r#"{"clip":id?,"layer":n?}"#, has_graphic, |s, p| {
             let clip = target_clip(s, p).ok_or_else(|| bad("graphics.deleteLayer", "no graphic clip"))?;
             let (_, ei) = layer_effect_index(s, clip, p)?;
