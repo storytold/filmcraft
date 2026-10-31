@@ -5112,7 +5112,10 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     }
     // what is open (sequence tabs, how each is shown) goes into the file beside the project
     let view = s.project_view();
-    let bytes = filmcraft_format::encode_with_view(&s.project, Some(&view), false);
+    // media paths are stored relative to the file when they can be (#3067): the session's project
+    // keeps its own paths
+    let stored = crate::doc_path::project_for_document(&s.project, Some(path), |p| s.media.follow(p));
+    let bytes = filmcraft_format::encode_with_view(&stored, Some(&view), false);
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
@@ -5141,6 +5144,10 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    let mut proj = proj;
+    // Stored paths become the files they name at load; what cannot be followed keeps its stored
+    // path and the pool refuses it (#3067).
+    crate::doc_path::absolutize(&mut proj, path.as_deref());
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);

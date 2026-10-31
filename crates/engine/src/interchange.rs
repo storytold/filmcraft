@@ -61,11 +61,12 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, bin: Op
         name: p.file_stem().map(|n| n.to_string_lossy().to_string()),
         ..Default::default()
     };
-    let (fragment, report) = match format {
+    let (mut fragment, report) = match format {
         // AAF / OMF may embed audio: write it next to the document (the media items point there)
         Format::Aaf | Format::Omf => {
             let r = if format == Format::Aaf { filmcraft_interchange::aaf::import(bytes, &opts) } else { filmcraft_interchange::omf::import(bytes, &opts) };
             let (mut fragment, extracted, report) = r.map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+            crate::doc_path::absolutize(&mut fragment.project, Some(path));
             for m in extracted {
                 let media = fragment
                     .project
@@ -86,6 +87,7 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, bin: Op
             sequence.settings.validate().map_err(|e| EngineError::Other(format!("{path}: invalid imported sequence settings: {e}")))?;
         }
     }
+    crate::doc_path::absolutize(&mut fragment.project, Some(path));
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
     let seqs = s.edit(&format!("Import {name}"), |proj, _| {
@@ -186,7 +188,9 @@ pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
         name: s.project.item(seq).map(|i| i.name.clone()),
         ..Default::default()
     };
-    let (bytes, report) = filmcraft_interchange::export(&s.project, seq, format, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
+    // Other apps open the paths the document writes: resolved files, not stored paths.
+    let resolved = crate::doc_path::resolved_project(&s.project, |p| s.media.follow(p));
+    let (bytes, report) = filmcraft_interchange::export(&resolved, seq, format, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
     Ok(json!({"path": path, "bytes": bytes.len(), "report": report_json(&report)}))
 }
