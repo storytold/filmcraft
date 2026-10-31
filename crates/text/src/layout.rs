@@ -373,6 +373,9 @@ struct ParaLine {
     carets: Vec<(usize, f32)>,
     content: f32,
     left_trim: f32,
+    /// Width of the trailing whitespace that counts into the alignment width: a hard line end (the last line of a
+    /// paragraph) keeps its spaces, a soft-wrapped line lets them hang.
+    trail: f32,
     ascent: f32,
     descent: f32,
     /// Underlined segments `(x0, x1, style)` in line coordinates (rich layouts only).
@@ -422,6 +425,7 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
             carets: vec![(base, 0.0)],
             content: 0.0,
             left_trim: 0.0,
+            trail: 0.0,
             ascent: pm.ascent,
             descent: pm.descent,
             underlines: Vec::new(),
@@ -706,6 +710,7 @@ impl Para<'_> {
             carets,
             content: content_w,
             left_trim: if base_rtl { tw } else { 0.0 },
+            trail: if li + 1 == nlines { tw } else { 0.0 },
             ascent,
             descent,
             underlines,
@@ -754,14 +759,17 @@ pub fn layout_rich_uncached(text: &str, style: &TextStyle, runs: &[StyleRun], pa
             }
         }
         prev_desc = pl.descent;
+        // spaces at a hard line end count into the width the line is aligned by; in a right-to-left paragraph they
+        // sit left of the content, so the block starts at the aligned position instead of the content
+        let aw = pl.content + pl.trail;
         let shift = match (para.width, para.align) {
             (None, Align::Left | Align::Justify) => 0.0,
-            (None, Align::Center) => -pl.content / 2.0,
-            (None, Align::Right) => -pl.content,
+            (None, Align::Center) => -aw / 2.0,
+            (None, Align::Right) => -aw,
             (Some(_), Align::Left | Align::Justify) => 0.0,
-            (Some(w), Align::Center) => (w - pl.content) / 2.0,
-            (Some(w), Align::Right) => w - pl.content,
-        } - pl.left_trim;
+            (Some(w), Align::Center) => (w - aw) / 2.0,
+            (Some(w), Align::Right) => w - aw,
+        } - if pl.left_trim > 0.0 { pl.left_trim - pl.trail } else { 0.0 };
         let g0 = lay.glyphs.len();
         lay.glyphs.extend(pl.glyphs.into_iter().map(|mut g| {
             g.x += shift;
@@ -971,3 +979,35 @@ pub fn measure(text: &str, style: &TextStyle) -> f32 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod trailing_space_tests {
+    use super::*;
+
+    fn lines(text: &str, width: Option<f32>) -> Vec<Line> {
+        let st = TextStyle { size: 40.0, ..Default::default() };
+        let para = ParagraphStyle { align: Align::Center, width, ..Default::default() };
+        layout_uncached(text, &st, &para).lines
+    }
+
+    #[test]
+    fn trailing_spaces_at_a_hard_line_end_shift_a_centred_line() {
+        let plain = lines("ab\ncd", None);
+        let spaced = lines("ab   \ncd", None);
+        let space_w = lines("a b", None)[0].width - lines("ab", None)[0].width;
+        assert!(space_w > 0.0);
+        // the content moves left by half of the three spaces' width; the width of the content itself is unchanged
+        let dx = plain[0].x - spaced[0].x;
+        assert!((dx - 1.5 * space_w).abs() < 0.01, "dx {dx}, space {space_w}");
+        assert_eq!(plain[0].width, spaced[0].width);
+        assert_eq!(plain[1].x, spaced[1].x);
+    }
+
+    #[test]
+    fn soft_wrapped_lines_still_let_their_trailing_space_hang() {
+        let wrapped = lines("ab cd", Some(lines("ab", None)[0].width + 4.0));
+        let alone = lines("ab", Some(lines("ab", None)[0].width + 4.0));
+        assert_eq!(wrapped.len(), 2);
+        assert_eq!(wrapped[0].x, alone[0].x);
+    }
+}
