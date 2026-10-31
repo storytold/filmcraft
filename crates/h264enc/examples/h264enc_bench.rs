@@ -3,7 +3,7 @@
 //! `cargo run --release -p filmcraft-h264enc --example h264enc_bench -- IN.yuv W H FRAMES OUT.h264 [preset] [rate] [slices] [bframes] [threads]`
 //! preset: speed|balanced|quality, rate: qpN | crfN | cbrN | vbrN (max = 1.5 x target), slices: -1 = export rule
 //! (one per four macroblock rows), threads: 0 = all cores. Defaults match an export: balanced vbr20000 -1 2 0.
-use filmcraft_h264enc::*;
+use filmcraft_h264enc::{Encoder, EncoderConfig, PacketFormat, Preset, RateControl, YuvFrame};
 use std::time::Instant;
 
 fn main() {
