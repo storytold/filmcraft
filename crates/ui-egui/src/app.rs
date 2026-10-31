@@ -317,6 +317,7 @@ impl FilmcraftApp {
         self.logic_background(ctx, now);
         self.logic_session_events();
         self.logic_command_inbox(ctx);
+        self.logic_os_events(ctx);
         self.advance_playback(ctx);
         self.advance_source_playback(ctx);
         self.poll_jobs(ctx);

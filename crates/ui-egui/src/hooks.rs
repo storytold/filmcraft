@@ -94,7 +94,24 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// The operating system's requests since the last call (macOS: a Finder double-click, Open
+    /// With, files dropped on the Dock icon, the Dock's Quit), polled every frame.
+    pub os_events: Option<OsEventsFn>,
 }
+
+/// A request from the operating system, delivered through [`HostHooks::os_events`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OsEvent {
+    /// Open files as if they were given on the command line: the project like File ▸ Open Recent,
+    /// the media files imported into the shown bin.
+    Open { project: Option<String>, media: Vec<String> },
+    /// Quit (the Dock menu's Quit, logging out): closes the window like Cmd+Q, which asks about
+    /// unsaved changes first.
+    Quit,
+}
+
+/// Polls [`HostHooks::os_events`].
+pub type OsEventsFn = Box<dyn FnMut() -> Vec<OsEvent>>;
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
 pub enum ClipboardMedia {
