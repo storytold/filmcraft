@@ -172,6 +172,9 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 });
                 webcodecs::install();
                 let mut session = Session::new(Arc::new(fs::WebServices));
+                // This build can't tell which computer it runs on, and a browser keeps no preferences
+                // file with a choice to respect (#400).
+                session.prefs.timeline.mouse_scrolling = filmcraft_ui_egui::panels::timeline::default_mouse_scrolling_on(cc.egui_ctx.os()).into();
                 let mut toast = None;
                 if let Some((name, bytes)) = recovered {
                     let path = format!("/recovered/{name}");

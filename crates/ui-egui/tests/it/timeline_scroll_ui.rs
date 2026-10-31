@@ -10,7 +10,7 @@ use egui_kittest::Harness;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::panels::timeline::{max_scroll, timeline_extent};
+use filmcraft_ui_egui::panels::timeline::{default_mouse_scrolling_on, max_scroll, timeline_extent};
 use serde_json::{Value, json};
 
 struct Driver {
@@ -189,6 +189,17 @@ fn the_wheel_starts_out_as_the_platform_has_it() {
     assert_eq!(d.view(), (7.0, 50.0, 0.0, 0.0), "over the video tracks: the same");
     d.wheel(0.8, 0.0, -30.0, json!({"ctrl": true}));
     assert_eq!(d.view(), (7.0, 50.0, 0.0, 30.0), "Ctrl + wheel moves the tracks");
+}
+
+/// A browser's build target is `wasm32` on every computer, so the web app goes by the computer
+/// egui reports: a Mac in a browser starts out as a Mac does natively (#400).
+#[test]
+fn the_wheel_in_a_browser_starts_out_as_the_computer_has_it() {
+    use egui::os::OperatingSystem as Os;
+    assert_eq!(default_mouse_scrolling_on(Os::Mac), "vertical");
+    for os in [Os::Windows, Os::Nix, Os::Unknown] {
+        assert_eq!(default_mouse_scrolling_on(os), "horizontal", "{os:?}");
+    }
 }
 
 /// Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal": the wheel moves the Timeline

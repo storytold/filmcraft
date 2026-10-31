@@ -372,7 +372,7 @@ pub struct TimelinePrefs {
 /// What the mouse wheel does over the Timeline out of the box (#400): on macOS it moves the tracks
 /// up and down and on Windows the Timeline sideways, Premiere Pro's defaults there; Linux, where
 /// Premiere does not run, goes with Windows. The primary modifier swaps the two either way.
-pub(crate) fn default_mouse_scrolling(platform: Platform) -> &'static str {
+pub fn default_mouse_scrolling(platform: Platform) -> &'static str {
     if platform == Platform::Mac { "vertical" } else { "horizontal" }
 }
 
