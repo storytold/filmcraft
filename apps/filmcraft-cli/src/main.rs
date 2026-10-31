@@ -507,6 +507,9 @@ async fn cli_export(a: &Args) {
         Ok(v) => {
             print(a, &v);
             let written = written_paths(&v, out).join(", ");
+            for warning in v.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                diag(format_args!("filmcraft-cli: warning: {warning} (CLI: --range entire)"));
+            }
             check_offline(a, &offline_media(&v), &format!("export: {written}"));
             diag(format_args!("exported {written} in {:.1}s", t0.elapsed().as_secs_f64()));
         }

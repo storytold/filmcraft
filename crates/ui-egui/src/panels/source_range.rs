@@ -98,13 +98,12 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
         (ids[1], "Drag In point", RangeEdge::In, inside),
         (ids[2], "Drag Out point", RangeEdge::Out, outside),
     ] {
-        if which == Which::Program
-            && match edge {
-                RangeEdge::In => view.mark_in.is_none(),
-                RangeEdge::Out => view.mark_out.is_none(),
-                RangeEdge::Move => view.mark_in.is_none() || view.mark_out.is_none(),
-            }
-        {
+        // Source keeps its In/Out handles at the clip ends, but no monitor has a movable band until both marks exist
+        if match edge {
+            RangeEdge::In => which == Which::Program && view.mark_in.is_none(),
+            RangeEdge::Out => which == Which::Program && view.mark_out.is_none(),
+            RangeEdge::Move => view.mark_in.is_none() || view.mark_out.is_none(),
+        } {
             continue;
         }
         if (edge == RangeEdge::In && !shows(selected.start)) || (edge == RangeEdge::Out && !shows(selected.end())) {
@@ -121,7 +120,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
             RangeEdge::Out => result.out_hot = response.hovered(),
             RangeEdge::Move => {}
         }
-        if response.drag_started() {
+        if response.drag_started_by(egui::PointerButton::Primary) {
             let Some(pointer) = ctx.input(|i| i.pointer.press_origin()) else { continue };
             let bounds = TimeRange::from_bounds(view.start, view.end);
             let original = view.selected_range();
@@ -201,7 +200,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, which: Whi
         let id = if which == Which::Source { "source.playhead" } else { "program.playhead" };
         app.auto.add(id, rect, "Scrub playhead");
         let playhead = ui.interact(rect, egui::Id::unique(id), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-        if (playhead.dragged() || playhead.clicked())
+        if (playhead.dragged_by(egui::PointerButton::Primary) || playhead.clicked())
             && let Some(pos) = playhead.interact_pointer_pos()
         {
             let f = (f64::from(pos.x - bar.min.x) / f64::from(bar.width().max(1.0))).clamp(0.0, 1.0);

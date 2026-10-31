@@ -2,7 +2,9 @@
 //! effects) is carried in egui temp data so the timeline/monitors can accept drops.
 
 pub mod audio_fx_editor;
+pub mod caption_export;
 pub mod clip_dialogs;
+pub mod clip_mismatch;
 pub mod color_dialogs;
 pub mod dialogs;
 pub mod effect_controls;
@@ -28,6 +30,7 @@ pub mod misc;
 pub mod mixer;
 pub mod monitor;
 pub mod monitor_view;
+pub mod motion_path;
 pub mod multicam;
 pub mod notes;
 pub mod panel_state;
@@ -286,19 +289,39 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     }
 }
 
-/// The panel "≡" menu.
+/// The main window's share of the panel "≡" menu pass: the drag ghost, the bins in their own
+/// windows, and the menu itself when it was opened in the main window.
 pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     drag_ghost(app, ui);
     // bins opened in new windows (Project panel)
     project::floating(app, ui.ctx());
+    panel_menu_area(app, ui);
+}
+
+/// The panel "≡" menu, drawn in the viewport that owns the click that opened it: a panel in its
+/// own OS window opens its menu in that window, at that window's coordinates (#3633).
+pub fn panel_menu_area(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let id = egui::Id::unique("panel-menu");
-    let Some((p, pos)) = ui.ctx().data(|d| d.get_temp::<(PanelKind, egui::Pos2)>(id)) else { return };
+    let viewport = ui.ctx().viewport_id();
+    let Some((p, pos, owner)) = ui.ctx().data(|d| d.get_temp::<(PanelKind, egui::Pos2, egui::ViewportId)>(id)) else { return };
+    if owner != viewport {
+        // a click in another window dismisses the menu, as a click elsewhere in its own window does
+        if ui.ctx().input(|i| i.pointer.any_pressed()) {
+            ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2, egui::ViewportId)>(id));
+        }
+        return;
+    }
+    // its elements are registered in the window that draws them
+    let outer = std::mem::replace(&mut app.auto.viewport, viewport);
     let mut close = false;
     let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             let scroll =
                 egui::ScrollArea::vertical().id_salt("panel-menu-scroll").max_height((ui.ctx().content_rect().height() - 16.0).max(0.0)).show(ui, |ui| {
-                    ui.set_min_width(190.0);
+                    // a small window (a floated panel can be narrower than the menu) takes the menu at its width
+                    let width = ui.ctx().content_rect().width() - 16.0;
+                    ui.set_min_width(190.0_f32.min(width.max(0.0)));
+                    ui.set_max_width(width.max(0.0));
                     // the Timeline's tabs are its open sequences: Close Panel closes the active one and
                     // keeps the panel (Premiere's wording and behaviour)
                     if p == PanelKind::Timeline && app.session.state.active_sequence.is_some() {
@@ -345,8 +368,9 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     // the menu, and must not close it again in the same frame.
     let fresh = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::unique("panel-menu-opened"))) == Some(ui.ctx().cumulative_frame_nr());
     if close || (!fresh && area.response.clicked_elsewhere()) || crate::widgets::escape_closes(ui.ctx()) {
-        ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2)>(id));
+        ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2, egui::ViewportId)>(id));
     }
+    app.auto.viewport = outer;
 }
 
 /// The panel's own items, each section after a separator: the Timeline's sequence and track
@@ -362,8 +386,14 @@ pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKin
             let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
             close = true;
         }
-        ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
-        ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
+        let r = ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
+        app.auto.add("panel.menu.Timeline.videoThumbnails", r.rect, "Video Thumbnails");
+        let r = ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
+        app.auto.add("panel.menu.Timeline.audioWaveforms", r.rect, "Audio Waveforms");
+        let r = ui.checkbox(&mut app.ui.timeline.show_video_names, tl!("Video Names"));
+        app.auto.add("panel.menu.Timeline.videoNames", r.rect, "Video Names");
+        let r = ui.checkbox(&mut app.ui.timeline.show_audio_names, tl!("Audio Names"));
+        app.auto.add("panel.menu.Timeline.audioNames", r.rect, "Audio Names");
         let mut work_area = app.session.active_sequence().is_some_and(|q| q.work_area.is_some());
         let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Checkbox::new(&mut work_area, tl!("Work Area Bar")));
         app.auto.add("panel.menu.Timeline.workAreaBar", r.rect, "Work Area Bar");

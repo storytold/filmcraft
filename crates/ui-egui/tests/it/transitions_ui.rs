@@ -436,3 +436,32 @@ fn each_transition_is_painted_once_a_frame() {
         assert_eq!(ids.iter().filter(|i| *i == id).count(), 1, "{id} registered more than once: {ids:?}");
     }
 }
+
+/// #3573: right-clicking a video transition in the Effects panel offers Set as Default Transition,
+/// and Cmd+D then applies that transition.
+#[test]
+fn set_as_default_transition_from_the_effects_panel_feeds_cmd_d() {
+    let mut d = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.ok("ui.set", json!({"effectsSearch": "Iris Round"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "effects.item.iris_round", "button": "right"}));
+    d.frames(3);
+    d.click("effects.itemMenu.setDefaultTransition");
+    assert_eq!(d.harness.state().session.state.default_video_transition, "iris_round");
+    // a plain effect has no such item
+    d.ok("ui.set", json!({"effectsSearch": "Gaussian Blur"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "effects.item.gaussian_blur", "button": "right"}));
+    d.frames(3);
+    assert!(d.find("effects.itemMenu.setDefaultTransition").is_none());
+    d.ok("ui.key", json!({"key": "Escape"}));
+    // Cmd+D on a selected clip uses it
+    let q = d.exec("sequence.inspect", json!({}));
+    let clip = q["video"][0]["items"][2]["clip"].clone();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.ok("ui.key", json!({"key": "Cmd+D"}));
+    d.frames(2);
+    let q = d.exec("sequence.inspect", json!({}));
+    assert!(q["video"][0]["transitions"].as_array().unwrap().iter().any(|t| t["to"] == clip && t["effect"] == "iris_round"), "{q}");
+}

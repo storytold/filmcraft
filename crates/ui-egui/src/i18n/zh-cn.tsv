@@ -64,6 +64,10 @@
 	Captions and Graphics	字幕与图形
 	Captions…	字幕…
 	Caribbean	加勒比
+	Center at Cut	在剪切点居中
+	Start at Cut	在剪切点开始
+	End at Cut	在剪切点结束
+	Custom Start	自定义开始
 	Center Horizontally	水平居中
 	Center Vertically	垂直居中
 	Cerulean	蔚蓝
@@ -443,6 +447,9 @@
 	Recover	恢复
 	Not Now	暂不
 	Are you sure you want to discard your changes to '{file}'?	确定要放弃对“{file}”的更改吗？
+	Replace File	替换文件
+	“{file}” already exists in “{folder}”. Do you want to replace it?	“{file}”已存在于“{folder}”中。要替换它吗？
+	Replace	替换
 	Yes	是
 	No	否
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	将媒体添加到你的项目。将文件拖到窗口任意位置，或在下方选择来源。
@@ -987,7 +994,6 @@
 	Show graphs	显示图表
 	Toggle animation	切换动画
 	Add/Remove Keyframe	添加/移除关键帧
-	Temporal Interpolation	时间插值
 	Linear	线性
 	Bezier	贝塞尔
 	Auto Bezier	自动贝塞尔
@@ -1036,6 +1042,7 @@
 	All Caps	全大写
 	Small Caps	小型大写
 	Underline	下划线
+	Strikethrough	删除线
 	OpenType	OpenType
 	Kerning	字距调整
 	Ligatures	连字
@@ -1176,7 +1183,7 @@
 	New Bin	新建素材箱
 	Find	查找
 	Automate to Sequence	自动适配到序列
-	Select items to clear	选择要清除的项目
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	在时间轴中选择一个剪辑（或一个链接的剪辑），或在项目面板中选择一个项目，以进行重命名
 	User Order	用户顺序
 	Descending	降序
 	Refresh Project	刷新项目
@@ -3589,7 +3596,6 @@
 	Export the labels to a preset file…	将标签导出为预设文件…
 	Show the presets folder	显示预设文件夹
 	Delete this preset	删除此预设
-	Opens in your web browser: {url}	在网页浏览器中打开：{url}
 	Saves this session's log and shows it in your file manager.	保存本次会话的日志并在文件管理器中显示。
 	Shows a report on this computer.	显示本机的报告。
 	Shows the version, community links and credits in a FilmCraft window.	在 FilmCraft 窗口中显示版本、社区链接和致谢。
@@ -3601,5 +3607,35 @@
 	Open a sequence to search its graphics	打开序列以搜索其中的图形
 	No text graphics in this sequence. Add text with the Type tool.	此序列中没有文本图形。请用文字工具添加文本。
 	No matching text.	没有匹配的文本。
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	编辑标记…
+	In:	入点：
+	Marker Color:	标记颜色：
+	Options:	选项：
+	Comment Marker	注释标记
+	Chapter Marker	章节标记
+	Segmentation Marker	分段标记
+	Web Link	Web 链接
+	Flash Cue Point	闪存提示点
+	Invalid duration: {error}	持续时间无效：{error}
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) 需要硬件编码器（NVIDIA GPU 上的 NVENC、macOS 上的 VideoToolbox）；本机未找到，且 FilmCraft 尚无软件 H.265 编码器。请改选 H.264 或 ProRes。
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 需要硬件编码器；本机未找到，且 FilmCraft 尚无软件 AV1 编码器。
+	Enter a positive duration within the supported speed range.	请输入支持的速度范围内的正时长。
+	Show Video Names	显示视频名称
+	Show Audio Names	显示音频名称
+	Video Names	视频名称
+	Audio Names	音频名称
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	控制服务器已禁用：FILMCRAFT_CONTROL_TOKEN 必须包含 64 个随机十六进制字符（参见 docs/control-protocol.md）
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Clip Mismatch Warning dialog.
+	Clip Mismatch Warning	剪辑不匹配警告
+	This clip does not match the sequence settings.	此剪辑与序列设置不匹配。
+	Clip: {settings}	剪辑：{settings}
+	Sequence: {settings}	序列：{settings}
+	Change the sequence to match the clip's settings?	是否更改序列以匹配剪辑的设置？
+	Change Sequence Settings	更改序列设置
+	Keep Existing Settings	保留现有设置

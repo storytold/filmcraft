@@ -75,6 +75,23 @@ fn concealment_before_and_after_packets() {
     assert!(out[0].iter().all(|&v| v == 0.0));
 }
 
+/// A caller-supplied loss span must not allocate without limit: more than 120 ms is rejected
+/// before any output is reserved, 120 ms still works.
+#[test]
+fn concealment_length_is_capped() {
+    let mut dec = StreamDecoder::new(48000, 2).unwrap();
+    let mut out = Vec::new();
+    assert_eq!(dec.conceal(5760, &mut out).unwrap(), 5760);
+    assert_eq!(out.len(), 5760 * 2);
+    out.clear();
+    for n in [5760 + 120, 48000 * 10, usize::MAX - usize::MAX % 120] {
+        assert!(dec.conceal(n, &mut out).is_err(), "n={n}");
+        // The length is checked before the packet is parsed, so any bytes will do.
+        assert!(dec.decode_fec(&[0xF8, 0xFF, 0xFE], n, &mut out).is_err(), "fec n={n}");
+    }
+    assert!(out.is_empty());
+}
+
 fn vectors_dir() -> Option<PathBuf> {
     let d = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/fixtures/opus/vectors");
     d.join("testvector01.bit").exists().then_some(d)

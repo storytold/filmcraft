@@ -1,7 +1,7 @@
 //! Responsive design and per-character styles of graphic clips (M10.7).
 //!
 //! - **Per-character styles** ([`StyleRun`], [`CharStyle`]): a text layer's runs override font,
-//!   style, size, fill, faux bold / italic, underline, tracking, baseline shift and caps for a
+//!   style, size, fill, faux bold / italic, underline, strikethrough, tracking, baseline shift and caps for a
 //!   range of characters. Ranges are in *characters* (not bytes), sorted and non-overlapping;
 //!   [`apply_char_style`] merges a new style into a range and [`adjust_runs`] keeps runs on the
 //!   right characters when the text is edited (typed characters take the style of the character
@@ -69,6 +69,8 @@ pub struct CharStyle {
     pub faux_italic: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub underline: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strikethrough: Option<bool>,
     /// Tracking in 1/1000 em.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tracking: Option<f32>,
@@ -94,6 +96,7 @@ impl CharStyle {
             faux_bold: over.faux_bold.or(self.faux_bold),
             faux_italic: over.faux_italic.or(self.faux_italic),
             underline: over.underline.or(self.underline),
+            strikethrough: over.strikethrough.or(self.strikethrough),
             tracking: over.tracking.or(self.tracking),
             baseline_shift: over.baseline_shift.or(self.baseline_shift),
             caps: over.caps.or(self.caps),
@@ -108,6 +111,12 @@ pub struct StyleRun {
     pub end: usize,
     #[serde(flatten)]
     pub style: CharStyle,
+}
+
+/// The style of character `i`: every run that covers it, later runs over earlier ones (what
+/// [`apply_char_style`] left there); empty where nothing was set.
+pub fn char_style_at(runs: &[StyleRun], i: usize) -> CharStyle {
+    runs.iter().filter(|r| r.start <= i && i < r.end).fold(CharStyle::default(), |acc, r| acc.merged(&r.style))
 }
 
 /// Per-character styles of a text of `n` characters.
@@ -461,6 +470,17 @@ mod tests {
     }
     fn bold() -> CharStyle {
         CharStyle { faux_bold: Some(true), ..Default::default() }
+    }
+
+    #[test]
+    fn char_style_at_reads_the_overrides_covering_a_character() {
+        let red = CharStyle { fill: Some([1.0, 0.0, 0.0, 1.0]), ..Default::default() };
+        let big = CharStyle { size: Some(120.0), ..Default::default() };
+        let runs = apply_char_style(&apply_char_style(&[], 11, 6, 11, &red), 11, 8, 11, &big);
+        assert_eq!(char_style_at(&runs, 0), CharStyle::default());
+        assert_eq!(char_style_at(&runs, 6), red);
+        assert_eq!(char_style_at(&runs, 8), red.merged(&big));
+        assert_eq!(char_style_at(&runs, 11), CharStyle::default());
     }
 
     #[test]

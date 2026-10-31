@@ -1,5 +1,5 @@
 use super::*;
-use filmcraft_project::{Label, Project, SequenceSettings, TrackKind};
+use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, Label, Project, SequenceSettings, TrackKind};
 use filmcraft_time::FrameRate;
 use proptest::prelude::*;
 
@@ -74,6 +74,22 @@ impl Fx {
     }
     fn spans(&self, track: TrackId) -> Vec<(i64, i64)> {
         self.seq.track(track).unwrap().items.iter().map(|i| (R.frame_at(i.start), R.frame_at(i.duration))).collect()
+    }
+    fn add_caption_track(&mut self, name: &str, format: CaptionFormat) -> TrackId {
+        let tid = TrackId(self.next);
+        self.next += 1;
+        let ct = CaptionTrack::new(tid, name.into(), format);
+        self.seq.caption_tracks.push(ct);
+        tid
+    }
+    fn add_caption(&mut self, track: TrackId, start: i64, dur: i64, text: &str) -> ClipId {
+        let mut n = self.next;
+        let id = captions::add_caption(&mut self.seq, track, f(start), f(dur), text, &mut Self::ctx(&mut n)).unwrap();
+        self.next = n;
+        id
+    }
+    fn caption_spans(&self, track: TrackId) -> Vec<(i64, i64, String)> {
+        self.seq.caption_track(track).unwrap().captions.iter().map(|c| (R.frame_at(c.start), R.frame_at(c.duration), c.text.clone())).collect()
     }
 }
 
@@ -240,6 +256,107 @@ fn ripple_delete_closes_the_time_free_on_every_track() {
 }
 
 #[test]
+fn ripple_delete_sync_locked_caption_tracks() {
+    // 1. Basic ripple delete with before, inside, overlapping, and after captions.
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a1 = fx.a(0);
+    let c1 = fx.add_caption_track("C1", CaptionFormat::Subtitle);
+
+    let _v0 = fx.put(v1, 0, 10, 0);
+    let v1_clip = fx.put(v1, 10, 10, 0);
+    let _v2 = fx.put(v1, 20, 10, 0);
+    let _a0 = fx.put(a1, 0, 10, 0);
+    let a1_clip = fx.put(a1, 10, 10, 0);
+    let _a2 = fx.put(a1, 20, 10, 0);
+
+    fx.add_caption(c1, 2, 6, "before");
+    fx.add_caption(c1, 12, 4, "inside");
+    fx.add_caption(c1, 18, 6, "overlap");
+    fx.add_caption(c1, 26, 4, "after");
+
+    ripple_delete_items(&mut fx.seq, &[v1_clip, a1_clip]).unwrap();
+
+    assert_eq!(
+        fx.caption_spans(c1),
+        vec![(2, 6, "before".into()), (10, 4, "overlap".into()), (16, 4, "after".into()),],
+        "captions follow ripple delete on sync-locked track"
+    );
+
+    // 2. Locked caption track and sync_lock=false caption track remain untouched.
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let c_locked = fx.add_caption_track("C_Locked", CaptionFormat::Subtitle);
+    let c_unsynced = fx.add_caption_track("C_Unsynced", CaptionFormat::Subtitle);
+    fx.seq.caption_track_mut(c_locked).unwrap().locked = true;
+    fx.seq.caption_track_mut(c_unsynced).unwrap().sync_lock = false;
+
+    fx.seq.caption_track_mut(c_locked).unwrap().captions.push(Caption {
+        id: ClipId(50001),
+        start: f(15),
+        duration: f(10),
+        text: "locked".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+    fx.seq.caption_track_mut(c_unsynced).unwrap().captions.push(Caption {
+        id: ClipId(50002),
+        start: f(15),
+        duration: f(10),
+        text: "unsynced".into(),
+        speaker: None,
+        cue_id: None,
+        settings: String::new(),
+    });
+
+    let _v0 = fx.put(v1, 0, 10, 0);
+    let v1_clip = fx.put(v1, 10, 10, 0);
+    let _v2 = fx.put(v1, 20, 10, 0);
+    ripple_delete_items(&mut fx.seq, &[v1_clip]).unwrap();
+
+    assert_eq!(fx.caption_spans(c_locked), vec![(15, 10, "locked".into())]);
+    assert_eq!(fx.caption_spans(c_unsynced), vec![(15, 10, "unsynced".into())]);
+
+    // 3. Multiple separated spans: right-to-left ripple updates captions correctly for each span.
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let c1 = fx.add_caption_track("C1", CaptionFormat::Subtitle);
+    let _v0 = fx.put(v1, 0, 10, 0);
+    let v1_clip = fx.put(v1, 10, 10, 0);
+    let _v2 = fx.put(v1, 20, 10, 0);
+    let v3_clip = fx.put(v1, 30, 10, 0);
+    let _v4 = fx.put(v1, 40, 10, 0);
+
+    fx.add_caption(c1, 5, 3, "c0");
+    fx.add_caption(c1, 12, 4, "c1_inside");
+    fx.add_caption(c1, 22, 6, "c2_between");
+    fx.add_caption(c1, 32, 4, "c3_inside");
+    fx.add_caption(c1, 42, 6, "c4_after");
+
+    ripple_delete_items(&mut fx.seq, &[v1_clip, v3_clip]).unwrap();
+    assert_eq!(fx.caption_spans(c1), vec![(5, 3, "c0".into()), (12, 6, "c2_between".into()), (22, 6, "c4_after".into()),]);
+
+    // 4. A later span can already ripple captions before an earlier media conflict aborts.
+    let mut fx = Fx::new();
+    let (v1, a1) = (fx.v(0), fx.a(0));
+    let c1 = fx.add_caption_track("C1", CaptionFormat::Subtitle);
+    let _v0 = fx.put(v1, 0, 10, 0);
+    let v1_clip = fx.put(v1, 10, 10, 0);
+    let _v2 = fx.put(v1, 20, 10, 0);
+    let v3_clip = fx.put(v1, 30, 10, 0);
+    let _v4 = fx.put(v1, 40, 10, 0);
+    fx.put(a1, 12, 5, 0);
+    fx.add_caption(c1, 2, 4, "cap_before");
+    fx.add_caption(c1, 12, 4, "cap_inside");
+    fx.add_caption(c1, 42, 4, "cap_after");
+
+    let before = fx.seq.clone();
+    assert_eq!(ripple_delete_items(&mut fx.seq, &[v1_clip, v3_clip]), Err(EditError::SyncLockConflict("A1".into())));
+    assert_eq!(fx.seq, before, "conflict restores the complete sequence after a later span was processed");
+}
+
+#[test]
 fn close_gap_works() {
     let mut fx = Fx::new();
     let v1 = fx.v(0);
@@ -287,6 +404,143 @@ fn regular_trim_respects_neighbours_and_handles() {
     assert_eq!(d, f(3));
     assert_eq!(fx.seq.find_item(a).unwrap().1.source_in, f(8));
     fx.seq.check().unwrap();
+}
+
+#[test]
+fn a_graphic_extends_from_its_left_edge() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let g = fx.put(v1, 20, 10, 0);
+    fx.put(v1, 0, 8, 0);
+    fn ctx(n: &mut u64) -> EditCtx<'_> {
+        EditCtx { next_id: n, media_duration: &|_| None, media_start: &|_| Tick::ZERO, min_duration: f(1) }
+    }
+    let mut n = fx.next;
+    // dragging the left edge 30 frames earlier stops at the previous clip, 12 frames away
+    let d = trim(&mut fx.seq, g, Edge::In, TrimMode::Regular, -f(30), &mut ctx(&mut n)).unwrap();
+    assert_eq!(d, -f(12));
+    let it = fx.seq.find_item(g).unwrap().1;
+    assert_eq!((it.start, it.duration, it.source_in), (f(8), f(22), -f(12)));
+    // a keyframe at media time 4 is still at timeline frame 24
+    assert_eq!(it.effect_time_at(f(24)), f(4));
+    // shrinking it back returns exactly to where it started
+    trim(&mut fx.seq, g, Edge::In, TrimMode::Regular, f(12), &mut ctx(&mut n)).unwrap();
+    let it = fx.seq.find_item(g).unwrap().1;
+    assert_eq!((it.start, it.duration, it.source_in), (f(20), f(10), Tick::ZERO));
+    // a clip with real media and no footage before it is still blocked
+    let a = fx.put(fx.v(1), 20, 10, 0);
+    let d = trim(&mut fx.seq, a, Edge::In, TrimMode::Regular, -f(3), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, Tick::ZERO);
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn a_graphic_ripple_extends_from_its_left_edge() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let g = fx.put(v1, 20, 10, 0);
+    let mut n = fx.next;
+    let mut ctx = EditCtx { next_id: &mut n, media_duration: &|_| None, media_start: &|_| Tick::ZERO, min_duration: f(1) };
+    let d = ripple_trim_group(&mut fx.seq, &[g], Edge::In, -f(5), &mut ctx).unwrap();
+    assert_eq!(d, -f(5));
+    let it = fx.seq.find_item(g).unwrap().1;
+    assert_eq!((it.duration, it.source_in), (f(15), -f(5)));
+    // the ripple keeps the start, so what showed at media time 4 now shows 5 frames later
+    assert_eq!(it.effect_time_at(it.start + f(9)), f(4));
+    fx.seq.check().unwrap();
+}
+
+/// Item 2 is a graphic (no media length); everything else is long media.
+fn graphic_media(i: ItemId) -> Option<Tick> {
+    if i == ItemId(2) { None } else { Some(f(1000)) }
+}
+
+fn graphic_ctx(n: &mut u64) -> EditCtx<'_> {
+    EditCtx { next_id: n, media_duration: &graphic_media, media_start: &|_| Tick::ZERO, min_duration: f(1) }
+}
+
+#[test]
+fn a_roll_extends_a_graphic_from_its_left_edge() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 10, 10);
+    let g = fx.put(v1, 10, 10, 0);
+    fx.seq.find_item_mut(g).unwrap().1.item = ItemId(2);
+    let mut n = fx.next;
+    let d = roll(&mut fx.seq, a, g, -f(5), &mut graphic_ctx(&mut n)).unwrap();
+    assert_eq!(d, -f(5));
+    assert_eq!(fx.spans(v1), vec![(0, 5), (5, 15)]);
+    let it = fx.seq.find_item(g).unwrap().1;
+    assert_eq!(it.source_in, -f(5));
+    // what showed at frame 12 still does
+    assert_eq!(it.effect_time_at(f(12)), f(2));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn a_slide_extends_a_graphic_from_its_left_edge() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    fx.put(v1, 0, 10, 10);
+    let b = fx.put(v1, 10, 10, 10);
+    let g = fx.put(v1, 20, 10, 0);
+    fx.seq.find_item_mut(g).unwrap().1.item = ItemId(2);
+    let mut n = fx.next;
+    let d = slide(&mut fx.seq, b, -f(5), &mut graphic_ctx(&mut n)).unwrap();
+    assert_eq!(d, -f(5));
+    assert_eq!(fx.spans(v1), vec![(0, 5), (5, 10), (15, 15)]);
+    let it = fx.seq.find_item(g).unwrap().1;
+    assert_eq!(it.source_in, -f(5));
+    assert_eq!(it.effect_time_at(f(22)), f(2));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn a_slip_moves_a_stretched_graphic_by_what_was_asked() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let g = fx.put(v1, 20, 10, 0);
+    fx.seq.find_item_mut(g).unwrap().1.item = ItemId(2);
+    let mut n = fx.next;
+    trim(&mut fx.seq, g, Edge::In, TrimMode::Regular, -f(12), &mut graphic_ctx(&mut n)).unwrap();
+    assert_eq!(fx.seq.find_item(g).unwrap().1.source_in, -f(12));
+    let d = slip(&mut fx.seq, g, f(1), &mut graphic_ctx(&mut n)).unwrap();
+    assert_eq!(d, f(1));
+    assert_eq!(fx.seq.find_item(g).unwrap().1.source_in, -f(11));
+}
+
+#[test]
+fn a_slip_moves_a_frame_held_stretched_graphic_by_what_was_asked() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let g = fx.put(v1, 20, 10, 0);
+    {
+        let it = fx.seq.find_item_mut(g).unwrap().1;
+        it.item = ItemId(2);
+        it.source_in = -f(12);
+        it.frame_hold = Some(Tick::ZERO);
+    }
+    let mut n = fx.next;
+    let d = slip(&mut fx.seq, g, f(1), &mut graphic_ctx(&mut n)).unwrap();
+    assert_eq!(d, f(1));
+    assert_eq!(fx.seq.find_item(g).unwrap().1.source_in, -f(11));
+}
+
+#[test]
+fn a_roll_extends_a_frame_held_graphic() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 10, 10);
+    let g = fx.put(v1, 10, 10, 0);
+    {
+        let it = fx.seq.find_item_mut(g).unwrap().1;
+        it.item = ItemId(2);
+        it.source_in = -f(5);
+        it.frame_hold = Some(Tick::ZERO);
+    }
+    let mut n = fx.next;
+    let d = roll(&mut fx.seq, a, g, -f(3), &mut graphic_ctx(&mut n)).unwrap();
+    assert_eq!(d, -f(3));
 }
 
 #[test]
@@ -603,6 +857,36 @@ fn a_regular_trim_shortens_a_transition_longer_than_its_clips() {
     assert_eq!((tr.start, tr.duration), (f(0), f(3)), "the transition covers both clips and no more");
     assert_eq!(tr.align, filmcraft_project::TransitionAlign::CenterAtCut);
     fx.seq.check().unwrap();
+}
+
+/// A crossfade needs both clips and their cut; a fade needs only its clip.
+#[test]
+fn orphan_transitions_are_ones_whose_clips_are_gone_or_apart() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 10, 0);
+    let b = fx.put(v1, 10, 10, 0);
+    let c = fx.put(v1, 25, 10, 0);
+    let tr = |id, from, to| Transition {
+        id: TransitionId(id),
+        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        start: f(8),
+        duration: f(4),
+        from,
+        to,
+        align: Default::default(),
+        reverse: false,
+    };
+    let t = fx.seq.track_mut(v1).unwrap();
+    t.transitions = vec![
+        tr(1, Some(a), Some(b)),        // on the a|b cut: stays
+        tr(2, Some(b), Some(c)),        // b and c are 5 frames apart: goes
+        tr(3, Some(c), None),           // fade out of c: stays
+        tr(4, Some(ClipId(999)), None), // its clip is gone: goes
+        tr(5, None, None),              // joins nothing: goes
+    ];
+    remove_orphan_transitions(t);
+    assert_eq!(t.transitions.iter().map(|x| x.id.0).collect::<Vec<_>>(), vec![1, 3]);
 }
 
 #[test]
@@ -1077,5 +1361,32 @@ fn moving_an_edge_keeps_the_media_under_the_timeline() {
             let trimmed = fresh.seq.find_item(c).unwrap().1;
             assert_eq!((trimmed.start, trimmed.duration, trimmed.source_in), (moved.start, moved.duration, moved.source_in), "{label}");
         }
+    }
+}
+
+#[test]
+fn trim_caption_shorter_than_min_duration_does_not_cross_bounds() {
+    use filmcraft_project::{Caption, CaptionFormat, CaptionTrack};
+    for edge in [Edge::In, Edge::Out] {
+        let mut fx = Fx::new();
+        let tid = TrackId(900);
+        let mut tr = CaptionTrack::new(tid, "c".into(), CaptionFormat::Subtitle);
+        for (id, start) in [(1, 0), (2, 1000)] {
+            tr.captions.push(Caption {
+                id: ClipId(id),
+                start: Tick(start),
+                duration: Tick(1000),
+                text: "x".into(),
+                speaker: None,
+                cue_id: None,
+                settings: String::new(),
+            });
+        }
+        fx.seq.caption_tracks.push(tr);
+        let ctx = Fx::ctx(&mut fx.next);
+        let _ = crate::captions::trim_caption(&mut fx.seq, ClipId(2), edge, Tick(5), &ctx);
+        let c = fx.seq.find_caption(ClipId(2)).unwrap().1;
+        assert!(c.start >= Tick(1000), "{edge:?}: start moved back into previous caption: {:?}", c.start);
+        assert!(c.duration >= Tick(1000), "{edge:?}: caption shrank: {:?}", c.duration);
     }
 }
