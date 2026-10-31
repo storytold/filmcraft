@@ -1011,6 +1011,15 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
 
     hover_cursor(app, ui, seq, layout, pos);
 
+    // open the scrub audio stream while the pointer is over the ruler, before a drag starts:
+    // opening the device on the first move of a playhead drag stalled the UI
+    if let Some(p) = pos
+        && matches!(hit(seq, layout, p), Hit::Ruler)
+    {
+        let now = app.now();
+        app.warm_scrub_audio(now);
+    }
+
     if press_action(app, &ctx, &resp, seq, layout) {
         return;
     }

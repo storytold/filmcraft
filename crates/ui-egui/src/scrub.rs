@@ -81,8 +81,29 @@ impl FilmcraftApp {
         self.scrub.open
     }
 
+    /// Open the scrub stream (silent) before the first move. Opening the output device
+    /// (enumerating devices, building and starting the stream) takes tens of milliseconds on the
+    /// UI thread, which stalled the first moves of a playhead drag. The Timeline calls this while
+    /// the pointer hovers its ruler; each call also keeps an open stream from lingering out.
+    pub(crate) fn warm_scrub_audio(&mut self, now: f64) {
+        if !self.session.prefs.audio.scrub_audio || self.playback.playing || self.source_playback.clock.playing {
+            return;
+        }
+        if self.scrub.open {
+            self.scrub.last_move = now;
+            return;
+        }
+        let at = self.session.playhead();
+        self.scrub_aim(at, now, false);
+    }
+
     /// Aim the scrub stream at `at` (opening it if needed) and play one grain.
     fn scrub_grain(&mut self, at: Tick, now: f64) {
+        self.scrub_aim(at, now, true);
+    }
+
+    /// `scrub_grain`; with `audible` false the stream is opened but plays nothing yet.
+    fn scrub_aim(&mut self, at: Tick, now: f64, audible: bool) {
         let Some(seq_id) = self.session.state.active_sequence else { return };
         let Some(a) = self.audio.as_ref() else { return };
         let sr = a.sample_rate();
@@ -92,7 +113,7 @@ impl FilmcraftApp {
         let total = ((GRAIN_S * sr as f64) as i64).max(1);
         {
             let mut g = self.scrub.grain.lock().unwrap_or_else(PoisonError::into_inner);
-            *g = Grain { cursor: at.to_units_floor(sr as i64), left: total, total };
+            *g = Grain { cursor: at.to_units_floor(sr as i64), left: if audible { total } else { 0 }, total };
         }
         self.scrub.last_move = now;
         if self.scrub.open {
@@ -231,6 +252,43 @@ mod tests {
         assert!(app.scrub_tick(0.05, false), "lingers briefly after release");
         assert!(!app.scrub_tick(0.05 + LINGER_S, false), "then closes");
         assert!(fill.lock().unwrap().is_none());
+    }
+
+    /// Opening the device stalled the first moves of a playhead drag: hovering the ruler opens
+    /// the stream silently, so the first move only re-aims it.
+    #[test]
+    fn hovering_the_ruler_opens_the_stream_before_the_first_move() {
+        let (mut app, fill) = app(true);
+        let rate = app.session.sequence_rate();
+        app.warm_scrub_audio(0.0);
+        assert!(app.scrub.is_open(), "the stream is open before any move");
+        assert_eq!(loudness(&fill), 0.0, "and silent");
+        app.warm_scrub_audio(0.2);
+        assert!(app.scrub_tick(0.3, false), "hovering keeps it from lingering out");
+        app.scrub_tick(0.3, true);
+        app.session.set_playhead(rate.tick_of(60));
+        assert!(app.scrub_tick(0.31, true));
+        assert!(loudness(&fill) > 0.0, "the first move plays a grain on the open stream");
+        assert!(!app.scrub_tick(0.31 + LINGER_S + 0.01, false), "leaving the ruler closes it");
+
+        let (mut off, fill) = self::app(false);
+        off.warm_scrub_audio(0.0);
+        assert!(!off.scrub.is_open() && fill.lock().unwrap().is_none(), "nothing opens with the setting off");
+    }
+
+    /// A press on the ruler calls `stop()` before the drag starts: with nothing playing it must
+    /// leave the opened scrub stream alone (reopening the device stalled the first moves).
+    #[test]
+    fn the_ruler_press_keeps_the_scrub_stream_open() {
+        let (mut app, fill) = app(true);
+        app.warm_scrub_audio(0.0);
+        assert!(app.scrub.is_open());
+        app.stop();
+        assert!(app.scrub.is_open() && fill.lock().unwrap().is_some(), "nothing was playing: the stream stays");
+
+        app.playback.playing = true;
+        app.stop();
+        assert!(!app.scrub.is_open() && fill.lock().unwrap().is_none(), "stopping playback still releases the device");
     }
 
     #[test]

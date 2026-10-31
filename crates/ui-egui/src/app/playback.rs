@@ -95,16 +95,22 @@ impl FilmcraftApp {
     }
 
     pub fn stop(&mut self) {
+        // A press on the Timeline ruler stops playback first. With nothing playing, that must
+        // not close the scrub stream the ruler hover opened: reopening the output device on the
+        // UI thread is what stalled the first moves of a playhead drag.
+        let keep_scrub = !self.playback.playing && self.scrub.is_open();
         self.playback.playing = false;
         self.playback.stop_at = None;
         self.playback.rest_at = None;
         self.playback.preroll = None;
         self.playback.meter.finish();
         self.frames.stop_prefetch();
-        if let Some(a) = self.audio.as_mut() {
-            a.stop();
+        if !keep_scrub {
+            if let Some(a) = self.audio.as_mut() {
+                a.stop();
+            }
+            self.scrub.device_stopped();
         }
-        self.scrub.device_stopped();
         self.playback.audio_clock = false;
         self.playback.audio_retry_at = 0.0;
         if self.session.mixrec.active() {
