@@ -191,6 +191,12 @@ fn start_frames(tc: &Timecode, rate: FrameRate) -> i64 {
     ((n + d / 2) / d) as i64
 }
 
+/// Bytes read from the front of every picture to find its slice header when the index has no
+/// temporal offsets (`avc_presentation_order`), and the longer read for pictures where that is
+/// not enough.
+const AVC_ORDER_HEAD: usize = 2 << 10;
+const AVC_ORDER_HEAD_MAX: usize = 16 << 10;
+
 impl MxfSource {
     pub fn open(name: &str, bytes: Arc<[u8]>) -> crate::Result<Self> {
         Self::open_reader(name, Arc::new(filmcraft_media::reader::MemReader(bytes)))
@@ -229,13 +235,17 @@ impl MxfSource {
             vpts = t.samples.iter().map(|s| s.pts).collect();
             vorder = t.display_order.clone();
             if t.needs_reorder && matches!(t.codec, Codec::Avc { .. }) {
-                let heads: Vec<Vec<u8>> = (0..t.samples.len())
-                    .map(|i| {
-                        let s = t.samples[i];
-                        filmcraft_media::reader::read_range(&*bytes.0, s.offset, (s.size as usize).min(16 << 10)).unwrap_or_default()
-                    })
-                    .collect();
-                match avc_presentation_order(&heads) {
+                // Only the slice headers are needed. The first picture of a stream has its
+                // parameter sets and SEI in front of the slice, so read a short head of every
+                // picture first and the long one only if some slice header does not fit.
+                let heads = |cap: usize| -> Vec<Vec<u8>> {
+                    t.samples.iter().map(|s| filmcraft_media::reader::read_range(&*bytes.0, s.offset, (s.size as usize).min(cap)).unwrap_or_default()).collect()
+                };
+                let order = avc_presentation_order(&heads(AVC_ORDER_HEAD)).or_else(|| {
+                    let all_short = t.samples.iter().all(|s| s.size as usize <= AVC_ORDER_HEAD);
+                    if all_short { None } else { avc_presentation_order(&heads(AVC_ORDER_HEAD_MAX)) }
+                });
+                match order {
                     Some(pts) => {
                         vorder = vec![0; pts.len()];
                         for (s, &d) in pts.iter().enumerate() {
