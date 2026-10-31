@@ -1,7 +1,7 @@
 //! Edit / Clip / File menu dialogs (M3.10): Paste Attributes, Remove Attributes, Offline File,
 //! Make Subclip, Edit Subclip, Modify ▸ Audio Channels, Modify ▸ Timecode, Frame Hold Options,
-//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), and the Close Project and
-//! Quit "save changes?" prompts.
+//! Field Options, Clip Speed / Duration, Nest… (Nested Sequence Name), and the Close Project,
+//! Open Project and Quit "save changes?" prompts.
 //!
 //! The open dialog lives in `UiState::clip_dialog` (serde): the engine command it runs and the
 //! parameters being edited — the same JSON the command takes — so agents can open a dialog from
@@ -27,6 +27,8 @@
 //! - Clip Speed / Duration `speedDuration.*`: `speed`, `reverse`, `ripple`,
 //!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`;
+//! - Open Project (asked once the project to open is chosen, see [`intercept_open`])
+//!   `openProject.save`, `openProject.dontSave`, `openProject.cancel`;
 //! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
 //!   `quit.save`, `quit.dontSave`, `quit.cancel`.
 
@@ -61,6 +63,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.fieldOptions" => (tl!("Field Options"), "fieldOptions"),
         "clip.speedDuration" => (tl!("Clip Speed / Duration"), "speedDuration"),
         "file.closeProject" => (tl!("Save Project"), "closeProject"),
+        "file.open" => (tl!("Save Project"), "openProject"),
         "app.quit" => (tl!("Save Project"), "quit"),
         _ => return None,
     })
@@ -95,7 +98,8 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if id == "file.saveAll" && app.session.path.is_none() {
         return Some(app.file_dialog("file.save", params));
     }
-    if (id == "file.closeProject" && !app.session.is_dirty()) || id == "app.quit" {
+    // Open Project asks once the project to open is chosen (`intercept_open`)
+    if (id == "file.closeProject" && !app.session.is_dirty()) || id == "app.quit" || id == "file.open" {
         return None;
     }
     meta(id)?;
@@ -116,8 +120,20 @@ pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
         return false;
     }
     if app.ui.clip_dialog.as_ref().is_none_or(|d| d.command != "app.quit") {
-        app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.quit".into(), params: json!({}), info: Value::Null, error: String::new() });
+        app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.quit".into(), params: json!({}), info: asked_over(&app.session), error: String::new() });
     }
+    true
+}
+
+/// File ▸ Open Project once the project at `path` is chosen, File ▸ Open Recent and Home's Recent
+/// list: with unsaved changes Save / Don't Save / Cancel is asked first, as Close Project asks, and
+/// `path` opens after Save or Don't Save. Returns whether it asked.
+pub fn intercept_open(app: &mut FilmcraftApp, path: &str) -> bool {
+    if !app.session.is_dirty() {
+        return false;
+    }
+    app.ui.clip_dialog =
+        Some(ClipDialogDraft { command: "file.open".into(), params: json!({"path": path}), info: asked_over(&app.session), error: String::new() });
     true
 }
 
@@ -230,8 +246,15 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
                 json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps}),
             )
         }
+        "file.closeProject" => (json!({}), asked_over(s)),
         _ => (json!({}), Value::Null),
     }
+}
+
+/// The info of the Close Project, Open Project and Quit prompts: the project they are asked over
+/// (`Session::document_epoch`). When another project replaces it, the prompt closes.
+fn asked_over(s: &filmcraft_engine::Session) -> Value {
+    json!({"project": s.document_epoch})
 }
 
 fn format_name(f: AudioChannels) -> &'static str {
@@ -312,11 +335,22 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.clip_dialog = None;
         return;
     };
+    // a save prompt asked over a project that another one has replaced since (a script opened,
+    // created or closed to it) closes without acting on the new project
+    if d.info["project"].as_u64().is_some_and(|p| p != app.session.document_epoch) {
+        app.ui.clip_dialog = None;
+        return;
+    }
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
-    // a never-saved project is saved through the Save dialog
-    let can_save = app.session.path.is_some() || app.hooks.pick_save.is_some();
+    // only open resumes after an asynchronous save dialog
+    let can_save = app.session.path.is_some()
+        || if d.command == "file.open" {
+            crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks)
+        } else {
+            app.hooks.pick_save.is_some()
+        };
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("clip-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
@@ -546,7 +580,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 }
             }
-            "file.closeProject" | "app.quit" => {
+            "file.closeProject" | "file.open" | "app.quit" => {
                 ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -612,6 +646,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         }
         Some("dontSave") | Some("save") => {
+            // Open Project ▸ Save on a never-saved project: the chosen project opens once the Save
+            // dialog's file is saved, which can be a later frame (Linux)
+            if action == Some("save") && d.command == "file.open" && app.session.path.is_none() {
+                app.ui.clip_dialog = None;
+                if let Err(e) = save_then_open(app, d.clone()) {
+                    app.ui.status = e;
+                    app.ui.clip_dialog = Some(d);
+                }
+                return;
+            }
             if action == Some("save") {
                 let saved = if app.session.path.is_some() {
                     app.session.execute("file.save", json!({})).map(|_| ()).map_err(|e| e.to_string())
@@ -620,7 +664,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 };
                 if let Err(e) = saved {
                     app.ui.status = e;
-                    app.ui.clip_dialog = None;
+                    app.ui.clip_dialog = Some(d);
                     return;
                 }
                 // the Save dialog was cancelled: back to the prompt
@@ -628,6 +672,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     app.ui.clip_dialog = Some(d);
                     return;
                 }
+            }
+            // Open Project opens the chosen project; when that fails, this project stays open with
+            // its unsaved changes
+            if d.command == "file.open" {
+                match app.session.execute("file.open", d.params.clone()) {
+                    Ok(_) => edit_after_open(app, &d),
+                    Err(e) => app.ui.status = e.to_string(),
+                }
+                app.ui.clip_dialog = None;
+                return;
             }
             // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
             // snapshot, so the next launch doesn't offer them back
@@ -645,6 +699,51 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         _ => {}
     }
     app.ui.clip_dialog = Some(d);
+}
+
+/// Open Project ▸ Save on a never-saved project: the Save dialog, then `prompt`'s project opens
+/// once the file is saved. The dialog's answer runs when it arrives (the host may answer in a later
+/// frame). A canceled dialog or a failed save shows the prompt again. An answer that arrives after
+/// another project was opened, created or closed to does nothing, and one that arrives while another
+/// prompt is shown saves but leaves the opening to that prompt. Returns an error when no dialog can
+/// be shown.
+fn save_then_open(app: &mut FilmcraftApp, prompt: ClipDialogDraft) -> Result<Value, String> {
+    let name = format!("{}.fcproj", app.session.project.name);
+    // the project the dialog saves (not one opened, created or closed to meanwhile)
+    let project = app.session.document_epoch;
+    app.pick(crate::native_dialogs::FileDialog::SaveProject { name }, move |app, paths| {
+        if app.session.document_epoch != project {
+            return Ok(Value::Null);
+        }
+        let Some(path) = paths.into_iter().next() else {
+            if app.ui.clip_dialog.is_none() {
+                app.ui.clip_dialog = Some(prompt);
+            }
+            return Ok(Value::Null);
+        };
+        if let Err(e) = app.session.execute("file.saveAs", json!({"path": path})) {
+            app.ui.status = e.to_string();
+            if app.ui.clip_dialog.is_none() {
+                app.ui.clip_dialog = Some(prompt);
+            }
+            return Ok(Value::Null);
+        }
+        if app.ui.clip_dialog.is_none() {
+            match app.session.execute("file.open", prompt.params.clone()) {
+                Ok(_) => edit_after_open(app, &prompt),
+                Err(e) => app.ui.status = e.to_string(),
+            }
+        }
+        Ok(Value::Null)
+    })
+}
+
+/// A Recent row on Home asked (`editAfterOpen`): the project it chose is open, so Home switches to
+/// Edit, as it does when no prompt was needed.
+fn edit_after_open(app: &mut FilmcraftApp, prompt: &ClipDialogDraft) {
+    if prompt.info["editAfterOpen"].as_bool() == Some(true) {
+        app.ui.mode = crate::state::Mode::Edit;
+    }
 }
 
 /// The parameters sent on OK (dialog-only fields dropped or converted).
