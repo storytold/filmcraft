@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(&*cache.highlights("hello hello"), &[false, false, false]);
         s.undo();
         assert_eq!(cache.content(&s).words[1].text, "hello");
-        s.execute("file.openDemoProject", json!({})).unwrap();
+        s.execute("file.openDemoProject", json!({"discard": true})).unwrap();
         assert!(cache.content(&s).words.is_empty());
         assert!(cache.highlights("hello").is_empty());
     }

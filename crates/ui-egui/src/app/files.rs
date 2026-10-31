@@ -54,7 +54,11 @@ impl FilmcraftApp {
             }
             "file.open" => self.pick(FileDialog::OpenProject, |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
-                app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
+                let params = json!({"path": path});
+                app.session.execute("file.open", params.clone()).or_else(|e| {
+                    // the unsaved changes cannot be kept: ask whether to discard them
+                    if crate::panels::clip_dialogs::offer_discard(app, "file.open", &params, &e) { Ok(Value::Null) } else { Err(e.to_string()) }
+                })
             }),
             "graphics.newFromFile" => {
                 let exts: Vec<&str> = filmcraft_media::STILL_EXTENSIONS.iter().chain(filmcraft_media::VIDEO_EXTENSIONS).copied().collect();

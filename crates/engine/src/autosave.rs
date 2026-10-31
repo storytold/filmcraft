@@ -524,6 +524,46 @@ pub fn unix_now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
+/// How many following seconds [`publish_version`] tries when a name is taken.
+const NAME_TRIES: i64 = 64;
+
+/// The unix time in the name of a file `list_auto_saves` returned: `<name>-<YYYY-MM-DD_HH-MM-SS>[-<unix>]`.
+/// `None` for the older form without one. Only for such files: the 19-character stamp tells the forms apart.
+fn version_unix(path: &Path, name: &str) -> Option<i64> {
+    let stem = path.file_stem()?.to_str()?;
+    let rest = stem.strip_prefix(&format!("{}-", names::file_stem(name)))?;
+    rest.get(20..)?.parse().ok()
+}
+
+/// Write `data` as a new version of `name` in `dir`, never replacing a file that is already there (#3621).
+/// A version's name has a one second resolution, so two writers of the same project name in the same
+/// second (the auto-save worker, and the snapshot taken before a project is replaced) would write the same
+/// file; the later one would silently replace the other's copy. The time used is after every version
+/// there (so it also sorts newest, and rotation drops the oldest), and the file is published exclusively:
+/// a name that turns out to be taken (a concurrent writer) moves on to the next second. Returns the path.
+pub(crate) fn publish_version(dir: &Path, name: &str, now: i64, offset_at: &dyn Fn(i64) -> i32, data: &[u8]) -> io::Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    // `list_auto_saves` decides what is a version of this project and orders them; the newest is its last
+    let newest = names::list_auto_saves(dir, name).last().and_then(|p| version_unix(p, name));
+    let no_time = || io::Error::new(io::ErrorKind::InvalidInput, "no newer auto-save time is available");
+    let start = match newest {
+        Some(n) => n.checked_add(1).ok_or_else(no_time)?.max(now),
+        None => now,
+    };
+    for i in 0..NAME_TRIES {
+        let unix = start.checked_add(i).ok_or_else(no_time)?;
+        let path = dir.join(names::auto_save_name(name, unix, offset_at(unix)));
+        // No-clobber publication from a uniquely named, bounded staging file: it fails when the name exists
+        // and, where that cannot be done safely (a filesystem without links), fails rather than replace.
+        match filmcraft_format::atomic_write_new(&path, data) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "every auto-save name for the next minute is taken"))
+}
+
 // ------------------------------------------------------------------ recovery candidates
 
 /// Snapshot meta written next to `snapshot.fcproj`.
@@ -1030,7 +1070,10 @@ impl Worker {
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
         let unix = unix_now();
-        let r = names::write_auto_save(&dir, &name, unix, (self.local_offset)(unix), &bytes, self.prefs.max_versions as usize);
+        let r = publish_version(&dir, &name, unix, &|u| (self.local_offset)(u), &bytes).and_then(|path| {
+            names::rotate(&dir, &name, self.prefs.max_versions as usize)?;
+            Ok(path)
+        });
         let write_ms = t1.elapsed().as_secs_f64() * 1000.0;
         match r {
             Ok(path) => {

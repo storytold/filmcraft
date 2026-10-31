@@ -1652,7 +1652,7 @@ fn new_project_without_a_sequence_clears_the_ime_edit() {
     d.ok("ui.type", json!({"text": "x"}));
     d.frames(2);
     assert!(d.ime().is_some(), "the text editor owns the IME before the replacement");
-    d.exec("file.newProject", json!({"name": "Fresh"}));
+    d.exec("file.newProject", json!({"name": "Fresh", "discard": true}));
     d.frames(3);
     assert!(d.harness.state().ui.gfx_edit.is_none(), "the replaced document has no edit target");
     assert!(d.ime().is_none(), "no sequence means no visible editor and no descriptor");

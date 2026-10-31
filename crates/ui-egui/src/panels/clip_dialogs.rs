@@ -62,6 +62,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.speedDuration" => (tl!("Clip Speed / Duration"), "speedDuration"),
         "file.closeProject" => (tl!("Save Project"), "closeProject"),
         "app.quit" => (tl!("Save Project"), "quit"),
+        "app.discardChanges" => (tl!("Unsaved Changes"), "discardChanges"),
         _ => return None,
     })
 }
@@ -85,8 +86,37 @@ fn hold_on() -> [(&'static str, &'static str); 5] {
     ]
 }
 
+/// `command` (New Project, Open, Demo Project) was refused because the unsaved changes cannot be kept: ask whether to
+/// discard them and carry on. True when the question was asked.
+pub fn offer_discard(app: &mut FilmcraftApp, command: &str, params: &Value, error: &filmcraft_engine::EngineError) -> bool {
+    if !matches!(error, filmcraft_engine::EngineError::UnsavedChanges(_)) {
+        return false;
+    }
+    let params = json!({"command": command, "params": params});
+    app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.discardChanges".into(), params, info: Value::Null, error: String::new() });
+    true
+}
+
 /// Menu / shortcut entry points without params open a dialog. Returns None for other ids.
 pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    // New Project and Open replace the project: when its unsaved changes cannot be kept, ask first
+    if matches!(id, "file.newProject" | "file.openDemoProject" | "file.open")
+        && params.get("discard").is_none()
+        && (id != "file.open" || params.get("path").is_some())
+    {
+        return Some(match app.session.execute(id, params.clone()) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if offer_discard(app, id, params, &e) {
+                    Ok(json!({"dialog": "discardChanges"}))
+                } else {
+                    let e = e.to_string();
+                    app.ui.status = e.clone();
+                    Err(e)
+                }
+            }
+        });
+    }
     let empty = params.as_object().is_none_or(|m| m.is_empty());
     if !empty {
         return None;
@@ -546,6 +576,23 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 }
             }
+            "app.discardChanges" => {
+                ui.label(tl!("Couldn't keep a copy of the unsaved project. Discard changes and continue?"));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let r = ui.button(tl!("Cancel"));
+                    push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
+                    if r.clicked() {
+                        action = Some("cancel");
+                    }
+                    let r = ui.button(tl!("Discard"));
+                    push(&mut elems, format!("{pre}.discard"), &r, "Discard");
+                    if r.clicked() {
+                        action = Some("discard");
+                    }
+                });
+                return;
+            }
             "file.closeProject" | "app.quit" => {
                 ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
                 ui.add_space(8.0);
@@ -610,6 +657,18 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 Err(e) => d.error = e.to_string(),
             }
+        }
+        Some("discard") => {
+            let mut params = d.params["params"].clone();
+            if let Some(m) = params.as_object_mut() {
+                m.insert("discard".into(), json!(true));
+            }
+            let command = d.params["command"].as_str().unwrap_or_default().to_string();
+            app.ui.clip_dialog = None;
+            if let Err(e) = app.session.execute(&command, params) {
+                app.ui.status = e.to_string();
+            }
+            return;
         }
         Some("dontSave") | Some("save") => {
             if action == Some("save") {

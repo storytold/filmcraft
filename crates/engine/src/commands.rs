@@ -1318,8 +1318,9 @@ fn marker_list_mut(s: &mut Session) -> Result<(ItemId, Tick)> {
 fn build() -> Vec<CommandSpec> {
     let mut v = vec![
         // ================= File =================
-        cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
+        cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str,"discard":bool?}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
+            let snapshot = snapshot_if_dirty(s, bool_p(p, "discard").unwrap_or(false))?;
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
             s.document_epoch = s.document_epoch.wrapping_add(1);
             s.history = Default::default();
@@ -1332,9 +1333,10 @@ fn build() -> Vec<CommandSpec> {
             s.saved_revision = s.revision;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             // the project as `project_inspect` names it (#1545: an agent needs no extra round trip)
-            Ok(json!({"name": name, "revision": s.revision}))
+            Ok(json!({"name": name, "revision": s.revision, "snapshot": snapshot}))
         }),
-        cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
+        cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, r#"{"discard":bool?}"#, always, |s, p| {
+            let snapshot = snapshot_if_dirty(s, bool_p(p, "discard").unwrap_or(false))?;
             let (p, seq) = crate::demo::demo_project(&s.media);
             s.project = std::sync::Arc::new(p);
             s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -1351,7 +1353,7 @@ fn build() -> Vec<CommandSpec> {
             s.saved_revision = s.revision;
             s.events.push(crate::Event::ProjectChanged { revision: s.revision });
             s.events.push(crate::Event::OpenSequence(seq));
-            Ok(json!({"sequence": seq.0}))
+            Ok(json!({"sequence": seq.0, "snapshot": snapshot}))
         }),
         cmd!(
             "file.newSequence",
@@ -1524,119 +1526,128 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
             }
         ),
-        cmd!("file.import", "Import…", ["File"], Some("Cmd+I"), r#"{"paths":[str],"bin":binId?,"imageSequence":bool?,"replace":bool?}"#, always, |s, p| {
-            let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
-            let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
-                Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
-                None => str_p(p, "path").map(|x| vec![x.to_string()]).unwrap_or_default(),
-            };
-            if paths.is_empty() {
-                return Err(bad("file.import", "need `paths`"));
-            }
-            if bool_p(p, "replace").unwrap_or(false) {
-                let name = s.project.name.clone();
-                s.execute("file.newProject", json!({ "name": name }))?;
-            }
-            let mut ids = Vec::new();
-            let mut errors = Vec::new();
-            let mut sequences = Vec::new();
-            let mut reports = Vec::new();
-            let mut image_sequences = Vec::new();
-            // Image Sequence: each path is the first frame of a numbered still sequence. With
-            // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
-            let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
-            let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
-            for path in paths {
-                if as_sequence || (detect && detect_image_sequence(s, &path)) {
-                    match import_image_sequence(s, &path, bin) {
-                        Ok((id, frames, missing)) => {
-                            ids.push(id.0);
-                            image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
-                        }
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    }
-                    continue;
+        cmd!(
+            "file.import",
+            "Import…",
+            ["File"],
+            Some("Cmd+I"),
+            r#"{"paths":[str],"bin":binId?,"imageSequence":bool?,"replace":bool?,"discard":bool?}"#,
+            always,
+            |s, p| {
+                let bin = u64_p(p, "bin").map(filmcraft_project::BinId);
+                let paths: Vec<String> = match p.get("paths").and_then(Value::as_array) {
+                    Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                    None => str_p(p, "path").map(|x| vec![x.to_string()]).unwrap_or_default(),
+                };
+                if paths.is_empty() {
+                    return Err(bad("file.import", "need `paths`"));
                 }
-                // Media files through the host's reader (no whole-file read) when it has one.
-                let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
-                let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
-                match read {
-                    Ok(_) if streamed => match import_streamed(s, &path, bin) {
-                        Ok(id) => ids.push(id.0),
-                        Err(e) => errors.push(format!("{path}: {e}")),
-                    },
-                    Ok(b) => {
-                        if let Some(fmt) = crate::captions::detect(&path, &b) {
-                            match crate::captions::import(s, &path, &b, fmt, None) {
-                                Ok(r) => reports.push(r),
-                                Err(e) => errors.push(format!("{path}: {e}")),
+                if bool_p(p, "replace").unwrap_or(false) {
+                    let name = s.project.name.clone();
+                    s.execute("file.newProject", json!({ "name": name, "discard": bool_p(p, "discard").unwrap_or(false) }))?;
+                }
+                let mut ids = Vec::new();
+                let mut errors = Vec::new();
+                let mut sequences = Vec::new();
+                let mut reports = Vec::new();
+                let mut image_sequences = Vec::new();
+                // Image Sequence: each path is the first frame of a numbered still sequence. With
+                // Settings ▸ Media ▸ Import image sequences on, a single numbered still is detected.
+                let as_sequence = p.get("imageSequence").and_then(Value::as_bool).unwrap_or(false);
+                let detect = !as_sequence && s.prefs.media.import_image_sequences && paths.len() == 1;
+                for path in paths {
+                    if as_sequence || (detect && detect_image_sequence(s, &path)) {
+                        match import_image_sequence(s, &path, bin) {
+                            Ok((id, frames, missing)) => {
+                                ids.push(id.0);
+                                image_sequences.push(json!({"item": id.0, "frames": frames, "missing": missing}));
                             }
-                        } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
-                            match crate::interchange::import(s, &path, &b, fmt) {
-                                Ok(r) => {
-                                    sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
-                                    reports.push(r);
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        }
+                        continue;
+                    }
+                    // Media files through the host's reader (no whole-file read) when it has one.
+                    let streamed = filmcraft_media::is_importable(std::path::Path::new(&path)) && s.services.reader(&path).is_some();
+                    let read = if streamed { Ok(Vec::new()) } else { s.services.read_file(&path) };
+                    match read {
+                        Ok(_) if streamed => match import_streamed(s, &path, bin) {
+                            Ok(id) => ids.push(id.0),
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        },
+                        Ok(b) => {
+                            if let Some(fmt) = crate::captions::detect(&path, &b) {
+                                match crate::captions::import(s, &path, &b, fmt, None) {
+                                    Ok(r) => reports.push(r),
+                                    Err(e) => errors.push(format!("{path}: {e}")),
                                 }
-                                Err(e) => errors.push(format!("{path}: {e}")),
-                            }
-                        } else {
-                            match import_bytes(s, &path, b.into(), bin) {
-                                Ok(id) => ids.push(id.0),
-                                Err(e) => errors.push(format!("{path}: {e}")),
+                            } else if let Some(fmt) = crate::interchange::detect(&path, &b) {
+                                match crate::interchange::import(s, &path, &b, fmt) {
+                                    Ok(r) => {
+                                        sequences.extend(r["sequences"].as_array().cloned().unwrap_or_default());
+                                        reports.push(r);
+                                    }
+                                    Err(e) => errors.push(format!("{path}: {e}")),
+                                }
+                            } else {
+                                match import_bytes(s, &path, b.into(), bin) {
+                                    Ok(id) => ids.push(id.0),
+                                    Err(e) => errors.push(format!("{path}: {e}")),
+                                }
                             }
                         }
-                    }
-                    Err(e) => errors.push(format!("{path}: {e}")),
-                }
-            }
-            if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
-                return Err(EngineError::Other(errors.join("; ")));
-            }
-            // Project Settings ▸ Ingest: copy / transcode / create proxies
-            // (image sequences are many files: ingest copies and transcodes single files only)
-            let item_ids: Vec<ItemId> = ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
-            // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
-            let ma = &s.prefs.media_analysis;
-            if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
-                let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
-                if !audio.is_empty() {
-                    // without speech-to-text the setting can't act: say so instead of importing
-                    // silently untranscribed (#89)
-                    let r = crate::transcript::can_transcribe(s)
-                        .map_err(EngineError::Other)
-                        .and_then(|()| s.execute("transcript.generate", json!({"items": audio})));
-                    if let Err(e) = r {
-                        errors.push(format!("transcription: {e}"));
+                        Err(e) => errors.push(format!("{path}: {e}")),
                     }
                 }
-            }
-            let ingest = match crate::proxies::ingest(s, &item_ids) {
-                Ok(v) => v,
-                Err(e) => {
-                    errors.push(format!("ingest: {e}"));
-                    Value::Null
+                if ids.is_empty() && sequences.is_empty() && reports.is_empty() && !errors.is_empty() {
+                    return Err(EngineError::Other(errors.join("; ")));
                 }
-            };
-            let mut out = if !ingest.is_null() {
-                json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest})
-            } else if reports.is_empty() {
-                json!({"items": ids, "errors": errors})
-            } else {
-                json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors})
-            };
-            if !image_sequences.is_empty() {
-                out["imageSequences"] = json!(image_sequences);
+                // Project Settings ▸ Ingest: copy / transcode / create proxies
+                // (image sequences are many files: ingest copies and transcodes single files only)
+                let item_ids: Vec<ItemId> =
+                    ids.iter().filter(|i| !image_sequences.iter().any(|q| q["item"].as_u64() == Some(**i))).map(|i| ItemId(*i)).collect();
+                // Settings ▸ Media Analysis & Transcription ▸ Automatically transcribe clips
+                let ma = &s.prefs.media_analysis;
+                if ma.auto_transcribe && ma.auto_transcribe_scope == "allImported" && !ids.is_empty() {
+                    let audio: Vec<u64> = ids.iter().copied().filter(|i| s.project.item(ItemId(*i)).is_some_and(|it| it.has_audio())).collect();
+                    if !audio.is_empty() {
+                        // without speech-to-text the setting can't act: say so instead of importing
+                        // silently untranscribed (#89)
+                        let r = crate::transcript::can_transcribe(s)
+                            .map_err(EngineError::Other)
+                            .and_then(|()| s.execute("transcript.generate", json!({"items": audio})));
+                        if let Err(e) = r {
+                            errors.push(format!("transcription: {e}"));
+                        }
+                    }
+                }
+                let ingest = match crate::proxies::ingest(s, &item_ids) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        errors.push(format!("ingest: {e}"));
+                        Value::Null
+                    }
+                };
+                let mut out = if !ingest.is_null() {
+                    json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors, "ingest": ingest})
+                } else if reports.is_empty() {
+                    json!({"items": ids, "errors": errors})
+                } else {
+                    json!({"items": ids, "sequences": sequences, "documents": reports, "errors": errors})
+                };
+                if !image_sequences.is_empty() {
+                    out["imageSequences"] = json!(image_sequences);
+                }
+                // Newly imported files may resolve paths the project already listed as offline
+                // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
+                // the cached slate of every item that came back so the monitors show the file again.
+                let was_missing = s.offline.missing.clone();
+                crate::relink::refresh(s);
+                for item in was_missing.iter().filter(|i| !s.offline.missing.contains(i)) {
+                    s.media.remove(*item);
+                }
+                Ok(out)
             }
-            // Newly imported files may resolve paths the project already listed as offline
-            // (issue #110): rebuild s.offline.missing so the "Media missing" badge clears, and drop
-            // the cached slate of every item that came back so the monitors show the file again.
-            let was_missing = s.offline.missing.clone();
-            crate::relink::refresh(s);
-            for item in was_missing.iter().filter(|i| !s.offline.missing.contains(i)) {
-                s.media.remove(*item);
-            }
-            Ok(out)
-        }),
+        ),
         cmd!(
             "file.exportInterchange",
             "Export Interchange",
@@ -1700,16 +1711,17 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.revert", "Revert", ["File"], None, "{}", has_saved_path, |s, _| {
             let path = s.path.clone().ok_or_else(|| bad("file.revert", "project was never saved"))?;
             let keep = s.state.active_sequence;
-            let r = open_project(s, &path)?;
+            // Revert discards the edits on purpose
+            let r = open_project(s, &path, true)?;
             if let Some(k) = keep.filter(|k| s.project.sequence(*k).is_some()) {
                 s.state.active_sequence = Some(k);
                 s.state.open_sequences = vec![k];
             }
             Ok(r)
         }),
-        cmd!("file.open", "Open Project…", ["File"], Some("Cmd+O"), r#"{"path":str}"#, always, |s, p| {
+        cmd!("file.open", "Open Project…", ["File"], Some("Cmd+O"), r#"{"path":str,"discard":bool?}"#, always, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("file.open", "need `path`"))?.to_string();
-            open_project(s, &path)
+            open_project(s, &path, bool_p(p, "discard").unwrap_or(false))
         }),
         cmd!("file.recover", "Recover Unsaved Changes…", ["File"], None, r#"{"id":str?}"#, has_recovery, |s, p| recover(s, str_p(p, "id"))),
         cmd!("file.discardRecovery", "Discard Unsaved Changes", [], None, r#"{"id":str?,"all":bool?}"#, has_recovery, |s, p| {
@@ -1765,9 +1777,21 @@ fn build() -> Vec<CommandSpec> {
                 "recoverable": per.candidates.len(),
             }))
         }),
-        query!("file.listAutoSaves", "Browse Auto-Saves", "{}", |s, _| {
-            let dir = auto_save_dir(s);
-            let files = filmcraft_format::autosave::list_auto_saves(&dir, &auto_save_name(s));
+        query!("file.listAutoSaves", "Browse Auto-Saves", r#"{"name":str?,"dir":str?}"#, |s, p| {
+            // `name` and `dir`: another project's versions (e.g. the one a New/Open just replaced, from its `snapshot` path)
+            let dir = match str_p(p, "dir") {
+                None => auto_save_dir(s),
+                // only an auto-save location: the current project's, or where a replaced project's snapshot went
+                Some(d) => {
+                    let d = std::path::PathBuf::from(d);
+                    if d != auto_save_dir(s) && !s.snapshot_dirs.contains(&d) {
+                        return Err(bad("file.listAutoSaves", "`dir` must be an auto-save folder: the project's own, or the one a `snapshot` went to"));
+                    }
+                    d
+                }
+            };
+            let name = str_p(p, "name").map_or_else(|| auto_save_name(s), str::to_string);
+            let files = filmcraft_format::autosave::list_auto_saves(&dir, &name);
             Ok(json!({"dir": dir, "files": files.iter().rev().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>()}))
         }),
         query!("prefs.get", "Get Preferences", r#"{"key":str?}"#, |s, p| match str_p(p, "key") {
@@ -4888,11 +4912,16 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     crate::project_tools::warn_untrusted_scratch(s);
 }
 
-fn open_project(s: &mut Session, path: &str) -> Result<Value> {
+fn open_project(s: &mut Session, path: &str, discard: bool) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
-    install_project(s, loaded.project, Some(path.to_string()), true);
+    // after the target is read, so rotating the versions cannot remove what is being opened (#3621)
+    let snapshot = snapshot_if_dirty(s, discard)?;
+    // the snapshot's rotation may have removed the very version being opened: then nothing backs it
+    // and it stays unsaved
+    let backed = snapshot.is_none() || s.services.file_size(path).is_ok();
+    install_project(s, loaded.project, Some(path.to_string()), backed);
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);
     }
@@ -4906,7 +4935,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
         s.toast(format!("Upgraded project from schema v{from} to v{}; the original is kept as a backup when you save", filmcraft_format::SCHEMA_VERSION));
     }
     let missing = crate::relink::on_open(s);
-    Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing}))
+    Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing, "snapshot": snapshot}))
 }
 
 /// Load a recovery candidate (newest when `id` is None) as the current, unsaved project.
@@ -4933,6 +4962,91 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     crate::autosave::discard_candidate(&c).map_err(|e| EngineError::Other(e.to_string()))?;
     s.toast(format!("Recovered unsaved changes to {} from {saved_at}", c.meta.project_name));
     Ok(json!({"id": c.id, "name": c.meta.project_name, "path": c.meta.project_path, "savedAt": saved_at, "revision": c.meta.revision}))
+}
+
+/// Before a dirty project is replaced, write it to the auto-save versions synchronously (also when it was
+/// never saved) so it can be brought back through `file.listAutoSaves`. Returns the snapshot's path, or
+/// `None` when the project has no unsaved changes. When the unsaved changes cannot be kept, the
+/// replacement is refused unless `discard` says to drop them; with `discard` a snapshot is still taken
+/// when it can be, and a failure to take it is ignored (#3621).
+fn snapshot_if_dirty(s: &mut Session, discard: bool) -> Result<Option<String>> {
+    // The browser has neither the native clock nor the native filesystem (its own recovery snapshots cover it).
+    if cfg!(target_arch = "wasm32") || !s.is_dirty() {
+        return Ok(None);
+    }
+    match snapshot_dirty(s) {
+        Ok(Some(path)) => {
+            // remembered, so `file.listAutoSaves` may list the replaced project's versions from there
+            if let Some(dir) = std::path::Path::new(&path).parent().map(std::path::Path::to_path_buf)
+                && !s.snapshot_dirs.contains(&dir)
+            {
+                s.snapshot_dirs.push(dir);
+                let extra = s.snapshot_dirs.len().saturating_sub(16);
+                s.snapshot_dirs.drain(..extra);
+            }
+            Ok(Some(path))
+        }
+        Ok(None) if discard => Ok(None),
+        Ok(None) => Err(EngineError::UnsavedChanges(
+            "the project has unsaved changes and nowhere to keep a copy of them: save it first, or pass `discard: true` to drop them".into(),
+        )),
+        Err(_) if discard => Ok(None),
+        Err(e) => Err(EngineError::UnsavedChanges(format!("{e}; pass `discard: true` to drop the unsaved changes anyway"))),
+    }
+}
+
+/// The project with its document-relative media and proxy paths made absolute: the snapshot lives in the
+/// auto-save folder, not beside the project file, so a relative path would resolve to the wrong place
+/// when it is opened (#3621). Paths that cannot be followed are left as they are.
+fn with_absolute_media(s: &Session) -> filmcraft_project::Project {
+    let mut project = (*s.project).clone();
+    for media in project.items.values_mut().filter_map(|i| i.as_media_mut()) {
+        for r in std::iter::once(&mut media.media).chain(media.proxy.iter_mut()) {
+            if let filmcraft_project::MediaRef::File { path } = r
+                && let Ok(followed) = s.media.follow(path)
+            {
+                // a path the user picked in this session is followed as given: relative to the working directory
+                *path = std::path::absolute(&followed).ok().and_then(|p| p.into_os_string().into_string().ok()).unwrap_or(followed);
+            }
+        }
+    }
+    project
+}
+
+fn snapshot_dirty(s: &Session) -> Result<Option<String>> {
+    // Without a project path or a data directory there is nowhere that is not the working directory.
+    if s.path.is_none() && s.persistence.is_none() {
+        return Ok(None);
+    }
+    // an auto-save the worker has under way finishes first, so it cannot land after (and over) this one
+    if let Some(per) = &s.persistence {
+        per.flush();
+    }
+    let bytes = filmcraft_format::encode(&with_absolute_media(s), false);
+    let dir = auto_save_dir(s);
+    let name = auto_save_name(s);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let offset_at = |unix: i64| s.persistence.as_ref().map_or(0, |p| (p.local_offset)(unix));
+    let max = usize::try_from(s.prefs.auto_save.max_versions).unwrap_or(usize::MAX).max(1);
+    // The auto-save worker can write and rotate this folder while the snapshot is taken (`flush` is no write
+    // barrier), and with a short version limit its rotation could remove the snapshot just written. So the
+    // snapshot is checked after rotating and taken again when it is gone, a few times, before giving up.
+    for _ in 0..4 {
+        // never replaces a version there, and sorts after every one (rotation drops the oldest)
+        let path = crate::autosave::publish_version(&dir, &name, now, &offset_at, &bytes)
+            .map_err(|e| EngineError::Other(format!("could not snapshot the unsaved project before replacing it: {e}")))?;
+        // a version the auto-save list cannot find would not protect anything
+        if !filmcraft_format::autosave::list_auto_saves(&dir, &name).contains(&path) {
+            let _ = std::fs::remove_file(&path);
+            return Err(EngineError::Other("could not snapshot the unsaved project: its auto-save time is out of range".into()));
+        }
+        // Pruning old versions is best effort: a lost race with the worker's rotation must not stop the replacement
+        let _ = filmcraft_format::autosave::rotate(&dir, &name, max);
+        if path.exists() {
+            return Ok(Some(path.to_string_lossy().into_owned()));
+        }
+    }
+    Err(EngineError::Other("could not snapshot the unsaved project: its copy kept being removed by the auto-save rotation".into()))
 }
 
 /// Where auto-saves of the current project go.

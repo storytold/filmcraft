@@ -421,3 +421,49 @@ fn project_captured_folder_outside_the_project_is_not_used() {
     assert!(s.execute("file.projectSettings.scratchDisks", json!({"captured": "file://192.0.2.1/s/cap"})).is_err());
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Codex on #3621: writers of the same project name in the same second (the snapshot before a replacement
+/// and the auto-save worker run on different threads) each keep their own file and contents.
+#[test]
+fn concurrent_writers_of_one_name_each_keep_their_version() {
+    let dir = temp_dir("publish-concurrent");
+    let now = 1_790_000_000;
+    let threads: Vec<_> = (0..8)
+        .map(|n| {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                let data = vec![n as u8; 64 * 1024];
+                let path = autosave::publish_version(&dir, "Same", now, &|_| 0, &data).unwrap();
+                (path, data)
+            })
+        })
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    for t in threads {
+        let (path, data) = t.join().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), data, "{path:?} holds its writer's bytes");
+        assert!(seen.insert(path), "every writer got its own file");
+    }
+    assert_eq!(filmcraft_format::autosave::list_auto_saves(&dir, "Same").len(), 8);
+    let stray: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| !e.file_name().to_string_lossy().ends_with(".fcproj")).collect();
+    assert!(stray.is_empty(), "no staging files left: {stray:?}");
+}
+
+#[test]
+fn a_long_project_name_still_publishes() {
+    let dir = temp_dir("publish-long");
+    let name = "é".repeat(100);
+    autosave::publish_version(&dir, &name, 1_790_000_000, &|_| 0, b"x").expect("a long name fits the staging file too");
+}
+
+/// #3621: a file `list_auto_saves` does not count as a version (a sign in its time) must not move the
+/// next version's time, and a version without a unix time in its name is not read as one from its seconds.
+#[test]
+fn publish_version_orders_by_the_same_rule_as_the_version_list() {
+    let dir = temp_dir("publish-parse");
+    let now = 1_790_000_000;
+    std::fs::write(dir.join("P-2026-10-30_10-00-00-+9999999999.fcproj"), b"not a version").unwrap();
+    std::fs::write(dir.join("P-2026-10-30_10-00-59.fcproj"), b"old form").unwrap();
+    let path = autosave::publish_version(&dir, "P", now, &|_| 0, b"x").unwrap();
+    assert!(path.to_string_lossy().ends_with(&format!("-{now}.fcproj")), "{path:?}");
+}

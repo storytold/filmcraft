@@ -92,6 +92,10 @@ pub enum EngineError {
     Edit(#[from] filmcraft_edit::EditError),
     #[error("media: {0}")]
     Media(#[from] filmcraft_media::MediaError),
+    /// A project with unsaved changes would be replaced and they cannot be kept (a copy could not be
+    /// written, or there is nowhere to write one): the caller may ask for `discard: true` (#3621).
+    #[error("{0}")]
+    UnsavedChanges(String),
     #[error("{0}")]
     Other(String),
 }
@@ -453,6 +457,9 @@ pub struct Session {
     pub prefs_path: Option<std::path::PathBuf>,
     /// Auto-save ring + crash-recovery journal (native frontends start it; None = off).
     pub persistence: Option<autosave::Persistence>,
+    /// Folders the snapshots taken before a project was replaced went to, newest last: the only places
+    /// besides the current project's own where `file.listAutoSaves` lists another project's versions.
+    pub(crate) snapshot_dirs: Vec<std::path::PathBuf>,
     /// Schema version of the file at `path` as found on disk (older = upgraded on load; the first
     /// save over it keeps a backup of the original).
     pub loaded_schema: u32,
@@ -572,6 +579,7 @@ impl Session {
             prefs: Default::default(),
             prefs_path: None,
             persistence: None,
+            snapshot_dirs: Vec::new(),
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),
             mixrec: Default::default(),

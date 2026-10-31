@@ -466,3 +466,33 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
     }
 }
+
+/// New Project on a project whose unsaved changes cannot be kept (no auto-save location here) asks
+/// before discarding them, instead of refusing for good (#3621 review).
+#[test]
+fn new_project_asks_before_discarding_changes_it_cannot_keep() {
+    let mut d = Driver::new();
+    d.edit();
+    let name = d.app().session.project.name.clone();
+    assert_eq!(d.menu("file.newProject")["dialog"], "discardChanges");
+    assert!(d.has("discardChanges.discard") && d.has("discardChanges.cancel"));
+    assert_eq!(d.app().session.project.name, name, "nothing is discarded before the answer");
+    d.click("discardChanges.cancel");
+    assert!(!d.has("discardChanges.discard"));
+    assert!(d.app().session.is_dirty() && d.app().session.project.name == name, "Cancel keeps the project");
+    d.menu("file.newProject");
+    d.click("discardChanges.discard");
+    assert!(!d.app().session.is_dirty());
+    assert_ne!(d.app().session.project.name, name, "Discard replaces the project");
+}
+
+/// The Demo Project replaces the project like New does, so it asks the same question (#3621 review).
+#[test]
+fn the_demo_project_asks_before_discarding_changes_it_cannot_keep() {
+    let mut d = Driver::new();
+    d.edit();
+    assert_eq!(d.menu("file.openDemoProject")["dialog"], "discardChanges");
+    assert!(d.app().session.is_dirty(), "nothing is discarded before the answer");
+    d.click("discardChanges.discard");
+    assert!(!d.app().session.is_dirty());
+}
