@@ -141,6 +141,30 @@ impl FilmcraftApp {
             } else {
                 None
             };
+            // Clear and Ripple Delete in Effect Controls never reach the clip (#1354). They remove the
+            // selected effect, or the selected mask when no effect is selected; Motion and the other
+            // fixed effects cannot be removed. With nothing removable selected (or after the last
+            // removal cleared the selection) the key is consumed and does nothing, so a repeated
+            // Backspace cannot fall through to `edit.clear` and delete the timeline clip.
+            if self.ui.focused == PanelKind::EffectControls && matches!(id.as_str(), "edit.clear" | "edit.rippleDelete") {
+                let sel = self.session.state.selected_effect.clone();
+                let remove = if let Some(e) = sel {
+                    let target = self.session.active_sequence().and_then(|s| {
+                        let (_, it) = s.find_item(e.clip)?;
+                        let idx = e.index(&it.effects)?;
+                        Some((e.clip, idx, it.effects.get(idx)?.def().is_some_and(|d| d.intrinsic)))
+                    });
+                    target.filter(|t| !t.2).map(|(clip, idx, _)| ("effects.remove", json!({"clip": clip.0, "index": idx})))
+                } else {
+                    self.session.state.selected_mask.map(|m| ("masks.remove", json!({"clip": m.clip.0, "effect": m.effect, "mask": m.mask})))
+                };
+                if let Some((cmd, params)) = remove
+                    && let Err(e) = menus::invoke(self, ctx, cmd, params)
+                {
+                    self.ui.status = e;
+                }
+                continue;
+            }
             // Mark In/Out in the Source monitor when it has focus.
             let params = if let Some(p) = clear {
                 p
