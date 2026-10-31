@@ -51,6 +51,7 @@ pub mod sequence_tools;
 pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
+pub mod silence;
 pub mod source_monitor;
 pub mod sync;
 pub mod transcript;
