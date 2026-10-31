@@ -438,3 +438,33 @@ fn hevc_slice_bit_fields_match_the_header() {
     assert_eq!(1u32 << hevc_slice_bits::COLLOCATED_FROM_L0, 0x1000, "LongSliceFlags.collocated_from_l0_flag");
     assert_eq!(1u32 << hevc_slice_bits::SLICE_LOOP_FILTER_ACROSS_SLICES_ENABLED, 0x2000, "LongSliceFlags.slice_loop_filter_across_slices_enabled_flag");
 }
+
+/// The DRM PRIME 2 surface export structures and constants (`va_drmcommon.h`, `va.h`), printed by
+/// the same C program as the layouts above.
+#[test]
+fn drm_prime_export_matches_the_header() {
+    assert_eq!(VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 as i64, 0x40000000, "VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2");
+    assert_eq!(VA_EXPORT_SURFACE_READ_ONLY as i64, 0x0001, "VA_EXPORT_SURFACE_READ_ONLY");
+    assert_eq!(VA_EXPORT_SURFACE_READ_WRITE as i64, 0x0003, "VA_EXPORT_SURFACE_READ_WRITE");
+    assert_eq!(VA_EXPORT_SURFACE_SEPARATE_LAYERS as i64, 0x0004, "VA_EXPORT_SURFACE_SEPARATE_LAYERS");
+    assert_eq!(VA_FOURCC_NV12, 0x3231564E, "VA_FOURCC_NV12");
+    assert_eq!(VA_FOURCC_P010, 0x30313050, "VA_FOURCC_P010");
+    assert_eq!((size_of::<VADRMPRIMEObject>(), align_of::<VADRMPRIMEObject>()), (16, 8), "VADRMPRIMEObject");
+    assert_eq!(offset_of!(VADRMPRIMEObject, fd), 0, "object.fd");
+    assert_eq!(offset_of!(VADRMPRIMEObject, size), 4, "object.size");
+    assert_eq!(offset_of!(VADRMPRIMEObject, drm_format_modifier), 8, "object.drm_format_modifier");
+    assert_eq!((size_of::<VADRMPRIMESurfaceLayer>(), align_of::<VADRMPRIMESurfaceLayer>()), (56, 4), "VADRMPRIMESurfaceLayer");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceLayer, drm_format), 0, "layer.drm_format");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceLayer, num_planes), 4, "layer.num_planes");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceLayer, object_index), 8, "layer.object_index");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceLayer, offset), 24, "layer.offset");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceLayer, pitch), 40, "layer.pitch");
+    assert_eq!((size_of::<VADRMPRIMESurfaceDescriptor>(), align_of::<VADRMPRIMESurfaceDescriptor>()), (312, 8), "VADRMPRIMESurfaceDescriptor");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceDescriptor, fourcc), 0, "descriptor.fourcc");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceDescriptor, width), 4, "descriptor.width");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceDescriptor, height), 8, "descriptor.height");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceDescriptor, num_objects), 12, "descriptor.num_objects");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceDescriptor, objects), 16, "descriptor.objects");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceDescriptor, num_layers), 80, "descriptor.num_layers");
+    assert_eq!(offset_of!(VADRMPRIMESurfaceDescriptor, layers), 84, "descriptor.layers");
+}

@@ -261,7 +261,7 @@ impl Readback {
             // SAFETY: see the `Map` call: `luma_len + chroma_len` bytes are mapped at `pData`.
             let all = unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, luma_len + chroma_len) };
             let (luma, chroma) = all.split_at(luma_len);
-            f(&Biplanar { luma, chroma, stride, rows })
+            f(&Biplanar { luma, chroma, stride, chroma_stride: stride, rows })
         })();
         // SAFETY: the subresource was mapped above and nothing borrowed from it outlives `result`.
         unsafe { gpu.context.Unmap(staging, 0) };
