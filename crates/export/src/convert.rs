@@ -131,9 +131,7 @@ pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mu
     // Per row: gather the luma sums, then the vectorisable part (codes, chroma differences) over
     // whole rows, then add the differences pairwise in the order the per-pixel loop added them.
     let rows_init = || (vec![0f32; w], vec![0f32; w], vec![0f32; w], vec![0f32; cw], vec![0f32; cw]);
-    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each_init(
-        rows_init,
-        |(ty, tb, tr, us, vs), (cy, (yr, (ur, vr)))| {
+    let step = |(ty, tb, tr, us, vs): &mut (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>), (cy, (yr, (ur, vr))): (usize, (&mut [u8], (&mut [u8], &mut [u8])))| {
             let rows = yr.len() / w;
             us.fill(0.0);
             vs.fill(0.0);
@@ -175,8 +173,15 @@ pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mu
                 *uo = code8(128.0 + 224.0 * us[cx] / cnt);
                 *vo = code8(128.0 + 224.0 * vs[cx] / cnt);
             }
-        },
-    );
+    };
+    if crate::yuv_rows_are_serial() {
+        let mut state = rows_init();
+        for item in y.chunks_mut(w * 2).zip(u.chunks_mut(cw).zip(v.chunks_mut(cw))).enumerate() {
+            step(&mut state, item);
+        }
+    } else {
+        y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each_init(rows_init, step);
+    }
 }
 
 /// Limited-range 8-bit 4:2:0 from encoded R'G'B' floats with matrix (Kr, Kb).
@@ -188,7 +193,7 @@ pub fn rgbf_to_yuv420_8(rgb: &[f32], w: usize, h: usize, m: Matrix, y: &mut Vec<
     y.resize(w * h, 0);
     u.resize(cw * ch, 0);
     v.resize(cw * ch, 0);
-    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+    crate::for_yuv_rows(y, u, v, w, cw, &|cy, yr, ur, vr| {
         let rows = yr.len() / w;
         let mut us = vec![0f32; cw];
         let mut vs = vec![0f32; cw];
