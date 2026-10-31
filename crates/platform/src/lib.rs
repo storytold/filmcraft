@@ -38,6 +38,8 @@ pub mod cursor;
 #[cfg(target_os = "macos")]
 pub mod hardware_encode;
 pub mod hybrid;
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+mod intel_vpl;
 #[cfg(target_os = "windows")]
 pub mod media_foundation;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]

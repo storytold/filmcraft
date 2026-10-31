@@ -338,6 +338,21 @@ decoded frame H.264 1080p 104 → 2.3 ms, 2160p 417 → 11.4 ms; HEVC 1080p 46 �
 203 → 10.1 ms, Main 10 2160p 212 → 18.4 ms.
 Details in [docs/performance.md](../../docs/performance.md).
 
+## Intel VPL declaration work
+
+The private `intel_vpl` module currently declares the minimal Windows x64 MSVC
+identity/session API from Intel VPL 2.15.0 public headers, pinned to
+`c45b5d786bf7cdabbe49ff1bab78693ad78feb78`. It does not load a DLL, select a backend,
+register an encoder or establish codec support. The Intel MIT notice is retained in
+the declarations and in `tests/support/intel_vpl/LICENSE.intel-libvpl`.
+
+The first-party `tests/support/intel_vpl/vpl215_abi_oracle.c` checks C signatures
+without linking VPL and reports layouts in a separate CRT-only executable. Its
+`headers.json` pins the public declarations needed for a local MSVC comparison;
+downloaded headers and compiler outputs belong in ignored build storage. Neither
+the oracle nor an Intel SDK is a product build dependency. Actual runtime identity,
+per-adapter session ownership and codec/output acceptance remain separate work.
+
 ## Not yet
 
 Zero-copy upload of decoded pictures into wgpu textures (`CVPixelBuffer`s on macOS, Direct3D 11
