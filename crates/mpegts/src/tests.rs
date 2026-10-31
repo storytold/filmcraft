@@ -778,6 +778,7 @@ fn pmt_not_yet_applicable_is_ignored() {
     assert!(f.warnings.is_empty(), "{:?}", f.warnings);
 }
 
+#[test]
 fn hevc_several_access_units_in_one_pes_are_separate_units() {
     let aud = nal(&[0x46, 0x01], &[0x50]);
     let idr = [aud.clone(), slice(&[0x26, 0x01], 0x80, 300)].concat();
