@@ -116,7 +116,7 @@ Every commit must pass all of these:
 
 | Gate | Command |
 |---|---|
-| Format | `cargo fmt --check` (`rustfmt.toml`: `max_width = 160`) |
+| Format | `cargo xtask fmt` (`rustfmt.toml`: `max_width = 160`; checks every workspace package separately on Windows) |
 | Lints | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Tests | `cargo nextest run --workspace` ([cargo-nextest](https://nexte.st), or `cargo test --workspace`), then `cargo test --workspace --doc` |
 | Layering | `cargo xtask layers` |
