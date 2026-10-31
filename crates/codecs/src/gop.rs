@@ -512,6 +512,18 @@ const MIN_FRAMES: usize = 64;
 /// reserve above into an unbounded number of full-resolution copies.
 const FRAME_CACHE_CEILING: usize = 384 << 20;
 
+/// A cache of inter-coded frames always has room for this many, whatever their size, up to
+/// [`LARGE_FRAME_CEILING`]: the pictures a hardware decoder has in flight plus the frames playback
+/// prefetches. With fewer, frames decoded ahead of the playhead are evicted before they are
+/// shown and each request restarts the decoder at the keyframe (an 8K frame is 50 MB, and
+/// [`FRAME_CACHE_CEILING`] alone holds 7 of them). Intra-only sources don't need it: an evicted
+/// frame costs one decode of its own sample.
+const PLAYBACK_FRAMES: usize = 16;
+
+/// The most decoded pixels a source cache retains for [`PLAYBACK_FRAMES`] of large frames: 16
+/// frames of 10-bit 8K 4:2:0 (100 MB each as 16-bit samples).
+const LARGE_FRAME_CEILING: usize = 2 << 30;
+
 /// A running decoder up to this many samples before the wanted sample's sync sample keeps going
 /// rather than restarting at the sync sample.
 const CONTINUE_THROUGH: usize = 48;
@@ -628,10 +640,13 @@ impl GopCache {
         self.store_finished(st, pts, self.finish(f), draft);
     }
 
-    /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
-    fn cache_budget(&self, frame_bytes: usize) -> usize {
+    /// The small-frame reserve may use the configured cache budget, but may never enlarge it;
+    /// large inter-coded frames keep room for [`PLAYBACK_FRAMES`] of them, up to
+    /// [`LARGE_FRAME_CEILING`].
+    fn cache_budget(&self, frame_bytes: usize, intra: bool) -> usize {
         let reserve = MIN_FRAMES.saturating_mul(frame_bytes).min(FRAME_CACHE_CEILING);
-        self.budget.min(FRAME_CACHE_CEILING).max(reserve)
+        let playback = if intra { 0 } else { PLAYBACK_FRAMES.saturating_mul(frame_bytes).min(LARGE_FRAME_CEILING) };
+        self.budget.min(FRAME_CACHE_CEILING).max(reserve).max(playback)
     }
 
     /// Cache a frame [`Self::finish`] has been applied to.
@@ -643,7 +658,7 @@ impl GopCache {
         } else {
             st.drafts.remove(&pts);
         }
-        let budget = self.cache_budget(f.byte_size());
+        let budget = self.cache_budget(f.byte_size(), st.intra);
         let before = st.bytes;
         st.bytes += f.byte_size();
         if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
