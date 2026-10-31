@@ -223,20 +223,10 @@ impl Reverb {
     }
 }
 
-impl AudioEffect for Reverb {
-    param_plumbing!("reverb");
-    fn reset(&mut self) {
-        self.lines.iter_mut().for_each(|l| l.iter_mut().for_each(|v| *v = 0.0));
-        self.pre.iter_mut().for_each(|v| *v = 0.0);
-        self.lp = [0.0; FDN];
-        self.w = 0;
-        self.pre_w = 0;
-        self.counter = 0;
-        self.apply_params(true);
-    }
-    fn process(&mut self, channels: &mut [&mut [f32]]) {
+impl Reverb {
+    fn process_block<const SETTLED: bool, const CHANNELS: usize>(&mut self, channels: &mut [&mut [f32]]) {
         let n = block_len(channels);
-        let nch = channels.len();
+        let nch = if CHANNELS == 0 { channels.len() } else { CHANNELS };
         if nch == 0 {
             return;
         }
@@ -245,9 +235,9 @@ impl AudioEffect for Reverb {
         let hh = 2.0 / FDN as f32;
         // During a settled block these positions cannot change. Preserve the original path
         // while smoothing, and preserve the 32-sample gain update grid in both cases.
-        let fixed = self.len.iter().all(|l| !l.is_smoothing());
+        let fixed = SETTLED || self.len.iter().all(|l| !l.is_smoothing());
         let delays = self.len.map(|l| prepare_delay(line_len, l.value()));
-        let predelay = (!self.pre_len.is_smoothing()).then(|| prepare_delay(pre_len, self.pre_len.value()));
+        let predelay = (SETTLED || !self.pre_len.is_smoothing()).then(|| prepare_delay(pre_len, self.pre_len.value()));
         for i in 0..n {
             if self.counter == 0 {
                 self.update_gains();
@@ -258,13 +248,15 @@ impl AudioEffect for Reverb {
                     l.tick();
                 }
             }
-            self.rt60.tick();
-            let damp = self.damp.tick();
-            let mix = self.mix.tick();
-            let pd = self.pre_len.tick();
+            if !SETTLED {
+                self.rt60.tick();
+            }
+            let damp = if SETTLED { self.damp.value() } else { self.damp.tick() };
+            let mix = if SETTLED { self.mix.value() } else { self.mix.tick() };
+            let pd = if SETTLED { self.pre_len.value() } else { self.pre_len.tick() };
 
             let mut mono = 0.0;
-            for ch in channels.iter() {
+            for ch in channels.iter().take(nch) {
                 mono += ch[i];
             }
             mono /= nch as f32;
@@ -292,7 +284,7 @@ impl AudioEffect for Reverb {
             }
             self.w = if self.w + 1 == line_len { 0 } else { self.w + 1 };
             let (wl, wr) = (wl * 0.35, wr * 0.35);
-            for (c, ch) in channels.iter_mut().enumerate() {
+            for (c, ch) in channels.iter_mut().take(nch).enumerate() {
                 let x = ch[i];
                 let wet = if nch == 1 {
                     0.5 * (wl + wr)
@@ -303,6 +295,33 @@ impl AudioEffect for Reverb {
                 };
                 ch[i] = x + mix * (wet - x);
             }
+        }
+    }
+}
+
+impl AudioEffect for Reverb {
+    param_plumbing!("reverb");
+    fn reset(&mut self) {
+        self.lines.iter_mut().for_each(|l| l.iter_mut().for_each(|v| *v = 0.0));
+        self.pre.iter_mut().for_each(|v| *v = 0.0);
+        self.lp = [0.0; FDN];
+        self.w = 0;
+        self.pre_w = 0;
+        self.counter = 0;
+        self.apply_params(true);
+    }
+    fn process(&mut self, channels: &mut [&mut [f32]]) {
+        // Specialize the common settled stereo loop without changing the sample math,
+        // gain-update grid, or the general path used during parameter ramps.
+        let settled = self.len.iter().all(|l| !l.is_smoothing())
+            && !self.rt60.is_smoothing()
+            && !self.damp.is_smoothing()
+            && !self.mix.is_smoothing()
+            && !self.pre_len.is_smoothing();
+        if settled && channels.len() == 2 {
+            self.process_block::<true, 2>(channels);
+        } else {
+            self.process_block::<false, 0>(channels);
         }
     }
 }
@@ -507,6 +526,8 @@ mod throughput_tests {
                     fx.set_param("size", (block % 101) as f32);
                     fx.set_param("decay", 0.1 + (block % 20) as f32);
                     fx.set_param("predelay", (block % 200) as f32);
+                    fx.set_param("damping", (block % 100) as f32);
+                    fx.set_param("mix", ((block * 7) % 100) as f32);
                 }
             }
             if block == 600 {
