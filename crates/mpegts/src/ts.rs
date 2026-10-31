@@ -373,6 +373,75 @@ fn add_pmt_streams(sec: &[u8], packet_size: usize, later: bool, es: &mut HashMap
     changed || (later && es.keys().any(|p| !listed.contains(p)))
 }
 
+/// The PSI state gathered while scanning: the selected program and its PMT, the PMT's PCR_PID
+/// and whether a later PMT version added streams mid-stream.
+#[derive(Default)]
+struct PmtState {
+    pmt_pid: Option<u16>,
+    program: Option<u16>,
+    pmt: Psi,
+    pmt_version: Option<u8>,
+    pcr_pid: Option<u16>,
+    pmt_changed: bool,
+}
+
+/// Feed one PAT section stream: the first program's PMT PID is chosen; later PAT repeats
+/// cannot change it.
+fn feed_pat(pk: &Packet<'_>, pat: &mut Psi, pmt: &mut PmtState, crc_errors: &mut u64) {
+    for sec in pat.feed(pk.pusi, pk.payload) {
+        if sec.len() < 12 || sec[0] != 0 {
+            continue;
+        }
+        if sec[5] & 1 == 0 {
+            // not yet applicable (current_next_indicator 0)
+            continue;
+        }
+        if crc32_mpeg(&sec) != 0 {
+            *crc_errors += 1;
+            continue;
+        }
+        let body = &sec[8..sec.len() - 4];
+        for e in body.as_chunks::<4>().0 {
+            let num = u16::from_be_bytes([e[0], e[1]]);
+            let pid = (((e[2] & 0x1F) as u16) << 8) | e[3] as u16;
+            if num != 0 && pmt.pmt_pid.is_none() {
+                pmt.pmt_pid = Some(pid);
+                pmt.program = Some(num);
+            }
+        }
+    }
+}
+
+/// Feed one PMT section stream: the PMT's PCR_PID becomes the file clock and new PIDs are
+/// registered; a later PMT version may only add PIDs, existing streams are never re-mapped or
+/// dropped.
+fn feed_pmt<'a>(pk: &Packet<'a>, pmt: &mut PmtState, packet_size: usize, es: &mut HashMap<u16, EsState>, order: &mut Vec<u16>, crc_errors: &mut u64) {
+    for sec in pmt.pmt.feed(pk.pusi, pk.payload) {
+        if sec.len() < 16 || sec[0] != 2 {
+            continue;
+        }
+        // current_next_indicator 0: not yet applicable; a PMT is one section (0 of 0)
+        if sec[5] & 1 == 0 || sec[6] != 0 || sec[7] != 0 {
+            continue;
+        }
+        let version = (sec[5] >> 1) & 0x1F;
+        if pmt.pmt_version == Some(version) {
+            // a repeat of the PMT already used: no need to check it again
+            continue;
+        }
+        if crc32_mpeg(&sec) != 0 {
+            *crc_errors += 1;
+            continue;
+        }
+        let later = pmt.pmt_version.is_some();
+        pmt.pmt_version = Some(version);
+        pmt.pcr_pid = Some((((sec[8] & 0x1F) as u16) << 8) | sec[9] as u16);
+        if add_pmt_streams(&sec, packet_size, later, es, order) {
+            pmt.pmt_changed = true;
+        }
+    }
+}
+
 pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_offset: usize) -> Result<File> {
     let len = src.len();
     let mut head = vec![0u8; packet_size * 8];
@@ -380,12 +449,9 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
     let mut off = first_sync(&head[..n], packet_size, sync_offset).ok_or(Error::NotMpeg)? as u64;
     let mut warnings: Vec<String> = Vec::new();
     let mut pat = Psi::default();
-    let mut pmt_pid: Option<u16> = None;
-    let mut program = None;
-    let mut pmt = Psi::default();
+    let mut pmt = PmtState::default();
     let mut es: HashMap<u16, EsState> = HashMap::new();
     let mut order: Vec<u16> = Vec::new();
-    let mut pmt_version: Option<u8> = None;
     // one timestamp unwrapper for the program: its streams share one clock, so a stream whose
     // first timestamp lies just after the 33-bit wrap stays in step with one just before it
     let mut unwrap = Unwrap::default();
@@ -393,10 +459,8 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
     // file's `pcr_range`, the first PCR PID seen stands in until (or unless) a PMT names one
     let mut clocks: HashMap<u16, ClockRange> = HashMap::new();
     let mut first_pcr_pid: Option<u16> = None;
-    let mut pcr_pid: Option<u16> = None;
     let (mut lost_sync, mut cc_errors, mut crc_errors) = (0u64, 0u64, 0u64);
     let (mut tei_dropped, mut scrambled, mut duplicates) = (0u64, 0u64, 0u64);
-    let mut pmt_changed = false;
     const BLOCK: usize = 4096;
     let mut block = vec![0u8; BLOCK * packet_size];
     let mut bad_adaptation = 0u64;
@@ -454,60 +518,11 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                 continue;
             }
             if pk.pid == 0 {
-                if pmt_pid.is_some() {
-                    // the first program is chosen; later PAT repeats cannot change it
-                    continue;
-                }
-                for sec in pat.feed(pk.pusi, pk.payload) {
-                    if sec.len() < 12 || sec[0] != 0 {
-                        continue;
-                    }
-                    if sec[5] & 1 == 0 {
-                        // not yet applicable (current_next_indicator 0)
-                        continue;
-                    }
-                    if crc32_mpeg(&sec) != 0 {
-                        crc_errors += 1;
-                        continue;
-                    }
-                    let body = &sec[8..sec.len() - 4];
-                    for e in body.as_chunks::<4>().0 {
-                        let num = u16::from_be_bytes([e[0], e[1]]);
-                        let pid = (((e[2] & 0x1F) as u16) << 8) | e[3] as u16;
-                        if num != 0 && pmt_pid.is_none() {
-                            pmt_pid = Some(pid);
-                            program = Some(num);
-                        }
-                    }
-                }
+                feed_pat(&pk, &mut pat, &mut pmt, &mut crc_errors);
                 continue;
             }
-            if Some(pk.pid) == pmt_pid {
-                for sec in pmt.feed(pk.pusi, pk.payload) {
-                    if sec.len() < 16 || sec[0] != 2 {
-                        continue;
-                    }
-                    // current_next_indicator 0: not yet applicable; a PMT is one section (0 of 0)
-                    if sec[5] & 1 == 0 || sec[6] != 0 || sec[7] != 0 {
-                        continue;
-                    }
-                    let version = (sec[5] >> 1) & 0x1F;
-                    if pmt_version == Some(version) {
-                        // a repeat of the PMT already used: no need to check it again
-                        continue;
-                    }
-                    if crc32_mpeg(&sec) != 0 {
-                        crc_errors += 1;
-                        continue;
-                    }
-                    // a later PMT version may only add PIDs; existing streams are never re-mapped or dropped
-                    let later = pmt_version.is_some();
-                    pmt_version = Some(version);
-                    pcr_pid = Some((((sec[8] & 0x1F) as u16) << 8) | sec[9] as u16);
-                    if add_pmt_streams(&sec, packet_size, later, &mut es, &mut order) {
-                        pmt_changed = true;
-                    }
-                }
+            if Some(pk.pid) == pmt.pmt_pid {
+                feed_pmt(&pk, &mut pmt, packet_size, &mut es, &mut order, &mut crc_errors);
                 continue;
             }
             let Some(e) = es.get_mut(&pk.pid) else { continue };
@@ -555,13 +570,13 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
     if duplicates > 0 {
         warnings.push(format!("{duplicates} duplicate packet(s) dropped"));
     }
-    if pmt_changed {
+    if pmt.pmt_changed {
         warnings.push("program map table changed mid-stream; new streams were added, changes to or removal of known ones ignored".into());
     }
     if crc_errors > 0 {
         warnings.push(format!("{crc_errors} PSI section(s) with bad CRC"));
     }
-    if pmt_pid.is_none() {
+    if pmt.pmt_pid.is_none() {
         warnings.push("no program association table".into());
     }
     let mut streams = Vec::new();
@@ -575,8 +590,8 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         }
         streams.push(e.stream);
     }
-    let pcr_range = pcr_pid.or(first_pcr_pid).and_then(|p| clocks.get(&p)).and_then(ClockRange::range);
-    Ok(File { format: Format::Ts { packet_size, sync_offset }, streams, program, pcr_range, warnings })
+    let pcr_range = pmt.pcr_pid.or(first_pcr_pid).and_then(|p| clocks.get(&p)).and_then(ClockRange::range);
+    Ok(File { format: Format::Ts { packet_size, sync_offset }, streams, program: pmt.program, pcr_range, warnings })
 }
 
 /// Collect unit `u` of stream `st`: from the packet at `u.pos`, the PID's elementary-stream bytes.
