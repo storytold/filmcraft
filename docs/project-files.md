@@ -299,8 +299,22 @@ have no identity, so relinking them skips the fingerprint check.
 | `media.relink {item, path, force?, relinkOthers?=true, alignTimecode?, match?}` | check, link, then the others |
 | `media.autoRelink {from, to}` / `{folder}` | batch relink: a folder-prefix remap, or a search of a folder tree |
 | `media.search {folder, item?, exactName?=true}` | ranked candidates with `ok`, `identityMatch`, `problems` |
-| `media.replaceFootage {item, path}` | relink without checks (Replace Footage) |
+| `media.replaceFootage {item, path}` | replace one file-backed Project item; Clip ▸ Replace Footage… or the item's context menu opens a picker |
 | `media.offlineAll` | close the dialog and leave the rest offline |
+
+Replace Footage deliberately accepts a different file name, duration, dimensions or frame rate.
+It preserves the Project item's ID and its uses in every sequence; `MediaClip::identity` is updated
+to the replacement file's fingerprint, or cleared if the host can decode the file but cannot
+read its fingerprint metadata. It never retains the old file's identity after replacement. Clip placements, source trims,
+effects and durations are retained, even when the new source is shorter. A static Motion anchor
+still at the old source's centre moves to the replacement's centre when dimensions change,
+including uses through subclips and in other sequences. Position, Scale and Rotation remain
+unchanged; custom or animated anchors retain their source-pixel values. Source timecode is
+not realigned and other bin items are not relinked. Attached proxies are detached because they
+belong to the old source. Replacement and proxy detachment are one undoable edit; undo/redo and
+save/reopen retain the association. Missing or unreadable replacement files leave the project intact.
+The picker accepts video, audio and still images; cancellation does nothing. Generated items,
+sequences and multi-selection do not enable the Clip-menu action.
 
 `match` selects which properties must agree. Each defaults as shown:
 

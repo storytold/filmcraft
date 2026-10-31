@@ -111,7 +111,7 @@ pub type SystemThemeFn = Box<dyn Fn(&egui::Context) -> Option<egui::Theme>>;
 /// that can only run it later.
 #[derive(Clone, Debug)]
 pub struct RelinkHint {
-    /// `media.relink`, `media.attachProxies` or `media.reconnectFullRes`.
+    /// `media.relink`, `media.replaceFootage`, `media.attachProxies` or `media.reconnectFullRes`.
     pub command: String,
     /// Its parameters, without `"path"`.
     pub params: serde_json::Value,

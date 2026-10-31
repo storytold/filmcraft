@@ -122,6 +122,27 @@ fn check_image_sequence_with_missing_frames(prefix: &str) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Replacing a sequence with its own first frame (a still at the same path) and undoing must not
+/// keep playing the still: the cached source is keyed by media kind as well as path.
+#[test]
+fn undo_replace_footage_with_same_path_restores_the_sequence() {
+    let dir = tmp_dir("imgseq-replace-same-path");
+    let mut s = demo();
+    let paths = write_frames(&dir, "shot_", &[1, 2, 3], "png");
+    let id = item_of(&s.execute("file.import", json!({"paths": [paths[0]], "imageSequence": true})).unwrap());
+    assert_eq!(red_at(&s, id, 1), 20);
+    s.execute("project.select", json!({"items": [id.0]})).unwrap();
+    s.execute("media.replaceFootage", json!({"item": id.0, "path": paths[0]})).unwrap();
+    assert_eq!(s.project.item(id).unwrap().as_media().unwrap().info.kind, MediaKind::Still);
+    assert_eq!(red_at(&s, id, 1), 10, "the still shows its one frame");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.item(id).unwrap().as_media().unwrap().info.kind, MediaKind::ImageSequence);
+    assert_eq!(red_at(&s, id, 1), 20, "undo must restore the sequence's frames, not the cached still");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(red_at(&s, id, 1), 10, "redo must return to the still");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn import_image_sequences_setting_detects_a_numbered_still() {
     let dir = tmp_dir("imgseq-auto");

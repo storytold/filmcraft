@@ -14,6 +14,356 @@ use crate::relink::{apply_remap, derive_remap};
 const W: u32 = 160;
 const H: u32 = 90;
 
+/// A replacement whose bytes can be decoded but not fingerprinted must not inherit the old identity.
+#[test]
+fn replace_footage_clears_unreadable_identity_and_undo_restores_it() {
+    struct NoFingerprint;
+    impl crate::Services for NoFingerprint {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            std::fs::read(path)
+        }
+        fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+            crate::Services::write_file(&crate::FsServices, path, data)
+        }
+        fn file_size(&self, _path: &str) -> std::io::Result<u64> {
+            Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "fingerprint metadata unavailable"))
+        }
+    }
+    let root = tmp_dir("replace-no-fingerprint");
+    let original = root.join("original.mov");
+    let replacement = root.join("replacement.mov");
+    make_movie(&original, DemoScene::Aurora, W, H, 12);
+    make_movie(&replacement, DemoScene::Dunes, W, H, 12);
+    let (mut s, items, _) = session_with(&[&original]);
+    let item = items[0];
+    let before = s.project.clone();
+    assert!(before.item(item).unwrap().as_media().unwrap().identity.is_some());
+    s.services = std::sync::Arc::new(NoFingerprint);
+    s.execute("media.replaceFootage", json!({"item":item.0,"path":replacement.to_string_lossy()})).unwrap();
+    let media = s.project.item(item).unwrap().as_media().unwrap();
+    assert_eq!(media.media, filmcraft_project::MediaRef::File { path: replacement.to_string_lossy().into_owned() });
+    assert!(media.identity.is_none(), "the old footage's fingerprint cannot describe the replacement");
+    let after = s.project.clone();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project, after);
+    let path = root.join("replaced.fcproj");
+    s.execute("file.save", json!({"path":path.to_string_lossy()})).unwrap();
+    assert_eq!(open(path.to_str().unwrap()).project.item(item), after.item(item));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A differently sized replacement keeps its visible centre in sequence coordinates.
+#[test]
+fn replace_footage_keeps_smaller_and_larger_sources_centered() {
+    let root = tmp_dir("replace-centre-pixels");
+    let original = root.join("original.mov");
+    make_movie(&original, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, _) = session_with(&[&original]);
+    for (width, height) in [(80, 40), (240, 120), (80, 40)] {
+        let replacement = root.join(format!("{width}-{height}.png"));
+        // A small opaque marker at the source centre makes both up- and down-sizing visible.
+        image::RgbaImage::from_fn(width, height, |x, y| {
+            if (width / 2 - 10..width / 2 + 10).contains(&x) && (height / 2 - 5..height / 2 + 5).contains(&y) {
+                image::Rgba([255, 255, 255, 255])
+            } else {
+                image::Rgba([0, 0, 0, 0])
+            }
+        })
+        .save(&replacement)
+        .unwrap();
+        let before = s.project.clone();
+        s.execute("media.replaceFootage", json!({"item":items[0].0,"path":replacement.to_string_lossy()})).unwrap();
+        let after = s.project.clone();
+        let (w, h, pixels) = frame_rgba(&mut s, 2, 1.0);
+        assert_eq!((w, h), (W as usize, H as usize));
+        let lit: Vec<(usize, usize)> =
+            pixels.as_chunks::<4>().0.iter().enumerate().filter(|(_, p)| p[0] > 100 || p[1] > 100 || p[2] > 100).map(|(i, _)| (i % w, i / w)).collect();
+        assert!(lit.len() > 10);
+        assert_eq!(
+            lit.iter().map(|p| p.0).min().unwrap() + lit.iter().map(|p| p.0).max().unwrap(),
+            w - 1,
+            "horizontal centre after {width}x{height} replacement"
+        );
+        assert_eq!(
+            lit.iter().map(|p| p.1).min().unwrap() + lit.iter().map(|p| p.1).max().unwrap(),
+            h - 1,
+            "vertical centre after {width}x{height} replacement"
+        );
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project, before);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(s.project, after);
+    }
+    let path = root.join("centred.fcproj");
+    s.execute("file.save", json!({"path":path.to_string_lossy()})).unwrap();
+    assert_eq!(open(path.to_str().unwrap()).project, s.project);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Default pivots follow the source through subclips; custom and animated pivots stay intact.
+#[test]
+fn replace_footage_preserves_custom_motion_and_centers_subclips_in_every_sequence() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::{ItemKind, Keyframe, Label, ParamValue, TrackKind};
+    use filmcraft_time::{Tick, TimeRange};
+    let root = tmp_dir("replace-centre-motion");
+    let original = root.join("original.mov");
+    let replacement = root.join("replacement.mov");
+    make_movie(&original, DemoScene::Aurora, W, H, 12);
+    make_movie(&replacement, DemoScene::Dunes, W * 2, H * 2, 12);
+    let (mut s, items, first) = session_with(&[&original, &original]);
+    let rate = s.sequence_rate();
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    let range = TimeRange::new(Tick::ZERO, rate.tick_of(12));
+    let sub = p.add_item("sub", Label::Iris, ItemKind::Subclip { parent: items[0], range, restrict_trims: false }, None);
+    let nested = p.add_item("nested sub", Label::Iris, ItemKind::Subclip { parent: sub, range, restrict_trims: false }, None);
+    let settings = p.sequence(first).unwrap().settings.clone();
+    let second = p.new_sequence("Other sequence", settings, 1, 0, None);
+    let mut clips = Vec::new();
+    for (source, kind) in [(nested, 0), (items[0], 1), (items[0], 2)] {
+        let mut clip = p.make_track_item(source, TrackKind::Video, Tick::ZERO, range, rate).unwrap();
+        for e in &mut clip.effects {
+            filmcraft_project::resolve_auto_points(e, (W, H), (W, H));
+        }
+        let motion = clip.effect_mut("motion").unwrap();
+        motion.params.get_mut("position").unwrap().value = ParamValue::Vec2(Vec2::new(31.0, 42.0));
+        motion.params.get_mut("scale").unwrap().value = ParamValue::Float(75.0);
+        motion.params.get_mut("rotation").unwrap().value = ParamValue::Float(12.0);
+        let anchor = motion.params.get_mut("anchor").unwrap();
+        if kind == 1 {
+            anchor.value = ParamValue::Vec2(Vec2::new(12.0, 17.0));
+        }
+        if kind == 2 {
+            anchor.keyframes = vec![Keyframe::new(Tick::ZERO, anchor.value.clone()), Keyframe::new(rate.tick_of(5), ParamValue::Vec2(Vec2::new(20.0, 30.0)))];
+        }
+        clips.push(clip);
+    }
+    p.sequence_mut(second).unwrap().video_tracks[0].items = clips;
+    let mut expected = p.sequence(second).unwrap().clone();
+    expected.video_tracks[0].items[0].effect_mut("motion").unwrap().params.get_mut("anchor").unwrap().value =
+        ParamValue::Vec2(Vec2::new(f64::from(W), f64::from(H)));
+    let other = p.item(items[1]).unwrap().clone();
+    let before = s.project.clone();
+    s.execute("media.replaceFootage", json!({"item":items[0].0,"path":replacement.to_string_lossy()})).unwrap();
+    assert_eq!(s.project.sequence(second), Some(&expected));
+    assert_eq!(s.project.item(items[1]), Some(&other));
+    let first_seq = s.project.sequence(first).unwrap();
+    assert_eq!(first_seq.video_tracks[0].items[0].effect("motion").unwrap().vec2_at("anchor", Tick::ZERO), Vec2::new(f64::from(W), f64::from(H)));
+    assert_eq!(first_seq.video_tracks[0].items[1], before.sequence(first).unwrap().video_tracks[0].items[1]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+/// Replacement preserves edits, refreshes source pixels, and survives undo/redo and reopen.
+fn replace_footage_preserves_edits_updates_pixels_and_round_trips() {
+    let root = tmp_dir("replace-footage");
+    let original = root.join("original.mov");
+    let replacement = root.join("replacement.mov");
+    make_movie(&original, DemoScene::Aurora, W, H, 12);
+    // A shorter replacement with a different size must not move or trim existing edits.
+    make_movie(&replacement, DemoScene::Dunes, W * 2, H * 2, 6);
+    let (mut s, items, seq) = session_with(&[&original, &original]);
+    let item = items[0];
+    s.edit("attach test proxy", |project, _| {
+        project.item_mut(item).unwrap().as_media_mut().unwrap().proxy =
+            Some(filmcraft_project::MediaRef::File { path: original.to_string_lossy().into_owned() });
+        Ok(())
+    })
+    .unwrap();
+    let before = s.project.clone();
+    let pixels = frame_rgba(&mut s, 2, 1.0).2;
+    // Explicit targeting works without a Project selection, as required by CLI/MCP callers.
+    s.state.project_selection.clear();
+    s.execute("media.replaceFootage", json!({"item":item.0,"path":replacement.to_string_lossy(),"relinkOthers":true,"alignTimecode":true})).unwrap();
+    let after = s.project.clone();
+    let mut expected = before.sequence(seq).unwrap().clone();
+    for clip in expected.all_tracks_mut().flat_map(|t| t.items.iter_mut()).filter(|c| c.item == item) {
+        if let Some(motion) = clip.effect_mut("motion") {
+            motion.params.get_mut("anchor").unwrap().value = filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(f64::from(W), f64::from(H)));
+        }
+    }
+    assert_eq!(after.sequence(seq), Some(&expected), "only the default source anchor changes; all edits survive");
+    assert_eq!(after.items.len(), before.items.len());
+    let media = after.item(item).unwrap().as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().unwrap().width, W * 2);
+    assert!(media.proxy.is_none(), "old proxy must not hide replacement footage");
+    assert_eq!(after.item(items[1]), before.item(items[1]), "another bin item using the original file is untouched");
+    assert_ne!(frame_rgba(&mut s, 2, 1.0).2, pixels, "cached source is replaced immediately");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project, before);
+    assert_eq!(frame_rgba(&mut s, 2, 1.0).2, pixels, "undo invalidates the replacement source too");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(s.project, after);
+    let path = root.join("replaced.fcproj");
+    s.execute("file.save", json!({"path":path.to_string_lossy()})).unwrap();
+    let reopened = open(path.to_str().unwrap());
+    assert_eq!(reopened.project.item(item), after.item(item));
+    assert_eq!(reopened.project.sequence(seq), after.sequence(seq));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+/// Invalid targets and files must leave the project and its undo history unchanged.
+fn replace_footage_rejects_bad_targets_and_files_without_mutation() {
+    let root = tmp_dir("replace-invalid");
+    let original = root.join("original.mov");
+    make_movie(&original, DemoScene::Aurora, W, H, 12);
+    let (mut s, items, seq) = session_with(&[&original]);
+    s.state.project_selection.clear();
+    assert!(!s.is_enabled("media.replaceFootage"));
+    s.state.project_selection = vec![seq];
+    assert!(!s.is_enabled("media.replaceFootage"));
+    s.state.project_selection = vec![items[0], seq];
+    assert!(!s.is_enabled("media.replaceFootage"));
+    s.state.project_selection = vec![items[0]];
+    assert!(s.is_enabled("media.replaceFootage"));
+    let corrupt = root.join("bad.mov");
+    std::fs::write(&corrupt, b"not a movie").unwrap();
+    let before = s.project.clone();
+    let undo = s.undo_mark();
+    for p in [
+        json!(null),
+        json!([]),
+        json!({}),
+        json!({"item":u64::MAX,"path":"bad"}),
+        json!({"item":seq.0,"path":original.to_string_lossy()}),
+        json!({"item":items[0].0,"path":root.join("missing.mov").to_string_lossy()}),
+        json!({"item":items[0].0,"path":corrupt.to_string_lossy()}),
+    ] {
+        assert!(s.execute("media.replaceFootage", p).is_err());
+        assert_eq!(s.project, before);
+        assert_eq!(s.undo_mark(), undo);
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+/// A completed job for another source cannot overwrite replacement footage.
+fn replace_footage_ignores_old_background_proxy_and_ingest_outputs() {
+    use crate::proxies::{OnDone, PendingJob};
+    let root = tmp_dir("replace-pending");
+    let original = root.join("original.mov");
+    let replacement = root.join("replacement.mov");
+    make_movie(&original, DemoScene::Aurora, W, H, 12);
+    // Matching properties: proxy validation alone cannot tell this is old footage.
+    make_movie(&replacement, DemoScene::Dunes, W, H, 12);
+    for on_done in [OnDone::AttachProxies, OnDone::ReplaceMedia] {
+        let (mut s, items, _) = session_with(&[&original, &original]);
+        let sources = items
+            .iter()
+            .map(|id| {
+                let media = s.project.item(*id).unwrap().as_media().unwrap();
+                (*id, media.media.clone(), media.identity)
+            })
+            .collect();
+        s.execute("media.replaceFootage", json!({"item":items[0].0,"path":replacement.to_string_lossy()})).unwrap();
+        let expected = s.project.item(items[0]).unwrap().clone();
+        s.media_jobs.push(PendingJob {
+            job: u64::MAX,
+            on_done,
+            sources,
+            outputs: std::sync::Arc::new(std::sync::Mutex::new(items.iter().map(|id| (*id, original.to_string_lossy().into_owned())).collect())),
+        });
+        crate::proxies::poll(&mut s);
+        assert_eq!(s.project.item(items[0]), Some(&expected), "stale output cannot undo the replacement");
+        if on_done == OnDone::AttachProxies {
+            assert!(s.project.item(items[1]).unwrap().as_media().unwrap().proxy.is_some(), "valid outputs in the same batch still attach");
+        }
+        assert!(s.media_jobs.is_empty());
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Replacing with the same file invalidates older jobs, without discarding other batch items.
+#[test]
+fn replace_footage_invalidates_pending_jobs_for_the_same_source() {
+    use crate::proxies::{OnDone, PendingJob};
+    let root = tmp_dir("replace-same-source");
+    let original = root.join("original.mov");
+    make_movie(&original, DemoScene::Aurora, W, H, 12);
+    for on_done in [OnDone::AttachProxies, OnDone::ReplaceMedia] {
+        let (mut s, items, _) = session_with(&[&original, &original]);
+        let sources = items
+            .iter()
+            .map(|id| {
+                let media = s.project.item(*id).unwrap().as_media().unwrap();
+                (*id, media.media.clone(), media.identity)
+            })
+            .collect();
+        let outputs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        s.media_jobs.push(PendingJob { job: u64::MAX, on_done, sources, outputs: outputs.clone() });
+        // Rejected replacements must not invalidate work that still belongs to this source.
+        assert!(s.execute("media.replaceFootage", json!({"item":items[0].0,"path":root.join("missing.mov").to_string_lossy()})).is_err());
+        assert_eq!(s.media_jobs[0].sources.len(), 2);
+        s.execute("media.replaceFootage", json!({"item":items[0].0,"path":original.to_string_lossy()})).unwrap();
+        assert_eq!(s.media_jobs[0].sources.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(), vec![items[1]]);
+        // Simulate the worker finishing only after replacement, with the unchanged source tuple.
+        outputs.lock().unwrap().extend(items.iter().map(|id| (*id, original.to_string_lossy().into_owned())));
+        crate::proxies::poll(&mut s);
+        assert!(s.project.item(items[0]).unwrap().as_media().unwrap().proxy.is_none());
+        if on_done == OnDone::AttachProxies {
+            assert!(s.project.item(items[1]).unwrap().as_media().unwrap().proxy.is_some());
+        }
+        assert!(s.media_jobs.is_empty());
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Rejected job files are cleaned up, but files adopted as current media remain available.
+#[test]
+fn replace_footage_cleans_up_unreferenced_job_outputs() {
+    use crate::proxies::{OnDone, PendingJob};
+    let root = tmp_dir("replace-cleanup");
+    let original = root.join("original.mov");
+    make_movie(&original, DemoScene::Aurora, W, H, 12);
+    for (on_done, adopt_output) in
+        [(OnDone::AttachProxies, 0), (OnDone::AttachProxies, 1), (OnDone::AttachProxies, 2), (OnDone::AttachProxies, 3), (OnDone::Nothing, 0)]
+    {
+        let stale = root.join("stale-proxy.mov");
+        let valid = root.join("valid-proxy.mov");
+        std::fs::copy(&original, &stale).unwrap();
+        std::fs::copy(&original, &valid).unwrap();
+        let (mut s, items, _) = session_with(&[&original, &original]);
+        let sources = items
+            .iter()
+            .map(|id| {
+                let m = s.project.item(*id).unwrap().as_media().unwrap();
+                (*id, m.media.clone(), m.identity)
+            })
+            .collect();
+        s.media_jobs.push(PendingJob {
+            job: u64::MAX,
+            on_done,
+            sources,
+            outputs: std::sync::Arc::new(std::sync::Mutex::new(vec![
+                (items[0], stale.to_string_lossy().into_owned()),
+                (items[1], valid.to_string_lossy().into_owned()),
+            ])),
+        });
+        let alias = root.join(".").join("stale-proxy.mov");
+        let replacement = match adopt_output {
+            1 | 3 => &stale,
+            2 => &alias,
+            _ => &original,
+        };
+        s.execute("media.replaceFootage", json!({"item":items[0].0,"path":replacement.to_string_lossy()})).unwrap();
+        if adopt_output == 3 {
+            // The output is no longer current, but undo must still be able to restore it.
+            s.execute("media.replaceFootage", json!({"item":items[0].0,"path":original.to_string_lossy()})).unwrap();
+        }
+        crate::proxies::poll(&mut s);
+        assert_eq!(stale.exists(), adopt_output != 0 || on_done == OnDone::Nothing, "only an unreferenced obsolete output is deleted");
+        assert!(valid.exists(), "accepted output is untouched");
+        assert!(original.exists(), "input source is untouched");
+        assert_eq!(s.project.item(items[1]).unwrap().as_media().unwrap().proxy.is_some(), on_done == OnDone::AttachProxies);
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// A saved project at `<root>/Project/p.fcproj` using `<root>/Media/{a,b}.mov`.
 fn saved_project(root: &std::path::Path) -> (String, Vec<ItemId>) {
     let media = root.join("Media");
@@ -113,7 +463,7 @@ fn fingerprint_mismatch_is_refused_unless_forced() {
     let root = tmp_dir("relink-mismatch");
     let (path, items) = saved_project(&root);
     std::fs::remove_dir_all(root.join("Media")).unwrap();
-    // same name, duration, size and rate — different pictures
+    // same name, duration, size and rate -- different pictures
     let other = root.join("Other");
     std::fs::create_dir_all(&other).unwrap();
     make_movie(&other.join("a.mov"), DemoScene::Dunes, W, H, 12);
@@ -198,7 +548,7 @@ fn reimport_clears_offline_list_after_path_resolves() {
     let a = root.join("Media/a.mov");
 
     // Delete a.mov so the saved project now points at a missing file, then reopen:
-    // `on_open` → `refresh` → `scan` registers items[0] as missing.
+    // `on_open` -> `refresh` -> `scan` registers items[0] as missing.
     let online = frame_rgba(&mut open(&path), 3, 1.0);
     std::fs::remove_file(&a).unwrap();
     let mut s = open(&path);
@@ -210,7 +560,7 @@ fn reimport_clears_offline_list_after_path_resolves() {
     // and the user has to reopen or `media.relink` each item.
     make_movie(&a, DemoScene::Aurora, W, H, 12);
     s.execute("file.import", json!({"paths": [a.to_string_lossy()]})).unwrap();
-    assert!(!s.offline.missing.contains(&items[0]), "issue #110 — file.import did not refresh s.offline.missing (still contains {:?})", s.offline.missing);
+    assert!(!s.offline.missing.contains(&items[0]), "issue #110 -- file.import did not refresh s.offline.missing (still contains {:?})", s.offline.missing);
     assert_eq!(s.execute("media.findMissing", json!({})).unwrap()["missing"].as_array().unwrap().len(), 0);
     // and the monitors show the file again, not the cached slate
     assert_eq!(frame_rgba(&mut s, 3, 1.0), online);

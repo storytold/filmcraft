@@ -3,6 +3,19 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Replace Footage
+
+Select a single file-backed item in Project, then use **Clip ▸ Replace Footage…**, or right-click
+the item and choose **Replace Footage…** (`project.itemMenu.replaceFootage`). The existing relink
+picker supplies a replacement path without importing another item. Its async hint names the
+original item, so a later selection change cannot redirect the replacement. The engine command
+`media.replaceFootage {item, path}` remains available to CLI/MCP clients. Cancellation is a no-op.
+See [project files](../../docs/project-files.md#link-media) for preservation and proxy semantics.
+
+Replacing with another frame size keeps a default, static Motion anchor centred in the new
+source. Position, Scale, Rotation, custom anchors and anchor keyframes are preserved. This
+applies in every sequence, including clips that reference the source through subclips.
+
 ## Export range warnings
 
 The Export panel shows the selected range's length in sequence frames and seconds beside Range

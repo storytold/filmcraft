@@ -327,6 +327,13 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
     }
     if matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_project::MediaRef::File { .. })) {
         ui.separator();
+        let replace = ui.button(tl!("Replace Footage…"));
+        app.auto.add("project.itemMenu.replaceFootage", replace.rect, "Replace Footage…");
+        if replace.clicked() {
+            actions.push(("project.select".into(), json!({"items": [id.0]})));
+            actions.push(("media.replaceFootage".into(), json!({})));
+            ui.close();
+        }
         for (label, cmd) in [(tl!("Link Media…"), "media.linkMedia"), (tl!("Make Offline…"), "media.makeOffline")] {
             if ui.button(label).clicked() {
                 actions.push(("project.select".into(), sel()));

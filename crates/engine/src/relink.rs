@@ -321,7 +321,7 @@ struct Plan {
 }
 
 /// Apply planned relinks as one undo step.
-fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -> Result<Vec<Value>> {
+fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str, replace: bool) -> Result<Vec<Value>> {
     let rows: Vec<Value> = plans.iter().map(|p| json!({"item": p.item.0, "path": p.cand.path})).collect();
     let sources: Vec<(ItemId, String, filmcraft_media::SharedSource)> =
         plans.iter().filter_map(|p| p.cand.source.clone().map(|src| (p.item, p.cand.path.clone(), src))).collect();
@@ -330,9 +330,15 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
             let Some(m) = proj.item_mut(p.item).and_then(|i| i.as_media_mut()) else { continue };
             let old_tc = m.info.start_timecode;
             let rate = m.info.frame_rate();
+            let old_size = m.info.video.as_ref().map(|v| (v.width, v.height));
             m.media = MediaRef::File { path: p.cand.path.clone() };
             m.offline = false;
-            if p.cand.identity.is_some() {
+            if replace {
+                // A proxy belongs to the old footage, not to its replacement.
+                m.proxy = None;
+            }
+            // An unreadable replacement identity is unknown, never the old footage's identity.
+            if replace || p.cand.identity.is_some() {
                 m.identity = p.cand.identity;
             }
             let mut shift = Tick::ZERO;
@@ -345,15 +351,26 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
                 m.info = info.clone();
             }
             proj.shift_media_time(p.item, shift);
+            if replace {
+                recenter_default_anchors(proj, p.item, old_size);
+            }
             if p.cand.info.is_some() {
                 // The item's size is now the file's own. Clips that came from an interchange import
                 // while the file was missing still have an "auto" (NaN) anchor waiting for it:
-                // centre it in the real picture. Points that are numbers are not touched.
+                // centre it in the real picture. Other numeric points stay intentional;
+                // replacement's default Motion anchor was already adjusted above.
                 proj.resolve_placed_auto_points(|_| true, |source| source.id == p.item);
             }
         }
         Ok(())
     })?;
+    if replace {
+        // Replacement is a new user decision, even if the path and fingerprint are unchanged.
+        // Do this only after the edit succeeds, and leave other items in each batch valid.
+        for job in &mut s.media_jobs {
+            job.sources.retain(|(item, _, _)| !plans.iter().any(|p| p.item == *item));
+        }
+    }
     for p in &plans {
         s.media.allow(&p.cand.path);
     }
@@ -366,6 +383,36 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
         s.offline.prompt = false;
     }
     Ok(rows)
+}
+
+/// Keep an unanimated, source-centred Motion pivot centred when replacement changes its size.
+/// Numeric custom pivots and all keyframed pivots remain intentional source-pixel coordinates.
+fn recenter_default_anchors(project: &mut Project, item: ItemId, old_size: Option<(u32, u32)>) {
+    let (Some(old), Some(new)) = (old_size, project.source_size(item)) else { return };
+    if old == new || old.0 == 0 || old.1 == 0 || new.0 == 0 || new.1 == 0 {
+        return;
+    }
+    // Include every sequence and subclip chain, using the same bounded lookup as the renderer.
+    let users: std::collections::BTreeSet<ItemId> =
+        project.items.values().filter(|i| project.resolve_media(i.id).is_some_and(|(source, _, _)| source == item)).map(|i| i.id).collect();
+    let old_center = filmcraft_geom::Vec2::new(f64::from(old.0) / 2.0, f64::from(old.1) / 2.0);
+    let new_center = filmcraft_geom::Vec2::new(f64::from(new.0) / 2.0, f64::from(new.1) / 2.0);
+    for entry in project.items.values_mut() {
+        let ItemKind::Sequence(sequence) = &mut entry.kind else { continue };
+        if !sequence.all_tracks().flat_map(|t| t.items.iter()).any(|clip| users.contains(&clip.item)) {
+            continue;
+        }
+        let sequence = std::sync::Arc::make_mut(sequence);
+        for clip in sequence.all_tracks_mut().flat_map(|t| t.items.iter_mut()) {
+            if !users.contains(&clip.item) {
+                continue;
+            }
+            let Some(anchor) = clip.effect_mut("motion").and_then(|e| e.params.get_mut("anchor")) else { continue };
+            if anchor.keyframes.is_empty() && anchor.value == filmcraft_project::ParamValue::Vec2(old_center) {
+                anchor.value = filmcraft_project::ParamValue::Vec2(new_center);
+            }
+        }
+    }
 }
 
 /// Other missing items that the remap (or the new file's folder) finds, checked.
@@ -404,6 +451,11 @@ fn others(s: &Session, skip: ItemId, old: &str, new: &str, o: &MatchOptions) -> 
 
 /// `media.relink`: link `item` to `path` (checked unless `force`), then the others.
 pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
+    relink_inner(s, p, false)
+}
+
+/// Plan and apply a checked relink or an intentional single-item replacement.
+fn relink_inner(s: &mut Session, p: &Value, replace: bool) -> Result<Value> {
     let item = u64_p(p, "item").map(ItemId).ok_or_else(|| bad("media.relink", "need `item`"))?;
     let path = str_p(p, "path").ok_or_else(|| bad("media.relink", "need `path`"))?.to_string();
     let force = bool_p(p, "force").unwrap_or(false);
@@ -429,7 +481,7 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     if o.relink_others {
         plans.extend(others(s, item, &old, &path, &o));
     }
-    let rows = apply(s, plans, o.align_timecode, "Link Media")?;
+    let rows = apply(s, plans, o.align_timecode, if replace { "Replace Footage" } else { "Link Media" }, replace)?;
     Ok(json!({"relinked": rows, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
@@ -469,7 +521,7 @@ pub fn auto_relink(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         return Err(bad("media.autoRelink", "need `from` and `to`, or `folder`"));
     }
-    let rows = if plans.is_empty() { Vec::new() } else { apply(s, plans, o.align_timecode, "Link Media")? };
+    let rows = if plans.is_empty() { Vec::new() } else { apply(s, plans, o.align_timecode, "Link Media", false)? };
     refresh(s);
     Ok(json!({"relinked": rows, "failed": failed, "remaining": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
@@ -628,6 +680,24 @@ fn status_json(s: &Session, id: ItemId) -> Option<Value> {
     }))
 }
 
+/// Enable replacement only for one selected file-backed Project item.
+fn can_replace_footage(s: &Session) -> std::result::Result<(), String> {
+    let [item] = s.state.project_selection.as_slice() else { return Err("select one file in the Project panel".into()) };
+    match s.project.item(*item).and_then(|i| i.as_media()).map(|m| &m.media) {
+        Some(MediaRef::File { .. }) => Ok(()),
+        _ => Err("select one file in the Project panel".into()),
+    }
+}
+
+/// Replace the explicitly named item without remapping neighbours or shifting source times.
+fn replace_footage(s: &mut Session, p: &Value) -> Result<Value> {
+    let item = u64_p(p, "item").ok_or_else(|| bad("media.replaceFootage", "need `item`"))?;
+    let path = str_p(p, "path").ok_or_else(|| bad("media.replaceFootage", "need `path`"))?;
+    // Build our own parameters: callers cannot accidentally relink neighbouring missing media
+    // or shift source times when deliberately replacing a single Project item.
+    relink_inner(s, &json!({"item": item, "path": path, "force": true, "relinkOthers": false}), true)
+}
+
 pub fn commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
@@ -696,16 +766,11 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec {
             id: "media.replaceFootage",
             label: "Replace Footage…",
-            menu: &[],
+            menu: &["Clip"],
             shortcut: None,
             params: r#"{"item":id,"path":str}"#,
-            enabled: always,
-            run: |s, p| {
-                let mut q = p.clone();
-                q["force"] = json!(true);
-                q["relinkOthers"] = json!(false);
-                relink(s, &q)
-            },
+            enabled: can_replace_footage,
+            run: replace_footage,
             journal: true,
         },
         CommandSpec {

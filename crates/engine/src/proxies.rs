@@ -84,6 +84,8 @@ pub struct PendingJob {
     pub on_done: OnDone,
     /// (item, output path) for each finished output.
     pub outputs: Arc<Mutex<Vec<(ItemId, String)>>>,
+    /// Source identity when work began; stale outputs must not attach to replacement footage.
+    pub sources: Vec<(ItemId, MediaRef, Option<filmcraft_project::MediaIdentity>)>,
 }
 
 /// Transcode `range` (whole media when None) of one media clip to `out` with `preset`, blocking.
@@ -259,6 +261,7 @@ fn items_param(s: &Session, p: &Value) -> Vec<ItemId> {
 /// Start a background transcode job over `work` (item, output path, preset). Returns the job id.
 fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, &'static Preset)>, on_done: OnDone, wait: bool) -> Result<u64> {
     let mut tasks = Vec::new();
+    let mut sources = Vec::new();
     let mut total = 0;
     for (item, output, pr) in work {
         let (clip, _, name) = media_path(&s.project, item).ok_or_else(|| bad("media.createProxies", format!("item {} is not file media", item.0)))?;
@@ -267,6 +270,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
             return Err(EngineError::Other(format!("{name} is offline; link it first")));
         }
         total += frame_count(&clip, None);
+        sources.push((item, clip.media.clone(), clip.identity));
         tasks.push((item, clip, name, src, output, pr));
     }
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
@@ -333,7 +337,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.media_jobs.push(PendingJob { job: id, on_done, outputs });
+    s.media_jobs.push(PendingJob { job: id, on_done, outputs, sources });
     if wait || cfg!(target_arch = "wasm32") {
         run();
         poll(s);
@@ -355,7 +359,18 @@ pub fn poll(s: &mut Session) {
         .collect();
     for i in finished.into_iter().rev() {
         let pj = s.media_jobs.remove(i);
-        let outs = std::mem::take(&mut *pj.outputs.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut outs = std::mem::take(&mut *pj.outputs.lock().unwrap_or_else(|e| e.into_inner()));
+        if pj.on_done != OnDone::Nothing {
+            outs.retain(|(item, path)| {
+                let current = s.project.item(*item).and_then(|i| i.as_media());
+                let keep =
+                    pj.sources.iter().any(|(id, source, identity)| *id == *item && current.is_some_and(|m| m.media == *source && m.identity == *identity));
+                if !keep {
+                    discard_unused_output(s, path);
+                }
+                keep
+            });
+        }
         if outs.is_empty() {
             continue;
         }
@@ -367,6 +382,35 @@ pub fn poll(s: &mut Session) {
         if let Err(e) = r {
             s.error_toast("job", e.to_string());
         }
+    }
+}
+
+/// Delete an obsolete job-owned output only when current and undoable states do not use it.
+fn discard_unused_output(s: &mut Session, path: &str) {
+    let canonical = std::fs::canonicalize(path).ok();
+    let mut seen = std::collections::HashSet::new();
+    let mut references = |media: &MediaRef| {
+        let MediaRef::File { path: used } = media else { return false };
+        if used == path {
+            return true;
+        }
+        if !seen.insert(used.clone()) {
+            return false;
+        }
+        let followed = s.media.follow(used).ok();
+        followed.as_deref() == Some(path)
+            || canonical.as_ref().is_some_and(|output| followed.and_then(|p| std::fs::canonicalize(p).ok()).as_ref() == Some(output))
+    };
+    let mut projects = std::iter::once(s.project.as_ref()).chain(s.history.undo.iter().chain(&s.history.redo).map(|(_, p)| p.as_ref()));
+    if projects.any(|project| {
+        project.items.values().any(|item| item.as_media().is_some_and(|m| references(&m.media) || m.proxy.as_ref().is_some_and(&mut references)))
+    }) {
+        return;
+    }
+    if let Err(error) = std::fs::remove_file(path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        s.error_toast("job", format!("could not remove obsolete job output {path}: {error}"));
     }
 }
 

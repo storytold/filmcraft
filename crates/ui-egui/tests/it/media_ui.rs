@@ -516,3 +516,54 @@ fn locate_relinks_instead_of_importing() {
     assert!(st.as_array().unwrap().iter().all(|m| m["status"] == "online"), "item {item}: {st}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+/// The actual menu preserves its target across async selection changes and supports cancellation.
+fn replace_footage_picker_cancels_and_replaces_the_original_selection() {
+    let root = tmp_dir("replace-footage");
+    let original = root.join("original.mov");
+    let replacement = root.join("replacement.mov");
+    make_movie(&original, DemoScene::Aurora, 160, 90, 12);
+    make_movie(&replacement, DemoScene::Dunes, 320, 180, 12);
+    let mut s = Session::default();
+    let imported = s.execute("file.import", json!({"paths":[original.to_string_lossy()]})).unwrap();
+    let item = imported["items"][0].as_u64().unwrap();
+    let mut d = Driver::new(s);
+    d.exec("project.select", json!({"items":[item]}));
+    let menu = filmcraft_ui_egui::menus::menu_items_for(&d.app().session);
+    let entry = menu.iter().find(|m| m.id == "media.replaceFootage").unwrap();
+    assert_eq!(entry.path, vec!["Clip"]);
+    assert!(entry.enabled);
+    let before = d.app().session.project.clone();
+    let hints = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let h = hints.clone();
+    d.app().hooks.pick_file_for_relink = Some(Box::new(move |exts, hint| {
+        assert!(exts.contains(&"mov") && exts.contains(&"wav") && exts.contains(&"png"));
+        h.lock().unwrap().push(hint.unwrap());
+        None
+    }));
+    d.click("menu.Clip");
+    assert!(d.ids("menu.media.replaceFootage").contains(&"menu.media.replaceFootage".to_string()));
+    d.snapshot("media-replace-footage-menu");
+    d.click("menu.media.replaceFootage");
+    assert_eq!(d.app().session.project, before, "cancelling never edits the project");
+    let hint = hints.lock().unwrap().pop().unwrap();
+    assert_eq!(hint.command, "media.replaceFootage");
+    assert_eq!(hint.params["item"], item);
+    // An async host retains the requested item even if selection changes before its answer.
+    d.exec("project.select", json!({"items":[]}));
+    let mut params = hint.params;
+    params["path"] = json!(replacement.to_string_lossy());
+    d.exec(&hint.command, params);
+    assert_eq!(d.app().session.project.items.len(), before.items.len());
+    d.exec("edit.undo", json!({}));
+    d.exec("project.select", json!({"items":[item]}));
+    let file = replacement.to_string_lossy().into_owned();
+    d.app().hooks.pick_file_for_relink = Some(Box::new(move |_, _| Some(file.clone())));
+    d.ok("ui.menu.invoke", json!({"id":"media.replaceFootage"}));
+    let media = d.app().session.project.item(filmcraft_engine::project::ItemId(item)).unwrap().as_media().unwrap();
+    assert_eq!(media.info.video.as_ref().unwrap().width, 320);
+    assert!(matches!(&media.media, MediaRef::File {path} if path == replacement.to_str().unwrap()));
+    d.snapshot("media-replace-footage");
+    let _ = std::fs::remove_dir_all(root);
+}

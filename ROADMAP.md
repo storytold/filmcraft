@@ -1,5 +1,7 @@
 # FilmCraft Roadmap
 
+- M11: Replace Footage is available from Clip and the Project-item context menu for one file-backed item. The replacement preserves timeline edits, detaches the old proxy and supports undo/redo; no parity percentage is changed by this UI wiring.
+
 - UI.6: Compact Source and Program monitors separate timecodes from view settings and retain Source drag choices. Transport controls use the shared toolbar sizing helper, with overflow actions in an operable More menu and a scrolling fallback at tiny widths.
 - UI.3: Panel tabs, edge splits, tab reordering and floating groups use the shared docking model and drop resolver. Floating geometry is saved with named workspaces while legacy layout JSON remains readable. Dock dividers use bounded shared geometry and keyboard-accessible resize handles. Tools and dock tabs expose actual widget focus, paint focus outlines, and support keyboard traversal/activation. Control input reaches focused widgets in background windows; optional input isolation supports unattended validation. Existing workspace trees and saved layout formats are retained.
 
