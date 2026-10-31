@@ -264,7 +264,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                     icons::paint(&ui.painter().with_clip_rect(area), Rect::from_center_size(c, vec2(9.0, 9.0)), Icon::Keyframe, Color32::WHITE);
                     ui.ctx().set_cursor_icon(CursorIcon::Move);
                 }
-                if resp.drag_started()
+                if resp.drag_started_by(egui::PointerButton::Primary)
                     && let Some(p) = pointer
                 {
                     next = Some(KeyDrag { clip: it.id, index: i, grab: p - c, begun: false });

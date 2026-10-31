@@ -392,7 +392,7 @@ fn list_presets(_: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Lumetri Presets ▸ apply: a new Lumetri Color configured as the preset on each video clip
-/// (standard effects go before the intrinsic ones, like `effects.apply`).
+/// (added at the end of the clip's effects, like `effects.apply`).
 fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "lumetri.applyPreset";
     let name = str_p(p, "name").ok_or_else(|| bad(cmd, "need `name`"))?;
@@ -406,8 +406,7 @@ fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
         let mut n = 0;
         for t in q.video_tracks.iter_mut() {
             for it in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
-                let pos = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(it.effects.len());
-                it.effects.insert(pos, inst.clone());
+                it.effects.push(inst.clone());
                 n += 1;
             }
         }
