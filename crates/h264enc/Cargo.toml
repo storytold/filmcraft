@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-h264enc"
-description = "Clean-room pure-Rust H.264/AVC encoder (High/Main/Baseline, CABAC/CAVLC, B-frames, rate control)"
+description = "Clean-room pure-Rust H.264/AVC encoder (High 10/High/Main/Baseline, CABAC/CAVLC, B-frames, rate control)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

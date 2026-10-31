@@ -3633,3 +3633,13 @@
 	Could not check for updates:\n{error}	Aktualizace se nepodařilo zkontrolovat:\n{error}
 	FilmCraft {version} is currently the newest version available.	FilmCraft {version} je nejnovější dostupná verze.
 	Looks for a newer FilmCraft release and offers to update.	Vyhledá novější vydání FilmCraftu a nabídne aktualizaci.
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10bitová barva
+	All Intra	Pouze intra
+	Every frame a keyframe (edit-friendly, larger files)	Každý snímek klíčový (vhodné pro střih, větší soubory)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	H.264 High 10 (10bitové 4:2:0) ve velikosti sekvence, konstantní kvalita CRF 16, AAC 320 kb/s; master bez pruhování
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10bitové 4:2:0, každý snímek klíčový), CRF 12, AAC 320 kb/s; mezilehlý formát vhodný pro střih

@@ -3615,3 +3615,13 @@
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) zahtijeva hardverski enkoder (NVENC na NVIDIA GPU-ovima, VideoToolbox na macOS-u); na ovom računaru nije pronađen nijedan, a FilmCraft još nema softverski H.265 enkoder. Umjesto toga odaberite H.264 ili ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 zahtijeva hardverski enkoder; na ovom računaru nije pronađen nijedan, a FilmCraft još nema softverski AV1 enkoder.
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Hardversko dekodiranje: Automatski koristi video dekoder sistema (VideoToolbox na macOS-u, Media Foundation na Windowsu, VA-API za H.264 i HEVC na Linuxu) za tokove koje podržava, a FilmCraftov vlastiti dekoder za sve ostalo ili ako hardver zakaže. Mediji koji su već otvoreni zadržavaju svoj dekoder dok se ponovo ne otvore.
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10-bitna boja
+	All Intra	Samo intra
+	Every frame a keyframe (edit-friendly, larger files)	Svaka sličica je ključna (pogodno za montažu, veće datoteke)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	H.264 High 10 (10-bitno 4:2:0) u veličini sekvence, konstantan kvalitet CRF 16, AAC 320 kbps; master bez bandinga
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bitno 4:2:0, svaka sličica je ključna), CRF 12, AAC 320 kbps; međuformat pogodan za montažu
