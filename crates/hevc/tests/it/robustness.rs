@@ -57,7 +57,7 @@ fn hvcc_input_matches_reference() {
         }
         pics.extend(dec.flush());
         let reference = std::fs::read(yuv).unwrap();
-        common::compare(&pics, &reference, f.width as usize, f.height as usize, f.bit_depth).unwrap();
+        common::compare(&pics, &reference, f.width as usize, f.height as usize, f.bit_depth, f.chroma).unwrap();
         let mut pts: Vec<i64> = pics.iter().map(|p| p.pts).collect();
         pts.sort();
         assert_eq!(pts, (0..samples.len() as i64).map(|i| i * 1000).collect::<Vec<_>>());

@@ -647,8 +647,14 @@ impl Sps {
 
     /// Features this decoder does not handle yet.
     pub fn check_supported(&self) -> Result<()> {
-        if self.chroma_format_idc != 1 {
-            return unsupported(format!("chroma_format_idc {} (only 4:2:0)", self.chroma_format_idc));
+        if self.chroma_array_type() != 1 && self.chroma_array_type() != 2 {
+            let what = match self.chroma_format_idc {
+                0 => "monochrome".to_string(),
+                3 if self.separate_colour_plane => "4:4:4 with separate colour planes".to_string(),
+                3 => "4:4:4".to_string(),
+                idc => format!("chroma_format_idc {idc}"),
+            };
+            return unsupported(format!("{what} (only 4:2:0 and 4:2:2)"));
         }
         if self.bit_depth_luma > 12 || self.bit_depth_chroma > 12 {
             return unsupported(format!("bit depth {}/{}", self.bit_depth_luma, self.bit_depth_chroma));
@@ -785,7 +791,14 @@ impl Pps {
                     any |= r.read_ue()? != 0;
                 }
                 any |= r.read_flag()?; // cross_component_prediction
-                any |= r.read_flag()?; // chroma_qp_offset_list
+                let chroma_qp_offset_list = r.read_flag()?;
+                any |= chroma_qp_offset_list;
+                if !chroma_qp_offset_list {
+                    // (with the list enabled the PPS is unsupported already and the list sits
+                    // before these fields)
+                    any |= r.read_ue()? != 0; // log2_sao_offset_scale_luma
+                    any |= r.read_ue()? != 0; // log2_sao_offset_scale_chroma
+                }
                 range_extension = any;
             }
         }
