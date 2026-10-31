@@ -491,8 +491,32 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
     Ok(Some(path))
 }
 
+fn reject_source_overwrite(project: &Project, output: &str) -> Result<()> {
+    let output_path = Path::new(output);
+    let output_identity = std::fs::canonicalize(output_path).unwrap_or_else(|_| output_path.to_path_buf());
+    for item in project.items.values() {
+        let Some(media) = item.as_media() else { continue };
+        let paths = std::iter::once(&media.media).chain(media.proxy.iter());
+        for reference in paths {
+            let filmcraft_project::MediaRef::File { path } = reference else { continue };
+            let source_path = Path::new(path);
+            let source_identity = std::fs::canonicalize(source_path).unwrap_or_else(|_| source_path.to_path_buf());
+            let same = if cfg!(windows) {
+                output_identity.to_string_lossy().eq_ignore_ascii_case(&source_identity.to_string_lossy())
+            } else {
+                output_identity == source_identity
+            };
+            if same {
+                return Err(EngineError::Other(format!("export path is an imported source: {path}")));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Run an export of `seq` in `project` as a background job (or now, with `wait`); returns the job id.
 pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
+    reject_source_overwrite(&project, &settings.path)?;
     let format = settings.format;
     if !filmcraft_export::available(format) {
         return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));

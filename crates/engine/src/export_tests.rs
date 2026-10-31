@@ -198,6 +198,23 @@ fn single_frame_in_out_exports_warn_without_changing_the_output() {
 }
 
 #[test]
+fn export_cannot_overwrite_an_imported_source() {
+    let mut s = demo();
+    let dir = Scratch::new("source-overwrite");
+    let source_path = dir.path("source.wav");
+    s.execute("file.exportMedia", json!({"path": source_path, "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.25, "wait": true}))
+        .unwrap();
+    let before = std::fs::read(&source_path).unwrap();
+    s.execute("file.import", json!({"paths": [source_path]})).unwrap();
+
+    let result =
+        s.execute("file.exportMedia", json!({"path": source_path, "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.25, "wait": true}));
+
+    assert!(result.is_err(), "exporting over imported media must be rejected");
+    assert_eq!(std::fs::read(&source_path).unwrap(), before, "the imported source must remain intact");
+}
+
+#[test]
 fn export_integer_parameters_cannot_wrap_or_overflow() {
     let mut s = demo();
     for name in ["bitrateKbps", "maxBitrateKbps", "keyframeDistance"] {
