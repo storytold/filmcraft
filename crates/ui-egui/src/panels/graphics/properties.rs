@@ -166,7 +166,7 @@ impl Ctx<'_> {
     }
     fn check(&mut self, vui: &mut egui::Ui, id: &str, label: &str) -> bool {
         let mut b = pv(self.e, id, self.mt).as_bool().unwrap_or(false);
-        let r = vui.checkbox(&mut b, label);
+        let r = vui.checkbox_drag(&mut b, label);
         self.auto(id, r.rect, label);
         if r.changed() {
             self.set(id, json!(b));
@@ -624,7 +624,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let vertical = pv(e, "vertical", mt).as_bool().unwrap_or(false);
             let (_, mut vui) = cx.row(ui, tl!("Orientation"));
             let mut value = vertical;
-            let response = vui.checkbox(&mut value, tl!("Vertical Text"));
+            let response = vui.checkbox_drag(&mut value, tl!("Vertical Text"));
             cx.auto("vertical", response.rect, "Vertical Text");
             if response.changed() {
                 cx.set("vertical", json!(value));
@@ -723,16 +723,20 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for (id, r, label) in autos {
         app.auto.add(&id, r, &label);
     }
-    let (down, press) = ui.ctx().input(|i| (i.pointer.any_down(), i.pointer.press_start_time()));
+    let (down, released, press) = ui.ctx().input(|i| (i.pointer.any_down(), i.pointer.any_released(), i.pointer.press_start_time()));
     let key = egui::Id::unique("gfx-props-drag-step");
     let begun = ui.ctx().data(|d| d.get_temp::<Option<f64>>(key)).flatten();
     let mut wrote = false;
+    // whether this press has already begun its undo step; the release frame has no press time
+    let mut started = if down { begun.is_some() && begun == press } else { begun.is_some() };
     for (cmd, mut p) in actions {
         // a drag of a property is one undo step: the first change of each press begins a new one,
-        // the rest fold into it (like Effect Controls, #201 / #887)
-        if matches!(cmd.as_str(), "graphics.set" | "graphics.setCharStyle") && down {
+        // the rest, on the same frame or later and up to the release, fold into it (like Effect
+        // Controls, #201 / #887)
+        if matches!(cmd.as_str(), "graphics.set" | "graphics.setCharStyle") && (down || released) {
             p["merge"] = json!(true);
-            p["begin"] = json!(begun != press);
+            p["begin"] = json!(!started);
+            started = true;
             wrote = true;
         }
         if let Err(e) = app.session.execute(&cmd, p) {
@@ -769,7 +773,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         elems.push(("graphics.textProperties.type".into(), r.response.rect, "Text Layer Type"));
         ui.add_space(6.0);
         ui.label(tl!("Text Styling"));
-        let r = ui.checkbox(&mut d.ligatures, tl!("Ligatures"));
+        let r = ui.checkbox_drag(&mut d.ligatures, tl!("Ligatures"));
         elems.push(("graphics.textProperties.ligatures".into(), r.rect, "Ligatures"));
         ui.add_space(6.0);
         ui.horizontal(|ui| {

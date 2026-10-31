@@ -8,6 +8,7 @@
 //! `<p>.handles` (frames), `<p>.renderAudioEffects`, `<p>.title` (OMF), `<p>.ok`, `<p>.cancel`.
 
 use crate::widgets::CenteredDialog as _;
+use crate::widgets::DragCheckbox as _;
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
@@ -81,7 +82,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 ui.end_row();
             } else {
                 ui.label("");
-                let r = ui.checkbox(&mut d.mixdown_video, tl!("Mixdown video"));
+                let r = ui.checkbox_drag(&mut d.mixdown_video, tl!("Mixdown video"));
                 elems.push((format!("{p}.mixdownVideo"), r.rect, d.mixdown_video.to_string()));
                 ui.end_row();
             }
@@ -138,7 +139,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.end_row();
             ui.label(tl!("Rendering:"));
             let linked = d.audio == "linked";
-            let r = ui.add_enabled(!linked, egui::Checkbox::new(&mut d.trim, tl!("Trim audio files")));
+            let r = ui.checkbox_drag_enabled(!linked, &mut d.trim, tl!("Trim audio files"));
             elems.push((format!("{p}.trimAudio"), r.rect, d.trim.to_string()));
             ui.end_row();
             ui.label(tl!("Handle Frames:"));
@@ -146,11 +147,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             elems.push((format!("{p}.handles"), r.rect, d.handles.to_string()));
             ui.end_row();
             ui.label("");
-            let r = ui.add_enabled(!linked, egui::Checkbox::new(&mut d.render_effects, tl!("Render audio clip effects")));
+            let r = ui.checkbox_drag_enabled(!linked, &mut d.render_effects, tl!("Render audio clip effects"));
             elems.push((format!("{p}.renderAudioEffects"), r.rect, d.render_effects.to_string()));
             ui.end_row();
             ui.label("");
-            let r = ui.checkbox(&mut d.breakout, tl!("Breakout to mono"));
+            let r = ui.checkbox_drag(&mut d.breakout, tl!("Breakout to mono"));
             elems.push((format!("{p}.breakoutToMono"), r.rect, d.breakout.to_string()));
             ui.end_row();
         });

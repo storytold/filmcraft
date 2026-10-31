@@ -57,6 +57,7 @@ pub mod tts;
 pub mod voiceover;
 pub mod workspaces;
 
+use crate::widgets::DragCheckbox as _;
 use egui::{Align2, Color32, Rect};
 use filmcraft_project::ItemId;
 
@@ -363,10 +364,10 @@ pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKin
             let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
             close = true;
         }
-        ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
-        ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
+        ui.checkbox_drag(&mut app.ui.timeline.show_thumbnails, tl!("Video Thumbnails"));
+        ui.checkbox_drag(&mut app.ui.timeline.show_waveforms, tl!("Audio Waveforms"));
         let mut work_area = app.session.active_sequence().is_some_and(|q| q.work_area.is_some());
-        let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Checkbox::new(&mut work_area, tl!("Work Area Bar")));
+        let r = ui.checkbox_drag_enabled(app.session.state.active_sequence.is_some(), &mut work_area, tl!("Work Area Bar"));
         app.auto.add("panel.menu.Timeline.workAreaBar", r.rect, "Work Area Bar");
         if r.changed()
             && let Err(e) = app.session.execute("sequence.workAreaBar", serde_json::json!({"show": work_area}))

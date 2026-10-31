@@ -2,6 +2,7 @@ use super::{
     AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
     HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, pos2, vec2,
 };
+use crate::widgets::DragCheckbox as _;
 
 // ---------------------------------------------------------------------------------------------
 // middle: settings
@@ -107,7 +108,9 @@ pub(super) fn drag(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut f64, opti
 }
 
 pub(super) fn check(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut bool, label: &str) -> bool {
-    let r = ui.checkbox(v, label);
+    // A sweep finds the checkbox it began on by its id. Rows above this one come and go, so the
+    // automatic id (a count of the widgets before it) is not stable.
+    let r = ui.scope_builder(egui::UiBuilder::new().scope_id(egui::Id::unique(("export-check", id))), |ui| ui.checkbox_drag(v, label)).inner;
     reg.add(id, r.rect, label);
     r.changed()
 }
@@ -810,4 +813,47 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
         }
     }
     browse
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two checkboxes with rows between them that only show while the first one is on, as Image
+    /// Overlay and Name Overlay are.
+    fn frame(ctx: &egui::Context, state: &mut [bool; 2], events: Vec<egui::Event>) -> Vec<Rect> {
+        let mut reg = Reg::default();
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            check(ui, &mut reg, "test.first", &mut state[0], "first");
+            if state[0] {
+                ui.label("detail");
+                ui.label("more detail");
+            }
+            check(ui, &mut reg, "test.second", &mut state[1], "second");
+        });
+        out.textures_delta.clear();
+        reg.0.iter().map(|(_, r, _)| *r).collect()
+    }
+
+    fn primary(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    /// A sweep up from a checkbox onto one whose switching off hides the rows between them still
+    /// switches the first one off.
+    #[test]
+    fn a_sweep_survives_rows_that_hide_above_its_start() {
+        let ctx = egui::Context::default();
+        let mut state = [true, true];
+        frame(&ctx, &mut state, vec![]);
+        let rects = frame(&ctx, &mut state, vec![]);
+        let (first, second) = (rects[0].center(), rects[1].center());
+        frame(&ctx, &mut state, vec![egui::Event::PointerMoved(second)]);
+        frame(&ctx, &mut state, vec![primary(second, true)]);
+        frame(&ctx, &mut state, vec![egui::Event::PointerMoved(first)]);
+        frame(&ctx, &mut state, vec![primary(first, false)]);
+        frame(&ctx, &mut state, vec![]);
+        assert_eq!(state, [false, false]);
+    }
 }

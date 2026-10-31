@@ -320,6 +320,52 @@ fn shadow_color_drag_is_one_undo_step() {
     assert_eq!(color(&mut d), before, "one undo restores the original color");
 }
 
+/// A sweep across two checkboxes changes both in one frame (the pointer left the first and reached
+/// the second); the sweep is still one undo step, whether the changes land before the release or
+/// on it.
+#[test]
+fn a_checkbox_sweep_is_one_undo_step() {
+    for release_with_the_move in [false, true] {
+        let mut d = Driver::demo();
+        d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+        let r = d.exec("graphics.newText", json!({"text": "Title"}));
+        let clip = r["clip"].as_u64().unwrap();
+        d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+        d.frames(4);
+        // scroll the properties panel so the text rows are on screen
+        d.ok("ui.scroll", json!({"x": 1400.0, "y": 500.0, "dx": 0.0, "dy": -300.0}));
+        d.frames(3);
+        let flags = |d: &mut Driver| ["kerning", "ligatures"].map(|p| text_param(d, clip, p).and_then(|v| v.as_bool()).unwrap());
+        let before = flags(&mut d);
+        let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+        let centre = |d: &mut Driver, id: &str| {
+            let r = d.rect(id);
+            egui::pos2((r[0] + r[2] / 2.0) as f32, (r[1] + r[3] / 2.0) as f32)
+        };
+        let (a, b) = (centre(&mut d, "graphics.prop.kerning"), centre(&mut d, "graphics.prop.ligatures"));
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let send = |d: &mut Driver, events: Vec<egui::Event>| {
+            d.harness.input_mut().events.extend(events);
+            d.frames(1);
+        };
+        send(&mut d, vec![egui::Event::PointerMoved(a)]);
+        send(&mut d, vec![button(a, true)]);
+        if release_with_the_move {
+            send(&mut d, vec![egui::Event::PointerMoved(b), button(b, false)]);
+        } else {
+            send(&mut d, vec![egui::Event::PointerMoved(b)]);
+            send(&mut d, vec![button(b, false)]);
+        }
+        d.frames(3);
+        let after = flags(&mut d);
+        assert_eq!(after, before.map(|v| !v), "both checkboxes took the swept state (release with the move: {release_with_the_move})");
+        let undo1 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+        assert_eq!(undo1, undo0 + 1, "one undo step (release with the move: {release_with_the_move})");
+        d.exec("edit.undo", json!({}));
+        assert_eq!(flags(&mut d), before);
+    }
+}
+
 /// Character ranges use setCharStyle, but must share the same one-gesture undo rule as a layer.
 #[test]
 fn selected_character_size_drag_is_one_undo_step() {
