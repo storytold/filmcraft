@@ -211,11 +211,12 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
     let mut warnings = Vec::new();
     let mut pos = 0u64;
     let mut found_any = false;
-    let mut recovery_budget = 64 << 20;
+    let mut recovery_budget: usize = 64 << 20;
     let mut hdr = [0u8; 27 + 255];
     while pos + 27 <= len {
         src.read_at(pos, &mut hdr[..27])?;
         if &hdr[..4] != b"OggS" || hdr[4] != 0 {
+            recovery_budget = recovery_budget.saturating_sub(27);
             match find_capture(src, pos + 1, len, &mut recovery_budget)? {
                 Some(p) => {
                     if found_any {
@@ -245,6 +246,13 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
         page[22..26].fill(0);
         if crc32(&page) != stored_crc {
             warnings.push(format!("bad CRC on page at byte {pos}"));
+            // a dense run of fake capture patterns would otherwise re-read a page per byte; charge what
+            // this candidate cost: the header and segment table at the top, then the whole page again
+            recovery_budget = recovery_budget.saturating_sub(27 + nseg + page.len());
+            if recovery_budget == 0 {
+                warnings.push(format!("gave up resynchronising after byte {pos}"));
+                break;
+            }
             pos += 1;
             continue;
         }

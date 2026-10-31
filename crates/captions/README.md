@@ -14,7 +14,7 @@ and writes caption files, converts them to and from caption tracks, and draws ca
 | SubRip `.srt` | yes | yes | BOM, UTF-16, Windows-1252 fallback, CRLF/CR, missing or wrong indexes, `,` or `.` milliseconds, 1–9 fraction digits, missing hours, SSA coordinates, cues not separated by blank lines. Inline tags are kept as text. |
 | WebVTT `.vtt` | yes | yes | Cue identifiers, cue settings (verbatim), a leading `<v Speaker>` voice span (as the caption's speaker) and STYLE / REGION / NOTE blocks are kept. A missing `WEBVTT` signature is tolerated. |
 | Scenarist SCC `.scc` | yes | yes | CEA-608 at 29.97 fps, drop-frame or not. Reads pop-on, roll-up and paint-on (channel 1); writes pop-on. |
-| MacCaption MCC `.mcc` | yes | yes | One SMPTE ST 334-2 caption distribution packet (CDP) per frame in MacCaption's hex text with letter abbreviations. Writes 29.97 fps (`30DF` / `30`) with CEA-608 field 1 (the SCC schedule) **and** CEA-708 service 1 (two-window pop-on emulation). Reads CEA-608 field 1 when present, else CEA-708 service 1; time code rates 30DF, 30, 60DF, 60, 25, 24, 50. |
+| MacCaption MCC `.mcc` | yes | yes | One SMPTE ST 334-2 caption distribution packet (CDP) per frame carrying caption data, omitting empty frames, in MacCaption's hex text with letter abbreviations. Writes 29.97 fps (`30DF` / `30`) with CEA-608 field 1 (the SCC schedule) **and** CEA-708 service 1 (two-window pop-on emulation). Reads CEA-608 field 1 when present, else CEA-708 service 1; time code rates 30DF, 30, 60DF, 60, 25, 24, 50. |
 | EBU STL `.stl` | yes | yes | EBU Tech 3264-E: GSI block + 128-byte TTI blocks, `STL25.01` (25 fps) or `STL30.01` (read/written as 29.97 fps, non-drop labels), ISO/IEC 6937 Latin text (accents as diacritic + letter), italics / underline codes as `<i>` / `<u>`, extension blocks for long subtitles, start-of-programme (TCP) subtracted. |
 | TTML `.ttml` (IMSC1) | yes | yes | Writes the IMSC1 Text profile (TTML2 namespaces): `<p>` per cue, `<br/>`, styled `<span>`s for `<i>` / `<b>` / `<u>`, `ttm:agent` speakers, exact frame times (`123f`) at the sequence rate. Reads any TTML (TTML1, TTML2, the 2006 `ttaf1` drafts): clock / frame / offset / tick times, `dur`, nested time containers (`body` / `div` begins offset and ends clip their contents; `seq` containers are read as `par` with a warning), timed spans, referenced styles. |
 | DFXP `.dfxp` | yes | yes | TTML1 with the DFXP presentation profile; clock times in milliseconds (frame-exact after `snap_to_frames`). |
@@ -63,6 +63,22 @@ Text is wrapped at 32 columns, bottom-aligned (last row 15) and centred. Charact
 608 basic, special and extended sets (extended characters are preceded by a basic fallback
 character, as the standard requires); others are dropped. If there is no room to load a caption
 before its in point (for example a caption at 00:00:00:00), it appears as soon as it is loaded.
+
+### MCC writer
+
+The writer merges the scheduled CEA-608 and CEA-708 frames in timestamp order. Frames without
+caption data are omitted, including during a displayed caption; its explicit erase/hide command
+still lands at its out point. CDP sequence counters advance per emitted packet, wrapping at 16 bits.
+Export work and output size therefore follow the scheduled caption data, not the time between
+cues or their duration (#2811). Empty-frame insertion is an optional MCC export behavior; see
+[EZTitles' MCC export documentation, "Write empty frames"](https://eztitles.com/Webhelp/EZTitles/export_subtitles_cc_mcc.htm).
+FilmCraft does not offer continuous padding for consumers that require a packet on every video frame.
+
+Regression tests cover sparse output, both caption streams individually and together, drop-frame
+and non-drop timecodes, exact cue round trips, and timestamps near the tick storage limit.
+An external FFmpeg 9.0.2 decode of the two-cue regression fixture preserved text and all four
+timestamps (2.002–4.004 s and 120.120–122.122 s); the combined-stream export has 29 data lines,
+down from 3,614. No media fixtures are committed.
 
 ## Burn-in
 

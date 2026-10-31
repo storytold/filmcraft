@@ -46,7 +46,7 @@ fn make_movie(path: &Path, scene: DemoScene, frames: i64) {
         identity: None,
     };
     let mut p = Project::new("fixture");
-    let item = p.add_item("scene", Label::Iris, ItemKind::Media(clip), None);
+    let item = p.add_item("scene", Label::Iris, ItemKind::Media(Box::new(clip)), None);
     let seq = p.new_sequence("s", SequenceSettings { width: W, height: H, frame_rate: rate, ..Default::default() }, 1, 0, None);
     let mut v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, dur), rate).unwrap();
     for e in &mut v.effects {
@@ -114,9 +114,11 @@ impl Driver {
         }
     }
 
-    /// Run frames (with short sleeps so frame workers finish) until `done`.
+    /// Run frames (with short sleeps so frame workers finish) until `done`, for at most two
+    /// minutes of wall-clock time.
     fn until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
-        for _ in 0..600 {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed().as_secs() < 120 {
             if done(self) {
                 return;
             }

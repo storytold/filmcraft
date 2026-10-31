@@ -275,7 +275,44 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         Format::Otio => otio::import(&text, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
     };
+    let mut imported = imported;
+    bound_start_timecodes(&mut imported, &mut report);
     Ok((imported, report))
+}
+
+/// Start timecodes beyond this many frames (about 100 hours at the highest accepted rate) are not
+/// timecodes: a value near `i64::MAX` made the export overflow adding frame numbers to it.
+const MAX_START_TIMECODE: u64 = 360_000_000_000;
+
+/// Reset what a document carries beyond what the frame arithmetic can hold, and say so: frame rates
+/// above `common::MAX_RATE` per second (an FCPXML `frameDuration` of `1/9223372036854775807s` made
+/// `frames_round` overflow on export) and start timecodes beyond `MAX_START_TIMECODE` frames. One pass
+/// after every import, so no format can let such a number through.
+pub(crate) fn bound_start_timecodes(imported: &mut Imported, report: &mut Report) {
+    for item in imported.project.items.values_mut() {
+        let name = item.name.clone();
+        if let Some(seq) = item.as_sequence_mut() {
+            if !common::plausible_rate(seq.settings.frame_rate) {
+                report.warn(format!("sequence \"{name}\" has an implausible frame rate ({}); the default was used", seq.settings.frame_rate));
+                seq.settings.frame_rate = FrameRate::default();
+            }
+            if seq.start_timecode.unsigned_abs() > MAX_START_TIMECODE {
+                report.warn(format!("sequence \"{name}\" has an out-of-range start timecode ({} frames); it starts at 0", seq.start_timecode));
+                seq.start_timecode = 0;
+            }
+        } else if let Some(media) = item.as_media_mut() {
+            if let Some(v) = media.info.video.as_mut()
+                && !common::plausible_rate(v.frame_rate)
+            {
+                report.warn(format!("media \"{name}\" has an implausible frame rate ({}); the default was used", v.frame_rate));
+                v.frame_rate = FrameRate::default();
+            }
+            if media.info.start_timecode.is_some_and(|tc| tc.unsigned_abs() > MAX_START_TIMECODE) {
+                report.warn(format!("media \"{name}\" has an out-of-range start timecode; it was ignored"));
+                media.info.start_timecode = None;
+            }
+        }
+    }
 }
 
 fn decode_text(bytes: &[u8]) -> String {
