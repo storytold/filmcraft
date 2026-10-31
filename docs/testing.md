@@ -137,6 +137,10 @@ Each codec README has the full fixture matrix and the measured results.
 - `crates/gpu/src/tests.rs` composites the same frame plan (a YUV layer plus a transformed,
   semi-transparent RGBA layer) on the GPU and on the CPU. It requires a 99th-percentile channel
   difference of ≤ 6 and a mean of < 1.5 (8-bit levels). It skips when no GPU adapter is available.
+  A software adapter counts: wgpu offers one when there is no GPU, so on a machine without a GPU
+  installing Mesa's lavapipe (`mesa-vulkan-drivers` on Debian / Ubuntu) runs these tests. CI does
+  that and sets `FILMCRAFT_REQUIRE_GPU=1`, so missing adapters/devices fail the normal
+  suite instead of silently skipping; the tests print the selected adapter.
 - Effects implemented only on the CPU need no GPU test: the plan pre-renders those layers on the
   CPU.
 - **Golden images** (`crates/golden`, a test-only crate): `tests/golden.rs` builds small procedural
@@ -365,3 +369,12 @@ thread's CPU time, so it runs with the rest of the suite. Hosts without a per-th
 explicitly with
 `cargo test --release -p filmcraft-render --lib perf_24_tracks_3_effects_realtime_factor -- --ignored --nocapture`
 and record the machine with the result.
+
+### Required software-GPU CI, 2026-10-30
+
+The application workflow only calls the shared gate and supplies packages and
+`FILMCRAFT_REQUIRE_GPU=1`. GPU unit and golden tests fail if adapter lookup, device
+creation, or a required float render target is unavailable. No extra application-local
+workflow job or duplicate release-build test pass is added. Local runs without this
+variable retain explicit skip behavior. An adapter log line alone is not proof that
+device creation succeeded.

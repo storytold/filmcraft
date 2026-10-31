@@ -10,10 +10,45 @@ use super::*;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::plan::execute_cpu;
 
+/// The device for the GPU tests of this crate, or `None` without an adapter. wgpu offers a software
+/// adapter (lavapipe, llvmpipe, WARP) too, after any GPU: CI's tests run on lavapipe. The adapter is
+/// printed so that a log shows what the tests ran on.
 pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = crate::adapter::native_instance();
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    let required = std::env::var_os("FILMCRAFT_REQUIRE_GPU").is_some();
+    let adapter = checked_gpu_result(pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())), required)?;
+    let info = adapter.get_info();
+    eprintln!("GPU test adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+    checked_gpu_result(pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())), required)
+}
+
+// Test-only policy: local machines may lack an adapter, but the CI software-GPU leg must
+// fail on both adapter lookup and device creation failures, even after printing an adapter.
+fn checked_gpu_result<T, E: std::fmt::Debug>(result: Result<T, E>, required: bool) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            assert!(!required, "required GPU test setup failed: {error:?}");
+            eprintln!("SKIPPED (gpu): test setup failed: {error:?}");
+            None
+        }
+    }
+}
+
+#[test]
+fn optional_gpu_failure_is_skipped() {
+    assert_eq!(checked_gpu_result::<(), _>(Err("device creation failed"), false), None);
+}
+
+#[test]
+#[should_panic(expected = "required GPU test setup failed")]
+fn required_gpu_device_failure_fails_the_test() {
+    checked_gpu_result::<(), _>(Err("device creation failed"), true);
+}
+
+#[test]
+fn required_gpu_success_runs() {
+    assert_eq!(checked_gpu_result::<_, &str>(Ok(7), true), Some(7));
 }
 
 pub(crate) fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
