@@ -278,17 +278,20 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
   PQ / HLG, limited), and for PQ `mdcv` and `clli`; 8-bit SDR HEVC is unchanged and has no `colr`
   (the VUI carries its description, as in the software H.264 path).
 
-## Background job threads (macOS)
+## Background job threads
 
 `register()` installs a call to `thread_priority::lower_current_thread` (a refusal is logged) as
-the export crate's background-thread hook (`filmcraft_export::register_background_thread_start`). Each thread of an
-export's, the export queue's, Render Previews' or a proxy job's pool
-(`filmcraft_export::on_own_threads`) runs it as it starts and drops to the lowest relative
-priority (−15) of the default QoS class, so the monitors' frame workers (default class at 0) and
-the main thread (user-interactive) get the cores first while the machine is busy. Not the utility
-class: macOS runs that on the efficiency cores first, which made an export 15 % slower on an idle
-machine. Threads those threads create start at the default class at 0 again, so decoders an export
-opens keep their priority. Windows and Linux are not covered yet ([ADR 0002](../../docs/adr/0002-background-thread-priority.md)).
+the export crate's background-thread hook (`filmcraft_export::register_background_thread_start`).
+Each thread of an export's, the export queue's, Render Previews' or a proxy job's pool
+(`filmcraft_export::on_own_threads`) runs it as it starts and drops below the monitors' frame
+workers and the main thread, so they get the cores first while the machine is busy
+([ADR 0002](../../docs/adr/0002-background-thread-priority.md)):
+
+| OS | Lowered to | Threads those threads create |
+|---|---|---|
+| macOS | the default QoS class at relative priority −15 (not the utility class, which macOS runs on the efficiency cores first: an export 15 % slower on an idle machine) | start at the default class at 0 again |
+| Windows | below-normal priority | start at normal priority again |
+| Linux | a `nice` value 10 higher | take the lowered value: an export's own decoders run lowered with it, and `register()` makes the shared decode pool (`filmcraft_codecs::gop::start_decode_pool`) so that no lowered thread is the first to |
 
 ## Guarantees
 

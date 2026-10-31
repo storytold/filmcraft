@@ -64,7 +64,7 @@ remain in effect; implementation differences are not exceptions to those rules.
 |---|---|---|
 | macOS | [`videotoolbox`](../../crates/platform/src/videotoolbox.rs) | VideoToolbox decoding, CoreMedia/CoreVideo buffers and its output callback. |
 | macOS | [`videotoolbox_encode`](../../crates/platform/src/videotoolbox_encode.rs) | VideoToolbox H.264/HEVC encoding and its output callback; `dlsym` resolves an optional VideoToolbox property. |
-| macOS | [`thread_priority`](../../crates/platform/src/thread_priority.rs) | `pthread_set_qos_class_self_np` lowers a background job thread (ADR 0002). |
+| macOS / Windows / Linux | [`thread_priority`](../../crates/platform/src/thread_priority.rs) | `pthread_set_qos_class_self_np`, `SetThreadPriority` or `setpriority` lowers a background job thread (ADR 0002). |
 | Windows | [`media_foundation::gpu`](../../crates/platform/src/media_foundation/gpu.rs), [`media_foundation::mft`](../../crates/platform/src/media_foundation/mft.rs) | COM, Media Foundation, D3D11 device setup and surface readback. |
 | Windows / 64-bit Linux | [`nvenc::ffi`](../../crates/platform/src/nvenc/ffi.rs), [`nvenc::session`](../../crates/platform/src/nvenc/session.rs), [`nvenc::device`](../../crates/platform/src/nvenc/device.rs) | NVENC declarations and calls, driver loading, D3D11 or CUDA device/context operations. |
 | 64-bit Linux | [`nvdec::cuvid`](../../crates/platform/src/nvdec/cuvid.rs) | NVDEC driver calls, parser callbacks and CUDA readback, using `nvenc::device`. |
