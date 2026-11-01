@@ -241,11 +241,12 @@ impl FilmcraftApp {
                 self.playback.audio_seen = (f, now);
             } else if now - self.playback.audio_seen.1 >= AUDIO_STALL_S {
                 // the device stopped consuming samples: continue from where the audio got to on
-                // the wall clock, without sound
+                // the wall clock, without sound, and retry as for a lost device (#3785).
                 let played = if sr > 0 { f as f64 / sr as f64 } else { 0.0 };
                 self.playback.anchor_tick += Tick::from_seconds_f64(played * self.playback.speed);
                 self.playback.anchor_time = now;
                 self.playback.audio_clock = false;
+                self.playback.audio_retry_at = now + AUDIO_RETRY_S;
                 if let Some(a) = self.audio.as_mut() {
                     a.stop();
                 }

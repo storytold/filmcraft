@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-31 · **Change:** minor (G17: retry stalled audio outputs) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -308,6 +308,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   unplugged device) is restarted with the same rate, channels, clock and mixer position, so sound
   resumes instead of playback going silent (at most 3 restarts in 10 s); a panicking mixer plays
   silence (#840).
+- **Have:** Program and Source playback reopen an output that stops consuming samples without
+  reporting an error (#3785). After the one-second stall timeout, playback uses the wall clock
+  and retries the output every two seconds from the current playhead. Simulated-device tests
+  cover recovery and failed reopens; the underlying Windows driver stall remains unconfirmed.
 - **Estimate:** 20–40 h.
 
 ## G18. Effects depth: approximations and missing behaviour
@@ -344,6 +348,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-31 | minor | G17: Program and Source playback retry stalled outputs without pause/play (#3785); simulated-device regression coverage, Windows hardware validation still needed |
 | 2026-10-30 | minor | G14: three key languages have no catalog (Hindi, Arabic, Vietnamese); Korean, Italian, German and Russian are near-complete; Ukrainian is menus only; G13 GIF transparency retained |
 | 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461) |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |

@@ -294,10 +294,8 @@ impl FilmcraftApp {
             clock.anchor_tick = time;
             clock.anchor_time = now;
             clock.audio_clock = false;
-            // A dead stream is reopened on a timer; a stalled one keeps the wall clock (#136).
-            if reading.is_none() {
-                clock.audio_retry_at = now + AUDIO_RETRY_S;
-            }
+            // Reopen lost and stalled streams while playback continues on the wall clock (#3785).
+            clock.audio_retry_at = now + AUDIO_RETRY_S;
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }

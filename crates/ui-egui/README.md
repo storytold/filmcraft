@@ -89,6 +89,19 @@ Source range handles use transient gesture previews and the engine's integer-fra
 `source_monitor::adjust_range`; release dispatches one mark edit. Monitor command routing
 keeps Source navigation, markers and marked-range playback separate from Program.
 
+### Audio stalls and recovery
+
+Program and Source playback switch to the wall clock if the output stops consuming samples for
+one second, even when the device reports no error (#3785). Both reopen the output after two
+seconds, using the current playhead and a fresh device-clock grace period. Failed reopens retain
+the two-second retry interval; stopping playback cancels retries. This recovers from a stalled
+output without requiring pause/play, but does not diagnose why a particular driver stopped.
+
+`audio_recovery_tests` covers frozen zero and nonzero frame counters, normal and 2x playback,
+repeated stalls, failed reopens and cancellation. `source_playback_ui` checks Source recovery
+without rewinding or changing the Program playhead or project. These tests use simulated devices;
+the reported Windows WASAPI hardware failure still needs validation on an affected machine.
+
 ## Pane layout controls
 
 The panels use `craft-ui::docking` with its split-tree settings: craft-ui draws the frames, tab
