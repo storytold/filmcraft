@@ -177,7 +177,9 @@ fn source_settings(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CMD, "parameters must be an object"));
     }
     let all = footage(s, p);
-    let is_set = |k: &&str| p.get(*k).is_some_and(|v| !v.is_null() && *v != Value::Bool(false));
+    // null is unset for every key, `reset: false` too; any other value (also `false` for a number or
+    // a string) is set, so `apply` rejects it with a type error
+    let is_set = |k: &&str| p.get(*k).is_some_and(|v| !v.is_null() && !(*k == "reset" && *v == Value::Bool(false)));
     if !SETTING_KEYS.iter().any(is_set) {
         // describe the first item
         let first = all.first().copied().ok_or_else(|| bad(CMD, "select a clip"))?;

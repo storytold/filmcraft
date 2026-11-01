@@ -136,6 +136,37 @@ fn an_edit_that_changes_nothing_records_no_undo_step() {
 }
 
 #[test]
+fn false_is_not_unset_for_value_parameters() {
+    let dir = tmp_dir("raw-false");
+    let mut s = demo();
+    let id = import_folder(&mut s, &dir);
+    let depth = s.history.undo.len();
+    for k in ["exposure", "temperature", "tint", "whiteBalance", "highlights", "demosaic", "output"] {
+        assert!(s.execute("clip.sourceSettings", json!({"items": [id.0], k: false})).is_err(), "{k}: false");
+    }
+    assert_eq!(s.history.undo.len(), depth);
+}
+
+#[test]
+fn an_item_that_already_has_the_settings_is_left_alone_in_a_multi_item_edit() {
+    let dir = tmp_dir("raw-multi");
+    let mut s = demo();
+    let a = import_folder(&mut s, &dir);
+    let dir2 = tmp_dir("raw-multi2");
+    let b = import_folder(&mut s, &dir2);
+    s.execute("clip.sourceSettings", json!({"items": [a.0], "exposure": 1.0})).unwrap();
+    let depth = s.history.undo.len();
+    // `a` already has this exposure, `b` does not: one step, and only `b` changes
+    s.execute("clip.sourceSettings", json!({"items": [a.0, b.0], "exposure": 1.0})).unwrap();
+    assert_eq!(s.history.undo.len(), depth + 1);
+    assert_eq!(raw_of(&s, a).unwrap().exposure, 1.0);
+    assert_eq!(raw_of(&s, b).unwrap().exposure, 1.0);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(raw_of(&s, a).unwrap().exposure, 1.0);
+    assert_eq!(raw_of(&s, b), None);
+}
+
+#[test]
 fn white_balance_from_the_as_shot_temperature() {
     let dir = tmp_dir("raw-wb");
     let mut s = demo();
