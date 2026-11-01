@@ -240,10 +240,19 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
         let (project, media) = args::project_and_media(&files);
+        // Settings ▸ General ▸ At Startup ▸ Show Home (the default): no project opens, the window
+        // starts on Home (the Import screen, with the recent projects). The demo opens only for
+        // `--demo` or a first run with no preferences yet (#2421).
+        let home = project.is_none()
+            && !startup_flag
+            && media.is_empty()
+            && session.prefs.general.at_startup == "showHome"
+            && session.prefs_path.as_deref().is_some_and(|p| p.exists());
         if let Some(p) = project {
             if let Err(e) = session.execute("file.open", json!({"path": p})) {
                 log::error!("{e}");
             }
+        } else if home {
         } else if !startup_flag && session.prefs.general.at_startup == "openMostRecent" {
             // Settings ▸ General ▸ At Startup ▸ Open Most Recent
             let recent = session.prefs.general.recent_projects.iter().find(|p| std::path::Path::new(p).exists()).cloned();
@@ -273,6 +282,10 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }
         let mut app = FilmcraftApp::new(session);
         app.set_startup_update_check(true);
+        // Home only when nothing opened a project after all (`--recover` may have)
+        if home && app.session.path.is_none() {
+            app.ui.mode = filmcraft_ui_egui::state::Mode::Import;
+        }
         app.graphics_notice = notice;
         if recover == Some(false) {
             app.dialog = None;
