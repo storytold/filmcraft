@@ -8,7 +8,7 @@
 //! the selection marks In/Out and can be extracted or lifted (`transcript.*` commands).
 
 use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
-use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionFormat};
+use filmcraft_project::{CaptionAlign, CaptionAnchor, CaptionBoxMode, CaptionFormat};
 use filmcraft_time::{TimeDisplay, format_time};
 use serde_json::{Value, json};
 
@@ -747,6 +747,33 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
         app.auto.add("text.captions.style.background", resp.rect, "Background box");
         if resp.changed() {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "background": bg})));
+        }
+        for (m, label, tip) in [
+            (CaptionBoxMode::Line, tl!("Lines"), tl!("One box behind each line")),
+            (CaptionBoxMode::Block, tl!("Block"), tl!("One box around the whole caption")),
+        ] {
+            let resp = ui.selectable_label(st.box_mode == m, label).on_hover_text(tip);
+            app.auto.add(&format!("text.captions.style.boxMode.{}", m.name()), resp.rect, m.name());
+            if resp.clicked() {
+                actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "boxMode": m.name()})));
+            }
+        }
+        // the automatic padding shows what it draws: 0.3 × size at the sides, none above or below
+        let [pad_x, pad_y] = st.background_padding.unwrap_or([(st.size * 0.3).round(), 0.0]);
+        for (axis, label, tip, value) in [
+            ("x", tl!("Pad X "), tl!("Box padding left and right (px at 1080 lines)"), pad_x),
+            ("y", tl!("Pad Y "), tl!("Box padding above and below (px at 1080 lines)"), pad_y),
+        ] {
+            let mut v = value;
+            // the full range captions.setStyle accepts: a narrower one would clamp a stored value
+            // (and report it changed) as soon as the panel shows it
+            let resp = ui.add(crate::widgets::number_drag(&mut v).range(0.0..=500.0).speed(0.5).prefix(label).suffix(" px")).on_hover_text(tip);
+            app.auto.add(&format!("text.captions.style.backgroundPadding.{axis}"), resp.rect, "Caption box padding");
+            let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
+                let pad = if axis == "x" { [v, pad_y] } else { [pad_x, v] };
+                actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "backgroundPadding": pad})));
+            }
         }
         ui.label(egui::RichText::new(tl!("Align")).size(11.0).color(app.tokens.text_dim));
         for (a, icon_txt, name, tip) in [
