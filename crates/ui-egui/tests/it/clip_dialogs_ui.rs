@@ -807,8 +807,17 @@ fn a_dropped_project_file_opens_and_asks_about_unsaved_changes() {
     assert_eq!(d.path().as_deref(), Some(a_path.as_str()));
     assert_eq!(d.app().session.project.items.len(), items);
 
-    // Open Recent and File ▸ Open ask the same question
+    // a project file that fails to open: Don't Save keeps the open project and its changes
+    let broken = dir.join("broken.fcproj");
+    std::fs::write(&broken, "not a project").unwrap();
     d.edit();
+    d.drop_files(&[&broken]);
+    d.click("openProject.dontSave");
+    assert_eq!(d.path().as_deref(), Some(a_path.as_str()), "still the open project");
+    assert!(d.app().session.is_dirty(), "its changes are kept");
+    assert!(d.app().ui.status.contains("broken.fcproj"), "the reason is shown: {}", d.app().ui.status);
+
+    // Open Recent and File ▸ Open ask the same question
     assert_eq!(d.menu("file.openRecent.1")["dialog"], "openProject");
     d.click("openProject.cancel");
     assert_eq!(d.path().as_deref(), Some(a_path.as_str()));

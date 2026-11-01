@@ -770,12 +770,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 }
 
 /// Go on after the unsaved-changes prompt (Don't Save, or Save once it saved): close the project,
-/// then for Quit close the window and for Open open the chosen project.
+/// then for Quit close the window; for Open open the chosen project instead of closing.
 fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) {
     let command = prompt.command.as_str();
     // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
-    // snapshot, so the next launch doesn't offer them back
-    let close = command != "app.quit" || app.session.is_dirty();
+    // snapshot, so the next launch doesn't offer them back. Open replaces the project only once
+    // the chosen one has loaded (which leaves the session as clean as closing does), so a file
+    // that fails to open keeps the current project and its changes.
+    let close = command == "file.closeProject" || (command == "app.quit" && app.session.is_dirty());
     if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
         app.ui.status = e.to_string();
     }
