@@ -27,7 +27,8 @@ use std::sync::{Once, OnceLock};
 
 use filmcraft_codecs::hw::NalCodec;
 use filmcraft_export::{
-    BitrateMode, EncodedPacket, EncoderFrame, ExportError, ExportSettings, FieldOrder, Format, H264Pass, H264Profile, HardwareEncoding, Result, VideoEncoder,
+    BitrateMode, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, FieldOrder, Format, H264Pass, H264Profile, HardwareEncoding, Result,
+    VideoEncoder,
 };
 use filmcraft_isobmff::{AvcConfig, SampleEntry};
 use filmcraft_time::FrameRate;
@@ -60,6 +61,8 @@ struct Config {
     /// Constant bit rate (Export ▸ Bitrate Encoding ▸ CBR); otherwise VBR.
     cbr: bool,
     codec: NalCodec,
+    /// QuickTime uses an `nclc` colour box; MP4 uses `nclx`.
+    mov: bool,
     /// The output media subtype (`MFVideoFormat_H264` / `MFVideoFormat_HEVC`).
     subtype: windows::core::GUID,
     /// `MF_MT_MPEG2_PROFILE` to ask for, where the codec has a defined mapping.
@@ -76,6 +79,11 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
     // the NV12 pictures this path encodes are 8-bit 4:2:0: HDR would need P010 and Main 10
     if s.signal.is_hdr() {
         return Err("HDR (this path encodes 8-bit 4:2:0)".into());
+    }
+    // rgba_to_yuv420_8 always writes BT.709 limited-range samples. Do not tag those pixels with
+    // a different requested signal; let the registry try another encoder instead.
+    if s.signal != ColorSignal::default() {
+        return Err("non-BT.709 color (this path converts to BT.709 limited range)".into());
     }
     if !matches!(s.h264_pass, H264Pass::Single) || s.bitrate_mode == BitrateMode::Vbr2Pass {
         return Err("two-pass encoding".into());
@@ -111,6 +119,7 @@ fn config(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -
         bitrate_bps: s.bitrate_kbps.max(100).saturating_mul(1000),
         cbr: s.bitrate_mode == BitrateMode::Cbr,
         codec: if hevc { NalCodec::Hevc } else { NalCodec::H264 },
+        mov: !format.is_mp4_with(s.multiplexer),
         subtype: if hevc { MFVideoFormat_HEVC } else { MFVideoFormat_H264 },
         // H.264 only. HEVC's `MF_MT_MPEG2_PROFILE` values are `eAVEncH265VProfile_*`, and every
         // encoder this path has met already writes Main without being asked, so there is nothing to
@@ -308,7 +317,7 @@ impl MfVideoEncoder {
     /// picture.
     fn sample_entry_from(&self, annex_b: &[u8]) -> Result<SampleEntry> {
         let (w, h) = (u16::try_from(self.cfg.size.0).unwrap_or(u16::MAX), u16::try_from(self.cfg.size.1).unwrap_or(u16::MAX));
-        let entry = match self.cfg.codec {
+        let mut entry = match self.cfg.codec {
             NalCodec::H264 => {
                 let (sps, pps) = annexb::split_h264_parameter_sets(annex_b).map_err(|e| ExportError::Encode(format!("Media Foundation: {e}")))?;
                 SampleEntry::avc(AvcConfig::new(vec![sps], vec![pps], 4), w, h)
@@ -320,6 +329,7 @@ impl MfVideoEncoder {
                 SampleEntry::hevc(record, w, h)
             }
         };
+        ColorSignal::default().apply_to(&mut entry, self.cfg.mov);
         Ok(entry)
     }
 
@@ -370,7 +380,11 @@ impl VideoEncoder for MfVideoEncoder {
     fn sample_entry(&self) -> SampleEntry {
         // Only complete once the encoder has written its parameter sets; the export asks again
         // after the first picture, which is when they exist.
-        self.entry.clone().unwrap_or_else(|| SampleEntry::avc(AvcConfig::default(), self.cfg.size.0 as u16, self.cfg.size.1 as u16))
+        self.entry.clone().unwrap_or_else(|| {
+            let mut entry = SampleEntry::avc(AvcConfig::default(), self.cfg.size.0 as u16, self.cfg.size.1 as u16);
+            ColorSignal::default().apply_to(&mut entry, self.cfg.mov);
+            entry
+        })
     }
 
     fn timescale(&self) -> u32 {
@@ -503,6 +517,70 @@ mod tests {
 
     fn settings(format: Format) -> ExportSettings {
         ExportSettings { format, hardware_encoding: HardwareEncoding::Auto, bitrate_kbps: 4000, ..Default::default() }
+    }
+
+    #[test]
+    fn declines_sdr_signals_that_do_not_match_the_bt709_input_conversion() {
+        for format in [Format::H264, Format::Hevc] {
+            for signal in [
+                ColorSignal { primaries: 9, transfer: 1, matrix: 1 },
+                ColorSignal { primaries: 1, transfer: 1, matrix: 9 },
+                ColorSignal { primaries: 6, transfer: 6, matrix: 6 },
+            ] {
+                let request = ExportSettings { signal, ..settings(format) };
+                assert!(config(format, 640, 360, FrameRate::FPS_24, &request).is_err(), "{format:?} {signal:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn incompatible_sdr_requests_use_the_factory_decline_contract() {
+        let signal = ColorSignal { primaries: 9, transfer: 1, matrix: 1 };
+        let h264 = ExportSettings { signal, ..settings(Format::H264) };
+        assert!(factory(Format::H264, 640, 360, FrameRate::FPS_24, &h264).is_none());
+        let hevc = ExportSettings { signal, ..settings(Format::Hevc) };
+        assert!(matches!(factory(Format::Hevc, 640, 360, FrameRate::FPS_24, &hevc), Some(Err(ExportError::Unsupported(_)))));
+    }
+
+    #[test]
+    fn h264_output_sample_entry_signals_bt709_limited() {
+        let request = settings(Format::H264);
+        let Some(result) = factory(Format::H264, 640, 360, FrameRate::FPS_24, &request) else {
+            eprintln!("SKIPPED: no Media Foundation H.264 encoder");
+            return;
+        };
+        let mut encoder = result.expect("Media Foundation H.264 encoder");
+        let rgba = vec![128u8; 640 * 360 * 4];
+        let mut output = 0;
+        for index in 0..4 {
+            output += encoder.encode(&EncoderFrame { width: 640, height: 360, rgba: &rgba, hdr: None, index }).unwrap().len();
+        }
+        output += encoder.flush().unwrap().len();
+        assert_eq!(output, 4, "all submitted frames must be emitted");
+        let entry = encoder.sample_entry();
+        let video = entry.video.expect("video sample entry");
+        assert_eq!(video.color, Some(filmcraft_isobmff::ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false }));
+    }
+
+    #[test]
+    fn h264_mov_sample_entries_use_quicktime_bt709_color() {
+        let request = ExportSettings { multiplexer: filmcraft_export::Multiplexer::Mov, ..settings(Format::H264) };
+        let Some(result) = factory(Format::H264, 640, 360, FrameRate::FPS_24, &request) else {
+            eprintln!("SKIPPED: no Media Foundation H.264 encoder");
+            return;
+        };
+        let mut encoder = result.expect("Media Foundation H.264 encoder");
+        let provisional = encoder.sample_entry();
+        let rgba = vec![128u8; 640 * 360 * 4];
+        let mut output = 0;
+        for index in 0..4 {
+            output += encoder.encode(&EncoderFrame { width: 640, height: 360, rgba: &rgba, hdr: None, index }).unwrap().len();
+        }
+        output += encoder.flush().unwrap().len();
+        assert_eq!(output, 4, "all submitted frames must be emitted");
+        let expected = Some(filmcraft_isobmff::ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 });
+        assert_eq!(encoder.sample_entry().video.expect("video sample entry").color, expected);
+        assert_eq!(provisional.video.expect("provisional video sample entry").color, expected);
     }
 
     /// The export's bitrate mode reaches the encoder as its rate control mode (#936).
