@@ -20,6 +20,7 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Pl => Some(include_str!("pl.tsv")),
         Language::Sv => Some(include_str!("sv.tsv")),
         Language::Tr => Some(include_str!("tr.tsv")),
+        Language::Ar => Some(include_str!("ar.tsv")),
     }
 }
 
