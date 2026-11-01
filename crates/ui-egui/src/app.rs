@@ -113,6 +113,8 @@ impl FilmcraftApp {
             menu_sent: Vec::new(),
             shortcut_editor: Default::default(),
             graphics_notice: None,
+            restart_notice: None,
+            restart_after_quit: false,
             tl: Default::default(),
             transcript_cache: Default::default(),
             command_inbox: None,
@@ -121,6 +123,7 @@ impl FilmcraftApp {
             gpu: None,
             watched_render: None,
             applied_prefs: None,
+            language_applied: false,
             applied_ui_scale: None,
             workspace_restored: false,
             workspaces,
@@ -395,6 +398,9 @@ impl FilmcraftApp {
             // a broken notice must not take the session down: drop it
             self.graphics_notice = None;
         }
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| restart_notice::show(self, ui.ctx()))).is_err() {
+            self.restart_notice = None;
+        }
         self.last_ui_time = self.now();
         if !self.synthetic.is_empty() || self.synthetic_pending_step.is_some() {
             ctx.request_repaint();
@@ -502,6 +508,10 @@ impl eframe::App for FilmcraftApp {
         // Flush the recovery journal and stop the auto-save worker; a session with nothing unsaved
         // removes its journal, one with unsaved changes keeps it for the next launch.
         self.session.shutdown();
+        // a restart asked for relaunches the app once the state is safe on disk
+        if self.restart_after_quit {
+            self.relaunch();
+        }
     }
 
     /// Eframe's UI entry: begin this pass's IME reset state, suspend custom controls when no

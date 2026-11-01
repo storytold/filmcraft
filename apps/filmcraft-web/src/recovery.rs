@@ -12,13 +12,16 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use filmcraft_engine::Session;
+use filmcraft_engine::autosave::Preferences;
 use serde_json::{Value, json};
 
 use crate::opfs;
 use crate::recovery_policy::{Action, Policy};
 
-const SNAPSHOT: &str = "recovery/snapshot.fcproj";
-const META: &str = "recovery/meta.json";
+pub(crate) const SNAPSHOT: &str = "recovery/snapshot.fcproj";
+pub(crate) const META: &str = "recovery/meta.json";
+/// The persisted preferences (`preferences.json` in the desktop data directory, mapped to OPFS).
+pub(crate) const PREFS: &str = "preferences.json";
 /// Media larger than this are not copied to OPFS.
 const KEEP_MAX: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
 
@@ -33,12 +36,14 @@ pub struct Autosave {
     outcomes: Rc<RefCell<Vec<Outcome>>>,
     /// Monotonic host clock. Web `logic` may run for hidden tabs; egui's input time is stale there.
     clock: web_time::Instant,
+    /// The preferences last persisted (web sessions have no `prefs_path` to write through).
+    prefs: Option<Preferences>,
 }
 
 impl Default for Autosave {
     /// Default policy with a monotonic host clock, so hidden-tab logic never uses a stale egui input time.
     fn default() -> Self {
-        Self { policy: Policy::default(), outcomes: Rc::default(), clock: web_time::Instant::now() }
+        Self { policy: Policy::default(), outcomes: Rc::default(), clock: web_time::Instant::now(), prefs: None }
     }
 }
 
@@ -47,6 +52,12 @@ impl Autosave {
     pub fn tick(&mut self, s: &Session, ctx: &egui::Context) {
         if !opfs::available() {
             return;
+        }
+        // Preferences persist the same way: a change (the interface language a restart was asked
+        // for) must already be in OPFS when the page reloads, and survive an ordinary tab close.
+        if self.prefs.as_ref() != Some(&s.prefs) {
+            self.prefs = Some(s.prefs.clone());
+            opfs::write(PREFS.into(), serde_json::to_vec_pretty(&s.prefs).unwrap_or_default());
         }
         let now = self.clock.elapsed().as_secs_f64();
         for o in self.outcomes.borrow_mut().drain(..) {

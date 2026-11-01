@@ -3731,3 +3731,8 @@
 	Previous	前へ
 	Next	次へ
 	Enter a valid HH:MM:SS:FF timecode	有効なタイムコードを HH:MM:SS:FF 形式で入力してください
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	再起動
+	Later	後で
+	Restart FilmCraft to use {language}	FilmCraft を再起動して {language} を使用
+	The interface language changes after a restart.	インターフェースの言語は再起動後に変更されます。

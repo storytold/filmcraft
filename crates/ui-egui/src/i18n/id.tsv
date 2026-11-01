@@ -3669,3 +3669,8 @@
 	Previous	Sebelumnya
 	Next	Berikutnya
 	Enter a valid HH:MM:SS:FF timecode	Masukkan kode waktu HH:MM:SS:FF yang valid
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	Mulai ulang
+	Later	Nanti
+	Restart FilmCraft to use {language}	Mulai ulang FilmCraft untuk menggunakan {language}
+	The interface language changes after a restart.	Bahasa antarmuka berubah setelah memulai ulang.

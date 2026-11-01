@@ -65,6 +65,7 @@ pub mod panels;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_ahead;
+pub mod restart_notice;
 mod rtl;
 pub mod scrub;
 mod shuttle;
@@ -326,6 +327,11 @@ pub struct FilmcraftApp {
     /// The window runs in a fallback graphics mode (set by the desktop host): a notice with a
     /// button back to the default mode (see [`graphics_notice`]).
     pub graphics_notice: Option<graphics_notice::GraphicsNotice>,
+    /// A language change waiting for a restart (see [`restart_notice`]).
+    pub restart_notice: Option<restart_notice::RestartNotice>,
+    /// Relaunch the app when the close in progress finishes (`on_exit` calls `hooks.restart`);
+    /// the language-change notice's Restart button sets it.
+    pub restart_after_quit: bool,
     /// Fault injection for robustness tests: the next UI pass panics.
     #[doc(hidden)]
     pub panic_next_frame: bool,
@@ -374,6 +380,9 @@ pub struct FilmcraftApp {
     watched_render: Option<(u64, Tick)>,
     /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
     applied_prefs: Option<filmcraft_engine::autosave::Preferences>,
+    /// The saved interface language has been applied once, at the first `apply_prefs`: later
+    /// changes wait for a restart (`applied_prefs` can't say this, `sync_pool` resets it).
+    language_applied: bool,
     /// Settings ▸ Appearance ▸ UI Scale last applied, with the system scale it was applied for.
     applied_ui_scale: Option<(Option<f32>, f32)>,
     workspace_restored: bool,

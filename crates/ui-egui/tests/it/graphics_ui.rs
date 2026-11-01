@@ -23,8 +23,13 @@ struct Driver {
 
 impl Driver {
     fn demo() -> Self {
+        Self::with(|_| {})
+    }
+    /// `setup` adjusts the session before the app is built, e.g. a saved interface language.
+    fn with(setup: impl FnOnce(&mut Session)) -> Self {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
+        setup(&mut session);
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let shots = std::env::var_os("FILMCRAFT_UI_SHOTS").map(std::path::PathBuf::from);
@@ -167,7 +172,13 @@ fn choice_and_stroke_width_accessible_names_follow_language() {
 
     assert_eq!(d.harness.get_by_role_and_label(Role::ComboBox, "Shape").value().as_deref(), Some("Rectangle"));
 
-    d.exec("prefs.set", json!({"key": "general.interfaceLanguage", "value": "es"}));
+    // a saved language applies at startup: an app restarted into it
+    let mut d = Driver::with(|s| {
+        s.prefs.general.interface_language = "es".into();
+    });
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let clip = d.exec("graphics.newShape", json!({"shape": "rectangle", "position": [800, 500], "size": [500, 300]}))["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
     d.frames(4);
     let es = filmcraft_ui_egui::i18n::Language::Es;
     for (label, value) in [("Shape", "Rectangle"), ("Fill Type", "Solid"), ("Stroke Type", "Outer"), ("Stroke 2 Type", "Outer")] {
@@ -226,7 +237,14 @@ fn effect_controls_text_accessible_name_follows_language() {
     d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
     d.frames(4);
 
-    d.exec("prefs.set", json!({"key": "general.interfaceLanguage", "value": "es"}));
+    // a saved language applies at startup: an app restarted into it
+    let mut d = Driver::with(|s| {
+        s.prefs.general.interface_language = "es".into();
+    });
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let clip = d.exec("graphics.newText", json!({"text": "Night Drive"}))["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
     d.frames(4);
     let es = filmcraft_ui_egui::i18n::Language::Es;
     assert_eq!(

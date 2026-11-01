@@ -24,7 +24,12 @@ struct Driver {
 
 impl Driver {
     fn demo() -> Self {
+        Self::with_session(|_| {})
+    }
+    /// `setup` adjusts the session before the app is built (e.g. a saved interface language).
+    fn with_session(setup: impl FnOnce(&mut Session)) -> Self {
         let mut session = Session::default();
+        setup(&mut session);
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
@@ -462,10 +467,9 @@ fn hex_field_takes_typing_a_character_at_a_time() {
 /// text wraps at the page edge.
 #[test]
 fn long_translations_stay_on_the_page() {
-    let mut d = Driver::demo();
+    // a language choice takes effect at the next start, so each language gets a restarted app
     for lang in ["en", "fr", "es", "pt-br", "de", "ru", "uk", "id"] {
-        d.exec("prefs.set", json!({"key": "general.interfaceLanguage", "value": lang}));
-        d.frames(3);
+        let mut d = Driver::with_session(|s| s.prefs.general.interface_language = lang.into());
         for c in CATEGORIES {
             d.menu(&format!("app.settings.{c}"));
             let page = d.rect("settings.page");

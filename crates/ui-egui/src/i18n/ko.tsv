@@ -3690,3 +3690,8 @@
 	Previous	이전
 	Next	다음
 	Enter a valid HH:MM:SS:FF timecode	올바른 HH:MM:SS:FF 타임코드를 입력하세요
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	다시 시작
+	Later	나중에
+	Restart FilmCraft to use {language}	FilmCraft를 다시 시작하여 {language} 사용
+	The interface language changes after a restart.	인터페이스 언어는 다시 시작하면 변경됩니다.

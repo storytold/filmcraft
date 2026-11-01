@@ -678,6 +678,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     match action {
         Some("cancel") => {
+            if d.command == "app.quit" {
+                // a restart asked for was cancelled with the quit prompt
+                app.cancel_restart();
+            }
             app.ui.clip_dialog = None;
             return;
         }
@@ -699,6 +703,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             if app.session.path.is_some() {
                 if let Err(e) = app.session.execute("file.save", json!({})) {
                     app.ui.status = e.to_string();
+                    if d.command == "app.quit" {
+                        // the save failed, the prompt is gone: the restart is off
+                        app.cancel_restart();
+                    }
                     app.ui.clip_dialog = None;
                     return;
                 }
@@ -764,6 +772,11 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, command: &str) {
     if command == "app.quit" {
         app.quit_confirmed = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        // on the web the confirmed restart reloads the page itself
+        #[cfg(target_arch = "wasm32")]
+        if app.restart_after_quit {
+            app.finish_restart();
+        }
     }
     app.ui.clip_dialog = None;
 }
