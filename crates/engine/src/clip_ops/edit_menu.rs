@@ -25,6 +25,7 @@ pub(super) fn apply_label(s: &mut Session, p: &Value, l: Label) -> Result<Value>
         for i in &items {
             if let Some(it) = pr.item_mut(*i) {
                 it.label = l;
+                it.custom_label_color = None;
                 n += 1;
             }
         }
@@ -32,6 +33,7 @@ pub(super) fn apply_label(s: &mut Session, p: &Value, l: Label) -> Result<Value>
             for c in &clips {
                 if let Some((_, it)) = q.find_item_mut(*c) {
                     it.label = l;
+                    it.custom_label_color = None;
                     n += 1;
                 }
             }
@@ -42,17 +44,19 @@ pub(super) fn apply_label(s: &mut Session, p: &Value, l: Label) -> Result<Value>
 }
 
 pub(super) fn select_label_group(s: &mut Session, _: &Value) -> Result<Value> {
+    let key = |label: Label, custom: Option<filmcraft_project::HexColor>| (if custom.is_some() { "" } else { label.name() }, custom);
     if !s.state.selection.is_empty() {
         let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
-        let labels: BTreeSet<&str> = s.state.selection.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.label.name())).collect();
-        let sel: Vec<ClipId> = q.all_tracks().flat_map(|t| t.items.iter()).filter(|i| labels.contains(i.label.name())).map(|i| i.id).collect();
+        let labels: BTreeSet<_> = s.state.selection.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| key(i.label, i.custom_label_color))).collect();
+        let sel: Vec<ClipId> =
+            q.all_tracks().flat_map(|t| t.items.iter()).filter(|i| labels.contains(&key(i.label, i.custom_label_color))).map(|i| i.id).collect();
         s.state.selection = sel;
         return Ok(json!({"clips": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}));
     }
-    let labels: BTreeSet<&str> = s.state.project_selection.iter().filter_map(|i| s.project.item(*i).map(|it| it.label.name())).collect();
+    let labels: BTreeSet<_> = s.state.project_selection.iter().filter_map(|i| s.project.item(*i).map(|it| key(it.label, it.custom_label_color))).collect();
     let mut all = Vec::new();
     s.project.root.all_items(&mut all);
-    let sel: Vec<ItemId> = all.into_iter().filter(|i| s.project.item(*i).is_some_and(|it| labels.contains(it.label.name()))).collect();
+    let sel: Vec<ItemId> = all.into_iter().filter(|i| s.project.item(*i).is_some_and(|it| labels.contains(&key(it.label, it.custom_label_color)))).collect();
     s.state.project_selection = sel;
     Ok(json!({"items": s.state.project_selection.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
