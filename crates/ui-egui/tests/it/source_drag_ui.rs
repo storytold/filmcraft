@@ -452,4 +452,21 @@ fn source_drag_onto_an_empty_timeline_keeps_the_marks_and_stream_choice() {
     assert!(q.audio_tracks.iter().all(|t| t.items.is_empty()));
 }
 
-/
+/// #3447: the header's Search shows Effects with the cursor in its search field, also when the
+/// panel was showing already.
+#[test]
+fn header_search_puts_the_cursor_in_the_effects_search() {
+    let mut h = harness(5);
+    h.state_mut().set_workspace("Effects");
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let at = control_rect(&h, "header.search").center();
+    pointer(&mut h, at, Some(true));
+    pointer(&mut h, at, Some(false));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(h.ctx.egui_wants_keyboard_input());
+    assert!(!h.state().ui.focus_effects_search, "the request was taken");
+}

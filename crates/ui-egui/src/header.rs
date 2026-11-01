@@ -95,6 +95,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     if btn(ui, Icon::Search, "search", tl!("Search"), app).clicked() {
         app.show_panel(crate::dock::PanelKind::Effects);
+        // with the panel already showing, opening it alone changes nothing on screen (#3447)
+        app.ui.focus_effects_search = true;
     }
     if btn(ui, Icon::Bell, "notifications", tl!("Progress"), app).clicked() {
         app.ui.mode = Mode::Export;
