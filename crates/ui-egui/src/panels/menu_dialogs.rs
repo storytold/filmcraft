@@ -375,7 +375,9 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
 
 /// The Source Settings dialog's parameters for camera raw footage (`clip.sourceSettings`'s
 /// description `info`): the item's settings, a custom white balance starting from the file's
-/// as-shot one. Empty for other footage.
+/// as-shot one. Empty for other footage. The dialog edits the first selected clip only: it shows
+/// that clip's values, and applying them to other selected clips would overwrite their own settings
+/// with it. `clip.sourceSettings` itself takes several `items`.
 fn source_settings_params(info: &Value) -> Value {
     if info["raw"] != true {
         return json!({});
@@ -432,6 +434,8 @@ fn source_settings_ui(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut V
         p["whiteBalance"] = json!("asShot");
         p["exposure"] = json!(0.0);
         p["demosaic"] = json!("high");
+        p["highlights"] = json!("clip");
+        p["output"] = json!("sceneLinearRec709");
         if let (Some(t), Some(n)) = (info["asShot"]["temperature"].as_f64(), info["asShot"]["tint"].as_f64()) {
             p["temperature"] = json!(t.round());
             p["tint"] = json!(n.round());

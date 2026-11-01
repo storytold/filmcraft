@@ -26,7 +26,8 @@ use crate::{Result, Session};
 
 const CMD: &str = "clip.sourceSettings";
 
-/// The parameters that change settings (any of them makes the command an edit).
+/// The parameters that change settings (any of them, other than null or `reset: false`, makes
+/// the command an edit).
 const SETTING_KEYS: [&str; 8] = ["whiteBalance", "temperature", "tint", "exposure", "highlights", "demosaic", "output", "reset"];
 
 pub(crate) fn commands() -> Vec<CommandSpec> {
@@ -36,7 +37,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "Source Settings…",
             menu: &["Clip"],
             shortcut: None,
-            params: r#"{"items":[id]?,"item":id?,"whiteBalance"":"asShot"|"custom"?,"temperature":kelvin?,"tint":n?,"exposure":stops?,"highlights":"clip"?,"demosaic":"fast"|"high"?,"output":"sceneLinearRec709"?,"reset":bool?}"#,
+            params: r#"{"items":[id]?,"item":id?,"whiteBalance":"asShot"|"custom"?,"temperature":kelvin?,"tint":n?,"exposure":stops?,"highlights":"clip"?,"demosaic":"fast"|"high"?,"output":"sceneLinearRec709"?,"reset":bool?}"#,
             enabled: has_footage,
             run: source_settings,
             journal: true,
@@ -176,7 +177,8 @@ fn source_settings(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CMD, "parameters must be an object"));
     }
     let all = footage(s, p);
-    if !SETTING_KEYS.iter().any(|k| p.get(*k).is_some()) {
+    let is_set = |k: &&str| p.get(*k).is_some_and(|v| !v.is_null() && *v != Value::Bool(false));
+    if !SETTING_KEYS.iter().any(is_set) {
         // describe the first item
         let first = all.first().copied().ok_or_else(|| bad(CMD, "select a clip"))?;
         return describe(s, first);
@@ -194,17 +196,20 @@ fn source_settings(s: &mut Session, p: &Value) -> Result<Value> {
     for i in &items {
         let cur = s.project.item(*i).and_then(|it| it.as_media()).and_then(|m| m.interpret.raw).unwrap_or_default();
         let r = if reset { RawSettings::default() } else { apply(cur, p)? };
-        new.push((*i, (r != RawSettings::default()).then_some(r)));
+        new.push((*i, (r != RawSettings::default()).then_some(r), r != cur));
     }
-    s.edit("Source Settings", |pr, _| {
-        for (i, r) in &new {
-            if let Some(ItemKind::Media(m)) = pr.item_mut(*i).map(|it| &mut it.kind) {
-                m.interpret.raw = *r;
+    // nothing changes: no empty undo step
+    if new.iter().any(|(_, _, changed)| *changed) {
+        s.edit("Source Settings", |pr, _| {
+            for (i, r, changed) in &new {
+                if let (true, Some(ItemKind::Media(m))) = (*changed, pr.item_mut(*i).map(|it| &mut it.kind)) {
+                    m.interpret.raw = *r;
+                }
             }
-        }
-        Ok(())
-    })?;
-    let first = new.first().and_then(|(_, r)| *r).unwrap_or_default();
+            Ok(())
+        })?;
+    }
+    let first = new.first().and_then(|(_, r, _)| *r).unwrap_or_default();
     Ok(json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>(), "settings": settings_json(&first)}))
 }
 

@@ -363,7 +363,8 @@ mod tests {
 
     /// The picture is as sharp as developing the full frame and then averaging it down: at 1/2 and
     /// 1/4 the reduced development differs from that box-filtered full development by under 0.01 on average
-    /// (0.06 at the single edge pixel) and keeps the edge at least as steep.
+    /// (at most 0.053, in the two columns beside the edge), has no gain error (the signed mean offset
+    /// is -0.003, half a pixel of ramp slope from the Bayer siting) and keeps the edge at least as steep.
     #[test]
     fn reduced_development_matches_the_box_filtered_full_picture() {
         let bytes = edge_dng();
@@ -375,6 +376,7 @@ mod tests {
             let (sw, sh) = (small.width as usize, small.height as usize);
             let mut worst = 0.0f32;
             let mut sum = 0.0f32;
+            let mut signed = 0.0f32;
             for y in 0..sh {
                 for x in 0..sw {
                     let mut avg = 0.0;
@@ -383,19 +385,23 @@ mod tests {
                             avg += red_at(&full, x * k + dx, y * k + dy);
                         }
                     }
-                    let d = (red_at(&small, x, y) - avg / (k * k) as f32).abs();
-                    worst = worst.max(d);
-                    sum += d;
+                    let d = red_at(&small, x, y) - avg / (k * k) as f32;
+                    worst = worst.max(d.abs());
+                    sum += d.abs();
+                    signed += d;
                 }
             }
             // steepest step between neighbouring pixels in the middle row, in units of the picture's edge
             let row = sh / 2;
             let step_small = (1..sw).map(|x| (red_at(&small, x, row) - red_at(&small, x - 1, row)).abs()).fold(0.0f32, f32::max);
             let step_full = (1..full.width as usize).map(|x| (red_at(&full, x, row * k) - red_at(&full, x - 1, row * k)).abs()).fold(0.0f32, f32::max);
-            // the edge is not softer than the box-filtered full picture's (which spreads it over k pixels)
+            // the edge is not softer than in the box-filtered full picture
             assert!(step_small >= step_full, "1/{k}: edge step {step_small} < full {step_full}");
             let mean = sum / (sw * sh) as f32;
             assert!(mean < 0.01, "1/{k}: mean abs diff {mean}");
+            // a gain error would show here (a tenth of a percent of full scale is 0.001)
+            let offset = signed / (sw * sh) as f32;
+            assert!(offset.abs() < 0.004, "1/{k}: signed mean offset {offset}");
             assert!(worst < 0.06, "1/{k}: worst diff {worst}");
         }
     }

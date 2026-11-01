@@ -116,6 +116,26 @@ fn exposure_changes_every_frame_and_is_one_undo_step() {
 }
 
 #[test]
+fn an_edit_that_changes_nothing_records_no_undo_step() {
+    let dir = tmp_dir("raw-noop");
+    let mut s = demo();
+    let id = import_folder(&mut s, &dir);
+    let depth = s.history.undo.len();
+    // null and `reset: false` are unset: the command only describes the item
+    let r = s.execute("clip.sourceSettings", json!({"items": [id.0], "whiteBalance": null, "reset": false})).unwrap();
+    assert_eq!(r["raw"], true);
+    // the settings the item already has, and a reset of an item without settings
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "exposure": 0.0, "demosaic": "high"})).unwrap();
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "reset": true})).unwrap();
+    assert_eq!(s.history.undo.len(), depth);
+    assert_eq!(raw_of(&s, id), None);
+    // a real change is still one step, and repeating it is not another
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "exposure": 1.0})).unwrap();
+    s.execute("clip.sourceSettings", json!({"items": [id.0], "exposure": 1.0})).unwrap();
+    assert_eq!(s.history.undo.len(), depth + 1);
+}
+
+#[test]
 fn white_balance_from_the_as_shot_temperature() {
     let dir = tmp_dir("raw-wb");
     let mut s = demo();

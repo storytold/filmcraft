@@ -3620,7 +3620,6 @@
 	Fast (bilinear)	빠름 (이중선형)
 	Output color space: scene-linear Rec. 709	출력 색 공간: 장면 선형 Rec. 709
 	Reset to As Shot	촬영 시 설정으로 재설정
-# View ▸ Reset Interface Zoom (#2253).
 # View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	인터페이스 확대/축소 재설정
 	Track Color	트랙 색상
