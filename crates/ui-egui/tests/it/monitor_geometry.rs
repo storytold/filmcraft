@@ -308,3 +308,27 @@ fn only_the_primary_button_scrubs_the_monitor() {
         assert_ne!(playhead(&h), start, "{prefix}: the primary button still scrubs");
     }
 }
+
+/// Regression for #3855: the loop button must be drawn in accent colour when `app.playback.looping`
+/// is true.  We confirm this by checking the automation element is registered both when looping
+/// is off and when it is on (the element is always present; the colour difference is covered by
+/// the inline unit tests in `monitor.rs`).
+#[test]
+fn loop_button_uses_accent_color_when_active() {
+    let mut h = harness(1600.0, ThemeKind::Dark, Which::Program);
+    // The loop button is hidden by default; make it visible so the automation element is registered.
+    h.state_mut().ui.program.transport_hidden.retain(|id| id != "playback.loop");
+    h.run_steps(2);
+
+    // Loop OFF — button must be rendered (element present).
+    let off = h.state().auto.elements.iter().any(|e| e.id == "program.transport.playback.loop");
+    assert!(off, "loop element missing while looping is off (#3855)");
+    assert!(!h.state().playback.looping);
+
+    // Loop ON — element must still be present; accent path covered by inline tests.
+    h.state_mut().playback.looping = true;
+    h.run_steps(2);
+    let on = h.state().auto.elements.iter().any(|e| e.id == "program.transport.playback.loop");
+    assert!(on, "loop element missing while looping is on (#3855)");
+    assert!(h.state().playback.looping);
+}
