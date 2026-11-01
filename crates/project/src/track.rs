@@ -1,9 +1,114 @@
+use super::keyframe::{Interpolation, Param};
 use super::label::Label;
 use super::sequence::bounded_time_range;
 use super::{
     ClipId, Deserialize, EffectInstance, EssentialSound, GraphicMeta, ItemId, MarkerId, MixerStrip, MulticamSel, ParamValue, Serialize, Tick, TimeRange,
     TrackId, TransitionId, graphic, mask,
 };
+
+/// The smallest rate (media ticks per timeline tick) the Time Remapping integration walks with, so
+/// a 0 % speed section freezes on the frame it reached instead of dividing by zero.
+const MIN_REMAP_RATE: f64 = 1e-6;
+/// The largest rate the integration walks with, so a hostile speed value cannot overflow the
+/// timeline arithmetic.
+const MAX_REMAP_RATE: f64 = 1e9;
+
+/// One segment of the Time Remapping speed curve between two adjacent keyframes, with the rate
+/// (media ticks per timeline tick, in magnitude) at each end. `hold` keeps the left keyframe's
+/// rate across the segment (Hold interpolation); otherwise the rate changes linearly with the
+/// media time.
+#[derive(Clone, Copy)]
+struct RemapSeg {
+    a: f64,
+    b: f64,
+    va: f64,
+    vb: f64,
+    hold: bool,
+}
+
+/// Timeline time spent walking a speed-curve segment between media positions `x0` and `x1`
+/// (distances from the segment's left edge, in either direction): exact for the linear rate
+/// profile (the log-mean of the endpoint rates), `hold` keeps `va`.
+fn seg_seconds(s: &RemapSeg, x0: f64, x1: f64) -> f64 {
+    let l = (s.b - s.a).max(1.0);
+    if s.hold || (s.vb - s.va).abs() <= s.va.abs() * 1e-12 {
+        return (x0 - x1).abs() / s.va;
+    }
+    let c = (s.vb - s.va) / l;
+    let v0 = (s.va + c * x0).clamp(MIN_REMAP_RATE, MAX_REMAP_RATE);
+    let v1 = (s.va + c * x1).clamp(MIN_REMAP_RATE, MAX_REMAP_RATE);
+    // the log of the endpoint rates and the rate difference share a sign per direction, so the
+    // magnitude of their quotient is the (positive) crossing time either way
+    ((v0 / v1).ln() / c).abs().max(0.0)
+}
+
+/// The media position reached walking from `x0` by signed timeline ticks `dt` within a speed-curve
+/// segment, saturated to the segment.
+fn seg_position(s: &RemapSeg, x0: f64, dt: f64) -> f64 {
+    let l = (s.b - s.a).max(1.0);
+    let c = (s.vb - s.va) / l;
+    if s.hold || c.abs() <= s.va.abs() * 1e-12 / l {
+        return (x0 + dt * s.va).clamp(0.0, l);
+    }
+    let arg = (c * dt).clamp(-40.0, 40.0);
+    (x0 + s.va * arg.exp_m1() / c).clamp(0.0, l)
+}
+
+/// Walk `remaining` timeline ticks through the media from `from` (a media tick position) under the
+/// speed-curve segments (ascending media order), up or down: beyond the outermost keyframes the
+/// rate is constant (`v_hi` above, `v_lo` below), inside a segment the crossing time is exact.
+/// Returns the media position reached.
+fn walk_remapping(segs: &[RemapSeg], v_lo: f64, v_hi: f64, from: f64, mut remaining: f64, up: bool) -> f64 {
+    let mut m = from;
+    let mut i: isize = if up { segs.partition_point(|s| s.b <= m) as isize } else { segs.partition_point(|s| s.a < m) as isize - 1 };
+    loop {
+        let s = if i >= 0 { segs.get(i as usize) } else { None };
+        match s {
+            Some(s) if up && m < s.a => {
+                // constant rate before the curve begins
+                let dt = (s.a - m) / v_lo;
+                if remaining < dt {
+                    return m + remaining * v_lo;
+                }
+                remaining -= dt;
+                m = s.a;
+            }
+            Some(s) if !up && m > s.b => {
+                // constant rate after the curve ends (walking down)
+                let dt = (m - s.b) / v_hi;
+                if remaining < dt {
+                    return m - remaining * v_hi;
+                }
+                remaining -= dt;
+                m = s.b;
+            }
+            Some(s) => {
+                let x0 = (m - s.a).clamp(0.0, s.b - s.a);
+                let x1 = if up { s.b - s.a } else { 0.0 };
+                let dt = seg_seconds(s, x0, x1);
+                if remaining < dt {
+                    let x = seg_position(s, x0, if up { remaining } else { -remaining });
+                    return s.a + x;
+                }
+                remaining -= dt;
+                m = if up { s.b } else { s.a };
+                i = if up { i + 1 } else { i - 1 };
+            }
+            None => {
+                // beyond the outermost keyframes the curve holds its end value
+                return if up { m + remaining * v_hi } else { m - remaining * v_lo };
+            }
+        }
+    }
+}
+
+/// A media position as f64 saturated to the representable `Tick` range.
+fn saturate_tick(m: f64) -> i64 {
+    if !m.is_finite() {
+        return 0;
+    }
+    m.round().clamp(i64::MIN as f64, i64::MAX as f64) as i64
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MarkerKind {
@@ -173,7 +278,8 @@ impl TrackItem {
     pub fn range(&self) -> TimeRange {
         TimeRange::new(self.start, self.duration)
     }
-    /// Media time displayed at timeline time `t` (ignores time remapping keyframes).
+    /// Media time displayed at timeline time `t` (a static Time Remapping speed scales the
+    /// constant factor; an animated one integrates the speed curve).
     pub fn source_time_at(&self, t: Tick) -> Tick {
         if let Some(h) = self.frame_hold {
             return h;
@@ -191,17 +297,149 @@ impl TrackItem {
     }
     /// Media time at timeline time `t` ignoring any frame hold.
     pub fn moving_source_time_at(&self, t: Tick) -> Tick {
+        if let Some(m) = self.remapped_media_time(t) {
+            return m;
+        }
+        let k = self.effective_speed();
         let rel = t - self.start;
-        let scaled = Tick((rel.0 as f64 * self.speed.abs()).round() as i64);
-        if self.reverse {
-            self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64) - scaled - Tick(1)
-        } else {
-            self.source_in + scaled
+        let scaled = Tick((rel.0 as f64 * k).round() as i64);
+        if self.reverse { self.source_in + Tick((self.duration.0 as f64 * k).round() as i64) - scaled - Tick(1) } else { self.source_in + scaled }
+    }
+    /// The media span the clip covers in `rel` timeline ticks from its start: the Time Remapping
+    /// speed curve walked up when it is animated (whatever the direction flag — the covered span
+    /// is the same), the constant factor otherwise. The clip's whole span is
+    /// `media_span(duration)`, the far end of [`TrackItem::source_out`].
+    pub fn media_span(&self, rel: Tick) -> Tick {
+        if let Some((segs, v_lo, v_hi)) = self.remap_curve() {
+            let far = Tick(saturate_tick(walk_remapping(&segs, v_lo, v_hi, self.source_in.0 as f64, rel.0.max(0) as f64, true)));
+            return (far - self.source_in).max(Tick::ZERO);
+        }
+        Tick((rel.0.max(0) as f64 * self.effective_speed()).round() as i64)
+    }
+    /// Media time consumed by the item (the source out point): the far end of the media the clip
+    /// plays, which a Time Remapping speed curve spreads differently than a constant factor.
+    pub fn source_out(&self) -> Tick {
+        self.source_in + self.media_span(self.duration)
+    }
+    /// The source out point at the clip's constant Speed/Duration factor, ignoring Time Remapping:
+    /// what Speed/Duration and Rate Stretch scale, so their speed never counts the remap twice.
+    pub fn source_out_unremapped(&self) -> Tick {
+        self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)
+    }
+    /// The first timeline time at which the clip shows media time `src` (None when it never does):
+    /// the inverse of [`TrackItem::source_time_at`].
+    pub fn timeline_time_of_media(&self, src: Tick) -> Option<Tick> {
+        if self.frame_hold.is_some() {
+            return (self.source_time_at(self.start) == src).then_some(self.start);
+        }
+        if !self.remap_animated() {
+            let k = self.effective_speed();
+            if !(k.is_finite() && k > 0.0) {
+                return None;
+            }
+            let total = self.media_span(self.duration);
+            let rel_src = if self.reverse { total - Tick(1) - (src - self.source_in) } else { src - self.source_in };
+            if rel_src < Tick::ZERO || rel_src >= total {
+                return None;
+            }
+            let t = self.start + Tick((rel_src.0 as f64 / k).floor() as i64);
+            return (t < self.end()).then_some(t);
+        }
+        // a curve: the shown media time moves monotonically through the clip, so the timeline time
+        // for `src` is found by bisecting the mapping
+        let (a, b) = (self.source_time_at(self.start), self.source_time_at((self.end() - Tick(1)).max(self.start)));
+        let (lo_mt, hi_mt) = (a.min(b), a.max(b));
+        if src < lo_mt || src > hi_mt {
+            return None;
+        }
+        let (mut lo, mut hi) = (0i64, self.duration.0.max(1));
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let m = self.moving_source_time_at(self.start + Tick(mid));
+            let hit = if self.reverse { m <= src } else { m >= src };
+            if hit {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let t = self.start + Tick(lo.min(self.duration.0 - 1));
+        (t < self.end()).then_some(t)
+    }
+    /// The Time Remapping effect's Speed parameter, when the clip carries one (percent of the
+    /// Speed/Duration factor).
+    fn remap_speed(&self) -> Option<&Param> {
+        self.effect("time_remap").and_then(|e| e.param("speed"))
+    }
+    /// Time Remapping speed (percent, in magnitude) at absolute media time `m`: the static value,
+    /// or the speed curve's value there. 100 % leaves the clip's Speed/Duration factor unchanged;
+    /// a hostile (non-finite) value stands for 100 %.
+    pub fn remap_percent_at(&self, m: Tick) -> f64 {
+        match self.remap_speed() {
+            Some(p) => {
+                let v = p.f64_at(m);
+                if v.is_finite() { v.abs() } else { 100.0 }
+            }
+            None => 100.0,
         }
     }
-    /// Media time consumed by the item (the source out point).
-    pub fn source_out(&self) -> Tick {
-        self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)
+    /// Whether the Time Remapping speed is animated: the media time then comes from integrating
+    /// the speed curve, not from a constant factor.
+    pub fn remap_animated(&self) -> bool {
+        self.remap_speed().is_some_and(|p| p.is_animated())
+    }
+    /// The clip's Speed/Duration factor (1.0 = 100 %) with its static Time Remapping speed
+    /// applied. The curve's value at the clip's In point stands for the whole clip; callers that
+    /// need the local rate use [`TrackItem::rate_at`].
+    pub fn effective_speed(&self) -> f64 {
+        self.speed.abs() * self.remap_percent_at(self.source_in) / 100.0
+    }
+    /// The playback rate (media ticks per timeline tick, in magnitude) at timeline time `t`: the
+    /// Speed/Duration factor with the Time Remapping speed shown there. 1.0 = normal.
+    pub fn rate_at(&self, t: Tick) -> f64 {
+        self.speed.abs() * self.remap_percent_at(self.moving_source_time_at(t)) / 100.0
+    }
+    /// The playback rate (magnitude) at one edge of the clip, for converting a media handle to
+    /// timeline ticks when trimming: extending an edge consumes media at the position shown there.
+    pub fn edge_rate(&self, out_edge: bool) -> f64 {
+        let t = if out_edge { (self.end() - Tick(1)).max(self.start) } else { self.start };
+        self.rate_at(t).max(1e-9)
+    }
+    /// The media time shown at timeline time `t` when the Time Remapping speed is animated: the
+    /// speed curve (keyed at absolute media times) integrated over the clip, so a ramp trades
+    /// timeline time for media time exactly. A reversed clip walks the covered span back from its
+    /// far end. `None` without a curve or on hostile values (the constant factor applies).
+    fn remapped_media_time(&self, t: Tick) -> Option<Tick> {
+        let (segs, v_lo, v_hi) = self.remap_curve()?;
+        let rel = ((t - self.start).0 as f64).max(0.0);
+        if !rel.is_finite() {
+            return None;
+        }
+        let (from, up) =
+            if self.reverse { (self.source_in.0 as f64 + self.media_span(self.duration).0 as f64, false) } else { (self.source_in.0 as f64, true) };
+        Some(Tick(saturate_tick(walk_remapping(&segs, v_lo, v_hi, from, rel, up))))
+    }
+    /// The speed-curve segments of the clip with the rate beyond either end, or `None` when the
+    /// Time Remapping speed is not animated (or the values are hostile).
+    fn remap_curve(&self) -> Option<(Vec<RemapSeg>, f64, f64)> {
+        if !self.remap_animated() {
+            return None;
+        }
+        let base = self.speed.abs();
+        if !base.is_finite() || base <= 0.0 {
+            return None;
+        }
+        let p = self.remap_speed()?;
+        let mut keys: Vec<(i64, bool)> = p.keyframes.iter().map(|k| (k.time.0, k.interp == Interpolation::Hold)).collect();
+        keys.sort_unstable();
+        keys.dedup_by_key(|k| k.0);
+        let (Some(&first), Some(&last)) = (keys.first(), keys.last()) else { return None };
+        let rate = |m: i64| (base * self.remap_percent_at(Tick(m)) / 100.0).clamp(MIN_REMAP_RATE, MAX_REMAP_RATE);
+        let v_lo = rate(first.0);
+        let v_hi = rate(last.0);
+        let segs: Vec<RemapSeg> =
+            keys.windows(2).map(|w| RemapSeg { a: w[0].0 as f64, b: w[1].0 as f64, va: rate(w[0].0), vb: rate(w[1].0), hold: w[0].1 }).collect();
+        Some((segs, v_lo, v_hi))
     }
     pub fn effect(&self, id: &str) -> Option<&EffectInstance> {
         self.effects.iter().find(|e| e.effect == id)

@@ -110,9 +110,10 @@ fn short_clips(s: &Session, clips: &[u64]) -> Vec<Value> {
             if over <= 0 || it.frame_hold.is_some() {
                 return None;
             }
-            // media ticks past the end, as sequence ticks of this clip
+            // media ticks past the end, as sequence ticks of this clip (at the rate shown at the
+            // edge the overrun reaches, Time Remapping included)
             let length = it.duration.0.max(0);
-            let ticks = ((over as f64 / it.speed.abs().max(1e-9)).round().min(length as f64) as i64).min(length);
+            let ticks = ((over as f64 / it.edge_rate(true)).round().min(length as f64) as i64).min(length);
             let frames = ticks.saturating_add(frame - 1) / frame;
             (frames > 0).then(|| json!({"clip": c, "shortByFrames": frames}))
         })

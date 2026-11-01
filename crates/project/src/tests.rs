@@ -394,3 +394,215 @@ fn source_par_follows_interpret_footage_subclips_and_sequences() {
     assert_eq!(p.conformed_source_size(adj, (4, 3)), Some((1440.0, 1080.0)));
     assert_eq!(p.source_par(ItemId(987_654_321)), None);
 }
+
+// ---------- time remapping ----------
+
+/// Set the Time Remapping speed of a clip (static value, keyframes cleared).
+fn set_remap_speed(it: &mut TrackItem, percent: f64) {
+    let e = it.effect_mut("time_remap").expect("intrinsic time_remap");
+    e.params.insert("speed".into(), Param::new(ParamValue::Float(percent)));
+}
+
+/// Replace the Time Remapping speed with a keyframed curve (absolute media times, percent).
+fn set_remap_curve(it: &mut TrackItem, keys: &[(i64, f64)]) {
+    let e = it.effect_mut("time_remap").expect("intrinsic time_remap");
+    let mut p = Param::new(ParamValue::Float(100.0));
+    for (m, v) in keys {
+        p.put_keyframe(Tick(*m), ParamValue::Float(*v));
+    }
+    e.params.insert("speed".into(), p);
+}
+
+fn remapped_clip(p: &mut Project, clip: ItemId, seq: ItemId, seconds: i64) -> (TrackItem, i64) {
+    // 24 fps: whole seconds snap to whole frames, so the assertions stay exact
+    p.sequence_mut(seq).unwrap().settings.frame_rate = FrameRate::FPS_24;
+    let it = p.make_track_item(clip, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(seconds * TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
+    let s = TICKS_PER_SECOND;
+    (it, s)
+}
+
+#[test]
+fn time_remap_speed_scales_the_shown_media_time() {
+    let (mut p, clip, seq) = demo_project();
+    let (mut it, s) = remapped_clip(&mut p, clip, seq, 4);
+    // 100 %: one second of media per second of timeline
+    assert_eq!(it.source_time_at(Tick(s)), Tick(s));
+    assert_eq!(it.source_out(), Tick(4 * s));
+    assert_eq!(it.effective_speed(), 1.0);
+    // 50 %: half the media over the same timeline span
+    set_remap_speed(&mut it, 50.0);
+    assert_eq!(it.effective_speed(), 0.5);
+    assert_eq!(it.source_time_at(Tick(s)), Tick(s / 2));
+    assert_eq!(it.source_out(), Tick(2 * s));
+    assert_eq!(it.source_out_unremapped(), Tick(4 * s), "Speed/Duration still scales the base factor");
+    // 200 %: twice the media
+    set_remap_speed(&mut it, 200.0);
+    assert_eq!(it.source_time_at(Tick(s)), Tick(2 * s));
+    assert_eq!(it.source_out(), Tick(8 * s));
+    // the remap composes with Speed/Duration
+    it.speed = 2.0;
+    assert_eq!(it.source_time_at(Tick(s)), Tick(4 * s), "200 % Speed/Duration x 200 % Time Remapping");
+}
+
+#[test]
+fn time_remap_ramp_integrates_the_speed_curve() {
+    let (mut p, clip, seq) = demo_project();
+    let (mut it, s) = remapped_clip(&mut p, clip, seq, 8);
+    // constant 100 % over media [0, 1 s), then a linear ramp 100 % -> 300 % over media [1 s, 2 s),
+    // then a constant 300 %: the mapping integrates the rate, so the ramp segment takes
+    // ln(3)/2 ≈ 0.5493 s of timeline time and √2 − 1 ≈ 0.4142 s of media is half of it
+    set_remap_curve(&mut it, &[(0, 100.0), (s, 100.0), (2 * s, 300.0)]);
+    let ln3_2 = (3.0f64).ln() / 2.0;
+    assert_eq!(it.source_time_at(Tick(s / 2)).0, Tick(s / 2).0, "constant segment");
+    // the ramp starts at timeline 1 s and takes ln(3)/2 s
+    let cross = s + (ln3_2 * s as f64).round() as i64;
+    let at_cross = it.source_time_at(Tick(cross));
+    assert!((at_cross.0 as f64 / (2.0 * s as f64) - 1.0).abs() < 1e-6, "the ramp ends at media 2 s, got {}", at_cross.0 as f64 / s as f64);
+    let half = s + (ln3_2 / 2.0 * s as f64).round() as i64;
+    let at_half = it.source_time_at(Tick(half));
+    let want = 1.0 + ((3.0f64).sqrt() - 1.0) / 2.0;
+    assert!((at_half.0 as f64 / s as f64 - want).abs() < 1e-3, "half the ramp reaches media {} s, got {}", want, at_half.0 as f64 / s as f64);
+    // after the ramp the rate is a constant 300 %
+    let late = cross + s / 2;
+    let at_late = it.source_time_at(Tick(late));
+    assert!((at_late.0 as f64 / s as f64 - 3.5).abs() < 1e-3, "300 % after the ramp, got {}", at_late.0 as f64 / s as f64);
+    // the covered span: the ramp plus 300 % for the rest of the 8 s clip
+    let span = (it.source_out() - it.source_in).0 as f64 / s as f64;
+    let want_span = 2.0 + 3.0 * (8.0 - ln3_2 - 1.0);
+    assert!((span - want_span).abs() < 1e-3, "span {span} vs {want_span}");
+    // the inverse mapping lands back on the timeline times it came from
+    for f in [0.25, 0.5, 1.0, 1.2, 1.5, 2.0, 5.5] {
+        let t = Tick((f * s as f64).round() as i64);
+        let m = it.source_time_at(t);
+        let back = it.timeline_time_of_media(m).expect("media time within the clip");
+        assert!((back - t).0.abs() <= rate_frame(&p, seq).0, "media {} s maps back to {} s, wanted {} s", m.0 as f64 / s as f64, back.0 as f64 / s as f64, f);
+    }
+}
+
+#[test]
+fn time_remap_ramp_is_monotonic_and_continuous() {
+    let (mut p, clip, seq) = demo_project();
+    let (mut it, s) = remapped_clip(&mut p, clip, seq, 6);
+    set_remap_curve(&mut it, &[(0, 25.0), (s, 400.0), (3 * s, 50.0), (5 * s, 150.0)]);
+    let mut prev = it.source_time_at(Tick::ZERO);
+    for i in 1..=600 {
+        let m = it.source_time_at(Tick(i * 10 * s / 600));
+        assert!(m >= prev, "media time must not go back at {} s", i as f64 / 60.0);
+        prev = m;
+    }
+    let span = (it.source_out().0 as f64 - it.source_in.0 as f64) / s as f64;
+    assert!(span > 0.0 && span.is_finite());
+}
+
+#[test]
+fn time_remap_hold_keeps_the_left_rate() {
+    let (mut p, clip, seq) = demo_project();
+    let (mut it, s) = remapped_clip(&mut p, clip, seq, 4);
+    let e = it.effect_mut("time_remap").unwrap();
+    let mut prm = Param::new(ParamValue::Float(100.0));
+    let mut k0 = Keyframe::new(Tick(0), ParamValue::Float(100.0));
+    k0.interp = Interpolation::Hold;
+    prm.keyframes.push(k0);
+    let mut k = Keyframe::new(Tick(s), ParamValue::Float(300.0));
+    k.interp = Interpolation::Hold;
+    prm.keyframes.push(k);
+    e.params.insert("speed".into(), prm);
+    // the hold keeps 100 % until media 1 s, then the rate steps to 300 %
+    assert_eq!(it.source_time_at(Tick(s)), Tick(s));
+    assert_eq!(it.source_time_at(Tick(s + s / 2)), Tick(s + 3 * s / 2));
+}
+
+#[test]
+fn time_remap_freeze_reverse_and_single_keyframe() {
+    let (mut p, clip, seq) = demo_project();
+    let (mut it, s) = remapped_clip(&mut p, clip, seq, 4);
+    // 0 % freezes on the frame it reached (the integration floor crawls at a millionth of the rate)
+    set_remap_curve(&mut it, &[(0, 0.0), (s, 0.0)]);
+    assert!(it.source_time_at(Tick(s)).0 < 1_000_000, "a 0 % section barely moves");
+    assert!(it.source_out() > it.source_in, "the span stays representable");
+    // one keyframe: the curve holds its value everywhere
+    set_remap_curve(&mut it, &[(3 * s, 200.0)]);
+    assert_eq!(it.source_time_at(Tick(s)), Tick(2 * s));
+    assert_eq!(it.source_out(), Tick(8 * s));
+    // reversed: the walk starts at the covered span's far end and runs back to the In point
+    set_remap_speed(&mut it, 100.0);
+    it.reverse = true;
+    assert_eq!(it.source_time_at(Tick::ZERO), Tick(4 * s) - Tick(1));
+    assert_eq!(it.source_time_at(Tick(4 * s) - Tick(1)), Tick(0));
+    set_remap_curve(&mut it, &[(0, 100.0), (s, 100.0), (2 * s, 300.0)]);
+    let far = it.source_time_at(Tick::ZERO);
+    assert!(far > it.source_time_at(Tick(2 * s)), "a reversed clip walks back through the curve");
+    let last_shown = it.source_time_at((it.end() - Tick(1)).max(it.start));
+    assert!(it.timeline_time_of_media(last_shown).is_some(), "the media at the end maps back into the clip");
+}
+
+#[test]
+fn time_remap_hostile_values_fall_back_to_normal_speed() {
+    let (mut p, clip, seq) = demo_project();
+    let rate = p.sequence(seq).unwrap().settings.frame_rate;
+    let (mut it, s) = remapped_clip(&mut p, clip, seq, 4);
+    // a non-finite static value stands for 100 %
+    set_remap_speed(&mut it, f64::NAN);
+    assert_eq!(it.source_time_at(rate.tick_of(12)), rate.tick_of(12));
+    assert_eq!(it.source_out(), Tick(4 * s));
+    set_remap_speed(&mut it, f64::INFINITY);
+    assert_eq!(it.source_out(), Tick(4 * s));
+    // a NaN keyframe among real ones acts as 100 % there, nothing panics, the walk stays finite
+    set_remap_curve(&mut it, &[(0, 100.0), (s, f64::NAN), (3 * s, 100.0)]);
+    for i in 0..=40 {
+        let m = it.source_time_at(Tick(i * s / 10));
+        assert!(m.0.checked_abs().is_some(), "media time stays in range");
+    }
+    // a hostile base speed: the curve is refused and the constant formula saturates safely
+    set_remap_curve(&mut it, &[(0, 200.0), (s, 200.0)]);
+    it.speed = 0.0;
+    assert_eq!(it.source_time_at(Tick(s)), Tick(0), "a 0 base speed freezes at the In point");
+    it.speed = f64::NAN;
+    assert_eq!(it.source_time_at(Tick(s)), it.source_in, "NaN falls back to the In point");
+}
+
+#[test]
+fn time_remap_inverse_maps_media_time_to_the_timeline() {
+    let (mut p, clip, seq) = demo_project();
+    let (mut it, s) = remapped_clip(&mut p, clip, seq, 4);
+    // static 50 %: media 0.5 s shows one second in
+    set_remap_speed(&mut it, 50.0);
+    assert_eq!(it.timeline_time_of_media(Tick(s / 2)), Some(Tick(s)));
+    assert_eq!(it.timeline_time_of_media(Tick(4 * s)), None, "media past the clip's out point");
+    // reversed: the In point shows at the end
+    set_remap_speed(&mut it, 100.0);
+    it.reverse = true;
+    assert_eq!(it.timeline_time_of_media(Tick(0)), Some(Tick(4 * s) - Tick(1)));
+    it.reverse = false;
+    // a curve: the ramp segment's middle
+    set_remap_curve(&mut it, &[(0, 100.0), (s, 100.0), (2 * s, 300.0)]);
+    let ln3_2 = (3.0f64).ln() / 2.0;
+    let t = it.timeline_time_of_media(Tick(2 * s)).expect("media 2 s is inside the ramp");
+    assert!((t.0 as f64 / s as f64 - (1.0 + ln3_2)).abs() < 1e-3, "media 2 s at timeline {} s", t.0 as f64 / s as f64);
+}
+
+fn rate_frame(p: &Project, seq: ItemId) -> Tick {
+    p.sequence(seq).map(|q| q.settings.frame_rate.frame_duration()).unwrap_or(Tick(1))
+}
+
+#[test]
+fn splitting_a_remapped_clip_keeps_the_content_continuous() {
+    let (mut p, clip, seq) = demo_project();
+    let (mut it, s) = remapped_clip(&mut p, clip, seq, 8);
+    set_remap_curve(&mut it, &[(0, 100.0), (s, 100.0), (2 * s, 300.0)]);
+    let before: Vec<_> = (0..=80).map(|i| it.source_time_at(Tick(i * s / 10))).collect();
+    // razor at 2 s: the right piece starts on the media the left piece reached
+    let cut = Tick(2 * s);
+    let cut_media = it.media_span(cut);
+    let mut right = it.clone();
+    it.duration = cut;
+    right.start = cut;
+    right.duration -= cut;
+    right.source_in += cut_media;
+    for i in 0..=20usize {
+        let t = Tick(i as i64 * s / 10);
+        let (whole, split) = (before[20 + i], right.source_time_at(cut + t));
+        assert!((whole.0 - split.0).abs() <= 1, "timeline {} s shows the same frame whole and split ({} vs {})", 2.0 + i as f64 / 10.0, whole.0, split.0);
+    }
+    assert_eq!(it.source_time_at(Tick(19 * s / 10)), before[19], "the left piece keeps its frames");
+}

@@ -493,7 +493,7 @@ fn ci() -> Result<(), String> {
     run(Command::new(cargo).args(["fmt", "--check"]))?;
     run(Command::new(cargo).args(["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))?;
     let tested = tests();
-    i18n_report(true);
+    i18n_report();
     tested?;
     layers()?;
     assets()?;
@@ -517,13 +517,10 @@ fn tests() -> Result<(), String> {
 
 /// The missing-translations report (`i18n::tests::missing_translations_report` in
 /// `filmcraft-ui-egui`), printed to the log. A missing translation never fails a build, so
-/// neither does this. After `tests`, `workspace` selects the packages and targets the test run
-/// did, so it reuses that build: `-p filmcraft-ui-egui --lib` alone resolves features differently
-/// and recompiled for about 3 minutes.
-fn i18n_report(workspace: bool) {
-    let selection: &[&str] = if workspace { &["--workspace", "--lib", "--bins", "--tests"] } else { &["-p", "filmcraft-ui-egui", "--lib"] };
-    let filter = ["--", "--exact", "i18n::tests::missing_translations_report", "--nocapture"];
-    if let Err(e) = run(Command::new(env!("CARGO")).arg("test").args(selection).args(filter)) {
+/// neither does this.
+fn i18n_report() {
+    let args = ["test", "-p", "filmcraft-ui-egui", "--lib", "--", "--exact", "i18n::tests::missing_translations_report", "--nocapture"];
+    if let Err(e) = run(Command::new(env!("CARGO")).args(args)) {
         eprintln!("i18n report not printed: {e}");
     }
 }
@@ -557,7 +554,7 @@ fn main() -> ExitCode {
         "fixtures" => fixtures(&std::env::args().skip(2).collect::<Vec<_>>()),
         "ci" => ci(),
         "i18n-report" => {
-            i18n_report(false);
+            i18n_report();
             Ok(())
         }
         "bench" => bench(),

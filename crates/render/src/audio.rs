@@ -164,9 +164,11 @@ fn with_handles(item: &TrackItem, t0: Tick, t1: Tick) -> TrackItem {
     ext.start = item.start - head;
     ext.duration = item.duration + head + tail;
     // forward media time is source_in + (t - start)·speed; reversed it counts down from the out
-    // point, so the extra head (forward) or tail (reverse) moves source_in back
+    // point, so the extra head (forward) or tail (reverse) moves source_in back. The media beyond
+    // the extended edge plays at the rate shown at that edge (Time Remapping included).
+    let edge = if item.reverse { (item.end() - Tick(1)).max(item.start) } else { item.start };
     let shift = if item.reverse { tail } else { head };
-    ext.source_in = item.source_in - Tick((shift.0 as f64 * item.speed.abs()).round() as i64);
+    ext.source_in = item.source_in - Tick((shift.0 as f64 * item.rate_at(edge)).round() as i64);
     ext
 }
 
@@ -381,11 +383,39 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     }
     let n = (a1 - a0) as usize;
     let off = (a0 - x0) as usize;
-    let speed = item.speed.abs().max(1e-6);
+    let animated = item.remap_animated();
+    // the Speed/Duration factor with a static Time Remapping speed applied (a curve maps every
+    // sample below instead)
+    let speed = if animated { item.speed.abs().max(1e-6) } else { item.effective_speed().max(1e-6) };
     let src_start_ticks = item.source_time_at(Tick::from_units(a0, sr as i64));
     let remixed = crate::remix::read(item, &|m0, len| src(m0, len), a0 - item_s0, n, sr);
     let buf = if remixed.is_some() {
         remixed
+    } else if animated {
+        // a Time Remapping speed curve: the media position of every output sample comes from the
+        // clip's mapping, then the surrounding source samples are mixed linearly (rate magnitudes
+        // never go below the integration floor, so positions stay monotonic and the two endpoint
+        // positions bound every sample)
+        let per_sample = sr as f64 / filmcraft_time::TICKS_PER_SECOND as f64;
+        let at = |i: i64| item.source_time_at(Tick::from_units(a0 + i, sr as i64)).0 as f64;
+        let (first, last) = (at(0), at(n as i64 - 1));
+        let (m_lo, m_hi) = if first <= last { (first, last) } else { (last, first) };
+        let s0 = (m_lo * per_sample).floor() as i64;
+        let span = (((m_hi * per_sample).ceil() as i64 - s0).max(1) as usize).saturating_add(2);
+        src(s0, span).map(|raw| {
+            let mut b = AudioBuffer::silence(sr, raw.channel_count(), n);
+            for (c, ch) in raw.channels.iter().enumerate() {
+                for (i, dst) in b.channels[c].iter_mut().take(n).enumerate() {
+                    let pos = at(i as i64) * per_sample - s0 as f64;
+                    let i0 = pos.floor().max(0.0) as usize;
+                    let fr = (pos - i0 as f64) as f32;
+                    let a = ch.get(i0).copied().unwrap_or(0.0);
+                    let bb = ch.get(i0 + 1).copied().unwrap_or(a);
+                    *dst = a + (bb - a) * fr;
+                }
+            }
+            b
+        })
     } else if (speed - 1.0).abs() < 1e-9 && !item.reverse {
         src(src_start_ticks.to_units_floor(sr as i64), n)
     } else {

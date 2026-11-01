@@ -1423,6 +1423,8 @@ mod stored_paths_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod time_remap_tests;
+#[cfg(test)]
 mod timeline_move_tests;
 #[cfg(test)]
 mod track_params_tests;

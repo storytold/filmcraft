@@ -1242,12 +1242,13 @@ impl Exp<'_, '_> {
                 self.float_param(c, FloatParam { effect: "opacity", pid: "opacity", label: "opacity", min: 0.0, max: 100.0, xml_id: "opacity" }, rate, |v| v);
                 self.close_effect();
             }
-            if c.speed != 1.0 || c.reverse || c.frame_hold.is_some() {
+            if c.speed != 1.0 || c.reverse || c.frame_hold.is_some() || c.remap_animated() || (c.remap_percent_at(c.source_in) - 100.0).abs() > 1e-9 {
                 if param(c, "time_remap", "speed").is_some_and(|p| p.is_animated()) {
-                    self.report.warn("speed ramps (time remapping keyframes) are not exported to FCP7 XML");
+                    self.report.warn("speed ramps (time remapping keyframes) are not exported to FCP7 XML; the speed at the clip's In point was exported");
                 }
                 self.open_effect("Time Remap", "timeremap", "motion", "motion", "video", true);
-                let sp = if c.frame_hold.is_some() { 0.0 } else { c.speed * 100.0 };
+                // the total speed: the Speed/Duration factor with the Time Remapping speed applied
+                let sp = if c.frame_hold.is_some() { 0.0 } else { c.speed * c.remap_percent_at(c.source_in) };
                 self.simple_param("variablespeed", "variablespeed", "0");
                 self.simple_param("speed", "speed", &num(sp));
                 self.simple_param("reverse", "reverse", bool_str(c.reverse));

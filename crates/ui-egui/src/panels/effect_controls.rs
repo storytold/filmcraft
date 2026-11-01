@@ -37,8 +37,10 @@ const PROPS_VALUE_R: f32 = PROPS_NAV_X + NAV_STEP + 12.0;
 
 /// Timeline time at which the clip shows media time `m` (where a keyframe sits in the sequence).
 fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
-    let offset = if it.reverse { it.source_out() - m - Tick(1) } else { m - it.source_in };
-    it.start + Tick((offset.0 as f64 / it.speed.abs().max(1e-6)).round() as i64)
+    it.timeline_time_of_media(m).unwrap_or_else(|| {
+        let offset = if it.reverse { it.source_out() - m - Tick(1) } else { m - it.source_in };
+        it.start + Tick((offset.0 as f64 / it.effective_speed().max(1e-6)).round() as i64)
+    })
 }
 
 // The press frame can include movement before the button went down. Start from the press
@@ -1233,7 +1235,13 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let (br, bresp) = bui.allocate_exact_size(vec2(118.0, 26.0), Sense::click());
         bui.painter().rect_filled(br, 4.0, if bresp.hovered() { t.hover } else { t.panel_bg });
         bui.painter().rect_stroke(br, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-        bui.painter().text(br.center(), Align2::CENTER_CENTER, tlf!("Speed {n}%", n = format!("{:.0}", it.speed * 100.0)), Tokens::ui(12.0), t.text);
+        bui.painter().text(
+            br.center(),
+            Align2::CENTER_CENTER,
+            tlf!("Speed {n}%", n = format!("{:.0}", it.effective_speed() * 100.0)),
+            Tokens::ui(12.0),
+            t.text,
+        );
         app.auto.add("properties.speed", br, "Speed");
         open_speed = bresp.clicked();
     });
