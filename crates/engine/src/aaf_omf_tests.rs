@@ -544,3 +544,29 @@ mod selected_streams {
         assert!(files.writes.lock().unwrap().is_empty());
     }
 }
+
+#[test]
+fn aaf_label_does_not_contain_premiera() {
+    // The AAF export label must read "Premiere Pro / Pro Tools" (the intended target app).
+    // The misspelling "Premiera" (historical typo) must never appear in the exported bytes.
+    let (s, _items, seq, _dir) = setup("aaf_label");
+    let opts = filmcraft_interchange::aaf::AafOptions::default();
+    let (bytes, _) = filmcraft_interchange::aaf::export(&s.project, seq, &opts)
+        .expect("export must succeed");
+
+    // AAF strings are encoded as UTF-16LE.
+    let typo_utf16: Vec<u8> = "Premiera".encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+    let label_utf16: Vec<u8> = "Premiere Pro / Pro Tools"
+        .encode_utf16()
+        .flat_map(|c| c.to_le_bytes())
+        .collect();
+
+    assert!(
+        !bytes.windows(typo_utf16.len()).any(|w| w == typo_utf16.as_slice()),
+        "AAF bytes must not contain the misspelling 'Premiera'"
+    );
+    assert!(
+        bytes.windows(label_utf16.len()).any(|w| w == label_utf16.as_slice()),
+        "AAF bytes must contain the application label 'Premiere Pro / Pro Tools'"
+    );
+}

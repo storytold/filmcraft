@@ -50,6 +50,12 @@ use crate::{ImportOptions, Imported, Report, Result};
 pub struct AafOptions {
     /// Composition name (default: the sequence name).
     pub name: Option<String>,
+    /// Target-application label embedded in the AAF Identification object (e.g.
+    /// "Premiere Pro / Pro Tools").  Defaults to `"Premiere Pro / Pro Tools"` so that
+    /// importers can identify the intended host application.  The string "Premiera" (a
+    /// historical typo) must never appear here; the test `aaf_label_does_not_contain_premiera`
+    /// enforces this.
+    pub label: Option<String>,
     pub media: MediaOptions,
     /// Write 512-byte sectors (compound file version 3) instead of 4096-byte sectors.
     pub small_sectors: bool,
@@ -62,7 +68,8 @@ pub fn export(project: &Project, sequence: ItemId, opts: &AafOptions) -> Result<
     let name = opts.name.clone().or_else(|| project.item(sequence).map(|i| i.name.clone())).unwrap_or_else(|| "Sequence".into());
     let doc = comp::from_project(project, sequence, &name, &opts.media, comp::Nests::Compositions, &mut report)?;
     let version = if opts.small_sectors { filmcraft_cfb::Version::V3 } else { filmcraft_cfb::Version::V4 };
-    let bytes = write::write(&doc, version, &mut report)?;
+    let label = opts.label.as_deref().unwrap_or("Premiere Pro / Pro Tools");
+    let bytes = write::write(&doc, version, label, &mut report)?;
     Ok((bytes, report))
 }
 
