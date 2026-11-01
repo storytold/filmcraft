@@ -43,16 +43,31 @@ pub(crate) fn mix(session: &Session, seq_id: ItemId, device_rate: u32, speed: f6
 ///
 ///   timeline_end = start − (cursor − start) × abs_speed
 ///
-/// So as device time advances, the timeline retreats. Each block reads `in_frames` forward-in-time
-/// ending at `timeline_end`, then reverses the frame order before writing to `buf`.
+/// So as device time advances, the timeline retreats. Each call slices `actual_in` frames from a
+/// forward-rendered cache ending at `timeline_end`, reverses them, and resamples into `buf`.
 ///
-/// At 1× reverse: block N reads [timeline_end − N, timeline_end], flips → N device frames reversed.
-/// At 2× reverse: block N reads 2N frames, flips, resamples to N device frames.
+/// **Caching**: the inner `mix` is called once per `WINDOW`-frame window rather than once per
+/// output block.  Stateful effects (denoise, speech enhance) pay their pre-roll cost once per
+/// window instead of once per block, keeping reverse playback from underrunning.
+///
+/// At 1× reverse: each output block reads `block` frames from the cache, flips them.
+/// At 2× reverse: each output block reads `2 × block` frames, flips, resamples to `block` frames.
 fn reverse_wrap(
     mut mix: impl FnMut(i64, &mut [f32], usize) + Send + 'static,
     abs_speed: f64,
 ) -> impl FnMut(i64, &mut [f32], usize) + Send {
+    // Forward-render this many timeline frames per window to amortise pre-roll cost.
+    // Must be >> worst-case effect pre-roll (e.g. speech_enhance requests ~14 400 frames at 48 kHz).
+    const WINDOW: usize = 32_768;
+
     let mut start: Option<i64> = None;
+    // Forward-rendered cache covering timeline [cache_start, cache_start + cache_frames).
+    // Successive reverse output blocks are sliced from this cache without re-invoking `mix`.
+    let mut cache: Vec<f32> = Vec::new();
+    let mut cache_start: i64 = 0;
+    let mut cache_frames: usize = 0;
+    let mut cache_ch: usize = 0;
+
     move |cursor: i64, buf: &mut [f32], ch: usize| {
         if ch == 0 || buf.is_empty() || !buf.len().is_multiple_of(ch) {
             buf.fill(0.0);
@@ -60,10 +75,14 @@ fn reverse_wrap(
         }
         let out_frames = buf.len() / ch;
         // Record the cursor at the moment J is first pressed (= timeline position at that instant).
-        // Reset if cursor jumps backward (seek or restart creates a fresh closure, but be safe).
+        // Reset (and invalidate the cache) if cursor jumps backward.
         let s = match start {
             Some(s) if cursor >= s => s,
-            _ => { start = Some(cursor); cursor }
+            _ => {
+                cache_frames = 0; // cursor reset: stale cache must not be served
+                start = Some(cursor);
+                cursor
+            }
         };
         // Map increasing device cursor → decreasing timeline position.
         let device_elapsed = cursor.saturating_sub(s);
@@ -74,7 +93,6 @@ fn reverse_wrap(
             buf.fill(0.0);
             return;
         }
-        // Read forward-in-time ending at `timeline_end`, then reverse them.
         // Derive read_start from the same absolute cursor mapping as timeline_end so both
         // boundaries use round(), avoiding a one-frame overlap at non-half fractional speeds.
         let next_elapsed = device_elapsed.saturating_add(out_frames as i64);
@@ -84,32 +102,55 @@ fn reverse_wrap(
             buf.fill(0.0);
             return;
         }
-        let mut fwd = vec![0.0f32; actual_in * ch];
-        mix(read_start, &mut fwd, ch);
+
+        // Refill the forward-rendered cache when it no longer covers [read_start, timeline_end).
+        // Each refill renders WINDOW frames in one mixer call, paying pre-roll cost once and
+        // then serving many successive reverse output blocks from the same rendered data.
+        let cache_end = cache_start + cache_frames as i64;
+        if ch != cache_ch || cache_frames == 0 || read_start < cache_start || timeline_end > cache_end {
+            let window_frames = WINDOW.max(actual_in);
+            let new_start = timeline_end.saturating_sub(window_frames as i64).max(0);
+            let new_frames = (timeline_end - new_start) as usize;
+            cache.resize(new_frames * ch, 0.0);
+            cache.fill(0.0);
+            if new_frames > 0 {
+                mix(new_start, &mut cache, ch);
+            }
+            cache_start = new_start;
+            cache_frames = new_frames;
+            cache_ch = ch;
+        }
+
+        // Slice [read_start, read_start + actual_in) from the cache and reverse it.
+        let frame_offset = (read_start - cache_start) as usize;
+        let copy_frames = actual_in.min(cache_frames.saturating_sub(frame_offset));
+        if copy_frames == 0 {
+            buf.fill(0.0);
+            return;
+        }
+        let mut fwd = cache[frame_offset * ch..(frame_offset + copy_frames) * ch].to_vec();
         // Reverse the frame order of `fwd` in-place.
-        for i in 0..(actual_in / 2) {
-            let j = actual_in - 1 - i;
+        for i in 0..(copy_frames / 2) {
+            let j = copy_frames - 1 - i;
             for c in 0..ch {
                 fwd.swap(i * ch + c, j * ch + c);
             }
         }
         // Resample the available reversed frames at the requested speed, then pad with silence.
-        // Near timeline zero actual_in < in_frames; stretching partial frames across all
-        // out_frames would slow the audio. Instead output only the proportional number of
-        // frames and fill the remainder with silence.
-        let available_out = ((actual_in as f64 / abs_speed).round() as usize).min(out_frames);
+        // Near timeline zero copy_frames < actual_in; pad with silence rather than stretching.
+        let available_out = ((copy_frames as f64 / abs_speed).round() as usize).min(out_frames);
         if available_out == 0 {
             buf.fill(0.0);
             return;
         }
-        if actual_in == available_out {
+        if copy_frames == available_out {
             buf[..available_out * ch].copy_from_slice(&fwd);
         } else {
-            let scale = actual_in as f64 / available_out.max(1) as f64;
+            let scale = copy_frames as f64 / available_out.max(1) as f64;
             for i in 0..available_out {
                 let src = i as f64 * scale;
                 let lo = src as usize;
-                let hi = (lo + 1).min(actual_in - 1);
+                let hi = (lo + 1).min(copy_frames - 1);
                 let t = (src - lo as f64) as f32;
                 for c in 0..ch {
                     let s0 = fwd[lo * ch + c];
