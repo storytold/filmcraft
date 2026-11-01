@@ -2393,6 +2393,7 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-frame",
  "filmcraft-geom",
+ "filmcraft-interchange",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-text",
