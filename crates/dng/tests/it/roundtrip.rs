@@ -367,3 +367,53 @@ fn cyclic_ifds_huge_sizes_and_bad_offsets() {
     let o = Options { raw_tags: vec![(tags::COMPRESSION, Value::Short(vec![34892]))], ..Default::default() };
     assert_eq!(decode(&write(&px, &o)).err(), Some(Error::Unsupported("lossy JPEG DNG".into())));
 }
+
+#[test]
+fn lossless_jpeg_frame_larger_than_its_entropy_data_is_rejected() {
+    // a few bytes of entropy data cannot code 512 x 512 samples (a code is at least one bit)
+    let px = vec![100u16; 4 * 4];
+    let mut j = lj92(&px, &Lj92Params { width: 4, height: 4, comps: 1, precision: 12, predictor: 1, restart_lines: 0, pt: 0 });
+    let sof = j.windows(2).position(|b| b == [0xFF, 0xC3]).unwrap();
+    // marker(2) length(2) precision(1) height(2) width(2)
+    j[sof + 5..sof + 7].copy_from_slice(&512u16.to_be_bytes());
+    j[sof + 7..sof + 9].copy_from_slice(&512u16.to_be_bytes());
+    assert_eq!(ljpeg::decode(&j, 1 << 20).err(), Some(Error::Truncated));
+}
+
+#[test]
+fn tiles_sharing_bytes_are_rejected() {
+    let px = picture(32, 16, 1, 12, 8);
+    let o = Options {
+        width: 32,
+        height: 16,
+        bits: 12,
+        layout: Layout::Tiles { width: 16, height: 16 },
+        compression: Compression::LosslessJpeg { predictor: 1, components: 1, restart_lines: 0, pt: 0 },
+        ..Default::default()
+    };
+    let mut f = write(&px, &o);
+    assert!(decode(&f).is_ok());
+    let word = |f: &[u8], at: usize| u32::from_le_bytes(f[at..at + 4].try_into().unwrap()) as usize;
+    let offs = word(&f, find_tag(&f, tags::TILE_OFFSETS).unwrap() + 8);
+    let counts = word(&f, find_tag(&f, tags::TILE_BYTE_COUNTS).unwrap() + 8);
+    // tile 1 reuses tile 0's bytes
+    let (o0, c0) = (f[offs..offs + 4].to_vec(), f[counts..counts + 4].to_vec());
+    f[offs + 4..offs + 8].copy_from_slice(&o0);
+    f[counts + 4..counts + 8].copy_from_slice(&c0);
+    assert!(matches!(decode(&f), Err(Error::Malformed(_))));
+}
+
+#[test]
+fn lossless_jpeg_frame_needing_a_partial_extra_byte_is_rejected() {
+    // 17 x 1 samples need at least 17 bits = 3 bytes; the scan holds only 2
+    let px = vec![100u16; 4 * 4];
+    let mut j = lj92(&px, &Lj92Params { width: 4, height: 4, comps: 1, precision: 12, predictor: 1, restart_lines: 0, pt: 0 });
+    let sof = j.windows(2).position(|b| b == [0xFF, 0xC3]).unwrap();
+    j[sof + 5..sof + 7].copy_from_slice(&1u16.to_be_bytes());
+    j[sof + 7..sof + 9].copy_from_slice(&17u16.to_be_bytes());
+    let sos = j.windows(2).position(|b| b == [0xFF, 0xDA]).unwrap();
+    let scan = sos + 2 + usize::from(u16::from_be_bytes([j[sos + 2], j[sos + 3]]));
+    j.truncate(scan);
+    j.extend([0, 0]);
+    assert_eq!(ljpeg::decode(&j, 1 << 20).err(), Some(Error::Truncated));
+}

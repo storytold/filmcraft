@@ -1,3 +1,4 @@
+use super::HexColor;
 use super::label::Label;
 use super::sequence::bounded_time_range;
 use super::{
@@ -19,6 +20,16 @@ pub enum MarkerKind {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Marker {
+    /// Optional web address, separate from notes and retained when changing marker kind.
+    /// Opening is explicit and must pass `marker_web_url`, including for imported projects.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    /// Optional user attribution. Empty in older projects; never inferred from the OS account.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    /// Exact sRGB marker color. None retains the existing preset and its display mapping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_color: Option<HexColor>,
     pub id: MarkerId,
     pub start: Tick,
     pub duration: Tick,
@@ -55,6 +66,8 @@ pub struct TrackItem {
     pub item: ItemId,
     pub name: String,
     pub label: Label,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_label_color: Option<HexColor>,
     /// Timeline position (sequence ticks).
     pub start: Tick,
     /// Duration on the timeline.
@@ -221,6 +234,48 @@ impl TrackItem {
             Some(p) => (p.f64_at(rel) / 100.0).abs(),
             None => self.speed.abs(),
         }
+    }
+
+    /// The first timeline time at which the clip shows media time `src` (None when it never does):
+    /// the inverse of [`TrackItem::source_time_at`]. A speed curve is monotonic through the clip,
+    /// so its timeline time is bisected out of the mapping.
+    pub fn timeline_time_of_media(&self, src: Tick) -> Option<Tick> {
+        if self.frame_hold.is_some() {
+            return (self.source_time_at(self.start) == src).then_some(self.start);
+        }
+        if self.time_remap_speed().is_none() {
+            let k = self.speed.abs();
+            if !(k.is_finite() && k > 0.0) {
+                return None;
+            }
+            let total = self.media_span(Tick::ZERO, self.duration);
+            let rel_src = if self.reverse { self.source_in + total - Tick(1) - src } else { src - self.source_in };
+            if rel_src < Tick::ZERO || rel_src >= total {
+                return None;
+            }
+            let t = self.start + Tick((rel_src.0 as f64 / k).floor() as i64);
+            return (t < self.end()).then_some(t);
+        }
+        // the shown media time moves monotonically through the clip, so the timeline time for
+        // `src` is found by bisecting the mapping
+        let (a, b) = (self.source_time_at(self.start), self.source_time_at((self.end() - Tick(1)).max(self.start)));
+        let (lo_mt, hi_mt) = (a.min(b), a.max(b));
+        if src < lo_mt || src > hi_mt {
+            return None;
+        }
+        let (mut lo, mut hi) = (0i64, self.duration.0.max(1));
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let m = self.moving_source_time_at(self.start + Tick(mid));
+            let hit = if self.reverse { m <= src } else { m >= src };
+            if hit {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let t = self.start + Tick(lo.min(self.duration.0 - 1));
+        (t < self.end()).then_some(t)
     }
 
     /// Media ticks consumed while playing from clip-relative timeline time `from` to `to`:

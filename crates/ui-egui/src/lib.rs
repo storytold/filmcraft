@@ -168,6 +168,11 @@ pub struct Playback {
     /// Resting playhead for an inclusive marked range; unlike stop_at, this
     /// names the last visible frame, not the following playback boundary.
     pub rest_at: Option<Tick>,
+    /// Where the Timeline draws the playhead while playing, and when (monotonic host s): it moves
+    /// with the wall clock every frame and eases toward the playback clock, so it glides instead
+    /// of jumping a frame at a time or by a device buffer. The session playhead stays on the
+    /// frame shown.
+    smooth_playhead: Option<(Tick, f64)>,
 }
 
 /// Incoming composition identity for the Program monitor. Interrupted compositions remain
@@ -372,6 +377,10 @@ pub struct FilmcraftApp {
     pub gpu: Option<GpuState>,
     /// Preview render job being watched (job id, where to start playing when it completes).
     watched_render: Option<(u64, Tick)>,
+    /// The status bar's running-job text as last shown.
+    job_text: Option<panels::JobText>,
+    /// Running jobs' texts in the export queue and the Progress panel as last shown.
+    steady_texts: panels::SteadyTexts,
     /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
     applied_prefs: Option<filmcraft_engine::autosave::Preferences>,
     /// Settings ▸ Appearance ▸ UI Scale last applied, with the system scale it was applied for.

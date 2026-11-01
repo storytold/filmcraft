@@ -796,6 +796,9 @@ fn read_markers(n: Node, rate: FrameRate, b: &mut Builder) -> Vec<Marker> {
         let duration = if out_f > in_f { rate.tick_of(out_f) - start } else { Tick::ZERO };
         let color = child_text(m, "color").and_then(label_from).unwrap_or(Label::Green);
         out.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(b.alloc()),
             start,
             duration,
@@ -827,6 +830,7 @@ struct Exp<'a, 'r> {
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
+    crate::warn_marker_metadata_loss(p, seq_id, report);
     p.sequence(seq_id).ok_or(Error::NoSequence(seq_id))?;
     let mut x = Exp {
         p,
@@ -1242,12 +1246,22 @@ impl Exp<'_, '_> {
                 self.float_param(c, FloatParam { effect: "opacity", pid: "opacity", label: "opacity", min: 0.0, max: 100.0, xml_id: "opacity" }, rate, |v| v);
                 self.close_effect();
             }
-            if c.speed != 1.0 || c.reverse || c.frame_hold.is_some() {
-                if param(c, "time_remap", "speed").is_some_and(|p| p.is_animated()) {
-                    self.report.warn("speed ramps (time remapping keyframes) are not exported to FCP7 XML");
+            // the curve's rate at the clip's In point stands for the whole clip in this flat export
+            let remapped = param(c, "time_remap", "speed").is_some_and(|p| p.is_animated());
+            if c.speed != 1.0 || c.reverse || c.frame_hold.is_some() || remapped {
+                if remapped {
+                    self.report.warn("speed ramps (time remapping keyframes) are not exported to FCP7 XML; the speed at the clip's In point was exported");
                 }
                 self.open_effect("Time Remap", "timeremap", "motion", "motion", "video", true);
-                let sp = if c.frame_hold.is_some() { 0.0 } else { c.speed * 100.0 };
+                // a curve replaces the Speed/Duration factor while it is animated, so the flat
+                // export carries the curve's rate at the clip's In point; otherwise the factor
+                let sp = if c.frame_hold.is_some() {
+                    0.0
+                } else if remapped {
+                    c.remap_speed_at(Tick::ZERO) * 100.0
+                } else {
+                    c.speed * 100.0
+                };
                 self.simple_param("variablespeed", "variablespeed", "0");
                 self.simple_param("speed", "speed", &num(sp));
                 self.simple_param("reverse", "reverse", bool_str(c.reverse));

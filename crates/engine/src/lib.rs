@@ -25,6 +25,7 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
+mod marker_edit;
 mod marker_export;
 pub mod masks;
 pub mod media_browser;
@@ -35,6 +36,7 @@ pub mod media_watch;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+mod palette;
 pub mod panels;
 pub mod paste_media;
 pub mod perf;
@@ -225,11 +227,13 @@ impl Services for FsServices {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UndoMark(Option<usize>);
 
-/// Undo history of whole-project snapshots.
+/// Undo history of whole-project snapshots. Each step is its label, the project before (undo) or
+/// after (redo) it, and the id of the command that made it (None for an edit made outside
+/// [`Session::execute`]); the History panel draws that command's icon.
 #[derive(Clone, Default)]
 pub struct History {
-    pub undo: Vec<(String, Arc<Project>)>,
-    pub redo: Vec<(String, Arc<Project>)>,
+    pub undo: Vec<(String, Arc<Project>, Option<String>)>,
+    pub redo: Vec<(String, Arc<Project>, Option<String>)>,
     /// Labels of all applied states, oldest first (History panel).
     pub limit: usize,
     /// Key of the last [`Session::edit_merged`] step: a continuous gesture (a fader drag) with the
@@ -400,6 +404,8 @@ pub struct EditorState {
     /// Marker colours hidden in the Markers panel (Show All Marker Colors clears this).
     #[serde(default)]
     pub hidden_marker_colors: Vec<filmcraft_project::Label>,
+    #[serde(default)]
+    pub hidden_custom_marker_colors: Vec<filmcraft_project::HexColor>,
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
@@ -436,6 +442,8 @@ pub enum Event {
 
 pub struct Session {
     pub project: Arc<Project>,
+    /// Runtime identity of the opened project, stable across edits/undo and renewed on replacement.
+    pub project_instance: Arc<()>,
     pub history: History,
     pub revision: u64,
     /// Bumped whenever the session installs a different project document (`file.newProject`,
@@ -504,6 +512,9 @@ pub struct Session {
     pub browser: media_browser::BrowserState,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
+    /// Id of the outermost command [`Session::execute`] is running, stored with each undo step
+    /// it makes.
+    pub(crate) command_origin: Option<String>,
     /// Each media file's size and modification time when last seen (Settings ▸ Media ▸
     /// Automatically refresh growing files, [`media_watch`]).
     pub media_stamps: std::collections::HashMap<String, media_watch::Stamp>,
@@ -558,6 +569,7 @@ impl Session {
     pub fn new(services: Arc<dyn Services>) -> Self {
         Self {
             project: Arc::new(Project::new("Untitled")),
+            project_instance: Arc::new(()),
             history: History { limit: 200, ..Default::default() },
             revision: 1,
             document_epoch: 0,
@@ -600,6 +612,7 @@ impl Session {
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
+            command_origin: None,
             media_stamps: Default::default(),
             media_scan: None,
         }
@@ -758,6 +771,11 @@ impl Session {
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        // headless sessions (CLI, MCP, control channel) have no UI frame loop calling
+        // `poll_persistence`: apply background mask tracking before each command (#3302)
+        if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
+            masks::poll(self);
+        }
         let journal = spec.journal && !commands::reports_only(id, &params);
         if self.exec_depth == 0 && journal && self.trim_play.active() {
             self.settle_trim_playback(id);
@@ -777,6 +795,10 @@ impl Session {
             && self.prefs.media_analysis.auto_transcribe_scope == "sequenceClips"
             && !matches!(id, "edit.undo" | "edit.redo" | "file.newProject" | "file.openDemoProject" | "file.open" | "file.revert" | "file.recover"))
         .then(|| self.project.clone());
+        let outermost = self.exec_depth == 0;
+        if outermost {
+            self.command_origin = Some(id.to_string());
+        }
         self.exec_depth += 1;
         // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
         // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
@@ -784,6 +806,9 @@ impl Session {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))));
         self.exec_depth -= 1;
+        if outermost {
+            self.command_origin = None;
+        }
         if self.exec_depth == 0 {
             source_monitor::track_history(self);
         }
@@ -940,7 +965,7 @@ impl Session {
         self.refuse_self_nesting(&p)?;
         self.drop_orphan_transitions(&mut p);
         let old = std::mem::replace(&mut self.project, Arc::new(p));
-        self.history.undo.push((label.to_string(), old));
+        self.history.undo.push((label.to_string(), old, self.command_origin.clone()));
         if self.history.undo.len() > self.history.limit {
             self.history.undo.remove(0);
         }
@@ -983,7 +1008,7 @@ impl Session {
         // a panic inside the group must not leave the history unlimited: restore, then let it go on
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
         self.history.limit = limit;
-        let first = self.history.undo.get(undo).map(|e| e.1.clone());
+        let first = self.history.undo.get(undo).map(|e| (e.1.clone(), e.2.clone()));
         let rolled_back = |s: &mut Session| {
             s.history.undo.truncate(undo);
             s.history.redo = redo.clone();
@@ -993,9 +1018,9 @@ impl Session {
             s.bump();
         };
         match (r, first) {
-            (Ok(Ok(v)), Some(first)) => {
+            (Ok(Ok(v)), Some((first, origin))) => {
                 self.history.undo.truncate(undo);
-                self.history.undo.push((label.to_string(), first));
+                self.history.undo.push((label.to_string(), first, origin));
                 if self.history.undo.len() > limit {
                     self.history.undo.remove(0);
                 }
@@ -1031,7 +1056,7 @@ impl Session {
         let mut earliest = None;
         let mut n = 0;
         while self.undo_mark() != mark {
-            let Some((_, prev)) = self.history.undo.pop() else { break };
+            let Some((_, prev, _)) = self.history.undo.pop() else { break };
             earliest = Some(prev);
             n += 1;
         }
@@ -1084,20 +1109,20 @@ impl Session {
     }
 
     pub fn undo(&mut self) -> Option<String> {
-        let (label, prev) = self.history.undo.pop()?;
+        let (label, prev, origin) = self.history.undo.pop()?;
         self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, prev);
-        self.history.redo.push((label.clone(), cur));
+        self.history.redo.push((label.clone(), cur, origin));
         self.fix_state();
         self.bump();
         Some(label)
     }
 
     pub fn redo(&mut self) -> Option<String> {
-        let (label, next) = self.history.redo.pop()?;
+        let (label, next, origin) = self.history.redo.pop()?;
         self.history.merge_key = None;
         let cur = std::mem::replace(&mut self.project, next);
-        self.history.undo.push((label.clone(), cur));
+        self.history.undo.push((label.clone(), cur, origin));
         self.fix_state();
         self.bump();
         Some(label)
@@ -1422,6 +1447,8 @@ mod split_edit_ripple_trim_tests;
 mod stored_paths_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod time_remap_tests;
 #[cfg(test)]
 mod timeline_move_tests;
 #[cfg(test)]

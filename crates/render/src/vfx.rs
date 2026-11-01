@@ -13,6 +13,7 @@
 
 mod blur;
 pub(crate) use blur::bokeh;
+pub use blur::{KERNEL_REACH, bokeh_kernel};
 mod color;
 pub(crate) use color::cdl;
 mod distort;
@@ -163,14 +164,22 @@ impl FxEnv for ItemEnv<'_> {
     }
     fn clip_key(&self) -> u64 {
         let mut h = 0xcbf2_9ce4_8422_2325u64;
-        for v in [
+        let mut vs: Vec<u64> = vec![
             self.item.item.0,
             self.item.start.0 as u64,
             self.item.duration.0 as u64,
             self.item.source_in.0 as u64,
             self.item.speed.to_bits(),
             self.item.reverse as u64,
-        ] {
+        ];
+        // Time Remapping: the speed curve changes the media time the GPU shows, so it joins the
+        // cache key — without it a re-timed clip would keep showing the old frames
+        if let Some(p) = self.item.effect("time_remap").and_then(|e| e.param("speed")) {
+            vs.push(p.value.as_f64().unwrap_or(100.0).to_bits());
+            vs.push(p.keyframes.len() as u64);
+            vs.extend(p.keyframes.iter().flat_map(|k| [k.time.0 as u64, k.value.as_f64().unwrap_or(100.0).to_bits()]));
+        }
+        for v in vs {
             h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
         }
         h

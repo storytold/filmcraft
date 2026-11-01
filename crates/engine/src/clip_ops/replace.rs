@@ -73,6 +73,7 @@ pub(super) fn replace_with(s: &mut Session, p: &Value, how: Replace) -> Result<V
             it.item = new_item;
             it.name = pi.name.clone();
             it.label = pi.label;
+            it.custom_label_color = pi.custom_label_color;
             it.source_in = src_in;
             it.frame_hold = None;
             it.multicam = None;
@@ -110,9 +111,12 @@ fn short_clips(s: &Session, clips: &[u64]) -> Vec<Value> {
             if over <= 0 || it.frame_hold.is_some() {
                 return None;
             }
-            // media ticks past the end, as sequence ticks of this clip
+            // media ticks past the end, as sequence ticks of this clip (at the rate shown at the
+            // timeline edge that reaches the overrun media: the Out edge, or the In edge when
+            // reversed — Time Remapping included)
             let length = it.duration.0.max(0);
-            let ticks = ((over as f64 / it.speed.abs().max(1e-9)).round().min(length as f64) as i64).min(length);
+            let edge_rate = it.remap_speed_at(if it.reverse { Tick::ZERO } else { it.duration }).max(1e-9);
+            let ticks = ((over as f64 / edge_rate).round().min(length as f64) as i64).min(length);
             let frames = ticks.saturating_add(frame - 1) / frame;
             (frames > 0).then(|| json!({"clip": c, "shortByFrames": frames}))
         })

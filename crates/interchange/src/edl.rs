@@ -440,6 +440,9 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
             let t = ctx.rec(*tc, ev.df);
             let id = MarkerId(ctx.b.alloc());
             ctx.seq.markers.push(Marker {
+                url: String::new(),
+                author: String::new(),
+                custom_color: None,
                 id,
                 start: t,
                 duration: Tick::ZERO,
@@ -495,7 +498,10 @@ fn import_event(ctx: &mut Ctx, ev: &Event, report: &mut Report) {
         [l1, l2] if matches!(l2.trans, Trans::Dissolve | Trans::Wipe(_)) => {
             let t0 = ctx.rec(l2.tcs[2], df);
             let t1 = ctx.rec(l2.tcs[3], df);
-            let d = ctx.rate.tick_of(l2.dur);
+            if l2.dur < 0 {
+                report.warn(format!("EDL event {} has a negative transition duration ({}); it was set to 0", l2.num, l2.dur));
+            }
+            let d = ctx.rate.tick_of(l2.dur.max(0));
             // Resolve separately for each track kind: named audio dissolves have
             // different definitions from their video counterparts.
             let mut video_effect = None;
@@ -985,6 +991,7 @@ fn track_order(context: &TrackExport<'_>) -> u8 {
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
+    crate::warn_marker_metadata_loss(p, seq_id, report);
     let seq = p.sequence(seq_id).ok_or(crate::Error::NoSequence(seq_id))?;
     let rate = seq.settings.frame_rate;
     let df = seq.settings.drop_frame && rate.supports_drop_frame();
