@@ -55,6 +55,7 @@ const OP_BOKEH_BOOST: u32 = 33u;
 const OP_BOKEH: u32 = 34u;
 const OP_BOKEH_UP: u32 = 35u;
 const OP_THREE_WAY: u32 = 36u;
+const OP_NOISE: u32 = 37u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -689,6 +690,43 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     return dec(v);
 }
 
+// ---- `effects::hash3` in 64-bit integer math, a u64 as (low, high) words
+
+// The full 64-bit product of two u32 (16-bit limbs).
+fn mul_wide(a: u32, b: u32) -> vec2<u32> {
+    let a0 = a & 0xffffu; let a1 = a >> 16u;
+    let b0 = b & 0xffffu; let b1 = b >> 16u;
+    let p00 = a0 * b0; let p01 = a0 * b1; let p10 = a1 * b0; let p11 = a1 * b1;
+    let mid = (p00 >> 16u) + (p01 & 0xffffu) + (p10 & 0xffffu);
+    return vec2((p00 & 0xffffu) | (mid << 16u), p11 + (p01 >> 16u) + (p10 >> 16u) + (mid >> 16u));
+}
+
+// `u64::wrapping_mul`
+fn mul64(a: vec2<u32>, b: vec2<u32>) -> vec2<u32> {
+    let lo = mul_wide(a.x, b.x);
+    return vec2(lo.x, lo.y + a.x * b.y + a.y * b.x);
+}
+
+// `h ^= h >> n` for 0 < n < 32
+fn xorshift64(h: vec2<u32>, n: u32) -> vec2<u32> {
+    return h ^ vec2((h.x >> n) | (h.y << (32u - n)), h.y >> n);
+}
+
+// `u64::wrapping_add` of a small constant
+fn add64(a: vec2<u32>, k: u32) -> vec2<u32> {
+    let lo = a.x + k;
+    return vec2(lo, a.y + select(0u, 1u, lo < a.x));
+}
+
+fn hash3(x: u32, y: u32, z: vec2<u32>) -> f32 {
+    var h = mul64(vec2(x, 0u), vec2(0x7f4a7c15u, 0x9e3779b9u)) ^ mul64(vec2(y, 0u), vec2(0x27d4eb4fu, 0xc2b2ae3du)) ^ mul64(z, vec2(0x9e3779f9u, 0x165667b1u));
+    h = xorshift64(h, 31u);
+    h = mul64(h, vec2(0x1ce4e5b9u, 0xbf58476du));
+    h = xorshift64(h, 29u);
+    // (h >> 40) / 2^24
+    return f32(h.y >> 8u) / 16777216.0;
+}
+
 // One output pixel of every op but the running-sum box blur.
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
@@ -865,6 +903,27 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             }
             let res = vec3(enc_to_linear_limiter(out_enc.x), enc_to_linear_limiter(out_enc.y), enc_to_linear_limiter(out_enc.z));
             return vec4(res * a, a);
+        }
+        case OP_NOISE: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 0.0 {
+                return o;
+            }
+            let amount = u.p0.x;
+            let grain = u.p0.y;
+            let g = vec2<u32>(vec2<f32>(p) / grain);
+            let seed = u.i1.xy;
+            let n0 = hash3(g.x, g.y, seed) - 0.5;
+            var ns = vec3(n0);
+            if u.i1.z != 0u {
+                ns = vec3(n0, hash3(g.x, g.y, add64(seed, 7777u)) - 0.5, hash3(g.x, g.y, add64(seed, 99991u)) - 0.5);
+            }
+            var v = enc(o.rgb / a) + ns * amount;
+            if u.i1.w != 0u {
+                v = clamp(v, vec3(0.0), vec3(1.0));
+            }
+            return vec4(dec(v) * a, a);
         }
         case OP_LUMETRI: {
             let o = ld(p);

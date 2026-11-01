@@ -57,6 +57,7 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
+const OP_NOISE: u32 = 37;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -145,6 +146,12 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
         FxOp::Invert { channel: 4, blend } => out.push(step(OP_INVERT_ALPHA, [0; 4], &[*blend])),
         FxOp::Invert { channel, blend } => out.push(step(OP_INVERT, [*channel, 0, 0, 0], &[*blend])),
         FxOp::Posterize { n } => out.push(step(OP_POSTERIZE, [0; 4], &[*n])),
+        FxOp::Noise { amount, colored, clip, grain, seed } => {
+            if *amount > 0.0 {
+                // the 64-bit frame seed as two words (the shader hashes in 64-bit integer math)
+                out.push(step(OP_NOISE, [*seed as u32, (*seed >> 32) as u32, *colored as u32, *clip as u32], &[*amount, *grain]));
+            }
+        }
         FxOp::Gaussian { rx, ry, repeat } => {
             boxes(rx, false, *repeat, &mut out);
             boxes(ry, true, *repeat, &mut out);
