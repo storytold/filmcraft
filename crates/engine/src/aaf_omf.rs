@@ -420,6 +420,7 @@ pub fn export_aaf(s: &mut Session, p: &Value) -> Result<Value> {
         name: s.project.item(seq).map(|i| i.name.clone()),
         media: MediaOptions { breakout_to_mono: plan.breakout, audio_only: false, essence, mixdown_video },
         small_sectors: bool_p(p, "smallSectors").unwrap_or(false),
+        ..Default::default()
     };
     let (bytes, report) = filmcraft_interchange::aaf::export(&s.project, seq, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;

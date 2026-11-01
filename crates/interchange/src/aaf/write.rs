@@ -350,7 +350,7 @@ fn add_tape_mob(first: &Source, tape_id: [u8; 32], timecode: Option<(i64, FrameR
 }
 
 /// Serialise a composition document.
-pub(crate) fn write(doc: &Document, version: filmcraft_cfb::Version, report: &mut Report) -> Result<Vec<u8>> {
+pub(crate) fn write(doc: &Document, version: filmcraft_cfb::Version, label: &str, report: &mut Report) -> Result<Vec<u8>> {
     let comp = doc.compositions.first().ok_or(Error::Empty)?;
     let mut w = W { report, inexact: false };
     let mut ids = IdGen::for_document(doc, comp);
@@ -377,7 +377,7 @@ pub(crate) fn write(doc: &Document, version: filmcraft_cfb::Version, report: &mu
     // ---- the compositions: the exported sequence first
     let comp_id = ids.next();
     let composition_mobs = {
-        let mut composition_writer = CompositionWriter { w: &mut w, doc, refs: &refs, used_ops: &mut used_ops, uses_varying: &mut uses_varying };
+        let mut composition_writer = CompositionWriter { w: &mut w, doc, refs: &refs, used_ops: &mut used_ops, uses_varying: &mut uses_varying, label };
         let mut output = vec![composition_writer.write(comp, comp_id, true)];
         output.extend(doc.nested.iter().zip(&nested_ids).map(|(nested, id)| composition_writer.write(nested, *id, false)));
         output
@@ -490,6 +490,7 @@ struct CompositionWriter<'a, 'b, 'c> {
     refs: &'b Refs,
     used_ops: &'a mut Vec<Auid>,
     uses_varying: &'a mut bool,
+    label: &'b str,
 }
 
 impl CompositionWriter<'_, '_, '_> {
@@ -670,12 +671,16 @@ impl CompositionWriter<'_, '_, '_> {
         if top {
             mob.set(pid::USAGE_CODE, Value::Data(def::USAGE_TOP_LEVEL.to_vec()));
         }
+        let mut user_comments = vec![
+            tagged("FilmCraft Frame Size", &format!("{}x{}", comp.width, comp.height)),
+            tagged("FilmCraft Audio Sample Rate", &comp.sample_rate.to_string()),
+        ];
+        if top && !self.label.is_empty() {
+            user_comments.push(tagged("ApplicationScheme", self.label));
+        }
         mob.with(pid::SLOTS, Value::StrongVec(slots)).with(
             pid::MOB_USER_COMMENTS,
-            Value::StrongVec(vec![
-                tagged("FilmCraft Frame Size", &format!("{}x{}", comp.width, comp.height)),
-                tagged("FilmCraft Audio Sample Rate", &comp.sample_rate.to_string()),
-            ]),
+            Value::StrongVec(user_comments),
         )
     }
 }
