@@ -1,8 +1,10 @@
+#[cfg(test)]
+use super::Ordering;
 use super::encoders::{aac_factory, apv_factory, dnx_factory, h264_factory, mjpeg_factory, prores_factory};
 use super::format::{ExportSettings, Format};
 #[cfg(test)]
 use super::stats::{GPU_FALLBACKS, GPU_FRAMES};
-use super::*;
+use super::{FrameRate, ItemId, OnceLock, PoisonError, Project, Result, RwLock, SampleEntry, SourceProvider, Tick};
 
 /// A packet produced by a video encoder.
 pub struct EncodedPacket {
@@ -24,6 +26,10 @@ pub struct EncoderFrame<'a> {
     pub index: u64,
 }
 
+/// Per-picture work an encoder hands to the export's render threads, see
+/// [`VideoEncoder::prepare_ahead`].
+pub type PrepareAhead = std::sync::Arc<dyn Fn(&EncoderFrame) + Send + Sync>;
+
 pub trait VideoEncoder: Send {
     /// MP4/MOV sample entry (codec config) — may only be complete after the first frame.
     fn sample_entry(&self) -> SampleEntry;
@@ -36,6 +42,13 @@ pub trait VideoEncoder: Send {
     }
     /// First-pass statistics of a two-pass encode (H.264).
     fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
+        None
+    }
+    /// Work on a rendered picture that needs nothing of the encoder's state (H.264: the colour
+    /// conversion), for the render threads to do while earlier pictures are being encoded.
+    /// [`VideoEncoder::encode`] picks the result up by [`EncoderFrame::index`] and does the work
+    /// itself for a picture that has none; the encoded bytes are the same either way.
+    fn prepare_ahead(&self) -> Option<PrepareAhead> {
         None
     }
 }

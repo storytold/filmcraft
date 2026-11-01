@@ -35,6 +35,9 @@ fn join_error(e: tokio::task::JoinError) -> AutomationError {
 #[derive(Clone)]
 pub struct FilmcraftMcp {
     backend: Arc<Backend>,
+    /// Bridge `render_frame` moves the app's one playhead and screenshots the one Program monitor, so
+    /// calls (which MCP clients may send in parallel) take turns instead of seeing each other's frame.
+    render_lock: Arc<tokio::sync::Mutex<()>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -197,10 +200,10 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
 
 impl FilmcraftMcp {
     pub fn headless(session: Session) -> Self {
-        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), tool_router: Self::tool_router() }
+        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), tool_router: Self::tool_router() }
     }
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), tool_router: Self::tool_router() })
+        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), render_lock: Arc::default(), tool_router: Self::tool_router() })
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {
@@ -451,6 +454,8 @@ impl FilmcraftMcp {
                 })
             }
             Backend::Bridge(b) => {
+                // held until the playhead is back, also for the no-`seconds` screenshot, which must not catch another call's seek
+                let _turn = self.render_lock.lock().await;
                 let Some(sec) = p.seconds else {
                     return self.screenshot(&b.clone(), Some("Program".into()), max).await;
                 };

@@ -1,5 +1,8 @@
 use super::coeffs::ceil_log2;
-use super::*;
+use super::{
+    DC_PRED, MI_HEIGHT_LOG2, MI_WIDTH_LOG2, PALETTE_COLOR_CONTEXT, PALETTE_COLOR_HASH_MULTIPLIERS, PALETTE_COLORS, PALETTE_NUM_NEIGHBORS, TileDecoder,
+    block_height, block_width,
+};
 
 impl<'a, 'f> TileDecoder<'a, 'f> {
     // ---- palette -------------------------------------------------------------------------
@@ -166,7 +169,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         if self.b.palette_size_y > 0 {
             let n = self.b.palette_size_y;
             let mut map = std::mem::take(&mut self.color_map_y);
-            self.read_color_map(&mut map, n, bw, bh, on_w, on_h, 0);
+            self.read_color_map(&mut map, n, MapDims { bw, bh, on_w, on_h }, 0);
             self.color_map_y = map;
         }
         if self.b.palette_size_uv > 0 {
@@ -182,14 +185,14 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 on_h += 2;
             }
             let mut map = std::mem::take(&mut self.color_map_uv);
-            self.read_color_map(&mut map, n, bw, bh, on_w, on_h, 1);
+            self.read_color_map(&mut map, n, MapDims { bw, bh, on_w, on_h }, 1);
             self.color_map_uv = map;
         }
     }
 
     /// Color index map (stride 64).
-    #[allow(clippy::too_many_arguments)]
-    fn read_color_map(&mut self, map: &mut [u8], n: usize, bw: usize, bh: usize, on_w: usize, on_h: usize, plane: usize) {
+    fn read_color_map(&mut self, map: &mut [u8], n: usize, dims: MapDims, plane: usize) {
+        let MapDims { bw, bh, on_w, on_h } = dims;
         map[0] = self.sd.read_ns(n as u32) as u8;
         for i in 1..(on_h + on_w - 1) {
             let jmax = i.min(on_w - 1);
@@ -231,6 +234,15 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             }
         }
     }
+}
+
+/// Block size and on-screen size of a palette color map.
+#[derive(Clone, Copy)]
+struct MapDims {
+    bw: usize,
+    bh: usize,
+    on_w: usize,
+    on_h: usize,
 }
 
 /// get_palette_color_context( ): returns (ColorOrder, ColorContextHash).

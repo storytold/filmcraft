@@ -14,6 +14,9 @@ fn step(h: &mut Harness<'static, FilmcraftApp>) {
 }
 fn harness(item: u64) -> Harness<'static, FilmcraftApp> {
     let mut s = Session::default();
+    // the demo's 1080p 23.976 clip doesn't match the empty 720p 24 fps sequence: these tests are
+    // about the drag, so the Clip Mismatch Warning (clip_mismatch_ui.rs) stays out of the way
+    s.prefs.timeline.clip_mismatch_warning = false;
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.execute("file.newSequence", json!({"name":"Drop test","width":1280,"height":720,"fps":24})).unwrap();
     s.execute("source.open", json!({"item":item})).unwrap();
@@ -390,4 +393,32 @@ fn program_handles_exist_only_for_explicit_marks_and_clear_hides_them() {
     step(&mut h);
     assert!(!has(&h, "program.range.in") && !has(&h, "program.range.out") && !has(&h, "program.range.body"));
     assert!(has(&h, "source.range.in") && has(&h, "source.range.out"));
+}
+
+#[test]
+fn source_move_band_needs_both_marks_so_an_unmarked_bar_has_no_hand() {
+    let mut h = harness(5);
+    let has = |h: &Harness<'static, FilmcraftApp>, id: &str| h.state().auto.elements.iter().any(|e| e.id == id);
+    let hand = [egui::CursorIcon::PointingHand, egui::CursorIcon::Grab];
+    let bar = control_rect(&h, "source.scrubBar");
+    // the middle of the lower part, where the band would be: away from the handles and the playhead
+    let spot = egui::pos2(bar.center().x, bar.max.y - 3.0);
+    pointer(&mut h, spot, None);
+    assert!(!has(&h, "source.range.body"), "no marks: no Move zone");
+    assert!(has(&h, "source.range.in") && has(&h, "source.range.out"), "Source keeps its end handles");
+    assert!(!hand.contains(&h.output().platform_output.cursor_icon), "no marks: no hand over the bar");
+    let rate = filmcraft_engine::clip_ops::source_view(&h.state().session, filmcraft_engine::project::ItemId(5)).unwrap().rate;
+    h.state_mut().session.execute("project.setMarks", json!({"item":5,"in":rate.tick_of(12).0})).unwrap();
+    pointer(&mut h, spot, None);
+    assert!(!has(&h, "source.range.body"), "In alone: still no Move zone");
+    h.state_mut().session.execute("project.setMarks", json!({"item":5,"in":null,"out":rate.tick_of(150).0})).unwrap();
+    pointer(&mut h, spot, None);
+    assert!(!has(&h, "source.range.body"), "Out alone: still no Move zone");
+    h.state_mut().session.execute("project.setMarks", json!({"item":5,"in":rate.tick_of(12).0,"out":rate.tick_of(150).0})).unwrap();
+    step(&mut h);
+    assert!(has(&h, "source.range.body"), "both marks: the band moves");
+    let body = control_rect(&h, "source.range.body").center();
+    pointer(&mut h, body, None);
+    pointer(&mut h, body, None);
+    assert!(hand.contains(&h.output().platform_output.cursor_icon), "both marks: the band shows the hand");
 }

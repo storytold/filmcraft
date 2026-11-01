@@ -23,6 +23,8 @@ use crate::{EngineError, Result, Session};
 
 /// Sample rate audio is analysed at.
 pub const ANALYSIS_RATE: u32 = 48_000;
+/// Seconds of audio decoded per read while analysing (bounds the buffer, whatever the channel count).
+const ANALYSIS_CHUNK_SECONDS: u64 = 60;
 /// Longest stretch of a clip analysed for audio sync (from its start).
 pub const MAX_ANALYSIS: Tick = Tick(30 * 60 * TICKS_PER_SECOND);
 
@@ -122,6 +124,19 @@ pub fn timeline_clip(p: &Project, ti: &TrackItem) -> SyncClip {
     }
 }
 
+/// Frames per analysis read: [`ANALYSIS_CHUNK_SECONDS`], shortened so the decoder's buffer for the
+/// stream at its own sample rate and channel count (plus the frames it reads past the window)
+/// stays under the audio buffer limit, e.g. for a multichannel high-rate stream.
+fn chunk_frames(stream: Option<&filmcraft_media::AudioStreamInfo>) -> usize {
+    let wanted = (ANALYSIS_CHUNK_SECONDS * ANALYSIS_RATE as u64) as usize;
+    let Some(a) = stream else { return wanted };
+    let per_frame = (a.channels.max(1) as usize).saturating_mul(std::mem::size_of::<f32>());
+    // source frames one buffer can hold, less a margin for the decoder's extra frames
+    let room = (filmcraft_media::MAX_AUDIO_BUFFER_BYTES / per_frame).saturating_sub(64);
+    let fits = (room as u128 * ANALYSIS_RATE as u128 / a.sample_rate.max(1) as u128) as usize;
+    wanted.min(fits).max(ANALYSIS_RATE as usize / 100)
+}
+
 /// Mono audio of a clip's media range at [`ANALYSIS_RATE`] (None: no audio).
 pub fn clip_audio(s: &Session, c: &SyncClip) -> Option<Vec<f32>> {
     let src = s.source(c.item)?;
@@ -131,9 +146,26 @@ pub fn clip_audio(s: &Session, c: &SyncClip) -> Option<Vec<f32>> {
     let sr = ANALYSIS_RATE as i64;
     let start = c.range.start.to_units_floor(sr);
     let len = c.range.duration.min(MAX_ANALYSIS).to_units_floor(sr).max(0) as usize;
-    let buf = src.audio(start, len, ANALYSIS_RATE).ok()?;
-    let chans: Vec<&[f32]> = buf.channels.iter().map(|c| c.as_slice()).collect();
-    Some(mixdown(&chans))
+    // Read in short chunks and mix each down to mono: one read of the whole range is a planar
+    // buffer of channels x length, which for stereo over ~23 minutes exceeds the audio buffer
+    // limit and failed as "no audio" (#3554).
+    let chunk = chunk_frames(src.info().audio());
+    let mut mono: Vec<f32> = Vec::with_capacity(len);
+    let mut done = 0usize;
+    while done < len {
+        let n = chunk.min(len - done);
+        let buf = src.audio(start.checked_add(done as i64)?, n, ANALYSIS_RATE).ok()?;
+        let chans: Vec<&[f32]> = buf.channels.iter().map(|c| c.as_slice()).collect();
+        let part = mixdown(&chans);
+        let short = part.len() < n;
+        mono.extend(part);
+        if short {
+            // the media ended inside this chunk: keep later samples from shifting earlier
+            break;
+        }
+        done += n;
+    }
+    Some(mono)
 }
 
 /// The outcome for one clip: its anchor, and for audio the correlation figures.
@@ -226,4 +258,30 @@ pub fn report(clips: &[SyncClip], anchors: &[Anchor], starts: &[Tick], rate: Fra
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::*;
+    use filmcraft_media::{AudioStreamInfo, MAX_AUDIO_BUFFER_BYTES};
+
+    fn stream(sample_rate: u32, channels: u32) -> AudioStreamInfo {
+        AudioStreamInfo { sample_rate, channels, codec: String::new(), bits_per_sample: None }
+    }
+
+    /// The decoder's buffer for one chunk never exceeds the audio buffer limit, from stereo to the
+    /// widest, fastest stream the container readers accept (#3554).
+    #[test]
+    fn a_chunk_fits_the_audio_buffer_limit_for_any_stream() {
+        let full = (ANALYSIS_CHUNK_SECONDS * ANALYSIS_RATE as u64) as usize;
+        assert_eq!(chunk_frames(None), full);
+        assert_eq!(chunk_frames(Some(&stream(48_000, 2))), full);
+        for (rate, ch) in [(384_000u32, 6u32), (384_000, 64), (192_000, 32), (96_000, 8), (8_000, 1)] {
+            let n = chunk_frames(Some(&stream(rate, ch)));
+            let source_frames = (n as u128 * rate as u128).div_ceil(ANALYSIS_RATE as u128) as usize + 2;
+            assert!(source_frames * ch as usize * 4 <= MAX_AUDIO_BUFFER_BYTES, "{rate} Hz x {ch}: {n} frames");
+            assert!(n > 0);
+        }
+        assert!(chunk_frames(Some(&stream(384_000, 6))) < full, "a 60 s read of 6 x 384 kHz would not fit");
+    }
 }

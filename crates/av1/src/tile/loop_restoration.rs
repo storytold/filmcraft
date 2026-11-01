@@ -1,5 +1,8 @@
 use super::coeffs::inverse_recenter;
-use super::*;
+use super::{
+    NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_WIENER, SGR_PARAMS, SGRPROJ_PARAMS_BITS, SGRPROJ_PRJ_BITS,
+    SGRPROJ_PRJ_SUBEXP_K, SUPERRES_NUM, TileDecoder,
+};
 
 impl<'a, 'f> TileDecoder<'a, 'f> {
     // ---- loop restoration syntax -------------------------------------------------------------

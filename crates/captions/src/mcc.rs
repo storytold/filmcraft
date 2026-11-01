@@ -626,11 +626,11 @@ pub fn parse(text: &str) -> Result<Document> {
             continue;
         };
         let tc = tc.split('.').next().unwrap_or(tc);
-        let parts: Vec<i64> = tc.split([':', ';']).filter_map(|p| p.parse().ok()).collect();
-        let [h, m, s, f] = parts[..] else {
+        let parts: Option<Vec<i64>> = tc.split([':', ';']).map(|p| p.parse().ok()).collect();
+        let Some([h, m, s, f]) = parts.as_deref() else {
             return Err(Error::Syntax { line: n + 1, msg: format!("bad timecode \"{tc}\"") });
         };
-        let frame = fields_to_frames(h, m, s, f, rate.0, rate.1 || tc.contains(';'));
+        let frame = fields_to_frames(*h, *m, *s, *f, rate.0, rate.1 || tc.contains(';'));
         let Some(bytes) = expand(data) else {
             doc.warnings.push(format!("line {}: bad caption data", n + 1));
             continue;
@@ -729,6 +729,20 @@ mod tests {
         let got: Vec<(i64, i64, &str)> = back.cues.iter().map(|c| (RATE.frame_at(c.start), RATE.frame_at(c.end), c.text.as_str())).collect();
         assert_eq!(got, vec![(60, 120, "Hello, world!"), (120, 200, "Second caption\nwith two lines"), (260, 300, "Café “q” ♪")]);
         assert!(parse("garbage").is_err());
+    }
+
+    /// Reject malformed fields instead of silently dropping them from the timecode.
+    #[test]
+    fn rejects_timecodes_with_unparseable_extra_fields() {
+        let doc = Document { cues: vec![cue(60, 120, "Caption")], ..Default::default() };
+        let text = write(&doc, false);
+        assert_eq!(parse(&text).unwrap().cues, doc.cues);
+        let (line_index, line) = text.lines().enumerate().find(|(_, line)| line.contains('\t')).unwrap();
+        let (tc, data) = line.split_once('\t').unwrap();
+        for prefix in ["bad:", ":", "9223372036854775808:", "00:"] {
+            let malformed = text.replacen(line, &format!("{prefix}{tc}\t{data}"), 1);
+            assert!(matches!(parse(&malformed), Err(Error::Syntax { line, .. }) if line == line_index + 1), "accepted malformed timecode: {prefix}{tc}");
+        }
     }
 
     /// Keep separated short captions compact while preserving cues and valid CDP packets.

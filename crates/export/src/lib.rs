@@ -53,7 +53,7 @@ mod run;
 mod stats;
 mod still_encode;
 
-pub use convert::{rgba_to_yuv420_8, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10};
+pub use convert::{Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10};
 pub(crate) use encoders::FlacAudio;
 #[cfg(test)]
 use encoders::{aac_factory, h264_factory};
@@ -65,7 +65,7 @@ pub(crate) use registry::build_frame_renderer;
 #[cfg(test)]
 pub(crate) use registry::reset_frame_renderers_for_tests;
 pub use registry::{
-    AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, VideoEncoder, available,
+    AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, PrepareAhead, VideoEncoder, available,
     encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder, register_encoder, register_format_probe, register_frame_renderer,
     register_hdr_probe,
 };

@@ -306,6 +306,24 @@ fn audio_track_mixer_keys_open_show_hide_and_toggle_meter_input_only() {
     assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::AudioTrackMixer);
 }
 
+/// `mixer.meterInputOnly` refuses parameters that are not an object and leaves the option as it
+/// was; null parameters toggle it.
+#[test]
+fn meter_input_only_refuses_parameters_that_are_not_an_object() {
+    let mut d = Driver::new();
+    assert!(!d.app().ui.mixer_meter_input_only);
+    for params in [json!(true), json!(1), json!("on"), json!([true])] {
+        let (req, reply) = ControlRequest::new("ui.menu.invoke", json!({"id": "mixer.meterInputOnly", "params": params}));
+        d.tx.send(req).unwrap();
+        d.frames(3);
+        let response = reply.try_recv().expect("the command is answered");
+        assert_eq!(response["ok"], false, "{params}: {response}");
+        assert!(!d.app().ui.mixer_meter_input_only, "{params} leaves Meter Input(s) Only off");
+    }
+    let r = d.ok("ui.menu.invoke", json!({"id": "mixer.meterInputOnly", "params": null}));
+    assert_eq!(r, json!({"meterInputOnly": true}));
+}
+
 /// Off macOS the menus show `Ctrl+…`, so that is what agents send: a `Ctrl` chord through
 /// `ui.key` (and `ctrl` in `ui.click` modifiers) must act like the physical key, which egui-winit
 /// reports as `ctrl` + `command`. Bindings are written `Cmd+…`, so this failed to match (#245).

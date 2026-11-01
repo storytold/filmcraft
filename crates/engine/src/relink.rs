@@ -541,6 +541,20 @@ pub fn search(s: &Session, p: &Value) -> Result<Value> {
     Ok(json!({"results": out}))
 }
 
+/// Whether Make Offline ▸ delete may remove `path` for item `id`: a regular file (not a link or
+/// a folder) with a media extension, whose size and fingerprint equal the ones recorded when the
+/// item was imported or linked. An item with no recorded identity (a New Offline File placeholder,
+/// or a project from an older build) has no evidence it was ever linked to this file, so it goes
+/// offline and its file is left alone; relinking it records an identity.
+fn deletable_media(s: &Session, id: ItemId, path: &str) -> bool {
+    let p = Path::new(path);
+    if !filmcraft_media::is_importable(p) || !std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let recorded = s.project.item(id).and_then(|i| i.as_media()).and_then(|m| m.identity);
+    recorded.is_some_and(|want| identity_of(&*s.services, path).is_ok_and(|have| have == want))
+}
+
 /// `media.makeOffline {items?, deleteFiles?}`.
 pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
     let items: Vec<ItemId> = match p.get("items").and_then(Value::as_array) {
@@ -568,10 +582,12 @@ pub fn make_offline(s: &mut Session, p: &Value) -> Result<Value> {
     })?;
     let mut deleted = Vec::new();
     if delete {
-        for (_, path) in &files {
+        for (id, path) in &files {
             // Stored paths in an opened document are not authority to delete arbitrary files.
-            // Delete only the resolved path that the media pool permits opening.
+            // Delete only the resolved path that the media pool permits opening, and only when
+            // it is a regular media file that is still the one the item was linked to.
             if let Ok(path) = s.media.follow(path)
+                && deletable_media(s, *id, &path)
                 && std::fs::remove_file(&path).is_ok()
             {
                 deleted.push(path.clone());
@@ -734,15 +750,30 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Offline All",
             menu: &[],
             shortcut: None,
-            params: "{}  (leave every missing file offline and close the Link Media dialog)",
+            params: "{}  (mark every missing file offline, saved with the project, and close the Link Media dialog)",
             enabled: always,
-            run: |s, _| {
-                s.offline.prompt = false;
-                Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
-            },
-            journal: false,
+            run: offline_all,
+            journal: true,
         },
     ]
+}
+
+/// `media.offlineAll`: mark every missing item offline on purpose, so the project remembers the
+/// choice and reopening it does not ask again (as in Premiere). Relinking clears the mark.
+fn offline_all(s: &mut Session, _: &Value) -> Result<Value> {
+    let ids: Vec<ItemId> = s.offline.missing.iter().copied().filter(|i| s.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| !m.offline)).collect();
+    if !ids.is_empty() {
+        s.edit("Offline All", |proj, _| {
+            for i in &ids {
+                if let Some(m) = proj.item_mut(*i).and_then(|it| it.as_media_mut()) {
+                    m.offline = true;
+                }
+            }
+            Ok(())
+        })?;
+    }
+    s.offline.prompt = false;
+    Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// After a project opens: find missing files and ask for them.
@@ -754,9 +785,11 @@ pub fn on_open(s: &mut Session) -> usize {
         log::warn!("media paths stored in the project not opened: {}", refused.join(", "));
         s.toast(format!("Not opening {} media file(s) the project names on another computer or device; File > Link Media… reconnects them", refused.len()));
     }
-    s.offline.prompt = !s.offline.missing.is_empty();
-    if !s.offline.missing.is_empty() {
-        s.toast(format!("{} media file(s) are missing; File > Link Media… reconnects them", s.offline.missing.len()));
+    // Items made offline on purpose (Make Offline / Offline All) don't ask again.
+    let missing = list.iter().filter(|m| m.status == "missing").count();
+    s.offline.prompt = missing > 0;
+    if missing > 0 {
+        s.toast(format!("{missing} media file(s) are missing; File > Link Media… reconnects them"));
     }
     list.len()
 }

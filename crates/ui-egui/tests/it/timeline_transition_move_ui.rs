@@ -236,3 +236,50 @@ fn dragging_one_side_to_another_track_drops_the_transition() {
     assert!(q1.video_tracks[0].transitions.is_empty(), "the clip moved to V2 and its transition was dropped");
     assert!(q1.video_tracks.iter().any(|t| t.items.iter().any(|i| i.id == a0.id && t.id == v2)), "the clip landed on V2");
 }
+
+/// A fade rides with its clip even onto another track: the preview draws it on the destination
+/// row while dragging (it used to vanish until the drop — its home row skipped it and the
+/// destination row never drew it), and the drop puts it there.
+#[test]
+fn dragging_a_clip_to_another_track_carries_its_fade_in_the_preview() {
+    let mut h = harness(true);
+    let q0 = h.state().session.active_sequence().unwrap().clone();
+    // a clip far to the right on V2 marks that track's row
+    let (v2, rate) = (q0.video_tracks[1].id, h.state().session.sequence_rate());
+    h.state_mut().session.execute("timeline.place", json!({"item":5,"time":rate.tick_of(200).0,"duration":rate.tick_of(24).0,"track": v2.0})).unwrap();
+    step(&mut h);
+    let q0 = h.state().session.active_sequence().unwrap().clone();
+    let (a0, tr0) = (q0.video_tracks[0].items[0].clone(), q0.video_tracks[0].transitions[0].clone());
+    let (a_rect, tr_rect, v2_rect) = (
+        rect(&h, &format!("timeline.clip.{}", a0.id.0)),
+        rect(&h, &format!("timeline.transition.{}", tr0.id.0)),
+        rect(&h, &format!("timeline.clip.{}", q0.video_tracks[1].items[0].id.0)),
+    );
+    assert_eq!(tr0.to, Some(a0.id), "the fade-in sits on the dragged clip");
+    let gap_before = tr_rect.min.x - a_rect.min.x;
+    let y = a_rect.center().y;
+    // press clear of the fade band (it covers the left 75 px of the clip) and of the edge zones
+    let x0 = a_rect.left() + 110.0;
+    pointer(&mut h, pos2(x0, y), Some(true));
+    for i in 1..=6 {
+        // move into the V2 row first (track crossing), so the pointer ends up there
+        let p = pos2(x0 + 20.0 * i as f32, y + (v2_rect.center().y - y) * i as f32 / 6.0);
+        pointer(&mut h, p, None);
+    }
+    // mid-drag: the fade previews where the drop will put it, on the V2 row, still keeping its
+    // offset to the clip
+    let tr_mid = rect(&h, &format!("timeline.transition.{}", tr0.id.0));
+    let clip_mid = rect(&h, &format!("timeline.clip.{}", a0.id.0));
+    // a transition's band starts 17 px into its row (the clip body starts 1 px past the row edges)
+    let band = v2_rect.min.y + 16.0;
+    assert!((tr_mid.min.y - band).abs() < 1.0, "fade not previewed on the destination row: {tr_mid:?} (band at {band})");
+    let gap_mid = tr_mid.min.x - clip_mid.min.x;
+    assert!((gap_mid - gap_before).abs() < 1.0, "fade lagged: gap {gap_before} -> {gap_mid}");
+    pointer(&mut h, pos2(x0 + 140.0, v2_rect.center().y), Some(false));
+    let q1 = h.state().session.active_sequence().unwrap().clone();
+    assert!(q1.video_tracks[0].transitions.is_empty(), "the fade left V1");
+    let v2t = q1.video_tracks.iter().find(|t| t.id == v2).unwrap();
+    assert!(v2t.items.iter().any(|i| i.id == a0.id), "the clip landed on V2");
+    let (a1, tr1) = (v2t.items.iter().find(|i| i.id == a0.id).unwrap(), &v2t.transitions[0]);
+    assert_eq!(tr1.start.0 - tr0.start.0, a1.start.0 - a0.start.0, "the committed transition moved with the clip");
+}
