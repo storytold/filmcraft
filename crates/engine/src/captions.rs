@@ -611,6 +611,32 @@ pub fn commands() -> Vec<CommandSpec> {
             has_caption_track,
             export,
         ),
+        spec("captions.copyStyle", "Copy Caption Style", &["Sequence", "Captions"], None, r#"{"track":id|"C1"?}"#, has_caption_track, |s, p| {
+            let tid = track_param(s, p).ok_or_else(|| bad("captions.copyStyle", "no caption track"))?;
+            let style = s
+                .active_sequence()
+                .and_then(|q| q.caption_tracks.iter().find(|t| t.id == tid))
+                .map(|t| t.style.clone())
+                .ok_or_else(|| bad("captions.copyStyle", "no such caption track"))?;
+            s.state.caption_style_clipboard = Some(style);
+            Ok(json!({"copied": true}))
+        }),
+        spec("captions.pasteStyle", "Paste Caption Style", &["Sequence", "Captions"], None, r#"{"track":id|"C1"?}"#, has_caption_track, |s, p| {
+            let style = s.state.caption_style_clipboard.clone().ok_or_else(|| EngineError::Other("no caption style in clipboard".into()))?;
+            let tid = track_param(s, p).ok_or_else(|| bad("captions.pasteStyle", "no caption track"))?;
+            s.edit("Paste Caption Style", |proj, st| {
+                let q = st.active_sequence.ok_or(EngineError::NoSequence)?;
+                proj.sequence_mut(q)
+                    .ok_or(EngineError::NoSequence)?
+                    .caption_tracks
+                    .iter_mut()
+                    .find(|t| t.id == tid)
+                    .ok_or_else(|| bad("captions.pasteStyle", "no such caption track"))?
+                    .style = style.clone();
+                Ok(())
+            })?;
+            Ok(json!({"pasted": true}))
+        }),
         CommandSpec {
             id: "captions.list",
             label: "List Captions",
