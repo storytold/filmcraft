@@ -1,7 +1,7 @@
 use super::transform_tree::TtNode;
 use super::{
-    Blk, CU_SKIP, CU_TRANSQUANT_BYPASS, E_PU_H, E_PU_V, E_TU_H, E_TU_V, F_CODED, F_INTRA, F_NOFILTER, F_SKIP, INTRA_CHROMA, PART_MODE, PRED_MODE,
-    PREV_INTRA_LUMA, PartMode, RQT_ROOT_CBF, Result, SPLIT_CU, Sample, SliceDecoder, ensure, qpc_420,
+    Blk, CU_SKIP, CU_TRANSQUANT_BYPASS, ChromaFormat, E_PU_H, E_PU_V, E_TU_H, E_TU_V, F_CODED, F_INTRA, F_NOFILTER, F_SKIP, INTRA_CHROMA,
+    INTRA_CHROMA_MODE_422, PART_MODE, PRED_MODE, PREV_INTRA_LUMA, PartMode, RQT_ROOT_CBF, Result, SPLIT_CU, Sample, SliceDecoder, ensure, qpc,
 };
 use crate::mvpred::PredBlock;
 
@@ -81,8 +81,9 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let offc = 6 * (self.pic.bd_c as i32 - 8);
         let qpi_cb = (self.qp_y + self.pps.cb_qp_offset + self.sh.cb_qp_offset).clamp(-offc, 57);
         let qpi_cr = (self.qp_y + self.pps.cr_qp_offset + self.sh.cr_qp_offset).clamp(-offc, 57);
-        self.qp_cb = qpc_420(qpi_cb) + offc;
-        self.qp_cr = qpc_420(qpi_cr) + offc;
+        let is420 = self.pic.chroma == ChromaFormat::C420;
+        self.qp_cb = qpc(qpi_cb, is420) + offc;
+        self.qp_cr = qpc(qpi_cr, is420) + offc;
     }
 
     fn coding_unit(&mut self, x0: i32, y0: i32, log2: u32, depth: u32) -> Result<()> {
@@ -144,7 +145,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             }
             self.parse_intra_modes(x0, y0, n, part)?;
             self.max_trafo_depth = self.sps.max_th_depth_intra + self.intra_split as u32;
-            self.transform_tree(TtNode { x0, y0, xb: x0, yb: y0, log2, blk_idx: 0 }, 0, [true, true])?;
+            self.transform_tree(TtNode { x0, y0, xb: x0, yb: y0, log2, blk_idx: 0 }, 0, [[true; 2]; 2])?;
         } else {
             self.intra_split = false;
             let mut merge2nx2n = false;
@@ -175,7 +176,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             let root_cbf = if !merge2nx2n { self.dd(RQT_ROOT_CBF) == 1 } else { true };
             if root_cbf {
                 self.max_trafo_depth = self.sps.max_th_depth_inter;
-                self.transform_tree(TtNode { x0, y0, xb: x0, yb: y0, log2, blk_idx: 0 }, 0, [true, true])?;
+                self.transform_tree(TtNode { x0, y0, xb: x0, yb: y0, log2, blk_idx: 0 }, 0, [[true; 2]; 2])?;
             }
         }
         self.finish_cu(x0, y0, n);
@@ -247,8 +248,10 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let start = self.c.bit_pos().div_ceil(8);
         let data = self.c.data();
         let n = 1usize << log2;
+        let (csx, csy) = self.pic.chroma.shifts();
+        let (ncw, nch) = (n >> csx, n >> csy);
         let (bl, bc) = (self.sps.pcm_bit_depth_luma, self.sps.pcm_bit_depth_chroma);
-        let total_bits = n * n * bl as usize + 2 * (n / 2) * (n / 2) * bc as usize;
+        let total_bits = n * n * bl as usize + 2 * ncw * nch * bc as usize;
         ensure!(start + total_bits.div_ceil(8) <= data.len(), "PCM samples truncated");
         let mut r = filmcraft_bitstream::BitReader::new(&data[start..]);
         let (sy, sc) = (self.pic.bd_y - bl, self.pic.bd_c - bc);
@@ -261,10 +264,10 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
         let cw = self.pic.cwidth;
         for c in 1..3 {
-            for y in 0..n / 2 {
-                for x in 0..n / 2 {
+            for y in 0..nch {
+                for x in 0..ncw {
                     let v = r.read_bits(bc)? as u16;
-                    self.pic.planes[c][(y0 as usize / 2 + y) * cw + x0 as usize / 2 + x] = S::from_u16(v << sc);
+                    self.pic.planes[c][((y0 as usize >> csy) + y) * cw + (x0 as usize >> csx) + x] = S::from_u16(v << sc);
                 }
             }
         }
@@ -332,15 +335,20 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 self.fill_blk(xp, yp, pb, pb, |b| b.ipm = mode as u8);
             }
         }
-        // chroma mode (4:2:0: one per CU, derived from the first PU's luma mode)
+        // chroma mode (one per CU in 4:2:0 and 4:2:2, derived from the first PU's luma mode:
+        // Table 8-2, then the 4:2:2 mapping of Table 8-3)
         let icpm = if self.dd(INTRA_CHROMA) == 0 { 4 } else { self.bypass_bits(2) };
         let luma = self.pic.blk_at(x0, y0).ipm as u32;
-        self.intra_chroma_mode = match icpm {
+        let mode = match icpm {
             4 => luma,
             _ => {
                 let m = [0, 26, 10, 1][icpm as usize];
                 if m == luma { 34 } else { m }
             }
+        };
+        self.intra_chroma_mode = match self.pic.chroma {
+            ChromaFormat::C420 => mode,
+            ChromaFormat::C422 => INTRA_CHROMA_MODE_422.get(mode as usize).copied().unwrap_or(mode as u8) as u32,
         };
         Ok(())
     }
