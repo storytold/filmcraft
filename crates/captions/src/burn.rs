@@ -546,4 +546,18 @@ mod tests {
         t.enabled = false;
         assert!(track_overlay(&t, Tick(5), 100, 100).is_none());
     }
+    #[test]
+    fn corner_radius_zero_and_nonzero_both_render_without_panic() {
+        let c = cap("Test");
+        let st0 = CaptionStyle { background: true, box_corner_radius: 0.0, ..Default::default() };
+        assert!(render_caption(&c, &st0, 1920, 1080).is_some());
+
+        let c2 = cap("Test");
+        let st20 = CaptionStyle { background: true, box_corner_radius: 20.0, ..Default::default() };
+        assert!(render_caption(&c2, &st20, 1920, 1080).is_some());
+
+        // Hostile large radius is clamped to half the box height, no panic.
+        let st_big = CaptionStyle { background: true, box_corner_radius: 99999.0, ..Default::default() };
+        assert!(render_caption(&cap("Clamp"), &st_big, 640, 360).is_some());
+    }
 }
