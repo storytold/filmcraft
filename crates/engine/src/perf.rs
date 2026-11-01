@@ -48,7 +48,9 @@ pub fn decode_json() -> Value {
     })
 }
 
-/// Export counters: pictures encoded by hardware encoders, sessions, declined requests; and the wall
+/// Export counters: pictures encoded by hardware encoders, sessions, declined requests; frames the
+/// GPU frame renderer composited, frames it handed to the CPU, and why it is off when it is
+/// (`gpu`, #1616: an export that asked for the GPU and got the CPU looked like a slow one); and the wall
 /// time of each export stage in milliseconds (`stages`: setup, loudness, render, encode with its
 /// `convert` part, audio, mux, finish, wait), summed over the exports of this process (diff two readings).
 /// Render and encode overlap (the next batch renders while this one is encoded), so their sum can exceed
@@ -57,7 +59,12 @@ pub fn export_json() -> Value {
     let hw = filmcraft_export::hw_encode_stats();
     let stages: serde_json::Map<String, Value> =
         filmcraft_export::stage_times().into_iter().map(|(s, ns)| (format!("{}Ms", s.name()), json!(ns as f64 / 1e6))).collect();
-    json!({"hardware": {"frames": hw.frames, "sessions": hw.sessions, "declined": hw.declined}, "stages": stages})
+    let gpu = filmcraft_export::gpu_render_stats();
+    json!({
+        "hardware": {"frames": hw.frames, "sessions": hw.sessions, "declined": hw.declined},
+        "gpu": {"frames": gpu.frames, "fallbacks": gpu.fallbacks, "disabled": gpu.disabled},
+        "stages": stages,
+    })
 }
 
 /// The engine's `perf.stats`.
@@ -111,6 +118,10 @@ mod tests {
         for k in ["frames", "sessions", "declined"] {
             assert!(v["export"]["hardware"][k].is_number(), "export.hardware.{k} in {v}");
         }
+        for k in ["frames", "fallbacks"] {
+            assert!(v["export"]["gpu"][k].is_number(), "export.gpu.{k} in {v}");
+        }
+        assert!(v["export"]["gpu"]["disabled"].is_null() || v["export"]["gpu"]["disabled"].is_string());
         for k in ["setupMs", "loudnessMs", "renderMs", "encodeMs", "convertMs", "audioMs", "muxMs", "finishMs", "waitMs"] {
             assert!(v["export"]["stages"][k].is_number(), "export.stages.{k} in {v}");
         }

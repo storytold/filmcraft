@@ -75,8 +75,8 @@ use run::gif_delay_cs;
 pub use run::{export, export_range, frame_span, validate_range};
 pub(crate) use stats::note_lock_wait;
 pub use stats::{
-    GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_hw_encode_declined,
-    note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait, stage_times, timed,
+    GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_gpu_render_disabled,
+    note_hw_encode_declined, note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait, stage_times, timed,
 };
 pub use still_encode::{encode_png, encode_still, encode_still_with, encode_still_with_quality};
 
