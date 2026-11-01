@@ -784,6 +784,19 @@ fn a_dropped_project_file_opens_and_asks_about_unsaved_changes() {
     let a_path = d.path().expect("saved as A");
     let items = d.app().session.project.items.len();
 
+    // Save on a never-saved project: Save As first, then the dropped project opens
+    let saved = dir.join("saved-from-prompt.fcproj");
+    let saved_path = saved.to_string_lossy().into_owned();
+    let mut fresh = Driver::new();
+    fresh.app().session.path = None;
+    fresh.app().hooks.pick_save = Some(Box::new(move |_| Some(saved_path.clone())));
+    fresh.edit();
+    fresh.drop_files(&[&b]);
+    fresh.click("openProject.save");
+    assert!(saved.exists(), "saved to the chosen file");
+    assert!(fresh.path().is_some_and(|p| p.ends_with("B.FCPROJ")), "opened {:?}", fresh.path());
+    assert!(!fresh.app().session.is_dirty());
+
     // unsaved changes: the prompt, and Cancel keeps the project and its changes
     d.edit();
     d.drop_files(&[&b]);
