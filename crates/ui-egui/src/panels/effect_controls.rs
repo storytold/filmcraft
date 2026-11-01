@@ -682,6 +682,7 @@ pub(crate) fn param_row(
         }
     }
     let value = param.value_at(row_mt);
+    let value = param.value_at(mt);
     let mut vui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(Rect::from_min_max(pos2(vx, r.min.y + 1.0), pos2(r.max.x - 26.0, r.max.y - 1.0)))

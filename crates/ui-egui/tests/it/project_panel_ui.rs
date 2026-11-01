@@ -955,6 +955,11 @@ fn media_browser_navigation_import_and_columns() {
     d.key("Shift+O");
     assert!(d.app().session.state.source_item.is_some());
     assert_eq!(d.app().session.project.items.len(), 2);
+    // opening a clip in Source shows Source, so the Media Browser is no longer maximized (#3669)
+    assert_ne!(d.app().ui.keys.maximized, Some(filmcraft_ui_egui::dock::PanelKind::MediaBrowser));
+    d.ok("ui.set", json!({"focused": "MediaBrowser"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(2);
     // Edit Columns…
     d.click("panel.menu.MediaBrowser");
     d.click("mediaBrowser.menu.editColumns");
