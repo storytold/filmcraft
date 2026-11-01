@@ -1,0 +1,58 @@
+{
+  "repo": "filmcraft",
+  "source": "06052cb2e41c610ba3f78737fcac37950f92cb8c",
+  "gnome": "GNOME Shell 51.1",
+  "mutter": "51.1",
+  "binary_sha256": "6d8563fb5c2db12ce9e96fe0efab8ff44f0ce823ec919314015577f53280cf02",
+  "controls": {
+    "maximize": true,
+    "restore": true,
+    "minimize": true,
+    "close": true,
+    "titlebar_drag": true,
+    "edge_drag_resize": true
+  },
+  "resize_before": {
+    "x": 200,
+    "y": 148,
+    "w": 1200,
+    "h": 800,
+    "buffer": {
+      "x": 200,
+      "y": 183,
+      "w": 1200,
+      "h": 765
+    },
+    "minimized": false,
+    "maximized": false,
+    "type": 0
+  },
+  "resize_after": {
+    "x": 200,
+    "y": 148,
+    "w": 1104,
+    "h": 744,
+    "buffer": {
+      "x": 200,
+      "y": 183,
+      "w": 1104,
+      "h": 709
+    },
+    "minimized": false,
+    "maximized": false,
+    "type": 0
+  },
+  "screenshots": {
+    "gnome-wayland.png": "GNOME Shell 51.1 / Mutter 51.0, Wayland",
+    "kde-x11.png": "KWin 6.8.0, X11 client via XWayland in an isolated Wayland compositor"
+  },
+  "kde_x11_frame_extents": [
+    [
+      0,
+      0,
+      36,
+      0
+    ]
+  ],
+  "source_lockfile_note": "Unmodified PR source."
+}
