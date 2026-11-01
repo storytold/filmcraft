@@ -5216,6 +5216,8 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
     install_project(s, loaded.project, Some(path.to_string()), true);
+    // export settings come back whether or not the open sequences do
+    s.state.export_ui = loaded.view.as_ref().and_then(|v| v.export.clone());
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);
     }

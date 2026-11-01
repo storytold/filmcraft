@@ -51,6 +51,10 @@ pub struct ProjectView {
     /// written before it existed have none, and every playhead starts at zero as it did then.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub playheads: BTreeMap<ItemId, Tick>,
+    /// The Export mode's settings (preset, file name, folder, range), as the frontend keeps them:
+    /// opaque here, and the frontend reads them with defaults for anything missing or malformed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export: Option<serde_json::Value>,
 }
 
 impl ProjectView {

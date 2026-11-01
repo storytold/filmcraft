@@ -170,6 +170,38 @@ pub fn export_params(app: &FilmcraftApp) -> Value {
     p
 }
 
+/// The settings saved beside the project ([`filmcraft_engine::EditorState::export_ui`]): all but
+/// the open dialogs.
+fn saved_view(ex: &ExportUi) -> Value {
+    let mut v = serde_json::to_value(ex).unwrap_or_default();
+    if let Some(m) = v.as_object_mut() {
+        for k in ["manager", "quickOpen"] {
+            m.remove(k);
+        }
+    }
+    v
+}
+
+/// Keep the session's copy of the export settings current, so saving the project saves them.
+pub fn note_settings(app: &mut FilmcraftApp) {
+    let v = saved_view(&app.ui.export);
+    if app.session.state.export_ui.as_ref() != Some(&v) {
+        app.session.state.export_ui = Some(v);
+    }
+}
+
+/// Take the export settings a project was saved with. They come from a file: one that does not
+/// read as settings is ignored, and the custom range is held to what its fields allow.
+pub fn restore_settings(app: &mut FilmcraftApp) {
+    let Some(v) = app.session.state.export_ui.clone() else { return };
+    let Ok(mut ex) = serde_json::from_value::<ExportUi>(v) else { return };
+    ex.custom_start = if ex.custom_start.is_finite() { ex.custom_start.clamp(0.0, 86_400.0) } else { 0.0 };
+    ex.custom_end = if ex.custom_end.is_finite() { ex.custom_end.clamp(0.0, 86_400.0) } else { 10.0 };
+    ex.manager = app.ui.export.manager.take();
+    ex.quick_open = app.ui.export.quick_open;
+    app.ui.export = ex;
+}
+
 fn sync_sequence(app: &mut FilmcraftApp) {
     let Some(seq) = app.session.state.active_sequence else { return };
     if app.ui.export.for_sequence != Some(seq.0) || app.ui.export.file_name.is_empty() {

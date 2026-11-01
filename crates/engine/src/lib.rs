@@ -337,6 +337,10 @@ pub struct EditorState {
     /// and takes a sequence's view from here when it becomes the active one.
     #[serde(default)]
     pub timeline_views: std::collections::BTreeMap<ItemId, filmcraft_project::SequenceView>,
+    /// The frontend's Export mode settings (preset, file name, folder, range), saved beside the
+    /// project ([`filmcraft_project::ProjectView::export`]) and given back when it is opened.
+    #[serde(default)]
+    pub export_ui: Option<serde_json::Value>,
     /// Timeline clipboard (serialized track items with their relative track index).
     #[serde(skip)]
     pub clipboard: Vec<(TrackKind, usize, filmcraft_project::TrackItem)>,
@@ -894,6 +898,7 @@ impl Session {
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
+            export: self.state.export_ui.clone(),
         }
     }
 
