@@ -523,6 +523,7 @@ fn language_commands_switch_and_persist_without_a_document() {
         ("french", Language::Fr, "fr", "Français", Some(("app.language.german", "Deutsch"))),
         ("indonesian", Language::Id, "id", "Bahasa Indonesia", Some(("app.language.french", "Français"))),
         ("italian", Language::It, "it", "Italiano", Some(("app.language.indonesian", "Bahasa Indonesia"))),
+        ("turkish", Language::Tr, "tr", "Türkçe", Some(("app.language.italian", "Italiano"))),
         ("czech", Language::Cs, "cs", "Čeština", Some(("app.language.italian", "Italiano"))),
         ("polish", Language::Pl, "pl", "Polski", Some(("app.language.italian", "Italiano"))),
         ("swedish", Language::Sv, "sv", "Svenska", Some(("app.language.italian", "Italiano"))),
@@ -600,10 +601,10 @@ fn system_language_picks_italian_korean_and_the_first_known() {
     for none in [&["swe"][..], &["s"], &["-sv"], &["da"], &["nb-NO"], &["nn"], &["no"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
-    for tag in ["tr", "TR", "tr-TR", "tr_TR.UTF-8", "tr_TR"] {
+    for tag in ["tr", "TR", "tr-TR", "tr_TR.UTF-8", "tr_TR", "tr-CY"] {
         assert_eq!(l(&[tag]), Language::Tr, "{tag}");
     }
-    for none in [&["ita"][..], &["i"], &["-it"]] {
+    for none in [&["ita"][..], &["i"], &["-it"], &["tur"], &["-tr"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
     assert_eq!(l(&["da-DK", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
@@ -617,7 +618,6 @@ fn system_language_picks_italian_korean_and_the_first_known() {
     assert_eq!(l(&[&"x".repeat(1 << 20), "es"]), Language::Es);
     assert_eq!(l(&[&"de".repeat(1 << 19), "de-DE"]), Language::De);
 }
-
 /// #218: the `system` preference (the default) asks the host for the system's languages; an
 /// explicit choice does not, and without a host hook System Language is English.
 #[test]
