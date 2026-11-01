@@ -1,12 +1,12 @@
-//! Lumetri in HDR working spaces (known cd/m² values through PQ and HLG) and HSL Secondary ▸
-//! Refine (Denoise, Blur of the key).
+//! Lumetri in HDR working spaces (known cd/m² values through PQ and HLG), HSL Secondary ▸
+//! Refine (Denoise, Blur of the key), Invert Mask and the key eyedroppers (Set / Add / Remove color).
 
 use filmcraft_color::{GradeSpace, REFERENCE_WHITE_NITS, WorkingSpace};
 use filmcraft_project::{EffectInstance, ParamValue, find_effect};
 use filmcraft_time::Tick;
 
 use crate::Image;
-use crate::effects::{FxCtx, apply};
+use crate::effects::{FxCtx, HslKeyPick, apply, lumetri_hsl_key_pick};
 
 const RW: f32 = REFERENCE_WHITE_NITS as f32;
 
@@ -180,4 +180,118 @@ fn hsl_refine_blur_softens_the_key() {
     assert!(inside[1] > inside[0], "red turned green inside: {inside:?}");
     let speck = img.get(3, 3);
     assert!(speck[0] > speck[1], "speckle left alone after denoise: {speck:?}");
+}
+
+#[test]
+fn hsl_invert_mask_flips_the_key() {
+    let m = |img: &Image, x: usize, y: usize| filmcraft_color::linear_to_srgb(img.get(x, y)[1]);
+    let mut img = keyed_image();
+    let e = lumetri(&[
+        ("hsl_on", ParamValue::Bool(true)),
+        ("hsl_hue", F(0.0)),
+        ("hsl_hue_range", F(40.0)),
+        ("hsl_show_mask", ParamValue::Choice(3)),
+        ("hsl_invert", ParamValue::Bool(true)),
+    ]);
+    apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+    assert!(m(&img, 20, 20) < 0.01 && m(&img, 8, 20) > 0.99, "the red square is out, the grey is in");
+    // the correction follows the inverted key: the grey around is warmed, the red square left alone
+    let mut img = keyed_image();
+    let e = lumetri(&[("hsl_on", ParamValue::Bool(true)), ("hsl_hue_range", F(40.0)), ("hsl_invert", ParamValue::Bool(true)), ("hsl_temp", F(100.0))]);
+    apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+    let (grey, red) = (img.get(8, 20), img.get(20, 20));
+    assert!(grey[0] > grey[2] + 0.01, "the grey is warmed: {grey:?}");
+    assert!((red[0] - 0.8).abs() < 1e-3 && (red[1] - 0.02).abs() < 1e-3, "the red is untouched: {red:?}");
+}
+
+/// The HSL Secondary key (White/Black mask view) of each linear colour under `e`.
+fn key_of(e: &EffectInstance, working: WorkingSpace, colours: &[[f32; 3]]) -> Vec<f32> {
+    let mut e = e.clone();
+    for (k, v) in [("hsl_on", ParamValue::Bool(true)), ("hsl_show_mask", ParamValue::Choice(3))] {
+        e.params.get_mut(k).unwrap().value = v;
+    }
+    let mut img = Image::new(colours.len(), 1);
+    for (i, c) in colours.iter().enumerate() {
+        img.px[i * 4..i * 4 + 4].copy_from_slice(&[c[0], c[1], c[2], 1.0]);
+    }
+    apply(&mut img, &e, &cx(working));
+    // the mask view is a display image in the working signal: grey levels 0…1 decode to themselves at 0 and 1
+    let gs = GradeSpace::new(working, e.f64_at("curves_hdr_range", Tick::ZERO) as f32);
+    (0..colours.len()).map(|i| gs.encode([img.px[i * 4]; 3])[0]).collect()
+}
+
+/// Pick `c` with `mode` and write the resulting sliders into `e`.
+fn pick(e: &mut EffectInstance, working: WorkingSpace, c: [f32; 3], mode: HslKeyPick) {
+    for (k, v) in lumetri_hsl_key_pick(e, Tick::ZERO, working, c, mode).unwrap() {
+        assert!(v.is_finite(), "{k} = {v}");
+        e.params.get_mut(k).unwrap().value = F(f64::from(v));
+    }
+}
+
+#[test]
+fn hsl_key_eyedroppers_set_add_and_remove_colours() {
+    let (orange, yellow, blue, grey) = ([0.8, 0.15, 0.02], [0.5, 0.6, 0.03], [0.04, 0.08, 0.7], [0.2, 0.2, 0.2]);
+    let all = [orange, yellow, blue, grey];
+    let w = WorkingSpace::Rec709;
+    let mut e = lumetri(&[]);
+    pick(&mut e, w, orange, HslKeyPick::Set);
+    let k = key_of(&e, w, &all);
+    assert!(k[0] > 0.99 && k[1] < 0.01 && k[2] < 0.01 && k[3] < 0.01, "Set keys the orange alone: {k:?}");
+    pick(&mut e, w, yellow, HslKeyPick::Add);
+    let k = key_of(&e, w, &all);
+    assert!(k[0] > 0.99 && k[1] > 0.99 && k[2] < 0.01 && k[3] < 0.01, "Add takes the yellow in: {k:?}");
+    // adding a colour already inside changes nothing
+    let again = lumetri_hsl_key_pick(&e, Tick::ZERO, w, orange, HslKeyPick::Add).unwrap();
+    let now: Vec<f32> = again.iter().map(|(k, _)| e.f64_at(k, Tick::ZERO) as f32).collect();
+    assert!(again.iter().zip(&now).all(|((_, a), b)| (a - b).abs() < 1e-3), "{again:?} vs {now:?}");
+    pick(&mut e, w, yellow, HslKeyPick::Remove);
+    let k = key_of(&e, w, &all);
+    assert!(k[1] < 0.01 && k[0] > 0.99, "Remove drops the yellow and keeps the orange: {k:?}");
+    // removing a colour outside the key changes nothing
+    let kept = lumetri_hsl_key_pick(&e, Tick::ZERO, w, blue, HslKeyPick::Remove).unwrap();
+    assert!(kept.iter().all(|(k, v)| (e.f64_at(k, Tick::ZERO) as f32 - v).abs() < 1e-3), "{kept:?}");
+    // colours that are not numbers pick nothing
+    for c in [[f32::NAN, 0.2, 0.2], [f32::INFINITY, 0.0, 0.0]] {
+        assert!(lumetri_hsl_key_pick(&e, Tick::ZERO, w, c, HslKeyPick::Set).is_none());
+    }
+    // negative and huge values are clamped like the key clamps them
+    assert!(lumetri_hsl_key_pick(&e, Tick::ZERO, w, [-1.0, 1e30, 0.2], HslKeyPick::Add).is_some_and(|v| v.iter().all(|(_, x)| x.is_finite())));
+}
+
+#[test]
+fn hsl_key_eyedroppers_wrap_around_red_and_stop_at_180_degrees() {
+    let w = WorkingSpace::Rec709;
+    let hue = |deg: f32| {
+        let c = filmcraft_color::hsl_to_rgb(deg / 360.0, 0.8, 0.5);
+        c.map(filmcraft_color::srgb_to_linear)
+    };
+    let mut e = lumetri(&[]);
+    pick(&mut e, w, hue(350.0), HslKeyPick::Set);
+    pick(&mut e, w, hue(20.0), HslKeyPick::Add);
+    let k = key_of(&e, w, &[hue(350.0), hue(5.0), hue(20.0), hue(180.0)]);
+    assert!(k[0] > 0.99 && k[1] > 0.99 && k[2] > 0.99 && k[3] < 0.01, "the arc runs through red: {k:?}");
+    let range = e.f64_at("hsl_hue_range", Tick::ZERO);
+    assert!((44.0..47.0).contains(&range), "350° … 20° plus the half range on the far side: {range}");
+    // an opposite hue would need more than 180°: the arc stops there with the colour at its edge
+    pick(&mut e, w, hue(200.0), HslKeyPick::Add);
+    assert!((e.f64_at("hsl_hue_range", Tick::ZERO) - 180.0).abs() < 1e-3);
+    assert!(key_of(&e, w, &[hue(200.0)])[0] > 0.99);
+    // Remove on the hue axis pulls the near edge in
+    let mut e = lumetri(&[]);
+    pick(&mut e, w, hue(120.0), HslKeyPick::Set);
+    pick(&mut e, w, hue(131.0), HslKeyPick::Remove);
+    let k = key_of(&e, w, &[hue(131.0), hue(107.0)]);
+    assert!(k[0] < 0.01 && k[1] > 0.99, "{k:?}");
+}
+
+#[test]
+fn hsl_key_eyedroppers_read_hdr_colours_like_the_key() {
+    // a bright red highlight above HDR White in a PQ sequence: Set keys it, not the grey beside it
+    let w = WorkingSpace::Rec2100Pq;
+    let red = [2000.0 / RW, 300.0 / RW, 200.0 / RW];
+    let grey = [100.0 / RW; 3];
+    let mut e = lumetri(&[]);
+    pick(&mut e, w, red, HslKeyPick::Set);
+    let k = key_of(&e, w, &[red, grey]);
+    assert!(k[0] > 0.99 && k[1] < 0.01, "{k:?}");
 }
