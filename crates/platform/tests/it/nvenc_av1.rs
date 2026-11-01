@@ -11,10 +11,15 @@ fn av1_export_round_trips_mp4_sdr_pq_and_hlg() {
     use filmcraft_time::{FrameRate, Tick, TimeRange};
     use std::sync::Arc;
 
+    let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     filmcraft_platform::register();
     if !filmcraft_platform::nvenc::av1_available() {
         eprintln!("SKIPPED: no NVENC AV1 encoder");
         return;
+    }
+    let hdr = filmcraft_platform::nvenc::av1_hdr_available();
+    if !hdr {
+        eprintln!("no NVENC AV1 Main 10 encoder: the PQ and HLG cases are skipped");
     }
     let ffmpeg = filmcraft_testkit::require_ffmpeg!();
     let ffprobe = filmcraft_testkit::require_ffprobe!();
@@ -24,6 +29,9 @@ fn av1_export_round_trips_mp4_sdr_pq_and_hlg() {
         (filmcraft_color::WorkingSpace::Rec2100Pq, "smpte2084", "yuv420p10le"),
         (filmcraft_color::WorkingSpace::Rec2100Hlg, "arib-std-b67", "yuv420p10le"),
     ] {
+        if working != filmcraft_color::WorkingSpace::Rec709 && !hdr {
+            continue;
+        }
         let mut p = Project::new("AV1 regression");
         let g = GeneratorSource::new(Generator::Demo(DemoScene::OceanSunset), 320, 180, rate, rate.tick_of(8));
         let info = g.info().clone();
@@ -86,8 +94,9 @@ fn av1_export_round_trips_mp4_sdr_pq_and_hlg() {
 
 #[test]
 fn main10_encodes_hdr_signal_and_repeated_keyframes() {
-    if !filmcraft_platform::nvenc::av1_available() {
-        eprintln!("SKIPPED: no NVENC AV1 encoder");
+    let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !filmcraft_platform::nvenc::av1_hdr_available() {
+        eprintln!("SKIPPED: no NVENC AV1 Main 10 encoder");
         return;
     }
     let cfg = Config {

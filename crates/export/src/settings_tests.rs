@@ -1219,8 +1219,15 @@ fn a_time_left_reads_like_a_clock() {
     assert!(!format_eta(Duration::MAX).is_empty(), "the largest duration cannot overflow");
 }
 
+/// One test, in two halves that share the process-wide probe registry: the second flips AV1's
+/// probe, which the first must see unregistered.
 #[test]
 fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
+    av1_names_settings_and_the_missing_encoder_error();
+    av1_container_and_the_probe_registry();
+}
+
+fn av1_names_settings_and_the_missing_encoder_error() {
     for name in ["av1", "AV1", "av01"] {
         assert_eq!(Format::from_name(name), Some(Format::Av1), "{name}");
     }
@@ -1250,6 +1257,45 @@ fn av1_is_an_mp4_format_that_needs_a_registered_encoder() {
     let sc = Scratch::new("av1-missing");
     let err = export(&p, seq, &ExportSettings { path: sc.path("x.mp4"), include_audio: false, ..a.clone() }, &m, &Progress::default()).unwrap_err().to_string();
     assert!(err.contains("AV1") && err.contains("encoder not available"), "{err}");
+}
+
+fn av1_container_and_the_probe_registry() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let a = ExportSettings { format: Format::Av1, ..Default::default() };
+    // the container is fixed: MP4 whatever the multiplexer, never QuickTime; H.265 does follow it
+    for mux in [Multiplexer::Mp4, Multiplexer::Mov] {
+        assert!(Format::Av1.is_mp4_with(mux), "{mux:?}");
+        assert_eq!(ExportSettings { multiplexer: mux, ..a.clone() }.extension(), "mp4", "{mux:?}");
+    }
+    assert!(Format::Av1.is_mp4_video() && !Format::Av1.is_h26x() && !Format::Av1.is_mxf() && !Format::Av1.is_audio_only());
+    assert!(Format::Hevc.is_mp4_with(Multiplexer::Mp4) && !Format::Hevc.is_mp4_with(Multiplexer::Mov));
+
+    // available only where a registered probe says the machine has an AV1 encoder; HDR (Main 10) is a
+    // separate answer, and the summary says which profile an export would use
+    static AV1: AtomicBool = AtomicBool::new(false);
+    static AV1_HDR: AtomicBool = AtomicBool::new(false);
+    fn probe() -> bool {
+        AV1.load(Ordering::SeqCst)
+    }
+    fn hdr_probe() -> bool {
+        AV1_HDR.load(Ordering::SeqCst)
+    }
+    let video = |s: &ExportSettings| s.summary(1920, 1088, FrameRate::FPS_25, 48_000, Tick(10 * TICKS_PER_SECOND)).video;
+    register_format_probe(Format::Av1, probe);
+    register_format_probe(Format::Av1, probe); // the same probe twice is harmless
+    register_hdr_probe(Format::Av1, hdr_probe);
+    assert!(!available(Format::Av1) && !crate::hdr_available(Format::Av1), "a machine without an AV1 encoder");
+    assert!(video(&a).contains("AV1 Main (hardware encoder)") && !video(&a).contains("Main 10"), "{}", video(&a));
+    AV1.store(true, Ordering::SeqCst);
+    assert!(available(Format::Av1), "an AV1 encoder (RTX 40 series and later)");
+    assert!(!crate::hdr_available(Format::Av1), "AV1 Main without Main 10 stays SDR");
+    assert!(!Format::Hevc.has_builtin_encoder() && !available(Format::Hevc), "probes are per format");
+    AV1_HDR.store(true, Ordering::SeqCst);
+    assert!(crate::hdr_available(Format::Av1));
+    assert!(video(&a).contains("AV1 Main / Main 10 for HDR"), "{}", video(&a));
+    AV1.store(false, Ordering::SeqCst);
+    AV1_HDR.store(false, Ordering::SeqCst);
+    assert!(!available(Format::Av1) && !crate::hdr_available(Format::Av1));
 }
 
 #[test]

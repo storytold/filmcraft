@@ -290,7 +290,7 @@ request NVENC cannot take is an error that says why.
 
 - **What it writes:** AV1 Main, 4:2:0, 8-bit SDR BT.709, or 10-bit BT.2020 with PQ / HLG (Main 10),
   progressive, preset P5, constant or one-pass variable bitrate, an IDR with a repeated sequence
-  header at every keyframe distance, in MP4 (`av01`) or QuickTime. Samples are low-overhead OBUs
+  header at every keyframe distance, in MP4 (`av01`; AV1 has no QuickTime option). Samples are low-overhead OBUs
   (temporal units) as NVENC writes them. Two-pass VBR, CRF, non-square pixels and interlaced output
   are declined.
 - **The `av1C` is built from the sequence header OBU the encoder wrote** (`nvenc/av1.rs`, parsed with

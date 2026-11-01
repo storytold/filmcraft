@@ -746,5 +746,23 @@ mod format_tests {
         assert_eq!(super::format_for("out/clip.MXF"), Some("mxf-op1a"));
         assert_eq!(super::format_for("a.mov"), Some("prores"));
         assert_eq!(super::format_for("noext"), None);
+        // `.mp4` stays H.264: AV1 is never guessed, it takes `--format av1`; the containers AV1 would
+        // use elsewhere (Matroska, WebM, IVF) are not ones FilmCraft writes, so they guess nothing
+        assert_eq!(super::format_for("a.mp4"), Some("h264"));
+        for path in ["a.mkv", "a.webm", "a.ivf"] {
+            assert_eq!(super::format_for(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn every_format_the_help_names_is_one_the_export_takes() {
+        let line = super::HELP.lines().position(|l| l.contains("a format (")).expect("the export help names its formats");
+        let text: String = super::HELP.lines().skip(line).take(3).collect::<Vec<_>>().join(" ");
+        let list = text.split_once("a format (").and_then(|(_, rest)| rest.split_once(", guessed")).expect("a format list").0;
+        let names: Vec<&str> = list.split('|').map(str::trim).collect();
+        assert!(names.contains(&"av1") && names.contains(&"hevc") && names.len() > 10, "{names:?}");
+        for name in names {
+            assert!(filmcraft_export::Format::from_name(name).is_some(), "{name}");
+        }
     }
 }
