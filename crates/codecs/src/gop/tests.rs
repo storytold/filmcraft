@@ -813,57 +813,61 @@ fn rotation_waits_for_the_frames_requests_take() {
     assert!(raw(&plain).is_empty());
 }
 
+/// Samples whose pictures are `w`×`h`: the index in the first pixel, 255 everywhere else.
+struct Wide(Samples, usize, usize);
+struct WideDec(Box<dyn VideoDecoder>, usize, usize);
+impl VideoDecoder for WideDec {
+    fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+        let (w, h) = (self.1, self.2);
+        Ok(self.0.decode(sample, pts)?.into_iter().map(|d| widen(d, w, h)).collect())
+    }
+    fn flush(&mut self) -> Vec<DecodedFrame> {
+        let (w, h) = (self.1, self.2);
+        self.0.flush().into_iter().map(|d| widen(d, w, h)).collect()
+    }
+    fn reset(&mut self) {
+        self.0.reset()
+    }
+    fn name(&self) -> &str {
+        "wide"
+    }
+    fn intra_only(&self) -> bool {
+        self.0.intra_only()
+    }
+}
+fn widen(d: DecodedFrame, w: usize, h: usize) -> DecodedFrame {
+    let mut px = vec![255; w * h * 4];
+    px[..4].copy_from_slice(&[index_of(&d.frame) as u8, 0, 0, 255]);
+    DecodedFrame { frame: VideoFrame::rgba8(w as u32, h as u32, px), ..d }
+}
+impl VideoSamples for Wide {
+    fn count(&self) -> usize {
+        self.0.count()
+    }
+    fn pts(&self, i: usize) -> i64 {
+        self.0.pts(i)
+    }
+    fn sync_before(&self, i: usize) -> usize {
+        self.0.sync_before(i)
+    }
+    fn sample_at(&self, t: i64) -> Option<usize> {
+        self.0.sample_at(t)
+    }
+    fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+        self.0.read(i)
+    }
+    fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+        Ok(Box::new(WideDec(self.0.make_decoder()?, self.1, self.2)))
+    }
+}
+
 /// #3467: a rotated frame really is turned, whether it is decoded for the request or taken raw
 /// from the cache later.
 #[test]
 fn raw_frames_taken_from_the_cache_come_out_rotated() {
-    struct Wide(Samples);
-    struct WideDec(Box<dyn VideoDecoder>);
-    impl VideoDecoder for WideDec {
-        fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
-            Ok(self.0.decode(sample, pts)?.into_iter().map(widen).collect())
-        }
-        fn flush(&mut self) -> Vec<DecodedFrame> {
-            self.0.flush().into_iter().map(widen).collect()
-        }
-        fn reset(&mut self) {
-            self.0.reset()
-        }
-        fn name(&self) -> &str {
-            "wide"
-        }
-        fn intra_only(&self) -> bool {
-            self.0.intra_only()
-        }
-    }
-    // 2×1: the index in the left pixel, 255 in the right one
-    fn widen(d: DecodedFrame) -> DecodedFrame {
-        let i = index_of(&d.frame) as u8;
-        DecodedFrame { frame: VideoFrame::rgba8(2, 1, vec![i, 0, 0, 255, 255, 255, 255, 255]), ..d }
-    }
-    impl VideoSamples for Wide {
-        fn count(&self) -> usize {
-            self.0.count()
-        }
-        fn pts(&self, i: usize) -> i64 {
-            self.0.pts(i)
-        }
-        fn sync_before(&self, i: usize) -> usize {
-            self.0.sync_before(i)
-        }
-        fn sample_at(&self, t: i64) -> Option<usize> {
-            self.0.sample_at(t)
-        }
-        fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
-            self.0.read(i)
-        }
-        fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
-            Ok(Box::new(WideDec(self.0.make_decoder()?)))
-        }
-    }
     // long-GOP and intra-only (ProRes, DNx) decoding alike
     for intra in [false, true] {
-        let s = Wide(samples(30, 30, 0, intra));
+        let s = Wide(samples(30, 30, 0, intra), 2, 1);
         let c = GopCache::new(None).with_rotation(1);
         // frame 4 is decoded for the request, frame 2 taken raw from the cache afterwards
         for i in [4usize, 2] {
@@ -877,6 +881,99 @@ fn raw_frames_taken_from_the_cache_come_out_rotated() {
         assert_eq!((f.width, f.height, turns), (2, 1, 1), "intra {intra}");
         assert_eq!((c.frame(&s, 3000).expect("frame").width, turns), (1, 1), "intra {intra}");
     }
+}
+
+/// The pixel at (x, y) of a frame, as RGBA.
+fn px(f: &VideoFrame, x: usize, y: usize) -> [u8; 4] {
+    let rgba = f.to_rgba8();
+    let at = (y * f.width as usize + x) * 4;
+    [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]
+}
+
+/// #3467: every display rotation swaps or keeps the size of a non-square clip and puts the marked
+/// pixel (top left as stored) where a clockwise turn puts it, for frames decoded for the request
+/// and for frames taken raw from the cache alike.
+#[test]
+fn every_quarter_turn_of_a_non_square_clip_is_right() {
+    // marked pixel after 1, 2 and 3 clockwise quarter turns of a 3×2 picture: (x, y)
+    let marked = [(1, 0), (2, 1), (0, 2)];
+    for (turns, (x, y)) in (1u8..4).zip(marked) {
+        let s = Wide(samples(30, 30, 0, false), 3, 2);
+        let c = GopCache::new(None).with_rotation(turns);
+        let size = if turns % 2 == 1 { (2, 3) } else { (3, 2) };
+        for i in [4usize, 2] {
+            let f = c.frame(&s, i as i64 * 1000).expect("frame");
+            assert_eq!((f.width, f.height), size, "turns {turns} frame {i}");
+            assert_eq!(px(&f, x, y), [i as u8, 0, 0, 255], "turns {turns} frame {i}");
+            assert_eq!(px(&f, 0, 0) == [i as u8, 0, 0, 255], (x, y) == (0, 0));
+        }
+        // a second hit gets the finished frame, not a second turn
+        let again = c.frame(&s, 2_000).expect("frame");
+        assert_eq!(px(&again, x, y), [2, 0, 0, 255], "turns {turns}");
+    }
+}
+
+/// #3467: the clean aperture is cut before the turn, for decoded and raw-cached frames.
+#[test]
+fn crop_and_rotation_compose_on_raw_frames() {
+    // 4×2 picture, marked pixel (0, 0); keep the 2×2 block at x = 0: marked pixel stays top left,
+    // then a clockwise quarter turn moves it to the top right of the 2×2 result
+    let region = Region { x: 0, y: 0, w: 2, h: 2 };
+    let s = Wide(samples(30, 30, 0, false), 4, 2);
+    let c = GopCache::new(None).with_crop(Some(region)).with_rotation(1);
+    for i in [4usize, 2] {
+        let f = c.frame(&s, i as i64 * 1000).expect("frame");
+        assert_eq!((f.width, f.height), (2, 2), "frame {i}");
+        assert_eq!(px(&f, 1, 0), [i as u8, 0, 0, 255], "frame {i}");
+    }
+    // the block at x = 2 holds no marked pixel at all
+    let c = GopCache::new(None).with_crop(Some(Region { x: 2, y: 0, w: 2, h: 2 })).with_rotation(1);
+    let f = c.frame(&s, 4_000).expect("frame");
+    assert!((0..2).all(|x| (0..2).all(|y| px(&f, x, y) == [255; 4])));
+}
+
+/// #3467: a raw frame decoded as a draft is still a draft once finished, and no exact request is
+/// served it.
+#[test]
+fn raw_draft_frames_are_not_served_to_exact_requests() {
+    let s = samples(300, 250, 3, false);
+    let c = GopCache::new(None).with_rotation(1);
+    for i in 0..8usize {
+        let f = filmcraft_media::cancel::with_draft(true, || c.frame(&s, i as i64 * 1000)).expect("frame");
+        assert_eq!((index_of(&f), is_draft(&f)), (i, i % 2 == 1), "frame {i}");
+    }
+    let resets = s.resets.load(Ordering::Relaxed);
+    // finishing the raw frame kept its draft mark
+    assert!(c.shared.state.lock().unwrap().drafts.contains(&5_000));
+    // an exact request decodes frame 5 again and gets an exact, rotated one
+    let f = c.frame(&s, 5_000).expect("frame");
+    assert!(!is_draft(&f) && index_of(&f) == 5);
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets + 1);
+    assert!(!c.shared.state.lock().unwrap().drafts.contains(&5_000));
+    // an exact even frame is served from the cache
+    assert!(!is_draft(&c.frame(&s, 4_000).expect("frame")));
+    assert_eq!(s.resets.load(Ordering::Relaxed), resets + 1);
+}
+
+/// #3467: eviction drops a frame from `frames`, `raw`, `drafts` and the byte count together, and
+/// what is left still comes out rotated.
+#[test]
+fn evicting_raw_frames_keeps_the_cache_consistent() {
+    let s = Wide(samples(200, 200, 0, false), 2, 1);
+    let mut c = GopCache::new(None).with_rotation(1);
+    c.budget = 0;
+    let n = MIN_FRAMES as i64 + 30;
+    for i in 0..n {
+        assert_eq!(c.frame(&s, i * 1000).expect("frame").width, 1);
+    }
+    let st = c.shared.state.lock().unwrap();
+    assert!(st.frames.len() < n as usize, "some frames were evicted");
+    assert!(st.raw.iter().chain(st.drafts.iter()).all(|p| st.frames.contains_key(p)), "no mark outlives its frame");
+    assert_eq!(st.bytes, st.frames.values().map(|f| f.byte_size()).sum::<usize>());
+    drop(st);
+    // decoding up to an evicted frame again still turns it
+    let f = c.frame(&s, 1_000).expect("frame");
+    assert_eq!((f.width, f.height), (1, 2));
 }
 
 #[test]
