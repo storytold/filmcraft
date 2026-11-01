@@ -30,7 +30,7 @@ pub struct BridgeClient {
 }
 
 impl BridgeClient {
-    /// `addr` such as `127.0.0.1:9876` (loopback only). Reads `FILMCRAFT_CONTROL_TOKEN`
+    /// `addr` such as `127.0.0.1:9886` (loopback only). Reads `FILMCRAFT_CONTROL_TOKEN`
     /// from the environment; the desktop app requires this credential on every request.
     pub fn new(addr: impl Into<String>) -> Result<Self, AutomationError> {
         let addr = addr.into();
@@ -90,13 +90,44 @@ impl BridgeClient {
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let line = format!("{}\n", json!({"id": id, "token": self.token, "method": method, "params": params}));
             let res: Result<Value, AutomationError> = async {
-                conn.1.write_all(line.as_bytes()).await.map_err(|e| AutomationError::Bridge(e.to_string()))?;
+                let gone = |e: &std::io::Error| {
+                    matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::NotConnected)
+                };
+                conn.1.write_all(line.as_bytes()).await.map_err(|e| {
+                    if gone(&e) {
+                        AutomationError::Bridge(format!("{} closed the connection without a reply", self.addr))
+                    } else {
+                        AutomationError::Bridge(e.to_string())
+                    }
+                })?;
                 let mut buf = String::new();
-                tokio::time::timeout(Duration::from_secs(90), conn.0.read_line(&mut buf))
+                let n = tokio::time::timeout(Duration::from_secs(90), conn.0.read_line(&mut buf))
                     .await
                     .map_err(|_| AutomationError::Bridge("timeout".into()))?
-                    .map_err(|e| AutomationError::Bridge(e.to_string()))?;
-                serde_json::from_str(&buf).map_err(|e| AutomationError::Bridge(format!("bad reply: {e}")))
+                    .map_err(|e| {
+                        if gone(&e) {
+                            AutomationError::Bridge(format!("{} closed the connection without a reply", self.addr))
+                        } else {
+                            AutomationError::Bridge(e.to_string())
+                        }
+                    })?;
+                if n == 0 {
+                    return Err(AutomationError::Bridge(format!("{} closed the connection without a reply", self.addr)));
+                }
+                let v: Value = serde_json::from_str(&buf).map_err(|_| AutomationError::Bridge(Self::wrong_server(&self.addr)))?;
+                // A reply the app never sends (another program on the port, e.g. a different
+                // tool's server) used to surface as a bare parse or `ok` error (#3313). The app
+                // echoes the request's `id` on success; its own `ok: false` rejects (bad token,
+                // junk line) carry none.
+                let known = match v.get("ok") {
+                    Some(Value::Bool(true)) => v.get("id") == Some(&json!(id)),
+                    Some(Value::Bool(false)) => true,
+                    _ => false,
+                };
+                if !known {
+                    return Err(AutomationError::Bridge(Self::wrong_server(&self.addr)));
+                }
+                Ok(v)
             }
             .await;
             match res {
@@ -117,6 +148,13 @@ impl BridgeClient {
             }
         }
         Err(AutomationError::Bridge("unreachable".into()))
+    }
+
+    /// The peer answered but not as the control server does (`{"ok": …}` per line): another
+    /// program owns the port. The classic case is a different tool's server, which used to
+    /// surface as a bare JSON parse error (#3313).
+    fn wrong_server(addr: &str) -> String {
+        format!("{addr} is not a FilmCraft control server: something else is listening on this port")
     }
 
     async fn connect(&self) -> Result<Conn, AutomationError> {
@@ -289,6 +327,79 @@ mod tests {
         slow.abort();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(b.execute("fast", json!({})).await.unwrap(), json!("fast"));
+    }
+
+    /// A stand-in for another program's server (the Blender MCP add-on that also defaults to a
+    /// nearby port, #3313): it answers every line, just never as the control server would.
+    async fn foreign_app(reply: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let reply = reply.to_string();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = listener.accept().await {
+                let reply = reply.clone();
+                tokio::spawn(async move {
+                    let (r, mut w) = s.into_split();
+                    let mut lines = BufReader::new(r).lines();
+                    while let Ok(Some(_)) = lines.next_line().await {
+                        let _ = w.write_all(format!("{reply}\n").as_bytes()).await;
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    /// A non-FilmCraft reply used to surface as `bad reply: …` (a JSON parse error) or a bare
+    /// `app: error`; the port's real owner is named instead (#3313).
+    #[tokio::test]
+    async fn a_reply_from_another_program_is_named() {
+        for reply in [
+            "{\"status\": \"error\", \"message\": \"unknown command\"}",
+            "{\"jsonrpc\": \"2.0\", \"id\": 1, \"result\": {}}",
+            "not json at all",
+            "{\"ok\": true}",
+            "{\"ok\": true, \"id\": 9999}",
+        ] {
+            let addr = foreign_app(reply).await;
+            let b = BridgeClient::new(addr.clone()).unwrap();
+            let e = b.call("ui.inspect", json!({})).await.unwrap_err();
+            let e = e.to_string();
+            assert!(e.contains("not a FilmCraft control server") && e.contains(&addr), "{reply}: {e}");
+        }
+    }
+
+    /// The app's own unsolicited rejects (`{"ok": false, "error": …}`) carry no `id` (bad token,
+    /// junk line): they must reach the caller as the app's error, not as a foreign server.
+    #[tokio::test]
+    async fn an_error_reply_without_an_id_is_the_apps_own_error() {
+        let addr = foreign_app("{\"ok\": false, \"error\": \"control authentication failed; closing the connection\"}").await;
+        let b = BridgeClient::new(addr).unwrap();
+        let e = b.call("ui.inspect", json!({})).await.unwrap_err();
+        assert_eq!(e.to_string(), "app: control authentication failed; closing the connection");
+    }
+
+    /// A peer that hangs up silently is named too, not "EOF while parsing a value". Closing
+    /// after reading the request sends a clean FIN; closing without reading sends a reset.
+    #[tokio::test]
+    async fn a_connection_closed_without_reply_is_named() {
+        for read_first in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            tokio::spawn(async move {
+                while let Ok((s, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        if read_first {
+                            let (r, _w) = s.into_split();
+                            let _ = BufReader::new(r).lines().next_line().await;
+                        }
+                    });
+                }
+            });
+            let b = BridgeClient::new(addr).unwrap();
+            let e = b.call("ui.inspect", json!({})).await.unwrap_err();
+            assert!(e.to_string().contains("closed the connection without a reply"), "read_first={read_first}: {e}");
+        }
     }
 
     /// Everything else is forwarded unchanged.

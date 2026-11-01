@@ -257,7 +257,7 @@ The trailer and the grades in these screenshots were built exactly this way, by 
 
 ```sh
 cargo run --release -p filmcraft                           # the desktop app, with a demo project
-cargo run --release -p filmcraft -- --control 9876         # plus the JSON-lines control server
+cargo run --release -p filmcraft -- --control 9886         # plus the JSON-lines control server
 cargo run --release -p filmcraft-cli -- commands           # list every engine command
 cargo run --release -p filmcraft-cli -- mcp                # MCP server (headless)
 ```

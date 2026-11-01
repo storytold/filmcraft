@@ -134,8 +134,8 @@ mod tests {
         assert_eq!(a.opt("--project"), Some("p.fcproj"));
         assert!(a.flag("--save") && a.flag("--demo") && a.flag("--compact"));
         assert!(!a.flag("--bridge"));
-        let b = args("--bridge=127.0.0.1:9876 inspect sequence");
-        assert_eq!(b.opt("--bridge"), Some("127.0.0.1:9876"));
+        let b = args("--bridge=127.0.0.1:9886 inspect sequence");
+        assert_eq!(b.opt("--bridge"), Some("127.0.0.1:9886"));
         assert_eq!(b.pos(1), Some("sequence"));
     }
 

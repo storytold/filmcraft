@@ -1,15 +1,15 @@
 # Control protocol & MCP
 
 ## Desktop control channel
-`filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT`) listens on `127.0.0.1:<port>` (loopback only).
+`filmcraft --control 9886` (or `FILMCRAFT_CONTROL_PORT`) listens on `127.0.0.1:<port>` (loopback only).
 The listener requires `FILMCRAFT_CONTROL_TOKEN`: 64 random hex characters shared with authorized
 clients through their inherited environment. Generate a fresh token for each desktop session, then
 start the desktop and bridge from that environment:
 
 ```sh
 export FILMCRAFT_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-filmcraft --control 9876 &
-filmcraft-cli mcp --bridge 127.0.0.1:9876
+filmcraft --control 9886 &
+filmcraft-cli mcp --bridge 127.0.0.1:9886
 ```
 
 The CLI / MCP bridge reads this variable automatically. Keep it private: don't put the value in
@@ -17,6 +17,14 @@ command-line arguments, logs, checked-in MCP configuration, or shared files. Wit
 the desktop leaves the listener closed. Every raw JSON request must include the same top-level
 `token` string; missing or incorrect credentials get an error and close the connection before any
 request is dispatched. Loopback alone does not restrict clients to the desktop owner's OS account.
+
+Port 9886 is the documented example; the other Craft apps use their own (PhotoCraft 7878,
+GridCraft 7979, WordCraft 7981, EffectCraft 9877). Pick a port nothing else listens on: Blender's
+MCP add-ons default to 9876, a frequent neighbour of a video editor. If the port can't be bound
+(already in use) or the token is missing, the app still starts but says so on stderr, in the log
+file and in the status bar, and `ui.inspect` reports it under `control` (`{port, listening,
+error}`). A bridge that reaches a server which is not FilmCraft reports
+"not a FilmCraft control server: something else is listening on this port".
 
 Socket reads and writes time out after two minutes without progress, releasing the connection slot.
 Expiration closes the connection without an unsolicited reply; reconnect before the next request
@@ -48,7 +56,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 |---|---|---|
 | `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id |
 | `engine.commands` / `ui.menu.list` | – | command registry / menu tree |
-| `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…) |
+| `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…); `control` reports the control listener `{port, listening, error}` (`null` when neither `--control` nor a non-empty `FILMCRAFT_CONTROL_PORT` was given) |
 | `ui.docking` | – | the panel layout (craft-ui `Layout`), the focused and maximized panel, and `hitRects`: each docking gesture source drawn last frame (`{hit, rect}`) |
 | `ui.elements` | `{prefix?}` | every on-screen interactive element: id, label, rect (`status.text` carries the status bar's whole message or hint, even when the bar shows it shortened); `window` (the `n` of `panel.float.<n>`) marks an element drawn in a floating panel's own OS window, whose rect is in that window's coordinates |
 | `ui.set` | `{tool, workspace, mode, theme, focused, playbackRes, timeline:{pps,scroll,fit}, program:{…}, source:{…}, clipDialog:{param: value}, menuDialog:{param: value}, panels:{scopes, timecode, reference, events, progress}, export:{…}, keyframeSelection:[…]}` | `keyframeSelection` replaces the Effect Controls keyframe selection (`[{clip, effect, param, mask?, time}]`, `time` in media ticks; read back as `ui.inspect` → `ui.keyframe_selection`; a click on a lane keyframe selects just that one); `program` / `source` merge fields into the monitor view state (`res`, `paused_res`, `high_quality`, `display`, `zoom`, `pan`, `show_rulers`, `show_guides`, `lock_guides`, `snap`, `guides`, `compare_ref`, …; see [monitors.md](monitors.md)); `clipDialog` sets fields of the open Edit / Clip / File dialog (Paste Attributes, Make Subclip, Frame Hold Options, …); `menuDialog` those of the M3.11 dialogs (Find, Create Search Bin, Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence…; see `panels::menu_dialogs`); `panels` merges into the panel settings (`ui.inspect` → `ui.panels`; see `panels::panel_state`): Lumetri Scopes `{shown: ["vectorscopeYuv"|"vectorscopeHls"|"histogram"|"parade"|"waveform"], waveformType, paradeType, colorSpace, brightness, scale, clamp, targets}`, Timecode `{rows: [{source, mode, display}], showName}`, Reference Monitor `{ganged, time, display: "composite"|"scopes", scopes}`, Events `{level, selected}`, Progress `{showFinished}` `export` deep-merges into Export mode state (`preset` — applied first —, `settings` (ExportSettings JSON), `fileName`, `location`, `range`, `customStart`, `customEnd`, `openSections`, `manager` (Preset Manager: `query`, `favoritesOnly`, `selected`, `saveName`), `quickOpen`, `quickPath`, `quickPreset`); `program` / `source` merge fields into the monitor view state (`res`, `paused_res`, `high_quality`, `display`, `zoom`, `pan`, `show_rulers`, `show_guides`, `lock_guides`, `snap`, `guides`, `compare_ref`, …; see [monitors.md](monitors.md)); `clipDialog` sets fields of the open Edit / Clip / File dialog (Paste Attributes, Make Subclip, Frame Hold Options, …); `menuDialog` those of the M3.11 dialogs (Find, Create Search Bin, Project Settings, Scene Edit Detection, Simplify Sequence, Automate to Sequence…; see `panels::menu_dialogs`); `projectPanel` merges into the Project panel's view state (`bin` shown in place, `tabs` (bins in a tab or window: `{bin, floating, view, iconSize, nav}`), `activeTab`, `selectedBin`, `rename: {item|bin, text}`, `dialog` (`{"metadataDisplay": {columns, filter}}`, `{"savePresetAs": {name}}`, `{"managePresets": {selected, name}}`, `{"freeformOptions": {options}}`, `{"saveArrangement": {name, bin}}`)); `mediaBrowser` into the Media Browser's (`expanded`, `pathEdit`, `editColumns`, `treeWidth`). View settings, columns and presets are engine commands (`project.view.set`, `project.columns.set`, `project.viewPreset.*`, `mediaBrowser.settings`) |
@@ -196,7 +204,7 @@ Ctrl), `Ctrl` (macOS ⌃), `Alt`, `Shift`. The dialog (Edit ▸ Keyboard Shortcu
 
 ## MCP
 `filmcraft-cli mcp` serves MCP on stdio: headless (in-process session; `--demo` / `--project p.fcproj`)
-or `--bridge 127.0.0.1:9876` to drive the running app. Tools: `command_list`, `command_run`,
+or `--bridge 127.0.0.1:9886` to drive the running app. Tools: `command_list`, `command_run`,
 `command_batch`, `doc_inspect`, `render_preview`, `project_inspect`, `sequence_inspect`, `media_import`,
 `render_frame`, `ui_inspect`, `ui_elements`, `ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_screenshot`,
 `ui_control`; resources `filmcraft://document` and `filmcraft://commands`. `.mcp.json` registers both.
