@@ -77,8 +77,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
             }
         }
         // store motion
-        let w4 = self.pic.w4;
-        for by in (yp >> 2)..((yp + h) >> 2) {
+        let (w4, yb) = (self.pic.w4, (self.pic.y_base >> 2) as i32);
+        for by in (yp >> 2) - yb..((yp + h) >> 2) - yb {
             let o = by as usize * w4;
             self.pic.mvf[o + (xp >> 2) as usize..o + ((xp + w) >> 2) as usize].fill(mvf);
         }
@@ -145,7 +145,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                     let sh = if c == 0 { 2 } else { 3 };
                     let stride = if c == 0 { self.pic.width } else { self.pic.cwidth };
                     let frame = &self.refs[l][f.ref_idx[l] as usize].frame;
-                    let dst = &mut self.pic.planes[c][y as usize * stride + x as usize..];
+                    let yb = self.pic.line0(c);
+                    let dst = &mut self.pic.planes[c][(y as usize - yb) * stride + x as usize..];
                     frame.copy_block(c, (x + (mv[0] as i32 >> sh), y + (mv[1] as i32 >> sh)), (bw, bh), dst, stride);
                     continue;
                 }
@@ -165,7 +166,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
                 }
             }
             let stride = if c == 0 { self.pic.width } else { self.pic.cwidth };
-            let dst = &mut self.pic.planes[c][y as usize * stride + x as usize..];
+            let yb = self.pic.line0(c);
+            let dst = &mut self.pic.planes[c][(y as usize - yb) * stride + x as usize..];
             let Some(pwt) = pwt else {
                 if bi {
                     inter::put_bi(&self.pred0, &self.pred1, bw, bh, bd, dst, stride);
