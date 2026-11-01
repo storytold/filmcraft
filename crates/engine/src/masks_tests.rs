@@ -231,7 +231,7 @@ fn tracking_session() -> (Session, ClipId) {
     let item = p.add_item(
         "moving",
         filmcraft_project::Label::Iris,
-        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: filmcraft_project::MediaRef::Generator(g.generator.clone()),
             info: info.clone(),
             interpret: Default::default(),
@@ -241,7 +241,7 @@ fn tracking_session() -> (Session, ClipId) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let seq = p.new_sequence("s", filmcraft_project::SequenceSettings { width: 320, height: 240, frame_rate: rate, ..Default::default() }, 1, 0, None);

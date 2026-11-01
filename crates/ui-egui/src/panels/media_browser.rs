@@ -31,10 +31,16 @@ pub struct MediaBrowserUi {
     pub path_edit: Option<String>,
     /// Edit Columns… dialog: the columns being chosen (open when Some).
     pub edit_columns: Option<Vec<String>>,
+    /// The thumbnail size while its slider is dragged; the preference is written on release.
+    #[serde(skip)]
+    pub thumbnail_drag: Option<f32>,
     /// Width of the directory tree (points).
     pub tree_width: f32,
     /// The thumbnail under the pointer and the hovered fraction of its duration.
     pub hover: Option<(String, f32)>,
+    /// List view column being resized and its width so far; the preference is written on release.
+    #[serde(skip)]
+    pub column_drag: Option<(String, f32)>,
 }
 
 /// Cached directory listings (refreshed every few seconds or on Refresh).
@@ -52,9 +58,12 @@ struct Cache {
 const PREVIEW_BASE: u64 = 1 << 44;
 const CACHE_SECS: f64 = 3.0;
 const ROW_H: f32 = 22.0;
+/// How often to look for background probe results.
+const PROBE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Temp-store key for the Media Browser cache: listings stay fresh for 3 s and preview texture ids start at `PREVIEW_BASE`.
 fn cache_id() -> egui::Id {
-    egui::Id::new("media-browser-cache")
+    egui::Id::unique("media-browser-cache")
 }
 
 fn with_cache<R>(ctx: &egui::Context, f: impl FnOnce(&mut Cache) -> R) -> R {
@@ -106,7 +115,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ];
     for (icon, id, tip, enabled) in nav {
         let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));
-        let resp = ui.interact(r, egui::Id::new(("mb-nav", id)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique(("mb-nav", id)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("mediaBrowser.{id}"), r, tip);
         if resp.hovered() && enabled {
             ui.painter().rect_filled(r, 3.0, t.hover);
@@ -122,7 +131,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let pw = (bar.max.x - x - 290.0).max(80.0);
     let pr = Rect::from_min_size(pos2(x + 4.0, bar.min.y + 1.0), vec2(pw, 22.0));
     let mut path = app.ui.media_browser.path_edit.clone().unwrap_or_else(|| dir.clone());
-    let resp = ui.put(pr, egui::TextEdit::singleline(&mut path).id(egui::Id::new("mb-path")).font(egui::FontId::proportional(11.5)));
+    let resp = crate::widgets::accessible_name(
+        ui.put(pr, egui::TextEdit::singleline(&mut path).id(egui::Id::unique("mb-path")).font(egui::FontId::proportional(11.5))),
+        "Path",
+    );
     app.auto.add("mediaBrowser.path", pr, "Path");
     if resp.changed() {
         app.ui.media_browser.path_edit = Some(path.clone());
@@ -138,7 +150,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // file types
     let fr = Rect::from_min_size(pos2(x, bar.min.y + 1.0), vec2(150.0, 22.0));
     let label = mb::FILE_TYPES.iter().find(|f| f.0 == prefs.file_types).map(|f| f.1.to_string()).unwrap_or_else(|| format!(".{}", prefs.file_types));
-    let fresp = crate::widgets::dropdown_text(ui, fr, &label, &t, egui::Id::new("mb-types")).on_hover_text(tl!("File Types Displayed"));
+    let fresp = crate::widgets::dropdown_text(ui, fr, &label, &t, egui::Id::unique("mb-types")).on_hover_text(tl!("File Types Displayed"));
     app.auto.add("mediaBrowser.fileTypes", fr, "File Types Displayed");
     egui::Popup::menu(&fresp).show(|ui| {
         for (k, l) in mb::FILE_TYPES {
@@ -162,7 +174,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     x = fr.max.x + 6.0;
     for (icon, v, tip) in [(Icon::ListView, "list", tl!("List View")), (Icon::IconView, "thumbnails", tl!("Thumbnail View"))] {
         let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));
-        let resp = ui.interact(r, egui::Id::new(("mb-view", v)), Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique(("mb-view", v)), Sense::click()).on_hover_text(tip);
         app.auto.add(&format!("mediaBrowser.view.{v}"), r, tip);
         if prefs.view == v {
             ui.painter().rect_filled(r, 3.0, t.pressed);
@@ -203,7 +215,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let list_r = Rect::from_min_max(pos2(tree_r.max.x + 4.0, body.min.y), body.max);
     // splitter
     let split = Rect::from_min_max(pos2(tree_r.max.x, body.min.y), pos2(tree_r.max.x + 4.0, body.max.y));
-    let sresp = ui.interact(split, egui::Id::new("mb-split"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+    let sresp = ui.interact(split, egui::Id::unique("mb-split"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
     if sresp.dragged() {
         app.ui.media_browser.tree_width = (tw + sresp.drag_delta().x).clamp(100.0, (rect.width() * 0.7).max(100.0));
     }
@@ -229,11 +241,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     if prefs.view == "thumbnails" {
         let sr = Rect::from_min_size(pos2(rect.max.x - 130.0, rect.max.y - 20.0), vec2(120.0, 16.0));
-        let mut sz = prefs.thumbnail_size;
+        let shown = app.ui.media_browser.thumbnail_drag.unwrap_or(prefs.thumbnail_size);
+        let mut sz = shown;
         let resp = ui.put(sr, egui::Slider::new(&mut sz, 60.0..=320.0).show_value(false));
         app.auto.add("mediaBrowser.thumbnailSize", sr, "Thumbnail size");
         // a drag ended by Escape goes back to the size it started from (#580)
-        let orig_id = egui::Id::new("media-browser-thumbnail-size-before-drag");
+        let orig_id = egui::Id::unique("media-browser-thumbnail-size-before-drag");
         if resp.drag_started() {
             ui.data_mut(|d| d.insert_temp(orig_id, prefs.thumbnail_size));
         }
@@ -244,11 +257,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         {
             sz = before;
         }
-        if sz != prefs.thumbnail_size {
-            app.session.prefs.media_browser.thumbnail_size = sz;
+        // in UI state while dragging: had the drag changed the preferences already, the command
+        // would see nothing new and not write preferences.json
+        if sz != shown {
+            app.ui.media_browser.thumbnail_drag = Some(sz);
         }
-        if !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
-            exec(app, &ctx, "mediaBrowser.settings", json!({"thumbnailSize": sz}));
+        if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+            app.ui.media_browser.thumbnail_drag = None;
+            if !escaped {
+                exec(app, &ctx, "mediaBrowser.settings", json!({"thumbnailSize": sz}));
+            }
         }
     }
 }
@@ -406,7 +424,7 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
             exec(app, &ctx, "mediaBrowser.openInSource", json!({"path": e.path}));
         }
     }
-    if resp.drag_started() && !e.is_dir {
+    if resp.drag_started_by(egui::PointerButton::Primary) && !e.is_dir {
         start_file_drag(app, ui, e);
     }
     resp.context_menu(|ui| {
@@ -507,7 +525,16 @@ fn finish_drag(app: &mut FilmcraftApp, ui: &egui::Ui) {
 fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], columns: &[String]) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
-    let widths: Vec<f32> = columns.iter().map(|c| if c == "Name" { 220.0 } else { 110.0 }).collect();
+    let saved = &app.session.prefs.media_browser.column_widths;
+    let drag = &app.ui.media_browser.column_drag;
+    // clamped here too: a hand-edited preferences file never went through the command's clamp
+    let widths: Vec<f32> = columns
+        .iter()
+        .map(|c| match drag {
+            Some((d, w)) if d == c => *w,
+            _ => saved.get(c).map_or(if c == "Name" { 220.0 } else { 110.0 }, |w| w.clamp(30.0, 800.0)),
+        })
+        .collect();
     let total: f32 = widths.iter().sum::<f32>() + 8.0;
     let header = Rect::from_min_size(r.min, vec2(r.width(), 20.0));
     let body = Rect::from_min_max(pos2(r.min.x, header.max.y), r.max);
@@ -515,7 +542,6 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
     child.set_clip_rect(body.intersect(ui.clip_rect()));
     let needs_probe =
         columns.iter().any(|c| matches!(c.as_str(), "Frame Rate" | "Media Duration" | "Video Info" | "Audio Info" | "Video Codec" | "Audio Codec"));
-    let mut probes_left = 2;
     let out = egui::ScrollArea::both().id_salt("mb-list-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         ui.set_min_width(total.max(body.width()));
         for (i, e) in entries.iter().enumerate() {
@@ -527,16 +553,10 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
                 ui.painter().rect_filled(rr, 0.0, t.row_alt);
             }
             let info = if needs_probe && !e.is_dir {
-                let cached = app.session.browser.probes.contains_key(&e.path);
-                if cached || probes_left > 0 {
-                    if !cached {
-                        probes_left -= 1;
-                        ctx.request_repaint();
-                    }
-                    mb::probe(&mut app.session, &e.path)
-                } else {
+                mb::probe_background(&mut app.session, &e.path).unwrap_or_else(|| {
+                    ctx.request_repaint_after(PROBE_POLL);
                     None
-                }
+                })
             } else {
                 None
             };
@@ -573,12 +593,12 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
     let hp = ui.painter().with_clip_rect(header.intersect(ui.clip_rect()));
     hp.rect_filled(header, 0.0, t.panel_bg);
     hp.line_segment([header.left_bottom(), header.right_bottom()], Stroke::new(1.0, t.separator));
-    let mut x = header.min.x + 4.0 - out.state.offset.x;
+    let mut x = header.min.x + 4.0 - out.state.clamped_offset().x;
     for (c, w) in columns.iter().zip(&widths) {
         let cr = Rect::from_min_size(pos2(x, header.min.y), vec2(*w, 20.0));
         hp.text(pos2(cr.min.x + 4.0, cr.center().y), Align2::LEFT_CENTER, crate::i18n::t(c), Tokens::ui(11.0), t.text_dim);
         if cr.intersects(header) {
-            let resp = ui.interact(cr.intersect(header), egui::Id::new(("mb-col", c)), Sense::click());
+            let resp = ui.interact(cr.intersect(header), egui::Id::unique(("mb-col", c)), Sense::click());
             app.auto.add(&format!("mediaBrowser.header.{c}"), cr.intersect(header), c);
             resp.context_menu(|ui| {
                 if ui.button(tl!("Edit Columns…")).clicked() {
@@ -586,6 +606,29 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
                     ui.close();
                 }
             });
+        }
+        // resize handle on the column's right edge, as in the Project panel's List view
+        let hr = Rect::from_center_size(pos2(cr.max.x, header.center().y), vec2(8.0, 20.0));
+        let visible = hr.intersects(header);
+        // a handle dragged past the header's end stays registered, or its release would be missed
+        let dragging = app.ui.media_browser.column_drag.as_ref().is_some_and(|(d, _)| d == c);
+        if visible || dragging {
+            let resp = ui
+                .interact(if visible { hr.intersect(header) } else { hr }, egui::Id::unique(("mb-colsize", c)), Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeColumn);
+            if visible {
+                app.auto.add(&format!("mediaBrowser.resize.{c}"), hr.intersect(header), "Resize column");
+                hp.line_segment([pos2(cr.max.x, header.min.y + 4.0), pos2(cr.max.x, header.max.y - 4.0)], Stroke::new(1.0, t.separator));
+            }
+            // the width lives in UI state while dragging: had the drag changed the preferences
+            // already, the command would see nothing new and not write preferences.json
+            if resp.dragged() {
+                app.ui.media_browser.column_drag = Some((c.clone(), (w + resp.drag_delta().x).clamp(30.0, 800.0)));
+            }
+            if resp.drag_stopped() {
+                let w = app.ui.media_browser.column_drag.take().filter(|(d, _)| d == c).map_or(*w, |(_, w)| w);
+                exec(app, &ctx, "mediaBrowser.settings", json!({"columnWidths": {c: w}}));
+            }
         }
         x += w;
     }
@@ -613,10 +656,11 @@ fn preview_item(
             p.items.insert(
                 ItemId(id),
                 ProjectItem {
+                    custom_label_color: None,
                     id: ItemId(id),
                     name: e.name.clone(),
                     label: Label::Iris,
-                    kind: ItemKind::Media(MediaClip {
+                    kind: ItemKind::Media(Box::new(MediaClip {
                         media: MediaRef::File { path: e.path.clone() },
                         info: info.clone(),
                         interpret: Default::default(),
@@ -626,7 +670,7 @@ fn preview_item(
                         offline: false,
                         proxy: None,
                         identity: None,
-                    }),
+                    })),
                     metadata: Default::default(),
                     created: 0,
                     split: Default::default(),
@@ -642,21 +686,20 @@ fn preview_item(
 fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry]) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
-    let size = app.session.prefs.media_browser.thumbnail_size;
+    let size = app.ui.media_browser.thumbnail_drag.unwrap_or(app.session.prefs.media_browser.thumbnail_size);
     let hover_scrub = app.session.prefs.media_browser.hover_scrub;
     let th_h = size * 9.0 / 16.0;
     let cell = vec2(size + 16.0, th_h + 30.0);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt("mb-thumbs"));
     child.set_clip_rect(r.intersect(ui.clip_rect()));
     let per_row = ((r.width() - 8.0) / cell.x).floor().max(1.0) as usize;
-    let mut probes_left = 2;
     app.ui.media_browser.hover = None;
     egui::ScrollArea::vertical().id_salt("mb-thumb-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         for chunk in entries.chunks(per_row) {
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), cell.y), Sense::hover());
             for (k, e) in chunk.iter().enumerate() {
                 let tr = Rect::from_min_size(pos2(row.min.x + 8.0 + k as f32 * cell.x, row.min.y + 6.0), vec2(size, th_h));
-                let resp = ui.interact(tr.expand(2.0), egui::Id::new(("mb-thumb", &e.path)), Sense::click_and_drag());
+                let resp = ui.interact(tr.expand(2.0), egui::Id::unique(("mb-thumb", &e.path)), Sense::click_and_drag());
                 let sel = app.session.browser.selection.contains(&e.path);
                 ui.painter().rect_filled(tr, 3.0, Color32::from_gray(14));
                 if sel {
@@ -671,10 +714,8 @@ fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Ent
                     );
                 } else {
                     let visible = ui.is_rect_visible(tr);
-                    if visible && matches!(e.kind, "video" | "image") && !app.session.browser.probes.contains_key(&e.path) && probes_left > 0 {
-                        probes_left -= 1;
-                        mb::probe(&mut app.session, &e.path);
-                        ctx.request_repaint();
+                    if visible && matches!(e.kind, "video" | "image") && mb::probe_background(&mut app.session, &e.path).is_none() {
+                        ctx.request_repaint_after(PROBE_POLL);
                     }
                     let frac = if hover_scrub && resp.hovered() {
                         ctx.pointer_hover_pos().map(|p| ((p.x - tr.min.x) / tr.width()).clamp(0.0, 1.0)).unwrap_or(0.3)
@@ -815,7 +856,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut close = false;
     let mut ok = false;
     egui::Window::new(tl!("Edit Columns"))
-        .id(egui::Id::new("mb-edit-columns"))
+        .id(egui::Id::unique("mb-edit-columns"))
         .collapsible(false)
         .resizable(false)
         .pivot(Align2::CENTER_CENTER)

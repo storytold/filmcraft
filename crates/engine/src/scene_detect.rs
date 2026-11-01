@@ -286,6 +286,9 @@ fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Ve
                             continue;
                         }
                         m.markers.push(Marker {
+                            url: String::new(),
+                            author: String::new(),
+                            custom_color: None,
                             id: MarkerId(id),
                             start: *mt,
                             duration: Tick::ZERO,
@@ -320,5 +323,4 @@ fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Ve
 }
 
 #[cfg(test)]
-#[path = "scene_detect_tests.rs"]
 mod tests;

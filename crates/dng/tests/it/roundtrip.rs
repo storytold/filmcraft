@@ -4,7 +4,7 @@
 
 use filmcraft_dng::color::{D50, D65, bradford, inverse, mul, rec709_to_xyz, xy_to_xyz};
 use filmcraft_dng::tiff::tags;
-use filmcraft_dng::writer::{Compression, Layout, Options, Value, lj92, write};
+use filmcraft_dng::writer::{Compression, Layout, Lj92Params, Options, Value, lj92, write};
 use filmcraft_dng::{Dng, Error, Timecode, decode, ljpeg, probe, sniff};
 
 /// A deterministic pseudo-random sequence.
@@ -129,24 +129,27 @@ fn lossless_jpeg_extremes_restarts_and_point_transform() {
     px[0] = 0;
     px[2] = 32_768; // 0 after the 2^15 initial prediction is a difference of 32768 (SSSS 16)
     for predictor in 1..=7 {
-        let j = lj92(&px, w, h, 2, 16, predictor, 0, 0);
+        let j = lj92(&px, &Lj92Params { width: w, height: h, comps: 2, precision: 16, predictor, restart_lines: 0, pt: 0 });
         let d = ljpeg::decode(&j, 1 << 20).unwrap();
         assert_eq!((d.width, d.height, d.components, d.precision, d.predictor), (w, h, 2, 16, predictor));
         assert_eq!(d.samples, px, "predictor {predictor}");
         // restart markers every 2 and every 3 lines
         for r in [2, 3] {
-            let j = lj92(&px, w, h, 2, 16, predictor, r, 0);
+            let j = lj92(&px, &Lj92Params { width: w, height: h, comps: 2, precision: 16, predictor, restart_lines: r, pt: 0 });
             assert!(j.windows(2).any(|b| b == [0xFF, 0xD0]), "has RST0");
             assert_eq!(ljpeg::decode(&j, 1 << 20).unwrap().samples, px, "predictor {predictor} restart {r}");
         }
     }
     // point transform: the low bits are dropped and the rest shifted back
     let px = picture(12, 6, 1, 14, 9);
-    let j = lj92(&px, 12, 6, 1, 14, 4, 0, 2);
+    let j = lj92(&px, &Lj92Params { width: 12, height: 6, comps: 1, precision: 14, predictor: 4, restart_lines: 0, pt: 2 });
     let want: Vec<u16> = px.iter().map(|v| v >> 2 << 2).collect();
     assert_eq!(ljpeg::decode(&j, 1 << 20).unwrap().samples, want);
     // the sample cap
-    assert_eq!(ljpeg::decode(&lj92(&px, 12, 6, 1, 14, 1, 0, 0), 71).err(), Some(Error::TooLarge));
+    assert_eq!(
+        ljpeg::decode(&lj92(&px, &Lj92Params { width: 12, height: 6, comps: 1, precision: 14, predictor: 1, restart_lines: 0, pt: 0 }), 71).err(),
+        Some(Error::TooLarge)
+    );
 }
 
 /// The colour tags of a camera whose white-balanced values are Rec. 709 already.
@@ -363,4 +366,54 @@ fn cyclic_ifds_huge_sizes_and_bad_offsets() {
     // unsupported compressions and depths are named
     let o = Options { raw_tags: vec![(tags::COMPRESSION, Value::Short(vec![34892]))], ..Default::default() };
     assert_eq!(decode(&write(&px, &o)).err(), Some(Error::Unsupported("lossy JPEG DNG".into())));
+}
+
+#[test]
+fn lossless_jpeg_frame_larger_than_its_entropy_data_is_rejected() {
+    // a few bytes of entropy data cannot code 512 x 512 samples (a code is at least one bit)
+    let px = vec![100u16; 4 * 4];
+    let mut j = lj92(&px, &Lj92Params { width: 4, height: 4, comps: 1, precision: 12, predictor: 1, restart_lines: 0, pt: 0 });
+    let sof = j.windows(2).position(|b| b == [0xFF, 0xC3]).unwrap();
+    // marker(2) length(2) precision(1) height(2) width(2)
+    j[sof + 5..sof + 7].copy_from_slice(&512u16.to_be_bytes());
+    j[sof + 7..sof + 9].copy_from_slice(&512u16.to_be_bytes());
+    assert_eq!(ljpeg::decode(&j, 1 << 20).err(), Some(Error::Truncated));
+}
+
+#[test]
+fn tiles_sharing_bytes_are_rejected() {
+    let px = picture(32, 16, 1, 12, 8);
+    let o = Options {
+        width: 32,
+        height: 16,
+        bits: 12,
+        layout: Layout::Tiles { width: 16, height: 16 },
+        compression: Compression::LosslessJpeg { predictor: 1, components: 1, restart_lines: 0, pt: 0 },
+        ..Default::default()
+    };
+    let mut f = write(&px, &o);
+    assert!(decode(&f).is_ok());
+    let word = |f: &[u8], at: usize| u32::from_le_bytes(f[at..at + 4].try_into().unwrap()) as usize;
+    let offs = word(&f, find_tag(&f, tags::TILE_OFFSETS).unwrap() + 8);
+    let counts = word(&f, find_tag(&f, tags::TILE_BYTE_COUNTS).unwrap() + 8);
+    // tile 1 reuses tile 0's bytes
+    let (o0, c0) = (f[offs..offs + 4].to_vec(), f[counts..counts + 4].to_vec());
+    f[offs + 4..offs + 8].copy_from_slice(&o0);
+    f[counts + 4..counts + 8].copy_from_slice(&c0);
+    assert!(matches!(decode(&f), Err(Error::Malformed(_))));
+}
+
+#[test]
+fn lossless_jpeg_frame_needing_a_partial_extra_byte_is_rejected() {
+    // 17 x 1 samples need at least 17 bits = 3 bytes; the scan holds only 2
+    let px = vec![100u16; 4 * 4];
+    let mut j = lj92(&px, &Lj92Params { width: 4, height: 4, comps: 1, precision: 12, predictor: 1, restart_lines: 0, pt: 0 });
+    let sof = j.windows(2).position(|b| b == [0xFF, 0xC3]).unwrap();
+    j[sof + 5..sof + 7].copy_from_slice(&1u16.to_be_bytes());
+    j[sof + 7..sof + 9].copy_from_slice(&17u16.to_be_bytes());
+    let sos = j.windows(2).position(|b| b == [0xFF, 0xDA]).unwrap();
+    let scan = sos + 2 + usize::from(u16::from_be_bytes([j[sos + 2], j[sos + 3]]));
+    j.truncate(scan);
+    j.extend([0, 0]);
+    assert_eq!(ljpeg::decode(&j, 1 << 20).err(), Some(Error::Truncated));
 }

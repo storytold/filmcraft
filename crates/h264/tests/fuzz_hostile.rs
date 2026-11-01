@@ -103,40 +103,48 @@ fn sweep() {
         for n in depth.truncations(seed.len()) {
             run_all(&seed[..n], &format!("{name} truncate {n}"));
         }
-        // SPS/PPS/first slice header region: every byte to a few values, every bit
-        for p in 0..seed.len().min(120) {
-            for (i, v) in VALUES.into_iter().enumerate() {
-                if !depth.value(p, i) {
-                    continue;
-                }
-                let mut d = seed.clone();
-                d[p] = v;
-                run_all(&d, &format!("{name} byte {p}={v:#x}"));
+        header_flips(&depth, &seed, name);
+        random_rounds(&depth, &seed, name);
+    }
+}
+
+/// SPS/PPS/first slice header region: every byte to a few values, every bit.
+fn header_flips(depth: &Depth, seed: &[u8], name: &str) {
+    for p in 0..seed.len().min(120) {
+        for (i, v) in VALUES.into_iter().enumerate() {
+            if !depth.value(p, i) {
+                continue;
             }
-            for b in 0..8 {
-                if !depth.bit(p, b) {
-                    continue;
-                }
-                let mut d = seed.clone();
-                d[p] ^= 1 << b;
-                run_all(&d, &format!("{name} flip {p}.{b}"));
+            let mut d = seed.to_vec();
+            d[p] = v;
+            run_all(&d, &format!("{name} byte {p}={v:#x}"));
+        }
+        for b in 0..8 {
+            if !depth.bit(p, b) {
+                continue;
+            }
+            let mut d = seed.to_vec();
+            d[p] ^= 1 << b;
+            run_all(&d, &format!("{name} flip {p}.{b}"));
+        }
+    }
+}
+
+fn random_rounds(depth: &Depth, seed: &[u8], name: &str) {
+    let mut rng = Rng(0x9e3779b97f4a7c15 ^ name.len() as u64);
+    // Skipped rounds still draw their mutations, so round i matches round i of a full run.
+    for i in 0..depth.rounds {
+        let mut d = seed.to_vec();
+        for _ in 0..1 + rng.below(6) {
+            let p = rng.below(d.len());
+            if rng.below(2) == 0 {
+                d[p] ^= 1 << rng.below(8);
+            } else {
+                d[p] = rng.next() as u8;
             }
         }
-        let mut rng = Rng(0x9e3779b97f4a7c15 ^ name.len() as u64);
-        // Skipped rounds still draw their mutations, so round i matches round i of a full run.
-        for i in 0..depth.rounds {
-            let mut d = seed.clone();
-            for _ in 0..1 + rng.below(6) {
-                let p = rng.below(d.len());
-                if rng.below(2) == 0 {
-                    d[p] ^= 1 << rng.below(8);
-                } else {
-                    d[p] = rng.next() as u8;
-                }
-            }
-            if depth.round(i) {
-                run_all(&d, &format!("{name} random {i}"));
-            }
+        if depth.round(i) {
+            run_all(&d, &format!("{name} random {i}"));
         }
     }
 }

@@ -76,7 +76,7 @@ pub fn make(ff: &Path, spec: &Spec) -> PathBuf {
         args.extend(spec.enc.iter().map(String::as_str));
         args.extend(["-f", "ivf", t.as_str()]);
         run(ff, &args);
-        std::fs::rename(&tmp, &path).unwrap();
+        filmcraft_testkit::fixtures::publish(&tmp, &path).unwrap();
     }
     path
 }

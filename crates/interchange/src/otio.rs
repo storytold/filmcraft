@@ -22,8 +22,8 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use serde_json::{Value, json};
 
 use crate::common::{
-    Builder, MediaSpec, base_item, empty_sequence, file_name, generator_of, item_media, path_to_file_url, rate_from_f64, relative_path, resolve_path,
-    settings_for, transition_effect, transition_name,
+    Builder, MAX_RATE, MediaSpec, base_item, empty_sequence, file_name, generator_of, item_media, path_to_file_url, rate_from_f64, relative_path, relative_url,
+    resolve_path, resolve_url, settings_for, transition_effect, transition_name,
 };
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
 
@@ -50,6 +50,15 @@ fn read_rt(v: &Value) -> Option<Tick> {
         return Some(Tick::from_rational(value as i64, r.den, r.num));
     }
     Some(Tick((value * TICKS_PER_SECOND as f64 * r.den as f64 / r.num as f64).round() as i64))
+}
+
+/// Whether any `rate` in the document is beyond what [`rate_from_f64`] accepts.
+fn has_absurd_rate(v: &Value) -> bool {
+    match v {
+        Value::Object(m) => m.iter().any(|(k, x)| if k == "rate" { x.as_f64().is_some_and(|r| r > MAX_RATE as f64) } else { has_absurd_rate(x) }),
+        Value::Array(a) => a.iter().any(has_absurd_rate),
+        _ => false,
+    }
 }
 
 fn read_rate(v: &Value) -> Option<FrameRate> {
@@ -113,17 +122,27 @@ fn color_label(s: &str) -> Label {
 // Export
 // ---------------------------------------------------------------------------------------------
 
+/// Most clips an export writes inside nested sequences. OTIO has no references: every use of a nested
+/// sequence is written in full, so a compound clip that holds three uses of another, nested ten deep,
+/// is 3^10 copies, and a 3 KB document made the export run for minutes and grow to gigabytes. Each
+/// clip is about 10 KB of JSON, so this bounds the extra output near 250 MB; real projects use a
+/// few thousand. Past it, further nested sequences are written as gaps, with a warning.
+const MAX_NESTED_ITEMS: usize = 25_000;
+
 struct Exp<'a, 'r> {
     p: &'a Project,
     opts: &'a ExportOptions,
     report: &'r mut Report,
     stack: Vec<ItemId>,
+    /// Clips written inside nested sequences so far, and the limit for it (see [`MAX_NESTED_ITEMS`]).
+    nested_items: usize,
+    nested_limit: usize,
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
     let seq = p.sequence(seq_id).ok_or(Error::NoSequence(seq_id))?;
     let rate = seq.settings.frame_rate;
-    let mut x = Exp { p, opts, report, stack: vec![seq_id] };
+    let mut x = Exp { p, opts, report, stack: vec![seq_id], nested_items: 0, nested_limit: MAX_NESTED_ITEMS };
     let name = opts.name.clone().unwrap_or_else(|| p.item(seq_id).map(|i| i.name.clone()).unwrap_or_default());
     let stack = x.stack_json(seq_id, &name, None);
     let tl = json!({
@@ -140,8 +159,8 @@ impl Exp<'_, '_> {
     fn seq_meta(&self, id: ItemId) -> Value {
         let Some((it, s)) = self.p.item(id).and_then(|it| Some((it, it.as_sequence()?))) else { return json!({}) };
         json!({
-            "item": id.0,
-            "label": it.label,
+            "item": id.0, "custom_colors": self.p.custom_colors, "custom_color_names": self.p.custom_color_names,
+            "label": it.label, "custom_label_color": it.custom_label_color,
             "settings": s.settings,
             "start_timecode": s.start_timecode,
             "master_volume_db": s.master_volume_db,
@@ -226,7 +245,7 @@ impl Exp<'_, '_> {
             return json!({"OTIO_SCHEMA": "MissingReference.1", "name": name, "available_range": null, "metadata": {}});
         };
         let avail = tr(m.info.start_timecode.map(|f| m.frame_rate().tick_of(f)).unwrap_or(Tick::ZERO), m.info.duration, rate);
-        let meta = json!({"filmcraft": {"item": item.0, "label": self.p.item(item).map(|i| i.label), "info": m.info, "offline": m.offline}});
+        let meta = json!({"filmcraft": {"item": item.0, "label": self.p.item(item).map(|i| i.label), "custom_label_color": self.p.item(item).and_then(|i| i.custom_label_color), "info": m.info, "offline": m.offline}});
         match &m.media {
             MediaRef::Generator(g) => json!({
                 "OTIO_SCHEMA": "GeneratorReference.1",
@@ -234,11 +253,11 @@ impl Exp<'_, '_> {
                 "generator_kind": match g { Generator::ColorMatte { .. } => "SolidColor", Generator::BlackVideo => "black", Generator::BarsAndTone => "SMPTEBars", _ => "FilmCraftGenerator" },
                 "parameters": match g { Generator::ColorMatte { color } => json!({"color": color}), _ => json!({}) },
                 "available_range": avail,
-                "metadata": {"filmcraft": {"item": item.0, "generator": g, "info": m.info}},
+                "metadata": {"filmcraft": {"item": item.0, "generator": g, "info": m.info, "label": self.p.item(item).map(|i| i.label), "custom_label_color": self.p.item(item).and_then(|i| i.custom_label_color)}},
             }),
             MediaRef::File { path } => {
                 let url = match &self.opts.relative_to {
-                    Some(base) => relative_path(path, base).unwrap_or_else(|| abs_url(path)),
+                    Some(base) => relative_path(path, base).map(|r| relative_url(&r)).unwrap_or_else(|| abs_url(path)),
                     None => abs_url(path),
                 };
                 json!({"OTIO_SCHEMA": "ExternalReference.1", "name": name, "target_url": url, "available_range": avail, "available_image_bounds": null, "metadata": meta})
@@ -247,6 +266,9 @@ impl Exp<'_, '_> {
     }
 
     fn item_json(&mut self, it: &TrackItem, kind: TrackKind, rate: FrameRate) -> Value {
+        if self.stack.len() > 1 {
+            self.nested_items = self.nested_items.saturating_add(1);
+        }
         let base = base_item(self.p, it.item);
         let mut effects = Vec::new();
         if let Some(h) = it.frame_hold {
@@ -258,7 +280,7 @@ impl Exp<'_, '_> {
             effects.push(json!({"OTIO_SCHEMA": "LinearTimeWarp.1", "name": "", "effect_name": "LinearTimeWarp", "time_scalar": s, "metadata": {}}));
         }
         let meta = json!({"filmcraft": {
-            "label": it.label, "link": it.link, "group": it.group, "effects": it.effects,
+            "label": it.label, "custom_label_color": it.custom_label_color, "link": it.link, "group": it.group, "effects": it.effects,
             "gain_db": it.gain_db, "scale_to_frame": it.scale_to_frame, "source_in_ticks": it.source_in.0,
             "duration_ticks": it.duration.0,
         }});
@@ -267,6 +289,17 @@ impl Exp<'_, '_> {
         if matches!(self.p.item(base).map(|i| &i.kind), Some(ItemKind::Sequence(_))) {
             if self.stack.contains(&base) {
                 self.report.warn("recursive nested sequence skipped");
+                return json!({"OTIO_SCHEMA": "Gap.1", "name": "", "source_range": tr(Tick::ZERO, it.duration, rate), "effects": [], "markers": [], "enabled": true, "metadata": {}});
+            }
+            if self.nested_items >= self.nested_limit {
+                // once: later nested sequences hit this too, and the message would repeat
+                if self.nested_items < usize::MAX {
+                    self.nested_items = usize::MAX;
+                    self.report.warn(format!(
+                        "more than {} clips written inside nested sequences: the rest are gaps (OTIO repeats a nested sequence for every use)",
+                        self.nested_limit
+                    ));
+                }
                 return json!({"OTIO_SCHEMA": "Gap.1", "name": "", "source_range": tr(Tick::ZERO, it.duration, rate), "effects": [], "markers": [], "enabled": true, "metadata": {}});
             }
             self.stack.push(base);
@@ -313,7 +346,7 @@ fn marker_json(m: &Marker, rate: FrameRate) -> Value {
         "comment": m.comment,
         "color": color_name(m.color),
         "marked_range": tr(m.start, m.duration, rate),
-        "metadata": {"filmcraft": {"kind": m.kind, "label": m.color, "start_ticks": m.start.0, "duration_ticks": m.duration.0}},
+        "metadata": {"filmcraft": {"kind": m.kind, "url": m.url, "label": m.color, "custom_color": m.custom_color, "author": m.author, "start_ticks": m.start.0, "duration_ticks": m.duration.0}},
     })
 }
 
@@ -378,6 +411,11 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
     if timelines.is_empty() {
         return Err(Error::parse(Format::Otio, format!("no Timeline in a {} document", schema(&v))));
     }
+    if has_absurd_rate(&v) {
+        report.warn(format!(
+            "an OTIO rate above {MAX_RATE} per second is not a frame rate; the default 24 fps was used (this includes audio sample rates above it, such as DSD)"
+        ));
+    }
     let mut imp = Imp { b: Builder::new(&name_of(&v)), opts, report, links: HashMap::new(), groups: HashMap::new() };
     if imp.b.p.name.is_empty() {
         imp.b.p.name = "Imported OTIO".into();
@@ -410,6 +448,39 @@ fn first_rate(v: &Value) -> Option<FrameRate> {
 }
 
 impl Imp<'_, '_> {
+    /// Union each timeline's saved palette into the project's 64 retained colors.
+    /// Keep the first valid name, fill missing names even at capacity, and never keep orphan names.
+    fn merge_palette(&mut self, meta: Option<&Value>) {
+        if let Some(colors) = meta.and_then(|m| m.get("custom_colors")).and_then(Value::as_array) {
+            let mut overflow = false;
+            for color in colors.iter().filter_map(Value::as_str).filter_map(filmcraft_project::HexColor::parse) {
+                if self.b.p.custom_colors.contains(&color) {
+                    continue;
+                }
+                if self.b.p.custom_colors.len() >= 64 {
+                    overflow = true;
+                    break;
+                }
+                self.b.p.custom_colors.push(color);
+            }
+            if overflow {
+                self.report.warn("OTIO saved palettes exceed the 64-color project limit; additional colors were not imported.");
+            }
+        }
+        if let Some(names) = meta.and_then(|m| m.get("custom_color_names")).and_then(Value::as_object) {
+            // Palette membership bounds retained names to 64; orphan input entries consume no slots.
+            for (key, value) in names {
+                if let (Some(color), Some(name)) = (filmcraft_project::HexColor::parse(key), value.as_str())
+                    && self.b.p.custom_colors.contains(&color)
+                    && name.len() <= 128
+                    && !name.chars().any(char::is_control)
+                {
+                    self.b.p.custom_color_names.entry(color).or_insert_with(|| name.to_owned());
+                }
+            }
+        }
+    }
+
     fn timeline(&mut self, tl: &Value) -> ItemId {
         let name = name_of(tl);
         let name = if name.is_empty() { self.opts.name.clone().unwrap_or_else(|| "Timeline".into()) } else { name };
@@ -423,6 +494,8 @@ impl Imp<'_, '_> {
             _ => tl,
         };
         let meta = fc(tl).or_else(|| fc(stack));
+        self.merge_palette(meta);
+
         let rate = tl.get("global_start_time").and_then(read_rate).or_else(|| first_rate(stack)).unwrap_or_default();
         let id = self.sequence(stack, &name, meta, rate);
         if let Some(st) = tl.get("global_start_time").and_then(read_rt)
@@ -441,6 +514,9 @@ impl Imp<'_, '_> {
             && let Some(it) = self.b.p.item_mut(id)
         {
             it.label = l;
+        }
+        if let Some(it) = self.b.p.item_mut(id) {
+            it.custom_label_color = meta.and_then(|m| m.get("custom_label_color")).and_then(Value::as_str).and_then(filmcraft_project::HexColor::parse);
         }
         let mut seq = empty_sequence(settings);
         if let Some(m) = meta {
@@ -584,6 +660,7 @@ impl Imp<'_, '_> {
             }
         }
         let Some(m) = meta else { return };
+        ti.custom_label_color = m.get("custom_label_color").and_then(Value::as_str).and_then(filmcraft_project::HexColor::parse);
         if let Some(l) = m.get("label").and_then(|l| serde_json::from_value::<Label>(l.clone()).ok()) {
             ti.label = l;
         }
@@ -691,7 +768,7 @@ impl Imp<'_, '_> {
         let id = match schema_name(r) {
             "ExternalReference" | "ImageSequenceReference" => {
                 let url = r.get("target_url").and_then(Value::as_str).or_else(|| r.get("target_url_base").and_then(Value::as_str)).unwrap_or("");
-                let path = resolve_path(url, self.opts.base_dir.as_deref());
+                let path = resolve_url(url, self.opts.base_dir.as_deref());
                 let display = if name.is_empty() { file_name(&path).to_string() } else { name.clone() };
                 let key = format!("file:{path}");
                 let existed = self.b.find_media(&key);
@@ -720,11 +797,15 @@ impl Imp<'_, '_> {
                         }
                     }
                 });
-                let key = format!("gen:{}", serde_json::to_string(&g).unwrap_or_default());
+                // Equal generator content can belong to distinct project items; repeated item IDs share media.
+                let key = match meta.and_then(|m| m.get("item")).and_then(Value::as_u64) {
+                    Some(item) => format!("gen:item:{item}"),
+                    None => format!("gen:{}", serde_json::to_string(&g).unwrap_or_default()),
+                };
                 let existed = self.b.find_media(&key);
                 let id = self.b.generator_media(&key, if name.is_empty() { "Generator" } else { &name }, g, &spec, None);
                 if existed.is_none() {
-                    self.fill_media(id, info, None, kind);
+                    self.fill_media(id, info, meta, kind);
                 }
                 id
             }
@@ -752,6 +833,7 @@ impl Imp<'_, '_> {
         let label = meta.and_then(|m| m.get("label")).and_then(|l| serde_json::from_value::<Label>(l.clone()).ok());
         let offline = meta.and_then(|m| m.get("offline")).and_then(Value::as_bool);
         let Some(it) = self.b.p.item_mut(id) else { return };
+        it.custom_label_color = meta.and_then(|m| m.get("custom_label_color")).and_then(Value::as_str).and_then(filmcraft_project::HexColor::parse);
         if let Some(l) = label {
             it.label = l;
         }
@@ -789,6 +871,9 @@ impl Imp<'_, '_> {
                 .and_then(|l| serde_json::from_value::<Label>(l.clone()).ok())
                 .unwrap_or_else(|| color_label(m.get("color").and_then(Value::as_str).unwrap_or("")));
             out.push(Marker {
+                url: meta.and_then(|x| x.get("url")).and_then(Value::as_str).unwrap_or("").to_string(),
+                author: meta.and_then(|x| x.get("author")).and_then(Value::as_str).unwrap_or("").to_string(),
+                custom_color: meta.and_then(|x| x.get("custom_color")).and_then(|c| c.as_str()).and_then(filmcraft_project::HexColor::parse),
                 id: MarkerId(self.b.alloc()),
                 start,
                 duration,
@@ -822,5 +907,59 @@ mod tests {
         let t = Tick(TICKS_PER_SECOND / 48_000 * 12_345);
         let back = read_rt(&rt(t, FrameRate::FPS_24)).unwrap();
         assert!((back - t).abs() <= Tick(1));
+    }
+
+    /// A tree of compound clips: `uses` uses of the next level in each, `levels` media levels deep, leaf clips in the last.
+    fn nested_tree(levels: usize, uses: usize) -> String {
+        let mut xml = String::from(
+            r#"<?xml version="1.0"?><fcpxml version="1.10"><resources><format id="f1" frameDuration="100/2500s" width="1920" height="1080"/>
+<asset id="a1" name="c" start="0s" duration="10s" hasVideo="1" format="f1"><media-rep kind="original-media" src="file:///tmp/c.mov"/></asset>"#,
+        );
+        for level in 0..levels {
+            let inner: String = (0..uses)
+                .map(|i| {
+                    if level + 1 < levels {
+                        format!(r#"<ref-clip ref="m{}" offset="{i}s" duration="1s"/>"#, level + 1)
+                    } else {
+                        format!(r#"<asset-clip ref="a1" offset="{i}s" duration="1s"/>"#)
+                    }
+                })
+                .collect();
+            xml.push_str(&format!(r#"<media id="m{level}" name="L{level}"><sequence format="f1" tcStart="0s"><spine>{inner}</spine></sequence></media>"#));
+        }
+        xml.push_str(r#"</resources><library><event name="E"><project name="P"><sequence format="f1" tcStart="0s"><spine><ref-clip ref="m0" offset="0s" duration="1s"/></spine></sequence></project></event></library></fcpxml>"#);
+        xml
+    }
+
+    /// OTIO repeats a nested sequence for every use, so 10 uses nested 3 deep is 111 copies and a 3 KB
+    /// document nested 12 deep made the export run for minutes and grow to gigabytes. Past the limit on clips
+    /// written inside nested sequences the rest are gaps, with one warning. The test lowers the limit so it
+    /// stays tiny: without the check all 112 stacks are written.
+    #[test]
+    fn nested_copies_stop_at_the_limit() {
+        let (imported, _) = crate::import(nested_tree(3, 10).as_bytes(), crate::Format::Fcpxml, None).expect("import succeeds");
+        let seq = imported.sequences[0];
+        let opts = ExportOptions::default();
+        let write = |limit: usize| {
+            let mut report = Report::default();
+            let mut x = Exp { p: &imported.project, opts: &opts, report: &mut report, stack: vec![seq], nested_items: 0, nested_limit: limit };
+            let stacks = x.stack_json(seq, "t", None).to_string().matches("\"Stack.1\"").count();
+            (stacks, report)
+        };
+        let (all, report) = write(usize::MAX - 1);
+        assert_eq!(all, 112);
+        assert!(!report.mentions("nested sequences"), "{report}");
+        let (capped, report) = write(200);
+        assert!(capped < 60, "{capped} stacks");
+        assert!(report.mentions("clips written inside nested sequences"), "{report}");
+        assert_eq!(report.warnings().filter(|w| w.message.contains("inside nested sequences")).map(|w| w.count).sum::<u32>(), 1);
+    }
+
+    /// An ordinary project with nested sequences is far below the real limit and exports untouched.
+    #[test]
+    fn ordinary_nesting_is_not_capped() {
+        let (imported, _) = crate::import(nested_tree(3, 4).as_bytes(), crate::Format::Fcpxml, None).expect("import succeeds");
+        let (_, report) = crate::export(&imported.project, imported.sequences[0], crate::Format::Otio, &ExportOptions::default()).expect("export succeeds");
+        assert!(!report.mentions("inside nested sequences"), "{report}");
     }
 }

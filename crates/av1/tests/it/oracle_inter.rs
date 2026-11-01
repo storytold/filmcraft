@@ -15,12 +15,14 @@ fn specs() -> Vec<Spec> {
     ]
 }
 
-/// Super-resolution (denominator 12 on the inter frames) and film grain synthesis.
+/// Super-resolution (denominator 12 on the inter frames), film grain synthesis and quantiser
+/// matrices.
 fn specs_tools() -> Vec<Spec> {
     let p = |params: &'static str| -> Vec<&'static str> { vec!["-preset", "6", "-crf", "35", "-svtav1-params", params] };
     vec![
         Spec::new("inter_superres", "testsrc2=s=416x240:r=25", 8, "yuv420p", &p("superres-mode=1:superres-denom=12:superres-kf-denom=13")),
         Spec::new("inter_film_grain", "testsrc2=s=352x288:r=25,noise=alls=20:allf=t", 8, "yuv420p", &p("film-grain=10")),
+        Spec::new("inter_qmatrix_10bit", "mandelbrot=s=352x288:r=25", 8, "yuv420p10le", &p("enable-qm=1:qm-min=0:qm-max=8")),
     ]
 }
 

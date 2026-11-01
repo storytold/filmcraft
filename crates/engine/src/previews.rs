@@ -62,12 +62,24 @@ pub struct BarSpan {
 /// Which segments a render command picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderMode {
-    /// Red and yellow segments in In/Out (Enter).
+    /// Red segments in In/Out (Enter), as in Premiere: yellow ones should play in real time, and
+    /// rendering them too can take hours of encoding on a long sequence (#1220).
     EffectsInToOut,
     /// Every segment in In/Out, including no-bar ones.
     InToOut,
     /// Segments showing a selected clip.
     Selection,
+}
+
+impl RenderMode {
+    /// Whether this mode renders a segment whose playback needs `need` (In/Out and the selection
+    /// aside).
+    pub fn renders(self, need: Need) -> bool {
+        match self {
+            RenderMode::EffectsInToOut => need == Need::Render,
+            RenderMode::InToOut | RenderMode::Selection => true,
+        }
+    }
 }
 
 type Memo = (Arc<Project>, ItemId, Arc<Vec<Segment>>);
@@ -168,6 +180,13 @@ fn audio_name(hash: &str) -> String {
     format!("{hash}.wav")
 }
 
+/// The speaker layout a mix is rendered for and how a 5.1 Mix is folded down to stereo.
+#[derive(Clone, Copy, Debug)]
+pub struct MixOutput {
+    pub layout: Layout,
+    pub mixdown: Mixdown,
+}
+
 impl PreviewStore {
     /// A store using a fresh per-process temp folder (unsaved projects).
     pub fn temp() -> Self {
@@ -219,17 +238,20 @@ impl PreviewStore {
         self.bump();
     }
 
-    /// Move to `dir`, taking this store's preview files along (first save of a project).
+    /// Move to `dir`, taking this store's preview files along (first save of a project). The folder is
+    /// created only when there are files to take along: a render creates it when it needs it (#2343).
     pub fn move_to(&self, dir: PathBuf) {
         let old = self.dir();
         if old.as_deref() == Some(dir.as_path()) {
             return;
         }
+        let files = self.files.read().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(old) = &old
+            && !files.is_empty()
             && (old.starts_with(crate::temp_dir()) || self.temp_root().is_some_and(|r| old.starts_with(r)))
         {
             let _ = std::fs::create_dir_all(&dir);
-            for name in self.files.read().unwrap_or_else(|e| e.into_inner()).iter() {
+            for name in &files {
                 let (a, b) = (old.join(name), dir.join(name));
                 if !b.exists() && std::fs::rename(&a, &b).is_err() {
                     let _ = std::fs::copy(&a, &b).map(|_| std::fs::remove_file(&a));
@@ -386,14 +408,13 @@ impl PreviewStore {
     /// Sequence audio for playback and meters, as stereo (a 5.1 Mix folded with the BS.775
     /// downmix): rendered audio previews where they are valid, the live mix everywhere else.
     pub fn mix(&self, project: &Arc<Project>, seq: ItemId, start: i64, frames: usize, sources: &dyn filmcraft_render::SourceProvider) -> AudioBuffer {
-        self.mix_layout(project, seq, start, frames, sources, Layout::Stereo, Mixdown::FrontRear)
+        self.mix_layout(project, seq, start, frames, sources, MixOutput { layout: Layout::Stereo, mixdown: Mixdown::FrontRear })
     }
 
     /// [`PreviewStore::mix`] in `layout`: a 5.1 Mix is folded to stereo with `mixdown` (Preferences ▸
     /// Audio ▸ 5.1 Mixdown Type) or played as six channels on a 5.1 device; a stereo Mix is placed
     /// on the front speakers of a 5.1 device. Rendered audio previews are stereo BS.775 folds, so
     /// they are used only for stereo output of a stereo Mix or with the BS.775 mixdown.
-    #[allow(clippy::too_many_arguments)]
     pub fn mix_layout(
         &self,
         project: &Arc<Project>,
@@ -401,9 +422,9 @@ impl PreviewStore {
         start: i64,
         frames: usize,
         sources: &dyn filmcraft_render::SourceProvider,
-        layout: Layout,
-        mixdown: Mixdown,
+        output: MixOutput,
     ) -> AudioBuffer {
+        let MixOutput { layout, mixdown } = output;
         let Some(q) = project.sequence(seq) else { return AudioBuffer::silence(48_000, layout.channels(), frames) };
         let live = Some(&*self.live);
         let has_audio = self.files.read().unwrap_or_else(|e| e.into_inner()).iter().any(|n| n.ends_with(".wav"));
@@ -623,9 +644,8 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     let segs = store.segments(&s.project, seq);
     let selection: HashSet<_> = s.state.selection.iter().copied().collect();
     let mut todo: Vec<Todo> = Vec::new();
-    for g in segs.iter() {
+    for g in segs.iter().filter(|g| mode.renders(g.need)) {
         let (a, b) = match mode {
-            RenderMode::EffectsInToOut if g.need == Need::None => continue,
             RenderMode::EffectsInToOut | RenderMode::InToOut => rel_range(g, rate, &range),
             RenderMode::Selection if g.clips.iter().any(|c| selection.contains(c)) => (0, g.frames.max(0)),
             RenderMode::Selection => continue,
@@ -635,7 +655,11 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         }
     }
     if todo.is_empty() {
-        s.toast("Nothing to render: previews are up to date");
+        s.toast(if mode == RenderMode::EffectsInToOut {
+            "Nothing to render: no red segments without previews between In and Out"
+        } else {
+            "Nothing to render: previews are up to date"
+        });
         return Ok(json!({"job": null, "segments": 0}));
     }
     std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("preview folder {}: {e}", dir.display())))?;
@@ -649,8 +673,9 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
     };
     job.progress.total.store(frames.max(1) as u64, Ordering::Relaxed);
     let project = s.project.clone();
-    // Previews are cached by content and reused with proxies on or off: always full resolution.
-    let provider = s.media.full_res_provider(project.clone(), s.services.clone());
+    // Previews are cached by content and reused with proxies on or off: always full resolution,
+    // from their own copies of the files so the monitors keep their decoders.
+    let provider = s.media.full_res_provider(project.clone(), s.services.clone()).own_sources();
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let nseg = todo.len();
     let run = move || {
@@ -751,7 +776,7 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
     let job = crate::Job { id, label: "Rendering audio previews".into(), progress: Default::default(), result: Default::default() };
     job.progress.total.store(total.max(1) as u64, Ordering::Relaxed);
     let project = s.project.clone();
-    let provider = s.media.full_res_provider(project.clone(), s.services.clone());
+    let provider = s.media.full_res_provider(project.clone(), s.services.clone()).own_sources();
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let nseg = todo.len();
     let run = move || {

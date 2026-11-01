@@ -184,7 +184,7 @@ fn edit_mask<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut Mas
     let body = move |pr: &mut filmcraft_project::Project, _: &mut crate::EditorState| -> Result<R> {
         let q = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-        let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+        let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
         let ei = effect_index(&it.effects, eff.as_ref(), sel, clip).ok_or_else(|| bad(label, "no such effect on clip"))?;
         let e = &mut it.effects[ei];
         let mi = mask_i.ok_or_else(|| bad(label, "need `mask`"))?;
@@ -557,7 +557,7 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
             if only.is_some_and(|c| c != it.id) {
                 continue;
             }
-            let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+            let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
             for (ei, e) in it.effects.iter().enumerate() {
                 for (mi, m) in e.masks.iter().enumerate() {
                     out.push(json!({
