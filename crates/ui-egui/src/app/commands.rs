@@ -1,8 +1,8 @@
-use super::{FilmcraftApp, menus};
+use super::{FilmcraftApp, Value, json, menus};
+use crate::OsEvent;
+use crate::state::ClipDialogDraft;
 #[cfg(test)]
 use filmcraft_engine::Session;
-#[cfg(test)]
-use serde_json::json;
 
 impl FilmcraftApp {
     // ---------------------------------------------------------------- input
@@ -50,6 +50,57 @@ impl FilmcraftApp {
                 }
             }
             self.command_inbox = Some(rx);
+        }
+    }
+
+    /// Act on the operating system's requests: files to open (a Finder double-click, Open With, a
+    /// drop on the Dock icon) and the Dock's Quit.
+    pub(super) fn logic_os_events(&mut self, ctx: &egui::Context) {
+        let events = self.hooks.os_events.as_mut().map(|poll| poll()).unwrap_or_default();
+        for event in events {
+            match event {
+                // control-only mode takes no files from outside, as it takes no native menu commands (#1943)
+                OsEvent::Open { .. } if self.control_input_only => {}
+                OsEvent::Open { project, media } => self.open_os_files(ctx, project, media),
+                OsEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            }
+        }
+    }
+
+    /// Open the project and import the media the OS asked for, then bring the window forward
+    /// (restored if it was minimized): the request came from another app. A project replacing one
+    /// with unsaved changes waits for Save / Don't Save / Cancel, as Close Project asks; the answer
+    /// opens it (`clip_dialogs::leave`).
+    fn open_os_files(&mut self, ctx: &egui::Context, project: Option<String>, media: Vec<String>) {
+        if project.is_some() && self.session.is_dirty() {
+            let params = json!({"open": {"project": project, "media": media}});
+            self.ui.clip_dialog = Some(ClipDialogDraft { command: "file.closeProject".into(), params, info: Value::Null, error: String::new() });
+        } else {
+            self.open_files(ctx, project, media);
+        }
+        if ctx.input(|i| i.viewport().minimized) == Some(true) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// Open `project` like File ▸ Open Recent, then import `media` into the shown bin. When the
+    /// project can't be opened nothing is imported, so the open project stays as it was; a
+    /// failure is shown in the status bar.
+    pub(crate) fn open_files(&mut self, ctx: &egui::Context, project: Option<String>, media: Vec<String>) {
+        if let Some(path) = project
+            && menus::invoke(self, ctx, "file.open", json!({"path": path})).is_err()
+        {
+            return;
+        }
+        if !media.is_empty() {
+            let bin = self.import_bin().0;
+            if let Ok(v) = menus::invoke(self, ctx, "file.import", json!({"paths": media, "bin": bin}))
+                && let Some(errs) = v.get("errors").and_then(Value::as_array)
+                && !errs.is_empty()
+            {
+                self.ui.status = errs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ");
+            }
         }
     }
 }

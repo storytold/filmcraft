@@ -51,6 +51,9 @@ muda = "0.21"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSArray"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSPanel", "NSColorPanel", "NSColor", "NSColorSpace"] }
 objc2 = "0.6"
+# Finder double-click, Open With, Dock drops and the Dock's Quit arrive as Apple events, not arguments
+# (apple_events.rs); the audited adapter PhotoCraft and PDFCraft use, pinned exactly.
+fmv-macos-events = "=0.1.0"
 # Same winit as eframe: macOS event-loop options (no app activation when driven by an agent).
 winit = { version = "0.30", default-features = false }
 
