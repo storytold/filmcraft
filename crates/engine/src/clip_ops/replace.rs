@@ -1,7 +1,7 @@
 use super::common::item_rate;
 use super::enabled::is_clip_item;
 use super::file::item_range;
-use super::*;
+use super::{ClipId, EngineError, ItemKind, Result, Session, Tick, TrackKind, Value, bad, bool_p, clips_p, item_p, json, source_range, with_links};
 
 // ---------------------------------------------------------------------------------------------
 // Clip: Replace With Clip
@@ -73,6 +73,7 @@ pub(super) fn replace_with(s: &mut Session, p: &Value, how: Replace) -> Result<V
             it.item = new_item;
             it.name = pi.name.clone();
             it.label = pi.label;
+            it.custom_label_color = pi.custom_label_color;
             it.source_in = src_in;
             it.frame_hold = None;
             it.multicam = None;

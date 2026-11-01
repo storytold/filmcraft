@@ -1,7 +1,10 @@
 //! Fixed-point NLSF decoding, NLSF→LPC conversion and filter stabilisation
 //! (RFC 6716 §4.2.7.5, with the RFC 8251 §6/§7 overflow fixes).
 
-use super::tables::*;
+use super::tables::{
+    COS_Q12, LSF_ORDER_NBMB, LSF_ORDER_WB, NLSF_CB_NBMB, NLSF_CB_WB, NLSF_MIN_SPACING_NBMB, NLSF_MIN_SPACING_WB, NLSF_PRED_NBMB, NLSF_PRED_WB, NLSF_PSEL_NBMB,
+    NLSF_PSEL_WB,
+};
 
 pub const MAX_LPC_ORDER: usize = 16;
 

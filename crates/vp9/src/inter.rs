@@ -27,29 +27,30 @@ impl RefPlane<'_> {
     }
 }
 
+/// Geometry and filtering parameters of one motion-compensated block.
+#[derive(Clone, Copy, Debug)]
+pub struct McBlock {
+    /// Top-left sample position in 1/16 sample units of the reference.
+    pub x: i32,
+    pub y: i32,
+    /// Step per output sample in 1/16 units (16 = unscaled).
+    pub step_x: i32,
+    pub step_y: i32,
+    pub w: usize,
+    pub h: usize,
+    pub filter: u8,
+    pub bit_depth: u8,
+}
+
 /// Predict a `w` x `h` block whose top-left sample is at (`x`, `y`) in 1/16 sample units of the
 /// reference, stepping `step_x` / `step_y` (16 = unscaled). Output samples go to `out` (stride
 /// `w`). `tmp` must hold at least `(h * step_y / 16 + 8) * w` entries, `win` at least
 /// `(w + 7) * (h + 7)` (edge-clamped source window).
-#[allow(clippy::too_many_arguments)]
-pub fn predict(
-    r: &RefPlane,
-    x: i32,
-    y: i32,
-    step_x: i32,
-    step_y: i32,
-    w: usize,
-    h: usize,
-    filter: u8,
-    bit_depth: u8,
-    out: &mut [u16],
-    tmp: &mut [u16],
-    win: &mut [u16],
-) {
-    if step_x == 16 && step_y == 16 {
-        predict_unscaled(r, x, y, w, h, filter, bit_depth, out, tmp, win);
+pub fn predict(r: &RefPlane, blk: &McBlock, out: &mut [u16], tmp: &mut [u16], win: &mut [u16]) {
+    if blk.step_x == 16 && blk.step_y == 16 {
+        predict_unscaled(r, blk, out, tmp, win);
     } else {
-        predict_scaled(r, x, y, step_x, step_y, w, h, filter, bit_depth, out, tmp);
+        predict_scaled(r, blk, out, tmp);
     }
 }
 
@@ -72,8 +73,8 @@ fn fetch_window(r: &RefPlane, x0: i32, y0: i32, w: usize, h: usize, win: &mut [u
     ws
 }
 
-#[allow(clippy::too_many_arguments)]
-fn predict_unscaled(r: &RefPlane, x: i32, y: i32, w: usize, h: usize, filter: u8, bit_depth: u8, out: &mut [u16], tmp: &mut [u16], win: &mut [u16]) {
+fn predict_unscaled(r: &RefPlane, blk: &McBlock, out: &mut [u16], tmp: &mut [u16], win: &mut [u16]) {
+    let McBlock { x, y, w, h, filter, bit_depth, .. } = *blk;
     let (x0, y0) = (x >> 4, y >> 4);
     let (fx, fy) = ((x & 15) as usize, (y & 15) as usize);
     let max = (1i32 << bit_depth) - 1;
@@ -81,6 +82,9 @@ fn predict_unscaled(r: &RefPlane, x: i32, y: i32, w: usize, h: usize, filter: u8
     // Source view with origin at (x0 - 3, y0 - 3): the reference band itself when the window
     // lies inside the picture and inside one band.
     let span = if inside { r.frame.span(r.plane, (y0 - 3) as usize, (y0 + h as i32 + 5) as usize) } else { None };
+    if inside && span.is_none() && predict_two_bands(r, x0, y0, w, h, fx, fy, filter, max, out, tmp) {
+        return;
+    }
     let (src, ss, so): (&[u16], usize, usize) = match span {
         Some((data, o)) => (data, r.frame.strides[r.plane], o + (x0 - 3) as usize),
         None => {
@@ -118,6 +122,58 @@ fn predict_unscaled(r: &RefPlane, x: i32, y: i32, w: usize, h: usize, filter: u8
             }
         }
     }
+}
+
+/// [`predict_unscaled`] for a window inside the picture whose rows lie in two consecutive bands:
+/// rows are read from the bands directly instead of being copied into a window first. False
+/// (nothing written) if the window spans more than two bands.
+#[allow(clippy::too_many_arguments)]
+fn predict_two_bands(r: &RefPlane, x0: i32, y0: i32, w: usize, h: usize, fx: usize, fy: usize, filter: u8, max: i32, out: &mut [u16], tmp: &mut [u16]) -> bool {
+    let f = r.frame;
+    let p = r.plane;
+    let bh = f.band_h[p];
+    let ss = f.strides[p];
+    let (ya, yb) = ((y0 - 3) as usize, (y0 + h as i32 + 4) as usize + 1);
+    let split = (ya / bh + 1) * bh;
+    if split >= yb {
+        return false;
+    }
+    let (Some((d0, o0)), Some((d1, o1))) = (f.span(p, ya, split), f.span(p, split, yb)) else { return false };
+    let xo = (x0 - 3) as usize;
+    let row = |i: usize| -> &[u16] {
+        let y = ya + i;
+        if y < split { &d0[o0 + i * ss + xo..] } else { &d1[o1 + (y - split) * ss + xo..] }
+    };
+    match (fx, fy) {
+        (0, 0) => {
+            for i in 0..h {
+                out[i * w..i * w + w].copy_from_slice(&row(i + 3)[3..3 + w]);
+            }
+        }
+        (_, 0) => {
+            let fh = taps(filter, fx);
+            for i in 0..h {
+                filter_h(row(i + 3), fh, max, &mut out[i * w..i * w + w]);
+            }
+        }
+        (0, _) => {
+            let fv = taps(filter, fy);
+            for i in 0..h {
+                filter_v_rows(std::array::from_fn(|t| &row(i + t)[3..]), fv, max, &mut out[i * w..i * w + w]);
+            }
+        }
+        _ => {
+            let fh = taps(filter, fx);
+            let fv = taps(filter, fy);
+            for i in 0..h + 7 {
+                filter_h(row(i), fh, max, &mut tmp[i * w..i * w + w]);
+            }
+            for i in 0..h {
+                filter_v(&tmp[i * w..], w, fv, max, &mut out[i * w..i * w + w]);
+            }
+        }
+    }
+    true
 }
 
 /// Horizontal 8-tap filter of one row: `o[j]` from `s[j..j + 8]`. The taps are the outer loop
@@ -188,15 +244,21 @@ fn narrow8<const W: usize>(acc: &[u16; W], o: &mut [u16; W]) {
 /// Vertical 8-tap filter of one row: `o[j]` from `s[j + t * ss]`, t = 0..8.
 #[inline(always)]
 fn filter_v(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut [u16]) {
+    filter_v_rows(std::array::from_fn(|t| s.get(t * ss..).unwrap_or_default()), f, max, o)
+}
+
+/// Vertical 8-tap filter of one row: `o[j]` from `rows[t][j]`, t = 0..8.
+#[inline(always)]
+fn filter_v_rows(rows: [&[u16]; 8], f: &[i16], max: i32, o: &mut [u16]) {
     match o.len() {
-        4 => filter_v_n::<4>(s, ss, f, max, o),
-        8 => filter_v_n::<8>(s, ss, f, max, o),
-        16 => filter_v_n::<16>(s, ss, f, max, o),
-        32 => filter_v_n::<32>(s, ss, f, max, o),
-        64 => filter_v_n::<64>(s, ss, f, max, o),
+        4 => filter_v_n::<4>(&rows, f, max, o),
+        8 => filter_v_n::<8>(&rows, f, max, o),
+        16 => filter_v_n::<16>(&rows, f, max, o),
+        32 => filter_v_n::<32>(&rows, f, max, o),
+        64 => filter_v_n::<64>(&rows, f, max, o),
         _ => {
             for (j, d) in o.iter_mut().enumerate() {
-                let acc: i32 = (0..8).map(|t| f[t] as i32 * s[j + t * ss] as i32).sum();
+                let acc: i32 = (0..8).map(|t| f[t] as i32 * rows[t][j] as i32).sum();
                 *d = ((acc + 64) >> 7).clamp(0, max) as u16;
             }
         }
@@ -204,7 +266,7 @@ fn filter_v(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut [u16]) {
 }
 
 #[inline(always)]
-fn filter_v_n<const W: usize>(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut [u16]) {
+fn filter_v_n<const W: usize>(rows: &[&[u16]; 8], f: &[i16], max: i32, o: &mut [u16]) {
     let Some(o) = o.first_chunk_mut::<W>() else {
         return;
     };
@@ -212,7 +274,7 @@ fn filter_v_n<const W: usize>(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut
         let mut acc = [64u16; W];
         for t in 0..8 {
             let c = f[t] as u16;
-            let Some(p) = s.get(t * ss..).and_then(|s| s.first_chunk::<W>()) else {
+            let Some(p) = rows[t].first_chunk::<W>() else {
                 return;
             };
             for j in 0..W {
@@ -225,7 +287,7 @@ fn filter_v_n<const W: usize>(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut
     let mut acc = [64i32; W];
     for t in 0..8 {
         let c = f[t] as i32;
-        let Some(p) = s.get(t * ss..).and_then(|s| s.first_chunk::<W>()) else {
+        let Some(p) = rows[t].first_chunk::<W>() else {
             return;
         };
         for j in 0..W {
@@ -238,8 +300,8 @@ fn filter_v_n<const W: usize>(s: &[u16], ss: usize, f: &[i16], max: i32, o: &mut
 }
 
 /// General process of 8.5.2.4 (any step).
-#[allow(clippy::too_many_arguments)]
-fn predict_scaled(r: &RefPlane, x: i32, y: i32, step_x: i32, step_y: i32, w: usize, h: usize, filter: u8, bit_depth: u8, out: &mut [u16], tmp: &mut [u16]) {
+fn predict_scaled(r: &RefPlane, blk: &McBlock, out: &mut [u16], tmp: &mut [u16]) {
+    let McBlock { x, y, step_x, step_y, w, h, filter, bit_depth } = *blk;
     let max = (1i32 << bit_depth) - 1;
     let ih = ((((h as i32 - 1) * step_y + 15) >> 4) + 8) as usize;
     for row in 0..ih {
@@ -304,8 +366,8 @@ mod tests {
                 for &(bw, bh) in &[(4usize, 4usize), (8, 8), (16, 8)] {
                     let mut a = vec![0u16; bw * bh];
                     let mut b = vec![0u16; bw * bh];
-                    predict_unscaled(&r, x, y, bw, bh, filter, 8, &mut a, &mut tmp, &mut [0u16; 71 * 71]);
-                    predict_scaled(&r, x, y, 16, 16, bw, bh, filter, 8, &mut b, &mut tmp);
+                    predict_unscaled(&r, &McBlock { x, y, step_x: 16, step_y: 16, w: bw, h: bh, filter, bit_depth: 8 }, &mut a, &mut tmp, &mut [0u16; 71 * 71]);
+                    predict_scaled(&r, &McBlock { x, y, step_x: 16, step_y: 16, w: bw, h: bh, filter, bit_depth: 8 }, &mut b, &mut tmp);
                     assert_eq!(a, b, "filter {filter} pos ({x},{y}) {bw}x{bh}");
                 }
             }

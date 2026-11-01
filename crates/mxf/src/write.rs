@@ -32,7 +32,10 @@ use std::collections::VecDeque;
 use std::io::{self, Seek, SeekFrom, Write};
 
 use crate::Rational;
-use labels::*;
+use labels::{
+    CE_709, CE_2020, CP_709, CP_2020, DEF_PICTURE, DEF_SOUND, DEF_TIMECODE, EC_MULTIPLE, INDEX_KEY, KLV_FILL, OP_ATOM, PRIMER, PRIMER_KEY, RIP_KEY, TC_709,
+    TC_HLG, TC_PQ, element_key, essence_container, op1a, partition_key, set_key,
+};
 
 /// A SMPTE ST 330 basic UMID (32 bytes): package identifiers.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -433,6 +436,8 @@ pub struct MxfWriter<W: Write + Seek> {
     // OP1a
     pending: VecDeque<(Vec<u8>, FrameInfo)>,
     sound_buf: Vec<Vec<u8>>,
+    /// Read cursor into each `sound_buf` track: bytes before it are already written.
+    sound_rd: Vec<usize>,
     // OP-Atom
     clip_len: u64,
     clip_kl: u64,
@@ -444,14 +449,19 @@ fn ber4(n: usize) -> [u8; 4] {
     [0x83, b[1], b[2], b[3]]
 }
 
-fn klv(out: &mut Vec<u8>, key: &[u8; 16], v: &[u8]) {
+/// Key and BER length of a KLV triplet whose value is `len` bytes long.
+fn klv_header(out: &mut Vec<u8>, key: &[u8; 16], len: usize) {
     out.extend_from_slice(key);
-    if v.len() < 1 << 24 {
-        out.extend_from_slice(&ber4(v.len()));
+    if len < 1 << 24 {
+        out.extend_from_slice(&ber4(len));
     } else {
         out.push(0x88);
-        out.extend_from_slice(&(v.len() as u64).to_be_bytes());
+        out.extend_from_slice(&(len as u64).to_be_bytes());
     }
+}
+
+fn klv(out: &mut Vec<u8>, key: &[u8; 16], v: &[u8]) {
+    klv_header(out, key, v.len());
     out.extend_from_slice(v);
 }
 
@@ -589,19 +599,31 @@ impl<W: Write + Seek> MxfWriter<W> {
             entries: Vec::new(),
             pending: VecDeque::new(),
             sound_buf: vec![Vec::new(); nsound],
+            sound_rd: vec![0; nsound],
             clip_len: 0,
             clip_kl: 0,
             samples: 0,
         };
         let meta = me.metadata(Durations { essence: -1 });
         me.header_region = meta.len() + HEADER_RESERVE;
-        let pack = me.partition_pack(2, 1, 0, 0, 0, me.header_region as u64, 0, 0, 0);
+        let pack = me.partition_pack(PartitionFields {
+            kind: 2,
+            status: 1,
+            this: 0,
+            prev: 0,
+            footer: 0,
+            hbc: me.header_region as u64,
+            ibc: 0,
+            index_sid: 0,
+            body_sid: 0,
+        });
         let mut out = pack;
         out.extend_from_slice(&meta);
         fill(&mut out, HEADER_RESERVE);
         me.put(&out)?;
         me.body_partition = me.pos;
-        let body = me.partition_pack(3, 4, me.pos, 0, 0, 0, 0, 0, BODY_SID);
+        let body =
+            me.partition_pack(PartitionFields { kind: 3, status: 4, this: me.pos, prev: 0, footer: 0, hbc: 0, ibc: 0, index_sid: 0, body_sid: BODY_SID });
         me.put(&body)?;
         me.essence_start = me.pos;
         if clip {
@@ -659,8 +681,8 @@ impl<W: Write + Seek> MxfWriter<W> {
         v
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn partition_pack(&self, kind: u8, status: u8, this: u64, prev: u64, footer: u64, hbc: u64, ibc: u64, index_sid: u32, body_sid: u32) -> Vec<u8> {
+    fn partition_pack(&self, f: PartitionFields) -> Vec<u8> {
+        let PartitionFields { kind, status, this, prev, footer, hbc, ibc, index_sid, body_sid } = f;
         let mut v = Vec::with_capacity(160);
         v.extend_from_slice(&1u16.to_be_bytes());
         v.extend_from_slice(&3u16.to_be_bytes());
@@ -759,31 +781,53 @@ impl<W: Write + Seek> MxfWriter<W> {
                 return Ok(());
             }
             let need: Vec<usize> = (0..self.cfg.sound.len()).map(|k| self.unit_samples(k, i) as usize * self.cfg.sound[k].block_align() as usize).collect();
-            let enough = need.iter().zip(&self.sound_buf).all(|(n, b)| b.len() >= *n);
+            let enough = need.iter().zip(self.sound_buf.iter().zip(&self.sound_rd)).all(|(n, (b, rd))| b.len() - rd >= *n);
             if !enough && !flush {
                 return Ok(());
             }
-            if !has_pic && self.sound_buf.iter().all(Vec::is_empty) {
+            if !has_pic && self.sound_buf.iter().zip(&self.sound_rd).all(|(b, rd)| b.len() == *rd) {
                 return Ok(());
             }
             let pic = if has_pic { self.pending.pop_front() } else { None };
+            // The picture is written straight from its buffer; `head` is its key and length,
+            // `cp` the sound KLVs behind it.
+            let mut head = Vec::new();
             let mut cp = Vec::new();
             let mut slices = Vec::new();
-            if let Some((data, _)) = &pic {
-                klv(&mut cp, &self.tracks[0].element_key, data);
+            let pic_len = pic.as_ref().map_or(0, |(data, _)| data.len());
+            if pic.is_some() {
+                klv_header(&mut head, &self.tracks[0].element_key, pic_len);
             }
+            let sound_start = head.len() + pic_len;
             let first_sound = has_pic as usize;
             for (k, n) in need.iter().enumerate() {
-                let take = (*n).min(self.sound_buf[k].len());
-                let mut chunk: Vec<u8> = self.sound_buf[k].drain(..take).collect();
-                chunk.resize(*n, 0);
+                let buf = &self.sound_buf[k];
+                let rd = self.sound_rd[k];
+                let take = (*n).min(buf.len() - rd);
                 if k > 0 || has_pic {
-                    slices.push(cp.len() as u32);
+                    slices.push((sound_start + cp.len()) as u32);
                 }
-                klv(&mut cp, &self.tracks[first_sound + k].element_key, &chunk);
+                klv_header(&mut cp, &self.tracks[first_sound + k].element_key, *n);
+                cp.extend_from_slice(&buf[rd..rd + take]);
+                cp.resize(cp.len() + (*n - take), 0);
+                self.sound_rd[k] = rd + take;
+                // Drop the consumed prefix once it is at least half of the buffer: amortised
+                // linear, where draining every edit unit from the front is quadratic.
+                let (buf, rd) = (&mut self.sound_buf[k], &mut self.sound_rd[k]);
+                if *rd == buf.len() {
+                    buf.clear();
+                    *rd = 0;
+                } else if *rd >= 4096 && *rd * 2 >= buf.len() {
+                    buf.drain(..*rd);
+                    *rd = 0;
+                }
             }
-            let info = pic.map(|p| p.1).unwrap_or_else(FrameInfo::intra);
+            let info = pic.as_ref().map(|p| p.1).unwrap_or_else(FrameInfo::intra);
             self.entries.push(Entry { offset: self.pos - self.essence_start, slices, info });
+            self.put(&head)?;
+            if let Some((data, _)) = &pic {
+                self.put(data)?;
+            }
             self.put(&cp)?;
         }
     }
@@ -854,9 +898,21 @@ impl<W: Write + Seek> MxfWriter<W> {
                     ((a + b - 1) / b) as i64
                 }
             };
-            self.track_sets(&mut out, base + 1, 1, 0, tc_rate, DEF_TIMECODE, tc_dur, if material { Some("TC1") } else { None }, |s| {
-                s.u16(0x1502, tc.rounded_base()).i64(0x1501, tc.frames).u8(0x1503, tc.drop_frame as u8);
-            });
+            self.track_sets(
+                &mut out,
+                TrackSpec {
+                    uid0: base + 1,
+                    id: 1,
+                    number: 0,
+                    rate: tc_rate,
+                    def: DEF_TIMECODE,
+                    duration: tc_dur,
+                    name: if material { Some("TC1") } else { None },
+                },
+                |s| {
+                    s.u16(0x1502, tc.rounded_base()).i64(0x1501, tc.frames).u8(0x1503, tc.drop_frame as u8);
+                },
+            );
             let mut vi = 0;
             let mut ai = 0;
             for (k, t) in self.tracks.iter().enumerate() {
@@ -872,7 +928,16 @@ impl<W: Write + Seek> MxfWriter<W> {
                 };
                 let number = if material { 0 } else { u32::from_be_bytes(t.element_key[12..16].try_into().unwrap_or([0; 4])) };
                 let file = cfg.ids.file;
-                self.track_sets(&mut out, base + 4 + 3 * k as u32, t.id, number, cfg.edit_rate, def, d.essence, material.then_some(label.as_str()), |s| {
+                let spec = TrackSpec {
+                    uid0: base + 4 + 3 * k as u32,
+                    id: t.id,
+                    number,
+                    rate: cfg.edit_rate,
+                    def,
+                    duration: d.essence,
+                    name: material.then_some(label.as_str()),
+                };
+                self.track_sets(&mut out, spec, |s| {
                     let (src, src_track) = if material { (file, t.id) } else { (Umid([0; 32]), 0) };
                     s.i64(0x1201, 0).p(0x1101, &src.0).u32(0x1102, src_track);
                 });
@@ -962,19 +1027,8 @@ impl<W: Write + Seek> MxfWriter<W> {
 
     /// A track, its sequence and its one component (`component` adds the component-specific
     /// properties: source clip or timecode).
-    #[allow(clippy::too_many_arguments)]
-    fn track_sets(
-        &self,
-        out: &mut Vec<u8>,
-        uid0: u32,
-        id: u32,
-        number: u32,
-        rate: Rational,
-        def: [u8; 16],
-        duration: i64,
-        name: Option<&str>,
-        component: impl FnOnce(&mut Set),
-    ) {
+    fn track_sets(&self, out: &mut Vec<u8>, spec: TrackSpec<'_>, component: impl FnOnce(&mut Set)) {
+        let TrackSpec { uid0, id, number, rate, def, duration, name } = spec;
         let (tu, su, cu) = (self.uid(uid0), self.uid(uid0 + 1), self.uid(uid0 + 2));
         let mut t = Set::new(0x3B, tu);
         t.u32(0x4801, id).u32(0x4804, number);
@@ -1119,7 +1173,17 @@ impl<W: Write + Seek> MxfWriter<W> {
         let meta = self.metadata(d);
         let index = self.index();
         let footer = self.pos;
-        let pack = self.partition_pack(4, 4, footer, self.body_partition, footer, meta.len() as u64, index.len() as u64, INDEX_SID, 0);
+        let pack = self.partition_pack(PartitionFields {
+            kind: 4,
+            status: 4,
+            this: footer,
+            prev: self.body_partition,
+            footer,
+            hbc: meta.len() as u64,
+            ibc: index.len() as u64,
+            index_sid: INDEX_SID,
+            body_sid: 0,
+        });
         let mut out = pack;
         out.extend_from_slice(&meta);
         out.extend_from_slice(&index);
@@ -1135,18 +1199,48 @@ impl<W: Write + Seek> MxfWriter<W> {
         let end = self.pos;
         // closed, complete header partition (same size as the provisional one)
         if meta.len() + 20 <= self.header_region {
-            let mut h = self.partition_pack(2, 4, 0, 0, footer, self.header_region as u64, 0, 0, 0);
+            let mut h = self.partition_pack(PartitionFields {
+                kind: 2,
+                status: 4,
+                this: 0,
+                prev: 0,
+                footer,
+                hbc: self.header_region as u64,
+                ibc: 0,
+                index_sid: 0,
+                body_sid: 0,
+            });
             h.extend_from_slice(&meta);
             fill(&mut h, self.header_region - meta.len());
             self.w.seek(SeekFrom::Start(self.base))?;
             self.w.write_all(&h)?;
         } else {
             // cannot happen (metadata sizes do not depend on the durations); keep the header open
-            let h = self.partition_pack(2, 1, 0, 0, footer, self.header_region as u64, 0, 0, 0);
+            let h = self.partition_pack(PartitionFields {
+                kind: 2,
+                status: 1,
+                this: 0,
+                prev: 0,
+                footer,
+                hbc: self.header_region as u64,
+                ibc: 0,
+                index_sid: 0,
+                body_sid: 0,
+            });
             self.w.seek(SeekFrom::Start(self.base))?;
             self.w.write_all(&h)?;
         }
-        let body = self.partition_pack(3, 4, self.body_partition, 0, footer, 0, 0, 0, BODY_SID);
+        let body = self.partition_pack(PartitionFields {
+            kind: 3,
+            status: 4,
+            this: self.body_partition,
+            prev: 0,
+            footer,
+            hbc: 0,
+            ibc: 0,
+            index_sid: 0,
+            body_sid: BODY_SID,
+        });
         self.w.seek(SeekFrom::Start(self.base + self.body_partition))?;
         self.w.write_all(&body)?;
         self.w.seek(SeekFrom::Start(self.base + end))?;
@@ -1210,4 +1304,28 @@ pub fn write_opatom_pcm(opts: &OpAtomPcm, samples: &[i32]) -> io::Result<Vec<u8>
     }
     w.push_sound(0, &pcm)?;
     Ok(w.finish()?.into_inner())
+}
+
+/// Fields of a partition pack that vary between the header, body and footer partitions.
+struct PartitionFields {
+    kind: u8,
+    status: u8,
+    this: u64,
+    prev: u64,
+    footer: u64,
+    hbc: u64,
+    ibc: u64,
+    index_sid: u32,
+    body_sid: u32,
+}
+
+/// Identity and timing of one track, its sequence and its component.
+struct TrackSpec<'a> {
+    uid0: u32,
+    id: u32,
+    number: u32,
+    rate: Rational,
+    def: [u8; 16],
+    duration: i64,
+    name: Option<&'a str>,
 }

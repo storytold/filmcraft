@@ -1,4 +1,4 @@
-use super::*;
+use super::Ordering;
 
 /// Hardware encoder counters (`perf.stats` `export.hardware`): pictures encoded by hardware
 /// encoders, encoders created, and requests a hardware encoder declined (the software encoder
@@ -51,7 +51,8 @@ pub enum Stage {
     Render,
     /// Encoding the rendered frames, colour conversion included (serial).
     Encode,
-    /// The part of [`Stage::Encode`] spent converting RGB to the encoder's YUV.
+    /// Time spent converting RGB to the encoder's YUV: part of [`Stage::Encode`], or, when the encoder
+    /// converts ahead ([`crate::VideoEncoder::prepare_ahead`]), summed over the render threads.
     Convert,
     /// Mixing and encoding audio and writing it to the container.
     Audio,

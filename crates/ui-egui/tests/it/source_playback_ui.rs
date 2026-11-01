@@ -184,13 +184,22 @@ fn source_range_playback_stops_at_out_and_loop_restarts_without_program_playback
 #[test]
 fn a_single_frame_source_range_starts_at_the_marked_last_frame() {
     let mut h = Harness::builder().with_step_dt(0.1).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app(5));
+    // Keep the stepped clock ahead of slow first-frame host/font initialization.
+    const START: f64 = 10_000.0;
+    h.input_mut().time = Some(START);
     h.step();
     let v = filmcraft_engine::clip_ops::source_view(&h.state().session, filmcraft_engine::project::ItemId(5)).unwrap();
     let last = v.rate.snap(v.end - v.rate.frame_duration());
     h.state_mut().session.execute("project.setMarks", json!({"item":5,"in":last.0,"out":last.0})).unwrap();
     h.state_mut().play_source_range(false, false).unwrap();
     assert_eq!(h.state().session.state.source_playhead, last);
-    for _ in 0..4 {
+    // RawInput::time overrides the harness clock. Advance it explicitly: sleeping with
+    // START held fixed freezes now() when the host clock's offset was captured earlier.
+    for step in 1..=200 {
+        if !h.state().source_playback.clock.playing {
+            break;
+        }
+        h.input_mut().time = Some(START + f64::from(step) * 0.1);
         h.step();
     }
     assert!(!h.state().source_playback.clock.playing);
@@ -229,4 +238,51 @@ fn j_and_l_shuttle_the_source_both_ways_and_double_the_speed() {
     assert_eq!(h.state().session.playhead(), program);
     assert!(!h.state().playback.playing);
     assert_eq!(h.state().session.project.to_json(), before);
+}
+
+/// A Source monitor session of the demo project's active sequence, with `Out` as the audio device.
+fn sequence_in_source(prepare: impl FnOnce(&mut Session)) -> (FilmcraftApp, Arc<Mutex<Option<Fill>>>) {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    prepare(&mut session);
+    let seq = session.state.active_sequence.expect("a sequence").0;
+    session.execute("source.open", json!({"item": seq})).unwrap();
+    let fill = Arc::new(Mutex::new(None));
+    let mut app = FilmcraftApp::new(session);
+    app.audio = Some(Box::new(Out { frames: Arc::new(AtomicU64::new(0)), fill: fill.clone(), stalled: false }));
+    (app, fill)
+}
+
+#[test]
+fn a_sequence_with_sound_plays_in_the_source_monitor_through_the_device() {
+    let (app, fill) = sequence_in_source(|_| {});
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app);
+    h.step();
+    h.state_mut().play_source().unwrap();
+    for _ in 0..4 {
+        h.step();
+    }
+    assert!(h.state().source_playback.clock.playing);
+    assert!(h.state().source_playback.clock.audio_clock, "the sequence's sound drives the clock");
+    assert!(fill.lock().unwrap().is_some(), "the sequence's sound reaches the output");
+    h.state_mut().stop_source();
+}
+
+#[test]
+fn a_sequence_without_sound_plays_in_the_source_monitor_without_starting_the_output() {
+    let (app, fill) = sequence_in_source(|s| {
+        s.execute("file.newSequence", json!({"name": "Silent", "width": 1280, "height": 720, "fps": 24})).unwrap();
+        let picture = s.project.items.values().find(|i| i.as_media().is_some_and(|m| m.info.video.is_some())).expect("a picture item").id.0;
+        s.execute("timeline.place", json!({"item": picture, "track": "V1", "time": 0, "insert": false, "audio": false})).unwrap();
+    });
+    let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| app);
+    h.step();
+    h.state_mut().play_source().unwrap();
+    for _ in 0..4 {
+        h.step();
+    }
+    assert!(h.state().source_playback.clock.playing);
+    assert!(!h.state().source_playback.clock.audio_clock);
+    assert!(fill.lock().unwrap().is_none(), "no sound, so no output stream");
+    h.state_mut().stop_source();
 }

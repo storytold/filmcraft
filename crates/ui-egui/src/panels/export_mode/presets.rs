@@ -1,6 +1,6 @@
 use super::quick::list_row;
 use super::settings::check;
-use super::*;
+use super::{Align2, Color32, FileDialog, FilmcraftApp, Rect, Reg, Sense, Value, apply_preset, json, pos2, preset_key, settings_json, vec2};
 
 // ---------------------------------------------------------------------------------------------
 // Preset Manager
@@ -17,7 +17,7 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut pick: Option<&'static str> = None;
     let all = app.session.export_presets.all();
     let favorite = |n: &str| app.session.export_presets.is_favorite(n);
-    let q = m.query.to_lowercase();
+    let q = m.query.trim().to_string();
     egui::Window::new(tl!("Preset Manager"))
         .id(egui::Id::unique("Preset Manager"))
         .id(egui::Id::unique("preset-manager"))
