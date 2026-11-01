@@ -7,6 +7,7 @@ use crate::mbtypes::{MbTypeInfo, Part, SubMbInfo, b_mb_type, b_sub_mb_type, intr
 use crate::picture::MbKind;
 use crate::slice::SliceType;
 use crate::slicedec::{MbCur, SliceDecoder};
+use crate::tables::{ZIGZAG4, ZIGZAG8};
 
 /// Table 9-43: significant_coeff_flag ctxIdxInc for 8x8 frame blocks.
 #[rustfmt::skip]
@@ -375,16 +376,17 @@ impl SliceDecoder<'_> {
         (st.nnz_c[comp][y * 2 + x] != 0) as usize
     }
 
-    /// residual_block_cabac for ctxBlockCat `cat` (0..=5). Coefficients are written to `coeff`
-    /// in list order (indices 0..max_num). `cbf_inc` is the coded_block_flag ctxIdxInc (ignored for cat 5).
-    /// Returns the number of non-zero coefficients.
-    fn residual_block_cabac(&mut self, c: &mut Cabac, coeff: &mut [i32], cat: usize, max_num: usize, cbf_inc: usize) -> u8 {
-        if cat != 5 && c.decode_decision(85 + CAT_OFFSET[cat].0 + cbf_inc) == 0 {
+    /// residual_block_cabac for ctxBlockCat `CAT` (0..=5). Each non-zero coefficient is passed to
+    /// `put` as (index in the coefficient list, level); the others are zero. `cbf_inc` is the
+    /// coded_block_flag ctxIdxInc (ignored for cat 5). Returns the number of non-zero coefficients.
+    fn residual_block_cabac<const CAT: usize>(c: &mut Cabac, cbf_inc: usize, mut put: impl FnMut(usize, i32)) -> u8 {
+        if CAT != 5 && c.decode_decision(85 + CAT_OFFSET[CAT].0 + cbf_inc) == 0 {
             return 0;
         }
+        let max_num = [16, 15, 16, 4, 15, 64][CAT];
         let (sig_base, last_base, abs_base) =
-            if cat == 5 { (402, 417, 426) } else { (105 + CAT_OFFSET[cat].1, 166 + CAT_OFFSET[cat].1, 227 + CAT_OFFSET[cat].2) };
-        let (sig_tab, last_tab): (&[u8], &[u8]) = match cat {
+            if CAT == 5 { (402, 417, 426) } else { (105 + CAT_OFFSET[CAT].1, 166 + CAT_OFFSET[CAT].1, 227 + CAT_OFFSET[CAT].2) };
+        let (sig_tab, last_tab): (&[u8], &[u8]) = match CAT {
             3 => (&CHROMA_DC_CTX, &CHROMA_DC_CTX),
             5 => (&SIG8_FRAME, &LAST8),
             _ => (&IDENT_CTX, &IDENT_CTX),
@@ -410,7 +412,7 @@ impl SliceDecoder<'_> {
         }
         let mut eq1 = 0usize;
         let mut gt1 = 0usize;
-        let gt1_cap = if cat == 3 { 3 } else { 4 };
+        let gt1_cap = if CAT == 3 { 3 } else { 4 };
         for &p in pos[..n].iter().rev() {
             let inc0 = if gt1 != 0 { 0 } else { (1 + eq1).min(4) };
             let mut abs = 1i32;
@@ -441,7 +443,7 @@ impl SliceDecoder<'_> {
             } else {
                 eq1 += 1;
             }
-            coeff[p as usize] = if c.decode_bypass() == 1 { -abs } else { abs };
+            put(p as usize, if c.decode_bypass() == 1 { -abs } else { abs });
         }
         n as u8
     }
@@ -453,7 +455,7 @@ impl SliceDecoder<'_> {
         if kind == MbKind::I16x16 {
             let inc = self.cbf_dc_cond(self.nb[0], 0, intra) + 2 * self.cbf_dc_cond(self.nb[1], 0, intra);
             let mut lv = [0i32; 16];
-            if self.residual_block_cabac(c, &mut lv, 0, 16, inc) > 0 {
+            if Self::residual_block_cabac::<0>(c, inc, |k, v| lv[k] = v) > 0 {
                 self.mb_mut().cbf_dc |= 1;
                 self.put_luma_dc(&lv);
             }
@@ -464,27 +466,41 @@ impl SliceDecoder<'_> {
                 continue;
             }
             if t8 {
-                let mut lv = [0i32; 64];
-                self.residual_block_cabac(c, &mut lv, 5, 64, 0);
+                let (blk, ls, dq) = self.luma8_dst(b8);
+                let mut ac = false;
+                Self::residual_block_cabac::<5>(c, 0, |k, v| {
+                    let p = ZIGZAG8[k] as usize;
+                    ac |= p != 0;
+                    blk[p] = dq.apply(v, ls[p]);
+                });
+                self.mark_luma8(b8, ac);
                 let st = self.mb_mut();
                 for r in [by8 * 4 + bx8, by8 * 4 + bx8 + 1, (by8 + 1) * 4 + bx8, (by8 + 1) * 4 + bx8 + 1] {
                     st.nnz[r] = 1;
                 }
-                self.put_luma8(b8, &lv);
             } else {
                 for i4 in 0..4 {
                     let (bx, by) = (bx8 + (i4 & 1), by8 + (i4 >> 1));
                     let raster = by * 4 + bx;
                     let inc = self.cbf_luma_cond(bx as i32 - 1, by as i32, intra) + 2 * self.cbf_luma_cond(bx as i32, by as i32 - 1, intra);
-                    let mut lv = [0i32; 16];
+                    let (blk, ls, dq) = self.luma4_dst(raster);
+                    let mut ac = false;
                     let n = if kind == MbKind::I16x16 {
-                        self.residual_block_cabac(c, &mut lv[1..], 1, 15, inc)
+                        Self::residual_block_cabac::<1>(c, inc, |k, v| {
+                            let p = ZIGZAG4[k + 1] as usize;
+                            ac = true;
+                            blk[p] = dq.apply(v, ls[p]);
+                        })
                     } else {
-                        self.residual_block_cabac(c, &mut lv, 2, 16, inc)
+                        Self::residual_block_cabac::<2>(c, inc, |k, v| {
+                            let p = ZIGZAG4[k] as usize;
+                            ac |= p != 0;
+                            blk[p] = dq.apply(v, ls[p]);
+                        })
                     };
                     self.mb_mut().nnz[raster] = n;
                     if n > 0 {
-                        self.put_luma4(raster, &lv, kind == MbKind::I16x16);
+                        self.mark_luma4(raster, ac);
                     }
                 }
             }
@@ -495,7 +511,7 @@ impl SliceDecoder<'_> {
                 let bit = 1 + comp as u8;
                 let inc = self.cbf_dc_cond(self.nb[0], bit, intra) + 2 * self.cbf_dc_cond(self.nb[1], bit, intra);
                 let mut lv = [0i32; 4];
-                if self.residual_block_cabac(c, &mut lv, 3, 4, inc) > 0 {
+                if Self::residual_block_cabac::<3>(c, inc, |k, v| lv[k] = v) > 0 {
                     self.mb_mut().cbf_dc |= 1 << bit;
                     self.put_chroma_dc(comp, &lv);
                 }
@@ -506,11 +522,14 @@ impl SliceDecoder<'_> {
                 for b in 0..4 {
                     let (bx, by) = ((b & 1) as i32, (b >> 1) as i32);
                     let inc = self.cbf_chroma_ac_cond(comp, bx - 1, by, intra) + 2 * self.cbf_chroma_ac_cond(comp, bx, by - 1, intra);
-                    let mut lv = [0i32; 16];
-                    let n = self.residual_block_cabac(c, &mut lv[1..], 4, 15, inc);
+                    let (blk, ls, dq) = self.chroma_ac_dst(comp, b);
+                    let n = Self::residual_block_cabac::<4>(c, inc, |k, v| {
+                        let p = ZIGZAG4[k + 1] as usize;
+                        blk[p] = dq.apply(v, ls[p]);
+                    });
                     self.mb_mut().nnz_c[comp][b] = n;
                     if n > 0 {
-                        self.put_chroma_ac(comp, b, &lv);
+                        self.mark_chroma_ac(comp, b, true);
                     }
                 }
             }
