@@ -79,6 +79,10 @@ pub fn marker_rect(layout: &Layout, start: Tick) -> Rect {
     Rect::from_center_size(pos2(layout.x_of(start), layout.ruler.min.y + 8.0), vec2(10.0, 13.0))
 }
 
+pub fn marker_end_rect(layout: &Layout, marker: &filmcraft_project::Marker) -> Option<Rect> {
+    (marker.duration > Tick::ZERO).then(|| marker_rect(layout, marker.start + marker.duration))
+}
+
 /// The visible duration band, shared by painting and hit testing (#1143).
 pub fn marker_range_rect(layout: &Layout, marker: &filmcraft_project::Marker) -> Option<Rect> {
     (marker.duration > Tick::ZERO).then(|| {
@@ -93,7 +97,11 @@ pub fn marker_under_pointer<'a>(seq: &'a Sequence, layout: &Layout, pos: Pos2) -
     if !layout.ruler.contains(pos) {
         return None;
     }
-    seq.markers.iter().rev().find(|m| marker_rect(layout, m.start).contains(pos) || marker_range_rect(layout, m).is_some_and(|r| r.contains(pos)))
+    seq.markers.iter().rev().find(|m| {
+        marker_rect(layout, m.start).contains(pos)
+            || marker_end_rect(layout, m).is_some_and(|r| r.contains(pos))
+            || marker_range_rect(layout, m).is_some_and(|r| r.contains(pos))
+    })
 }
 
 /// A press on a marker puts the playhead on its start for Clear Selected Marker (#695).
@@ -125,6 +133,12 @@ pub fn work_area_at(seq: &Sequence, layout: &Layout, pos: Pos2) -> Option<Option
     })
 }
 
+/// The top of a transition's box on a track row: below the clip's name strip, and from the top of
+/// the track when it is compact (a short track would leave a sliver too thin to read or grab).
+pub fn transition_top(row: Rect) -> f32 {
+    if row.height() < 50.0 { row.min.y + 1.0 } else { row.min.y + 17.0 }
+}
+
 pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     if layout.ruler.contains(pos) {
         if let Some(edge) = work_area_at(seq, layout, pos) {
@@ -140,7 +154,7 @@ pub fn hit(seq: &Sequence, layout: &Layout, pos: Pos2) -> Hit {
     for trn in &tr.transitions {
         let x0 = layout.x_of(trn.start);
         let x1 = layout.x_of(trn.end());
-        if pos.x >= x0 && pos.x <= x1 && pos.y > row.rect.min.y + 17.0 {
+        if pos.x >= x0 && pos.x <= x1 && pos.y > transition_top(row.rect) {
             // the ends are edge zones, narrower on a short transition so its middle stays grabbable
             let zone = EDGE_PX.min((x1 - x0) / 3.0);
             let edge = if pos.x - x0 <= zone {
@@ -337,6 +351,7 @@ mod tests {
     /// A clip on screen from `x0` to `x1` px (the layout is 100 px per second).
     fn clip(id: u64, x0: f64, x1: f64) -> TrackItem {
         TrackItem {
+            custom_label_color: None,
             id: ClipId(id),
             item: ItemId(1),
             name: format!("c{id}"),
@@ -386,6 +401,8 @@ mod tests {
             pps: 100.0,
             scroll: 0.0,
             split_y: TOP + 60.0,
+            v_scroll: 0.0,
+            a_scroll: 0.0,
         };
         (seq, layout, track)
     }
@@ -469,6 +486,9 @@ mod tests {
         let (mut seq, l, _) = fixture(clips());
         let off = Tick::from_seconds_f64(3.017);
         seq.markers.push(filmcraft_project::Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: filmcraft_project::MarkerId(9),
             start: off,
             duration: Tick::ZERO,
@@ -489,6 +509,9 @@ mod tests {
         let (mut seq, layout, _) = fixture(clips());
         for id in [9, 10] {
             seq.markers.push(filmcraft_project::Marker {
+                url: String::new(),
+                author: String::new(),
+                custom_color: None,
                 id: filmcraft_project::MarkerId(id),
                 start: Tick::from_seconds_f64(3.0),
                 duration: Tick::from_seconds_f64(2.0),
@@ -502,10 +525,15 @@ mod tests {
         let at = band.center();
         assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 10);
         assert_eq!(marker_at(&seq, &layout, at), Some(seq.markers[1].start));
+        let end = marker_end_rect(&layout, &seq.markers[1]).unwrap();
+        let cap = pos2(end.center().x + 3.0, end.bottom() - 2.0);
+        assert!(!band.contains(cap));
+        assert_eq!(marker_under_pointer(&seq, &layout, cap).unwrap().id.0, 10, "the end flag outside the range band belongs to the same marker");
         assert!(marker_under_pointer(&seq, &layout, at + vec2(0.0, 20.0)).is_none());
         assert!(marker_under_pointer(&seq, &layout, pos2(f32::NAN, at.y)).is_none());
         seq.markers[1].duration = Tick(-1);
         assert!(marker_range_rect(&layout, &seq.markers[1]).is_none());
+        assert!(marker_end_rect(&layout, &seq.markers[1]).is_none());
         assert_eq!(marker_under_pointer(&seq, &layout, at).unwrap().id.0, 9);
     }
 

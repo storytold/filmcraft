@@ -244,7 +244,10 @@ fn mode_id(viewport: ViewportId) -> Id {
 /// Whether the current callback is a UI pass (between the installed begin/end-pass hooks)
 /// for this viewport, rather than `run_logic`. Defaults to false when no hook ran.
 pub(crate) fn in_ui_pass(ctx: &Context) -> bool {
-    ctx.data(|data| data.get_temp::<bool>(mode_id(ctx.viewport_id()))).unwrap_or(false)
+    // read outside the closure: `viewport_id` takes the context lock, which `data` already holds, and a
+    // writer waiting in between makes that second read deadlock
+    let id = mode_id(ctx.viewport_id());
+    ctx.data(|data| data.get_temp::<bool>(id)).unwrap_or(false)
 }
 
 /// Temp-data key of the IME descriptor identity `viewport` published at the end of a pass.
@@ -558,5 +561,34 @@ mod tests {
         full.textures_delta.clear();
         assert!(!in_ui_pass(&ctx));
         let _logic = ctx.run_logic(&egui::RawInput::default(), |ctx| assert!(!in_ui_pass(ctx)));
+    }
+
+    /// CI flake on PR #3690: `in_ui_pass` read the viewport id inside the `data` closure, so with a
+    /// writer queued between the two reads of the context lock the second read never got the lock.
+    /// A writer hammering the context while the pass check runs must not stall it (the context's
+    /// lock panics after 10 s, so a stall fails the test).
+    #[test]
+    fn in_ui_pass_does_not_nest_the_context_lock() {
+        let ctx = Context::default();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (ctx, stop) = (ctx.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                let mut n = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    n = n.wrapping_add(1);
+                    ctx.data_mut(|data| data.insert_temp(Id::unique("film-ime-writer"), n));
+                }
+            })
+        };
+        let t0 = std::time::Instant::now();
+        for _ in 0..300_000 {
+            assert!(!in_ui_pass(&ctx));
+            if t0.elapsed() > std::time::Duration::from_secs(8) {
+                break;
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().expect("the writer thread finished");
     }
 }

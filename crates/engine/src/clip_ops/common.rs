@@ -46,7 +46,7 @@ impl SourceView {
         json!({
             "item": self.item.0, "media": self.media.0, "start": self.start.0, "end": self.end.0, "fps": self.rate.as_f64(),
             "playhead": playhead.0, "markIn": self.mark_in.map(|t| t.0), "markOut": self.mark_out.map(|t| t.0),
-            "markers": self.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "name": m.name, "duration": m.duration.0})).collect::<Vec<_>>(),
+            "markers": self.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "name": m.name, "duration": m.duration.0, "color":m.color_value(), "author":m.author, "comment":m.comment, "url":m.url, "kind":m.kind})).collect::<Vec<_>>(),
             "subclip": self.subclip.map(|(r, restrict)| json!({"start": r.start.0, "end": r.end().0, "restrictTrims": restrict})),
         })
     }

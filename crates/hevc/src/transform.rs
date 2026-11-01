@@ -4,12 +4,14 @@ use crate::tables::{DST_MATRIX, TRANS_MATRIX};
 
 /// Inverse transform of an n x n block of scaled coefficients `c` (row-major, `c[y * n + x]`) in place,
 /// producing residuals after the final `bd_shift` rounding (8-299). `max_x` / `max_y` bound the
-/// non-zero coefficients (inclusive). `dst`: DST-VII (intra 4x4 luma).
+/// non-zero coefficients (inclusive). `dst`: DST-VII (intra 4x4 luma). Coefficients are in the
+/// 16-bit range the scaling process clips them to (8.6.2).
 ///
-/// Evaluated as sums of basis rows scaled by the non-zero coefficients (zero coefficients, which
-/// are most of them, cost nothing), with the size a compile-time constant so the inner loops over
-/// contiguous basis rows vectorise. Integer sums are exact (|sum| < 2^27), so the result equals the
-/// direct matrix product of 8.6.4.2 in any summation order.
+/// The first stage is evaluated as sums of basis rows scaled by the non-zero coefficients (zero
+/// coefficients, which are most of them, cost nothing), with the size a compile-time constant so
+/// the inner loops over contiguous basis rows vectorise. The second stage of the 8..32-point DCT
+/// uses the even/odd butterfly, skipping all-zero columns. Integer sums are exact (|sum| < 2^27),
+/// so the result equals the direct matrix product of 8.6.4.2 in any summation order.
 pub fn inverse_transform(c: &mut [i32], n: usize, dst: bool, max_x: usize, max_y: usize, bd_shift: u32) {
     match n {
         4 => inverse::<4>(c, dst, max_x, max_y, bd_shift),
@@ -21,32 +23,45 @@ pub fn inverse_transform(c: &mut [i32], n: usize, dst: bool, max_x: usize, max_y
 
 #[inline(always)]
 fn inverse<const N: usize>(c: &mut [i32], dst: bool, max_x: usize, max_y: usize, bd_shift: u32) {
+    let c = &mut c[..N * N];
     let step = 32 / N;
     // basis function of coefficient index j (row j of the transform matrix, N samples)
     let basis = |j: usize| -> &[i8] { if dst { &DST_MATRIX[j][..N] } else { &TRANS_MATRIX[j * step][..N] } };
     // 1. columns (8-297 ... first stage): e[x][y] = sum_j M[j][y] * d[x][j], stored transposed
     //    (col[x][y]) so each coefficient adds one contiguous basis row.
-    let mut col = [[0i32; N]; N];
+    let mut col = [[0i16; N]; N];
+    let mut nz = 0u32; // columns x with a non-zero coefficient
     for x in 0..=max_x.min(N - 1) {
-        let acc = &mut col[x];
+        let mut acc = [0i32; N];
         for j in 0..=max_y.min(N - 1) {
-            let d = c[j * N + x];
+            let d = c[j * N + x] as i16;
             if d != 0 {
+                nz |= 1 << x;
                 for (a, &m) in acc.iter_mut().zip(basis(j)) {
-                    *a += m as i32 * d;
+                    *a += m as i16 as i32 * d as i32;
                 }
             }
         }
-        for a in acc.iter_mut() {
-            *a = ((*a + 64) >> 7).clamp(-32768, 32767);
+        for (g, a) in col[x].iter_mut().zip(acc) {
+            *g = ((a + 64) >> 7).clamp(-32768, 32767) as i16;
         }
     }
     // 2. rows: r[x][y] = sum_j M[j][x] * g[j][y], g[j][y] = col[j][y]
     let round = 1 << (bd_shift - 1);
+    if N >= 8 {
+        let mut e = [[0i32; N]; N];
+        rows_butterfly::<N>(&col, nz, &mut e);
+        for (y, r) in c.as_chunks_mut::<N>().0.iter_mut().enumerate() {
+            for (r, e) in r.iter_mut().zip(&e) {
+                *r = (e[y] + round) >> bd_shift;
+            }
+        }
+        return;
+    }
     for y in 0..N {
         let mut out = [round; N];
         for (j, g) in col.iter().enumerate().take(max_x.min(N - 1) + 1) {
-            let g = g[y];
+            let g = g[y] as i32;
             if g != 0 {
                 for (o, &m) in out.iter_mut().zip(basis(j)) {
                     *o += m as i32 * g;
@@ -56,6 +71,64 @@ fn inverse<const N: usize>(c: &mut [i32], dst: bool, max_x: usize, max_y: usize,
         for (r, o) in c[y * N..y * N + N].iter_mut().zip(out) {
             *r = o >> bd_shift;
         }
+    }
+}
+
+/// Second stage of the N-point DCT (N >= 8) by even/odd decomposition, kept transposed like `col`:
+/// `e[x][y] = sum_j M[j][x] * col[j][y]` over the rows of `col` set in `nz` (the others are zero).
+/// Level `m` (2, 4, .. N) adds the odd basis rows of the m-point DCT (coefficients j = s, 3s, 5s,
+/// .., s = N / m), which are antisymmetric, to the symmetric m/2-point result:
+/// `e[k] += o[k]`, `e[m-1-k] = e[k] - o[k]` for k < m/2.
+#[inline(never)]
+fn rows_butterfly<const N: usize>(col: &[[i16; N]; N], nz: u32, e: &mut [[i32; N]; N]) {
+    let step = 32 / N;
+    for (e, &g) in e[0].iter_mut().zip(&col[0]) {
+        *e = 64 * g as i32;
+    }
+    let mut m = 2;
+    while m <= N {
+        let s = N / m;
+        let odd = (s..N).step_by(2 * s).fold(0, |b, j| b | 1 << j) & nz;
+        let (lo, hi) = e.split_at_mut(m / 2);
+        for (k, ek) in lo.iter_mut().enumerate() {
+            let em = &mut hi[m / 2 - 1 - k];
+            if odd == 0 {
+                *em = *ek;
+                continue;
+            }
+            let mut o = [0; N];
+            let mut bits = odd;
+            while bits != 0 {
+                let j = bits.trailing_zeros() as usize;
+                mac(&mut o, TRANS_MATRIX[j * step][k] as i16, &col[j]);
+                bits &= bits - 1;
+            }
+            *em = *ek;
+            add(ek, &o);
+            sub(em, &o);
+        }
+        m *= 2;
+    }
+}
+
+#[inline(always)]
+fn add<const N: usize>(a: &mut [i32; N], b: &[i32; N]) {
+    for (a, &b) in a.iter_mut().zip(b) {
+        *a += b;
+    }
+}
+
+#[inline(always)]
+fn sub<const N: usize>(a: &mut [i32; N], b: &[i32; N]) {
+    for (a, &b) in a.iter_mut().zip(b) {
+        *a -= b;
+    }
+}
+
+#[inline(always)]
+fn mac<const N: usize>(o: &mut [i32; N], w: i16, g: &[i16; N]) {
+    for (o, &g) in o.iter_mut().zip(g) {
+        *o += w as i32 * g as i32;
     }
 }
 
