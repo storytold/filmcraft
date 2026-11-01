@@ -1118,13 +1118,96 @@ pub fn apply_look(look: u32, c: [f32; 3]) -> [f32; 3] {
     }
 }
 
+/// Entries of a baked Lumetri curve table (over x in 0…1).
+pub const CURVE_TABLE_SIZE: usize = 1024;
+
+/// The Lumetri curves in the order [`lumetri_curves`] applies them (and `gpufx::LumetriCurves`
+/// holds them): the luma curve, the red / green / blue curves, then the hue / saturation block.
+pub const CURVE_IDS: [&str; 9] =
+    ["curve_luma", "curve_red", "curve_green", "curve_blue", "hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"];
+
+/// The Lumetri curves of `e` baked into tables of [`CURVE_TABLE_SIZE`] entries, in [`CURVE_IDS`]
+/// order. None where a curve does nothing: Curves off, a luma / RGB curve that is the identity,
+/// a hue / saturation curve without points.
+pub(crate) fn lumetri_curve_tables(e: &EffectInstance) -> [Option<Vec<f32>>; 9] {
+    const N: usize = CURVE_TABLE_SIZE;
+    if !on(e, "curves_on") {
+        return Default::default();
+    }
+    CURVE_IDS.map(|id| {
+        let c = curve_param(e, id)?;
+        if id.starts_with("curve_") { (!is_identity_curve(&c)).then(|| curve_lut(&c, N)) } else { hue_lut(&c, N) }
+    })
+}
+
+/// One value of a curve table: linear between neighbouring entries over 0…1; above 1 in an HDR
+/// signal the curve continues with slope 1 from its end point.
+#[inline]
+fn sample_curve(l: &[f32], x: f32, hdr: bool) -> f32 {
+    let Some(&last) = l.last() else {
+        return x;
+    };
+    if hdr && x > 1.0 {
+        return last + (x - 1.0);
+    }
+    let n = l.len();
+    let p = x.clamp(0.0, 1.0) * (n - 1) as f32;
+    let i = (p as usize).min(n - 1);
+    let j = (i + 1).min(n - 1);
+    let (a, b) = (l.get(i).copied().unwrap_or(last), l.get(j).copied().unwrap_or(last));
+    a + (b - a) * (p - i as f32)
+}
+
+/// The Lumetri curves on one value of the grading signal (`t` from [`lumetri_curve_tables`]):
+/// the luma curve on each channel, the red / green / blue curves, then hue vs saturation / hue /
+/// luma and luma / saturation vs saturation in HSL (keyed on the hue, saturation and lightness the
+/// pixel had before the block).
+#[inline]
+pub(crate) fn lumetri_curves(mut v: [f32; 3], t: [Option<&[f32]>; 9], hdr: bool) -> [f32; 3] {
+    let [luma_c, red_c, green_c, blue_c, hvs, hvh, hvl, lvs, svs] = t;
+    if let Some(l) = luma_c {
+        v = v.map(|q| sample_curve(l, q, hdr));
+    }
+    if let Some(l) = red_c {
+        v[0] = sample_curve(l, v[0], hdr);
+    }
+    if let Some(l) = green_c {
+        v[1] = sample_curve(l, v[1], hdr);
+    }
+    if let Some(l) = blue_c {
+        v[2] = sample_curve(l, v[2], hdr);
+    }
+    if hvs.is_some() || hvh.is_some() || hvl.is_some() || lvs.is_some() || svs.is_some() {
+        v = within_unit(v, hdr, |u| {
+            let mut h = rgb_to_hsl(u[0], u[1], u[2]);
+            let (h0, s0, l0) = (h[0], h[1], h[2]);
+            if let Some(t) = hvh {
+                h[0] = (h[0] + (sample_curve(t, h0, hdr) - 0.5)).rem_euclid(1.0);
+            }
+            let mut sm = 1.0;
+            if let Some(t) = hvs {
+                sm *= sample_curve(t, h0, hdr) * 2.0;
+            }
+            if let Some(t) = lvs {
+                sm *= sample_curve(t, l0, hdr) * 2.0;
+            }
+            if let Some(t) = svs {
+                sm *= sample_curve(t, s0, hdr) * 2.0;
+            }
+            h[1] = (h[1] * sm).clamp(0.0, 1.0);
+            if let Some(t) = hvl {
+                h[2] = (h[2] + (sample_curve(t, h0, hdr) - 0.5) * 0.5).clamp(0.0, 1.0);
+            }
+            hsl_to_rgb(h[0], h[1], h[2])
+        });
+    }
+    v
+}
+
 fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    const N: usize = 1024;
-    let (creative_on, curves_on, wheels_on) = (on(e, "creative_on"), on(e, "curves_on"), on(e, "wheels_on"));
-    let lut = |id: &str| curve_param(e, id).filter(|c| curves_on && !is_identity_curve(c)).map(|c| curve_lut(&c, N));
-    let (luma_c, red_c, green_c, blue_c) = (lut("curve_luma"), lut("curve_red"), lut("curve_green"), lut("curve_blue"));
-    let hue = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| hue_lut(&c, N));
-    let (hvs, hvh, hvl, lvs, svs) = (hue("hue_vs_sat"), hue("hue_vs_hue"), hue("hue_vs_luma"), hue("luma_vs_sat"), hue("sat_vs_sat"));
+    let (creative_on, wheels_on) = (on(e, "creative_on"), on(e, "wheels_on"));
+    let tables = lumetri_curve_tables(e);
+    let curves = tables.each_ref().map(|t| t.as_deref());
     // Creative ▸ Look: a LUT ("Browse…" / built-in) takes precedence over the procedural menu
     let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
     let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
@@ -1133,34 +1216,13 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
     let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
     let wheels = wheels_on && (ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || ls.abs() + lm.abs() + lh.abs() > 1e-5);
-    let any = luma_c.is_some()
-        || red_c.is_some()
-        || green_c.is_some()
-        || blue_c.is_some()
-        || hvs.is_some()
-        || hvh.is_some()
-        || hvl.is_some()
-        || lvs.is_some()
-        || svs.is_some()
-        || look > 0
-        || look_lut.is_some()
-        || wheels;
+    let any = curves.iter().any(Option::is_some) || look > 0 || look_lut.is_some() || wheels;
     if !any {
         return;
     }
     // HDR: curves, wheels and looks span 0 … the curves' HDR Range (cd/m²)
     let gs = grade_space(e, cx, "curves_hdr_range");
     let hdr = gs.is_hdr();
-    let sample = |l: &Vec<f32>, x: f32| {
-        // above HDR White a curve continues with slope 1 from its end point
-        if hdr && x > 1.0 {
-            return l[N - 1] + (x - 1.0);
-        }
-        let p = x.clamp(0.0, 1.0) * (N - 1) as f32;
-        let i = p as usize;
-        let j = (i + 1).min(N - 1);
-        l[i] + (l[j] - l[i]) * (p - i as f32)
-    };
     img.map_rgb(|c, _, _| {
         let mut v = gs.encode(c);
         if let Some(l) = &look_lut {
@@ -1182,43 +1244,7 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                 v[k] *= 1.0 + (wh[k] * 0.5 + lh * 0.5) * whi;
             }
         }
-        if let Some(l) = &luma_c {
-            v = v.map(|q| sample(l, q));
-        }
-        if let Some(l) = &red_c {
-            v[0] = sample(l, v[0]);
-        }
-        if let Some(l) = &green_c {
-            v[1] = sample(l, v[1]);
-        }
-        if let Some(l) = &blue_c {
-            v[2] = sample(l, v[2]);
-        }
-        if hvs.is_some() || hvh.is_some() || hvl.is_some() || lvs.is_some() || svs.is_some() {
-            v = within_unit(v, hdr, |u| {
-                let mut h = rgb_to_hsl(u[0], u[1], u[2]);
-                let (h0, s0, l0) = (h[0], h[1], h[2]);
-                if let Some(t) = &hvh {
-                    h[0] = (h[0] + (sample(t, h0) - 0.5)).rem_euclid(1.0);
-                }
-                let mut sm = 1.0;
-                if let Some(t) = &hvs {
-                    sm *= sample(t, h0) * 2.0;
-                }
-                if let Some(t) = &lvs {
-                    sm *= sample(t, l0) * 2.0;
-                }
-                if let Some(t) = &svs {
-                    sm *= sample(t, s0) * 2.0;
-                }
-                h[1] = (h[1] * sm).clamp(0.0, 1.0);
-                if let Some(t) = &hvl {
-                    h[2] = (h[2] + (sample(t, h0) - 0.5) * 0.5).clamp(0.0, 1.0);
-                }
-                hsl_to_rgb(h[0], h[1], h[2])
-            });
-        }
-        gs.decode(v)
+        gs.decode(lumetri_curves(v, curves, hdr))
     });
 }
 
