@@ -84,23 +84,32 @@ fn reverse_wrap(
                 fwd.swap(i * ch + c, j * ch + c);
             }
         }
-        // Resample `actual_in` reversed frames → `out_frames` device frames (linear interp).
-        if actual_in == out_frames {
-            buf.copy_from_slice(&fwd);
+        // Resample the available reversed frames proportionally, then pad the tail with silence.
+        // When actual_in < in_frames (partial read near timeline zero), only fill the output
+        // frames that actual_in can represent at abs_speed; the remainder is silence rather than
+        // stretching the partial read across all out_frames.
+        let available_out = ((actual_in as f64 / abs_speed).round() as usize).min(out_frames);
+        if available_out == 0 {
+            buf.fill(0.0);
             return;
         }
-        let scale = (actual_in - 1).max(1) as f64 / out_frames.max(1) as f64;
-        for i in 0..out_frames {
-            let src = i as f64 * scale;
-            let lo = src as usize;
-            let hi = (lo + 1).min(actual_in - 1);
-            let t = (src - lo as f64) as f32;
-            for c in 0..ch {
-                let s0 = fwd[lo * ch + c];
-                let s1 = fwd[hi * ch + c];
-                buf[i * ch + c] = s0 + (s1 - s0) * t;
+        if actual_in == available_out {
+            buf[..available_out * ch].copy_from_slice(&fwd);
+        } else {
+            let scale = (actual_in - 1).max(1) as f64 / available_out.max(1) as f64;
+            for i in 0..available_out {
+                let src = i as f64 * scale;
+                let lo = src as usize;
+                let hi = (lo + 1).min(actual_in - 1);
+                let t = (src - lo as f64) as f32;
+                for c in 0..ch {
+                    let s0 = fwd[lo * ch + c];
+                    let s1 = fwd[hi * ch + c];
+                    buf[i * ch + c] = s0 + (s1 - s0) * t;
+                }
             }
         }
+        buf[available_out * ch..].fill(0.0);
     }
 }
 
@@ -395,6 +404,6 @@ mod tests {
         // buf1 first sample should be higher (later in timeline) than buf2 first sample.
         assert!(buf1[0] > buf2[0], "reverse must retreat on the timeline: buf1[0]={} buf2[0]={}", buf1[0], buf2[0]);
         // Adjacent: buf2 ends where buf1 began (within float rounding).
-        assert!((buf2[block - 1] - buf1[0]).abs() < 1e-4, "blocks must be adjacent on the timeline");
+        assert!((buf1[block - 1] - buf2[0]).abs() < 1e-4, "blocks must be adjacent on the timeline");
     }
 }
