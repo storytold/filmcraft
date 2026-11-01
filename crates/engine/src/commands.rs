@@ -3713,7 +3713,7 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({"keyframes": keyframes, "param": pid, "value": value}))
             }
         ),
-        cmd!("effects.toggleAnimation", "Toggle Animation", [], None, r#"{"clip":id,"effect":str|index,"param":str,"mask":n?}"#, has_seq, |s, p| {
+        cmd!("effects.toggleAnimation", "Toggle Animation", [], None, r#"{"clip":id?,"effect":(str|index)?,"param":str?,"mask":n?}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.toggleAnimation", "need `clip`"))?;
             let pid = str_p(p, "param").ok_or_else(|| bad("effects.toggleAnimation", "need `param`"))?.to_string();
             let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
@@ -3768,7 +3768,7 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("effects.resetParam", "Reset Parameter", [], None, r#"{"clip":id,"effect":str|index,"param":str}"#, has_seq, |s, p| {
+        cmd!("effects.resetParam", "Reset Parameter", [], None, r#"{"clip":id?,"effect":(str|index)?,"param":str?}"#, has_seq, |s, p| {
             let c = clip_p(p, "clip").ok_or_else(|| bad("effects.resetParam", "need `clip`"))?;
             let pid = str_p(p, "param").ok_or_else(|| bad("effects.resetParam", "need `param`"))?.to_string();
             let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
@@ -3796,7 +3796,7 @@ fn build() -> Vec<CommandSpec> {
             "Add/Remove Keyframe",
             [],
             None,
-            r#"{"clip":id,"effect":str|index,"param":str,"mask":n?,"time":ticks?}"#,
+            r#"{"clip":id?,"effect":(str|index)?,"param":str?,"mask":n?,"time":ticks?}"#,
             has_seq,
             |s, p| { keyframe_op(s, p, "add") }
         ),
