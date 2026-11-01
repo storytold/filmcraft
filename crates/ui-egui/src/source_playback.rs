@@ -10,6 +10,9 @@ use serde_json::json;
 
 use crate::{AUDIO_RETRY_S, AUDIO_STALL_S, FilmcraftApp, Playback, shuttle};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Default)]
 pub struct SourcePlayback {
     pub clock: Playback,
@@ -258,7 +261,7 @@ impl FilmcraftApp {
             return;
         }
         let now = self.now();
-        let time = self.session.state.source_playhead;
+        let mut time = self.session.state.source_playhead;
         if time != self.source_playback.shown {
             self.source_playback.clock.anchor_tick = time;
             self.source_playback.clock.anchor_time = now;
@@ -266,12 +269,20 @@ impl FilmcraftApp {
             self.start_source_audio(now);
         }
         if !self.source_playback.clock.audio_clock && self.source_playback.clock.audio_retry_at > 0.0 && now >= self.source_playback.clock.audio_retry_at {
-            // The output failed mid-play: open it again where the wall clock got to, so a
-            // recovering device brings the sound back without a pause/play.
-            self.source_playback.clock.audio_retry_at = now + AUDIO_RETRY_S;
-            self.source_playback.clock.anchor_tick = time;
-            self.source_playback.clock.anchor_time = now;
-            self.source_playback.clock.audio_seen = (0, now);
+            // Catch up from the wall-clock anchor, not the last displayed frame, before opening
+            // the mixer. Retain the unsnapped position on the clock for the range/end logic below.
+            let clock = &mut self.source_playback.clock;
+            let elapsed = if clock.anchor_time < 0.0 { 0.0 } else { (now - clock.anchor_time).max(0.0) };
+            time = Tick(clock.anchor_tick.0.saturating_add(Tick::from_seconds_f64(elapsed * clock.speed).0));
+            clock.audio_retry_at = now + AUDIO_RETRY_S;
+            clock.anchor_tick = time;
+            clock.anchor_time = now;
+            clock.audio_seen = (0, now);
+            if let Err(e) = self.session.execute("source.setPlayhead", json!({"time": time.0})) {
+                self.stop_source();
+                self.ui.status = e.to_string();
+                return;
+            }
             self.start_source_audio(now);
         }
         if self.source_playback.clock.audio_clock
