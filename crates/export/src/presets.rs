@@ -185,6 +185,16 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 ..Default::default()
             },
         ),
+        p(
+            "MP3 48 kHz 320 kbps",
+            "Audio Only",
+            "MPEG audio (.mp3), joint stereo 48 kHz at 320 kbps",
+            ExportSettings {
+                format: Format::Mp3,
+                audio: AudioSettings { codec: AudioCodec::Mp3, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 320, bits: 16, ..Default::default() },
+                ..Default::default()
+            },
+        ),
         p("FLAC 48 kHz 24-bit", "Audio Only", "FLAC, stereo 48 kHz 24-bit, lossless", audio_only(Format::Flac, 24)),
     ]
 }

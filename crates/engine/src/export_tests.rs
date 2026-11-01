@@ -378,6 +378,7 @@ fn verify_audio_preset(name: &str, format: &str, settings: &Value, probe_result:
 fn verify_special_preset(name: &str, format: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
     match format {
         "aac" => verify_aac_preset(name, format_name, output, probe_result, start, end),
+        "mp3" => verify_mp3_preset(name, format_name, output, probe_result, start, end),
         "gif" => verify_gif_preset(probe_result),
         "mxf-opatom" => verify_opatom_preset(name, format_name, output, probe_result),
         _ => false,
@@ -391,6 +392,19 @@ fn verify_aac_preset(name: &str, format_name: &str, output: &str, probe_result: 
     let audio = stream(probe_result, "audio").unwrap();
     assert_eq!((audio["codec_name"].as_str(), audio["sample_rate"].as_str(), audio["channels"].as_u64()), (Some("aac"), Some("48000"), Some(2)), "{name}");
     assert!((num(&probe_result["format"]["duration"]) - (end - start)).abs() < 0.03, "{name}: {}", probe_result["format"]["duration"]);
+    true
+}
+
+fn verify_mp3_preset(name: &str, format_name: &str, output: &str, probe_result: &Value, start: f64, end: f64) -> bool {
+    // MP3: a plain Layer III stream, sound only, as long as the range plus the encoder
+    // delay (1057 samples) rounded up to whole 1152-sample frames
+    assert!(output.ends_with(".mp3"), "{name}: {output}");
+    assert_eq!(format_name, "mp3", "{name}");
+    assert_eq!(probe_result["streams"].as_array().unwrap().len(), 1, "{name}");
+    let audio = stream(probe_result, "audio").unwrap();
+    assert_eq!((audio["codec_name"].as_str(), audio["sample_rate"].as_str(), audio["channels"].as_u64()), (Some("mp3"), Some("48000"), Some(2)), "{name}");
+    let excess = num(&probe_result["format"]["duration"]) - (end - start);
+    assert!((0.0..0.06).contains(&excess), "{name}: {}", probe_result["format"]["duration"]);
     true
 }
 
