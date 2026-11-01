@@ -110,6 +110,13 @@ impl eframe::App for WebApp {
             a.pump();
         }
         self.autosave.tick(&self.app.session, ctx);
+        // the browser tab names the open document (eframe's web backend ignores ViewportCommand::Title)
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            let title = self.app.window_title();
+            if doc.title() != title {
+                doc.set_title(&title);
+            }
+        }
         self.app.finish_ime_reset_logic(ctx);
     }
 
