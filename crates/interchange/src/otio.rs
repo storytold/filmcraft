@@ -605,10 +605,17 @@ impl Imp<'_, '_> {
 
     /// Imports a sequence, preferring explicit settings over inferred video dimensions.
     fn sequence(&mut self, stack: &Value, name: &str, meta: Option<&Value>, rate: FrameRate) -> ItemId {
-        let settings: SequenceSettings = meta.and_then(|m| m.get("settings")).and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_else(|| {
-            let (width, height) = first_video_dimensions(stack).unwrap_or((1920, 1080));
-            settings_for(rate, width, height, false)
-        });
+        let settings: SequenceSettings =
+            meta.and_then(|m| m.get("settings")).and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_else(|| match first_video_dimensions(stack) {
+                Some((width, height)) => {
+                    self.report.info(format!("OTIO sequence size {width}x{height} was inferred from the first usable video clip"));
+                    settings_for(rate, width, height, false)
+                }
+                None => {
+                    self.report.warn("no OTIO sequence settings or video clip frame size; the sequence uses the default 1920x1080");
+                    settings_for(rate, 1920, 1080, false)
+                }
+            });
         let id = self.b.reserve_sequence(name, settings.clone(), None);
         if let Some(l) = meta.and_then(|m| m.get("label")).and_then(|l| serde_json::from_value::<Label>(l.clone()).ok())
             && let Some(it) = self.b.p.item_mut(id)

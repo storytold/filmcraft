@@ -330,7 +330,9 @@ fn sequence_dimensions_use_first_clip_when_references_have_two_sizes() {
             ]}
         ]}
     }"#;
-    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let (imp, report) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    assert!(report.mentions("1080x1920 was inferred"), "{report}");
+    assert!(!report.has_warnings(), "{report}");
     let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
     assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
     let sizes: Vec<_> = sequence.video_tracks[0]
@@ -339,6 +341,27 @@ fn sequence_dimensions_use_first_clip_when_references_have_two_sizes() {
         .map(|clip| imp.project.item(clip.item).unwrap().as_media().unwrap().info.video.as_ref().map(|v| (v.width, v.height)))
         .collect();
     assert_eq!(sizes, [Some((1080, 1920)), Some((1280, 720))]);
+}
+
+/// A reference without a frame size keeps the HD fallback and says so in the report.
+#[test]
+fn sequence_dimensions_warn_on_default_fallback() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"unknown",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"missing.mp4",
+                    "available_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":100}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, report) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    assert!(report.has_warnings(), "{report}");
+    assert!(report.mentions("default 1920x1080"), "{report}");
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1920, 1080));
 }
 
 /// Integral JSON floats preserve portrait dimensions for both the sequence and imported media.
