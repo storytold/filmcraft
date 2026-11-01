@@ -251,9 +251,11 @@ fn cancel_stops_a_chunk_on_its_way() {
     assert!(matches!(e, PublishError::Cancelled), "{e:?}");
     assert!(control.progress.last().is_some_and(|&p| p > 0 && p < total), "{:?}", control.progress);
     assert!(control.waits.is_empty(), "a cancel is not retried");
+    // The cancel can come before the server has even read the request line, so the chunk may or
+    // may not be in its log; what matters is that no byte of it was kept and nothing followed it.
     fake.with(|s| {
         assert!(s.received.is_empty(), "the server never got the whole chunk");
-        assert_eq!(s.chunks, 1);
+        assert!(s.chunks <= 1, "{:?}", s.log);
     });
 }
 
