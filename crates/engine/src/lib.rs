@@ -1389,6 +1389,8 @@ mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
 #[cfg(test)]
+mod named_targets_tests;
+#[cfg(test)]
 mod narration_tests;
 #[cfg(test)]
 mod nest_editing_tests;
