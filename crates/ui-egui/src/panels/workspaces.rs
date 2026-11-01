@@ -24,7 +24,8 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         "reset" => {
             let n = app.ui.workspace.clone();
             app.set_workspace(&n);
-            Ok(json!({"workspace": n}))
+            // the saved layout is the one to come back to now, not the one remembered at the last close
+            app.forget_remembered_layout(&n).map(|()| json!({"workspace": n}))
         }
         "saveChanges" => {
             let n = app.ui.workspace.clone();
@@ -64,6 +65,10 @@ fn save(app: &mut FilmcraftApp, name: &str) -> Result<(), String> {
         None => saved.push(entry),
     }
     next.current = name.to_string();
+    // the saved layout is the layout in use: nothing older remembered may win over it at launch
+    if next.last.as_ref().is_some_and(|l| l.name == name) {
+        next.last = None;
+    }
     app.set_workspaces(next)
 }
 
@@ -101,6 +106,9 @@ fn rename(app: &mut FilmcraftApp, from: &str, to: &str) -> Result<Value, String>
     for s in next.saved.iter_mut().filter(|s| s.name == from) {
         s.name = to.clone();
     }
+    if let Some(l) = next.last.as_mut().filter(|l| l.name == from) {
+        l.name = to.clone();
+    }
     if next.current == from {
         next.current = to.clone();
     }
@@ -116,6 +124,10 @@ fn delete(app: &mut FilmcraftApp, name: &str) -> Result<Value, String> {
     let mut next = app.workspaces.clone();
     let before = next.saved.len();
     next.saved.retain(|s| s.name != name);
+    // a deleted workspace, or a built-in back to its original, has no remembered layout either
+    if next.last.as_ref().is_some_and(|l| l.name == name) {
+        next.last = None;
+    }
     if next.saved.len() == before {
         return Err(if is_builtin(name) { format!("`{name}` is a built-in workspace and can't be deleted") } else { format!("unknown workspace `{name}`") });
     }

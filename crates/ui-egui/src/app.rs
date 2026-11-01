@@ -494,6 +494,7 @@ impl eframe::App for FilmcraftApp {
     /// Cancel outstanding screenshots with one error reply each, end per-viewport IME reset
     /// state, and shut the session down so its recovery journal is flushed or removed.
     fn on_exit(&mut self) {
+        self.remember_layout();
         // Late screenshot callbacks now find a dropped slot and write nothing; clients get one error.
         capture::cancel_all(self);
         for viewport in self.ime_viewports.drain(..) {

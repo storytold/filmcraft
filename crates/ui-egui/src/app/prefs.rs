@@ -131,10 +131,11 @@ impl FilmcraftApp {
             self.ui.status = note;
         }
         if prev.is_none() && !self.workspace_restored {
-            // reopen the workspace in use when the app last closed
+            // reopen the workspace in use when the app last closed, with the layout it had then
             self.workspace_restored = true;
             if let Some(w) = dock::find(&self.workspaces, &self.workspaces.current) {
                 self.set_workspace(&w);
+                self.restore_remembered_layout(&w);
             }
         }
         self.applied_prefs = Some(p);

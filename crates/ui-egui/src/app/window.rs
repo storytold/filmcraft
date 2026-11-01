@@ -5,6 +5,44 @@ impl FilmcraftApp {
         self.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join(dock::WORKSPACES_FILE))
     }
 
+    /// Keep the layout in use as the one to reopen with (`workspaces.json` ▸ `last`), so panel
+    /// changes made without Save Changes to this Workspace survive a restart (#2421). Called when
+    /// the app closes; a layout that does not validate, or is already remembered, writes nothing.
+    pub fn remember_layout(&mut self) {
+        let Ok(last) = dock::SavedWorkspace::new(&self.ui.workspace, &self.ui.dock) else { return };
+        if self.workspaces.last.as_ref() == Some(&last) && self.workspaces.current == self.ui.workspace {
+            return;
+        }
+        let mut next = self.workspaces.clone();
+        // the workspace in use too: it is only recorded on a switch, and a launch that never
+        // switched would otherwise not know which workspace the layout belongs to
+        next.current = self.ui.workspace.clone();
+        next.last = Some(last);
+        if let Err(e) = self.set_workspaces(next) {
+            log::warn!("{e}");
+        }
+    }
+
+    /// Drop the layout remembered for `workspace` (Reset to Saved Layout): the saved layout is the
+    /// one to reopen with until the app closes again.
+    pub fn forget_remembered_layout(&mut self, workspace: &str) -> Result<(), String> {
+        if !self.workspaces.last.as_ref().is_some_and(|l| l.name == workspace) {
+            return Ok(());
+        }
+        let mut next = self.workspaces.clone();
+        next.last = None;
+        self.set_workspaces(next)
+    }
+
+    /// At launch, after the workspace in use came back: its remembered layout, when the one
+    /// remembered belongs to it (a layout of another workspace, or one that does not read back,
+    /// leaves the saved layout in place).
+    pub(crate) fn restore_remembered_layout(&mut self, workspace: &str) {
+        if let Some(saved) = self.workspaces.last.as_ref().filter(|l| l.name == workspace).and_then(dock::read_saved) {
+            self.ui.dock = saved.layout;
+        }
+    }
+
     /// Replace the saved workspaces and write them to the data directory.
     pub fn set_workspaces(&mut self, w: dock::WorkspacePrefs) -> Result<(), String> {
         self.workspaces = w;
