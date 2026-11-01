@@ -74,6 +74,7 @@ fn reverse_wrap(
             buf.fill(0.0);
             return;
         }
+        // Read forward-in-time ending at `timeline_end`, then reverse them.
         // Derive read_start from the same absolute cursor mapping as timeline_end so both
         // boundaries use round(), avoiding a one-frame overlap at non-half fractional speeds.
         let next_elapsed = device_elapsed.saturating_add(out_frames as i64);
@@ -380,12 +381,34 @@ mod tests {
 
     #[test]
     fn reverse_wrap_2x_speed_produces_finite_output() {
+        // Use a ramp so each timeline position yields a distinct, nonzero value.
         let sr = 48_000u32;
-        let inner = tone_mix(sr, vec![440.0, 660.0], false);
-        let mut rev = reverse_wrap(inner, 2.0);
-        let mut buf = vec![0.0f32; 2048];
-        rev(sr as i64 * 2, &mut buf, 2);
-        assert!(buf.iter().all(|x| x.is_finite()), "2x reverse must be finite");
+        let block = 2048usize;
+        let ramp_mix = move |start: i64, buf: &mut [f32], ch: usize| {
+            for (i, frame) in buf.chunks_exact_mut(ch).enumerate() {
+                let v = (start + i as i64) as f32 / sr as f32;
+                frame.iter_mut().for_each(|s| *s = v);
+            }
+        };
+        // Start 4 seconds in so 2× retreat won't hit timeline zero within two blocks.
+        let start_cursor: i64 = sr as i64 * 4;
+        let mut rev = reverse_wrap(ramp_mix, 2.0);
+
+        // First call.
+        let mut buf1 = vec![0.0f32; block * 2]; // stereo
+        rev(start_cursor, &mut buf1, 2);
+        assert!(buf1.iter().all(|x| x.is_finite()), "2x reverse first call must be finite");
+        assert!(buf1.iter().any(|x| x.abs() > 0.0), "2x reverse first call must be nonzero");
+
+        // Second call: device advances by `block` frames; timeline retreats by block*2 at 2× speed.
+        let mut buf2 = vec![0.0f32; block * 2];
+        rev(start_cursor + block as i64, &mut buf2, 2);
+        assert!(buf2.iter().all(|x| x.is_finite()), "2x reverse second call must be finite");
+        // At 2× reverse speed the second block starts 2×block earlier on the timeline than the first.
+        // The ramp encodes position, so buf2 samples should be strictly less than buf1 samples.
+        assert!(buf2[0] < buf1[0],
+            "2x reverse: second call must read earlier on timeline; buf2[0]={} buf1[0]={}",
+            buf2[0], buf1[0]);
     }
 
     #[test]
@@ -395,7 +418,7 @@ mod tests {
         let sr = 48_000u32;
         let block = 1024usize;
         // Ramp: sample value = frame index / sr (unique per position, easy to sum-check).
-        let ramp_mix = |start: i64, buf: &mut [f32], ch: usize| {
+        let ramp_mix = move |start: i64, buf: &mut [f32], ch: usize| {
             for (i, frame) in buf.chunks_exact_mut(ch).enumerate() {
                 let v = (start + i as i64) as f32 / sr as f32;
                 frame.iter_mut().for_each(|s| *s = v);
