@@ -100,7 +100,12 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
             "sequence.linkedSelection",
             vec![
                 spec("sequence.selectionFollowsPlayhead", "Selection Follows Playhead", &["Sequence"], None, r#"{"on":bool?}"#, always, |s, p| {
-                    s.state.selection_follows_playhead = bool_p(p, "on").unwrap_or(!s.state.selection_follows_playhead);
+                    // the preference is the source of truth (#3089: it persists across sessions);
+                    // the session flag mirrors it through set_prefs
+                    let on = bool_p(p, "on").unwrap_or(!s.prefs.timeline.selection_follows_playhead);
+                    let mut next = s.prefs.clone();
+                    next.timeline.selection_follows_playhead = on;
+                    s.set_prefs(next).map_err(|e| EngineError::Other(format!("saving preferences: {e}")))?;
                     if s.state.selection_follows_playhead {
                         select_under_playhead(s);
                     }
@@ -132,7 +137,7 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     &[],
                     None,
                     r#"{"clips":[id]?,"cut":[id,id]?,"all":bool?}"#,
-                    has_seq,
+                    has_through_edits,
                     join_through_edits,
                 ),
                 query("sequence.throughEdits", "List Through Edits", "{}", |s, _| {
@@ -193,7 +198,7 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     "Add Range Marker",
                     &["Markers"],
                     Some("Ctrl+Shift+M"),
-                    r#"{"time":ticks?,"durationFrames":i64=1s,"duration":ticks?,"name":str?,"comment":str?,"color":label?}"#,
+                    r#"{"time":ticks?,"durationFrames":i64=1s,"duration":ticks?,"name":str?,"comment":str?,"color":label_or_hex?,"author":str?}"#,
                     has_seq,
                     add_range_marker,
                 ),
@@ -202,7 +207,7 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     "Add Range Marker to In and Out",
                     &["Markers"],
                     Some("Ctrl+M"),
-                    r#"{"name":str?,"comment":str?,"color":label?}"#,
+                    r#"{"name":str?,"comment":str?,"color":label_or_hex?,"author":str?}"#,
                     has_in_and_out,
                     add_range_marker_in_out,
                 ),
@@ -213,9 +218,18 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
             vec![
                 spec("markers.showAllMarkerColors", "Show All Marker Colors", &["Markers"], None, "{}", has_hidden_colors, |s, _| {
                     s.state.hidden_marker_colors.clear();
+                    s.state.hidden_custom_marker_colors.clear();
                     Ok(json!({"hidden": []}))
                 }),
-                spec("markers.filterColors", "Marker Colour Filter", &[], None, r#"{"hidden":[label]}|{"color":label,"visible":bool?}"#, always, filter_colors),
+                spec(
+                    "markers.filterColors",
+                    "Marker Colour Filter",
+                    &[],
+                    None,
+                    r#"{"hidden":[label_or_hex]}|{"color":label_or_hex,"visible":bool?}"#,
+                    always,
+                    filter_colors,
+                ),
             ],
         ),
         (
@@ -226,7 +240,7 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     "Add Chapter Marker…",
                     &["Markers"],
                     None,
-                    r#"{"time":ticks?,"name":str?,"comment":str?,"color":label?}"#,
+                    r#"{"time":ticks?,"name":str?,"comment":str?,"color":label_or_hex?,"author":str?}"#,
                     has_seq,
                     |s, p| {
                         let t = sequence_time_p(s, p, "", "markers.addChapter")?.unwrap_or(s.playhead());
@@ -284,7 +298,7 @@ fn has_split(s: &Session) -> std::result::Result<(), String> {
     if program || source { Ok(()) } else { Err("there are no split points".into()) }
 }
 fn has_hidden_colors(s: &Session) -> std::result::Result<(), String> {
-    if s.state.hidden_marker_colors.is_empty() { Err("all marker colours are shown".into()) } else { Ok(()) }
+    if s.state.hidden_marker_colors.is_empty() && s.state.hidden_custom_marker_colors.is_empty() { Err("all marker colours are shown".into()) } else { Ok(()) }
 }
 
 // ---------- selection follows playhead ----------
@@ -366,6 +380,16 @@ fn go_to_gap(s: &mut Session, p: &Value, next: bool, in_track: bool) -> Result<V
 }
 
 // ---------- through edits ----------
+
+/// Join Through Edits is enabled when the sequence has a through edit on an unlocked track: with
+/// none anywhere the Timeline's clip menu greys it out instead of failing when chosen. (A
+/// selection without one, or a named `cut` that is not one, still answers with its reason.)
+fn has_through_edits(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    let q = s.active_sequence().ok_or("no sequence is open")?;
+    let any = edit::through::through_edits(q).iter().any(|e| q.track(e.track).is_some_and(|t| !t.locked));
+    if any { Ok(()) } else { Err("there are no through edits to join".into()) }
+}
 
 fn join_through_edits(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(cut) = p.get("cut") {
@@ -529,6 +553,10 @@ pub(crate) fn lay_out_tracks_like(new: &mut filmcraft_project::Sequence, from: &
     }
 }
 
+/// Make Subsequence: copy the selected clips (with linked partners), or everything between In
+/// and Out on the targeted tracks, into a new sequence named `name` or `<seq>_Sub_NN`. Copies
+/// get fresh ids, links and groups and start from zero; the new sequence opens in the Source
+/// Monitor.
 fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?.clone();
@@ -571,6 +599,7 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
         let nid = pr.new_sequence(&name, q.settings.clone(), q.video_tracks.len(), q.audio_tracks.len(), None);
         let mut ids = std::collections::HashMap::new();
         let mut links = std::collections::HashMap::new();
+        let mut groups = std::collections::HashMap::new();
         let mut placed: Vec<(TrackKind, usize, TrackItem)> = Vec::new();
         for (kind, ti, mut it) in items.clone() {
             let new_id = ClipId(pr.alloc_id());
@@ -579,6 +608,9 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
             it.start -= offset;
             if let Some(l) = it.link {
                 it.link = Some(*links.entry(l).or_insert_with(|| pr.alloc_id()));
+            }
+            if let Some(g) = it.group {
+                it.group = Some(*groups.entry(g).or_insert_with(|| pr.alloc_id()));
             }
             placed.push((kind, ti, it));
         }
@@ -610,7 +642,6 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
         }
         for tr in nq.all_tracks_mut() {
             tr.sort();
-            edit::remove_orphan_transitions(tr);
         }
         nq.check().map_err(EngineError::Other)?;
         st.project_selection = vec![nid];
@@ -665,6 +696,7 @@ pub(crate) fn place_sequence_clips(s: &mut Session, placement: crate::commands::
         // copies with ids, links and transitions of their own, moved to `at`
         let mut ids = std::collections::HashMap::new();
         let mut links = std::collections::HashMap::new();
+        let mut groups = std::collections::HashMap::new();
         let mut placed: Vec<(TrackKind, usize, TrackItem)> = Vec::new();
         for (kind, lane, mut it) in items.clone() {
             let id = ClipId(p.alloc_id());
@@ -673,6 +705,9 @@ pub(crate) fn place_sequence_clips(s: &mut Session, placement: crate::commands::
             it.start = at + (it.start - range.start);
             if let Some(l) = it.link {
                 it.link = Some(*links.entry(l).or_insert_with(|| p.alloc_id()));
+            }
+            if let Some(g) = it.group {
+                it.group = Some(*groups.entry(g).or_insert_with(|| p.alloc_id()));
             }
             placed.push((kind, lane, it));
         }
@@ -725,7 +760,6 @@ pub(crate) fn place_sequence_clips(s: &mut Session, placement: crate::commands::
         }
         for tr in seq.all_tracks_mut() {
             tr.sort();
-            edit::remove_orphan_transitions(tr);
         }
         seq.check().map_err(EngineError::Other)?;
         if insert
@@ -873,32 +907,19 @@ pub(crate) fn place_on_new_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     if !new_v && !new_a {
         return Err(bad(cmd, "no new track to add: the item has no picture or sound for it"));
     }
-    let added = add_tracks(s, &json!({"video": u64::from(new_v), "audio": u64::from(new_a)}))?;
-    let mark = s.history.undo.len();
-    let mut q = p.clone();
-    for (key, kind) in [("track", "video"), ("audioTrack", "audio")] {
-        if is_new(key) {
-            q[key] = added.get(kind).and_then(|ids| ids.get(0)).cloned().unwrap_or(Value::Null);
-        }
-    }
     let place = crate::commands::find(cmd).ok_or_else(|| EngineError::UnknownCommand(cmd.into()))?.run;
-    match place(s, &q) {
-        Ok(v) => {
-            // the new tracks and the clip are one undo step
-            if mark >= 1
-                && s.history.undo.len() == mark + 1
-                && let (Some((label, _)), Some((_, before))) = (s.history.undo.pop(), s.history.undo.pop())
-            {
-                s.history.undo.push((label, before));
+    // one undo step for the tracks and the clip; when the placement fails the project, its undo
+    // and its redo history are put back as they were
+    s.edit_group("Place Clip", |s| {
+        let added = add_tracks(s, &json!({"video": u64::from(new_v), "audio": u64::from(new_a)}))?;
+        let mut q = p.clone();
+        for (key, kind) in [("track", "video"), ("audioTrack", "audio")] {
+            if is_new(key) {
+                q[key] = added.get(kind).and_then(|ids| ids.get(0)).cloned().unwrap_or(Value::Null);
             }
-            Ok(v)
         }
-        Err(e) => {
-            s.undo();
-            s.history.redo.pop();
-            Err(e)
-        }
-    }
+        place(s, &q)
+    })
 }
 
 fn delete_tracks(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1105,10 +1126,11 @@ struct MarkerInput<'a> {
 fn add_marker(s: &mut Session, input: MarkerInput<'_>) -> Result<MarkerId> {
     let MarkerInput { cmd, label, start, duration, kind, name, params } = input;
     let comment = str_p(params, "comment").unwrap_or("").to_string();
-    let color = marker_color_p(params, cmd)?.unwrap_or(Label::Green);
+    let (color, custom_color) = marker_color_p(params, cmd)?.unwrap_or((Label::Green, None));
+    let author = crate::commands::marker_author_p(params, cmd)?.unwrap_or_default();
     s.edit_sequence(label, |q, ctx, _| {
         let id = MarkerId(ctx.alloc());
-        q.markers.push(Marker { id, start, duration, name, comment, kind, color });
+        q.markers.push(Marker { url: String::new(), author, custom_color, id, start, duration, name, comment, kind, color });
         q.markers.sort_by_key(|m| m.start);
         Ok(id)
     })
@@ -1148,23 +1170,52 @@ fn add_range_marker_in_out(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn filter_colors(s: &mut Session, p: &Value) -> Result<Value> {
-    if let Some(a) = p.get("hidden").and_then(Value::as_array) {
-        let mut v = Vec::new();
-        for x in a {
-            let n = x.as_str().unwrap_or_default();
-            v.push(Label::from_name(n).ok_or_else(|| bad("markers.filterColors", format!("unknown colour `{n}`")))?);
+    let id = "markers.filterColors";
+    let parse = |v: &Value| -> Result<(Label, Option<filmcraft_project::HexColor>)> {
+        crate::commands::marker_color_p(&json!({"color":v}), id)?.ok_or_else(|| bad(id, "need a color"))
+    };
+    if let Some(value) = p.get("hidden") {
+        let a = value.as_array().filter(|a| a.len() <= 80).ok_or_else(|| bad(id, "hidden must contain at most 80 colors"))?;
+        let mut presets = Vec::new();
+        let mut custom = Vec::new();
+        for v in a {
+            let (preset, hex) = parse(v)?;
+            if let Some(hex) = hex {
+                if !custom.contains(&hex) {
+                    custom.push(hex);
+                }
+            } else if !presets.contains(&preset) {
+                presets.push(preset);
+            }
         }
-        s.state.hidden_marker_colors = v;
-    } else if let Some(n) = str_p(p, "color") {
-        let c = Label::from_name(n).ok_or_else(|| bad("markers.filterColors", format!("unknown colour `{n}`")))?;
-        let hidden = s.state.hidden_marker_colors.contains(&c);
-        let visible = bool_p(p, "visible").unwrap_or(hidden);
-        s.state.hidden_marker_colors.retain(|x| *x != c);
-        if !visible {
-            s.state.hidden_marker_colors.push(c);
+        if custom.len() > 64 {
+            return Err(bad(id, "too many custom color filters"));
+        }
+        s.state.hidden_marker_colors = presets;
+        s.state.hidden_custom_marker_colors = custom;
+    } else if let Some(value) = p.get("color") {
+        let (preset, hex) = parse(value)?;
+        let visible = p.get("visible").map(|v| v.as_bool().ok_or_else(|| bad(id, "visible must be a boolean"))).transpose()?;
+        if let Some(hex) = hex {
+            let visible = visible.unwrap_or(s.state.hidden_custom_marker_colors.contains(&hex));
+            s.state.hidden_custom_marker_colors.retain(|c| *c != hex);
+            if !visible {
+                if s.state.hidden_custom_marker_colors.len() >= 64 {
+                    return Err(bad(id, "too many custom color filters"));
+                }
+                s.state.hidden_custom_marker_colors.push(hex);
+            }
+        } else {
+            let visible = visible.unwrap_or(s.state.hidden_marker_colors.contains(&preset));
+            s.state.hidden_marker_colors.retain(|c| *c != preset);
+            if !visible {
+                s.state.hidden_marker_colors.push(preset);
+            }
         }
     } else {
-        return Err(bad("markers.filterColors", "need `hidden` or `color`"));
+        return Err(bad(id, "need hidden or color"));
     }
-    Ok(json!({"hidden": s.state.hidden_marker_colors.iter().map(|c| c.name()).collect::<Vec<_>>()}))
+    Ok(
+        json!({"hidden":s.state.hidden_marker_colors.iter().map(|c|c.name().to_owned()).chain(s.state.hidden_custom_marker_colors.iter().map(|c|c.hex())).collect::<Vec<_>>()}),
+    )
 }

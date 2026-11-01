@@ -48,6 +48,12 @@ edit reports the value written at the requested time, rather than the static fal
 For example, setting opacity `blend` to `"Screen"` returns
 `{"keyframes": 0, "param": "blend", "value": 8}`.
 
+`effects.addKeyframe` toggles: it returns `{"added": true, "mediaTime": t}` when it added a keyframe and
+`{"added": false, "mediaTime": t}` when it removed the one already there; `mediaTime` is where the keyframe
+is, to find it again. An explicit `time` keeps its place, outside the clip too, as in `effects.setParam`;
+only the playhead (when no `time` is given) is held to the clip's last tick. `effects.deleteKeyframe`
+returns `{"removed": true}` or `{"removed": false}` (no keyframe sat exactly at `mediaTime`).
+
 ### From an installed release
 
 The release packages ship `filmcraft-cli` alongside the desktop app, so no build is needed:
@@ -138,6 +144,14 @@ progress and stop it:
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
+- `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
+  strings, empty when none). If the default or explicitly selected In/Out range covers one
+  sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
+  The export still succeeds, including with `wait: true` over MCP or the bridge. Explicit custom,
+  work-area and entire-sequence ranges are unchanged and do not warn. Queue additions collect
+  warnings from the newly added ranges. `filmcraft-cli export` (including `--queue`)
+  also prints the warning on stderr and suggests `--range entire`; the warning does not change
+  the exit status. Frame counts here use the sequence rate, even when the export rate differs.
 - Bridge mode works the same way: the export runs as an app job (the app stays responsive and shows
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmcraft-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
@@ -246,9 +260,9 @@ frames: the warning stays and the exit status is 0. The export result lists the 
 `markers.exportCsv {path}` exports all markers in the active sequence, including colours hidden
 in the UI and markers outside In/Out, sorted by start then id. The UTF-8 CSV has a header and CRLF
 records; quotes, commas and embedded newlines are escaped. Columns are Sequence, Marker ID, Name,
-Comment, Kind, Color, Start Timecode, End Timecode, Duration Frames, Start Ticks, Duration Ticks and
-Frame Rate (exact numerator/denominator). Color uses the user's display label from Settings ▸
-Labels. Timecodes include the sequence's start timecode and
+Comment, Kind, Color, Start Timecode, End Timecode, Duration Frames, Start Ticks, Duration Ticks,
+Frame Rate (exact numerator/denominator), Author, and URL. Custom colors use canonical `#RRGGBB`;
+preset Color uses the user's display label from Settings ▸ Labels. Timecodes include the sequence's start timecode and
 drop-frame setting; End is exclusive, and a point marker's End equals Start. Duration Frames is
 rounded down; tick columns preserve sub-frame timing (254016000000 ticks per second).
 An empty sequence writes just the header. User text starting with a spreadsheet formula character
@@ -344,3 +358,83 @@ ROADMAP.md and [target-app-parity.md](target-app-parity.md) keep two numbers: **
   what works;
 - benchmarks state the machine, the load average and before/after on the same build;
 - don't raise a percentage without evidence a reviewer can rerun.
+
+### Marker authors and custom colors
+
+`markers.add`, the range/chapter/Flash Cue marker commands, and `markers.edit` accept
+`author` (text, at most 1024 UTF-8 bytes without control characters) and `color` (an
+existing label name or six hex digits, optionally prefixed with `#`). Commands and CSV
+report custom colors as uppercase `#RRGGBB`. Omitting either property while editing
+preserves it; `author: null` also preserves the author, `author: ""` clears attribution,
+and choosing a preset clears custom color.
+The source-target variants of Add/Edit accept the same properties. Inspect reports
+include `author` and the effective `color`.
+
+`markers.edit` also accepts `kind:"comment|chapter|segmentation|webLink|flashCue"`.
+The editor's visible Type radio group (`markerProperties.kind`, with choices
+`markerProperties.kind.<kind>`) applies type changes with the other fields in one Undo
+step. The compact form follows Name, Author, Time/Duration, Notes, then grouped Color
+and vertical Type choices. The editor offers Comment, Chapter, Segmentation and Web Link;
+existing legacy marker types are retained unless explicitly changed. A narrow action
+column uses centered buttons; small windows move actions below the scrolling form.
+It retains the same sequence/source owner.
+Notes scroll within a bounded field. Time and Duration accept only digits and colons
+in `HH:MM:SS:FF` form (three frame digits at 100 fps or higher); Done remains disabled for incomplete or invalid timecodes.
+Unchecked Duration ignores its draft value and saves a point marker with zero duration.
+Text fields use normal text editing shortcuts and their own Undo/Redo history.
+
+Previous/Next (`markerProperties.previous`, `markerProperties.next`) save valid changes
+to the current marker as one Undo step, then open its neighbour in chronological order
+with marker ID breaking time ties. Navigation stays in the original sequence/source view,
+even if another is opened. Unchanged navigation adds no Undo step; invalid drafts remain
+open without moving or changing the project. Ends disable the corresponding button.
+Cancel discards only the current draft; edits saved by earlier navigation remain undoable.
+These controls change the editor, without redirecting another sequence/source playhead.
+
+Web Link markers show a separate URL field (`markerProperties.url`) and an explicit
+Open Link button (`markerProperties.openLink`). Notes remain independent. `markers.edit`
+accepts `url` (an absolute HTTP(S) address, up to 8192 UTF-8 bytes, no control characters
+or embedded credentials); an empty string clears it and omission/null retains it.
+The URL is retained across type changes. Opening uses the existing browser service
+and never occurs during playback, seeking, project load or Undo/Redo. URLs survive
+project/OTIO round trips and appear in a separate CSV column; other interchange formats
+report URL loss. Imported addresses are checked again before opening.
+
+`colors.addCustom {color:"#RRGGBB"}` saves a reusable project-local marker/clip swatch (maximum 64). Duplicate colors are no-ops. Palette additions are independently undoable from marker edits.
+Interchange imports fill missing names on existing swatches while preserving target names,
+even when the palette is full. Formats that cannot retain the saved palette warn about its
+loss even if none of its colors are assigned; FilmCraft projects and OTIO retain it.
+An OTIO collection unions its timelines' saved palettes in encounter order, preserving the
+first valid name and filling missing names for retained colors. Empty later palettes do
+not clear earlier colors. Colors beyond the project's 64-entry limit produce a warning.
+
+`edit.label` also accepts a hex `label` and `saveColor:true` to save and apply a custom clip color atomically. Markers and clips share the unchanged sixteen clip presets; Red, Orange, Cyan and Pink are aliases for Rose, Mango, Teal and Magenta.
+
+Adding a marker stays immediate and does not open an editor. The dialogs described here are
+marker editing controls, opened explicitly for an existing marker.
+If a command changes or removes that marker while its editor is open, the editor and its
+native color session close with a status message; reopen it to edit the current values.
+Changes to other markers do not discard the draft.
+
+Range markers split their flag vertically, placing the left half at the start and the right
+half at the end in the Timeline, Source, and Program rulers. Both ends retain the marker's
+identity for editing; `timeline.markerEnd.<id>`, `source.markerEnd.<id>`, and
+`program.markerEnd.<id>` expose the end flags to automation. Point markers keep their whole flag.
+
+On macOS, custom marker/clip colors and project-palette edits open the system Color panel.
+Its live selection updates only the draft; FilmCraft's Add/Save/Apply and Cancel actions keep
+ownership of project changes and Undo. Closing the Color panel retains the draft without applying
+it. Colors are converted to opaque sRGB `#RRGGBB`; typed hex values update the open panel.
+Preset swatches and named project colors remain in FilmCraft. Other hosts, headless automation,
+and native-picker failures reuse egui's established opaque color picker with FilmCraft's hex field.
+The `*.native` automation control reopens the system panel; `*.hex` remains available on either path. Switching projects or leaving
+the draft closes its native panel, and an older draft cannot redirect or close a newer picker.
+While the native Color panel has keyboard focus, its Edit menu uses AppKit's normal text actions
+for Copy/Paste, Select All, and Undo/Redo. FilmCraft's Edit menu returns when its main window
+regains focus. Temporary panel hiding during app deactivation does not discard the color draft.
+
+This host picker is scoped to marker colors, clip labels, and project palette editing. Existing
+text, graphics, effect, transition, and settings color controls retain their established behavior.
+The label editor stores opaque sRGB bytes; it does not reinterpret floating-point effect colors,
+HDR values, or alpha. The fallback shares egui's picker implementation with those controls,
+without replacing their command or color-format semantics.

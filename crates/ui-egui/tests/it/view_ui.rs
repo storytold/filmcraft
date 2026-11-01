@@ -17,6 +17,8 @@ struct Driver {
     harness: Harness<'static, FilmcraftApp>,
     tx: Sender<ControlRequest>,
     shots: Option<std::path::PathBuf>,
+    /// Where the pointer was last put by `move_to` or `press`.
+    pointer: egui::Pos2,
 }
 
 impl Driver {
@@ -31,7 +33,7 @@ impl Driver {
             b = b.wgpu().with_pixels_per_point(1.0);
         }
         let harness = b.build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, shots };
+        let mut d = Driver { harness, tx, shots, pointer: egui::Pos2::ZERO };
         d.frames(4);
         d
     }
@@ -83,6 +85,41 @@ impl Driver {
     fn click(&mut self, id: &str) {
         self.ok("ui.click", json!({"id": id}));
         self.frames(2);
+    }
+    /// Move the pointer to `(x, y)` a few points per frame, as a mouse does (a button held stays
+    /// held), and let the UI react.
+    fn move_to(&mut self, x: f64, y: f64) {
+        let (from, to) = (self.pointer, egui::pos2(x as f32, y as f32));
+        let steps = ((to - from).length() / 20.0).ceil().max(1.0) as usize;
+        for i in 1..=steps {
+            self.harness.input_mut().events.push(egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32)));
+            self.frames(1);
+        }
+        self.pointer = to;
+        self.frames(2);
+    }
+    /// Press the primary button at `(x, y)`.
+    fn press(&mut self, x: f64, y: f64) {
+        let pos = egui::pos2(x as f32, y as f32);
+        let events = &mut self.harness.input_mut().events;
+        events.push(egui::Event::PointerMoved(pos));
+        events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        self.pointer = pos;
+        self.frames(1);
+    }
+    fn release(&mut self, x: f64, y: f64) {
+        let pos = egui::pos2(x as f32, y as f32);
+        self.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        self.frames(2);
+    }
+    /// The cursor the last frame asked for.
+    fn cursor(&self) -> egui::CursorIcon {
+        self.harness.output().platform_output.cursor_icon
     }
     fn shot(&mut self, name: &str) {
         let Some(dir) = self.shots.clone() else { return };
@@ -481,6 +518,65 @@ fn time_zoom_bar_zooms_and_scrolls_the_monitor_ruler() {
     assert!((d.rect("program.zoomBar")[2] - track[2]).abs() < 0.5);
 }
 
+/// The Program monitor's zoom bar with the middle half of the duration shown: the thumb sits
+/// inside the track. Returns the thumb (x, y, width, height), the track, and the y of the bar's middle.
+fn program_zoom_bar(d: &mut Driver) -> ([f64; 4], [f64; 4], f64) {
+    d.ok("ui.set", json!({"program": {"time_zoom": [0.25, 0.75]}}));
+    d.frames(3);
+    let (thumb, track) = (d.rect("program.zoomBar"), d.rect("program.zoomBar.track"));
+    (thumb, track, thumb[1] + thumb[3] / 2.0)
+}
+
+/// The monitor zoom bar's circular end handles zoom, so the pointer over one shows the horizontal
+/// resize arrow; the middle of the thumb scrolls and the bar beside it jumps, which keep the normal
+/// pointer.
+#[test]
+fn time_zoom_bar_handles_show_the_resize_cursor_on_hover() {
+    let mut d = Driver::demo();
+    let (thumb, track, y) = program_zoom_bar(&mut d);
+    d.move_to(thumb[0] + 3.0, y);
+    assert_eq!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "left handle");
+    d.move_to(thumb[0] + thumb[2] - 3.0, y);
+    assert_eq!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "right handle");
+    d.move_to(thumb[0] + thumb[2] / 2.0, y);
+    assert_eq!(d.cursor(), egui::CursorIcon::Default, "middle of the thumb");
+    d.move_to(track[0] + 10.0, y);
+    assert_eq!(d.cursor(), egui::CursorIcon::Default, "the bar beside the thumb");
+}
+
+/// A handle drag goes on whatever the pointer is over, so the arrow stays while the pointer is off
+/// the bar, and goes when the button is released.
+#[test]
+fn time_zoom_bar_handle_drag_keeps_the_resize_cursor_off_the_bar() {
+    let mut d = Driver::demo();
+    let (thumb, _, y) = program_zoom_bar(&mut d);
+    let handle = thumb[0] + thumb[2] - 3.0;
+    d.press(handle, y);
+    d.move_to(handle + 40.0, y);
+    let z = d.program()["time_zoom"].clone();
+    assert!(z[1].as_f64().is_some_and(|end| end > 0.75), "the right handle dragged right zooms out: {z}");
+    assert_eq!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "dragging along the bar");
+    d.move_to(handle + 40.0, y - 300.0);
+    assert_eq!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "dragging above the bar");
+    d.release(handle + 40.0, y - 300.0);
+    assert_ne!(d.cursor(), egui::CursorIcon::ResizeHorizontal, "button released, pointer off the bar");
+}
+
+/// Dragging the thumb by its middle scrolls: with the thumb stopped at the end of the bar the
+/// pointer can sit where a handle is, and must not show the zoom arrow.
+#[test]
+fn time_zoom_bar_middle_drag_never_shows_the_resize_cursor() {
+    let mut d = Driver::demo();
+    let (thumb, track, y) = program_zoom_bar(&mut d);
+    d.press(thumb[0] + thumb[2] / 2.0, y);
+    d.move_to(thumb[0] + thumb[2] / 2.0 + 60.0, y);
+    d.move_to(track[0] + track[2] - 3.0, y);
+    let end = d.rect("program.zoomBar");
+    assert!((end[0] + end[2] - (track[0] + track[2])).abs() < 0.5, "the thumb is at the end of the bar: {end:?}");
+    assert_eq!(d.cursor(), egui::CursorIcon::Default, "pointer over the right handle's place");
+    d.release(track[0] + track[2] - 3.0, y);
+}
+
 /// While a monitor plays, its zoomed ruler pages to keep the playhead in view, keeping its width,
 /// as the Timeline follows the playhead; stopped, or with auto-scrolling off, it stays put.
 #[test]
@@ -681,6 +777,100 @@ fn snap_in_program_monitor_and_graphics_menu() {
     let shortcut = menu.as_array().unwrap().iter().find(|m| m["id"] == "graphics.bringToFront").unwrap()["shortcut"].clone();
     assert_eq!(shortcut, "Cmd+Shift+]");
     d.shot("graphics-menu");
+}
+
+#[test]
+fn snap_in_program_monitor_snaps_video_clip_motion_drags() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let c = &seq["video"][0]["items"][0];
+    let (clip, start, dur) = (c["clip"].as_u64().unwrap(), c["start"].as_i64().unwrap(), c["duration"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + dur / 2}));
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    // half size, centred 80 frame pixels left of the frame centre
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 50.0}));
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "position", "value": [880.0, 540.0]}));
+    d.frames(3);
+    d.exec("effects.select", json!({"clip": clip, "effect": "motion"}));
+    d.frames(3);
+    let pos_x = |d: &mut Driver| {
+        let app = d.harness.state();
+        let it = app.session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1;
+        let mt = it.source_time_at(app.session.playhead());
+        it.effect("motion").unwrap().param("position").unwrap().vec2_at(mt).x
+    };
+    let drag = |d: &mut Driver, frame_dx: f64, extra: f64| {
+        let pic = d.rect("program.picture");
+        let k = pic[2] / 1920.0;
+        let b = d.rect("program.transform.box");
+        // off the anchor point at the centre
+        let (x, y) = (b[0] + b[2] * 0.3, b[1] + b[3] * 0.3);
+        d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + frame_dx * k + extra, "y": y}, "steps": 8}));
+        d.frames(2);
+    };
+    // the box centre goes 80 frame pixels + 3 screen pixels towards the frame centre: it snaps onto it
+    drag(&mut d, 80.0, 3.0);
+    assert!((pos_x(&mut d) - 960.0).abs() < 0.01, "snapped to the frame centre: {}", pos_x(&mut d));
+    // snapping off: the same kind of drag lands off the centre
+    d.menu("view.snapInProgramMonitor");
+    assert_eq!(d.program()["snap"], false);
+    // back to the start, then the same drag towards the centre: it moves as far as the pointer did
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "position", "value": [880.0, 540.0]}));
+    d.frames(3);
+    let k = d.rect("program.picture")[2] / 1920.0;
+    drag(&mut d, 80.0, 3.0);
+    let free = pos_x(&mut d);
+    assert!((free - (960.0 + 3.0 / k)).abs() < 1.5 && (free - 960.0).abs() > 0.5, "free move near the centre: {free}");
+}
+
+#[test]
+fn snap_in_program_monitor_follows_the_modifier_with_the_pointer_still() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let c = &seq["video"][0]["items"][0];
+    let (clip, start, dur) = (c["clip"].as_u64().unwrap(), c["start"].as_i64().unwrap(), c["duration"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + dur / 2}));
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 50.0}));
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "position", "value": [880.0, 540.0]}));
+    d.frames(3);
+    d.exec("effects.select", json!({"clip": clip, "effect": "motion"}));
+    d.frames(3);
+    let pos_x = |d: &mut Driver| {
+        let app = d.harness.state();
+        let it = app.session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().1;
+        let mt = it.source_time_at(app.session.playhead());
+        it.effect("motion").unwrap().param("position").unwrap().vec2_at(mt).x
+    };
+    let pic = d.rect("program.picture");
+    let k = pic[2] / 1920.0;
+    let b = d.rect("program.transform.box");
+    let (x, y) = (b[0] + b[2] * 0.3, b[1] + b[3] * 0.3);
+    let at = |dx: f32| egui::pos2(x as f32 + dx, y as f32);
+    let push = |d: &mut Driver, e: egui::Event| d.harness.input_mut().events.push(e);
+    let button =
+        |pressed: bool, pos: egui::Pos2| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    push(&mut d, egui::Event::PointerMoved(at(0.0)));
+    d.frames(1);
+    push(&mut d, button(true, at(0.0)));
+    d.frames(1);
+    let end = (80.0 * k + 3.0) as f32;
+    for i in 1..=8 {
+        push(&mut d, egui::Event::PointerMoved(at(end * i as f32 / 8.0)));
+        d.frames(1);
+    }
+    assert!((pos_x(&mut d) - 960.0).abs() < 0.01, "snapped to the centre: {}", pos_x(&mut d));
+    // ⌘/Ctrl goes down with the pointer still: the position is free again
+    push(&mut d, egui::Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    d.frames(2);
+    assert!((pos_x(&mut d) - 960.0).abs() > 0.5, "free with the modifier held: {}", pos_x(&mut d));
+    // and released again: snapped
+    push(&mut d, egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    d.frames(2);
+    assert!((pos_x(&mut d) - 960.0).abs() < 0.01, "snapped again: {}", pos_x(&mut d));
+    push(&mut d, button(false, at(end)));
+    d.frames(3);
+    assert!((pos_x(&mut d) - 960.0).abs() < 0.01, "released snapped: {}", pos_x(&mut d));
 }
 
 #[test]

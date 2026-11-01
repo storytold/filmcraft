@@ -21,12 +21,24 @@ read off files it exports, never from the application itself.
 | OMF | Avid *OMF Interchange Specification* | Version 2.0 (1997) | classes (`HEAD`, `CMOB`, `MMOB`, `SMOB`, `MSLT`, `TRKD`, `SEQU`, `SCLP`, `FILL`, `TRAN`, `EFFE`, `ESLT`, `CVAL`, `VVAL`, `TCCP`, `WAVD`, `AIFD`, `WAVE`, `AIFC`, locators), property and type names |
 | OMF | Apple *Bento Specification* | revision 1.0d5 | container label, TOC encoding, objects / properties / types, references |
 | WAVE / AIFF | Microsoft RIFF WAVE; Apple AIFF 1.3 | — | embedded and separate audio files |
+| FCPXML | Apple [FCPXML Document Type Definition](https://developer.apple.com/documentation/professional-video-applications/document-type-definition) | 1.10 (2021) | standalone `video` asset references, source selection and clip timing |
 
 The other formats' editions are listed in the module docs (`edl`, `fcp7`, `fcpxml`, `otio`, `ale`).
 
 **Invariant — Unicode media URLs:** file URL prefix probes must not panic when their byte boundary
 falls inside a UTF-8 character. Timeline importers use the shared converter; `tests/it/file_urls.rs`
 checks expected Unicode paths through the public converter, resolver and EDL importer.
+
+## Absurd frame rates and start timecodes
+
+Importers accept frame rates up to 1 000 000 per second (above video rates and PCM audio sample
+rates such as 192 000 Hz, which OTIO uses as a rate). An FCP7 `timebase` is clamped to it and an OTIO rate beyond it
+uses the default, each with a warning (DSD audio at 2.8 or 5.6 MHz is beyond it, so an OTIO DSD clip is retimed at
+the default rate and reported). Also, a sequence
+or media rate beyond it (an FCPXML `frameDuration` of `1/9223372036854775807s`) is reset to the
+default with a warning: such a rate overflowed the frame arithmetic of every export. Sequence and
+media start timecodes beyond 360 000 000 000 frames are reset the same way. Covered by
+`tests/it/rates.rs` (including the warnings), `src/common.rs` (`rates`) and `tests/it/fcp7.rs` (`absurd_start_timecode_is_bounded`).
 
 ## AAF and OMF
 
@@ -44,6 +56,15 @@ passes `AudioEssence` (embedded PCM or a written file) back in `MediaOptions`.
 Not represented: speed changes and frame holds (exported at 100 % with a report entry),
 graphics and synthetic media (gaps), video effects other than transitions, clip
 markers (written to the master mob, so they come back as media markers), OMF video and markers.
+
+## FCPXML standalone video
+
+Asset-backed `video` elements import as picture-only clips, including Final Cut slideshows whose
+still-image assets have zero duration. Clip durations, source times, media paths, connected lanes,
+adjustments, markers and transitions use the existing timeline import mapping. The engine links
+available images and exposes missing paths through Link Media; saving and reopening preserves them.
+Effect-backed generators and video sources other than the default `srcID="1"` are skipped with a
+warning.
 
 ## Nested sequences
 
@@ -89,6 +110,11 @@ OMF carries no video at all.
   several uses of the next are exponential (a 3 KB FCPXML nested 12 deep made the export run for minutes and grow to
   gigabytes). After 25 000 clips written inside nested sequences the rest are gaps, with one warning; an ordinary
   project is far below that and unchanged.
+- `tests/it/fcpxml.rs`: standalone still-image clips retain timing, media paths, markers and
+  transitions; AV assets import picture only, including connected clips and adjustments;
+  unsupported references and source selections report warnings without panicking. The engine's
+  `interchange_auto_points_tests` also covers missing-image import, save/reopen, relink, undo/redo
+  and rendered pixels throughout the clip, plus automatic linking when the image exists.
 - `tests/it/aaf_omf.rs`: AAF round trips at 25, 29.97 DF, 23.976 and 59.94 DF (clips, gaps,
   two-sided and one-sided transitions, links, markers, start timecodes, constant and keyframed
   gain, media markers and timecode); 512-byte sectors; breakout to mono; embedded trimmed audio
@@ -97,6 +123,9 @@ OMF carries no video at all.
   random corruption never panic. Nested sequences: AAF round trips as compositions (nests in
   nests, a nest used twice, another frame and sample rate, breakout to mono), OMF with the
   rendered sound, the audio needs of nests, a sequence inside itself.
+- `src/fcpxml.rs` (unit tests): a `<format>` whose `frameDuration` has a zero or negative part (`100/0s`,
+  `0/100s`, `-100/2500s`) gets the default frame rate and an `invalid frameDuration` warning in the report
+  instead of a zero rate, which made the export divide by zero once the sequence had a start timecode or a marker.
 - `tests/it/uncarried_clips.rs`: every format's export report names each graphic clip and adjustment
   layer once, as a warning; a sequence without them reports nothing; what a re-import gives back
   matches the report; the FCP7 XML import names a clip item whose file is not defined.
@@ -106,5 +135,7 @@ OMF carries no video at all.
   transition rules and sequence length arithmetic; every stored form round-trips through the
   container; a file rewritten into Premiere Pro's layout (video tracks as layers of one slot,
   nested compositions tagged top-level) reads back as the same edit.
+- `src/common.rs` (`scaled_saturates`) and `tests/it/edl.rs`: a duration read from a file times an integral speed saturates
+  instead of overflowing (an EDL with a record-out timecode of 2147483647 hours and an `M2` speed change panicked).
 - `src/omf/tests.rs`: the Bento label and TOC, the required properties of every OMF class
   written, reference resolution, embedded WAVE data, sequence lengths in samples.
