@@ -1,10 +1,34 @@
 //! Small custom widgets in Premiere's visual language.
 
+pub mod color_picker;
+
 use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use filmcraft_time::{FrameRate, Tick, parse_timecode};
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
+
+#[derive(Clone, Copy)]
+pub(crate) enum MarkerPart {
+    Whole,
+    Left,
+    Right,
+}
+
+/// Point markers use the whole flag; a range places its two halves at its endpoints.
+pub(crate) fn marker_glyph(painter: &egui::Painter, rect: Rect, tip_height: f32, part: MarkerPart, color: Color32) {
+    let x = rect.center().x;
+    let y = rect.top();
+    let shoulder = rect.bottom() - tip_height;
+    let points = match part {
+        MarkerPart::Whole => {
+            vec![pos2(rect.left(), y), pos2(rect.right(), y), pos2(rect.right(), shoulder), pos2(x, rect.bottom()), pos2(rect.left(), shoulder)]
+        }
+        MarkerPart::Left => vec![pos2(rect.left(), y), pos2(x, y), pos2(x, rect.bottom()), pos2(rect.left(), shoulder)],
+        MarkerPart::Right => vec![pos2(x, y), pos2(rect.right(), y), pos2(rect.right(), shoulder), pos2(x, rect.bottom())],
+    };
+    painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+}
 
 /// Give a widget an explicit accessible name without changing its visible hint text.
 ///

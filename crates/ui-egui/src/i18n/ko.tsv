@@ -3631,3 +3631,62 @@
 	Flash Cue Point	Flash 큐 포인트
 	Invalid duration: {error}	잘못된 지속 시간: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Select items to clear	지울 항목 선택
+	Temporal Interpolation	시간 보간
+	Opens in your web browser: {url}	웹 브라우저에서 엽니다: {url}
+	A range marker needs a positive duration	범위 마커에는 양수 길이가 필요합니다
+	Add Custom Color	사용자 지정 색상 추가
+	Add and apply	추가 및 적용
+	Add color	색상 추가
+	Add custom color	사용자 지정 색상 추가
+	Add custom color…	사용자 지정 색상 추가…
+	Author	작성자
+	Chapter	챕터
+	Choose Color…	색상 선택…
+	Choose color with system picker	시스템 선택기로 색상 선택
+	Color picker	색상 선택기
+	Color selected markers	선택한 마커 색상 변경
+	Custom Color…	사용자 지정 색상…
+	Delete Marker	마커 삭제
+	Delete selected markers	선택한 마커 삭제
+	Edit Custom Color	사용자 지정 색상 편집
+	Edit Marker	마커 편집
+	Edit color	색상 편집
+	Editing or removing a swatch leaves assigned colors unchanged.	견본을 편집하거나 제거해도 지정된 색상은 변경되지 않습니다.
+	Enter six hex digits, for example FF80C0.	16진수 여섯 자리를 입력하세요. 예: FF80C0.
+	Hex	16진수
+	Hex color	16진수 색상
+	Manage Colors	색상 관리
+	Manage Colors…	색상 관리…
+	Marker owner is unavailable	마커가 속한 항목을 사용할 수 없습니다
+	No markers	마커 없음
+	No matching markers	일치하는 마커 없음
+	No saved colors	저장된 색상 없음
+	No sequence open	열린 시퀀스 없음
+	No source clip open	열린 소스 클립 없음
+	Notes	메모
+	Project Colors	프로젝트 색상
+	Range marker	범위 마커
+	Remove saved color	저장된 색상 제거
+	Save color	색상 저장
+	Search markers	마커 검색
+	Search name, notes, author	이름, 메모, 작성자 검색
+	Select all	모두 선택
+	Select all visible markers	보이는 모든 마커 선택
+	Sequence: {name}	시퀀스: {name}
+	Source: {name}	소스: {name}
+	Source: {name} (shared source markers)	소스: {name} (공유 소스 마커)
+	System color picker unavailable: {error}	시스템 색상 선택기를 사용할 수 없음: {error}
+	Time is outside the supported range	시간이 지원 범위를 벗어났습니다
+	{count} selected	{count}개 선택됨
+	Remove Custom Color	사용자 지정 색상 제거
+	Edit Markers	마커 편집
+	Delete Markers	마커 삭제
+	Marker changed or was removed. Reopen it to continue.	마커가 변경되거나 제거되었습니다. 계속하려면 다시 여세요.
+	URL	URL
+	Open Link	링크 열기
+	Opens this address in your web browser	이 주소를 웹 브라우저에서 엽니다
+	Enter a valid HTTP or HTTPS URL without credentials	인증 정보가 없는 올바른 HTTP 또는 HTTPS URL을 입력하세요
+	Previous	이전
+	Next	다음
+	Enter a valid HH:MM:SS:FF timecode	올바른 HH:MM:SS:FF 타임코드를 입력하세요
