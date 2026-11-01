@@ -3080,7 +3080,13 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         cmd!("playhead.end", "Go to Sequence End", [], Some("End"), "{}", has_seq, |s, _| {
+            // The first frame at or after the end, flush with the last clip as in Premiere Pro. The
+            // playhead sits on frames, so a sequence that ends between frames (sound that runs to
+            // the sample, a clip moved to a sub-frame time) rounds up, not down into the last clip.
             let e = s.active_sequence().map(|q| q.duration()).unwrap_or_default();
+            let rate = s.sequence_rate();
+            let f = rate.frame_at(e);
+            let e = if rate.tick_of(f) < e { rate.tick_of(f.saturating_add(1)) } else { e };
             s.set_playhead(e);
             Ok(Value::Null)
         }),
@@ -4778,7 +4784,7 @@ fn remove_transitions(s: &mut Session, ids: &[TransitionId], label: &str) -> Res
 /// `timeline.selectGap`: select the gap on `track` at `time` (clicking empty space between
 /// clips, #648, #668). It replaces the clip, transition, caption and edit point selections, as
 /// in Premiere Pro. Empty time after a track's last clip is not a gap.
-fn select_gap(s: &mut Session, p: &Value) -> Result<Value> {
+pub(crate) fn select_gap(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "timeline.selectGap";
     let track = track_p(s, p, "track", CMD)?.ok_or_else(|| bad(CMD, "need `track`"))?;
     let t = time_p(s, p, "").ok_or_else(|| bad(CMD, "need `time`, `frame` or `seconds`"))?;

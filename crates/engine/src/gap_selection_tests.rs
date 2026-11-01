@@ -205,6 +205,112 @@ fn close_gap_without_params_closes_selected_gap_in_one_undo_step() {
     assert_eq!(serde_json::to_value(&s.project).unwrap(), after);
 }
 
+fn gap_on(track: filmcraft_project::TrackId, from: Tick, to: Tick) -> Option<GapSelection> {
+    Some(GapSelection { track, range: filmcraft_time::TimeRange::from_bounds(from, to) })
+}
+
+/// D (Select Clip at Playhead) in the empty time between two clips selects the gap, so Delete
+/// closes it: the keyboard way to the light block a click gives.
+#[test]
+fn d_in_a_gap_selects_it_and_delete_closes_it() {
+    let mut s = Session::default();
+    let [(picture1, _), (picture2, sound2)] = two_clips(&mut s, [0, 96]);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let v1 = s.active_sequence().unwrap().video_tracks[0].id;
+    s.execute("timeline.select", json!({"clips": [picture1.0]})).unwrap();
+    s.set_playhead(f(60));
+    let before = s.project.clone();
+
+    let r = s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert_eq!(s.state.gap_selection, gap_on(v1, f(48), f(96)), "{r}");
+    assert!(s.state.selection.is_empty(), "the gap replaces the clip selection");
+    assert_eq!(r["gap"], json!({"track": v1.0, "start": f(48).0, "end": f(96).0}));
+
+    s.execute("edit.clear", json!({})).unwrap();
+    assert_eq!(range(&s, picture2), (f(48), f(96)), "Delete closes the gap");
+    assert_eq!(range(&s, sound2), (f(48), f(96)), "and the sound follows");
+    assert_eq!(range(&s, picture1).0, Tick::ZERO);
+    assert_eq!(s.undo().as_deref(), Some("Ripple Delete"), "one undo step");
+    assert_eq!(*s.project, *before);
+}
+
+/// Down parks the playhead on the cut at the end of a clip, which is the gap's first frame: D
+/// selects the gap there. On the next clip's first frame D selects that clip and drops the gap.
+#[test]
+fn d_on_the_cut_before_a_gap_selects_it_and_on_a_clip_drops_it() {
+    let mut s = Session::default();
+    let [(picture1, _), (picture2, sound2)] = two_clips(&mut s, [0, 96]);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let v1 = s.active_sequence().unwrap().video_tracks[0].id;
+    s.set_playhead(Tick::ZERO);
+    s.execute("playhead.nextEdit", json!({})).unwrap();
+    assert_eq!(s.playhead(), range(&s, picture1).1);
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert_eq!(s.state.gap_selection, gap_on(v1, f(48), f(96)));
+
+    s.set_playhead(f(96));
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert!(s.state.selection.contains(&picture2) && s.state.selection.contains(&sound2), "the clip and its sound");
+    assert!(s.state.gap_selection.is_none(), "a clip selection replaces the gap");
+    s.execute("edit.clear", json!({})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(picture2).is_none(), "Delete removes the clip, not the old gap");
+    assert_eq!(range(&s, picture1).0, Tick::ZERO);
+}
+
+/// A one-frame gap is a gap too.
+#[test]
+fn d_selects_a_one_frame_gap() {
+    let mut s = Session::default();
+    let [_, (picture2, _)] = two_clips(&mut s, [0, 49]);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let v1 = s.active_sequence().unwrap().video_tracks[0].id;
+    s.set_playhead(f(48));
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert_eq!(s.state.gap_selection, gap_on(v1, f(48), f(49)));
+    s.execute("edit.clear", json!({})).unwrap();
+    assert_eq!(range(&s, picture2).0, f(48));
+}
+
+/// Empty time after the last clip is not a gap, and a locked track's gap is not selectable: D
+/// selects nothing and Delete moves nothing.
+#[test]
+fn d_after_the_last_clip_or_on_locked_tracks_selects_nothing() {
+    let mut s = Session::default();
+    let [_, (picture2, _)] = two_clips(&mut s, [0, 96]);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    s.set_playhead(f(400));
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert!(s.state.gap_selection.is_none() && s.state.selection.is_empty());
+
+    s.execute("timeline.setTrack", json!({"track": "V1", "locked": true})).unwrap();
+    s.execute("timeline.setTrack", json!({"track": "A1", "locked": true})).unwrap();
+    s.set_playhead(f(60));
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert!(s.state.gap_selection.is_none() && s.state.selection.is_empty());
+    assert!(s.execute("edit.clear", json!({})).is_err());
+    assert_eq!(range(&s, picture2).0, f(96));
+}
+
+/// D works on the targeted tracks, as for clips: with only A1 targeted it picks A1's gap.
+#[test]
+fn d_selects_the_gap_on_a_targeted_track() {
+    let mut s = Session::default();
+    let [_, (picture2, sound2)] = two_clips(&mut s, [0, 96]);
+    let rate = s.sequence_rate();
+    let f = |n: i64| rate.tick_of(n);
+    let a1 = s.active_sequence().unwrap().audio_tracks[0].id;
+    s.execute("timeline.setTargeting", json!({"track": "V1", "targeted": false})).unwrap();
+    s.set_playhead(f(60));
+    s.execute("timeline.selectClipAtPlayhead", json!({})).unwrap();
+    assert_eq!(s.state.gap_selection, gap_on(a1, f(48), f(96)));
+    s.execute("edit.clear", json!({})).unwrap();
+    assert_eq!((range(&s, picture2).0, range(&s, sound2).0), (f(48), f(48)), "the picture follows its sound");
+}
+
 #[test]
 fn close_gap_rejects_invalid_context_and_explicit_parameters_without_editing() {
     let mut s = Session::default();

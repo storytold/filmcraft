@@ -27,7 +27,7 @@ Premiere has these as keys only (most are not in a menu). Modules: `filmcraft_en
 | Group | Commands | Keys |
 |---|---|---|
 | Navigation | Go to Next/Previous Edit Point (targeted tracks), …on Any Track, Go to Selected Clip Start/End, Reveal Nested Sequence | Down/Up, Shift+Down/Up, Shift+Home/End, Cmd+Alt+F |
-| Selection | Select Clip at Playhead, Select Next/Previous Clip, Select Find Box, Open Search | D, Cmd+Down/Up, Shift+F, Cmd+Shift+F |
+| Selection | Select Clip at Playhead (in the empty time between two clips it selects the gap, for Delete to close it), Select Next/Previous Clip, Select Find Box, Open Search | D, Cmd+Down/Up, Shift+F, Cmd+Shift+F |
 | Trimming | Extend Previous/Next Edit To Playhead; Nudge Clip Selection Left/Right One/Five Frames, Up/Down; Slip and Slide Clip Selection Left/Right One/Five Frames | Shift+Q/W; Cmd+(Shift+)Left/Right, Alt+Up/Down; Cmd+Alt+(Shift+)Left/Right; Alt+(Shift+), / . (Timeline) |
 | Targeting | Toggle All Video/Audio Targets, Toggle All Source Video/Audio; Toggle Target Video/Audio 1–8, Move All Video/Audio Targets Up/Down, Toggle Mute/Solo for targeted audio, Toggle Track Output for targeted video (unbound, as in Premiere) | Cmd+0/9, Cmd+Alt+0/9 |
 | Tracks | Expand/Minimize All Tracks (again restores), Increase/Decrease Video/Audio Tracks Height, Show Next/Previous Screen | Shift+= / Shift+-, Cmd+= / Cmd+- / Alt+= / Alt+-, PageDown/PageUp (Timeline) |
