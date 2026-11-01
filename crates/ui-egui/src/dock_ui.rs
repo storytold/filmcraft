@@ -272,7 +272,7 @@ impl FilmcraftApp {
         self.handle_forwarded_keys(&ctx, output.forwarded_events);
         self.window_files = output.window_files;
         if let Some(error) = output.error {
-            self.ui.status = error.to_string();
+            self.ui.fail(error.to_string());
         }
         for event in output.events {
             if let DockEvent::ToggleMaximize { panel } = event {
@@ -282,7 +282,7 @@ impl FilmcraftApp {
         for action in output.actions {
             for action in self.close_keeping_timeline(action) {
                 if let Err(error) = self.dock_command(&ctx, action) {
-                    self.ui.status = error;
+                    self.ui.fail(error);
                 }
             }
         }
@@ -314,7 +314,7 @@ impl FilmcraftApp {
                 }
             };
             if let Err(error) = result {
-                self.ui.status = error.to_string();
+                self.ui.fail(error.to_string());
             }
         }
         if let Some((panel, pos, viewport)) = menu {
@@ -352,7 +352,7 @@ impl FilmcraftApp {
             _ => return vec![action],
         };
         if let Err(error) = self.session.execute("sequence.close", json!({})) {
-            self.ui.status = error.to_string();
+            self.ui.fail(error.to_string());
         }
         closed.into_iter().filter(|panel| *panel != PanelKind::Timeline).map(|panel| Action::Close { panel }).collect()
     }
@@ -538,7 +538,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
             app.auto.add_response("panel.tabMenu.Timeline.closeOthers", &response, "Close Other Timeline Panels");
             if response.clicked() {
                 if let Err(error) = app.session.execute("sequence.closeOthers", json!({})) {
-                    app.ui.status = error.to_string();
+                    app.ui.fail(error.to_string());
                 }
                 close = true;
             }

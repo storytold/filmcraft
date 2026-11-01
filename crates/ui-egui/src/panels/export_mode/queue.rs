@@ -101,6 +101,6 @@ pub(super) fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect
     if let Some((cmd, p)) = action
         && let Err(e) = app.session.execute(cmd, p)
     {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }

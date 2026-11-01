@@ -72,7 +72,7 @@ pub fn run(app: &mut FilmcraftApp, cmd: &str, name: &str) {
             app.pick_ui(FileDialog::save_as(tl!("Effect presets"), &["json"], &format!("{name}.json")), move |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return };
                 if let Err(e) = app.session.execute("presets.export", json!({"path": path, "names": [name]})) {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                 }
             });
             return;
@@ -81,7 +81,7 @@ pub fn run(app: &mut FilmcraftApp, cmd: &str, name: &str) {
             app.pick_ui(FileDialog::open_file(tl!("Effect presets"), &["json"]), |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return };
                 if let Err(e) = app.session.execute("presets.import", json!({"path": path})) {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                 }
             });
             return;
@@ -89,7 +89,7 @@ pub fn run(app: &mut FilmcraftApp, cmd: &str, name: &str) {
         _ => return,
     };
     if let Err(e) = r {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 
@@ -148,7 +148,7 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
         );
         match r {
             Ok(_) => app.ui.status = tlf!("Saved preset “{name}”", name = d.name.trim()),
-            Err(e) => app.ui.status = e.to_string(),
+            Err(e) => app.ui.fail(e.to_string()),
         }
     }
 }

@@ -821,7 +821,7 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         // a multi-selection makes the sequence from its first item and follows it, back to back, in one undo step
         let items: Vec<u64> = crate::panels::dragged_selection(app, item).iter().map(|i| i.0).collect();
         if let Err(e) = app.session.execute("file.newSequence", json!({"fromItems": items})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
     // OS files dropped on an empty Timeline: import already happened; create a sequence from the first item
@@ -832,13 +832,13 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     {
         app.pending_timeline_drop = None;
         if let Err(e) = app.session.execute("file.newSequence", json!({"fromItem": first.0})) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         } else {
             let mut t = app.session.project.item(*first).map(|i| i.duration()).unwrap_or(Tick::ZERO);
             for item in rest {
                 let params = json!({"item": item.0, "time": t.0, "insert": false});
                 if let Err(e) = app.session.execute("timeline.place", params) {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                 } else {
                     t = Tick(t.0.saturating_add(app.session.project.item(*item).map(|i| i.duration().0.max(0)).unwrap_or(0)));
                 }

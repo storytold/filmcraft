@@ -112,7 +112,7 @@ fn start(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: boo
             }
             None => run_now(app, cmd, params, play),
         },
-        Err(e) => app.ui.status = e.to_string(),
+        Err(e) => app.ui.fail(e.to_string()),
     }
 }
 
@@ -121,7 +121,7 @@ fn run_now(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: b
         Ok(r) => {
             if play {
                 if let Err(e) = app.play_tts_preview() {
-                    app.ui.status = e;
+                    app.ui.fail(e);
                 }
             } else {
                 app.ui.status = match cmd {
@@ -130,7 +130,7 @@ fn run_now(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: b
                 };
             }
         }
-        Err(e) => app.ui.status = e.to_string(),
+        Err(e) => app.ui.fail(e.to_string()),
     }
 }
 
@@ -419,7 +419,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.ui.tts.confirm_download = false;
                 match app.session.execute("tts.downloadVoices", json!({})) {
                     Ok(r) => app.ui.tts.download_job = r["job"].as_u64(),
-                    Err(e) => app.ui.status = e.to_string(),
+                    Err(e) => app.ui.fail(e.to_string()),
                 }
             }
             Action::CancelDownload => {

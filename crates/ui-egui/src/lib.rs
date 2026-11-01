@@ -302,7 +302,7 @@ pub struct FilmcraftApp {
     /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
-    status_seen: (String, f64),
+    status_seen: (String, u64, f64),
     /// Admitted `ui.screenshot` requests and their completion slots.
     pub(crate) shots: capture::Shots,
     /// Fresh raw-input surface geometry, refreshed in `raw_input_hook` for UI and logic callbacks.

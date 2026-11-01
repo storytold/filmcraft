@@ -70,7 +70,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if response.clicked()
                 && let Err(e) = app.session.execute("markers.filterColors", json!({"color":color.name(),"visible":!on}))
             {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
     });
@@ -82,7 +82,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if response.clicked()
                 && let Err(e) = app.session.execute("markers.filterColors", json!({"color":color,"visible":!on}))
             {
-                app.ui.status = e.to_string();
+                app.ui.fail(e.to_string());
             }
         }
     });
@@ -187,7 +187,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 if state.source {
                     if let Err(e) = app.session.execute("source.setPlayhead", json!({"time":m.start.0})) {
-                        app.ui.status = e.to_string();
+                        app.ui.fail(e.to_string());
                     }
                 } else {
                     app.session.set_playhead(m.start);
@@ -209,7 +209,7 @@ fn bulk(app: &mut FilmcraftApp, owner: Owner, ids: &std::collections::BTreeSet<u
         p["color"] = json!(color);
     }
     if let Err(e) = app.session.execute(command, p) {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
 }
 fn filter(ui: &mut egui::Ui, rgb: [u8; 3], on: bool) -> egui::Response {

@@ -129,11 +129,11 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     meta(id)?;
     if id == "clip.rename" && rename_target(app).is_none() {
         let e = tl!("Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename").to_string();
-        app.ui.status = e.clone();
+        app.ui.fail(e.clone());
         return Some(Err(e));
     }
     if let Err(e) = filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session)) {
-        app.ui.status = e.clone();
+        app.ui.fail(e.clone());
         return Some(Err(e));
     }
     let (params, info) = defaults(app, id);
@@ -698,7 +698,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         Some("save") => {
             if app.session.path.is_some() {
                 if let Err(e) = app.session.execute("file.save", json!({})) {
-                    app.ui.status = e.to_string();
+                    app.ui.fail(e.to_string());
                     app.ui.clip_dialog = None;
                     return;
                 }
@@ -734,7 +734,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     Ok(_) => app.ui.clip_dialog = Some(prompt),
                     // the save failed: the prompt stays, with the reason in the status bar
                     Err(e) => {
-                        app.ui.status = e.clone();
+                        app.ui.fail(e.clone());
                         app.ui.clip_dialog = Some(prompt);
                     }
                 }
@@ -742,7 +742,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             });
             // no dialog shown (another one is open): the prompt stays, with the reason
             if let Err(e) = r {
-                app.ui.status = e;
+                app.ui.fail(e);
                 app.ui.clip_dialog = Some(d);
             }
             return;
@@ -759,7 +759,7 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, command: &str) {
     // snapshot, so the next launch doesn't offer them back
     let close = command != "app.quit" || app.session.is_dirty();
     if close && let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     if command == "app.quit" {
         app.quit_confirmed = true;

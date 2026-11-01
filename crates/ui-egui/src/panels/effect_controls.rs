@@ -159,7 +159,7 @@ fn drop_effect(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, clips: &[(
         }
     }
     if let Err(e) = result {
-        app.ui.status = e.to_string();
+        app.ui.fail(e.to_string());
     }
     crate::panels::clear_drag(ui);
 }
@@ -883,7 +883,7 @@ fn param_value_widget(
                             s.execute("effects.setParam", p)
                         });
                         if let Err(err) = r {
-                            app.ui.status = err.to_string();
+                            app.ui.fail(err.to_string());
                         }
                     });
                 }
@@ -1240,7 +1240,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     run(app, ui.ctx(), actions);
     // the footer button reads out the clip's speed and opens Clip ▸ Speed/Duration…, as in Premiere
     if open_speed && let Err(e) = crate::menus::invoke(app, ui.ctx(), "clip.speedDuration", json!({})) {
-        app.ui.status = e;
+        app.ui.fail(e);
     }
 }
 
@@ -1274,7 +1274,7 @@ pub(crate) fn run(app: &mut FilmcraftApp, ctx: &egui::Context, actions: Vec<(Str
             wrote = true;
         }
         if let Err(e) = app.session.execute(&cmd, p) {
-            app.ui.status = e.to_string();
+            app.ui.fail(e.to_string());
         }
     }
     if down && (wrote || begun.is_some()) {
