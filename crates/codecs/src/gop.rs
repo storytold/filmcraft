@@ -610,6 +610,14 @@ impl GopCache {
         self
     }
 
+    /// The sample table the cache is used with was replaced: its sample indices now name other
+    /// samples, so the running decoder's position means nothing. The next request that has to
+    /// decode restarts at a sync sample. Decoded frames stay (they are keyed by pts, which the
+    /// new table shares), as does the decoder itself.
+    pub fn forget_position(&self) {
+        self.shared.state.lock().unwrap_or_else(PoisonError::into_inner).next = usize::MAX;
+    }
+
     /// Colour signalled by the container wins over the bitstream's (YUV frames only); the
     /// container's clean aperture and then its display rotation are applied.
     fn finish(&self, mut f: VideoFrame) -> VideoFrame {
