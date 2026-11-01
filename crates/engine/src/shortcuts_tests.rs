@@ -390,3 +390,13 @@ fn default_keymaps_have_no_conflicts_on_any_platform() {
         assert!(mac.iter().any(|b| b.command == cmd && b.keys == keys), "{cmd} {keys} on macOS");
     }
 }
+
+#[test]
+fn auto_keyframe_commands_are_in_shortcuts_list() {
+    // #2149: effects.toggleAnimation and effects.addKeyframe must appear in the
+    // keyboard shortcut editor so users can bind them to keys.
+    let s = crate::Session::default();
+    let cmds = s.shortcuts.commands();
+    assert!(cmds.iter().any(|c| c.id == "effects.toggleAnimation"), "effects.toggleAnimation must be bindable (all params optional)");
+    assert!(cmds.iter().any(|c| c.id == "effects.addKeyframe"), "effects.addKeyframe must be bindable (all params optional)");
+}
