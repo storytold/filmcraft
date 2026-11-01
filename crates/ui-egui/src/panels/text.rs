@@ -61,6 +61,19 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         "Transcript" => transcript(app, ui, body),
         _ => graphics(app, ui, body),
     }
+
+    /// The font search helper matches by case-insensitive substring.
+    #[test]
+    fn font_search_filters_list_by_substring() {
+        // given a font list ["Arial", "Arimo", "Roboto"]
+        // filter query "ari" -> ["Arial", "Arimo"]
+        // filter query "rob" -> ["Roboto"]
+        let fonts = ["Arial", "Arimo", "Roboto"];
+        let matched: Vec<&str> = fonts.iter().copied().filter(|f| font_name_matches(f, "ari")).collect();
+        assert_eq!(matched, vec!["Arial", "Arimo"]);
+        let matched: Vec<&str> = fonts.iter().copied().filter(|f| font_name_matches(f, "rob")).collect();
+        assert_eq!(matched, vec!["Roboto"]);
+    }
 }
 
 fn tool_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, icon: Icon, id: &str, label: &str, enabled: bool) -> bool {
@@ -686,6 +699,12 @@ fn filmcraft_speech_available(app: &FilmcraftApp) -> bool {
     app.session.transcriber.is_some() || filmcraft_engine::transcript::speech_available()
 }
 
+/// Returns `true` when `name` matches the font search `query` (case-insensitive substring).
+/// An empty `query` matches everything.
+fn font_name_matches(name: &str, query: &str) -> bool {
+    query.is_empty() || name.to_lowercase().contains(query)
+}
+
 /// The track style controls in `r`, wrapping onto more rows when they don't fit; returns the
 /// height they took.
 fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: usize, actions: &mut Vec<(String, Value)>) -> f32 {
@@ -698,8 +717,17 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             if !filmcraft_text::fonts::system_scanned() {
                 filmcraft_text::fonts::scan_system();
             }
+            // Font search filter (#1997): persist filter string via egui temp storage.
+            let filter_id = egui::Id::unique(("caption-font-filter", tr.id.0));
+            let mut filter = ui.data(|d| d.get_temp::<String>(filter_id).unwrap_or_default());
+            let filter_resp = ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tl!("Search fonts…")).desired_width(f32::INFINITY));
+            app.auto.add("text.captions.style.font.search", filter_resp.rect, "Search fonts");
+            if filter_resp.changed() {
+                ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+            }
+            let low = filter.to_lowercase();
             // names starting with '.' are macOS-private system faces (UI/fallback fonts, some without a space glyph)
-            for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.')) {
+            for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.') && font_name_matches(f, &low)) {
                 let resp = ui.selectable_label(f.eq_ignore_ascii_case(&st.font), &f);
                 // An edge row may be only partly visible; automation must click its visible portion.
                 let visible = resp.rect.intersect(ui.clip_rect());
@@ -707,6 +735,7 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
                     app.auto.add(&format!("text.captions.style.font.option.{f}"), visible, &f);
                 }
                 if resp.clicked() {
+                    ui.data_mut(|d| d.remove::<String>(filter_id));
                     actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "font": f})));
                 }
             }
