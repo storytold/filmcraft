@@ -123,6 +123,7 @@ impl FilmcraftApp {
             applied_prefs: None,
             applied_ui_scale: None,
             workspace_restored: false,
+            engine_call: false,
             workspaces,
             menu_workspaces: Default::default(),
         }
