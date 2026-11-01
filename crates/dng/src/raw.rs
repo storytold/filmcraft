@@ -209,7 +209,9 @@ fn decode_chunk(c: &Chunk, l: &RawLayout, big_endian: bool) -> Result<Vec<u16>> 
         _ => {
             // the JPEG's samples fill the chunk in raster order (its own width × components may
             // differ from the chunk's, e.g. two components of half the width)
-            let d = ljpeg::decode(c.bytes, need)?;
+            // slack for a JPEG coded larger than its chunk (e.g. a last strip at full RowsPerStrip);
+            // the samples past `need` are dropped below
+            let d = ljpeg::decode(c.bytes, need.saturating_add(65_536 * 4))?;
             if d.samples.len() < need {
                 return Err(Error::Malformed("lossless JPEG smaller than its tile or strip"));
             }
