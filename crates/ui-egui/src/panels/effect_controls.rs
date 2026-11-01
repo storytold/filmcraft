@@ -1318,7 +1318,8 @@ fn graph_components(v: &ParamValue) -> Vec<f64> {
 
 /// Value and velocity graphs of an animated scalar or point parameter, drawn across the keyframe
 /// lane. A point draws an X and a Y curve, and its velocity graph is the speed along its path.
-/// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
+/// Keyframes drag vertically (value); Bezier influence handles drag horizontally. A double-click
+/// on the value graph adds a keyframe at the pointer. The velocity graph stays hover-only.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn graph_rows(
     app: &mut FilmcraftApp,
@@ -1372,6 +1373,37 @@ pub(crate) fn graph_rows(
     ui.data_mut(|d| d.insert_temp(range_id, (lo, hi, frame)));
     let area = Rect::from_min_max(pos2(lane.min.x, vr.min.y + 4.0), pos2(lane.max.x, vr.max.y - 4.0));
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
+    let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
+    // The plot used to be hover-only, so a double-click never reached the lane (#1277).
+    let plot = ui.interact(area, egui::Id::new(("kfg-plot", clip.0, idx, mask, pd.id)), Sense::click());
+    if plot.double_clicked()
+        && let Some(pos) = plot.interact_pointer_pos()
+    {
+        let f = ((pos.x - lane.min.x) / lane.width().max(1.0)).clamp(0.0, 1.0) as f64;
+        // `to_media` already applied speed, so the timeline time is the clip fraction of `dur`.
+        let timeline = it.start.0.saturating_add((f * dur) as i64);
+        let sampled = graph_components(&param.value_at(to_media(f)));
+        let mut body = json!({"clip": clip.0, "effect": idx, "param": pd.id, "time": timeline});
+        if sampled.len() <= 1 {
+            body["value"] = json!(v_of(pos.y));
+        } else if sampled.iter().all(|v| v.is_finite()) {
+            // A point is one keyframe. The curve nearer the pointer takes the pointer's value;
+            // the other coordinate keeps the value sampled at that time.
+            let mut moved = sampled;
+            let nearest = moved
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| (y_of(**a) - pos.y).abs().partial_cmp(&(y_of(**b) - pos.y).abs()).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i);
+            if let Some(ci) = nearest
+                && let Some(slot) = moved.get_mut(ci)
+            {
+                *slot = v_of(pos.y);
+            }
+            body["value"] = json!(moved);
+        }
+        actions.push(("effects.addKeyframe".into(), with_mask(body)));
+    }
     let p = ui.painter();
     p.rect_filled(area, 0.0, t.keyframe_plot_bg);
     for g in 1..4 {

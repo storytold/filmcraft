@@ -4139,6 +4139,11 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                 let added = !prm.remove_keyframe_at(mt_now);
                 if added {
                     prm.add_keyframe(mt_now);
+                    if let Some(v) = p.get("value")
+                        && let Some(k) = prm.keyframes.iter_mut().find(|k| k.time == mt_now)
+                    {
+                        k.value = json_to_param(&k.value, v).ok_or_else(|| bad("keyframe", "value has the wrong type"))?;
+                    }
                 }
                 reply = json!({"added": added, "mediaTime": mt_now.0});
             }
