@@ -226,7 +226,10 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         created.store(true, Ordering::Relaxed);
         let os_events = os_events.map(|connect| {
             let (launch_files, poll) = connect(&cc.egui_ctx);
-            files.extend(launch_files);
+            // control-only sessions take no files from outside (see `logic_os_events`)
+            if !control_input_only {
+                files.extend(launch_files);
+            }
             poll
         });
         // Start the control server before anything touches recovery state: `file.recover`

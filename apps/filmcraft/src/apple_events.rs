@@ -13,7 +13,6 @@
 
 use filmcraft_ui_egui::{OsEvent, OsEventsFn};
 use fmv_macos_events::{Event, Inbox, Registration};
-use std::path::PathBuf;
 
 /// Keeps the Apple-event handlers registered; hold it until the event loop returns.
 pub struct AppleEvents {
@@ -46,7 +45,7 @@ fn connect(inbox: Inbox, ctx: &egui::Context) -> (Vec<String>, OsEventsFn) {
     let mut early = Vec::new();
     for event in inbox.drain() {
         match event {
-            Event::Open(paths) => launch_files.extend(paths.into_iter().map(path_string)),
+            Event::Open(paths) => launch_files.extend(crate::args::os_files(paths)),
             Event::Quit => early.push(OsEvent::Quit),
         }
     }
@@ -54,8 +53,7 @@ fn connect(inbox: Inbox, ctx: &egui::Context) -> (Vec<String>, OsEventsFn) {
         let mut events = std::mem::take(&mut early);
         events.extend(inbox.drain().into_iter().map(|event| match event {
             Event::Open(paths) => {
-                let files: Vec<String> = paths.into_iter().map(path_string).collect();
-                let (project, media) = crate::args::project_and_media(&files);
+                let (project, media) = crate::args::project_and_media(&crate::args::os_files(paths));
                 OsEvent::Open { project, media }
             }
             Event::Quit => OsEvent::Quit,
@@ -63,8 +61,4 @@ fn connect(inbox: Inbox, ctx: &egui::Context) -> (Vec<String>, OsEventsFn) {
         events
     });
     (launch_files, poll)
-}
-
-fn path_string(path: PathBuf) -> String {
-    path.to_string_lossy().into_owned()
 }

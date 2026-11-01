@@ -692,7 +692,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         }
         Some("dontSave") => {
-            leave(app, ctx, &d.command);
+            leave(app, ctx, &d);
             return;
         }
         Some("save") => {
@@ -702,7 +702,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     app.ui.clip_dialog = None;
                     return;
                 }
-                leave(app, ctx, &d.command);
+                leave(app, ctx, &d);
                 return;
             }
             // A new project: Save As, then go on once it is saved. The host's dialog may answer
@@ -730,7 +730,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 };
                 let r = app.session.execute("file.saveAs", json!({"path": path})).map_err(|e| e.to_string());
                 match &r {
-                    Ok(_) if !app.session.is_dirty() => leave(app, &ctx2, &prompt.command),
+                    Ok(_) if !app.session.is_dirty() => leave(app, &ctx2, &prompt),
                     Ok(_) => app.ui.clip_dialog = Some(prompt),
                     // the save failed: the prompt stays, with the reason in the status bar
                     Err(e) => {
@@ -753,8 +753,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 }
 
 /// Go on after the unsaved-changes prompt (Don't Save, or Save once it saved): close the project,
-/// and for Quit close the window.
-fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, command: &str) {
+/// then for Quit close the window, and open the files the OS asked for while the project had
+/// unsaved changes (`params.open`, a Finder double-click).
+fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) {
+    let command = prompt.command.as_str();
     // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
     // snapshot, so the next launch doesn't offer them back
     let close = command != "app.quit" || app.session.is_dirty();
@@ -766,6 +768,11 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, command: &str) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
     app.ui.clip_dialog = None;
+    if let Some(open) = prompt.params.get("open") {
+        let project = open["project"].as_str().map(str::to_string);
+        let media = open["media"].as_array().map(|m| m.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+        app.open_files(ctx, project, media);
+    }
 }
 
 /// The parameters sent on OK (dialog-only fields dropped or converted).

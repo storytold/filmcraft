@@ -141,6 +141,14 @@ pub fn project_and_media(files: &[String]) -> (Option<String>, Vec<String>) {
     (project, media)
 }
 
+/// Paths the OS hands over outside the command line (macOS Apple events: a Finder double-click,
+/// Open With, a drop on the Dock icon), as launch files for [`project_and_media`]. A path that is
+/// not Unicode is passed on lossily, as a command-line file is (opening it then reports it missing).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn os_files(paths: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
+    paths.into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
+}
+
 /// A `--graphics` value: one of this platform's modes.
 fn graphics_mode(name: &str) -> Result<crate::graphics::Mode, String> {
     use crate::graphics::{LADDER, Mode};
@@ -293,6 +301,25 @@ mod tests {
         assert_eq!(project_and_media(&[]), (None, vec![]));
         // nothing to resolve against: kept as given rather than dropped
         assert_eq!(absolute(""), "");
+    }
+
+    /// Finder's open-documents event lists absolute paths in any order: the first project is
+    /// opened and the files that are not projects are imported, as on the command line.
+    #[test]
+    fn files_from_the_os_split_like_launch_files() {
+        let root = std::env::current_dir().unwrap();
+        let (movie, cut, older, sound) = (root.join("Harbour 4K.mov"), root.join("Edits").join("Cut.FCPROJ"), root.join("Older.fcproj"), root.join("Gåsö.wav"));
+        let (project, media) = project_and_media(&os_files([movie.clone(), cut.clone(), older, sound.clone()]));
+        assert_eq!(project, Some(cut.to_string_lossy().into_owned()));
+        assert_eq!(media, [movie.to_string_lossy().into_owned(), sound.to_string_lossy().into_owned()]);
+        assert!(os_files([]).is_empty());
+        // not Unicode (a Latin-1 name): passed on lossily, like a command-line file
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let latin1 = PathBuf::from(std::ffi::OsStr::from_bytes(b"/clips/caf\xe9.mov"));
+            assert_eq!(os_files([latin1]), ["/clips/caf\u{fffd}.mov"]);
+        }
     }
 
     #[test]
