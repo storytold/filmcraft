@@ -66,29 +66,37 @@ fn capped_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
     rayon::ThreadPoolBuilder::new().num_threads(cap).thread_name(|i| format!("filmcraft-export-{i}")).build().ok()
 }
 
-/// Run `f`, a background job's exports, on a pool of its own: `max_threads` threads (0 = one per
-/// core). From a plain thread an export renders on the global pool, where the monitors render
-/// their frames: those then queue behind the export's work for as long as it runs. Each thread
-/// runs the hook of [`crate::register_background_thread_start`] as it starts (the platform layer
-/// lowers its priority). Runs `f` where it is called in the browser, or when no pool can be made.
+/// Run `f`, a background job's exports, on the background pool: one thread per core, shared by
+/// every background job, so two at once (an export and Render Previews) split the cores instead
+/// of each taking them all. A job capped below the cores (`max_threads`, 0 = no cap) gets a pool
+/// of that many threads of its own. From a plain thread an export renders on the global pool,
+/// where the monitors render their frames: those then queue behind the export's work for as long
+/// as it runs. Each thread runs the hook of [`crate::register_background_thread_start`] as it
+/// starts (the platform layer lowers its priority). Runs `f` where it is called in the browser,
+/// or when no pool can be made.
 pub fn on_own_threads<T: Send>(max_threads: u32, f: impl FnOnce() -> T + Send) -> T {
-    match own_pool(max_threads) {
+    static SHARED: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let own;
+    let pool = match usize::try_from(max_threads) {
+        Ok(cap) if cap > 0 && cap < cores => {
+            own = background_pool(cap);
+            own.as_ref()
+        }
+        _ => SHARED.get_or_init(|| background_pool(cores)).as_ref(),
+    };
+    match pool {
         Some(pool) => pool.install(f),
         None => f(),
     }
 }
 
-fn own_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
+fn background_pool(threads: usize) -> Option<rayon::ThreadPool> {
     if cfg!(target_arch = "wasm32") {
         return None;
     }
-    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    let n = match usize::try_from(max_threads) {
-        Ok(0) | Err(_) => cores,
-        Ok(cap) => cap.min(cores),
-    };
     rayon::ThreadPoolBuilder::new()
-        .num_threads(n)
+        .num_threads(threads)
         .thread_name(|i| format!("filmcraft-export-{i}"))
         .start_handler(|_| super::registry::background_thread_start())
         .build()

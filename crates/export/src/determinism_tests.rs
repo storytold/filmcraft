@@ -385,14 +385,34 @@ fn own_threads_are_a_pool_of_their_own() {
     assert_eq!(on_own_threads(u32::MAX, rayon::current_num_threads), cores, "never more threads than cores");
 }
 
+/// Two background jobs at once (an export and Render Previews) split the cores: each made a pool of
+/// one thread per core, so together they ran twice as many threads as there are cores.
+#[test]
+fn background_jobs_share_one_pool() {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    // a pool per job would run every job on a thread never seen before
+    let threads: std::collections::HashSet<_> = (0..=cores).map(|_| on_own_threads(0, || std::thread::current().id())).collect();
+    assert!(threads.len() <= cores, "{} threads for {} jobs on {cores} cores", threads.len(), cores + 1);
+    let together = std::thread::scope(|s| {
+        let jobs: Vec<_> = (0..2).map(|_| s.spawn(|| on_own_threads(0, rayon::current_num_threads))).collect();
+        jobs.into_iter().filter_map(|j| j.join().ok()).collect::<Vec<_>>()
+    });
+    assert_eq!(together, vec![cores, cores], "both jobs on the same pool of one thread per core");
+}
+
 #[test]
 fn own_threads_run_the_background_hook_as_they_start() {
     static STARTED: std::sync::Mutex<Vec<std::thread::ThreadId>> = std::sync::Mutex::new(Vec::new());
     fn note() {
         STARTED.lock().unwrap().push(std::thread::current().id());
     }
+    // a capped job makes its pool now, after the hook is in; the shared pool may have been made by
+    // another test before it
+    if std::thread::available_parallelism().map_or(1, |n| n.get()) < 2 {
+        return;
+    }
     crate::register_background_thread_start(note);
-    let workers: std::collections::HashSet<_> = on_own_threads(2, || (0..64).into_par_iter().map(|_| std::thread::current().id()).collect());
+    let workers: std::collections::HashSet<_> = on_own_threads(1, || (0..64).into_par_iter().map(|_| std::thread::current().id()).collect());
     let started = STARTED.lock().unwrap();
     assert!(!workers.is_empty() && workers.iter().all(|w| started.contains(w)), "every thread of the pool ran the hook");
     assert!(!started.contains(&std::thread::current().id()), "the calling thread keeps its priority");

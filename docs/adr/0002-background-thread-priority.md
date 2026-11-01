@@ -18,7 +18,7 @@ default class with the lowest relative priority gives playback the same frames a
 export about 1 % (377, 380 s).
 
 Two things the monitors shared with background jobs are fixed without any `unsafe`: the rendering
-threads (background jobs run on a pool of their own, `filmcraft_export::on_own_threads`) and the
+threads (background jobs run on a pool the monitors don't use, `filmcraft_export::on_own_threads`) and the
 decoders (a job reads its own copy of each file, `MediaPool::own_source`; that was why playing a
 clip while it exported dropped 93 % of the frames). Telling the system which threads can wait is
 an OS call (on macOS `pthread_set_qos_class_self_np`), which needs `unsafe` Rust. ADR 0001 allows

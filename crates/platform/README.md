@@ -282,7 +282,7 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
 
 `register()` installs a call to `thread_priority::lower_current_thread` (a refusal is logged) as
 the export crate's background-thread hook (`filmcraft_export::register_background_thread_start`).
-Each thread of an export's, the export queue's, Render Previews' or a proxy job's pool
+Each thread of the pool that exports, the export queue, Render Previews and proxy jobs render on
 (`filmcraft_export::on_own_threads`) runs it as it starts and drops below the monitors' frame
 workers and the main thread, so they get the cores first while the machine is busy
 ([ADR 0002](../../docs/adr/0002-background-thread-priority.md)):
