@@ -373,6 +373,9 @@ fn saving_the_project_says_where_in_the_status_bar() {
     d.app().ui.status.clear();
     d.menu("file.save");
     assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    d.app().ui.status.clear();
+    d.menu("file.saveAll");
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
     let copy = dir.join("copy.fcproj").to_string_lossy().to_string();
     d.ok("ui.menu.invoke", json!({"id": "file.saveCopy", "params": {"path": copy}}));
     assert_eq!(status(&mut d), format!("Copy of the project saved to {copy}"));

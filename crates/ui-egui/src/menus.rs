@@ -640,7 +640,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
 /// Tell the status bar where a project save went (File ▸ Save, Save As, Save a Copy).
 pub(crate) fn saved_status(app: &mut FilmcraftApp, id: &str, path: &str) {
     match id {
-        "file.save" | "file.saveAs" => app.ui.status = tlf!("Project saved to {path}", path),
+        "file.save" | "file.saveAs" | "file.saveAll" => app.ui.status = tlf!("Project saved to {path}", path),
         "file.saveCopy" => app.ui.status = tlf!("Copy of the project saved to {path}", path),
         _ => {}
     }
