@@ -177,6 +177,26 @@ pub fn register_format_probe(format: Format, probe: fn() -> bool) {
     }
 }
 
+fn background_thread_hook() -> &'static RwLock<Option<fn()>> {
+    static H: OnceLock<RwLock<Option<fn()>>> = OnceLock::new();
+    H.get_or_init(|| RwLock::new(None))
+}
+
+/// Say what to run on each thread of a background job's pool as it starts ([`crate::on_own_threads`]):
+/// the platform layer lowers the thread's scheduling priority, so the monitors and the UI come
+/// first while an export runs. A second registration replaces the first.
+pub fn register_background_thread_start(f: fn()) {
+    *background_thread_hook().write().unwrap_or_else(PoisonError::into_inner) = Some(f);
+}
+
+/// Run the registered background-thread hook, if any, on the calling thread.
+pub(crate) fn background_thread_start() {
+    let hook = *background_thread_hook().read().unwrap_or_else(PoisonError::into_inner);
+    if let Some(f) = hook {
+        f();
+    }
+}
+
 fn hdr_probes() -> &'static RwLock<Vec<FormatProbe>> {
     static P: OnceLock<RwLock<Vec<FormatProbe>>> = OnceLock::new();
     P.get_or_init(|| RwLock::new(Vec::new()))

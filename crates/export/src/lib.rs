@@ -66,13 +66,13 @@ pub(crate) use registry::build_frame_renderer;
 pub(crate) use registry::reset_frame_renderers_for_tests;
 pub use registry::{
     AudioEncoder, AudioEncoderFactory, EncodedPacket, EncoderFactory, EncoderFrame, FrameRenderer, FrameRendererFactory, PrepareAhead, VideoEncoder, available,
-    encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder, register_encoder, register_format_probe, register_frame_renderer,
-    register_hdr_probe,
+    encoder_registered, frame_renderer_registered, hdr_available, register_audio_encoder, register_background_thread_start, register_encoder,
+    register_format_probe, register_frame_renderer, register_hdr_probe,
 };
 use registry::{audio_factories, video_factories};
 #[cfg(test)]
 use run::gif_delay_cs;
-pub use run::{export, export_range, frame_span, validate_range};
+pub use run::{export, export_range, frame_span, on_own_threads, validate_range};
 pub(crate) use stats::note_lock_wait;
 pub use stats::{
     GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_hw_encode_declined,
