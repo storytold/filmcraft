@@ -85,7 +85,8 @@ later `decode_pts` call or by `flush`; each carries the `pts` of the temporal un
 Frame-job panics become decoder errors in both threaded and sequential decoding. Abandoned jobs
 complete their pending reference and picture slots with errors, so dependent jobs and decoder
 shutdown are not left waiting for results that cannot arrive. Use `decode_pts` and `flush_result`
-to receive these errors; the legacy `flush` convenience method discards drain errors.
+to receive errors observable through shown pictures or dependent jobs. A terminal non-shown frame
+without a dependent may not report its error. The legacy `flush` convenience method discards drain errors.
 
 `tests/it/perf.rs` (ignored) prints single-threaded fps (thread CPU time), per-stage ms/frame
 (`Decoder::stats()`) and all-core fps with its per-stage ms/frame for 1080p fixtures (key frames,
