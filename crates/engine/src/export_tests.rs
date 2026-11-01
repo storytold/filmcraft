@@ -1072,3 +1072,63 @@ fn max_threads_reaches_the_export_settings() {
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": -1})).is_err(), "a negative count is refused");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
 }
+
+/// AV1 export through the command parameters (what `filmcraft-cli export --format av1` sends): the
+/// name is accepted with or without a preset, a file named for another container gets an `.mp4`
+/// suffix (AV1 is MP4 only), a two-pass request is declined, and `export.formats` says whether this
+/// machine can encode it.
+#[test]
+fn av1_exports_take_the_format_name_and_report_availability() {
+    use filmcraft_export::presets::DEFAULT_PRESET;
+    use filmcraft_export::{ExportSettings, Format, Multiplexer};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let s = demo();
+    let settings = |p: &Value| crate::export_tools::settings_from_params(&s, p, "file.exportMedia").map(|(_, st)| st);
+    for p in [
+        json!({"path": "x.mp4", "format": "av1"}),
+        json!({"path": "x.mp4", "format": "AV1"}),
+        json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "format": "av1"}),
+        json!({"path": "x.mp4", "settings": {"format": "av1"}}),
+    ] {
+        assert_eq!(settings(&p).unwrap().format, Format::Av1, "{p}");
+    }
+    assert!(settings(&json!({"path": "x.mp4", "format": "av2"})).unwrap_err().to_string().contains("unknown format"));
+    let err = settings(&json!({"path": "x.mp4", "format": "av1", "bitrateMode": "vbr2Pass"})).unwrap_err().to_string();
+    assert!(err.contains("two-pass"), "{err}");
+
+    // the container is MP4 whatever the file was called and whatever multiplexer a preset left over
+    let av1 = ExportSettings { format: Format::Av1, ..Default::default() };
+    let quicktime = ExportSettings { multiplexer: Multiplexer::Mov, ..av1.clone() };
+    for st in [&av1, &quicktime] {
+        for (given, written) in [
+            ("out.mp4", "out.mp4"),
+            ("OUT.MP4", "OUT.MP4"),
+            ("out", "out.mp4"),
+            ("out.mkv", "out.mkv.mp4"),
+            ("out.webm", "out.webm.mp4"),
+            ("out.ivf", "out.ivf.mp4"),
+            ("out.mov", "out.mov.mp4"),
+        ] {
+            assert_eq!(crate::export_tools::with_extension(given, st), written, "{given}");
+        }
+    }
+
+    // `export.formats` lists it as MP4 and follows the probe a hardware encoder registers
+    static HERE: AtomicBool = AtomicBool::new(false);
+    fn probe() -> bool {
+        HERE.load(Ordering::SeqCst)
+    }
+    filmcraft_export::register_format_probe(Format::Av1, probe);
+    let mut session = demo();
+    let listed = |session: &mut Session| {
+        let formats = session.execute("export.formats", json!({})).unwrap();
+        let f = formats.as_array().unwrap().iter().find(|f| f["id"] == "av1").cloned().expect("av1 is listed");
+        assert_eq!((f["label"].as_str(), f["extension"].as_str(), f["video"].as_bool()), (Some("AV1"), Some("mp4"), Some(true)));
+        f["available"].as_bool().unwrap()
+    };
+    assert!(!listed(&mut session), "a machine without an AV1 encoder");
+    HERE.store(true, Ordering::SeqCst);
+    assert!(listed(&mut session), "a machine with one");
+    HERE.store(false, Ordering::SeqCst);
+    assert!(!listed(&mut session));
+}

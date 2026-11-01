@@ -1,7 +1,7 @@
 //! The HEVC availability probe of the NVENC backend: it opens one small encoder session, once. Its own
 //! test binary so that "first call" means a fresh process (driver load, Direct3D 11 device, NVENC
 //! session and encoder initialisation all included).
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 
 use std::time::{Duration, Instant};
 
