@@ -306,7 +306,8 @@ impl FilmcraftApp {
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.status(message),
                 filmcraft_engine::Event::ProjectChanged { .. } => {}
-                filmcraft_engine::Event::OpenUrl(url) => crate::links::open(self, ctx, &url),
+                // a sign-in page: its address stays out of the log
+                filmcraft_engine::Event::OpenUrl(url) => crate::links::open_private(self, ctx, &url),
             }
         }
     }
