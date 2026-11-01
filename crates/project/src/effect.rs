@@ -258,6 +258,8 @@ const A_STEREO: &[&str] = &["Audio Effects", "Stereo Imagery"];
 const A_TIME: &[&str] = &["Audio Effects", "Time and Pitch"];
 const A_TRANS: &[&str] = &["Audio Transitions", "Crossfade"];
 
+const SCALE_QUALITY: &[&str] = &["Bilinear", "Bicubic", "Nearest Neighbour"];
+
 fn build_effects() -> Vec<EffectDef> {
     let mut v = vec![
         // ---- intrinsic ----
@@ -274,6 +276,7 @@ fn build_effects() -> Vec<EffectDef> {
                 ang("rotation", "Rotation", 0.0),
                 pt("anchor", "Anchor Point", f64::NAN, f64::NAN),
                 fs("anti_flicker", "Anti-flicker Filter", 0.0, (0.0, 1.0), (0.0, 1.0), "", 2),
+                ch("scale_quality", "Scale Quality", SCALE_QUALITY, 0),
             ],
             intrinsic: true,
             accelerated: true,
@@ -912,5 +915,21 @@ mod tests {
         assert!(effect_defs().len() > 90);
         assert_eq!(find_effect_by_name("Gaussian Blur").unwrap().id, "gaussian_blur");
         assert_eq!(intrinsic_video().len(), 3);
+    }
+
+    #[test]
+    fn nearest_neighbour_scale_option_in_engine() {
+        // #2667: Motion effect must expose a "Scale Quality" choice param with Nearest Neighbour option.
+        let motion = find_effect("motion").expect("motion effect registered");
+        let p = motion.param("scale_quality").expect("motion has scale_quality param");
+        let ParamKind::Choice(opts) = &p.kind else {
+            panic!("scale_quality is not a Choice param");
+        };
+        assert!(opts.contains(&"Nearest Neighbour"), "Nearest Neighbour option must be present; got {opts:?}");
+        // Default (0) must be a non-destructive quality (Bilinear), not Nearest Neighbour.
+        let ParamValue::Choice(def) = p.default else {
+            panic!("default is not Choice");
+        };
+        assert_ne!(opts.get(def as usize).copied(), Some("Nearest Neighbour"), "Nearest Neighbour must not be the default");
     }
 }
