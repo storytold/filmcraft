@@ -310,6 +310,37 @@ fn sequence_dimensions_default_from_first_video_clip_image_bounds() {
     assert_eq!(media.info.video.as_ref().map(|v| (v.width, v.height)), Some((1080, 1920)));
 }
 
+/// With mixed sizes the first usable clip sets the sequence, and each media item keeps its own size.
+#[test]
+fn sequence_dimensions_use_first_clip_when_references_have_two_sizes() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"portrait",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"portrait.mp4",
+                    "available_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":100}},
+                    "available_image_bounds":{"OTIO_SCHEMA":"Box2d.1","min":{"x":0,"y":0},"max":{"x":1080,"y":1920}}}},
+                {"OTIO_SCHEMA":"Clip.2","name":"landscape",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"landscape.mp4",
+                    "available_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":100}},
+                    "available_image_bounds":{"OTIO_SCHEMA":"Box2d.1","min":{"x":0,"y":0},"max":{"x":1280,"y":720}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
+    let sizes: Vec<_> = sequence.video_tracks[0]
+        .items
+        .iter()
+        .map(|clip| imp.project.item(clip.item).unwrap().as_media().unwrap().info.video.as_ref().map(|v| (v.width, v.height)))
+        .collect();
+    assert_eq!(sizes, [Some((1080, 1920)), Some((1280, 720))]);
+}
+
 /// Integral JSON floats preserve portrait dimensions for both the sequence and imported media.
 #[test]
 fn sequence_dimensions_accept_integral_float_media_metadata() {
