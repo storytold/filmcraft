@@ -17,7 +17,7 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut pick: Option<&'static str> = None;
     let all = app.session.export_presets.all();
     let favorite = |n: &str| app.session.export_presets.is_favorite(n);
-    let q = m.query.to_lowercase();
+    let q = m.query.trim().to_string();
     egui::Window::new(tl!("Preset Manager"))
         .id(egui::Id::unique("Preset Manager"))
         .id(egui::Id::unique("preset-manager"))
