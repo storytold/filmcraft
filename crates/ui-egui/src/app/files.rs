@@ -75,6 +75,10 @@ impl FilmcraftApp {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 app.session.execute("captions.import", json!({"path": path})).map_err(|e| e.to_string())
             }),
+            "markers.import" => self.pick(FileDialog::open_files(&["csv"]), |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                app.session.execute("markers.import", json!({"path": path})).map_err(|e| e.to_string())
+            }),
             _ => match EXPORT_SAVE_DIALOGS.iter().find(|(c, ..)| *c == id) {
                 Some(&(_, filter, ext)) => self.export_save_dialog(id, filter, ext, params),
                 None => Err(format!("no dialog for {id}")),
