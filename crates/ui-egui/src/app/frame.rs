@@ -53,6 +53,11 @@ impl FilmcraftApp {
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
+        if self.ui.fullscreen_program {
+            ui.painter().rect_filled(full, 0.0, egui::Color32::BLACK);
+            panels::monitor::show(self, ui, full, panels::monitor::Which::Program);
+            return;
+        }
         let header_h = if self.ui.show_header { header::HEIGHT } else { 0.0 };
         let header = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), header_h));
         if self.ui.show_header {
