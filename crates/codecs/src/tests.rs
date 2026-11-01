@@ -263,6 +263,19 @@ fn quicktime_uncompressed_video() {
     }
 }
 
+/// DTS has no decoder: the stream says so in the media info instead of looking like a normal,
+/// silent track (#1422); decodable codecs keep their plain label.
+#[test]
+fn matroska_undecodable_audio_is_labelled_unsupported() {
+    let tone = ["-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:d=1", "-ac", "2"];
+    for (name, codec, want) in [("tone_dts.mkv", "dca", "DTS (unsupported)"), ("tone_aac.mkv", "aac", "AAC")] {
+        let args: Vec<&str> = tone.iter().copied().chain(["-c:a", codec, "-strict", "-2"]).collect();
+        let Some(b) = fixture(name, &args) else { return };
+        let src = crate::open_bytes(name, b).expect("open");
+        assert_eq!(src.info().audio_streams.first().map(|a| a.codec.as_str()), Some(want), "{name}");
+    }
+}
+
 #[test]
 fn matroska_prores_pcm() {
     check_mkv("blue_prores_pcm.mkv", &["-c:v", "prores_ks", "-profile:v", "2"], &["-c:a", "pcm_s16le"]);

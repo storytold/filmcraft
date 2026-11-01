@@ -7,7 +7,11 @@ use std::sync::OnceLock;
 /// Radix-2 complex FFT (forward, `e^{-2πi nk/P}`).
 struct Fft {
     n: usize,
-    twiddle: Vec<[f32; 2]>,
+    /// Twiddle of the length-2 stage, `e^{-2πi 0/n}`.
+    w0: [f32; 2],
+    /// Twiddles of the stages of length 4, 8, ..., n, one contiguous run of `len / 2` per stage.
+    stage_re: Vec<f32>,
+    stage_im: Vec<f32>,
     rev: Vec<u32>,
 }
 
@@ -16,13 +20,23 @@ impl Fft {
         assert!(n.is_power_of_two());
         let bits = n.trailing_zeros();
         let rev = (0..n as u32).map(|i| if bits == 0 { 0 } else { i.reverse_bits() >> (32 - bits) }).collect();
-        let twiddle = (0..n / 2)
+        let twiddle: Vec<[f32; 2]> = (0..n / 2)
             .map(|k| {
                 let a = -2.0 * PI * k as f64 / n as f64;
                 [a.cos() as f32, a.sin() as f32]
             })
             .collect();
-        Fft { n, twiddle, rev }
+        let (mut stage_re, mut stage_im) = (Vec::new(), Vec::new());
+        let mut len = 4;
+        while len <= n {
+            let step = n / len;
+            for k in 0..len / 2 {
+                stage_re.push(twiddle[k * step][0]);
+                stage_im.push(twiddle[k * step][1]);
+            }
+            len <<= 1;
+        }
+        Fft { n, w0: twiddle.first().copied().unwrap_or([1.0, 0.0]), stage_re, stage_im, rev }
     }
 
     fn run(&self, re: &mut [f32], im: &mut [f32]) {
@@ -34,24 +48,80 @@ impl Fft {
                 im.swap(i, j);
             }
         }
-        let mut len = 2;
-        while len <= n {
-            let half = len / 2;
-            let step = n / len;
-            for start in (0..n).step_by(len) {
-                for k in 0..half {
-                    let [wr, wi] = self.twiddle[k * step];
-                    let a = start + k;
-                    let b = a + half;
-                    let xr = re[b] * wr - im[b] * wi;
-                    let xi = re[b] * wi + im[b] * wr;
-                    re[b] = re[a] - xr;
-                    im[b] = im[a] - xi;
-                    re[a] += xr;
-                    im[a] += xi;
+        if n >= 2 {
+            let [wr, wi] = self.w0;
+            let ((re2, _), (im2, _)) = (re.as_chunks_mut::<2>(), im.as_chunks_mut::<2>());
+            for (r, i) in re2.iter_mut().zip(im2) {
+                let xr = r[1] * wr - i[1] * wi;
+                let xi = r[1] * wi + i[1] * wr;
+                r[1] = r[0] - xr;
+                i[1] = i[0] - xi;
+                r[0] += xr;
+                i[0] += xi;
+            }
+        }
+        let mut len = 4;
+        let mut off = 0;
+        // Two radix-2 stages (len, 2 * len) per pass over the data: the same butterflies in the same
+        // order per element, so the result is bit-identical to running the stages one by one.
+        while len * 2 <= n {
+            let h = len / 2;
+            let (t1r, t1i) = (&self.stage_re[off..off + h], &self.stage_im[off..off + h]);
+            let (t2r, t2i) = (&self.stage_re[off + h..off + 3 * h], &self.stage_im[off + h..off + 3 * h]);
+            off += 3 * h;
+            for (rc, ic) in re.chunks_exact_mut(4 * h).zip(im.chunks_exact_mut(4 * h)) {
+                let (ra, rest) = rc.split_at_mut(h);
+                let (rb, rest) = rest.split_at_mut(h);
+                let (rc2, rd) = rest.split_at_mut(h);
+                let (ia, rest) = ic.split_at_mut(h);
+                let (ib, rest) = rest.split_at_mut(h);
+                let (ic2, id) = rest.split_at_mut(h);
+                for k in 0..h {
+                    let (w1r, w1i) = (t1r[k], t1i[k]);
+                    // stage `len`: (a, b) and (c, d)
+                    let xr = rb[k] * w1r - ib[k] * w1i;
+                    let xi = rb[k] * w1i + ib[k] * w1r;
+                    let (br, bi) = (ra[k] - xr, ia[k] - xi);
+                    let (ar, ai) = (ra[k] + xr, ia[k] + xi);
+                    let xr = rd[k] * w1r - id[k] * w1i;
+                    let xi = rd[k] * w1i + id[k] * w1r;
+                    let (dr, di) = (rc2[k] - xr, ic2[k] - xi);
+                    let (cr, ci) = (rc2[k] + xr, ic2[k] + xi);
+                    // stage `2 * len`: (a, c) with w2[k], (b, d) with w2[k + h]
+                    let (w2r, w2i) = (t2r[k], t2i[k]);
+                    let xr = cr * w2r - ci * w2i;
+                    let xi = cr * w2i + ci * w2r;
+                    rc2[k] = ar - xr;
+                    ic2[k] = ai - xi;
+                    ra[k] = ar + xr;
+                    ia[k] = ai + xi;
+                    let (w2r, w2i) = (t2r[k + h], t2i[k + h]);
+                    let xr = dr * w2r - di * w2i;
+                    let xi = dr * w2i + di * w2r;
+                    rd[k] = br - xr;
+                    id[k] = bi - xi;
+                    rb[k] = br + xr;
+                    ib[k] = bi + xi;
                 }
             }
-            len <<= 1;
+            len <<= 2;
+        }
+        if len <= n {
+            let half = len / 2;
+            let (twr, twi) = (&self.stage_re[off..off + half], &self.stage_im[off..off + half]);
+            for (rc, ic) in re.chunks_exact_mut(len).zip(im.chunks_exact_mut(len)) {
+                let (ra, rb) = rc.split_at_mut(half);
+                let (ia, ib) = ic.split_at_mut(half);
+                for k in 0..half {
+                    let (wr, wi) = (twr[k], twi[k]);
+                    let xr = rb[k] * wr - ib[k] * wi;
+                    let xi = rb[k] * wi + ib[k] * wr;
+                    rb[k] = ra[k] - xr;
+                    ib[k] = ia[k] - xi;
+                    ra[k] += xr;
+                    ia[k] += xi;
+                }
+            }
         }
     }
 }
@@ -83,19 +153,22 @@ impl Mdct {
         Mdct { m, fft: Fft::new(q), pre, post }
     }
 
-    /// DCT-IV: `out[k] = Σ u[n] cos(π/M (n+½)(k+½))`.
-    fn dct4(&self, u: &[f32], out: &mut [f32]) {
+    /// Working buffers for this transform size.
+    pub fn scratch(&self) -> MdctScratch {
+        MdctScratch { re: vec![0.0; self.m / 2], im: vec![0.0; self.m / 2], u: vec![0.0; self.m] }
+    }
+
+    /// DCT-IV: `out[k] = Σ u[n] cos(π/M (n+½)(k+½))`; `re` and `im` (length M/2) are overwritten.
+    fn dct4(&self, u: &[f32], out: &mut [f32], re: &mut [f32], im: &mut [f32]) {
         let m = self.m;
         let q = m / 2;
-        let mut re = vec![0f32; q];
-        let mut im = vec![0f32; q];
         for n in 0..q {
             let (a, b) = (u[2 * n], u[m - 1 - 2 * n]);
             let [c, s] = self.pre[n];
             re[n] = a * c - b * s;
             im[n] = a * s + b * c;
         }
-        self.fft.run(&mut re, &mut im);
+        self.fft.run(re, im);
         for k in 0..q {
             let [c, s] = self.post[k];
             let wr = re[k] * c - im[k] * s;
@@ -109,21 +182,28 @@ impl Mdct {
     pub fn forward(&self, x: &[f32], out: &mut [f32]) {
         let m = self.m;
         let h = m / 2;
-        let mut u = vec![0f32; m];
+        let MdctScratch { re, im, mut u } = self.scratch();
         for n in 0..h {
             // quarters a, b, c, d of length M/2
             u[n] = -x[m + h - 1 - n] - x[m + h + n];
             u[h + n] = x[n] - x[m - 1 - n];
         }
-        self.dct4(&u, out);
+        let (mut re, mut im) = (re, im);
+        self.dct4(&u, out, &mut re, &mut im);
     }
 
     /// Inverse MDCT (unscaled): `y[n] = Σ X[k] cos(π/M (n + ½ + M/2)(k + ½))`, `y` has length 2M.
+    #[cfg(test)]
     pub fn inverse(&self, spec: &[f32], y: &mut [f32]) {
+        self.inverse_with(spec, y, &mut self.scratch());
+    }
+
+    /// [`Self::inverse`] with caller-provided working buffers from [`Self::scratch`].
+    pub fn inverse_with(&self, spec: &[f32], y: &mut [f32], sc: &mut MdctScratch) {
         let m = self.m;
         let h = m / 2;
-        let mut u = vec![0f32; m];
-        self.dct4(spec, &mut u);
+        let MdctScratch { re, im, u } = sc;
+        self.dct4(spec, u, re, im);
         for n in 0..h {
             y[n] = u[h + n];
             y[m - 1 - n] = -u[h + n];
@@ -131,6 +211,13 @@ impl Mdct {
             y[m + h + n] = -u[n];
         }
     }
+}
+
+/// Working buffers of one [`Mdct`] size, reusable across transforms.
+pub struct MdctScratch {
+    re: Vec<f32>,
+    im: Vec<f32>,
+    u: Vec<f32>,
 }
 
 /// Cached transforms for 1024 and 128 lines.

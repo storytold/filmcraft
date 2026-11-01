@@ -109,13 +109,24 @@ impl Interpolator {
         self.hist[self.pos + TAPS_PER_PHASE] = x;
         let win = &self.hist[self.pos..self.pos + TAPS_PER_PHASE];
         let mut peak = 0.0f32;
-        for p in 0..bank.factor {
-            let c = &bank.coeffs[p * TAPS_PER_PHASE..(p + 1) * TAPS_PER_PHASE];
-            let y: f32 = c.iter().zip(win).map(|(a, b)| a * b).sum();
-            peak = peak.max(y.abs());
+        for c in bank.coeffs.as_chunks::<TAPS_PER_PHASE>().0 {
+            peak = peak.max(dot(c, win).abs());
         }
         peak
     }
+}
+
+/// Dot product of one phase with the window. Eight partial sums (instead of one sequential sum)
+/// let the compiler vectorise it; the result differs from the sequential sum only by rounding.
+#[inline(always)]
+fn dot(c: &[f32; TAPS_PER_PHASE], win: &[f32]) -> f32 {
+    let mut acc = [0.0f32; 8];
+    for (cc, ww) in c.as_chunks::<8>().0.iter().zip(win.as_chunks::<8>().0) {
+        for ((a, &ci), &wi) in acc.iter_mut().zip(cc).zip(ww) {
+            *a += ci * wi;
+        }
+    }
+    (acc[0] + acc[4]) + (acc[1] + acc[5]) + (acc[2] + acc[6]) + (acc[3] + acc[7])
 }
 
 #[cfg(test)]
@@ -140,5 +151,50 @@ mod tests {
             }
         }
         assert!((peak - 1.0).abs() < 0.02, "peak {peak}");
+    }
+
+    /// The previous sequential-sum interpolator.
+    fn push_peak_reference(ip: &mut Interpolator, bank: &PolyphaseBank, x: f32) -> f32 {
+        ip.pos = if ip.pos == 0 { TAPS_PER_PHASE - 1 } else { ip.pos - 1 };
+        ip.hist[ip.pos] = x;
+        ip.hist[ip.pos + TAPS_PER_PHASE] = x;
+        let win = &ip.hist[ip.pos..ip.pos + TAPS_PER_PHASE];
+        let mut peak = 0.0f32;
+        for p in 0..bank.factor {
+            let c = &bank.coeffs[p * TAPS_PER_PHASE..(p + 1) * TAPS_PER_PHASE];
+            let y: f32 = c.iter().zip(win).map(|(a, b)| a * b).sum();
+            peak = peak.max(y.abs());
+        }
+        peak
+    }
+
+    #[test]
+    fn partial_sums_match_sequential_sum_to_rounding() {
+        let mut rng = crate::testutil::Rng::new(9);
+        let mut signals: Vec<Vec<f32>> = vec![(0..48_000).map(|_| rng.uniform()).collect(), (0..48_000).map(|_| 1e-4 * rng.uniform()).collect()];
+        for f in [997.0, 11_025.0, 19_000.0, 23_900.0] {
+            signals.push(crate::testutil::sine(f, 0.99, 48_000.0, 48_000, 0.3));
+        }
+        let (mut max_abs, mut max_rel, mut max_db) = (0.0f32, 0.0f32, 0.0f64);
+        for factor in [2, 4] {
+            let bank = PolyphaseBank::new(factor);
+            for x in &signals {
+                let (mut a, mut b) = (Interpolator::default(), Interpolator::default());
+                let (mut pa, mut pb) = (0.0f32, 0.0f32);
+                for &v in x {
+                    let (ya, yb) = (a.push_peak(&bank, v), push_peak_reference(&mut b, &bank, v));
+                    max_abs = max_abs.max((ya - yb).abs());
+                    if yb > 0.0 {
+                        max_rel = max_rel.max((ya - yb).abs() / yb);
+                    }
+                    pa = pa.max(ya);
+                    pb = pb.max(yb);
+                }
+                max_db = max_db.max((20.0 * (pa as f64 / pb as f64).log10()).abs());
+            }
+        }
+        println!("true-peak interpolator vs sequential sum: max abs {max_abs:e}, max rel {max_rel:e}, max peak {max_db:e} dB");
+        assert!(max_abs < 1e-6, "abs {max_abs}");
+        assert!(max_db < 1e-5, "dB {max_db}");
     }
 }

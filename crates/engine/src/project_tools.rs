@@ -187,7 +187,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Automate to Sequence…",
             &["Clip"],
             None,
-            r#"{"items":[id]?,"ordering":"sort|selection","placement":"sequentially|unnumberedMarkers","method":"insert|overwrite","overlapFrames":n=30,"stillFrames":n?,"videoTransition":bool=true,"audioTransition":bool=true,"ignoreAudio":bool=false,"ignoreVideo":bool=false}"#,
+            r#"{"items":[id]?,"ordering":"sort|selection"?,"placement":"sequentially|unnumberedMarkers"?,"method":"insert|overwrite"?,"overlapFrames":n=30,"stillFrames":n?,"videoTransition":bool=true,"audioTransition":bool=true,"ignoreAudio":bool=false,"ignoreVideo":bool=false}"#,
             can_automate,
             automate_to_sequence,
         ),
@@ -678,6 +678,7 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     proj.name = name.clone();
     proj.root.name = name;
     s.project = std::sync::Arc::new(proj);
+    s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
     s.history = Default::default();
     s.history.limit = 200;
@@ -1337,7 +1338,10 @@ fn automate_to_sequence(s: &mut Session, p: &Value) -> Result<Value> {
     let mut result: Result<()> = Ok(());
     for (k, ((id, r), at)) in plan.iter().zip(&starts).enumerate() {
         let insert = method == "insert" && placement == "unnumberedMarkers";
-        match crate::commands::place_item(s, *id, *r, *at, vdest, adest, insert, "Automate to Sequence", None) {
+        match crate::commands::place_item(
+            s,
+            crate::commands::ItemPlacement { item: *id, range: *r, at: *at, vdest, adest, insert, label: "Automate to Sequence", audio_split: None },
+        ) {
             Ok(ids) => placed.push((k, ids)),
             Err(e) => {
                 result = Err(e);

@@ -10,7 +10,7 @@ use std::f64::consts::{PI, TAU};
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use super::*;
+use super::{FxCtx, Image, add_light, blend_simple, bv, chv, cv, fbm, fv, hash01, highlights, lerp3, lin, luma, smoothstep};
 
 type V3 = [f64; 3];
 

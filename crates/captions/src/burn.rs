@@ -1,7 +1,7 @@
 //! Caption layout and burn-in.
 //!
 //! [`overlay`] lays out the caption showing on a track at a time with the track's
-//! [`CaptionStyle`] (size relative to a 1080-line frame, colour, background box, outline, wrap
+//! [`CaptionStyle`] (font style, size relative to a 1080-line frame, colour, background box, outline, wrap
 //! width, alignment, anchor and margin; WebVTT `line:N%` and `align:` cue settings override the style)
 //! and rasterises it into a small premultiplied linear-light RGBA [`Overlay`] positioned in the
 //! frame. Renderers composite overlays over the finished picture.
@@ -55,10 +55,12 @@ impl Overlay {
     }
 }
 
-/// The caption face: the track's font family (Inter when empty or not installed) in SemiBold at `px`.
-fn caption_style(font: &str, px: f32) -> TextStyle {
+/// The caption face: the track's font family (Inter when empty or not installed) in the track's
+/// font style (SemiBold when empty) at `px`.
+fn caption_style(font: &str, font_style: &str, px: f32) -> TextStyle {
     let family = if font.trim().is_empty() { filmcraft_text::fonts::DEFAULT_FAMILY } else { font.trim() };
-    TextStyle { family: family.into(), style: "SemiBold".into(), size: px, ..Default::default() }
+    let style = if font_style.trim().is_empty() { "SemiBold" } else { font_style.trim() };
+    TextStyle { family: family.into(), style: style.into(), size: px, ..Default::default() }
 }
 
 fn lin(c: [u8; 4]) -> [f32; 4] {
@@ -120,7 +122,7 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     // a hostile wrap width (NaN, negative, huge) falls back to or is clamped near the 90 % default
     let wrap_at = if style.max_width.is_finite() { style.max_width.clamp(0.05, 1.0) } else { 0.9 };
     let max_w = w as f32 * wrap_at;
-    let ts = caption_style(&style.font, px);
+    let ts = caption_style(&style.font, &style.font_style, px);
     let mut lines: Vec<String> = Vec::new();
     // (speaker names are metadata; like Premiere, they are not burned in)
     for l in c.plain_lines() {
@@ -530,7 +532,7 @@ mod tests {
             let lh = (st.size * 1920.0 / 1080.0 * st.line_spacing) as usize;
             (o, lh)
         };
-        let ts = caption_style(&CaptionStyle::default().font, 54.0 * 1920.0 / 1080.0);
+        let ts = caption_style(&CaptionStyle::default().font, "SemiBold", 54.0 * 1920.0 / 1080.0);
         for frac in [0.9_f32, 0.52, 0.4] {
             let st = CaptionStyle { max_width: frac, ..Default::default() };
             let (o, lh) = lines(&st);
@@ -556,6 +558,22 @@ mod tests {
         assert_eq!(at(f32::INFINITY), at(0.9), "infinity is the default");
         assert_eq!(at(-3.0), at(0.05), "negative clamps to the narrowest");
         assert_eq!(at(1e30), at(1.0), "huge clamps to the frame");
+    }
+
+    #[test]
+    fn font_style_is_used() {
+        // two styles of one family differ; an empty style is the default SemiBold
+        let semi = render_caption(&cap("Hello world"), &CaptionStyle::default(), 1920, 1080).unwrap();
+        for style in ["Regular", "Bold"] {
+            let st = CaptionStyle { font_style: style.into(), ..Default::default() };
+            let o = render_caption(&cap("Hello world"), &st, 1920, 1080).unwrap();
+            assert_ne!((o.w, &o.px), (semi.w, &semi.px), "{style} renders like SemiBold");
+        }
+        let empty = CaptionStyle { font_style: " ".into(), ..Default::default() };
+        assert_eq!(render_caption(&cap("Hello world"), &empty, 1920, 1080), Some(semi.clone()));
+        // a style the family lacks falls back to the nearest weight, like graphic text
+        let missing = CaptionStyle { font_style: "No Such Style".into(), ..Default::default() };
+        assert!(render_caption(&cap("Hello world"), &missing, 1920, 1080).is_some());
     }
 
     #[test]

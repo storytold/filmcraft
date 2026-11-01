@@ -170,6 +170,37 @@ fn run_waits_for_an_export_on_its_last_line() {
 /// `export --preset`: a built-in preset by name (dash or en dash), a custom range, a user preset
 /// from `--data-dir`, `--list-presets`, `--queue`, and a clean failure for an unknown preset.
 #[test]
+fn single_frame_in_out_export_warns_in_json_and_stderr() {
+    let dir = std::env::temp_dir().join(format!("fc-cli-single-frame-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let project = dir.join("marked.fcproj");
+    let script = dir.join("marks.jsonl");
+    std::fs::write(&script, "{\"id\":\"markers.markIn\",\"params\":{\"frame\":12}}\n{\"id\":\"markers.markOut\",\"params\":{\"frame\":12}}\n").unwrap();
+    let setup = cli(&["--demo", "--save-as", project.to_str().unwrap(), "run", script.to_str().unwrap()]);
+    assert!(setup.status.success(), "{}", String::from_utf8_lossy(&setup.stderr));
+    for (name, bounds, warned) in [
+        ("marked.wav", vec![], true),
+        ("explicit.wav", vec!["--start", "0", "--end", "0.04"], false),
+        ("queued.wav", vec!["--queue"], true),
+        ("queued-explicit.wav", vec!["--queue", "--start", "0", "--end", "0.04"], false),
+    ] {
+        let path = dir.join(name);
+        let mut args = vec!["--project", project.to_str().unwrap(), "export", path.to_str().unwrap()];
+        args.extend(bounds);
+        let output = cli(&args);
+        let v = json_out(&output);
+        assert_eq!(v["warnings"].as_array().unwrap().len(), usize::from(warned));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.contains("In/Out range is 1 frame"), warned, "{stderr}");
+        if warned {
+            assert!(stderr.contains("--range entire"), "{stderr}");
+        }
+        assert!(path.exists());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn export_with_presets() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/export-tests").join(format!("cli-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

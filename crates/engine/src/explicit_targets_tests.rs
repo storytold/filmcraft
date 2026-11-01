@@ -330,3 +330,127 @@ fn unlink_with_an_unlinked_clip_in_the_selection_still_unlinks() {
         assert_eq!(clip(&s, c).unwrap().link, None, "{c:?}");
     }
 }
+
+/// #3620: timeline.delete aliases clear / ripple delete and accepts explicit clips without selection.
+#[test]
+fn timeline_delete_alias_deletes_and_ripple_deletes_explicit_clips() {
+    let mut s = demo();
+    let (a, b) = (v1(&s)[0].clone(), v1(&s)[1].clone());
+    assert!(s.is_enabled("timeline.delete"), "timeline.delete is enabled whenever a sequence is open");
+
+    // Regular delete by clip id
+    s.execute("timeline.delete", json!({"clip": a.id.0})).unwrap();
+    assert!(clip(&s, a.id).is_none() && clip(&s, b.id).is_some());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(clip(&s, a.id).is_some());
+
+    // Ripple delete by clips list
+    let a_and_its_audio: Vec<u64> = s
+        .active_sequence()
+        .unwrap()
+        .all_tracks()
+        .flat_map(|t| &t.items)
+        .filter(|i| i.id == a.id || (i.link.is_some() && i.link == a.link))
+        .map(|i| i.id.0)
+        .collect();
+    s.execute("timeline.setTrack", json!({"track": "A2", "syncLock": false})).unwrap();
+    s.execute("timeline.delete", json!({"clips": a_and_its_audio, "ripple": true})).unwrap();
+    assert!(clip(&s, a.id).is_none());
+    assert_eq!(clip(&s, b.id).unwrap().start, a.start, "the next clip closes the gap");
+
+    // Malformed explicit targets are rejected and do not mutate selection
+    s.state.selection = vec![b.id];
+    assert!(s.execute("timeline.delete", json!({"clip": null})).is_err());
+    assert!(s.execute("edit.clear", json!({"clip": "invalid"})).is_err());
+    assert!(s.execute("edit.rippleDelete", json!({"clips": null})).is_err());
+    assert_eq!(s.state.selection, vec![b.id]);
+    assert!(clip(&s, b.id).is_some());
+}
+
+/// Every explicit-target shape that is not a valid, non-empty list of clips of the active
+/// sequence is a param error, for each command sharing the deletion handling, and never falls
+/// back to deleting the selection.
+#[test]
+fn deletion_commands_reject_invalid_explicit_targets_without_touching_the_selection() {
+    let mut s = demo();
+    let (a, b) = (v1(&s)[0].clone(), v1(&s)[1].clone());
+    let unknown = 9_999_999u64;
+    let bad_params = [
+        json!({"clip": null}),
+        json!({"clips": null}),
+        json!({"clip": "x"}),
+        json!({"clip": -1}),
+        json!({"clips": 5}),
+        json!({"clips": []}),
+        json!({"clips": [null]}),
+        json!({"clips": ["x"]}),
+        json!({"clips": [a.id.0, null]}),
+        json!({"clips": [unknown]}),
+        json!({"clips": [a.id.0, unknown]}),
+        json!({"clip": unknown}),
+        json!({"clip": a.id.0, "clips": [a.id.0]}),
+        json!({"clip": null, "clips": [a.id.0]}),
+    ];
+    let before = v1(&s).len();
+    for cmd in ["edit.clear", "edit.rippleDelete", "timeline.delete"] {
+        for p in &bad_params {
+            s.state.selection = vec![b.id];
+            match s.execute(cmd, p.clone()) {
+                Err(EngineError::BadParams { .. }) => {}
+                other => panic!("{cmd} {p}: expected BadParams, got {other:?}"),
+            }
+            assert_eq!(s.state.selection, vec![b.id], "{cmd} {p}: selection untouched");
+            assert_eq!(v1(&s).len(), before, "{cmd} {p}: nothing deleted");
+            assert!(clip(&s, a.id).is_some() && clip(&s, b.id).is_some(), "{cmd} {p}: clips intact");
+        }
+    }
+
+    // timeline.delete: `ripple` must be a boolean when given
+    s.state.selection = vec![b.id];
+    for ripple in [json!("yes"), json!(1)] {
+        match s.execute("timeline.delete", json!({"clip": a.id.0, "ripple": ripple})) {
+            Err(EngineError::BadParams { .. }) => {}
+            other => panic!("timeline.delete ripple {ripple}: expected BadParams, got {other:?}"),
+        }
+    }
+    assert!(clip(&s, a.id).is_some() && clip(&s, b.id).is_some());
+
+    // no selection: still an error, nothing deleted
+    s.state.selection.clear();
+    for cmd in ["edit.clear", "edit.rippleDelete", "timeline.delete"] {
+        assert!(s.execute(cmd, json!({"clip": null})).is_err());
+        assert!(s.execute(cmd, json!({"clips": []})).is_err());
+        assert!(s.execute(cmd, json!({"clips": [unknown]})).is_err());
+    }
+    assert_eq!(v1(&s).len(), before);
+}
+
+/// Only V1 stays sync-locked, so a ripple of a lone V1 clip (linked selection is off) moves nothing else.
+fn unlock_all_but_v1(s: &mut Session) {
+    let seq = s.active_sequence().unwrap();
+    let (nv, na) = (seq.video_tracks.len(), seq.audio_tracks.len());
+    let names = (2..=nv).map(|n| format!("V{n}")).chain((1..=na).map(|n| format!("A{n}")));
+    for track in names.collect::<Vec<_>>() {
+        s.execute("timeline.setTrack", json!({"track": track, "syncLock": false})).unwrap();
+    }
+}
+
+/// With neither `clip` nor `clips`, deletion still acts on the selection.
+#[test]
+fn deletion_commands_fall_back_to_the_selection_only_when_no_target_is_named() {
+    for cmd in ["edit.clear", "edit.rippleDelete", "timeline.delete"] {
+        let mut s = demo();
+        unlock_all_but_v1(&mut s);
+        let b = v1(&s)[1].clone();
+        s.state.selection = vec![b.id];
+        s.execute(cmd, json!({})).unwrap();
+        assert!(clip(&s, b.id).is_none(), "{cmd} deletes the selected clip");
+        assert!(s.state.selection.is_empty(), "{cmd} clears the selection");
+    }
+    let mut s = demo();
+    unlock_all_but_v1(&mut s);
+    let b = v1(&s)[1].clone();
+    s.state.selection = vec![b.id];
+    s.execute("timeline.delete", json!({"ripple": true})).unwrap();
+    assert!(clip(&s, b.id).is_none(), "timeline.delete ripple falls back to the selection");
+}
