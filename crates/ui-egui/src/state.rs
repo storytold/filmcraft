@@ -201,6 +201,8 @@ pub struct TimelineView {
     pub show_video_names: bool,
     #[serde(default = "yes")]
     pub show_audio_names: bool,
+    /// Combined A/V lanes: video and audio tracks share a single row (wrench menu).
+    pub combined_av_lanes: bool,
     /// Follow during playback (page scroll).
     pub follow: bool,
     pub fit_pending: bool,
@@ -242,6 +244,7 @@ impl Default for TimelineView {
             show_waveforms: true,
             show_video_names: true,
             show_audio_names: true,
+            combined_av_lanes: false,
             follow: true,
             fit_pending: true,
             seen_playhead: None,
@@ -1063,5 +1066,25 @@ impl Default for UiState {
             project_panel: Default::default(),
             media_browser: Default::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #2584: `combined_av_lanes` field round-trips through serde; an old workspace JSON
+    /// without it deserialises to the default (false).
+    #[test]
+    fn combined_av_lanes_field_persists_in_serde() {
+        let mut v = TimelineView::default();
+        v.combined_av_lanes = true;
+        let json = serde_json::to_string(&v).expect("TimelineView must serialise");
+        assert!(json.contains("combined_av_lanes"), "field must be present when true");
+        let back: TimelineView = serde_json::from_str(&json).expect("round-trip");
+        assert!(back.combined_av_lanes, "round-trip: must stay true");
+        // Old workspace JSON without the field must default to false.
+        let old: TimelineView = serde_json::from_str(r#"{}"#).expect("empty JSON must deserialise");
+        assert!(!old.combined_av_lanes, "missing field defaults to false");
     }
 }
