@@ -55,6 +55,8 @@ const OP_BOKEH_BOOST: u32 = 33u;
 const OP_BOKEH: u32 = 34u;
 const OP_BOKEH_UP: u32 = 35u;
 const OP_THREE_WAY: u32 = 36u;
+const OP_SHAKE_BLUR: u32 = 37u;
+const OP_RGB_SPLIT: u32 = 38u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -690,6 +692,49 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
 }
 
 // One output pixel of every op but the running-sum box blur.
+// Camera Shake with motion blur: sample `i`'s inverse map (a, b, e, f) from p0..p4.
+fn shake_map(i: u32) -> vec4<f32> {
+    switch i {
+        case 0u: { return u.p0; }
+        case 1u: { return u.p1; }
+        case 2u: { return u.p2; }
+        case 3u: { return u.p3; }
+        default: { return u.p4; }
+    }
+}
+
+// One shake sample as `OP_RESAMPLE` draws it: the inverse map is a similarity (c = -b, d = a);
+// the rectangle `gpufx::resample` writes is found from the forward map of the frame's corners.
+fn shake_tap(m: vec4<f32>, p: vec2<i32>, pc: vec2<f32>) -> vec4<f32> {
+    let s = size();
+    let a = m.x; let b = m.y; let e = m.z; let f = m.w;
+    let det = a * a + b * b;
+    if det <= 0.0 {
+        return vec4(0.0);
+    }
+    let wh = vec2<f32>(s);
+    var lo = vec2(3.0e38);
+    var hi = vec2(-3.0e38);
+    for (var k = 0u; k < 4u; k++) {
+        let q = vec2(select(0.0, wh.x, (k & 1u) != 0u), select(0.0, wh.y, (k & 2u) != 0u)) - vec2(e, f);
+        let d = vec2(a * q.x + b * q.y, a * q.y - b * q.x) / det;
+        lo = min(lo, d);
+        hi = max(hi, d);
+    }
+    let r0 = clamp(floor(lo), vec2(0.0), wh);
+    let r1 = clamp(ceil(hi), vec2(0.0), wh);
+    let fp = vec2<f32>(p);
+    if fp.x < r0.x || fp.x >= r1.x || fp.y < r0.y || fp.y >= r1.y {
+        return vec4(0.0);
+    }
+    let uu = a * pc.x - b * pc.y + e;
+    let vv = b * pc.x + a * pc.y + f;
+    if uu < -1.0 || vv < -1.0 || uu > wh.x + 1.0 || vv > wh.y + 1.0 {
+        return vec4(0.0);
+    }
+    return sample_bilinear(uu, vv);
+}
+
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
     let pc = vec2<f32>(p) + 0.5;
@@ -785,6 +830,27 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 return vec4(0.0);
             }
             return sample_bilinear(uu, vv) * m1.z;
+        }
+        case OP_SHAKE_BLUR: {
+            // the mean of i1.x shake samples (`vfx::distort::motion_blurred`)
+            let n = u.i1.x;
+            var acc = vec4(0.0);
+            for (var i = 0u; i < n; i++) {
+                acc += shake_tap(shake_map(i), p, pc);
+            }
+            return acc * (1.0 / f32(n));
+        }
+        case OP_RGB_SPLIT: {
+            // p0 = (amount, ox, oy, maxd), p1 = (centre x, centre y, blend); i1.x = radial
+            var d = u.p0.yz;
+            if u.i1.x != 0u {
+                d = (pc - u.p1.xy) / u.p0.w * u.p0.x;
+            }
+            let r = sample_bilinear(pc.x - d.x, pc.y - d.y);
+            let g = ld(p);
+            let b = sample_bilinear(pc.x + d.x, pc.y + d.y);
+            let o = vec4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
+            return o + (g - o) * u.p1.z;
         }
         case OP_HFLIP: {
             return ld(vec2(s.x - 1 - p.x, p.y));

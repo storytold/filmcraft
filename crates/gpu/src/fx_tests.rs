@@ -336,6 +336,11 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             vec![("exposure", fl(4.0)), ("contrast", fl(100.0)), ("temperature", fl(100.0)), ("tint", fl(100.0)), ("whites", fl(100.0)), ("blacks", fl(100.0))],
             false,
         ),
+        ("rgb_split", vec![("amount", fl(3.5)), ("angle", fl(30.0))], false),
+        ("rgb_split", vec![("amount", fl(-6.0)), ("angle", fl(200.0)), ("blend", fl(40.0))], false),
+        ("rgb_split", vec![("mode", ch(1)), ("amount", fl(12.0)), ("center", pt(20.0, 30.0))], false),
+        ("rgb_split", vec![("mode", ch(1)), ("amount", fl(40.0)), ("blend", fl(75.0))], false),
+        ("rgb_split", vec![("amount", fl(0.0))], false),
         (
             "lumetri",
             vec![
@@ -406,6 +411,49 @@ fn effects_match_cpu_exactly(dev: &wgpu::Device, q: &wgpu::Queue) {
         }
     }
     assert!(failures.is_empty(), "GPU effects differ from the CPU:\n{}", failures.join("\n"));
+}
+
+/// Camera Shake on the GPU against its CPU reference. The shake is smooth noise of the clip time,
+/// zero at time 0, so this samples several times (the shared cases run at time 0), with and
+/// without motion blur. The rectangle each sample covers is found in f32 on the GPU (f64 on the
+/// CPU), so a pixel on a sample's outline may flip, as for the step functions.
+#[test]
+fn gpu_camera_shake_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    assert!(c.fx.is_some(), "the effect stage did not build on this device");
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let shakes: Vec<Vec<(&str, ParamValue)>> = vec![
+        vec![],
+        vec![("amount", fl(8.0)), ("rotation", fl(4.0)), ("zoom", fl(12.0)), ("frequency", fl(6.0)), ("seed", fl(3.0))],
+        vec![("amount", fl(22.0)), ("rotation", fl(0.6)), ("zoom", fl(3.0)), ("frequency", fl(7.0)), ("motion_blur", fl(35.0)), ("seed", fl(7.0))],
+        vec![("amount", fl(40.0)), ("rotation", fl(10.0)), ("zoom", fl(0.0)), ("complexity", fl(6.0)), ("motion_blur", fl(100.0))],
+    ];
+    let mut failures = Vec::new();
+    for params in &shakes {
+        let e = effect("camera_shake", params);
+        for seconds in [0.37, 1.9, 12.25] {
+            let cx = FxCtx { seconds, frame_rate: 60.0, ..cx(Tick::ZERO, 1.0) };
+            let op = FxOp::eval(&e, &cx, w as usize, h as usize).expect("camera_shake has a GPU op");
+            assert!(op.gpu_ok(), "{params:?} at {seconds}s: not GPU-capable");
+            assert!(!matches!(&op, FxOp::Resample(r) if r.inv.as_ref().is_some_and(Affine::is_identity)), "{params:?} at {seconds}s: no shake");
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op] };
+            let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            eprintln!("camera_shake {params:?} at {seconds}s: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+            if worst > EXACT || flips > FLIPS {
+                failures.push(format!("{params:?} at {seconds}s: {worst:.2e}, flips {flips:.4}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "GPU Camera Shake differs from the CPU:\n{}", failures.join("\n"));
 }
 
 /// #3465 review: a neutral Three-Way Color Corrector leaves every value alone on both paths,

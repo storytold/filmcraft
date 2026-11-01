@@ -57,6 +57,8 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
+const OP_SHAKE_BLUR: u32 = 37;
+const OP_RGB_SPLIT: u32 = 38;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -193,6 +195,18 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
             match &r.inv {
                 Some(m) => out.push(step(OP_RESAMPLE, r.rect, &[m.a as f32, m.b as f32, m.c as f32, m.d as f32, m.e as f32, m.f as f32, op, 1.0])),
                 None => out.push(step(OP_RESAMPLE, [0; 4], &[0.0; 8])),
+            }
+        }
+        FxOp::ShakeBlur { samples } => {
+            // per sample the inverse map's a, b, e, f (a similarity: c = −b, d = a; `gpu_ok`)
+            let p: Vec<f32> = samples.iter().filter_map(|r| r.inv.as_ref()).flat_map(|m| [m.a as f32, m.b as f32, m.e as f32, m.f as f32]).take(20).collect();
+            if !p.is_empty() {
+                out.push(step(OP_SHAKE_BLUR, [(p.len() / 4) as u32, 0, 0, 0], &p));
+            }
+        }
+        FxOp::RgbSplit { radial, amount, ox, oy, cx, cy, maxd, blend } => {
+            if amount.abs() >= 1e-3 {
+                out.push(step(OP_RGB_SPLIT, [*radial as u32, 0, 0, 0], &[*amount, *ox, *oy, *maxd, *cx, *cy, *blend]));
             }
         }
         FxOp::HFlip => out.push(step(OP_HFLIP, [0; 4], &[])),

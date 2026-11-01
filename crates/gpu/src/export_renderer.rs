@@ -346,6 +346,75 @@ mod tests {
         }
     }
 
+    /// A clip with Camera Shake (motion blur on) and RGB Split, alone or with Lumetri Color before
+    /// or between them, is planned for the GPU effect stage with every effect in order, instead of
+    /// being rendered on the CPU, and the GPU frame matches `render_sequence` by [`assert_parity`]
+    /// (p99 of the per-pixel max 8-bit channel difference ≤ 6, mean < 1.5). Without an adapter it
+    /// skips, as the other GPU tests here do; with one, a frame left to the CPU fails the plan
+    /// asserts before any comparison.
+    #[test]
+    fn shaken_and_split_clip_renders_on_the_gpu() {
+        use filmcraft_project::{EffectInstance, ParamValue, find_effect};
+        use filmcraft_render::gpufx::FxOp;
+        let Some(mut renderer) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (shake / split GPU parity): no adapter");
+            return;
+        };
+        let (mut base, seq, mut sources) = project(false);
+        let project = Arc::make_mut(&mut base);
+        let media = *sources.0.iter().find(|(_, s)| s.info().has_video()).unwrap().0;
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let source = GeneratorSource::new(Generator::Demo(filmcraft_media::DemoScene::OceanSunset), 320, 180, rate, Tick(2 * TICKS_PER_SECOND));
+        let ItemKind::Media(clip) = &mut project.item_mut(media).unwrap().kind else { panic!("expected generated media") };
+        clip.info = source.info().clone();
+        clip.media = MediaRef::Generator(source.generator.clone());
+        sources.0.insert(media, Arc::new(source));
+        let effect = |id: &str, params: &[(&str, f64)]| -> EffectInstance {
+            let mut e = find_effect(id).unwrap().instance();
+            for (k, v) in params {
+                e.param_mut(k).unwrap().value = ParamValue::Float(*v);
+            }
+            e
+        };
+        let shake = effect("camera_shake", &[("amount", 12.0), ("rotation", 2.0), ("zoom", 6.0), ("motion_blur", 35.0)]);
+        let split = effect("rgb_split", &[("amount", 4.0)]);
+        let lumetri = effect("lumetri", &[("contrast", 18.0), ("vibrance", 18.0), ("saturation", 106.0)]);
+        let chains: [(&str, Vec<EffectInstance>); 3] = [
+            ("shake + split", vec![shake.clone(), split.clone()]),
+            ("lumetri + shake + split", vec![lumetri.clone(), shake.clone(), split.clone()]),
+            ("shake + lumetri + split", vec![shake, lumetri, split]),
+        ];
+        for (what, chain) in chains {
+            let mut p = base.clone();
+            let item = &mut Arc::make_mut(&mut p).sequence_mut(seq).unwrap().video_tracks[0].items[0];
+            let ids: Vec<&str> = chain.iter().map(|e| e.effect.as_str()).collect();
+            item.effects.extend(chain.iter().cloned());
+            for t in [Tick(TICKS_PER_SECOND / 3), Tick(TICKS_PER_SECOND * 3 / 4)] {
+                for scale in [1.0, 0.5] {
+                    let opts = RenderOptions { scale, ..Default::default() };
+                    let FramePlan::Layers { layers, .. } = plan_frame(&p, seq, t, opts, &sources) else {
+                        panic!("{what}: the frame was not planned as GPU layers");
+                    };
+                    let fx = layers.iter().find_map(|l| l.fx.as_ref()).unwrap_or_else(|| panic!("{what}: the clip goes through the GPU effect stage"));
+                    let planned: Vec<&str> = fx
+                        .ops
+                        .iter()
+                        .map(|op| match op {
+                            FxOp::ShakeBlur { .. } => "camera_shake",
+                            FxOp::RgbSplit { .. } => "rgb_split",
+                            FxOp::Lumetri { .. } => "lumetri",
+                            _ => "other",
+                        })
+                        .collect();
+                    assert_eq!(planned, ids, "{what}: every effect on the GPU, in order: {:?}", fx.ops);
+                    let cpu = filmcraft_render::render_sequence(&p, seq, t, opts, &sources);
+                    let gpu = renderer.render(&p, seq, t, opts, &sources).expect("GPU rendered the frame");
+                    assert_parity(&cpu, &gpu, what);
+                }
+            }
+        }
+    }
+
     #[test]
     fn gpu_render_impls_frame_renderer() {
         // dev-dependency: the same wrapper the app and CLI register.
