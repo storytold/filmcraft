@@ -1313,3 +1313,28 @@ mod waveform_zone_tests {
         assert_eq!(waveform_zone_height(4.0), 8.0);
     }
 }
+/// #1746: the clip right-click menu's Audio Options submenu mirrors Clip ▸ Audio Options, so a
+/// command added to the registry (or a stale entry here) cannot leave the two out of step.
+#[cfg(test)]
+mod clip_menu_tests {
+    use super::*;
+
+    fn registry_audio_options() -> Vec<&'static str> {
+        filmcraft_engine::command_specs().iter().filter(|c| c.menu == ["Clip", "Audio Options"]).map(|c| c.id).collect()
+    }
+
+    #[test]
+    fn audio_options_submenu_mirrors_the_clip_menu() {
+        let menu: Vec<&str> = menus::CLIP_AUDIO_MENU.iter().map(|(_, id)| *id).collect();
+        assert_eq!(menu, registry_audio_options(), "the clip context menu's Audio Options submenu vs Clip ▸ Audio Options");
+        assert!(menu.contains(&"clip.audioGain"), "Audio Gain… is reachable from the clip right-click menu (#1746)");
+    }
+
+    #[test]
+    fn the_clip_menu_offers_the_audio_options_submenu() {
+        assert!(
+            menus::CLIP_MENU.iter().flat_map(|g| g.iter()).any(|&(_, cmd)| cmd == "clip.audioOptions"),
+            "the clip context menu has an Audio Options entry that opens the submenu"
+        );
+    }
+}

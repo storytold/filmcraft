@@ -65,8 +65,15 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
         ("Fit to frame", "clip.fitToFrame"),
         ("Fill frame", "clip.fillFrame"),
     ],
+    &[("Audio Options", "clip.audioOptions")],
     &[("Reveal in Project", "clip.revealInProject"), ("Join Through Edits", "sequence.joinThroughEdits")],
 ];
+
+/// The clip context menu's Audio Options submenu (#1746): Audio Gain…, Breakout to Mono and
+/// Extract Audio, in the registry's group order. Kept as one list so a command added to either
+/// side cannot drift out of the other (see `clip_menu_tests`).
+pub(crate) const CLIP_AUDIO_MENU: &[(&str, &str)] =
+    &[("Audio Gain…", "clip.audioGain"), ("Breakout to Mono", "clip.breakoutToMono"), ("Extract Audio", "clip.extractAudio")];
 
 /// The cut right-clicked on a track (#219): the clip ending there and the clip starting there,
 /// either missing at the ends of a gap. Its menu offers the edit point's trim types, Apply Default
@@ -250,6 +257,25 @@ pub(super) fn gap_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egu
         }
         ui.close();
     }
+}
+
+/// The clip menu's Audio Options submenu (#1746): each item is enabled by its own command,
+/// exactly as in Clip ▸ Audio Options; `…` items open their dialog through `menus::invoke`.
+pub(super) fn audio_options_menu(app: &mut FilmcraftApp, ctx: &egui::Context, ui: &mut egui::Ui) {
+    let menu = ui.menu_button(tl!("Audio Options"), |ui| {
+        for &(label, cmd) in CLIP_AUDIO_MENU {
+            let label = crate::i18n::t(label);
+            let r = ui.add_enabled(app.session.is_enabled(cmd), egui::Button::new(label));
+            app.auto.add_response(&format!("timeline.clipMenu.{cmd}"), &r, label);
+            if r.clicked() {
+                if let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({})) {
+                    app.ui.status = e;
+                }
+                ui.close();
+            }
+        }
+    });
+    app.auto.add_response("timeline.clipMenu.clip.audioOptions", &menu.response, tl!("Audio Options"));
 }
 
 /// The clip menu's Multi-Camera submenu: Enable, Flatten, and the cameras of the selected nested
