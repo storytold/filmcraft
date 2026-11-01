@@ -229,7 +229,12 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
 pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> FramePlan {
     let Some(seq) = project.sequence(seq_id) else { return FramePlan::Image(crate::Image::new(1, 1)) };
     let (w, h) = output_size(seq, opts.scale);
-    if whole_frame_on_cpu(project, seq, t) {
+    // An HDR / wide-gamut sequence plans as layers too: its sources are decoded into the working
+    // space on the GPU (`colorman::gpu_input`, which a log curve enters through the CPU's decode
+    // table) and the compositor's resolve pass runs the sequence's display transform (working
+    // space → monitor). Frames the compositor cannot finish stay on the CPU: an adjustment layer,
+    // a transition it cannot mix, or a display transform the shader cannot encode (an HDR target).
+    if !layered_at(project, seq, t) || crate::colorman::display_transform(&seq.settings.color).gpu_params().is_none() {
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
     let mut layers = PlanStack::default();
@@ -256,13 +261,17 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
 /// Whether [`plan_frame`] hands the frame at `t` back as one CPU image ([`FramePlan::Image`]). A
 /// GPU renderer gains nothing on such a frame, so a caller with only a few of them (the export's
 /// pool) can render it on the CPU without taking one.
+/// Whether the frame at `t` needs the CPU compositor: an HDR / wide-gamut sequence, an adjustment
+/// layer, or a transition the compositor cannot mix. Callers that render on the CPU only (the
+/// export's pool) use it to skip taking a GPU plan; [`plan_frame`] itself plans an HDR / wide-gamut
+/// frame as layers whenever the compositor can finish it.
 pub fn is_cpu_frame(project: &Project, seq_id: ItemId, t: Tick) -> bool {
     project.sequence(seq_id).is_none_or(|seq| whole_frame_on_cpu(project, seq, t))
 }
 
-/// The frames [`plan_frame`] does not plan: an HDR / wide-gamut sequence composites and converts
-/// on the CPU, and so does a frame with an adjustment layer or a complex transition anywhere at
-/// `t` (whole-frame fallback).
+/// The frames the CPU-only path ([`is_cpu_frame`]) covers: an HDR / wide-gamut sequence (its
+/// display transform and any log-source decode), an adjustment layer, or a complex transition
+/// anywhere at `t` (whole-frame fallback).
 fn whole_frame_on_cpu(project: &Project, seq: &Sequence, t: Tick) -> bool {
     !seq.settings.color.is_plain() || !layered_at(project, seq, t)
 }
@@ -471,9 +480,10 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         let time = crate::video_source_time(item, t, src.info().frame_rate());
         let Ok(frame) = src.video_frame(FrameRequest { time, scale: want }) else { return };
         let cs = crate::colorman::source_space(project, item.item, &frame);
-        // HDR and wide-gamut media on a Rec. 709 sequence is converted on the GPU too (#965); log
-        // media and other pipelines are converted on the CPU (below), and so are blended
-        // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
+        // HDR, wide-gamut and log media is converted on the GPU (#965): the shader's own curves, a
+        // log curve through the CPU's decode table. What has no shader form is converted below on
+        // the CPU, and so are blended in-between frames (Frame Blending / Optical Flow on
+        // speed-changed clips)
         let pipe = &seq.settings.color;
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
         let plain =

@@ -84,6 +84,8 @@ pub struct GpuCompositor {
     accum_readback_buf: Option<(wgpu::Buffer, u64)>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
     clock: u64,
+    /// The resolve pass's display transform (`set_display_transform`), as plain numbers.
+    display: [f32; DISPLAY_FLOATS],
     dummy: wgpu::TextureView,
     /// The effect stage (None on devices without compute shaders or storage textures: layers
     /// with effects are then rendered on the CPU here).
@@ -253,6 +255,16 @@ pub fn prepare_frame(f: &VideoFrame) -> Option<Prepared> {
     }
 }
 
+/// The display transform to resolve a *sequence* plan with: `display` (the sequence's,
+/// `colorman::display_transform(..).gpu_params()`) for a plan composited in its working space,
+/// none for a [`FramePlan::Image`]. That image is `render_sequence`'s output, already converted
+/// for the monitor, and converting it again would tone map and gamut map it twice. (The CPU
+/// images the compositor makes itself, for a transition it cannot mix, are in working space and
+/// keep the transform: they are drawn inside a working-space plan.)
+pub fn sequence_display(plan: &FramePlan, display: Option<filmcraft_color::GpuOutputParams>) -> Option<filmcraft_color::GpuOutputParams> {
+    if matches!(plan, FramePlan::Image(_)) { None } else { display }
+}
+
 /// Convert every layer of a plan for upload. Thread-safe and GPU-free: run it on a worker.
 pub fn prepare(plan: &FramePlan) -> PreparedPlan {
     match plan {
@@ -294,6 +306,7 @@ impl GpuCompositor {
                 tex_entry(2),
                 tex_entry(3),
                 tex_entry(5),
+                tex_entry(6),
             ],
         });
         let blend_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -310,11 +323,21 @@ impl GpuCompositor {
                 tex_entry(3),
                 tex_entry(4),
                 tex_entry(5),
+                tex_entry(6),
             ],
         });
         let final_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("final"),
-            entries: &[wgpu::BindGroupLayoutEntry { binding: 0, ..tex_entry(0) }],
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, ..tex_entry(0) },
+                // the resolve pass's display transform (`set_display_transform`)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+            ],
         });
         let pl =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("layer"), bind_group_layouts: &[Some(&layer_bgl)], immediate_size: 0 });
@@ -420,6 +443,7 @@ impl GpuCompositor {
             accum_readback_buf: None,
             uploads: HashMap::new(),
             clock: 0,
+            display: [0.0; DISPLAY_FLOATS],
             dummy,
             fx,
             transition: transition::PushStage::new(device),
@@ -472,6 +496,36 @@ impl GpuCompositor {
             bytes,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * bpp), rows_per_image: Some(h) },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.uploaded_bytes += bytes.len() as u64;
+        t.create_view(&Default::default())
+    }
+
+    /// Upload the input transform's log decode table as a 1D texture (`GpuCurve::Lut`). A log curve
+    /// is a table on the CPU too, so the shader samples the same numbers instead of a second
+    /// formula: 8192 entries, 32 KB, re-made per layer per frame (the picture's own upload is three
+    /// orders of magnitude larger). The entries are laid out in rows of [`LUT_ROW`] (entry `i` at
+    /// `(i % LUT_ROW, i / LUT_ROW)`), so the table fits the smallest 2D texture limit (WebGL2's
+    /// 2048) instead of being one 8192-wide row.
+    fn lut_texture(&mut self, values: &[f32]) -> wgpu::TextureView {
+        let rows = u32::try_from(values.len().div_ceil(LUT_ROW as usize)).unwrap_or(1).max(1);
+        let mut bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        bytes.resize(LUT_ROW as usize * rows as usize * 4, 0);
+        let t = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("input-lut"),
+            size: wgpu::Extent3d { width: LUT_ROW, height: rows, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * LUT_ROW), rows_per_image: Some(rows) },
+            wgpu::Extent3d { width: LUT_ROW, height: rows, depth_or_array_layers: 1 },
         );
         self.uploaded_bytes += bytes.len() as u64;
         t.create_view(&Default::default())
@@ -628,17 +682,20 @@ impl GpuCompositor {
         let taps = if footprint > 1.25 { footprint.ceil().min(4.0) } else { 1.0 };
         let _ = Matrix::Bt709;
         // colour management (q0..q5), stage by stage as `InputTransform::apply`
-        let q = src.input.map_or([0.0; 24], |p| {
+        let q = src.input.map_or([0.0; 28], |p| {
             let curve = match p.curve {
                 filmcraft_color::GpuCurve::Sdr => 0.0,
                 filmcraft_color::GpuCurve::Linear => 1.0,
                 filmcraft_color::GpuCurve::Pq => 2.0,
                 filmcraft_color::GpuCurve::Hlg => 3.0,
+                // a log curve: the shader samples the CPU's decode table (binding 6)
+                filmcraft_color::GpuCurve::Lut => 4.0,
             };
             let (hl, hk) = p.hlg.unwrap_or(([0.0; 3], 0.0));
             let mx = p.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
             let (sp, dp) = p.tone.unwrap_or((0.0, 0.0));
             let dl = p.desaturate.unwrap_or([0.0; 3]);
+            let (lut_lo, lut_hi, lut_n) = p.lut.unwrap_or((0.0, 1.0, 0));
             let on = |b: bool| if b { 1.0 } else { 0.0 };
             #[rustfmt::skip]
             let q = [
@@ -648,6 +705,7 @@ impl GpuCompositor {
                 mx[1][0], mx[1][1], mx[1][2], sp,
                 mx[2][0], mx[2][1], mx[2][2], dp,
                 dl[0], dl[1], dl[2], on(p.desaturate.is_some()),
+                lut_lo, lut_hi, lut_n as f32, on(p.compress),
             ];
             q
         });
@@ -699,9 +757,56 @@ impl GpuCompositor {
         buf
     }
 
+    /// The resolve pass's display transform uniform ([`set_display_transform`](Self::set_display_transform)).
+    fn display_buffer(&self) -> wgpu::Buffer {
+        let bytes: Vec<u8> = self.display.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("display-u"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buf, 0, &bytes);
+        buf
+    }
+
     /// Composite a plan; returns the output view (sRGB, over black) and its size.
     pub fn composite(&mut self, plan: &FramePlan) -> (wgpu::TextureView, (u32, u32)) {
         self.composite_prepared(plan, None)
+    }
+
+    /// Set the resolve pass's display transform (the sequence's working space → monitor,
+    /// `filmcraft_color::OutputTransform::gpu_params`). Layers are composited in the sequence's
+    /// working linear space, so an HDR / wide-gamut sequence needs it to come out right; `None`
+    /// (the default) leaves the accumulator as the monitor's own space, as for a plain sequence.
+    /// Only the resolve pass uses it: a caller that reads the working-linear accumulator back
+    /// (the export path) is unaffected.
+    pub fn set_display_transform(&mut self, p: Option<filmcraft_color::GpuOutputParams>) {
+        let Some(p) = p else {
+            self.display = [0.0; DISPLAY_FLOATS];
+            return;
+        };
+        let mx = p.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        let (sp, dp) = p.tone.unwrap_or((0.0, 0.0));
+        let dl = p.compress.unwrap_or([0.0; 3]);
+        let on = |b: bool| if b { 1.0 } else { 0.0 };
+        let curve = match p.target.curve() {
+            filmcraft_color::Curve::Sdr | filmcraft_color::Curve::Srgb => 0.0,
+            filmcraft_color::Curve::Linear => 1.0,
+            filmcraft_color::Curve::Pq => 2.0,
+            filmcraft_color::Curve::Hlg => 3.0,
+            // not reachable: `gpu_params` refuses a target the shader cannot encode
+            filmcraft_color::Curve::Log(_) => 0.0,
+        };
+        #[rustfmt::skip]
+        let d = [
+            1.0, curve, on(p.tone.is_some()), on(p.matrix.is_some()),
+            on(p.compress.is_some()), sp, dp, filmcraft_color::REFERENCE_WHITE_NITS as f32,
+            mx[0][0], mx[0][1], mx[0][2], dl[0],
+            mx[1][0], mx[1][1], mx[1][2], dl[1],
+            mx[2][0], mx[2][1], mx[2][2], dl[2],
+        ];
+        self.display = d;
     }
 
     /// [`composite`](Self::composite) with texel conversions already done by [`prepare`] (the
@@ -749,7 +854,9 @@ impl GpuCompositor {
                 if self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side {
                     return None;
                 }
-                let img = filmcraft_render::plan::effect_image(&l.frame, lfx);
+                // decoded through the layer's input transform, as `execute_cpu` does; the image is
+                // then working-space linear, so the new layer has none
+                let img = filmcraft_render::plan::effect_image_with(&l.frame, lfx, l.input.as_deref());
                 Some(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend))
             })
             .collect();
@@ -788,6 +895,14 @@ impl GpuCompositor {
             // HDR / wide-gamut Y'CbCr: the planner's input transform, in the shader (#965)
             let src = SrcInfo { input: l.input.as_ref().filter(|_| src.kind == 2).and_then(|t| t.gpu_params()), ..src };
             let views = self.uploads.get(k).map_or_else(|| std::array::from_fn(|_| self.dummy.clone()), |up| up.views.clone());
+            // a log source's decode table, which the shader samples (`GpuCurve::Lut`) wherever the
+            // source is drawn (onto the working image too); the compositor's own dummy for every
+            // other curve
+            let lut = l.input.as_deref().and_then(filmcraft_color::InputTransform::gpu_lut);
+            let lut_view = match lut {
+                Some(values) => self.lut_texture(values),
+                None => self.dummy.clone(),
+            };
             let job = match &l.fx {
                 Some(lfx) => {
                     // the source drawn onto the working image (box-decimated by n, as the CPU decodes)
@@ -806,6 +921,7 @@ impl GpuCompositor {
                             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
                             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
                             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&lut_view) },
                         ],
                     });
                     match self.fx.as_mut() {
@@ -844,6 +960,7 @@ impl GpuCompositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&tex[1]) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&tex[2]) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&tex[3]) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&lut_view) },
             ];
             let (layout, region) = match (&backdrop_view, l.blend.reads_destination()) {
                 (Some(b), true) => {
@@ -858,10 +975,14 @@ impl GpuCompositor {
         if let Some(f) = self.fx.as_mut() {
             f.end_frame();
         }
+        let display_buf = self.display_buffer();
         let final_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("final"),
             layout: &self.final_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&accum_view) }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&accum_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: display_buf.as_entire_binding() },
+            ],
         });
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite") });
         // Runs of fixed-function layers draw in one pass. A layer that reads the destination
@@ -1002,6 +1123,7 @@ impl GpuCompositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&self.dummy) },
             ],
         });
         let stage = self.fx.as_mut()?;
@@ -1211,8 +1333,13 @@ struct SrcInfo {
     input: Option<filmcraft_color::GpuInputParams>,
 }
 
+/// Entries per row of a log decode table's texture (`lut_texture`; `LUT_ROW` in `composite.wgsl`).
+const LUT_ROW: u32 = 256;
+
 /// Floats in a layer's uniform block (`U` in `composite.wgsl`: 13 vec4).
-const UNIFORM_FLOATS: usize = 52;
+const UNIFORM_FLOATS: usize = 56;
+/// Floats in the display transform uniform (`struct O` in `composite.wgsl`): 5 vec4.
+const DISPLAY_FLOATS: usize = 20;
 
 /// Poll a future once: wgpu's native error scopes resolve immediately. `None` if it is still
 /// pending (then the caller assumes the worst).

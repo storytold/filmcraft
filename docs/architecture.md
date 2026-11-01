@@ -569,9 +569,12 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
 - **Maths** in `filmcraft-color` (`transform`, `log`, `spaces`; formulas and sources in
   [crates/color/README.md](../crates/color/README.md)); the renderer side is `render::colorman`.
 - **Fast path.** A Rec. 709 sequence without wide gamut and media whose metadata says Rec. 709 /
-  sRGB decodes exactly as before, and its layers stay on the GPU. Log, HDR or wide-gamut media,
-  and every layer of an HDR/wide-gamut sequence, are converted on the CPU (the GPU path draws them
-  as pre-rendered images, like layers with effects).
+  sRGB decodes exactly as before, and its layers stay on the GPU. Display-referred HDR or
+  wide-gamut media (PQ, HLG, BT.2020, P3) is converted in the compositor's shader, and an HDR /
+  wide-gamut sequence composites on the GPU too: the resolve pass runs its display transform
+  (working space → monitor, `OutputTransform::gpu_params`); a display transform the shader cannot
+  encode keeps the whole frame on the CPU. Log media is converted in the shader as well, through
+  the CPU's own decode table (`InputTransform::gpu_lut`), camera-gamut compression included.
 - **Outputs.** `RenderOptions::working_output` returns working-space pixels (HDR exports,
   scopes); otherwise the top-level render is converted for an SDR monitor. The other colour
   effects work on display-encoded values clamped to 0..1 (they clip HDR highlights above
