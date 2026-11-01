@@ -78,6 +78,8 @@ impl FilmcraftApp {
         // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
         // passes its release: put the press back, so Paste can paste files or an image (#611).
         let mut swallowed = None;
+        // Holding Cmd+V pastes once: its auto-repeat presses would paste again every repeat (#3448).
+        i.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::V, pressed: true, repeat: true, modifiers: m, .. } if m.command));
         for e in &i.events {
             match e {
                 egui::Event::Key { key: egui::Key::V, pressed, modifiers: m, .. } => {
@@ -320,5 +322,57 @@ mod text_focus_shortcut_tests {
         for key in [Key::A, Key::R, Key::J, Key::Z, Key::C, Key::T] {
             assert!(lets_text_field_keep(Modifiers::NONE, true), "{key:?} is a Telex key the tools stole");
         }
+    }
+}
+
+#[cfg(test)]
+mod paste_key_tests {
+    use egui::{Event, Key, Modifiers};
+
+    fn app() -> super::FilmcraftApp {
+        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.bindings = super::menus::bindings(&app);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        app
+    }
+
+    fn v(pressed: bool, repeat: bool) -> Event {
+        Event::Key { key: Key::V, physical_key: Some(Key::V), pressed, repeat, modifiers: Modifiers::COMMAND }
+    }
+
+    /// One pass of `match_shortcuts` with Cmd held, returning how many pastes fired.
+    fn pastes(app: &mut super::FilmcraftApp, event: Event) -> usize {
+        let mut input = egui::InputState::default();
+        input.modifiers = Modifiers::COMMAND;
+        input.events = vec![event];
+        app.match_shortcuts(&mut input, false, false).iter().filter(|id| *id == "edit.paste").count()
+    }
+
+    /// Holding Cmd+V pastes once: the key's auto-repeat presses do not paste again (#3448).
+    #[test]
+    fn held_cmd_v_pastes_once() {
+        let mut app = app();
+        let fired: usize = [v(true, false), v(true, true), v(true, true), v(false, false)].into_iter().map(|e| pastes(&mut app, e)).sum();
+        assert_eq!(fired, 1, "down, repeat, repeat, up must paste exactly once");
+    }
+
+    /// On macOS the native menu takes the Cmd+V press and pastes; its release alone then reaches
+    /// egui and must not paste a second time (#3448).
+    #[test]
+    fn release_after_native_menu_paste_does_not_paste_again() {
+        let mut app = app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.command_inbox = Some(rx);
+        tx.send("edit.paste".to_string()).unwrap();
+        app.logic_command_inbox(&egui::Context::default());
+        assert_eq!(pastes(&mut app, v(false, false)), 0, "the release after the menu's paste");
+    }
+
+    /// With no text on the clipboard egui-winit drops the Ctrl+V press but passes its release:
+    /// that release still pastes once (#611).
+    #[test]
+    fn lone_release_still_pastes_once() {
+        let mut app = app();
+        assert_eq!(pastes(&mut app, v(false, false)), 1);
     }
 }
