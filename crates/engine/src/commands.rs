@@ -2678,7 +2678,7 @@ fn build() -> Vec<CommandSpec> {
             "Sequence Settings…",
             ["Sequence"],
             None,
-            r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?,"dropFrame":bool?,"maxRenderQuality":bool?,"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"scaleMotion":bool=false}"#,
+            r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?,"dropFrame":bool?,"videoDisplay":"timecode|feet35|feet16|frames"?,"maxRenderQuality":bool?,"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"scaleMotion":bool=false}"#,
             has_seq,
             |s, p| {
                 const CMD: &str = "sequence.settings";
@@ -2702,6 +2702,14 @@ fn build() -> Vec<CommandSpec> {
                     None => None,
                 };
                 let drop_frame = bool_p(p, "dropFrame");
+                let display = match str_p(p, "videoDisplay") {
+                    Some(d) => Some(
+                        filmcraft_time::TimeDisplay::from_id(d)
+                            .filter(|x| filmcraft_time::TimeDisplay::VIDEO.contains(x))
+                            .ok_or_else(|| bad(CMD, format!("unknown videoDisplay `{d}` (timecode, feet35, feet16, frames)")))?,
+                    ),
+                    None => None,
+                };
                 let rate = fps.or_else(|| s.active_sequence().map(|q| q.settings.frame_rate)).unwrap_or(FrameRate::FPS_23_976);
                 if drop_frame == Some(true) && !rate.supports_drop_frame() {
                     return Err(bad(CMD, format!("drop-frame timecode needs a 29.97, 59.94 or 119.88 fps timebase, not {rate}")));
@@ -2731,6 +2739,9 @@ fn build() -> Vec<CommandSpec> {
                     }
                     if let Some(df) = drop_frame {
                         q.settings.drop_frame = df;
+                    }
+                    if let Some(d) = display {
+                        q.settings.display = d;
                     }
                     if let Some(v) = bool_p(&p, "maxRenderQuality") {
                         q.settings.max_render_quality = v;
