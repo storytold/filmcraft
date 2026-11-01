@@ -114,6 +114,11 @@ pub trait Services: Send + Sync {
     fn write_file_new(&self, _path: &str, _data: &[u8]) -> std::io::Result<()> {
         Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "exclusive file creation is unavailable on this host"))
     }
+    /// Whether an occupied regular file has exactly these bytes. Symlinks must return false.
+    /// Hosts that cannot verify return false.
+    fn existing_file_matches(&self, _path: &str, _data: &[u8]) -> std::io::Result<bool> {
+        Ok(false)
+    }
     /// Size of a file in bytes (an error when it is missing). Hosts should override this: the
     /// default reads the whole file.
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
@@ -133,6 +138,11 @@ pub trait Services: Send + Sync {
     /// File names in a directory (image sequence detection). `None`: the host cannot list
     /// directories; sequences are then found by probing consecutive frame numbers.
     fn list_dir(&self, _dir: &str) -> Option<std::io::Result<Vec<String>>> {
+        None
+    }
+    /// Direct child names within both limits; return an error rather than a partial listing.
+    /// Hosts without bounded directory listing leave the importer to probe candidate paths.
+    fn list_dir_bounded(&self, _dir: &str, _max_entries: usize, _max_bytes: usize) -> Option<std::io::Result<Vec<String>>> {
         None
     }
     /// A loader the media pool keeps for reading files later (image sequence frames on demand).
@@ -163,6 +173,33 @@ pub trait Services: Send + Sync {
 
 /// Native filesystem services.
 pub struct FsServices;
+
+fn same_file_snapshot(first: &std::fs::Metadata, second: &std::fs::Metadata) -> bool {
+    if !first.file_type().is_file() || !second.file_type().is_file() || first.len() != second.len() {
+        return false;
+    }
+    let (Ok(first_modified), Ok(second_modified)) = (first.modified(), second.modified()) else {
+        return false;
+    };
+    if first_modified != second_modified {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        first.dev() == second.dev() && first.ino() == second.ino() && first.ctime() == second.ctime() && first.ctime_nsec() == second.ctime_nsec()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        first.creation_time() == second.creation_time() && first.last_write_time() == second.last_write_time()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
 impl Services for FsServices {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
         std::fs::read(path)
@@ -188,6 +225,40 @@ impl Services for FsServices {
         }
         filmcraft_format::atomic_write_new(path, data)
     }
+    fn existing_file_matches(&self, path: &str, data: &[u8]) -> std::io::Result<bool> {
+        use std::io::Read;
+
+        let before = std::fs::symlink_metadata(path)?;
+        let Ok(expected_len) = u64::try_from(data.len()) else { return Ok(false) };
+        if !before.file_type().is_file() || before.len() != expected_len {
+            return Ok(false);
+        }
+        #[cfg(windows)]
+        let mut file = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_SHARE_READ: u32 = 0x0000_0001;
+            std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(path)?
+        };
+        #[cfg(not(windows))]
+        let mut file = std::fs::File::open(path)?;
+        if !same_file_snapshot(&before, &file.metadata()?) {
+            return Ok(false);
+        }
+        let mut buffer = [0_u8; 8192];
+        for chunk in data.chunks(buffer.len()) {
+            file.read_exact(&mut buffer[..chunk.len()])?;
+            if buffer[..chunk.len()] != *chunk {
+                return Ok(false);
+            }
+        }
+        let mut extra = [0_u8];
+        if file.read(&mut extra)? != 0 {
+            return Ok(false);
+        }
+        let opened_after = file.metadata()?;
+        let pathname_after = std::fs::symlink_metadata(path)?;
+        Ok(same_file_snapshot(&before, &opened_after) && same_file_snapshot(&opened_after, &pathname_after))
+    }
     fn file_size(&self, path: &str) -> std::io::Result<u64> {
         let m = std::fs::metadata(path)?;
         if m.is_file() { Ok(m.len()) } else { Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{path} is not a file"))) }
@@ -195,6 +266,22 @@ impl Services for FsServices {
     fn list_dir(&self, dir: &str) -> Option<std::io::Result<Vec<String>>> {
         let dir = if dir.is_empty() { "." } else { dir };
         Some(std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect()))
+    }
+    fn list_dir_bounded(&self, dir: &str, max_entries: usize, max_bytes: usize) -> Option<std::io::Result<Vec<String>>> {
+        let dir = if dir.is_empty() { "." } else { dir };
+        Some((|| {
+            let mut names = Vec::new();
+            let mut bytes = 0_usize;
+            for entry in std::fs::read_dir(dir)? {
+                let name = entry?.file_name().into_string().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "non-UTF-8 directory entry"))?;
+                bytes = bytes.checked_add(name.len()).ok_or_else(|| std::io::Error::other("directory listing byte limit exceeded"))?;
+                if names.len() >= max_entries || bytes > max_bytes {
+                    return Err(std::io::Error::other("directory listing limit exceeded"));
+                }
+                names.push(name);
+            }
+            Ok(names)
+        })())
     }
     fn file_loader(&self) -> Option<filmcraft_media::sequence::FrameLoader> {
         Some(std::sync::Arc::new(|p: &str| std::fs::read(p)))
