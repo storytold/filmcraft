@@ -420,3 +420,97 @@ fn rtmd_fields_reject_drop_frame_skipped_labels() {
     assert_eq!(df30(1, 0, 0), None);
     assert_eq!(df30(1, 0, 2), Some((0, 1, 0, 2, true)));
 }
+
+/// Android phones (`VID….mp4`, HEVC 4K60) step decode times by 9 units of 90 kHz a sample and
+/// show the pictures 1/60 s apart through composition offsets. The frame rate came from the
+/// sample durations and read 10000 fps, so a 4K60 clip in a 4K60 sequence was never native and
+/// New Sequence From Clip made a 10000 fps sequence.
+#[test]
+fn frame_rate_follows_the_pictures_not_the_decode_steps() {
+    let n = 12u16;
+    // decode time 9·k, presentation time 1500·k; the last sample runs to the end of the clip
+    let samples: Vec<(u32, i32)> = (0..n).map(|k| (if k + 1 < n { 9 } else { 1500 * u32::from(n) - 9 * u32::from(n - 1) }, 1491 * i32::from(k))).collect();
+    let src = timed_prores("VID20261022185143.mp4", &samples);
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
+    let luma = |k: i64| {
+        let f = src.video_frame(FrameRequest::full(Tick::from_rational(k, 1, 60))).expect("frame");
+        let l = f.luma8();
+        l.iter().map(|&v| u32::from(v)).sum::<u32>() / l.len().max(1) as u32
+    };
+    let seen: Vec<u32> = (0..i64::from(n)).map(luma).collect();
+    assert!(seen.windows(2).all(|w| w[0] < w[1]), "one picture per frame, in order: {seen:?}");
+}
+
+#[test]
+fn picture_durations_ignore_order_repeats_and_hostile_times() {
+    assert_eq!(picture_durations([0i64, 3000, 1500, 4500].into_iter()), vec![1500, 1500, 1500]);
+    assert!(picture_durations([7i64, 7, 7].into_iter()).is_empty());
+    assert!(picture_durations(std::iter::empty()).is_empty());
+    assert_eq!(picture_durations([i64::MIN, 0, i64::MAX].into_iter()), Vec::<u32>::new(), "gaps past u32 are left out");
+}
+
+/// A 64×32 ProRes MOV at 90 kHz with one sample per (duration, composition offset), each picture
+/// brighter than the one before.
+fn timed_prores(name: &str, samples: &[(u32, i32)]) -> Mp4Source {
+    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+    let t = mux.add_track(TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 90_000)).expect("track");
+    for (k, &(duration, composition_offset)) in samples.iter().enumerate() {
+        let mut fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
+        fr.y.fill(100 + (60 * k as u16) % 900);
+        let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
+        mux.write_sample(t, WriteSample { data: &data, duration, composition_offset, is_sync: true }).expect("sample");
+    }
+    Mp4Source::open(name, mux.finish().expect("finish").into_inner().into()).expect("open")
+}
+
+/// 59.94 fps over 90 kHz: a frame lasts 1501.5 units, so the samples alternate 1501 and 1502 and
+/// their median alone reads 59.92 fps.
+#[test]
+fn frame_rate_of_durations_rounded_to_the_timescale() {
+    let src = timed_prores("a.mov", &(0..24).map(|k| (1501 + k % 2, 0)).collect::<Vec<_>>());
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_59_94));
+}
+
+/// #1282: phones stamp pictures just off their grid. 60 fps samples with every other picture 10
+/// units late are 1510 and 1490 apart, whose median alone reads 59.60 fps (and their slope 60).
+#[test]
+fn frame_rate_of_pictures_just_off_their_grid() {
+    let src = timed_prores("a.mov", &(0..24).map(|k| (1500, if k % 2 == 1 { 10 } else { 0 })).collect::<Vec<_>>());
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
+}
+
+/// A picture far after the others (a gap of about 2^31 units) is left out of the mean rather than
+/// overflowing the comparison with the median (a panic in a checked build).
+#[test]
+fn frame_rate_ignores_a_gap_of_2_to_the_31() {
+    let src = timed_prores("a.mov", &(0..24).map(|k| (1500, if k == 23 { 2_000_000_000 } else { 0 })).collect::<Vec<_>>());
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
+}
+
+/// 60 fps pictures that shift 10 units once, halfway: one picture 1510 units after the one before.
+#[test]
+fn frame_rate_of_pictures_shifted_once() {
+    let src = timed_prores("a.mov", &(0..24).map(|k| (1500, if k >= 12 { 10 } else { 0 })).collect::<Vec<_>>());
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
+}
+
+/// 29.97 fps with B-frames, stored the way the Android phones step their decode times (1 unit a
+/// sample): each P picture comes before the two B pictures it is shown after, so the pictures are
+/// 3003 units apart only once sorted by the time they are shown. In stored order they read 3, -2
+/// and 1 frames apart, and the durations read 90000 fps.
+#[test]
+fn frame_rate_of_b_frames_sorts_the_pictures_by_the_time_they_are_shown() {
+    // shown as 0, 3, 1, 2, 6, 4, 5, …: an I picture, then a P and its two B pictures in turn
+    let shown: Vec<i32> = std::iter::once(0).chain((0..8).flat_map(|g| [3 * g + 3, 3 * g + 1, 3 * g + 2])).collect();
+    let n = shown.len() as i32;
+    let samples: Vec<(u32, i32)> = (0..n).map(|k| (if k + 1 < n { 1 } else { 3003 * n as u32 }, shown[k as usize] * 3003 - k)).collect();
+    let src = timed_prores("VID20261101120000.mp4", &samples);
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_29_97));
+}
+
+/// A track of one picture has no time from one picture to the next: its duration stands in.
+#[test]
+fn frame_rate_of_a_single_picture_comes_from_its_duration() {
+    let src = timed_prores("a.mov", &[(1500, 0)]);
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_60));
+}
