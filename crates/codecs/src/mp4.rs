@@ -42,7 +42,8 @@ fn nominal_rate(timescale: u32, samples: &[Sample]) -> Option<FrameRate> {
     let mut durs: Vec<u32> = samples.iter().map(|s| s.duration).filter(|&d| d > 0).collect();
     durs.sort_unstable();
     let &median = durs.get(durs.len() / 2)?;
-    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) * 4 <= median).map(|&d| f64::from(d)).collect();
+    // Divide, don't multiply: `abs_diff * 4` wraps for a duration near `u32::MAX` and would keep the outlier (#1700).
+    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) <= median / 4).map(|&d| f64::from(d)).collect();
     let mean = near.iter().sum::<f64>() / near.len().max(1) as f64;
     if mean <= 0.0 {
         return None;

@@ -79,6 +79,15 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G4. Crashes at start-up, and no test CI on pull requests
 
+- Regression coverage for the reliability batch: linked-clip selection and deletion (#1163),
+  unreadable overlays preserving lower tracks (#1563), VP9 worker starvation (#1283), H.264 YUV
+  conversion hangs (#1329), Unicode image-sequence names (#1565) and file URLs (#1591), malformed
+  FCPXML times and FCP7 timebases, healing cuts without losing audio choices or links (#1786),
+  SCC/MCC pop-on timing (#1791), and phone frame-rate detection (#1700). Tests live in the
+  engine individual-selection, sequence and multicam groups; render offline tests; VP9
+  conformance; export YUV tests; media sequence tests; interchange unit and mutation tests;
+  caption round trips; and codec rounded-timestamp tests. The combined interchange fuzzer no
+  longer exempts Unicode URLs, and duration-outlier arithmetic has an overflow regression.
 - **Have:** a graphics start-up fallback (#820): after two starts in a row that died within 15 s
   of launch without painting (a driver crash in wgpu instance / device creation; hangs, later
   crashes and concurrent instances don't count), the next launch moves on to DirectX 12 only
@@ -345,6 +354,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-30 | minor | G14: three key languages have no catalog (Hindi, Arabic, Vietnamese); Korean, Italian, German and Russian are near-complete; Ukrainian is menus only; G13 GIF transparency retained |
+| 2026-10-14 | minor | Record regression coverage for ten reliability fixes and their integration guards; parity estimates unchanged |
 | 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461) |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
