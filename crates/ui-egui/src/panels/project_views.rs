@@ -538,8 +538,13 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
     {
         c.width = *w;
     }
-    let width = LEAD + cols.iter().map(|c| c.width).sum::<f32>() + 8.0;
     let row_h = if thumbs { list_thumb_row_height(v.icon_size, f) } else { (f * 2.0).max(22.0) };
+    // a zoomed thumbnail keeps room for the name beside it: the Name column is drawn wide enough
+    // (its saved width is unchanged)
+    if thumbs && let Some(name) = cols.first_mut() {
+        name.width = name.width.max(list_name_width(row_h));
+    }
+    let width = LEAD + cols.iter().map(|c| c.width).sum::<f32>() + 8.0;
     let lc = ListCtx { row_h, font: f, thumbs, width: width.max(rect.width()), cols };
     let header_h = (f * 1.8).max(20.0);
     let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + header_h), rect.max);
@@ -1242,6 +1247,12 @@ pub(crate) fn freeform_zoom(icon_size: f32) -> f32 {
 fn list_thumb_row_height(icon_size: f32, font: f32) -> f32 {
     let plain = (font * 2.0).max(22.0);
     if icon_size.is_finite() { (icon_size * 0.4).max(plain) } else { (font * 3.6).max(44.0) }
+}
+
+/// The narrowest Name column that shows a row's thumbnail and still 120 points of its name, for
+/// items one bin deep (the row draws the thumbnail 16:9 at the row height less 6).
+fn list_name_width(row_h: f32) -> f32 {
+    (row_h - 6.0).max(0.0) * 16.0 / 9.0 + 14.0 * 2.0 + 18.0 + 120.0
 }
 
 fn cards_stack(cards: &[Card], item: u64) -> Option<u64> {

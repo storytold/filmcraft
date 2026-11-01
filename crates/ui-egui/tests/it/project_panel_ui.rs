@@ -1620,6 +1620,13 @@ fn zoom_sizes_list_thumbnails_and_the_freeform_canvas() {
     d.exec("project.view.set", json!({"iconSize": 300.0}));
     let big = row(&mut d);
     assert!(small > plain && (big - 120.0).abs() < 1.0, "rows {plain} / {small} / {big}");
+    // the bigger thumbnail does not cover the name or the next column: the Name column widens
+    let name = d.rect("project.list.header.Name");
+    let next = d.rect("project.list.header.Frame Rate");
+    let thumb_w = (big - 6.0) * 16.0 / 9.0;
+    assert!(name[2] >= thumb_w + 120.0 && next[0] >= name[0] + name[2] - 1.0, "Name {name:?}, Frame Rate {next:?}");
+    let saved = d.app().session.prefs.project_panel.view.columns.first().map(|c| c.width);
+    assert!(saved.is_some_and(|w| w < name[2]), "the saved width is unchanged: {saved:?}");
 
     // Freeform: twice the size draws every card twice as big and twice as far from the origin
     d.exec("project.view.set", json!({"iconSize": 110.0}));
