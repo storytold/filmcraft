@@ -42,7 +42,10 @@ mod abi_tests;
 
 use std::collections::VecDeque;
 
+use filmcraft_codecs::hw::NalCodec;
 use filmcraft_isobmff::HevcConfig;
+
+use crate::annexb;
 
 pub use self::session::{Caps, Codec, Params, Sei, Signal};
 use self::session::{Locked, Session, Submitted};
@@ -550,94 +553,35 @@ fn check_caps(caps: &Caps, cfg: &Config) -> Result<(), String> {
 
 /// The NAL units of an Annex B byte stream (start codes `00 00 01` / `00 00 00 01`).
 pub fn annex_b_nals(data: &[u8]) -> Vec<&[u8]> {
-    let mut starts = Vec::new();
-    let mut i = 0usize;
-    while let Some(w) = data.get(i..i.saturating_add(3)) {
-        if w == [0, 0, 1] {
-            starts.push(i + 3);
-            i += 3;
-        } else {
-            i += 1;
-        }
-    }
-    let mut out = Vec::with_capacity(starts.len());
-    for (k, &s) in starts.iter().enumerate() {
-        let mut e = starts.get(k + 1).map_or(data.len(), |n| n.saturating_sub(3));
-        // trailing zero bytes belong to the next start code (4-byte form) or are padding
-        while e > s && data.get(e - 1) == Some(&0) {
-            e -= 1;
-        }
-        if let Some(n) = data.get(s..e).filter(|n| !n.is_empty()) {
-            out.push(n);
-        }
-    }
-    out
+    annexb::nals(data)
 }
 
 /// Annex B to 4-byte length-prefixed NAL units, dropping parameter sets (they live in the `avcC`)
 /// and access unit delimiters. Errors on a stream without NAL units.
 pub fn annex_b_to_length_prefixed(data: &[u8]) -> Result<Vec<u8>, String> {
-    annex_b_to_length_prefixed_for(Codec::H264, data)
+    annexb::to_length_prefixed(NalCodec::H264, data)
 }
 
 /// The NAL unit type of a NAL unit (`None` when it is too short to have a header).
 pub fn nal_type(codec: Codec, nal: &[u8]) -> Option<u8> {
-    match codec {
-        Codec::H264 => nal.first().map(|b| b & 0x1f),
-        // two header bytes: forbidden_zero_bit, nal_unit_type (6), layer id (6), temporal id plus 1 (3)
-        Codec::Hevc => match nal {
-            [b, _, ..] => Some((b >> 1) & 0x3f),
-            _ => None,
-        },
-    }
+    annexb::nal_type(codec.nal(), nal)
 }
 
 /// [`annex_b_to_length_prefixed`] for a codec: H.264 drops SPS / PPS / AUD (types 7 to 9); HEVC drops
 /// VPS / SPS / PPS / AUD (32 to 35) and end-of-sequence / end-of-bitstream markers (36, 37), since
 /// the file is one coded video sequence. A NAL unit too short for its header is dropped.
 pub fn annex_b_to_length_prefixed_for(codec: Codec, data: &[u8]) -> Result<Vec<u8>, String> {
-    let nals = annex_b_nals(data);
-    if nals.is_empty() {
-        return Err("the encoder produced no NAL units".into());
-    }
-    let mut out = Vec::with_capacity(data.len());
-    for n in nals {
-        let dropped = match (codec, nal_type(codec, n)) {
-            (_, None) => true,
-            (Codec::H264, Some(t)) => matches!(t, 7..=9),
-            (Codec::Hevc, Some(t)) => matches!(t, 32..=37),
-        };
-        if dropped {
-            continue;
-        }
-        let len = u32::try_from(n.len()).map_err(|_| "a NAL unit longer than 4 GiB".to_string())?;
-        out.extend_from_slice(&len.to_be_bytes());
-        out.extend_from_slice(n);
-    }
-    if out.is_empty() {
-        return Err("the encoder produced no picture data".into());
-    }
-    Ok(out)
+    annexb::to_length_prefixed(codec.nal(), data)
 }
 
 /// The SPS and PPS NAL units of an Annex B byte string.
 pub fn split_parameter_sets(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let nals = annex_b_nals(data);
-    let find = |t: u8| nals.iter().find(|n| n.first().is_some_and(|b| b & 0x1f == t)).map(|n| n.to_vec());
-    match (find(7), find(8)) {
-        (Some(s), Some(p)) => Ok((s, p)),
-        _ => Err("the encoder returned no SPS / PPS".into()),
-    }
+    annexb::split_h264_parameter_sets(data)
 }
 
 /// The VPS, SPS and PPS NAL units of an Annex B byte string from an HEVC encoder.
 pub fn split_hevc_parameter_sets(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
-    let nals = annex_b_nals(data);
-    let find = |t: u8| nals.iter().find(|n| nal_type(Codec::Hevc, n) == Some(t)).map(|n| n.to_vec());
-    match (find(32), find(33), find(34)) {
-        (Some(v), Some(s), Some(p)) => Ok((v, s, p)),
-        _ => Err("the encoder returned no VPS / SPS / PPS".into()),
-    }
+    annexb::split_hevc_parameter_sets(data)
 }
 
 #[cfg(test)]
