@@ -154,8 +154,10 @@ await start("filmcraft_canvas"); // the canvas id the app renders on
 - The assets carry their build hash as a `?v=` query (as `index.html` loads them), so they can
   be cached forever.
 - FilmCraft has no user names that work could be signed with, so there is no `?author=`.
-- An unframed page that uses `?host=parent` keeps the normal app with downloads; only the exact
-  `data-host` value `page` turns this mode on.
+- An unframed page that uses `?host=parent` keeps the normal app with downloads.
+  `data-host="page"` turns this mode on only when `?host=parent` is absent: if `?host=parent` is
+  present it takes precedence, so a same-origin framed page uses the parent bridge, while an
+  unframed or cross-origin page gets no bridge and keeps normal downloads.
 
 ## Renderer selection and fallback flags
 
