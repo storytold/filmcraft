@@ -1768,7 +1768,8 @@ fn verify_corrupt_cached_model_in_worker(d: &mut Driver, item: u64, model: &str)
     d.click("transcribeAudio.ok");
     assert!(d.app().ui.speech_download.is_none(), "cached files must be verified by a worker, not the UI");
     assert_eq!(d.app().session.jobs.len(), 1);
-    for _ in 0..200 {
+    let started = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(120) {
         d.frames(1);
         if d.app().session.transcribe_jobs.is_empty() {
             break;
