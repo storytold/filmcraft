@@ -255,6 +255,12 @@ fn effect_controls_double_clicking_a_property_name_resets_it() {
     let (keys, value) = d.scale(&clip);
     assert!(keys.is_empty(), "{keys:?}");
     assert_eq!(value, 100.0);
+    // the double-click neither folds nor renames anything: the row is still there
+    d.rect("effectControls.motion.0.scale.name");
+    // and the reset is one undo step
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert_eq!(d.scale(&clip).1, 150.0, "one undo brings the value back");
 }
 
 /// Crop is not on a clip until it is used: its diamond applies the effect, then adds the keyframe.
