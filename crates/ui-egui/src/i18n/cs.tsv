@@ -3633,3 +3633,139 @@
 	Could not check for updates:\n{error}	Aktualizace se nepodařilo zkontrolovat:\n{error}
 	FilmCraft {version} is currently the newest version available.	FilmCraft {version} je nejnovější dostupná verze.
 	Looks for a newer FilmCraft release and offers to update.	Vyhledá novější vydání FilmCraftu a nabídne aktualizaci.
+
+# Czech catch-up: interface strings added through 2026-11-01.
+# Markers: properties, types, ownership, navigation and validation.
+	A range marker needs a positive duration	Značka rozsahu musí mít kladnou dobu trvání
+	Author	Autor
+	Chapter	Kapitola
+	Chapter Marker	Značka kapitoly
+	Comment Marker	Značka komentáře
+	Delete Marker	Odstranit značku
+	Edit Marker	Upravit značku
+	Edit Marker…	Upravit značku…
+	Flash Cue Point	Bod Flash Cue
+	Marker changed or was removed. Reopen it to continue.	Značka byla změněna nebo odstraněna. Chcete-li pokračovat, znovu ji otevřete.
+	Marker owner is unavailable	Položka, ke které značka patří, není k dispozici
+	Next	Další
+	Notes	Poznámky
+	Open Link	Otevřít odkaz
+	Opens this address in your web browser	Otevře tuto adresu ve webovém prohlížeči
+	Previous	Předchozí
+	Range marker	Značka rozsahu
+	Segmentation Marker	Značka segmentace
+	Sequence: {name}	Sekvence: {name}
+	Source: {name}	Zdroj: {name}
+	Source: {name} (shared source markers)	Zdroj: {name} (sdílené značky zdroje)
+	Time is outside the supported range	Čas je mimo podporovaný rozsah
+	URL	URL
+	Web Link	Webový odkaz
+	Enter a valid HH:MM:SS:FF timecode	Zadejte platný časový kód HH:MM:SS:FF
+	Enter a valid HTTP or HTTPS URL without credentials	Zadejte platnou URL adresu HTTP nebo HTTPS bez přihlašovacích údajů
+
+# Markers panel: search, selection and bulk operations.
+	Color selected markers	Obarvit vybrané značky
+	Delete selected markers	Odstranit vybrané značky
+	No markers	Žádné značky
+	No matching markers	Žádné odpovídající značky
+	No sequence open	Není otevřena žádná sekvence
+	No source clip open	Není otevřen žádný zdrojový klip
+	Search markers	Hledat značky
+	Search name, notes, author	Hledat v názvu, poznámkách a jménu autora
+	Select all	Vybrat vše
+	Select all visible markers	Vybrat všechny viditelné značky
+	Delete Markers	Odstranit značky
+	Edit Markers	Upravit značky
+	{count} selected	Vybráno: {count}
+
+# Project colour swatches and the shared custom-colour picker.
+	Add Custom Color	Přidat vlastní barvu
+	Add and apply	Přidat a použít
+	Add color	Přidat barvu
+	Add custom color	Přidat vlastní barvu
+	Add custom color…	Přidat vlastní barvu…
+	Choose Color…	Vybrat barvu…
+	Choose color with system picker	Vybrat barvu systémovým nástrojem
+	Color picker	Výběr barvy
+	Custom Color…	Vlastní barva…
+	Edit Custom Color	Upravit vlastní barvu
+	Edit color	Upravit barvu
+	Editing or removing a swatch leaves assigned colors unchanged.	Úprava nebo odebrání vzorku barvy nezmění již přiřazené barvy.
+	Enter six hex digits, for example FF80C0.	Zadejte šest šestnáctkových číslic, například FF80C0.
+	Hex	Hex
+	Hex color	Barva v šestnáctkovém zápisu
+	Manage Colors	Spravovat barvy
+	Manage Colors…	Spravovat barvy…
+	No saved colors	Žádné uložené barvy
+	Project Colors	Barvy projektu
+	Remove saved color	Odebrat uloženou barvu
+	Remove Custom Color	Odebrat vlastní barvu
+	Save color	Uložit barvu
+	System color picker unavailable: {error}	Systémový nástroj pro výběr barvy není k dispozici: {error}
+
+# Three-Way Color Corrector and Luma Key effect parameters.
+	Three-Way Color Corrector	Třípásmová korekce barev
+	Highlight Balance	Vyvážení světel
+	Highlight Hue	Odstín světel
+	Highlight Level	Úroveň světel
+	Highlight Softness	Měkkost přechodu světel
+	Midtone Balance	Vyvážení středních tónů
+	Midtone Hue	Odstín středních tónů
+	Midtone Level	Úroveň středních tónů
+	Shadow Balance	Vyvážení stínů
+	Shadow Hue	Odstín stínů
+	Shadow Level	Úroveň stínů
+	Shadow Softness	Měkkost přechodu stínů
+	Shadow Threshold	Práh stínů
+	Tonal Range	Tónový rozsah
+	Key Out Brights	Klíčovat světlé oblasti
+
+# Export presets, range readouts and GIF transparency.
+	TikTok 1080×1920	TikTok 1080×1920
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 na výšku 9:16, měřítko pro vyplnění, VBR s jedním průchodem, 10 Mb/s, normalizace vnímané hlasitosti na −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 na výšku 9:16, měřítko pro vyplnění, VBR s jedním průchodem, 12 Mb/s, normalizace vnímané hlasitosti na −14 LUFS
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 na výšku 9:16, měřítko pro vyplnění, VBR s jedním průchodem, 8 Mb/s, normalizace vnímané hlasitosti na −14 LUFS
+	1 frame ({seconds} s)	1 snímek ({seconds} s)
+	{frames} frames ({seconds} s)	Snímků: {frames} ({seconds} s)
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	Rozsah mezi vstupním a výstupním bodem zdroje je pouze 1 snímek. Pro export celé sekvence zvolte Celý zdroj.
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	Při zapnutí je průhlednost GIFu dvoustavová: alfa pod 128 znamená průhlednost, 128 a více znamená neprůhlednost.
+
+# Sequence/clip mismatch dialog.
+	Change Sequence Settings	Změnit nastavení sekvence
+	Change the sequence to match the clip's settings?	Změnit nastavení sekvence podle nastavení klipu?
+	Clip Mismatch Warning	Varování při neshodě klipu
+	Clip: {settings}	Klip: {settings}
+	Keep Existing Settings	Ponechat stávající nastavení
+	Sequence: {settings}	Sekvence: {settings}
+	This clip does not match the sequence settings.	Tento klip neodpovídá nastavení sekvence.
+
+# Project save status, caption export and file replacement.
+	Copy of the project saved to {path}	Kopie projektu uložena do {path}
+	Project saved to {path}	Projekt uložen do {path}
+	Caption Export Settings	Nastavení exportu titulků
+	Exported {path} as {format}, from its file extension	Exportováno do {path} ve formátu {format} podle přípony souboru
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	Soubor {name} již existuje, proto se nic neexportovalo. Chcete-li jej nahradit, vyberte jej v dialogu pro uložení.
+	Replace	Nahradit
+	Replace File	Nahradit soubor
+	“{file}” already exists in “{folder}”. Do you want to replace it?	Soubor „{file}“ již ve složce „{folder}“ existuje. Chcete jej nahradit?
+
+# Timeline, clip editing and transitions.
+	Add Track	Přidat stopu
+	Delete Track	Odstranit stopu
+	Delete Clips	Odstranit klipy
+	Audio Names	Názvy zvukových klipů
+	Video Names	Názvy videoklipů
+	Show Audio Names	Zobrazit názvy zvukových klipů
+	Show Video Names	Zobrazit názvy videoklipů
+	Enter a positive duration within the supported speed range.	Zadejte kladnou dobu trvání v podporovaném rozsahu rychlosti.
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Chcete-li přejmenovat položku, vyberte jeden klip (nebo propojený klip) na časové ose nebo jednu položku v panelu projektu
+	Set as Default Transition	Nastavit jako výchozí přechod
+
+# Graphics text formatting and responsive timing.
+	Strikethrough	Přeškrtnutí
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	„Responzivní návrh – čas“ přemapuje klíčové snímky vrstev grafiky; efekty klipu jako Krytí a Pohyb zachovávají čas média
+
+# Control server status.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Ovládací server je vypnutý: FILMCRAFT_CONTROL_TOKEN musí obsahovat 64 náhodných šestnáctkových znaků (viz docs/control-protocol.md)
