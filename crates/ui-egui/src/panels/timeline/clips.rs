@@ -191,7 +191,13 @@ pub(super) fn draw_clip(
     t: &Tokens,
     rate: FrameRate,
 ) {
-    let base = label_color(app, it.label);
+    let base = it.custom_label_color.map_or_else(
+        || label_color(app, it.label),
+        |c| {
+            let [r, g, b] = c.0;
+            Color32::from_rgb(r, g, b)
+        },
+    );
     let inr = in_range(app, it);
     let fill = if !it.enabled {
         // Keep the configured label hue when disabled, with an opaque darker fill (#1190).
@@ -248,22 +254,31 @@ pub(super) fn draw_clip(
         draw_waveform(app, p, body, it, Color32::from_rgb(fill.r() / 2, fill.g() / 2, fill.b() / 2));
     }
     let clip_p = p.with_clip_rect(body.shrink2(vec2(1.0, 0.0)).intersect(p.clip_rect()));
-    // name band
-    if w > 24.0 {
-        let mut label = it.name.clone();
-        if let Some(m) = it.multicam.filter(|m| m.enabled) {
-            let cam = app.session.project.sequence(it.item).and_then(|q| q.cameras().cameras.get(m.angle as usize).map(|c| c.name.clone()));
-            label = format!("[MC{}] {}", m.angle + 1, cam.unwrap_or(label));
-        }
-        if (it.speed - 1.0).abs() > 1e-6 || it.reverse {
-            label = format!("{label} [{}%]", ((if it.reverse { -1.0 } else { 1.0 }) * it.speed * 100.0).round());
-        }
+    // name band (View ▸ the wrench menu's Show Video Names / Show Audio Names)
+    // a hidden name keeps the multicam angle and the speed, which say something the name does not
+    let names = if kind == TrackKind::Video { app.ui.timeline.show_video_names } else { app.ui.timeline.show_audio_names };
+    let mut label = if names { it.name.clone() } else { String::new() };
+    if let Some(m) = it.multicam.filter(|m| m.enabled) {
+        let cam = app.session.project.sequence(it.item).and_then(|q| q.cameras().cameras.get(m.angle as usize).map(|c| c.name.clone()));
+        label = if names { format!("[MC{}] {}", m.angle + 1, cam.unwrap_or(label)) } else { format!("[MC{}]", m.angle + 1) };
+    }
+    if (it.speed - 1.0).abs() > 1e-6 || it.reverse {
+        let speed = format!("[{}%]", ((if it.reverse { -1.0 } else { 1.0 }) * it.speed * 100.0).round());
+        label = if label.is_empty() { speed } else { format!("{label} {speed}") };
+    }
+    if w > 24.0 && !label.is_empty() {
         clip_p.text(
             pos2(body.min.x + 6.0, body.min.y + 8.5),
             Align2::LEFT_CENTER,
             label,
             Tokens::ui(11.5),
-            if it.enabled { Color32::from_rgb(0xd9, 0xd9, 0xd9) } else { t.text_faint },
+            if it.custom_label_color.is_some() && u32::from(fill.r()) * 299 + u32::from(fill.g()) * 587 + u32::from(fill.b()) * 114 > 140_000 {
+                Color32::BLACK
+            } else if it.enabled {
+                Color32::from_rgb(0xd9, 0xd9, 0xd9)
+            } else {
+                t.text_faint
+            },
         );
     }
     // fx badge right-aligned in the header (italic-ish "fx")

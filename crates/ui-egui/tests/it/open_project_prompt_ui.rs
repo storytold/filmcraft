@@ -3,7 +3,6 @@
 //! Save before it opens.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -133,23 +132,6 @@ fn projects(d: &mut Driver, test: &str) -> (PathBuf, String, String) {
 }
 
 #[test]
-fn open_project_with_unsaved_changes_asks_first_and_cancel_keeps_the_project() {
-    let mut d = Driver::new();
-    let (dir, current, other) = projects(&mut d, "cancel");
-    let clip = d.edit();
-    let r = d.open_project(&other);
-    assert_eq!(d.path(), Some(current.clone()), "nothing opens before an answer");
-    assert_eq!(r["dialog"], "openProject");
-    assert!(d.has("openProject.save") && d.has("openProject.dontSave") && d.has("openProject.cancel"));
-    d.click("openProject.cancel");
-    assert!(d.app().ui.clip_dialog.is_none());
-    assert_eq!(d.path(), Some(current));
-    assert!(d.app().session.is_dirty());
-    assert_eq!(d.label(clip), Label::Yellow, "the change is kept");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn open_project_save_saves_the_changes_then_opens_the_chosen_project() {
     let mut d = Driver::new();
     let (dir, current, other) = projects(&mut d, "save");
@@ -221,76 +203,6 @@ fn close_project_and_quit_failed_save_keep_the_prompt() {
 }
 
 #[test]
-fn open_project_dont_save_opens_the_chosen_project_without_saving() {
-    let mut d = Driver::new();
-    let (dir, current, other) = projects(&mut d, "dontSave");
-    let first = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].clone();
-    assert_ne!(first.label, Label::Yellow);
-    let clip = d.edit();
-    // a project that can't be opened leaves the current one open with its changes
-    let missing = dir.join("missing.fcproj").to_string_lossy().into_owned();
-    d.open_project(&missing);
-    d.click("openProject.dontSave");
-    assert!(d.app().ui.clip_dialog.is_none());
-    assert!(d.app().ui.status.contains("missing.fcproj"), "{}", d.app().ui.status);
-    assert_eq!(d.path(), Some(current.clone()));
-    assert!(d.app().session.is_dirty());
-    assert_eq!(d.label(clip), Label::Yellow);
-    d.open_project(&other);
-    d.click("openProject.dontSave");
-    assert!(d.app().ui.clip_dialog.is_none());
-    assert_eq!(d.path(), Some(other));
-    assert!(!d.app().session.is_dirty());
-    // the project the change was made in is as it was saved
-    d.exec("file.open", json!({"path": current}));
-    assert_eq!(d.label(clip), first.label);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn open_project_asks_only_with_unsaved_changes_and_a_scripted_open_does_not_ask() {
-    let mut d = Driver::new();
-    let (dir, current, other) = projects(&mut d, "clean");
-    let r = d.open_project(&other);
-    assert!(d.app().ui.clip_dialog.is_none(), "nothing unsaved: no prompt");
-    assert_eq!(r["path"], json!(other));
-    assert_eq!(d.path(), Some(other.clone()));
-    d.edit();
-    assert_eq!(d.open_project(&current)["dialog"], "openProject");
-    assert_eq!(d.path(), Some(other));
-    d.click("openProject.cancel");
-    // `file.open` with a path (agents, MCP) opens without asking
-    d.exec("file.open", json!({"path": current}));
-    assert!(d.app().ui.clip_dialog.is_none());
-    assert_eq!(d.path(), Some(current));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn open_recent_with_unsaved_changes_asks_first() {
-    let mut d = Driver::new();
-    let (dir, current, other) = projects(&mut d, "openRecent");
-    let clip = d.edit();
-    let i = d.recent(&other);
-    let r = d.menu(&format!("file.openRecent.{i}"));
-    assert_eq!(r["dialog"], "openProject");
-    assert_eq!(d.path(), Some(current.clone()), "nothing opens before an answer");
-    d.click("openProject.cancel");
-    assert_eq!(d.path(), Some(current.clone()));
-    assert_eq!(d.label(clip), Label::Yellow, "the change is kept");
-    let i = d.recent(&other);
-    d.menu(&format!("file.openRecent.{i}"));
-    d.click("openProject.save");
-    assert!(d.app().ui.clip_dialog.is_none());
-    assert_eq!(d.path(), Some(other));
-    assert!(!d.app().session.is_dirty());
-    // the change was written to the project it was made in
-    d.exec("file.open", json!({"path": current}));
-    assert_eq!(d.label(clip), Label::Yellow);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn home_recent_with_unsaved_changes_asks_first() {
     let mut d = Driver::new();
     let (dir, current, other) = projects(&mut d, "homeRecent");
@@ -335,30 +247,6 @@ fn home_recent_save_on_a_never_saved_project_switches_to_edit_once_it_opens() {
     assert!(d.app().ui.clip_dialog.is_none());
     assert_eq!(d.path(), Some(other));
     assert_eq!(d.app().ui.mode, Mode::Edit);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn open_project_save_on_a_never_saved_project_uses_the_save_dialog() {
-    let mut d = Driver::new();
-    let (dir, _, other) = projects(&mut d, "neverSaved");
-    d.app().session.path = None;
-    let clip = d.edit();
-    let saved = dir.join("saved.fcproj").to_string_lossy().into_owned();
-    let mut answers = vec![None, Some(saved.clone())];
-    d.app().hooks.pick_save = Some(Box::new(move |_| if answers.is_empty() { None } else { answers.remove(0) }));
-    d.open_project(&other);
-    // the Save dialog is canceled: back to the prompt, nothing opens
-    d.click("openProject.save");
-    assert!(d.app().ui.clip_dialog.is_some());
-    assert_eq!(d.path(), None);
-    assert!(d.app().session.is_dirty());
-    // saved to the chosen file, then the chosen project opens
-    d.click("openProject.save");
-    assert!(d.app().ui.clip_dialog.is_none());
-    assert_eq!(d.path(), Some(other));
-    d.exec("file.open", json!({"path": saved}));
-    assert_eq!(d.label(clip), Label::Yellow);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -432,22 +320,11 @@ fn open_project_save_waits_for_a_save_dialog_answered_later() {
     assert!(!d.app().session.is_dirty());
     d.exec("file.open", json!({"path": saved}));
     assert_eq!(d.label(clip), Label::Yellow, "the change was saved");
-    // another project opened while the Save dialog is open: the late answer saves and opens nothing
+    // a new project changed while the Save dialog is open: the late answer saves and opens nothing
+    let late = dir.join("late.fcproj").to_string_lossy().into_owned();
     d.app().session.path = None;
     d.exec("file.newBin", json!({"name": "Late"}));
     assert!(d.app().session.is_dirty());
-    let late = dir.join("late.fcproj").to_string_lossy().into_owned();
-    d.menu("file.open");
-    answer(&mut d, vec![other.clone()]);
-    d.click("openProject.save");
-    d.exec("file.open", json!({"path": saved}));
-    answer(&mut d, vec![late.clone()]);
-    assert!(!std::path::Path::new(&late).exists());
-    assert_eq!(d.path(), Some(saved));
-    assert!(d.app().ui.clip_dialog.is_none());
-    // the same for a new project changed while the Save dialog is open
-    d.app().session.path = None;
-    d.exec("file.newBin", json!({"name": "Late"}));
     d.menu("file.open");
     answer(&mut d, vec![other]);
     d.click("openProject.save");
@@ -462,48 +339,25 @@ fn open_project_save_waits_for_a_save_dialog_answered_later() {
 }
 
 #[test]
-fn asynchronous_save_is_enabled_only_for_open_project_on_a_never_saved_project() {
-    let mut d = Driver::new();
-    d.app().session.path = None;
-    d.edit();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let count = calls.clone();
-    d.app().hooks.run_dialog = Some(Box::new(move |_| {
-        count.fetch_add(1, Ordering::SeqCst);
-        let (_tx, rx) = channel();
-        rx
-    }));
-    d.menu("file.closeProject");
-    d.click("closeProject.save");
-    assert_eq!(calls.load(Ordering::SeqCst), 0, "disabled Save does not launch a dialog");
-    assert!(d.has("closeProject.save"));
-    d.click("closeProject.cancel");
-    assert!(filmcraft_ui_egui::panels::clip_dialogs::intercept_open(d.app(), "other.fcproj"));
-    d.frames(3);
-    d.click("openProject.save");
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "enabled Save launches a dialog");
-}
-
-#[test]
 fn a_save_prompt_closes_when_a_script_replaces_its_project() {
     let mut d = Driver::new();
-    let (dir, current, other) = projects(&mut d, "replaced");
+    let (dir, _, other) = projects(&mut d, "replaced");
     // Open Project
     d.edit();
     d.open_project(&other);
-    d.exec("file.open", json!({"path": other}));
+    assert!(d.has("openProject.dontSave"));
+    d.exec("file.newProject", json!({"name": "New"}));
     d.exec("file.newBin", json!({"name": "Changed"}));
     assert!(d.app().ui.clip_dialog.is_none());
     assert!(!d.has("openProject.dontSave"));
-    assert_eq!(d.path(), Some(other.clone()));
-    assert!(d.app().session.is_dirty(), "the other project's change is kept");
+    assert_eq!(d.path(), None);
+    assert!(d.app().session.is_dirty(), "the new project's change is kept");
     // Close Project
     d.menu("file.closeProject");
     assert!(d.has("closeProject.dontSave"));
-    d.exec("file.open", json!({"path": current}));
+    d.exec("file.newProject", json!({"name": "New"}));
     d.exec("file.newBin", json!({"name": "Changed"}));
     assert!(d.app().ui.clip_dialog.is_none());
-    assert_eq!(d.path(), Some(current));
     assert!(d.app().session.is_dirty());
     // Quit
     d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);

@@ -358,7 +358,7 @@ pub fn cell(p: &Project, it: &ProjectItem, column: &str) -> (String, SortKey) {
     };
     match column {
         "Name" => text(it.name.clone()),
-        "Label" => text(it.label.name().to_string()),
+        "Label" => text(it.label_value()),
         "Media Type" => text(it.type_label().to_string()),
         "Frame Rate" if has_v => (format!("{} fps", rate.label()), SortKey::Num(rate.num as f64 / rate.den.max(1) as f64)),
         "Frame Rate" => (String::new(), SortKey::Num(0.0)),
@@ -1047,7 +1047,7 @@ fn items(s: &mut Session, p: &Value) -> Result<Value> {
         for id in items {
             let Some(it) = pr.item(id) else { continue };
             let cells: serde_json::Map<String, Value> = view.columns.iter().map(|c| (c.name.clone(), json!(cell(pr, it, &c.name).0))).collect();
-            rows.push(json!({"item": id.0, "name": it.name, "label": it.label.name(), "depth": depth, "cells": cells}));
+            rows.push(json!({"item": id.0, "name": it.name, "label": it.label_value(), "depth": depth, "cells": cells}));
         }
     }
     walk(pr, bin, view, 0, recursive, &mut rows);
@@ -1240,13 +1240,19 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         q("project.freeform.layout", "Freeform Layout", r#"{"bin":binId?,"width":f32?}"#, |s, p| {
             Ok(layout_json(s, bin_p(p), f64_p(p, "width").unwrap_or(800.0) as f32))
         }),
-        c("project.freeform.move", "Move Clip Cards", r#"{"items":[id]?,"x":f32,"y":f32,"snap":bool?} | {"positions":{"<id>":[x,y]}}"#, always, freeform_move),
-        c("project.freeform.resize", "Clip Size", r#"{"items":[id]?,"size":f32?,"step":1|-1?}"#, always, freeform_resize),
-        c("project.freeform.alignToGrid", "Align to Grid", r#"{"bin":binId?,"grid":f32?}"#, always, freeform_align),
+        c(
+            "project.freeform.move",
+            "Move Clip Cards",
+            r#"{"items":[id]?,"x":f32,"y":f32,"snap":bool?,"width":f32?} | {"positions":{"<id>":[x,y]},"width":f32?}"#,
+            always,
+            freeform_move,
+        ),
+        c("project.freeform.resize", "Clip Size", r#"{"items":[id]?,"size":f32?,"step":1|-1?,"width":f32?}"#, always, freeform_resize),
+        c("project.freeform.alignToGrid", "Align to Grid", r#"{"bin":binId?,"grid":f32?,"width":f32?}"#, always, freeform_align),
         c("project.freeform.reset", "Reset to Grid", r#"{"bin":binId?}"#, always, freeform_reset),
-        c("project.freeform.stack", "Stack Clips", r#"{"items":[id]?}"#, always, |s, p| freeform_stack(s, p, true)),
-        c("project.freeform.unstack", "Unstack Clips", r#"{"items":[id]?}"#, always, |s, p| freeform_stack(s, p, false)),
-        c("project.freeform.saveArrangement", "Save Arrangement", r#"{"name":str,"bin":binId?}"#, always, arrangement_save),
+        c("project.freeform.stack", "Stack Clips", r#"{"items":[id]?,"width":f32?}"#, always, |s, p| freeform_stack(s, p, true)),
+        c("project.freeform.unstack", "Unstack Clips", r#"{"items":[id]?,"width":f32?}"#, always, |s, p| freeform_stack(s, p, false)),
+        c("project.freeform.saveArrangement", "Save Arrangement", r#"{"name":str,"bin":binId?,"width":f32?}"#, always, arrangement_save),
         c("project.freeform.restoreArrangement", "Restore Arrangement", r#"{"name":str,"bin":binId?}"#, always, arrangement_restore),
         c("project.freeform.deleteArrangement", "Delete Arrangement", r#"{"name":str,"bin":binId?}"#, always, arrangement_delete),
         q("project.freeform.arrangements", "List Arrangements", r#"{"bin":binId?}"#, |s, p| {

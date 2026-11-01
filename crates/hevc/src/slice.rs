@@ -307,7 +307,7 @@ fn parse_long_term_refs(r: &mut BitReader, sh: &mut SliceHeader, sps: &Sps) -> R
     let num_lt_sps = if !sps.lt_ref_pics.is_empty() { r.read_ue()? } else { 0 };
     ensure!(num_lt_sps as usize <= sps.lt_ref_pics.len(), "num_long_term_sps out of range");
     let num_lt_pics = r.read_ue()?;
-    ensure!(num_lt_sps + num_lt_pics <= 32, "too many long-term pictures");
+    ensure!(num_lt_sps.saturating_add(num_lt_pics) <= 32, "too many long-term pictures");
     let mut msb_acc = 0u32;
     for i in 0..num_lt_sps + num_lt_pics {
         let (lsb, used) = if i < num_lt_sps {
@@ -352,9 +352,9 @@ fn parse_list_modification(r: &mut BitReader, sh: &mut SliceHeader, total: u32) 
 fn parse_inter_slice_params(r: &mut BitReader, sh: &mut SliceHeader, pps: &Pps, sps: &Sps) -> Result<()> {
     sh.num_ref_idx = [pps.num_ref_idx_l0_default, if sh.is_b() { pps.num_ref_idx_l1_default } else { 0 }];
     if r.read_flag()? {
-        sh.num_ref_idx[0] = r.read_ue()? + 1;
+        sh.num_ref_idx[0] = r.read_ue_plus(1)?;
         if sh.is_b() {
-            sh.num_ref_idx[1] = r.read_ue()? + 1;
+            sh.num_ref_idx[1] = r.read_ue_plus(1)?;
         }
     }
     ensure!(sh.num_ref_idx[0] <= 15 && sh.num_ref_idx[1] <= 15, "num_ref_idx_active out of range");
@@ -414,6 +414,19 @@ fn parse_qp_and_loop_filter(r: &mut BitReader, sh: &mut SliceHeader, pps: &Pps, 
     Ok(())
 }
 
+/// `n` `entry_point_offset_minus1` values (`offset_len_minus1` + 1 bits each), as offsets.
+fn read_entry_point_offsets(r: &mut BitReader, n: u32) -> Result<Vec<u32>> {
+    let len = r.read_ue_plus(1)?;
+    ensure!(len <= 32, "offset_len_minus1 out of range");
+    let mut out = Vec::new();
+    for _ in 0..n {
+        // a 32-bit field can hold u32::MAX, whose offset does not fit in 32 bits
+        let Some(offset) = r.read_bits(len)?.checked_add(1) else { return invalid("entry_point_offset_minus1 out of range") };
+        out.push(offset);
+    }
+    Ok(out)
+}
+
 /// Entry point offsets and the slice header extension.
 fn parse_entry_points_and_extension(r: &mut BitReader, sh: &mut SliceHeader, pps: &Pps, sps: &Sps) -> Result<()> {
     sh.entry_points.clear();
@@ -421,11 +434,7 @@ fn parse_entry_points_and_extension(r: &mut BitReader, sh: &mut SliceHeader, pps
         let n = r.read_ue()?;
         ensure!(n <= sps.pic_width_in_ctbs() * sps.pic_height_in_ctbs(), "num_entry_point_offsets out of range");
         if n > 0 {
-            let len = r.read_ue()? + 1;
-            ensure!(len <= 32, "offset_len_minus1 out of range");
-            for _ in 0..n {
-                sh.entry_points.push(r.read_bits(len)? + 1);
-            }
+            sh.entry_points = read_entry_point_offsets(r, n)?;
         }
     }
     if pps.slice_header_extension_present {
@@ -481,4 +490,128 @@ fn parse_pwt(r: &mut BitReader, sh: &SliceHeader, sps: &Sps) -> Result<PredWeigh
         t.l[l] = e;
     }
     Ok(t)
+}
+
+#[cfg(test)]
+mod entry_point_tests {
+    use super::*;
+    use filmcraft_bitstream::BitWriter;
+
+    fn offsets(len_minus1: u32, values: &[u32], bits: u32) -> Result<Vec<u32>> {
+        let mut w = BitWriter::new();
+        w.write_ue(len_minus1);
+        for &v in values {
+            w.write_bits(v, bits);
+        }
+        w.rbsp_trailing();
+        let b = w.finish();
+        read_entry_point_offsets(&mut BitReader::new(&b), values.len() as u32)
+    }
+
+    #[test]
+    fn entry_point_offsets_are_one_based() {
+        assert_eq!(offsets(7, &[0, 255], 8).unwrap(), vec![1, 256]);
+    }
+
+    #[test]
+    fn a_maximal_32_bit_entry_point_is_an_error_not_an_overflow() {
+        assert!(offsets(31, &[u32::MAX], 32).is_err());
+        assert_eq!(offsets(31, &[u32::MAX - 1], 32).unwrap(), vec![u32::MAX]);
+    }
+
+    /// 64x64 4:2:0 SPS with 16x16 CTBs (4x4 CTBs).
+    fn sps_bytes() -> Vec<u8> {
+        let mut w = BitWriter::new();
+        w.write_bits(0, 4);
+        w.write_bits(0, 3);
+        w.write_bits(1, 1);
+        for _ in 0..2 {
+            w.write_bits(0, 32);
+        }
+        w.write_bits(0, 24);
+        w.write_bits(93, 8);
+        w.write_ue(0);
+        w.write_ue(1);
+        w.write_ue(64);
+        w.write_ue(64);
+        w.write_bit(false);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_ue(4);
+        w.write_bit(true);
+        w.write_ue(4);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_ue(1);
+        w.write_ue(0);
+        w.write_ue(2);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_bits(0, 3);
+        w.write_bit(false);
+        w.write_ue(0);
+        w.write_bits(0, 5);
+        w.rbsp_trailing();
+        w.finish()
+    }
+
+    /// A PPS with entropy coding sync, so slice headers carry entry points.
+    fn pps_bytes() -> Vec<u8> {
+        let mut w = BitWriter::new();
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_bits(0, 3);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_ue(0);
+        w.write_ue(0);
+        w.write_se(0);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_se(0);
+        w.write_se(0);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_bit(false);
+        w.write_bit(false); // tiles
+        w.write_bit(true); // entropy sync
+        w.write_bits(0, 4);
+        w.write_ue(0);
+        w.write_bits(0, 2);
+        w.rbsp_trailing();
+        w.finish()
+    }
+
+    /// An IDR slice header with one entry point of `offset_minus1` (32-bit field).
+    fn idr_slice(offset_minus1: u32) -> Vec<u8> {
+        let mut w = BitWriter::new();
+        w.write_bit(true); // first_slice_segment_in_pic_flag
+        w.write_bit(false); // no_output_of_prior_pics_flag
+        w.write_ue(0); // pps id
+        w.write_ue(2); // I slice
+        w.write_se(0); // slice_qp_delta
+        w.write_ue(1); // num_entry_point_offsets
+        w.write_ue(31); // offset_len_minus1
+        w.write_bits(offset_minus1, 32);
+        w.rbsp_trailing();
+        w.finish()
+    }
+
+    fn parse_slice(offset_minus1: u32) -> Result<SliceHeader> {
+        let sps = std::sync::Arc::new(Sps::parse(&sps_bytes())?);
+        let pps = std::sync::Arc::new(Pps::parse(&pps_bytes())?);
+        let nal = NalHeader { nal_type: nal_type::IDR_W_RADL, layer_id: 0, temporal_id: 0 };
+        SliceHeader::parse(&idr_slice(offset_minus1), nal, |_| Ok((pps, sps)), None).map(|(sh, _, _)| sh)
+    }
+
+    #[test]
+    fn a_slice_header_with_a_maximal_32_bit_entry_point_is_rejected() {
+        assert_eq!(parse_slice(7).unwrap().entry_points, vec![8]);
+        assert!(parse_slice(u32::MAX).is_err());
+    }
 }

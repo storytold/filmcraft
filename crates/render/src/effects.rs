@@ -355,11 +355,14 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         "luma_key" => {
             let th = f(e, "threshold", cx) / 100.0;
             let cut = f(e, "cutoff", cx) / 100.0;
+            let invert = b(e, "invert");
             img.px.par_chunks_mut(4).for_each(|p| {
                 if p[3] <= 0.0 {
                     return;
                 }
                 let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
+                // keying out brights measures Cutoff / Threshold from white: the same ramp, mirrored
+                let l = if invert { 1.0 - l } else { l };
                 let a = if l <= cut {
                     0.0
                 } else if l >= th.max(cut + 1e-3) {
@@ -376,7 +379,13 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let cs = [color(e, "c1", cx), color(e, "c2", cx), color(e, "c3", cx), color(e, "c4", cx)];
             let op = f(e, "opacity", cx) / 100.0;
             let (w, h) = (img.w as f32, img.h as f32);
-            let pts = [(0.25 * w, 0.25 * h), (0.75 * w, 0.25 * h), (0.25 * w, 0.75 * h), (0.75 * w, 0.75 * h)];
+            // a point left at its NaN default sits a quarter in from its corner of the frame
+            let at = |id: &str, fx: f32, fy: f32| {
+                let v = e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or(Vec2::new(f64::NAN, f64::NAN));
+                let px = |v: f64, frac: f32, size: f32| if v.is_finite() { v as f32 * cx.px_scale } else { frac * size };
+                (px(v.x, fx, w), px(v.y, fy, h))
+            };
+            let pts = [at("p1", 0.25, 0.25), at("p2", 0.75, 0.25), at("p3", 0.25, 0.75), at("p4", 0.75, 0.75)];
             let blend_exp = 1.0 + f(e, "blend", cx) / 100.0;
             fill_over(img, op, |x, y| {
                 let mut acc = [0.0f32; 3];
@@ -621,6 +630,22 @@ fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32
     o.map(|q| q * m)
 }
 
+/// The luma (encoded, 0..1) down to which the Lumetri highlight / shadow lift scales a pixel by
+/// `new luma / luma`, preserving its hue exactly as it always has; below it the scale is held at
+/// this luma's and the rest of the lift is added equally to the channels, so a trace of chroma in
+/// a near-black pixel is not multiplied into a speck (#2094). About 5/255 in sRGB. Mirrored in
+/// `fx.wgsl` (`lumetri_op`).
+pub(crate) const LIFT_LUMA_FLOOR: f32 = 0.02;
+
+/// The lift's per-channel scale and equal addition for a pixel of luma `l` lifted to `nl`: the
+/// luma lands on `nl` either way (`l * k + add == nl`); at or above [`LIFT_LUMA_FLOOR`] the
+/// addition is zero and the scale is the hue-preserving `nl / l`.
+#[inline]
+pub(crate) fn lift_scale(l: f32, nl: f32) -> (f32, f32) {
+    let k = if l > 1e-5 { (nl / l).min(1.0 + (nl - l).max(0.0) / LIFT_LUMA_FLOOR) } else { 1.0 };
+    (k, nl - l.max(0.0) * k)
+}
+
 fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
     let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
@@ -667,10 +692,11 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let ws = (1.0 - l).clamp(0.0, 1.0).powi(3);
         let whl = l.clamp(0.0, 1.0).powi(3);
         let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
-        if l > 1e-5 {
-            let k = nl / l;
-            v = v.map(|q| q * k);
-        }
+        // #2094: scaling by nl / l alone multiplies a near-black pixel's chroma by the whole lift
+        // (tens of times), so a trace of blue bleed beside a bright colour came out as a saturated
+        // speck; below LIFT_LUMA_FLOOR the scale is held and the rest is added equally
+        let (k, add) = lift_scale(l, nl);
+        v = v.map(|q| q * k + add);
         // contrast: smooth S-curve around mid grey (HDR: over 0 … HDR White; speculars above it
         // keep their distance from white)
         if contrast.abs() > 1e-4 {
@@ -979,6 +1005,114 @@ mod tests {
         assert!(img.get(32, 32)[0] < 0.9 && img.get(24, 32)[0] > 0.01);
     }
 
+    /// Key Out Brights measures the thresholds from white: a 75 % grey with Cutoff 60 / Threshold 80
+    /// is 25 % from white, below the Cutoff, so it is keyed out (alpha 0), not left at 0.25.
+    #[test]
+    fn luma_key_inverted_thresholds_are_measured_from_white() {
+        let alpha_at = |srgb: f32, invert: bool| {
+            let l = srgb_to_linear(srgb);
+            let mut img = Image::filled(1, 1, [l, l, l, 1.0]);
+            let mut e = find_effect("luma_key").unwrap().instance();
+            e.params.get_mut("threshold").unwrap().value = ParamValue::Float(80.0);
+            e.params.get_mut("cutoff").unwrap().value = ParamValue::Float(60.0);
+            e.params.get_mut("invert").unwrap().value = ParamValue::Bool(invert);
+            apply(&mut img, &e, &cx());
+            img.get(0, 0)[3]
+        };
+        assert!(alpha_at(0.75, true).abs() < 1e-4, "75 % is 25 % from white: keyed out, got {}", alpha_at(0.75, true));
+        // the ramp mirrored: opaque up to 20 %, transparent from 40 %, half way at 30 %
+        assert!(alpha_at(0.15, true) > 0.99, "darks stay");
+        assert!((alpha_at(0.30, true) - 0.5).abs() < 1e-3, "mid ramp: {}", alpha_at(0.30, true));
+        assert!(alpha_at(0.40, true).abs() < 1e-4);
+        // the normal ramp is unchanged (transparent to 60 %, half way at 70 %)
+        assert!((alpha_at(0.70, false) - 0.5).abs() < 1e-3);
+    }
+
+    /// Luma Key keys out darks by default; "Key Out Brights" keys out the light side instead, and a
+    /// project saved before the option existed keeps the old behaviour.
+    #[test]
+    fn luma_key_can_key_out_brights() {
+        let run = |invert: Option<bool>| {
+            let mut img = Image::new(2, 1);
+            img.px[0..4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+            img.px[4..8].copy_from_slice(&[0.01, 0.01, 0.01, 1.0]);
+            let mut e = find_effect("luma_key").unwrap().instance();
+            e.params.get_mut("threshold").unwrap().value = ParamValue::Float(40.0);
+            e.params.get_mut("cutoff").unwrap().value = ParamValue::Float(20.0);
+            match invert {
+                Some(v) => e.params.get_mut("invert").unwrap().value = ParamValue::Bool(v),
+                None => {
+                    e.params.remove("invert");
+                }
+            }
+            apply(&mut img, &e, &cx());
+            (img.get(0, 0)[3], img.get(1, 0)[3])
+        };
+        assert_eq!(run(Some(false)), (1.0, 0.0), "default keys out the dark grey");
+        assert_eq!(run(None), (1.0, 0.0), "a project without the param renders as before");
+        assert_eq!(run(Some(true)), (0.0, 1.0), "inverted keys out the white, keeps the grey");
+    }
+
+    /// #3465: Three-Way Color Corrector is the identity at its defaults, each wheel moves only its
+    /// own tonal range, and Saturation 0 is grey.
+    #[test]
+    fn three_way_color_corrector_works_per_tonal_range() {
+        let run = |set: &[(&str, f64)], c: [f32; 3]| {
+            let mut img = Image::filled(2, 2, [c[0], c[1], c[2], 1.0]);
+            let mut e = find_effect("three_way_color").unwrap().instance();
+            for (k, v) in set {
+                e.params.get_mut(*k).unwrap().value = ParamValue::Float(*v);
+            }
+            apply(&mut img, &e, &cx());
+            let p = img.get(0, 0);
+            [p[0], p[1], p[2]]
+        };
+        let (dark, mid, bright) = ([0.02f32; 3], [0.2f32; 3], [0.9f32; 3]);
+        for c in [dark, mid, bright, [0.1, 0.4, 0.7]] {
+            let o = run(&[], c);
+            assert!(o.iter().zip(c).all(|(a, b)| (a - b).abs() < 1e-4), "{c:?} -> {o:?}");
+        }
+        // a red shadow wheel (hue 0) tints the dark pixel red, leaves the bright one alone
+        let sh = [("shadow_hue", 0.0), ("shadow_balance", 80.0)];
+        let d = run(&sh, dark);
+        assert!(d[0] > dark[0] + 0.01 && d[2] < d[0], "{d:?}");
+        let b = run(&sh, bright);
+        assert!((b[0] - bright[0]).abs() < 1e-3, "{b:?}");
+        // a highlight level lift brightens the bright pixel only
+        let hl = [("hi_level", 50.0)];
+        assert!(run(&hl, bright)[0] > bright[0] + 0.01 || bright[0] > 0.99);
+        assert!((run(&hl, dark)[0] - dark[0]).abs() < 1e-3);
+        // no saturation: grey
+        let g = run(&[("saturation", 0.0)], [0.1, 0.4, 0.7]);
+        assert!((g[0] - g[1]).abs() < 1e-4 && (g[1] - g[2]).abs() < 1e-4, "{g:?}");
+    }
+
+    /// #3465 review: the default Three-Way Color Corrector leaves HDR values (2.0) untouched, a
+    /// changed control keeps the headroom of a bright pixel, and overlapping tonal ranges (the
+    /// shadow edge above the highlight edge) apply each adjustment at most once in total.
+    #[test]
+    fn three_way_keeps_hdr_and_normalises_overlapping_ranges() {
+        let run = |set: &[(&str, f64)], c: [f32; 3]| {
+            let mut img = Image::filled(1, 1, [c[0], c[1], c[2], 1.0]);
+            let mut e = find_effect("three_way_color").unwrap().instance();
+            for (k, v) in set {
+                e.params.get_mut(*k).unwrap().value = ParamValue::Float(*v);
+            }
+            apply(&mut img, &e, &cx());
+            let p = img.get(0, 0);
+            [p[0], p[1], p[2]]
+        };
+        assert_eq!(run(&[], [2.0, 0.5, 1.5]), [2.0, 0.5, 1.5], "default is the identity, HDR included");
+        assert!(run(&[("mid_level", 10.0)], [2.0, 2.0, 2.0])[0] > 1.5, "a changed control does not clamp HDR");
+        // overlapping ranges: a mid-grey in both would take the full level twice
+        let both = run(
+            &[("shadow_threshold", 100.0), ("shadow_softness", 0.0), ("hi_threshold", 0.0), ("hi_softness", 0.0), ("shadow_level", 40.0), ("hi_level", 40.0)],
+            [0.2, 0.2, 0.2],
+        );
+        let one = run(&[("shadow_level", 40.0), ("shadow_threshold", 100.0), ("shadow_softness", 0.0)], [0.2, 0.2, 0.2]);
+        assert!((both[0] - one[0]).abs() < 1e-3, "weights sum to one: {both:?} vs {one:?}");
+    }
+
     #[test]
     fn flip_and_crop() {
         let mut img = Image::new(4, 1);
@@ -999,6 +1133,74 @@ mod tests {
         for (a, b) in img.px.iter().zip(&before.px) {
             assert!((a - b).abs() < 2e-3, "{a} {b}");
         }
+    }
+
+    /// #2094: at and above the luma floor (0.02 encoded, about 5/255) the lift is exactly what it
+    /// always was, the hue-preserving scale `new luma / luma`: a lit shadow pixel at Shadows 50
+    /// keeps its channel ratios and lands on the same values as the plain scale; a pixel just
+    /// below the floor is continuous with one just above.
+    #[test]
+    fn lumetri_shadow_lift_is_unchanged_at_and_above_the_luma_floor() {
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("shadows").unwrap().value = ParamValue::Float(50.0);
+        // a warm shadow pixel: sRGB about (0.12, 0.09, 0.055), luma 0.097 encoded, well above the floor
+        let lit = dec([0.12, 0.09, 0.055]);
+        let mut img = Image::new(1, 1);
+        img.px[0..4].copy_from_slice(&[lit[0], lit[1], lit[2], 1.0]);
+        apply(&mut img, &e, &cx());
+        let out = img.get(0, 0);
+        // the lift as it always was: the encoded pixel scaled by new luma / luma, nothing added
+        let v = enc(lit);
+        let l = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+        let nl = l + 0.5 * 0.35 * (1.0 - l).powi(3);
+        let (k, add) = lift_scale(l, nl);
+        assert!((k - nl / l).abs() < 1e-6 && add.abs() < 1e-6, "above the floor the lift is the plain scale: k {k} add {add}");
+        let expected = dec([v[0] * k, v[1] * k, v[2] * k]);
+        for c in 0..3 {
+            assert!((out[c] - expected[c]).abs() < 2e-3, "channel {c}: {out:?} vs {expected:?}");
+        }
+        // continuity at the floor: the two sides of it give the same scale and addition
+        let (k_at, add_at) = lift_scale(LIFT_LUMA_FLOOR, LIFT_LUMA_FLOOR + 0.1);
+        let (k_under, add_under) = lift_scale(LIFT_LUMA_FLOOR - 1e-4, LIFT_LUMA_FLOOR - 1e-4 + 0.1);
+        assert!((k_at - k_under).abs() < 0.05 && (add_at - add_under).abs() < 1e-3, "{k_at} {k_under} {add_at} {add_under}");
+    }
+
+    /// #2094: a Shadows lift on a near-black pixel carrying a trace of blue (4:2:0 chroma bleed
+    /// beside a bright orange) lifts it towards grey instead of scaling the trace into a saturated
+    /// blue speck, and black lifts by the same amount as near-black (no step between them).
+    #[test]
+    fn lumetri_shadow_lift_does_not_amplify_near_black_chroma() {
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("shadows").unwrap().value = ParamValue::Float(8.0);
+        // linear light: about (0, 2, 6) of 255 in sRGB with the red driven slightly negative by a
+        // 4:2:0 chroma sample shared with the bright neighbour
+        let mut img = Image::new(3, 1);
+        img.px[0..4].copy_from_slice(&[-0.001, 0.0006, 0.0018, 1.0]);
+        img.px[4..8].copy_from_slice(&[0.0, 0.0, 0.0, 1.0]);
+        img.px[8..12].copy_from_slice(&[0.001, 0.001, 0.001, 1.0]);
+        apply(&mut img, &e, &cx());
+        let (bleed, black, near) = (img.get(0, 0), img.get(1, 0), img.get(2, 0));
+        // it used to come out at about (0, 5, 44) of 255; now near (0, 10, 20): a lifted near-black
+        assert!(bleed[2] - bleed[0].max(bleed[1]) < 0.01, "blue speck: {bleed:?}");
+        assert!(black[0] > 0.001 && (black[0] - black[1]).abs() < 1e-5, "black not lifted neutrally: {black:?}");
+        assert!((near[0] - black[0]).abs() < 0.002, "step between black {black:?} and near-black {near:?}");
+    }
+
+    /// Luma vs Sat pulling the highlights to grey leaves a saturated dark colour alone: the
+    /// curve's axis runs from black to white and does not wrap around.
+    #[test]
+    fn luma_vs_sat_highlight_point_leaves_shadows_saturated() {
+        let mut e = find_effect("lumetri").unwrap().instance();
+        e.params.get_mut("luma_vs_sat").unwrap().value = filmcraft_project::ParamValue::Curve(vec![[0.5, 0.5], [0.9, 0.0]]);
+        let dark_red = [0.02, 0.0005, 0.0005, 1.0];
+        let mut img = Image::filled(1, 1, dark_red);
+        apply(&mut img, &e, &cx());
+        let s = |p: &[f32]| {
+            let c = [p[0], p[1], p[2]].map(linear_to_srgb);
+            rgb_to_hsl(c[0], c[1], c[2])[1]
+        };
+        let (before, after) = (s(&dark_red), s(&img.px));
+        assert!((after - before).abs() < 1e-3, "shadow saturation {before} became {after}");
     }
 }
 
@@ -1054,19 +1256,30 @@ pub fn curve_lut(points: &[[f32; 2]], n: usize) -> Vec<f32> {
 }
 
 /// Periodic (hue) curve: points around the colour wheel, neutral 0.5 where there are none.
-fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
+/// Entry `i` of the `n` entries is the curve at hue `i / (n - 1)`, so the first and last entries
+/// are both red and equal.
+pub fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     if points.is_empty() {
         return None;
     }
-    // wrap: repeat points one period left and right, then sample 0..1
+    // wrap: repeat points one period left and right, map -1..2 onto 0..1 and sample it with
+    // 3n - 2 entries, whose spacing is exactly one n-entry step over 0..1: entries n-1 ..= 2n-2
+    // are hues 0 ..= 1
     let mut ext = Vec::new();
     for off in [-1.0f32, 0.0, 1.0] {
         for p in points {
-            ext.push([p[0] + off, p[1]]);
+            ext.push([(p[0] + off + 1.0) / 3.0, p[1]]);
         }
     }
-    let lut = curve_lut(&ext.iter().map(|p| [(p[0] + 1.0) / 3.0, p[1]]).collect::<Vec<_>>(), n * 3);
-    Some(lut[n..2 * n].to_vec())
+    let lut = curve_lut(&ext, 3 * n - 2);
+    Some(lut[n - 1..2 * n - 1].to_vec())
+}
+
+/// Lumetri's other "vs Sat" curves (Luma vs Sat, Sat vs Sat): neutral 0.5 where there are no
+/// points, like the hue curves, but over a straight 0..1 axis. Black and white are not neighbours,
+/// so the curve does not wrap; it stays flat beyond its outermost points.
+pub fn vs_sat_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
+    (!points.is_empty()).then(|| curve_lut(points, n))
 }
 
 pub(crate) fn curve_param(e: &EffectInstance, id: &str) -> Option<Vec<[f32; 2]>> {
@@ -1124,7 +1337,8 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let lut = |id: &str| curve_param(e, id).filter(|c| curves_on && !is_identity_curve(c)).map(|c| curve_lut(&c, N));
     let (luma_c, red_c, green_c, blue_c) = (lut("curve_luma"), lut("curve_red"), lut("curve_green"), lut("curve_blue"));
     let hue = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| hue_lut(&c, N));
-    let (hvs, hvh, hvl, lvs, svs) = (hue("hue_vs_sat"), hue("hue_vs_hue"), hue("hue_vs_luma"), hue("luma_vs_sat"), hue("sat_vs_sat"));
+    let vs_sat = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| vs_sat_lut(&c, N));
+    let (hvs, hvh, hvl, lvs, svs) = (hue("hue_vs_sat"), hue("hue_vs_hue"), hue("hue_vs_luma"), vs_sat("luma_vs_sat"), vs_sat("sat_vs_sat"));
     // Creative ▸ Look: a LUT ("Browse…" / built-in) takes precedence over the procedural menu
     let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
     let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
@@ -1381,6 +1595,33 @@ mod curve_tests {
         assert!(s.windows(2).all(|w| w[1] >= w[0] - 1e-6), "monotone");
         let h = hue_lut(&[[0.0, 0.8], [0.5, 0.2]], 64).unwrap();
         assert!((h[0] - h[63]).abs() < 0.05, "periodic");
+    }
+
+    /// A steep hue curve through red: the LUT's first and last entries are both exactly red, so
+    /// the curve meets itself at 0/360 degrees without a step, and entry i is hue i/(n-1).
+    #[test]
+    fn hue_curve_has_no_seam_at_red() {
+        let pts = [[0.02, 0.9], [0.5, 0.5], [0.98, 0.1]];
+        let n = 1024;
+        let h = hue_lut(&pts, n).unwrap();
+        assert!((h[0] - h[n - 1]).abs() < 1e-5, "step at red: {} vs {}", h[0], h[n - 1]);
+        assert!((h[0] - 0.5).abs() < 1e-4, "red is midway between the two points: {}", h[0]);
+        // slope on both sides of the wrap agrees (C1 across red)
+        let (s0, s1) = (h[1] - h[0], h[n - 1] - h[n - 2]);
+        assert!((s0 - s1).abs() < 1e-3 * s0.abs().max(1e-3), "slopes {s0} vs {s1}");
+        // a control point lands on its own grid entry
+        let g = hue_lut(&[[0.25, 0.8], [0.75, 0.3]], 5).unwrap();
+        assert!((g[1] - 0.8).abs() < 1e-5 && (g[3] - 0.3).abs() < 1e-5, "{g:?}");
+    }
+
+    /// Luma vs Sat and Sat vs Sat are not periodic: a point in the highlights does not reach
+    /// around into the shadows.
+    #[test]
+    fn vs_sat_curves_do_not_wrap() {
+        let l = vs_sat_lut(&[[0.5, 0.5], [0.9, 0.0]], 256).unwrap();
+        assert!((l[0] - 0.5).abs() < 1e-5, "black follows the left point: {}", l[0]);
+        assert!(l[255].abs() < 1e-5, "white follows the right point: {}", l[255]);
+        assert!(vs_sat_lut(&[], 256).is_none());
     }
 }
 

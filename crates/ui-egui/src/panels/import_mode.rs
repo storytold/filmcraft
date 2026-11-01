@@ -111,7 +111,7 @@ fn recent(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, y: f32) -> f32 
         let ctx = ui.ctx().clone();
         // unsaved changes: Save / Don't Save / Cancel first, asked over the project they were made in;
         // Home switches to Edit once the chosen project opens, and stays after Cancel
-        if crate::panels::clip_dialogs::intercept_open(app, &path) {
+        if crate::panels::clip_dialogs::ask_before_open(app, &path).is_some() {
             if let Some(info) = app.ui.clip_dialog.as_mut().and_then(|d| d.info.as_object_mut()) {
                 info.insert("editAfterOpen".into(), json!(true));
             }
