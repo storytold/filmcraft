@@ -99,8 +99,14 @@ Every write of a project file, auto-save, recovery snapshot or preferences file 
 3. rename it over the target (an atomic replace on every supported OS);
 4. `fsync` the directory so the rename itself is durable.
 
-A crash, `kill -9` or power cut at any point leaves either the complete old file or the complete new
-one. If a step fails, the temp file is removed and the old file is untouched.
+When both file and directory sync complete successfully on a filesystem that supports durable sync,
+a crash, `kill -9` or power cut after the save leaves either the complete old file or the complete
+new one. Some writable network filesystems, including some macOS SMB shares, support atomic
+replacement but explicitly do not support durable file sync. FilmCraft still performs the atomic
+rename there so an ordinary save is not refused, but the filesystem cannot guarantee which bytes
+survive a sudden power loss. Failures before the rename remove the temp file and leave the old file
+untouched. A directory-sync failure after the rename is treated as best-effort: the new file remains
+published, and the old file is no longer present at the target path.
 
 ## Commands
 
