@@ -35,8 +35,6 @@ mod file_filters;
 mod graphics;
 mod logging;
 #[cfg(target_os = "macos")]
-mod native_color;
-#[cfg(target_os = "macos")]
 mod native_menu;
 mod window_raise;
 
@@ -362,8 +360,7 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         }));
         #[cfg(target_os = "macos")]
         {
-            let (rx, update, text_menu) = native_menu::install(&app, cc.egui_ctx.clone());
-            app.hooks.pick_color = Some(native_color::picker(text_menu));
+            let (rx, update) = native_menu::install(&app, cc.egui_ctx.clone());
             app.command_inbox = Some(rx);
             app.hooks.menu_changed = Some(update);
             app.ui.show_menu_bar = false;

@@ -64,7 +64,7 @@ impl Driver {
         self.ok("engine.execute", json!({"command": "perf.stats"}))["frames"].clone()
     }
 
-    /// Drain queued requests; running jobs can still finish after this returns.
+    /// Step until the frame workers are idle.
     fn settle(&mut self) {
         for _ in 0..400 {
             self.frames(1);
@@ -98,25 +98,19 @@ fn frame_worker_survives_a_panicking_job_and_keeps_rendering() {
     // go on until that has happened.
     let mut st = d.frame_stats();
     let mut at_last_fault = None;
-    let started = std::time::Instant::now();
     for k in 10..=100 {
         if at_last_fault.is_none() && st["failedJobs"].as_u64() == Some(faults) {
             at_last_fault = Some(jobs(&st));
         }
-        let recovered = at_last_fault.is_some_and(|n| jobs(&st) > n + workers);
-        if recovered && d.harness.state().frames.queue_len() == 0 {
+        if at_last_fault.is_some_and(|n| jobs(&st) > n + workers) {
             break;
         }
-        if started.elapsed() >= std::time::Duration::from_secs(120) {
-            break;
-        }
-        // A nonempty queue can mean busy workers. Keep waiting for their results rather than
-        // treating it as worker death. Once recovery is proven, stop adding work and drain it.
-        if !recovered {
-            d.ok("engine.execute", json!({"command": "playhead.set", "params": {"seconds": f64::from(k) * 0.1}}));
-        }
+        d.ok("engine.execute", json!({"command": "playhead.set", "params": {"seconds": f64::from(k) * 0.1}}));
         d.settle();
         st = d.frame_stats();
+        if d.harness.state().frames.queue_len() > 0 {
+            break; // no worker is taking jobs: the assertions below say so
+        }
     }
     assert_eq!(st["failedJobs"].as_u64(), Some(faults), "{st}");
     let at_last_fault = at_last_fault.unwrap_or(u64::MAX);

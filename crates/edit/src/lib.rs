@@ -97,22 +97,35 @@ pub fn split_track_at(track: &mut Track, t: Tick, ctx: &mut EditCtx, links: &mut
     let left = &mut track.items[idx];
     let mut right = left.clone();
     let cut = t - left.start;
-    // the media the cut lands on (Time Remapping speed included): the right piece starts there
-    let cut_media = left.media_span(cut);
     left.duration = cut;
     let new_id = ClipId(ctx.alloc());
     right.id = new_id;
     right.start = t;
     right.duration -= cut;
-    if !right.reverse && right.frame_hold.is_none() {
-        right.source_in += cut_media;
-    } else if right.reverse {
-        // reversed: the left piece now shows the later media; keep content continuous
-        let left_ref = &mut track.items[idx];
-        let consumed = cut_media;
-        let total_src = left_ref.media_span(cut + right.duration);
-        right.source_in = left_ref.source_in;
-        left_ref.source_in += total_src - consumed;
+    // the media each piece consumes, under the item's Time Remapping curve (a plain multiple of
+    // `speed` when the clip has no animated one); computed on the intact item before the right
+    // piece's curve is shifted below
+    let left_span = left.media_span(Tick::ZERO, cut);
+    let right_span = left.media_span(cut, cut + right.duration);
+    if right.reverse {
+        // reversed: the left piece now shows the later media; keep content continuous by starting
+        // it where the right piece's media ends (advancing the original source In by the media
+        // span of the right piece — not a total-span-minus-cut difference, which drifts by
+        // rounding and falls apart entirely under a variable speed curve)
+        let orig_in = left.source_in;
+        right.source_in = orig_in;
+        left.source_in = orig_in + right_span;
+    } else if right.frame_hold.is_none() {
+        right.source_in += left_span;
+    }
+    // the right piece's timeline restarts at the cut, so its Time Remapping curve shifts with it
+    // (keyframes left of the cut go negative and hold their value, keeping the ramp continuous)
+    if right.time_remap_speed().is_some()
+        && let Some(p) = right.effect_mut("time_remap").and_then(|e| e.param_mut("speed"))
+    {
+        for k in &mut p.keyframes {
+            k.time -= cut;
+        }
     }
     if let Some(l) = right.link {
         let nl = *links.entry(l).or_insert_with(|| ctx.alloc());
@@ -730,6 +743,7 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
     let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
     let (prev_end, next_start) = neighbours(tr, clip);
     let media = media_len(ctx, it);
+    let speed = it.speed.abs().max(1e-9);
     let mut d = delta;
     match edge {
         Edge::In => {
@@ -740,8 +754,6 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
                 (true, None) => Tick::MAX,
                 (false, _) => head(ctx, it),
             };
-            // the extension plays at the rate shown at the edge (Time Remapping included)
-            let speed = it.edge_rate(false);
             let max_ext = if handle == Tick::MAX { Tick::MAX } else { Tick((handle.0 as f64 / speed).floor() as i64) };
             let lo = if mode == TrimMode::Regular { (-(it.start - prev_end)).max(-max_ext) } else { -max_ext };
             let hi = it.duration - ctx.min_duration;
@@ -756,7 +768,6 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
         Edge::Out => {
             let lo = -(it.duration - ctx.min_duration);
             let mut hi = if mode == TrimMode::Regular { next_start - it.end() } else { Tick::MAX };
-            let speed = it.edge_rate(true);
             if it.reverse && it.frame_hold.is_none() {
                 // a reversed clip's Out edge consumes media before source_in
                 hi = hi.min(Tick((head(ctx, it).0 as f64 / speed).floor() as i64));
@@ -775,11 +786,11 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
 /// move), and, for the In edge with `move_start`, where it starts. The trims and the timeline's
 /// live trim preview share it, so the preview shows the media the edit will keep (#374).
 pub fn move_edge(it: &mut TrackItem, edge: Edge, d: Tick, move_start: bool) {
+    let speed = it.speed.abs();
     match edge {
         Edge::In => {
             if !it.reverse && it.frame_hold.is_none() {
-                // the extension plays at the rate shown at the edge (Time Remapping included)
-                it.source_in += src_of(d, it.edge_rate(false));
+                it.source_in += src_of(d, speed);
             }
             it.duration -= d;
             if move_start {
@@ -788,7 +799,7 @@ pub fn move_edge(it: &mut TrackItem, edge: Edge, d: Tick, move_start: bool) {
         }
         Edge::Out => {
             if it.reverse {
-                it.source_in -= src_of(d, it.edge_rate(true));
+                it.source_in -= src_of(d, speed);
             }
             it.duration += d;
         }
@@ -980,21 +991,21 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
     }
     // a reversed clip consumes media from the opposite end, so its media limit is the other one
     if l.reverse {
-        d = d.min(Tick((head(ctx, l).0 as f64 / l.edge_rate(true)).floor() as i64));
+        d = d.min(Tick((head(ctx, l).0 as f64 / l.speed.abs()).floor() as i64));
     } else if let Some(m) = media_len(ctx, l) {
-        d = d.min(Tick(((m - l.source_out()).0 as f64 / l.edge_rate(true)).floor() as i64));
+        d = d.min(Tick(((m - l.source_out()).0 as f64 / l.speed.abs()).floor() as i64));
     }
     if r.reverse {
         if let Some(m) = media_len(ctx, r) {
-            d = d.max(-Tick(((m - r.source_out()).0 as f64 / r.edge_rate(false)).floor() as i64));
+            d = d.max(-Tick(((m - r.source_out()).0 as f64 / r.speed.abs()).floor() as i64));
         }
     } else {
-        d = d.max(-Tick((head(ctx, r).0 as f64 / r.edge_rate(false)).floor() as i64));
+        d = d.max(-Tick((head(ctx, r).0 as f64 / r.speed.abs()).floor() as i64));
     }
     if d == Tick::ZERO {
         return Ok(d);
     }
-    let (ls, rs) = (l.edge_rate(true), r.edge_rate(false));
+    let (ls, rs) = (l.speed.abs(), r.speed.abs());
     let before = seq.clone();
     {
         let (_, l) = seq.find_item_mut(left).ok_or(EditError::NoItem(left))?;
@@ -1019,8 +1030,7 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
 pub fn slip(seq: &mut Sequence, clip: ClipId, delta_media: Tick, ctx: &mut EditCtx) -> Result<Tick> {
     unlocked_track(seq, clip)?;
     let (_, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
-    // the media the clip plays (Time Remapping included) has to stay inside the source
-    let used = it.source_out() - it.source_in;
+    let used = src_of(it.duration, it.speed);
     let max_in = media_len(ctx, it).map(|m| m - used).unwrap_or(Tick::MAX);
     let lo = if (ctx.media_duration)(it.item).is_none() {
         // media with no length has no set time, therefore no floor either.
@@ -1052,9 +1062,9 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
         d = d.max(-(p.duration - ctx.min_duration));
         if p.reverse {
             // a reversed neighbour grows by pulling earlier media in front of its source In
-            d = d.min(Tick((head(ctx, p).0 as f64 / p.edge_rate(true)).floor() as i64));
+            d = d.min(Tick((head(ctx, p).0 as f64 / p.speed.abs()).floor() as i64));
         } else if let Some(m) = media_len(ctx, p) {
-            d = d.min(Tick(((m - p.source_out()).0 as f64 / p.edge_rate(true)).floor() as i64));
+            d = d.min(Tick(((m - p.source_out()).0 as f64 / p.speed.abs()).floor() as i64));
         }
     } else {
         d = d.max(-(it.start - neighbours(tr, clip).0));
@@ -1064,10 +1074,10 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
         if n.reverse {
             // a reversed neighbour grows leftwards by pulling later media behind its source Out
             if let Some(m) = media_len(ctx, n) {
-                d = d.max(-Tick(((m - n.source_out()).0 as f64 / n.edge_rate(false)).floor() as i64));
+                d = d.max(-Tick(((m - n.source_out()).0 as f64 / n.speed.abs()).floor() as i64));
             }
         } else {
-            d = d.max(-Tick((head(ctx, n).0 as f64 / n.edge_rate(false)).floor() as i64));
+            d = d.max(-Tick((head(ctx, n).0 as f64 / n.speed.abs()).floor() as i64));
         }
     } else {
         d = d.min(neighbours(tr, clip).1 - it.end());
@@ -1081,7 +1091,7 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
         let pi = t.item_mut(p.id).ok_or(EditError::NoItem(p.id))?;
         pi.duration += d;
         if p.reverse {
-            pi.source_in -= src_of(d, pi.edge_rate(true));
+            pi.source_in -= src_of(d, p.speed);
         }
     }
     if let Some(n) = next {
@@ -1089,7 +1099,7 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
         ni.start += d;
         ni.duration -= d;
         if !n.reverse {
-            ni.source_in += src_of(d, ni.edge_rate(false));
+            ni.source_in += src_of(d, n.speed);
         }
     }
     let me = t.item_mut(clip).ok_or(EditError::NoItem(clip))?;
@@ -1165,8 +1175,7 @@ pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delt
     let mut speed = 1.0;
     for c in clips {
         let (_, it) = seq.find_item(*c).ok_or(EditError::NoItem(*c))?;
-        // the constant-factor span: Rate Stretch sets the base speed, Time Remapping multiplies it
-        let src_len = it.source_out_unremapped() - it.source_in;
+        let src_len = it.source_out() - it.source_in;
         let new_dur = match edge {
             Edge::Out => it.duration + d,
             Edge::In => it.duration - d,
@@ -1208,9 +1217,7 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
         if origins.iter().any(|o| o.0 == tid) {
             return Err(EditError::Other("clips on one track change speed one at a time".into()));
         }
-        // the constant-factor span: the dialog's speed is the base factor, Time Remapping
-        // multiplies it, so the new duration must not count the remap twice
-        let src_len = it.source_out_unremapped() - it.source_in;
+        let src_len = it.source_out() - it.source_in;
         // a tiny speed saturates the cast: keep the clip's end representable
         let room = Tick(Tick::MAX.0.saturating_sub(it.start.0.max(0)));
         let mut new_dur = Tick((src_len.0 as f64 / speed).round() as i64).min(room).max(ctx.min_duration);
@@ -1261,6 +1268,91 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
     work.check().map_err(EditError::Other)?;
     *seq = work;
     Ok(())
+}
+
+/// Retake a clip's length after its Time Remapping speed changed, so the clip ends where its
+/// media ends: the media the clip played before the change (`old_span`, capped at what the item
+/// actually has) must fit the new curve exactly. Under one constant rate that length is
+/// `old_span / rate`; under a varying curve the length whose integrated consumption equals
+/// `old_span` is searched out (a ramp has no closed form). A faster rate thus trims the still
+/// frames the clip would otherwise hold past the media's end, and a slower one grows the clip to
+/// show the media that was left over. A static speed (it does not drive playback), a frame hold
+/// and a locked track leave the clip alone. No ripple: later clips stay where they are, as with a
+/// regular trim. A curve that never consumes `old_span` even across the room to the next clip (a
+/// tail held at 0%) changes nothing: the hold is deliberate.
+pub fn fit_remap_duration(seq: &mut Sequence, clip: ClipId, old_span: Tick, ctx: &EditCtx) -> Result<()> {
+    let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
+    if seq.track(tid).is_some_and(|t| t.locked) || it.frame_hold.is_some() {
+        return Ok(());
+    }
+    // one rate for the whole clip, or a curve to integrate
+    let rate = match it.effect("time_remap").and_then(|e| e.param("speed")) {
+        Some(p) if p.is_animated() => {
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for k in &p.keyframes {
+                let Some(v) = k.value.as_f64() else { return Ok(()) };
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+            let r = (lo / 100.0).abs();
+            ((hi - lo).abs() <= 1e-9 && r.is_finite() && r > 1e-9).then_some(r)
+        }
+        _ => return Ok(()),
+    };
+    // the media the clip is meant to show: what it consumed before the change, never past what it has
+    let available = (ctx.media_duration)(it.item).map(|len| len.0.saturating_sub(it.source_in.max((ctx.media_start)(it.item)).0));
+    let span = match available {
+        Some(a) => old_span.0.min(a),
+        None => old_span.0,
+    };
+    if span <= 0 {
+        return Ok(());
+    }
+    // keep the clip's end representable, and inside the next clip's start
+    let room = Tick(Tick::MAX.0.saturating_sub(it.start.0.max(0)));
+    let (_, next_start) = neighbours(seq.track(tid).ok_or(EditError::NoTrack(tid))?, clip);
+    let room = room.min(next_start - it.start);
+    let new_dur = match rate {
+        Some(r) => Tick((span as f64 / r).round() as i64),
+        // the curve varies: search the length that consumes exactly `span` of media
+        None => match remap_fit_length(it, span, room) {
+            Some(d) => d,
+            None => return Ok(()),
+        },
+    }
+    .max(ctx.min_duration)
+    .min(room);
+    if new_dur == it.duration {
+        return Ok(());
+    }
+    let (_, it) = seq.find_item_mut(clip).ok_or(EditError::NoItem(clip))?;
+    it.duration = new_dur;
+    let frame = seq.settings.frame_rate.frame_duration();
+    let track = seq.track_mut(tid).ok_or(EditError::NoTrack(tid))?;
+    fades_follow_edges(track, clip);
+    transitions_stay_within_clips(track, clip, frame);
+    Ok(())
+}
+
+/// The timeline length whose media consumption under the clip's Time Remapping curve equals
+/// `span`: the cumulative consumption is a non-decreasing function of the length (the rate is
+/// taken absolutely), so the length around the crossing is binary-searched and the nearer tick of
+/// the two kept. None when even `room` of timeline consumes less than `span` (the curve stops
+/// consuming — a tail held at 0% — or the neighbours leave no room to grow into).
+fn remap_fit_length(it: &TrackItem, span: i64, room: Tick) -> Option<Tick> {
+    if it.media_span(Tick::ZERO, room).0 < span || room <= Tick::ZERO {
+        return None;
+    }
+    let (mut lo, mut hi) = (Tick::ZERO, room);
+    while hi - lo > Tick(1) {
+        let mid = Tick(lo.0 + (hi.0 - lo.0) / 2);
+        if it.media_span(Tick::ZERO, mid).0 >= span {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Some(if (it.media_span(Tick::ZERO, lo).0 - span).abs() <= (it.media_span(Tick::ZERO, hi).0 - span).abs() { lo } else { hi })
 }
 
 /// Add a transition at the cut between `from` and `to` (or at a single clip edge).

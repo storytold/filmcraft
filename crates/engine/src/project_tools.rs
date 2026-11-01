@@ -678,7 +678,6 @@ fn new_from_template(s: &mut Session, p: &Value) -> Result<Value> {
     proj.name = name.clone();
     proj.root.name = name;
     s.project = std::sync::Arc::new(proj);
-    s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
     s.history = Default::default();
     s.history.limit = 200;

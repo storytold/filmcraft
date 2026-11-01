@@ -191,13 +191,7 @@ pub(super) fn draw_clip(
     t: &Tokens,
     rate: FrameRate,
 ) {
-    let base = it.custom_label_color.map_or_else(
-        || label_color(app, it.label),
-        |c| {
-            let [r, g, b] = c.0;
-            Color32::from_rgb(r, g, b)
-        },
-    );
+    let base = label_color(app, it.label);
     let inr = in_range(app, it);
     let fill = if !it.enabled {
         // Keep the configured label hue when disabled, with an opaque darker fill (#1190).
@@ -272,13 +266,7 @@ pub(super) fn draw_clip(
             Align2::LEFT_CENTER,
             label,
             Tokens::ui(11.5),
-            if it.custom_label_color.is_some() && u32::from(fill.r()) * 299 + u32::from(fill.g()) * 587 + u32::from(fill.b()) * 114 > 140_000 {
-                Color32::BLACK
-            } else if it.enabled {
-                Color32::from_rgb(0xd9, 0xd9, 0xd9)
-            } else {
-                t.text_faint
-            },
+            if it.enabled { Color32::from_rgb(0xd9, 0xd9, 0xd9) } else { t.text_faint },
         );
     }
     // fx badge right-aligned in the header (italic-ish "fx")

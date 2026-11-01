@@ -440,9 +440,6 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
             let t = ctx.rec(*tc, ev.df);
             let id = MarkerId(ctx.b.alloc());
             ctx.seq.markers.push(Marker {
-                url: String::new(),
-                author: String::new(),
-                custom_color: None,
                 id,
                 start: t,
                 duration: Tick::ZERO,
@@ -988,7 +985,6 @@ fn track_order(context: &TrackExport<'_>) -> u8 {
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
-    crate::warn_marker_metadata_loss(p, seq_id, report);
     let seq = p.sequence(seq_id).ok_or(crate::Error::NoSequence(seq_id))?;
     let rate = seq.settings.frame_rate;
     let df = seq.settings.drop_frame && rate.supports_drop_frame();

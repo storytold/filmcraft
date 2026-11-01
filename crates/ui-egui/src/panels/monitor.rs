@@ -954,9 +954,18 @@ fn mini_timeline(
         Which::Program => app.session.active_sequence().map(|q| q.markers.clone()),
         Which::Source => app.session.state.source_item.and_then(|i| filmcraft_engine::clip_ops::source_view(&app.session, i)).map(|v| v.markers),
     };
-    let within = |time: Tick| time >= shown.0 && time <= shown.1;
-    if let Some(markers) = &markers {
-        paint_ruler_markers(app, p, bar, markers, &xof, &within, &shows);
+    if let Some(markers) = markers {
+        for m in markers.iter().filter(|m| shows(m.start)) {
+            let x = xof(m.start);
+            let c = m.color.marker_rgb();
+            let c = Color32::from_rgb(c[0], c[1], c[2]);
+            let y = bar.min.y;
+            p.add(egui::Shape::convex_polygon(
+                vec![pos2(x - 3.5, y), pos2(x + 3.5, y), pos2(x + 3.5, y + 7.0), pos2(x, y + 10.0), pos2(x - 3.5, y + 7.0)],
+                c,
+                Stroke::NONE,
+            ));
+        }
     }
     if shows(time) {
         let x = xof(time);
@@ -975,36 +984,7 @@ fn mini_timeline(
     if interaction.out_hot {
         crate::panels::source_range::trim_cue(p, b, bar, -4.0);
     }
-    let mut marker_seek = None;
-    if let (Some(list), Some(owner)) = (&markers, super::marker_properties::Owner::current(app, which == Which::Source)) {
-        for marker in list {
-            let end = (marker.duration > Tick::ZERO).then(|| marker.start + marker.duration);
-            for (is_end, time) in std::iter::once((false, marker.start)).chain(end.map(|time| (true, time))) {
-                if !(if end.is_some() { within(time) } else { shows(time) }) {
-                    continue;
-                }
-                let rect = Rect::from_min_max(pos2(xof(time) - 4.0, bar.min.y), pos2(xof(time) + 4.0, bar.min.y + 10.0));
-                // Both flags retain the exact marker owner, including coincident ranges.
-                let kind = if is_end { "monitor-marker-end" } else { "monitor-marker" };
-                let response = ui.interact(rect, egui::Id::unique((kind, which as u8, marker.id.0)), Sense::click());
-                let control = if is_end { "markerEnd" } else { "marker" };
-                app.auto.add_response(
-                    &format!("{}.{control}.{}", if which == Which::Source { "source" } else { "program" }, marker.id.0),
-                    &response,
-                    &marker.name,
-                );
-                if response.clicked() {
-                    marker_seek = Some(marker.start);
-                }
-                if response.double_clicked() {
-                    super::marker_properties::open_owned(app, marker, owner);
-                }
-                response.context_menu(|ui| super::misc::marker_owned_menu(app, ui, marker, "monitor.markerMenu", owner));
-            }
-        }
-    }
-
-    let scrub = marker_seek.or(interaction.scrub).or_else(|| {
+    let scrub = interaction.scrub.or_else(|| {
         if !interaction.handled && (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked()) {
             resp.interact_pointer_pos().map(|pos| {
                 let f = ((pos.x - bar.min.x) / bar.width().max(1.0)).clamp(0.0, 1.0) as f64;
@@ -1288,37 +1268,6 @@ fn source_nav(app: &mut FilmcraftApp, cmd: &str) {
         _ => rate.tick_of(rate.frame_at(cur).saturating_add(1)),
     };
     let _ = app.session.execute("source.setPlayhead", json!({"time": t.0}));
-}
-
-fn paint_ruler_markers(
-    app: &FilmcraftApp,
-    p: &egui::Painter,
-    bar: Rect,
-    markers: &[filmcraft_project::Marker],
-    xof: &impl Fn(Tick) -> f32,
-    within: &impl Fn(Tick) -> bool,
-    shows: &impl Fn(Tick) -> bool,
-) {
-    for m in markers {
-        let c = m.custom_color.map_or_else(|| app.session.prefs.labels.rgb(m.color), |c| c.0);
-        let c = Color32::from_rgb(c[0], c[1], c[2]);
-        let glyph = |time| Rect::from_min_size(pos2(xof(time) - 3.5, bar.min.y), vec2(7.0, 10.0));
-        if m.duration > Tick::ZERO {
-            let end = m.start + m.duration;
-            let band = Rect::from_min_max(pos2(xof(m.start), bar.min.y), pos2(xof(end), bar.min.y + 7.0));
-            if band.width() > 0.0 {
-                p.rect_filled(band, 0.0, c.gamma_multiply(0.6));
-            }
-            if within(m.start) {
-                crate::widgets::marker_glyph(p, glyph(m.start), 3.0, crate::widgets::MarkerPart::Left, c);
-            }
-            if within(end) {
-                crate::widgets::marker_glyph(p, glyph(end), 3.0, crate::widgets::MarkerPart::Right, c);
-            }
-        } else if shows(m.start) {
-            crate::widgets::marker_glyph(p, glyph(m.start), 3.0, crate::widgets::MarkerPart::Whole, c);
-        }
-    }
 }
 
 #[cfg(test)]

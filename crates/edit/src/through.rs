@@ -151,11 +151,13 @@ pub fn clip_item_to(it: &TrackItem, range: TimeRange) -> Option<TrackItem> {
     let mut c = it.clone();
     let head = a - it.start;
     let tail = it.end() - b;
+    let speed = it.speed.abs();
+    let src = |d: Tick| Tick((d.0 as f64 * speed).round() as i64);
     if it.frame_hold.is_none() {
         if it.reverse {
-            c.source_in += it.media_span(tail);
+            c.source_in += src(tail);
         } else {
-            c.source_in += it.media_span(head);
+            c.source_in += src(head);
         }
     }
     c.start = a;
@@ -171,7 +173,6 @@ mod tests {
 
     fn item(id: u64, start: i64, dur: i64, src: i64) -> TrackItem {
         TrackItem {
-            custom_label_color: None,
             id: ClipId(id),
             item: ItemId(1),
             name: "c".into(),

@@ -25,7 +25,6 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
-mod marker_edit;
 mod marker_export;
 pub mod masks;
 pub mod media_browser;
@@ -36,7 +35,6 @@ pub mod media_watch;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
-mod palette;
 pub mod panels;
 pub mod paste_media;
 pub mod perf;
@@ -402,8 +400,6 @@ pub struct EditorState {
     /// Marker colours hidden in the Markers panel (Show All Marker Colors clears this).
     #[serde(default)]
     pub hidden_marker_colors: Vec<filmcraft_project::Label>,
-    #[serde(default)]
-    pub hidden_custom_marker_colors: Vec<filmcraft_project::HexColor>,
     /// Sequence markers copied with the clipboard clips (start relative to the copied range).
     #[serde(skip)]
     pub clipboard_markers: Vec<filmcraft_project::Marker>,
@@ -440,8 +436,6 @@ pub enum Event {
 
 pub struct Session {
     pub project: Arc<Project>,
-    /// Runtime identity of the opened project, stable across edits/undo and renewed on replacement.
-    pub project_instance: Arc<()>,
     pub history: History,
     pub revision: u64,
     /// Bumped whenever the session installs a different project document (`file.newProject`,
@@ -564,7 +558,6 @@ impl Session {
     pub fn new(services: Arc<dyn Services>) -> Self {
         Self {
             project: Arc::new(Project::new("Untitled")),
-            project_instance: Arc::new(()),
             history: History { limit: 200, ..Default::default() },
             revision: 1,
             document_epoch: 0,
@@ -1429,8 +1422,6 @@ mod split_edit_ripple_trim_tests;
 mod stored_paths_tests;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod time_remap_tests;
 #[cfg(test)]
 mod timeline_move_tests;
 #[cfg(test)]

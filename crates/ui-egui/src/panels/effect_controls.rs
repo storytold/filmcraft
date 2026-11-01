@@ -37,10 +37,15 @@ const PROPS_VALUE_R: f32 = PROPS_NAV_X + NAV_STEP + 12.0;
 
 /// Timeline time at which the clip shows media time `m` (where a keyframe sits in the sequence).
 fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
-    it.timeline_time_of_media(m).unwrap_or_else(|| {
-        let offset = if it.reverse { it.source_out() - m - Tick(1) } else { m - it.source_in };
-        it.start + Tick((offset.0 as f64 / it.effective_speed().max(1e-6)).round() as i64)
-    })
+    let offset = if it.reverse { it.source_out() - m - Tick(1) } else { m - it.source_in };
+    it.start + Tick((offset.0 as f64 / it.speed.abs().max(1e-6)).round() as i64)
+}
+
+/// Timeline time at which a keyframe of `effect`.`param` stored at `stored` sits in the sequence:
+/// Time Remapping's speed anchors its keyframes to the clip's timeline time (media time is what
+/// remapping defines), every other effect stores media time and maps through the clip.
+fn keyframe_timeline_time(it: &TrackItem, effect: &str, param: &str, stored: Tick) -> Tick {
+    if filmcraft_project::TrackItem::timeline_keyframed(effect, param) { it.start + stored } else { timeline_time_of(it, stored) }
 }
 
 // The press frame can include movement before the button went down. Start from the press
@@ -253,7 +258,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.auto.add("effectControls.graphicTimeHint", ir, hint);
             }
             let mt_now = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
-            // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
+            let pt_now = ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)) - it.start;
             let mut order: Vec<usize> = (0..it.effects.len()).collect();
             order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
             let mut after_fixed = false;
@@ -342,7 +347,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     custom_setup_row(app, bui, body, &lane, clip, idx, &e.effect);
                 }
                 for pd in &def.params {
-                    param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, it, &mut keys);
+                    param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, it, &mut keys, pt_now);
                     if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
                         && let Some(param) = e.params.get(pd.id)
                         && param.is_animated()
@@ -514,12 +519,17 @@ fn keyframe_nav(
     auto: &str,
     tip: &str,
     actions: &mut Vec<(String, Value)>,
+    pt: Tick,
+    timeline_keys: bool,
 ) -> bool {
     let t = app.tokens;
+    // the time the navigator searches and compares at: stored coordinates differ per effect kind
+    let now = if timeline_keys { pt } else { mt };
     if let Some(param) = param.filter(|p| p.is_animated()) {
-        for (d, target, name, tip) in
-            [(-1.0, param.prev_keyframe(mt), "prevKeyframe", "Go to previous keyframe"), (1.0, param.next_keyframe(mt), "nextKeyframe", "Go to next keyframe")]
-        {
+        for (d, target, name, tip) in [
+            (-1.0, param.prev_keyframe(now), "prevKeyframe", "Go to previous keyframe"),
+            (1.0, param.next_keyframe(now), "nextKeyframe", "Go to next keyframe"),
+        ] {
             // the arrows almost the row's height to click, as Premiere's
             let r = Rect::from_center_size(at + vec2(d * NAV_STEP, 0.0), vec2(14.0, 20.0));
             let resp = ui.interact(r, id.with(name), Sense::click()).on_hover_text(crate::i18n::t(tip));
@@ -530,13 +540,14 @@ fn keyframe_nav(
             if resp.clicked()
                 && let Some(k) = target
             {
-                actions.push(("playhead.set".into(), json!({"time": timeline_time_of(it, k).0})));
+                let tl = if timeline_keys { it.start + k } else { timeline_time_of(it, k) };
+                actions.push(("playhead.set".into(), json!({"time": tl.0})));
             }
         }
     }
     let r = Rect::from_center_size(at, vec2(15.0, 15.0));
     let resp = ui.interact(r.expand(1.5), id.with("key"), Sense::click()).on_hover_text(crate::i18n::t(tip));
-    if param.is_some_and(|p| p.keyframes.iter().any(|k| k.time == mt)) {
+    if param.is_some_and(|p| p.keyframes.iter().any(|k| k.time == now)) {
         icons::paint(ui.painter(), r, Icon::Keyframe, t.hot_text);
     } else {
         let s = 4.7;
@@ -564,6 +575,7 @@ fn properties_nav(
     actions: &mut Vec<(String, Value)>,
 ) {
     let prm = it.effect(effect).and_then(|e| e.param(param));
+    // the Properties panel hosts no Time Remapping row, so media time is right for every row here
     let tip = match prm {
         Some(p) if p.keyframes.iter().any(|k| k.time == mt) => "Remove keyframe",
         Some(p) if p.is_animated() => "Add keyframe",
@@ -571,7 +583,7 @@ fn properties_nav(
     };
     let at = pos2(row.max.x - PROPS_NAV_X, row.center().y);
     let id = egui::Id::unique(("props-nav", effect, param, clip.0));
-    if keyframe_nav(app, ui, at, prm, mt, it, id, &format!("properties.{effect}.{param}"), tip, actions) {
+    if keyframe_nav(app, ui, at, prm, mt, it, id, &format!("properties.{effect}.{param}"), tip, actions, mt, false) {
         if it.effect(effect).is_none() {
             actions.push(("effects.apply".into(), json!({"clips": [clip.0], "effect": effect})));
         }
@@ -595,9 +607,14 @@ pub(crate) fn param_row(
     lx: &dyn Fn(Tick) -> f32,
     it: &TrackItem,
     keys: &mut Interaction,
+    pt: Tick,
 ) {
     let _ = lx;
     let t = app.tokens;
+    // Time Remapping's speed keys and evaluates on the clip's timeline time; everything else on
+    // media time
+    let timeline_keys = filmcraft_project::TrackItem::timeline_keyframed(&e.effect, pd.id);
+    let row_mt = if timeline_keys { pt } else { mt };
     let param = match mask {
         Some(k) => e.masks.get(k).and_then(|m| m.param(pd.id)),
         None => e.params.get(pd.id),
@@ -650,7 +667,7 @@ pub(crate) fn param_row(
     x += 14.0;
     let vx = r.min.x + (r.width() * 0.5).max(150.0);
     row_label(ui, pos2(x, r.center().y), crate::i18n::t(pd.label), vx - 6.0 - x, Tokens::ui(12.0), t.text);
-    let value = param.value_at(mt);
+    let value = param.value_at(row_mt);
     let mut vui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(Rect::from_min_max(pos2(vx, r.min.y + 1.0), pos2(r.max.x - 26.0, r.max.y - 1.0)))
@@ -666,7 +683,20 @@ pub(crate) fn param_row(
     if pd.animatable && param.is_animated() {
         let at = pos2(r.max.x - 42.0, r.center().y);
         let auto = format!("effectControls.{}.{}", e.effect, pkey);
-        if keyframe_nav(app, ui, at, Some(param), mt, it, egui::Id::unique(("knav", clip.0, idx, pkey)), &auto, "Add/Remove Keyframe", actions) {
+        if keyframe_nav(
+            app,
+            ui,
+            at,
+            Some(param),
+            mt,
+            it,
+            egui::Id::unique(("knav", clip.0, idx, pkey)),
+            &auto,
+            "Add/Remove Keyframe",
+            actions,
+            pt,
+            timeline_keys,
+        ) {
             actions.push(("effects.addKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id}))));
         }
     }
@@ -686,7 +716,7 @@ pub(crate) fn param_row(
         let y = r.center().y;
         let dur = it.duration.0.max(1) as f64;
         for k in &param.keyframes {
-            let tl = timeline_time_of(it, k.time);
+            let tl = keyframe_timeline_time(it, &e.effect, pd.id, k.time);
             let f = ((tl - it.start).0 as f64 / dur) as f32;
             if !(-0.01..=1.01).contains(&f) {
                 continue;
@@ -1235,13 +1265,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let (br, bresp) = bui.allocate_exact_size(vec2(118.0, 26.0), Sense::click());
         bui.painter().rect_filled(br, 4.0, if bresp.hovered() { t.hover } else { t.panel_bg });
         bui.painter().rect_stroke(br, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-        bui.painter().text(
-            br.center(),
-            Align2::CENTER_CENTER,
-            tlf!("Speed {n}%", n = format!("{:.0}", it.effective_speed() * 100.0)),
-            Tokens::ui(12.0),
-            t.text,
-        );
+        bui.painter().text(br.center(), Align2::CENTER_CENTER, tlf!("Speed {n}%", n = format!("{:.0}", it.speed * 100.0)), Tokens::ui(12.0), t.text);
         app.auto.add("properties.speed", br, "Speed");
         open_speed = bresp.clicked();
     });
@@ -1333,7 +1357,10 @@ pub(crate) fn graph_rows(
     row_line(ui, velr, lane, &t);
     let speed = it.speed.abs().max(1e-6);
     let dur = it.duration.0.max(1) as f64;
-    let to_media = |f: f64| it.source_in + Tick((f * dur * speed) as i64);
+    let timeline_keys = it.effects.get(idx).is_some_and(|e| filmcraft_project::TrackItem::timeline_keyframed(&e.effect, pd.id));
+    let to_media = |f: f64| {
+        if timeline_keys { it.start + Tick((f * dur) as i64) } else { it.source_in + Tick((f * dur * speed) as i64) }
+    };
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
     let n = (lane.width() / 2.0).max(8.0) as usize;
@@ -1435,7 +1462,10 @@ fn draw_graph_keyframes(
     let t = app.tokens;
     let speed = it.speed.abs().max(1e-6);
     let dur = it.duration.0.max(1) as f64;
-    let to_f = |m: Tick| ((m - it.source_in).0 as f64 / speed / dur) as f32;
+    let timeline_keys = it.effects.get(idx).is_some_and(|e| filmcraft_project::TrackItem::timeline_keyframed(&e.effect, pd.id));
+    let to_f = |m: Tick| {
+        if timeline_keys { (m.0 as f64 / dur) as f32 } else { ((m - it.source_in).0 as f64 / speed / dur) as f32 }
+    };
     let x_of = |f: f32| lane.min.x + f * lane.width();
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
     let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
