@@ -374,6 +374,8 @@ pub struct FilmcraftApp {
     watched_render: Option<(u64, Tick)>,
     /// The status bar's running-job text as last shown.
     job_text: Option<panels::JobText>,
+    /// Running jobs' texts in the export queue and the Progress panel as last shown.
+    steady_texts: panels::SteadyTexts,
     /// Settings last applied to the UI (theme, tooltips, frame cache, audio device).
     applied_prefs: Option<filmcraft_engine::autosave::Preferences>,
     /// Settings ▸ Appearance ▸ UI Scale last applied, with the system scale it was applied for.

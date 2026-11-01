@@ -121,6 +121,7 @@ impl FilmcraftApp {
             gpu: None,
             watched_render: None,
             job_text: None,
+            steady_texts: Default::default(),
             applied_prefs: None,
             applied_ui_scale: None,
             workspace_restored: false,

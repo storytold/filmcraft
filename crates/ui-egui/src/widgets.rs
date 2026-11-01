@@ -550,6 +550,15 @@ pub fn paint_tabular(painter: &egui::Painter, left_center: egui::Pos2, pieces: V
     }
 }
 
+/// [`tabular_text`] as a label in `ui`'s layout.
+pub fn tabular_label(ui: &mut egui::Ui, text: &str, font: &egui::FontId, color: Color32) -> egui::Response {
+    let (pieces, width) = tabular_text(ui.painter(), text, font, color);
+    let height = pieces.iter().map(|(_, g)| g.size().y).fold(font.size, f32::max);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+    paint_tabular(ui.painter(), pos2(rect.min.x, rect.center().y), pieces, color);
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

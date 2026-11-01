@@ -85,6 +85,46 @@ impl JobText {
     pub const EVERY: f64 = 1.0;
 }
 
+/// The texts of running jobs elsewhere (an export queue item, a row of the Progress panel) as last
+/// shown, by key: each changes at most every [`JobText::EVERY`] seconds.
+#[derive(Default)]
+pub struct SteadyTexts(std::collections::HashMap<String, (f64, String)>);
+
+impl SteadyTexts {
+    /// The text last shown under `key`, or `make`'s when that is [`JobText::EVERY`] old at `now`.
+    /// Texts no longer asked for (their job ended) are let go.
+    pub fn get(&mut self, key: &str, now: f64, make: impl FnOnce() -> String) -> String {
+        self.0.retain(|_, (at, _)| (*at..*at + 10.0 * JobText::EVERY).contains(&now));
+        if let Some((at, text)) = self.0.get(key)
+            && (*at..*at + JobText::EVERY).contains(&now)
+        {
+            return text.clone();
+        }
+        let text = make();
+        self.0.insert(key.to_owned(), (now, text.clone()));
+        text
+    }
+}
+
+#[cfg(test)]
+mod steady_text_tests {
+    use super::SteadyTexts;
+
+    #[test]
+    fn a_text_is_made_again_once_a_second_and_forgotten_when_no_longer_asked_for() {
+        let mut texts = SteadyTexts::default();
+        assert_eq!(texts.get("a", 5.0, || "1".into()), "1");
+        assert_eq!(texts.get("a", 5.9, || "2".into()), "1");
+        assert_eq!(texts.get("b", 5.9, || "x".into()), "x", "each key has its own");
+        assert_eq!(texts.get("a", 6.0, || "3".into()), "3");
+        // a clock that went back (a test, a new session) makes the text again
+        assert_eq!(texts.get("a", 1.0, || "4".into()), "4");
+        // "b", last made at 5.9, ended long ago
+        texts.get("a", 100.0, || "5".into());
+        assert_eq!(texts.0.len(), 1);
+    }
+}
+
 /// ` · 2:05 left`: the time a job has left, as it follows a percentage.
 pub fn left_text(d: std::time::Duration) -> String {
     tlf!(" · {time} left", time = filmcraft_engine::export::format_eta(d))
