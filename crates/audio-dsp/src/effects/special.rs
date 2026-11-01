@@ -6,7 +6,7 @@ use super::time::Reverb;
 use super::util::{DcBlock, DelayLine, OnePole, coef, lin_db};
 use crate::biquad::{Biquad, Coeffs, FilterType};
 use crate::loudness::LoudnessMeter;
-use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, param_plumbing};
+use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, flush32, param_plumbing};
 use std::f32::consts::{FRAC_PI_2, PI};
 
 const SM: f32 = 20.0;
@@ -676,7 +676,7 @@ impl Shadow {
     fn tick(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.b1 * self.x1 - self.a1 * self.y1;
         self.x1 = x;
-        self.y1 = if y.abs() < 1e-25 { 0.0 } else { y };
+        self.y1 = flush32(y);
         y
     }
     fn set_coeffs(&mut self, o: &Shadow) {
