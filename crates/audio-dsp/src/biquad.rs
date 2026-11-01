@@ -323,4 +323,139 @@ mod tests {
             assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{id} stays NaN after one NaN input sample");
         }
     }
+
+    const RUN_LEN: usize = 2 * 48000;
+
+    /// Parameter settings for the non-finite input sweeps.
+    #[derive(Clone, Copy, Debug)]
+    enum Setting {
+        Default,
+        /// Toggles on, last choice, other parameters at 37 % of their range.
+        Moved,
+        /// Toggles off, every other parameter at its minimum (e.g. no gate hold, multiband
+        /// bands neither bypassed nor linked).
+        Min,
+    }
+
+    /// Process 2 s of noise in 512-sample blocks, with `bad` (if any) at input sample 1000 of
+    /// the left channel. Returns both output channels and the position of the bad sample's own
+    /// latency-delayed output.
+    fn run_effect(id: &str, setting: Setting, bad: Option<f32>) -> (Vec<f32>, Vec<f32>, usize) {
+        let mut fx = crate::create_effect(id, SR as f32, 2).unwrap_or_else(|| panic!("{id}"));
+        for p in fx.params() {
+            let v = match (setting, p.unit) {
+                (Setting::Default, _) => continue,
+                (Setting::Moved, crate::Unit::Toggle) => 1.0,
+                (Setting::Moved, crate::Unit::Choice) => p.max,
+                (Setting::Moved, _) => p.min + (p.max - p.min) * 0.37,
+                (Setting::Min, _) => p.min,
+            };
+            fx.set_param(p.id, v);
+        }
+        run_fx(fx, bad)
+    }
+
+    /// [`run_effect`] for an already configured effect.
+    fn run_fx(mut fx: Box<dyn crate::AudioEffect>, bad: Option<f32>) -> (Vec<f32>, Vec<f32>, usize) {
+        const BAD_AT: usize = 1000;
+        let mut rng = Rng::new(8);
+        let mut l: Vec<f32> = (0..RUN_LEN).map(|_| 0.5 * rng.uniform()).collect();
+        let mut r: Vec<f32> = (0..RUN_LEN).map(|_| 0.5 * rng.uniform()).collect();
+        if let Some(bad) = bad {
+            l[BAD_AT] = bad;
+        }
+        for (a, b) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
+            fx.process(&mut [a, b]);
+        }
+        (l, r, BAD_AT + fx.latency())
+    }
+
+    /// Last output sample index (either channel) that is not finite, ignoring `own`.
+    fn last_non_finite_in(l: &[f32], r: &[f32], own: usize) -> Option<usize> {
+        l.iter().chain(r).enumerate().map(|(i, v)| (i % l.len(), v)).filter(|&(i, v)| i != own && !v.is_finite()).map(|(i, _)| i).max()
+    }
+
+    /// RMS of the last 0.5 s of both channels.
+    fn tail_rms(l: &[f32], r: &[f32]) -> f64 {
+        let t = l.len() - 24000;
+        let s: f64 = l[t..].iter().chain(&r[t..]).map(|&v| (v as f64) * (v as f64)).sum();
+        (s / 48000.0).sqrt()
+    }
+
+    /// Every registered effect, at default, moved and minimum parameters, produces finite output
+    /// again within 0.5 s after one NaN, +inf or -inf input sample, and is not left muted: the
+    /// level of its last 0.5 s is at least half that of a run without the bad sample.
+    #[test]
+    fn every_effect_recovers_after_one_non_finite_sample() {
+        let mut failures = Vec::new();
+        for e in crate::effects() {
+            for setting in [Setting::Default, Setting::Moved, Setting::Min] {
+                let (l, r, _) = run_effect(e.id, setting, None);
+                let clean = tail_rms(&l, &r);
+                for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                    let (l, r, own) = run_effect(e.id, setting, Some(bad));
+                    let last = last_non_finite_in(&l, &r, own);
+                    if last.is_some_and(|i| i >= own + 24000) {
+                        failures.push(format!("{} ({setting:?}) still non-finite at sample {last:?} after {bad}", e.id));
+                    }
+                    let level = tail_rms(&l, &r);
+                    if level < 0.5 * clean {
+                        failures.push(format!("{} ({setting:?}) level {level:e} after {bad}, {clean:e} without", e.id));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Effects whose state is cleaned outside `flush` recover from NaN and ±inf within two blocks.
+    #[test]
+    fn phaser_click_remover_binauralizer_recover_from_non_finite_input() {
+        for id in ["phaser", "click_remover", "binauralizer"] {
+            for setting in [Setting::Default, Setting::Moved] {
+                for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                    let (l, r, own) = run_effect(id, setting, Some(bad));
+                    let last = last_non_finite_in(&l, &r, own);
+                    assert!(last.is_none_or(|i| i < own + 1024), "{id} ({setting:?}) still non-finite at sample {last:?} after {bad}");
+                }
+            }
+        }
+    }
+
+    /// With the loudness maximiser on and the exciter off (which the sweep's settings do not
+    /// combine), an inf sample used to hold the limiter envelope at -inf dB: silence for good.
+    #[test]
+    fn mastering_limiter_recovers_from_inf() {
+        let make = || {
+            let mut fx = crate::create_effect("mastering", SR as f32, 2).unwrap();
+            fx.set_param("loudness", 50.0);
+            fx
+        };
+        let (l, r, _) = run_fx(make(), None);
+        let clean = tail_rms(&l, &r);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let (l, r, own) = run_fx(make(), Some(bad));
+            let last = last_non_finite_in(&l, &r, own);
+            assert!(last.is_none_or(|i| i < own + 1024), "still non-finite at sample {last:?} after {bad}");
+            assert!(tail_rms(&l, &r) >= 0.5 * clean, "level {:e} after {bad}, {clean:e} without", tail_rms(&l, &r));
+        }
+    }
+
+    /// A NaN written to any parameter of any effect never reaches the output (`set_param` ignores NaN).
+    #[test]
+    fn nan_parameter_values_never_produce_non_finite_output() {
+        let mut bad = Vec::new();
+        for e in crate::effects() {
+            let ids: Vec<&str> = crate::create_effect(e.id, SR as f32, 2).unwrap().params().iter().map(|p| p.id).collect();
+            for id in ids {
+                let mut fx = crate::create_effect(e.id, SR as f32, 2).unwrap();
+                fx.set_param(id, f32::NAN);
+                let (l, r, _) = run_fx(fx, None);
+                if l.iter().chain(&r).any(|v| !v.is_finite()) {
+                    bad.push(format!("{}.{id}", e.id));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
+    }
 }
