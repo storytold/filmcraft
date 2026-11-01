@@ -557,15 +557,40 @@ fn lumetri_unsupported_sections_fall_back() {
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 
-    // curve_luma modified
+    // curves run on the GPU's curves pass (identity and empty curves carry no table)
     let e = effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
-
-    // hue_vs_sat non-empty
+    assert!(matches!(&op, Some(o @ FxOp::Lumetri { curves: Some(_), .. }) if o.gpu_ok()), "{op:?}");
     let e = effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[0.5, 0.5]]))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(matches!(&op, Some(o @ FxOp::Lumetri { curves: Some(_), .. }) if o.gpu_ok()), "{op:?}");
+    let e = effect("lumetri", &[("curve_red", ParamValue::Curve(vec![[0.0, 0.0], [1.0, 1.0]])), ("hue_vs_hue", ParamValue::Curve(vec![]))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(matches!(&op, Some(o @ FxOp::Lumetri { curves: None, .. }) if o.gpu_ok()), "{op:?}");
+    // Curves off: none
+    let e = effect("lumetri", &[("curves_on", ParamValue::Bool(false)), ("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
+    assert!(matches!(&op, Some(o @ FxOp::Lumetri { curves: None, .. }) if o.gpu_ok()), "{op:?}");
+    // tables the curves pass does not take: non-finite entries, a wrong length; a bad signal
+    let e = effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))]);
+    let Some(FxOp::Lumetri { curves: Some(k), .. }) = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h) else { panic!("no curves") };
+    assert!(k.gpu_ok());
+    let mut bad = k.clone();
+    let mut t = vec![0.5f32; filmcraft_render::effects::CURVE_TABLE_SIZE];
+    t[7] = f32::NAN;
+    bad.tables[0] = Some(t.into());
+    assert!(!bad.gpu_ok());
+    let mut short = k.clone();
+    short.tables[2] = Some(vec![0.5f32; 16].into());
+    assert!(!short.gpu_ok());
+    let mut sig = k.clone();
+    sig.grade = filmcraft_color::GradeSpace::Pq { white: 203.0, norm: f32::NAN };
+    assert!(!sig.gpu_ok());
+    // the CPU reference copes with what it refuses
+    let mut img = filmcraft_render::Image::filled(w, h, [0.3, 0.2, 0.1, 1.0]);
+    for k in [&bad, &short] {
+        img.map_rgb(|c, _, _| k.apply(c));
+    }
 
     // wheel offset
     let e = effect("lumetri", &[("wheel_shadows", pt(0.5, 0.0))]);
@@ -641,6 +666,285 @@ fn hdr_lumetri_matches_cpu() {
         }
     }
     assert!(failures.is_empty(), "HDR Lumetri differs from the CPU:\n{}", failures.join("\n"));
+}
+
+fn curve(points: &[[f32; 2]]) -> ParamValue {
+    ParamValue::Curve(points.to_vec())
+}
+
+/// A production grade's curves (a wedding reel graded in FilmCraft 0.15): a 7-point luma S, a
+/// 12-point hue vs saturation that tames oranges / greens and a 7-point hue vs luma, identity RGB
+/// curves.
+fn reel_curves() -> Vec<(&'static str, ParamValue)> {
+    vec![
+        ("curve_luma", curve(&[[0.0, 0.0], [0.12, 0.07], [0.3, 0.25], [0.5, 0.5], [0.72, 0.78], [0.9, 0.94], [1.0, 1.0]])),
+        ("curve_red", curve(&[[0.0, 0.0], [1.0, 1.0]])),
+        ("curve_green", curve(&[[0.0, 0.0], [1.0, 1.0]])),
+        ("curve_blue", curve(&[[0.0, 0.0], [1.0, 1.0]])),
+        (
+            "hue_vs_sat",
+            curve(&[
+                [0.0, 0.5],
+                [0.025, 0.5],
+                [0.055, 0.45],
+                [0.1, 0.47],
+                [0.13, 0.48],
+                [0.17, 0.38],
+                [0.25, 0.33],
+                [0.39, 0.36],
+                [0.49, 0.47],
+                [0.58, 0.47],
+                [0.7, 0.5],
+                [1.0, 0.5],
+            ]),
+        ),
+        ("hue_vs_luma", curve(&[[0.0, 0.5], [0.12, 0.5], [0.18, 0.48], [0.28, 0.46], [0.4, 0.48], [0.5, 0.5], [1.0, 0.5]])),
+    ]
+}
+
+/// Lumetri curve cases: each curve alone, the red seam of the hue curves, extreme and degenerate
+/// curves, curves after a Look LUT, and the production grade (curves with an Input LUT and basic
+/// adjustments).
+fn curve_cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>)> {
+    let txt = |s: &str| ParamValue::Text(s.into());
+    vec![
+        ("luma", vec![("curve_luma", curve(&[[0.0, 0.05], [0.25, 0.18], [0.75, 0.85], [1.0, 0.95]]))]),
+        ("red", vec![("curve_red", curve(&[[0.0, 0.0], [0.4, 0.55], [1.0, 1.0]]))]),
+        ("green", vec![("curve_green", curve(&[[0.0, 0.1], [0.6, 0.5], [1.0, 0.9]]))]),
+        ("blue", vec![("curve_blue", curve(&[[0.0, 0.0], [0.3, 0.2], [0.8, 0.9], [1.0, 1.0]]))]),
+        ("hue_vs_sat", vec![("hue_vs_sat", curve(&[[0.0, 0.7], [0.33, 0.2], [0.66, 0.5]]))]),
+        ("hue_vs_hue", vec![("hue_vs_hue", curve(&[[0.1, 0.6], [0.5, 0.4], [0.8, 0.55]]))]),
+        ("hue_vs_luma", vec![("hue_vs_luma", curve(&[[0.05, 0.7], [0.4, 0.3], [0.7, 0.5]]))]),
+        ("luma_vs_sat", vec![("luma_vs_sat", curve(&[[0.0, 0.2], [0.5, 0.6], [1.0, 0.9]]))]),
+        ("sat_vs_sat", vec![("sat_vs_sat", curve(&[[0.0, 0.8], [0.5, 0.5], [1.0, 0.3]]))]),
+        // points either side of red: the curves wrap across hue 0 / 1
+        (
+            "red_seam",
+            vec![
+                ("hue_vs_hue", curve(&[[0.03, 0.62], [0.5, 0.5], [0.97, 0.4]])),
+                ("hue_vs_sat", curve(&[[0.01, 0.9], [0.99, 0.1]])),
+                ("hue_vs_luma", curve(&[[0.02, 0.3], [0.98, 0.75]])),
+            ],
+        ),
+        ("flat_hue", vec![("hue_vs_sat", curve(&[[0.5, 0.5]]))]),
+        (
+            "extreme",
+            vec![
+                ("curve_luma", curve(&[[0.0, 1.0], [1.0, 0.0]])),
+                ("curve_red", curve(&[[0.0, 0.0], [0.45, 0.02], [0.55, 0.98], [1.0, 1.0]])),
+                ("curve_green", curve(&[[0.3, 0.8]])),
+                ("curve_blue", curve(&[[-0.2, 0.1], [0.5, 0.5], [0.5, 0.6], [1.3, 0.9]])),
+                ("hue_vs_sat", curve(&[[0.2, 1.0], [0.25, 0.0], [0.7, 1.0]])),
+                ("sat_vs_sat", curve(&[[0.0, 1.0], [1.0, 0.0]])),
+            ],
+        ),
+        (
+            "all_nine",
+            vec![
+                ("curve_luma", curve(&[[0.0, 0.02], [0.5, 0.55], [1.0, 0.97]])),
+                ("curve_red", curve(&[[0.0, 0.0], [0.5, 0.52], [1.0, 1.0]])),
+                ("curve_green", curve(&[[0.0, 0.0], [0.5, 0.48], [1.0, 1.0]])),
+                ("curve_blue", curve(&[[0.0, 0.03], [1.0, 0.95]])),
+                ("hue_vs_sat", curve(&[[0.1, 0.6], [0.6, 0.4]])),
+                ("hue_vs_hue", curve(&[[0.2, 0.55], [0.7, 0.45]])),
+                ("hue_vs_luma", curve(&[[0.3, 0.55], [0.8, 0.45]])),
+                ("luma_vs_sat", curve(&[[0.0, 0.4], [1.0, 0.6]])),
+                ("sat_vs_sat", curve(&[[0.0, 0.6], [1.0, 0.45]])),
+            ],
+        ),
+        (
+            "after_look",
+            vec![
+                ("look_lut", txt("builtin:look-teal-orange")),
+                ("look_intensity", fl(80.0)),
+                ("curve_luma", curve(&[[0.0, 0.0], [0.3, 0.22], [0.7, 0.8], [1.0, 1.0]])),
+                ("hue_vs_sat", curve(&[[0.08, 0.35], [0.5, 0.55]])),
+                ("curves_hdr_range", fl(400.0)),
+            ],
+        ),
+        ("reel_curves", reel_curves()),
+    ]
+}
+
+/// The production grade around [`reel_curves`]: an Input LUT (a built-in S-Log3 conversion standing
+/// in for the reel's own) and its basic adjustments.
+fn reel_grade() -> Vec<(&'static str, ParamValue)> {
+    let mut reel = reel_curves();
+    reel.extend([
+        ("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into())),
+        ("contrast", fl(18.0)),
+        ("highlights", fl(-12.0)),
+        ("shadows", fl(-8.0)),
+        ("whites", fl(2.0)),
+        ("blacks", fl(-12.0)),
+        ("saturation", fl(108.0)),
+        ("vibrance", fl(8.0)),
+    ]);
+    reel
+}
+
+/// 8-bit display-referred difference of two linear premultiplied images (sRGB-encoded, per pixel
+/// the largest channel difference): p99, mean, max, and the count of pixels off by more than one
+/// level.
+fn diff8(cpu: &[f32], gpu: &[f32]) -> (u32, f64, u32, usize) {
+    let e = |v: f32| (filmcraft_color::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as i32;
+    let mut d: Vec<u32> = cpu
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(gpu.as_chunks::<4>().0.iter())
+        .map(|(a, b)| (0..3).map(|k| (e(a[k]) - e(b[k])).unsigned_abs()).max().unwrap_or(0))
+        .collect();
+    d.sort_unstable();
+    let over = d.iter().filter(|v| **v > 1).count();
+    (d[d.len() * 99 / 100], d.iter().sum::<u32>() as f64 / d.len() as f64, d[d.len() - 1], over)
+}
+
+/// The adapter the GPU tests run on, for the log.
+fn adapter_name() -> String {
+    let instance = wgpu::Instance::default();
+    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        .map(|a| {
+            let i = a.get_info();
+            format!("{} ({:?}, {}, {})", i.name, i.backend, i.driver, i.driver_info)
+        })
+        .unwrap_or_else(|_| "none".into())
+}
+
+/// Lumetri's curves run on the GPU's curves pass and match the CPU op in SDR and in the HDR working
+/// spaces: every curve alone, the red seam, extreme and degenerate curves, after a Look LUT, and a
+/// production grade with an Input LUT.
+#[test]
+fn lumetri_curves_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    eprintln!("adapter: {}", adapter_name());
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let mut failures = Vec::new();
+    for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Hlg, filmcraft_color::WorkingSpace::Rec2100Pq] {
+        let cxc = FxCtx { working, ..cx(Tick::ZERO, 1.0) };
+        for (name, params) in curve_cases() {
+            let op = FxOp::eval(&effect("lumetri", &params), &cxc, w as usize, h as usize).expect("lumetri op");
+            assert!(matches!(op, FxOp::Lumetri { curves: Some(_), .. }), "{name}: no curves");
+            assert!(op.gpu_ok(), "{working:?} {name}: not GPU-capable");
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            eprintln!("{working:?} {name}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+            if worst > EXACT * 10.0 || flips > 0.0 {
+                failures.push(format!("{working:?} {name}: {worst:.2e}, flips {flips:.4}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "Lumetri curves differ from the CPU:\n{}", failures.join("\n"));
+}
+
+/// The production grade (Input LUT, basic adjustments, luma / hue vs sat / hue vs luma curves)
+/// matches the CPU op by the compositor's criterion (8-bit p99 ≤ 6, mean < 1.5) in SDR and HDR.
+/// Not exactly: the LUT's gamut conversion turns the test picture's greys into colours of ~1e-7
+/// chroma, whose hue is rounding noise that differs between the CPU's and the GPU's f32
+/// arithmetic, and hue vs luma then lifts them by different amounts (up to its 0.02 here; see
+/// [`lumetri_curves_near_neutral`]).
+#[test]
+fn lumetri_reel_grade_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Hlg, filmcraft_color::WorkingSpace::Rec2100Pq] {
+        let cxc = FxCtx { working, ..cx(Tick::ZERO, 1.0) };
+        let op = FxOp::eval(&effect("lumetri", &reel_grade()), &cxc, w as usize, h as usize).expect("lumetri op");
+        assert!(matches!(op, FxOp::Lumetri { input_lut: Some(_), curves: Some(_), .. }) && op.gpu_ok(), "{working:?}: {op:?}");
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        op.apply(&mut cpu);
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        let (p99, mean, max, over) = diff8(&cpu.px, &gpu);
+        eprintln!(
+            "{working:?} reel grade: max rel diff {worst:.2e}, {:.3}% flipped; 8-bit p99 {p99}, mean {mean:.4}, max {max}, {over} of {} pixels > 1 level",
+            flips * 100.0,
+            w * h
+        );
+        assert!(p99 <= 6 && mean < 1.5, "{working:?}: p99 {p99}, mean {mean}");
+        // the difference is the near-neutral pixels': pixels the CPU leaves coloured (chroma of
+        // the unpremultiplied result above 1e-3) match exactly
+        let (mut coloured, mut worst_coloured) = (0usize, 0f32);
+        for (a, b) in cpu.px.as_chunks::<4>().0.iter().zip(gpu.as_chunks::<4>().0.iter()) {
+            if a[3] <= 1e-6 {
+                continue;
+            }
+            let u = [a[0] / a[3], a[1] / a[3], a[2] / a[3]];
+            if u[0].max(u[1]).max(u[2]) - u[0].min(u[1]).min(u[2]) <= 1e-3 {
+                continue;
+            }
+            coloured += 1;
+            worst_coloured = (0..4).map(|k| (a[k] - b[k]).abs() / (1.0 + a[k].abs())).fold(worst_coloured, f32::max);
+        }
+        eprintln!("{working:?} reel grade: {coloured} coloured pixels, max rel diff {worst_coloured:.2e}");
+        assert!(worst_coloured <= EXACT * 10.0, "{working:?}: coloured pixels differ by {worst_coloured:.2e}");
+    }
+}
+
+/// Near-neutral pixels: `rgb_to_hsl` gives grey (max − min < 1e-7) hue 0, anything with more
+/// chroma a hue from rounding noise, so a steep hue vs luma curve can lift such a pixel by a
+/// different amount on the CPU and the GPU when their f32 arithmetic lands it on a different hue.
+/// Exact greys (half-float exact, as the GPU's source draw needs) stay grey through the curves and
+/// must match; an Input LUT whose gamut conversion leaves greys ~1e-7 off neutral makes their hue
+/// noise, and those cases are measured and reported (the CPU itself is discontinuous there: such a
+/// pixel's hue is arbitrary), not bounded.
+#[test]
+fn lumetri_curves_near_neutral() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (256u32, 4u32);
+    let px: Vec<f32> = (0..w * h)
+        .flat_map(|i| {
+            let g = half((i % w) as f32 / (w - 1) as f32);
+            [g, g, g, 1.0]
+        })
+        .collect();
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let steep = || vec![("hue_vs_luma", curve(&[[0.0, 1.0], [0.02, 0.0], [0.5, 0.5], [0.98, 0.0]])), ("basic_on", ParamValue::Bool(false))];
+    let lut = || ("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into()));
+    let mut steep_lut = steep();
+    steep_lut[1] = ("basic_on", ParamValue::Bool(true));
+    steep_lut.push(lut());
+    let cases = [
+        ("grey_steep", steep(), true),
+        ("grey_reel_curves", reel_curves(), true),
+        ("grey_lut_steep", steep_lut, false),
+        ("grey_reel_grade", reel_grade(), false),
+    ];
+    for (name, params, exact) in cases {
+        let op = FxOp::eval(&effect("lumetri", &params), &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("lumetri op");
+        assert!(op.gpu_ok());
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        op.apply(&mut cpu);
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        let (p99, mean, max, over) = diff8(&cpu.px, &gpu);
+        eprintln!(
+            "{name}: max rel diff {worst:.2e}, {:.2}% of values off > 0.02; 8-bit p99 {p99}, mean {mean:.3}, max {max}, {over} of {} pixels > 1 level",
+            flips * 100.0,
+            w * h
+        );
+        if exact {
+            assert!(worst <= EXACT && flips == 0.0, "{name}: greys must match: {worst}, {flips}");
+        }
+    }
 }
 
 /// A project whose LUT library holds `lib:shaped`: a 1D shaper over a non-unit domain in front of

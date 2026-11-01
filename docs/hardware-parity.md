@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (GPU effects: Lumetri Input LUT and Look LUT) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-31 · **Change:** minor (GPU effects: Lumetri curves) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Each hardware feature Premiere uses, per platform, against ours. Implementation detail lives in
 [`crates/platform/README.md`](../crates/platform/README.md) (decode / encode backends, the one
@@ -50,8 +50,8 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 | Feature | Premiere (Mercury Playback Engine: Metal, CUDA, OpenCL) | Ours (wgpu: Metal, D3D12, Vulkan) | % |
 |---|---|---|---|
 | Compositing, blend modes, transforms | GPU | **GPU** (#32), CPU compositor is the oracle | 90% |
-| Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **34 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs, sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Lumetri basic / creative / vignette with Input LUT and Look LUT (SDR and Rec. 2100 PQ / HLG; with no procedural Look, sharpen, curves, wheels or HSL set) | ~40% |
-| Lumetri curves, wheels, HSL secondary | GPU | CPU | 0% |
+| Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **34 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs, sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Lumetri basic / creative / vignette with Input LUT, Look LUT and curves (SDR and Rec. 2100 PQ / HLG; with no procedural Look, sharpen, wheels or HSL set) | ~40% |
+| Lumetri curves, wheels, HSL secondary | GPU | curves **GPU** (luma, RGB, hue / luma / sat vs curves); wheels, HSL secondary CPU | 35% |
 | Keys (Ultra Key), masks, distortions, transitions | GPU | CPU (masks have WGSL parity tests, not in the live path) | 10% |
 | Export rendering on the GPU | yes | **yes** (#421; Export ▸ GPU Rendering, Auto): 2.4× (1080p) to 3.2× (4K) faster on effects-heavy timelines | 80% |
 | Thumbnails on the GPU (26.0) | yes | CPU | 0% |
@@ -87,3 +87,4 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Lumetri on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |
 | 2026-10-24 | minor | GPU effects: Lumetri basic / creative / vignette in Rec. 2100 PQ / HLG sequences too |
 | 2026-10-25 | minor | GPU effects: Lumetri Input LUT and Look LUT (cubes up to 65³, shapers up to 65536 entries) |
+| 2026-10-31 | minor | GPU effects: Lumetri curves (all nine, SDR and Rec. 2100 PQ / HLG) |

@@ -270,6 +270,56 @@ fn lumetri_luts_plan_as_gpu_effects() {
     }
 }
 
+/// A clip graded like a production reel (an Input LUT, basic adjustments, a 7-point luma curve and
+/// hue vs saturation / luma curves) plans as a layer with GPU effects in SDR and HDR sequences
+/// (curves used to send the whole layer to the CPU), and the plan's picture is the reference
+/// renderer's.
+#[test]
+fn lumetri_curves_plan_as_gpu_effects() {
+    let (mut p, red, _ocean, seq, mut map) = setup();
+    let matte = GeneratorSource::new(Generator::ColorMatte { color: [0.6, 0.3, 0.2, 1.0] }, 320, 180, FrameRate::FPS_24, Tick(10 * TICKS_PER_SECOND));
+    map.0.insert(red, Arc::new(YuvSource(matte)) as SharedSource);
+    let clip = place(&mut p, seq, 0, red, 0, 48);
+    {
+        let s = p.sequence_mut(seq).unwrap();
+        let (_, it) = s.find_item_mut(clip).unwrap();
+        let mut e = filmcraft_project::find_effect("lumetri").unwrap().instance();
+        for (k, v) in [
+            ("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into())),
+            ("contrast", ParamValue::Float(18.0)),
+            ("highlights", ParamValue::Float(-12.0)),
+            ("saturation", ParamValue::Float(108.0)),
+            ("curve_luma", ParamValue::Curve(vec![[0.0, 0.0], [0.12, 0.07], [0.3, 0.25], [0.5, 0.5], [0.72, 0.78], [0.9, 0.94], [1.0, 1.0]])),
+            ("hue_vs_sat", ParamValue::Curve(vec![[0.0, 0.5], [0.055, 0.45], [0.17, 0.38], [0.25, 0.33], [0.49, 0.47], [0.7, 0.5]])),
+            ("hue_vs_luma", ParamValue::Curve(vec![[0.0, 0.5], [0.18, 0.48], [0.28, 0.46], [0.5, 0.5]])),
+        ] {
+            e.param_mut(k).unwrap().value = v;
+        }
+        it.effects.push(e);
+    }
+    let r = FrameRate::FPS_24;
+    for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Hlg] {
+        p.sequence_mut(seq).unwrap().settings.color.working = working;
+        for f in [0, 20] {
+            let opts = RenderOptions { scale: 0.5, ..Default::default() };
+            let plan = plan::plan_frame(&p, seq, r.tick_of(f), opts, &map);
+            let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("{working:?} frame {f}: not planned as layers") };
+            let fx = layers.iter().find_map(|l| l.fx.as_ref()).unwrap_or_else(|| panic!("{working:?} frame {f}: the Lumetri layer has no GPU effects"));
+            assert!(
+                fx.ops.iter().any(|o| matches!(o, gpufx::FxOp::Lumetri { input_lut: Some(_), curves: Some(_), .. })),
+                "{working:?} frame {f}: {:?}",
+                fx.ops
+            );
+            let reference = render_sequence(&p, seq, r.tick_of(f), opts, &map);
+            let mut got = plan::execute_cpu(&plan);
+            colorman::to_display(&mut got, &p.sequence(seq).unwrap().settings.color);
+            assert_eq!((got.w, got.h), (reference.w, reference.h));
+            let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+            assert!(max < 0.02, "{working:?} frame {f}: max diff {max}");
+        }
+    }
+}
+
 #[test]
 fn push_plan_preserves_reference_track_order_and_reverse() {
     let (mut p, red, ocean, seq, map) = setup();

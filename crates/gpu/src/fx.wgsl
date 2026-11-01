@@ -21,6 +21,9 @@ struct U {
 @group(0) @binding(3) var aux: texture_2d<f32>;
 // LUT pass: the table (the 1D shaper's entries, then the cube's, red fastest; rgb in .xyz).
 @group(0) @binding(4) var<storage, read> lut_data: array<vec4<f32>>;
+// Curves (the curves pass, or a LUT pass carrying them): the curve tables, four per `vec4`
+// (`fx.rs` `curves_bytes`).
+@group(0) @binding(5) var<storage, read> curve_data: array<vec4<f32>>;
 
 const OP_BRIGHTNESS_CONTRAST: u32 = 1u;
 const OP_PROC_AMP: u32 = 2u;
@@ -53,6 +56,7 @@ const OP_OFFSET: u32 = 29u;
 const OP_VIDEO_LIMITER: u32 = 30u;
 const OP_LUMETRI: u32 = 31u;
 const OP_LUT: u32 = 32u;
+const OP_CURVES: u32 = 33u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -699,7 +703,94 @@ fn lut_op(c: vec3<f32>) -> vec3<f32> {
     if u.i1.w != 0u {
         o = v + (lk - v) * u.p0.w;
     }
+    // a Look LUT carrying the curves (`LumetriLut::apply_with_curves`): they follow on its signal
+    if curves_mask() != 0u {
+        o = curves_signal(o);
+    }
     return grade_dec(o);
+}
+
+// The curves (`LumetriCurves::apply`): u.p5.x the mask of the tables applied (bit k: table k in
+// `effects::CURVE_IDS` order: luma, red, green, blue, hue vs sat, hue vs hue, hue vs luma, luma vs
+// sat, sat vs sat; 0: none), u.i1.z grading mode (as `grade_enc`). Table k's entry i is component
+// k % 4 of curve_data[(k / 4) * CURVE_N + i].
+const CURVE_N: u32 = 1024u;
+
+fn curve_at(k: u32, i: u32) -> f32 {
+    return curve_data[(k >> 2u) * CURVE_N + i][k & 3u];
+}
+
+// `effects::sample_curve`: linear between entries over 0…1; above 1 in HDR, slope 1 from the end.
+fn curve_sample(k: u32, x: f32) -> f32 {
+    if u.i1.z != 0u && x > 1.0 {
+        return curve_at(k, CURVE_N - 1u) + (x - 1.0);
+    }
+    let p = clamp(x, 0.0, 1.0) * f32(CURVE_N - 1u);
+    let i = min(u32(p), CURVE_N - 1u);
+    let j = min(i + 1u, CURVE_N - 1u);
+    let a = curve_at(k, i);
+    return a + (curve_at(k, j) - a) * (p - f32(i));
+}
+
+fn curves_mask() -> u32 {
+    return u32(u.p5.x);
+}
+
+// `effects::lumetri_curves`: the curves on a value of the grading signal.
+fn curves_signal(v0: vec3<f32>) -> vec3<f32> {
+    var v = v0;
+    let m = curves_mask();
+    if (m & 1u) != 0u {
+        v = vec3(curve_sample(0u, v.x), curve_sample(0u, v.y), curve_sample(0u, v.z));
+    }
+    if (m & 2u) != 0u {
+        v.x = curve_sample(1u, v.x);
+    }
+    if (m & 4u) != 0u {
+        v.y = curve_sample(2u, v.y);
+    }
+    if (m & 8u) != 0u {
+        v.z = curve_sample(3u, v.z);
+    }
+    if (m & 0x1f0u) != 0u {
+        // `effects::within_unit`: SDR clamps to 0…1; HDR scales a signal above 1 into it and back
+        var sc = 1.0;
+        var w: vec3<f32>;
+        if u.i1.z == 0u {
+            w = clamp(v, vec3(0.0), vec3(1.0));
+        } else {
+            sc = max(max(max(v.x, v.y), v.z), 1.0);
+            w = max(v / sc, vec3(0.0));
+        }
+        var h = rgb_to_hsl(w);
+        let h0 = h.x;
+        let s0 = h.y;
+        let l0 = h.z;
+        if (m & 32u) != 0u {
+            h.x = fract_euclid(h.x + (curve_sample(5u, h0) - 0.5));
+        }
+        var sm = 1.0;
+        if (m & 16u) != 0u {
+            sm *= curve_sample(4u, h0) * 2.0;
+        }
+        if (m & 128u) != 0u {
+            sm *= curve_sample(7u, l0) * 2.0;
+        }
+        if (m & 256u) != 0u {
+            sm *= curve_sample(8u, s0) * 2.0;
+        }
+        h.y = clamp(h.y * sm, 0.0, 1.0);
+        if (m & 64u) != 0u {
+            h.z = clamp(h.z + (curve_sample(6u, h0) - 0.5) * 0.5, 0.0, 1.0);
+        }
+        v = hsl_to_rgb(h.x, h.y, h.z) * sc;
+    }
+    return v;
+}
+
+// The curves pass.
+fn curves_op(c: vec3<f32>) -> vec3<f32> {
+    return grade_dec(curves_signal(grade_enc(c)));
 }
 
 // One output pixel of every op but the running-sum box blur.
@@ -894,6 +985,14 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 return o;
             }
             return vec4(lut_op(o.rgb / a) * a, a);
+        }
+        case OP_CURVES: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            return vec4(curves_op(o.rgb / a) * a, a);
         }
         default: {
             let o = ld(p);

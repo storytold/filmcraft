@@ -578,7 +578,7 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   BT.2100 inverse OOTF of a display with that peak, then the OETF). So the sliders and curves span
   0 … HDR White like black … white in SDR, exposure is stops of light, and highlights above HDR
   White pass through (contrast leaves them alone; **HDR Specular** scales them). The GPU Lumetri
-  op (basic, creative, vignette, Input LUT, Look LUT) grades the same signal. Rec. 709 sequences grade exactly as
+  op (basic, creative, vignette, Input LUT, Look LUT, curves) grades the same signal. Rec. 709 sequences grade exactly as
   before. HSL Secondary ▸ Refine: **Denoise** (median of the key,
   radius 1–3 px) and **Blur** (Gaussian of the key, σ ≤ 20 px), both scaled with the playback
   resolution.
@@ -606,6 +606,13 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   the HDR White signal) and after it (Look LUT mixed by Intensity, on the curves' HDR Range
   signal), reading the shaper and cube from a storage buffer uploaded once per LUT and kept while
   frames use it. Cubes above 65³ and shapers above 65536 entries render the effect on the CPU.
+- **Curves on the GPU.** The Lumetri op carries its curves as the 1024-entry tables the CPU bakes
+  from the curve points (`render::gpufx::LumetriCurves`, from `effects::lumetri_curve_tables`;
+  the monotone spline and the hue wrap stay CPU-side). The effect stage reads them from a second
+  storage buffer (binding 5, four curves per `vec4`, 48 KB, uploaded per frame) and applies them
+  after the Look: inside the Look LUT's pass when there is one (one encode and decode, as
+  `fn lumetri` does, so the result does not depend on the pass split), otherwise in a curves pass
+  of its own. Identity luma / RGB curves and empty hue curves carry no table.
 
 ### 5.4 Multi-camera and synchronisation
 

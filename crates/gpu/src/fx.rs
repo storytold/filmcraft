@@ -14,13 +14,17 @@
 //!
 //! Lumetri's Input LUT and Look LUT run as a LUT pass before and after its grade pass. The pass
 //! reads the table from a storage buffer (the 1D shaper's entries, then the cube's), uploaded once
-//! per LUT and kept while frames use it.
+//! per LUT and kept while frames use it. Its curves run after the Look (in the Look's LUT pass,
+//! before it decodes the signal, as `fn lumetri` does; without a Look LUT in a curves pass of their
+//! own), reading the tables the CPU baked from the curve points from a second storage buffer
+//! (binding 5, four curves per `vec4`, uploaded per frame).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use filmcraft_color::{GradeSpace, Lut};
-use filmcraft_render::gpufx::{FxOp, LumetriLut};
+use filmcraft_render::effects::CURVE_TABLE_SIZE;
+use filmcraft_render::gpufx::{FxOp, LumetriCurves, LumetriLut};
 use filmcraft_render::plan::LayerFx;
 
 /// Working texture format.
@@ -59,6 +63,7 @@ const OP_OFFSET: u32 = 29;
 const OP_VIDEO_LIMITER: u32 = 30;
 const OP_LUMETRI: u32 = 31;
 const OP_LUT: u32 = 32;
+const OP_CURVES: u32 = 33;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -106,8 +111,11 @@ struct Step {
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
     unsharp_blur: bool,
-    /// The table of a LUT pass.
+    /// The table of a LUT pass (binding 4; uploaded once, kept while frames use it).
     lut: Option<Arc<Lut>>,
+    /// The curve tables of a curves pass or a LUT pass carrying the curves (binding 5), packed by
+    /// [`curves_bytes`]: uploaded per frame, as the CPU bakes them per frame.
+    curves: Option<Vec<u8>>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -115,7 +123,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, lut: None }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, lut: None, curves: None }
 }
 
 /// The grading signal as `fx.wgsl`'s `grade_enc` / `grade_dec` read it: mode (0 sRGB, 1 PQ, 2
@@ -160,6 +168,42 @@ fn lut_step(l: &LumetriLut) -> Step {
     let mut s = step(OP_LUT, [cube_n, shaper_n, mode, l.mix.is_some() as u32], &p);
     s.lut = Some(l.lut.clone());
     s
+}
+
+/// The curves (`LumetriCurves`) on a pass: p5.x = the mask of the tables applied
+/// (`LumetriCurves::mask`, below 2⁹ so exact as f32), the tables on binding 5.
+fn with_curves(mut s: Step, k: &LumetriCurves) -> Step {
+    s.p[20] = k.mask() as f32;
+    s.curves = Some(curves_bytes(k));
+    s
+}
+
+/// A curves pass (`LumetriCurves::apply`): i1.z = grading mode, with the grading numbers in p3.w /
+/// p4.w where `grade_enc` reads them.
+fn curves_step(k: &LumetriCurves) -> Step {
+    let (mode, g0, g1) = grade_mode(k.grade);
+    let mut p = [0.0; 20];
+    p[15] = g0;
+    p[19] = g1;
+    with_curves(step(OP_CURVES, [0, 0, mode, 0], &p), k)
+}
+
+/// The curve tables as the curves pass reads them: entry `i` of table `k` is component `k % 4`
+/// of `vec4` `(k / 4) * CURVE_TABLE_SIZE + i` (three blocks of `CURVE_TABLE_SIZE` `vec4`s; tables
+/// not applied, and entries past a short table, are 0: `LumetriCurves::gpu_ok` keeps short tables
+/// on the CPU).
+fn curves_bytes(k: &LumetriCurves) -> Vec<u8> {
+    let blocks = k.tables.len().div_ceil(4);
+    let mut v = vec![0f32; blocks * CURVE_TABLE_SIZE * 4];
+    for (c, t) in k.tables.iter().enumerate() {
+        let Some(t) = t else { continue };
+        for (i, x) in t.iter().take(CURVE_TABLE_SIZE).enumerate() {
+            if let Some(d) = v.get_mut(((c / 4) * CURVE_TABLE_SIZE + i) * 4 + c % 4) {
+                *d = *x;
+            }
+        }
+    }
+    v.into_iter().flat_map(f32::to_le_bytes).collect()
 }
 
 /// A LUT's table as the LUT pass reads it: the shaper's entries, then the cube's (red fastest),
@@ -282,6 +326,7 @@ fn steps(op: &FxOp) -> Vec<Step> {
             specular,
             input_lut,
             look_lut,
+            curves,
             ..
         } => {
             // the grading signal: mode 0 sRGB, 1 PQ (p3.w = norm), 2 HLG (p3.w = white, p4.w = gamma)
@@ -325,8 +370,18 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 *specular,
             ];
             out.push(step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, mode, 0], &p));
-            if let Some(l) = look_lut {
-                out.push(lut_step(l));
+            // the curves after the Look: in its pass when they share its signal (one encode and
+            // decode, as `FxOp::apply` and `fn lumetri`), else in a pass of their own
+            match (look_lut.as_ref(), curves.as_deref()) {
+                (Some(l), Some(k)) if l.fuses_with(k) => out.push(with_curves(lut_step(l), k)),
+                (l, k) => {
+                    if let Some(l) = l {
+                        out.push(lut_step(l));
+                    }
+                    if let Some(k) = k {
+                        out.push(curves_step(k));
+                    }
+                }
             }
         }
     }
@@ -334,12 +389,12 @@ fn steps(op: &FxOp) -> Vec<Step> {
 }
 
 impl FxStage {
-    /// Whether `device` can run the stage: compute shaders with 16×16 workgroups and a storage
-    /// texture (WebGL2-class devices can't; they render effects on the CPU).
+    /// Whether `device` can run the stage: compute shaders with 16×16 workgroups, a storage
+    /// texture and two storage buffers (WebGL2-class devices can't; they render effects on the CPU).
     pub(crate) fn supported(device: &wgpu::Device) -> bool {
         let l = device.limits();
         l.max_storage_textures_per_shader_stage >= 1
-            && l.max_storage_buffers_per_shader_stage >= 1
+            && l.max_storage_buffers_per_shader_stage >= 2
             && l.max_compute_invocations_per_workgroup >= 256
             && l.max_compute_workgroup_size_x >= 64
             && l.max_compute_workgroup_size_y >= 16
@@ -359,6 +414,12 @@ impl FxStage {
                 view_dimension: wgpu::TextureViewDimension::D2,
                 multisampled: false,
             },
+            count: None,
+        };
+        let storage = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
             count: None,
         };
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -382,16 +443,8 @@ impl FxStage {
                     count: None,
                 },
                 tex(3),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                storage(4),
+                storage(5),
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fx"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
@@ -566,6 +619,19 @@ impl FxStage {
                 Some(l) => self.lut_buffer(device, queue, l)?,
                 None => self.no_lut.clone(),
             };
+            let curves = match &s.curves {
+                Some(bytes) => {
+                    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("fx-curves"),
+                        size: bytes.len() as u64,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    queue.write_buffer(&buf, 0, bytes);
+                    buf
+                }
+                None => self.no_lut.clone(),
+            };
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fx"),
                 layout: &self.bgl,
@@ -575,6 +641,7 @@ impl FxStage {
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
                     wgpu::BindGroupEntry { binding: 4, resource: table.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: curves.as_entire_binding() },
                 ],
             });
             let groups = if s.run {

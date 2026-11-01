@@ -16,7 +16,7 @@ use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, on, point, text, within_unit};
+use crate::effects::{CURVE_TABLE_SIZE, FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, lumetri_curves, on, point, text, within_unit};
 use crate::image::Image;
 
 /// The largest 3D cube (entries per side) a [`LumetriLut`] takes to the GPU; larger ones (a
@@ -51,13 +51,32 @@ impl LumetriLut {
     /// Linear (unpremultiplied) colour → the colour after the LUT.
     #[inline]
     pub fn apply(&self, c: [f32; 3]) -> [f32; 3] {
-        let v = self.grade.encode(c);
+        self.grade.decode(self.apply_signal(self.grade.encode(c)))
+    }
+
+    /// The LUT (and its mix) on a value of its grading signal.
+    #[inline]
+    fn apply_signal(&self, v: [f32; 3]) -> [f32; 3] {
         let lk = within_unit(v, self.grade.is_hdr(), |u| self.lut.apply(u));
-        let o = match self.mix {
+        match self.mix {
             None => lk,
             Some(k) => [v[0] + (lk[0] - v[0]) * k, v[1] + (lk[1] - v[1]) * k, v[2] + (lk[2] - v[2]) * k],
-        };
-        self.grade.decode(o)
+        }
+    }
+
+    /// The Look LUT followed by `curves` on one value of the grading signal, as `fn lumetri` runs
+    /// them (one encode and decode; the GPU's LUT pass does the same when it carries the curves).
+    /// Only meaningful when both work on the same signal ([`fuses_with`](Self::fuses_with)).
+    #[inline]
+    pub fn apply_with_curves(&self, c: [f32; 3], curves: &LumetriCurves) -> [f32; 3] {
+        let v = self.apply_signal(self.grade.encode(c));
+        self.grade.decode(lumetri_curves(v, curves.tables(), self.grade.is_hdr()))
+    }
+
+    /// Whether `curves` work on this LUT's signal, so both run in one pass. (The Look LUT and the
+    /// curves both use the curves' HDR Range, so they always do for a Lumetri op.)
+    pub fn fuses_with(&self, curves: &LumetriCurves) -> bool {
+        self.mix.is_some() && self.grade == curves.grade
     }
 
     /// Whether the GPU's LUT pass reproduces [`apply`](Self::apply): tables it can index (sizes
@@ -69,12 +88,61 @@ impl LumetriLut {
         let cube_ok = self.lut.cube.as_ref().is_none_or(|c| {
             (2..=GPU_LUT_MAX_CUBE).contains(&c.size) && c.size.checked_pow(3).is_some_and(|n| n == c.data.len()) && domain(&c.domain_min, &c.domain_max)
         });
-        let grade_ok = match self.grade {
-            GradeSpace::Sdr => true,
-            GradeSpace::Pq { white, norm } => white.is_finite() && norm.is_finite() && norm > 0.0,
-            GradeSpace::Hlg { white, gamma } => white.is_finite() && gamma.is_finite() && gamma > 0.0,
-        };
-        shaper_ok && cube_ok && grade_ok && self.mix.is_none_or(f32::is_finite)
+        shaper_ok && cube_ok && grade_ok(self.grade) && self.mix.is_none_or(f32::is_finite)
+    }
+}
+
+/// Lumetri's curves as the op carries them: the tables `fn lumetri` bakes from the curve points
+/// (`effects::lumetri_curve_tables`, in `effects::CURVE_IDS` order: luma, red, green, blue, hue vs
+/// sat, hue vs hue, hue vs luma, luma vs sat, sat vs sat; None where a curve does nothing) and the
+/// signal they work on (the curves' HDR Range). `apply` is `fn lumetri`'s arithmetic for them, which
+/// the GPU's curves pass reproduces. They run after the Look, as on the CPU.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LumetriCurves {
+    pub tables: [Option<Arc<[f32]>>; 9],
+    pub grade: GradeSpace,
+}
+
+impl LumetriCurves {
+    /// The curves of `e` (None when none of them does anything).
+    pub fn of(e: &EffectInstance, cx: &FxCtx) -> Option<Self> {
+        let tables = crate::effects::lumetri_curve_tables(e).map(|t| t.map(Arc::from));
+        tables.iter().any(Option::is_some).then(|| LumetriCurves { tables, grade: grade_space(e, cx, "curves_hdr_range") })
+    }
+
+    /// Bit `k` set: table `k` is applied.
+    pub fn mask(&self) -> u32 {
+        self.tables.iter().enumerate().filter(|(_, t)| t.is_some()).fold(0, |m, (k, _)| m | (1 << k))
+    }
+
+    /// Linear (unpremultiplied) colour → the colour after the curves.
+    #[inline]
+    pub fn apply(&self, c: [f32; 3]) -> [f32; 3] {
+        let v = self.grade.encode(c);
+        self.grade.decode(lumetri_curves(v, self.tables(), self.grade.is_hdr()))
+    }
+
+    /// The tables as `effects::lumetri_curves` takes them.
+    #[inline]
+    fn tables(&self) -> [Option<&[f32]>; 9] {
+        self.tables.each_ref().map(|t| t.as_deref())
+    }
+
+    /// Whether the GPU's curves pass reproduces [`apply`](Self::apply): every table of
+    /// `CURVE_TABLE_SIZE` finite entries, a finite grading signal.
+    pub fn gpu_ok(&self) -> bool {
+        let tables_ok = self.tables.iter().flatten().all(|t| t.len() == CURVE_TABLE_SIZE && t.iter().all(|v| v.is_finite()));
+        tables_ok && grade_ok(self.grade)
+    }
+}
+
+/// A grading signal the GPU's `grade_enc` / `grade_dec` reproduce (finite numbers, a positive PQ
+/// norm and HLG gamma).
+fn grade_ok(g: GradeSpace) -> bool {
+    match g {
+        GradeSpace::Sdr => true,
+        GradeSpace::Pq { white, norm } => white.is_finite() && norm.is_finite() && norm > 0.0,
+        GradeSpace::Hlg { white, gamma } => white.is_finite() && gamma.is_finite() && gamma > 0.0,
     }
 }
 
@@ -265,6 +333,8 @@ pub enum FxOp {
         input_lut: Option<LumetriLut>,
         /// Creative ▸ Look LUT, applied after the grade.
         look_lut: Option<LumetriLut>,
+        /// Curves, applied after the Look (boxed: nine table slots).
+        curves: Option<Box<LumetriCurves>>,
         gpu_capable: bool,
     },
 }
@@ -572,7 +642,7 @@ impl FxOp {
                 FxOp::VideoLimiter { max: 1.0 + clip_level / 100.0, comp: comp_val, axis, warn, warning_color: wc }
             }
             "lumetri" => {
-                use crate::effects::{curve_param, is_identity_curve, wheel_rgb};
+                use crate::effects::wheel_rgb;
                 let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
                 let gs = grade_space(e, cx, "hdr_white");
                 let is_hdr = gs.is_hdr();
@@ -583,13 +653,8 @@ impl FxOp {
                 let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
                 let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
 
-                let curves_on = on(e, "curves_on");
-                let has_curves = curves_on && {
-                    ["curve_luma", "curve_red", "curve_green", "curve_blue"].iter().any(|id| curve_param(e, id).is_some_and(|c| !is_identity_curve(&c)))
-                        || ["hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"]
-                            .iter()
-                            .any(|id| curve_param(e, id).is_some_and(|c| !c.is_empty()))
-                };
+                // Curves: the tables `fn lumetri` bakes (identity and empty curves do nothing)
+                let curves = LumetriCurves::of(e, cx).map(Box::new);
 
                 let wheels_on = on(e, "wheels_on");
                 let has_wheels = wheels_on && {
@@ -601,7 +666,7 @@ impl FxOp {
 
                 let hsl_on = b(e, "hsl_on");
 
-                let gpu_capable = look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
+                let gpu_capable = look == 0 && sharpen.abs() <= 1e-3 && !has_wheels && !hsl_on;
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let temp = bf("temperature") / 100.0;
@@ -652,6 +717,7 @@ impl FxOp {
                         grade: grade_space(e, cx, "curves_hdr_range"),
                         mix: Some(f(e, "look_intensity", cx) / 100.0),
                     }),
+                    curves,
                     gpu_capable,
                 }
             }
@@ -722,18 +788,16 @@ impl FxOp {
                 specular,
                 input_lut,
                 look_lut,
+                curves,
                 gpu_capable,
                 ..
             } => {
                 *gpu_capable
                     && input_lut.as_ref().is_none_or(LumetriLut::gpu_ok)
                     && look_lut.as_ref().is_none_or(LumetriLut::gpu_ok)
+                    && curves.as_deref().is_none_or(LumetriCurves::gpu_ok)
                     && specular.is_finite()
-                    && match *grade {
-                        GradeSpace::Sdr => true,
-                        GradeSpace::Pq { white, norm } => white.is_finite() && norm.is_finite() && norm > 0.0,
-                        GradeSpace::Hlg { white, gamma } => white.is_finite() && gamma.is_finite() && gamma > 0.0,
-                    }
+                    && grade_ok(*grade)
                     && fin(gains)
                     && fin(&[*exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *faded, *vib])
                     && fin(st)
@@ -1058,6 +1122,7 @@ impl FxOp {
                 specular,
                 input_lut,
                 look_lut,
+                curves,
                 ..
             } => {
                 let (gs, specular) = (*grade, *specular);
@@ -1134,10 +1199,19 @@ impl FxOp {
                     }
                     gs.decode(v)
                 });
-                // the Look is a pass of its own after the grade, as `lumetri_advanced` after
-                // `fn lumetri`'s pass (and the GPU's LUT pass after its grade pass)
-                if let Some(l) = look_lut {
-                    img.map_rgb(|c, _, _| l.apply(c));
+                // the Look and the curves are a pass of their own after the grade, as
+                // `lumetri_advanced` after `fn lumetri`'s pass (and the GPU's LUT pass, carrying
+                // the curves, or its curves pass after its grade pass)
+                match (look_lut, curves.as_deref()) {
+                    (Some(l), Some(k)) if l.fuses_with(k) => img.map_rgb(|c, _, _| l.apply_with_curves(c, k)),
+                    (l, k) => {
+                        if let Some(l) = l {
+                            img.map_rgb(|c, _, _| l.apply(c));
+                        }
+                        if let Some(k) = k {
+                            img.map_rgb(|c, _, _| k.apply(c));
+                        }
+                    }
                 }
             }
         }

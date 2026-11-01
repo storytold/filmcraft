@@ -1678,6 +1678,107 @@ mod lumetri_cpu_parity_tests {
         }
     }
 
+    fn curve(points: &[[f32; 2]]) -> ParamValue {
+        ParamValue::Curve(points.to_vec())
+    }
+
+    /// The Lumetri op with curves (each curve alone, the red seam, extreme and degenerate curves,
+    /// curves after a Look LUT, a production grade with an Input LUT) is GPU-capable and grades as
+    /// `fn lumetri`, in SDR and in the HDR working spaces. Identity and empty curves carry no table.
+    #[test]
+    fn lumetri_curves_op_matches_fn_lumetri() {
+        let txt = |s: &str| ParamValue::Text(s.into());
+        let reel = vec![
+            ("curve_luma", curve(&[[0.0, 0.0], [0.12, 0.07], [0.3, 0.25], [0.5, 0.5], [0.72, 0.78], [0.9, 0.94], [1.0, 1.0]])),
+            ("curve_red", curve(&[[0.0, 0.0], [1.0, 1.0]])),
+            (
+                "hue_vs_sat",
+                curve(&[
+                    [0.0, 0.5],
+                    [0.025, 0.5],
+                    [0.055, 0.45],
+                    [0.1, 0.47],
+                    [0.13, 0.48],
+                    [0.17, 0.38],
+                    [0.25, 0.33],
+                    [0.39, 0.36],
+                    [0.49, 0.47],
+                    [0.58, 0.47],
+                    [0.7, 0.5],
+                    [1.0, 0.5],
+                ]),
+            ),
+            ("hue_vs_luma", curve(&[[0.0, 0.5], [0.12, 0.5], [0.18, 0.48], [0.28, 0.46], [0.4, 0.48], [0.5, 0.5], [1.0, 0.5]])),
+            ("input_lut", txt("builtin:slog3-sgamut3cine-to-rec709")),
+            ("contrast", fl(18.0)),
+            ("highlights", fl(-12.0)),
+            ("shadows", fl(-8.0)),
+            ("whites", fl(2.0)),
+            ("blacks", fl(-12.0)),
+            ("saturation", fl(108.0)),
+            ("vibrance", fl(8.0)),
+        ];
+        let cases: Vec<(&str, Vec<(&str, ParamValue)>)> = vec![
+            ("luma", vec![("curve_luma", curve(&[[0.0, 0.05], [0.25, 0.18], [0.75, 0.85], [1.0, 0.95]]))]),
+            (
+                "rgb",
+                vec![("curve_red", curve(&[[0.0, 0.0], [0.4, 0.55], [1.0, 1.0]])), ("curve_blue", curve(&[[0.0, 0.0], [0.3, 0.2], [0.8, 0.9], [1.0, 1.0]]))],
+            ),
+            ("hue_vs_sat", vec![("hue_vs_sat", curve(&[[0.0, 0.7], [0.33, 0.2], [0.66, 0.5]]))]),
+            ("hue_vs_hue", vec![("hue_vs_hue", curve(&[[0.1, 0.6], [0.5, 0.4], [0.8, 0.55]]))]),
+            ("hue_vs_luma", vec![("hue_vs_luma", curve(&[[0.05, 0.7], [0.4, 0.3], [0.7, 0.5]]))]),
+            ("luma_sat_vs_sat", vec![("luma_vs_sat", curve(&[[0.0, 0.2], [0.5, 0.6], [1.0, 0.9]])), ("sat_vs_sat", curve(&[[0.0, 0.8], [1.0, 0.3]]))]),
+            ("red_seam", vec![("hue_vs_hue", curve(&[[0.03, 0.62], [0.5, 0.5], [0.97, 0.4]])), ("hue_vs_luma", curve(&[[0.02, 0.3], [0.98, 0.75]]))]),
+            (
+                "extreme",
+                vec![
+                    ("curve_luma", curve(&[[0.0, 1.0], [1.0, 0.0]])),
+                    ("curve_red", curve(&[[0.0, 0.0], [0.45, 0.02], [0.55, 0.98], [1.0, 1.0]])),
+                    ("curve_green", curve(&[[0.3, 0.8]])),
+                    ("curve_blue", curve(&[[-0.2, 0.1], [0.5, 0.5], [0.5, 0.6], [1.3, 0.9]])),
+                    ("hue_vs_sat", curve(&[[0.2, 1.0], [0.25, 0.0], [0.7, 1.0]])),
+                ],
+            ),
+            (
+                "after_look",
+                vec![
+                    ("look_lut", txt("builtin:look-teal-orange")),
+                    ("look_intensity", fl(80.0)),
+                    ("curve_luma", curve(&[[0.0, 0.0], [0.3, 0.22], [0.7, 0.8], [1.0, 1.0]])),
+                    ("hue_vs_sat", curve(&[[0.08, 0.35], [0.5, 0.55]])),
+                    ("curves_hdr_range", fl(400.0)),
+                ],
+            ),
+            ("reel", reel),
+        ];
+        let (w, h) = (67usize, 41usize);
+        for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Hlg, filmcraft_color::WorkingSpace::Rec2100Pq] {
+            let cx = FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None, frame_rate: 24.0, working };
+            for (name, params) in &cases {
+                let e = effect(params);
+                let mut reference = test_picture(w, h);
+                let mut got = reference.clone();
+                lumetri(&mut reference, &e, &cx);
+                let op = FxOp::eval(&e, &cx, w, h).unwrap_or_else(|| panic!("{name}: eval returned None"));
+                let FxOp::Lumetri { curves: Some(k), .. } = &op else { panic!("{name}: no curves in {op:?}") };
+                let applied = k.tables.iter().filter(|t| t.is_some()).count();
+                let named = params
+                    .iter()
+                    .filter(|(id, v)| crate::effects::CURVE_IDS.contains(id) && !matches!(v, ParamValue::Curve(c) if is_identity_curve(c)))
+                    .count();
+                assert_eq!(applied, named, "{working:?} {name}: tables");
+                assert!(op.gpu_ok(), "{working:?} {name}: expected gpu_ok == true");
+                op.apply(&mut got);
+                let mut max_diff = 0f32;
+                for (i, (&a, &b)) in reference.px.iter().zip(&got.px).enumerate() {
+                    max_diff = max_diff.max((a - b).abs());
+                    assert!((a - b).abs() <= 1e-6, "{working:?} {name}: sample {i}: fn lumetri {a}, op {b}");
+                }
+                eprintln!("{working:?} {name}: max sample diff vs fn lumetri: {max_diff:.2e}");
+            }
+        }
+    }
+
     /// #719: positive Roundness rounds the Lumetri vignette (it used to be ignored), +100
     /// is a circle and negative values widen the oval, on the CPU path and the GPU op alike.
     #[test]
