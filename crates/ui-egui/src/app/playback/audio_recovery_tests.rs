@@ -38,7 +38,10 @@ fn forward_shuttle_playback_keeps_audio_enabled() {
     assert_eq!(shuttle_mix_rate(48_000, 1.0), Some(48_000));
     assert_eq!(shuttle_mix_rate(48_000, 2.0), Some(24_000));
     assert_eq!(shuttle_mix_rate(48_000, 4.0), Some(12_000));
-    assert_eq!(shuttle_mix_rate(48_000, -1.0), None);
+    // Reverse speeds now return Some(device_rate); the mixer closure handles reversal.
+    assert_eq!(shuttle_mix_rate(48_000, -1.0), Some(48_000));
+    assert_eq!(shuttle_mix_rate(48_000, -2.0), Some(48_000));
+    assert_eq!(shuttle_mix_rate(48_000, -4.0), Some(48_000));
     assert_eq!(shuttle_mix_rate(0, 2.0), None);
     assert_eq!(shuttle_mix_rate(48_000, f64::NAN), None);
 
@@ -50,6 +53,20 @@ fn forward_shuttle_playback_keeps_audio_enabled() {
     app.play(2.0);
     app.end_preroll(0.0);
     assert_eq!(starts.load(Ordering::Relaxed), 1, "2x playback must start audio output");
+    assert!(app.playback.audio_clock, "the device is still the master clock");
+    app.stop();
+}
+
+#[test]
+fn reverse_shuttle_playback_starts_audio() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    let starts = Arc::new(AtomicUsize::new(0));
+    app.audio = Some(Box::new(Device { ready: true, starts: starts.clone(), reading: Some(0) }));
+    app.play(-1.0);
+    app.end_preroll(0.0);
+    assert_eq!(starts.load(Ordering::Relaxed), 1, "reverse playback must start audio output");
     assert!(app.playback.audio_clock, "the device is still the master clock");
     app.stop();
 }
