@@ -788,6 +788,41 @@ fn settings_bitrate_replaces_a_presets_adaptive_bitrate() {
     assert_eq!(target(&settings(&p)), 1036);
 }
 
+/// Without a preset an H.264 export starts from the default preset, as Export mode and Quick
+/// Export do: its bitrate follows the frame size instead of `ExportSettings::default()`'s fixed
+/// 20 Mbit/s, ten times the default preset's for 720x480. Other formats keep the plain defaults,
+/// and a script can still ask for the earlier settings.
+#[test]
+fn unpreset_h264_exports_start_from_the_default_preset() {
+    use filmcraft_export::ExportSettings;
+    use filmcraft_export::presets::{DEFAULT_PRESET, find_builtin};
+    use filmcraft_time::FrameRate;
+    let s = demo();
+    let settings = |p: &Value| crate::export_tools::settings_from_params(&s, p, "file.exportMedia").map(|(_, st)| st).unwrap();
+    let resolve = |st: &ExportSettings| st.resolve(720, 480, FrameRate::FPS_29_97, 44_100);
+    let preset = find_builtin(DEFAULT_PRESET).unwrap().settings;
+    for p in [json!({"path": "x.mp4"}), json!({"path": "x.mp4", "format": "h264"}), json!({"path": "x.mp4", "settings": {"format": "h264"}})] {
+        let st = settings(&p);
+        assert_eq!(st.adaptive_bitrate, preset.adaptive_bitrate, "{p}");
+        // 720 x 480 x 29.97 fps x 0.2 bits per pixel, not 20,000
+        assert_eq!(resolve(&st).target_kbps, 2072, "{p}");
+        assert_eq!(resolve(&st).sample_rate, 48_000, "{p}");
+    }
+    // other formats are unchanged: a QuickTime export keeps its own audio default
+    let prores = settings(&json!({"path": "x.mov", "format": "prores"}));
+    assert_eq!(serde_json::to_value(&prores).unwrap(), serde_json::to_value(ExportSettings { format: prores.format, ..ExportSettings::default() }).unwrap());
+    // the earlier rate, and the earlier settings exactly
+    let old = ExportSettings::default();
+    for p in [json!({"path": "x.mp4", "bitrateKbps": 20000}), json!({"path": "x.mp4", "settings": {"bitrateKbps": 20000}})] {
+        assert_eq!(resolve(&settings(&p)).target_kbps, 20_000, "{p}");
+    }
+    let p = json!({"path": "x.mp4", "bitrateKbps": 20000, "settings": {"audio": {"sampleRate": null}}});
+    assert_eq!(resolve(&settings(&p)), resolve(&old));
+    assert_eq!(settings(&p).audio_codec(), old.audio_codec());
+    let p = json!({"path": "x.mp4", "bitrateKbps": 20000, "settings": {"audio": {"codec": "auto", "sampleRate": null}}});
+    assert_eq!(serde_json::to_value(settings(&p)).unwrap(), serde_json::to_value(&old).unwrap());
+}
+
 #[test]
 fn crf_param_picks_constant_quality() {
     use filmcraft_export::BitrateMode::{Cbr, Crf, Vbr1Pass};
