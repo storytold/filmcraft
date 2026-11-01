@@ -1,14 +1,18 @@
-//! Export mode (header "Export"), laid out like Premiere 26: Destinations and the export queue on
-//! the left; the Media File settings in the middle (File Name, Location, Preset, Format, then the
+//! Export mode (header "Export"), laid out like Premiere 26: Destinations (Media File, and YouTube
+//! in builds that can publish) and the export queue on the left; the chosen destination's settings
+//! in the middle: for Media File (File Name, Location, Preset, Format, then the
 //! Video, Audio, Multiplexer, Captions, Effects and Metadata sections); the preview, Range,
-//! Scaling, the Summary with the estimated file size, and Send to Queue / Export on the right.
+//! Scaling, the Summary with the estimated file size, and Send to Queue / Export on the right. With
+//! YouTube ticked, Export also uploads the file once it is written (`publish.youtube.upload`).
 //! Also the Preset Manager (Preset ▸ More presets…) and the header's Quick Export popup.
 //!
 //! Every setting lives in [`ExportUi`] (serde, `ui.inspect` / `ui.set {"export": {…}}`) and every
 //! action runs an engine command (`file.exportMedia`, `export.queue.*`, `export.presets.*`,
 //! `export.quick`).
 //!
-//! Automation ids: `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
+//! Automation ids: `export.destination.mediaFile`, `export.destination.youtube`,
+//! `export.destination.youtube.enabled`, `export.youtube.<enabled|client|signIn|cancelSignIn|signOut|title|description|tags|privacy|madeForKids|lastUpload>`,
+//! `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
 //! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`,
 //! `export.video.*`, `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
 //! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
@@ -40,6 +44,7 @@ mod preview;
 mod queue;
 mod quick;
 mod settings;
+mod youtube;
 
 use presets::preset_manager;
 #[cfg(test)]
@@ -52,11 +57,17 @@ pub(crate) use settings::PARS;
 use settings::settings_column;
 #[cfg(test)]
 use settings::{MAX_LOCATION_DISPLAY_BYTES, location_tail};
+pub use youtube::YoutubeUi;
+use youtube::youtube_column;
 
 /// Export mode state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ExportUi {
+    /// The destination whose settings show in the middle: `mediaFile` | `youtube`.
+    pub destination: String,
+    /// The YouTube destination.
+    pub youtube: YoutubeUi,
     /// The preset the settings came from ("Custom" once edited).
     pub preset: String,
     pub settings: ExportSettings,
@@ -87,6 +98,8 @@ impl Default for ExportUi {
     fn default() -> Self {
         let preset = filmcraft_engine::export::presets::find_builtin(DEFAULT_PRESET).map(|p| p.settings).unwrap_or_default();
         ExportUi {
+            destination: MEDIA_FILE.into(),
+            youtube: YoutubeUi::default(),
             preset: DEFAULT_PRESET.into(),
             settings: preset,
             file_name: String::new(),
@@ -116,6 +129,8 @@ pub struct PresetManager {
 }
 
 pub const CUSTOM: &str = "Custom";
+pub const MEDIA_FILE: &str = "mediaFile";
+pub const YOUTUBE: &str = "youtube";
 
 /// Collected automation ids (registered after drawing, so widgets can borrow the app freely).
 #[derive(Default)]
@@ -215,9 +230,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         return;
     };
     sync_sequence(app);
+    youtube::poll(app);
     let before = settings_json(&app.ui.export.settings);
     queue_column(app, ui, left);
-    settings_column(app, ui, mid);
+    if app.ui.export.destination == YOUTUBE && youtube::available(app) {
+        youtube_column(app, ui, mid);
+    } else {
+        settings_column(app, ui, mid);
+    }
     preview_column(app, ui, right, seq_id);
     // editing any setting turns the preset into "Custom"
     if settings_json(&app.ui.export.settings) != before

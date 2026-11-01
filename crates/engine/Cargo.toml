@@ -17,6 +17,8 @@ whisper = ["filmcraft-speech/whisper"]
 speech-download = ["filmcraft-speech/download"]
 # Natural voices for Text to Speech: Kokoro-82M on candle (CPU) and their download.
 neural-voices = ["filmcraft-tts/kokoro", "speech-download"]
+# Publishing to YouTube over HTTPS (Google sign-in and uploads, #2626).
+publish = ["filmcraft-publish/net"]
 
 [dependencies]
 filmcraft-time = { workspace = true }
@@ -38,6 +40,7 @@ filmcraft-interchange = { workspace = true }
 filmcraft-captions = { workspace = true }
 filmcraft-speech = { workspace = true }
 filmcraft-tts = { workspace = true }
+filmcraft-publish = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -48,6 +51,10 @@ web-time = "1"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+# The publishing tests talk HTTP to a local fake Google, which checks PKCE.
+filmcraft-publish = { workspace = true, features = ["net"] }
+base64 = "0.23"
+sha2 = "0.10"
 filmcraft-dng = { workspace = true, features = ["writer"] }
 filmcraft-isobmff = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }

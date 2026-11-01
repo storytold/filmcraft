@@ -2062,6 +2062,7 @@ dependencies = [
 name = "filmcraft-engine"
 version = "0.16.0"
 dependencies = [
+ "base64",
  "chrono",
  "craft-docpath",
  "filmcraft-audio-dsp",
@@ -2079,6 +2080,7 @@ dependencies = [
  "filmcraft-media",
  "filmcraft-mxf",
  "filmcraft-project",
+ "filmcraft-publish",
  "filmcraft-render",
  "filmcraft-scopes",
  "filmcraft-speech",
@@ -2090,6 +2092,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "web-time",
 ]
@@ -2382,6 +2385,22 @@ dependencies = [
  "filmcraft-testkit",
  "rayon",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-publish"
+version = "0.16.0"
+dependencies = [
+ "base64",
+ "filmcraft-publish",
+ "getrandom 0.3.4",
+ "rustls",
+ "rustls-rustcrypto",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "ureq",
 ]
 
 [[package]]
