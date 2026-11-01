@@ -105,8 +105,12 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   bit-exact. Each picture is sent as one picture-parameter buffer, the scaling matrices, and a slice
   parameter + slice data buffer per slice (the NAL unit as stored, emulation prevention included).
   HEVC pictures are sent the same way per slice segment (scaling lists only when enabled, converted
-  to raster order). Pictures the DPB outputs are read back right away (`vaGetImage` into an NV12 or
-  P010 image, then `biplanar.rs`), **the one GPU to CPU copy**. Surfaces: the stream's DPB size plus two.
+  to raster order). Pictures the DPB outputs are read back right away (`vaDeriveImage`, which maps the
+  surface's own NV12 or P010 memory, or `vaGetImage` into an image where a driver cannot derive it;
+  then `biplanar.rs`), **the one GPU to CPU copy**. Surfaces: the stream's DPB size plus two.
+  [`va::Display::export_surface`](src/vaapi/va.rs) can hand a decoded surface over as DMABUF
+  (DRM PRIME 2: plane formats, offsets, pitches, the objects' file descriptors and their DRM format
+  modifiers) instead of reading it back; nothing imports it into the compositor yet.
   - *frame_num gaps* (and every start at a non-IDR picture: an open-GOP seek) get "non-existing"
     frames like the software decoder's: copies of the latest decoded frame, mid-gray when there is
     none (`vaPutImage`). Pictures predicted from them (the leading pictures of an open GOP after a
@@ -349,7 +353,11 @@ Details in [docs/performance.md](../../docs/performance.md).
 ## Not yet
 
 Zero-copy upload of decoded pictures into wgpu textures (`CVPixelBuffer`s on macOS, Direct3D 11
-textures on Windows); B-frames in the VideoToolbox encoders and 10-bit / HDR HEVC (Main 10) in
+textures on Windows; on Linux the VA-API half is in: `va::Display::export_surface` hands a decoded
+surface over as a DMABUF - the plane layout, the objects' file descriptors and their format
+modifiers, checked against the C layout in `abi_tests.rs` and on a real driver in `va.rs`'s test -
+but nothing imports it into wgpu yet, which needs raw Vulkan (`wgpu-hal`) and a same-GPU rule);
+B-frames in the VideoToolbox encoders and 10-bit / HDR HEVC (Main 10) in
 VideoToolbox; VP9 and AV1 through VA-API (Linux), and VA-API encoding; field-coded H.264; 4:4:4 and 4:2:2 encoding with NVENC, HDR
 H.264 with NVENC (HDR H.264 stays with the software encoder), HDR10 MaxCLL / MaxFALL measured from
 the pictures (they are written as 0, unknown), AV1 with NVENC, H.265 with the other Windows vendors and on Linux, and encoders
