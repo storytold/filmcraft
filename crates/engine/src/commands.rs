@@ -128,7 +128,7 @@ pub(crate) fn has_project_selection(s: &Session) -> std::result::Result<(), Stri
 }
 fn has_clipboard(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
-    if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
+    if s.state.clipboard.is_empty() && s.state.caption_clipboard.is_empty() && s.state.clipboard_transitions.is_empty() { Err("clipboard is empty".into()) } else { Ok(()) }
 }
 
 /// The ids a caller named under `many` (a list) or `one` (a single id), when the command documents
@@ -1991,6 +1991,24 @@ fn build() -> Vec<CommandSpec> {
         }),
         cmd!("edit.copy", "Copy", ["Edit"], Some("Cmd+C"), "{}", has_clips_or_captions, |s, _| {
             if s.state.selection.is_empty() {
+                if !s.state.transition_selection.is_empty() {
+                    // Copy selected transitions (#2350): store them for paste, clearing the clip clipboard
+                    let q = s.active_sequence().ok_or(crate::EngineError::NoSequence)?;
+                    let sel = &s.state.transition_selection;
+                    let mut transitions = Vec::new();
+                    for (kind, list) in [(TrackKind::Video, &q.video_tracks), (TrackKind::Audio, &q.audio_tracks)] {
+                        for (ti, t) in list.iter().enumerate() {
+                            for x in t.transitions.iter().filter(|x| sel.contains(&x.id)) {
+                                transitions.push((kind, ti, x.clone()));
+                            }
+                        }
+                    }
+                    let n = transitions.len();
+                    s.state.clipboard_transitions = transitions;
+                    s.state.clipboard.clear();
+                    s.state.caption_clipboard.clear();
+                    return Ok(json!({"copied": n}));
+                }
                 return Ok(json!({"copied": crate::captions::copy(s)}));
             }
             copy_selection(s);
@@ -2473,7 +2491,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("clip.frameHold", "Add Frame Hold", ["Clip", "Video Options"], None, r#"{"clips":[id]?,"time":ticks?}"#, has_seq, |s, p| {
             crate::clip_ops::add_frame_hold(s, p)
         }),
-        cmd!("clip.nest", "Nest…", ["Clip"], None, r#"{"name":str?}"#, has_selection, |s, p| nest(s, p)),
+        cmd!("clip.nest", "Nest…", ["Clip"], Some("Alt+G"), r#"{"name":str?}"#, has_selection, |s, p| nest(s, p)),
         // Reveal in Project (clip context menu) and Reveal Sequence in Project (Timeline tab menu):
         // select the item in the Project panel and show it there
         cmd!("clip.revealInProject", "Reveal in Project", [], None, r#"{"clip":id?}"#, has_seq, |s, p| {
