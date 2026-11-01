@@ -638,6 +638,8 @@ fn parse_args() -> Args {
                     .collect()
             }
             "--cpu" => a.gpu = false,
+            // read by `bench_playback`'s main
+            "--hw" => drop(it.next()),
             "--gpu" => a.gpu = true,
             "--seconds" => a.seconds = it.next().and_then(|v| v.parse().ok()).unwrap_or(8.0),
             "--refresh" => a.refresh = it.next().and_then(|v| v.parse().ok()).unwrap_or(60.0),
@@ -646,7 +648,7 @@ fn parse_args() -> Args {
             "--json" => a.json = it.next(),
             "--help" | "-h" => {
                 println!(
-                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
+                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,hevc-4320,hevc10-4320,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--hw auto|off] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
                 );
                 std::process::exit(0);
             }
@@ -726,6 +728,10 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
         "h264-2160" | "seek-storm-2160" => {
             let a = import(&mut s, &fixture("a2160.mp4")?);
             build_sequence(&mut s, 3840, 2160, &[(a, 100.0, None, 0.0, 100.0)], &[], 10.0)
+        }
+        "hevc-4320" | "hevc10-4320" => {
+            let a = import(&mut s, &fixture(if name == "hevc10-4320" { "hevc10_4320.mp4" } else { "hevc4320.mp4" })?);
+            build_sequence(&mut s, 7680, 4320, &[(a, 100.0, None, 0.0, 100.0)], &[], 6.0)
         }
         "hevc-2160" | "seek-storm-hevc-2160" => {
             let a = import(&mut s, &fixture("hevc2160.mp4")?);
