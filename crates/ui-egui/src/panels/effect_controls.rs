@@ -2134,10 +2134,6 @@ pub(crate) fn graph_rows(
     let shown_duration = timeline_range.1.0.saturating_sub(timeline_range.0.0).max(1);
     let timeline_at = |f: f64| Tick(timeline_range.0.0.saturating_add((f * shown_duration as f64).round() as i64));
     let to_media = |f: f64| it.source_time_at(timeline_at(f));
-    let to_f = |m: Tick| {
-        let time = timeline_time_of(it, m);
-        (time.0.saturating_sub(timeline_range.0.0) as f64 / shown_duration as f64) as f32
-    };
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
     let n = ((lane.width() / 2.0).max(8.0) as usize).min(4096);
