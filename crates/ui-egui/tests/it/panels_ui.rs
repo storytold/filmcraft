@@ -912,3 +912,29 @@ fn opening_a_clip_in_source_focuses_it_so_space_plays_it() {
     d.frames(2);
     assert!(d.app().source_playback.clock.playing, "Space plays the Source clip");
 }
+
+/// #3669: a closed Source panel is reopened (not left hidden) when a clip opens in it.
+#[test]
+fn opening_a_clip_in_source_reopens_a_closed_source_panel() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let (mut d, a, _, _) = inspector_selection_driver();
+    d.ok("ui.panel.close", json!({"panel": PanelKind::Source.id()}));
+    d.frames(2);
+    assert!(!d.app().ui.dock.contains(&PanelKind::Source), "Source is closed");
+    d.exec("source.open", json!({"item": a.0}));
+    d.frames(3);
+    assert!(d.app().ui.dock.contains(&PanelKind::Source), "Source is docked again");
+    assert_eq!(d.app().ui.focused, PanelKind::Source);
+}
+
+/// #3669: another maximized panel no longer hides the Source monitor that just got focus.
+#[test]
+fn opening_a_clip_in_source_clears_another_panels_maximize() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let (mut d, a, _, _) = inspector_selection_driver();
+    d.app().ui.keys.maximized = Some(PanelKind::Project);
+    d.exec("source.open", json!({"item": a.0}));
+    d.frames(3);
+    assert_eq!(d.app().ui.keys.maximized, None, "the maximize is cleared so Source is visible");
+    assert_eq!(d.app().ui.focused, PanelKind::Source);
+}

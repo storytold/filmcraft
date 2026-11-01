@@ -289,9 +289,12 @@ impl FilmcraftApp {
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
-                    let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
+                    // a closed Source panel reopens, and another panel's maximize would hide it
+                    if self.ui.keys.maximized.is_some_and(|p| p != PanelKind::Source) {
+                        self.ui.keys.maximized = None;
+                    }
                     // the clip just opened there is what Space and J/K/L act on next (#3669)
-                    self.ui.focused = PanelKind::Source;
+                    self.show_panel(PanelKind::Source);
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.toast = Some((message, now)),
