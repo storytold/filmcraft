@@ -46,6 +46,8 @@ struct Api {
     create_image: ffi::vaCreateImage,
     destroy_image: ffi::vaDestroyImage,
     get_image: ffi::vaGetImage,
+    /// Maps a surface's own memory as an image (no copy into a second image); optional.
+    derive_image: Option<ffi::vaDeriveImage>,
     put_image: ffi::vaPutImage,
     map_buffer: ffi::vaMapBuffer,
     unmap_buffer: ffi::vaUnmapBuffer,
@@ -73,6 +75,14 @@ fn load() -> Result<Api, String> {
             *s.map_err(|e| format!("{}: {e}", stringify!($name)))?
         }};
     }
+    // A symbol an older libva may not have: absent is not an error (the caller declines).
+    macro_rules! sym_opt {
+        ($lib:expr, $name:ident) => {{
+            // SAFETY: as `sym!`, but the pointer is kept only when the symbol resolves.
+            let s = unsafe { $lib.get::<ffi::$name>(concat!(stringify!($name), "\0").as_bytes()) };
+            s.ok().map(|s| *s)
+        }};
+    }
     Ok(Api {
         initialize: sym!(va, vaInitialize),
         terminate: sym!(va, vaTerminate),
@@ -96,6 +106,7 @@ fn load() -> Result<Api, String> {
         create_image: sym!(va, vaCreateImage),
         destroy_image: sym!(va, vaDestroyImage),
         get_image: sym!(va, vaGetImage),
+        derive_image: sym_opt!(va, vaDeriveImage),
         put_image: sym!(va, vaPutImage),
         map_buffer: sym!(va, vaMapBuffer),
         unmap_buffer: sym!(va, vaUnmapBuffer),
@@ -254,6 +265,8 @@ pub struct Session {
     context: ffi::VAContextID,
     surfaces: Vec<VASurfaceID>,
     image: Option<VAImage>,
+    /// Whether to read pictures through `vaDeriveImage` (cleared the first time it fails).
+    derive: bool,
     /// Coded size of the surfaces (luma samples).
     size: (u32, u32),
     geometry: Geometry,
@@ -321,7 +334,7 @@ impl Session {
         }
         let config = config.ok_or(why)?;
         // From here on `Drop` releases what was made.
-        let mut s = Self { display, config, context: ffi::VA_INVALID_ID, surfaces: Vec::new(), image: None, size, geometry };
+        let mut s = Self { display, config, context: ffi::VA_INVALID_ID, surfaces: Vec::new(), image: None, derive: true, size, geometry };
         let count_c = c_uint::try_from(count).map_err(|_| "too many surfaces")?;
         let mut surfaces = vec![ffi::VA_INVALID_SURFACE; count];
         // SAFETY: `surfaces` has room for `count` ids; no attributes are passed (null, 0).
@@ -431,6 +444,30 @@ impl Session {
         Ok(image)
     }
 
+    /// The picture in surface `index`, read through an image derived from the surface itself:
+    /// the driver maps the decoded memory instead of copying it into a second image first, which
+    /// is most of `vaGetImage`'s cost at 4K. An error leaves the caller to use `vaGetImage`.
+    fn read_derived(&mut self, index: usize) -> Result<VideoFrame, String> {
+        let derive = self.display.api.derive_image.ok_or("libva has no vaDeriveImage")?;
+        let surface = *self.surfaces.get(index).ok_or("surface out of range")?;
+        let api = self.display.api;
+        // SAFETY: `surface` is one of this session's surfaces.
+        let st = unsafe { (api.sync_surface)(self.display.dpy, surface) };
+        self.display.check(st, "vaSyncSurface")?;
+        let mut image = VAImage { image_id: ffi::VA_INVALID_ID, buf: ffi::VA_INVALID_ID, ..Default::default() };
+        // SAFETY: `surface` was made on this display; `image` is a live output the driver fills in.
+        let st = unsafe { derive(self.display.dpy, surface, &mut image) };
+        self.display.check(st, "vaDeriveImage")?;
+        let frame = self.read_image(&image);
+        // SAFETY: the image was derived above on this display and is destroyed once; its buffer
+        // has been unmapped by `read_image`.
+        let st = unsafe { (api.destroy_image)(self.display.dpy, image.image_id) };
+        // a derived image the driver cannot free would pile up: stop deriving (the caller falls
+        // back to vaGetImage)
+        self.display.check(st, "vaDestroyImage (derived image)")?;
+        frame
+    }
+
     /// Every sample of `image` set to mid-gray: 128 in NV12, 512 (0x8000 in the high bits of
     /// little-endian 16-bit words) in P010.
     fn write_gray(&self, image: &VAImage) -> Result<(), String> {
@@ -497,12 +534,9 @@ fn biplanar_view<'a>(image: &VAImage, data: &'a [u8]) -> Result<Biplanar<'a>, St
         return Err(format!("the read-back image is not NV12 / P010 (fourcc {:#x}, {} planes)", image.format.fourcc, image.num_planes));
     }
     let [p0, p1, _] = image.pitches;
-    if p0 != p1 {
-        return Err(format!("NV12 planes with different pitches ({p0}, {p1})"));
-    }
     let luma = data.get(image.offsets[0] as usize..).ok_or("NV12 luma offset out of range")?;
     let chroma = data.get(image.offsets[1] as usize..).ok_or("NV12 chroma offset out of range")?;
-    Ok(Biplanar { luma, chroma, stride: p0 as usize, rows: usize::from(image.height) })
+    Ok(Biplanar { luma, chroma, stride: p0 as usize, chroma_stride: p1 as usize, rows: usize::from(image.height) })
 }
 
 impl Accel for Session {
@@ -531,6 +565,15 @@ impl Accel for Session {
     }
 
     fn read(&mut self, index: usize) -> Result<VideoFrame, String> {
+        if self.derive {
+            match self.read_derived(index) {
+                Ok(frame) => return Ok(frame),
+                Err(e) => {
+                    log::info!("VA-API: reading pictures with vaGetImage ({e})");
+                    self.derive = false;
+                }
+            }
+        }
         let image = self.get_image(index)?;
         self.read_image(&image)
     }
