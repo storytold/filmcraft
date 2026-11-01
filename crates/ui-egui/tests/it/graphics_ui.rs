@@ -321,7 +321,7 @@ fn shadow_color_drag_is_one_undo_step() {
 }
 
 /// With a Type-tool selection the Style buttons show and toggle the selected characters' style,
-/// not the layer's: a second click turns Faux Bold (or All Caps) off again.
+/// not the layer's: a second click turns Faux Bold (or All Caps, or Small Caps) off again.
 #[test]
 fn style_buttons_toggle_the_selected_characters() {
     let mut d = Driver::demo();
@@ -336,7 +336,9 @@ fn style_buttons_toggle_the_selected_characters() {
     }
     d.frames(3);
     let styles = |d: &mut Driver| d.exec("graphics.list", json!({}))["layers"][0]["styles"].clone();
-    for (id, key, on, off) in [("faux_bold", "fauxBold", json!(true), json!(false)), ("all_caps", "caps", json!(1), json!(0))] {
+    for (id, key, on, off) in
+        [("faux_bold", "fauxBold", json!(true), json!(false)), ("all_caps", "caps", json!(1), json!(0)), ("small_caps", "caps", json!(2), json!(0))]
+    {
         d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
         d.frames(3);
         assert_eq!(styles(&mut d)[0][key], on, "first click styles the selection: {}", styles(&mut d));
@@ -349,7 +351,8 @@ fn style_buttons_toggle_the_selected_characters() {
 
 /// A selection whose characters mix a style shows its button off (on only when every selected
 /// character has it), so a click styles all of them; reading the first character alone showed it
-/// on, and the click unstyled the characters that had it.
+/// on, and the click unstyled the characters that had it. The same for the caps buttons, which
+/// are both off when the selection mixes caps modes.
 #[test]
 fn style_button_on_a_mixed_selection_styles_all_of_it() {
     let mut d = Driver::demo();
@@ -371,18 +374,33 @@ fn style_button_on_a_mixed_selection_styles_all_of_it() {
     d.frames(3);
     let st = styles(&mut d);
     assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0]["fauxBold"].clone()), (json!(6), json!(8), json!(true)), "\"Dr\" is bold: {st}");
+    d.ok("ui.click", json!({"id":"graphics.prop.all_caps"}));
+    d.frames(3);
+    let st = styles(&mut d);
+    assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0]["caps"].clone()), (json!(6), json!(8), json!(1)), "\"Dr\" is All Caps: {st}");
     for _ in 0..3 {
         d.ok("ui.key", json!({"key":"Shift+ArrowRight"}));
     }
     d.frames(3);
+    // the runs over "Drive" (6..11, contiguous), as (start, end, value of `key`)
+    let runs = |st: &serde_json::Value, key: &str| -> Vec<(u64, u64, serde_json::Value)> {
+        let runs: Vec<_> =
+            st.as_array().into_iter().flatten().map(|r| (r["start"].as_u64().unwrap_or(0), r["end"].as_u64().unwrap_or(0), r[key].clone())).collect();
+        assert_eq!(runs.first().map(|r| r.0), Some(6), "{st}");
+        assert_eq!(runs.last().map(|r| r.1), Some(11), "{st}");
+        assert!(runs.windows(2).all(|w| w[0].1 == w[1].0), "{st}");
+        runs
+    };
     d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
     d.frames(3);
     let st = styles(&mut d);
-    assert_eq!(
-        (st[0]["start"].clone(), st[0]["end"].clone(), st[0]["fauxBold"].clone()),
-        (json!(6), json!(11), json!(true)),
-        "the click bolds all of \"Drive\": {st}"
-    );
+    assert!(runs(&st, "fauxBold").iter().all(|r| r.2 == json!(true)), "the click bolds all of \"Drive\": {st}");
+    // "Dr" is All Caps, "ive" is not: both caps buttons are off, so a click makes it all All Caps
+    d.ok("ui.click", json!({"id":"graphics.prop.all_caps"}));
+    d.frames(3);
+    let st = styles(&mut d);
+    assert!(runs(&st, "caps").iter().all(|r| r.2 == json!(1)), "the click makes all of \"Drive\" All Caps: {st}");
+    assert!(runs(&st, "fauxBold").iter().all(|r| r.2 == json!(true)), "and keeps it bold: {st}");
 }
 
 /// Without a Type-tool selection the Style buttons show and toggle the layer's style: an unstyled
