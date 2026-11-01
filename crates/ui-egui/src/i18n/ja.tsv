@@ -3763,3 +3763,5 @@
 	Toggle Color Grading Section	カラーグレーディングのセクションを切り替え
 	Color Grading Section	カラーグレーディングのセクション
 	Read Video Scopes	ビデオスコープを読み取る
+	Trusted Network Folders	信頼するネットワークフォルダー
+	Media a project names on another computer is opened only from a project saved on that share. Network folders listed here (\\\\server\\share, separated by ;) are opened from a project saved anywhere.	ほかのコンピューター上にあるとプロジェクトに書かれたメディアは、そのプロジェクトが同じ共有フォルダーに保存されているときだけ開きます。ここに書いたネットワークフォルダー(\\\\server\\share、; 区切り)のメディアは、プロジェクトの保存場所にかかわらず開きます。

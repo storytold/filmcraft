@@ -310,6 +310,11 @@ have no identity, so relinking them skips the fingerprint check.
   `craft-docpath`); a relative path is taken from the document's folder. Other paths (another
   computer, a device) count as missing: the item shows the offline slate, the open says why, and
   the Link Media dialog lists it. A file imported or linked in this session is opened as given.
+  Network shares listed in Preferences ▸ Media ▸ Trusted Network Folders (`media.trustedShares`,
+  `\\server\share` roots separated by `;` or line breaks; empty by default) are opened from a
+  document saved anywhere, with the same lexical checks as the document's own share, so a project
+  on the local disk (or an interchange document imported from it) finds its media on a NAS.
+  `filmcraft-cli --trust-share \\server\share` (repeatable) sets it for one run.
 
 ### Link Media
 
