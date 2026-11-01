@@ -313,7 +313,14 @@ fn color_matte_dialog_picks_and_changes_the_color() {
     for id in ["colorMatte.color", "colorMatte.name", "colorMatte.width", "colorMatte.height", "colorMatte.seconds", "colorMatte.ok"] {
         assert!(d.has(id), "{id}");
     }
-    d.ok("ui.set", json!({"menuDialog": {"color": "#ff8000", "name": "Orange"}}));
+    d.ok("ui.set", json!({"menuDialog": {"name": "Orange"}}));
+    d.click("colorMatte.color");
+    assert!(d.has("colorMatte.color.hex"), "the color popup exposes its editable hex field");
+    d.click("colorMatte.color.hex");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "#ff8000"}));
+    assert_eq!(d.app().ui.extras.dialog.as_ref().map(|dialog| dialog.params["color"].clone()), Some(json!("#ff8000")));
+    d.click("colorMatte.color");
     d.click("colorMatte.ok");
     assert!(!d.dialog_open());
     let orange = d.item_named("Orange");

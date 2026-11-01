@@ -3698,3 +3698,32 @@
 	Previous	上一个
 	Next	下一个
 	Enter a valid HH:MM:SS:FF timecode	请输入有效的 HH:MM:SS:FF 时间码
+
+# Effect Controls selection, clipboard and colour picker.
+	A selected clip no longer exists	所选剪辑已不存在
+	A selected effect no longer exists	所选效果已不存在
+	A selected keyframe no longer exists	所选关键帧已不存在
+	A selected parameter no longer exists	所选参数已不存在
+	Audio and video effects cannot be pasted as one chain	不能将音频和视频效果作为同一链条粘贴
+	Click to edit color	单击以编辑颜色
+	Copied {count} effect(s)	已复制 {count} 个效果
+	Copied {count} keyframe(s)	已复制 {count} 个关键帧
+	Copy Effects	复制效果
+	Delete Keyframes	删除关键帧
+	HEX	十六进制
+	Keyframe offset overflows	关键帧偏移量超出范围
+	No active sequence	没有活动序列
+	No effects have been copied	尚未复制效果
+	No keyframes have been copied	尚未复制关键帧
+	No selected clips match the copied effects	所选剪辑均不兼容已复制的效果
+	No supported effects are selected	未选择受支持的效果
+	Only standard effects can be copied	只能复制标准效果
+	Paste Effects	粘贴效果
+	Pasted {count} effect(s)	已粘贴 {count} 个效果
+	Select keyframes to copy	请选择要复制的关键帧
+	Select no more than 64 effects to copy	最多选择 64 个效果进行复制
+	The copied effects are unavailable	已复制的效果不可用
+	The selected effect is unavailable	所选效果不可用
+	The selected effects contain too much animation or path data to copy	所选效果包含过多动画或路径数据，无法复制
+	The selected keys contain too much path data to copy	所选关键帧包含过多路径数据，无法复制
+	Too many keyframes to copy	要复制的关键帧过多

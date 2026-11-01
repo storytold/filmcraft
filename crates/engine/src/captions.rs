@@ -176,6 +176,8 @@ pub fn copy(s: &mut Session) -> usize {
     s.state.clipboard.clear();
     s.state.clipboard_markers.clear();
     s.state.clipboard_transitions.clear();
+    s.state.effect_clipboard = None;
+    s.state.keyframe_clipboard = None;
     s.state.caption_clipboard.len()
 }
 

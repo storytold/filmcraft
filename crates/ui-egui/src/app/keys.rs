@@ -31,7 +31,11 @@ impl FilmcraftApp {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
         panels::masks::pen_take_back(self, ctx, text_focused);
-        let fire = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused, label_selected));
+        // The panel the pointer rests on: Effect Controls takes Delete, Copy and Paste for its
+        // keyframes and effects from the pointer as well as from focus.
+        let pointer_panel = panels::keyboard::panel_under_pointer(self, ctx).unwrap_or(self.ui.focused);
+        let (fire, claimed) = ctx.input_mut(|i| self.match_shortcuts(i, text_focused, divider_focused, label_selected, pointer_panel));
+        self.run_claimed_shortcuts(ctx, claimed);
         self.fire_shortcuts(ctx, fire);
     }
 
@@ -49,7 +53,9 @@ impl FilmcraftApp {
         if self.session.trim_play.dynamic.is_some() && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
         }
-        let fire = self.match_shortcuts(&mut input, false, false, false);
+        // A forwarded chord carries no pointer, so the focused panel stands in for it.
+        let (fire, claimed) = self.match_shortcuts(&mut input, false, false, false, self.ui.focused);
+        self.run_claimed_shortcuts(ctx, claimed);
         self.fire_shortcuts(ctx, fire);
     }
 
@@ -66,14 +72,25 @@ impl FilmcraftApp {
             .unwrap_or_default()
     }
 
-    /// The binding ids the key presses in `i` fire, consuming those presses.
-    fn match_shortcuts(&mut self, i: &mut egui::InputState, text_focused: bool, divider_focused: bool, label_selected: bool) -> Vec<String> {
+    /// The binding ids the key presses in `i` fire, consuming those presses, and the panel
+    /// shortcuts they claimed instead (see [`ClaimedShortcuts`]). `pointer_panel` is the panel the
+    /// pointer rests on, which decides whether Effect Controls owns Delete and Copy.
+    fn match_shortcuts(
+        &mut self,
+        i: &mut egui::InputState,
+        text_focused: bool,
+        divider_focused: bool,
+        label_selected: bool,
+        pointer_panel: PanelKind,
+    ) -> (Vec<String>, ClaimedShortcuts) {
         // Panel shortcuts of the focused panel override application shortcuts on the same chord.
         // egui ignores extra Shift and Alt when matching, so the most specific chords go first
         // across both scopes (the sort is stable, so the panel still wins a tie): otherwise the
         // Timeline's `Delete` (Clear) swallows the app-wide `Shift+Delete` (Ripple Delete) (#680).
         let focused = self.ui.focused.title();
+        let effect_controls_pointer = pointer_panel == PanelKind::EffectControls || self.ui.focused == PanelKind::EffectControls;
         let mut fire = Vec::new();
+        let mut claimed = ClaimedShortcuts::default();
         let modifiers = i.modifiers;
         // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
         // passes its release: put the press back, so Paste can paste files or an image (#611).
@@ -108,6 +125,19 @@ impl FilmcraftApp {
             });
         }
         clipboard_events_as_keys(&mut i.events, modifiers, label_selected);
+        // Del with the pointer over Effect Controls removes the panel's keyframes or effects, not
+        // the Timeline's clip, so take it before the bindings see it — but only while the panel has
+        // something to remove: Delete is bound application-wide, and an empty panel must not
+        // swallow the edit the user meant.
+        if !text_focused
+            && effect_controls_pointer
+            && panels::effect_controls::can_delete_for_shortcut(self)
+            && i.modifiers == egui::Modifiers::NONE
+            && i.key_pressed(egui::Key::Delete)
+        {
+            claimed.effect_controls_delete = true;
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Delete);
+        }
         let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
         let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
         let mut candidates: Vec<&menus::KeyBinding> = panel.chain(app_wide).collect();
@@ -120,16 +150,38 @@ impl FilmcraftApp {
             if lets_text_field_keep(*m, text_focused) {
                 continue;
             }
+            if claimed.effect_controls_delete && *k == egui::Key::Delete {
+                continue;
+            }
             // The focused divider consumes the arrows itself (egui matches them with any Shift/Alt).
             if divider_focused && matches!(k, egui::Key::ArrowLeft | egui::Key::ArrowRight | egui::Key::ArrowUp | egui::Key::ArrowDown) {
                 continue;
             }
             let fires = if repeats_when_held(id) { i.consume_key(*m, *k) } else { consume_fresh_press(i, *m, *k) };
             if fires {
-                fire.push(id.clone());
+                // Effect Controls takes Copy for its own selection — the selected keyframes, else
+                // the selected effect — instead of the app-wide clip copy, but only while it has
+                // something to copy: otherwise the chord belongs to the Timeline selection.
+                // Paste needs no scoping here: the application holds one clipboard, and
+                // `edit.paste` applies whatever was copied last (see `filmcraft_engine::clipboard`).
+                if !text_focused && effect_controls_pointer && id == "edit.copy" && panels::effect_controls::can_copy_for_shortcut(self) {
+                    claimed.effect_controls_copy = true;
+                } else {
+                    fire.push(id.clone());
+                }
             }
         }
-        fire
+        (fire, claimed)
+    }
+
+    /// Run the Effect Controls shortcuts the key scan claimed, in the panel's own words.
+    fn run_claimed_shortcuts(&mut self, ctx: &egui::Context, claimed: ClaimedShortcuts) {
+        if claimed.effect_controls_delete {
+            panels::effect_controls::delete_for_shortcut(self, ctx);
+        }
+        if claimed.effect_controls_copy {
+            panels::effect_controls::copy_for_shortcut(self);
+        }
     }
 
     /// Run the commands of the bindings `match_shortcuts` fired, as the focused panel scopes them.
@@ -154,7 +206,22 @@ impl FilmcraftApp {
             } else {
                 json!({})
             };
-            if let Err(e) = menus::invoke(self, ctx, &id, params) {
+            let result = menus::invoke(self, ctx, &id, params);
+            // A paste reports what it applied and selects the keyframes it pasted — it may have
+            // come from the panel or from the Timeline selection, one clipboard serves both.
+            if id == "edit.paste"
+                && let Ok(value) = &result
+            {
+                if let Some(inserted) = value.get("inserted").and_then(|inserted| inserted.as_u64()) {
+                    self.ui.status = tlf!("Pasted {count} effect(s)", count = inserted);
+                }
+                if let Some(keys) = value.get("keyframes")
+                    && let Ok(keys) = serde_json::from_value(keys.clone())
+                {
+                    self.ui.keyframe_selection = keys;
+                }
+            }
+            if let Err(e) = result {
                 self.ui.status = e;
             }
         }
@@ -224,6 +291,16 @@ fn consume_fresh_press(i: &mut egui::InputState, modifiers: egui::Modifiers, key
 /// with a modifier are not what a text field or an IME consumes, so they keep working.
 fn lets_text_field_keep(modifiers: egui::Modifiers, text_focused: bool) -> bool {
     text_focused && menus::specificity(modifiers) == 0
+}
+
+/// The panel shortcuts the key scan claimed while matching chords: Effect Controls runs them once
+/// the scan has released the input lock, because they edit the session and read the context.
+#[derive(Default)]
+struct ClaimedShortcuts {
+    /// Del: remove the selected keyframes, else the selected effects of the selected clips.
+    effect_controls_delete: bool,
+    /// Ctrl+C: copy the selected keyframes, else the selected effect.
+    effect_controls_copy: bool,
 }
 
 #[cfg(test)]
@@ -359,7 +436,7 @@ mod key_repeat_tests {
         app.ui.focused = crate::dock::PanelKind::Timeline;
         let mut input = egui::InputState::default();
         input.events = events;
-        app.match_shortcuts(&mut input, false, false, false)
+        app.match_shortcuts(&mut input, false, false, false, crate::dock::PanelKind::Timeline).0
     }
 
     /// Holding Space sends one press and then OS key repeats: Play/Stop runs once, not once per

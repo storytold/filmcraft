@@ -3731,3 +3731,32 @@
 	Previous	前へ
 	Next	次へ
 	Enter a valid HH:MM:SS:FF timecode	有効なタイムコードを HH:MM:SS:FF 形式で入力してください
+
+# Effect Controls selection, clipboard and colour picker.
+	A selected clip no longer exists	選択したクリップは存在しません。
+	A selected effect no longer exists	選択したエフェクトは存在しません。
+	A selected keyframe no longer exists	選択したキーフレームは存在しません。
+	A selected parameter no longer exists	選択したパラメーターは存在しません。
+	Audio and video effects cannot be pasted as one chain	オーディオとビデオのエフェクトを同じチェーンに貼り付けることはできません。
+	Click to edit color	クリックして色を編集します。
+	Copied {count} effect(s)	エフェクトを {count} 個コピーしました。
+	Copied {count} keyframe(s)	キーフレームを {count} 個コピーしました。
+	Copy Effects	エフェクトをコピー
+	Delete Keyframes	キーフレームを削除
+	HEX	16進数
+	Keyframe offset overflows	キーフレームのオフセットが上限を超えています。
+	No active sequence	アクティブなシーケンスがありません。
+	No effects have been copied	コピーしたエフェクトはありません。
+	No keyframes have been copied	コピーしたキーフレームはありません。
+	No selected clips match the copied effects	選択したクリップにコピーしたエフェクトを適用できません。
+	No supported effects are selected	対応しているエフェクトが選択されていません。
+	Only standard effects can be copied	標準エフェクトのみコピーできます。
+	Paste Effects	エフェクトを貼り付け
+	Pasted {count} effect(s)	エフェクトを {count} 個貼り付けました。
+	Select keyframes to copy	コピーするキーフレームを選択してください。
+	Select no more than 64 effects to copy	コピーするエフェクトは 64 個以下を選択してください。
+	The copied effects are unavailable	コピーしたエフェクトを使用できません。
+	The selected effect is unavailable	選択したエフェクトを使用できません。
+	The selected effects contain too much animation or path data to copy	選択したエフェクトのアニメーションまたはパスデータが多すぎるため、コピーできません。
+	The selected keys contain too much path data to copy	選択したキーフレームのパスデータが多すぎるため、コピーできません。
+	Too many keyframes to copy	コピーするキーフレームが多すぎます。

@@ -254,7 +254,7 @@ pub(crate) fn toggle_maximize(app: &mut FilmcraftApp, p: PanelKind) -> Value {
 /// The visible panel under the pointer (from last frame's automation rects). Each native
 /// floating window has its own coordinates, so only rects of the window holding the pointer
 /// count.
-fn panel_under_pointer(app: &FilmcraftApp, ctx: &egui::Context) -> Option<PanelKind> {
+pub(crate) fn panel_under_pointer(app: &FilmcraftApp, ctx: &egui::Context) -> Option<PanelKind> {
     let panels = app.auto.query("panel.");
     let pointer = |viewport| ctx.input_for(viewport, |i| i.pointer.latest_pos()).map(|pos| (viewport, pos));
     let (viewport, pos) =
