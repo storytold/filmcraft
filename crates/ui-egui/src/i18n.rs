@@ -58,6 +58,8 @@ pub enum Language {
     /// Swedish.
     Sv,
     Tr,
+    /// Arabic; right-to-left script with contextual letter forms.
+    Ar,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -76,9 +78,10 @@ static BOSNIAN: OnceLock<Catalog> = OnceLock::new();
 static CZECH: OnceLock<Catalog> = OnceLock::new();
 static SWEDISH: OnceLock<Catalog> = OnceLock::new();
 static TURKISH: OnceLock<Catalog> = OnceLock::new();
+static ARABIC: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::En,
         Self::Ja,
         Self::Es,
@@ -96,6 +99,7 @@ impl Language {
         Self::Sv,
         Self::Tr,
         Self::Bs,
+        Self::Ar,
     ];
 
     /// BCP 47 tag for AccessKit and the web IME's hidden input. Keep the persisted spelling
@@ -119,6 +123,7 @@ impl Language {
             Self::Pl => "pl",
             Self::Sv => "sv",
             Self::Tr => "tr",
+            Self::Ar => "ar",
         }
     }
 
@@ -141,6 +146,7 @@ impl Language {
             Self::Pl => "Polski",
             Self::Sv => "Svenska",
             Self::Tr => "Türkçe",
+            Self::Ar => "العربية",
         }
     }
 
@@ -163,6 +169,7 @@ impl Language {
             "pl" => Some(Self::Pl),
             "sv" => Some(Self::Sv),
             "tr" => Some(Self::Tr),
+            "ar" => Some(Self::Ar),
             _ => None,
         }
     }
@@ -195,6 +202,7 @@ impl Language {
             ("pl", Language::Pl),
             ("sv", Language::Sv),
             ("tr", Language::Tr),
+            ("ar", Language::Ar),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -232,6 +240,7 @@ impl Language {
             Self::Pl => "pl",
             Self::Sv => "sv",
             Self::Tr => "tr",
+            Self::Ar => "ar",
         }
     }
 
@@ -255,6 +264,7 @@ impl Language {
             Self::Pl => Some(POLISH.get_or_init(|| Catalog::parse(include_str!("i18n/pl.tsv")))),
             Self::Sv => Some(SWEDISH.get_or_init(|| Catalog::parse(include_str!("i18n/sv.tsv")))),
             Self::Tr => Some(TURKISH.get_or_init(|| Catalog::parse(include_str!("i18n/tr.tsv")))),
+            Self::Ar => Some(ARABIC.get_or_init(|| Catalog::parse(include_str!("i18n/ar.tsv")))),
         }
     }
 
@@ -487,6 +497,13 @@ pub fn chinese_font_available() -> bool {
 pub fn korean_font_available() -> bool {
     crate::cjk::korean_available()
 }
+
+/// Whether the interface can show Arabic: `theme::install` adds an installed system Arabic
+/// face (Noto Sans Arabic, Segoe UI, Tahoma, Arial…, see `rtl.rs`) when there is one.
+pub fn arabic_font_available() -> bool {
+    crate::rtl::arabic_font_available()
+}
+
 
 #[cfg(test)]
 mod tests;
