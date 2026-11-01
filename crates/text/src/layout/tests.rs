@@ -387,3 +387,135 @@ fn empty_text_has_a_caret() {
     assert_eq!(l.caret(0).0, 0.0);
     assert!(l.bounds[3] > l.bounds[1]);
 }
+
+/// 縦中横: 2–4 consecutive half-width characters of a `tate_chu_yoko` run share one cell of a
+/// vertical column — side by side across it, upright, inside one row — while the characters
+/// that follow move up by the cells the group saved. Without the flag every character keeps
+/// its own cell, and horizontal text ignores it.
+#[test]
+fn tate_chu_yoko_sets_half_width_characters_side_by_side_in_one_cell() {
+    let style = st(40.0);
+    let vertical = ParagraphStyle { vertical: true, ..Default::default() };
+    let tcy = TextStyle { tate_chu_yoko: true, ..style.clone() };
+    let text = "あ12い";
+    let plain = layout_rich(text, &style, &[], &vertical);
+    assert_eq!(plain.lines.len(), 4, "without the flag every character keeps its own cell");
+    let row = plain.lines[1].baseline - plain.lines[0].baseline;
+    assert!(row > 0.0);
+    let runs = [StyleRun { range: 3..5, style: tcy.clone() }];
+    let l = layout_rich(text, &style, &runs, &vertical);
+    assert!(l.vertical);
+    assert_eq!(l.lines.len(), 3, "the two digits share one cell: {:?}", l.lines);
+    let cell = &l.lines[1];
+    assert_eq!(cell.range, 3..5, "the cell covers both digits: {:?}", l.lines);
+    let digits: Vec<&Glyph> = l.glyphs.iter().filter(|g| (3..5).contains(&g.cluster)).collect();
+    assert_eq!(digits.len(), 2, "one glyph per digit: {digits:?}");
+    assert!((digits[0].y - digits[1].y).abs() < 0.01, "side by side, not stacked: {digits:?}");
+    assert!(digits[1].x > digits[0].x, "in reading order: {digits:?}");
+    // One caret stop per character boundary: a caret or a click still works inside the group.
+    let stops: Vec<usize> = cell.carets.iter().map(|c| c.0).collect();
+    for b in 3..=5 {
+        assert!(stops.contains(&b), "caret at {b}: {stops:?}");
+    }
+    // The glyphs use each sub-slot's left edge, the same origin as the carets, and stay inside
+    // the cell: with the half-character offset the last digit crosses the cell's right edge.
+    assert!((digits[0].x - cell.x).abs() < 0.01, "first digit at the cell's left edge: {} vs {}", digits[0].x, cell.x);
+    let stop = |b: usize| cell.carets.iter().find(|c| c.0 == b).map_or(f32::MAX, |c| c.1);
+    let advance = stop(5) - stop(4);
+    assert!(
+        digits[1].x + advance <= cell.x + cell.width + 0.01,
+        "the digits stay inside the cell: {}..{} vs {}..{}",
+        digits[0].x,
+        digits[1].x + advance,
+        cell.x,
+        cell.x + cell.width
+    );
+    assert!(cell.width > style.size * 0.4 && cell.width < style.size * 1.6, "about one cell across the column: {}", cell.width);
+    // The group takes one row down the column: what follows moves up by the cells it saved.
+    assert!((cell.baseline - l.lines[0].baseline - row).abs() < 0.01, "{:?}", l.lines);
+    assert!((l.lines[2].baseline - cell.baseline - row).abs() < 0.01, "{:?}", l.lines);
+    assert!(
+        (plain.lines[3].baseline - l.lines[2].baseline - row).abs() < 0.01,
+        "the character after the group sits one row higher than without the flag: {:?} against {:?}",
+        plain.lines,
+        l.lines
+    );
+    let (x, baseline, li) = l.caret(4);
+    assert_eq!((li, baseline), (1, cell.baseline));
+    assert!((x - digits[1].x).abs() < 0.01, "the caret between the digits sits at the second digit's origin: {x} vs {}", digits[1].x);
+    assert_eq!(l.hit(x, baseline), 4, "a click between them lands there");
+    // A whole run flagged at the base style groups too.
+    let all = layout("12", &tcy, &vertical);
+    assert_eq!(all.lines.len(), 1, "the run is one cell: {:?}", all.lines);
+    assert_eq!(all.glyphs.len(), 2);
+    assert!((all.glyphs[0].y - all.glyphs[1].y).abs() < 0.01 && all.glyphs[1].x > all.glyphs[0].x);
+    // Horizontal text ignores the flag.
+    let horizontal = ParagraphStyle::default();
+    let h = layout_rich(text, &style, &[StyleRun { range: 3..5, style: tcy }], &horizontal);
+    let plain_h = layout_rich(text, &style, &[], &horizontal);
+    let glyphs = |l: &Layout| l.glyphs.iter().map(|g| (g.id, g.x, g.y, g.cluster)).collect::<Vec<_>>();
+    assert_eq!(glyphs(&h), glyphs(&plain_h), "horizontal layout is unchanged");
+}
+
+/// A 縦中横 group wider than its column overflows into the neighbouring columns by design; the
+/// layout bounds must cover the whole group, or selection and clipping lose its ends.
+#[test]
+fn a_tate_chu_yoko_group_wider_than_the_column_widens_the_bounds() {
+    let vertical = ParagraphStyle { vertical: true, ..Default::default() };
+    let tcy = TextStyle { tate_chu_yoko: true, ..st(40.0) };
+    // The second column's centre lies one column width to the left of the first.
+    let two = layout("1234\na", &tcy, &vertical);
+    let col_w = -(two.lines[1].x + two.lines[1].width / 2.0);
+    let l = layout("1234", &tcy, &vertical);
+    assert_eq!(l.lines.len(), 1, "the four digits share one cell: {:?}", l.lines);
+    let cell = &l.lines[0];
+    assert!(cell.width > col_w, "the group is wider than one column: {} vs {col_w}", cell.width);
+    assert!(l.bounds[0] <= cell.x, "the left end of the group is inside the bounds: {} vs {}", cell.x, l.bounds[0]);
+    assert!(cell.x + cell.width <= l.bounds[2], "the right end of the group is inside the bounds: {} vs {}", cell.x + cell.width, l.bounds[2]);
+}
+
+/// A rich 縦中横 cell underlines each member at its own sub-slot, the way a single-character
+/// cell puts the strip to the right of its character, rather than the first underlined
+/// member's style at the right edge of the whole cell.
+#[test]
+fn a_tate_chu_yoko_cell_keeps_each_underlined_member_in_its_slot() {
+    let vertical = ParagraphStyle { vertical: true, ..Default::default() };
+    let base = TextStyle { tate_chu_yoko: true, ..st(40.0) };
+    let underlined = TextStyle { underline: true, ..base.clone() };
+    let runs = [StyleRun { range: 0..1, style: underlined.clone() }];
+    let l = layout_rich("12", &base, &runs, &vertical);
+    assert_eq!(l.lines.len(), 1, "the digits share one cell: {:?}", l.lines);
+    let cell = &l.lines[0];
+    assert_eq!(l.underlines.len(), 1, "only the first digit is underlined");
+    assert_eq!(l.underline_runs, vec![1]);
+    // The strip runs down the right edge of the first digit's slot, measured from the same
+    // style in a single-character cell.
+    let one = layout("1", &underlined, &vertical);
+    let offset = one.underlines[0][0] - (one.lines[0].x + one.lines[0].width);
+    let slot_edge = cell.x + one.lines[0].width;
+    let [ux, top, ux1, bottom] = l.underlines[0];
+    assert!((ux - (slot_edge + offset)).abs() < 0.01, "the strip follows the first digit's slot: {ux} vs {}", slot_edge + offset);
+    assert!(ux < cell.x + cell.width - 1.0, "not the right edge of the cell: {ux} vs {}", cell.x + cell.width);
+    assert!(bottom - top > ux1 - ux, "a vertical strip");
+    assert!((top - (cell.baseline - cell.ascent)).abs() < 0.01, "the strip shares the cell's top");
+    assert!((bottom - top - (one.underlines[0][3] - one.underlines[0][1])).abs() < 0.01, "one row tall");
+    // With both digits underlined, each keeps its own strip and run, even in different styles.
+    let two = [StyleRun { range: 0..1, style: underlined.clone() }, StyleRun { range: 1..2, style: TextStyle { tracking: 20.0, ..underlined } }];
+    let both = layout_rich("12", &base, &two, &vertical);
+    assert_eq!(both.lines.len(), 1);
+    assert_eq!(both.underlines.len(), 2, "one strip per underlined digit: {:?}", both.underlines);
+    assert_eq!(both.underline_runs, vec![1, 2]);
+    assert!(both.underlines[0][0] < both.underlines[1][0], "left to right, as the digits stand: {:?}", both.underlines);
+}
+
+/// 縦中横 groups only half-width printable ASCII: a grapheme cluster that carries a combining
+/// mark (`A` + U+0301) is not one, even though its first character is ASCII.
+#[test]
+fn tate_chu_yoko_does_not_group_a_grapheme_with_a_combining_mark() {
+    let style = TextStyle { tate_chu_yoko: true, ..st(40.0) };
+    let para = ParagraphStyle { vertical: true, ..Default::default() };
+    let l = layout("A\u{301}B", &style, &para);
+    assert_eq!(l.lines.len(), 2, "the combining mark keeps its base in one cell and B gets its own: {:?}", l.lines);
+    assert_eq!(l.lines[0].range, 0..3);
+    assert_eq!(l.lines[1].range, 3..4);
+}

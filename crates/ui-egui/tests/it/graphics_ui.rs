@@ -488,6 +488,36 @@ fn a_graphics_tab_edit_writes_keyframed_text_where_it_is_shown() {
     assert_eq!(at(&mut d, late), filmcraft_project::ParamValue::Text("End".into()), "the end keeps its own");
 }
 
+/// 縦中横 in the Text section: the toggle sits beside Vertical Text, sets the layer's
+/// `tate_chu_yoko` property through `graphics.set`, and is disabled for horizontal text.
+#[test]
+fn tate_chu_yoko_toggle_in_the_text_section() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let r = d.exec("graphics.newText", json!({"text": "12", "vertical": true}));
+    let clip = r["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+    d.frames(4);
+    assert_eq!(text_param(&mut d, clip, "vertical").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(text_param(&mut d, clip, "tate_chu_yoko").and_then(|v| v.as_bool()), Some(false), "off by default");
+    d.ok("ui.click", json!({"id": "graphics.prop.tate_chu_yoko"}));
+    d.frames(2);
+    assert_eq!(text_param(&mut d, clip, "tate_chu_yoko").and_then(|v| v.as_bool()), Some(true), "the toggle sets 縦中横");
+    d.ok("ui.click", json!({"id": "graphics.prop.tate_chu_yoko"}));
+    d.frames(2);
+    assert_eq!(text_param(&mut d, clip, "tate_chu_yoko").and_then(|v| v.as_bool()), Some(false), "and clears it");
+    // Horizontal text: the toggle is disabled, so a click leaves the property alone.
+    let r = d.exec("graphics.newText", json!({"text": "12"}));
+    let hclip = r["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": hclip, "layers": [0]}));
+    d.frames(4);
+    assert_eq!(text_param(&mut d, hclip, "vertical").and_then(|v| v.as_bool()), Some(false));
+    let before = text_param(&mut d, hclip, "tate_chu_yoko").and_then(|v| v.as_bool());
+    d.ok("ui.click", json!({"id": "graphics.prop.tate_chu_yoko"}));
+    d.frames(2);
+    assert_eq!(text_param(&mut d, hclip, "tate_chu_yoko").and_then(|v| v.as_bool()), before, "disabled for horizontal text");
+}
+
 /// Click the entry labelled `label` of the open drop-down list with the pointer.
 fn pick(d: &mut Driver, label: &str) {
     let r = d.harness.get_by_label(label).rect();
