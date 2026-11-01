@@ -45,3 +45,13 @@ jobs:
       - name: Build and check non-executable installer fixtures
         shell: pwsh
         run: ./packaging/windows/test-install-policy.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'craft-install-policy-tests')
+
+  macos-dmg:
+    timeout-minutes: 15
+    name: macOS DMG app passes codesign --strict
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: bash packaging/macos/dmg-test.sh
