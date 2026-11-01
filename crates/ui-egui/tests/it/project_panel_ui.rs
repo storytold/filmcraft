@@ -1599,3 +1599,22 @@ fn a_dragged_media_browser_thumbnail_size_is_written_to_preferences() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Regression alias for #3856: both Clear and Automate footer buttons must be inert when
+/// the project panel has no item selected.
+#[test]
+fn clear_and_automate_disabled_with_empty_selection() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.exec("project.select", json!({"items": []}));
+    d.app().ui.project_panel.selected_bin = None;
+    d.frames(2);
+    let project = d.app().session.project.clone();
+    d.app().ui.status.clear();
+    for id in ["project.button.project.delete", "project.button.clip.automateToSequence"] {
+        d.click(id);
+        assert!(d.app().ui.status.is_empty(), "{id}: empty selection must not set a status (#3856): {}", d.app().ui.status,);
+        assert!(std::sync::Arc::ptr_eq(&project, &d.app().session.project), "{id}: empty selection must not mutate the project (#3856)",);
+        assert!(!d.has("automate.ok"), "{id}: empty selection must not open the dialog (#3856)");
+    }
+}
