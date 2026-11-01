@@ -69,8 +69,22 @@ fixture_tests!(
 /// other picture stays bit-exact, single-threaded and with frame threads.
 #[test]
 fn draft_mode_changes_only_flagged_non_reference_frames() {
-    let f = common::fixture("temporal_layers");
-    let Some((ivf, yuv)) = common::ensure(f) else { return };
+    let f = common::fixture("draft_pairs");
+    let Some((seed, _)) = common::ensure(f) else { return };
+    let seed = std::fs::read(seed).unwrap();
+    let mut frames: Vec<Vec<u8>> = common::ivf_frames(&seed).into_iter().map(<[u8]>::to_vec).collect();
+    for (i, frame) in frames.iter_mut().enumerate() {
+        // VP9 profile 0, shown frame, error resilient: the eight refresh flags of an
+        // inter frame start at byte 1. The following key frame resets all references.
+        assert_eq!(frame[0], if i % 2 == 0 { 0x83 } else { 0x87 }, "unexpected fixture header at frame {i}");
+        if i % 2 == 1 {
+            frame[1] = 0;
+        }
+    }
+    let ivf = common::fixtures_dir().join("draft_disposable_pairs.ivf");
+    let yuv = common::fixtures_dir().join("draft_disposable_pairs.yuv");
+    common::write_ivf(&ivf, f.width as u16, f.height as u16, &frames);
+    assert!(common::reference_decode(&ivf, &yuv, f.pix_fmt));
     let reference = std::fs::read(&yuv).unwrap();
     let data = std::fs::read(&ivf).unwrap();
     let fsize = common::raw_size(f.width as usize, f.height as usize, f.pix_fmt);

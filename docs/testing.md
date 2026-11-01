@@ -122,6 +122,11 @@ are never linked or shipped ([AGENTS.md](../AGENTS.md) §2).
   without a Direct3D 11 video device or the HEVC / VP9 / AV1 codec extensions of the Microsoft Store. The VP9 and
   AV1 fixtures (libvpx-vp9, libaom-av1; 360p, 1080p, 2160p, hidden alt-ref frames, two GOPs) need an ffmpeg with those encoders.
 
+Two oracle fixtures explicitly control properties that external encoder versions do not guarantee:
+
+- The low-bitrate Opus/Matroska test keeps its 16 kHz source, but feeds the encoder at 48 kHz. This avoids old muxers writing a `CodecDelay` at the wrong sample clock. The test validates delay metadata against OpusHead pre-skip and retains the 40 dB sequential and random-access SNR requirements.
+- The VP9 draft test rewrites the refresh masks of shown inter frames in key/inter pairs. Each following key frame resets references, so the rewritten stream is valid independently of temporal-layer encoder heuristics. FFmpeg decodes the rewritten stream as the oracle; draft coverage, changed filtered pixels and exact unflagged pictures remain required.
+
 The NVENC tests (`crates/platform/tests/it/nvenc.rs` and `nvenc_export.rs` for H.264, `nvenc_rgba_input.rs` for
 the GPU's RGB → 4:2:0 conversion, `nvenc_hevc.rs`,
 `nvenc_hevc_export.rs`, `nvenc_hevc_probe.rs` and `nvenc_hevc_warm.rs` for H.265, `nvenc_hevc_main10.rs` and
