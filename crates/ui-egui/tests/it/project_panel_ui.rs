@@ -1599,3 +1599,49 @@ fn a_dragged_media_browser_thumbnail_size_is_written_to_preferences() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #3774: the footer's Zoom sizes List view's thumbnails and scales the Freeform canvas, not
+/// only Icon view's cards. A List without thumbnails has nothing for it to size, so its rows stay.
+#[test]
+fn zoom_sizes_list_thumbnails_and_the_freeform_canvas() {
+    let mut d = project_driver();
+    let items: Vec<u64> = footage_in(&mut d, "list").iter().map(|(i, _)| *i).collect();
+    let row = |d: &mut Driver| {
+        d.frames(3);
+        d.rect(&format!("project.item.{}", items[0]))[3]
+    };
+    // List without thumbnails: the rows do not change
+    let plain = row(&mut d);
+    d.exec("project.view.set", json!({"iconSize": 300.0}));
+    assert_eq!(row(&mut d), plain, "no thumbnails, nothing to size");
+    // List with thumbnails: the row follows the thumbnail size
+    d.exec("project.view.set", json!({"thumbnails": true, "iconSize": 110.0}));
+    let small = row(&mut d);
+    d.exec("project.view.set", json!({"iconSize": 300.0}));
+    let big = row(&mut d);
+    assert!(small > plain && (big - 120.0).abs() < 1.0, "rows {plain} / {small} / {big}");
+
+    // Freeform: twice the size draws every card twice as big and twice as far from the origin
+    d.exec("project.view.set", json!({"iconSize": 110.0}));
+    d.exec("project.freeform.move", json!({"items": [items[0]], "x": 40, "y": 40}));
+    d.exec("project.freeform.move", json!({"items": [items[1]], "x": 240, "y": 40}));
+    d.exec("project.view.set", json!({"view": "freeform"}));
+    let card = |d: &mut Driver, i: u64| {
+        d.frames(3);
+        let (r, c) = (d.rect(&format!("project.item.{i}")), d.rect("project.freeform"));
+        (r[0] - c[0], r[2])
+    };
+    let ((x0, w0), (x1, _)) = (card(&mut d, items[0]), card(&mut d, items[1]));
+    d.exec("project.view.set", json!({"iconSize": 220.0}));
+    let ((x0z, w0z), (x1z, _)) = (card(&mut d, items[0]), card(&mut d, items[1]));
+    assert!((w0z - 2.0 * w0).abs() < 1.0, "card width {w0} → {w0z}");
+    assert!(((x1z - x0z) - 2.0 * (x1 - x0)).abs() < 1.0, "spacing {} → {}", x1 - x0, x1z - x0z);
+    // a drag at that zoom moves the card by its on-canvas distance: 100 points on screen are 50
+    let r = d.rect(&format!("project.item.{}", items[0]));
+    let from = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": from.0 + 100.0, "y": from.1}, "steps": 16}));
+    d.frames(4);
+    let pos = d.app().session.project.item(ItemId(items[0])).unwrap().metadata.get(FREEFORM_POS).cloned().expect("card placed");
+    let (x, y, _) = filmcraft_engine::project_panel::parse_pos(&pos).unwrap();
+    assert!((x - 90.0).abs() < 3.0 && (y - 40.0).abs() < 3.0, "moved to {x},{y}");
+}

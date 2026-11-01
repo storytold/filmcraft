@@ -587,7 +587,13 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     let sw = (bar.width() - 300.0).clamp(40.0, 120.0);
     let sr = Rect::from_min_size(pos2(x + 8.0, bar.min.y + 8.0), vec2(sw, 16.0));
     let mut sz = v.icon_size;
-    let resp = crate::widgets::accessible_name(ui.put(sr, egui::Slider::new(&mut sz, 48.0..=400.0).show_value(false)), tl!("Zoom"));
+    // it sizes Icon view's cards, the Freeform canvas and List view's thumbnails (#3774): a List
+    // without thumbnails has nothing for it to size
+    let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(sr).id_salt((pre, "zoom")));
+    if v.mode == ViewMode::List && !app.session.prefs.project_panel.thumbnails {
+        sui.disable();
+    }
+    let resp = crate::widgets::accessible_name(sui.put(sr, egui::Slider::new(&mut sz, 48.0..=400.0).show_value(false)), tl!("Zoom"));
     app.auto.add(&format!("{pre}.iconSize"), sr, "Zoom");
     // a drag ended by Escape goes back to the size it started from (#580)
     let orig_id = egui::Id::unique((pre, "icon-size-before-drag"));

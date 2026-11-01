@@ -539,7 +539,8 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
         c.width = *w;
     }
     let width = LEAD + cols.iter().map(|c| c.width).sum::<f32>() + 8.0;
-    let lc = ListCtx { row_h: if thumbs { (f * 3.6).max(44.0) } else { (f * 2.0).max(22.0) }, font: f, thumbs, width: width.max(rect.width()), cols };
+    let row_h = if thumbs { list_thumb_row_height(v.icon_size, f) } else { (f * 2.0).max(22.0) };
+    let lc = ListCtx { row_h, font: f, thumbs, width: width.max(rect.width()), cols };
     let header_h = (f * 1.8).max(20.0);
     let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + header_h), rect.max);
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt((&v.prefix, "list-body")));
@@ -1083,7 +1084,9 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
 pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, filter: &str, actions: &mut Actions) {
     let t = app.tokens;
     let opts = app.session.prefs.project_panel.freeform.clone();
-    let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, rect.width());
+    // the footer's Zoom scales the canvas (#3774); cards keep their positions and sizes unscaled
+    let z = freeform_zoom(v.icon_size);
+    let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, rect.width() / z);
     cards.retain(|c| matches_filter(app, ItemId(c.item), filter));
     let drag_key = egui::Id::unique((&v.prefix, "ff-drag"));
     // (dragged item, offset so far)
@@ -1095,7 +1098,8 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             c.item == d || (sel.contains(&d) && sel.contains(&c.item)) || (stack_of_d.is_some() && c.stack == stack_of_d)
         })
     };
-    let extent = cards.iter().fold(vec2(rect.width(), rect.height()), |e, c| vec2(e.x.max(c.x + c.size + 40.0), e.y.max(c.y + c.size * 9.0 / 16.0 + 60.0)));
+    let extent =
+        cards.iter().fold(vec2(rect.width(), rect.height()), |e, c| vec2(e.x.max((c.x + c.size + 40.0) * z), e.y.max((c.y + c.size * 9.0 / 16.0 + 60.0) * z)));
     // a middle-button drag anywhere on the canvas pans it, the content following the pointer, as in
     // the Timeline and the monitors (#579); cards move only with the primary button
     let (offset_key, pan_key) = (egui::Id::unique((&v.prefix, "ff-offset")), egui::Id::unique((&v.prefix, "ff-pan")));
@@ -1118,7 +1122,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         let (canvas, bg) = ui.allocate_exact_size(extent, Sense::click_and_drag());
         app.auto.add(&format!("{}.freeform", v.prefix), canvas, "Freeform canvas");
         if opts.snap {
-            let g = opts.grid.max(4.0);
+            let g = opts.grid.max(4.0) * z;
             let mut x = canvas.min.x;
             while x < canvas.max.x {
                 ui.painter().line_segment([pos2(x, canvas.min.y), pos2(x, canvas.max.y)], Stroke::new(0.5, t.separator.gamma_multiply(0.5)));
@@ -1144,7 +1148,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         for i in order {
             let c = cards[i].clone();
             let off = if moving(&c) { dragging.map(|d| d.1).unwrap_or_default() } else { egui::Vec2::ZERO };
-            let r = Rect::from_min_size(canvas.min + vec2(c.x, c.y) + off, vec2(c.size, c.size * 9.0 / 16.0 + 20.0));
+            let r = Rect::from_min_size(canvas.min + vec2(c.x, c.y) * z + off, vec2(c.size * z, c.size * z * 9.0 / 16.0 + 20.0));
             let Some(kind) = app.session.project.item(ItemId(c.item)).map(|x| x.kind.clone()) else { continue };
             let Some(resp) = card(app, ui, r, ItemId(c.item), &v.prefix, opts.show_names, opts.show_durations, Sense::click_and_drag()) else { continue };
             note_hit(ui, v, ItemId(c.item), r);
@@ -1207,9 +1211,10 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                         items.insert(0, s);
                     }
                     let lead = cards.iter().find(|x| x.item == items[0]).cloned().unwrap_or(c);
+                    // the drag moved on screen, the cards live on the unscaled canvas
                     actions.push((
                         "project.freeform.move".into(),
-                        json!({"items": items, "x": (lead.x + off.x).max(0.0), "y": (lead.y + off.y).max(0.0), "width": rect.width()}),
+                        json!({"items": items, "x": (lead.x + off.x / z).max(0.0), "y": (lead.y + off.y / z).max(0.0), "width": rect.width() / z}),
                     ));
                 }
             }
@@ -1225,6 +1230,18 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         bg.context_menu(|ui| canvas_menu(app, ui, v, bin, actions));
     });
     ui.ctx().data_mut(|d| d.insert_temp(offset_key, out.state.unclamped_offset()));
+}
+
+/// The Freeform canvas scale for the footer's Zoom: 1 at the default size, as Icon view's card size.
+pub(crate) fn freeform_zoom(icon_size: f32) -> f32 {
+    if icon_size.is_finite() { (icon_size / pp::ViewSettings::default().icon_size).clamp(0.25, 4.0) } else { 1.0 }
+}
+
+/// The List view row height with thumbnails for the footer's Zoom: the thumbnail follows it
+/// (#3774), never smaller than a row without one.
+fn list_thumb_row_height(icon_size: f32, font: f32) -> f32 {
+    let plain = (font * 2.0).max(22.0);
+    if icon_size.is_finite() { (icon_size * 0.4).max(plain) } else { (font * 3.6).max(44.0) }
 }
 
 fn cards_stack(cards: &[Card], item: u64) -> Option<u64> {
