@@ -274,6 +274,7 @@ fn build_effects() -> Vec<EffectDef> {
                 ang("rotation", "Rotation", 0.0),
                 pt("anchor", "Anchor Point", f64::NAN, f64::NAN),
                 fs("anti_flicker", "Anti-flicker Filter", 0.0, (0.0, 1.0), (0.0, 1.0), "", 2),
+                ch("scale_quality", "Scale Quality", &["Bilinear", "Bicubic", "Nearest Neighbour"], 0),
             ],
             intrinsic: true,
             accelerated: true,
@@ -922,5 +923,21 @@ mod tests {
         assert!(effect_defs().len() > 90);
         assert_eq!(find_effect_by_name("Gaussian Blur").unwrap().id, "gaussian_blur");
         assert_eq!(intrinsic_video().len(), 3);
+    }
+
+    #[test]
+    fn nearest_neighbour_scale_option_in_engine() {
+        // #2667: motion effect must expose scale_quality with a Nearest Neighbour option.
+        let motion = find_effect("motion").expect("motion effect registered");
+        let p = motion.param("scale_quality").expect("motion has scale_quality param");
+        let ParamKind::Choice(opts) = &p.kind else {
+            panic!("scale_quality is not a Choice param");
+        };
+        assert!(opts.contains(&"Nearest Neighbour"), "scale_quality must include 'Nearest Neighbour'; got {opts:?}");
+        // Default must NOT be Nearest Neighbour (bilinear is the safe default)
+        let ParamValue::Choice(def) = p.default else {
+            panic!("scale_quality default is not a Choice");
+        };
+        assert_ne!(opts.get(def as usize).copied(), Some("Nearest Neighbour"), "Nearest Neighbour must not be the default");
     }
 }
