@@ -207,6 +207,40 @@ fn the_tool_pointer_stays_on_during_a_drag() {
     }
 }
 
+/// A trimming tool keeps its icon as the pointer through the drag of an edge, as it does over the
+/// edge, instead of the trim arrow the Selection tool keeps.
+#[test]
+fn a_trimming_tool_keeps_its_pointer_through_an_edge_drag() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let id = format!("timeline.clip.{city}");
+    let els = d.ok("ui.elements", json!({"prefix": id}));
+    let el = els.as_array().expect("elements").iter().find(|e| e["id"] == id.as_str()).expect("clip").clone();
+    let r: Vec<f32> = el["rect"].as_array().expect("rect").iter().map(|x| x.as_f64().unwrap_or_default() as f32).collect();
+    let edge = pos2(r[0] + 2.0, r[1] + r[3] / 2.0);
+    for (tool, shown) in [("Selection", CursorIcon::ResizeColumn), ("Ripple", CursorIcon::None), ("Rolling", CursorIcon::None)] {
+        d.ok("ui.set", json!({"tool": tool}));
+        d.frames(2);
+        d.hover(edge);
+        assert_eq!(d.cursor(), shown, "{tool}: the pointer over the edge");
+        let button = |pressed| egui::Event::PointerButton { pos: edge, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        d.harness.input_mut().events.push(button(true));
+        d.frames(1);
+        for dx in [4.0, 10.0, 18.0, 26.0] {
+            d.harness.input_mut().events.push(egui::Event::PointerMoved(edge + egui::vec2(dx, 0.0)));
+            d.frames(1);
+        }
+        assert_eq!(d.cursor(), shown, "{tool}: the pointer mid-drag");
+        d.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: edge + egui::vec2(26.0, 0.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        d.frames(2);
+    }
+}
+
 /// An Option-drag copies, and its Copy pointer is what shows, whatever the tool.
 #[test]
 fn an_option_drag_keeps_the_copy_pointer() {
