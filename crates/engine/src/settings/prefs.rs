@@ -62,7 +62,7 @@ impl Default for GeneralPrefs {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppearancePrefs {
-    /// Legacy single "Color Theme": `darkest` | `dark` | `light`. Setting it (old settings files,
+    /// Legacy single "Color Theme": `darkest` | `dark` | `oled` | `light`. Setting it (old settings files,
     /// automation, View ▸ Appearance) selects that theme and fixes the mode to its family. It is
     /// kept in line with the fields below ([`AppearancePrefs::sync_color_theme`]): the light or
     /// dark theme of a fixed mode, and the dark theme in Auto (whose shown theme depends on the
@@ -70,7 +70,7 @@ pub struct AppearancePrefs {
     pub color_theme: String,
     /// "Appearance Mode": `auto` (follow the operating system) | `dark` (default) | `light`.
     pub appearance_mode: String,
-    /// The theme shown in dark mode: `darkest` (default) | `dark`.
+    /// The theme shown in dark mode: `darkest` (default) | `dark` | `oled`.
     pub dark_theme: String,
     /// The theme shown in light mode: `light`.
     pub light_theme: String,
@@ -112,7 +112,7 @@ impl AppearancePrefs {
         UI_SCALES.iter().any(|(k, _)| *k == self.ui_scale).then(|| self.ui_scale.parse::<f32>().ok()).flatten().map(|pct| pct / 100.0)
     }
 
-    /// The theme to show (`darkest` | `dark` | `light`): the light or dark theme of the mode. Auto
+    /// The theme to show (`darkest` | `dark` | `oled` | `light`): the light or dark theme of the mode. Auto
     /// follows `system_light` (the operating system's appearance) and is dark without an answer.
     pub fn shown_theme(&self, system_light: Option<bool>) -> &str {
         let light = match self.appearance_mode.as_str() {

@@ -15,21 +15,25 @@ pub enum ThemeKind {
     Dark,
     /// Slightly lighter grey panels (Premiere's brightness slider mid position).
     Medium,
+    /// True black panels for OLED displays.
+    Oled,
     Light,
 }
 
 impl ThemeKind {
-    /// Settings ▸ Appearance ▸ Color Theme value (`darkest`, `dark`, `light`).
+    /// Settings ▸ Appearance ▸ Color Theme value (`darkest`, `dark`, `oled`, `light`).
     pub fn pref_name(self) -> &'static str {
         match self {
             ThemeKind::Dark => "darkest",
             ThemeKind::Medium => "dark",
+            ThemeKind::Oled => "oled",
             ThemeKind::Light => "light",
         }
     }
     pub fn from_pref(s: &str) -> ThemeKind {
         match s {
             "dark" => ThemeKind::Medium,
+            "oled" => ThemeKind::Oled,
             "light" => ThemeKind::Light,
             _ => ThemeKind::Dark,
         }
@@ -38,6 +42,7 @@ impl ThemeKind {
         match s.to_ascii_lowercase().as_str() {
             "dark" | "darkest" => Some(ThemeKind::Dark),
             "medium" | "grey" | "gray" => Some(ThemeKind::Medium),
+            "oled" | "black" => Some(ThemeKind::Oled),
             "light" => Some(ThemeKind::Light),
             _ => None,
         }
@@ -257,6 +262,31 @@ impl Tokens {
                 monitor_bg: Color32::from_rgb(0x32, 0x32, 0x32),
                 row_alt: Color32::from_rgb(50, 50, 50),
                 hover: Color32::from_rgb(64, 64, 64),
+                ..dark
+            },
+            // True black chrome: recesses and borders carry the separation Darkest's greys give.
+            ThemeKind::Oled => Tokens {
+                app_bg: Color32::BLACK,
+                header_bg: Color32::BLACK,
+                panel_bg: Color32::BLACK,
+                tab_bg: Color32::BLACK,
+                hover: Color32::from_rgb(0x24, 0x24, 0x24),
+                field_bg: Color32::from_rgb(0x0c, 0x0c, 0x0c),
+                field_border: Color32::from_rgb(0x3a, 0x3a, 0x3a),
+                separator: Color32::from_rgb(0x2e, 0x2e, 0x2e),
+                row_alt: Color32::from_rgb(0x0c, 0x0c, 0x0c),
+                control_surface: Color32::from_rgb(0x16, 0x16, 0x16),
+                plot_bg: Color32::from_rgb(0x0a, 0x0a, 0x0a),
+                meter_readout_bg: Color32::from_rgb(0x0a, 0x0a, 0x0a),
+                keyframe_plot_bg: Color32::from_gray(0x0a),
+                caption_track_bg: Color32::from_rgb(0x14, 0x12, 0x1a),
+                disabled_clip_bg: Color32::from_gray(0x18),
+                tl_bg: Color32::BLACK,
+                tl_track_bg: Color32::BLACK,
+                tl_track_bg_alt: Color32::from_rgb(0x06, 0x06, 0x06),
+                tl_header_bg: Color32::from_rgb(0x0a, 0x0a, 0x0a),
+                tl_ruler_bg: Color32::from_rgb(0x0a, 0x0a, 0x0a),
+                monitor_bg: Color32::BLACK,
                 ..dark
             },
             ThemeKind::Light => Tokens {
@@ -556,6 +586,27 @@ mod tests {
         assert_eq!(Tokens::for_kind(ThemeKind::Medium).plot_bg, dark.plot_bg, "Medium keeps the established dark plot treatment");
     }
 
+    /// OLED puts every large surface on true black; text, borders and recesses stay readable.
+    #[test]
+    fn oled_is_true_black_with_legible_chrome() {
+        let t = Tokens::for_kind(ThemeKind::Oled);
+        for (name, c) in
+            [("app", t.app_bg), ("header", t.header_bg), ("panel", t.panel_bg), ("tab strip", t.tab_bg), ("timeline", t.tl_bg), ("monitor", t.monitor_bg)]
+        {
+            assert_eq!(c, Color32::BLACK, "{name}");
+        }
+        for (name, c) in
+            [("separator", t.separator), ("field border", t.field_border), ("hover", t.hover), ("alternate row", t.row_alt), ("alt track", t.tl_track_bg_alt)]
+        {
+            assert!(c.r() > 0, "{name} is invisible on black");
+            assert!(u16::from(c.r()) + u16::from(c.g()) + u16::from(c.b()) < 300, "{name} is not near-black: {c:?}");
+        }
+        assert_eq!(t.kind, ThemeKind::Oled);
+        assert_eq!(ThemeKind::Oled.pref_name(), "oled");
+        assert_eq!(ThemeKind::from_pref("oled"), ThemeKind::Oled);
+        assert_eq!(ThemeKind::from_name("OLED"), Some(ThemeKind::Oled));
+    }
+
     #[test]
     fn dark_and_medium_keep_existing_audio_and_effect_palettes() {
         for kind in [ThemeKind::Dark, ThemeKind::Medium] {
@@ -584,7 +635,7 @@ mod tests {
     #[test]
     fn the_default_highlight_leaves_the_theme_blues_as_designed() {
         let default = filmcraft_engine::settings::parse_hex(filmcraft_engine::settings::DEFAULT_HIGHLIGHT);
-        for k in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+        for k in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Oled, ThemeKind::Light] {
             assert_eq!(highlight_blues(&Tokens::for_kind(k).with_appearance(default, false)), highlight_blues(&Tokens::for_kind(k)), "{k:?}");
         }
     }
@@ -616,7 +667,7 @@ mod tests {
             return;
         }
         let ctx = egui::Context::default();
-        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Oled, ThemeKind::Light] {
             install(&ctx, &Tokens::for_kind(kind));
             ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
             ctx.fonts_mut(|fonts| {

@@ -396,7 +396,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     draw_headers(app, ui, seq, &rows, rect, vclip, aclip, &t);
     // divider between video and audio
     let div = Rect::from_min_max(pos2(rect.min.x, split_y), pos2(content.max.x, split_y + DIVIDER_H));
-    painter.rect_filled(div, 0.0, t.app_bg);
+    // OLED keeps every large surface true black: the divider needs the themed separator.
+    let div_color = if t.kind == crate::theme::ThemeKind::Oled { t.separator } else { t.app_bg };
+    painter.rect_filled(div, 0.0, div_color);
     let div_resp = ui.interact(div, egui::Id::unique("tl-divider"), Sense::drag());
     if div_resp.hovered() || div_resp.dragged() {
         ctx.set_cursor_icon(CursorIcon::ResizeVertical);
@@ -419,7 +421,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
     // ---- caption tracks
     if cap_n > 0 {
-        painter.rect_filled(Rect::from_min_max(pos2(rect.min.x, caption_area.max.y), pos2(content.max.x, caption_area.max.y + DIVIDER_H)), 0.0, t.app_bg);
+        painter.rect_filled(Rect::from_min_max(pos2(rect.min.x, caption_area.max.y), pos2(content.max.x, caption_area.max.y + DIVIDER_H)), 0.0, div_color);
         super::timeline_captions::paint(app, ui, seq, caption_area, &layout, &t);
     }
 
