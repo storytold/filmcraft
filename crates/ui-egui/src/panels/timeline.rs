@@ -49,7 +49,7 @@ pub(crate) use layout::reveal_playhead;
 use layout::video_row_tops;
 pub use layout::{Layout, Row, max_scroll, min_pps, scroll_to_reveal, timeline_extent, zoom_about};
 #[cfg(test)]
-pub(crate) use menus::{CLIP_AUDIO_MENU, CLIP_MENU, EDIT_POINT_TYPES};
+pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
 pub use ruler::ruler_steps;
 use scrollbars::{vertical_scrollbar, zoom_scrollbar};
