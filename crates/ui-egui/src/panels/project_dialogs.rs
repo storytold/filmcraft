@@ -79,7 +79,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     push(app, "projectDialog.name", &r, "Name");
                 });
                 if ok_cancel(app, ui, &mut close) && !name.trim().is_empty() {
-                    run = Some(("project.freeform.saveArrangement".into(), json!({"name": name, "bin": bin, "width": width})));
+                    // the bin may have been deleted while the dialog was open
+                    match bin.filter(|b| app.session.project.root.find_bin(filmcraft_project::BinId(*b)).is_none()) {
+                        Some(b) => {
+                            app.ui.status = format!("no bin {b}");
+                            close = true;
+                        }
+                        None => run = Some(("project.freeform.saveArrangement".into(), json!({"name": name, "bin": bin, "width": width}))),
+                    }
                 }
             }
         }

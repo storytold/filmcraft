@@ -958,11 +958,17 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, op: &str, params: &Val
             Ok(Value::Null)
         }
         "saveArrangement" => {
-            // the canvas the menu was opened on, which may be a floating bin window
-            let bin = params.get("bin").and_then(Value::as_u64).or_else(|| Some(view_of(app, inst).bin.0));
-            let width = params.get("width").and_then(Value::as_f64);
-            app.ui.project_panel.dialog = Some(ProjectDialog::SaveArrangement { name: String::new(), bin, width });
-            Ok(Value::Null)
+            // the canvas the menu was opened on, which may be a floating bin window; an unknown bin
+            // is refused, as the engine would save to the root bin instead
+            let given = params.get("bin").and_then(Value::as_u64);
+            if let Some(b) = given.filter(|b| app.session.project.root.find_bin(BinId(*b)).is_none()) {
+                Err(format!("no bin {b}"))
+            } else {
+                let bin = given.or_else(|| Some(view_of(app, inst).bin.0));
+                let width = params.get("width").and_then(Value::as_f64);
+                app.ui.project_panel.dialog = Some(ProjectDialog::SaveArrangement { name: String::new(), bin, width });
+                Ok(Value::Null)
+            }
         }
         "revealProject" => {
             let Some(p) = app.session.path.clone() else { return Some(Err("the project has not been saved".into())) };

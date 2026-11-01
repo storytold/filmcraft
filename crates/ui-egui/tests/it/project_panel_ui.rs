@@ -1713,3 +1713,20 @@ fn a_card_menu_stacks_only_the_selected_cards_of_its_bin() {
     assert!(stack(&mut d, items[0]).is_some() && stack(&mut d, items[1]).is_some(), "this bin's cards are stacked");
     assert_eq!(stack(&mut d, other), None, "the other bin's item is left alone");
 }
+
+/// #3774 review: Save Arrangement takes the bin of the canvas it was opened on; an unknown bin
+/// is refused instead of saving to the root bin.
+#[test]
+fn save_arrangement_refuses_an_unknown_bin() {
+    let mut d = project_driver();
+    let (bin, _) = d.footage();
+    let r = d.call("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": 987_654, "width": 400.0}}));
+    assert_eq!(r["ok"], json!(false), "{r}");
+    assert!(d.app().ui.project_panel.dialog.is_none(), "no dialog for an unknown bin");
+    let root = d.app().session.project.root.id.0;
+    let saved = d.exec("project.freeform.arrangements", json!({"bin": root}));
+    assert_eq!(saved.as_array().map_or(0, Vec::len), 0, "nothing saved to the root: {saved}");
+    // a bin that exists opens the dialog
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": bin, "width": 400.0}}));
+    assert!(d.app().ui.project_panel.dialog.is_some());
+}
