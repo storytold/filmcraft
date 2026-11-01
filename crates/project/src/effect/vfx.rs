@@ -71,6 +71,10 @@ pub fn auto_point(effect: &str, param: &str) -> Option<(f64, f64)> {
         ("checkerboard", "anchor") => (0.0, 0.0),
         ("write_on", "brush") => (0.5, 0.5),
         ("volumetric_rays", "center") => (0.5, 0.25),
+        ("four_color_gradient", "p1") => (0.25, 0.25),
+        ("four_color_gradient", "p2") => (0.75, 0.25),
+        ("four_color_gradient", "p3") => (0.25, 0.75),
+        ("four_color_gradient", "p4") => (0.75, 0.75),
         _ => return None,
     })
 }
@@ -1296,5 +1300,15 @@ mod tests {
         assert_eq!((v("upper_left").x, v("upper_left").y), (0.0, 0.0));
         assert_eq!((v("lower_right").x, v("lower_right").y), (1920.0, 1080.0));
         assert_eq!((v("upper_right").x, v("upper_right").y), (1920.0, 0.0));
+    }
+
+    #[test]
+    fn four_color_gradient_points_resolve_to_the_quarter_positions() {
+        let mut e = find_effect("four_color_gradient").unwrap().instance();
+        crate::resolve_auto_points(&mut e, (1920, 1080), (1920, 1080));
+        let v = |k: &str| e.param(k).unwrap().value.as_vec2().unwrap();
+        for (k, x, y) in [("p1", 480.0, 270.0), ("p2", 1440.0, 270.0), ("p3", 480.0, 810.0), ("p4", 1440.0, 810.0)] {
+            assert_eq!((v(k).x, v(k).y), (x, y), "{k}");
+        }
     }
 }

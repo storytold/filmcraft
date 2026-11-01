@@ -310,10 +310,16 @@ fn parse_money(rest: &str, lang: Lang) -> Option<(Vec<String>, usize)> {
         words.push(unit.into());
         return Some((words, skip + used + scale_len));
     }
-    let mut words = english_cardinal(value);
-    push_unit(&mut words, unit, value == 1);
+    let sub_unit_only = value == 0 && had_minor && minor > 0;
+    let mut words = Vec::new();
+    if !sub_unit_only {
+        words = english_cardinal(value);
+        push_unit(&mut words, unit, value == 1);
+    }
     if had_minor && minor > 0 {
-        words.push("and".into());
+        if !sub_unit_only {
+            words.push("and".into());
+        }
         let mut cents = english_cardinal(u64::from(minor));
         push_unit(&mut cents, sub, minor == 1);
         words.extend(cents);

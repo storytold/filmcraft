@@ -62,6 +62,7 @@ impl Lut3d {
 
     /// Sample a colour transform on a `size³` grid over 0..1.
     pub fn from_fn(size: usize, f: impl Fn([f32; 3]) -> [f32; 3]) -> Self {
+        let size = size.max(2);
         let n = (size - 1) as f32;
         let mut data = Vec::with_capacity(size * size * size);
         for b in 0..size {
@@ -527,6 +528,16 @@ mod tests {
     fn wild(size: usize) -> Lut3d {
         // a non-linear, non-separable LUT
         Lut3d::from_fn(size, |c| [(c[0] * c[1] + c[2].powi(2)).sin(), c[1].powf(0.45) * (1.0 - 0.3 * c[0]), (c[0] - c[2]).abs() + 0.1 * c[1]])
+    }
+
+    #[test]
+    fn zero_size_lut_construction_does_not_panic() {
+        let from_fn = std::panic::catch_unwind(|| Lut3d::from_fn(0, |c| c));
+        let identity = std::panic::catch_unwind(|| Lut3d::identity(0));
+        assert!(from_fn.is_ok());
+        assert!(identity.is_ok());
+        assert_eq!(from_fn.unwrap().size, 2);
+        assert_eq!(identity.unwrap().size, 2);
     }
 
     #[test]

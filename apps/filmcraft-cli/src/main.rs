@@ -195,7 +195,8 @@ impl Backend {
             // this process exits after the command, so a background export would never be written:
             // long commands wait unless the caller says otherwise (#2342)
             Backend::Local(s) => {
-                if filmcraft_automation::long_job::LONG_COMMANDS.contains(&id)
+                // mask tracking is applied when its job finishes, which this process never sees (#3302)
+                if (filmcraft_automation::long_job::LONG_COMMANDS.contains(&id) || id == "masks.track")
                     && let Some(p) = params.as_object_mut()
                 {
                     // anything but an explicit `false` (missing, null, a typo'd value) waits

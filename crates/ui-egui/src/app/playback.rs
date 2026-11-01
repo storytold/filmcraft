@@ -39,6 +39,7 @@ impl FilmcraftApp {
         self.playback.speed = speed;
         self.playback.anchor_tick = self.session.playhead();
         self.playback.anchor_time = -1.0; // set when the preroll ends
+        self.playback.smooth_playhead = None;
         self.playback.preroll = Some(-1.0);
         self.playback.preroll_ready = false;
         if let Some(a) = self.audio.as_mut() {
@@ -205,10 +206,36 @@ impl FilmcraftApp {
         }
     }
 
+    /// Where the Timeline draws the playhead: the smoothed playback clock while playing, else the
+    /// session playhead.
+    pub(crate) fn shown_playhead(&self) -> Tick {
+        match self.playback.smooth_playhead {
+            Some((t, _)) if self.playback.playing => t,
+            _ => self.session.playhead(),
+        }
+    }
+
+    /// The drawn playhead for a playback clock at `clock`: the last drawn one moved on by the wall
+    /// time since, plus a tenth of how far that is from the clock. It never steps back against
+    /// the direction of play; a jump (loop, seek) more than a quarter second away is taken at once.
+    fn smooth_playhead(&self, clock: Tick, now: f64) -> Tick {
+        let Some((drawn, at)) = self.playback.smooth_playhead else { return clock };
+        let speed = self.playback.speed;
+        let predicted = drawn.seconds() + (now - at).max(0.0) * speed;
+        let error = clock.seconds() - predicted;
+        if !predicted.is_finite() || error.abs() > 0.25 {
+            return clock;
+        }
+        let next = predicted + error * 0.1;
+        let next = if speed >= 0.0 { next.max(drawn.seconds()) } else { next.min(drawn.seconds()) };
+        Tick::from_seconds_f64(next)
+    }
+
     /// Advance the Program playhead only while playing; owns preroll completion, audio-clock anchoring, output retry and the fallback to wall time when audio
     /// is lost or stalls.
     pub(super) fn advance_playback(&mut self, ctx: &egui::Context) {
         if !self.playback.playing {
+            self.playback.smooth_playhead = None;
             return;
         }
         let now = self.now();
@@ -300,6 +327,7 @@ impl FilmcraftApp {
             self.stop();
         } else {
             self.session.set_playhead(t);
+            self.playback.smooth_playhead = Some((self.smooth_playhead(t, now), now));
         }
         ctx.request_repaint();
     }
@@ -359,5 +387,94 @@ mod voiceover_playback_tests {
         assert!(app.session.playhead() > from, "{:?} <= {from:?}", app.session.playhead());
         app.session.execute("audio.voiceover.stop", json!({"discard": true})).unwrap();
         app.stop();
+    }
+}
+
+#[cfg(test)]
+mod smooth_playhead_tests {
+    use super::*;
+
+    fn playing_at(now: f64) -> FilmcraftApp {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        app.playback.playing = true;
+        app.playback.speed = 1.0;
+        app.playback.anchor_tick = Tick::ZERO;
+        app.playback.anchor_time = 0.0;
+        app.set_now_for_test(now);
+        app.advance_playback(&egui::Context::default());
+        app
+    }
+
+    /// The playhead line follows the playback clock between frame boundaries, so it glides at the
+    /// display's refresh rate instead of jumping a whole frame at a time. The session playhead
+    /// still names the frame shown.
+    #[test]
+    fn the_drawn_playhead_moves_between_frames_while_playing() {
+        let frame = playing_at(0.0).session.sequence_rate().frame_duration().seconds();
+        let mid = frame * 1.5;
+        let app = playing_at(mid);
+        assert_eq!(app.session.playhead(), app.session.sequence_rate().tick_of(1), "the frame shown");
+        let drawn = app.shown_playhead().seconds();
+        assert!((drawn - mid).abs() < 1e-6, "drawn at the clock time {mid}, not the frame boundary: {drawn}");
+        let later = playing_at(mid + frame * 0.25).shown_playhead().seconds();
+        assert!(later > drawn, "it keeps moving inside the same frame: {drawn} -> {later}");
+    }
+
+    /// A device that reports its clock once per 1024-sample buffer.
+    struct BufferedDevice(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+    impl crate::AudioOut for BufferedDevice {
+        fn sample_rate(&self) -> u32 {
+            48_000
+        }
+        fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn stop(&mut self) {}
+        fn played_frames(&self) -> Option<u64> {
+            Some(self.0.load(std::sync::atomic::Ordering::Relaxed))
+        }
+    }
+
+    /// Played on the audio clock and drawn at 60 Hz, the playhead only ever moves forward, by
+    /// about one display frame's worth of time each frame. It used to step back a few points and
+    /// then jump ahead every half second or so.
+    #[test]
+    fn on_the_audio_clock_the_drawn_playhead_never_steps_back() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let mut app = FilmcraftApp::new(session);
+        let played = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        app.audio = Some(Box::new(BufferedDevice(played.clone())));
+        app.playback.playing = true;
+        app.playback.speed = 1.0;
+        app.playback.audio_clock = true;
+        app.playback.anchor_tick = Tick::ZERO;
+        let ctx = egui::Context::default();
+        let mut last: Option<f64> = None;
+        for frame in 0..240 {
+            let now = frame as f64 / 60.0;
+            played.store((now * 48_000.0 / 1024.0).floor() as u64 * 1024, std::sync::atomic::Ordering::Relaxed);
+            app.set_now_for_test(now);
+            app.advance_playback(&ctx);
+            let drawn = app.shown_playhead().seconds();
+            if let Some(prev) = last.filter(|_| frame > 30) {
+                let step = drawn - prev;
+                assert!(step >= 0.0, "frame {frame}: stepped back {:.4} s ({prev:.4} -> {drawn:.4})", -step);
+                assert!((0.5 / 60.0..1.5 / 60.0).contains(&step), "frame {frame}: uneven step {step:.4} s");
+                assert!((drawn - now).abs() < 0.05, "frame {frame}: drawn {drawn:.4} drifted from the clock {now:.4}");
+            }
+            last = Some(drawn);
+        }
+    }
+
+    /// Stopped, the drawn playhead is the session playhead.
+    #[test]
+    fn stopped_it_is_the_session_playhead() {
+        let mut app = playing_at(0.1);
+        app.stop();
+        assert_eq!(app.shown_playhead(), app.session.playhead());
     }
 }

@@ -3596,3 +3596,65 @@
 	Couldn't open your web browser	Не удалось открыть браузер
 	Open this address in your browser yourself:	Этот адрес нужно открыть в браузере вручную:
 	Reset Interface Zoom	Сбросить масштаб интерфейса
+	A range marker needs a positive duration	Длительность маркера диапазона должна быть положительной
+	Add Custom Color	Добавить свой цвет
+	Add and apply	Добавить и применить
+	Add color	Добавить цвет
+	Add custom color	Добавить свой цвет
+	Add custom color…	Добавить свой цвет…
+	Author	Автор
+	Chapter	Глава
+	Choose Color…	Выбрать цвет…
+	Choose color with system picker	Выбрать цвет в системном окне
+	Color picker	Выбор цвета
+	Color selected markers	Изменить цвет выбранных маркеров
+	Custom Color…	Свой цвет…
+	Delete Marker	Удалить маркер
+	Delete selected markers	Удалить выбранные маркеры
+	Edit Custom Color	Изменить свой цвет
+	Edit Marker	Изменить маркер
+	Edit Marker…	Изменить маркер…
+	Edit color	Изменить цвет
+	Editing or removing a swatch leaves assigned colors unchanged.	Изменение или удаление образца не меняет назначенные цвета.
+	Enter six hex digits, for example FF80C0.	Введите шесть шестнадцатеричных цифр, например FF80C0.
+	Hex	HEX
+	Hex color	Цвет в формате HEX
+	Manage Colors	Управление цветами
+	Manage Colors…	Управление цветами…
+	Marker owner is unavailable	Объект, которому принадлежит маркер, недоступен
+	No markers	Нет маркеров
+	No matching markers	Нет подходящих маркеров
+	No saved colors	Нет сохранённых цветов
+	No sequence open	Нет открытой секвенции
+	No source clip open	Нет открытого исходного клипа
+	Notes	Примечания
+	Project Colors	Цвета проекта
+	Range marker	Маркер диапазона
+	Remove saved color	Удалить сохранённый цвет
+	Save color	Сохранить цвет
+	Search markers	Поиск маркеров
+	Search name, notes, author	Поиск по имени, примечаниям и автору
+	Select all	Выбрать всё
+	Select all visible markers	Выбрать все видимые маркеры
+	Sequence: {name}	Секвенция: {name}
+	Source: {name}	Источник: {name}
+	Source: {name} (shared source markers)	Источник: {name} (общие исходные маркеры)
+	System color picker unavailable: {error}	Системное окно выбора цвета недоступно: {error}
+	Time is outside the supported range	Время за пределами допустимого диапазона
+	{count} selected	Выбрано: {count}
+	Remove Custom Color	Удалить свой цвет
+	Edit Markers	Изменить маркеры
+	Delete Markers	Удалить маркеры
+	Marker changed or was removed. Reopen it to continue.	Маркер изменён или удалён. Откройте его заново, чтобы продолжить.
+	Comment Marker	Маркер комментария
+	Chapter Marker	Маркер главы
+	Segmentation Marker	Маркер сегментации
+	Web Link	Веб-ссылка
+	Flash Cue Point	Точка сигнала Flash
+	URL	URL
+	Open Link	Открыть ссылку
+	Opens this address in your web browser	Открывает этот адрес в веб-браузере
+	Enter a valid HTTP or HTTPS URL without credentials	Введите допустимый URL HTTP или HTTPS без учётных данных
+	Previous	Предыдущий
+	Next	Следующий
+	Enter a valid HH:MM:SS:FF timecode	Введите допустимый тайм-код ЧЧ:ММ:СС:КК (HH:MM:SS:FF)
