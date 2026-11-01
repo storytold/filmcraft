@@ -11,7 +11,8 @@
 //! A tab separates the timecode from the code words. Each line's pairs are sent one per frame
 //! starting at its timecode. **Reading** runs a channel-1
 //! CEA-608 decoder (pop-on, roll-up, paint-on; redundant control codes ignored) and emits a cue
-//! whenever the displayed memory changes. **Writing** produces pop-on captions: for each cue the
+//! whenever the displayed memory changes or an End of Caption swaps it, so neighbours with the
+//! same text stay separate cues. **Writing** produces pop-on captions: for each cue the
 //! load (RCL, ENM, PAC + tab offset per row, text) is scheduled into free frames before the cue so
 //! its End of Caption lands exactly on the cue start; an Erase Displayed Memory clears it at the
 //! cue end (omitted when the next caption replaces it). Rows are bottom-aligned (row 15 last),
@@ -111,13 +112,18 @@ impl Decoder {
         if now == cur {
             return;
         }
+        self.close(f);
+        if !now.is_empty() {
+            self.open = Some((f, now));
+        }
+    }
+
+    /// End the cue being shown at frame `f` (dropped if it never reached a frame).
+    fn close(&mut self, f: i64) {
         if let Some((s, text)) = self.open.take()
             && f > s
         {
             self.cues.push((s, f, text));
-        }
-        if !now.is_empty() {
-            self.open = Some((f, now));
         }
     }
 
@@ -181,6 +187,8 @@ impl Decoder {
                 misc::EOC => {
                     std::mem::swap(&mut self.displayed, &mut self.hidden);
                     self.mode = Mode::PopOn;
+                    // each swap presents its own caption, even one reading the same as the last
+                    self.close(f);
                 }
                 misc::CR => {
                     if let Mode::RollUp(n) = self.mode {
@@ -554,6 +562,24 @@ mod tests {
         let back = parse(&s).unwrap();
         let got: Vec<(i64, i64, &str)> = back.cues.iter().map(|c| (RATE.frame_at(c.start), RATE.frame_at(c.end), c.text.as_str())).collect();
         assert_eq!(got, vec![(60, 120, "Hello, world!"), (120, 200, "Second caption\nwith two lines"), (260, 300, "Ñandú ♪ {x} * café “q”")]);
+    }
+
+    /// Replaying the `scc_back_to_back` proptest failure: neighbours with the same text merged.
+    #[test]
+    fn identical_back_to_back_cues_stay_separate() {
+        let doc = Document {
+            cues: vec![cue(90, 135, "Ht"), cue(135, 180, "Ht"), cue(180, 225, "Ht"), cue(225, 270, "Other"), cue(270, 315, "Ht")],
+            ..Default::default()
+        };
+        // The stream carries each boundary: every cue has its own End of Caption on its start frame.
+        let occ = schedule(&doc);
+        for start in [90, 135, 180, 225, 270] {
+            assert_eq!(occ.get(&start), Some(&(0x14, misc::EOC)), "frame {start}");
+        }
+        let s = write(&doc, false);
+        let back = parse(&s).unwrap();
+        assert_eq!(back.cues, doc.cues);
+        assert_eq!(write(&back, false), s);
     }
 
     #[test]

@@ -731,6 +731,13 @@ mod tests {
         assert!(parse("garbage").is_err());
     }
 
+    /// Keep back-to-back captions with the same text separate on the CEA-608 path (the SCC decoder).
+    #[test]
+    fn identical_back_to_back_cues_stay_separate_on_608() {
+        let doc = Document { cues: vec![cue(90, 135, "Ht"), cue(135, 180, "Ht")], ..Default::default() };
+        assert_eq!(parse(&write_with(&doc, false, true, false)).unwrap().cues, doc.cues);
+    }
+
     /// Reject malformed fields instead of silently dropping them from the timecode.
     #[test]
     fn rejects_timecodes_with_unparseable_extra_fields() {
