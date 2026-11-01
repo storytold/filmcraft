@@ -8,6 +8,7 @@
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
+use egui_kittest::kittest::{NodeT, Queryable};
 use filmcraft_engine::Session;
 use filmcraft_project::{ClipId, Interpolation, Param};
 use filmcraft_time::Tick;
@@ -492,6 +493,32 @@ fn selected_keyframes_move_together_and_undo_as_one_edit() {
     assert_eq!(serde_json::to_value(&d.harness.state().session.project).unwrap(), after);
 }
 
+/// #1916: with three Scale keyframes selected, the interpolation chosen in the right-click menu
+/// applies to all three as one undo step, not only to the keyframe under the pointer. A fourth,
+/// unselected keyframe is left alone, and right-clicking it changes only that one.
+#[test]
+fn keyframe_menu_interpolation_applies_to_every_selected_keyframe() {
+    let (mut d, clip) = Driver::demo();
+    let keys = lane_keys(&mut d, &clip, &[("scale", 0.5), ("scale", 1.5), ("scale", 2.5), ("scale", 3.5)]);
+    select_keys(&mut d, &keys[..3]);
+    let before = d.parameter(&clip, "motion", "scale");
+    assert!(before.keyframes.iter().all(|k| k.interp == Interpolation::Linear));
+    let undo = d.undo_len();
+    d.right_click(&key_id(&d, &keys[1]));
+    d.click("effectControls.keyframeMenu.bezier");
+    let changed = d.parameter(&clip, "motion", "scale");
+    let interps: Vec<_> = changed.keyframes.iter().map(|k| k.interp).collect();
+    assert_eq!(interps, [Interpolation::Bezier, Interpolation::Bezier, Interpolation::Bezier, Interpolation::Linear]);
+    assert_eq!(d.undo_len(), undo + 1);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.parameter(&clip, "motion", "scale"), before, "one undo reverts all three");
+
+    d.right_click(&key_id(&d, &keys[3]));
+    d.click("effectControls.keyframeMenu.hold");
+    let interps: Vec<_> = d.parameter(&clip, "motion", "scale").keyframes.iter().map(|k| k.interp).collect();
+    assert_eq!(interps, [Interpolation::Linear, Interpolation::Linear, Interpolation::Linear, Interpolation::Hold]);
+}
+
 #[test]
 fn shift_snaps_the_group_to_other_rows_at_different_lane_widths() {
     for (width, theme) in [(280.0, "dark"), (480.0, "light")] {
@@ -726,4 +753,104 @@ fn a_line_separates_added_effects_from_the_fixed_ones() {
         "on the edge between the fixed and the added effects: {opacity:?} {line:?} {blur:?}"
     );
     assert!(tint[1] > blur[1], "one line, above all the added effects");
+}
+
+/// #2326: an effect dragged from the Effects panel onto Effect Controls is applied to the clip shown
+/// there, not to the clip the Timeline would pick; a drag that ends elsewhere does not touch it.
+#[test]
+fn effect_dropped_on_effect_controls_applies_to_the_selected_clip() {
+    let (mut d, clip) = Driver::demo();
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.ok("ui.set", json!({"effectsSearch": "Gaussian Blur"}));
+    d.frames(3);
+    let effects_of = |d: &Driver, id: u64| -> Vec<String> {
+        let s = &d.harness.state().session;
+        s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1.effects.iter().map(|e| e.effect.clone()).collect()
+    };
+    assert!(!effects_of(&d, clip.id).contains(&"gaussian_blur".to_string()));
+    let undo = d.undo_len();
+    d.rect("effects.item.gaussian_blur");
+    let to = d.rect("effectControls.lane");
+    d.ok("ui.drag", json!({"from": {"id": "effects.item.gaussian_blur"}, "to": {"x": to[0] + to[2] / 2.0, "y": to[1] + to[3] / 2.0}, "steps": 8}));
+    d.frames(3);
+    assert!(effects_of(&d, clip.id).contains(&"gaussian_blur".to_string()), "applied to the selected clip");
+    assert_eq!(d.undo_len(), undo + 1, "one undo step");
+}
+
+/// Scale keyframes at 1 s and 2 s and a Position keyframe at 1 s; the first Scale keyframe eases
+/// in. Returns the lane diamond of that first Scale keyframe and its media time.
+fn three_keyframes_first_easing_in(d: &mut Driver, clip: &Clip) -> (String, i64) {
+    d.seek(1.0);
+    for param in ["scale", "position"] {
+        d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": param}));
+    }
+    d.seek(2.0);
+    d.exec("effects.addKeyframe", json!({"clip": clip.id, "effect": "motion", "param": "scale"}));
+    let time = d.scale(clip).0[0];
+    d.exec("effects.setInterpolation", json!({"clip": clip.id, "effect": "motion", "param": "scale", "mediaTime": time, "interpolation": "easeIn"}));
+    (format!("effectControls.motion.scale.keyframe.{time}"), time)
+}
+
+/// The rows of the keyframe menu, as accessibility reports them: each row's label and whether it
+/// is checked (`None` for a command, which is never checked).
+fn row_checks(d: &mut Driver) -> Vec<(&'static str, Option<egui::accesskit::Toggled>)> {
+    d.frames(2);
+    ["Clear", "Linear", "Bezier", "Auto Bezier", "Continuous Bezier", "Hold", "Ease In", "Ease Out"]
+        .into_iter()
+        .map(|label| (label, d.harness.get_by_label(label).accesskit_node().toggled()))
+        .collect()
+}
+
+/// #265: right-clicking a keyframe shows Premiere's rows in Premiere's order (Clear, the five
+/// temporal interpolations, then Ease In and Ease Out), with no heading, and the keyframe's own
+/// interpolation checked, on the lane's diamonds and on the graph's points alike. Clear is a
+/// plain command: accessibility does not report it as an unchecked toggle.
+#[test]
+fn keyframe_menu_has_premieres_rows_and_checks_the_current_interpolation() {
+    use egui::accesskit::Toggled;
+    let (mut d, clip) = Driver::demo();
+    let (diamond, time) = three_keyframes_first_easing_in(&mut d, &clip);
+    d.right_click(&diamond);
+    d.shot("keyframe-menu");
+    let expected = ["clear", "linear", "bezier", "autoBezier", "continuousBezier", "hold", "easeIn", "easeOut"];
+    let mut shown: Vec<(f64, &str)> = expected.iter().filter_map(|k| Some((d.find(&format!("effectControls.keyframeMenu.{k}"))?[1], *k))).collect();
+    shown.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(shown.iter().map(|r| r.1).collect::<Vec<_>>(), expected, "the rows top to bottom");
+    assert!(d.harness.query_by_label_contains("Temporal Interpolation").is_none(), "Premiere's menu has no heading");
+
+    let eased = |label: &str| match label {
+        "Clear" => None,
+        "Ease In" => Some(Toggled::True),
+        _ => Some(Toggled::False),
+    };
+    for (label, toggled) in row_checks(&mut d) {
+        assert_eq!(toggled, eased(label), "lane menu: {label}");
+    }
+
+    d.click("effectControls.motion.scale.graphs");
+    assert!(d.find("effectControls.keyframeMenu.clear").is_none(), "the click closed the lane's menu");
+    d.right_click(&format!("effectControls.scale.graph.keyframe.{time}"));
+    for (label, toggled) in row_checks(&mut d) {
+        assert_eq!(toggled, eased(label), "graph menu: {label}");
+    }
+}
+
+/// #265: with every keyframe selected (⌘A in Effect Controls), Clear from a keyframe's menu still
+/// deletes only the right-clicked keyframe. This pins today's behaviour; Clear acting on the whole
+/// selection, as in Premiere, comes with Select All back in the menu.
+#[test]
+fn keyframe_menu_clear_deletes_only_the_clicked_keyframe_of_a_selection() {
+    let (mut d, clip) = Driver::demo();
+    let (diamond, time) = three_keyframes_first_easing_in(&mut d, &clip);
+    let selected = |d: &mut Driver| d.ok("ui.inspect", json!({}))["ui"]["keyframe_selection"].as_array().map_or(0, Vec::len);
+    d.ok("ui.set", json!({"focused": "EffectControls"}));
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.frames(2);
+    d.right_click(&diamond);
+    assert_eq!(selected(&mut d), 3, "the right-clicked keyframe is part of the whole selection");
+    d.click("effectControls.keyframeMenu.clear");
+    let scale = d.scale(&clip).0;
+    let position = d.parameter(&clip, "motion", "position").keyframes.len();
+    assert_eq!((scale.len(), position), (1, 1), "2 of 3 keyframes remain: {scale:?}");
+    assert!(!scale.contains(&time), "the right-clicked Scale keyframe is the one deleted");
 }

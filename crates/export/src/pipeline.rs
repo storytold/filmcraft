@@ -26,18 +26,6 @@ fn bounded_overlay_dimensions(w: usize, h: usize) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod overlay_budget_tests {
-    use super::*;
-
-    #[test]
-    fn overlay_pixel_budget_is_checked_without_overflow() {
-        assert!(bounded_overlay_dimensions(4096, 4096).is_ok());
-        assert!(bounded_overlay_dimensions(4097, 4096).is_err());
-        assert!(bounded_overlay_dimensions(usize::MAX, 2).is_err());
-    }
-}
-
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Geometry {
@@ -168,9 +156,15 @@ impl Drop for Pipeline {
     /// frames, which nothing else asks for, so free them instead of holding up to 320 MiB idle. A
     /// job still rendering at that moment allocates a few images again; the pool is only a cache.
     /// Parts of a larger job (render-preview segments, proxies) keep them for the next part.
+    /// The same goes for the decoded frames and decoders the sources' caches kept (up to 384 MiB
+    /// per source, never trimmed once the export stops asking) and the 8/16-bit plane shelves:
+    /// without this a long-lived process holds gigabytes after every export. Caches in use by
+    /// another thread (a monitor) are left alone.
     fn drop(&mut self) {
         if self.trim_pool {
             filmcraft_frame::pool::trim_f32();
+            filmcraft_codecs::release_idle();
+            filmcraft_frame::pool::trim_planes();
         }
     }
 }
@@ -533,4 +527,16 @@ fn limit_px(c: &mut [f32; 3], lo: f32, hi: f32) {
         c.iter_mut().for_each(|v| *v += d);
     }
     c.iter_mut().for_each(|v| *v = v.clamp(0.0, hi.max(lo)));
+}
+
+#[cfg(test)]
+mod overlay_budget_tests {
+    use super::*;
+
+    #[test]
+    fn overlay_pixel_budget_is_checked_without_overflow() {
+        assert!(bounded_overlay_dimensions(4096, 4096).is_ok());
+        assert!(bounded_overlay_dimensions(4097, 4096).is_err());
+        assert!(bounded_overlay_dimensions(usize::MAX, 2).is_err());
+    }
 }

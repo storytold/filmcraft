@@ -113,7 +113,7 @@ fn scene(specs: &[Spec]) -> (Project, ItemId, SourceMap) {
         let item = p.add_item(
             &format!("layer{track}"),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(g.generator.clone()),
                 info: info.clone(),
                 interpret: Default::default(),
@@ -123,7 +123,7 @@ fn scene(specs: &[Spec]) -> (Project, ItemId, SourceMap) {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         let mut clip = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FPS.tick_of(48)), FPS).expect("clip");
@@ -178,8 +178,12 @@ fn check(what: &str, specs: &[Spec], scale: f32) {
         // twice: the second render starts from recycled buffers
         for round in 0..2 {
             let got = render_sequence(&p, seq, t, opts, &map);
-            same_bits(&got, &reference(&p, seq, t, opts, &map), &format!("{what} (frame {f}, render {round})"));
+            let want = reference(&p, seq, t, opts, &map);
+            same_bits(&got, &want, &format!("{what} (frame {f}, render {round})"));
             pool::recycle_f32(got.px);
+            // and as the monitor's bytes, straight from the frame where it is one picture alone
+            let bytes = render_sequence_rgba8(&p, seq, t, opts, &map);
+            assert!(bytes == (want.w, want.h, want.over_black_with_alpha_rgba8()), "{what} (frame {f}, render {round}): monitor bytes");
         }
     }
 }
@@ -218,6 +222,8 @@ fn shortcuts_give_the_general_paths_bits() {
     check("bigger banner", &[cam(), Spec::new(banner(W * 2, H * 2, (0, H * 2 - 18, W * 2, H * 2)))], 1.0);
     // reduced-resolution rendering decimates every frame
     check("half scale", &[cam(), ban(bar)], 0.5);
+    check("camera alone at half scale", &[cam()], 0.5);
+    check("camera alone at a third", &[cam()], 1.0 / 3.0);
     check("quarter scale", &[cam(), ban(corner)], 0.25);
 }
 
@@ -226,9 +232,18 @@ fn which_layers_take_a_shortcut() {
     let (p, seq, map) = scene(&[Spec::new(camera(W, H)), Spec::new(banner(W, H, (0, H - 9, W, H)))]);
     let s = p.sequence(seq).expect("sequence");
     let (opts, t) = (RenderOptions::default(), FPS.tick_of(3));
-    let layer = |track: usize, allow: bool| item_layer_ex(&p, s, s.video_tracks[track].item_at(t).expect("clip"), t, opts, &map, "", allow);
-    // a camera frame has no alpha: opaque, the whole picture
-    assert!(matches!(layer(0, true), Some(Layer::Full { opaque: true, .. })));
+    let layer = |track: usize, allow: bool| {
+        item_layer_ex(&p, s, s.video_tracks[track].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: allow })
+    };
+    // a camera frame has no alpha: opaque, the whole picture, converted when it is needed
+    assert!(matches!(layer(0, true), Some(Layer::Frame { .. })));
+    // alone, it stays that frame up to the monitor's bytes; under a banner it is converted
+    let canvas = |specs: &[Spec]| {
+        let (p, seq, map) = scene(specs);
+        seq_canvas(&p, p.sequence(seq).expect("sequence"), t, opts, &map, None).frame.is_some()
+    };
+    assert!(canvas(&[Spec::new(camera(W, H))]));
+    assert!(!canvas(&[Spec::new(camera(W, H)), Spec::new(banner(W, H, (0, H - 9, W, H)))]));
     // a banner is only its rectangle (rows H-9.. of a 96-wide picture)
     match layer(1, true) {
         Some(Layer::Region { image, x, y, .. }) => assert_eq!((x, y, image.w, image.h), (0, H - 9, W, 9)),
@@ -240,7 +255,7 @@ fn which_layers_take_a_shortcut() {
     // a transparent banner is an empty region
     let (p, seq, map) = scene(&[Spec::new(banner(W, H, (0, 0, 0, 0)))]);
     let s = p.sequence(seq).expect("sequence");
-    match item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, "", true) {
+    match item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: true }) {
         Some(Layer::Region { image, .. }) => assert_eq!((image.w, image.h, image.px.len()), (0, 0, 0)),
         _ => panic!("a transparent banner is an empty region"),
     }
@@ -248,7 +263,10 @@ fn which_layers_take_a_shortcut() {
     for spec in [Spec { effect: Some("brightness_contrast"), ..Spec::new(camera(W, H)) }, Spec { motion_scale: Some(50.0), ..Spec::new(camera(W, H)) }] {
         let (p, seq, map) = scene(&[spec]);
         let s = p.sequence(seq).expect("sequence");
-        assert!(matches!(item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, "", true), Some(Layer::Full { opaque: false, .. })));
+        assert!(matches!(
+            item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: true }),
+            Some(Layer::Full { opaque: false, .. })
+        ));
     }
 }
 

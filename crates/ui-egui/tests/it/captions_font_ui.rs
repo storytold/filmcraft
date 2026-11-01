@@ -20,7 +20,9 @@ impl Driver {
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        // the font list names every installed family, and some names are in scripts the interface
+        // fonts do not cover (macOS lists "इनाईमाथी" for InaiMathi): draw those as boxes
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).allow_missing_glyphs().build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);
         d

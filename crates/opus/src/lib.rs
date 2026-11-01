@@ -3,9 +3,6 @@
 //! Layer L0: no dependencies beyond `std`; no `unsafe`; builds for `wasm32-unknown-unknown`.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
-// The fixed-point parts mirror the normative integer arithmetic; keep C-like shift expressions.
-#![allow(clippy::precedence, clippy::int_plus_one)]
-
 pub(crate) mod celt;
 mod decoder;
 mod header;

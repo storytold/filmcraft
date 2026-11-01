@@ -14,7 +14,7 @@ use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, on, point, text};
+use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, grade_space, lift_scale, on, point, text};
 use crate::image::Image;
 
 /// A bilinear resample of the working image through an affine map (`Image::transformed` at a
@@ -53,6 +53,16 @@ pub enum FxOp {
         md: [f32; 3],
         hi: [f32; 3],
         preserve: bool,
+    },
+    /// Three-Way Color Corrector: per tonal range an encoded-RGB offset (the wheel) and a level
+    /// shift (`[r, g, b, level]`), the range edges `[shadow lo, shadow hi, highlight lo,
+    /// highlight hi]` on encoded luma, and a saturation factor.
+    ThreeWay {
+        sh: [f32; 4],
+        md: [f32; 4],
+        hi: [f32; 4],
+        range: [f32; 4],
+        sat: f32,
     },
     LeaveColor {
         amount: f32,
@@ -105,6 +115,18 @@ pub enum FxOp {
         dx: f32,
         dy: f32,
         steps: u32,
+    },
+    /// Bokeh Blur: `levels` halvings of the working image, highlights boosted (`boost` × a
+    /// smoothstep from `threshold`), an iris-shaped gather of `rings` rings out to radius `rr`
+    /// (`sides` 0 = circle, rotated by `rot` radians), then scaled back up. `rings` 0: no-op.
+    Bokeh {
+        levels: u32,
+        boost: f32,
+        threshold: f32,
+        sides: u32,
+        rot: f32,
+        rr: f32,
+        rings: u32,
     },
     /// Unsharp mask over a repeat-edge Gaussian of the given box radii (per axis).
     Unsharp {
@@ -206,6 +228,7 @@ pub const GPU_EFFECTS: &[&str] = &[
     "tint",
     "black_white",
     "color_balance",
+    "three_way_color",
     "leave_color",
     "change_to_color",
     "color_pass",
@@ -219,6 +242,7 @@ pub const GPU_EFFECTS: &[&str] = &[
     "camera_blur",
     "directional_blur",
     "directional_blur_legacy",
+    "bokeh_blur",
     "sharpen",
     "unsharp_mask",
     "crop",
@@ -259,6 +283,13 @@ fn minifies(m: &Affine, w: usize, h: usize) -> bool {
 }
 
 impl FxOp {
+    /// A Three-Way Color Corrector with neutral controls (and any other op: false): it leaves the
+    /// image untouched, HDR values included.
+    pub fn is_identity_three_way(&self) -> bool {
+        matches!(self, FxOp::ThreeWay { sh, md, hi, sat, .. }
+            if [sh, md, hi].iter().all(|w| w.iter().all(|v| *v == 0.0)) && *sat == 1.0)
+    }
+
     /// Evaluate `e` at `cx.t` for a `w`×`h` working image. None for effects without a GPU
     /// implementation (and for disabled effects).
     pub fn eval(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize) -> Option<FxOp> {
@@ -285,6 +316,30 @@ impl FxOp {
                     md: [g("mid_r"), g("mid_g"), g("mid_b")],
                     hi: [g("hi_r"), g("hi_g"), g("hi_b")],
                     preserve: b(e, "preserve"),
+                }
+            }
+            "three_way_color" => {
+                // a wheel: its hue as an RGB direction without the grey component, scaled by Balance
+                let wheel = |hue: &str, bal: &str, lvl: &str| {
+                    let h = f(e, hue, cx).rem_euclid(360.0) / 360.0;
+                    let c = filmcraft_color::hsl_to_rgb(h, 1.0, 0.5);
+                    let m = (c[0] + c[1] + c[2]) / 3.0;
+                    let k = f(e, bal, cx).clamp(0.0, 100.0) / 100.0 * 0.5;
+                    [(c[0] - m) * k, (c[1] - m) * k, (c[2] - m) * k, f(e, lvl, cx) / 100.0 * 0.25]
+                };
+                // the edges of a range: the threshold ± half its softness, on 0..1 luma
+                let edges = |thr: &str, soft: &str| {
+                    let (t, s) = (f(e, thr, cx).clamp(0.0, 100.0) / 100.0, f(e, soft, cx).clamp(0.0, 100.0) / 100.0 * 0.5);
+                    ((t - s).clamp(0.0, 1.0), (t + s).clamp(0.0, 1.0))
+                };
+                let (s0, s1) = edges("shadow_threshold", "shadow_softness");
+                let (h0, h1) = edges("hi_threshold", "hi_softness");
+                FxOp::ThreeWay {
+                    sh: wheel("shadow_hue", "shadow_balance", "shadow_level"),
+                    md: wheel("mid_hue", "mid_balance", "mid_level"),
+                    hi: wheel("hi_hue", "hi_balance", "hi_level"),
+                    range: [s0, s1, h0, h1],
+                    sat: f(e, "saturation", cx) / 100.0,
                 }
             }
             "leave_color" => {
@@ -354,6 +409,29 @@ impl FxOp {
                     FxOp::DirectionalBlur { dx: (dir.sin() as f32) * len, dy: (-dir.cos() as f32) * len, steps }
                 }
             }
+            "bokeh_blur" => {
+                let r = f(e, "amount", cx) * cx.px_scale;
+                if !r.is_finite() || r < 0.5 {
+                    return Some(FxOp::Bokeh { levels: 0, boost: 0.0, threshold: 0.0, sides: 0, rot: 0.0, rr: 0.0, rings: 0 });
+                }
+                // Large radii work on a halved (and halved again…) image: the result is smooth.
+                let (mut ww, mut wh, mut down, mut levels) = (w, h, 1.0f32, 0u32);
+                while r / down > 12.0 && ww >= 8 && wh >= 8 {
+                    (ww, wh) = ((ww / 2).max(1), (wh / 2).max(1));
+                    down *= 2.0;
+                    levels += 1;
+                }
+                let rr = r / down;
+                FxOp::Bokeh {
+                    levels,
+                    boost: f(e, "highlight", cx) / 100.0 * 6.0,
+                    threshold: f(e, "threshold", cx) / 100.0,
+                    sides: [0u32, 3, 4, 5, 6, 8][crate::vfx::chv(e, "shape").min(5) as usize],
+                    rot: f(e, "rotation", cx).to_radians(),
+                    rr,
+                    rings: (rr.ceil() as usize).clamp(1, 12) as u32,
+                }
+            }
             "sharpen" => {
                 // below a sigma of ~0.58 the three boxes all round to radius 0 and the mask is a
                 // no-op, so Sharpen vanished at 1/2 playback resolution and below (#1351)
@@ -389,6 +467,12 @@ impl FxOp {
                 FxOp::crop_rect(w, h, 0.0, 0.0, 0.0, 0.0, amt)
             }
             "transform" => {
+                // With its own shutter angle the CPU blurs the motion over seven samples
+                // (`vfx::distort::transform_fx`, under the same condition); the GPU op places one
+                // picture, so this stays on the CPU rather than losing the blur
+                if crate::vfx::bv(e, "shutter_override") && crate::vfx::fv(e, "shutter_angle", cx) > 0.5 {
+                    return None;
+                }
                 let img = Image { w, h, px: Vec::new() };
                 let anchor = point(e, "anchor", cx, &img);
                 let pos = point(e, "position", cx, &img);
@@ -595,6 +679,7 @@ impl FxOp {
             FxOp::Tint { black, white, amount } => fin(black) && fin(white) && amount.is_finite(),
             FxOp::BlackWhite | FxOp::HFlip | FxOp::VFlip => true,
             FxOp::ColorBalance { sh, md, hi, .. } => fin(sh) && fin(md) && fin(hi),
+            FxOp::ThreeWay { sh, md, hi, range, sat } => fin(sh) && fin(md) && fin(hi) && fin(range) && sat.is_finite(),
             FxOp::LeaveColor { amount, key_hue, tol, soft } => fin(&[*amount, *key_hue, *tol, *soft]),
             FxOp::ChangeToColor { from_hue, to_hue, tol, soft } => fin(&[*from_hue, *to_hue, *tol, *soft]),
             FxOp::ColorPass { key, sim, .. } => fin(key) && sim.is_finite(),
@@ -605,6 +690,7 @@ impl FxOp {
             FxOp::Posterize { n } => n.is_finite(),
             FxOp::Gaussian { .. } => true,
             FxOp::DirectionalBlur { dx, dy, .. } => fin(&[*dx, *dy]),
+            FxOp::Bokeh { boost, threshold, sides, rot, rr, rings, .. } => fin(&[*boost, *threshold, *rot, *rr]) && *sides <= 8 && *rings <= 12,
             FxOp::Unsharp { amount, threshold, .. } => fin(&[*amount, *threshold]),
             FxOp::Crop { x0, x1, y0, y1, feather } => fin(&[*x0, *x1, *y0, *y1, *feather]),
             FxOp::Resample(r) => {
@@ -686,6 +772,35 @@ impl FxOp {
                         o = o.map(|v| v + d);
                     }
                     dec(o)
+                });
+            }
+            FxOp::ThreeWay { sh, md, hi, range, sat } => {
+                if self.is_identity_three_way() {
+                    return;
+                }
+                let (sh, md, hi, range, sat) = (*sh, *md, *hi, *range, *sat);
+                let ramp = |l: f32, lo: f32, hi: f32| {
+                    let t = ((l - lo) / (hi - lo).max(1e-4)).clamp(0.0, 1.0);
+                    t * t * (3.0 - 2.0 * t)
+                };
+                img.map_rgb(|c, _, _| {
+                    let e = enc(c);
+                    let l = 0.2126 * e[0] + 0.7152 * e[1] + 0.0722 * e[2];
+                    let (mut ws, mut wh) = (1.0 - ramp(l, range[0], range[1]), ramp(l, range[2], range[3]));
+                    // overlapping ranges (shadow edge above the highlight edge) share the pixel: weights sum to 1
+                    let wm = (1.0 - ws - wh).max(0.0);
+                    let total = ws + wm + wh;
+                    ws /= total;
+                    wh /= total;
+                    let wm = wm / total;
+                    let lvl = sh[3] * ws + md[3] * wm + hi[3] * wh;
+                    let mut o = [0.0; 3];
+                    for k in 0..3 {
+                        o[k] = e[k] + sh[k] * ws + md[k] * wm + hi[k] * wh + lvl;
+                    }
+                    let l2 = 0.2126 * o[0] + 0.7152 * o[1] + 0.0722 * o[2];
+                    // decoded without the upper clamp: values above 1 (HDR) keep their headroom
+                    o.map(|v| filmcraft_color::srgb_to_linear((l2 + (v - l2) * sat).max(0.0)))
                 });
             }
             FxOp::LeaveColor { amount, key_hue, tol, soft } => {
@@ -778,6 +893,11 @@ impl FxOp {
             }
             FxOp::Gaussian { rx, ry, repeat } => crate::effects::box_blur(img, rx, ry, *repeat),
             FxOp::DirectionalBlur { dx, dy, steps } => crate::effects::directional_taps(img, *dx, *dy, *steps as usize),
+            FxOp::Bokeh { levels, boost, threshold, sides, rot, rr, rings } => {
+                if *rings > 0 {
+                    crate::vfx::bokeh(img, *levels, *boost, *threshold, *sides, *rot, *rr, *rings);
+                }
+            }
             FxOp::Unsharp { rx, ry, amount, threshold } => crate::effects::unsharp_boxes(img, rx, ry, *amount, *threshold),
             FxOp::Crop { x0, x1, y0, y1, feather } => crate::effects::crop_px(img, *x0, *x1, *y0, *y1, *feather),
             FxOp::Resample(r) => {
@@ -962,10 +1082,9 @@ impl FxOp {
                     let ws = (1.0 - l).clamp(0.0, 1.0).powi(3);
                     let whl = l.clamp(0.0, 1.0).powi(3);
                     let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
-                    if l > 1e-5 {
-                        let k = nl / l;
-                        v = v.map(|q| q * k);
-                    }
+                    // #2094: below LIFT_LUMA_FLOOR the hue-preserving scale is held and the rest is added equally
+                    let (k, add) = lift_scale(l, nl);
+                    v = v.map(|q| q * k + add);
                     // contrast: smooth S-curve around mid grey
                     if contrast.abs() > 1e-4 {
                         let k = 1.0 + contrast;
@@ -1149,5 +1268,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Transform with its own shutter angle blurs the motion on the CPU
+    /// (`vfx::distort::transform_fx`). The GPU op has no such blur, so that effect must leave
+    /// the GPU chain instead of silently losing its blur in the Program monitor and GPU exports.
+    #[test]
+    fn transform_with_its_own_shutter_angle_stays_on_the_cpu() {
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        let on_gpu = |e: &EffectInstance| FxOp::eval(e, &cx, 64, 36).is_some_and(|op| op.gpu_ok());
+        let mut e = find_effect("transform").unwrap().instance();
+        e.params.get_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(40.0, 20.0));
+        assert!(on_gpu(&e), "a plain transform runs on the GPU");
+        e.params.get_mut("shutter_override").unwrap().value = ParamValue::Bool(true);
+        assert!(!on_gpu(&e), "the default 180° shutter blurs the motion: CPU");
+        e.params.get_mut("shutter_angle").unwrap().value = ParamValue::Float(0.0);
+        assert!(on_gpu(&e), "a closed shutter blurs nothing");
+        e.params.get_mut("shutter_override").unwrap().value = ParamValue::Bool(false);
+        e.params.get_mut("shutter_angle").unwrap().value = ParamValue::Float(360.0);
+        assert!(on_gpu(&e), "the angle counts only with the override");
     }
 }
