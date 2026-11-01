@@ -1,3 +1,4 @@
+use super::HexColor;
 use super::label::Label;
 use super::sequence::bounded_time_range;
 use super::{
@@ -19,6 +20,16 @@ pub enum MarkerKind {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Marker {
+    /// Optional web address, separate from notes and retained when changing marker kind.
+    /// Opening is explicit and must pass `marker_web_url`, including for imported projects.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    /// Optional user attribution. Empty in older projects; never inferred from the OS account.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author: String,
+    /// Exact sRGB marker color. None retains the existing preset and its display mapping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_color: Option<HexColor>,
     pub id: MarkerId,
     pub start: Tick,
     pub duration: Tick,
@@ -55,6 +66,8 @@ pub struct TrackItem {
     pub item: ItemId,
     pub name: String,
     pub label: Label,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_label_color: Option<HexColor>,
     /// Timeline position (sequence ticks).
     pub start: Tick,
     /// Duration on the timeline.

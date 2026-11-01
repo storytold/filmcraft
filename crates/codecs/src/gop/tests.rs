@@ -207,19 +207,50 @@ fn rayon_frame_requests_while_decoding_on_rayon_never_deadlock() {
         let _ = tx.send(());
     });
     // A deadlock stops every request of a round for good. On a loaded machine the 3,840
-    // requests can take minutes, so the limit applies to the time between two answered ones.
-    let mut answered = 0;
+    // requests can take minutes, so the limit applies to the time since the last answered one.
+    if let Err(frames) = wait_while_answered(&rx, &done, Duration::from_secs(120)) {
+        panic!("frame requests deadlocked after {frames} frames");
+    }
+}
+
+/// Waits for `rx` while `done` keeps growing. Returns `Err` with the count in `done` once
+/// `limit` has passed since the count last grew (or since the call, before it grows).
+fn wait_while_answered(rx: &std::sync::mpsc::Receiver<()>, done: &AtomicUsize, limit: Duration) -> Result<(), usize> {
+    let mut answered = done.load(Ordering::Relaxed);
+    let mut last_answer = Instant::now();
     loop {
-        match rx.recv_timeout(Duration::from_secs(120)) {
-            Ok(()) => break,
+        match rx.recv_timeout(limit / 120) {
+            Ok(()) => return Ok(()),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let now = done.load(Ordering::Relaxed);
-                assert!(now > answered, "frame requests deadlocked after {now} frames");
-                answered = now;
+                if now > answered {
+                    answered = now;
+                    last_answer = Instant::now();
+                } else if last_answer.elapsed() >= limit {
+                    return Err(now);
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("a frame request failed"),
         }
     }
+}
+
+#[test]
+fn a_stall_right_after_an_answer_is_reported_once_the_limit_has_passed() {
+    let (_tx, rx) = std::sync::mpsc::channel();
+    let done = Arc::new(AtomicUsize::new(0));
+    let answering = done.clone();
+    let (answer_tx, answer_rx) = std::sync::mpsc::channel();
+    let limit = Duration::from_secs(2);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        let answer = Instant::now();
+        answering.fetch_add(1, Ordering::Relaxed);
+        let _ = answer_tx.send(answer);
+    });
+    assert_eq!(wait_while_answered(&rx, &done, limit), Err(1));
+    let waited = answer_rx.recv().expect("answer time").elapsed();
+    assert!(waited >= limit && waited < limit * 3 / 2, "the stall was reported {waited:?} after the answer");
 }
 
 #[test]

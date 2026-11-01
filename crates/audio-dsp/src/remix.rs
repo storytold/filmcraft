@@ -309,6 +309,48 @@ fn mel_to_hz(m: f64) -> f64 {
     700.0 * (10f64.powf(m / 2595.0) - 1.0)
 }
 
+/// Mel bands of the cepstra.
+const BANDS: usize = 26;
+
+/// Triangular mel filterbank (26 bands, 30 Hz … min(8 kHz, Nyquist)) for an `n`-point STFT: per
+/// band, the bins it covers with their weights, in increasing bin order. Every other bin has
+/// weight 0 in that band.
+fn mel_weights(sr: u32, n: usize) -> Vec<Vec<(usize, f64)>> {
+    let hz = |k: usize| k as f64 * sr as f64 / n as f64;
+    let fmax = (sr as f64 / 2.0).min(8000.0);
+    let (m0, m1) = (hz_to_mel(30.0), hz_to_mel(fmax));
+    let edges: Vec<f64> = (0..BANDS + 2).map(|i| mel_to_hz(m0 + (m1 - m0) * i as f64 / (BANDS + 1) as f64)).collect();
+    (0..BANDS)
+        .map(|b| {
+            let (l, cn, r) = (edges[b], edges[b + 1], edges[b + 2]);
+            (0..n / 2 + 1)
+                .filter_map(|k| {
+                    let f = hz(k);
+                    if f > l && f < cn {
+                        Some((k, (f - l) / (cn - l)))
+                    } else if f >= cn && f < r {
+                        Some((k, (r - f) / (r - cn)))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Mel band energies of one magnitude spectrum.
+fn mel_bands(mel: &[Vec<(usize, f64)>], mag: &[f32]) -> [f64; BANDS] {
+    let mut band = [0f64; BANDS];
+    for (e, weights) in band.iter_mut().zip(mel) {
+        for &(k, w) in weights {
+            let v = mag[k];
+            *e += w * (v as f64) * (v as f64);
+        }
+    }
+    band
+}
+
 /// Per-beat chroma (12) and cepstra (12) from a 4× larger STFT.
 fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32; 12]>) {
     let n = (onset_frame(sr) * 2).max(1024);
@@ -323,11 +365,7 @@ fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32
             (55.0..=5000.0).contains(&f).then(|| (((12.0 * (f / 440.0).log2()).round() as i64 + 9).rem_euclid(12)) as usize)
         })
         .collect();
-    // mel filterbank (26 bands, 30 Hz … min(8 kHz, Nyquist))
-    const BANDS: usize = 26;
-    let fmax = (sr as f64 / 2.0).min(8000.0);
-    let (m0, m1) = (hz_to_mel(30.0), hz_to_mel(fmax));
-    let edges: Vec<f64> = (0..BANDS + 2).map(|i| mel_to_hz(m0 + (m1 - m0) * i as f64 / (BANDS + 1) as f64)).collect();
+    let mel = mel_weights(sr, n);
     let mut frame_chroma = Vec::with_capacity(mags.len());
     let mut frame_cep = Vec::with_capacity(mags.len());
     for m in &mags {
@@ -338,21 +376,7 @@ fn beat_features(x: &[f32], sr: u32, beats: &[i64]) -> (Vec<[f32; 12]>, Vec<[f32
             }
         }
         frame_chroma.push(c);
-        let mut band = [0f64; BANDS];
-        for (b, e) in band.iter_mut().enumerate() {
-            let (l, cn, r) = (edges[b], edges[b + 1], edges[b + 2]);
-            for (k, v) in m.iter().enumerate() {
-                let f = hz(k);
-                let w = if f > l && f < cn {
-                    (f - l) / (cn - l)
-                } else if f >= cn && f < r {
-                    (r - f) / (r - cn)
-                } else {
-                    0.0
-                };
-                *e += w * (*v as f64) * (*v as f64);
-            }
-        }
+        let band = mel_bands(&mel, m);
         let lb: Vec<f64> = band.iter().map(|e| (e + 1e-10).ln()).collect();
         let mut cep = [0f32; 12];
         for (q, c) in cep.iter_mut().enumerate() {
@@ -404,11 +428,28 @@ fn similarity_cells(beats: usize) -> Result<usize, RemixError> {
     beats.checked_mul(beats).filter(|&n| n <= MAX_SIMILARITY_CELLS).ok_or(RemixError::TooComplex)
 }
 
-fn cos(a: &[f32; 12], b: &[f32; 12]) -> f32 {
+fn norm(a: &[f32; 12]) -> f32 {
+    a.iter().map(|v| v * v).sum::<f32>().sqrt()
+}
+
+/// Cosine similarity of `a` and `b`, given their norms.
+fn cos(a: &[f32; 12], na: f32, b: &[f32; 12], nb: f32) -> f32 {
     let d: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-    let na = a.iter().map(|v| v * v).sum::<f32>().sqrt();
-    let nb = b.iter().map(|v| v * v).sum::<f32>().sqrt();
     if na > 0.0 && nb > 0.0 { d / (na * nb) } else { 0.0 }
+}
+
+/// Fills the beat self-similarity matrix `sim` (`m²`, row-major, symmetric).
+fn fill_similarity(sim: &mut [f32], chroma: &[[f32; 12]], cep: &[[f32; 12]]) {
+    let m = chroma.len();
+    let chroma_norm: Vec<f32> = chroma.iter().map(norm).collect();
+    let cep_norm: Vec<f32> = cep.iter().map(norm).collect();
+    for i in 0..m {
+        for j in i..m {
+            let s = 0.6 * cos(&chroma[i], chroma_norm[i], &chroma[j], chroma_norm[j]) + 0.4 * (1.0 + cos(&cep[i], cep_norm[i], &cep[j], cep_norm[j])) * 0.5;
+            sim[i * m + j] = s;
+            sim[j * m + i] = s;
+        }
+    }
 }
 
 /// How far [`Analysis::beats`] sit before the attack of each beat (half a crossfade), samples.
@@ -465,11 +506,7 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
     let (chroma, cep) = beat_features(&mono, sample_rate, &beats);
     let m = beats.len();
     let mut sim = vec![0f32; similarity_cells(m)?];
-    for i in 0..m {
-        for j in 0..m {
-            sim[i * m + j] = 0.6 * cos(&chroma[i], &chroma[j]) + 0.4 * (1.0 + cos(&cep[i], &cep[j])) * 0.5;
-        }
-    }
+    fill_similarity(&mut sim, &chroma, &cep);
     let period_s = period * hop as f64;
     Ok(Analysis { sample_rate, len: len as i64, beats, period: period_s, bpm: 60.0 * sample_rate as f64 / period_s, sim })
 }
@@ -894,6 +931,80 @@ mod tests {
                 assert!((v - exp).abs() < 1e-6);
             }
         }
+    }
+
+    /// The mel bands and similarity matrix as computed before the sparse filterbank and the
+    /// precomputed norms.
+    fn reference_bands(x: &[f32], sr: u32) -> Vec<[f64; BANDS]> {
+        let n = (onset_frame(sr) * 2).max(1024);
+        let hz = |k: usize| k as f64 * sr as f64 / n as f64;
+        let fmax = (sr as f64 / 2.0).min(8000.0);
+        let (m0, m1) = (hz_to_mel(30.0), hz_to_mel(fmax));
+        let edges: Vec<f64> = (0..BANDS + 2).map(|i| mel_to_hz(m0 + (m1 - m0) * i as f64 / (BANDS + 1) as f64)).collect();
+        stft_mag(x, n, n / 2)
+            .iter()
+            .map(|m| {
+                let mut band = [0f64; BANDS];
+                for (b, e) in band.iter_mut().enumerate() {
+                    let (l, cn, r) = (edges[b], edges[b + 1], edges[b + 2]);
+                    for (k, v) in m.iter().enumerate() {
+                        let f = hz(k);
+                        let w = if f > l && f < cn {
+                            (f - l) / (cn - l)
+                        } else if f >= cn && f < r {
+                            (r - f) / (r - cn)
+                        } else {
+                            0.0
+                        };
+                        *e += w * (*v as f64) * (*v as f64);
+                    }
+                }
+                band
+            })
+            .collect()
+    }
+
+    fn reference_similarity(chroma: &[[f32; 12]], cep: &[[f32; 12]]) -> Vec<f32> {
+        fn cos(a: &[f32; 12], b: &[f32; 12]) -> f32 {
+            let d: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+            let na = a.iter().map(|v| v * v).sum::<f32>().sqrt();
+            let nb = b.iter().map(|v| v * v).sum::<f32>().sqrt();
+            if na > 0.0 && nb > 0.0 { d / (na * nb) } else { 0.0 }
+        }
+        let m = chroma.len();
+        let mut sim = vec![0f32; m * m];
+        for i in 0..m {
+            for j in 0..m {
+                sim[i * m + j] = 0.6 * cos(&chroma[i], &chroma[j]) + 0.4 * (1.0 + cos(&cep[i], &cep[j])) * 0.5;
+            }
+        }
+        sim
+    }
+
+    #[test]
+    fn sparse_mel_bands_and_symmetric_similarity_are_bit_identical() {
+        for sr in [8_000, 11_025, 22_050, 44_100, 48_000, 96_000] {
+            let (m, truth) = test_music(sr, 120.0, 8, 3);
+            let x = &m[0];
+            let n = (onset_frame(sr) * 2).max(1024);
+            let mel = mel_weights(sr, n);
+            let mags = stft_mag(x, n, n / 2);
+            let want = reference_bands(x, sr);
+            assert_eq!(mags.len(), want.len());
+            for (frame, want) in mags.iter().zip(want) {
+                assert_eq!(mel_bands(&mel, frame).map(f64::to_bits), want.map(f64::to_bits), "{sr} Hz");
+            }
+            let (chroma, cep) = beat_features(x, sr, &truth);
+            let mut sim = vec![0f32; chroma.len() * chroma.len()];
+            fill_similarity(&mut sim, &chroma, &cep);
+            let want = reference_similarity(&chroma, &cep);
+            assert_eq!(sim.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{sr} Hz");
+        }
+        // zero vectors (silent beats) keep their 0 cosine
+        let z = [[0f32; 12]; 3];
+        let mut sim = vec![0f32; 9];
+        fill_similarity(&mut sim, &z, &z);
+        assert_eq!(sim, reference_similarity(&z, &z));
     }
 
     #[test]

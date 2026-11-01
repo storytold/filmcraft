@@ -910,7 +910,8 @@ fn upgrade_caption(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let col = |c: [u8; 4]| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0];
         set(&mut layer, "font", ParamValue::Text(st.font.clone()));
-        set(&mut layer, "font_style", ParamValue::Text("SemiBold".into()));
+        let font_style = if st.font_style.trim().is_empty() { "SemiBold" } else { st.font_style.trim() };
+        set(&mut layer, "font_style", ParamValue::Text(font_style.into()));
         set(&mut layer, "align", ParamValue::Choice(st.align as u32));
         set(&mut layer, "fill_color", ParamValue::Color(col(st.color)));
         set(&mut layer, "leading", ParamValue::Float(line_h - size * 1.21));
@@ -1067,7 +1068,8 @@ pub fn fonts_used(s: &Session) -> Vec<(String, String, usize)> {
     for q in s.project.sequences() {
         if let ItemKind::Sequence(sq) = &q.kind {
             for t in &sq.caption_tracks {
-                add(t.style.font.clone(), "SemiBold".into());
+                let st = if t.style.font_style.trim().is_empty() { "SemiBold" } else { t.style.font_style.trim() };
+                add(t.style.font.clone(), st.into());
             }
         }
     }
@@ -1123,8 +1125,12 @@ fn replace_fonts(s: &mut Session, p: &Value) -> Result<Value> {
         for id in ids {
             if let Some(sq) = pr.sequence_mut(id) {
                 for t in &mut sq.caption_tracks {
-                    if t.style.font.eq_ignore_ascii_case(&from) && from_style.is_none() {
+                    let st = if t.style.font_style.trim().is_empty() { "SemiBold" } else { t.style.font_style.trim() };
+                    if matches(&t.style.font, st) {
                         t.style.font = to.clone();
+                        if let Some(ts) = &to_style {
+                            t.style.font_style = ts.clone();
+                        }
                         n += 1;
                     }
                 }
