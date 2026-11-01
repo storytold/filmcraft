@@ -103,7 +103,7 @@ fn reverse_wrap(
         if actual_in == available_out {
             buf[..available_out * ch].copy_from_slice(&fwd);
         } else {
-            let scale = (actual_in - 1).max(1) as f64 / available_out.max(1) as f64;
+            let scale = actual_in as f64 / available_out.max(1) as f64;
             for i in 0..available_out {
                 let src = i as f64 * scale;
                 let lo = src as usize;
