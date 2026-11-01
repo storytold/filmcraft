@@ -413,6 +413,33 @@ mod tests {
             buf2[0], buf1[0]);
     }
 
+    /// Checks that adjacent reverse-playback blocks share a seam that is no larger than one
+    /// sample step of the source signal — i.e., no audible click at block boundaries.
+    #[test]
+    fn reverse_wrap_block_seams_are_continuous() {
+        let sr = 48_000u32;
+        let hz = 440.0f64;
+        let block = 1024usize;
+        let sine_mix = move |start: i64, buf: &mut [f32], ch: usize| {
+            for (i, frame) in buf.chunks_exact_mut(ch).enumerate() {
+                let t = (start + i as i64) as f64 / sr as f64;
+                let v = (std::f64::consts::TAU * hz * t).sin() as f32;
+                frame.iter_mut().for_each(|s| *s = v);
+            }
+        };
+        let start_cursor: i64 = sr as i64 * 10;
+        let mut rev = reverse_wrap(sine_mix, 1.0);
+        let mut buf1 = vec![0.0f32; block];
+        let mut buf2 = vec![0.0f32; block];
+        rev(start_cursor, &mut buf1, 1);
+        rev(start_cursor + block as i64, &mut buf2, 1);
+        // The last sample of block 1 and the first sample of block 2 must be adjacent on the
+        // timeline (differ by one sample step). A discontinuity larger than ~0.1 would be audible.
+        let seam = (buf1[block - 1] - buf2[0]).abs();
+        assert!(seam < 0.1,
+            "click at block seam: |buf1[-1] - buf2[0]| = {seam:.6}; max expected ~0.058 for 440 Hz at 48 kHz");
+    }
+
     #[test]
     fn reverse_wrap_blocks_sequence_backward_on_timeline() {
         // Verify that successive calls retreat on the timeline rather than advancing.
