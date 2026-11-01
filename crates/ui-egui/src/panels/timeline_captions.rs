@@ -318,7 +318,7 @@ fn interact_block(
         let pps = app.ui.timeline.pps;
         let raw = seq.settings.frame_rate.snap_nearest(Tick::from_seconds_f64((p.x - x0) as f64 / pps));
         // snap the edge(s) the gesture moves, as a clip drag does (#2192)
-        let snap = |app: &mut FilmcraftApp, edge: Tick, exclude: &[ClipId]| super::timeline::snap_caption(app, seq, layout, edge + raw, exclude) - edge;
+        let snap = |app: &mut FilmcraftApp, edge: Tick, _exclude: &[ClipId]| super::timeline::snap_for_captions(app, seq, layout, edge + raw) - edge;
         let d = match g {
             0 => {
                 // the captions that move are no targets, or a short drag would stick where it began
