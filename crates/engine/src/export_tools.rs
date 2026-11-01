@@ -630,6 +630,11 @@ pub struct QueueItem {
     /// The background job while encoding / after it ran.
     pub job: Option<u64>,
     pub error: Option<String>,
+    /// Elapsed encoding time in seconds, set when the job finishes (#2045).
+    pub elapsed_secs: Option<f64>,
+    /// Wallclock instant when encoding started; not serialised.
+    #[serde(skip)]
+    pub started_at: Option<web_time::Instant>,
     /// The project as it was when the item was queued.
     #[serde(skip)]
     pub project: Arc<Project>,
@@ -689,6 +694,7 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
         "job": it.job,
         "error": it.error,
         "offlineMedia": it.job.map_or_else(|| json!([]), |j| offline_media_json(s, j)),
+        "elapsedSecs": it.elapsed_secs,
     })
 }
 
@@ -708,9 +714,16 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
             let Some(r) = res else { continue };
             let it = &mut s.export_queue.items[i];
             match r {
-                Ok(_) => it.status = QueueStatus::Done,
-                Err(e) if e == "cancelled" => it.status = QueueStatus::Cancelled,
+                Ok(_) => {
+                    it.elapsed_secs = it.started_at.map(|t| t.elapsed().as_secs_f64());
+                    it.status = QueueStatus::Done;
+                }
+                Err(e) if e == "cancelled" => {
+                    it.elapsed_secs = it.started_at.map(|t| t.elapsed().as_secs_f64());
+                    it.status = QueueStatus::Cancelled;
+                }
                 Err(e) => {
+                    it.elapsed_secs = it.started_at.map(|t| t.elapsed().as_secs_f64());
                     it.status = QueueStatus::Failed;
                     it.error = Some(e);
                 }
@@ -737,6 +750,7 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
                 x.status = QueueStatus::Encoding;
                 x.job = Some(job);
                 x.error = None;
+                x.started_at = Some(web_time::Instant::now());
             }
             Err(e) => {
                 let x = &mut s.export_queue.items[i];
@@ -811,6 +825,8 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             job: None,
             error: None,
             project: project.clone(),
+            elapsed_secs: None,
+            started_at: None,
         });
         ids.push(id);
     }
