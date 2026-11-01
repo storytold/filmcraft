@@ -3636,3 +3636,13 @@
 	Flash Cue Point	Punto Flash Cue
 	Invalid duration: {error}	Durata non valida: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	Colore a 10 bit
+	All Intra	Solo intra
+	Every frame a keyframe (edit-friendly, larger files)	Ogni fotogramma è un fotogramma chiave (facile da montare, file più grandi)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	H.264 High 10 (10 bit 4:2:0) alla dimensione della sequenza, qualità costante CRF 16, AAC 320 kbps; un master senza banding
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 bit 4:2:0, ogni fotogramma è un fotogramma chiave), CRF 12, AAC 320 kbps; un intermedio facile da montare

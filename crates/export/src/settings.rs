@@ -49,6 +49,10 @@ pub enum H264Profile {
     Main,
     #[default]
     High,
+    /// High 10: 10-bit 4:2:0 color, without the banding of 8 bits (HDR exports keep their 10-bit
+    /// precision).
+    #[serde(rename = "high10")]
+    High10,
 }
 
 impl H264Profile {
@@ -57,7 +61,13 @@ impl H264Profile {
             H264Profile::Baseline => "Baseline",
             H264Profile::Main => "Main",
             H264Profile::High => "High",
+            H264Profile::High10 => "High 10",
         }
+    }
+
+    /// Bits per sample of the coded pictures.
+    pub fn bit_depth(self) -> u8 {
+        if self == H264Profile::High10 { 10 } else { 8 }
     }
 }
 
@@ -676,8 +686,10 @@ impl ExportSettings {
             match self.video_format() {
                 Format::H264 => {
                     v += &format!(
-                        ", {} {}, {}",
+                        ", {}{} ({}-bit) {}, {}",
                         self.h264_profile.label(),
+                        if self.h264_intra_only { " Intra" } else { "" },
+                        self.h264_profile.bit_depth(),
                         self.h264_level.map(|l| format!("L{}.{}", l / 10, l % 10)).unwrap_or_else(|| "auto level".into()),
                         self.bitrate_mode.label()
                     );
@@ -686,7 +698,7 @@ impl ExportSettings {
                         BitrateMode::Crf => format!(" {}", self.crf),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
                     };
-                    v += &format!(", keyframe every {} frames", r.keyint);
+                    v += &if self.h264_intra_only { ", every frame a keyframe".to_string() } else { format!(", keyframe every {} frames", r.keyint) };
                 }
                 Format::Hevc => {
                     // Main 10 only where a registered encoder writes HDR (NVENC); VideoToolbox is 8-bit

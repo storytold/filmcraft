@@ -3619,3 +3619,13 @@
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Der Kontrollserver ist deaktiviert: FILMCRAFT_CONTROL_TOKEN muss 64 zufällige Hexzeichen enthalten (siehe docs/control-protocol.md)
 
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10-Bit-Farbe
+	All Intra	Nur Intra
+	Every frame a keyframe (edit-friendly, larger files)	Jedes Bild ein Keyframe (schnittfreundlich, größere Dateien)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	H.264 High 10 (10 Bit 4:2:0) in der Größe der Sequenz, konstante Qualität CRF 16, AAC 320 kbps; ein Master ohne Banding
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 Bit 4:2:0, jedes Bild ein Keyframe), CRF 12, AAC 320 kbps; ein schnittfreundliches Zwischenformat

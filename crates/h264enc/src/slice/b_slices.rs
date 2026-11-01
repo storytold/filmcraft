@@ -1,6 +1,8 @@
-use super::{Avail, Cand, MbCtx, MbEdges, MbInfo, MbKind, Mv, MvNb, Part, PartGeom, PartSearch, PredOut, Shape, SliceEnc, Src, avg_into, mv_bits, sad16, satd};
+use super::{
+    Avail, Cand, MbCtx, MbEdges, MbInfo, MbKind, Mv, MvNb, Part, PartGeom, PartSearch, Pixel, PredOut, Shape, SliceEnc, Src, avg_into, mv_bits, sad16, satd,
+};
 
-impl<'a, 'b> SliceEnc<'a, 'b> {
+impl<'a, 'b, P: Pixel> SliceEnc<'a, 'b, P> {
     // ------------------------------------------------------------------ B slices
 
     /// Spatial direct prediction (§8.4.1.2.2) with direct_8x8_inference. Returns per-8x8 refs and mvs.
@@ -51,7 +53,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
     /// B 16x8 / 8x16 candidate: search each partition in both lists, choose L0/L1/Bi per partition, then derive
     /// the motion vector predictors in decoding order from the chosen directions. With `beat`, a
     /// candidate whose cost does not come below it is `None` before its residual is coded.
-    fn b_partition(&self, m: &MbCtx, part: Part, lam: u32, seeds: [Mv; 2], beat: Option<u64>) -> Option<Box<Cand>> {
+    fn b_partition(&self, m: &MbCtx<'_, P>, part: Part, lam: u32, seeds: [Mv; 2], beat: Option<u64>) -> Option<Box<Cand<P>>> {
         let MbCtx { mx, my, qp, src, .. } = *m;
         let f = self.f;
         let rp = [f.l0?, f.l1?];
@@ -60,7 +62,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         for l in 0..2 {
             mvs[l] = self.search_part(rp[l], &PartSearch { mx, my, part, list: l, lam, seed: seeds[l] }, src).0;
         }
-        let mut preds = [([0u8; 256], [0u8; 64], [0u8; 64]), ([0u8; 256], [0u8; 64], [0u8; 64])];
+        let mut preds = [([P::default(); 256], [P::default(); 64], [P::default(); 64]), ([P::default(); 256], [P::default(); 64], [P::default(); 64])];
         for l in 0..2 {
             let (a, b, c) = &mut preds[l];
             for pi in 0..2 {
@@ -72,7 +74,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         avg_into(&mut bi.1, &preds[1].1);
         avg_into(&mut bi.2, &preds[1].2);
         let srcs = [&preds[0], &preds[1], &bi];
-        let (mut py_, mut pu, mut pv) = ([0u8; 256], [0u8; 64], [0u8; 64]);
+        let (mut py_, mut pu, mut pv) = ([P::default(); 256], [P::default(); 64], [P::default(); 64]);
         let mut dirs = [0u8; 4];
         let mut cost = ((lam * 8) >> 8) as u64;
         for pi in 0..2 {
@@ -149,7 +151,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         Some(c)
     }
 
-    pub(super) fn analyse_b(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges, src: &Src) -> Box<Cand> {
+    pub(super) fn analyse_b(&self, mx: usize, my: usize, qp: u8, av: Avail, e: &MbEdges<P>, src: &Src<P>) -> Box<Cand<P>> {
         let f = self.f;
         // B slices always have both references; without them the macroblock is coded intra.
         let (Some(r0), Some(r1)) = (f.l0, f.l1) else { return self.analyse_intra(&MbCtx { mx, my, qp, av, e, src }, u64::MAX) };
@@ -166,14 +168,14 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 }
             }
         }
-        let mut best: Option<Box<Cand>> = None;
+        let mut best: Option<Box<Cand<P>>> = None;
         if direct_ok {
-            let mut y = [0u8; 256];
-            let mut u = [0u8; 64];
-            let mut v = [0u8; 64];
-            let mut ty = [0u8; 256];
-            let mut tu = [0u8; 64];
-            let mut tv = [0u8; 64];
+            let mut y = [P::default(); 256];
+            let mut u = [P::default(); 64];
+            let mut v = [P::default(); 64];
+            let mut ty = [P::default(); 256];
+            let mut tu = [P::default(); 64];
+            let mut tv = [P::default(); 64];
             for q in 0..4 {
                 let rect = Part::P8x8.rect(q);
                 let (u0, u1) = (dref[0][q] >= 0, dref[1][q] >= 0);
@@ -223,7 +225,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             let (m, p, c) = self.search_part(rp, &PartSearch { mx, my, part: Part::P16x16, list: l, lam, seed: dmv[l][0] }, src);
             res[l] = (m[0], p[0], c);
         }
-        let mut preds = [([0u8; 256], [0u8; 64], [0u8; 64]), ([0u8; 256], [0u8; 64], [0u8; 64])];
+        let mut preds = [([P::default(); 256], [P::default(); 64], [P::default(); 64]), ([P::default(); 256], [P::default(); 64], [P::default(); 64])];
         for (l, rp) in [(0usize, r0), (1usize, r1)] {
             let (a, b, c) = &mut preds[l];
             self.pred_block(rp, (px, py), (0, 0, 16, 16), res[l].0, PredOut { y: a, u: b, v: c });
@@ -280,7 +282,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         }
         let mut best = best.unwrap_or_else(|| self.analyse_intra(&MbCtx { mx, my, qp, av, e, src }, u64::MAX));
         // --- 16x8 / 8x16 partitions with a per-partition prediction direction
-        if f.p.partitions && best.cost > 256 * 4 {
+        if f.p.partitions && best.cost > (256 * 4) << f.p.depth.shift {
             for part in [Part::P16x8, Part::P8x16] {
                 // Without RD only the cost decides, so a losing candidate's residual is not coded.
                 let beat = (!f.p.rd).then_some(best.cost);
@@ -303,8 +305,8 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         best
     }
 
-    fn better_intra_candidate(&self, ctx: &MbCtx<'_>, best: &Cand, lam: u32) -> Option<Box<Cand>> {
-        let threshold = (256 * 3 + 16 * lam as u64 / 256) * 3;
+    fn better_intra_candidate(&self, ctx: &MbCtx<'_, P>, best: &Cand<P>, lam: u32) -> Option<Box<Cand<P>>> {
+        let threshold = (((256 * 3) << self.f.p.depth.shift) + 16 * lam as u64 / 256) * 3;
         if !self.f.p.always_intra && best.cost <= threshold {
             return None;
         }
