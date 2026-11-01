@@ -400,6 +400,16 @@ fn background_jobs_share_one_pool() {
     assert_eq!(together, vec![cores, cores], "both jobs on the same pool of one thread per core");
 }
 
+/// A shared pool that could not be made (no threads to be had) was remembered as none for good, so
+/// every later background job rendered on the global pool beside the monitors.
+#[test]
+fn a_shared_pool_that_could_not_be_made_is_tried_again() {
+    let slot = std::sync::Mutex::new(None);
+    assert_eq!(crate::run::made_once(&slot, || None::<u32>), None);
+    assert_eq!(crate::run::made_once(&slot, || Some(7)).as_deref(), Some(&7), "tried again");
+    assert_eq!(crate::run::made_once(&slot, || Some(8)).as_deref(), Some(&7), "made once it worked");
+}
+
 #[test]
 fn own_threads_run_the_background_hook_as_they_start() {
     static STARTED: std::sync::Mutex<Vec<std::thread::ThreadId>> = std::sync::Mutex::new(Vec::new());
