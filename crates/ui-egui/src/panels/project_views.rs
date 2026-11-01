@@ -1091,7 +1091,9 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
     let opts = app.session.prefs.project_panel.freeform.clone();
     // the footer's Zoom scales the canvas (#3774); cards keep their positions and sizes unscaled
     let z = freeform_zoom(v.icon_size);
-    let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, rect.width() / z);
+    // the canvas width the cards wrap at, unscaled: the layout commands below get the same one
+    let width = rect.width() / z;
+    let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, width);
     cards.retain(|c| matches_filter(app, ItemId(c.item), filter));
     let drag_key = egui::Id::unique((&v.prefix, "ff-drag"));
     // (dragged item, offset so far)
@@ -1194,7 +1196,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             if stopped && !crate::panels::drag_cancelled(ui) {
                 released = dragging.filter(|d| d.0 == c.item).map(|d| (d.0, d.1 + resp.drag_delta()));
             }
-            resp.context_menu(|ui| card_menu(app, ui, v, c.item, actions));
+            resp.context_menu(|ui| card_menu(app, ui, v, c.item, width, actions));
         }
         marquee(app, ui, v, &bg, canvas.min, actions);
         if let Some((item, off)) = released {
@@ -1219,7 +1221,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                     // the drag moved on screen, the cards live on the unscaled canvas
                     actions.push((
                         "project.freeform.move".into(),
-                        json!({"items": items, "x": (lead.x + off.x / z).max(0.0), "y": (lead.y + off.y / z).max(0.0), "width": rect.width() / z}),
+                        json!({"items": items, "x": (lead.x + off.x / z).max(0.0), "y": (lead.y + off.y / z).max(0.0), "width": width}),
                     ));
                 }
             }
@@ -1232,7 +1234,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             actions.push(("file.import".into(), json!({})));
         }
         let bin = Some(v.bin.0);
-        bg.context_menu(|ui| canvas_menu(app, ui, v, bin, actions));
+        bg.context_menu(|ui| canvas_menu(app, ui, v, bin, width, actions));
     });
     ui.ctx().data_mut(|d| d.insert_temp(offset_key, out.state.unclamped_offset()));
 }
@@ -1259,31 +1261,32 @@ fn cards_stack(cards: &[Card], item: u64) -> Option<u64> {
     cards.iter().find(|c| c.item == item).and_then(|c| c.stack)
 }
 
-fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, actions: &mut Actions) {
+fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, width: f32, actions: &mut Actions) {
     let sel: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
     let items: Vec<u64> = if sel.contains(&item) { sel.clone() } else { vec![item] };
     let b = ui.add_enabled(items.len() > 1, egui::Button::new(tl!("Stack")));
     app.auto.add(&format!("{}.cardMenu.stack", v.prefix), b.rect, "Stack");
     if b.clicked() {
-        actions.push(("project.freeform.stack".into(), json!({"items": items})));
+        actions.push(("project.freeform.stack".into(), json!({"items": items, "width": width})));
         ui.close();
     }
     let stacked = app.session.project.item(ItemId(item)).is_some_and(|i| i.metadata.contains_key(pp::FREEFORM_STACK));
     let b = ui.add_enabled(stacked, egui::Button::new(tl!("Unstack")));
     app.auto.add(&format!("{}.cardMenu.unstack", v.prefix), b.rect, "Unstack");
     if b.clicked() {
-        actions.push(("project.freeform.unstack".into(), json!({"items": items})));
+        actions.push(("project.freeform.unstack".into(), json!({"items": items, "width": width})));
         ui.close();
     }
     ui.menu_button(tl!("Clip Size"), |ui| {
         for (label, step) in [(tl!("Larger"), 1), (tl!("Smaller"), -1)] {
             if ui.button(label).clicked() {
-                actions.push(("project.freeform.resize".into(), json!({"items": items, "step": step})));
+                actions.push(("project.freeform.resize".into(), json!({"items": items, "step": step, "width": width})));
                 ui.close();
             }
         }
         if ui.button(tl!("Default")).clicked() {
-            actions.push(("project.freeform.resize".into(), json!({"items": items, "size": app.session.prefs.project_panel.freeform.card_size})));
+            actions
+                .push(("project.freeform.resize".into(), json!({"items": items, "size": app.session.prefs.project_panel.freeform.card_size, "width": width})));
             ui.close();
         }
     });
@@ -1294,7 +1297,7 @@ fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, act
     }
 }
 
-fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, actions: &mut Actions) {
+fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, width: f32, actions: &mut Actions) {
     fn entry(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, actions: &mut Actions, id: &str, label: &str, (cmd, p): (&str, serde_json::Value)) {
         let b = ui.button(label);
         app.auto.add(&format!("{}.canvasMenu.{id}", v.prefix), b.rect, label);
@@ -1303,10 +1306,10 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
             ui.close();
         }
     }
-    entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), ("project.freeform.alignToGrid", json!({"bin": bin})));
+    entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), ("project.freeform.alignToGrid", json!({"bin": bin, "width": width})));
     entry(app, ui, v, actions, "resetToGrid", tl!("Reset to Grid"), ("project.freeform.reset", json!({"bin": bin})));
     ui.separator();
-    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), ("projectPanel.saveArrangement", json!({})));
+    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), ("projectPanel.saveArrangement", json!({"width": width})));
     let names: Vec<String> = app
         .session
         .execute("project.freeform.arrangements", json!({"bin": bin}))

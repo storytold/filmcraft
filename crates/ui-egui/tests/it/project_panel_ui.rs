@@ -1652,3 +1652,37 @@ fn zoom_sizes_list_thumbnails_and_the_freeform_canvas() {
     let (x, y, _) = filmcraft_engine::project_panel::parse_pos(&pos).unwrap();
     assert!((x - 90.0).abs() < 3.0 && (y - 40.0).abs() < 3.0, "moved to {x},{y}");
 }
+
+/// #3774 review: zoomed in, the Freeform commands get the width the cards are drawn at, so
+/// Align to Grid keeps the cards in the rows shown instead of an 800-point layout's.
+#[test]
+fn a_zoomed_freeform_canvas_aligns_the_cards_it_shows() {
+    let mut d = project_driver();
+    let (bin, items) = d.footage();
+    d.exec("project.view.set", json!({"view": "freeform", "iconSize": 396.0}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.wait_for(&format!("project.item.{}", items[0]));
+    d.frames(3);
+    let canvas = d.rect("project.freeform");
+    let z = 396.0 / 110.0;
+    // where each card is drawn, on the unscaled canvas
+    let shown: Vec<(f32, f32)> = items
+        .iter()
+        .map(|i| {
+            let r = d.rect(&format!("project.item.{i}"));
+            ((r[0] - canvas[0]) / z, (r[1] - canvas[1]) / z)
+        })
+        .collect();
+    assert!(shown.iter().any(|s| s.1 > shown[0].1 + 1.0), "the zoomed canvas wraps the cards into rows: {shown:?}");
+    // the canvas menu, on empty canvas to the right of the cards
+    let panel = d.rect("panel.Project");
+    d.ok("ui.click", json!({"x": panel[0] + panel[2] - 30.0, "y": canvas[1] + 20.0, "button": "right"}));
+    d.frames(2);
+    d.click("project.canvasMenu.alignToGrid");
+    d.frames(2);
+    for (i, (sx, sy)) in items.iter().zip(&shown) {
+        let pos = d.app().session.project.item(ItemId(*i)).unwrap().metadata.get(FREEFORM_POS).cloned().expect("aligned");
+        let (x, y, _) = filmcraft_engine::project_panel::parse_pos(&pos).unwrap();
+        assert!((x - sx).abs() <= 20.0 && (y - sy).abs() <= 20.0, "item {i}: aligned to {x},{y}, shown at {sx},{sy}");
+    }
+}

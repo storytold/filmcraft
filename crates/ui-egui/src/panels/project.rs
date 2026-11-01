@@ -75,8 +75,8 @@ pub enum ProjectDialog {
     ManagePresets { selected: usize, name: String },
     /// Freeform View Options….
     FreeformOptions { options: filmcraft_engine::project_panel::FreeformOptions },
-    /// Freeform ▸ Save Arrangement….
-    SaveArrangement { name: String, bin: Option<u64> },
+    /// Freeform ▸ Save Arrangement…, with the canvas width (unscaled) its unplaced cards wrap at.
+    SaveArrangement { name: String, bin: Option<u64>, width: Option<f64> },
 }
 
 /// Frontend state of the Project panel (`UiState::project_panel`).
@@ -959,7 +959,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, op: &str, params: &Val
         }
         "saveArrangement" => {
             let bin = Some(view_of(app, inst).bin.0);
-            app.ui.project_panel.dialog = Some(ProjectDialog::SaveArrangement { name: String::new(), bin });
+            let width = params.get("width").and_then(Value::as_f64);
+            app.ui.project_panel.dialog = Some(ProjectDialog::SaveArrangement { name: String::new(), bin, width });
             Ok(Value::Null)
         }
         "revealProject" => {
