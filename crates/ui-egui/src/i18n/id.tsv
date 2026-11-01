@@ -3611,6 +3611,64 @@
 	Flash Cue Point	Titik Isyarat Flash
 	Invalid duration: {error}	Durasi tidak valid: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Temporal Interpolation	Interpolasi Temporal
+	Select items to clear	Pilih item yang akan dihapus
+	A range marker needs a positive duration	Penanda rentang memerlukan durasi positif
+	Add Custom Color	Tambah Warna Kustom
+	Add and apply	Tambah dan terapkan
+	Add color	Tambah warna
+	Add custom color	Tambah warna kustom
+	Add custom color…	Tambah warna kustom…
+	Author	Pembuat
+	Chapter	Bab
+	Choose Color…	Pilih Warna…
+	Choose color with system picker	Pilih warna dengan pemilih sistem
+	Color picker	Pemilih warna
+	Color selected markers	Ubah warna penanda terpilih
+	Custom Color…	Warna Kustom…
+	Delete Marker	Hapus Penanda
+	Delete selected markers	Hapus penanda terpilih
+	Edit Custom Color	Edit Warna Kustom
+	Edit Marker	Edit Penanda
+	Edit color	Edit warna
+	Editing or removing a swatch leaves assigned colors unchanged.	Mengedit atau menghapus contoh warna tidak mengubah warna yang sudah diterapkan.
+	Enter six hex digits, for example FF80C0.	Masukkan enam digit heksadesimal, misalnya FF80C0.
+	Hex	Heksadesimal
+	Hex color	Warna heksadesimal
+	Manage Colors	Kelola Warna
+	Manage Colors…	Kelola Warna…
+	Marker owner is unavailable	Pemilik penanda tidak tersedia
+	No markers	Tidak ada penanda
+	No matching markers	Tidak ada penanda yang cocok
+	No saved colors	Tidak ada warna tersimpan
+	No sequence open	Tidak ada sekuens yang terbuka
+	No source clip open	Tidak ada klip sumber yang terbuka
+	Notes	Catatan
+	Project Colors	Warna Proyek
+	Range marker	Penanda rentang
+	Remove saved color	Hapus warna tersimpan
+	Save color	Simpan warna
+	Search markers	Cari penanda
+	Search name, notes, author	Cari nama, catatan, pembuat
+	Select all	Pilih semua
+	Select all visible markers	Pilih semua penanda yang terlihat
+	Sequence: {name}	Sekuens: {name}
+	Source: {name}	Sumber: {name}
+	Source: {name} (shared source markers)	Sumber: {name} (penanda sumber bersama)
+	System color picker unavailable: {error}	Pemilih warna sistem tidak tersedia: {error}
+	Time is outside the supported range	Waktu di luar rentang yang didukung
+	{count} selected	{count} dipilih
+	Remove Custom Color	Hapus Warna Kustom
+	Edit Markers	Edit Penanda
+	Delete Markers	Hapus Penanda
+	Marker changed or was removed. Reopen it to continue.	Penanda telah diubah atau dihapus. Buka kembali untuk melanjutkan.
+	URL	URL
+	Open Link	Buka Tautan
+	Opens this address in your web browser	Membuka alamat ini di peramban web
+	Enter a valid HTTP or HTTPS URL without credentials	Masukkan URL HTTP atau HTTPS yang valid tanpa kredensial
+	Previous	Sebelumnya
+	Next	Berikutnya
+	Enter a valid HH:MM:SS:FF timecode	Masukkan kode waktu HH:MM:SS:FF yang valid
 # The language-change restart notice (a new interface language takes effect at the next start).
 	Restart	Mulai ulang
 	Later	Nanti

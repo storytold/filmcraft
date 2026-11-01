@@ -34,6 +34,7 @@ fn seq() -> Sequence {
 
 fn clip(id: u64, start: f64, dur: f64, src_in: f64) -> TrackItem {
     TrackItem {
+        custom_label_color: None,
         id: ClipId(id),
         item: MEDIA,
         name: "interview".into(),

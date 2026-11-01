@@ -3614,6 +3614,64 @@
 	Flash Cue Point	Ponto de referência Flash
 	Invalid duration: {error}	Duração inválida: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Temporal Interpolation	Interpolação temporal
+	Select items to clear	Selecione os itens que deseja limpar
+	A range marker needs a positive duration	Um marcador de intervalo precisa de uma duração positiva
+	Add Custom Color	Adicionar cor personalizada
+	Add and apply	Adicionar e aplicar
+	Add color	Adicionar cor
+	Add custom color	Adicionar cor personalizada
+	Add custom color…	Adicionar cor personalizada…
+	Author	Autor
+	Chapter	Capítulo
+	Choose Color…	Escolher cor…
+	Choose color with system picker	Escolher cor com o seletor do sistema
+	Color picker	Seletor de cores
+	Color selected markers	Alterar a cor dos marcadores selecionados
+	Custom Color…	Cor personalizada…
+	Delete Marker	Excluir marcador
+	Delete selected markers	Excluir os marcadores selecionados
+	Edit Custom Color	Editar cor personalizada
+	Edit Marker	Editar marcador
+	Edit color	Editar cor
+	Editing or removing a swatch leaves assigned colors unchanged.	Editar ou remover uma amostra não altera as cores atribuídas.
+	Enter six hex digits, for example FF80C0.	Digite seis dígitos hexadecimais, por exemplo FF80C0.
+	Hex	Hex
+	Hex color	Cor hexadecimal
+	Manage Colors	Gerenciar cores
+	Manage Colors…	Gerenciar cores…
+	Marker owner is unavailable	O proprietário do marcador está indisponível
+	No markers	Nenhum marcador
+	No matching markers	Nenhum marcador correspondente
+	No saved colors	Nenhuma cor salva
+	No sequence open	Nenhuma sequência aberta
+	No source clip open	Nenhum clipe de origem aberto
+	Notes	Notas
+	Project Colors	Cores do projeto
+	Range marker	Marcador de intervalo
+	Remove saved color	Remover cor salva
+	Save color	Salvar cor
+	Search markers	Pesquisar marcadores
+	Search name, notes, author	Pesquisar nome, notas ou autor
+	Select all	Selecionar tudo
+	Select all visible markers	Selecionar todos os marcadores visíveis
+	Sequence: {name}	Sequência: {name}
+	Source: {name}	Origem: {name}
+	Source: {name} (shared source markers)	Origem: {name} (marcadores de origem compartilhados)
+	System color picker unavailable: {error}	Seletor de cores do sistema indisponível: {error}
+	Time is outside the supported range	O tempo está fora do intervalo suportado
+	{count} selected	{count} selecionados
+	Remove Custom Color	Remover cor personalizada
+	Edit Markers	Editar marcadores
+	Delete Markers	Excluir marcadores
+	Marker changed or was removed. Reopen it to continue.	O marcador foi alterado ou removido. Abra-o novamente para continuar.
+	URL	URL
+	Open Link	Abrir link
+	Opens this address in your web browser	Abre este endereço no navegador da web
+	Enter a valid HTTP or HTTPS URL without credentials	Insira uma URL HTTP ou HTTPS válida sem credenciais
+	Previous	Anterior
+	Next	Próximo
+	Enter a valid HH:MM:SS:FF timecode	Digite um timecode válido HH:MM:SS:FF
 # The language-change restart notice (a new interface language takes effect at the next start).
 	Restart	Reiniciar
 	Later	Mais tarde

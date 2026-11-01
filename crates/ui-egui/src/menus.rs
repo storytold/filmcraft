@@ -188,27 +188,26 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     }
 }
 
-/// Edit ▸ Select All while a text field has the keyboard (the Project panel's search, a name being
-/// typed) selects that field's text, not the timeline clips: on macOS the native menu takes Cmd+A
-/// before the field sees the key. The selection is set on the field's state, so it holds however
-/// late in the pass the command runs (menu inbox or control channel); the field clamps the end to
-/// its text. False when no text field has the keyboard.
-fn select_all_in_text_field(ctx: &egui::Context) -> bool {
-    use egui::text::{CCursor, CCursorRange};
-    let Some(id) = ctx.memory(|m| m.focused()) else { return false };
-    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return false };
-    state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(usize::MAX))));
-    state.store(ctx, id);
-    true
+/// Route menu editing to the focused text field; automation can explicitly invoke the engine.
+pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    if text_field_window(ctx).is_some() && edits_text(id) {
+        return activate_native(app, ctx, id);
+    }
+    invoke_command(app, ctx, id, params)
+}
+
+pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> Vec<MenuItem> {
+    let mut items = menu_items(app);
+    if text_field_window(ctx).is_some() {
+        for item in items.iter_mut().filter(|item| edits_text(&item.id)) {
+            item.enabled = true;
+        }
+    }
+    items
 }
 
 /// Execute a UI or engine command by id.
-pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
-    // A focused text field takes Select All before the Project panel redirect below, or the
-    // Project search box would select items.
-    if id == "edit.selectAll" && select_all_in_text_field(ctx) {
-        return Ok(Value::Null);
-    }
+pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
     // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
     // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
     // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
@@ -690,8 +689,13 @@ pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) ->
         return Ok(graphic_text_command(app, ctx, id));
     }
     let (Some(window), Some(text)) = (text_field_window(ctx), text_command(id, ctx.os().is_mac())) else {
-        return invoke(app, ctx, id, json!({}));
+        return invoke_command(app, ctx, id, json!({}));
     };
+    // Retain main's immediate Select All for the root window, including Project search. Floating
+    // text fields keep the native event delivery that belongs to their own viewport.
+    if id == "edit.selectAll" && window == egui::ViewportId::ROOT && select_all_in_text_field(ctx) {
+        return Ok(Value::Null);
+    }
     match text {
         TextCommand::Paste => ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste),
         TextCommand::Events(events) if window == egui::ViewportId::ROOT => {
@@ -701,6 +705,15 @@ pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) ->
         TextCommand::Events(events) => craft_ui::docking::send_keys(ctx, window, events),
     }
     Ok(Value::Null)
+}
+
+fn select_all_in_text_field(ctx: &egui::Context) -> bool {
+    use egui::text::{CCursor, CCursorRange};
+    let Some(id) = ctx.memory(|m| m.focused()) else { return false };
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return false };
+    state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(usize::MAX))));
+    state.store(ctx, id);
+    true
 }
 
 /// The window whose text field has the keyboard: a floating panel's own OS window, or the main
@@ -754,6 +767,11 @@ fn text_command(id: &str, mac: bool) -> Option<TextCommand> {
         TextCommand::Events([true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers }).into())
     };
     Some(match id {
+        "edit.clear" => TextCommand::Events(
+            [true, false]
+                .map(|pressed| egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE })
+                .into(),
+        ),
         "edit.copy" => TextCommand::Events(vec![egui::Event::Copy]),
         "edit.cut" => TextCommand::Events(vec![egui::Event::Cut]),
         "edit.paste" => TextCommand::Paste,
@@ -1121,7 +1139,7 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
 /// Draw the in-window menu bar.
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("interface-language"), app.ui.language));
-    let items = menu_items(app);
+    let items = menu_items_with_focus(app, ui.ctx());
     // Draw Edit ▸ Label with the user's live palette, not the baked-in label colours.
     let labels = app.session.prefs.labels.clone();
     let ctx = ui.ctx().clone();
