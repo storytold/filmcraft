@@ -8,8 +8,8 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 ```json
 {
   "format": "filmcraft.project",
-  "schema_version": 13,
-  "generator": "FilmCraft 0.1.0",
+  "schema_version": 17,
+  "generator": "FilmCraft 0.12.0",
   "project": { "name": "…", "settings": { … }, "root": { … }, "items": { … }, "next_id": 48 },
   "view": { "open_sequences": [21, 50], "active_sequence": 50, "sequences": { "21": { "pps": 40.0, "scroll": 0.0, … } } }
 }
@@ -53,6 +53,10 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 | 11 | M3.11 | search bins (`project.search_bins`), Flash Cue markers, Project Settings safe areas, capture format and scratch disks; no-op step |
 | 12 | M10.7 | graphics design data: `TrackItem::graphic` (roll / crawl, responsive time, template link), `EffectInstance::layer` (layer uid, per-character styles, responsive pins), `project.source_graphics`; no-op step |
 | 13 | Multi-stream audio | `MediaInfo::audio_streams` and `TrackItem::audio_stream`; older `audio` objects load as stream zero, missing clip indices default to zero; no-op step |
+| 14 | Narrations | Text-to-Speech narration data; existing projects need no changes; no-op step |
+| 15 | Project notes | Project notes default empty; no-op step |
+| 16 | Marker and custom colors | Marker authors, custom marker/clip colors and named project palettes; existing presets remain unchanged and new fields default empty; no-op step |
+| 17 | Marker URLs | Marker URLs default empty; older builds refuse v17 instead of silently discarding saved URLs; no-op step |
 
 ### Migrations
 
@@ -444,3 +448,10 @@ frame-size ratio. Intrinsic effects (Motion, Opacity…) replace the clip's own 
 effects are added. Applying is one undo step; saving, renaming, deleting and importing change the
 library, not the project, and are not undoable. Files with another `format`, a newer `version` or
 unknown effect ids are refused.
+
+## Marker web addresses (schema v17)
+
+Markers may store an optional `url` independently of their name and notes. Older files
+load with an empty URL. Schema v17 prevents older builds from silently dropping links
+on save. Changing marker type retains the address. Project loading never opens it; the
+Edit Marker dialog offers explicit HTTP(S) browser opening for Web Link markers.

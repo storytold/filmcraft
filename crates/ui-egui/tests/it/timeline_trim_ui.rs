@@ -938,6 +938,9 @@ fn alt_rate_stretch_and_shift_alt_ripple_leave_the_edited_linked_audio_fixed() {
 #[ignore = "headless wgpu visual review"]
 fn ripple_rate_stretch_screenshot() {
     let (mut d, first, _) = ripple_fixture();
+    let frame = d.app().session.sequence_rate().frame_duration().0;
+    d.exec("markers.add", json!({"target":"program","time":60*frame,"durationFrames":12,"name":"Ripple range","color":"#11AA33"}));
+    d.exec("markers.rippleSequenceMarkers", json!({"on":true}));
     d.exec("effects.apply", json!({"effect":"cross_dissolve","clip":first,"edge":"out","frames":10}));
     let (x0, x1, y) = d.edges(first);
     d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
@@ -985,53 +988,75 @@ fn alt_dragging_an_edge_trims_only_that_side_of_a_link() {
     }
 }
 
-/// The sequence-marker preference moves the live ruler marker with its adjacent follower clip.
+/// Point and custom-colored range markers preview both ripple directions without mutating the project.
 #[test]
 fn ripple_rate_stretch_marker_preview_follows_the_cut_before_release() {
-    let (mut d, first, next) = ripple_fixture();
-    let frame = d.app().session.sequence_rate().frame_duration().0;
-    let marker = d.exec("markers.add", json!({"target":"program","time":60*frame,"name":"Cut marker"}))["marker"].as_u64().unwrap();
-    d.exec("markers.rippleSequenceMarkers", json!({"on":true}));
-    let before = d.app().session.project.clone();
-    let (x0, x1, y) = d.edges(first);
-    let from = pos2(x1 - 3.0, y);
-    let to = pos2(x1 + (x1 - x0) / 4.0, y);
-    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
-    d.hover(from);
-    d.harness.input_mut().events.push(egui::Event::PointerButton {
-        pos: from,
-        button: egui::PointerButton::Primary,
-        pressed: true,
-        modifiers: egui::Modifiers::SHIFT,
-    });
-    d.frames(1);
-    d.harness.input_mut().events.push(egui::Event::PointerMoved(to));
-    d.frames(3);
-    let elements = d.ok("ui.elements", json!({"prefix":"timeline."}));
-    let rect = |id: &str| {
-        let element = elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("missing {id}"));
-        let r = element["rect"].as_array().unwrap();
-        (r[0].as_f64().unwrap(), r[2].as_f64().unwrap())
-    };
-    let (marker_left, marker_width) = rect(&format!("timeline.marker.{marker}"));
-    let marker_x = marker_left + marker_width / 2.0;
-    let follower_x = rect(&format!("timeline.clip.{next}")).0;
-    assert!((marker_x - follower_x).abs() < 1.5, "live marker {marker_x} should follow the cut {follower_x}");
-    assert_eq!(*d.app().session.project, *before, "the live preview leaves the project untouched");
-    d.harness.input_mut().events.push(egui::Event::PointerButton {
-        pos: to,
-        button: egui::PointerButton::Primary,
-        pressed: false,
-        modifiers: egui::Modifiers::NONE,
-    });
-    d.frames(3);
-    let q = d.app().session.active_sequence().unwrap();
-    assert_eq!(q.markers.iter().find(|m| m.id.0 == marker).unwrap().start, q.find_item(ClipId(next)).unwrap().1.start);
-    let after = d.app().session.project.clone();
-    d.exec("edit.undo", json!({}));
-    assert_eq!(*d.app().session.project, *before);
-    d.exec("edit.redo", json!({}));
-    assert_eq!(*d.app().session.project, *after);
+    for duration in [0, 12] {
+        for direction in [-1.0, 1.0] {
+            let (mut d, first, next) = ripple_fixture();
+            let frame = d.app().session.sequence_rate().frame_duration().0;
+            let marker = d.exec(
+                "markers.add",
+                json!({"target":"program","time":60*frame,"durationFrames":duration,"name":"Cut marker","author":"Synthetic author","color":"#11AA33"}),
+            )["marker"]
+                .as_u64()
+                .unwrap();
+            let original_marker = d.app().session.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == marker).unwrap().clone();
+            d.exec("markers.rippleSequenceMarkers", json!({"on":true}));
+            let before = d.app().session.project.clone();
+            let (x0, x1, y) = d.edges(first);
+            let from = pos2(x1 - 3.0, y);
+            let to = pos2(x1 + direction * (x1 - x0) / 4.0, y);
+            d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+            d.hover(from);
+            d.harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::SHIFT,
+            });
+            d.frames(1);
+            d.harness.input_mut().events.push(egui::Event::PointerMoved(to));
+            d.frames(3);
+            let elements = d.ok("ui.elements", json!({"prefix":"timeline."}));
+            let rect = |id: &str| {
+                let element = elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("missing {id}"));
+                let r = element["rect"].as_array().unwrap();
+                (r[0].as_f64().unwrap(), r[2].as_f64().unwrap())
+            };
+            let (marker_left, marker_width) = rect(&format!("timeline.marker.{marker}"));
+            let marker_x = marker_left + marker_width / 2.0;
+            let follower_x = rect(&format!("timeline.clip.{next}")).0;
+            assert!((marker_x - follower_x).abs() < 1.5, "live marker {marker_x} should follow the cut {follower_x}");
+            if duration > 0 {
+                let (end_left, end_width) = rect(&format!("timeline.markerEnd.{marker}"));
+                let end_x = end_left + end_width / 2.0;
+                let span = (x1 - x0) as f64 * duration as f64 / 60.0;
+                assert!((end_x - marker_x - span).abs() < 1.5, "both range endpoints follow the accepted cut without changing duration");
+                let (range_left, range_width) = rect(&format!("timeline.markerRange.{marker}"));
+                assert!((range_left - marker_x).abs() < 1.5);
+                assert!((range_left + range_width - end_x).abs() < 1.5);
+            }
+            assert_eq!(*d.app().session.project, *before, "the live preview leaves the project untouched");
+            d.harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            d.frames(3);
+            let q = d.app().session.active_sequence().unwrap();
+            let actual_marker = q.markers.iter().find(|m| m.id.0 == marker).unwrap();
+            let mut expected_marker = original_marker;
+            expected_marker.start = q.find_item(ClipId(next)).unwrap().1.start;
+            assert_eq!(actual_marker, &expected_marker, "ripple preserves marker range, author and custom color");
+            let after = d.app().session.project.clone();
+            d.exec("edit.undo", json!({}));
+            assert_eq!(*d.app().session.project, *before);
+            d.exec("edit.redo", json!({}));
+            assert_eq!(*d.app().session.project, *after);
+        }
+    }
 }
 
 impl Driver {
