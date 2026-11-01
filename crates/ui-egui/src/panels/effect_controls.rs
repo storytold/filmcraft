@@ -1125,7 +1125,16 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             }
         }
-        if let Some((clip, it, _)) = clips.iter().find(|c| c.2 == TrackKind::Audio)
+        // the Audio section shows a clip Level and Pan change: the shown audio clip, else the first
+        // selected one on an unlocked track (a locked clip would keep its value while the others move,
+        // and a selected video without its own audio would hide the section), else a lone locked one
+        let shown_audio = clips.iter().find(|c| c.2 == TrackKind::Audio).map(|(c, it, _)| (*c, it.clone()));
+        let audio_ref = shown_audio
+            .clone()
+            .filter(|(c, _)| audio_group.is_empty() || audio_group.contains(c))
+            .or_else(|| audio_group.first().and_then(|c| app.session.active_sequence()?.find_item(*c).map(|(_, it)| (*c, it.clone()))))
+            .or(shown_audio);
+        if let Some((clip, it)) = &audio_ref
             && section(bui, app, "Audio", it.effects.iter().position(|e| e.effect == "volume").map(|i| (i, clip.0)), &mut actions)
         {
             let clip = *clip;

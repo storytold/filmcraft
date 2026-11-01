@@ -125,3 +125,64 @@ fn properties_level_changes_every_selected_audio_clip() {
     assert_eq!(pan(&mut d, ids[0]), 100.0, "the shown clip stays at its bound");
     assert!(pan(&mut d, ids[1]) > 1.0 && pan(&mut d, ids[2]) > 1.0, "the others keep moving right");
 }
+
+/// Type `text` into the Properties panel's Level and confirm it.
+fn type_level(d: &mut Driver, text: &str) {
+    d.element("properties.volume").expect("the Level is laid out");
+    d.ok("ui.click", json!({"id": "properties.volume"}));
+    d.frames(3);
+    d.ok("ui.type", json!({"text": text}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+}
+
+/// The Audio section shows a clip its Level changes: not a selected clip on a locked track (whose
+/// value would stay put, so typing the same value again moved the others again), and also with a
+/// video selected that has no audio of its own in the selection.
+#[test]
+fn properties_level_shows_a_clip_it_changes() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).expect("demo project");
+    let (tx, rx) = channel();
+    let app = FilmcraftApp::new(session).with_control(rx);
+    let harness = Harness::builder().with_size(egui::vec2(1600.0, 900.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+    let mut d = Driver { harness, tx };
+    d.frames(4);
+    let (first, start, end, _) = d.audio()[0];
+    let third = (end - start) / 3;
+    d.exec("timeline.razor", json!({"clip": first, "time": start + third}));
+    let second = d.audio()[1].0;
+    d.exec("timeline.razor", json!({"clip": second, "time": start + 2 * third}));
+    let ids: Vec<u64> = d.audio().iter().take(3).map(|c| c.0).collect();
+    for (id, level) in ids.iter().zip([-6.0, 0.0, 3.0]) {
+        d.exec("effects.setParam", json!({"clip": id, "effect": "volume", "param": "level", "value": level}));
+    }
+    let level = |d: &mut Driver, id: u64| -> f64 {
+        let seq = d.exec("sequence.inspect", json!({}));
+        let tracks = seq["audio"].as_array().cloned().unwrap_or_default();
+        let it = tracks.iter().flat_map(|t| t["items"].as_array().cloned().unwrap_or_default()).find(|i| i["clip"] == id).expect("the clip");
+        let e = it["effects"].as_array().unwrap().iter().find(|e| e["effect"] == "volume").cloned().unwrap();
+        e["params"]["level"]["value"].as_str().unwrap().trim_start_matches("Float(").trim_end_matches(')').parse().unwrap()
+    };
+    // the first clip on a track of its own, locked; it is selected first, so it would be the one shown
+    d.exec("timeline.move", json!({"moves": [{"clip": ids[0], "track": "new", "time": start}], "linked": false}));
+    let locked = d.exec("sequence.inspect", json!({}))["audio"].as_array().map_or(0, Vec::len);
+    d.exec("timeline.setTrack", json!({"track": format!("A{locked}"), "locked": true}));
+    d.exec("timeline.select", json!({"clips": ids}));
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.ok("ui.scroll", json!({"id": "panel.Properties", "dy": -2000.0}));
+    d.frames(3);
+    assert_eq!(d.element("properties.audioGroup").expect("two clips change")["label"], "2");
+    // typed twice: the shown clip moves to the typed value, so the second time changes nothing
+    type_level(&mut d, "-10");
+    type_level(&mut d, "-10");
+    let levels: Vec<f64> = ids.iter().map(|id| level(&mut d, *id)).collect();
+    assert_eq!(levels, [-6.0, -10.0, -7.0], "the locked clip stays, the others move once by the same amount");
+
+    // linked selection off, a video and the two unlocked audio clips: the Audio section is there
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    let video = d.exec("sequence.inspect", json!({}))["video"][0]["items"][0]["clip"].as_u64().expect("a video clip");
+    d.exec("timeline.select", json!({"clips": [video, ids[1], ids[2]]}));
+    d.frames(3);
+    assert_eq!(d.element("properties.audioGroup").expect("the Audio section with a video selected")["label"], "2");
+}
