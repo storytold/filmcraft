@@ -1,8 +1,9 @@
 //! Opening an MXF file: KLV walk, partitions, metadata resolution, sample tables.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::essence::{Codec, PictureInfo, SoundFormat, SoundInfo, decode_pcm, identify_picture, sniff_picture};
+use crate::essence::{Codec, PictureInfo, SoundFormat, SoundInfo, decode_aes3_frames, decode_pcm, identify_picture, sniff_picture};
 use crate::index::{IndexEntry, IndexSegment};
 use crate::klv::{KeyClass, Ul, ber_length, classify, find_header_partition};
 use crate::meta::{Metadata, Primer, SUB_DESCRIPTORS_ITEM, Set, set_type as st, tag};
@@ -299,18 +300,40 @@ const MAX_META_VALUE: u64 = 64 << 20;
 /// Samples (frames x channels) of zero padding `read_pcm` will produce past the stored essence.
 const PCM_PAD_FRAMES_LIMIT: usize = 1 << 24;
 
+/// Read size of a `Window` refill while the KLVs are small.
+const WINDOW_LARGE: usize = 64 << 10;
+/// Read size of a refill while big values are around: after a value of `WINDOW_LARGE` bytes or more
+/// (a picture, a clip wrapped sound element) the next header is only a few bytes, and the rest of a
+/// big read would be skipped again by the next jump.
+const WINDOW_SMALL: usize = 4 << 10;
+/// KLVs after a big value that still use `WINDOW_SMALL`. A frame holds several elements (picture,
+/// sound) and only some of them are big, so one small KLV must not switch back to big reads.
+const SMALL_KLVS: u32 = 4;
+
 /// Buffered reads of KLV headers.
 struct Window<'a, S: ByteSource + ?Sized> {
     src: &'a S,
     off: u64,
     buf: Vec<u8>,
+    /// Read size of the next refill (see `WINDOW_LARGE`/`WINDOW_SMALL`).
+    refill: usize,
+    /// KLVs left before `refill` is `WINDOW_LARGE` again.
+    small_left: u32,
+}
+
+impl<S: ByteSource + ?Sized> Window<'_, S> {
+    /// Choose the next refill size after walking a KLV with a value of `vlen` bytes.
+    fn skipped(&mut self, vlen: u64) {
+        self.small_left = if vlen >= WINDOW_LARGE as u64 { SMALL_KLVS } else { self.small_left.saturating_sub(1) };
+        self.refill = if self.small_left > 0 { WINDOW_SMALL } else { WINDOW_LARGE };
+    }
 }
 
 impl<S: ByteSource + ?Sized> Window<'_, S> {
     fn get(&mut self, at: u64, n: usize) -> std::io::Result<&[u8]> {
         let have = at >= self.off && at + n as u64 <= self.off + self.buf.len() as u64;
         if !have {
-            self.buf = read_upto(self.src, at, n.max(64 * 1024))?;
+            self.buf = read_upto(self.src, at, n.max(self.refill))?;
             self.off = at;
         }
         let a = (at - self.off) as usize;
@@ -323,15 +346,20 @@ fn walk(src: &(impl ByteSource + ?Sized)) -> Result<WalkResult> {
     let head = read_upto(src, 0, 65_536 + 32)?;
     let run_in = find_header_partition(&head).ok_or_else(|| Error::NotMxf("no header partition pack".into()))? as u64;
     let mut w = WalkResult { run_in, partitions: Vec::new(), metadata: Vec::new(), index: Vec::new(), elements: Vec::new(), warnings: Vec::new() };
-    let mut win = Window { src, off: 0, buf: Vec::new() };
+    let mut win = Window { src, off: 0, buf: Vec::new(), refill: WINDOW_LARGE, small_left: 0 };
     let mut pos = run_in;
     let mut cur_meta: Option<usize> = None;
+    let mut resync_budget = 64 << 20;
     while pos + 17 <= len {
-        let hdr = win.get(pos, 25)?.to_vec();
+        let mut hdr_buf = [0u8; 25];
+        let got = win.get(pos, 25)?;
+        let hdr_len = got.len();
+        hdr_buf[..hdr_len].copy_from_slice(got);
+        let hdr = &hdr_buf[..hdr_len];
         let key = Ul(hdr[..16].try_into().unwrap_or([0; 16]));
         if !key.is_smpte() {
             // Lost sync (corrupt data): look for the next partition pack.
-            match resync(src, pos + 1, len)? {
+            match resync(src, pos + 1, len, &mut resync_budget)? {
                 Some(p) => {
                     w.warnings.push(format!("lost KLV sync at byte {pos}; resumed at {p}"));
                     pos = p;
@@ -404,6 +432,7 @@ fn walk(src: &(impl ByteSource + ?Sized)) -> Result<WalkResult> {
             }
             KeyClass::Fill | KeyClass::RandomIndexPack | KeyClass::Other => {}
         }
+        win.skipped(vlen);
         pos = vend;
     }
     if w.partitions.is_empty() {
@@ -417,12 +446,14 @@ fn is_essence_item(k: &Ul) -> bool {
     matches!(k.0[12], 0x05 | 0x06 | 0x07 | 0x15 | 0x16 | 0x17 | 0x18)
 }
 
-/// The next partition pack key at or after `from` (scans at most 16 MiB).
-fn resync(src: &(impl ByteSource + ?Sized), from: u64, len: u64) -> Result<Option<u64>> {
+/// The next partition pack key at or after `from` (scans at most 16 MiB and shares `budget`
+/// with every other recovery attempt in this file).
+fn resync(src: &(impl ByteSource + ?Sized), from: u64, len: u64, budget: &mut usize) -> Result<Option<u64>> {
     let mut at = from;
     let end = len.min(from + (16 << 20));
-    while at < end {
-        let chunk = read_upto(src, at, 1 << 20)?;
+    while at < end && *budget > 0 {
+        let chunk = read_upto(src, at, (1 << 20).min(*budget))?;
+        *budget = budget.saturating_sub(chunk.len());
         if chunk.len() < 16 {
             break;
         }
@@ -544,8 +575,8 @@ struct TrackRef {
     origin: i64,
     start_position: i64,
     duration: Option<i64>,
-    descriptor: Option<Set>,
-    sub_descriptors: Vec<Set>,
+    descriptor: Option<Arc<Set>>,
+    sub_descriptors: Vec<Arc<Set>>,
     body_sid: u32,
     index_sid: u32,
 }
@@ -567,9 +598,13 @@ fn resolve_tracks(md: &Metadata, warnings: &mut Vec<String>) -> (Vec<TrackRef>, 
     }
     let material = md.of_kind(st::MATERIAL_PACKAGE).next();
     let mut out = Vec::new();
+    let mut descriptor_cache: HashMap<[u8; 16], Arc<Set>> = HashMap::new();
+    let intern_descriptor = |set: &Set, cache: &mut HashMap<[u8; 16], Arc<Set>>| {
+        if set.instance_uid == [0; 16] { Arc::new(set.clone()) } else { cache.entry(set.instance_uid).or_insert_with(|| Arc::new(set.clone())).clone() }
+    };
     let mut timecode = material.and_then(|m| package_timecode(md, m));
     let name = material.and_then(|m| m.string(tag::PACKAGE_NAME));
-    let file_track = |pkg: &Set, kind: Option<TrackKind>, id: Option<u32>, start: i64, duration: Option<i64>, name: Option<String>| -> Option<TrackRef> {
+    let mut file_track = |pkg: &Set, kind: Option<TrackKind>, id: Option<u32>, start: i64, duration: Option<i64>, name: Option<String>| -> Option<TrackRef> {
         let umid = umid_of(pkg, tag::PACKAGE_UID).unwrap_or([0; 32]);
         for r in pkg.references(tag::PACKAGE_TRACKS) {
             let Some(t) = md.get(&r) else { continue };
@@ -588,10 +623,16 @@ fn resolve_tracks(md: &Metadata, warnings: &mut Vec<String>) -> (Vec<TrackRef>, 
                 continue;
             }
             let desc = descriptor_for(md, pkg, tid, tk);
-            let subs: Vec<Set> = desc
+            let descriptor = desc.map(|d| intern_descriptor(d, &mut descriptor_cache));
+            let subs: Vec<Arc<Set>> = desc
                 .and_then(|d| d.dynamic_item(&SUB_DESCRIPTORS_ITEM))
                 .map(|v| {
-                    crate::klv::batch_of(v).into_iter().filter_map(|b| b.get(..16)).filter_map(|b| md.get(&b.try_into().unwrap_or([0; 16]))).cloned().collect()
+                    crate::klv::batch_of(v)
+                        .into_iter()
+                        .filter_map(|b| b.get(..16))
+                        .filter_map(|b| md.get(&b.try_into().unwrap_or([0; 16])))
+                        .map(|s| intern_descriptor(s, &mut descriptor_cache))
+                        .collect()
                 })
                 .unwrap_or_default();
             let (body_sid, index_sid) = sids.get(&umid).copied().unwrap_or((0, 0));
@@ -604,7 +645,7 @@ fn resolve_tracks(md: &Metadata, warnings: &mut Vec<String>) -> (Vec<TrackRef>, 
                 origin: t.i(tag::ORIGIN).unwrap_or(0),
                 start_position: start,
                 duration,
-                descriptor: desc.cloned(),
+                descriptor,
                 sub_descriptors: subs,
                 body_sid,
                 index_sid,
@@ -807,7 +848,7 @@ fn build_track(
     };
     match r.kind {
         TrackKind::Picture => {
-            let pi = desc.map(picture_info).unwrap_or_default();
+            let pi = desc.map(|d| picture_info(d)).unwrap_or_default();
             let mpeg_desc = desc.is_some_and(|d| d.kind() == Some(st::MPEG2_VIDEO_DESCRIPTOR));
             let mut codec = identify_picture(pi.picture_coding, container, mpeg_desc);
             if r.sub_descriptors.iter().any(|s| s.kind() == Some(st::AVC_SUBDESCRIPTOR)) && !matches!(codec, Codec::Avc { .. }) {
@@ -828,7 +869,7 @@ fn build_track(
             build_pictures(src, &mut t, elements, index, warnings)?;
         }
         TrackKind::Sound => {
-            let si = desc.map(sound_info).unwrap_or(SoundInfo { channels: 1, bits: 16, ..Default::default() });
+            let si = desc.map(|d| sound_info(d)).unwrap_or(SoundInfo { channels: 1, bits: 16, ..Default::default() });
             let d10 = container.is_some_and(|c| c.item_starts_with(&[0x0D, 0x01, 0x03, 0x01, 0x02, 0x01]));
             let aes_element = d10 || key4[0] == 0x06 && key4[2] == 0x10;
             let pcm_desc = desc.is_some_and(|d| matches!(d.kind(), Some(st::AES3_DESCRIPTOR) | Some(st::WAVE_DESCRIPTOR)));
@@ -1049,13 +1090,28 @@ impl MxfFile {
                         decode_pcm(&v, SoundFormat::Pcm, ch, si.bits, fb)?
                     }
                     SoundFormat::Aes3Element => {
-                        let size = c.size.min(src.len().saturating_sub(c.offset));
-                        let size = usize::try_from(size).map_err(|_| Error::Invalid("AES3 chunk exceeds the address space".into()))?;
-                        let mut v = vec![0u8; size];
-                        src.read_at(c.offset, &mut v)?;
-                        let all = decode_pcm(&v, SoundFormat::Aes3Element, ch, si.bits, 0)?;
-                        let s0 = (a - c.first_sample) as usize;
-                        all.into_iter().map(|p| p.get(s0..).map(<[f32]>::to_vec).unwrap_or_default()).collect()
+                        // Read only the requested sample frames (32 bytes each behind the 4-byte
+                        // element header), not the whole element: a clip-wrapped or hostile
+                        // element would otherwise be read and decoded in full on every call.
+                        if ch > 8 {
+                            return Err(Error::Invalid("an AES3 element has at most eight channels".into()));
+                        }
+                        let avail = c.size.min(src.len().saturating_sub(c.offset));
+                        let mut head = [0u8; 4];
+                        let total = if avail >= 4 {
+                            src.read_at(c.offset, &mut head)?;
+                            // same bound as `aes3_element_samples`
+                            u64::from(u16::from_le_bytes([head[1], head[2]])).min((avail - 4) / 32)
+                        } else {
+                            0
+                        };
+                        let s0 = a - c.first_sample;
+                        let n = (b - a).min(total.saturating_sub(s0));
+                        let mut v = vec![0u8; n as usize * 32];
+                        if n > 0 {
+                            src.read_at(c.offset + 4 + s0 * 32, &mut v)?;
+                        }
+                        decode_aes3_frames(&v, ch)
                     }
                     SoundFormat::Other => return Err(Error::Unsupported("sound essence coding".into())),
                 };
@@ -1093,5 +1149,103 @@ mod index_bounds_tests {
         let segment = IndexSegment { start_position: -1, entries: vec![IndexEntry::default(); 3], ..Default::default() };
         let (entries, _) = index_entries(&[segment], 0);
         assert_eq!(entries.keys().copied().collect::<Vec<_>>(), vec![0, 1]);
+    }
+}
+
+#[cfg(test)]
+mod aes3_read_tests {
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::source::ByteSource;
+
+    /// A source that remembers its largest single read.
+    struct Counting<'a> {
+        data: &'a [u8],
+        biggest: Cell<usize>,
+    }
+
+    impl ByteSource for Counting<'_> {
+        fn len(&self) -> u64 {
+            self.data.len() as u64
+        }
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            self.biggest.set(self.biggest.get().max(buf.len()));
+            self.data.read_at(offset, buf)
+        }
+    }
+
+    /// One clip-wrapped AES3 element of `declared` sample frames in a file that holds `stored`.
+    fn aes3_file(declared: u16, stored: usize, channels: u32) -> (MxfFile, Vec<u8>) {
+        let mut data = vec![0x00, declared as u8, (declared >> 8) as u8, 0xFF];
+        for i in 0..stored * 8 {
+            let s = ((i as i32 * 7919) % 1_000_000) - 500_000;
+            data.extend_from_slice(&((((s as u32) & 0xFF_FFFF) << 4) | (i as u32 & 15)).to_le_bytes());
+        }
+        let samples = (data.len() as u64 - 4) / 32;
+        let track = EssenceTrack {
+            track_id: 1,
+            track_number: 0,
+            kind: TrackKind::Sound,
+            name: None,
+            edit_rate: Rational::default(),
+            origin: 0,
+            start_position: 0,
+            duration: None,
+            codec: Codec::Aes3Element,
+            wrapping: Wrapping::Clip,
+            essence_container: None,
+            picture: None,
+            sound: Some(SoundInfo { channels, bits: 24, ..Default::default() }),
+            sound_format: SoundFormat::Aes3Element,
+            body_sid: 1,
+            index_sid: 0,
+            samples: Vec::new(),
+            display_order: Vec::new(),
+            chunks: vec![Chunk { offset: 0, size: data.len() as u64, first_sample: 0, samples }],
+            temporal_offsets: false,
+            needs_reorder: false,
+            indexed: false,
+        };
+        let file = MxfFile {
+            run_in: 0,
+            operational_pattern: OperationalPattern::Atom,
+            operational_pattern_label: Ul::default(),
+            partitions: Vec::new(),
+            index_segments: Vec::new(),
+            tracks: vec![track],
+            timecode: None,
+            material_package_name: None,
+            product_name: None,
+            company_name: None,
+            metadata_partition: 0,
+            warnings: Vec::new(),
+            file_size: data.len() as u64,
+        };
+        (file, data)
+    }
+
+    #[test]
+    fn aes3_reads_decode_only_the_requested_frames() {
+        for (declared, stored) in [(5000, 5000), (3000, 5000)] {
+            let (file, data) = aes3_file(declared, stored, 2);
+            let whole = decode_pcm(&data, SoundFormat::Aes3Element, 2, 24, 0).unwrap();
+            assert_eq!(whole[0].len(), declared as usize);
+            for (start, frames) in [(0u64, 1920usize), (1920, 1920), (2999, 4), (2990, 2000), (4990, 100), (6000, 10)] {
+                let src = Counting { data: &data, biggest: Cell::new(0) };
+                let got = file.read_pcm(&src, 0, start, frames).unwrap();
+                for (c, g) in got.iter().enumerate() {
+                    let want: Vec<f32> = (0..frames).map(|k| whole[c].get(start as usize + k).copied().unwrap_or(0.0)).collect();
+                    assert_eq!(g, &want, "declared {declared}, start {start}, frames {frames}, channel {c}");
+                }
+                assert!(src.biggest.get() <= frames * 32, "read {} bytes for {frames} frames", src.biggest.get());
+            }
+        }
+    }
+
+    #[test]
+    fn aes3_read_rejects_more_than_eight_channels() {
+        let (file, data) = aes3_file(10, 10, 9);
+        assert!(file.read_pcm(&data, 0, 0, 4).is_err());
     }
 }

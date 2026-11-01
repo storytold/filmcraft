@@ -50,111 +50,168 @@ pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
 }
 
-/// The marker colours of the Markers panel filter (each chip stands for the labels that share its
-/// marker colour).
-pub const MARKER_FILTER: [filmcraft_project::Label; 7] = {
-    use filmcraft_project::Label::*;
-    [Green, Rose, Purple, Mango, Yellow, Blue, Teal]
-};
+/// Egui memory key of the open Delete Redoable Actions confirmation.
+const CONFIRM_DELETE_REDOABLE: &str = "history-delete-redoable";
+
+/// The History panel's ≡ menu: Delete Redoable Actions and Clear History (automation ids
+/// `panel.menu.History.deleteRedoable` and `panel.menu.History.clear`). Returns true to close it.
+pub fn history_panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
+    let ctx = ui.ctx().clone();
+    let mut close = false;
+    for (id, label, command) in [("deleteRedoable", tl!("Delete Redoable Actions"), "history.deleteRedoable"), ("clear", tl!("Clear History"), "history.clear")]
+    {
+        let r = ui.add_enabled(app.session.is_enabled(command), egui::Button::new(label));
+        app.auto.add_response(&format!("panel.menu.History.{id}"), &r, label);
+        if r.clicked() {
+            if let Err(e) = crate::menus::invoke(app, &ctx, command, serde_json::json!({})) {
+                app.ui.status = e;
+            }
+            close = true;
+        }
+    }
+    close
+}
+
+/// Delete Redoable Actions from the panel menu or a key (no parameters) asks for OK first, as in
+/// Premiere. Returns None for other ids, and for calls with parameters, which run the command.
+pub fn route_history(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &serde_json::Value) -> Option<Result<serde_json::Value, String>> {
+    if id != "history.deleteRedoable" || !params.as_object().is_none_or(|m| m.is_empty()) {
+        return None;
+    }
+    if !app.session.history.can_redo() {
+        return Some(Err("nothing to redo".into()));
+    }
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CONFIRM_DELETE_REDOABLE), true));
+    Some(Ok(serde_json::json!({"dialog": "deleteRedoable"})))
+}
+
+/// The Delete Redoable Actions confirmation (automation ids `history.deleteRedoable.cancel` and
+/// `history.deleteRedoable.ok`). It closes by itself when nothing is left to redo.
+pub fn history_dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let key = egui::Id::unique(CONFIRM_DELETE_REDOABLE);
+    if !ctx.data(|d| d.get_temp::<bool>(key)).unwrap_or(false) {
+        return;
+    }
+    let mut close = !app.session.history.can_redo();
+    egui::Window::new(tl!("Delete Redoable Actions"))
+        .id(key.with("window"))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .show(ctx, |ui| {
+            ui.label(tl!("Delete the dimmed actions after the current state? They cannot be redone."));
+            ui.horizontal(|ui| {
+                let r = ui.button(tl!("Cancel"));
+                app.auto.add("history.deleteRedoable.cancel", r.rect, "Cancel");
+                close |= r.clicked();
+                let r = ui.button(tl!("OK"));
+                app.auto.add("history.deleteRedoable.ok", r.rect, "OK");
+                if r.clicked() {
+                    if let Err(e) = app.session.execute("history.deleteRedoable", serde_json::json!({})) {
+                        app.ui.status = e.to_string();
+                    }
+                    close = true;
+                }
+            });
+        });
+    if close || crate::widgets::escape_closes(ctx) {
+        ctx.data_mut(|d| d.remove::<bool>(key));
+    }
+}
+
+/// Marker filtering uses the same sixteen presets as clip labels.
+pub const MARKER_FILTER: [filmcraft_project::Label; 16] = filmcraft_project::Label::ALL;
 
 /// A marker's Label menu. An explicit program target keeps panel focus and clip/project
 /// selections from routing colour changes to another item (#1143).
 pub(crate) fn marker_label_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, marker: &filmcraft_project::Marker, prefix: &str) {
+    if let Some(owner) = super::marker_properties::Owner::current(app, false) {
+        marker_owned_menu(app, ui, marker, prefix, owner);
+    }
+}
+pub(crate) fn marker_owned_menu(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    marker: &filmcraft_project::Marker,
+    prefix: &str,
+    owner: super::marker_properties::Owner,
+) {
+    let params = |color: &str| {
+        let mut p = owner.params();
+        p["marker"] = serde_json::json!(marker.id.0);
+        p["color"] = serde_json::json!(color);
+        p
+    };
     let label = crate::i18n::t("Label");
     let menu = ui.menu_button(label, |ui| {
         for color in filmcraft_project::Label::ALL {
             let name = crate::i18n::t(color.name());
-            let r = ui.selectable_label(color == marker.color, name);
+            let r = ui.selectable_label(marker.custom_color.is_none() && color == marker.color, name);
             app.auto.add_response(&format!("{prefix}.color.{}", color.name()), &r, name);
             if r.clicked() {
-                if let Err(error) = app.session.execute("markers.edit", serde_json::json!({"target":"program","marker":marker.id.0,"color":color.name()})) {
+                if let Err(error) = app.session.execute("markers.edit", params(color.name())) {
                     app.ui.status = error.to_string();
                 }
                 ui.close();
             }
         }
+        ui.separator();
+        let customs = super::custom_colors::available(app);
+        egui::ScrollArea::vertical().id_salt(format!("{prefix}.customScroll")).max_height(140.0).show(ui, |ui| {
+            for color in &customs {
+                let hex = color.hex();
+                let [r, g, b] = color.0;
+                let response = ui
+                    .horizontal(|ui| {
+                        let (rect, swatch) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::click());
+                        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(r, g, b));
+                        ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, ui.visuals().text_color()), egui::StrokeKind::Inside);
+                        swatch.union(ui.selectable_label(marker.custom_color == Some(*color), super::custom_colors::name(app, *color)))
+                    })
+                    .inner;
+                app.auto.add_response(&format!("{prefix}.custom.{hex}"), &response, &hex);
+                if response.clicked() {
+                    if let Err(e) = app.session.execute("markers.edit", params(&hex)) {
+                        app.ui.status = e.to_string();
+                    }
+                    ui.close();
+                }
+            }
+        });
+        let response = ui.button(tl!("Custom Color…"));
+        app.auto.add_response(&format!("{prefix}.customColor"), &response, tl!("Custom Color"));
+        if response.clicked() {
+            super::marker_properties::open_owned(app, marker, owner);
+            if let Some(draft) = &mut app.ui.marker_properties {
+                draft.color_editor = Some(crate::widgets::color_picker::ColorDraft::new(
+                    marker.custom_color.map_or_else(|| app.session.prefs.labels.rgb(marker.color), |c| c.0),
+                ));
+            }
+            ui.close();
+        }
     });
     app.auto.add_response(&format!("{prefix}.label"), &menu.response, label);
+    let response = ui.button(tl!("Edit Marker…"));
+    app.auto.add_response(&format!("{prefix}.properties"), &response, tl!("Edit Marker"));
+    if response.clicked() {
+        super::marker_properties::open_owned(app, marker, owner);
+        ui.close();
+    }
+    let response = ui.button(tl!("Delete Marker"));
+    app.auto.add_response(&format!("{prefix}.delete"), &response, tl!("Delete Marker"));
+    if response.clicked() {
+        let mut p = owner.params();
+        p["marker"] = serde_json::json!(marker.id.0);
+        if let Err(e) = app.session.execute("markers.delete", p) {
+            app.ui.status = e.to_string();
+        }
+        ui.close();
+    }
 }
 
-/// Markers panel: a colour filter row (click a chip to show/hide that colour; automation ids
-/// `markers.filter.<label>`), then the sequence markers (`markers.row.<id>`; click = go to it).
 pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
-    let t = app.tokens;
-    // Keep the immutable project snapshot alive while UI commands mutate the session.
-    // Cloning a sequence here copies every clip and effect on every redraw.
-    let project = app.session.project.clone();
-    let Some(seq) = app.session.state.active_sequence.and_then(|id| project.sequence(id)) else {
-        crate::dock::placeholder(ui, rect, &t, tl!("(no sequence)"));
-        return;
-    };
-    let hidden: Vec<[u8; 3]> = app.session.state.hidden_marker_colors.iter().map(|l| l.marker_rgb()).collect();
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)));
-    let mut go = None;
-    let mut toggle = None;
-    let mut elems: Vec<(String, Rect, String)> = Vec::new();
-    child.horizontal(|ui| {
-        for l in MARKER_FILTER {
-            let c = l.marker_rgb();
-            let on = !hidden.contains(&c);
-            let (r, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::click());
-            let col = Color32::from_rgb(c[0], c[1], c[2]);
-            if on {
-                ui.painter().rect_filled(r.shrink(2.0), 3.0, col);
-            } else {
-                ui.painter().rect_stroke(r.shrink(2.5), 3.0, egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
-            }
-            elems.push((format!("markers.filter.{}", l.name()), r, format!("{} markers {}", l.name(), if on { "shown" } else { "hidden" })));
-            if resp.on_hover_text(tlf!("Show or hide {color} markers", color = crate::i18n::t(l.name()))).clicked() {
-                toggle = Some((l, !on));
-            }
-        }
-    });
-    child.add_space(4.0);
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut child, |ui| {
-        let mut shown = 0;
-        for m in seq.markers.iter().filter(|m| !hidden.contains(&m.color.marker_rgb())) {
-            shown += 1;
-            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
-            if resp.hovered() {
-                ui.painter().rect_filled(r, 3.0, t.hover);
-            }
-            let c = m.color.marker_rgb();
-            ui.painter().rect_filled(Rect::from_min_size(r.min + vec2(4.0, 6.0), vec2(4.0, 26.0)), 2.0, Color32::from_rgb(c[0], c[1], c[2]));
-            let name = if m.name.is_empty() { tl!("Marker") } else { &m.name };
-            ui.painter().text(pos2(r.min.x + 16.0, r.min.y + 12.0), Align2::LEFT_CENTER, name, Tokens::ui(12.0), t.text);
-            let mut tc = format_time(m.start, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
-            if m.duration > filmcraft_time::Tick::ZERO {
-                let d = format_time(m.duration, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
-                tc = format!("{tc}  ({d})");
-            }
-            if m.kind == filmcraft_project::MarkerKind::Chapter {
-                tc = tlf!("{tc}  Chapter", tc);
-            }
-            ui.painter().text(pos2(r.min.x + 16.0, r.min.y + 27.0), Align2::LEFT_CENTER, tc, Tokens::mono(11.0), t.hot_text);
-            elems.push((format!("markers.row.{}", m.id.0), r, name.to_string()));
-            if resp.clicked() {
-                go = Some(m.start);
-            }
-            resp.context_menu(|ui| marker_label_menu(app, ui, m, "markers.menu"));
-        }
-        if seq.markers.is_empty() {
-            ui.label(egui::RichText::new(tl!("No markers. Press M to add one.")).color(t.text_faint));
-        } else if shown == 0 {
-            ui.label(egui::RichText::new(tl!("All markers are hidden by the colour filter.")).color(t.text_faint));
-        }
-    });
-    for (id, r, l) in elems {
-        app.auto.add(&id, r, &l);
-    }
-    if let Some((l, visible)) = toggle
-        && let Err(e) = app.session.execute("markers.filterColors", serde_json::json!({"color": l.name(), "visible": visible}))
-    {
-        app.ui.status = e.to_string();
-    }
-    if let Some(g) = go {
-        app.session.set_playhead(g);
-    }
+    super::markers_panel::show(app, ui, rect);
 }
 
 pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {

@@ -2,6 +2,7 @@
 //! many cores render it and however the work is cut into steps.
 
 use super::*;
+use crate::run::capped_pool;
 use crate::tests::project;
 
 fn tmp(name: &str) -> String {
