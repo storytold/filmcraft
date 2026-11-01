@@ -13,6 +13,12 @@ const FRAME_MARGIN: i128 = 65_536;
 
 pub(crate) fn mix(session: &Session, seq_id: ItemId, device_rate: u32, speed: f64) -> Option<(u32, Mixer)> {
     let rate = super::shuttle_mix_rate(device_rate, speed)?;
+    if speed < 0.0 {
+        // Reverse playback: device runs at `rate` == `device_rate`; the mixer reads blocks
+        // backward from the timeline and flips them so the device hears the audio in reverse.
+        let inner = super::playback_mix(session, seq_id, rate);
+        return Some((rate, Box::new(reverse_wrap(inner, speed.abs()))));
+    }
     if !session.prefs.audio.maintain_pitch_shuttling || rate == device_rate {
         return Some((rate, Box::new(super::playback_mix(session, seq_id, rate))));
     }
@@ -20,6 +26,82 @@ pub(crate) fn mix(session: &Session, seq_id: ItemId, device_rate: u32, speed: f6
     let internal_rate = if rate > device_rate { device_rate.checked_mul(2)? } else { device_rate };
     let semitones = (12.0 * (f64::from(rate) / f64::from(device_rate)).log2()) as f32;
     Some((rate, Box::new(corrected(super::playback_mix(session, seq_id, internal_rate), internal_rate, rate, semitones))))
+}
+
+/// Wraps a forward mixer so the device hears it playing backward.
+///
+/// The `fill` closure from `play_ahead` calls this with a *device-frame cursor* that starts at the
+/// current timeline position and increases monotonically (device always consumes frames in order).
+/// We record the cursor on the first call (`start`) and derive the timeline read position from it:
+///
+///   timeline_end = start − (cursor − start) × abs_speed
+///
+/// So as device time advances, the timeline retreats. Each block reads `in_frames` forward-in-time
+/// ending at `timeline_end`, then reverses the frame order before writing to `buf`.
+///
+/// At 1× reverse: block N reads [timeline_end − N, timeline_end], flips → N device frames reversed.
+/// At 2× reverse: block N reads 2N frames, flips, resamples to N device frames.
+fn reverse_wrap(
+    mut mix: impl FnMut(i64, &mut [f32], usize) + Send + 'static,
+    abs_speed: f64,
+) -> impl FnMut(i64, &mut [f32], usize) + Send {
+    let mut start: Option<i64> = None;
+    move |cursor: i64, buf: &mut [f32], ch: usize| {
+        if ch == 0 || buf.is_empty() || !buf.len().is_multiple_of(ch) {
+            buf.fill(0.0);
+            return;
+        }
+        let out_frames = buf.len() / ch;
+        // Record the cursor at the moment J is first pressed (= timeline position at that instant).
+        // Reset if cursor jumps backward (seek or restart creates a fresh closure, but be safe).
+        let s = match start {
+            Some(s) if cursor >= s => s,
+            _ => { start = Some(cursor); cursor }
+        };
+        // Map increasing device cursor → decreasing timeline position.
+        let device_elapsed = cursor.saturating_sub(s);
+        let timeline_retreat = (device_elapsed as f64 * abs_speed).round() as i64;
+        let timeline_end = s.saturating_sub(timeline_retreat);
+        if timeline_end <= 0 {
+            // Reached or passed the start of the timeline.
+            buf.fill(0.0);
+            return;
+        }
+        // Read `in_frames` forward-in-time ending at `timeline_end`, then reverse them.
+        let in_frames = ((out_frames as f64 * abs_speed).ceil() as usize).max(1);
+        let read_start = timeline_end.saturating_sub(in_frames as i64).max(0);
+        let actual_in = (timeline_end - read_start).max(0) as usize;
+        if actual_in == 0 {
+            buf.fill(0.0);
+            return;
+        }
+        let mut fwd = vec![0.0f32; actual_in * ch];
+        mix(read_start, &mut fwd, ch);
+        // Reverse the frame order of `fwd` in-place.
+        for i in 0..(actual_in / 2) {
+            let j = actual_in - 1 - i;
+            for c in 0..ch {
+                fwd.swap(i * ch + c, j * ch + c);
+            }
+        }
+        // Resample `actual_in` reversed frames → `out_frames` device frames (linear interp).
+        if actual_in == out_frames {
+            buf.copy_from_slice(&fwd);
+            return;
+        }
+        let scale = (actual_in - 1).max(1) as f64 / out_frames.max(1) as f64;
+        for i in 0..out_frames {
+            let src = i as f64 * scale;
+            let lo = src as usize;
+            let hi = (lo + 1).min(actual_in - 1);
+            let t = (src - lo as f64) as f32;
+            for c in 0..ch {
+                let s0 = fwd[lo * ch + c];
+                let s1 = fwd[hi * ch + c];
+                buf[i * ch + c] = s0 + (s1 - s0) * t;
+            }
+        }
+    }
 }
 
 fn corrected(mix: impl FnMut(i64, &mut [f32], usize) + Send + 'static, from: u32, to: u32, semitones: f32) -> impl FnMut(i64, &mut [f32], usize) + Send {
@@ -253,5 +335,66 @@ mod tests {
         mix(i64::from(to), &mut buf, 2);
         assert!(buf.iter().all(|x| x.is_finite()));
         assert!(buf.iter().any(|x| x.abs() > 0.1));
+    }
+
+    #[test]
+    fn reverse_wrap_produces_audio_and_is_finite() {
+        let sr = 48_000u32;
+        let tones = vec![440.0, 660.0];
+        let inner = tone_mix(sr, tones, false);
+        let mut rev = reverse_wrap(inner, 1.0);
+        // At cursor=48000 (1 second in), there should be reversed audio.
+        let mut buf = vec![0.0f32; 2048];
+        rev(sr as i64, &mut buf, 2);
+        assert!(buf.iter().all(|x| x.is_finite()), "reverse output must be finite");
+        assert!(buf.iter().any(|x| x.abs() > 0.01), "reverse output must have signal");
+    }
+
+    #[test]
+    fn reverse_wrap_at_start_of_timeline_produces_silence() {
+        let sr = 48_000u32;
+        let inner = tone_mix(sr, vec![440.0], false);
+        let mut rev = reverse_wrap(inner, 1.0);
+        // cursor=0: timeline_end=0, so we've hit the start — must output silence.
+        let mut buf = vec![1.0f32; 512];
+        rev(0, &mut buf, 1);
+        assert!(buf.iter().all(|x| *x == 0.0), "must be silent at timeline start");
+    }
+
+    #[test]
+    fn reverse_wrap_2x_speed_produces_finite_output() {
+        let sr = 48_000u32;
+        let inner = tone_mix(sr, vec![440.0, 660.0], false);
+        let mut rev = reverse_wrap(inner, 2.0);
+        let mut buf = vec![0.0f32; 2048];
+        rev(sr as i64 * 2, &mut buf, 2);
+        assert!(buf.iter().all(|x| x.is_finite()), "2x reverse must be finite");
+    }
+
+    #[test]
+    fn reverse_wrap_blocks_sequence_backward_on_timeline() {
+        // Verify that successive calls retreat on the timeline rather than advancing.
+        // Use a ramp signal so different timeline positions produce measurably different output.
+        let sr = 48_000u32;
+        let block = 1024usize;
+        // Ramp: sample value = frame index / sr (unique per position, easy to sum-check).
+        let ramp_mix = |start: i64, buf: &mut [f32], ch: usize| {
+            for (i, frame) in buf.chunks_exact_mut(ch).enumerate() {
+                let v = (start + i as i64) as f32 / sr as f32;
+                frame.iter_mut().for_each(|s| *s = v);
+            }
+        };
+        let start_cursor: i64 = sr as i64 * 10; // 10 seconds in
+        let mut rev = reverse_wrap(ramp_mix, 1.0);
+        // First call: timeline reads [start-block, start], reversed → first sample ≈ start/sr.
+        let mut buf1 = vec![0.0f32; block];
+        rev(start_cursor, &mut buf1, 1);
+        // Second call: cursor advances by block; timeline retreats by block.
+        let mut buf2 = vec![0.0f32; block];
+        rev(start_cursor + block as i64, &mut buf2, 1);
+        // buf1 first sample should be higher (later in timeline) than buf2 first sample.
+        assert!(buf1[0] > buf2[0], "reverse must retreat on the timeline: buf1[0]={} buf2[0]={}", buf1[0], buf2[0]);
+        // Adjacent: buf2 ends where buf1 began (within float rounding).
+        assert!((buf2[block - 1] - buf1[0]).abs() < 1e-4, "blocks must be adjacent on the timeline");
     }
 }
