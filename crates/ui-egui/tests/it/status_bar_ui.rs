@@ -171,3 +171,14 @@ fn a_long_message_ends_before_the_job_progress() {
     let cancelled = d.app().session.jobs.iter().find(|j| j.id == 901).map(|j| j.progress.cancel.load(Ordering::Relaxed));
     assert_eq!(cancelled, Some(true));
 }
+
+/// Regression for #2295: the status bar must use an egui Label (selectable=true), not
+/// painted text.  A Label registers the message in the accessibility tree; painter().text()
+/// does not, so query_by_label distinguishes the two approaches.
+#[test]
+fn status_bar_text_is_selectable() {
+    let mut d = Driver::new();
+    d.app().ui.status = MESSAGE.into();
+    d.frames(2);
+    assert!(d.harness.query_by_label(MESSAGE).is_some(), "status message is not an egui Label — text cannot be selected or copied (#2295)",);
+}
