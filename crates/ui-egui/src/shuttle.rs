@@ -122,6 +122,8 @@ fn reverse_wrap(
     }
 }
 
+/// Wraps `mix` with pitch correction, resampling from `from` Hz to `to` Hz with a `semitones` shift.
+/// Used for forward shuttle playback when the maintain-pitch preference is enabled.
 fn corrected(mix: impl FnMut(i64, &mut [f32], usize) + Send + 'static, from: u32, to: u32, semitones: f32) -> impl FnMut(i64, &mut [f32], usize) + Send {
     let mut source = PitchedStream { mix: Box::new(mix), rate: from, semitones, channels: 0, stages: Vec::new(), latency: 0, next: None };
     let mut resampler = StreamResampler::new(from, to);

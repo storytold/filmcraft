@@ -33,6 +33,8 @@ impl AudioOut for Device {
     }
 }
 
+/// Checks that `shuttle_mix_rate` returns the expected mix rate for forward and reverse speeds,
+/// and that forward shuttle playback opens the audio device and keeps it as the master clock.
 #[test]
 fn forward_shuttle_playback_keeps_audio_enabled() {
     assert_eq!(shuttle_mix_rate(48_000, 1.0), Some(48_000));
@@ -57,6 +59,8 @@ fn forward_shuttle_playback_keeps_audio_enabled() {
     app.stop();
 }
 
+/// Verifies that `play(-1.0)` opens the audio device and uses it as the master clock,
+/// matching the contract introduced by the reverse-audio-playback feature.
 #[test]
 fn reverse_shuttle_playback_starts_audio() {
     let mut session = Session::default();
@@ -148,6 +152,8 @@ fn maintain_pitch_shuttling_controls_the_samples_sent_to_the_device() {
     }
 }
 
+/// Verifies that toggling the maintain-pitch preference while playing restarts the audio device
+/// at the current playhead position, and that out-of-range speeds keep audio silent.
 #[test]
 fn changing_pitch_preference_restarts_audio_at_the_current_playhead() {
     let mut session = Session::default();
