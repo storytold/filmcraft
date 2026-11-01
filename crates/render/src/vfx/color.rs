@@ -159,9 +159,19 @@ pub fn logo_cutout(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let kc = cv(e, "key_color", cx);
     let k = rgb_to_ycbcr(kc[0], kc[1], kc[2], Matrix::Bt709);
+    // How neutral the key colour is: 1 for a grey key, 0 once it has a chroma direction to project
+    // on, blending the two mattes across a band so an animated key colour does not jump.
+    let neutral = 1.0 - smoothstep(0.005, 0.015, (k[1] * k[1] + k[2] * k[2]).sqrt());
     let kmag2 = (k[1] * k[1] + k[2] * k[2]).max(1e-6);
     let setting = chv(e, "setting");
-    let preset = filmcraft_project::effect::ultra_key_setting(setting);
+    // A Setting preset stands in for the sliders only while none of them was touched (an instance
+    // that merely names the Setting). The Setting command writes the preset's values into the
+    // sliders, so from then on the stored values are the user's, whatever they are: whether a
+    // slider was edited is never guessed from one value, which would flip with animation.
+    let preset = filmcraft_project::effect::ultra_key_setting(setting).filter(|_| {
+        let defaults = filmcraft_project::effect::ultra_key_setting(0).unwrap_or(&[]);
+        defaults.iter().all(|(id, d)| (fv(e, id, cx) - *d as f32).abs() < 1e-4)
+    });
     let pf = |id: &str, fallback: f32| preset.and_then(|rows| rows.iter().find(|(k, _)| *k == id).map(|(_, v)| *v as f32)).unwrap_or(fallback);
     let transparency = pf("transparency", fv(e, "transparency", cx)) / 100.0;
     let highlight = pf("highlight", fv(e, "highlight", cx)) / 100.0;
@@ -187,9 +197,23 @@ pub fn ultra_key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         let v = enc(Image::unpremul([p[0], p[1], p[2], p[3]]));
         let y = rgb_to_ycbcr(v[0], v[1], v[2], Matrix::Bt709);
-        let proj = (y[1] * k[1] + y[2] * k[2]) / kmag2;
-        let perp = ((y[1] - proj * k[1]).powi(2) + (y[2] - proj * k[2]).powi(2)).sqrt() / kmag2.sqrt();
-        let keyness = proj.clamp(0.0, 1.5) * (1.0 - smoothstep(0.0, tol, perp));
+        let by_distance = || {
+            // a grey key has no chroma direction to project on: key what is close to it in Y′CbCr
+            let d = ((y[0] - k[0]).powi(2) + (y[1] - k[1]).powi(2) + (y[2] - k[2]).powi(2)).sqrt();
+            1.0 - smoothstep(0.0, tol * 0.4, d)
+        };
+        let by_projection = || {
+            let proj = (y[1] * k[1] + y[2] * k[2]) / kmag2;
+            let perp = ((y[1] - proj * k[1]).powi(2) + (y[2] - proj * k[2]).powi(2)).sqrt() / kmag2.sqrt();
+            proj.clamp(0.0, 1.5) * (1.0 - smoothstep(0.0, tol, perp))
+        };
+        let keyness = if neutral >= 1.0 {
+            by_distance()
+        } else if neutral <= 0.0 {
+            by_projection()
+        } else {
+            by_distance() * neutral + by_projection() * (1.0 - neutral)
+        };
         let mut m = (1.0 - keyness * gain).clamp(0.0, 1.0);
         m += (y[0] - k[0]).max(0.0) * highlight * 2.0 * keyness.min(1.0);
         m += (k[0] - y[0]).max(0.0) * shadow * 2.0 * keyness.min(1.0);
