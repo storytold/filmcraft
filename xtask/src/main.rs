@@ -545,7 +545,9 @@ fn bench() -> Result<(), String> {
 
 /// The workspace root (the parent of `xtask/`).
 fn root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask lives in the workspace").to_path_buf()
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // `xtask/` always has a parent; if it somehow did not, fall back to the manifest dir itself.
+    manifest_dir.parent().unwrap_or(manifest_dir).to_path_buf()
 }
 
 fn main() -> ExitCode {
