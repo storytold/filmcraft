@@ -194,7 +194,7 @@ impl FilmcraftApp {
             state::Tool::TrackSelectBackward => tl!("Click to select all clips to the left in all tracks. Shift-click for a single track."),
             state::Tool::Ripple => tl!("Drag an edit point to ripple trim; later clips move to keep the gap closed."),
             state::Tool::Rolling => tl!("Drag an edit point to roll it: the out of one clip and the in of the next move together."),
-            state::Tool::RateStretch => tl!("Drag an edge to change the clip's speed so it fills the new duration."),
+            state::Tool::RateStretch => tl!("Drag an edge to change speed. Shift-drag an Out edge to shift trailing clips."),
             state::Tool::Remix => tl!("Drag the edge of a music clip to remix it to the new duration at musically matching beats."),
             state::Tool::Razor => tl!("Click to split a clip. Shift-click to split all tracks."),
             state::Tool::Slip => tl!("Drag a clip to slip its source in/out without moving it."),

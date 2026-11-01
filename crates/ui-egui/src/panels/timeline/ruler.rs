@@ -178,8 +178,19 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
 fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, layout: &Layout, seq: &Sequence) {
     let ruler = layout.ruler;
     let marker_y = ruler.min.y + 2.0;
+    let preview = if app.session.state.ripple_sequence_markers {
+        match &app.tl.drag {
+            Some(Drag::Stretch { clip, edge, delta, ripple: true, linked, .. }) => {
+                super::stretch_preview::cached(app, *clip, *edge, *delta, true, *linked).ok()
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let markers = preview.as_ref().map_or(&seq.markers, |q| &q.markers);
     // Point flags stay whole; ranges split the same glyph across their endpoints.
-    for m in &seq.markers {
+    for m in markers {
         let x = layout.x_of(m.start);
         let c = m.custom_color.map_or_else(|| app.session.prefs.labels.rgb(m.color), |c| c.0);
         let c = Color32::from_rgb(c[0], c[1], c[2]);

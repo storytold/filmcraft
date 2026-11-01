@@ -30,6 +30,11 @@ impl Driver {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         session.execute("sequence.snap", json!({"on": false})).expect("snapping off");
+        Self::with_session(session)
+    }
+
+    /// Create the offscreen timeline driver around a supplied disposable session.
+    fn with_session(session: Session) -> Self {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
@@ -78,17 +83,35 @@ impl Driver {
 
     /// Press at `from`, move to `to` over `steps` frames (as a mouse does), release.
     fn drag(&mut self, from: Pos2, to: Pos2, steps: usize) {
+        self.drag_with_mods(from, to, steps, egui::Modifiers::NONE, false);
+    }
+
+    /// Drag with press-time modifiers, optionally releasing them before crossing the drag threshold.
+    fn drag_with_mods(&mut self, from: Pos2, to: Pos2, steps: usize, mods: egui::Modifiers, release_shift_early: bool) {
+        self.harness.input_mut().events.push(egui::Event::ModifiersChanged(mods));
         let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
         push(self, egui::Event::PointerMoved(from));
         self.frames(1);
-        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: mods });
         self.frames(1);
+        if release_shift_early {
+            self.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        }
         for i in 1..=steps {
             push(self, egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32)));
             self.frames(1);
         }
-        push(self, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        push(
+            self,
+            egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: if release_shift_early { egui::Modifiers::NONE } else { mods },
+            },
+        );
         self.frames(2);
+        self.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
     }
 
     /// Move the pointer to `at` with no button down, and let the Timeline react.
@@ -820,6 +843,121 @@ fn linked_audio_drag_adds_audio_and_video_tracks() {
     move_existing_clip_to_a_new_track(true, true);
 }
 
+/// Build an offscreen Rate Stretch timeline with linked clips and locked music.
+fn ripple_fixture() -> (Driver, u64, u64) {
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name":"Visual ripple"})).unwrap();
+    s.execute("file.newSequence", json!({"name":"Sequence","fps":25,"video":1,"audio":2})).unwrap();
+    let r = s.execute("file.newOfflineFile", json!({"name":"Synthetic","seconds":10,"fps":25,"video":true,"audio":true})).unwrap();
+    let item = r["item"].as_u64().unwrap();
+    let f = s.sequence_rate().tick_of(1).0;
+    let mut clips = Vec::new();
+    for n in 0..3 {
+        let r = s.execute("timeline.place", json!({"item":item,"track":"V1","audioTrack":"A1","time":f*60*n,"sourceIn":f*20,"duration":f*60})).unwrap();
+        clips.push(r["clips"][0].as_u64().unwrap());
+    }
+    s.execute("timeline.place", json!({"item":item,"track":"A2","time":0,"duration":f*240})).unwrap();
+    s.execute("timeline.setTrack", json!({"track":"A2","locked":true})).unwrap();
+    s.execute("sequence.snap", json!({"on":false})).unwrap();
+    let mut d = Driver::with_session(s);
+    d.ok("ui.set", json!({"tool":"RateStretch"}));
+    (d, clips[0], clips[1])
+}
+
+/// Shift captured on press ripples either direction, even when released during the drag.
+#[test]
+fn shift_out_drag_ripples_both_directions_and_captures_shift_at_press() {
+    for direction in [-1.0, 1.0] {
+        let (mut d, first, next) = ripple_fixture();
+        let before = d.app().session.project.clone();
+        let undo = d.undo_steps();
+        let (x0, x1, y) = d.edges(first);
+        let by = ((x1 - x0) / 4.0).round() * direction;
+        d.drag_with_mods(pos2(x1 - 3.0, y), pos2(x1 - 3.0 + by, y), by.abs() as usize, egui::Modifiers::SHIFT, true);
+        let q = d.app().session.active_sequence().unwrap();
+        let a = q.find_item(ClipId(first)).unwrap().1;
+        let b = q.find_item(ClipId(next)).unwrap().1;
+        assert_eq!(a.end(), b.start);
+        let old = before.sequence(d.app().session.state.active_sequence.unwrap()).unwrap();
+        let old_a = old.find_item(ClipId(first)).unwrap().1;
+        assert_eq!((a.source_in, a.source_out()), (old_a.source_in, old_a.source_out()));
+        assert_eq!(q.audio_tracks[1], old.audio_tracks[1]);
+        assert_eq!(a.duration.cmp(&old_a.duration), if direction < 0.0 { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater });
+        assert_eq!(d.undo_steps(), undo + 1);
+        d.exec("edit.undo", json!({}));
+        assert_eq!(*d.app().session.project, *before);
+    }
+}
+
+/// Plain Out-edge and Shift In-edge drags keep their ordinary non-ripple behavior.
+#[test]
+fn plain_rate_stretch_leaves_a_gap_and_shift_in_is_ordinary() {
+    let (mut d, first, next) = ripple_fixture();
+    let (x0, x1, y) = d.edges(first);
+    let next_start = d.span(next).0;
+    let by = ((x1 - x0) / 4.0).round();
+    d.drag(pos2(x1 - 3.0, y), pos2(x1 - 3.0 - by, y), by as usize);
+    assert!(d.span(first).1 < next_start);
+    assert_eq!(d.span(next).0, next_start);
+    d.exec("edit.undo", json!({}));
+    let (x0, _, y) = d.edges(first);
+    d.drag_with_mods(pos2(x0 + 3.0, y), pos2(x0 + 3.0 + by, y), by as usize, egui::Modifiers::SHIFT, false);
+    assert!(d.span(first).0 > 0);
+    assert_eq!(d.span(first).1, next_start);
+    assert_eq!(d.span(next).0, next_start);
+}
+
+/// Alt and Shift+Alt captured on press preserve the edited clip’s linked audio.
+#[test]
+fn alt_rate_stretch_and_shift_alt_ripple_leave_the_edited_linked_audio_fixed() {
+    for (mods, direction) in [(egui::Modifiers::ALT, -1.0), (egui::Modifiers { alt: true, shift: true, ..Default::default() }, 1.0)] {
+        let (mut d, first, _) = ripple_fixture();
+        let before = d.app().session.project.clone();
+        let q = d.app().session.active_sequence().unwrap();
+        let audio = q.audio_tracks[0].items[0].id.0;
+        let old_audio = q.find_item(ClipId(audio)).unwrap().1.clone();
+        let undo = d.undo_steps();
+        let (x0, x1, y) = d.edges(first);
+        let by = ((x1 - x0) / 4.0).round() * direction;
+        d.drag_with_mods(pos2(x1 - 3.0, y), pos2(x1 - 3.0 + by, y), by.abs() as usize, mods, true);
+        let q = d.app().session.active_sequence().unwrap();
+        assert_eq!(q.find_item(ClipId(audio)).unwrap().1, &old_audio);
+        let old = before.sequence(d.app().session.state.active_sequence.unwrap()).unwrap();
+        assert_eq!(
+            q.find_item(ClipId(first)).unwrap().1.duration.cmp(&old.find_item(ClipId(first)).unwrap().1.duration),
+            if direction < 0.0 { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }
+        );
+        assert_eq!(d.undo_steps(), undo + 1);
+        d.exec("edit.undo", json!({}));
+        assert_eq!(*d.app().session.project, *before);
+    }
+}
+
+/// Render the Shift Out-edge hover and live ripple preview without opening a window.
+#[test]
+#[ignore = "headless wgpu visual review"]
+fn ripple_rate_stretch_screenshot() {
+    let (mut d, first, _) = ripple_fixture();
+    let frame = d.app().session.sequence_rate().frame_duration().0;
+    d.exec("markers.add", json!({"target":"program","time":60*frame,"durationFrames":12,"name":"Ripple range","color":"#11AA33"}));
+    d.exec("markers.rippleSequenceMarkers", json!({"on":true}));
+    d.exec("effects.apply", json!({"effect":"cross_dissolve","clip":first,"edge":"out","frames":10}));
+    let (x0, x1, y) = d.edges(first);
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    d.hover(pos2(x1 - 3.0, y));
+    d.screenshot("ripple-rate-stretch-hover");
+    d.harness.input_mut().events.push(egui::Event::PointerButton {
+        pos: pos2(x1 - 3.0, y),
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::SHIFT,
+    });
+    d.frames(1);
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(pos2(x1 + (x1 - x0) / 4.0, y)));
+    d.frames(3);
+    d.screenshot("ripple-rate-stretch-preview");
+}
+
 /// #3300: with Alt held, dragging the edge of one side of a linked clip trims only that side; the
 /// linked audio keeps its range. Without Alt the partner still follows.
 #[test]
@@ -846,6 +984,77 @@ fn alt_dragging_an_edge_trims_only_that_side_of_a_link() {
             assert_eq!(d.span(sound), a0, "Alt-trim leaves the linked audio alone");
         } else {
             assert_eq!(d.span(sound).1, a0.1 - (v0.1 - v1.1), "the linked audio follows a plain trim");
+        }
+    }
+}
+
+/// Point and custom-colored range markers preview both ripple directions without mutating the project.
+#[test]
+fn ripple_rate_stretch_marker_preview_follows_the_cut_before_release() {
+    for duration in [0, 12] {
+        for direction in [-1.0, 1.0] {
+            let (mut d, first, next) = ripple_fixture();
+            let frame = d.app().session.sequence_rate().frame_duration().0;
+            let marker = d.exec(
+                "markers.add",
+                json!({"target":"program","time":60*frame,"durationFrames":duration,"name":"Cut marker","author":"Synthetic author","color":"#11AA33"}),
+            )["marker"]
+                .as_u64()
+                .unwrap();
+            let original_marker = d.app().session.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == marker).unwrap().clone();
+            d.exec("markers.rippleSequenceMarkers", json!({"on":true}));
+            let before = d.app().session.project.clone();
+            let (x0, x1, y) = d.edges(first);
+            let from = pos2(x1 - 3.0, y);
+            let to = pos2(x1 + direction * (x1 - x0) / 4.0, y);
+            d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+            d.hover(from);
+            d.harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::SHIFT,
+            });
+            d.frames(1);
+            d.harness.input_mut().events.push(egui::Event::PointerMoved(to));
+            d.frames(3);
+            let elements = d.ok("ui.elements", json!({"prefix":"timeline."}));
+            let rect = |id: &str| {
+                let element = elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("missing {id}"));
+                let r = element["rect"].as_array().unwrap();
+                (r[0].as_f64().unwrap(), r[2].as_f64().unwrap())
+            };
+            let (marker_left, marker_width) = rect(&format!("timeline.marker.{marker}"));
+            let marker_x = marker_left + marker_width / 2.0;
+            let follower_x = rect(&format!("timeline.clip.{next}")).0;
+            assert!((marker_x - follower_x).abs() < 1.5, "live marker {marker_x} should follow the cut {follower_x}");
+            if duration > 0 {
+                let (end_left, end_width) = rect(&format!("timeline.markerEnd.{marker}"));
+                let end_x = end_left + end_width / 2.0;
+                let span = (x1 - x0) as f64 * duration as f64 / 60.0;
+                assert!((end_x - marker_x - span).abs() < 1.5, "both range endpoints follow the accepted cut without changing duration");
+                let (range_left, range_width) = rect(&format!("timeline.markerRange.{marker}"));
+                assert!((range_left - marker_x).abs() < 1.5);
+                assert!((range_left + range_width - end_x).abs() < 1.5);
+            }
+            assert_eq!(*d.app().session.project, *before, "the live preview leaves the project untouched");
+            d.harness.input_mut().events.push(egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            d.frames(3);
+            let q = d.app().session.active_sequence().unwrap();
+            let actual_marker = q.markers.iter().find(|m| m.id.0 == marker).unwrap();
+            let mut expected_marker = original_marker;
+            expected_marker.start = q.find_item(ClipId(next)).unwrap().1.start;
+            assert_eq!(actual_marker, &expected_marker, "ripple preserves marker range, author and custom color");
+            let after = d.app().session.project.clone();
+            d.exec("edit.undo", json!({}));
+            assert_eq!(*d.app().session.project, *before);
+            d.exec("edit.redo", json!({}));
+            assert_eq!(*d.app().session.project, *after);
         }
     }
 }
@@ -911,4 +1120,59 @@ fn the_trim_cursor_stays_while_a_transition_end_is_dragged() {
     assert!(matches!(d.app().tl.drag, Some(Drag::Transition { edge: Some(_), .. })), "dragging the end: {:?}", d.app().tl.drag);
     assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "trim cursor while dragging, 40 px on");
     d.release(to);
+}
+
+/// Transition bounds in the live ripple preview follow the cut in both directions before release.
+#[test]
+fn ripple_rate_stretch_transition_preview_follows_the_cut_before_release() {
+    for direction in [-1.0, 1.0] {
+        let (mut d, first, next) = ripple_fixture();
+        let transition = d.exec("effects.apply", json!({"effect":"cross_dissolve","clip":first,"edge":"out","frames":10}))["transition"].as_u64().unwrap();
+        let q = d.app().session.active_sequence().unwrap();
+        let tr = q.video_tracks[0].transitions.iter().find(|tr| tr.id.0 == transition).unwrap();
+        assert_eq!((tr.from, tr.to), (Some(ClipId(first)), Some(ClipId(next))), "a centered transition across the edited cut");
+        let before = d.app().session.project.clone();
+        let undo = d.undo_steps();
+        let (x0, x1, y) = d.edges(first);
+        let from = pos2(x1 - 3.0, y);
+        let to = from + egui::vec2((x1 - x0) / 4.0 * direction, 0.0);
+        d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+        d.hover(from);
+        d.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::SHIFT,
+        });
+        d.frames(1);
+        d.harness.input_mut().events.push(egui::Event::PointerMoved(to));
+        d.frames(3);
+        let elements = d.ok("ui.elements", json!({"prefix":"timeline."}));
+        let rect = |id: &str| {
+            let element = elements.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("missing {id}"));
+            let r = element["rect"].as_array().unwrap();
+            (r[0].as_f64().unwrap(), r[2].as_f64().unwrap())
+        };
+        let (left, width) = rect(&format!("timeline.transition.{transition}"));
+        let center = left + width / 2.0;
+        let cut = rect(&format!("timeline.clip.{next}")).0;
+        assert!((center - cut).abs() < 1.5, "direction={direction}: transition center {center} should follow cut {cut}");
+        assert_eq!(*d.app().session.project, *before, "preview leaves the project unchanged");
+        d.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        d.frames(3);
+        let q = d.app().session.active_sequence().unwrap();
+        let tr = q.video_tracks[0].transitions.iter().find(|tr| tr.id.0 == transition).unwrap();
+        assert_eq!(tr.start + tr.duration.mul_ratio(1, 2), q.find_item(ClipId(next)).unwrap().1.start);
+        assert_eq!(d.undo_steps(), undo + 1);
+        let after = d.app().session.project.clone();
+        d.exec("edit.undo", json!({}));
+        assert_eq!(*d.app().session.project, *before);
+        d.exec("edit.redo", json!({}));
+        assert_eq!(*d.app().session.project, *after);
+    }
 }
