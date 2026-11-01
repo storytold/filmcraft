@@ -75,20 +75,26 @@ fn capped_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
 /// starts (the platform layer lowers its priority). Runs `f` where it is called in the browser,
 /// or when no pool can be made.
 pub fn on_own_threads<T: Send>(max_threads: u32, f: impl FnOnce() -> T + Send) -> T {
-    static SHARED: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    static SHARED: std::sync::Mutex<Option<Arc<rayon::ThreadPool>>> = std::sync::Mutex::new(None);
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    let own;
     let pool = match usize::try_from(max_threads) {
-        Ok(cap) if cap > 0 && cap < cores => {
-            own = background_pool(cap);
-            own.as_ref()
-        }
-        _ => SHARED.get_or_init(|| background_pool(cores)).as_ref(),
+        Ok(cap) if cap > 0 && cap < cores => background_pool(cap).map(Arc::new),
+        _ => made_once(&SHARED, || background_pool(cores)),
     };
     match pool {
         Some(pool) => pool.install(f),
         None => f(),
     }
+}
+
+/// What `slot` holds, or what `make` makes, kept in `slot`. A `make` that fails (no threads to be
+/// had for now) leaves the slot empty, so the next call tries again.
+pub(crate) fn made_once<T>(slot: &std::sync::Mutex<Option<Arc<T>>>, make: impl FnOnce() -> Option<T>) -> Option<Arc<T>> {
+    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if held.is_none() {
+        *held = make().map(Arc::new);
+    }
+    held.clone()
 }
 
 fn background_pool(threads: usize) -> Option<rayon::ThreadPool> {
