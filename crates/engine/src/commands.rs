@@ -5242,11 +5242,19 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
     let c = per.candidates.get(idx).cloned().ok_or_else(|| bad("file.recover", "no recovery session"))?;
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
-    install_project(s, loaded.project, c.meta.project_path.clone(), false);
-    if let Some(seq) = s.state.active_sequence {
-        s.events.push(crate::Event::OpenSequence(seq));
+    // A prior recovery can have opened this exact project but failed to confirm its new journal.
+    // Retrying that same snapshot must preserve the current editor state, not reinstall it.
+    let same_current = s.is_dirty() && *s.project == loaded.project && s.path == c.meta.project_path;
+    if s.is_dirty() && !same_current {
+        return Err(EngineError::Other("Save or close the current project before recovering another session; it has unsaved changes.".into()));
     }
-    crate::relink::on_open(s);
+    if !same_current {
+        install_project(s, loaded.project, c.meta.project_path.clone(), false);
+        if let Some(seq) = s.state.active_sequence {
+            s.events.push(crate::Event::OpenSequence(seq));
+        }
+        crate::relink::on_open(s);
+    }
     // Our own journal must hold the recovered state before the old one is deleted.
     s.sync_persistence();
     let per = s.persistence.as_mut().ok_or_else(|| EngineError::Other("recovery is not running".into()))?;

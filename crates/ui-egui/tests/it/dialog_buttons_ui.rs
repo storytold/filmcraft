@@ -125,6 +125,30 @@ fn recovery_prompt_buttons_show_the_pointing_hand() {
 }
 
 #[test]
+fn recovery_dialog_preserves_a_dirty_current_project() {
+    let data = temp_dir("recovery-dirty");
+    let mut session = session_after_crash(&data);
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    session.execute("sequence.addEdit", json!({"seconds": 2.5})).unwrap();
+    let current = (*session.project).clone();
+    let revision = session.revision;
+    let mut d = Driver::new(session);
+    d.harness.state_mut().ui.show_status_bar = false;
+
+    d.ok("ui.click", json!({"id": "recovery.recover"}));
+    d.frames(2);
+
+    assert_eq!(*d.harness.state().session.project, current);
+    assert_eq!(d.harness.state().session.revision, revision);
+    assert_eq!(d.harness.state().session.recovery_candidates().len(), 1);
+    assert!(d.harness.state().ui.status.contains("unsaved"));
+    let elements = d.ok("ui.elements", json!({"prefix": "recovery.error"}));
+    assert!(elements.as_array().is_some_and(|items| items.iter().any(|item| item["label"].as_str().is_some_and(|label| label.contains("unsaved")))));
+    drop(d);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
 fn revert_confirmation_buttons_show_the_pointing_hand() {
     let data = temp_dir("revert");
     let mut s = demo();
