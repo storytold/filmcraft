@@ -105,6 +105,58 @@ fn audio_codec(w: &WaveFormat) -> (ACodec, String) {
 /// A slice of a chunk: (chunk, offset in it, length).
 type Piece = (usize, usize, usize);
 
+/// How an H.264 / HEVC stream frames its NAL units, and the parameter sets its header carries
+/// (`strf` after the bitmap header). Start codes, with the sets in band or in the header as Annex
+/// B (written with global headers); or length prefixes, with an `avcC` / `hvcC` record (a stream
+/// copied from MP4), which reads turn into start codes. The decoder and the stream scans see
+/// Annex B either way.
+#[derive(Clone, Debug, Default)]
+struct NalSetup {
+    /// NAL length-prefix size of the chunks (`None`: start codes).
+    length_size: Option<usize>,
+    /// The header's parameter sets as Annex B (empty: in band).
+    sets: Vec<u8>,
+}
+
+impl NalSetup {
+    fn of(codec: &VCodec, extra: &[u8]) -> Self {
+        let (record, length_size) = match codec {
+            VCodec::H264 if extra.first() == Some(&1) => (crate::hw::NalStreamInfo::from_avcc(extra), crate::video::avcc_length_size(extra)),
+            VCodec::Hevc if extra.first() == Some(&1) => (crate::hw::NalStreamInfo::from_hvcc(extra), crate::video::hvcc_length_size_and_tid(extra).0),
+            VCodec::H264 | VCodec::Hevc if extra.starts_with(&[0, 0, 1]) || extra.starts_with(&[0, 0, 0, 1]) => {
+                return Self { length_size: None, sets: extra.to_vec() };
+            }
+            _ => return Self::default(),
+        };
+        // a record whose sets don't parse still frames the chunks; the decoder uses the in-band sets
+        let sets = record.map_or_else(
+            |e| {
+                log::warn!("AVI: the parameter sets in the stream header don't parse ({e}); using those in the chunks");
+                Vec::new()
+            },
+            |r| r.parameter_sets.iter().flat_map(|n| [0, 0, 0, 1].iter().chain(n)).copied().collect(),
+        );
+        Self { length_size: Some(length_size), sets }
+    }
+
+    /// A chunk as Annex B: length-prefixed NAL units get start codes (one cut short, as a partial
+    /// read leaves it, is kept as far as it goes).
+    fn to_annexb(&self, data: Vec<u8>) -> Vec<u8> {
+        let Some(n) = self.length_size.filter(|n| (1..=4).contains(n)) else { return data };
+        let mut out = Vec::with_capacity(data.len() + 16);
+        let mut at = 0usize;
+        while let Some(prefix) = data.get(at..at + n) {
+            let len = prefix.iter().fold(0usize, |v, &b| v << 8 | usize::from(b));
+            let from = at + n;
+            let to = from.saturating_add(len).min(data.len());
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(data.get(from..to).unwrap_or_default());
+            at = to;
+        }
+        out
+    }
+}
+
 struct AudioState {
     decoder: Option<PacketDecoder>,
     packets: HashMap<usize, Arc<Vec<Vec<f32>>>>,
@@ -129,6 +181,7 @@ pub struct AviSource {
     file: AviFile,
     vstream: Option<usize>,
     vcodec: VCodec,
+    nal: NalSetup,
     /// Pictures in stored (decode) order.
     vframes: Vec<VFrame>,
     /// `vframes` indices in presentation order (H.264 with B-frames is stored in decode order),
@@ -253,11 +306,12 @@ impl AviSource {
             return Err(CodecError::Unsupported("no playable streams".into()));
         }
         // video: frame slots, pictures and key frames
-        let (mut vcodec, mut vframes, mut vslots, mut rate, mut bottom_up, mut video) =
-            (VCodec::Unsupported(String::new()), Vec::new(), 0i64, FrameRate::new(25, 1), false, None);
+        let (mut vcodec, mut vframes, mut vslots, mut rate, mut bottom_up, mut video, mut nal) =
+            (VCodec::Unsupported(String::new()), Vec::new(), 0i64, FrameRate::new(25, 1), false, None, NalSetup::default());
         if let Some(vs) = vstream.and_then(|i| file.streams.get(i)) {
             let b = vs.video.clone().unwrap_or_default();
             let (codec, label) = video_codec(&b);
+            nal = NalSetup::of(&codec, &b.extra);
             rate = FrameRate::new(i64::from(vs.rate), i64::from(vs.scale));
             bottom_up = b.height > 0;
             let (w, h) = (b.width.unsigned_abs(), b.height.unsigned_abs());
@@ -267,7 +321,7 @@ impl AviSource {
                 }
                 let key = match &codec {
                     VCodec::H264 | VCodec::Hevc if !vs.keyframes_known => {
-                        file.read_chunk(&bytes, vstream.unwrap_or(0), k).is_ok_and(|d| random_access(&d, codec == VCodec::Hevc))
+                        file.read_chunk(&bytes, vstream.unwrap_or(0), k).is_ok_and(|d| random_access(&nal.to_annexb(d), codec == VCodec::Hevc))
                     }
                     VCodec::H264 | VCodec::Hevc => c.key,
                     _ => true,
@@ -286,12 +340,17 @@ impl AviSource {
                     vframes
                         .iter()
                         .take(n)
-                        .map(|f| {
-                            file.streams
+                        .enumerate()
+                        .map(|(i, f)| {
+                            let head = file
+                                .streams
                                 .get(si)
                                 .and_then(|s| s.chunks.get(f.chunk))
                                 .and_then(|c| filmcraft_media::reader::read_range(&*bytes.0, c.offset, (c.size as usize).min(8 << 10)).ok())
-                                .unwrap_or_default()
+                                .map(|d| nal.to_annexb(d))
+                                .unwrap_or_default();
+                            // the parameter sets a header carries come first, as the decoder gets them
+                            if i == 0 { [nal.sets.as_slice(), &head].concat() } else { head }
                         })
                         .collect()
                 };
@@ -418,7 +477,7 @@ impl AviSource {
         let mut vorder: Vec<usize> = (0..vframes.len()).collect();
         vorder.sort_by_key(|&i| vframes.get(i).map_or(0, |f| f.pts));
         let vorder_pts = vorder.iter().map(|&i| vframes.get(i).map_or(0, |f| f.pts)).collect();
-        Ok(Self { info, bytes, file, vstream, vcodec, vframes, vorder, vorder_pts, vslots, rate, bottom_up, video: GopCache::new(None), audios })
+        Ok(Self { info, bytes, file, vstream, vcodec, nal, vframes, vorder, vorder_pts, vslots, rate, bottom_up, video: GopCache::new(None), audios })
     }
 
     fn read(&self, stream: usize, chunk: usize) -> crate::Result<Vec<u8>> {
@@ -506,15 +565,15 @@ impl VideoSamples for AviVideo<'_> {
     }
     fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
         let f = self.src.vframes.get(i).ok_or_else(|| CodecError::Container("frame out of range".into()))?;
-        self.src.read(self.stream, f.chunk)
+        self.src.read(self.stream, f.chunk).map(|d| self.src.nal.to_annexb(d))
     }
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
         let v = self.src.info.video.as_ref().ok_or_else(|| CodecError::Unsupported("no video stream".into()))?;
         let (w, h) = (v.width.min(u32::from(u16::MAX)) as u16, v.height.min(u32::from(u16::MAX)) as u16);
         match &self.src.vcodec {
             VCodec::Jpeg => make_video_decoder(&SampleEntry::jpeg(w, h)),
-            VCodec::H264 => Ok(Box::new(crate::video::H264Decoder::annexb())),
-            VCodec::Hevc => Ok(Box::new(crate::video::HevcDecoder::annexb())),
+            VCodec::H264 => Ok(Box::new(crate::video::H264Decoder::annexb_with(self.src.nal.sets.clone()))),
+            VCodec::Hevc => Ok(Box::new(crate::video::HevcDecoder::annexb_with(self.src.nal.sets.clone()))),
             VCodec::Raw(f) => Ok(Box::new(RawVideoDecoder::new(*f, v.width, v.height, self.src.bottom_up)?)),
             VCodec::Unsupported(name) => Err(CodecError::Unsupported(format!("no decoder for {name} video"))),
         }

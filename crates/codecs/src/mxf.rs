@@ -62,6 +62,8 @@ pub struct MxfSource {
 /// Picture order counts of AVC access units (Annex B), in stored order, as presentation
 /// positions: the rank of (IDR period, POC) (8.2.1.1, picture order count type 0; types 1 and 2
 /// never reorder for the streams written by AVC encoders we have seen, so they keep stored order).
+/// A parameter set that doesn't parse is skipped, as the decoder skips a container header's: a
+/// slice that needs it leaves the order unknown.
 pub fn avc_presentation_order(heads: &[Vec<u8>]) -> Option<Vec<i64>> {
     use filmcraft_bitstream::{annexb_nals, unescape_rbsp};
     use filmcraft_h264::params::{Pps, Sps};
@@ -78,12 +80,12 @@ pub fn avc_presentation_order(heads: &[Vec<u8>]) -> Option<Vec<i64>> {
             let rbsp = unescape_rbsp(&nal[1..]);
             match hdr.nal_unit_type {
                 7 => {
-                    let sps = Sps::parse(&rbsp).ok()?;
+                    let Ok(sps) = Sps::parse(&rbsp) else { continue };
                     let id = sps.id as usize;
                     *spss.get_mut(id)? = Some(sps);
                 }
                 8 => {
-                    let pps = Pps::parse(&rbsp, &spss).ok()?;
+                    let Ok(pps) = Pps::parse(&rbsp, &spss) else { continue };
                     let id = pps.id as usize;
                     *ppss.get_mut(id)? = Some(pps);
                 }
