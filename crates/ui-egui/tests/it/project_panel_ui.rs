@@ -1720,12 +1720,14 @@ fn a_card_menu_stacks_only_the_selected_cards_of_its_bin() {
 fn save_arrangement_refuses_an_unknown_bin() {
     let mut d = project_driver();
     let (bin, _) = d.footage();
-    let r = d.call("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": 987_654, "width": 400.0}}));
-    assert_eq!(r["ok"], json!(false), "{r}");
-    assert!(d.app().ui.project_panel.dialog.is_none(), "no dialog for an unknown bin");
+    for bad in [json!(987_654), json!(-1), json!("footage"), json!(1.5)] {
+        let r = d.call("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": bad, "width": 400.0}}));
+        assert_eq!(r["ok"], json!(false), "bin {bad}: {r}");
+        assert!(d.app().ui.project_panel.dialog.is_none(), "no dialog for bin {bad}");
+    }
     let root = d.app().session.project.root.id.0;
     let saved = d.exec("project.freeform.arrangements", json!({"bin": root}));
-    assert_eq!(saved.as_array().map_or(0, Vec::len), 0, "nothing saved to the root: {saved}");
+    assert_eq!(saved["arrangements"].as_array().map(Vec::len), Some(0), "nothing saved to the root: {saved}");
     // a bin that exists opens the dialog
     d.ok("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": bin, "width": 400.0}}));
     assert!(d.app().ui.project_panel.dialog.is_some());
