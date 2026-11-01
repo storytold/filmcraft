@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (separate registered encoders and GPU poll behavior from pending #2488 / #2490 proposals; retain acceptance limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-11-01 · **Change:** minor (separate pending #2488 encoder support from merged GPU read-back bounds; retain acceptance limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Each hardware feature Premiere uses, per platform, against ours. Implementation detail lives in
 [`crates/platform/README.md`](../crates/platform/README.md) (decode / encode backends, the one
@@ -89,5 +89,6 @@ one encoder ~4–8 h ([target-app-parity.md](target-app-parity.md#calibration)).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-01 | minor | Reconcile merged GPU read-back bounds and encoder fallback; retain pending Media Foundation acceptance limits |
 | 2026-10-23 | minor | Clarified registered encoder support, pending Media Foundation / GPU callback proposals and historical acceptance limits |
 | 2026-10-10 | major | Created from ROADMAP.md's performance-and-hardware row and `crates/platform/README.md`; added Linux NVDEC (#549), GPU export and Lumetri on the GPU (#421), Premiere's per-platform hardware list, devices and I/O |

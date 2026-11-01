@@ -7,7 +7,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** minor (separate registered encoders and GPU poll behavior from pending #2488 / #2490 proposals; retain acceptance limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-11-01 · **Change:** minor (separate pending #2488 encoder support from merged GPU read-back bounds; retain acceptance limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -115,7 +115,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 - **2026-10-22:** ProRes 4444 / XQ alpha slices include the final singleton run code required by RDD 36:2022. Six HD fixtures rejected by native macOS decoding now pass; syntax regression tests cover final runs and slice widths ([details](crates/prores/README.md#alpha-bitstream-conformance), EffectCraft #293).
 
 - **2026-10-20:** the on/off items of the Sequence and Markers menus (Snap in Timeline, Linked Selection, Selection Follows Playhead, Show Through Edits, Ripple Sequence Markers, Copy Paste Includes Sequence Markers) show their checkmark, so choosing one visibly turns it on or off (#2623)
-- **2026-10-17 (proposal; status reviewed 2026-10-23):** Media Foundation hardware H.264 / H.265 export on Windows is pending #2488 (split from #1575; #1373), not implemented at this documentation branch's source head. It proposes a vendor-neutral 8-bit SDR encoder MFT path and an AMD rate-control workaround. Historical Snapdragon X / Adreno X1-85 and Radeon RX 6900 XT observations do not validate the revised transport. Dedicated hardware, Intel and per-adapter acceptance, Media Foundation 10-bit/HDR and AV1 export remain open. Bounded callback receive is separately pending #2490; the existing GPU poll bound does not bound the subsequent receive. Linux NVENC HEVC is a separate, unmerged proposal (#1648, #1624).
+- **2026-10-17 (proposal; status reviewed 2026-10-23):** Media Foundation hardware H.264 / H.265 export on Windows is pending #2488 (split from #1575; #1373), not implemented at this documentation branch's source head. It proposes a vendor-neutral 8-bit SDR encoder MFT path and an AMD rate-control workaround. Historical Snapdragon X / Adreno X1-85 and Radeon RX 6900 XT observations do not validate the revised transport. Dedicated hardware, Intel and per-adapter acceptance, Media Foundation 10-bit/HDR and AV1 export remain open. GPU polling and the subsequent callback receive have separate eight-second bounds (#2490); these are not a whole-export or arbitrary driver-stall deadline. Linux NVENC HEVC is a separate, unmerged proposal (#1648, #1624).
 - **2026-10-12:** Transform's motion-blur shutter on adjustment layers uses the sequence frame rate instead of 24 fps, so a 360° shutter in a 60 fps sequence spans one frame, not 2.5 (#1088)
 - **2026-10-10 (changed media):** Settings ▸ Media ▸ Automatically refresh growing files works: media files that change on disk while the project is open (a recording still being written, a render written over the file a clip uses) are read again every *Refresh growing files every* seconds and as soon as the window comes back to the front: the new length, picture and identity, without an undo step (`media.refreshChanged`, `media_watch`).
 - **2026-10-10 (re-measure):** full parity re-measure against Premiere Pro 26.5.2: menu label diff 338 / 366 (92%), installed bundle listings (10 UI languages, exporter and codec frameworks), 188 open issues. Breadth ~86% (file formats now counted), ready ~55%, stage **alpha**; progress docs reorganized ([target-app-parity](docs/target-app-parity.md), [gaps](docs/gaps.md), [roadmap](docs/roadmap.md), [codec](docs/codec-parity.md), [file-format](docs/file-format-parity.md), [hardware](docs/hardware-parity.md), [UI](docs/ui-parity.md), [localization](docs/localization-parity.md)).
@@ -175,6 +175,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-01 | minor | Reconcile merged GPU read-back bounds and encoder fallback; retain pending Media Foundation acceptance limits |
 | 2026-10-25 | minor | Reconcile upstream ProRes progress after rebase; retain pending Media Foundation/GPU proposals and hardware acceptance limits |
 | 2026-10-23 | minor | Distinguish registered encoders and bounded GPU polling from pending #2488 / #2490 proposals; retain hardware acceptance limits |
 | 2026-10-22 | minor | ProRes alpha: write the final singleton run code; 4444/XQ HD clips that failed native macOS decoding now decode, with syntax regression tests (EffectCraft #293) |

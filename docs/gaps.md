@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-01 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -106,11 +106,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   D3D11: H.264, HEVC, VP9, AV1) and Linux (VA-API and NVDEC: H.264, HEVC); hardware encode
   VideoToolbox H.264 / HEVC 8-bit, NVENC H.264 (Windows, Linux) and HEVC incl. Main 10 HDR
   (Windows);
-  GPU compositing, blend modes, 34 effect ids incl. Lumetri basic / creative / vignette,
+  GPU compositing, blend modes, 35 effect ids incl. Lumetri basic / creative / vignette,
   GPU export rendering (#421). GPU export read-back bounds the GPU poll to eight seconds,
-  allowing CPU fallback when that poll times out. The subsequent callback receive uses `rx.recv()` without a timeout at this
-  documentation branch's source head. [#2490](https://github.com/storytold/filmcraft/pull/2490) proposes
-  a separate eight-second callback receive bound; it remains pending. Neither bound is a deadline
+  allowing CPU fallback when that poll times out. The subsequent callback receive has its own
+  eight-second bound ([#2490](https://github.com/storytold/filmcraft/pull/2490)). Neither bound is a deadline
   for the entire export or a guarantee against arbitrary driver stalls.
 - **Missing:** zero-copy decoded frames into wgpu (every frame is read back to the CPU and
   re-uploaded); VideoToolbox Main 10 / HDR HEVC encode and B-frames; ProRes hardware decode /
@@ -357,6 +356,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-01 | minor | Reconcile merged GPU read-back bounds and encoder fallback; retain pending Media Foundation acceptance limits |
 | 2026-10-30 | minor | G14: three key languages have no catalog (Hindi, Arabic, Vietnamese); Korean, Italian, German and Russian are near-complete; Ukrainian is menus only; G13 GIF transparency retained |
 | 2026-10-23 | minor | Clarified registered encoder support, pending Media Foundation / GPU callback proposals and historical acceptance limits |
 | 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461) |

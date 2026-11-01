@@ -1,6 +1,6 @@
 # Architecture
 
-> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (separate registered encoders and GPU poll behavior from pending #2488 / #2490 proposals; retain acceptance limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-11-01 · **Change:** minor (separate pending #2488 encoder support from merged GPU read-back bounds; retain acceptance limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 FilmCraft is a Cargo workspace of small crates with strictly enforced layering. The engine is
 headless: every feature can be reached without a window, and the egui UI is one client among the
@@ -298,8 +298,9 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   (`filmcraft_export::register_hdr_probe`, `hdr_available`; NVENC with 10-bit support), otherwise it is
   tone-mapped to SDR as on macOS: `register()` hands `platform::nvenc::hevc_available` to
   `filmcraft_export::register_format_probe`, so the H.265 format exists where an HEVC encoder does,
-  and choosing it is the opt-in (the Hardware encoding toggle governs H.264 only). With no software
-  H.265 encoder, what NVENC declines is counted and ends the export with an error that says why.
+  and choosing it is the opt-in (the Hardware encoding toggle governs H.264 only). There is no software
+  H.265 encoder. A declined or failed factory does not stop the registry from trying later factories;
+  if none succeeds, the first failure is reported when present; otherwise the encoder is unavailable (#3475).
   **Pending Media Foundation encoder proposal:** [#2488](https://github.com/storytold/filmcraft/pull/2488)
   adds a vendor-neutral Windows hardware encoder factory behind NVENC and an alternative HEVC
   format probe. Neither is registered at this documentation branch's source head; Media Foundation
@@ -793,5 +794,6 @@ native menus) in `apps/filmcraft`. [roadmap.md](roadmap.md) has the milestone st
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-01 | minor | Reconcile merged GPU read-back bounds and encoder fallback; retain pending Media Foundation acceptance limits |
 | 2026-10-10 | trivial | Status line and revision history added; milestone link points at docs/roadmap.md |
 | 2026-10-23 | minor | Clarified registered encoder support, pending Media Foundation / GPU callback proposals and historical acceptance limits |

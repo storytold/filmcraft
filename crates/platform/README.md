@@ -279,8 +279,9 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
   sample entry.
 - **Timestamps are the H.264 path's:** dts is the decode index minus the B-frame delay, composition
   offsets are `pts - dts` in frame durations, and the media starts `delay` frames early (edit list).
-- **There is no fallback encoder.** A request NVENC cannot take is counted in
-  `export.hardware.declined` and ends the export with "H.265 export with NVENC: …" and the reason:
+- **There is no software H.265 encoder.** When NVENC cannot take a request, its decline is counted in
+  `export.hardware.declined`. The registry tries later registered factories; if none succeeds, it
+  reports the first failure when present, or encoder unavailable when all decline (#3475). NVENC refusal reasons include:
   10-bit on a GPU without it (HDR), interlaced output, two-pass (`ExportSettings::validate` refuses it first), non-square pixels,
   MXF, sizes above 65535, odd sizes, sizes outside the GPU's limits (129×33 to 8192×8192 on the RTX
   5060). On a machine without an HEVC encoder the format is not available and an export fails with

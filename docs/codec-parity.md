@@ -1,6 +1,6 @@
 # Codec parity
 
-> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (separate registered encoders and GPU poll behavior from pending #2488 / #2490 proposals; retain acceptance limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
+> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-11-01 · **Change:** minor (separate pending #2488 encoder support from merged GPU read-back bounds; retain acceptance limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2) and Media Encoder 2026
 
 Video and audio codecs, decode and encode, with fidelity and how each is tested. Containers,
 project and interchange files are in [file-format-parity.md](file-format-parity.md); hardware
@@ -61,6 +61,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-01 | minor | Reconcile merged GPU read-back bounds and encoder fallback; retain pending Media Foundation acceptance limits |
 | 2026-10-23 | minor | Clarified registered encoder support, pending Media Foundation / GPU callback proposals and historical acceptance limits |
 | 2026-10-22 | minor | ProRes alpha final-run syntax regression tests and native macOS HD decode validation |
 | 2026-10-11 | minor | CinemaDNG / DNG decode (#1065) |
