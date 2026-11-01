@@ -361,6 +361,8 @@
 	Zoom to Sequence	Умістити секвенцію
 	Project Notes	Нотатки проєкту
 
+	Centered Audio Waveforms	Центровані осцилограми аудіо
+
 # Marker editing and shared custom colors
 	A range marker needs a positive duration	Тривалість маркера діапазону має бути додатною
 	Add Custom Color	Додати власний колір
