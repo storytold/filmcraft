@@ -11,6 +11,13 @@ const MAX_CHANNELS: usize = 64;
 // Two shifters have at most 16384 frames of latency; leave room for priming and interpolation.
 const FRAME_MARGIN: i128 = 65_536;
 
+/// Returns `(mix_rate, mixer)` for shuttle playback at `speed`, or `None` if `speed` is outside
+/// the supported range (0.5×–4×, forward or reverse) or the device rate is zero.
+///
+/// * **Forward** (`speed > 0`): the mixer renders at a reduced sample rate so the device plays
+///   back faster; pitch correction is applied when the preference is set.
+/// * **Reverse** (`speed < 0`): the device runs at `device_rate`; a `reverse_wrap` closure reads
+///   blocks forward from the timeline, flips their frame order, and resamples to the output buffer.
 pub(crate) fn mix(session: &Session, seq_id: ItemId, device_rate: u32, speed: f64) -> Option<(u32, Mixer)> {
     let rate = super::shuttle_mix_rate(device_rate, speed)?;
     if speed < 0.0 {
@@ -84,23 +91,32 @@ fn reverse_wrap(
                 fwd.swap(i * ch + c, j * ch + c);
             }
         }
-        // Resample `actual_in` reversed frames → `out_frames` device frames (linear interp).
-        if actual_in == out_frames {
-            buf.copy_from_slice(&fwd);
+        // Resample the available reversed frames at the requested speed, then pad with silence.
+        // Near timeline zero actual_in < in_frames; stretching partial frames across all
+        // out_frames would slow the audio. Instead output only the proportional number of
+        // frames and fill the remainder with silence.
+        let available_out = ((actual_in as f64 / abs_speed).round() as usize).min(out_frames);
+        if available_out == 0 {
+            buf.fill(0.0);
             return;
         }
-        let scale = (actual_in - 1).max(1) as f64 / out_frames.max(1) as f64;
-        for i in 0..out_frames {
-            let src = i as f64 * scale;
-            let lo = src as usize;
-            let hi = (lo + 1).min(actual_in - 1);
-            let t = (src - lo as f64) as f32;
-            for c in 0..ch {
-                let s0 = fwd[lo * ch + c];
-                let s1 = fwd[hi * ch + c];
-                buf[i * ch + c] = s0 + (s1 - s0) * t;
+        if actual_in == available_out {
+            buf[..available_out * ch].copy_from_slice(&fwd);
+        } else {
+            let scale = (actual_in - 1).max(1) as f64 / available_out.max(1) as f64;
+            for i in 0..available_out {
+                let src = i as f64 * scale;
+                let lo = src as usize;
+                let hi = (lo + 1).min(actual_in - 1);
+                let t = (src - lo as f64) as f32;
+                for c in 0..ch {
+                    let s0 = fwd[lo * ch + c];
+                    let s1 = fwd[hi * ch + c];
+                    buf[i * ch + c] = s0 + (s1 - s0) * t;
+                }
             }
         }
+        buf[available_out * ch..].fill(0.0);
     }
 }
 
