@@ -136,7 +136,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
                 let rounds = if step == 1 { 1 + p.subpel_rounds as usize } else { 1 };
                 for _ in 0..rounds {
                     let c = best;
-                    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)] {
+                    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
                         let m = Mv::new(c.x as i32 + dx * step, c.y as i32 + dy * step);
                         if !self.mv_ok(bx, by, w, h, m) || !seen.first(m) {
                             continue;
@@ -283,16 +283,7 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
             skip_pred = Some((y, u, v));
         }
         // --- 16x16 search
-        let mut cands = vec![skip_mv, Mv::ZERO];
-        let colo = r.mbs[my * f.p.mbw + mx];
-        if colo.ref_idx[0][0] >= 0 {
-            cands.push(colo.mv[0][0]);
-        }
-        let (mv16, mvp16, cost16) = {
-            let (m, p, c) = self.search_part(r, &PartSearch { mx, my, part: Part::P16x16, list: 0, lam, seed: skip_mv }, src);
-            (m, p, c)
-        };
-        let _ = cands;
+        let (mv16, mvp16, cost16) = self.search_part(r, &PartSearch { mx, my, part: Part::P16x16, list: 0, lam, seed: skip_mv }, src);
         let mut best_part = Part::P16x16;
         let mut best_mvs = mv16;
         let mut best_mvps = mvp16;
@@ -300,7 +291,10 @@ impl<'a, 'b> SliceEnc<'a, 'b> {
         if f.p.partitions {
             let big = cost16 as u64 > (256 * 4) as u64;
             if big {
-                for part in [Part::P16x8, Part::P8x16, Part::P8x8] {
+                for part in [Part::P8x8, Part::P16x8, Part::P8x16] {
+                    if part != Part::P8x8 && best_part == Part::P16x16 {
+                        continue;
+                    }
                     let (m, p, c) = self.search_part(r, &PartSearch { mx, my, part, list: 0, lam, seed: mv16[0] }, src);
                     let extra = match part {
                         Part::P8x8 => 10,
