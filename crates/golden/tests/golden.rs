@@ -744,18 +744,23 @@ fn scenes_are_distinct() {
 fn device(context: &str, require_float_target: bool) -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let Some(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok() else {
+        assert!(std::env::var_os("FILMCRAFT_REQUIRE_GPU").is_none(), "{context}: required GPU adapter unavailable");
         eprintln!("SKIPPED ({context}): no GPU adapter");
         return None;
     };
-    let name = adapter.get_info().name;
+    let info = adapter.get_info();
+    eprintln!("GPU test adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+    let name = info.name;
     let renderable = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba32Float).allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
     if require_float_target && !renderable {
+        assert!(std::env::var_os("FILMCRAFT_REQUIRE_GPU").is_none(), "{context}: required GPU float target unavailable");
         eprintln!("SKIPPED ({context}): adapter {name} cannot render to Rgba32Float");
         return None;
     }
     match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
         Ok(device) => Some(device),
         Err(_) => {
+            assert!(std::env::var_os("FILMCRAFT_REQUIRE_GPU").is_none(), "{context}: required GPU device creation failed");
             eprintln!("SKIPPED ({context}): adapter {name} refused a device");
             None
         }
