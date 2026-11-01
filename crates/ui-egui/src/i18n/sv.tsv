@@ -3630,3 +3630,107 @@
 	Check for Updates…	Sök efter uppdateringar…
 	Set Work Area Bar In Point	Ange arbetsområdesfältets in-punkt
 	Set Work Area Bar Out Point	Ange arbetsområdesfältets ut-punkt
+	FilmCraft Updates	FilmCraft-uppdateringar
+	Center at Cut	Centrera vid snitt
+	Start at Cut	Börja vid snitt
+	End at Cut	Sluta vid snitt
+	Custom Start	Anpassad start
+	Replace File	Ersätt fil
+	“{file}” already exists in “{folder}”. Do you want to replace it?	”{file}” finns redan i ”{folder}”. Vill du ersätta den?
+	Replace	Ersätt
+	Strikethrough	Genomstruken
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Markera ett klipp (eller ett länkat klipp) i tidslinjen, eller ett objekt i projektpanelen, för att byta namn
+	Edit Marker…	Redigera markör…
+	In:	In:
+	Marker Color:	Markörfärg:
+	Options:	Alternativ:
+	Comment Marker	Kommentarsmarkör
+	Chapter Marker	Kapitelmarkör
+	Segmentation Marker	Segmenteringsmarkör
+	Web Link	Webblänk
+	Flash Cue Point	Flash-referenspunkt
+	Invalid duration: {error}	Ogiltig längd: {error}
+	Enter a positive duration within the supported speed range.	Ange en positiv längd inom det hastighetsintervall som stöds.
+	Show Video Names	Visa videonamn
+	Show Audio Names	Visa ljudnamn
+	Video Names	Videonamn
+	Audio Names	Ljudnamn
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Kontrollservern är inaktiverad: FILMCRAFT_CONTROL_TOKEN måste innehålla 64 slumpmässiga hexadecimala tecken (se docs/control-protocol.md)
+	Clip Mismatch Warning	Varning för avvikande klipp
+	This clip does not match the sequence settings.	Klippet matchar inte sekvensinställningarna.
+	Clip: {settings}	Klipp: {settings}
+	Sequence: {settings}	Sekvens: {settings}
+	Change the sequence to match the clip's settings?	Vill du ändra sekvensen så att den matchar klippets inställningar?
+	Change Sequence Settings	Ändra sekvensinställningar
+	Keep Existing Settings	Behåll befintliga inställningar
+	1 frame ({seconds} s)	1 bildruta ({seconds} s)
+	1/2	1/2
+	Add Track	Lägg till spår
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Ljudutgången misslyckades: spelar upp utan ljud (kontrollera Inställningar ▸ Ljudhårdvara)
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Ljudutgången svarar inte: spelar upp utan ljud (kontrollera Inställningar ▸ Ljudhårdvara)
+	Caption Export Settings	Exportinställningar för undertexter
+	Delete Track	Radera spår
+	Duration (frames):	Längd (bildrutor):
+	Edit Marker	Redigera markör
+	Exported {path} as {format}, from its file extension	Exporterade {path} som {format}, utifrån filändelsen
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	Responsiv design – Tid mappar om grafikens lagernyckelbildrutor; klippeffekter som Opacitet och Rörelse behåller medietiden
+	Set as Default Transition	Ange som standardövergång
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	Källans in/ut är bara 1 bildruta. Välj Hela källan för att exportera hela sekvensen.
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	När alternativet är aktiverat är GIF-transparensen antingen på eller av: alfa under 128 är transparent, 128 och högre är ogenomskinligt.
+	{frames} frames ({seconds} s)	{frames} bildrutor ({seconds} s)
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} finns redan, så inget exporterades. Om du vill ersätta filen väljer du den i dialogrutan för att spara.
+	A range marker needs a positive duration	En intervallmarkör måste ha en positiv längd
+	Add Custom Color	Lägg till anpassad färg
+	Add and apply	Lägg till och använd
+	Add color	Lägg till färg
+	Add custom color	Lägg till anpassad färg
+	Add custom color…	Lägg till anpassad färg…
+	Author	Författare
+	Chapter	Kapitel
+	Choose Color…	Välj färg…
+	Choose color with system picker	Välj färg med systemets färgväljare
+	Color picker	Färgväljare
+	Color selected markers	Färga markerade markörer
+	Custom Color…	Anpassad färg…
+	Delete Marker	Radera markör
+	Delete selected markers	Radera markerade markörer
+	Edit Custom Color	Redigera anpassad färg
+	Edit color	Redigera färg
+	Editing or removing a swatch leaves assigned colors unchanged.	Om du redigerar eller tar bort en färgruta ändras inte färger som redan har tilldelats.
+	Enter six hex digits, for example FF80C0.	Ange sex hexadecimala siffror, till exempel FF80C0.
+	Hex	Hex
+	Hex color	Hexfärg
+	Manage Colors	Hantera färger
+	Manage Colors…	Hantera färger…
+	Marker owner is unavailable	Markörens ägare är inte tillgänglig
+	No markers	Inga markörer
+	No matching markers	Inga matchande markörer
+	No saved colors	Inga sparade färger
+	No sequence open	Ingen sekvens är öppen
+	No source clip open	Inget källklipp är öppet
+	Notes	Anteckningar
+	Project Colors	Projektfärger
+	Range marker	Intervallmarkör
+	Remove saved color	Ta bort sparad färg
+	Save color	Spara färg
+	Search markers	Sök markörer
+	Search name, notes, author	Sök i namn, anteckningar, författare
+	Select all	Markera alla
+	Select all visible markers	Markera alla synliga markörer
+	Sequence: {name}	Sekvens: {name}
+	Source: {name}	Källa: {name}
+	Source: {name} (shared source markers)	Källa: {name} (delade källmarkörer)
+	System color picker unavailable: {error}	Systemets färgväljare är inte tillgänglig: {error}
+	Time is outside the supported range	Tiden ligger utanför det intervall som stöds
+	{count} selected	{count} markerade
+	Remove Custom Color	Ta bort anpassad färg
+	Edit Markers	Redigera markörer
+	Delete Markers	Radera markörer
+	Marker changed or was removed. Reopen it to continue.	Markören har ändrats eller tagits bort. Öppna den igen för att fortsätta.
+	URL	URL
+	Open Link	Öppna länk
+	Opens this address in your web browser	Öppnar den här adressen i webbläsaren
+	Enter a valid HTTP or HTTPS URL without credentials	Ange en giltig HTTP- eller HTTPS-URL utan inloggningsuppgifter
+	Previous	Föregående
+	Next	Nästa
+	Enter a valid HH:MM:SS:FF timecode	Ange en giltig tidskod i formatet HH:MM:SS:FF

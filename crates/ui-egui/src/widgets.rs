@@ -1,10 +1,34 @@
 //! Small custom widgets in Premiere's visual language.
 
+pub mod color_picker;
+
 use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use filmcraft_time::{FrameRate, Tick, parse_timecode};
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
+
+#[derive(Clone, Copy)]
+pub(crate) enum MarkerPart {
+    Whole,
+    Left,
+    Right,
+}
+
+/// Point markers use the whole flag; a range places its two halves at its endpoints.
+pub(crate) fn marker_glyph(painter: &egui::Painter, rect: Rect, tip_height: f32, part: MarkerPart, color: Color32) {
+    let x = rect.center().x;
+    let y = rect.top();
+    let shoulder = rect.bottom() - tip_height;
+    let points = match part {
+        MarkerPart::Whole => {
+            vec![pos2(rect.left(), y), pos2(rect.right(), y), pos2(rect.right(), shoulder), pos2(x, rect.bottom()), pos2(rect.left(), shoulder)]
+        }
+        MarkerPart::Left => vec![pos2(rect.left(), y), pos2(x, y), pos2(x, rect.bottom()), pos2(rect.left(), shoulder)],
+        MarkerPart::Right => vec![pos2(x, y), pos2(rect.right(), y), pos2(rect.right(), shoulder), pos2(x, rect.bottom())],
+    };
+    painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+}
 
 /// Give a widget an explicit accessible name without changing its visible hint text.
 ///
@@ -518,6 +542,49 @@ pub(crate) fn zoom_thumb_cursor(ui: &Ui, resp: &Response, thumb: Rect, handle_gr
     }
 }
 
+/// `text` laid out with each digit centred in a cell as wide as the widest digit (tabular figures,
+/// which egui's fonts don't switch on), so a number that changes doesn't move the text after it:
+/// the pieces with their x offsets, and the width of the whole.
+pub fn tabular_text(painter: &egui::Painter, text: &str, font: &egui::FontId, color: Color32) -> (Vec<(f32, std::sync::Arc<egui::Galley>)>, f32) {
+    let layout = |s: String| painter.layout_no_wrap(s, font.clone(), color);
+    let cell = ('0'..='9').map(|c| layout(c.to_string()).size().x).fold(0.0, f32::max);
+    // each digit alone; the runs between them whole, keeping their kerning
+    let mut runs: Vec<(bool, String)> = Vec::new();
+    for c in text.chars() {
+        match runs.last_mut() {
+            Some((false, run)) if !c.is_ascii_digit() => run.push(c),
+            _ => runs.push((c.is_ascii_digit(), c.to_string())),
+        }
+    }
+    let (mut pieces, mut x) = (Vec::with_capacity(runs.len()), 0.0);
+    for (digit, run) in runs {
+        let g = layout(run);
+        let w = g.size().x;
+        pieces.push((if digit { x + (cell - w) / 2.0 } else { x }, g));
+        x += if digit { cell } else { w };
+    }
+    (pieces, x)
+}
+
+/// Paint [`tabular_text`]'s pieces with their left edge at `left_center.x`, centred on its y.
+pub fn paint_tabular(painter: &egui::Painter, left_center: egui::Pos2, pieces: Vec<(f32, std::sync::Arc<egui::Galley>)>, color: Color32) {
+    for (dx, g) in pieces {
+        let y = left_center.y - g.size().y / 2.0;
+        painter.galley(pos2(left_center.x + dx, y), g, color);
+    }
+}
+
+/// [`tabular_text`] as a label in `ui`'s layout, read by screen readers as `egui::Label` is.
+pub fn tabular_label(ui: &mut egui::Ui, text: &str, font: &egui::FontId, color: Color32) -> egui::Response {
+    let (pieces, width) = tabular_text(ui.painter(), text, font, color);
+    let height = pieces.iter().map(|(_, g)| g.size().y).fold(font.size, f32::max);
+    let sense = if ui.memory(|m| m.options.screen_reader) { egui::Sense::focusable_noninteractive() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), sense);
+    paint_tabular(ui.painter(), pos2(rect.min.x, rect.center().y), pieces, color);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), text));
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,6 +611,24 @@ mod tests {
             .collect()
     }
 
+    /// Tabular text: every digit takes the same room, so `11:11` and `88:08` are as wide.
+    #[test]
+    fn tabular_text_gives_every_digit_the_same_room() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &Tokens::for_kind(ThemeKind::Dark)); // the app's UI font
+        let mut widths = Vec::new();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            for s in ["Exporting… 11% · 11:11 left", "Exporting… 88% · 88:08 left"] {
+                widths.push(tabular_text(ui.painter(), s, &Tokens::ui(11.0), Color32::WHITE).1);
+            }
+            let plain = |s: &str| ui.painter().layout_no_wrap(s.to_string(), Tokens::ui(11.0), Color32::WHITE).size().x;
+            assert!(plain("11:11") < plain("88:08"), "the font's own digits differ in width");
+        })
+        .textures_delta
+        .clear();
+        assert!((widths[0] - widths[1]).abs() < 0.01, "{widths:?}");
+    }
+
     #[test]
     fn the_text_of_a_search_field_is_centred_vertically_in_it() {
         for text in ["", "effects"] {
@@ -564,6 +649,22 @@ mod tests {
         })
         .textures_delta
         .clear();
+    }
+
+    /// The queue's progress line is painted digit by digit; a screen reader still reads it whole.
+    #[test]
+    fn a_tabular_label_is_read_as_its_text() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        let mut harness = Harness::builder().with_size(egui::vec2(240.0, 60.0)).build_ui_state(
+            |ui, _: &mut ()| {
+                tabular_label(ui, "Encoding 88% · 37:00 left", &Tokens::ui(11.0), Color32::WHITE);
+            },
+            (),
+        );
+        harness.run_steps(2);
+        harness.check_accessibility();
+        assert!(harness.query_by_label("Encoding 88% · 37:00 left").is_some());
     }
 
     /// The edit field behind a hot number uses the caller's property label, not the generic
