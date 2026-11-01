@@ -395,10 +395,8 @@ pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id
     let resp = ui.interact(rect, id, Sense::click());
     if on {
         ui.painter().rect_filled(rect, t.radius_sm, t.toggle_on);
-    }
-    if resp.hovered() {
-        // over an on toggle, a second layer of its background, so hovering never looks like off
-        ui.painter().rect_filled(rect, t.radius_sm, if on { t.toggle_on } else { t.hover });
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, t.radius_sm, t.hover);
     }
     let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
     icons::paint(ui.painter(), rect.shrink(rect.width() * 0.16), icon, col);
@@ -815,14 +813,25 @@ mod tests {
         assert!((end.center() - (start.center() + egui::vec2(-200.0, -150.0))).length() < 2.0, "moved with the drag: {start:?} -> {end:?}");
     }
 
-    /// The fills of the rectangles an icon toggle paints, on or off.
-    fn fills(on: bool, t: &Tokens) -> Vec<Color32> {
+    /// The fills of the rectangles an icon toggle paints, on or off, with the pointer over it or not.
+    fn fills(on: bool, hovered: bool, t: &Tokens) -> Vec<Color32> {
         let ctx = egui::Context::default();
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            icon_toggle(ui, Rect::from_min_size(pos2(10.0, 10.0), vec2(22.0, 22.0)), Icon::Lock, on, t, egui::Id::unique("toggle"), None);
-        });
-        out.textures_delta.clear();
-        out.shapes
+        let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(22.0, 22.0));
+        let frame = || {
+            let mut input = egui::RawInput::default();
+            if hovered {
+                input.events.push(egui::Event::PointerMoved(rect.center()));
+            }
+            let mut out = ctx.run_ui(input, |ui| {
+                icon_toggle(ui, rect, Icon::Lock, on, t, egui::Id::unique("toggle"), None);
+            });
+            out.textures_delta.clear();
+            out
+        };
+        // a widget is hovered from the frame after it was first drawn
+        frame();
+        frame()
+            .shapes
             .iter()
             .filter_map(|s| match &s.shape {
                 egui::Shape::Rect(r) => Some(r.fill),
@@ -835,8 +844,17 @@ mod tests {
     fn an_icon_toggle_that_is_on_has_a_background_and_one_that_is_off_has_none() {
         for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
             let t = Tokens::for_kind(kind);
-            assert!(fills(true, &t).contains(&t.toggle_on), "{kind:?}");
-            assert!(!fills(false, &t).contains(&t.toggle_on), "{kind:?}");
+            assert!(fills(true, false, &t).contains(&t.toggle_on), "{kind:?}");
+            assert!(!fills(false, false, &t).contains(&t.toggle_on), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn hovering_an_icon_toggle_shows_only_when_it_is_off() {
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            let t = Tokens::for_kind(kind);
+            assert!(fills(false, true, &t).contains(&t.hover), "{kind:?}");
+            assert_eq!(fills(true, true, &t), fills(true, false, &t), "{kind:?}: a second layer would lower the icon's contrast");
         }
     }
 }
