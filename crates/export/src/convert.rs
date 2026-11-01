@@ -1,5 +1,23 @@
 use super::{ExportError, IndexedParallelIterator, ParallelIterator, ParallelSliceMut, Result};
 
+/// Walk plane rows in parallel, or one chunk at a time while an export encode already holds the pool (#1329).
+fn for_planes<T: Send, U: Send, V: Send>(
+    y: &mut [T],
+    ys: usize,
+    u: &mut [U],
+    us: usize,
+    v: &mut [V],
+    vs: usize,
+    body: impl Fn((usize, (&mut [T], (&mut [U], &mut [V])))) + Sync + Send,
+) {
+    if crate::avoid_nested_rayon() {
+        crate::note_sequential_yuv();
+        y.chunks_mut(ys).zip(u.chunks_mut(us).zip(v.chunks_mut(vs))).enumerate().for_each(body);
+    } else {
+        y.par_chunks_mut(ys).zip(u.par_chunks_mut(us).zip(v.par_chunks_mut(vs))).enumerate().for_each(body);
+    }
+}
+
 /// A YUV matrix's luma coefficients: `kr` for red and `kb` for blue (green is the remainder).
 #[derive(Clone, Copy, Debug)]
 pub struct Matrix {
@@ -36,7 +54,7 @@ pub fn to_yuv444_10(rgba: &[u8], hdr: Option<&[f32]>, w: usize, h: usize, m: Mat
             None => rgba.get(i * 4..i * 4 + 3).map_or([0.0; 3], |p| [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0]),
         }
     };
-    y.par_chunks_mut(w).zip(cb.par_chunks_mut(w).zip(cr.par_chunks_mut(w))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
+    for_planes(y, w, cb, w, cr, w, |(row, (yr, (cbr, crr)))| {
         for (x, (yv, (cbv, crv))) in yr.iter_mut().zip(cbr.iter_mut().zip(crr.iter_mut())).enumerate() {
             let [r, g, b] = rgb_at(row * w + x);
             let yy = kr * r + kg * g + kb * b;
@@ -56,7 +74,7 @@ pub fn to_yuv444_10(rgba: &[u8], hdr: Option<&[f32]>, w: usize, h: usize, m: Mat
 pub fn rgba_to_yuv422_10(rgba: &[u8], w: usize, h: usize, y: &mut [u16], cb: &mut [u16], cr: &mut [u16]) {
     let cw = w.div_ceil(2);
     debug_assert!(y.len() >= w * h && rgba.len() >= w * h * 4);
-    y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
+    for_planes(y, w, cb, cw, cr, cw, |(row, (yr, (cbr, crr)))| {
         let src = &rgba[row * w * 4..(row + 1) * w * 4];
         let mut us = vec![0f32; w];
         let mut vs = vec![0f32; w];
@@ -85,7 +103,7 @@ pub fn rgbf_to_yuv422_10(rgb: &[f32], w: usize, h: usize, m: Matrix, y: &mut [u1
     debug_assert!(rgb.len() >= w * h * 3 && y.len() >= w * h);
     let kg = 1.0 - kr - kb;
     let (sb, sr) = (2.0 * (1.0 - kb), 2.0 * (1.0 - kr));
-    y.par_chunks_mut(w).zip(cb.par_chunks_mut(cw).zip(cr.par_chunks_mut(cw))).enumerate().for_each(|(row, (yr, (cbr, crr)))| {
+    for_planes(y, w, cb, cw, cr, cw, |(row, (yr, (cbr, crr)))| {
         let src = &rgb[row * w * 3..(row + 1) * w * 3];
         let mut us = vec![0f32; w];
         let mut vs = vec![0f32; w];
@@ -131,9 +149,7 @@ pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mu
     // Per row: gather the luma sums, then the vectorisable part (codes, chroma differences) over
     // whole rows, then add the differences pairwise in the order the per-pixel loop added them.
     let rows_init = || (vec![0f32; w], vec![0f32; w], vec![0f32; w], vec![0f32; cw], vec![0f32; cw]);
-    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each_init(
-        rows_init,
-        |(ty, tb, tr, us, vs), (cy, (yr, (ur, vr)))| {
+    let step = |(ty, tb, tr, us, vs): &mut (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>), (cy, (yr, (ur, vr))): (usize, (&mut [u8], (&mut [u8], &mut [u8])))| {
             let rows = yr.len() / w;
             us.fill(0.0);
             vs.fill(0.0);
@@ -175,8 +191,16 @@ pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mu
                 *uo = code8(128.0 + 224.0 * us[cx] / cnt);
                 *vo = code8(128.0 + 224.0 * vs[cx] / cnt);
             }
-        },
-    );
+    };
+    if crate::avoid_nested_rayon() {
+        crate::note_sequential_yuv();
+        let mut state = rows_init();
+        for item in y.chunks_mut(w * 2).zip(u.chunks_mut(cw).zip(v.chunks_mut(cw))).enumerate() {
+            step(&mut state, item);
+        }
+    } else {
+        y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each_init(rows_init, step);
+    }
 }
 
 /// Limited-range 8-bit 4:2:0 from encoded R'G'B' floats with matrix (Kr, Kb).
@@ -188,7 +212,7 @@ pub fn rgbf_to_yuv420_8(rgb: &[f32], w: usize, h: usize, m: Matrix, y: &mut Vec<
     y.resize(w * h, 0);
     u.resize(cw * ch, 0);
     v.resize(cw * ch, 0);
-    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+    for_planes(y, w * 2, u, cw, v, cw, |(cy, (yr, (ur, vr)))| {
         let rows = yr.len() / w;
         let mut us = vec![0f32; cw];
         let mut vs = vec![0f32; cw];
@@ -237,7 +261,7 @@ pub fn rgbf_to_yuv420_10(rgb: &[f32], w: usize, h: usize, m: Matrix, y: &mut Vec
     v.resize(cw * ch, 0);
     let unit = |x: f32| if x.is_nan() { 0.0 } else { x.clamp(0.0, 1.0) };
     let code = |x: f32| x.round().clamp(4.0, 1019.0) as u16;
-    y.par_chunks_mut(w * 2).zip(u.par_chunks_mut(cw).zip(v.par_chunks_mut(cw))).enumerate().for_each(|(cy, (yr, (ur, vr)))| {
+    for_planes(y, w * 2, u, cw, v, cw, |(cy, (yr, (ur, vr)))| {
         let rows = yr.len() / w;
         let mut us = vec![0f32; cw];
         let mut vs = vec![0f32; cw];
