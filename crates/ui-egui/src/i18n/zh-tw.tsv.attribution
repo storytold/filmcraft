@@ -1,0 +1,8 @@
+asset:        zh-tw.tsv
+title:        Traditional Chinese (Taiwan) interface translation catalog
+author:       FilmCraft contributors
+source:       original work
+license:      MIT OR Apache-2.0
+license-file: LICENSE-MIT and LICENSE-APACHE
+added:        2026-10-13 by loeness
+notes:        Original English-to-Traditional-Chinese interface translations using Taiwan video-editing vocabulary.

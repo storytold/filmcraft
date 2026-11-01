@@ -8,7 +8,7 @@ use super::{Deserialize, FrameRate, Serialize, Tick};
 #[serde(rename_all = "camelCase", default)]
 pub struct GeneralPrefs {
     /// Interface language (persisted independently of projects): `en`, `ja`, `es`, `pt-br`, `uk`,
-    /// `zh-cn`, `de`, `ru`, `fr`, `id`, `it`, `ko`, `cs`, `pl`, `sv`, `tr`, or `system` (the default: the operating system's preferred language when the
+    /// `zh-cn`, `de`, `ru`, `fr`, `id`, `it`, `ko`, `cs`, `pl`, `sv`, `tr`, `bs`, native `zh-tw`, or `system` (the default: the operating system's preferred language when the
     /// interface has it, otherwise English).
     pub interface_language: String,
     /// "At Startup": `showHome` (FilmCraft: the demo project), `openMostRecent`, `emptyProject`.

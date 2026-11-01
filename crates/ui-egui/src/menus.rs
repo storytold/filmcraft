@@ -44,6 +44,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
     uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
     uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
+    #[cfg(not(target_arch = "wasm32"))]
+    uic!("app.language.traditionalChinese", "繁體中文（台灣）", ["Edit", "Language"], None),
     uic!("app.language.korean", "한국어", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
@@ -242,6 +244,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             | "app.language.french"
             | "app.language.indonesian"
             | "app.language.italian"
+            | "app.language.traditionalChinese"
             | "app.language.bosnian"
             | "app.language.korean"
             | "app.language.czech"
@@ -272,6 +275,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             "app.language.french" => crate::i18n::Language::Fr,
             "app.language.indonesian" => crate::i18n::Language::Id,
             "app.language.italian" => crate::i18n::Language::It,
+            "app.language.traditionalChinese" => crate::i18n::Language::ZhTw,
             "app.language.bosnian" => crate::i18n::Language::Bs,
             "app.language.korean" => crate::i18n::Language::Ko,
             "app.language.czech" => crate::i18n::Language::Cs,
@@ -280,6 +284,20 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             "app.language.turkish" => crate::i18n::Language::Tr,
             _ => crate::i18n::Language::En,
         };
+        if language == crate::i18n::Language::ZhTw {
+            if cfg!(target_arch = "wasm32") {
+                return Err("Traditional Chinese is available in native builds".into());
+            }
+            if !crate::theme::install_fonts(ctx, language) {
+                return Err("No Traditional Chinese font is available; the interface stays in English.".into());
+            }
+        } else if app.ui.language == crate::i18n::Language::ZhTw {
+            // Remove the Taiwan face's interface priority when leaving Traditional Chinese.
+            crate::theme::install_fonts(ctx, language);
+            if language == crate::i18n::Language::Ja {
+                crate::i18n::install_japanese_font(ctx);
+            }
+        }
         // The preference is updated in memory before it is written, so a failed write (read-only
         // or full disk) still switches the interface; it only can't be remembered for next time.
         let saved = app.session.execute("prefs.set", json!({"key": "general.interfaceLanguage", "value": language.code()}));
@@ -922,6 +940,7 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.french" => it.checked = Some(app.ui.language == crate::i18n::Language::Fr),
             "app.language.indonesian" => it.checked = Some(app.ui.language == crate::i18n::Language::Id),
             "app.language.italian" => it.checked = Some(app.ui.language == crate::i18n::Language::It),
+            "app.language.traditionalChinese" => it.checked = Some(app.ui.language == crate::i18n::Language::ZhTw),
             "app.language.bosnian" => it.checked = Some(app.ui.language == crate::i18n::Language::Bs),
             "app.language.korean" => it.checked = Some(app.ui.language == crate::i18n::Language::Ko),
             "app.language.czech" => it.checked = Some(app.ui.language == crate::i18n::Language::Cs),

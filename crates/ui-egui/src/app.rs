@@ -29,6 +29,8 @@ impl FilmcraftApp {
         let workspaces =
             session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| dock::WorkspacePrefs::load(&d.join(dock::WORKSPACES_FILE))).unwrap_or_default();
         let language = i18n::Language::parse(&session.prefs.general.interface_language).unwrap_or_default();
+        // Traditional Chinese is native-only, including when restoring saved preferences.
+        let language = if cfg!(target_arch = "wasm32") && language == i18n::Language::ZhTw { i18n::Language::En } else { language };
         let ime_document_epoch = session.document_epoch;
         let ime_active_sequence = session.state.active_sequence;
         Self {
@@ -204,8 +206,16 @@ impl FilmcraftApp {
             // theme::install replaces the fonts: add the system Japanese font back (or fall back to
             // English when a saved Japanese setting meets a system without one)
             // (likewise Chinese without a Chinese face, Korean without a Hangul one)
+            let traditional_chinese_missing = self.ui.language == i18n::Language::ZhTw && !theme::install_fonts(ctx, self.ui.language);
             let japanese_missing = self.ui.language == i18n::Language::Ja && !i18n::install_japanese_font(ctx);
-            if japanese_missing
+            if traditional_chinese_missing {
+                // `theme::install` follows the previously active catalog. A failed Taiwan-font
+                // lookup leaves those definitions in place, so install the English stacks too.
+                theme::install_fonts(ctx, i18n::Language::En);
+                self.ui.language = i18n::Language::En;
+                i18n::set_current(i18n::Language::En);
+                ctx.set_language(Some(i18n::Language::En.bcp47().to_owned()));
+            } else if japanese_missing
                 || (self.ui.language == i18n::Language::ZhCn && !i18n::chinese_font_available())
                 || (self.ui.language == i18n::Language::Ko && !i18n::korean_font_available())
             {

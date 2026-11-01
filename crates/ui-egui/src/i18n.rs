@@ -20,6 +20,10 @@
 //! Simplified Chinese uses the Chinese fallback `theme::install` always adds (craft-fonts Hans/Hant
 //! faces, otherwise one installed system face, see `cjk.rs`); without one, switching to Chinese is
 //! refused the same way ([`chinese_font_available`]).
+//!
+//! Traditional Chinese uses a Taiwan font face when one is available. Native builds select it for
+//! Taiwan, Hong Kong, Macao and Traditional Chinese locales; without a Taiwan face, switching is
+//! refused and saved preferences fall back to English.
 
 mod catalog;
 
@@ -47,6 +51,9 @@ pub enum Language {
     Fr,
     Id,
     It,
+    /// Traditional Chinese (Taiwan), persisted as `zh-tw`.
+    #[serde(rename = "zh-tw")]
+    ZhTw,
     /// Bosnian, Latin script (Ijekavian); `bs-Cyrl` locales use it too.
     Bs,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
@@ -72,13 +79,14 @@ static KOREAN: OnceLock<Catalog> = OnceLock::new();
 static POLISH: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
+static TRADITIONAL_CHINESE: OnceLock<Catalog> = OnceLock::new();
 static BOSNIAN: OnceLock<Catalog> = OnceLock::new();
 static CZECH: OnceLock<Catalog> = OnceLock::new();
 static SWEDISH: OnceLock<Catalog> = OnceLock::new();
 static TURKISH: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::En,
         Self::Ja,
         Self::Es,
@@ -96,6 +104,7 @@ impl Language {
         Self::Sv,
         Self::Tr,
         Self::Bs,
+        Self::ZhTw,
     ];
 
     /// BCP 47 tag for AccessKit and the web IME's hidden input. Keep the persisted spelling
@@ -108,6 +117,7 @@ impl Language {
             Self::PtBr => "pt-BR",
             Self::Uk => "uk",
             Self::ZhCn => "zh-CN",
+            Self::ZhTw => "zh-TW",
             Self::De => "de",
             Self::Ru => "ru",
             Self::Fr => "fr",
@@ -135,6 +145,7 @@ impl Language {
             Self::Fr => "Français",
             Self::Id => "Bahasa Indonesia",
             Self::It => "Italiano",
+            Self::ZhTw => "繁體中文（台灣）",
             Self::Bs => "Bosanski",
             Self::Ko => "한국어",
             Self::Cs => "Čeština",
@@ -157,6 +168,7 @@ impl Language {
             "fr" => Some(Self::Fr),
             "id" => Some(Self::Id),
             "it" => Some(Self::It),
+            "zh-tw" => Some(Self::ZhTw),
             "bs" => Some(Self::Bs),
             "ko" => Some(Self::Ko),
             "cs" => Some(Self::Cs),
@@ -175,7 +187,7 @@ impl Language {
     /// and Android runtimes report) the Indonesian one; any Italian (`it-IT`, `it-CH`, `it_IT.UTF-8`…)
     /// the Italian one; any Bosnian (`bs-BA`, `bs_BA.UTF-8`, `bs-Latn-BA`…) the Bosnian one; any Swedish (`sv-SE`, `sv-FI`, `sv_SE.UTF-8`…) the Swedish one; any Turkish (`tr`, `tr-TR`, `tr_TR.UTF-8`…) the Turkish one. Chinese gets the Simplified catalog
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
-    /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
+    /// `zh-HK`, `zh-MO`, `zh-Hant…`) use the Taiwan catalog on native builds.
     pub fn from_locales(tags: &[String]) -> Self {
         const PRIMARY: [(&str, Language); 17] = [
             ("en", Language::En),
@@ -205,7 +217,11 @@ impl Language {
                     let rest = tag.get(primary.len()..).unwrap_or_default();
                     let sub = if rest.starts_with(['-', '_']) { parts.next().unwrap_or_default() } else { "" };
                     let simplified = sub.is_empty() || ["cn", "sg", "hans"].iter().any(|s| sub.eq_ignore_ascii_case(s));
-                    return simplified.then_some(Language::ZhCn);
+                    if simplified {
+                        return Some(Language::ZhCn);
+                    }
+                    let traditional = ["tw", "hk", "mo", "hant"].iter().any(|s| sub.eq_ignore_ascii_case(s));
+                    return (traditional && !cfg!(target_arch = "wasm32")).then_some(Language::ZhTw);
                 }
                 PRIMARY.iter().find(|(code, _)| primary.eq_ignore_ascii_case(code)).map(|(_, l)| *l)
             })
@@ -226,6 +242,7 @@ impl Language {
             Self::Fr => "fr",
             Self::Id => "id",
             Self::It => "it",
+            Self::ZhTw => "zh-tw",
             Self::Bs => "bs",
             Self::Ko => "ko",
             Self::Cs => "cs",
@@ -249,6 +266,7 @@ impl Language {
             Self::Fr => Some(FRENCH.get_or_init(|| Catalog::parse(include_str!("i18n/fr.tsv")))),
             Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("i18n/id.tsv")))),
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("i18n/it.tsv")))),
+            Self::ZhTw => Some(TRADITIONAL_CHINESE.get_or_init(|| Catalog::parse(include_str!("i18n/zh-tw.tsv")))),
             Self::Bs => Some(BOSNIAN.get_or_init(|| Catalog::parse(include_str!("i18n/bs.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("i18n/ko.tsv")))),
             Self::Cs => Some(CZECH.get_or_init(|| Catalog::parse(include_str!("i18n/cs.tsv")))),
