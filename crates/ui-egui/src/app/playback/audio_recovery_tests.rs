@@ -390,16 +390,20 @@ fn a_stalled_output_retries_and_follows_the_new_device_clock() {
             let before_retry = app.session.playhead();
             assert!(before_retry > heard_until, "the timeline keeps moving while waiting");
             assert_eq!(device.starts.load(Ordering::Relaxed), 1, "no retry before the deadline");
-            let retry_at = stalled_at + AUDIO_RETRY_S;
+            let (anchor_tick, anchor_time) = (app.playback.anchor_tick, app.playback.anchor_time);
+            let retry_at = stalled_at + AUDIO_RETRY_S + 0.125; // a UI frame after the retry deadline
+            let retry_position = anchor_tick + Tick::from_seconds_f64((retry_at - anchor_time) * speed);
             advance_at(&mut app, &ctx, retry_at);
             assert_eq!(device.starts.load(Ordering::Relaxed), 2);
             assert!(app.playback.audio_clock, "a fresh zero frame counter gets a new grace period");
             assert_eq!(app.playback.audio_retry_at, 0.0);
-            assert_eq!(app.session.playhead(), before_retry, "reopening does not rewind the timeline");
+            assert_eq!(app.playback.anchor_tick, retry_position, "the new anchor retains the unsnapped wall-clock position");
+            assert_eq!(app.playback.anchor_time, retry_at);
+            assert_eq!(app.session.playhead(), app.session.sequence_rate().snap(retry_position), "reopening includes time since the last UI frame");
 
             device.frames.store(12_000, Ordering::Relaxed);
             advance_at(&mut app, &ctx, retry_at + 0.25);
-            let recovered = app.session.sequence_rate().snap(before_retry + Tick::from_seconds_f64(0.25 * speed));
+            let recovered = app.session.sequence_rate().snap(retry_position + Tick::from_seconds_f64(0.25 * speed));
             assert_eq!(app.session.playhead(), recovered, "only the new stream's samples advance the clock");
 
             // A later stall is recoverable too, with the same bounded retry interval.

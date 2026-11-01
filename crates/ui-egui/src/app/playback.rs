@@ -208,10 +208,13 @@ impl FilmcraftApp {
             self.playback.anchor_time = now;
         }
         if !self.playback.audio_clock && self.playback.audio_retry_at > 0.0 && now >= self.playback.audio_retry_at {
-            // The output failed mid-play: open it again where the wall clock got to (what
-            // pause/play does by hand), so a recovering device brings the sound back.
+            // Catch up from the wall-clock anchor before reopening the mixer. Keep the
+            // unsnapped position as the new anchor so retries don't lose partial-frame time.
+            let elapsed = (now - self.playback.anchor_time).max(0.0);
+            let time = self.playback.anchor_tick + Tick::from_seconds_f64(elapsed * self.playback.speed);
+            self.session.set_playhead(time);
             self.playback.audio_retry_at = now + AUDIO_RETRY_S;
-            self.playback.anchor_tick = self.session.playhead();
+            self.playback.anchor_tick = time;
             self.playback.anchor_time = now;
             self.playback.audio_seen = (0, now);
             self.start_audio(now);

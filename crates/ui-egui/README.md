@@ -96,9 +96,11 @@ one second, even when the device reports no error (#3785). Both reopen the outpu
 seconds, using the current playhead and a fresh device-clock grace period. Failed reopens retain
 the two-second retry interval; stopping playback cancels retries. This recovers from a stalled
 output without requiring pause/play, but does not diagnose why a particular driver stopped.
-Source retries first advance from the wall-clock anchor, including time since the last UI frame,
-so the reopened mixer starts at the current Source position. Seeks still reanchor first, and
-the existing range/end handling stops or loops playback when a delayed retry crosses the end.
+Program and Source retries first advance from the wall-clock anchor, including time since the
+last UI frame and playback speed, so the reopened mixer starts at the current position. The
+anchor retains the unsnapped position for subsequent device-clock progress. Source seeks still
+reanchor first, and existing range/end handling stops or loops playback when a delayed retry
+crosses the end.
 
 `audio_recovery_tests` covers frozen zero and nonzero frame counters, normal and 2x playback,
 repeated stalls, failed reopens and cancellation. `source_playback_ui` checks Source recovery
