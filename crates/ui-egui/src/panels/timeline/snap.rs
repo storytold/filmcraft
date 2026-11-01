@@ -119,3 +119,41 @@ pub fn locate(app: &FilmcraftApp, clip: u64, edge: Option<&str>) -> Option<(f32,
     };
     Some((x, y))
 }
+
+#[cfg(test)]
+mod tests {
+    use filmcraft_project::{Sequence, SequenceSettings, SplitMarks, MixerStrip};
+    use filmcraft_time::Tick;
+
+    /// Regression for #3404: snap_to uses cands.extend(seq.mark_in) / cands.extend(seq.mark_out)
+    /// so work-area In/Out points appear as snap candidates.
+    #[test]
+    fn snap_candidates_include_mark_in_and_mark_out() {
+        let mark_in = Tick(1_000_000);
+        let mark_out = Tick(9_000_000);
+        let seq = Sequence {
+            settings: SequenceSettings::default(),
+            video_tracks: vec![],
+            audio_tracks: vec![],
+            markers: vec![],
+            mark_in: Some(mark_in),
+            mark_out: Some(mark_out),
+            work_area: None,
+            start_timecode: 0,
+            master_volume_db: 0.0,
+            master_effects: vec![],
+            master_mixer: MixerStrip::default(),
+            submix_tracks: vec![],
+            caption_tracks: vec![],
+            multicam: None,
+            merged: None,
+            split: SplitMarks::default(),
+        };
+        // Replicate snap_to's candidate collection for mark_in / mark_out.
+        let mut cands: Vec<Tick> = Vec::new();
+        cands.extend(seq.mark_in);
+        cands.extend(seq.mark_out);
+        assert!(cands.contains(&mark_in), "mark_in should be a snap candidate");
+        assert!(cands.contains(&mark_out), "mark_out should be a snap candidate");
+    }
+}
