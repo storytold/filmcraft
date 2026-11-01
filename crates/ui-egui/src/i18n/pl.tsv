@@ -3621,3 +3621,107 @@
 	No matching text.	Brak pasującego tekstu.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) wymaga sprzętowego kodera (NVENC na kartach NVIDIA, VideoToolbox w macOS); na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera H.265. Wybierz H.264 lub ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 wymaga sprzętowego kodera; na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera AV1.
+	1 frame ({seconds} s)	1 klatka ({seconds} s)
+	A range marker needs a positive duration	Znacznik zakresu wymaga dodatniego czasu trwania
+	Add and apply	Dodaj i zastosuj
+	Add color	Dodaj kolor
+	Add custom color	Dodaj kolor niestandardowy
+	Add Custom Color	Dodaj kolor niestandardowy
+	Add custom color…	Dodaj kolor niestandardowy…
+	Add Track	Dodaj ścieżkę
+	Audio Names	Nazwy klipów audio
+	Author	Autor
+	Caption Export Settings	Ustawienia eksportu napisów
+	Center at Cut	Środek na cięciu
+	Change Sequence Settings	Zmień ustawienia sekwencji
+	Change the sequence to match the clip's settings?	Zmienić ustawienia sekwencji, aby pasowały do klipu?
+	Chapter	Rozdział
+	Chapter Marker	Znacznik rozdziału
+	Check for Updates…	Sprawdź aktualizacje…
+	Choose color with system picker	Wybierz kolor systemowym selektorem
+	Choose Color…	Wybierz kolor…
+	Clip Mismatch Warning	Ostrzeżenie o niezgodności klipu
+	Clip: {settings}	Klip: {settings}
+	Color picker	Selektor kolorów
+	Color selected markers	Zmień kolor zaznaczonych znaczników
+	Comment Marker	Znacznik komentarza
+	Custom Color…	Kolor niestandardowy…
+	Custom Start	Niestandardowy początek
+	Delete Marker	Usuń znacznik
+	Delete Markers	Usuń znaczniki
+	Delete selected markers	Usuń zaznaczone znaczniki
+	Delete Track	Usuń ścieżkę
+	Edit color	Edytuj kolor
+	Edit Custom Color	Edytuj kolor niestandardowy
+	Edit Marker	Edytuj znacznik
+	Edit Markers	Edytuj znaczniki
+	Edit Marker…	Edytuj znacznik…
+	Editing or removing a swatch leaves assigned colors unchanged.	Edycja lub usunięcie próbki nie zmienia kolorów, które są już przypisane.
+	End at Cut	Koniec na cięciu
+	Enter a positive duration within the supported speed range.	Wpisz dodatni czas trwania mieszczący się w obsługiwanym zakresie szybkości.
+	Enter a valid HH:MM:SS:FF timecode	Wpisz poprawny kod czasowy w formacie HH:MM:SS:FF
+	Enter a valid HTTP or HTTPS URL without credentials	Wpisz poprawny adres HTTP lub HTTPS bez danych logowania
+	Enter six hex digits, for example FF80C0.	Wpisz sześć cyfr szesnastkowych, na przykład FF80C0.
+	Exported {path} as {format}, from its file extension	Wyeksportowano {path} jako {format} (na podstawie rozszerzenia pliku)
+	Flash Cue Point	Punkt Flash Cue
+	Hex	Hex
+	Hex color	Kolor szesnastkowy
+	Keep Existing Settings	Zachowaj obecne ustawienia
+	Looks for a newer FilmCraft release and offers to update.	Szuka nowszej wersji FilmCraft i proponuje aktualizację.
+	Manage Colors	Zarządzaj kolorami
+	Manage Colors…	Zarządzaj kolorami…
+	Marker changed or was removed. Reopen it to continue.	Znacznik został zmieniony lub usunięty. Otwórz go ponownie, aby kontynuować.
+	Marker owner is unavailable	Element, do którego należy znacznik, jest niedostępny
+	Next	Następny
+	No markers	Brak znaczników
+	No matching markers	Brak pasujących znaczników
+	No saved colors	Brak zapisanych kolorów
+	No sequence open	Brak otwartej sekwencji
+	No source clip open	Brak otwartego klipu źródłowego
+	Notes	Notatki
+	Open Link	Otwórz link
+	Opens this address in your web browser	Otwiera ten adres w przeglądarce internetowej
+	Previous	Poprzedni
+	Project Colors	Kolory projektu
+	Range marker	Znacznik zakresu
+	Remove Custom Color	Usuń kolor niestandardowy
+	Remove saved color	Usuń zapisany kolor
+	Replace	Zastąp
+	Replace File	Zastąp plik
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	Projekt responsywny – czas przemapowuje klatki kluczowe warstw grafiki; efekty klipu, takie jak Krycie i Ruch, zachowują czas multimediów
+	Save color	Zapisz kolor
+	Search markers	Szukaj znaczników
+	Search name, notes, author	Szukaj w nazwie, notatkach i autorze
+	Segmentation Marker	Znacznik segmentacji
+	Select all	Zaznacz wszystko
+	Select all visible markers	Zaznacz wszystkie widoczne znaczniki
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Aby zmienić nazwę, zaznacz jeden klip (lub połączony klip) na osi czasu albo jeden element w panelu Projekt
+	Sequence: {name}	Sekwencja: {name}
+	Sequence: {settings}	Sekwencja: {settings}
+	Set as Default Transition	Ustaw jako domyślne przejście
+	Set Work Area Bar In Point	Ustaw punkt wejścia paska obszaru roboczego
+	Set Work Area Bar Out Point	Ustaw punkt wyjścia paska obszaru roboczego
+	Show Audio Names	Pokaż nazwy klipów audio
+	Show Video Names	Pokaż nazwy klipów wideo
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	Wejście/wyjście źródła obejmuje tylko 1 klatkę. Wybierz Całe źródło, aby wyeksportować całą sekwencję.
+	Source: {name}	Źródło: {name}
+	Source: {name} (shared source markers)	Źródło: {name} (wspólne znaczniki źródła)
+	Start at Cut	Początek na cięciu
+	Strikethrough	Przekreślenie
+	System color picker unavailable: {error}	Systemowy selektor kolorów jest niedostępny: {error}
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Serwer sterowania jest wyłączony: FILMCRAFT_CONTROL_TOKEN musi zawierać 64 losowe znaki szesnastkowe (zobacz docs/control-protocol.md)
+	This clip does not match the sequence settings.	Ten klip nie pasuje do ustawień sekwencji.
+	Time is outside the supported range	Czas jest poza obsługiwanym zakresem
+	URL	Adres URL
+	Video Names	Nazwy klipów wideo
+	Web Link	Link internetowy
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	Po włączeniu przezroczystość GIF jest zero-jedynkowa: alfa poniżej 128 jest przezroczysta, 128 i więcej – nieprzezroczysta.
+	{count} selected	Zaznaczone: {count}
+	{frames} frames ({seconds} s)	Klatki: {frames} ({seconds} s)
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} już istnieje, więc nic nie wyeksportowano. Aby go zastąpić, wybierz go w oknie zapisywania.
+	“{file}” already exists in “{folder}”. Do you want to replace it?	„{file}” już istnieje w „{folder}”. Czy chcesz go zastąpić?
+	All files	Wszystkie pliki
+	Audio hardware: the default output device cannot be opened; using '{device}'	Sprzęt audio: nie można otworzyć domyślnego urządzenia wyjściowego; używane jest „{device}”
+	FilmCraft Updates	Aktualizacja FilmCraft
+	No audio output device found: playing without sound (check Settings > Audio Hardware)	Nie znaleziono urządzenia wyjściowego audio: odtwarzanie bez dźwięku (sprawdź Ustawienia > Sprzęt audio)
+	Update check is not supported in the web browser.	Sprawdzanie aktualizacji nie jest obsługiwane w przeglądarce internetowej.
