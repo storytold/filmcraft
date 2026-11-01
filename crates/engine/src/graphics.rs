@@ -1185,6 +1185,21 @@ pub fn commands() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
+        spec("graphics.duplicateLayer", "Duplicate Graphic Layer", &[], None, r#"{"clip":id?,"layer":n?}"#, has_graphic, |s, p| {
+            let clip = target_clip(s, p).ok_or_else(|| bad("graphics.duplicateLayer", "no graphic clip"))?;
+            let (l, ei) = layer_effect_index(s, clip, p)?;
+            let new_i = s.edit_sequence("Duplicate Graphic Layer", |q, _, st| {
+                let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+                let mut copy = it.effects[ei].clone();
+                if let Some(ref mut lx) = copy.layer {
+                    lx.uid = 0;
+                }
+                it.effects.insert(ei + 1, copy);
+                st.graphic_layers = vec![l + 1];
+                Ok(l + 1)
+            })?;
+            Ok(serde_json::json!({"clip": clip.0, "layer": new_i}))
+        }),
         spec(
             "graphics.arrangeLayer",
             "Arrange Graphic Layer",
