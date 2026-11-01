@@ -257,6 +257,8 @@ pub enum Drag {
     Marquee {
         start: MarqueeAnchor,
         before: Vec<ClipId>,
+        /// The caption selection when the drag began (the box selects captions too, #1912).
+        before_captions: Vec<ClipId>,
         add: bool,
         individual: bool,
     },
