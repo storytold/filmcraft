@@ -57,7 +57,9 @@ pub fn route_transport(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) ->
         "playback.slowForward" if trimming => ("trim.shuttle", json!({"direction": "forward", "slow": true, "clock": clock})),
         "playback.slowReverse" if trimming => ("trim.shuttle", json!({"direction": "reverse", "slow": true, "clock": clock})),
         "playback.stop" if app.session.trim_play.active() => ("trim.shuttleStop", json!({"clock": clock})),
-        "playback.toggle" if trimming || app.session.trim_play.around.is_some() => ("trim.playAround", json!({"clock": clock, "toggle": true})),
+        "playback.toggle" | "playback.toggleOther" if trimming || app.session.trim_play.around.is_some() => {
+            ("trim.playAround", json!({"clock": clock, "toggle": true}))
+        }
         "playback.playAround" => ("trim.playAround", json!({"clock": clock, "loop": false})),
         _ => return None,
     };

@@ -21,8 +21,13 @@ pub struct SourcePlayback {
 
 impl FilmcraftApp {
     pub fn toggle_source_play(&mut self) -> Result<(), String> {
+        self.toggle_source_play_to(self.session.prefs.playback.stop_returns_to_start)
+    }
+
+    /// Play/Stop whose stop returns to where playback began if `back`, else stays.
+    pub fn toggle_source_play_to(&mut self, back: bool) -> Result<(), String> {
         if self.source_playback.clock.playing {
-            self.stop_source();
+            self.stop_source_to(back);
             Ok(())
         } else {
             self.play_source()
@@ -89,6 +94,8 @@ impl FilmcraftApp {
         let first = if looping { range.start } else { view.start };
         let end = stop.unwrap_or(if looping { range.end() } else { view.end });
         self.stop();
+        // a speed change keeps where a stop goes back to; a new run takes it from where it starts
+        let kept = self.source_playback.clock.playing.then_some(self.source_playback.clock.origin);
         self.stop_source();
         let mut time = start.unwrap_or(self.session.state.source_playhead);
         // forward from the end (or before a looped range) starts over; backward runs from where it is
@@ -97,13 +104,27 @@ impl FilmcraftApp {
         }
         self.session.execute("source.setPlayhead", json!({"time": time.0})).map_err(|e| e.to_string())?;
         let time = self.session.state.source_playhead;
+        let origin = if start.is_some() { time } else { kept.unwrap_or(time) };
         self.source_playback.range_start = start;
         self.source_playback.item = Some(item);
         self.source_playback.shown = time;
-        self.source_playback.clock = Playback { playing: true, speed, anchor_time: -1.0, anchor_tick: time, looping, stop_at: stop, ..Default::default() };
+        self.source_playback.clock =
+            Playback { playing: true, speed, anchor_time: -1.0, anchor_tick: time, looping, stop_at: stop, origin, ..Default::default() };
         self.source_playback.clock.meter.start(speed);
         self.start_source_audio(0.0);
         Ok(())
+    }
+
+    /// [`stop_source`](Self::stop_source), and with `back` the Source playhead goes back to where
+    /// playback began.
+    pub fn stop_source_to(&mut self, back: bool) {
+        let origin = self.source_playback.clock.origin;
+        let was_playing = self.source_playback.clock.playing;
+        self.stop_source();
+        if back && was_playing {
+            let _ = self.session.execute("source.setPlayhead", json!({"time": origin.0}));
+            self.source_playback.shown = self.session.state.source_playhead;
+        }
     }
 
     pub fn stop_source(&mut self) {
@@ -320,7 +341,7 @@ impl FilmcraftApp {
                 }
             }
             if ended {
-                self.stop_source();
+                self.stop_source_to(self.session.prefs.playback.stop_returns_to_start);
             }
             ctx.request_repaint();
             return;
@@ -354,7 +375,7 @@ impl FilmcraftApp {
             }
         }
         if ended {
-            self.stop_source();
+            self.stop_source_to(self.session.prefs.playback.stop_returns_to_start);
         }
         ctx.request_repaint();
     }
