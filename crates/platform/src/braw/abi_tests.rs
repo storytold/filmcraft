@@ -3,7 +3,12 @@
 //! interfaces in the same order). Slot numbers are each
 //! method's position in its interface, after the three `IUnknown` entries (one pointer per virtual
 //! function, in declaration order). Re-check them against the headers when moving to a newer SDK.
-use super::ffi::*;
+#[cfg(not(windows))]
+use super::ffi::IID_IUnknown;
+use super::ffi::{
+    CallbackVtbl, ClipAudioVtbl, ClipProcessingAttributesVtbl, ClipVtbl, CodecVtbl, ConfigurationVtbl, FactoryVtbl, FrameVtbl, IID_IBlackmagicRaw,
+    IUnknownVtbl, Iid, JobVtbl, ProcessedImageVtbl, Ulong, Variant,
+};
 use std::mem::{align_of, offset_of, size_of};
 
 macro_rules! slots {
@@ -13,12 +18,16 @@ macro_rules! slots {
 }
 
 #[test]
-fn vtable_slots_match_the_header() {
+fn factory_codec_and_configuration_slots_match_the_header() {
     slots!(IUnknownVtbl { query_interface: 0, add_ref: 1, release: 2 });
     slots!(FactoryVtbl { create_codec: 3, create_clip_geometry: 6 });
     slots!(CodecVtbl { open_clip: 3, open_clip_from_file_with_geometry: 6, set_callback: 7, flush_jobs: 10 });
     slots!(ConfigurationVtbl { set_pipeline: 3, set_from_device: 11, get_version: 12, get_camera_support_version: 13 });
     slots!(ClipProcessingAttributesVtbl { get_clip_attribute: 3, get_post_3d_lut: 8, set_embedded_post_3d_lut: 12 });
+}
+
+#[test]
+fn image_job_and_callback_slots_match_the_header() {
     slots!(ProcessedImageVtbl {
         get_width: 3,
         get_height: 4,
@@ -42,6 +51,14 @@ fn vtable_slots_match_the_header() {
     });
     #[cfg(not(windows))]
     slots!(CallbackVtbl { destructor: 12, deleting_destructor: 13 });
+    // the callback vtable FilmCraft builds has every entry the API may call, and no more (Linux's
+    // and macOS's classes end with a virtual destructor's two entries; Windows' IDL declares none)
+    let callback_slots = if cfg!(windows) { 12 } else { 14 };
+    assert_eq!(size_of::<CallbackVtbl>(), callback_slots * size_of::<usize>());
+}
+
+#[test]
+fn clip_audio_frame_and_clip_slots_match_the_header() {
     slots!(ClipAudioVtbl {
         get_audio_format: 3,
         get_audio_bit_depth: 4,
@@ -64,10 +81,6 @@ fn vtable_slots_match_the_header() {
         create_job_read_audio: 19,
         clone_with_geometry: 22,
     });
-    // the callback vtable FilmCraft builds has every entry the API may call, and no more (Linux's
-    // and macOS's classes end with a virtual destructor's two entries; Windows' IDL declares none)
-    let callback_slots = if cfg!(windows) { 12 } else { 14 };
-    assert_eq!(size_of::<CallbackVtbl>(), callback_slots * size_of::<usize>());
 }
 
 #[cfg(not(windows))]

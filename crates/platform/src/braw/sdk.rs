@@ -21,7 +21,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::ffi::*;
+#[cfg(not(windows))]
+use super::ffi::VariantClearFn;
+#[cfg(windows)]
+use super::ffi::blackmagicRawVariantTypeEmpty;
+use super::ffi::{
+    BrawString, CallbackVtbl, ClipAudioVtbl, ClipProcessingAttributesVtbl, ClipVtbl, CodecVtbl, ConfigurationVtbl, CreateFactoryFn, E_NOINTERFACE, FactoryVtbl,
+    FrameVtbl, Hresult, IID_IBlackmagicRaw, IID_IBlackmagicRawCallback, IID_IBlackmagicRawClip, IID_IBlackmagicRawClipAudio, IID_IBlackmagicRawConfiguration,
+    IID_IBlackmagicRawFactory, IID_IUnknown, IUnknownVtbl, Iid, IidArg, JobVtbl, Object, ProcessedImageVtbl, S_OK, This, Ulong, Variant,
+    blackmagicRawAudioFormatPCMLittleEndian, blackmagicRawClipProcessingAttributeGamma, blackmagicRawClipProcessingAttributeGamut, blackmagicRawPipelineCPU,
+    blackmagicRawResourceFormatRGBAU8, blackmagicRawResourceTypeBufferCPU, blackmagicRawVariantTypeString,
+};
 
 /// The runtime library's file name: the shared library, or Blackmagic's framework bundle.
 #[cfg(target_os = "linux")]
