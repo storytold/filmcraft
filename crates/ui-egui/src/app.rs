@@ -370,6 +370,7 @@ impl FilmcraftApp {
             self.apply_prefs(&ctx);
             self.sync_timeline_view();
             panels::metadata::follow_selection(self);
+            panels::effect_controls::follow_selection(self);
             self.handle_drops(&ctx);
             self.begin_press(&ctx);
             self.latch_escape_cancel(&ctx);
