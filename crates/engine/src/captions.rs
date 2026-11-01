@@ -175,7 +175,6 @@ pub fn copy(s: &mut Session) -> usize {
     s.state.caption_clipboard = picked.into_iter().map(|(ti, c)| (ti, filmcraft_project::Caption { start: c.start - min, ..c })).collect();
     s.state.clipboard.clear();
     s.state.clipboard_markers.clear();
-    s.state.clipboard_transitions.clear();
     s.state.caption_clipboard.len()
 }
 
@@ -249,7 +248,6 @@ fn track_json(s: &Session, t: &CaptionTrack, index: usize) -> Value {
             "background": t.style.background, "backgroundColor": hex(t.style.background_color),
             "align": format!("{:?}", t.style.align).to_lowercase(), "anchor": format!("{:?}", t.style.anchor).to_lowercase(),
             "margin": t.style.margin, "lineSpacing": t.style.line_spacing, "outline": t.style.outline, "outlineColor": hex(t.style.outline_color),
-            "fontStyle": t.style.font_style,
         },
         "captions": t.captions.iter().map(|c| caption_json(s, c)).collect::<Vec<_>>(),
     })
@@ -354,7 +352,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Caption Track Style",
             &[],
             None,
-            r##"{"track":id|"C1","font":str?,"fontStyle":str="SemiBold" (Regular, Medium, Bold…)?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?}"##,
+            r##"{"track":id|"C1","font":str?,"size":f32?,"color":"#rrggbb[aa]"?,"background":bool?,"backgroundColor":"#rrggbbaa"?,"align":"left|center|right"?,"anchor":"top|middle|bottom"?,"margin":0..0.45 (fraction of frame height)?,"lineSpacing":f32?,"outline":f32?,"outlineColor":str?,"reset":bool?,"boxPadding":f32?,"boxCornerRadius":f32?,"fontStyle":"Regular|SemiBold|Bold|Italic|BoldItalic"?,"dropShadow":bool?,"shadowColor":"#rrggbb[aa]"?,"shadowDistance":f32?,"shadowAngleDeg":f32?,"shadowBlur":f32?}"##,
             has_caption_track,
             |s, p| {
                 let tid = track_param(s, p).ok_or_else(|| {
@@ -376,9 +374,6 @@ pub fn commands() -> Vec<CommandSpec> {
                     }
                     if let Some(v) = str_p(&p, "font") {
                         y.font = v.to_string();
-                    }
-                    if let Some(v) = str_p(&p, "fontStyle") {
-                        y.font_style = v.trim().to_string();
                     }
                     if let Some(v) = f64_p(&p, "size") {
                         y.size = (v as f32).clamp(4.0, 400.0);
@@ -417,6 +412,38 @@ pub fn commands() -> Vec<CommandSpec> {
                         Some("bottom") => y.anchor = CaptionAnchor::Bottom,
                         Some(o) => return Err(bad("captions.setStyle", format!("unknown anchor `{o}`"))),
                         None => {}
+                    }
+                    // Box padding (#3355), corner radius (#3356), font style (#3357).
+                    if let Some(v) = f64_p(&p, "boxPadding") {
+                        y.box_padding = (v as f32).clamp(0.0, 200.0);
+                    }
+                    if let Some(v) = f64_p(&p, "boxCornerRadius") {
+                        y.box_corner_radius = (v as f32).clamp(0.0, 200.0);
+                    }
+                    if let Some(s) = str_p(&p, "fontStyle") {
+                        match s {
+                            "Regular" | "SemiBold" | "Bold" | "Italic" | "BoldItalic" => {
+                                y.font_style = s.to_string();
+                            }
+                            o => return Err(bad("captions.setStyle", format!("unknown fontStyle `{o}`"))),
+                        }
+                    }
+                    // Drop shadow (#2322).
+                    if let Some(v) = bool_p(&p, "dropShadow") {
+                        y.drop_shadow = v;
+                    }
+                    if let Some(s) = str_p(&p, "shadowColor") {
+                        y.shadow_color =
+                            parse_color(&serde_json::Value::String(s.to_string())).ok_or_else(|| bad("captions.setStyle", format!("bad shadowColor `{s}`")))?;
+                    }
+                    if let Some(v) = f64_p(&p, "shadowDistance") {
+                        y.shadow_distance = (v as f32).clamp(0.0, 200.0);
+                    }
+                    if let Some(v) = f64_p(&p, "shadowAngleDeg") {
+                        y.shadow_angle_deg = (v as f32).rem_euclid(360.0);
+                    }
+                    if let Some(v) = f64_p(&p, "shadowBlur") {
+                        y.shadow_blur = (v as f32).clamp(0.0, 100.0);
                     }
                     Ok(())
                 })?;
