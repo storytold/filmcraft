@@ -75,6 +75,96 @@ Local test: `python3 -m http.server 8765` inside the folder, then open http://lo
   downloads) are blocked.
 - Don't send `X-Frame-Options: DENY` or a `frame-ancestors` CSP that excludes the embedding page.
 
+## The parent bridge (`?host=parent`)
+
+A page framing FilmCraft in a **same-origin** iframe can add `?host=parent` to the iframe's URL
+(`https://example.com/filmcraft/?host=parent`) and have FilmCraft hand its files over instead of
+downloading them. The two sides talk `postMessage` with plain window messages that carry a `type`:
+
+| Message | Direction | Fields |
+|---|---|---|
+| `filmcraft:ready` | app → page | `version`: the app is running and listening; send a file now |
+| `filmcraft:open` | page → app | `name`, `bytes` (an `ArrayBuffer` or `Uint8Array`): a `.fcproj` opens like File › Open, anything else imports like a file dropped on the page. Over 512 MiB or malformed: refused with a message in the app, nothing crashes |
+| `filmcraft:save` | app → page | `name`, `saveAs`, `bytes` (a transferred `ArrayBuffer`): every file the app would otherwise download — Save, Save As, Save a Copy, video / frame / audio exports, captions, interchange (AAF, OMF, EDL, markers), extracted audio, the schema backup. The page stores it and reports failures itself. `saveAs` says whether the file becomes the document's file — the project the next Save writes: `true` when the app adopts the file and the page didn't already have it as the document (Save As, and the first Save of a project the page never sent); `false` for a Save of the document under its own name and for every copy (Save a Copy, exports, the schema backup beside an upgraded project) |
+| `filmcraft:dirty` | app → page | `dirty`: unsaved changes appeared or went away |
+| `filmcraft:failed` | app → page | `error`: the app couldn't start (no WebGPU or WebGL2, for example) |
+
+In host mode the app opens no demo project and restores nothing from an earlier visit (no OPFS
+snapshot, no restored media), so the framing page should send the file to edit and guard leaving
+the page while changes are unsaved. Written files are also kept in the app's virtual file table
+(`filmcraft.files()` / `readFile`), but the host page is their destination. Opening `?host=parent`
+outside an iframe gives the normal app with downloads.
+
+## Same-document host mode (no iframe)
+
+A host application can also run FilmCraft from its own document: it loads the wasm-bindgen module
+itself and gives FilmCraft one of its own canvases, so there is no iframe and no `?host=parent`.
+It opts in with `data-host="page"` on that canvas — the exact value `page` — and the canvas keeps
+the id the app looks up (`id="filmcraft_canvas"`).
+
+```html
+<canvas id="filmcraft_canvas" data-host="page" style="width: 100%; height: 720px; display: block;"></canvas>
+```
+
+The page and the app then talk with DOM `CustomEvent`s on the canvas instead of `postMessage`.
+The app dispatches the same messages it would post to a parent — `filmcraft:ready`,
+`filmcraft:save`, `filmcraft:dirty`, `filmcraft:failed` — with the message fields (without the
+`type`) as the event's `detail`, and it opens a file when the page dispatches a `filmcraft:open`
+event with `detail: { name, bytes }`. Events do not bubble, so listen on the canvas itself (two
+editors on one page can't hear each other).
+
+Add the listeners before `init`: the app announces itself with `filmcraft:ready` while `init` is
+still running, and a file sent in reply would otherwise be missed. And unlike the standalone
+page, which starts itself, a host calls the glue's exported `start` with the canvas id after
+`init`.
+
+```js
+import init, { start } from "./filmcraft_web.js"; // the wasm-bindgen glue shipped with the app
+
+const canvas = document.getElementById("filmcraft_canvas");
+
+canvas.addEventListener("filmcraft:ready", async () => {
+  // The app is listening; hand it a project now, if you have one.
+  const bytes = await projectBytes(); // an ArrayBuffer or Uint8Array
+  canvas.dispatchEvent(new CustomEvent("filmcraft:open", {
+    detail: { name: "Trailer.fcproj", bytes },
+  }));
+});
+
+// Every file the app would otherwise download (Save, Save As, exports, …) arrives here.
+canvas.addEventListener("filmcraft:save", (event) => {
+  const { name, saveAs, bytes } = event.detail; // bytes is an ArrayBuffer
+  // Store the file under `name`; `saveAs` says whether it becomes the document's file.
+  // Report your own errors.
+  storeFile(name, bytes, saveAs);
+});
+canvas.addEventListener("filmcraft:dirty", (event) => {
+  unsaved = event.detail.dirty; // warn before leaving, as you like
+});
+canvas.addEventListener("filmcraft:failed", (event) => {
+  showError(event.detail.error); // the app couldn't start
+});
+
+await init({ module_or_path: "./filmcraft_web_bg.wasm?v=<build hash>" });
+await start("filmcraft_canvas"); // the canvas id the app renders on
+```
+
+- Saves are not downloads in this mode: the `bytes` in `filmcraft:save` hold the saved file, and
+  the host decides where the file goes.
+- The assets carry their build hash as a `?v=` query (as `index.html` loads them), so they can
+  be cached forever.
+- FilmCraft has no user names that work could be signed with, so there is no `?author=`.
+- An unframed page that uses `?host=parent` keeps the normal app with downloads.
+  `data-host="page"` turns this mode on only when `?host=parent` is absent: if `?host=parent` is
+  present it takes precedence, so a same-origin framed page uses the parent bridge, while an
+  unframed or cross-origin page gets no bridge and keeps normal downloads.
+
+### Trust and limits
+
+- **Who is trusted.** In page host mode the page and FilmCraft share one document, so any script on the page can drive the app: open files in it and receive what it saves. Use this mode only for a page you control. The iframe mode (`?host=parent`) answers only the parent window, on the page's own origin.
+- **Files from the host are untrusted input.** An opened file goes through the same reading as one picked with File ▸ Open or dropped on the window, with the same format limits; before it is copied into the app's memory, its size is checked against the host open limit (512 MiB) and a larger file is refused, and a name is cut to 255 characters.
+- **The event and message names are the interface.** `filmcraft:ready`, `filmcraft:open`, `filmcraft:save`, `filmcraft:dirty` and `filmcraft:failed`, and the fields they carry (the same as the `?host=parent` messages), stay stable; changing one is a breaking change.
+
 ## Renderer selection and fallback flags
 
 FilmCraft renders with wgpu. It uses **WebGPU** when the browser has it and falls back to
