@@ -444,7 +444,7 @@ fn dock_style(ui: &egui::Ui, t: &Tokens) -> DockStyle {
     style.gap = t.gap;
     style.background = t.panel_bg;
     style.tab_background = t.tab_bg;
-    style.active_background = t.panel_bg;
+    style.active_background = t.pressed;
     style.floating_background = t.panel_bg;
     style.text = t.tab_text_active;
     style.inactive_text = t.tab_text;
