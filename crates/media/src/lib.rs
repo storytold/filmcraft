@@ -212,6 +212,12 @@ pub trait MediaSource: Send + Sync {
     fn info(&self) -> &MediaInfo;
     /// The frame displayed at media time `req.time`.
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>>;
+    /// Like [`video_frame`](Self::video_frame), but a source may leave the container's display
+    /// rotation to the caller: the frame comes with the clockwise quarter turns still to apply
+    /// to it (0: upright, as `video_frame` returns it).
+    fn video_frame_unturned(&self, req: FrameRequest) -> Result<(Arc<VideoFrame>, u8)> {
+        self.video_frame(req).map(|f| (f, 0))
+    }
     /// `frames` audio frames starting at sample index `start` (at `sample_rate`, media time).
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer>;
     /// Like [`audio`](Self::audio) for audio stream `stream` (an index into
