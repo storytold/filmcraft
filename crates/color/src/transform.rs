@@ -6,8 +6,8 @@
 //! simply values above 1.0. Log media decodes to scene-linear reflectance (18 % grey = 0.18).
 //!
 //! **Input** ([`InputTransform`]): signal → per-channel decode table (curve) → HLG OOTF (BT.2100,
-//! 1000 cd/m² nominal peak, γ = 1.2) → 3×3 gamut matrix into the working primaries → tone mapping
-//! (only when an HDR or log source enters an SDR working space and Auto Tone Map is on) → gamut
+//! 1000 cd/m² nominal peak, γ = 1.2) → HLG-to-SDR tone mapping → 3×3 gamut matrix into the working
+//! primaries → PQ tone mapping (when HDR enters SDR and Auto Tone Map is on) → gamut
 //! compression (only when the source gamut is wider than the working gamut).
 //!
 //! **Output** ([`OutputTransform`]): working linear → display-referred SDR BT.709 for monitors
@@ -16,8 +16,10 @@
 //! just enough to fit ([`desaturate_into_gamut`]), so in-gamut colours (e.g. BT.709 content in a
 //! BT.2020 working space) come back exactly.
 //!
-//! **Tone mapping** is the ITU-R BT.2390 EETF (Hermite knee in the PQ domain) applied to
-//! max(R,G,B) and used as a ratio on RGB, so hue and saturation are preserved. **Gamut
+//! **Tone mapping** uses ITU-R BT.2446-1 Method A for HLG → SDR (1000 → 100 cd/m²,
+//! including its perceptual chroma correction, in BT.2020 before the gamut matrix).
+//! PQ uses the ITU-R BT.2390 EETF (Hermite knee in the PQ domain) applied to max(R,G,B).
+//! **Gamut
 //! compression** pulls out-of-gamut colours (negative components after the matrix) towards the
 //! achromatic axis with a per-channel distance compression after the ACES Reference Gamut
 //! Compression (threshold 0.8, limit 1.25, power 1.2); colours inside 80 % of the gamut boundary
@@ -160,6 +162,65 @@ impl ToneMap {
     }
 }
 
+/// ITU-R BT.2446-1 (03/2021), §4.1 tables 2–3: 1000-nit BT.2020 HDR display light
+/// → 100-nit BT.2020 SDR display light. Input uses HDR working units (203 nits = 1);
+/// output uses relative SDR linear light (SDR peak = 1), ready for a gamut matrix and
+/// sRGB monitor encoding. The method's intermediate R'G'B' uses gamma 2.4, not sRGB.
+/// Negative/above-peak HDR components are bounded to the method's normalized domain;
+/// NaN contributes black. Reconstructed SDR super-whites survive until display encoding.
+#[inline]
+pub fn bt2446a(c: [f32; 3]) -> [f32; 3] {
+    let rgb = c.map(|v| {
+        let normalized = if v.is_nan() { 0.0 } else { v * (REFERENCE_WHITE_NITS / HDR_PEAK_NITS) as f32 };
+        normalized.clamp(0.0, 1.0).powf(1.0 / 2.4)
+    });
+    let y = 0.2627 * rgb[0] + 0.6780 * rgb[1] + 0.0593 * rgb[2];
+    if y <= 0.0 {
+        return [0.0; 3];
+    }
+    // rho = 1 + 32 * (peak / 10000)^(1/2.4), at peaks 1000 and 100 cd/m².
+    // Rounded f32 constants also used by the shader; no per-pixel peak exponentiation.
+    let yp = (1.0 + 12.259_798 * y).ln() / 2.584_736_8;
+    let yc = if yp <= 0.7399 {
+        1.0770 * yp
+    } else if yp < 0.9909 {
+        -1.1510 * yp * yp + 2.7811 * yp - 0.6302
+    } else {
+        0.5 * yp + 0.5
+    };
+    let sdr = ((yc * 1.739_932_3).exp() - 1.0) / 4.696_958;
+    let scale = sdr / (1.1 * y);
+    let cb = scale * (rgb[2] - y) / 1.8814;
+    let cr = scale * (rgb[0] - y) / 1.4746;
+    let luma = sdr - (0.1 * cr).max(0.0);
+    let r = luma + 1.4746 * cr;
+    let b = luma + 1.8814 * cb;
+    let g = (luma - 0.2627 * r - 0.0593 * b) / 0.6780;
+    [r, g, b].map(|v| v.max(0.0).powf(2.4))
+}
+
+#[derive(Clone, Debug)]
+enum SdrToneMap {
+    Bt2390(ToneMap),
+    Bt2446A,
+}
+
+impl SdrToneMap {
+    fn apply(&self, c: [f32; 3]) -> [f32; 3] {
+        match self {
+            Self::Bt2390(t) => t.apply(c),
+            Self::Bt2446A => bt2446a(c),
+        }
+    }
+
+    fn gpu_params(&self) -> GpuToneMap {
+        match self {
+            Self::Bt2390(t) => GpuToneMap::Bt2390 { source_peak_nits: t.src_peak_nits as f32, target_peak_nits: t.dst_peak_nits as f32 },
+            Self::Bt2446A => GpuToneMap::Bt2446A,
+        }
+    }
+}
+
 /// Compress out-of-gamut colours towards the achromatic axis (see module docs). Used on input,
 /// where camera gamuts extend well beyond the working gamut.
 #[inline]
@@ -193,7 +254,7 @@ pub struct InputTransform {
     identity_matrix: bool,
     /// HLG OOTF luma weights (BT.2020) and the scale to working units.
     hlg: Option<([f32; 3], f32)>,
-    tone: Option<ToneMap>,
+    tone: Option<SdrToneMap>,
     compress: bool,
     /// Display-referred wide-gamut media (BT.2020 / P3 / HDR): desaturate into the working gamut
     /// with these luma weights instead of the camera-gamut compression.
@@ -217,7 +278,8 @@ impl InputTransform {
             Curve::Log(c) => (c.peak_linear() * REFERENCE_WHITE_NITS).clamp(REFERENCE_WHITE_NITS, LOG_PEAK_NITS),
             _ => REFERENCE_WHITE_NITS,
         };
-        let tone = (src.is_hdr() && !pipe.working.is_hdr() && pipe.auto_tone_map).then(|| ToneMap::new(peak, REFERENCE_WHITE_NITS));
+        let tone = (src.is_hdr() && !pipe.working.is_hdr() && pipe.auto_tone_map)
+            .then(|| if curve == Curve::Hlg { SdrToneMap::Bt2446A } else { SdrToneMap::Bt2390(ToneMap::new(peak, REFERENCE_WHITE_NITS)) });
         let wider = !identity_matrix && !gamut_within(src.gamut(), wg);
         // camera gamuts (log media) get the soft compression; display gamuts keep their in-gamut
         // colours exactly (BT.709 content in a BT.2020 file comes back unchanged)
@@ -240,10 +302,14 @@ impl InputTransform {
             let g = k * ys.powf((HLG_GAMMA - 1.0) as f32);
             c = c.map(|v| v * g);
         }
+        // Method A's luma/chroma coefficients are BT.2020: run before the gamut matrix.
+        if matches!(self.tone, Some(SdrToneMap::Bt2446A)) {
+            c = bt2446a(c);
+        }
         if !self.identity_matrix {
             c = crate::spaces::apply3(&self.matrix, c);
         }
-        if let Some(t) = &self.tone {
+        if let Some(SdrToneMap::Bt2390(t)) = &self.tone {
             c = t.apply(c);
         }
         if self.compress {
@@ -260,8 +326,8 @@ impl InputTransform {
         self.apply(rgb.map(|v| self.table.lookup(v)))
     }
 
-    /// The transform as plain numbers for a shader, which evaluates the curve and the BT.2390
-    /// EETF directly instead of sampling the tables. `None` for what a shader does not do: log
+    /// The transform as plain numbers for a shader, which evaluates the curve and the tone
+    /// mapping directly instead of sampling the tables. `None` for what a shader does not do: log
     /// curves and the camera-gamut compression.
     pub fn gpu_params(&self) -> Option<GpuInputParams> {
         let curve = match self.source.curve() {
@@ -278,7 +344,7 @@ impl InputTransform {
             curve,
             hlg: self.hlg,
             matrix: (!self.identity_matrix).then_some(self.matrix),
-            tone: self.tone.as_ref().map(|t| (t.src_peak_nits as f32, t.dst_peak_nits as f32)),
+            tone: self.tone.as_ref().map(SdrToneMap::gpu_params),
             desaturate: self.desaturate,
         })
     }
@@ -294,6 +360,18 @@ pub enum GpuCurve {
     Hlg,
 }
 
+/// Tone-mapping method and its stage in the colour-managed shader. Method A runs in
+/// BT.2020 before the gamut matrix; BT.2390 retains its existing post-matrix stage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GpuToneMap {
+    Bt2390 {
+        source_peak_nits: f32,
+        target_peak_nits: f32,
+    },
+    /// Fixed 1000-nit HDR → 100-nit SDR, BT.2446-1 §4.1.
+    Bt2446A,
+}
+
 /// [`InputTransform`] for a shader ([`InputTransform::gpu_params`]), stage by stage as
 /// [`InputTransform::apply`] runs them.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -303,8 +381,7 @@ pub struct GpuInputParams {
     pub hlg: Option<([f32; 3], f32)>,
     /// Into the working primaries (row-major), when they differ.
     pub matrix: Option<[[f32; 3]; 3]>,
-    /// BT.2390 tone mapping (source peak, target peak) in cd/m², on max(R,G,B) as a ratio.
-    pub tone: Option<(f32, f32)>,
+    pub tone: Option<GpuToneMap>,
     /// Luma weights to desaturate into the working gamut with ([`desaturate_into_gamut`]).
     pub desaturate: Option<[f32; 3]>,
 }
@@ -337,7 +414,7 @@ pub struct OutputTransform {
     pub target: ColorSpace,
     matrix: [[f32; 3]; 3],
     identity_matrix: bool,
-    tone: Option<ToneMap>,
+    tone: Option<SdrToneMap>,
     /// Target luma weights when the working gamut is wider than the target's.
     compress: Option<[f32; 3]>,
 }
@@ -351,7 +428,13 @@ impl OutputTransform {
     pub fn new(pipe: &ColorPipeline, target: ColorSpace) -> Self {
         let wg = pipe.working_gamut();
         let tg = target.gamut();
-        let tone = (pipe.working.is_hdr() && !target.is_hdr()).then(|| ToneMap::new(HDR_PEAK_NITS, REFERENCE_WHITE_NITS));
+        let tone = (pipe.working.is_hdr() && !target.is_hdr()).then(|| {
+            if pipe.working == crate::WorkingSpace::Rec2100Hlg {
+                SdrToneMap::Bt2446A
+            } else {
+                SdrToneMap::Bt2390(ToneMap::new(HDR_PEAK_NITS, REFERENCE_WHITE_NITS))
+            }
+        });
         let l = tg.luma();
         let compress = (!gamut_within(wg, tg)).then(|| [l[0] as f32, l[1] as f32, l[2] as f32]);
         OutputTransform { target, matrix: to_f32(&gamut_matrix(wg, tg)), identity_matrix: wg == tg, tone, compress }
@@ -450,6 +533,79 @@ mod tests {
     }
 
     #[test]
+    fn hlg_sdr_matches_bt2446a_reference_values() {
+        // Independent double-precision evaluation of BT.2446-1 §4.1 tables 2–3,
+        // after the BT.2100 HLG OOTF (1000 nits, gamma 1.2). These are SDR linear,
+        // not the HLG signal or the HDR working values (203 nits = 1).
+        let t = InputTransform::new(ColorSpace::Rec2100Hlg, Range::Full, &ColorPipeline::REC709, None);
+        for (signal, expected) in [(0.0, 0.0), (0.25, 0.03021365), (0.5, 0.12797941), (0.75, 0.40618720), (1.0, 1.0)] {
+            let got = t.convert([signal; 3]);
+            assert!(got.iter().all(|v| (f64::from(*v) - expected).abs() < 2e-5), "HLG {signal}: {got:?}, expected {expected}");
+        }
+    }
+
+    #[test]
+    fn bt2446a_colour_correction_and_hostile_values() {
+        // Independent f64 table 2–3 evaluation, in BT.2020 before gamut mapping.
+        // Coloured triples catch missing chroma scaling / red-luma adjustment.
+        let cases: [([f32; 3], [f64; 3]); 8] = [
+            ([0.01; 3], [0.007405422; 3]),
+            ([0.18; 3], [0.09680955; 3]),
+            ([1.0; 3], [0.40595344; 3]),
+            ([0.7, 0.2, 0.05], [0.31282763, 0.09613481, 0.02748413]),
+            ([1.0, 2.0, 3.0], [0.36275853, 0.67754957, 0.98389431]),
+            ([1000.0 / 203.0, 0.0, 0.0], [1.9606590, 0.0, 0.0]),
+            ([0.0, 1000.0 / 203.0, 0.0], [0.002021509, 1.5104287, 0.002021509]),
+            ([0.0, 0.0, 1000.0 / 203.0], [0.00001368824, 0.00001368824, 3.0702865]),
+        ];
+        for (input, expected) in cases {
+            let got = bt2446a(input);
+            assert!(got.iter().zip(expected).all(|(g, e)| (f64::from(*g) - e).abs() < 4e-6), "{input:?}: {got:?} != {expected:?}");
+        }
+        assert_eq!(bt2446a([0.0; 3]), [0.0; 3]);
+        assert_eq!(bt2446a([-1.0, f32::NEG_INFINITY, f32::NAN]), [0.0; 3]);
+        let peak = bt2446a([1000.0 / 203.0; 3]);
+        assert_eq!(bt2446a([f32::INFINITY, f32::MAX, 100.0]), peak);
+        for c in [[f32::NAN, 1.0, 2.0], [f32::MIN_POSITIVE; 3], [f32::MAX, -f32::MAX, 1.0]] {
+            let got = std::panic::catch_unwind(|| bt2446a(c)).expect("hostile pixels never panic");
+            assert!(got.iter().all(|v| v.is_finite() && *v >= 0.0), "{c:?}: {got:?}");
+        }
+        let mut previous = 0.0;
+        for code in 0..=4096 {
+            let c = code as f32 / 4096.0 * (1000.0 / 203.0);
+            let grey = bt2446a([c; 3]);
+            assert!(grey.iter().all(|v| v.is_finite() && *v >= previous - 2e-5 && *v <= 1.00001), "{code}: {grey:?}");
+            assert!((grey[0] - grey[1]).abs() < 1e-6 && (grey[1] - grey[2]).abs() < 1e-6, "neutral tint: {grey:?}");
+            previous = grey[0];
+        }
+        // The report's rounded knee coefficients introduce a small step. At either
+        // boundary it must stay below half an 8-bit display code (not a visible jump).
+        for yp in [0.7399f32, 0.9909] {
+            let linear = |v: f32| (((v * 2.5847368).exp() - 1.0) / 12.259798).powf(2.4) * (1000.0 / 203.0);
+            let a = bt2446a([linear(yp - 1e-6); 3])[0];
+            let b = bt2446a([linear(yp + 1e-6); 3])[0];
+            assert!((linear_to_srgb(a) - linear_to_srgb(b)).abs() * 255.0 < 0.5, "knee {yp}: {a} {b}");
+        }
+    }
+
+    #[test]
+    fn hlg_sdr_input_and_hdr_monitor_agree_without_double_mapping() {
+        let pipe = hdr(WorkingSpace::Rec2100Hlg);
+        let direct = InputTransform::new(ColorSpace::Rec2100Hlg, Range::Limited, &ColorPipeline::REC709, None);
+        let into_hdr = InputTransform::new(ColorSpace::Rec2100Hlg, Range::Limited, &pipe, None);
+        let display = OutputTransform::display(&pipe);
+        for rgb in [[0.0; 3], [0.5; 3], [0.75; 3], [1.0; 3], [0.8, 0.4, 0.2], [0.2, 0.9, 0.4]] {
+            let a = direct.convert(rgb);
+            let b = display.apply(into_hdr.convert(rgb));
+            assert!(a.iter().zip(b).all(|(a, b)| (a - b).abs() < 2e-5), "{rgb:?}: direct {a:?}, HDR monitor {b:?}");
+        }
+        let manual = ColorPipeline { auto_tone_map: false, ..ColorPipeline::REC709 };
+        let t = InputTransform::new(ColorSpace::Rec2100Hlg, Range::Full, &manual, None);
+        assert!(t.convert([0.75; 3])[0] > 0.99, "Auto Tone Map Off keeps HDR reference white");
+        assert!(into_hdr.convert([1.0; 3])[0] > 4.9, "working/HDR output retains highlights");
+    }
+
+    #[test]
     fn eetf_properties() {
         // identity below the knee, continuous, monotone, hits the target peak
         let (s, d) = (1000.0, 203.0);
@@ -517,9 +673,12 @@ mod tests {
         let hlg = p(ColorSpace::Rec2100Hlg).unwrap();
         assert_eq!(hlg.curve, GpuCurve::Hlg);
         assert!(hlg.hlg.is_some() && hlg.matrix.is_some() && hlg.desaturate.is_some());
-        assert_eq!(hlg.tone, Some((HDR_PEAK_NITS as f32, REFERENCE_WHITE_NITS as f32)));
+        assert_eq!(hlg.tone, Some(GpuToneMap::Bt2446A));
         let pq = InputTransform::new(ColorSpace::Rec2100Pq, Range::Limited, &ColorPipeline::REC709, Some(4000.0)).gpu_params().unwrap();
-        assert_eq!((pq.curve, pq.hlg, pq.tone), (GpuCurve::Pq, None, Some((4000.0, REFERENCE_WHITE_NITS as f32))));
+        assert_eq!(
+            (pq.curve, pq.hlg, pq.tone),
+            (GpuCurve::Pq, None, Some(GpuToneMap::Bt2390 { source_peak_nits: 4000.0, target_peak_nits: REFERENCE_WHITE_NITS as f32 }))
+        );
         let sdr2020 = p(ColorSpace::Rec2020).unwrap();
         assert_eq!((sdr2020.curve, sdr2020.tone), (GpuCurve::Sdr, None));
         assert!(sdr2020.matrix.is_some() && sdr2020.desaturate.is_some());
