@@ -77,11 +77,37 @@ pub mod timing {
 /// renderer and lives in a `OnceLock`, so it is not recreated in this process.
 static DEVICE_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Retire the shared export device, logging the first reason only.
+/// Retire the shared export device, logging the first reason only and keeping it for
+/// [`disabled_reason`].
 fn mark_device_failed(why: &str) {
-    if !DEVICE_FAILED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    // the reason is stored before the flag is raised, under the reason's own lock, so whoever
+    // sees the flag (an `ExportRenderer::new` on another thread) finds the reason with it
+    let mut slot = disabled_reason_slot().lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(why.to_string());
         log::error!("GPU export disabled for this session ({why}); exports render on the CPU");
     }
+    DEVICE_FAILED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn disabled_reason_slot() -> &'static std::sync::Mutex<Option<String>> {
+    static R: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
+    R.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// The first reason only, as the driver gave it; the export crate bounds it when it takes it.
+fn keep_reason(why: &str) {
+    let mut slot = disabled_reason_slot().lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(why.to_string());
+    }
+}
+
+/// Why this process's export renderer is off, once it is: no adapter or device could be had, or
+/// the device failed (#1616). `None` while it works or before it was asked for. The app's frame
+/// renderer factory passes this on to the export crate, where `perf.stats` shows it.
+pub fn disabled_reason() -> Option<String> {
+    disabled_reason_slot().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 fn device_failed() -> bool {
@@ -109,6 +135,7 @@ impl ExportRenderer {
                 // alone: this crate asks for none) has no GPU to offer, and `Instance::default()`
                 // panics there.
                 if wgpu::Instance::enabled_backend_features().is_empty() {
+                    keep_reason("this build has no wgpu backend (filmcraft-cli built on its own); exports render on the CPU");
                     return None;
                 }
                 let instance = crate::adapter::native_instance();
@@ -125,9 +152,21 @@ impl ExportRenderer {
                 {
                     adapters.retain(|a| named.contains(a.get_info().backend.into()));
                 }
-                let adapter = crate::adapter::pick(&adapters, None, power_preference).ok()?;
+                let adapter = match crate::adapter::pick(&adapters, None, power_preference) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        keep_reason(&format!("no graphics adapter: {e}"));
+                        return None;
+                    }
+                };
                 log::info!("export rendering on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
-                let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+                let (device, queue) = match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
+                    Ok(dq) => dq,
+                    Err(e) => {
+                        keep_reason(&format!("no graphics device: {e}"));
+                        return None;
+                    }
+                };
                 // wgpu's default handler panics on a validation or out-of-memory error; log it and
                 // send the remaining frames to the CPU instead.
                 device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| mark_device_failed(&format!("GPU error: {e}"))));
