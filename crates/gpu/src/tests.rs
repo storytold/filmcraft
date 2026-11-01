@@ -618,3 +618,34 @@ fn hdr_input_gpu_matches_cpu() {
         assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
     }
 }
+
+/// `linear_boxed` converts the oversized source in tiles; the pixels must be exactly what the
+/// whole-picture conversion box-averaged the same way gives (#2996).
+#[test]
+fn linear_boxed_matches_whole_image_boxing() {
+    let (w, h) = (1030usize, 6usize);
+    let data: Vec<u8> = (0..w * h * 4).map(|i| (i * 37 % 251) as u8).collect();
+    let frame = VideoFrame::rgba8(w as u32, h as u32, data);
+    let (_, _, full) = frame.to_linear_f32_decimated_with(1, None);
+    for (rx, ry) in [(4usize, 1usize), (1, 3)] {
+        let got = linear_boxed(&frame, 1, rx, ry, None);
+        let (tw, th) = ((w / rx).max(1), (h / ry).max(1));
+        assert_eq!((got.w, got.h), (tw, th));
+        for oy in 0..th {
+            for ox in 0..tw {
+                for k in 0..4 {
+                    let mut acc = 0.0f32;
+                    let mut n = 0.0f32;
+                    for dy in 0..ry {
+                        for dx in 0..rx {
+                            let i = ((oy * ry + dy).min(h - 1) * w + (ox * rx + dx).min(w - 1)) * 4 + k;
+                            acc += full[i];
+                            n += 1.0;
+                        }
+                    }
+                    assert_eq!(got.px[(oy * tw + ox) * 4 + k], acc / n, "rx {rx} ry {ry} at {ox},{oy} ch {k}");
+                }
+            }
+        }
+    }
+}

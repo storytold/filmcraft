@@ -1246,15 +1246,20 @@ fn plan_cpu_shrunk(plan: &FramePlan, max: usize) -> FramePlan {
                     return l.clone();
                 }
                 let nu = nx.min(ny);
-                let (dw, dh, px) = l.frame.to_linear_f32_decimated_with(nu, l.input.as_deref().map(|t| &t.table));
-                let mut img = filmcraft_render::Image { w: dw, h: dh, px };
-                if let Some(t) = l.input.as_deref().filter(|t| t.has_pixel_stage()) {
-                    img.map_rgb(|c, _, _| t.apply(c));
-                }
                 let (rx, ry) = (nx / nu, ny / nu);
-                if rx > 1 || ry > 1 {
-                    img = filmcraft_render::Image { w: (dw / rx).max(1), h: (dh / ry).max(1), px: box_axes(&img.px, dw, dh, rx, ry) };
-                }
+                let input = l.input.as_deref();
+                let img = if rx > 1 || ry > 1 {
+                    // one axis still shrinks: convert in strips, so the intermediate is bounded
+                    // instead of the whole nu-decimated picture
+                    linear_boxed(&l.frame, nu, rx, ry, input)
+                } else {
+                    let (w, h, px) = l.frame.to_linear_f32_decimated_with(nu, input.map(|t| &t.table));
+                    let mut img = filmcraft_render::Image { w, h, px };
+                    if let Some(t) = input.filter(|t| t.has_pixel_stage()) {
+                        img.map_rgb(|c, _, _| t.apply(c));
+                    }
+                    img
+                };
                 PlanLayer {
                     frame: Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)),
                     matrix: l.matrix.then_apply(&filmcraft_geom::Affine::scale(fw as f64 / img.w as f64, fh as f64 / img.h as f64)),
@@ -1285,31 +1290,85 @@ fn plan_cpu_shrunk(plan: &FramePlan, max: usize) -> FramePlan {
     }
 }
 
-/// Box-average `px` (w×h premultiplied linear RGBA) by `rx`×`ry` blocks, one axis at a time,
-/// so an axis that still needs its full resolution keeps it.
-fn box_axes(px: &[f32], w: usize, h: usize, rx: usize, ry: usize) -> Vec<f32> {
+/// The `nu`-decimated linear image reduced a further `rx`×`ry` (one of them is always 1, so a
+/// single axis is boxed): tiles of the decimated picture are converted, the layer's pixel
+/// stage applied and averaged into the output one tile at a time, so the intermediate stays
+/// bounded instead of the whole picture.
+fn linear_boxed(frame: &VideoFrame, nu: usize, rx: usize, ry: usize, input: Option<&filmcraft_color::InputTransform>) -> filmcraft_render::Image {
+    let (w, h) = frame.decimated_size(nu);
     let (tw, th) = ((w / rx).max(1), (h / ry).max(1));
-    let mut out = vec![0.0; tw * th * 4];
-    for oy in 0..th {
-        for ox in 0..tw {
-            let mut acc = [0.0f32; 4];
-            let mut n = 0.0f32;
-            for dy in 0..ry {
-                let sy = (oy * ry + dy).min(h - 1);
-                for dx in 0..rx {
-                    let i = (sy * w + (ox * rx + dx).min(w - 1)) * 4;
-                    for k in 0..4 {
-                        acc[k] += px[i + k];
+    let staged = |px: Vec<f32>, w: usize, h: usize| {
+        let mut img = filmcraft_render::Image { w, h, px };
+        if let Some(t) = input.filter(|t| t.has_pixel_stage()) {
+            img.map_rgb(|c, _, _| t.apply(c));
+        }
+        img.px
+    };
+    // a tile converts at most STRIP decimated pixels (~64 MiB of f32)
+    const STRIP: usize = 1 << 22;
+    let mut out = vec![0.0f32; tw * th * 4];
+    if rx > 1 {
+        let (sw, sh) = ((STRIP / (rx * 1024)).max(1) * rx, (STRIP / ((STRIP / (rx * 1024)).max(1) * rx).max(1)).max(1));
+        let mut ox = 0;
+        let mut x = 0;
+        while x < w {
+            let cw = sw.min(w - x);
+            let mut y = 0;
+            while y < h {
+                let (r, px) = frame.to_linear_f32_region(nu, input.map(|t| &t.table), filmcraft_frame::Region { x, y, w: cw, h: sh.min(h - y) });
+                let px = staged(px, r.w, r.h);
+                for yy in 0..r.h {
+                    for c in 0..r.w / rx {
+                        let mut acc = [0.0; 4];
+                        for dx in 0..rx {
+                            let i = (yy * r.w + (c * rx + dx).min(r.w - 1)) * 4;
+                            for k in 0..4 {
+                                acc[k] += px[i + k];
+                            }
+                        }
+                        let o = ((y + yy) * tw + ox + c) * 4;
+                        for k in 0..4 {
+                            out[o + k] = acc[k] / rx as f32;
+                        }
                     }
-                    n += 1.0;
                 }
+                y += r.h.max(1);
             }
-            for k in 0..4 {
-                out[(oy * tw + ox) * 4 + k] = acc[k] / n.max(1.0);
+            ox += cw / rx;
+            x += cw;
+        }
+    } else {
+        let (sh, sw) = ((STRIP / (ry * 1024)).max(1) * ry, (STRIP / ((STRIP / (ry * 1024)).max(1) * ry).max(1)).max(1));
+        let mut oy = 0;
+        let mut y = 0;
+        while y < h {
+            let ch = sh.min(h - y);
+            let mut x = 0;
+            while x < w {
+                let (r, px) = frame.to_linear_f32_region(nu, input.map(|t| &t.table), filmcraft_frame::Region { x, y, w: sw.min(w - x), h: ch });
+                let px = staged(px, r.w, r.h);
+                for rr in 0..r.h / ry {
+                    for xx in 0..r.w {
+                        let mut acc = [0.0; 4];
+                        for dy in 0..ry {
+                            let i = ((rr * ry + dy).min(r.h - 1) * r.w + xx) * 4;
+                            for k in 0..4 {
+                                acc[k] += px[i + k];
+                            }
+                        }
+                        let o = ((oy + rr) * tw + x + xx) * 4;
+                        for k in 0..4 {
+                            out[o + k] = acc[k] / ry as f32;
+                        }
+                    }
+                }
+                x += r.w.max(1);
             }
+            oy += ch / ry;
+            y += ch;
         }
     }
-    out
+    filmcraft_render::Image { w: tw, h: th, px: out }
 }
 
 /// Largest power of two (capped at 16, like the CPU path's decimation) that still leaves
