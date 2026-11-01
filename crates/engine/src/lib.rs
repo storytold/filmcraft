@@ -599,7 +599,12 @@ impl Session {
             tts_preview: None,
             tts_cache: Default::default(),
             trim_play: Default::default(),
-            shortcuts: shortcuts::Shortcuts::new(),
+            shortcuts: {
+                // one command per built-in effect preset (#1356); the user's join in `set_data_dir`
+                let mut sc = shortcuts::Shortcuts::new();
+                sc.set_dynamic(presets::shortcut_commands(&presets::PresetLibrary::default()));
+                sc
+            },
             offline: Default::default(),
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
@@ -658,6 +663,7 @@ impl Session {
         self.media.set_use_proxies(self.prefs.media.enable_proxies);
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
+        self.shortcuts.set_dynamic(presets::shortcut_commands(&self.presets));
         self.export_presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.apply_media_cache();
@@ -770,6 +776,14 @@ impl Session {
 
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
+        // `presets.apply.<name>` (a preset's shortcut command, #1356) is `presets.apply` with it
+        if commands::find(id).is_none()
+            && let Some(name) = presets::preset_for_command(&self.presets, id)
+        {
+            let mut p = params.as_object().cloned().unwrap_or_default();
+            p.insert("preset".into(), Value::String(name));
+            return self.execute("presets.apply", Value::Object(p));
+        }
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         let journal = spec.journal && !commands::reports_only(id, &params);
         if self.exec_depth == 0 && journal && self.trim_play.active() {
@@ -806,6 +820,12 @@ impl Session {
         }
         if self.exec_depth == 0 {
             source_monitor::track_history(self);
+        }
+        // a saved, deleted, renamed or imported preset changes the preset commands (#1356); also
+        // after an error, which can come after the library changed in memory (a file that could not
+        // be written): the commands always follow the library
+        if matches!(id, "presets.save" | "presets.delete" | "presets.rename" | "presets.import") {
+            self.shortcuts.set_dynamic(presets::shortcut_commands(&self.presets));
         }
         // source graphics: an edited instance updates the shared layers and the other instances
         if r.is_ok() && journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
