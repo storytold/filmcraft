@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use base64::Engine as _;
 use filmcraft_engine::Session;
+use futures_util::FutureExt;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
@@ -14,9 +15,21 @@ use serde_json::{Value, json};
 
 use crate::{AutomationError, BridgeClient, png_rgba};
 
+#[cfg(test)]
+#[path = "stdio_transport_tests.rs"]
+mod stdio_transport_tests;
+
 pub enum Backend {
     Headless(Arc<Mutex<Session>>),
     Bridge(Arc<BridgeClient>),
+}
+
+/// A cancelled/failed service must not detach its transport tasks.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// A panic payload as text.
@@ -25,7 +38,7 @@ fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// A failed blocking task: a panic is reported as an internal error and the session stays usable.
-fn join_error(e: tokio::task::JoinError) -> AutomationError {
+pub(crate) fn join_error(e: tokio::task::JoinError) -> AutomationError {
     match e.try_into_panic() {
         Ok(p) => AutomationError::Other(format!("internal error: {}", panic_message(p))),
         Err(e) => AutomationError::Other(e.to_string()),
@@ -36,6 +49,7 @@ fn join_error(e: tokio::task::JoinError) -> AutomationError {
 pub struct FilmcraftMcp {
     backend: Arc<Backend>,
     tool_router: ToolRouter<Self>,
+    requests: crate::request_lifecycle::RequestLifecycle,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -195,22 +209,76 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
     })
 }
 
+/// Preserve secondary cleanup diagnostics even when the caller has no logger.
+fn finish_with_cleanup(result: Result<(), AutomationError>, cleanup: Result<(), AutomationError>, context: &'static str) -> Result<(), AutomationError> {
+    match (result, cleanup) {
+        (Err(error), Err(cleanup)) => Err(AutomationError::Other(format!("{error}; {context}: {cleanup}"))),
+        (Err(error), _) | (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+/// Choose transport outcomes after one writer observation; `None` denotes its expired budget.
+fn finish_output_cleanup(
+    service: Result<(), AutomationError>,
+    output: Option<Result<(), AutomationError>>,
+    context: &'static str,
+) -> Result<(), AutomationError> {
+    match output {
+        Some(Ok(())) => service,
+        Some(Err(error)) => finish_with_cleanup(Err(error), service, context),
+        None => finish_with_cleanup(service, Err(AutomationError::Other("MCP output cleanup timed out".into())), "MCP output cleanup"),
+    }
+}
+
 impl FilmcraftMcp {
     pub fn headless(session: Session) -> Self {
-        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), tool_router: Self::tool_router() }
+        Self {
+            backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))),
+            tool_router: Self::tool_router(),
+            requests: crate::request_lifecycle::RequestLifecycle::new(),
+        }
     }
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), tool_router: Self::tool_router() })
+        Ok(Self {
+            backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))),
+            tool_router: Self::tool_router(),
+            requests: crate::request_lifecycle::RequestLifecycle::new(),
+        })
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {
-        self.serve_io(tokio::io::stdin(), tokio::io::stdout()).await
+        let (mut input_driver, input) = crate::stdio_input::StdioInput::start()?;
+        let result = self.serve_io(input, tokio::io::stdout()).await;
+        let cleanup = input_driver.finish().await;
+        finish_with_cleanup(result, cleanup, "MCP input cleanup")
     }
 
     /// Serve MCP over any line stream. A line that isn't JSON gets a JSON-RPC parse error
     /// (`-32700`, id null) instead of being dropped silently; the rest go to the rmcp service. One
     /// writer task owns `output`, so replies never interleave.
     pub async fn serve_io(
+        mut self,
+        input: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+        output: impl tokio::io::AsyncWrite + Unpin + Send + 'static,
+    ) -> Result<(), AutomationError> {
+        // Cloned services share the backend, but each transport owns its admission
+        // and shutdown. Ending one client must not close another client's scope.
+        self.requests = crate::request_lifecycle::RequestLifecycle::new();
+        let requests = self.requests.clone();
+        let result = std::panic::AssertUnwindSafe(self.serve_io_inner(input, output))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| Err(AutomationError::Other("MCP service panicked".into())));
+        // rmcp's bounded response drain does not join every request handler. Keep
+        // the main runtime alive for admitted exports and started blocking writes.
+        let request_cleanup = std::panic::AssertUnwindSafe(requests.close_and_drain())
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| Err(AutomationError::Other("MCP request cleanup panicked; completion unconfirmed".into())));
+        finish_with_cleanup(result, request_cleanup, "MCP request cleanup")
+    }
+    async fn serve_io_inner(
         self,
         input: impl tokio::io::AsyncRead + Unpin + Send + 'static,
         output: impl tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -219,9 +287,19 @@ impl FilmcraftMcp {
         let (mut to_service, service_in) = tokio::io::duplex(1 << 20);
         let (service_out, from_service) = tokio::io::duplex(1 << 20);
         let (err_tx, mut err_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let reader = tokio::spawn(async move {
+        let input_error = Arc::new(Mutex::new(None));
+        let reader_error = input_error.clone();
+        let reader = AbortOnDrop(tokio::spawn(async move {
             let mut lines = BufReader::new(input).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            loop {
+                let line = match lines.next_line().await {
+                    Ok(Some(line)) => line,
+                    Ok(None) => break,
+                    Err(error) => {
+                        *reader_error.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+                        break;
+                    }
+                };
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -237,27 +315,78 @@ impl FilmcraftMcp {
                     }
                 }
             }
-            // EOF: closing the pipe ends the service
+            // EOF or failed input: closing the pipe ends the service
             let _ = to_service.shutdown().await;
-        });
-        let writer = tokio::spawn(async move {
+        }));
+        let mut writer = AbortOnDrop(tokio::spawn(async move {
             let mut output = output;
             let mut replies = BufReader::new(from_service).lines();
             loop {
                 let line = tokio::select! {
-                    l = replies.next_line() => match l { Ok(Some(l)) => l, _ => break },
+                    l = replies.next_line() => match l {
+                        Ok(Some(line)) => line,
+                        Ok(None) => return Ok(()),
+                        Err(error) => return Err(AutomationError::Other(format!("MCP output read: {error}"))),
+                    },
                     Some(e) = err_rx.recv() => e,
                 };
-                if output.write_all(format!("{line}\n").as_bytes()).await.is_err() || output.flush().await.is_err() {
-                    break;
-                }
+                output.write_all(format!("{line}\n").as_bytes()).await.map_err(|error| AutomationError::Other(format!("MCP output write: {error}")))?;
+                output.flush().await.map_err(|error| AutomationError::Other(format!("MCP output flush: {error}")))?;
             }
-        });
-        let running = self.serve((service_in, service_out)).await.map_err(|e| AutomationError::Other(format!("MCP init: {e}")))?;
-        let r = running.waiting().await.map_err(|e| AutomationError::Other(e.to_string()));
-        reader.abort();
-        let _ = writer.await;
-        r.map(|_| ())
+        }));
+        // Retain transport guards across initialization errors and cancellation too.
+        let mut writer_finished = false;
+        let result = tokio::select! {
+            joined = &mut writer.0 => {
+                writer_finished = true;
+                joined.map_err(join_error).and_then(|output| output).and_then(|()| {
+                    Err(AutomationError::Other("MCP output closed during initialization".into()))
+                })
+            }
+            initialized = self.serve((service_in, service_out)) => match initialized {
+                Ok(running) => {
+                    let cancellation = running.cancellation_token();
+                    let waiting = running.waiting();
+                    tokio::pin!(waiting);
+                    tokio::select! {
+                        joined = &mut writer.0 => {
+                            writer_finished = true;
+                            // The external output is gone. Stop input too, then cancel and join
+                            // the same service future before the caller cleans up native ownership.
+                            reader.0.abort();
+                            cancellation.cancel();
+                            let service = waiting.await.map(|_| ()).map_err(join_error);
+                            finish_output_cleanup(service, Some(joined.map_err(join_error).and_then(|output| output)), "MCP service cleanup after output failure")
+                        }
+                        stopped = &mut waiting => stopped.map(|_| ()).map_err(join_error),
+                    }
+                }
+                Err(error) => Err(AutomationError::Other(format!("MCP init: {error}"))),
+            }
+        };
+        reader.0.abort();
+        // The reader records a failure before closing its pipe; no join or new wait
+        // is needed, including when an OS input read remains blocked.
+        let input_cleanup = match input_error.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            Some(error) => Err(AutomationError::Other(format!("MCP input read: {error}"))),
+            None => Ok(()),
+        };
+        let result = finish_with_cleanup(result, input_cleanup, "MCP reader");
+        if writer_finished {
+            // This JoinHandle has already been observed; polling it twice can panic.
+            return result;
+        }
+        // Initialization can fail concurrently with an already completed write
+        // or flush. Observe the writer once before choosing the original error;
+        // a still-pending writer retains the existing bounded cleanup budget.
+        let output = tokio::time::timeout(std::time::Duration::from_secs(2), &mut writer.0).await;
+        match output {
+            Ok(joined) => finish_output_cleanup(result, Some(joined.map_err(join_error).and_then(|output| output)), "MCP service stopped with output failure"),
+            Err(_) => {
+                writer.0.abort();
+                finish_output_cleanup(result, None, "MCP output cleanup")
+            }
+        }
     }
 
     /// Run an engine command on whichever backend.
@@ -266,7 +395,9 @@ impl FilmcraftMcp {
             Backend::Headless(s) => {
                 let s = s.clone();
                 let id = id.to_string();
+                let work = self.requests.retain_work()?;
                 tokio::task::spawn_blocking(move || {
+                    let _work = work;
                     // A command that panicked earlier poisoned the lock; the session is still usable.
                     let mut g = s.lock().unwrap_or_else(PoisonError::into_inner);
                     g.execute(&id, params).map_err(AutomationError::from)
@@ -433,7 +564,12 @@ impl FilmcraftMcp {
         match &*self.backend {
             Backend::Headless(s) => {
                 let s = s.clone();
+                let work = match self.requests.retain_work() {
+                    Ok(work) => work,
+                    Err(error) => return Ok(fail(error)),
+                };
                 let r = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, AutomationError> {
+                    let _work = work;
                     let g = s.lock().unwrap_or_else(PoisonError::into_inner);
                     // read-only: render at `seconds` without moving the playhead (#114)
                     let t = p.seconds.map_or_else(|| g.playhead(), filmcraft_time::Tick::from_seconds_f64);
@@ -633,6 +769,7 @@ impl ServerHandler for FilmcraftMcp {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, McpError> {
+        let _request = self.requests.enter().map_err(|error| McpError::internal_error(error.to_string(), None))?;
         if let Some(m) = self.unknown_arg(&request.name, request.arguments.as_ref()) {
             return Err(McpError::invalid_params(m, None));
         }
@@ -678,6 +815,7 @@ impl ServerHandler for FilmcraftMcp {
         request: rmcp::model::ReadResourceRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ReadResourceResponse, McpError> {
+        let _request = self.requests.enter().map_err(|error| McpError::internal_error(error.to_string(), None))?;
         let v = match request.uri.as_str() {
             DOCUMENT_URI => self.document().await,
             COMMANDS_URI => self.run("command.list", json!({})).await,

@@ -21,3 +21,5 @@ base64 = "0.23"
 schemars = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"
+futures-util = "0.3"
+log = "0.4"
