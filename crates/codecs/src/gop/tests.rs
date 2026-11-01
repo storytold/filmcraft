@@ -853,3 +853,18 @@ fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
     assert_eq!(pool.bytes.load(Ordering::Relaxed), 0);
     assert_eq!(pool.decoders.load(Ordering::Relaxed), 0);
 }
+
+/// #1216: an export's thread cap sizes the pool the caches decode on.
+#[test]
+fn an_export_cap_sizes_the_decode_pool() {
+    use filmcraft_media::cancel::with_max_threads;
+    // no cap: the shared, full-size pool
+    assert!(super::decode_pool().is_some());
+    // a cap: a pool of that size (a job run on it sees that many threads)
+    let seen = with_max_threads(Some(2), || super::decode_pool().map(|p| p.install(rayon::current_num_threads)));
+    assert_eq!(seen, Some(2));
+    let seen = with_max_threads(Some(3), || super::decode_pool().map(|p| p.install(rayon::current_num_threads)));
+    assert_eq!(seen, Some(3));
+    // back to the shared pool
+    assert!(super::decode_pool().is_some());
+}

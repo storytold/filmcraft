@@ -1072,3 +1072,17 @@ fn max_threads_reaches_the_export_settings() {
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": -1})).is_err(), "a negative count is refused");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
 }
+
+/// #1216: `maxThreads` is saved with a user export preset and comes back with it, in the same
+/// session and in a fresh one (the acceptance item "saved with export presets").
+#[test]
+fn max_threads_is_saved_with_an_export_preset() {
+    let dir = Scratch::new("max-threads-preset");
+    let mut s = demo();
+    s.export_presets.set_dir(&dir.0);
+    s.execute("export.presets.save", json!({"name": "Capped 2", "format": "h264", "maxThreads": 2})).unwrap();
+    assert_eq!(s.execute("export.presets.get", json!({"name": "Capped 2"})).unwrap()["settings"]["maxThreads"], json!(2));
+    let mut s2 = demo();
+    s2.export_presets.set_dir(&dir.0);
+    assert_eq!(s2.export_presets.find("Capped 2").map(|p| p.settings.max_threads), Some(2), "the cap is persisted with the preset");
+}

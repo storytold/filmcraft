@@ -646,6 +646,18 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     });
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxDepth", &mut s.render_at_max_depth, tl!("Render at Maximum Depth")));
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxQuality", &mut s.max_render_quality, tl!("Use Maximum Render Quality")));
+    // #1216: cap the export's CPU threads (0 = every core, as before). A huge value from a preset
+    // is clamped for display: the export clamps it to the machine's cores anyway.
+    row(ui, t, tl!("CPU Threads"), |ui| {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get()).max(1);
+        let sel = (s.max_threads as usize).min(cores);
+        let all = tl!("All cores").to_string();
+        let labels: std::vec::Vec<(String, bool)> = std::iter::once((all.clone(), true)).chain((1..=cores).map(|n| (n.to_string(), true))).collect();
+        let cur = if sel == 0 { all } else { sel.to_string() };
+        if let Some(i) = combo(ui, reg, "export.video.maxThreads", &cur, &labels, 120.) {
+            s.max_threads = i as u32;
+        }
+    });
 }
 
 fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_sr: u32) {

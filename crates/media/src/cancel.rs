@@ -17,6 +17,10 @@
 //! [`with_background`] marks work nobody waits on interactively (thumbnails of the Project panel,
 //! the Media Browser and the timeline): sources should not keep expensive state, such as a
 //! frame-threaded 4K decoder, for it once it is done.
+//!
+//! [`with_max_threads`] caps how many worker threads the work on a thread may start (#1216): an
+//! export sets it on its pool so its decoders and encoders do not use the whole machine. `None`
+//! (the default) means no cap.
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -29,6 +33,7 @@ thread_local! {
     static CATCH_UP: Cell<Option<Tick>> = const { Cell::new(None) };
     static DRAFT: Cell<bool> = const { Cell::new(false) };
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    static MAX_THREADS: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 /// Run `f` as background work when `on` (restoring the previous hint after): a thumbnail, not a
@@ -50,6 +55,29 @@ pub fn with_background<R>(on: bool, f: impl FnOnce() -> R) -> R {
 /// [`with_background`]`(true, …)`).
 pub fn background() -> bool {
     BACKGROUND.with(Cell::get)
+}
+
+/// Run `f` with a cap of `max_threads` worker threads on this thread (restoring the previous one
+/// after). Decoders and encoders made inside size their own pools to at most `max_threads`
+/// ([`max_threads`]); `None` means no cap. Set by an export so its decoders do not use the whole
+/// machine (#1216).
+pub fn with_max_threads<R>(max_threads: Option<usize>, f: impl FnOnce() -> R) -> R {
+    let prev = MAX_THREADS.with(|c| c.replace(max_threads));
+    let r = f();
+    MAX_THREADS.with(|c| c.set(prev));
+    r
+}
+
+/// The most worker threads work on this thread may start (None: no cap). See [`with_max_threads`].
+pub fn max_threads() -> Option<usize> {
+    MAX_THREADS.with(Cell::get)
+}
+
+/// Set this thread's thread cap for good (a rayon pool worker: `ThreadPoolBuilder::start_handler`),
+/// where [`with_max_threads`] is scoped to a closure. The pool lives for one export, so the cap
+/// does too.
+pub fn set_max_threads(max_threads: Option<usize>) {
+    MAX_THREADS.with(|c| c.set(max_threads));
 }
 
 /// Run `f` with the draft-decoding hint `on` (restoring the previous one after). Frames decoded
@@ -97,19 +125,21 @@ pub fn cancelled() -> bool {
 }
 
 /// The hints of the work running on this thread ([`with_cancel`], [`with_catch_up`],
-/// [`with_draft`], [`with_background`]), to carry them to another thread doing part of that work.
+/// [`with_draft`], [`with_background`], [`with_max_threads`]), to carry them to another thread
+/// doing part of that work.
 #[derive(Clone, Default)]
 pub struct Context {
     cancel: Option<Arc<AtomicBool>>,
     catch_up: Option<Tick>,
     draft: bool,
     background: bool,
+    max_threads: Option<usize>,
 }
 
 impl Context {
     /// This thread's hints.
     pub fn current() -> Self {
-        Context { cancel: CURRENT.with(|c| c.borrow().clone()), catch_up: catch_up(), draft: draft(), background: background() }
+        Context { cancel: CURRENT.with(|c| c.borrow().clone()), catch_up: catch_up(), draft: draft(), background: background(), max_threads: max_threads() }
     }
 
     /// Run `f` with these hints, restoring this thread's however `f` ends (a pool thread must
@@ -123,6 +153,7 @@ impl Context {
                 CATCH_UP.with(|c| c.set(prev.catch_up));
                 DRAFT.with(|c| c.set(prev.draft));
                 BACKGROUND.with(|c| c.set(prev.background));
+                MAX_THREADS.with(|c| c.set(prev.max_threads));
             }
         }
         let _restore = Restore(Context::current());
@@ -130,6 +161,7 @@ impl Context {
         CATCH_UP.with(|c| c.set(self.catch_up));
         DRAFT.with(|c| c.set(self.draft));
         BACKGROUND.with(|c| c.set(self.background));
+        MAX_THREADS.with(|c| c.set(self.max_threads));
         f()
     }
 }
@@ -193,6 +225,26 @@ mod tests {
         let r = std::panic::catch_unwind(|| with_background(true, || panic!("boom")));
         assert!(r.is_err());
         assert!(!background());
+    }
+
+    #[test]
+    fn max_threads_is_scoped_and_carried_in_the_context() {
+        assert_eq!(max_threads(), None, "no cap by default");
+        with_max_threads(Some(3), || {
+            assert_eq!(max_threads(), Some(3));
+            let ctx = Context::current();
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    assert_eq!(max_threads(), None, "another thread keeps its own hint");
+                    ctx.clone().run(|| assert_eq!(max_threads(), Some(3)));
+                    assert_eq!(max_threads(), None, "run restores this thread's own hint");
+                    set_max_threads(Some(5));
+                    assert_eq!(max_threads(), Some(5), "set_max_threads lasts past a closure");
+                });
+            });
+            assert_eq!(max_threads(), Some(3));
+        });
+        assert_eq!(max_threads(), None);
     }
 
     #[test]

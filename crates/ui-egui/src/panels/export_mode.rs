@@ -10,7 +10,7 @@
 //!
 //! Automation ids: `export.fileName`, `export.location`, `export.preset`, `export.preset.more`,
 //! `export.format`, `export.section.<video|audio|multiplexer|captions|effects|metadata>`,
-//! `export.video.*`, `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
+//! `export.video.*` (`export.video.maxThreads`: All cores / 1…N), `export.audio.*`, `export.effects.*`, `export.metadata.*`, `export.range`,
 //! `export.scaling`, `export.summary`, `export.estimate`, `export.sendToQueue`, `export.button`,
 //! `export.queue.start|stop|clear`, `export.queue.item.<id>` and `….<id>.<up|down|cancel|retry|remove>`;
 //! Preset Manager: `presetManager.search`, `presetManager.favoritesOnly`,
