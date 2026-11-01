@@ -125,39 +125,38 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
     let mut shown_language = app.ui.language;
     let update: MenuUpdater = Box::new(move |items: &[Item]| {
         let checked = |id: &str| items.iter().any(|it| it.id == id && it.checked == Some(true));
-        let language = if checked("app.language.japanese") {
-            filmcraft_ui_egui::i18n::Language::Ja
-        } else if checked("app.language.spanish") {
-            filmcraft_ui_egui::i18n::Language::Es
-        } else if checked("app.language.portuguese") {
-            filmcraft_ui_egui::i18n::Language::PtBr
-        } else if checked("app.language.ukrainian") {
-            filmcraft_ui_egui::i18n::Language::Uk
-        } else if checked("app.language.chinese") {
-            filmcraft_ui_egui::i18n::Language::ZhCn
-        } else if checked("app.language.german") {
-            filmcraft_ui_egui::i18n::Language::De
-        } else if checked("app.language.russian") {
-            filmcraft_ui_egui::i18n::Language::Ru
-        } else if checked("app.language.french") {
-            filmcraft_ui_egui::i18n::Language::Fr
-        } else if checked("app.language.indonesian") {
+        let language = if checked("app.language.indonesian") {
             filmcraft_ui_egui::i18n::Language::Id
-        } else if checked("app.language.italian") {
-            filmcraft_ui_egui::i18n::Language::It
         } else if checked("app.language.bosnian") {
             filmcraft_ui_egui::i18n::Language::Bs
-        } else if checked("app.language.korean") {
-            filmcraft_ui_egui::i18n::Language::Ko
-        } else if checked("app.language.turkish"){
         } else if checked("app.language.czech") {
             filmcraft_ui_egui::i18n::Language::Cs
+        } else if checked("app.language.german") {
+            filmcraft_ui_egui::i18n::Language::De
+        } else if checked("app.language.spanish") {
+            filmcraft_ui_egui::i18n::Language::Es
+        } else if checked("app.language.french") {
+            filmcraft_ui_egui::i18n::Language::Fr
+        } else if checked("app.language.italian") {
+            filmcraft_ui_egui::i18n::Language::It
         } else if checked("app.language.polish") {
             filmcraft_ui_egui::i18n::Language::Pl
+        } else if checked("app.language.portuguese") {
+            filmcraft_ui_egui::i18n::Language::PtBr
         } else if checked("app.language.swedish") {
             filmcraft_ui_egui::i18n::Language::Sv
         } else if checked("app.language.turkish") {
             filmcraft_ui_egui::i18n::Language::Tr
+        } else if checked("app.language.russian") {
+            filmcraft_ui_egui::i18n::Language::Ru
+        } else if checked("app.language.ukrainian") {
+            filmcraft_ui_egui::i18n::Language::Uk
+        } else if checked("app.language.japanese") {
+            filmcraft_ui_egui::i18n::Language::Ja
+        } else if checked("app.language.chinese") {
+            filmcraft_ui_egui::i18n::Language::ZhCn
+        } else if checked("app.language.korean") {
+            filmcraft_ui_egui::i18n::Language::Ko
         } else {
             filmcraft_ui_egui::i18n::Language::En
         };

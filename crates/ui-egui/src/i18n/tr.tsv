@@ -711,11 +711,7 @@
 	Clip Names	Klip Adları
 	Enumerate Cameras	Kameraları Numaralandır
 	Camera Angle Metadata	Kamera Açısı Üstverisi
-<<<<<<< HEAD
-	Move source clips to Processed Clips bin	Kaynak klipleri İşlenmiş Klipler havuzuna taşı
-=======
 	Move source clips to Processed Clips bin	Kaynak klipleri İşlenmiş Klipler klasörüne taşı
->>>>>>> upstream/main
 	Synchronized {n} clip group(s)	{n} klip grubu senkronize edildi
 	Merged clip created	Birleştirilmiş klip oluşturuldu
 	Multi-camera source sequence with {n} camera(s)	{n} kameralı çoklu kamera kaynak sekansı
@@ -724,19 +720,6 @@
 	Page {page} of {pages}	Sayfa {page} / {pages}
 	Previous page	Önceki sayfa
 	Next page	Sonraki sayfa
-<<<<<<< HEAD
-	Multi-Camera Record On/Off (0)	Çoklu Kamera Kaydı Aç/Kapat (0)
-	Record	Kayıt
-	Edit Cameras	Kameraları Düzenle
-	Cameras shown in the Multi-Camera view (uncheck to hide).	Çoklu kamera görünümünde gösterilen kameralar (gizlemek için işareti kaldırın).
-	Recorded {n} multi-camera cut(s)	{n} çoklu kamera kesmesi kaydedildi
-	Clamp Signal	Sinyali Sınırla
-	Presets	Hazır Ayarlar
-	Parade ({kind})	Parade ({kind})
-	Waveform ({kind})	Dalga Şekli ({kind})
-	Parade Type	Parade Türü
-	Waveform Type	Dalga Şekli Türü
-=======
 	Multi-Camera Record On/Off (0)	Çoklu Kamera Kaydı Açık/Kapalı (0)
 	Record	Kayıt
 	Edit Cameras	Kameraları Düzenle
@@ -748,7 +731,6 @@
 	Waveform ({kind})	Dalga Formu ({kind})
 	Parade Type	Parade Türü
 	Waveform Type	Dalga Formu Türü
->>>>>>> upstream/main
 	Vectorscope Targets	Vektörskop Hedefleri
 	Colour Space	Renk Uzayı
 	Brightness	Parlaklık
@@ -762,22 +744,13 @@
 	Edit Subclip	Alt Klibi Düzenle
 	Modify Clip: Audio Channels	Klibi Değiştir: Ses Kanalları
 	Modify Clip: Timecode	Klibi Değiştir: Zaman Kodu
-<<<<<<< HEAD
-	Frame Hold Options	Kare Tutma Seçenekleri
-=======
 	Frame Hold Options	Kare Dondurma Seçenekleri
->>>>>>> upstream/main
 	Field Options	Alan Seçenekleri
 	Save Project	Projeyi Kaydet
 	Motion	Hareket
 	Opacity	Opaklık
-<<<<<<< HEAD
-	Time Remapping	Zamanı Yeniden Eşleme
-	Channel Volume	Kanal Sesi
-=======
 	Time Remapping	Zaman Yeniden Eşleme
 	Channel Volume	Kanal Ses Düzeyi
->>>>>>> upstream/main
 	In Point	Giriş Noktası
 	Out Point	Çıkış Noktası
 	Playhead	Oynatma Kafası
@@ -786,11 +759,7 @@
 	Video Attributes	Video Öznitelikleri
 	Audio Attributes	Ses Öznitelikleri
 	No effects	Efekt yok
-<<<<<<< HEAD
-	Scale Attribute Times	Öznitelik Zamanlarını Ölçeklendir
-=======
 	Scale Attribute Times	Öznitelik Sürelerini Ölçeklendir
->>>>>>> upstream/main
 	File Name:	Dosya Adı:
 	Tape Name:	Bant Adı:
 	Contains:	İçerik:
@@ -802,27 +771,6 @@
 	Subclip: {name}	Alt Klip: {name}
 	Start:	Başlangıç:
 	End:	Bitiş:
-<<<<<<< HEAD
-	Restrict Trims To Subclip Boundaries	Kırpmaları Alt Klip Sınırlarıyla Sınırla
-	Convert to Master Clip	Ana Klip Yap
-	Clip Channel Format:	Klip Kanal Biçimi:
-	Number of Audio Clips:	Ses Klip Sayısı:
-	Media Source Channels	Medya Kaynak Kanalları
-	Ch. {n}	Kanal {n}
-	Clip {n}	Klip {n}
-	Source channels the selected audio clips play:	Seçili ses kliplerinin çaldığı kaynak kanallar:
-	Set Timecode:	Zaman Kodunu Ayarla:
-	Use the file's timecode	Dosyanın zaman kodunu kullan
-	Hold On	Kareyi Tut
-	Timecode:	Zaman Kodu:
-	Hold Filters	Filtreleri Koru
-	Reverse Field Dominance	Alan Baskınlığını Ters Çevir
-	Processing Options	İşleme Seçenekleri
-	None	Yok
-	Always Deinterlace	Her Zaman Deinterlace Et
-	Flicker Removal	Titreme Giderme
-	Save changes to “{project_name}” before closing?	Kapatmadan önce “{project_name}” projesindeki değişiklikler kaydedilsin mi?
-=======
 	Restrict Trims To Subclip Boundaries	Kırpmaları Alt Klip Sınırlarıyla Kısıtla
 	Convert to Master Clip	Ana Klibe Dönüştür
 	Clip Channel Format:	Klip Kanal Formatı:
@@ -842,66 +790,40 @@
 	Always Deinterlace	Her Zaman Taramayı Kaldır
 	Flicker Removal	Kırpışmayı Kaldırma
 	Save changes to “{project_name}” before closing?	Kapatmadan önce “{project_name}” üzerindeki değişiklikler kaydedilsin mi?
->>>>>>> upstream/main
 	Don't Save	Kaydetme
 	All media is online.	Tüm medyalar çevrimiçi.
 	{name} (copy)	{name} (kopya)
 	Offline	Çevrimdışı
 	Missing	Eksik
 	Link Media	Medyayı Bağla
-<<<<<<< HEAD
-	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	{n} klip medyasını bulamıyor. Konumlarını belirleyin, bir klasörde arayın veya çevrimdışı bırakın.
-=======
 	{n} clip(s) can't find their media. Locate them, search a folder, or leave them offline.	{n} klip medyasını bulamıyor. Dosyaları bulun, bir klasörde arayın veya çevrimdışı bırakın.
->>>>>>> upstream/main
 	Clip Name	Klip Adı
 	File Name	Dosya Adı
 	File Path	Dosya Yolu
 	Status	Durum
-<<<<<<< HEAD
-	Match file properties:	Eşleşen dosya özellikleri:
-	File Extension	Dosya Uzantısı
-	Clip ID (fingerprint)	Klip Kimliği (Parmak İzi)
-=======
 	Match file properties:	Eşleşecek dosya özellikleri:
 	File Extension	Dosya Uzantısı
 	Clip ID (fingerprint)	Klip Kimliği (parmak izi)
->>>>>>> upstream/main
 	Duration	Süre
 	Media Start	Medya Başlangıcı
 	Frame Size / Rate	Kare Boyutu / Hızı
 	Align Timecode	Zaman Kodunu Hizala
 	Relink others automatically	Diğerlerini otomatik olarak yeniden bağla
 	Search in:	Şurada ara:
-<<<<<<< HEAD
-	Browse…	Gözat…
-	A file dialog is already open	Zaten açık bir dosya iletişim penceresi var
-	Exact name matches only	Yalnızca tam ad eşleşmeleri
-	No candidates yet — Search a folder or Locate the file.	Henüz aday yok — Bir klasörde arayın veya dosyayı konumlandırın.
-=======
 	Browse…	Göz At…
 	A file dialog is already open	Bir dosya iletişim kutusu zaten açık
 	Exact name matches only	Yalnızca tam ad eşleşmeleri
 	No candidates yet — Search a folder or Locate the file.	Henüz aday yok — Bir klasörde arayın veya dosyayı bulun.
->>>>>>> upstream/main
 	✔ same file	✔ aynı dosya
 	✔ matches	✔ eşleşiyor
 	✖ different file	✖ farklı dosya
 	Preview	Önizleme
 	Offline All	Tümünü Çevrimdışı Yap
-<<<<<<< HEAD
-	Locate…	Konumlandır…
-	Linked {n} clip(s)	{n} klip bağlandı
-	Nothing found with that name.	Bu isimde hiçbir şey bulunamadı.
-	Make Offline	Çevrimdışı Yap
-	Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.	Seçili {n} klibi çevrimdışı yap. Klipler siz tekrar bağlayana kadar çevrimdışı ekranını gösterir.
-=======
 	Locate…	Bul…
 	Linked {n} clip(s)	{n} klip bağlandı
 	Nothing found with that name.	Bu adla hiçbir şey bulunamadı.
 	Make Offline	Çevrimdışı Yap
 	Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.	Seçili {n} klibi çevrimdışı yapın. Klipleri yeniden bağlayana kadar çevrimdışı ekranı gösterilir.
->>>>>>> upstream/main
 	Media files remain on disk	Medya dosyaları diskte kalır
 	Media files are deleted	Medya dosyaları silinir
 	Create Proxies	Proxy Oluştur
@@ -913,18 +835,6 @@
 	Creating {n} proxy file(s)…	{n} proxy dosyası oluşturuluyor…
 	Project Manager	Proje Yöneticisi
 	Sequences	Sekanslar
-<<<<<<< HEAD
-	Resulting Project	Oluşan Proje
-	Collect Files and Copy to New Location	Dosyaları Topla ve Yeni Konuma Kopyala
-	Consolidate and Transcode	Birleştir ve Transkod Et
-	Options	Seçenekler
-	Exclude Unused Clips	Kullanılmayan Klipleri Hariç Tut
-	Include Handles:	Payları Dahil Et:
-	Include Proxies	Proxyleri Dahil Et
-	Include Preview Files	Önizleme Dosyalarını Dahil Et
-	Destination Path	Hedef Yolu
-	Disk space: original {original} · resulting {result} ({n} files)	Disk alanı: orijinal {original} · oluşan {result} ({n} dosya)
-=======
 	Resulting Project	Oluşacak Proje
 	Collect Files and Copy to New Location	Dosyaları Topla ve Yeni Konuma Kopyala
 	Consolidate and Transcode	Birleştir ve Kod Dönüştür
@@ -935,28 +845,10 @@
 	Include Preview Files	Önizleme Dosyalarını Dahil Et
 	Destination Path	Hedef Yolu
 	Disk space: original {original} · resulting {result} ({n} files)	Disk alanı: orijinal {original} · sonuç {result} ({n} dosya)
->>>>>>> upstream/main
 	Disk space: —	Disk alanı: —
 	Calculate	Hesapla
 	Project Manager: writing {path}	Proje Yöneticisi: {path} yazılıyor
 	Timeline: (no sequences)	Zaman Çizgisi: (sekans yok)
-<<<<<<< HEAD
-	Browse	Gözat
-	Select audio clips, then click a preset to apply it.	Ses kliplerini seçin, ardından uygulamak için bir hazır ayara tıklayın.
-	{name} (user)	{name} (kullanıcı)
-	Select audio clips to edit them here	Burada düzenlemek için ses kliplerini seçin
-	Multiple Clips Selected	Birden Fazla Klip Seçildi
-	The selected clips have different audio types. Assign one type to edit them together.	Seçilen klipler farklı ses türlerine sahip. Birlikte düzenlemek için tek bir tür atayın.
-	Assign an audio type to the selection:	Seçime bir ses türü atayın:
-	Clear Audio Type	Ses Türünü Temizle
-	Preset:	Hazır Ayar:
-	(Custom)	(Özel)
-	Preset name	Hazır ayar adı
-	Reduce Noise	Gürültüyü Azalt
-	Reduce Rumble	Gürültü/Uğultuyu Azalt
-	DeHum	Uğultu Giderme
-	DeEss	DeEsser
-=======
 	Browse	Göz At
 	Select audio clips, then click a preset to apply it.	Ses kliplerini seçin, ardından uygulamak için bir önayara tıklayın.
 	{name} (user)	{name} (kullanıcı)
@@ -972,37 +864,10 @@
 	Reduce Rumble	Uğultuyu Azalt
 	DeHum	Vızıltıyı Gider
 	DeEss	Tıslamayı Gider
->>>>>>> upstream/main
 	Reduce Reverb	Yankıyı Azalt
 	Dynamics	Dinamikler
 	EQ	EQ
 	Enhance Speech	Konuşmayı İyileştir
-<<<<<<< HEAD
-	Low Tone	Bas Sesler
-	High Tone	Tiz Sesler
-	Mix	Mix
-	Reverb	Yankı
-	Stereo Width	Stereo Genişliği
-	Remixing music to a target duration is not available yet. Trim the clip and add a crossfade instead.	Müziği hedef süreye göre yeniden miksleme henüz mevcut değil. Klibi kırpın ve bunun yerine çapraz geçiş ekleyin.
-	Pan	Pan
-	Auto-Match	Otomatik Eşle
-	Not matched yet	Henüz eşleşmedi
-	Matches each of the {n} clips on its own.	{n} klibin her birini kendi içinde eşler.
-	Duck against:	Şura bastır:
-	Untagged	Etiketsiz
-	Sensitivity	Hassasiyet
-	Reduce By	Şu Kadar Azalt
-	Fades	Geçişler
-	Generate Keyframes	Anahtar Kareler Oluştur
-	Clip Volume	Klip Sesi
-	(no clip selected)	(klip seçilmedi)
-	Master · {name}	Master · {name}
-	Add Lumetri Color to clip	Klibe Lumetri Color Ekle
-	Input LUT	Girdi LUT'si
-	Color	Renk
-	Temperature	Sıcaklık
-	Tint	Ton
-=======
 	Low Tone	Düşük Ton
 	High Tone	Yüksek Ton
 	Mix	Miks
@@ -1027,7 +892,6 @@
 	Color	Renk
 	Temperature	Sıcaklık
 	Tint	Renk Tonu
->>>>>>> upstream/main
 	Saturation	Doygunluk
 	Exposure	Pozlama
 	Contrast	Kontrast
@@ -1037,15 +901,6 @@
 	Blacks	Siyahlar
 	HDR	HDR
 	HDR White	HDR Beyazı
-<<<<<<< HEAD
-	HDR Specular	HDR Speküler
-	Look	Look
-	Look LUT	Look LUT'si
-	Intensity	Yoğunluk
-	Adjustments	Ayarlar
-	Faded Film	Soluk Film
-	Sharpen	Keskinleştirme
-=======
 	HDR Specular	HDR Işıltısı
 	Look	Görünüm
 	Look LUT	Görünüm LUT'u
@@ -1053,25 +908,10 @@
 	Adjustments	Ayarlamalar
 	Faded Film	Soluk Film
 	Sharpen	Keskinleştir
->>>>>>> upstream/main
 	Vibrance	Canlılık
 	RGB Curves	RGB Eğrileri
 	HDR Range	HDR Aralığı
 	Hue Saturation Curves	Renk Tonu Doygunluk Eğrileri
-<<<<<<< HEAD
-	Hue vs Sat	Renk Tonu - Doygunluk
-	Hue vs Hue	Renk Tonu - Renk Tonu
-	Hue vs Luma	Renk Tonu - Parlaklık
-	Luma vs Sat	Parlaklık - Doygunluk
-	Sat vs Sat	Doygunluk - Doygunluk
-	Midtones	Ara Tonlar
-	Key	Anahtar
-	Hue	Renk Tonu
-	Hue Range	Renk Tonu Aralığı
-	Saturation Min	Minimum Doygunluk
-	Luma Min	Minimum Parlaklık
-	Luma Max	Maksimum Parlaklık
-=======
 	Hue vs Sat	Ton - Doygunluk
 	Hue vs Hue	Ton - Ton
 	Hue vs Luma	Ton - Luma
@@ -1084,23 +924,12 @@
 	Saturation Min	Min. Doygunluk
 	Luma Min	Min. Luma
 	Luma Max	Maks. Luma
->>>>>>> upstream/main
 	Soften	Yumuşat
 	Show Mask	Maskeyi Göster
 	Off	Kapalı
 	Color/Gray	Renk/Gri
 	Color/Black	Renk/Siyah
 	White/Black	Beyaz/Siyah
-<<<<<<< HEAD
-	Refine	Rifinisci
-	Denoise	Gürültü Azaltma
-	Blur	Bulanıklık
-	Correction	Düzeltme
-	Hue Shift	Renk Tonu Kaydırma
-	Midpoint	Orta Nokta
-	Roundness	Yuvarlaklık
-	Feather	Kenar Yumuşatma
-=======
 	Refine	İyileştir
 	Denoise	Gürültü Giderme
 	Blur	Bulanıklık
@@ -1109,44 +938,10 @@
 	Midpoint	Orta Nokta
 	Roundness	Yuvarlaklık
 	Feather	Yumuşatma
->>>>>>> upstream/main
 	LUT	LUT
 	Color Match	Renk Eşleme
 	Reference	Referans
 	Face Detection (protect skin tones)	Yüz Algılama (ten tonlarını koru)
-<<<<<<< HEAD
-	Apply Match	Eşleşmeyi Uygula
-	Create ellipse mask	Elips maskesi oluştur
-	Create 4-point polygon mask	4 noktali çokgen maskesi oluştur
-	Free draw bezier	Serbest çizim Bezier
-	Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close	Maske noktalarını yerleştirmek için Program monitörüne tıklayın (kavisler için sürükleyin); kapatmak için ilk noktaya tıklayın veya Enter tuşuna basın
-	Delete Mask	Maskeyi Sil
-	Inverted	Ters Çevrilmiş
-	Drag: move · Alt-click: smooth/corner · Cmd-click: delete	Sürükle: taşı · Alt+tıklama: yumuşat/köşe · Cmd+tıklama: sil
-	Track selected mask backward	Seçili maskeyi geriye doğru takip et
-	Track selected mask backward 1 frame	Seçili maskeyi 1 kare geriye takip et
-	Track selected mask forward 1 frame	Seçili maskeyi 1 kare ileriye takip et
-	Track selected mask forward	Seçili maskeyi ileriye doğru takip et
-	Stop tracking	Takibi durdur
-	Tracking method: {method}	Takip yöntemi: {method}
-	Composite	Bileşik
-	Comparison	Karşılaştırma
-	Video and Waveform	Video ve Dalga Şekli
-	System Default	Sistem Varsayılanı
-	Default location	Varsayılan konum
-	Font family	Font ailesi
-	Label Colors	Etiket Renkleri
-	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	Monitörler ve küçük resimler için tutulan çözümlenmiş kareler: {used} / {budget}.
-	FilmCraft keeps the rest of the RAM free for other applications.	FilmCraft RAM'in geri kalanını diğer uygulamalar için boş tutar.
-	not available in this session	bu oturumda mevcut değil
-	Currently: {loc} — {files} file(s), {size}	Şu anda: {loc} — {files} dosya, {size}
-	 ({ch} output channels)	 ({ch} çıkış kanalı)
-	Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2.	Program sol → cihaz çıkışı {l}, sağ → cihaz çıkışı {r}{dev}. Cihazın kanallarının ötesindeki çıkışlar 1 ve 2'ye düşer.
-	Auto-saves go to: {dir}	Otomatik kaydetmeler şuraya gider: {dir}
-	Recovery copy: {dir}	Kurtarma kopyası: {dir}
-	Last auto-save {a} · last recovery copy {j}	Son otomatik kaydetme {a} · son kurtarma kopyası {j}
-	Last auto-save {a}	Son otomatik kaydetme {a}
-=======
 	Apply Match	Eşlemeyi Uygula
 	Create ellipse mask	Elips maskesi oluştur
 	Create 4-point polygon mask	4 noktalı çokgen maske oluştur
@@ -1178,7 +973,6 @@
 	Recovery copy: {dir}	Kurtarma kopyası: {dir}
 	Last auto-save {a} · last recovery copy {j}	Son otomatik kayıt {a} · son kurtarma kopyası {j}
 	Last auto-save {a}	Son otomatik kayıt {a}
->>>>>>> upstream/main
 	Last recovery copy {j}	Son kurtarma kopyası {j}
 	Remove Media Cache Files	Medya Önbellek Dosyalarını Kaldır
 	Deleted {n} file(s), {size}.	{n} dosya silindi, {size}.
@@ -1186,11 +980,7 @@
 	Source · {name}	Kaynak · {name}
 	Reset Effect	Efekti Sıfırla
 	Reset Parameter	Parametreyi Sıfırla
-<<<<<<< HEAD
-	Save Preset…	Hazır Ayarı Kaydet…
-=======
 	Save Preset…	Önayarı Kaydet…
->>>>>>> upstream/main
 	Custom Setup	Özel Kurulum
 	Edit…	Düzenle…
 	Show graphs	Grafikleri göster
@@ -1198,20 +988,6 @@
 	Eyedropper (pick a color from the Program monitor)	Damlalık (Program monitöründen bir renk seçin)
 	Eyedropper: no picture to sample	Damlalık: örneklenecek görüntü yok
 	Add/Remove Keyframe	Anahtar Kare Ekle/Kaldır
-<<<<<<< HEAD
-	Temporal Interpolation	Zamansal İnterpolasyon
-	Linear	Doğrusal
-	Bezier	Bezier
-	Auto Bezier	Otomatik Bezier
-	Continuous Bezier	Sürekli Bezier
-	Ease In	Yavaşça Gir
-	Ease Out	Yavaşça Çık
-	Select a clip to grade	Renk düzeltmesi yapmak için bir klip seçin
-	Select a clip to see its properties	Özelliklerini görmek için bir klip seçin
-	Anchor point	Bağlantı noktası
-	Rotation	Döndürme
-	Level	Seviye
-=======
 	Temporal Interpolation	Zamansal Enterpolasyon
 	Linear	Doğrusal
 	Bezier	Bézier
@@ -1224,17 +1000,12 @@
 	Anchor point	Tutturma noktası
 	Rotation	Döndürme
 	Level	Düzey
->>>>>>> upstream/main
 	Speed {n}%	Hız %{n}
 	Value	Değer
 	Velocity	Hız
 	Default	Varsayılan
 	Custom ({n} points)	Özel ({n} nokta)
-<<<<<<< HEAD
-	Select a graphic clip, or use the Type tool (T) on the Program monitor	Bir grafik klip seçin veya Program monitöründe Yazı aracını (T) kullanın
-=======
 	Select a graphic clip, or use the Type tool (T) on the Program monitor	Bir grafik klibi seçin veya Program monitöründe Yazı aracını (T) kullanın
->>>>>>> upstream/main
 	Create new graphic	Yeni grafik oluştur
 	New Text Layer	Yeni Metin Katmanı
 	New Text	Yeni Metin
@@ -1243,21 +1014,6 @@
 	Delete Layer	Katmanı Sil
 	Select a layer to edit its properties.	Özelliklerini düzenlemek için bir katman seçin.
 	Align Left	Sola Hizala
-<<<<<<< HEAD
-	Align Center Horizontally	Yatayda Ortala
-	Align Right	Sağa Hizala
-	Align Top	Üste Hizala
-	Top	Yukarı
-	Send Backward	Bir Arkaya Gönder
-	Send to Back	En Arkaya Gönder
-	Safe Margins	Güvenli Alan Çizgileri
-	Align Center Vertically	Dikeyde Ortala
-	Review	İnceleme
-	Align Bottom	Alta Hizala
-	Font	Font
-	Font Style	Font Stili
-	Font Size	Font Boyutu
-=======
 	Align Center Horizontally	Yatay Olarak Ortala
 	Align Right	Sağa Hizala
 	Align Top	Üste Hizala
@@ -1266,26 +1022,10 @@
 	Font	Yazı Tipi
 	Font Style	Yazı Tipi Stili
 	Font Size	Yazı Tipi Boyutu
->>>>>>> upstream/main
 	Alignment	Hizalama
 	Left Align Text	Metni Sola Hizala
 	Center Align Text	Metni Ortala
 	Right Align Text	Metni Sağa Hizala
-<<<<<<< HEAD
-	Justify	Yasla
-	Tracking	Harf Aralığı
-	Leading	Satır Aralığı
-	Baseline Shift	Taban Çizgisi Kaydırma
-	Text Box Width	Metin Kutusu Genişliği
-	Style	Stil
-	Faux Bold	Sahte Kalın
-	Faux Italic	Sahte Eğik
-	All Caps	Tümü Büyük Harf
-	Small Caps	Küçük Kapital
-	Underline	Altı Çizili
-	OpenType	OpenType
-	Kerning	Karakter Aralığı
-=======
 	Justify	İki Yana Yasla
 	Tracking	Karakter Aralığı
 	Leading	Satır Aralığı
@@ -1299,59 +1039,31 @@
 	Underline	Altı Çizili
 	OpenType	OpenType
 	Kerning	Karakter Çifti Aralığı
->>>>>>> upstream/main
 	Ligatures	Bitişik Harfler
 	Shape	Şekil
 	Size	Boyut
 	Corner Radius	Köşe Yarıçapı
 	Polygon Sides	Çokgen Kenarları
-<<<<<<< HEAD
-	Fill	Riempimento
-	Stroke	Çizgi
-	Stroke 2	Çizgi 2
-=======
 	Fill	Dolgu
 	Stroke	Kontur
 	Stroke 2	Kontur 2
->>>>>>> upstream/main
 	Background	Arka Plan
 	   Opacity	   Opaklık
 	   Size	   Boyut
 	   Corner Radius	   Köşe Yarıçapı
 	Shadow	Gölge
 	   Angle	   Açı
-<<<<<<< HEAD
-	   Distance	   Mesafe
-=======
 	   Distance	   Uzaklık
->>>>>>> upstream/main
 	   Blur	   Bulanıklık
 	Search templates	Şablonlarda ara
 	All Categories	Tüm Kategoriler
 	Install…	Yükle…
-<<<<<<< HEAD
-	Install Motion Graphics Template (.fcgt)	Hareketli Grafikler Şablonu Yükle (.fcgt)
-=======
 	Install Motion Graphics Template (.fcgt)	Hareketli Grafik Şablonu Yükle (.fcgt)
->>>>>>> upstream/main
 	No templates match.	Eşleşen şablon yok.
 	{category} · My Template	{category} · Şablonum
 	Apply	Uygula
 	Remove	Kaldır
 	{n} editable properties	{n} düzenlenebilir özellik
-<<<<<<< HEAD
-	Template: {name}	   Şablon: {name}
-	Intro Duration	Giriş Süresi
-	Outro Duration	Çıkış Süresi
-	Roll	Kayan Yazı (Roll)
-	Start Off Screen	Ekran Dışından Başla
-	End Off Screen	Ekran Dışında Bitir
-	Preroll	Pre-roll
-	Postroll	Post-roll
-	Video Frame	Video Karesi
-	Pin To	Şuna İğnele
-	Pinned Edges	İğnelenmiş Kenarlar
-=======
 	   Template: {name}	   Şablon: {name}
 	Intro Duration	Giriş Süresi
 	Outro Duration	Çıkış Süresi
@@ -1363,28 +1075,11 @@
 	Video Frame	Video Karesi
 	Pin To	Şuna Sabitle
 	Pinned Edges	Sabitlenmiş Kenarlar
->>>>>>> upstream/main
 	FilmCraft Graphics Template	FilmCraft Grafik Şablonu
 	{n} Font	{n} Yazı Tipi
 	{n} Size	{n} Boyut
 	{n} Color	{n} Renk
 	{n} Position	{n} Konum
-<<<<<<< HEAD
-	Show {n}	Göster: {n}
-	My Templates	Şablonlarım
-	Export As Motion Graphics Template	Hareketli Grafik Şablonu Olara Aktar
-	Category:	Kategori:
-	Editable properties:	Düzenlenebilir özellikler:
-	Saved as a FilmCraft graphics template (.fcgt) in your templates folder.	Şablonlar klasörünüze FilmCraft grafik şablonu (.fcgt) olarak kaydedildi.
-	Exported graphics template to {path}	Grafik şablonu şuraya aktarıldı: {path}
-	Replace Fonts in Projects…	Projelerdeki Yazı Tiplerini Değiştir…
-	Toggle Proxies	Proxy'leri Aç/Kapat
-	Fonts used in the project:	Projede kullanılan yazı tipleri:
-	Zoom to Sequence	Tüm Zaman Çizgisini Göster
-	Upgrade Caption to Graphic	Altyazıyı Görsele Dönüştür
-	Snap in Program Monitor	Program Monitöründe Hizalama
-	Upgrade to Source Graphic	Kaynak Grafiğe Yükselt
-=======
 	Show {n}	{n} Göster
 	My Templates	Şablonlarım
 	Export As Motion Graphics Template	Hareketli Grafik Şablonu Olarak Dışa Aktar
@@ -1394,16 +1089,11 @@
 	Exported graphics template to {path}	Grafik şablonu {path} konumuna dışa aktarıldı
 	Replace Fonts in Projects	Projelerdeki Yazı Tiplerini Değiştir
 	Fonts used in the project:	Projede kullanılan yazı tipleri:
->>>>>>> upstream/main
 	{f} (missing)	{f} (eksik)
 	Replace:	Değiştir:
 	Replaced {n} font uses	{n} yazı tipi kullanımı değiştirildi
 	Show/Hide Effects and Sends	Efektleri ve Gönderimleri Göster/Gizle
-<<<<<<< HEAD
-	Audio Track Mixer menu	Ses İz Karıştırıcısı menüsü
-=======
 	Audio Track Mixer menu	Ses İzi Karıştırıcısı menüsü
->>>>>>> upstream/main
 	Show/Hide Tracks…	İzleri Göster/Gizle…
 	Meter Input(s) Only	Yalnızca Girişleri Ölç
 	Show/Hide Tracks	İzleri Göster/Gizle
@@ -1411,18 +1101,6 @@
 	Post-Fader	Post-Fader
 	Remove Effect	Efekti Kaldır
 	Fill the slots above first	Önce yukarıdaki yuvaları doldurun
-<<<<<<< HEAD
-	pre  	pre 
-	Pre-Fader	Pre-Fader
-	Mute Send	Gönderimi Sessize Al
-	Remove Send	Gönderimi Kaldır
-	New Submix	Yeni Alt Mix (Submix)
-	Pan / balance (drag; double-click: centre)	Pan / denge (sürükleyin; çift tıklama: merkez)
-	Solo safe	Güvenli Solo
-	Enable track for recording	İzi kayıt için etkinleştir
-	Volume (drag; double-click: 0 dB)	Ses Düzeyi (sürükleyin; çift tıklama: 0 dB)
-	5.1 panner (drag the puck; double-click: front centre)	5.1 Panner (imleci sürükleyin; çift tıklama: ön merkez)
-=======
 	pre 	pre 
 	Pre-Fader	Pre-Fader
 	Mute Send	Gönderimi Sessize Al
@@ -1433,44 +1111,10 @@
 	Enable track for recording	İzi kayıt için etkinleştir
 	Volume (drag; double-click: 0 dB)	Ses düzeyi (sürükleyin; çift tıklama: 0 dB)
 	5.1 panner (drag the puck; double-click: front centre)	5.1 panner (noktayı sürükleyin; çift tıklama: ön merkez)
->>>>>>> upstream/main
 	Center	Merkez
 	Go to In Point	Giriş Noktasına Git
 	Go to Out Point	Çıkış Noktasına Git
 	Play In to Out	Girişten Çıkışa Oynat
-<<<<<<< HEAD
-	Record (voice-over on the record-enabled track)	Kaydet (kayda açık iz üzerinde seslendirme)
-	Write keyframes	Anahtar kareleri yaz
-	Something went wrong while drawing the window. Your project is still open; save it to be safe.	Pencere çizilirken bir sorun oluştu. Projeniz hâlâ açık; güvenliğiniz için kaydedin.
-	Continue	Devam Et
-	Go Back	Geri
-	Go Forward	İleri
-	Up One Level	Bir Seviye Yukarı
-	File Types Displayed	Görüntülenen Dosya Türleri
-	List View	Liste Görünümü
-	Thumbnail View	Küçük Resim Görünümü
-	Ingest	İçe Aktarma (Ingest)
-	Open Ingest Settings	İçe Aktarma Ayarlarını Aç
-	Import as Image Sequence	Görüntü Dizisi Olarak İçeri Aktar
-	{sel} of {total} items selected	{total} öğeden {sel} tanesi seçildi
-	{total} items	{total} öğe
-	Cannot open {dir}: {e}	{dir} açılamıyor: {e}
-	Favorites	Sık Kullanılanlar
-	Local Drives	Yerel Sürücüler
-	Network	Ağ
-	Recent Directories	Son Klasörler
-	  (none)	  (yok)
-	Remove from Favorites	Sık Kullanılanlardan Kaldır
-	Add to Favorites	Sık Kullanılanlara Ekle
-	Clear Recent Directories	Son Klasörleri Temizle
-	Open In Source Monitor	Kaynak Monitöründe Aç
-	Reveal in Finder	Finder'da Göster
-	Edit Columns…	Sütunları Düzenle…
-	Hover Scrub	Hover Scrub
-	New Media Browser Panel	Yeni Medya Tarayıcı Paneli
-	Create Folder For Imported Projects	İçe Aktarılan Projeler İçin Klasör Oluştur
-	Allow Duplicate Media During Project Import	Proje Aktarımı Sırasında Mükerrer Medyaya İzin Ver
-=======
 	Record (voice-over on the record-enabled track)	Kaydet (kayıt etkinleştirilmiş izde dış ses)
 	Write keyframes	Anahtar kareleri yaz
 	Something went wrong while drawing the window. Your project is still open; save it to be safe.	Pencere çizilirken bir sorun oluştu. Projeniz hâlâ açık; güvende olmak için kaydedin.
@@ -1502,7 +1146,6 @@
 	New Media Browser Panel	Yeni Medya Tarayıcısı Paneli
 	Create Folder For Imported Projects	İçe Aktarılan Projeler İçin Klasör Oluştur
 	Allow Duplicate Media During Project Import	Proje İçe Aktarımı Sırasında Yinelenen Medyaya İzin Ver
->>>>>>> upstream/main
 	Refresh	Yenile
 	Edit Columns	Sütunları Düzenle
 	Guides	Kılavuzlar
@@ -1515,46 +1158,21 @@
 	Reference: previous frame	Referans: önceki kare
 	RGBA Channels	RGBA Kanalları
 	Add Guide	Kılavuz Ekle
-<<<<<<< HEAD
-	Save Guides as Template	Kılavuzları Şablon Olara Kaydet
-	Manage Guides	Kılavuzları Yönet
-	Orientation:	Yönlendirme:
-=======
 	Save Guides as Template	Kılavuzları Şablon Olarak Kaydet
 	Manage Guides	Kılavuzları Yönet
 	Orientation:	Yönelim:
->>>>>>> upstream/main
 	Vertical	Dikey
 	Horizontal	Yatay
 	Position:	Konum:
 	No saved guide templates.	Kayıtlı kılavuz şablonu yok.
 	Project: {name}	Proje: {name}
-<<<<<<< HEAD
-	Bin: {name}	Havuz: {name}
-	Up one level	Bir seviye yukarı
-=======
 	Bin: {name}	Klasör: {name}
 	Up one level	Bir düzey yukarı
->>>>>>> upstream/main
 	Video Usage: {vu}  Audio Usage: {au}	Video Kullanımı: {vu}  Ses Kullanımı: {au}
 	Icon View	Simge Görünümü
 	Freeform View	Serbest Görünüm
 	Sort Icons	Simgeleri Sırala
 	Clear (Delete)	Temizle (Sil)
-<<<<<<< HEAD
-	New Item	Yeni Öğedir
-	New Bin	Yeni Havuz
-	Find	Bul
-	Automate to Sequence	Zaman Çizgisine Otomatik Aktar
-	Select items to clear	Silinecek öğeleri seçin
-	User Order	Kullanıcı Sıralaması
-	Descending	Azalan
-	Refresh Project	Projeyi Yenile
-	Reveal Project in Finder…	Projeyi Finder'da Göster…
-	New Bin From Selection	Seçimden Yeni Havuz Oluştur
-	New Search Bin	Yeni Arama Havuzu
-	Search Bin	Arama Kutusu
-=======
 	New Item	Yeni Öge
 	New Bin	Yeni Klasör
 	Find	Bul
@@ -1566,7 +1184,6 @@
 	Reveal Project in Finder…	Projeyi Finder'da Göster…
 	New Bin From Selection	Seçimden Yeni Klasör
 	New Search Bin	Yeni Arama Klasörü
->>>>>>> upstream/main
 	New Project Shortcut	Yeni Proje Kısayolu
 	List	Liste
 	Icon	Simge
@@ -1574,47 +1191,26 @@
 	Preview Area	Önizleme Alanı
 	Thumbnails	Küçük Resimler
 	Thumbnails show effects applied	Küçük resimler uygulanan efektleri gösterir
-<<<<<<< HEAD
-	Thumbnail controls for all pointing devices	Tüm işaretleme cihazları için küçük resim kontrolleri
-	Refresh Sort Order	Sıralamayı Yenile
-	Metadata Display…	Üstveri Görüntüleme…
-	Save Current View Preset	Mevcut Görünüm Önayarını Kaydet
-	Restore View Preset	Görünüm Önayarını Geri Yükle
-	Project View Preset {n}	Proje Görünümü Önayarı {n}
-=======
 	Thumbnail controls for all pointing devices	Tüm işaretleme aygıtları için küçük resim kontrolleri
 	Refresh Sort Order	Sıralama Düzenini Yenile
 	Metadata Display…	Metaveri Görünümü…
 	Save Current View Preset	Geçerli Görünüm Hazır Ayarını Kaydet
 	Restore View Preset	Görünüm Hazır Ayarını Geri Yükle
 	Project View Preset {n}	Proje Görünümü Hazır Ayarı {n}
->>>>>>> upstream/main
 	Freeform View Options…	Serbest Görünüm Seçenekleri…
 	Media missing	Medya eksik
 	Unreadable	Okunamıyor
 	Open in Source Monitor	Kaynak Monitöründe Aç
 	Open in Timeline	Zaman Çizgisinde Aç
-<<<<<<< HEAD
-	New Sequence From Clip	Klipten Yeni Dizilim Oluştur
-	Sequence From Clip	Klipten Oluşturulan Dizi
-	Universal Counting Leader…	Evrensel Sayma Lideri…
-=======
 	New Sequence From Clip	Klipten Yeni Sekans
 	Set Poster Frame	Afiş Karesi Ayarla
->>>>>>> upstream/main
 	Proxy	Proxy
 	Open in Place	Yerinde Aç
 	Open in New Tab	Yeni Sekmede Aç
 	Open in New Window	Yeni Pencerede Aç
-<<<<<<< HEAD
-	{n} items	{n} öğe
-	Stack	Yığınla
-	Unstack	Yığını Çöz
-=======
 	{n} items	{n} öge
 	Stack	Yığınla
 	Unstack	Yığını Dağıt
->>>>>>> upstream/main
 	Clip Size	Klip Boyutu
 	Larger	Daha Büyük
 	Smaller	Daha Küçük
@@ -1623,33 +1219,6 @@
 	Save Arrangement…	Düzeni Kaydet…
 	Restore Arrangement	Düzeni Geri Yükle
 	Delete Arrangement	Düzeni Sil
-<<<<<<< HEAD
-	Drop media here to create sequence.	Dizilim oluşturmak için medyayı buraya bırakın.
-	Double-click a sequence in the Project panel to open it here.	Burada açmak için Proje panelindeki bir dizilime çift tıklayın.
-	Open Demo Project	Demo Projeyi Aç
-	Insert and overwrite sequences as nests or individual clips	Dizilimleri yuvalanmış (nest) veya tekil klip olarak ekle ve üzerine yaz
-	Snap in Timeline (S)	Zaman Çizgisinde Mıknatısla (S)
-	Snap in Timeline	Zaman Çizelgesinde Hizalama
-	Caption track options	Altyazı izi seçenekleri
-	Timeline Display Settings	Zaman Çizgisi Görüntü Ayarları
-	Show Video Thumbnails	Video Küçük Resimlerini Göster
-	Head	Baş
-	Head and Tail	Baş ve Son
-	Continuous	Sürekli
-	Show Audio Waveform	Ses Dalga Formunu Göster
-	Expand All Tracks	Tüm İzleri Genişlet
-	Minimize All Tracks	Tüm İzleri Daralt
-	Unrendered: should play back in real time	Render edilmedi: gerçek zamanlı oynatılmalıdır
-	Unrendered: render to play back in real time	Render edilmedi: gerçek zamanlı oynatmak için render edin
-	Rendered preview	Render edilmiş önizleme
-	✓ Enable	✓ Etkinleştir
-	(Default)	(Varsayılan)
-	(RGB) Gamma	(RGB) Gama
-	(RGB) Input Black Level	(RGB) Giriş Siyah Seviyesi
-	(RGB) Input White Level	(RGB) Giriş Beyaz Seviyesi
-	(RGB) Output Black Level	(RGB) Çıkış Siyah Seviyesi
-	(RGB) Output White Level	(RGB) Çıkış Beyaz Seviyesi
-=======
 	Drop media here to create sequence.	Sekans oluşturmak için medyayı buraya bırakın.
 	Double-click a sequence in the Project panel to open it here.	Burada açmak için Proje panelindeki bir sekansa çift tıklayın.
 	Open Demo Project	Demo Projesini Aç
@@ -1675,34 +1244,10 @@
 	(RGB) Input White Level	(RGB) Giriş Beyaz Düzeyi
 	(RGB) Output Black Level	(RGB) Çıkış Siyah Düzeyi
 	(RGB) Output White Level	(RGB) Çıkış Beyaz Düzeyi
->>>>>>> upstream/main
 	+ Cmd	+ Cmd
 	+ Opt	+ Opt
 	10 Bit Black Point	10 Bit Siyah Noktası
 	10 Bit White Point	10 Bit Beyaz Noktası
-<<<<<<< HEAD
-	105mm Prime	105mm Prime
-	29.97 fps Drop-Frame	29,97 fps Drop-Frame
-	29.97 fps Non Drop-Frame	29,97 fps Non Drop-Frame
-	35mm Prime	35mm Prime
-	3D Roll	3D Dönme (Roll)
-	3D Rotate	3D Döndür
-	3D Spin	3D Fırıldak
-	3D Spinback	3D Geri Dönüş
-	4-Color Gradient	4 Renkli Derecelenme
-	5.1 Media	5.1 Medya
-	5.1 Mixdown Type	5.1 Mixdown Türü
-	50-300mm Zoom	50-300mm Zoom
-	59.94 fps Drop-Frame	59,94 fps Drop-Frame
-	59.94 fps Non Drop-Frame	59,94 fps Non Drop-Frame
-	ASC CDL	ASC CDL
-	Accessible color contrast	Erişilebilir renk kontrastı
-	Animate zoom, scrolling and menus	Yakınlaştırma, kaydırma ve menüleri canlandır
-	Action-Safe Margin	Eylem Güvenli Alanı
-	Active Monitor	Etkin Monitör
-	Add	Ekle
-	Add tracks automatically when editing source clips onto the Timeline	Kaynak klipleri Zaman Çizgisine kurgularken otomatik olarak iz ekle
-=======
 	105mm Prime	105 mm Sabit Odaklı
 	29.97 fps Drop-Frame	29.97 fps Atlamalı Kare
 	29.97 fps Non Drop-Frame	29.97 fps Atlamasız Kare
@@ -1723,7 +1268,6 @@
 	Active Monitor	Etkin Monitör
 	Add	Ekle
 	Add tracks automatically when editing source clips onto the Timeline	Kaynak klipleri Zaman Çizgisinde düzenlerken izleri otomatik olarak ekle
->>>>>>> upstream/main
 	Place files dropped onto the Timeline directly on the Timeline	Zaman Çizgisine bırakılan dosyaları doğrudan Zaman Çizgisine yerleştir
 	1 file	1 dosya
 	{n} files	{n} dosya
@@ -1735,25 +1279,6 @@
 	Aggressive	Agresif
 	Align and Transform	Hizala ve Dönüştür
 	All lines	Tüm satırlar
-<<<<<<< HEAD
-	Allow Selection tool to choose Roll and Ripple trims without modifier key	Seçim aracının değiştirici tuş olmadan Kayan ve Dalgalı kırpmaları seçmesine izin ver
-	Allow current tool to change trim type of previously selected edit point	Mevcut aracın önceden seçilmiş kesme noktasının kırpma türünü değiştirmesine izin ver
-	Allow duplicate media during project import	Proje aktarımı sırasında mükerrer medyaya izin ver
-	Alpha Adjust	Alfa Ayarla
-	Alpha Blurriness	Alfa Bulanıklığı
-	Alpha Channel	Alfa Kanalı
-	Alpha Glow	Alfa Işıması
-	Always import embedded CEA-708 closed captions with wide aspect.	Gömülü CEA-708 kapalı altyazıları her zaman geniş en-boy oranıyla içe aktar.
-	Always override audio tags	Ses etiketlerini her zaman geçersiz kıl
-	Ambience	Ortam
-	Ambience Intensity	Ortam Yoğunluğu
-	Ambience Light Color	Ortam Işığı Rengi
-	Amount of Noise	Gürültü Miktarı
-	Amount to Decolor	Renk Giderme Miktarı
-	Amount to Tint	Renk Tonlama Miktarı
-	Amplifier	Amplifikatör
-	Amplify	Güçlendir
-=======
 	Allow Selection tool to choose Roll and Ripple trims without modifier key	Seçim aracının değiştirici tuş olmadan Rulo ve Kayan kırpmaları seçmesine izin ver
 	Allow current tool to change trim type of previously selected edit point	Geçerli aracın önceden seçilmiş kesim noktasının kırpma türünü değiştirmesine izin ver
 	Allow duplicate media during project import	Proje içe aktarımı sırasında yinelenen medyaya izin ver
@@ -1771,22 +1296,10 @@
 	Amount to Tint	Renklendirme Miktarı
 	Amplifier	Amplifikatör
 	Amplify	Yükselt
->>>>>>> upstream/main
 	Amplitude	Genlik
 	Amplitude and Compression	Genlik ve Sıkıştırma
 	Analog	Analog
 	Analog Delay	Analog Gecikme
-<<<<<<< HEAD
-	Analyze all imported media to search for visuals or audio	Görsel veya ses aramak için içe aktarılan tüm medyayı analiz et
-	Anamorphic	Anamorfik
-	Anchor	Çapa
-	Anchor Point	Çapa Noktası
-	Angle	Açı
-	Animation	Animasyon
-	Anti-aliasing Quality	Anti-aliasing Kalitesi
-	Anti-flicker Filter	Titreme Önleyici Filtre
-	Antialiasing for Best Quality	En İyi Kalite İçin Anti-aliasing
-=======
 	Analyze all imported media to search for visuals or audio	Görsel veya ses aramak için içe aktarılan tüm medyaları analiz et
 	Anamorphic	Anamorfik
 	Anchor	Tutturma
@@ -1796,16 +1309,11 @@
 	Anti-aliasing Quality	Kenar Yumuşatma Kalitesi
 	Anti-flicker Filter	Titreşim Önleme Filtresi
 	Antialiasing for Best Quality	En İyi Kalite İçin Kenar Yumuşatma
->>>>>>> upstream/main
 	Asymmetry	Asimetri
 	At Startup	Başlangıçta
 	At playback end, return to beginning when restarting playback	Oynatma sonunda, yeniden başlatıldığında başa dön
 	Attempt to force hardware to document sample rate	Donanımı belge örnekleme hızına zorlamayı dene
-<<<<<<< HEAD
-	Audio Codec	Ses Codec'i
-=======
 	Audio Codec	Ses Kodeki
->>>>>>> upstream/main
 	Audio Duration	Ses Süresi
 	Audio Effects	Ses Efektleri
 	Audio Hardware	Ses Donanımı
@@ -1814,34 +1322,11 @@
 	Audio Out Point	Ses Çıkış Noktası
 	Audio Samples	Ses Örnekleri
 	Audio Time Units	Ses Zaman Birimleri
-<<<<<<< HEAD
-	Audio Transition Default Duration	Varsayılan Ses Geçiş Süresi
-=======
 	Audio Transition Default Duration	Ses Geçişi Varsayılan Süresi
->>>>>>> upstream/main
 	Audio Transitions	Ses Geçişleri
 	Audio Usage	Ses Kullanımı
 	Auto	Otomatik
 	Auto Align	Otomatik Hizala
-<<<<<<< HEAD
-	Auto Reframe	Otomatik Yeniden Çerçeveleme
-	Auto Save	Otomatik Kaydet
-	Auto Save also saves the current project(s)	Otomatik kaydetme aynı zamanda mevcut projeyi/projeleri kaydeder
-	Auto-tag audio types in the timeline	Zaman çizgisindeki ses türlerini otomatik etiketle
-	Auto-transcribe all imported clips	İçe aktarılan tüm klipleri otomatik deşifre et
-	Auto-transcribe only clips in sequences	Yalnızca dizilimlerdeki klipleri otomatik deşifre et
-	Automatch Time	Otomatik Eşleşme Süresi
-	Automatic Click Remover	Otomatik Tıklama Kaldırıcı
-	Automatically Hide Dependent Clips	Bağımlı Klipleri Otomatik Olarak Gizle
-	Automatically Save Every	Şu Sıklıkta Otomatik Kaydet:
-	Automatically delete cache files older than	Şundan eski önbellek dosyalarını otomatik olarak sil:
-	Automatically delete oldest cache files when cache exceeds	Önbellek şunu aştığında en eski önbellek dosyalarını otomatik olarak sil:
-	Automatically refresh growing files	Büyüyen dosyaları otomatik olarak yenile
-	Automatically resume playback for growing files in Source Monitor	Kaynak Monitöründe büyüyen dosyalar için oynatmayı otomatik sürdür
-	Automatically save projects	Projeleri otomatik kaydet
-	Automatically transcribe clips	Klipleri otomatik deşifre et
-	Automation Keyframe Optimization	Otomasyon Anahtar Kare İyileştirmesi
-=======
 	Auto Reframe	Otomatik Yeniden Çerçevele
 	Auto Save	Otomatik Kaydet
 	Auto Save also saves the current project(s)	Otomatik Kaydet geçerli projeyi/projeleri de kaydeder
@@ -1859,7 +1344,6 @@
 	Automatically save projects	Projeleri otomatik kaydet
 	Automatically transcribe clips	Klipleri otomatik yazıya dök
 	Automation Keyframe Optimization	Otomasyon Anahtar Karesi Optimizasyonu
->>>>>>> upstream/main
 	Background Color	Arka Plan Rengi
 	Background Corner Radius	Arka Plan Köşe Yarıçapı
 	Background Opacity	Arka Plan Opaklığı
@@ -1873,40 +1357,16 @@
 	Band 4	Bant 4
 	Band 5	Bant 5
 	Band Pass	Bant Geçiren
-<<<<<<< HEAD
-	Band Slide	Bant Kaydırma
-	Band Stop	Bant Durduran
-	Bandpass	Bant Geçiren
-	Barn Doors	Barn Doors
-=======
 	Band Slide	Bant Öteleme
 	Band Stop	Bant Söndüren
 	Bandpass	Bant Geçiren
 	Barn Doors	Kanatlı Kapı
->>>>>>> upstream/main
 	Basic	Temel
 	Basic 3D	Temel 3D
 	Basic Correction	Temel Düzeltme
 	Bass	Bas
 	Behind	Arkada
 	Bessel	Bessel
-<<<<<<< HEAD
-	Bevel Alpha	Eğim Alfa
-	Bevel join	Eğimli birleşim
-	Binauralizer - Ambisonics	Çift Kulaklı (Binauralizer) - Ambisonics
-	Bins	Havuzlar
-	Black	Siyah
-	Black & White	Siyah Beyaz
-	Black Input Level	Siyah Giriş Seviyesi
-	Black and white	Siyah beyaz
-	Black and white with crushed blacks and strong contrast	Ezilmiş siyahlar ve güçlü kontrast ile siyah beyaz
-	Bleach Bypass	Bleach Bypass
-	Bleach-bypass style: desaturated with hard contrast	Bleach bypass stili: sert kontrastlı ve doygunluğu azaltılmış
-	Blend	Harmanla
-	Blend Mode	Harmanlama Modu
-	Blend With Original	Orijinal ile Harmanla
-	Blending Mode	Harmanlama Modu
-=======
 	Bevel Alpha	Alfa Eğim
 	Bevel join	Eğimli birleşim
 	Binauralizer - Ambisonics	Binauralizer - Ambisonics
@@ -1922,35 +1382,22 @@
 	Blend Mode	Karışım Modu
 	Blend With Original	Orijinalle Karıştır
 	Blending Mode	Karışım Modu
->>>>>>> upstream/main
 	Block Dissolve	Blok Çözünme
 	Block Height	Blok Yüksekliği
 	Block Motion	Blok Hareketi
 	Block Size	Blok Boyutu
 	Block Width	Blok Genişliği
 	Blocks	Bloklar
-<<<<<<< HEAD
-	Blue Blurriness	Mavi Bulanıklık
-	Blue Curve	Mavi Eğri
-	Blue Offset	Mavi Offset
-	Blue Power	Mavi Güç
-	Blue Slope	Mavi Eğim
-=======
 	Blue Blurriness	Mavi Bulanıklığı
 	Blue Curve	Mavi Eğrisi
 	Blue Offset	Mavi Ofseti
 	Blue Power	Mavi Gücü
 	Blue Slope	Mavi Eğimi
->>>>>>> upstream/main
 	Blue-Blue	Mavi-Mavi
 	Blue-Const	Mavi-Sabit
 	Blue-Green	Mavi-Yeşil
 	Blue-Red	Mavi-Kırmızı
-<<<<<<< HEAD
-	Blur & Sharpen	Bulanıklık ve Netlik
-=======
 	Blur & Sharpen	Bulanıklık ve Keskinlik
->>>>>>> upstream/main
 	Blur Amount	Bulanıklık Miktarı
 	Blur Angle	Bulanıklık Açısı
 	Blur Dimensions	Bulanıklık Boyutları
@@ -1959,22 +1406,13 @@
 	Blur Length	Bulanıklık Uzunluğu
 	Blurriness	Bulanıklık
 	Bokeh Blur	Bokeh Bulanıklığı
-<<<<<<< HEAD
-	Boost	Yükselt
-=======
 	Boost	Güçlendir
->>>>>>> upstream/main
 	Border	Kenarlık
 	Border Color	Kenarlık Rengi
 	Border Width	Kenarlık Genişliği
 	Borders	Kenarlıklar
-<<<<<<< HEAD
-	Bottom Center	Alt Merkez
-	Bottom Left	Alt Sol
-=======
 	Bottom Center	Alt Orta
 	Bottom Left	Sol Alt
->>>>>>> upstream/main
 	Bottom Right	Sağ Alt
 	Bounce	Sıçrama
 	Branching	Dallanma
@@ -1982,11 +1420,7 @@
 	Bright Air	Parlak Hava
 	Bright Studio	Parlak Stüdyo
 	Brightness & Contrast	Parlaklık ve Kontrast
-<<<<<<< HEAD
-	British Stack	İngiliz Amfi Yığını
-=======
 	British Stack	British Stack
->>>>>>> upstream/main
 	Brush Hardness	Fırça Sertliği
 	Brush Opacity	Fırça Opaklığı
 	Brush Position	Fırça Konumu
@@ -1994,46 +1428,6 @@
 	Brush Spacing (secs)	Fırça Aralığı (sn)
 	Brush Strokes	Fırça Darbeleri
 	Bubbles	Baloncuklar
-<<<<<<< HEAD
-	Bulge	Kabarma
-	Bulge Smoother	Kabarma Yumuşatıcı
-	Bump Height	Kabartma Yüksekliği
-	Burn Alpha	Alfa Yanması
-	Burn Chroma	Krominans Yanması
-	Burn Color	Yanma Rengi
-	Butt cap	Düz başlık
-	Butterworth	Butterworth
-	CEA-608	CEA-608
-	CEA-708	CEA-708
-	Cache analysis results for re-use	Yeniden kullanım için analiz sonuçlarını önbelleğe al
-	Camera Angle	Kamera Açısı
-	Camera Blur	Kamera Bulanıklığı
-	Camera Shake	Kamera Sarsıntısı
-	Capitalisation	Büyük/Küçük Harf Durumu
-	Cathedral	Katedral
-	Cell Pattern	Hücre Deseni
-	Center Channel Pan	Merkez Kanal Pan
-	Center Gradient	Merkez Gradyan
-	Center Input	Merkez Giriş
-	Center Out	Merkez Çıkış
-	Center Point (Latitude)	Merkez Nokta (Enlem)
-	Center Point (Longitude)	Merkez Nokta (Boylam)
-	Center Split	Merkezden Bölme
-	Center of Sphere	Kürenin Merkezi
-	Cents	Sent
-	Change to Color	Renge Değiştir
-	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	Değişiklikler her düzenlemeden hemen sonra arka planda kopyalanır. FilmCraft beklenmedik şekilde kapanırsa, bir sonraki başlatmada sunulurlar.
-	Channel	Kanal
-	Channel Blur	Kanal Bulanıklığı
-	Channel Mix	Kanal Miksi
-	Channel Mixer	Kanal Mikseri
-	Chaos	Kaos
-	Chebyshev	Chebyshev
-	Checker Wipe	Dama Geçişi
-	Checkerboard	Dama Tahtası
-	Chinese	Çince
-	Choke	Daraltma (Choke)
-=======
 	Bulge	Şişkinlik
 	Bulge Smoother	Şişkinlik Yumuşatıcı
 	Bump Height	Kabartma Yüksekliği
@@ -2072,7 +1466,6 @@
 	Checkerboard	Dama Tahtası
 	Chinese	Çince
 	Choke	Daraltma
->>>>>>> upstream/main
 	Chorus	Chorus
 	Chorus/Flanger	Chorus/Flanger
 	Chroma	Kroma
@@ -2085,18 +1478,6 @@
 	Clarity	Netlik
 	Clean Combo	Temiz Kombo
 	Clean Up Noisy Dialogue	Gürültülü Diyaloğu Temizle
-<<<<<<< HEAD
-	Clear Muddiness	Bulanıklığı Temizle
-	Client	İstemci
-	Clip	Klip
-	Clip Level	Klip Seviyesi
-	Clipping	Kırpılma (Clipping)
-	Clock Wipe	Saat Yönü Geçişi
-	Clock Wipe (Legacy)	Saat Yönü Geçişi (Eski)
-	Clockwise	Saat Yönünde
-	Clone	Klonla
-	Closed Captions	İşitme Engelli Altyazıları
-=======
 	Clear Muddiness	Boğukluğu Temizle
 	Client	İstemci
 	Clip	Klip
@@ -2107,23 +1488,12 @@
 	Clockwise	Saat Yönünde
 	Clone	Klonla
 	Closed Captions	Gizli Altyazılar
->>>>>>> upstream/main
 	Color & Alpha	Renk ve Alfa
 	Color 1	Renk 1
 	Color 2	Renk 2
 	Color 3	Renk 3
 	Color 4	Renk 4
 	Color Balance	Renk Dengesi
-<<<<<<< HEAD
-	Color Burn	Renk Yanması (Color Burn)
-	Color Channel	Renk Kanalı
-	Color Correction	Renk Düzeltme
-	Color Distortion	Renk Bozulması
-	Color Dodge	Renk Soldurması (Color Dodge)
-	Color Emboss	Renk Kabartma
-	Color Key	Renk Anahtarı (Color Key)
-	Color Pass	Renk Geçişi (Color Pass)
-=======
 	Color Burn	Renk Yanması
 	Color Channel	Renk Kanalı
 	Color Correction	Renk Düzeltme
@@ -2132,7 +1502,6 @@
 	Color Emboss	Renkli Kabartma
 	Color Key	Renk Anahtarı
 	Color Pass	Renk Geçişi
->>>>>>> upstream/main
 	Color Replace	Renk Değiştirme
 	Color Space	Renk Uzayı
 	Color Theme	Renk Teması
@@ -2143,51 +1512,15 @@
 	Columns	Sütunlar
 	Comment	Yorum
 	Complexity	Karmaşıklık
-<<<<<<< HEAD
-	Composite In Back	Arka Tarafta Bileşik
-	Composite In Front	Ön Tarafta Bileşik
-	Composite Using	Kullanılarak Bileştir
-	Composite on Original	Orijinal Üzerinde Bileştir
-=======
 	Composite In Back	Arkada Birleştir
 	Composite In Front	Önde Birleştir
 	Composite Using	Şununla Birleştir
 	Composite on Original	Orijinal Üzerinde Birleştir
->>>>>>> upstream/main
 	Compound Blur	Bileşik Bulanıklık
 	Compression Before Clipping	Kırpılma Öncesi Sıkıştırma
 	Constant Gain	Sabit Kazanç
 	Constant Power	Sabit Güç
 	Conversion Type	Dönüştürme Türü
-<<<<<<< HEAD
-	Convolution Reverb	Konvolüsyon Yankısı (Reverb)
-	Cool Blue	Soğuk Mavi
-	Cool, desaturated and punchy	Soğuk, doygunluğu düşük ve vurucu
-	Core Width	Çekirdek Genişliği
-	Corner	Köşe
-	Corner Pin	Köşe İğnesi (Corner Pin)
-	Count	Sayısı
-	Counter-clockwise	Saat Yönünün Tersine
-	Crash Recovery	Çökme Kurtarma
-	Crawl Left	Sola Kayma (Crawl Left)
-	Crawl Right	Sağa Kayma (Crawl Right)
-	Create folder for imported projects	İçe aktarılan projeler için klasör oluştur
-	Creative	Yaratıcı
-	Crop	Kırp
-	Crop Less <-> Smooth More	Daha Az Kırp <-> Daha Çok Yumuşat
-	Cross Displacement	Çapraz Yer Değiştirme
-	Cross Dissolve	Çapraz Dissolve
-	Cross Dissolve (Legacy)	Çapraz Dissolve (Eski)
-	Cross Zoom	Çapraz Zoom
-	Cross Zoom (Legacy)	Çapraz Zoom (Eski)
-	Crossfade	Çapraz Geçiş (Crossfade)
-	Crossovers	Crossover
-	Crystallize	Kristalleştir
-	Crystals	Kristaller
-	Cube Spin	Küp Döndürme
-	Curl Radius	Kıvrım Yarıçapı
-	Current Time	Mevcut Zaman
-=======
 	Convolution Reverb	Konvolüsyon Reverb
 	Cool Blue	Soğuk Mavi
 	Cool, desaturated and punchy	Soğuk, doygunluğu azaltılmış ve vurucu
@@ -2215,43 +1548,12 @@
 	Cube Spin	Küp Döndürme
 	Curl Radius	Kıvrılma Yarıçapı
 	Current Time	Geçerli Zaman
->>>>>>> upstream/main
 	Cursor	İmleç
 	Curvature	Eğrilik
 	Curve	Eğri
 	Curves	Eğriler
 	Custom	Özel
 	Custom Color	Özel Renk
-<<<<<<< HEAD
-	Cutoff	Kesim Frekansı
-	Cyan-teal shadows and warm highlights with a little more contrast	Biraz daha fazla kontrast ile ciyan-turkuaz gölgeler ve sıcak parlak alanlar
-	Cycle (in Revolutions)	Döngü (Tur Cinsinden)
-	Cycle Evolution	Döngü Evrimi
-	Damping	Sönümleme
-	Damping HF	Sönümleme YF (Yüksek Frekans)
-	Damping LF	Sönümleme DF (Düşük Frekans)
-	Dark	Koyu
-	Darken	Koyulaştır
-	Darker Color	Daha Koyu Renk
-	Date Created	Oluşturulma Tarihi
-	Date Modified	Değiştirilme Tarihi
-	Day for night: darker, cooler and less saturated	Gündüz çekimini geceye çevirme: daha koyu, daha soğuk ve daha az doygun
-	DeEsser	DeEsser
-	DeHummer	DeHummer
-	DeNoise	DeNoise (Gürültü Giderme)
-	DeReverb	DeReverb (Yankı Giderme)
-	Decay	Sönümlenme
-	Decay Time (RT60)	Sönümlenme Süresi (RT60)
-	Default Audio Tracks	Varsayılan Ses İzleri
-	Default Emoji font	Varsayılan Emoji Yazı Tipi
-	Default Media Scaling	Varsayılan Medya Ölçeklendirme
-	Default Output	Varsayılan Çıkış
-	Default closed caption font	İşitme engelli altyazıları için varsayılan yazı tipi
-	Default language	Varsayılan dil
-	Default paragraph direction	Varsayılan paragraf yönü
-	Default subtitle and text font	Varsayılan altyazı ve metin yazı tipi
-	Delay	Gecikme (Delay)
-=======
 	Cutoff	Kesme
 	Cyan-teal shadows and warm highlights with a little more contrast	Camgöbeği-turkuaz gölgeler ve biraz daha fazla kontrastlı sıcak açık tonlar
 	Cycle (in Revolutions)	Döngü (Tur Olarak)
@@ -2280,39 +1582,17 @@
 	Default paragraph direction	Varsayılan paragraf yönü
 	Default subtitle and text font	Varsayılan altyazı ve metin yazı tipi
 	Delay	Gecikme
->>>>>>> upstream/main
 	Delay 1	Gecikme 1
 	Delay 2	Gecikme 2
 	Delay 3	Gecikme 3
 	Delay 4	Gecikme 4
 	Delay and Echo	Gecikme ve Yankı
-<<<<<<< HEAD
-	Delete files older than	Şundan daha eski dosyaları sil:
-	Delete oldest files when the cache exceeds	Önbellek şunu aştığında en eski dosyaları sil:
-=======
 	Delete files older than	Şundan eski dosyaları sil
 	Delete oldest files when the cache exceeds	Önbellek şunu aştığında en eski dosyaları sil
->>>>>>> upstream/main
 	Delete…	Sil…
 	Depth	Derinlik
 	Desaturate	Doygunluğu Azalt
 	Description	Açıklama
-<<<<<<< HEAD
-	Detail Amplitude	Detay Genliği
-	Detail Level	Detay Seviyesi
-	Detailed Analysis	Ayrıntılı Analiz
-	Device Class	Cihaz Sınıfı
-	Dialogue	Diyalog
-	Diamond	Baklava Biçimi
-	Difference	Fark
-	Dimensions	Boyutlar
-	Dimmed	Kısık
-	Dip to Black	Siyaha Geçiş (Dip to Black)
-	Dip to Black (Legacy)	Siyaha Geçiş (Eski)
-	Dip to Color	Renge Geçiş (Dip to Color)
-	Dip to White	Beyaza Geçiş (Dip to White)
-	Dip to White (Legacy)	Beyaza Geçiş (Eski)
-=======
 	Detail Amplitude	Ayrıntı Genliği
 	Detail Level	Ayrıntı Seviyesi
 	Detailed Analysis	Ayrıntılı Analiz
@@ -2327,7 +1607,6 @@
 	Dip to Color	Renge Dalma
 	Dip to White	Beyaza Dalma
 	Dip to White (Legacy)	Beyaza Dalma (Eski)
->>>>>>> upstream/main
 	Direction	Yön
 	Directional	Yönlü
 	Directional Blur	Yönlü Bulanıklık
@@ -2338,21 +1617,12 @@
 	Display Color Management	Ekran Renk Yönetimi
 	Display Color Settings	Ekran Renk Ayarları
 	Display out of sync indicators for unlinked clips	Bağlantısız klipler için senkron dışı göstergelerini görüntüle
-<<<<<<< HEAD
-	Dissolve	Dissolve
-	Dissolve Blocks	Blok Dissolve
-	Distance	Mesafe
-	Distance to Image	Görüntüye Mesafe
-	Distort	Bozma (Distort)
-	Distortion	Bozulma (Distortion)
-=======
 	Dissolve	Çözünme
 	Dissolve Blocks	Blok Çözünme
 	Distance	Mesafe
 	Distance to Image	Görüntüye Mesafe
 	Distort	Bozulma
 	Distortion	Bozulma
->>>>>>> upstream/main
 	Distortion Complexity	Bozulma Karmaşıklığı
 	Distortion Rate	Bozulma Oranı
 	Distortion Type	Bozulma Türü
@@ -2360,19 +1630,6 @@
 	Do not delete cache files automatically	Önbellek dosyalarını otomatik olarak silme
 	Don't label speakers	Konuşmacıları etiketleme
 	Double-click	Çift tıklama
-<<<<<<< HEAD
-	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	Düşük oynatma çözünürlüğünde taslak çözme (H.264: daha hızlı, bazı kareler daha az filtrelenmiş)
-	Drive	Sürücü
-	Drop Shadow	Dış Gölge
-	Dry	Sessiz / Ham (Dry)
-	Dry Out	Kuru Çıkış (Dry Out)
-	Dry Up a Roomy Voice	Yankılı Sesdeki Oda Etkisini Azalt
-	Duck Deep Under Dialogue	Diyalogun Altında Derin Kısma
-	Duck Under Dialogue	Diyalogun Altında Kısma
-	Duck Under Voice and Effects	Ses ve Efektlerin Altında Kısma
-	Ducking	Ducking (Otomatik Kısma)
-	Dutch	Hollandaca
-=======
 	Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)	Düşük oynatma çözünürlüğünde taslak kod çözme (H.264: daha hızlı, bazı kareler daha az filtrelenir)
 	Drive	Sürüm
 	Drop Shadow	Alt Gölge
@@ -2384,23 +1641,10 @@
 	Duck Under Voice and Effects	Ses ve Efektlerin Altında Kıs
 	Ducking	Otomatik Kısma
 	Dutch	Felemenkçe
->>>>>>> upstream/main
 	Dynamic Link	Dynamic Link
 	Dynamics Processing	Dinamik İşleme
 	Early Reflections	Erken Yansımalar
 	Earthquake	Deprem
-<<<<<<< HEAD
-	Ease In and Out	Yavaşça Başla ve Bitir (Ease In and Out)
-	Easing	Yumuşatma (Easing)
-	Echo	Yankı (Echo)
-	Echo Glow	Yankı Parıltısı
-	Echo Operator	Yankı Operatörü
-	Echo Time (seconds)	Yankı Süresi (saniye)
-	Echoes	Yankılar
-	Edge Color	Kenar Rengi
-	Edge Feather	Kenar Yumuşatma (Feather)
-	Edge Glow	Kenar Parıltısı
-=======
 	Ease In and Out	Girişi ve Çıkışı Yavaşlat
 	Easing	Yavaşlatma
 	Echo	Yankı
@@ -2411,7 +1655,6 @@
 	Edge Color	Kenar Rengi
 	Edge Feather	Kenar Yumuşatma
 	Edge Glow	Kenar Işıması
->>>>>>> upstream/main
 	Edge Sharpness	Kenar Keskinliği
 	Edge Softness	Kenar Yumuşaklığı
 	Edge Thickness	Kenar Kalınlığı
@@ -2419,16 +1662,6 @@
 	Edge Threshold	Kenar Eşiği
 	Edge Type	Kenar Türü
 	Edge Width	Kenar Genişliği
-<<<<<<< HEAD
-	Elliptical	Elliptik
-	Emboss	Kabartma (Emboss)
-	Enable HSL Secondary	İkincil HSL'yi Etkinleştir
-	Enable Mercury Transmit	Mercury Transmit'i Etkinleştir
-	Enable ProRes hardware accelerated encoding, if available	Mevcutsa ProRes donanım hızlandırmalı kodlamayı etkinleştir
-	Enable clip and XMP metadata linking	Klip ve XMP üstveri bağlantısını etkinleştir
-	Enable developer mode	Geliştirici modunu etkinleştir
-	Enable hardware accelerated decoding (requires restart)	Donanım hızlandırmalı çözmeyi etkinleştir (yeniden başlatma gerektirir)
-=======
 	Elliptical	Eliptik
 	Emboss	Kabartma
 	Enable HSL Secondary	İkincil HSL'yi Etkinleştir
@@ -2437,7 +1670,6 @@
 	Enable clip and XMP metadata linking	Klip ve XMP üstveri bağlantısını etkinleştir
 	Enable developer mode	Geliştirici modunu etkinleştir
 	Enable hardware accelerated decoding (requires restart)	Donanım hızlandırmalı kod çözmeyi etkinleştir (yeniden başlatma gerektirir)
->>>>>>> upstream/main
 	Enable language auto-detection	Otomatik dil algılamayı etkinleştir
 	Enable proxies	Vekil medyaları etkinleştir
 	End Color	Bitiş Rengi
@@ -2446,22 +1678,6 @@
 	Error	Hata
 	Evolution	Evrim
 	Evolution Options	Evrim Seçenekleri
-<<<<<<< HEAD
-	Exciter Amount	Exciter Miktarı
-	Exciter Mode	Exciter Modu
-	Exclusion	Hariç Tutma
-	Exponential Fade	Üstel Geçiş (Exponential Fade)
-	Extended Dynamic Range Monitoring	Genişletilmiş Dinamik Aralık İzleme
-	FFT Filter	FFT Filtresi
-	Fade	Kararma/Aydınlanma (Fade)
-	Fade Out	Yavaşça Kaybolma (Fade Out)
-	Faded Matte	Soluk Mascherino
-	Falloff	Düşüş (Falloff)
-	Far Away	Uzaktaki
-	Fast	Hızlı
-	Faster Motion	Daha Hızlı Hareket
-	Feedback	Geri Besleme (Feedback)
-=======
 	Exciter Amount	Uyarım Miktarı
 	Exciter Mode	Uyarım Modu
 	Exclusion	Dışlama
@@ -2476,18 +1692,12 @@
 	Fast	Hızlı
 	Faster Motion	Daha Hızlı Hareket
 	Feedback	Geri Besleme
->>>>>>> upstream/main
 	Feedback 1	Geri Besleme 1
 	Feedback 2	Geri Besleme 2
 	Feedback 3	Geri Besleme 3
 	Feedback 4	Geri Besleme 4
-<<<<<<< HEAD
-	Feet + Frames 16mm	Feet + Kare 16mm
-	Feet + Frames 35mm	Feet + Kare 35mm
-=======
 	Feet + Frames 16mm	Fit + Kare 16 mm
 	Feet + Frames 35mm	Fit + Kare 35 mm
->>>>>>> upstream/main
 	Female	Kadın
 	File Size	Dosya Boyutu
 	Fill Background	Arka Planı Doldur
@@ -2496,13 +1706,8 @@
 	Fill Point	Dolgu Noktası
 	Fill Right with Left	Sağı Sol ile Doldur
 	Fill Selector	Dolgu Seçici
-<<<<<<< HEAD
-	Film Dissolve	Film Dissolve
-	Film Dissolve (Legacy)	Film Dissolve (Eski)
-=======
 	Film Dissolve	Film Çözünmesi
 	Film Dissolve (Legacy)	Film Çözünmesi (Eski)
->>>>>>> upstream/main
 	Film Roll	Film Rulosu
 	Filter	Filtre
 	Filter Frequency	Filtre Frekansı
@@ -2511,18 +1716,6 @@
 	Final Delay	Son Gecikme
 	Find Edges	Kenarları Bul
 	Flanger	Flanger
-<<<<<<< HEAD
-	Flare	Işık Parlaması (Flare)
-	Flare Brightness	Işık Parlaması Parlaklığı
-	Flare Center	Işık Parlaması Merkezi
-	Flare Color	Işık Parlaması Rengi
-	Flash	Flaş
-	Flicker	Titreme (Flicker)
-	Flickers	Titremeler
-	Flip Motion	Ters Çevirme Hareketi
-	Flip Over	Ters Çevir
-	Float	Oynar / Yüzen (Float)
-=======
 	Flare	Parlama
 	Flare Brightness	Parlama Parlaklığı
 	Flare Center	Parlama Merkezi
@@ -2533,23 +1726,12 @@
 	Flip Motion	Çevirme Hareketi
 	Flip Over	Ters Çevir
 	Float	Kayan Nokta
->>>>>>> upstream/main
 	Focus	Odak
 	Focus Blur	Odak Bulanıklığı
 	Focus Point	Odak Noktası
 	Focus Shape	Odak Şekli
 	Focus Size	Odak Boyutu
 	Fold Motion	Katlama Hareketi
-<<<<<<< HEAD
-	Foldback	Foldback
-	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Renk yönetimi parametreleri için Lumetri Renk panelindeki Ayarlar sekmesine gidin.
-	Format	Biçim
-	Four Scopes (RGB, 8 bit)	Dört Skop (RGB, 8 bit)
-	Four Scopes (YUV, float, no clamp)	Dört Skop (YUV, kayar nokta, kırpmasız)
-	Fractal Influence	Fraktal Etki
-	Fractal Type	Fraktal Türü
-	Frame	Kare / Çerçeve
-=======
 	Foldback	Katlama
 	For color management parameters, go to the Settings tab in the Lumetri Color panel.	Renk yönetimi parametreleri için Lumetri Rengi panelindeki Ayarlar sekmesine gidin.
 	Format	Biçim
@@ -2558,7 +1740,6 @@
 	Fractal Influence	Fraktal Etkisi
 	Fractal Type	Fraktal Türü
 	Frame	Kare
->>>>>>> upstream/main
 	Frame Color	Çerçeve Rengi
 	Frame Count	Kare Sayısı
 	Frame Layout	Kare Düzeni
@@ -2566,17 +1747,10 @@
 	Frame Width	Çerçeve Genişliği
 	Frame cache for monitors and thumbnails	Monitörler ve küçük resimler için kare önbelleği
 	Frames	Kareler
-<<<<<<< HEAD
-	Framing	Kadraj
-	French	Fransızca
-	Frequency	Frekans
-	From	Başlangıç
-=======
 	Framing	Çerçeveleme
 	French	Fransızca
 	Frequency	Frekans
 	From	Şuradan
->>>>>>> upstream/main
 	From East	Doğudan
 	From North	Kuzeyden
 	From South	Güneyden
@@ -2587,21 +1761,12 @@
 	Front + Rear	Ön + Arka
 	Front + Rear + LFE	Ön + Arka + LFE
 	Front Only	Yalnızca Ön
-<<<<<<< HEAD
-	Fuzz	Tüy / Tüylenme
-	GB	GB
-	Gamma	Gama
-	Gamma Correction	Gama Düzeltmesi
-	Gamut Warning	Gamut Uyarısı
-	Gamut Warning Color	Gamut Uyarı Rengi
-=======
 	Fuzz	Fuzz
 	GB	GB
 	Gamma	Gama
 	Gamma Correction	Gama Düzeltme
 	Gamut Warning	Gamut Uyarısı
 	Gamut Warning Color	Gamut Uyarısı Rengi
->>>>>>> upstream/main
 	Gap	Boşluk
 	Gap Color	Boşluk Rengi
 	Gaussian Blur	Gauss Bulanıklığı
@@ -2609,19 +1774,6 @@
 	General	Genel
 	Generate	Oluştur
 	Generate Timecode	Zaman Kodu Oluştur
-<<<<<<< HEAD
-	Generate waveforms and conform audio using multithreading	Çoklu izlek kullanarak dalga formları oluştur ve sesi uyumlaştır
-	Generate waveforms automatically during import	İçe aktarım sırasında dalga formlarını otomatik olarak oluştur
-	German	Almanca
-	Ghosts	Hayaletler
-	Glass	Cam
-	Glint	Parıltı
-	Glitch	Parazit (Glitch)
-	Glow	Işıma
-	Glow Brightness	Işıma Parlaklığı
-	Glow Color	Işıma Rengi
-	Glow Only	Sadece Işıma
-=======
 	Generate waveforms and conform audio using multithreading	Çoklu iş parçacığı kullanarak dalga formları oluştur ve sesi uyarla
 	Generate waveforms automatically during import	İçe aktarma sırasında dalga formlarını otomatik olarak oluştur
 	German	Almanca
@@ -2633,7 +1785,6 @@
 	Glow Brightness	Işıma Parlaklığı
 	Glow Color	Işıma Rengi
 	Glow Only	Yalnızca Işıma
->>>>>>> upstream/main
 	Glow Radius	Işıma Yarıçapı
 	Glow Saturation	Işıma Doygunluğu
 	Glow Width	Işıma Genişliği
@@ -2646,28 +1797,16 @@
 	Gradient Scatter	Gradyan Dağılımı
 	Gradient Shape	Gradyan Şekli
 	Gradient Start	Gradyan Başlangıcı
-<<<<<<< HEAD
-	Gradient Wipe	Gradyan Geçişi
-	Gradient Wipe (Legacy)	Gradyan Geçişi (Eski)
-	Grain Size	Kumlanma Boyutu
-=======
 	Gradient Wipe	Gradyan Silme
 	Gradient Wipe (Legacy)	Gradyan Silme (Eski)
 	Grain Size	Gren Boyutu
->>>>>>> upstream/main
 	Graphic Equalizer (10 Bands)	Grafik Ekolayzer (10 Bant)
 	Graphic Equalizer (20 Bands)	Grafik Ekolayzer (20 Bant)
 	Graphic Equalizer (30 Bands)	Grafik Ekolayzer (30 Bant)
 	Graphics	Grafikler
-<<<<<<< HEAD
-	Green Blurriness	Yeşil Bulanıklık
-	Green Curve	Yeşil Eğri
-	Green Offset	Yeşil Kaydırma
-=======
 	Green Blurriness	Yeşil Bulanıklığı
 	Green Curve	Yeşil Eğrisi
 	Green Offset	Yeşil Ötelemesi
->>>>>>> upstream/main
 	Green Power	Yeşil Güç
 	Green Slope	Yeşil Eğim
 	Green-Blue	Yeşil-Mavi
@@ -2675,11 +1814,7 @@
 	Green-Green	Yeşil-Yeşil
 	Green-Red	Yeşil-Kırmızı
 	Grid	Izgara
-<<<<<<< HEAD
-	Grow	Büyüt
-=======
 	Grow	Genişlet
->>>>>>> upstream/main
 	Growing Files	Büyüyen Dosyalar
 	Grunge	Grunge
 	Grunge & Distort	Grunge ve Distorsiyon
@@ -2692,47 +1827,13 @@
 	Hard Light	Sert Işık
 	Hard Limiter	Sert Sınırlayıcı
 	Hard Mix	Sert Karışım
-<<<<<<< HEAD
-	Hardware decoding	Donanım çözme
-	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Donanım çözme: Otomatik seçeneği, desteklenen akışlar için sistemin video çözücüsünü (macOS'te VideoToolbox, Windows'ta Media Foundation, Linux'ta H.264 ve HEVC için VA-API veya NVDEC) kullanır; diğer her şey için veya donanım başarısız olursa FilmCraft'ın kendi çözücüsünü kullanır. Zaten açık olan medyalar yeniden açılana kadar çözücülerini korur.
-	Head Size	Kafa Boyutu
-=======
 	Hardware decoding	Donanım kod çözme
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Donanım kod çözme: Otomatik seçeneği, desteklediği akışlar için sistemin video kod çözücüsünü (macOS'te VideoToolbox, Windows'ta Media Foundation, Linux'ta H.264 ve HEVC için VA-API veya NVDEC), diğer her şey için veya donanım başarısız olursa FilmCraft'ın kendi kod çözücüsünü kullanır. Halihazırda açık olan medya, yeniden açılana kadar kod çözücüsünü korur.
 	Head Size	Baş Boyutu
->>>>>>> upstream/main
 	Heart	Kalp
 	Height	Yükseklik
 	Hexagon	Altıgen
 	Hide Back Face	Arka Yüzü Gizle
-<<<<<<< HEAD
-	High	Yüksek
-	High Cutoff	Yüksek Kesişim
-	High Frequency Cut	Yüksek Frekans Kesimi
-	High Frequency Damping	Yüksek Frekans Sönümleme
-	High Pass	Yüksek Geçiren
-	High Shelf	High Shelf
-	High Shelf Gain	High Shelf Kazancı
-	High contrast with held highlights and deep shadows	Korunan vurgular ve derin gölgeler ile yüksek kontrast
-	Highlight	Vurgu
-	Highlight Blue Balance	Vurgu Mavi Dengesi
-	Highlight Brightness	Vurgu Parlaklığı
-	Highlight Color	Vurgu Rengi
-	Highlight Green Balance	Vurgu Yeşil Dengesi
-	Highlight Red Balance	Vurgu Kırmızı Dengesi
-	Highlight Rolloff	Vurgu Sönümlenmesi
-	Highlight Threshold	Vurgu Eşiği
-	Highlight Tint	Vurgu Tonu
-	Highlights Lightness	Vurguların Açıklığı
-	Highpass	Yüksek geçiren
-	Hindi	Hintçe
-	Hindi digits	Hintçe rakamlar
-	Horizontal 16:9	Yatay 16:9
-	Horizontal Alignment	Yatay Hizalama
-	Horizontal Blocks	Yatay Bloklar
-	Horizontal Decentering	Yatay Merkez Dışılık
-	Horizontal Displacement	Yatay Yer Değiştirme
-=======
 	Hide FilmCraft	FilmCraft'ı Gizle
 	Hide Others	Diğerlerini Gizle
 	High	Yüksek
@@ -2761,7 +1862,6 @@
 	Horizontal Blocks	Yatay Bloklar
 	Horizontal Decentering	Yatay Merkez Kaydırma
 	Horizontal Displacement	Yatay Deplasman
->>>>>>> upstream/main
 	Horizontal Flip	Yatay Çevir
 	Horizontal Margin	Yatay Kenar Boşluğu
 	Horizontal and Vertical	Yatay ve Dikey
@@ -2770,21 +1870,12 @@
 	I/O Buffer Size	G/Ç Arabellek Boyutu
 	Ignore Alpha	Alfayı Yoksay
 	Image Control	Görüntü Kontrolü
-<<<<<<< HEAD
-	Immersive Video	Kapsayıcı Video
-	Import numbered stills as image sequences	Numaralandırılmış kareleri görüntü dizisi olarak içe aktar
-	Impulse	Impulse
-	In a Room	Oda İçinde
-	In the Media Cache	Medya Önbelleğinde
-	In the project	Projeden
-=======
 	Immersive Video	Sürükleyici Video
 	Import numbered stills as image sequences	Numaralandırılmış sabit kareleri görüntü sekansları olarak içe aktar
 	Impulse	İmpuls
 	In a Room	Bir Odada
 	In the Media Cache	Medya Önbelleğinde
 	In the project	Projede
->>>>>>> upstream/main
 	In/Out Duration	Giriş/Çıkış Süresi
 	Include captions on import	İçe aktarırken altyazıları dahil et
 	Incoming	Gelen
@@ -2792,51 +1883,6 @@
 	Initial Delay	Başlangıç Gecikmesi
 	Inner	İç
 	Inner Radius	İç Yarıçap
-<<<<<<< HEAD
-	Input Boost	Girdi Takviyesi
-	Inset	İç Kenar Boşluğu
-	Inside	İçinde
-	Inside Color	İç Renk
-	Inter	Inter
-	Interior Room Tone	İç Mekan Oda Tonu
-	Internal Black Point	Dahili Siyah Noktası
-	Internal White Point	Dahili Beyaz Noktası
-	Interpolation	Ara Değerleme
-	Intersect	Kesiştir
-	Inverse Falloff	Ters Azalma
-	Invert	Ters Çevir
-	Invert Alpha	Alfayı Ters Çevir
-	Invert Blur	Bulanıklığı Ters Çevir
-	Invert Fill	Dolguyu Ters Çevir
-	Invert Gradient	Gradyanı Ters Çevir
-	Invert Left	Solu Ters Çevir
-	Invert Right	Sağı Ters Çevir
-	Iris	İris
-	Iris Box	Kutu İris
-	Iris Cross	Haç İris
-	Iris Diamond	Baklava İris
-	Iris Radius	İris Yarıçapı
-	Iris Rotation	İris Dönüşü
-	Iris Round	Daire İris
-	Iris Shape	İris Şekli
-	Italian	İtalyanca
-	Turkish	Türkçe
-	Japanese	Japonca
-	JetBrains Mono	JetBrains Mono
-	Join Through Edits	Kesim Noktalarını Birleştir
-	Ripple Trim In	Dalgalı Kırpma Giriş
-	Ripple Trim Out	Dalgalı Kırpma Çıkış
-	Ripple Delete Head Frame	İlk Kareyi Boşluğu Kapatarak Sil
-	Roll Edit	Kaydırma Düzenlemesi (Roll)
-	Select All Matching	Eşleşenlerin Tümünü Seç
-	Trim In	Giriş Noktasını Kırp
-	Trim Out	Çıkış Noktasını Kırp
-	Trim…	Kırpma…
-	Kaleidoscope	Kaleidoskop
-	Keep a recovery copy of unsaved changes	Kaydedilmemiş değişikliklerin bir kurtarma kopyasını sakla
-	Key Color	Anahtar Renk
-	Keying	Keying (Anahtarlama)
-=======
 	Input Boost	Giriş Güçlendirmesi
 	Inset	İç Çerçeve
 	Inside	İçeride
@@ -2876,23 +1922,11 @@
 	Keep a recovery copy of unsaved changes	Kaydedilmemiş değişikliklerin bir kurtarma kopyasını sakla
 	Key Color	Anahtar Renk
 	Keying	Keyleme
->>>>>>> upstream/main
 	Korean	Korece
 	Label Defaults	Varsayılan Etiketler
 	Label speakers	Konuşmacıları etiketle
 	Labels	Etiketler
 	Large Hall	Büyük Salon
-<<<<<<< HEAD
-	Large Trim Offset	Büyük Kırpma Kaydırması
-	Large Volume Adjustment	Büyük Ses Seviyesi Ayarı
-	Latch	Latch
-	Layer Name	Katman Adı
-	Layers	Katmanlar
-	Leave Color	Rengi Koruyup Diğerlerini Kaldır
-	Left - Left	Sol - Sol
-	Left - Right	Sol - Sağ
-	Left channel to device output	Sol kanal aygıt çıkışına
-=======
 	Large Trim Offset	Büyük Kırpma Kayması
 	Large Volume Adjustment	Büyük Ses Düzeyi Ayarı
 	Latch	Latch
@@ -2902,22 +1936,10 @@
 	Left - Left	Sol - Sol
 	Left - Right	Sol - Sağ
 	Left channel to device output	Aygıt çıkışına sol kanal
->>>>>>> upstream/main
 	Left to Right	Soldan Sağa
 	Left to right	Soldan sağa
 	Legacy	Eski
 	Length	Uzunluk
-<<<<<<< HEAD
-	Lens Blur	Mercek Bulanıklığı
-	Lens Distortion	Mercek Bozulması
-	Lens Flare	Mercek Parlaması
-	Lens Type	Mercek Türü
-	Level 1	Seviye 1
-	Level 2	Seviye 2
-	Level 3	Seviye 3
-	Level 4	Seviye 4
-	Levels	Seviyeler
-=======
 	Lens Blur	Lens Bulanıklığı
 	Lens Distortion	Lens Distorsiyonu
 	Lens Flare	Lens Parlaması
@@ -2927,7 +1949,6 @@
 	Level 3	Düzey 3
 	Level 4	Düzey 4
 	Levels	Düzeyler
->>>>>>> upstream/main
 	Lifted blacks, softer contrast, muted colour	Yükseltilmiş siyahlar, daha yumuşak kontrast, matlaştırılmış renk
 	Light 1	Işık 1
 	Light 2	Işık 2
@@ -2936,11 +1957,7 @@
 	Light 5	Işık 5
 	Light Angle	Işık Açısı
 	Light Color	Işık Rengi
-<<<<<<< HEAD
-	Light Intensity	Işık Şiddeti
-=======
 	Light Intensity	Işık Yoğunluğu
->>>>>>> upstream/main
 	Light Leak	Işık Sızıntısı
 	Light Leaks	Işık Sızıntıları
 	Light Sweep	Işık Taraması
@@ -2950,42 +1967,6 @@
 	Lighting Effects	Aydınlatma Efektleri
 	Lightning	Şimşek
 	Lights & Blurs	Işıklar ve Bulanıklıklar
-<<<<<<< HEAD
-	Lights & Glows	Işıklar ve Işımalar
-	Line Thickness	Çizgi Kalınlığı
-	Linear Burn	Lineer Yanma
-	Linear Dodge (Add)	Lineer Soldurma (Ekle)
-	Linear Light	Lineer Işık
-	Linear Ramp	Lineer Gradyan
-	Linear Wipe	Lineer Geçiş
-	Linear Wipe (Legacy)	Lineer Geçiş (Eski)
-	Linear keyframe thinning	Lineer anahtar kare seyreltme
-	Linear to Log	Lineer'den Log'a
-	Liquid Distortion	Sıvı Bükülmesi
-	Local Projects	Yerel Projeler
-	Location	Konum
-	Log Note	Log Notu
-	Log to Linear	Log'dan Lineer'e
-	Log to Log	Log'dan Log'a
-	Logo Cutout	Logo Kesiti
-	Long Shadow	Uzun Gölge
-	Look-Ahead Time	Öngörü Süresi
-	Loudness	Ses Yüksekliği (Loudness)
-	Loudness Maximizer	Ses Yüksekliği Maksimize Edici
-	Loudness Meter	Ses Yüksekliği Ölçer
-	Louver	Panjur
-	Low	Düşük
-	Low Frequency Cut	Düşük Frekans Kesimi
-	Low Pass	Düşük Geçiren
-	Low Shelf	Low Shelf
-	Low Shelf Gain	Low Shelf Kazancı
-	Lower Left	Sol Alt
-	Lower Right	Sağ Alt
-	Lowpass	Düşük geçiren
-	Luma	Luma
-	Luma Curve	Luma Eğrisi
-	Luma Fade	Luma Kararma/Aydınlanma
-=======
 	Lights & Glows	Işıklar ve Parıltılar
 	Line Thickness	Çizgi Kalınlığı
 	Linear Burn	Doğrusal Yanma
@@ -3020,21 +2001,10 @@
 	Luma	Luma
 	Luma Curve	Luma Eğrisi
 	Luma Fade	Luma Kararması
->>>>>>> upstream/main
 	Luma Key	Luma Key
 	Luma Source	Luma Kaynağı
 	Luma and Chroma	Luma ve Kroma
 	Lumetri Presets	Lumetri Hazır Ayarları
-<<<<<<< HEAD
-	Luminance	Parlaklık (Luminance)
-	Luminance Threshold	Parlaklık Eşiği
-	Luminosity	Parlaklık
-	MB	MB
-	Magenta	Eflatun (Magenta)
-	Magnify	Büyüteç
-	Magnify (Legacy)	Büyüteç (Eski)
-	Maintain pitch while shuttling	Hızlı sararken ses perdesini koru
-=======
 	Luminance	Luminans
 	Luminance Threshold	Luminans Eşiği
 	Luminosity	Parlaklık
@@ -3043,27 +2013,17 @@
 	Magnify	Büyüt
 	Magnify (Legacy)	Büyüt (Eski)
 	Maintain pitch while shuttling	Hızlı oynatırken ses perdesini koru
->>>>>>> upstream/main
 	Major Radius	Büyük Yarıçap
 	Male	Erkek
 	Mango	Mango
 	Map Black To	Siyahı Şuna Eşle
 	Map White To	Beyazı Şuna Eşle
-<<<<<<< HEAD
-	Maps full-range levels into 16–235 (video range) with a luma curve	Tam aralıklı seviyeleri bir luma eğrisi ile 16–235 (video aralığı) değerlerine eşler
-	Mask Only	Sadece Maske
-	Master Amplitude	Ana Genlik
-	Mastering	Mastering
-	Match frame sets in point	Eşleşen kare, giriş noktasını ayarlar
-	Matte	Matte (Maske)
-=======
 	Maps full-range levels into 16–235 (video range) with a luma curve	Bir luma eğrisi ile tam aralık düzeylerini 16–235 (video aralığı) değerlerine eşler
 	Mask Only	Yalnızca Maske
 	Master Amplitude	Ana Genlik
 	Mastering	Mastering
 	Match frame sets in point	Kareyi eşleme giriş noktasını ayarlar
 	Matte	Matte
->>>>>>> upstream/main
 	Matte Alpha	Matte Alfa
 	Matte Cleanup	Matte Temizleme
 	Matte Generation	Matte Oluşturma
@@ -3077,23 +2037,6 @@
 	Maximum Scale	Maksimum Ölçek
 	Media	Medya
 	Media Analysis	Medya Analizi
-<<<<<<< HEAD
-	Media Analysis & Transcription	Medya Analizi ve Transkripsiyon
-	Media Cache	Medya Önbelleği
-	Media Cache Database	Medya Önbellek Veritabanı
-	Media Cache Files	Medya Önbellek Dosyaları
-	Media Cache Management	Medya Önbellek Yönetimi
-	Media Duration	Medya Süresi
-	Media End	Medya Bitişi
-	Media Time	Medya Zamanı
-	Media Timecode	Medya Zaman Kodu
-	Media Type	Medya Türü
-	Media analysis and transcriptions will be cached in the Media Cache folder. Reanalysis won't be required if the media is imported into another project on this computer.	Medya analizi ve deşifreler Medya Önbelleği klasöründe önbelleğe alınacaktır. Medya bu bilgisayardaki başka bir projeye içe aktarılırsa yeniden analiz yapılması gerekmeyecektir.
-	Median	Medyan
-	Medium Room	Orta Oda
-	Memory	Bellek
-	Metadata & Timecode Burn-in	Üstveri ve Zaman Kodu Gömme
-=======
 	Media Analysis & Transcription	Medya Analizi ve Deşifre
 	Media Cache	Medya Önbelleği
 	Media Cache Database	Medya Önbelleği Veritabanı
@@ -3109,45 +2052,10 @@
 	Medium Room	Orta Boy Oda
 	Memory	Bellek
 	Metadata & Timecode Burn-in	Görüntüye Üstveri ve Zaman Kodu İşleme
->>>>>>> upstream/main
 	Method	Yöntem
 	Metrics Kerning	Metrik Karakter Aralığı
 	Mid	Orta
 	Mid Point	Orta Nokta
-<<<<<<< HEAD
-	Midtone Blue Balance	Ara Ton Mavi Dengesi
-	Midtone Green Balance	Ara Ton Yeşil Dengesi
-	Midtone Red Balance	Ara Ton Kırmızı Dengesi
-	Midtones Lightness	Ara Tonların Açıklığı
-	Minimum	Minimum
-	Minimum time	Minimum süre
-	Minimum time interval thinning	Minimum zaman aralıklı seyreltme
-	Minor Radius	Küçük Yarıçap
-	Mirror	Ayna
-	Mirror Alternate	Ayna Alternatif
-	Missing font replacement	Eksik yazı tipi değiştirme
-	Miter join	Köşe birleşimi
-	Miter limit	Köşe sınırı
-	Mixed Crystals	Karma Kristaller
-	Mode	Mod
-	Modern High Gain	Modern Yüksek Kazanç
-	Modulation	Modülasyon
-	Modulation Rate	Modülasyon Oranı
-	Mono Media	Mono Medya
-	Monochrome	Monokrom
-	Monochrome toned cyan-blue	Camgöbeği-mavi tonda monokrom
-	Monochrome toned warm brown	Sıcak kahverengi tonda monokrom
-	Monoscopic	Monoskopik
-	Monospace only	Yalnızca eş aralıklı
-	More colour in the less saturated areas	Daha az doymuş alanlarda daha fazla renk
-	Morph Cut	Morph Kesim
-	Mosaic	Mozaik
-	Mosaic (Legacy)	Mozaik (Eski)
-	Motion Blur	Hareket Bulanıklığı
-	Motion Camera	Kamera Hareketi
-	Motion Preset	Hareket Hazır Ayarı
-	Motion Tween	Hareket Ara Değerlemesi
-=======
 	Midtone Blue Balance	Orta Ton Mavi Dengesi
 	Midtone Green Balance	Orta Ton Yeşil Dengesi
 	Midtone Red Balance	Orta Ton Kırmızı Dengesi
@@ -3180,22 +2088,11 @@
 	Motion Camera	Hareketli Kamera
 	Motion Preset	Hareket Hazır Ayarı
 	Motion Tween	Hareket Ara Değeri
->>>>>>> upstream/main
 	Move	Taşı
 	Movie	Film
 	Movie (audio and video)	Film (ses ve video)
 	Multiband Compressor	Çok Bantlı Kompresör
 	Multichannel Mono Media	Çok Kanallı Mono Medya
-<<<<<<< HEAD
-	Multiply	Çarp
-	Multitap Delay	Çoklu Tap Gecikme
-	Music	Müzik
-	Mute input during timeline recording	Zaman çizgisinde kayıt yaparken girdinin sesini kıs
-	Name	Ad
-	Narrow	Dar
-	Neon Color	Neon Rengi
-	Neon Wipe	Neon Geçiş
-=======
 	Multiply	Çoğalt
 	Multitap Delay	Çoklu Gecikme
 	Music	Müzik
@@ -3204,39 +2101,12 @@
 	Narrow	Dar
 	Neon Color	Neon Rengi
 	Neon Wipe	Neon Silinme
->>>>>>> upstream/main
 	Next to original media files	Orijinal medya dosyalarının yanında
 	Night	Gece
 	No Motion	Hareket Yok
 	No Scroll	Kaydırma Yok
 	No plugins are installed. Changes will take effect the next time you start FilmCraft.	Hiçbir eklenti yüklü değil. Değişiklikler FilmCraft'ı bir sonraki başlatışınızda geçerli olacaktır.
 	Noise	Gürültü
-<<<<<<< HEAD
-	Noise & Grain	Gürültü ve Kumlanma
-	Noise (Legacy)	Gürültü (Eski)
-	Noise Level	Gürültü Seviyesi
-	Noise Reduction/Restoration	Gürültü Azaltma/Restorasyon
-	Noise Type	Gürültü Türü
-	Non-Additive Dissolve	Toplanmayan Dissolve
-	Normal	Normal
-	Notch 1	Notch 1
-	Notch 2	Notch 2
-	Notch 3	Notch 3
-	Notch 4	Notch 4
-	Notch 5	Notch 5
-	Notch 6	Notch 6
-	Notch Filter	Notch Filtresi
-	Notch Width	Notch Genişliği
-	Number Of Echoes	Eko Sayısı
-	Number of Harmonics	Harmonik Sayısı
-	Obsolete	Eski/Kullanılmayan
-	Octagon	Sekizgen
-	Offset	Ofset
-	Offset (Turbulence)	Ofset (Sarsıntı)
-	Offset From	Başlangıç Ofseti
-	Offset To	Bitiş Ofseti
-	Omni	Çok Yönlü (Omni)
-=======
 	Noise & Grain	Gürültü ve Gren
 	Noise (Legacy)	Gürültü (Eski)
 	Noise Level	Gürültü Düzeyi
@@ -3261,7 +2131,6 @@
 	Offset From	Şuradan Kaydır
 	Offset To	Şuraya Kaydır
 	Omni	Çok Yönlü
->>>>>>> upstream/main
 	On	Açık
 	On Original Image	Orijinal Görüntü Üzerinde
 	On Transparent	Şeffaf Üzerinde
@@ -3272,18 +2141,6 @@
 	Open new tab	Yeni sekme aç
 	Opens up the shadows	Gölgeleri açar
 	Order	Sıra
-<<<<<<< HEAD
-	Orientation	Yönelim
-	Outer	Dış
-	Outgoing	Giden
-	Output	Çıktı
-	Output Mapping	Çıktı Eşleme
-	Outside	Dışında
-	Outside Color	Dış Renk
-	Overflow	Taşma
-	Overlay	Üstüne Bindir (Overlay)
-	Overshoot	Aşma (Overshoot)
-=======
 	Orientation	Yönlendirme
 	Outer	Dış
 	Outgoing	Giden
@@ -3294,7 +2151,6 @@
 	Overflow	Taşma
 	Overlay	Kaplama
 	Overshoot	Aşım
->>>>>>> upstream/main
 	Page Peel	Sayfa Kıvrılması
 	Page Scroll	Sayfa Kaydırma
 	Page Turn	Sayfa Çevirme
@@ -3305,17 +2161,10 @@
 	Paint On White	Beyaz Üzerine Boya
 	Paint Style	Boya Stili
 	Paint Surface	Boya Yüzeyi
-<<<<<<< HEAD
-	Pan (Y Axis)	Pan (Y Eksen)
-	Panel Wipe	Panel Geçişi
-	Panels	Paneller
-	Panner - Ambisonics	Panner - Ambisonics
-=======
 	Pan (Y Axis)	Pan (Y Ekseni)
 	Panel Wipe	Panel Silinme
 	Panels	Paneller
 	Panner - Ambisonics	Panoramik Ayarlayıcı - Ambisonics
->>>>>>> upstream/main
 	Parade	Parade
 	Parade (RGB)	Parade (RGB)
 	Parametric Equalizer	Parametrik Ekolayzer
@@ -3328,40 +2177,16 @@
 	Pedestal	Pedestal
 	Pentagon	Beşgen
 	Per line	Satır başına
-<<<<<<< HEAD
-	Percent Blur	Yüzde Bulanıklık
-	Perspective	Perspektif
-	Phase Difference	Faz Farkı
-	Phaser	Phaser
-	Phone Call	Telefon Araması
-=======
 	Percent Blur	Bulanıklık Yüzdesi
 	Perspective	Perspektif
 	Phase Difference	Faz Farkı
 	Phaser	Phaser
 	Phone Call	Telefon Görüşmesi
->>>>>>> upstream/main
 	Phosphor	Fosfor
 	Phosphor Color	Fosfor Rengi
 	Photocopy	Fotokopi
 	Photocopy Color	Fotokopi Rengi
 	Pillow	Yastık
-<<<<<<< HEAD
-	Pin All	Tümünü İğnele
-	Pin Horizontal	Yatay İğnele
-	Pin Light	Nokta Işık (Pin Light)
-	Pin Vertical	Dikey İğnele
-	Pinning	İğneleme
-	Pitch Shifter	Pitch Shifter (Ses Perdesi Değiştirici)
-	Plate	Plaka
-	Plateau Wipe	Plato Geçişi
-	Plateaus	Platolar
-	Plates	Plakalar
-	Play after rendering previews	Önizlemeleri işledikten (render) sonra oynat
-	Play audio while scrubbing in Source and Program Monitors	Kaynak ve Program Monitörlerinde kaydırırken sesi oynat
-	Playback	Oynatma
-	Playhead position determines trim monitor loop playback	Oynatma kafası konumu kırpma monitörünün döngüsel oynatımını belirler
-=======
 	Pin All	Tümünü Sabitle
 	Pin Horizontal	Yatay Sabitle
 	Pin Light	Noktasal Işık
@@ -3376,7 +2201,6 @@
 	Play audio while scrubbing in Source and Program Monitors	Kaynak ve Program Monitörlerinde tarama yaparken sesi oynat
 	Playback	Oynatma
 	Playhead position determines trim monitor loop playback	Oynatma kafası konumu kırpma monitörü döngü oynatmasını belirler
->>>>>>> upstream/main
 	Plugins	Eklentiler
 	Podcast Voice	Podcast Sesi
 	Point 1	Nokta 1
@@ -3397,20 +2221,6 @@
 	Point 7	Nokta 7
 	Point 8	Nokta 8
 	Points	Noktalar
-<<<<<<< HEAD
-	Policy	Kural/Politika
-	Pop Motion	Ani Hareket (Pop)
-	Portuguese	Portekizce
-	Position & Rotation	Konum ve Dönüş
-	Position Amount	Konum Miktarı
-	Position, Scale & Rotation	Konum, Ölçek ve Dönüş
-	Position, Scale, Rotation	Konum, Ölçek, Dönüş
-	Posterize	Posterleştir
-	Posterize Time	Zamanı Posterleştir
-	Pre-Delay	Ön Gecikme
-	Prefix	Önek
-	Presence Lift	Varlık Artırma
-=======
 	Policy	İlke
 	Pop Motion	Belirme Hareketi
 	Portuguese	Portekizce
@@ -3423,7 +2233,6 @@
 	Pre-Delay	Ön Gecikme
 	Prefix	Ön Ek
 	Presence Lift	Varlık Yükseltme
->>>>>>> upstream/main
 	Preserve Luminosity	Parlaklığı Koru
 	Preserve Scale	Ölçeği Koru
 	ProcAmp	ProcAmp
@@ -3434,24 +2243,6 @@
 	Push	İtme
 	Push (Legacy)	İtme (Eski)
 	Q	Q
-<<<<<<< HEAD
-	RAM reserved for other applications	Diğer uygulamalar için ayrılmış RAM
-	RGB	RGB
-	RGB Split	RGB Ayrıştırma
-	RGB-White	RGB-Beyaz
-	Radial	Radyal
-	Radial Blur	Radyal Bulanıklık
-	Radial Ramp	Radyal Gradyan
-	Radial Wipe	Radyal Geçiş
-	Radial Wipe (Legacy)	Radyal Geçiş (Eski)
-	Radio Announcer	Radyo Sunucusu
-	Radio Voice	Radyo Sesi
-	Radius	Yarıçap
-	Ramp	Gradyan (Ramp)
-	Ramp Shape	Gradyan Şekli
-	Random	Rastgele
-	Random Seed	Rastgele Tohum
-=======
 	RAM reserved for other applications	Diğer uygulamalar için ayrılan RAM
 	RGB	RGB
 	RGB Split	RGB Ayrımı
@@ -3468,24 +2259,11 @@
 	Ramp Shape	Degrade Şekli
 	Random	Rastgele
 	Random Seed	Rastgele Çekirdek
->>>>>>> upstream/main
 	Range	Aralık
 	Ray	Işın
 	Ray Color	Işın Rengi
 	Ray Length	Işın Uzunluğu
 	Rays	Işınlar
-<<<<<<< HEAD
-	Rays Only	Sadece Işınlar
-	Read	Oku
-	Rec. 2100	Rec. 2100
-	Rec. 601	Rec. 601
-	Rec. 709	Rec. 709
-	Red Blurriness	Kırmızı Bulanıklık
-	Red Curve	Kırmızı Eğri
-	Red Offset	Kırmızı Kaydırma
-	Red Power	Kırmızı Güç
-	Red Slope	Kırmızı Eğim
-=======
 	Rays Only	Yalnızca Işınlar
 	Read	Okuma
 	Rec. 2100	Rec. 2100
@@ -3496,35 +2274,16 @@
 	Red Offset	Kırmızı Ofseti
 	Red Power	Kırmızı Gücü
 	Red Slope	Kırmızı Eğimi
->>>>>>> upstream/main
 	Red-Blue	Kırmızı-Mavi
 	Red-Const	Kırmızı-Sabit
 	Red-Green	Kırmızı-Yeşil
 	Red-Red	Kırmızı-Kırmızı
 	Reduce Axis	Ekseni Azalt
-<<<<<<< HEAD
-	Reduce Interlace Flicker	Geçmeli Titremeyi Azalt
-=======
 	Reduce Interlace Flicker	Geçmeli Tarama Titreşimini Azalt
->>>>>>> upstream/main
 	Reflected	Yansıtılmış
 	Reflection Angle	Yansıma Açısı
 	Reflection Center	Yansıma Merkezi
 	Refraction	Kırılma
-<<<<<<< HEAD
-	Reframe Offset	Yeniden Çerçeveleme Ofseti
-	Reframe Zoom	Yeniden Çerçeveleme Yakınlaştırması
-	Refresh growing Files Every	Büyüyen dosyaları yenileme sıklığı:
-	Relaxed	Rahat
-	Release Time	Bırakma Süresi (Release)
-	Relief	Kabartma
-	Remaining	Kalan
-	Remove Fringe	Saçakları Kaldır
-	Render Edit in Audition files to:	Audition'da Düzenle dosyalarını şuraya işle (render):
-	Render audio when rendering video	Video işlenirken (render) sesi de işle
-	Repair	Onar
-	Repeat Edge Pixels	Kenar Piksellerini Tekrar Et
-=======
 	Reframe Offset	Yeniden Çerçeveleme Kaydırması
 	Reframe Zoom	Yeniden Çerçeveleme Yakınlaştırması
 	Refresh growing Files Every	Büyüyen dosyaları şu sıklıkta yenile:
@@ -3537,31 +2296,11 @@
 	Render audio when rendering video	Video işlenirken sesi işle
 	Repair	Onar
 	Repeat Edge Pixels	Kenar Piksellerini Tekrarla
->>>>>>> upstream/main
 	Replace Color	Rengi Değiştir
 	Replace With Clip From Source Monitor	Kaynak Monitöründeki Kliple Değiştir
 	Replicate	Çoğalt
 	Responsive Design - Position	Duyarlı Tasarım - Konum
 	Responsive Design - Time	Duyarlı Tasarım - Zaman
-<<<<<<< HEAD
-	Restore open sequences when opening projects	Projeler açılırken açık dizileri geri yükle
-	Result	Sonuç
-	Retro	Retro
-	Reveal Nested Sequence	Yuvalanmış Diziyi Göster
-	Reveal Original Image	Orijinal Görüntüyü Göster
-	Reverb Amount	Yankı (Reverb) Miktarı
-	Reverse	Ters Çevir
-	Right - Left	Sağ - Sol
-	Right - Right	Sağ - Sağ
-	Right channel to device output	Sağ kanal aygıt çıkışına
-	Right to left	Sağdan sola
-	Ripple trim adds edits to keep both sides of trim in sync	Dalgalı kırpma, kırpmanın her iki tarafını da senkronize tutmak için düzenlemeler ekler
-	Roll (Z Axis)	Dönüş (Z Ekseni)
-	Room Size	Oda Boyutu
-	Rotation Amount	Dönüş Miktarı
-	Roughen	Pürüzlendir
-	Roughen Color	Pürüzlendirme Rengi
-=======
 	Restore open sequences when opening projects	Projeleri açarken açık sekansları geri yükle
 	Result	Sonuç
 	Retro	Retro
@@ -3580,7 +2319,6 @@
 	Rotation Amount	Döndürme Miktarı
 	Roughen	Pürüzlendir
 	Roughen Color	Pürüz Rengi
->>>>>>> upstream/main
 	Roughen Edges	Kenarları Pürüzlendir
 	Round cap	Yuvarlak Uç
 	Round join	Yuvarlak Birleşim
@@ -3589,40 +2327,13 @@
 	Russian	Rusça
 	Rusty	Paslı
 	Rusty Color	Pas Rengi
-<<<<<<< HEAD
-	SFX	Ses Efektleri (SFX)
-=======
 	SFX	SFX
->>>>>>> upstream/main
 	Sample Rate	Örnekleme Hızı
 	Saturation at 50 %	%50 Doygunluk
 	Save .cfa and .pek media cache files next to original media files when possible	Mümkün olduğunda .cfa ve .pek medya önbellek dosyalarını orijinal medya dosyalarının yanına kaydet
 	Scale (Degrees)	Ölçek (Derece)
 	Scale Amount	Ölçek Miktarı
 	Scale From	Başlangıç Ölçeği
-<<<<<<< HEAD
-	Scale Height	Yükseklik Ölçeği
-	Scale Match	Ölçek Eşleme
-	Scale To	Bitiş Ölçeği
-	Scale Width	Genişlik Ölçeği
-	Scale to frame size	Kare boyutuna ölçekle
-	Scan Lines	Taramalı Çizgiler
-	Scene	Sahne
-	Scientific Filter	Bilimsel Filtre
-	Scratch disk location for Captured Audio	Yakalanan Ses için çalışma diski konumu
-	Screen	Ekran (Screen)
-	Seconds	Saniye
-	Segments	Segmentler
-	Semi-tones	Yarım Tonlar
-	Sequence Name	Dizi Adı
-	Sequence Timecode	Dizi Zaman Kodu
-	Transparent Video…	Şeffaf Video…
-	Set focus on the Timeline when performing Insert/Overwrite edits	Araya Ekleme/Üstüne Yazma düzenlemeleri yaparken odağı Zaman Çizgisine getir
-	Set to frame size	Kare boyutuna ayarla
-	Setting	Ayar
-	Selection…	Seçim…
-	Selection as FilmCraft Project…	FilmCraft Projesi Olarak Seçme…
-=======
 	Scale Height	Ölçek Yüksekliği
 	Scale Match	Ölçeği Eşle
 	Scale To	Hedef Ölçek
@@ -3642,31 +2353,20 @@
 	Set to frame size	Kare boyutuna ayarla
 	Setting	Ayar
 	Settings	Ayarlar
->>>>>>> upstream/main
 	Shadow Angle	Gölge Açısı
 	Shadow Blue Balance	Gölge Mavi Dengesi
 	Shadow Blur	Gölge Bulanıklığı
 	Shadow Color	Gölge Rengi
 	Shadow Distance	Gölge Mesafesi
 	Shadow Green Balance	Gölge Yeşil Dengesi
-<<<<<<< HEAD
-	Shadow Only	Sadece Gölge
-=======
 	Shadow Only	Yalnızca Gölge
->>>>>>> upstream/main
 	Shadow Opacity	Gölge Opaklığı
 	Shadow Red Balance	Gölge Kırmızı Dengesi
 	Shadow Size	Gölge Boyutu
 	Shadow Tint	Gölge Tonu
-<<<<<<< HEAD
-	Shadows Lightness	Gölgelerin Açıklığı
-	Shake	Sarsıntı
-	Shape Dissolve	Şekil Geçişi
-=======
 	Shadows Lightness	Gölge Açıklığı
 	Shake	Sallantı
 	Shape Dissolve	Şekilli Çözünme
->>>>>>> upstream/main
 	Shape Flow	Şekil Akışı
 	Shape Size	Şekil Boyutu
 	Shapes	Şekiller
@@ -3674,16 +2374,6 @@
 	Sharp Colors	Keskin Renkler
 	Sharpen Amount	Keskinleştirme Miktarı
 	Shift Center To	Merkezi Şuraya Kaydır
-<<<<<<< HEAD
-	Shift clips that overlap trim point during ripple trimming	Dalgalı kırpma sırasında kırpma noktasıyla çakışan klipleri kaydır
-	Shot	Çekim
-	Show "Project:" and "Bin:" in Project panel tab	Proje paneli sekmesinde "Proje:" ve "Havuz:" ifadelerini göster
-	Show Clip Mismatch Warning dialog	Klip Uyumsuzluğu Uyarısı iletişim kutusunu göster
-	Show Event Indicator	Olay Göstergesini Göster
-	Show Focus Area	Odak Alanını Göster
-	Show Home	Ana Sayfayı Göster
-	Show Mask Tracker Preview	Maske Takip Önizlemesini Göster
-=======
 	Shift clips that overlap trim point during ripple trimming	Kayan kırpma sırasında kırpma noktasıyla örtüşen klipleri kaydır
 	Shot	Çekim
 	Show "Project:" and "Bin:" in Project panel tab	Proje paneli sekmesinde "Proje:" ve "Klasör:" göster
@@ -3692,31 +2382,11 @@
 	Show Focus Area	Odak Alanını Göster
 	Show Home	Ana Sayfayı Göster
 	Show Mask Tracker Preview	Maske İzleyici Önizlemesini Göster
->>>>>>> upstream/main
 	Show Only Noise	Yalnızca Gürültüyü Göster
 	Show Open Dialog	Aç İletişim Kutusunu Göster
 	Show Project Load Error Dialog	Proje Yükleme Hatası İletişim Kutusunu Göster
 	Show Rich Tool Tips	Zengin Araç İpuçlarını Göster
 	Show Tool Tips	Araç İpuçlarını Göster
-<<<<<<< HEAD
-	Show Workspace Reset Warning dialog on double click	Çift tıklandığında Çalışma Alanı Sıfırlama Uyarısı iletişim kutusunu göster
-	Show system compatibility issues at startup	Başlangıçta sistem uyumluluk sorunlarını göster
-	Shrink	Küçült
-	Shutter Angle	Enstantane Açısı
-	Similarity	Benzerlik
-	Simple Notch Filter	Basit Notch Filtresi
-	Simple Parametric EQ	Basit Parametrik EQ
-	Simple Text	Basit Metin
-	Single-band Compressor	Tek Bantlı Kompresör
-	Sinusoidal	Sinüzoidal
-	Skew	Eğme (Skew)
-	Skew Axis	Eğme Ekseni
-	Slats	Iç Panjurlar
-	Slice	Dilim
-	Slices	Dilimler
-	Slide	Kaydırma (Slide)
-	Slide (Legacy)	Kaydırma (Eski)
-=======
 	Show Workspace Reset Warning dialog on double click	Çift tıklamada Çalışma Alanını Sıfırlama Uyarısı iletişim kutusunu göster
 	Show system compatibility issues at startup	Başlangıçta sistem uyumluluğu sorunlarını göster
 	Shrink	Küçült
@@ -3734,21 +2404,10 @@
 	Slices	Dilimler
 	Slide	Öteleme
 	Slide (Legacy)	Öteleme (Eski)
->>>>>>> upstream/main
 	Slope	Eğim
 	Slow	Yavaş
 	Slower Motion	Daha Yavaş Hareket
 	Small Room	Küçük Oda
-<<<<<<< HEAD
-	Smart Limit	Akıllı Sınır
-	Smart Tools	Akıllı Araçlar
-	Smart quotes	Akıllı tırnak işaretleri
-	Smooth	Yumuşak
-	Smooth Motion	Pürüzsüz Hareket
-	Smooth Scroll	Pürüzsüz Kaydırma
-	Smoothness	Pürüzsüzlük
-	Snap playhead in Timeline when Snap is enabled	Hizalama etkinleştirildiğinde Zaman Çizgisinde oynatma kafasını hizala
-=======
 	Smart Limit	Akıllı Sınırlama
 	Smart Tools	Akıllı Araçlar
 	Smart quotes	Akıllı Tırnaklar
@@ -3757,66 +2416,17 @@
 	Smooth Scroll	Yumuşak Kaydırma
 	Smoothness	Pürüzsüzlük
 	Snap playhead in Timeline when Snap is enabled	Manyetik hizalama etkinken oynatma kafasını Zaman Çizgisinde hizala
->>>>>>> upstream/main
 	Soft	Yumuşak
 	Soft Clamp	Yumuşak Sınırlama
 	Soft Edges (Best Quality)	Yumuşak Kenarlar (En İyi Kalite)
 	Soft Light	Yumuşak Işık
-<<<<<<< HEAD
-	Soft Wipe	Yumuşak Geçiş
-=======
 	Soft Wipe	Yumuşak Silme
->>>>>>> upstream/main
 	Soften Harshness	Sertliği Yumuşat
 	Softness	Yumuşaklık
 	Solarize	Solarize Et
 	Solid Colors	Düz Renkler
 	Source Point	Kaynak Noktası
 	Source Text	Kaynak Metin
-<<<<<<< HEAD
-	Spacer	Aralık Bırakıcı
-	Spanish	İspanyolca
-	Speaker Angle	Hoparlör Açısı
-	Speaker Labeling	Hoparlör Etiketleme
-	Special	Özel
-	Special Effects	Özel Efektler
-	Speech model	Konuşma modeli
-	Speed	Hız
-	Spherize	Küreleştir
-	Spiky	Sivri
-	Spill	Işık Sızması (Spill)
-	Spill Suppression	Işık Sızmasını Bastırma
-	Spin	Döndür
-	Spin Direction	Dönüş Yönü
-	Spin Motion	Dönme Hareketi
-	Split	Böl
-	Split (Legacy)	Böl (Eski)
-	Spotlight	Spot Işığı
-	Spread	Yayılma
-	Spring Motion	Yay Hareketi
-	Square	Kare
-	Square (Width Only)	Kare (Yalnızca Genişlik)
-	Square 1:1	Kare 1:1
-	Stabilization	Stabilizasyon
-	Stabilize Only	Sadece Stabilize Et
-	Stabilize, Crop	Stabilize Et, Kırp
-	Stabilize, Crop, Auto-scale	Stabilize Et, Kırp, Otomatik Ölçeklendir
-	Stabilize, Synthesize Edges	Stabilize Et, Kenarları Sentezle
-	Stages	Aşamalar
-	Star	Yıldız
-	Star Wipe	Yıldız Geçişi
-	Start Angle	Başlangıç Açısı
-	Start Color	Başlangıç Rengi
-	Start Point	Başlangıç Noktası
-	Start at 0	0'dan başla
-	Start at 1	1'den başla
-	Start of Ramp	Gradyan Başlangıcı
-	Start with an Empty Project	Boş bir Proje ile Başla
-	Starting Intensity	Başlangıç Yoğunluğu
-	Static Plates	Statik Plakalar
-	Step forward/back many	İleri/geri çoklu adım
-	Stereo Expand	Stereo Genişlet
-=======
 	Spacer	Boşluk Bırakıcı
 	Spanish	İspanyolca
 	Speaker Angle	Hoparlör Açısı
@@ -3859,29 +2469,12 @@
 	Static Plates	Statik Plakalar
 	Step forward/back many	Birden çok kare ileri/geri git
 	Stereo Expand	Stereo Genişletme
->>>>>>> upstream/main
 	Stereo Expander	Stereo Genişletici
 	Stereo Imagery	Stereo Görüntüleme
 	Stereo Media	Stereo Medya
 	Stereo Phasing	Stereo Fazlama
 	Stereoscopic - Over/Under	Stereoskopik - Üst/Alt
 	Stereoscopic - Side by Side	Stereoskopik - Yan Yana
-<<<<<<< HEAD
-	Still	Kare (Hareketsiz Görüntü)
-	Still Image Default Duration	Varsayılan Hareketsiz Görüntü Süresi
-	Stone Church	Taş Kilise
-	Stopband Attenuation	Durdurma Bandı Zayıflatması
-	Straight Color	Düz Renk (Straight)
-	Strength	Şiddet
-	Stretch	Uzat
-	Stretch Gradient to Fit	Gradyanı Sığdırmak İçin Uzat
-	Stretch Map to Fit	Haritayı Sığdırmak İçin Uzat
-	Stretch Width or Height	Genişliği veya Yüksekliği Uzat
-	Stretch Wipe	Uzatmalı Geçiş
-	Stretch to Fit Frame	Kareye Sığdırmak İçin Uzat
-	Stripe	Çizgi
-	Stripes	Çizgiler
-=======
 	Still	Sabit Görüntü
 	Still Image Default Duration	Sabit Görüntü Varsayılan Süresi
 	Stone Church	Taş Kilise
@@ -3896,28 +2489,10 @@
 	Stretch to Fit Frame	Kareye Sığacak Şekilde Uzat
 	Stripe	Şerit
 	Stripes	Şeritler
->>>>>>> upstream/main
 	Strobe Color	Stroboskop Rengi
 	Strobe Duration (secs)	Stroboskop Süresi (sn)
 	Strobe Light	Stroboskop Işığı
 	Strobe Period (secs)	Stroboskop Periyodu (sn)
-<<<<<<< HEAD
-	Stroke 2 Color	Çizgi 2 Rengi
-	Stroke 2 Type	Çizgi 2 Türü
-	Stroke 2 Width	Çizgi 2 Genişliği
-	Stroke Angle	Fırça Darbesi Açısı
-	Stroke Color	Çizgi Rengi
-	Stroke Density	Fırça Darbesi Yoğunluğu
-	Stroke Length	Fırça Darbesi Uzunluğu
-	Stroke Length (secs)	Fırça Darbesi Uzunluğu (sn)
-	Stroke Only	Sadece Çizgi
-	Stroke Randomness	Fırça Darbesi Rastgeleliği
-	Stroke Type	Çizgi Türü
-	Stroke Width	Çizgi Genişliği
-	Stroke line cap	Çizgi ucu stili
-	Stroke line join	Çizgi birleşim stili
-	Studio Reverb	Stüdyo Yankısı (Reverb)
-=======
 	Stroke 2 Color	2. Kontur Rengi
 	Stroke 2 Type	2. Kontur Türü
 	Stroke 2 Width	2. Kontur Genişliği
@@ -3933,33 +2508,12 @@
 	Stroke line cap	Kontur çizgi ucu
 	Stroke line join	Kontur çizgi birleşimi
 	Studio Reverb	Stüdyo Reverbi
->>>>>>> upstream/main
 	Stylize	Stilize Et
 	Subclip End	Alt Klip Bitişi
 	Subclip Start	Alt Klip Başlangıcı
 	Subspace Warp	Alt Uzay Deformasyonu
 	Subtitle	Altyazı
 	Subtract	Çıkar
-<<<<<<< HEAD
-	Sum multichannel outputs to mono in Source Monitor	Kaynak Monitöründe çok kanallı çıktıları mono olarak birleştir
-	Super Narrow	Çok Dar
-	Surface Gloss	Yüzde Parlaklığı
-	Surface Material	Yüzey Malzemesi
-	Surround Reverb	Surround Yankı (Reverb)
-	Swap	Takas Et
-	Swap Channels	Kanalları Değiştir
-	Swivel	Eksen Etrafında Döndür
-	Synthetic	Sentetik
-	TV Power	TV Gücü
-	Tape	Kaset/Bant
-	Tape Name	Kaset Adı
-	Tape/Tube	Kaset/Makaralı
-	Target Aspect	Hedef En Boy Oranı
-	Target Color	Hedef Renk
-	Target Field of View	Hedef Görüş Alanı
-	Target Loudness	Hedef Ses Yüksekliği (Loudness)
-	Teal & Orange	Camgöbeği ve Turuncu (Teal & Orange)
-=======
 	Sum multichannel outputs to mono in Source Monitor	Kaynak Monitöründe çok kanallı çıkışları monoya topla
 	Super Narrow	Süper Dar
 	Surface Gloss	Yüzey Parlaklığı
@@ -3978,26 +2532,11 @@
 	Target Field of View	Hedef Görüş Alanı
 	Target Loudness	Hedef Ses Yüksekliği
 	Teal & Orange	Camgöbeği ve Turuncu
->>>>>>> upstream/main
 	Telephone	Telefon
 	Teletext	Teletekst
 	Template Properties	Şablon Özellikleri
 	Text Animator	Metin Canlandırıcı
 	Text Color	Metin Rengi
-<<<<<<< HEAD
-	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	Medya önbelleği, kaydedilmemiş projelerin işleme (render) önizlemelerini ve FilmCraft'ın yeniden oluşturabileceği diğer dosyaları tutar. Bunları silmek her zaman güvenlidir; FilmCraft gerektiğinde bunları yeniden oluşturur.
-	Thickness	Kalınlık
-	Tile Gradient	Döşeme Gradyanı
-	Tilt	Eğme (Tilt)
-	Tilt (X Axis)	Eğme (X Ekseni)
-	Time	Zaman
-	Time and Pitch	Zaman ve Ses Perdesi
-	Time Interpolation	Zaman İnterpolasyonu
-	Timecode Conversion	Zaman Kodu Dönüştürme
-	Timeline Mouse Scrolling	Zaman Çizgisinde Fare Kaydırma
-	Timeline Playback Auto-Scrolling	Zaman Çizgisinde Otomatik Oynatma Kaydırması
-	Tint Color	Renk Tonu (Tint)
-=======
 	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	Medya önbelleği, kaydedilmemiş projelerin işleme önizlemelerini ve FilmCraft'ın yeniden oluşturabileceği diğer dosyaları tutar. Bunları silmek her zaman güvenlidir; FilmCraft gerektiğinde bunları yeniden oluşturur.
 	Thickness	Kalınlık
 	Tile Gradient	Döşeme Gradyanı
@@ -4009,25 +2548,12 @@
 	Timeline Mouse Scrolling	Zaman Çizgisinde Fareyle Kaydırma
 	Timeline Playback Auto-Scrolling	Oynatma Sırasında Zaman Çizgisini Otomatik Kaydırma
 	Tint Color	Ton Rengi
->>>>>>> upstream/main
 	To	Hedef
 	Tolerance	Tolerans
 	Tone	Ton
 	Top Center	Üst Orta
 	Top Left	Üst Sol
 	Top Right	Üst Sağ
-<<<<<<< HEAD
-	Touch	Dokun (Touch)
-	Track Matte Key	İz Maskesi Keying (Track Matte)
-	Transcription	Transkripsiyon
-	Transcription preferences	Transkripsiyon tercihleri
-	Transform	Dönüştür (Transform)
-	Transformers	Dönüştürücüler
-	Transience	Geçicilik
-	Transition Completion	Geçiş Tamamlanması
-	Transition Softness	Geçiş Yumuşaklığı
-	Transparency	Şeffaflık
-=======
 	Touch	Dokunma
 	Track Matte Key	İz Matı Anahtarı
 	Transcription	Deşifre
@@ -4038,23 +2564,10 @@
 	Transition Completion	Geçiş Tamamlanması
 	Transition Softness	Geçiş Yumuşaklığı
 	Transparency	Saydamlık
->>>>>>> upstream/main
 	Trash	Çöp Kutusu
 	Travel Motion	Gezinme Hareketi
 	Treble	Tiz
 	Triangle	Üçgen
-<<<<<<< HEAD
-	Trim	Kırpma (Trim)
-	Tube	Lamba/Valf
-	Tube-modeled Compressor	Lamba Modelleme Kompresörü
-	Tubular	Boru Şeklinde
-	Turbulent	Çalkantılı
-	Turbulent Displace	Çalkantılı Yer Değiştirme
-	Turbulent Sharp	Keskin Çalkantılı
-	Turbulent Smooth	Yumuşak Çalkantılı
-	Turbulent Smoother	Daha Yumuşak Çalkantılı
-	Tweed	Tvit
-=======
 	Trim	Kırp
 	Tube	Lamba
 	Tube-modeled Compressor	Lamba Modelli Kompresör
@@ -4065,33 +2578,10 @@
 	Turbulent Smooth	Türbülanslı Düzgün
 	Turbulent Smoother	Türbülanslı Daha Yumuşak
 	Tweed	Tweed
->>>>>>> upstream/main
 	Twirl	Girdap
 	Twirl (Legacy)	Girdap (Eski)
 	Twirl Center	Girdap Merkezi
 	Twirl Radius	Girdap Yarıçapı
-<<<<<<< HEAD
-	Twist	Bükme
-	Twist Smoother	Daha Yumuşak Bükme
-	Typewriter	Daktilo
-	Ultra Key	Ultra Key
-	Uniform Scale	Ölçeği Orantılı Değiştir
-	Uniform Spacing	Eşit Aralıklandırma
-	Unsharp Mask	Keskinliği Artırırma Maskesi (Unsharp Mask)
-	Update it at least every	En az şu sıklıkla güncelle:
-	Update timeline dynamically during ripple edits.	Dalgalı düzenlemeler sırasında zaman çizgisini dinamik olarak güncelle.
-	Upper Frequency	Üst Frekans
-	Upper Left	Üst Sol
-	Upper Right	Üst Sağ
-	Use Color Noise	Renkli Gürültü Kullan
-	Use End Color	Bitiş Rengini Kullan
-	Use File	Dosyayı Kullan
-	Use Glow Color	Işıma Rengini Kullan
-	Use Media Source	Medya Kaynağını Kullan
-	Use Tint Color	Tinta Rengini Kullan
-	Utility	Yardımcı Araçlar
-	VHS Damage	VHS Bozulması
-=======
 	Twist	Burulma
 	Twist Smoother	Daha Yumuşak Burulma
 	Typewriter	Daktilo
@@ -4112,43 +2602,22 @@
 	Use Tint Color	Ton Rengini Kullan
 	Utility	Yardımcı
 	VHS Damage	VHS Hasarı
->>>>>>> upstream/main
 	VR Blur	VR Bulanıklığı
 	VR Chroma Leaks	VR Kroma Sızıntıları
 	VR Chromatic Aberrations	VR Kromatik Sapmaları
 	VR Color Gradients	VR Renk Gradyanları
-<<<<<<< HEAD
-	VR De-Noise	VR Gürültü Giderme
-	VR Digital Glitch	VR Dijital Parazit
-	VR Fractal Noise	VR Fraktal Gürültü
-	VR Glow	VR Işıma
-	VR Gradient Wipe	VR Gradyan Geçişi
-	VR Iris Wipe	VR İris Geçişi
-=======
 	VR De-Noise	VR Parazit Azaltma
 	VR Digital Glitch	VR Dijital Glitch
 	VR Fractal Noise	VR Fraktal Parazit
 	VR Glow	VR Işıma
 	VR Gradient Wipe	VR Gradyan Silme
 	VR Iris Wipe	VR İris Silme
->>>>>>> upstream/main
 	VR Light Leaks	VR Işık Sızıntıları
 	VR Light Rays	VR Işık Işınları
 	VR Mobius Zoom	VR Möbius Yakınlaştırma
 	VR Plane to Sphere	VR Düzlemden Küreye
 	VR Projection	VR Projeksiyon
 	VR Random Blocks	VR Rastgele Bloklar
-<<<<<<< HEAD
-	VR Rotate Sphere	VR Küre Döndürme
-	VR Sharpen	VR Keskinleştirme
-	VR Spherical Blur	VR Sferik Bulanıklık
-	Validate Content Credentials on import	İçe aktarım sırasında İçerik Kimlik Bilgilerini doğrula
-	Vectorscope (YUV)	Vettorscopio (YUV)
-	Vectorscope + Waveform YC	Vettorscopio + Dalga Formu YC
-	Vectorscope HLS	Vettorscopio HLS
-	Vectorscope YUV	Vettorscopio YUV
-	Venetian Blinds	Venedik Panjuru
-=======
 	VR Rotate Sphere	VR Küreyi Döndür
 	VR Sharpen	VR Keskinleştirme
 	VR Spherical Blur	VR Küresel Bulanıklık
@@ -4158,18 +2627,12 @@
 	Vectorscope HLS	Vektörskop HLS
 	Vectorscope YUV	Vektörskop YUV
 	Venetian Blinds	Jaluzi
->>>>>>> upstream/main
 	Vertical 4:5	Dikey 4:5
 	Vertical 9:16	Dikey 9:16
 	Vertical Alignment	Dikey Hizalama
 	Vertical Blocks	Dikey Bloklar
-<<<<<<< HEAD
-	Vertical Decentering	Dikey Merkez Dışılık
-	Vertical Displacement	Dikey Yer Değiştirme
-=======
 	Vertical Decentering	Dikey Merkezden Uzaklaşma
 	Vertical Displacement	Dikey Deplasman
->>>>>>> upstream/main
 	Vertical Flip	Dikey Çevir
 	Vertical Margin	Dikey Kenar Boşluğu
 	Very Narrow	Çok Dar
@@ -4183,15 +2646,6 @@
 	Video 8	Video 8
 	Video Codec	Video Kodeği
 	Video Duration	Video Süresi
-<<<<<<< HEAD
-	Video In Point	Video Giriş Noktası
-	Video In	Video Girişi
-	Video Info	Video Bilgisi
-	Video Limiter	Video Sınırlayıcı
-	Video Out Point	Video Çıkış Noktası
-	Video Out	Video Çıkışı
-	Video Transition Default Duration	Varsayılan Video Geçiş Süresi
-=======
 	Video Effects	Video Efektleri
 	Video In Point	Video Giriş Noktası
 	Video Info	Video Bilgisi
@@ -4199,33 +2653,17 @@
 	Video Out Point	Video Çıkış Noktası
 	Video Transition Default Duration	Varsayılan Video Geçişi Süresi
 	Video Transitions	Video Geçişleri
->>>>>>> upstream/main
 	Video Usage	Video Kullanımı
 	Vignette	Vinyet
 	Vivid Light	Canlı Işık
 	Vocal Booth	Vokal Kabini
-<<<<<<< HEAD
-	Vocal Enhancer	Vokal İyileştirici
-	Voice	Ses (Vokal)
-=======
 	Vocal Enhancer	Vokal Geliştirici
 	Voice	Ses
->>>>>>> upstream/main
 	Voice in a Hall	Salonda Ses
 	Volumetric Rays	Hacimsel Işınlar
 	Warm Film	Sıcak Film
 	Warm Room	Sıcak Oda
 	Warm Voice	Sıcak Ses
-<<<<<<< HEAD
-	Warm print stock with gentle roll-off	Yumuşak sönümlenmeli sıcak baskı stoku
-	Warm, soft late-afternoon light	Akşamüstünün sıcak ve yumuşak ışığı
-	Warning	Uyarı
-	Warp Stabilizer	Deformasyon Stabilizatörü (Warp Stabilizer)
-	Wave	Dalga
-	Wave Height	Dalga Yüksekliği
-	Wave Speed	Dalga Hızı
-	Wave Warp	Dalga Bükülmesi
-=======
 	Warm print stock with gentle roll-off	Yumuşak düşüşlü sıcak baskı filmi
 	Warm, soft late-afternoon light	Sıcak, yumuşak ikindi ışığı
 	Warning	Uyarı
@@ -4234,53 +2672,11 @@
 	Wave Height	Dalga Yüksekliği
 	Wave Speed	Dalga Hızı
 	Wave Warp	Dalga Bozulması
->>>>>>> upstream/main
 	Wave Width	Dalga Genişliği
 	Waveform	Dalga Formu
 	Waveform (Luma)	Dalga Formu (Luma)
 	Waveform (RGB)	Dalga Formu (RGB)
 	Wavelength	Dalga Boyu
-<<<<<<< HEAD
-	Wet	Islak (Wet)
-	Wet Out	Wet Çıktısı
-	When Opening a Project	Bir Proje Açılırken
-	Whip	Hızlı Geçiş (Whip)
-	Whip (Legacy)	Hızlı Geçiş (Eski)
-	Whisper base (balanced)	Whisper base (dengeli)
-	Whisper small (most accurate)	Whisper small (en hassas)
-	Whisper tiny (fastest)	Whisper tiny (en hızlı)
-	White	Beyaz
-	White Input Level	Beyaz Girdi Seviyesi
-	White Is High	Beyaz Yüksek
-	Wide Outdoor	Geniş Açık Hava
-	Widener	Genişletici
-	Width	Genişlik
-	Wiggle	Titreşim (Wiggle)
-	Wipe	Silerek Geçiş (Wipe)
-	Wipe Angle	Geçiş Açısı
-	Wonder Glow	Harika Işıma
-	Wrap Back	Geriye Doğru Sar
-	Write	Yaz
-	Write XMP ID to files on import	İçe aktarırken dosyalara XMP Kimliği yaz
-	Write clip markers to XMP	Klip işaretçilerini XMP'ye yaz
-	Write-on	Yazma Efekti (Write-on)
-	X Rotation	X Dönüşü
-	Y Rotation	Y Dönüşü
-	YC	YC
-	YC no Chroma	Croma'sız YC
-	YUV	YUV
-	Yellow-green highlights and blue-lifted shadows from crossed channel curves	Çapraz kanal eğrilerinden elde edilen sarı-yeşil vurgular ve maviye yükseltilmiş gölgeler
-	Z Position	Z Konumu
-	Z Rotation	Z Dönüşü
-	Zoom	Yakınlaştırma (Zoom)
-	Zoom Amount	Yakınlaştırma Miktarı
-	Zoom Blur	Yakınlaştırma Bulanıklığı
-	Zoom Strength	Yakınlaştırma Şiddeti
-	days	gün	
-	milliseconds	milisaniye
-	minute(s)	dakika
-	second(s)	saniye
-=======
 	Wet	Islak
 	Wet Out	Islak Çıkış
 	When Opening a Project	Bir Proje Açılırken
@@ -4322,7 +2718,6 @@
 	minute(s)	dakika
 	second(s)	saniye
 	seconds	saniye
->>>>>>> upstream/main
 	AAF…	AAF…
 	Audio…	Ses…
 	Avid Log Exchange…	Avid Log Exchange…
@@ -4335,31 +2730,6 @@
 	OMF…	OMF…
 	OpenTimelineIO…	OpenTimelineIO…
 	Save Changes to this Workspace	Değişiklikleri Bu Çalışma Alanına Kaydet
-<<<<<<< HEAD
-	Save as New Workspace…	Yeni Çalışma Alanı Olara Kaydet…
-	Create Search Bin	Arama Havuzu Oluştur
-	Edit Offline File	Çevrimdışı Dosyayı Düzenle
-	Source Settings…	Kaynak Ayarları…
-	Speed/Duration…	Hız/Süre…
-	Restore Captions from Source Clip	Altyazıları Kaynak Klipten Geri Yükle
-	Update Metadata…	Üstveriyi Güncelle…
-	Automate To Sequence	Diziye Otomatikleştir
-	Scene Edit Detection	Sahne Kesim Algılama
-	Analyze	Analiz Et
-	Normalize Mix Track	Mix İzini Normalleştir
-	Simplify Sequence…	Diziyi Sadeleştir…
-	Simplify	Sadeleştir
-	Transcribe Sequence	Sekansı Yazıya Dök
-	Save as Template…	Şablon olarak Kaydet…
-	Save All	Hepsini Kaydet
-	Flash Cue Marker	Flash Cue İşaretçisi
-	System Compatibility Report…	Sistem Uyumluluk Raporu…
-	no GPU adapter: the CPU compositor is used	GPU bağdaştırıcısı yok: CPU birleştiricisi kullanılıyor
-	Avid Log Exchange	Avid Log Exchange
-	FilmCraft Project	FilmCraft Projesi
-	{name} Selection.fcproj	{name} Seçim.fcproj
-	{name} (Simplified)	{name} (Sadeleştirilmiş)
-=======
 	Save as New Workspace…	Yeni Çalışma Alanı Olarak Kaydet…
 	Create Search Bin	Arama Klasörü Oluştur
 	Edit Offline File	Çevrimdışı Dosyayı Düzenle
@@ -4380,35 +2750,12 @@
 	FilmCraft Project	FilmCraft Projesi
 	{name} Selection.fcproj	{name} Seçim.fcproj
 	{name} (Simplified)	{name} (Basitleştirilmiş)
->>>>>>> upstream/main
 	Find in:	Şurada bul:
 	Find:	Bul:
 	Search:	Ara:
 	Clip Names and Markers	Klip Adları ve İşaretçiler
 	Match:	Eşleşme:
 	All	Tümü
-<<<<<<< HEAD
-	Any	Herhangi Bir
-	Case Sensitive	Büyük/Küçük Harfe Duyarlı
-	Scratch Disks	Çalışma Diskleri
-	Ingest Settings	Aktarım Ayarları
-	Captured and Generated:	Yakalana ve Oluşturulan:
-	Video Previews:	Video Önizlemeleri:
-	Audio Previews:	Ses Önizlemeleri:
-	Project Auto Save:	Proje Otomatik Kaydetme:
-	Same as Project	Proje ile Aynı
-	Path: {path}	Yol: {path}
-	Transcode	Dönüştür (Transcode)
-	Copy and Create Proxies	Kopyala ve Proxy Oluştur
-	Action:	Eylem:
-	Destination:	Hedef:
-	Next to the media	Medyanın yanında
-	Video Rendering and Playback	Video İşleme (Render) ve Oynatma
-	Renderer:	İşleyici (Renderer):
-	Display Format:	Görüntüleme Biçimi:
-	Milliseconds	Milisaniye
-	Capture	Yakala
-=======
 	Any	Herhangi Biri
 	Case Sensitive	Büyük/Küçük Harfe Duyarlı
 	Scratch Disks	Çalışma Diskleri
@@ -4429,7 +2776,6 @@
 	Display Format:	Görüntüleme Biçimi:
 	Milliseconds	Milisaniye
 	Capture	Yakalama
->>>>>>> upstream/main
 	Capture Format:	Yakalama Biçimi:
 	Action and Title Safe Areas	Eylem ve Başlık Güvenli Alanları
 	Title Safe Area	Başlık Güvenli Alanı
@@ -4440,21 +2786,12 @@
 	{codec} · {rate} Hz · {n} channel(s)	{codec} · {rate} Hz · {n} kanal
 	Media Name:	Medya Adı:
 	Scene:	Sahne:
-<<<<<<< HEAD
-	Shot/Take:	Çekim/Kayıt:
-	Log Note:	Log Notu:
-	Codec: {codec}	Kodek: {codec}
-	Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?	Seçili klip(ler)in ({n}) üstverileri medyalarının yanındaki XMP dosyalarına yazılsın mı?
-	Existing XMP files written by other applications are left unchanged.	Diğer uygulamalar tarafından yazılan mevcut XMP dosyaları değiştirilmeden bırakılır.
-	To {name}	{name} Konumuna
-=======
 	Shot/Take:	Plan/Çekim:
 	Log Note:	Kayıt Notu:
 	Codec: {codec}	Kodek: {codec}
 	Write the metadata of the selected clip(s) ({n}) to XMP files next to their media?	Seçilen kliplerin ({n}) metaverileri medyalarının yanındaki XMP dosyalarına yazılsın mı?
 	Existing XMP files written by other applications are left unchanged.	Diğer uygulamalar tarafından yazılan mevcut XMP dosyaları değiştirilmez.
 	To {name}	{name} Hedefine
->>>>>>> upstream/main
 	Ordering:	Sıralama:
 	Sort Order	Sıralama Düzeni
 	Selection Order	Seçim Sırası
@@ -4463,22 +2800,6 @@
 	At Unnumbered Markers	Numarasız İşaretçilerde
 	Method:	Yöntem:
 	Insert Edit	Araya Ekleme Düzenlemesi
-<<<<<<< HEAD
-	Overwrite Edit	Üstüne Yazma Düzenlemesi
-	Clip Overlap:	Klip Çakışması:
-	Frames per Still:	Hareketsiz Görüntü Başına Kare:
-	Apply Default Audio Transition	Varsayılan Ses Geçişini Applica/Uygula
-	Apply Default Video Transition	Varsayılan Video Geçişini Uygula
-	Ignore Options	Yoksayma Seçenekleri
-	Ignore Audio	Sesi Yoksay
-	Ignore Video	Videoyu Yoksay
-	Apply a cut at each detected cut point	Tespit edilen her kesim noktasına bir kesim uygula
-	Create a bin of subclips from each detected cut point	Tespit edilen her kesim noktasından alt kliplerden oluşan bir havuz oluştur
-	Create a clip marker at each detected cut point	Tespit edilen her kesim noktasına bir klip işaretçisi oluştur
-	Sensitivity:	Hassasiyet:
-	Normalize Mix Track to:	Mix İzini Şuna Normalleştir:
-	Disabled clips	Devre dışı bırakılmış klipler
-=======
 	Overwrite Edit	Üzerine Yazma Düzenlemesi
 	Clip Overlap:	Klip Örtüşmesi:
 	Frames per Still:	Hareketsiz Görüntü Başına Kare:
@@ -4494,7 +2815,6 @@
 	Sensitivity:	Duyarlılık:
 	Normalize Mix Track to:	Miksaj İzini şuna normalize et:
 	Disabled clips	Devre dışı klipler
->>>>>>> upstream/main
 	Empty tracks	Boş izler
 	Gaps	Boşluklar
 	Video effects	Video efektleri
@@ -4502,32 +2822,13 @@
 	Text (graphics and captions)	Metin (grafikler ve altyazılar)
 	Clips	Klipler
 	Move clips to the lowest track possible	Klipleri mümkün olan en alt ize taşı
-<<<<<<< HEAD
-	Keep:	Sakla:
-=======
 	Keep:	Koru:
->>>>>>> upstream/main
 	Video and Audio	Video ve Ses
 	Video Only	Yalnızca Video
 	Audio Only	Yalnızca Ses
 	Language:	Dil:
 	Audio on track {t}	{t} izindeki ses
 	Audio analysis:	Ses analizi:
-<<<<<<< HEAD
-	Recognize when different speakers are talking	Farklı konuşmacıları ayırt et
-	Template Name:	Şablon Adı:
-	Comments:	Yorumlar:
-	 (unavailable)	 (kullanılamıyor)
-	Decoders	Çözücüler
-	Containers	Kapsayıcılar (Containers)
-	Export formats	Dışa aktarım biçimleri
-	Match {n} of {total}	{total} taneden {n} tanesi eşleşti
-	Saved template {path}	Şablon kaydedildi: {path}
-	Scene Edit Detection: analysing in the background (see Progress)	Sahne Kesim Algılama: Arka planda analiz ediliyor (İlerleme durumuna bakın)
-	Delete Search Bin	Arama Havuzunu Sil
-	 (removed from {list})	 ({list} listesinden kaldırıldı)
-	{key} can't be used as a shortcut	{key} bir kısayol olarak kullanılamaz
-=======
 	Recognize when different speakers are talking	Farklı konuşmacıların ne zaman konuştuğunu algıla
 	Template Name:	Şablon Adı:
 	Comments:	Yorumlar:
@@ -4541,45 +2842,10 @@
 	Delete Search Bin	Arama Klasörünü Sil
 	 (removed from {list})	 ({list} listesinden kaldırıldı)
 	{key} can't be used as a shortcut	{key} kısayol olarak kullanılamaz
->>>>>>> upstream/main
 	Keyboard Shortcuts	Klavye Kısayolları
 	{active} (modified)	{active} (değiştirildi)
 	Loaded “{name}”	“{name}” yüklendi
 	My Shortcuts	Kısayollarım
-<<<<<<< HEAD
-	Deleted preset “{active}”	“{active}” hazır ayarı silindi
-	Export…	Dışa Aktar…
-	Exported to {path}	{path} konumuna dışa aktarıldı
-	Export: no file chosen (agents: shortcuts.export {path})	Dışa aktarım: dosya seçilmedi (ajanlar: shortcuts.export {path})
-	Imported “{name}”	“{name}” içe aktarıldı
-	Import: no file chosen (agents: shortcuts.import {path})	İçe aktarım: dosya seçilmedi (ajanlar: shortcuts.import {path})
-	Keyboard: US (macOS)	Klavye: ABD (macOS)
-	Keyboard: US	Klavye: ABD
-	Save preset as:	Hazır ayarı farklı kaydet:
-	Commands:	Komutlar:
-	{panel} Panel	{panel} Paneli
-	Application shortcuts work whatever panel has focus	Uygulama kısayolları, hangi panel odakta olursa olsun çalışır
-	Panel shortcuts override application shortcuts while that panel has focus	Panel kısayolları, o panel odaktayken uygulama kısayollarını geçersiz kılar
-	Modifier held / selected	Değiştirici tuş basılı / seçili
-	Search commands or keys	Komut veya tuş ara
-	Selected: {command}	Seçilen: {command}
-	Command	Komut
-	Shortcut	Kısayol
-	Type a shortcut… (Esc cancels)	Bir kısayol yazın… (Esc iptal eder)
-	Add another shortcut	Başka bir kısayol ekle
-	No matching commands	Eşleşen komut yok
-	Key:	Tuş:
-	Modifiers	Değiştirici Tuşlar
-	Nothing is assigned to this key	Bu tuşa hiçbir şey atanmamış
-	Click a key on the keyboard to see its shortcuts	Kısayollarını görmek için klavyedeki bir tuşa tıklayın
-	Assign {key} to {command}	{key} tuşunu {command} komutuna ata
-	Conflict: {key} is assigned to {commands} ({ctx})	Çakışma: {key} tuşu {commands} ({ctx}) komutuna atanmış
-	 and 	 ve 
-	Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.	Atamak için bir komutun Kısayol hücresine tıklayıp tuşlara basın; + başka bir kısayol ekler.
-	Cleared {n} shortcut(s) of {command}	{command} komutunun {n} kısayolu temizlendi
-	No export preset named `{name}`	`{name}` adında dışa aktarım hazır ayarı yok
-	Open a sequence to export	Dışa aktarmak için bir dizi açın
-=======
 	Deleted preset “{active}”	“{active}” önayarı silindi
 	Export…	Dışa Aktar…
 	Exported to {path}	{path} konumuna dışa aktarıldı
@@ -4612,31 +2878,11 @@
 	Cleared {n} shortcut(s) of {command}	{command} komutunun {n} kısayolu temizlendi
 	No export preset named `{name}`	`{name}` adında dışa aktarma önayarı yok
 	Open a sequence to export	Dışa aktarmak için bir sekans açın
->>>>>>> upstream/main
 	Destinations	Hedefler
 	Media File	Medya Dosyası
 	Queue ({n})	Kuyruk ({n})
 	Send exports here with Send to Queue, then start the queue.	Kuyruğa Gönder ile dışa aktarımları buraya gönderin, ardından kuyruğu başlatın.
 	Ready	Hazır
-<<<<<<< HEAD
-	Encoding {n}%	Kodlanıyor %{n}
-	Start Queue	Kuyruğu Başlat
-	Clear Finished	Tamamlananları Temizle
-	Not supported by FilmCraft's encoders yet	Henüz FilmCraft'ın kodlayıcıları tarafından desteklenmiyor
-	Sequence name	Dizi adı
-	Reset Duration	Sıfırlama Süresi
-	Folder	Klasör
-	Preset	Hazır Ayar
-	More presets…	Daha fazla hazır ayar…
-	Multiplexer	Multiplexer
-	The sequence has no caption track.	Dizide altyazı izi yok.
-	Export Options	Dışa Aktarım Seçenekleri
-	Burn Captions Into Video	Altyazıları Videoya İşle (Burn-in)
-	Create Sidecar File	Sidecar Dosyası Oluştur
-	File Format	Dosya Biçimi
-	SubRip Subtitle (.srt)	SubRip Altyazısı (.srt)
-	WebVTT (.vtt)	WebVTT (.vtt)
-=======
 	Encoding {n}%	Kodlanıyor: %{n}
 	Start Queue	Kuyruğu Başlat
 	Stop	Durdur
@@ -4655,35 +2901,10 @@
 	SubRip Subtitle (.srt)	SubRip Altyazısı (.srt)
 	WebVTT (.vtt)	WebVTT (.vtt)
 	Title	Başlık
->>>>>>> upstream/main
 	Creator	Oluşturan
 	Copyright	Telif Hakkı
 	Image	Görüntü
 	Frame Size	Kare Boyutu
-<<<<<<< HEAD
-	Match Source	Kaynakla Eşleştir
-	Field Order	Taramalı Saha Sırası (Field Order)
-	Aspect	En Boy Oranı
-	Profile	Profil
-	Bitrate Encoding	Bit Hızı Kodlaması
-	Target Bitrate	Hedef Bit Hızı
-	Adaptive ({bpp} bits per pixel)	Adattif (piksel başına {bpp} bit)
-	Maximum Bitrate	Maksimum Bit Hızı
-	Quality (CRF)	Kalite (CRF)
-	Key Frame Distance	Anahtar Kare Mesafesi
-	Quality	Kalite
-	Render at Maximum Depth	Maksimum Derinlikte İşle (Render)
-	Use Maximum Render Quality	Maksimum Render Kalitesini Kullan
-	Export Audio	Sesi Dışa Aktar
-	Audio Format	Ses Biçimi
-	Uncompressed (PCM)	Sıkıştırılmamış (PCM)
-	Match Source ({seq_sr} Hz)	Kaynakla Eşleştir ({seq_sr} Hz)
-	Channels	Kanallar
-	Audio Bitrate	Ses Bit Hızı
-	Sample Size	Örnek Boyutu
-	16 bit	16 bit
-	24 bit	24 bit
-=======
 	Match Source	Kaynağı Eşle
 	Field Order	Alan Sırası
 	Aspect	En-Boy Oranı
@@ -4710,28 +2931,12 @@
 	32 bit float	32 bit kayan nokta
 	FLAC stores whole-number samples only	FLAC yalnızca tam sayılı örnekleri depolar
 	MXF export writes integer PCM only	MXF dışa aktarımı yalnızca tamsayı PCM yazar
->>>>>>> upstream/main
 	Size / Opacity	Boyut / Opaklık
 	Image Overlay	Görüntü Bindirme
 	PNG or JPEG file	PNG veya JPEG dosyası
 	Name Overlay	Ad Bindirme
 	Timecode Overlay	Zaman Kodu Bindirme
 	Luma Min / Max	Luma Min / Maks
-<<<<<<< HEAD
-	Loudness Normalization	Ses Yüksekliği (Loudness) Normalizasyonu
-	True Peak Limit	True Peak Sınırı
-	Audio only	Yalnızca ses
-	Scaling	Ölçekleme
-	Scale To Fit	Sığdırmak İçin Ölçekle
-	Scale To Fill	Doldurmak İçin Ölçekle
-	Stretch To Fill	Doldurmak İçin Uzat
-	Summary	Özet
-	Sequence, {w}x{h}, {fps} fps, {rate} Hz	Dizi, {w}x{h}, {fps} fps, {rate} Hz
-	Estimated file size: {size}	Tahmini dosya boyutu: {size}
-	Send to Queue	Kuyruğa Gönder
-	Exporting {path}	{path} dışa aktarılıyor
-	Added to the export queue	Dışa aktarım kuyruğuna eklendi
-=======
 	Loudness Normalization	Ses Yüksekliği Normalizasyonu
 	True Peak Limit	Gerçek Tepe Sınırı
 	Audio only	Yalnızca ses
@@ -4745,38 +2950,11 @@
 	Send to Queue	Kuyruğa Gönder
 	Exporting {path}	{path} dışa aktarılıyor
 	Added to the export queue	Dışa aktarma kuyruğuna eklendi
->>>>>>> upstream/main
 	Preset Manager	Hazır Ayar Yöneticisi
 	Search presets	Hazır ayarları ara
 	Favorites only	Yalnızca favoriler
 	Show in the Preset menu	Hazır Ayar menüsünde göster
 	User	Kullanıcı
-<<<<<<< HEAD
-	Save current settings as:	Mevcut ayarları farklı kaydet:
-	Export presets	Hazır ayarları dışa aktar
-	Import: no file chosen (agents: export.presets.import {path})	İçe aktarım: dosya seçilmedi (ajanlar: export.presets.import {path})
-	Export: no file chosen (agents: export.presets.export {path, names})	Dışa aktarım: dosya seçilmedi (ajanlar: export.presets.export {path, names})
-	Quick Export: open a sequence first	Hızlı Dışa Aktarım: Önce bir dizi açın
-	File Name & Location	Dosya Adı ve Konumu
-	Quick Export: {path}	Hızlı Dışa Aktarım: {path}
-	Graphics problem: switched to software compositing	Grafik sorunu: Yazılımsal birleştirmeye (software compositing) geçildi
-	GPU acceleration is unavailable; preview renders on the CPU	GPU hızlandırma kullanılamıyor; önizleme render işlemleri CPU üzerinde yapılıyor
-	Exporting	Dışa Aktarılıyor
-	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Seçmek için tıklayın veya seçim kutusu oluşturmak için boş bir alana tıklayıp sürükleyin. Diğer seçenekler için Shift, Alt/Opt ve Cmd kullanın.
-	Click to select all clips to the right in all tracks. Shift-click for a single track.	Tüm izlerde sağdaki tüm klipleri seçmek için tıklayın. Tek bir iz için Shift+tık yapın.
-	Click to select all clips to the left in all tracks. Shift-click for a single track.	Tüm izlerde soldaki tüm klipleri seçmek için tıklayın. Tek bir iz için Shift+tık yapın.
-	Drag an edit point to ripple trim; later clips move to keep the gap closed.	Dalgalı kırpma (ripple trim) yapmak için bir kesim noktasını sürükleyin; boşluğun kapanması için sonraki klipler kayar.
-	Drag an edit point to roll it: the out of one clip and the in of the next move together.	Döndürerek kırpmak (roll edit) için bir kesim noktasını sürükleyin: bir klibin çıkış noktası ile sonraki klibin giriş noktası birlikte hareket eder.
-	Drag an edge to change the clip's speed so it fills the new duration.	Klibin hızını değiştirip yeni süreyi doldurmasını sağlamak için bir kenarını sürükleyin.
-	Drag the edge of a music clip to remix it to the new duration at musically matching beats.	Bir müzik klibini müzikal olarak eşleşen vuruşlarda yeni süreye göre yeniden mikslemek (remix) için kenarından sürükleyin.
-	Click to split a clip. Shift-click to split all tracks.	Bir klibi bölmek için tıklayın. Tüm izleri bölmek için Shift+tık yapın.
-	Drag a clip to slip its source in/out without moving it.	Bir klibin konumunu değiştirmeden kaynak giriş/çıkış noktalarını kaydırmak (slip) için sürükleyin.
-	Drag a clip to slide it between its neighbours.	Bir klibi komşuları arasında kaydırmak (slide) için sürükleyin.
-	Drag to scroll the timeline.	Zaman çizgisini kaydırmak için sürükleyin.
-	Click to zoom in; Opt-click to zoom out.	Yakınlaşmak için tıklayın; uzaklaşmak için Alt/Opt+tık yapın.
-	FilmCraft hit an error	FilmCraft bir hatayla karşılaştı
-	Details: {path}	Detaylar: {path}
-=======
 	Save current settings as:	Geçerli ayarları farklı kaydet:
 	Export presets	Dışa aktarma hazır ayarları
 	Import: no file chosen (agents: export.presets.import {path})	İçe aktar: dosya seçilmedi (aracılar: export.presets.import {path})
@@ -4801,26 +2979,10 @@
 	Click to zoom in; Opt-click to zoom out.	Yakınlaştırmak için tıklayın; uzaklaştırmak için Opt ile tıklayın.
 	FilmCraft hit an error	FilmCraft bir hatayla karşılaştı
 	Details: {path}	Ayrıntılar: {path}
->>>>>>> upstream/main
 	Opened {url}	{url} açıldı
 	(empty)	(boş)
 	Step Back 1 Frame	1 Kare Geri Git
 	Step Forward 1 Frame	1 Kare İleri Git
-<<<<<<< HEAD
-	Match Playhead	Oynatma Kafasıyla Eşleştir
-	Gang to Program	Program Monitörüne Bağla (Gang)
-	AAC Audio	AAC Ses
-	AAC Audio 48 kHz 320 kbps	AAC Ses 48 kHz 320 kbps
-	MPEG-4 audio (.m4a), stereo 48 kHz AAC-LC at 320 kbps	MPEG-4 ses (.m4a), stereo 48 kHz AAC-LC 320 kbps
-	AIFF	AIFF
-	AIFF 48 kHz 16-bit	AIFF 48 kHz 16-bit
-	AIFF, stereo 48 kHz 16-bit PCM	AIFF, stereo 48 kHz 16-bit PCM
-	FLAC	FLAC
-	FLAC 48 kHz 24-bit	FLAC 48 kHz 24-bit
-	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, stereo 48 kHz 24-bit, kayıpsız
-	FLAC (lossless)	FLAC (kayıpsız)
-	Compression Level	Sıkıştırma Seviyesi
-=======
 	Match Playhead	Oynatma Kafasını Eşle
 	Gang to Program	Programa Bağla
 	AAC Audio	AAC Ses
@@ -4834,77 +2996,38 @@
 	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, stereo 48 kHz 24 bit, kayıpsız
 	FLAC (lossless)	FLAC (kayıpsız)
 	Compression Level	Sıkıştırma Düzeyi
->>>>>>> upstream/main
 	0 fastest, 8 smallest	0 en hızlı, 8 en küçük
 	APV	APV
 	APV 422-10	APV 422-10
 	APV 422-12	APV 422-12
 	Anamorphic 2:1 (2.0)	Anamorfik 2:1 (2.0)
-<<<<<<< HEAD
-	Animated GIF	Hareketli GIF
-	Animated GIF 640×360	Hareketli GIF 640×360
-=======
 	Animated GIF	Animasyonlu GIF
 	Animated GIF 640×360	Animasyonlu GIF 640×360
->>>>>>> upstream/main
 	Apple ProRes	Apple ProRes
 	Apple ProRes 422	Apple ProRes 422
 	Apple ProRes 422 HQ	Apple ProRes 422 HQ
 	Apple ProRes 422 LT	Apple ProRes 422 LT
 	Apple ProRes 422 Proxy	Apple ProRes 422 Proxy
 	Apple ProRes 4444	Apple ProRes 4444
-<<<<<<< HEAD
-	Apple ProRes 4444 with Alpha	Apple ProRes 4444 Alfa Kanallı
-	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
-	Application	Uygulama
-	Apply Guide Template	Rehber Şablonunu Uygula
-	Auto Save Now	Şimdi Otomatik Kaydet
-	Auto-Match Loudness	Ses Yüksekliğini Otomatik Eşleştir
-=======
 	Apple ProRes 4444 with Alpha	Alfa Kanallı Apple ProRes 4444
 	Apple ProRes 4444 XQ	Apple ProRes 4444 XQ
 	Application	Uygulama
 	Apply Guide Template	Kılavuz Şablonunu Uygula
 	Auto Save Now	Şimdi Otomatik Kaydet
 	Auto-Match Loudness	Ses Yüksekliğini Otomatik Eşle
->>>>>>> upstream/main
 	Avid DNxHR	Avid DNxHR
 	Avid DNxHR HQ	Avid DNxHR HQ
 	Avid DNxHR LB	Avid DNxHR LB
 	Avid DNxHR SQ	Avid DNxHR SQ
-<<<<<<< HEAD
-	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	Avid tarzı OP-Atom: DNxHR HQ görüntü dosyası ve kanal başına bir adet 24-bit 48 kHz PCM dosyası (_A1, _A2…)
-	BMP	BMP
-	BMP Sequence	BMP Dizisi
-	Baseline	Taban Çizgisi (Baseline)
-	Begin Text Editing for a Graphic Layer	Bir Grafik Katmanı İçin Metin Düzenlemeye Başla
-=======
 	Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)	Avid tarzı OP-Atom: DNxHR HQ görüntü dosyası ve kanal başına bir adet 24 bit 48 kHz PCM dosyası (_A1, _A2…)
 	BMP	BMP
 	BMP Sequence	BMP Sekansı
 	Baseline	Baseline
 	Begin Text Editing for a Graphic Layer	Grafik Katmanı için Metin Düzenlemeyi Başlat
->>>>>>> upstream/main
 	Begins With	Şununla Başlar
 	Blur In	Bulanıklaşarak Giriş
 	Blur Out	Bulanıklaşarak Çıkış
 	Brightens inside a feathered circular mask	Yumuşatılmış dairesel bir maskenin içini aydınlatır
-<<<<<<< HEAD
-	Broadcast	Yayın (Broadcast)
-	CBR	CBR
-	Cancel Dynamic Trim	Dinamik Kırpmayı İptal Et
-	Cancel Queued Export	Kuyruktaki Dışa Aktarımı İptal Et
-	Center Left	Orta Sol
-	Center Right	Orta Sağ
-	Center align text	Metni ortala
-	Change Mask	Maskeyi Değiştir
-	Clear All Events	Tüm Olayları Temizle
-	Clear Edit Point Selection	Kesim Noktası Seçimini Temizle
-	Clear Finished Exports	Tamamlanan Dışa Aktarımları Temizle
-	Clear Poster Frame	Poster Karesini Temizle
-	Close Bin	Havuzu Kapat
-	Close Sequence	Diziyi Kapat
-=======
 	Broadcast	Yayın
 	CBR	CBR
 	Cancel Dynamic Trim	Dinamik Kırpmayı İptal Et
@@ -4919,7 +3042,6 @@
 	Clear Poster Frame	Poster Karesini Temizle
 	Close Bin	Klasörü Kapat
 	Close Sequence	Sekansı Kapat
->>>>>>> upstream/main
 	Contains	İçerir
 	Cut to Camera 1	Kamera 1'e Kes
 	Cut to Camera 2	Kamera 2'ye Kes
@@ -4935,13 +3057,8 @@
 	DVCPRO HD (1.5)	DVCPRO HD (1.5)
 	Darkens outside a feathered oval mask	Yumuşatılmış oval bir maskenin dışını karartır
 	Decrease Audio Tracks Height	Ses İzlerinin Yüksekliğini Azalt
-<<<<<<< HEAD
-	Decrease Clip Volume	Klip Ses Seviyesini Azalt
-	Decrease Clip Volume Many	Klip Ses Seviyesini Çok Azalt
-=======
 	Decrease Clip Volume	Klip Ses Düzeyini Azalt
 	Decrease Clip Volume Many	Klip Ses Düzeyini Çok Azalt
->>>>>>> upstream/main
 	Decrease Font Size by Five Units	Yazı Tipi Boyutunu Beş Birim Azalt
 	Decrease Font Size by One Unit	Yazı Tipi Boyutunu Bir Birim Azalt
 	Decrease Leading by Five Units	Satır Aralığını Beş Birim Azalt
@@ -4949,47 +3066,26 @@
 	Decrease Video Tracks Height	Video İzlerinin Yüksekliğini Azalt
 	Delete Captions	Altyazıları Sil
 	Delete Graphic Layer	Grafik Katmanını Sil
-<<<<<<< HEAD
-	Delete Guide Template	Rehber Şablonunu Sil
-	Delete Media Cache Files	Medya Önbellek Dosyalarını Sil
-	Discard Unsaved Changes	Kaydedilmemiş Değişiklikleri Sil/At
-=======
 	Delete Guide Template	Kılavuz Şablonunu Sil
 	Delete Media Cache Files	Medya Önbellek Dosyalarını Sil
 	Discard Unsaved Changes	Kaydedilmemiş Değişiklikleri Yoksay
->>>>>>> upstream/main
 	Does Not Contain	İçermez
 	Download Speech Model	Konuşma Modelini İndir
 	Dynamic Trim Stop	Dinamik Kırpmayı Durdur
 	Edit Caption Text	Altyazı Metnini Düzenle
-<<<<<<< HEAD
-	Ellipse Tool	Ellips Aracı
-	Ends With	Şununla Biter
-	Entire Source	Tüm Kaynak
-	EssentialSound	Temel Ses (Essential Sound)
-=======
 	Ellipse Tool	Elips Aracı
 	Ends With	Şununla Biter
 	Entire Source	Tüm Kaynak
 	EssentialSound	Temel Ses
->>>>>>> upstream/main
 	Export Frame	Kareyi Dışa Aktar
 	Extend Next Edit To Playhead	Sonraki Kesimi Oynatma Kafasına Uzat
 	Extend Previous Edit To Playhead	Önceki Kesimi Oynatma Kafasına Uzat
 	Extend Selected Edit to Playhead	Seçili Kesimi Oynatma Kafasına Uzat
-<<<<<<< HEAD
-	Extend Selection Down	Seçimi Aşağı Uzat
-	Extend Selection Left	Seçimi Sola Uzat
-	Extend Selection Right	Seçimi Sağa Uzat
-	Extend Selection Up	Seçimi Yukarı Uzat
-	Fade In	Girişte Kararma/Aydınlanma (Fade In)
-=======
 	Extend Selection Down	Seçimi Aşağı Genişlet
 	Extend Selection Left	Seçimi Sola Genişlet
 	Extend Selection Right	Seçimi Sağa Genişlet
 	Extend Selection Up	Seçimi Yukarı Genişlet
 	Fade In	Açılarak Giriş
->>>>>>> upstream/main
 	Gaussian Blur from 0 to 60 over the last second	Son saniye boyunca 0'dan 60'a Gauss Bulanıklığı
 	Gaussian Blur from 60 to 0 over the first second	İlk saniye boyunca 60'tan 0'a Gauss Bulanıklığı
 	Generate Ducking Keyframes	Ducking Anahtar Kareleri Oluştur
@@ -4999,22 +3095,6 @@
 	Go to Previous Edit Point on Any Track	Herhangi Bir İzdeki Önceki Kesim Noktasına Git
 	Go to Selected Clip End	Seçili Klibin Sonuna Git
 	Go to Selected Clip Start	Seçili Klibin Başına Git
-<<<<<<< HEAD
-	Go to Sequence End	Dizinin Sonuna Git
-	Go to Sequence Start	Dizinin Başına Git
-	H.264	H.264
-	AV1	AV1
-	H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps	Video paylaşım siteleri için H.264 1920×1080, VBR 1 geçiş, 16 Mbps
-	H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps	H.264 1920×1080, VBR 1 geçiş, 20 Mbps hedef, AAC 320 kbps
-	H.264 1920×1080, VBR 2 pass, 18 Mbps	H.264 1920×1080, VBR 2 geçiş, 18 Mbps
-	H.264 3840×2160 for video sharing sites, VBR 1 pass, 45 Mbps	Video paylaşım siteleri için H.264 3840×2160, VBR 1 geçiş, 45 Mbps
-	H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps	H.264 3840×2160, VBR 1 geçiş, 60 Mbps hedef, AAC 320 kbps
-	H.264 3840×2160, VBR 2 pass, 50 Mbps	H.264 3840×2160, VBR 2 geçiş, 50 Mbps
-	H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps	Kısa sosyal videolar için H.264 9:16 dikey, doldurmak için ölçeklendirilmiş, 12 Mbps
-	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	Dizinin kare boyutunda ve hızında H.264; piksel başına 0.05 bit
-	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	Dizinin kare boyutunda ve hızında H.264; piksel başına 0.1 bit
-	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	Dizinin kare boyutunda ve hızında H.264; bit hızı kare boyutuna uyarlanır (piksel başına 0.2 bit)
-=======
 	Go to Sequence End	Sekansın Sonuna Git
 	Go to Sequence Start	Sekansın Başına Git
 	H.264	H.264
@@ -5029,38 +3109,23 @@
 	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	Sekansın kare boyutu ve hızında H.264; piksel başına 0,05 bit
 	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	Sekansın kare boyutu ve hızında H.264; piksel başına 0,1 bit
 	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	Sekansın kare boyutu ve hızında H.264; bit hızı kare boyutuna uyarlanır (piksel başına 0,2 bit)
->>>>>>> upstream/main
 	HD Anamorphic 1080 (1.333)	HD Anamorfik 1080 (1.333)
 	Hand Tool	El Aracı
 	High Quality 1080p HD	Yüksek Kalite 1080p HD
 	High Quality 2160p 4K	Yüksek Kalite 2160p 4K
-<<<<<<< HEAD
-	Image Sequence	Görüntü Dizisi
-	Increase Audio Tracks Height	Ses İzlerinin Yüksekliğini Artır
-	Increase Clip Volume	Klip Ses Seviyesini Artır
-	Increase Clip Volume Many	Klip Ses Seviyesini Çok Artır
-=======
 	Image Sequence	Görüntü Sekansı
 	Increase Audio Tracks Height	Ses İzlerinin Yüksekliğini Artır
 	Increase Clip Volume	Klip Ses Düzeyini Artır
 	Increase Clip Volume Many	Klip Ses Düzeyini Çok Artır
->>>>>>> upstream/main
 	Increase Font Size by Five Units	Yazı Tipi Boyutunu Beş Birim Artır
 	Increase Font Size by One Unit	Yazı Tipi Boyutunu Bir Birim Artır
 	Increase Leading by Five Units	Satır Aralığını Beş Birim Artır
 	Increase Leading by One Unit	Satır Aralığını Bir Birim Artır
 	Increase Video Tracks Height	Video İzlerinin Yüksekliğini Artır
-<<<<<<< HEAD
-	Large blocks resolving to the picture over the first second	İlk saniyede görüntüye dönüşen büyük bloklar
-	Left align text	Metni sola yasla
-	Looping GIF, 640×360 at 15 fps	Döngüsel GIF, 15 fps'de 640×360
-	Lower First	Önce Alt Saha (Lower First)
-=======
 	Large blocks resolving to the picture over the first second	İlk saniye boyunca görüntüye dönüşen büyük bloklar
 	Left align text	Metni sola hizala
 	Looping GIF, 640×360 at 15 fps	Döngüsel GIF, 15 fps'de 640×360
 	Lower First	Önce Alt Alan
->>>>>>> upstream/main
 	Lumetri	Lumetri
 	MXF OP-Atom	MXF OP-Atom
 	MXF OP-Atom DNxHR (Avid)	MXF OP-Atom DNxHR (Avid)
@@ -5068,21 +3133,6 @@
 	MXF OP1a DNxHR HQ	MXF OP1a DNxHR HQ
 	MXF OP1a H.264	MXF OP1a H.264
 	MXF OP1a ProRes 422 HQ	MXF OP1a ProRes 422 HQ
-<<<<<<< HEAD
-	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, başlangıç zaman kodu
-	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a, H.264 High long GOP (piksel başına 0.3 bit), 24-bit 48 kHz PCM
-	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, başlangıç zaman kodu
-	Main	Ana
-	Mark In (Hover Scrub)	Giriş Noktası Koy (Gezinerek)
-	Mark Out (Hover Scrub)	Çıkış Noktası Koy (Gezinerek)
-	Masks	Maskeler
-	Match Source – Adaptive High Bitrate	Kaynakla Eşleştir – Adaptif Yüksek Bit Hızı
-	Match Source – Adaptive Low Bitrate	Kaynakla Eşleştir – Adaptif Düşük Bit Hızı
-	Match Source – Adaptive Medium Bitrate	Kaynakla Eşleştir – Adaptif Orta Bit Hızı
-	Matches	Eşleşenler
-	Maximize or Restore Active Frame	Etkin Kareyi Büyüt veya Geri Yükle
-	Maximize or Restore Frame Under Cursor	Imleç Altındaki Kareyi Büyüt veya Geri Yükle
-=======
 	MXF OP1a, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM, start timecode	MXF OP1a, DNxHR HQ (8 bit 4:2:2), 24 bit 48 kHz PCM, başlangıç zaman kodu
 	MXF OP1a, H.264 High long GOP (0.3 bits per pixel), 24-bit 48 kHz PCM	MXF OP1a, H.264 High uzun GOP (piksel başına 0,3 bit), 24 bit 48 kHz PCM
 	MXF OP1a, ProRes 422 HQ, 24-bit 48 kHz PCM, start timecode	MXF OP1a, ProRes 422 HQ, 24 bit 48 kHz PCM, başlangıç zaman kodu
@@ -5096,16 +3146,11 @@
 	Matches	Eşleşir
 	Maximize or Restore Active Frame	Etkin Çerçeveyi Büyüt veya Geri Yükle
 	Maximize or Restore Frame Under Cursor	İmleç Altındaki Çerçeveyi Büyüt veya Geri Yükle
->>>>>>> upstream/main
 	Media Browser Settings	Medya Tarayıcısı Ayarları
 	MediaBrowser	Medya Tarayıcısı
 	MediaCache	Medya Önbelleği
 	Merge Captions	Altyazıları Birleştir
-<<<<<<< HEAD
-	Mixer	Miksaj Paneli
-=======
 	Mixer	Karıştırıcı
->>>>>>> upstream/main
 	Mosaic In	Mozaik Giriş
 	Move All Audio Targets Down	Tüm Ses Hedeflerini Aşağı Taşı
 	Move All Audio Targets Up	Tüm Ses Hedeflerini Yukarı Taşı
@@ -5143,76 +3188,6 @@
 	Nudge Selected Object to right by one	Seçili Nesneyi Bir Birim Sağa Kaydır
 	Nudge Selected Object up by five	Seçili Nesneyi Beş Birim Yukarı Kaydır
 	Nudge Selected Object up by one	Seçili Nesneyi Bir Birim Yukarı Kaydır
-<<<<<<< HEAD
-	Nudge Volume +1dB	Ses Seviyesini Kaydır +1dB
-	Nudge Volume +3dB	Ses Seviyesini Kaydır +3dB
-	Nudge Volume -1dB	Ses Seviyesini Kaydır -1dB
-	Nudge Volume -3dB	Ses Seviyesini Kaydır -3dB
-	Numbered BMP stills (24-bit)	Numaralandırılmış BMP Kareleri (24-bit)
-	JPEG	JPEG
-	Targa	Targa
-	DPX	DPX
-	JPEG Sequence	JPEG Dizisi
-	Targa Sequence	Targa Dizisi
-	DPX Sequence	DPX Dizisi
-	Numbered JPEG stills (quality 90)	Numaralandırılmış JPEG Kareleri (kalite 90)
-	Numbered Targa stills (24-bit, uncompressed)	Numaralandırılmış Targa Kareleri (24-bit, sıkıştırılmamış)
-	Numbered DPX stills (10-bit RGB)	Numaralandırılmış DPX Kareleri (10-bit RGB)
-	OpenEXR	OpenEXR
-	OpenEXR Sequence	OpenEXR Dizisi
-	Numbered OpenEXR stills (half float, linear, uncompressed)	Numaralandırılmış OpenEXR Kareleri (yarı kayan noktalı, lineer, sıkıştırılmamış)
-	Numbered PNG stills at the sequence's frame size	Dizinin kare boyutunda numaralandırılmış PNG kareleri
-	Numbered TIFF stills (RGB, 8-bit)	Numaralandırılmış TIFF Kareleri (RGB, 8-bit)
-	Opacity 0 → 100 % over the first second	İlk saniyede Opaklık %0 → %100
-	Opacity 100 → 0 % over the last second	Son saniyede Opaklık %100 → %0
-	Open Bin	Havuzu Aç
-	Open Search	Aramayı Aç
-	PNG	PNG
-	PNG Sequence	PNG Dizisi
-	Panel	Panel
-	Pen Tool	Kalem Aracı
-	PiP 35% Upper Right	PiP %35 Sağ Üst
-	Picture-in-picture: 35 % scale in the upper right	Picture-in-picture: Sağ üstte %35 ölçek
-	Play Around	Çevresini Oynat
-	Play In to Out with Preroll/Postroll	Ön/Son Sarma ile Girişten Çıkışa Oynat
-	Play from Playhead to Out Point	Oynatma Kafasından Çıkış Noktasına Oynat
-	Play/Stop	Oynat/Durdur
-	Previous Multi-Camera Page	Önceki Çoklu Kamera Sayfası
-	Progressive	Aşamalı (Progressive)
-	ProjectPanel	Proje Paneli
-	QuickTime (Motion JPEG)	QuickTime (Motion JPEG)
-	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-10 (10-bit 4:2:2), 24-bit 48 kHz PCM
-	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, APV 422-12 (12-bit 4:2:2), 24-bit 48 kHz PCM
-	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR HQ (8-bit 4:2:2), 24-bit 48 kHz PCM
-	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR LB (8-bit 4:2:2), 24-bit 48 kHz PCM
-	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM	QuickTime, DNxHR SQ (8-bit 4:2:2), 24-bit 48 kHz PCM
-	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM	QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM
-	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM	QuickTime, ProRes 422 LT, 24-bit 48 kHz PCM
-	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM	QuickTime, ProRes 422 Proxy, 24-bit 48 kHz PCM
-	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4), 24-bit 48 kHz PCM
-	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) alfa kanallı, 24-bit 48 kHz PCM
-	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM
-	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, 24-bit 48 kHz PCM
-	Quit FilmCraft	FilmCraft'tan Çık
-	Rate Stretch Tool	Hız Uzatma Aracı
-	Razor Tool	Lama/Kesme Aracı
-	Rectangle Tool	Dikdörtgen Aracı
-	Remix Tool	Remix Aracı
-	Revert	Geri Dön
-	Revert Remix	Önceki sürüme dönme (remix)
-	Reverse Match Frame	Ters Eşleşen Kare
-	Selection Follows Playhead	Seçim Oynatma Göstergesini İzler
-	Show Through Edits	Bütünsel Kesimleri Göster
-	Show All Marker Colors	Tüm İşaretleyici Renklerini Göster
-	Show All Caption Tracks	Tüm Altyazı İzlerini Göster
-	Show Active Caption Tracks Only	Yalnızca Etkin Altyazı İzlerini Göster
-	Ripple Sequence Markers	Dizi İşaretçilerini Kaydır
-	Reset All Parameters	Tüm Parametreleri Resetle
-	Right align text	Metni sağa yasla
-	Ripple Trim Next Edit to Playhead	Sonraki Kesimi Oynatma Kafasına Dalgalı Kırp
-	Ripple Trim Previous Edit to Playhead	Önceki Kesimi Oynatma Kafasına Dalgalı Kırp
-	Render Effects In to Out	Girişten Çıkışa Efektleri Render Et
-=======
 	Nudge Volume +1dB	Ses Düzeyini +1 dB Ayarla
 	Nudge Volume +3dB	Ses Düzeyini +3 dB Ayarla
 	Nudge Volume -1dB	Ses Düzeyini -1 dB Ayarla
@@ -5272,7 +3247,6 @@
 	Ripple Trim Next Edit to Playhead	Sonraki Kesimi Oynatma Kafasına Kaydırarak Kırp
 	Ripple Trim Previous Edit to Playhead	Önceki Kesimi Oynatma Kafasına Kaydırarak Kırp
 	Rolling Edit Tool	Rulo Düzenleme Aracı
->>>>>>> upstream/main
 	Select Camera 1	Kamera 1'i Seç
 	Select Camera 2	Kamera 2'yi Seç
 	Select Camera 3	Kamera 3'ü Seç
@@ -5294,29 +3268,6 @@
 	Select to Previous Word	Önceki Kelimeye Kadar Seç
 	Select to Segment End	Segment Sonuna Kadar Seç
 	Select to Segment Start	Segment Başına Kadar Seç
-<<<<<<< HEAD
-	Select Label Group	Etiket Grubunu Seçin
-	Selection Tool	Seçim Aracı
-	Set Comparison Reference	Karşılaştırma Referansını Ayarla
-	Set Creative Look	Kreatif Görünümü Ayarla
-	Set Input LUT	Girdi LUT'sini Ayarla
-	Set Project Panel View	Proje Paneli Görünümünü Ayarla
-	Show Next Screen	Sonraki Ekranı Göster
-	Show Previous Screen	Önceki Ekranı Göster
-	Show Program Transcript	Program Deşifresini Göster
-	Transcript	Konuşma Metni
-	Shuttle Slow Left	Yavaş Sola Mekik
-	Shuttle Slow Right	Yavaş Sağa Mekik
-	Slide Clip Selection Left Five Frames	Klip Seçimini Beş Kare Sola Kaydır (Slide)
-	Slide Clip Selection Left One Frame	Klip Seçimini Bir Kare Sola Kaydır (Slide)
-	Slide Clip Selection Right Five Frames	Klip Seçimini Beş Kare Sağa Kaydır (Slide)
-	Slide Clip Selection Right One Frame	Klip Seçimini Bir Kare Sağa Kaydır (Slide)
-	Slip Clip Selection Left Five Frames	Klip Seçimini Beş Kare Sola Kaydır (Slip)
-	Slip Clip Selection Left One Frame	Klip Seçimini Bir Kare Sola Kaydır (Slip)
-	Slip Clip Selection Right Five Frames	Klip Seçimini Beş Kare Sağa Kaydır (Slip)
-	Slip Clip Selection Right One Frame	Klip Seçimini Bir Kare Sağa Kaydır (Slip)
-	Social Vertical 1080×1920	Sosyal Dikey 1080×1920
-=======
 	Selection Tool	Seçim Aracı
 	Set Comparison Reference	Karşılaştırma Referansını Ayarla
 	Set Creative Look	Yaratıcı Görünümü Ayarla
@@ -5341,51 +3292,27 @@
 	Slip Clip Selection Right One Frame	Klip Seçimini Bir Kare Sağa Kaydır
 	Slip Tool	Kaydırma Aracı
 	Social Vertical 1080×1920	Sosyal Medya Dikey 1080×1920
->>>>>>> upstream/main
 	Soft Vignette	Yumuşak Vinyet
 	Source In/Out	Kaynak Giriş/Çıkış
 	Split Caption	Altyazıyı Böl
 	Square Pixels (1.0)	Kare Pikseller (1.0)
-<<<<<<< HEAD
-	Stack Clips	Klipleri Üst Üste İstifle
-	Start Export Queue	Dışa Aktarım Kuyruğunu Başlat
-=======
 	Stack Clips	Klipleri Yığınla
 	Start Export Queue	Dışa Aktarma Kuyruğunu Başlat
->>>>>>> upstream/main
 	Start Voice-over Recording	Dış Ses Kaydını Başlat
 	Step Back Five Frames	Beş Kare Geri Git
 	Step Back One Frame	Bir Kare Geri Git
 	Step Forward Five Frames	Beş Kare İleri Git
 	Step Forward One Frame	Bir Kare İleri Git
-<<<<<<< HEAD
-	Stop Export Queue	Dışa Aktarım Kuyruğunu Durdur
-	Stop Multi-Camera Recording	Çoklu Kamera Kaydını Durdur
-	Stop Voice-over Recording	Dış Ses Kaydını Durdur
-	Sync Voice-over Capture	Dış Ses Yakalamayı Senkronize Et
-	TIFF	TIFF
-	TIFF Sequence	TIFF Dizisi
-=======
 	Stop Export Queue	Dışa Aktarma Kuyruğunu Durdur
 	Stop Multi-Camera Recording	Çoklu Kamera Kaydını Durdur
 	Stop Voice-over Recording	Dış Ses Kaydını Durdur
 	Sync Voice-over Capture	Dış Ses Yakalamayı Eşitle
 	TIFF	TIFF
 	TIFF Sequence	TIFF Sekansı
->>>>>>> upstream/main
 	TextPanel	Metin Paneli
 	Thumbnail Size Next	Sonraki Küçük Resim Boyutu
 	Thumbnail Size Previous	Önceki Küçük Resim Boyutu
 	Toggle All Audio Targets	Tüm Ses Hedeflerini Aç/Kapat
-<<<<<<< HEAD
-	Toggle All Source Audio	Tüm Kaynak Sesleri Aç/Kapat
-	Toggle All Source Video	Tüm Kaynak Videoları Aç/Kapat
-	Toggle All Video Targets	Tüm Video Hedeflerini Aç/Kapat
-	Toggle Audio During Scrubbing	Sürükleme Sırasında Sesi Aç/Kapat
-	Toggle Full Screen	Tam Ekranı Aç/Kapat
-	Toggle Mute for All Targeted Audio Tracks	Tüm Hedeflenen Ses İzleri İçin Sesi Kısmayı Aç/Kapat
-	Toggle Solo for All Targeted Audio Tracks	Tüm Hedeflenen Ses İzleri İçin Solo İşlevini Aç/Kapat
-=======
 	Toggle All Source Audio	Tüm Kaynak Sesi Aç/Kapat
 	Toggle All Source Video	Tüm Kaynak Videoyu Aç/Kapat
 	Toggle All Video Targets	Tüm Video Hedeflerini Aç/Kapat
@@ -5393,7 +3320,6 @@
 	Toggle Full Screen	Tam Ekranı Aç/Kapat
 	Toggle Mute for All Targeted Audio Tracks	Tüm Hedef Ses İzleri İçin Sessize Almayı Aç/Kapat
 	Toggle Solo for All Targeted Audio Tracks	Tüm Hedef Ses İzleri İçin Soloyu Aç/Kapat
->>>>>>> upstream/main
 	Toggle Source/Program Monitor Focus	Kaynak/Program Monitörü Odağını Değiştir
 	Toggle Target Audio 1	Hedef Ses 1'i Aç/Kapat
 	Toggle Target Audio 2	Hedef Ses 2'yi Aç/Kapat
@@ -5411,29 +3337,18 @@
 	Toggle Target Video 6	Hedef Video 6'yı Aç/Kapat
 	Toggle Target Video 7	Hedef Video 7'yi Aç/Kapat
 	Toggle Target Video 8	Hedef Video 8'i Aç/Kapat
-<<<<<<< HEAD
-	Toggle Track Output for All Targeted Video Tracks	Tüm Hedeflenen Video İzleri İçin İz Çıktısını Aç/Kapat
-	Toggle Trim Type	Kırpma Türünü Değiştir
-	Toggle View	Görünümü Değiştir
-=======
 	Toggle Track Output for All Targeted Video Tracks	Tüm Hedef Video İzleri İçin İz Çıkışını Aç/Kapat
 	Toggle Trim Type	Kırpma Türünü Değiştir
 	Toggle View	Görünümü Değiştir
 	Track Select Backward Tool	Geri İz Seçim Aracı
 	Track Select Forward Tool	İleri İz Seçim Aracı
->>>>>>> upstream/main
 	Track Selected Mask	Seçili Maskeyi Takip Et
 	Trim Next Edit to Playhead	Sonraki Kesimi Oynatma Kafasına Kırp
 	Trim Previous Edit to Playhead	Önceki Kesimi Oynatma Kafasına Kırp
 	Trimming	Kırpma
 	Type Tool	Yazı Aracı
-<<<<<<< HEAD
-	Unstack Clips	İstiflenmiş Klipleri Ayır
-	Upper First	Önce Üst Saha (Upper First)
-=======
 	Unstack Clips	Klipleri Yığından Çıkar
 	Upper First	Önce Üst Alan
->>>>>>> upstream/main
 	VBR, 1 pass	VBR, 1 geçiş
 	VBR, 2 pass	VBR, 2 geçiş
 	CRF (constant quality)	CRF (sabit kalite)
@@ -5441,18 +3356,6 @@
 	Vimeo 2160p 4K Ultra HD	Vimeo 2160p 4K Ultra HD
 	Voice-over Record	Dış Ses Kaydı
 	Voiceover	Dış Ses
-<<<<<<< HEAD
-	WAV, stereo 48 kHz 16-bit PCM	WAV, stereo 48 kHz 16-bit PCM
-	WAV, stereo 48 kHz 24-bit PCM	WAV, stereo 48 kHz 24-bit PCM
-	Warm Tint	Sıcak Renk Tonu
-	Warm highlights, brown shadows	Sıcak vurgular, kahverengi gölgeler
-	Waveform Audio	Dalga Formu Ses (Waveform)
-	Waveform Audio 48 kHz 16-bit	Dalga Formu Ses 48 kHz 16-bit
-	Waveform Audio 48 kHz 24-bit	Dalga Formu Ses 48 kHz 24-bit
-	Web & Social	Web ve Sosyal Medya
-	Work Area	Çalışma Alanı
-	Write Automation	Yazma Otomasyonu
-=======
 	WAV, stereo 48 kHz 16-bit PCM	WAV, stereo 48 kHz 16 bit PCM
 	WAV, stereo 48 kHz 24-bit PCM	WAV, stereo 48 kHz 24 bit PCM
 	Warm Tint	Sıcak Renk Tonu
@@ -5463,44 +3366,24 @@
 	Web & Social	Web ve Sosyal Medya
 	Work Area	Çalışma Alanı
 	Write Automation	Otomasyon Yaz
->>>>>>> upstream/main
 	YouTube 1080p Full HD	YouTube 1080p Full HD
 	YouTube 2160p 4K Ultra HD	YouTube 2160p 4K Ultra HD
 	Zoom Program Monitor to 100%	Program Monitörünü %100 Yakınlaştır
 	Zoom Program Monitor to Fit	Program Monitörünü Ekrana Sığdır
 	Zoom Source Monitor to 100%	Kaynak Monitörünü %100 Yakınlaştır
 	Zoom Source Monitor to Fit	Kaynak Monitörünü Ekrana Sığdır
-<<<<<<< HEAD
-	Zoom Tool	Yakınlaştırma Aracı (Zoom Tool)
-	with:	şununla:
-	Interface Language	Arayüz Dili
-	System Language	Sistem Dili
-	Cinematic	Sinematik
-	Film Emulation	Pellikola Emülasyonu
-=======
 	Zoom Tool	Yakınlaştırma Aracı
 	with:	Şununla:
 	Interface Language	Arayüz Dili
 	System Language	Sistem Dili
 	Cinematic	Sinematik
 	Film Emulation	Film Emülasyonu
->>>>>>> upstream/main
 	Technical	Teknik
 	Teal Shadows, Warm Skin	Camgöbeği Gölgeler, Sıcak Ten
 	Night Exterior	Gece Dış Mekan
 	Golden Dusk	Altın Alacakaranlık
 	Steel Blue	Çelik Mavisi
 	Hard Sun	Sert Güneş
-<<<<<<< HEAD
-	Faded Print	Sbişmiş Baskı
-	Silver Retention	Gümüş Tutma (Bleach Bypass)
-	Cross Processed	Çapraz İşlenmiş (Cross Processed)
-	Warm Negative	Sıcak Negatif
-	Neutral Mono	Nötr Mono
-	Hard Mono	Sert Mono
-	Sepia Tone	Sepya Tonu
-	Cold Mono	Soğuk Mono
-=======
 	Faded Print	Soluk Baskı
 	Silver Retention	Gümüş Tutma
 	Cross Processed	Çapraz İşlenmiş
@@ -5509,22 +3392,14 @@
 	Hard Mono	Sert Monokrom
 	Sepia Tone	Sepya Tonu
 	Cold Mono	Soğuk Monokrom
->>>>>>> upstream/main
 	Lift Shadows	Gölgeleri Yükselt
 	Protect Highlights	Vurguları Koru
 	Half Saturation	Yarı Doygunluk
 	Boost Vibrance	Canlılığı Artır
-<<<<<<< HEAD
-	Legal Range Squeeze	Yasal Aralık Sıkıştırma
-	A boxed label with a round pointer; move the label and the pointer follows.	Yuvarlak işaretçili kutu içinde bir etiket; etiketi taşıdığınızda işaretçi de takip eder.
-	A rounded tag that fits its text, with a status dot.	Metnine uyum sağlayan, durum noktalı yuvarlatılmış bir etiket.
-	A title on a rounded card with a soft shadow.	Yumuşak gölgeli, yuvarlatılmış bir kart üzerinde başlık.
-=======
 	Legal Range Squeeze	Yasal Aralık Sıkıştırması
 	A boxed label with a round pointer; move the label and the pointer follows.	Yuvarlak işaretçiye sahip kutulu bir etiket; etiketi taşıdığınızda işaretçi onu takip eder.
 	A rounded tag that fits its text, with a status dot.	Metnine uyum sağlayan durum noktalı yuvarlak bir etiket.
 	A title on a rounded card with a soft shadow.	Yumuşak gölgeli yuvarlak bir kart üzerinde başlık.
->>>>>>> upstream/main
 	Accent Color	Vurgu Rengi
 	Bar Color	Çubuk Rengi
 	Box Color	Kutu Rengi
@@ -5532,24 +3407,6 @@
 	Callout – Pointer	Açıklama – İşaretçi
 	Callout – Tag	Açıklama – Etiket
 	Callouts	Açıklamalar
-<<<<<<< HEAD
-	Credits	Jenerik / Emeği Geçenler
-	Dot Color	Nokta Rengi
-	Heading	Başlık
-	Large centred title, accent rule and subtitle.	Büyük ortalanmış başlık, vurgu çizgisi ve alt başlık.
-	Lower Third – Rule	Alt Üçte Bir – Çizgili
-	Lower Third – Slab	Alt Üçte Bir – Bloklu
-	Lower Thirds	Alt Üçte Birler (Lower Thirds)
-	Name Color	İsim Rengi
-	Name Size	İsim Boyutu
-	Name and role on a coloured slab that widens with the name.	İsimle birlikte genişleyen renkli bir blok üzerinde isim ve rol.
-	Name over a thin rule that always matches the name's width.	Her zaman ismin genişliğiyle eşleşen ince bir çizgi üzerinde isim.
-	Pointer Color	İşaretçi Rengi
-	Role	Rol
-	Rule Color	Çizgi Rengi
-	Show Dot	Noktayı Göster
-	Show Role	Rolü Göster
-=======
 	Credits	Jenerik
 	Dot Color	Nokta Rengi
 	Heading	Başlık
@@ -5566,7 +3423,6 @@
 	Rule Color	Çizgi Rengi
 	Show Dot	Noktayı Göster
 	Show Role	Unvanı Göster
->>>>>>> upstream/main
 	Slab Color	Blok Rengi
 	Tag Color	Etiket Rengi
 	Title Color	Başlık Rengi
@@ -5574,26 +3430,6 @@
 	Title – Boxed	Başlık – Kutulu
 	Title – Centered	Başlık – Ortalanmış
 	Titles	Başlıklar
-<<<<<<< HEAD
-	Select an item to preview it	Önizlemek için bir öğe seçin
-	End Credits	Kapanış Jeneriği
-	End Credits – Roll	Kapanış Jeneriği – Dikey Kayma
-	Ticker – Crawl	Kayan Yazı – Yatay Kayma
-	Centred credits that roll up from below the frame and leave at the top.	Ekranın altından yukarı doğru kayan ve üstten çıkan ortalanmış jenerik.
-	A news-style line that crawls in from the right and leaves at the left.	Sağdan girip soldan çıkan haber tarzı kayan çizgi.
-	out	çıkış
-	in	giriş
-	The language changed but could not be saved: {e}	Dil değiştirildi ancak kaydedilemedi: {e}
-	no Chinese font is installed on this system; the interface stays in English	Bu sistemde Çince yazı tipi yüklü değil; arayüz İngilizce kalacak
-	no Japanese font is installed on this system; the interface stays in English	Bu sistemde Japonca yazı tipi yüklü değil; arayüz İngilizce kalacak
-	Show	Göster
-	Sort	Sırala
-	Reverse the order	Sırayı tersine çevir
-	Grab bag	Karışık Kutusu
-	Table	Tablo
-	No contributor data was built into this copy.	Bu sürüme hiçbir katkıda bulunan verisi dahil edilmedi.
-	No model credits were built into this copy.	Bu sürüme hiçbir model jeneriği dahil edilmedi.
-=======
 	Select an item to preview it	Önizlemek için bir öge seçin
 	End Credits	Kapanış Jeneriği
 	End Credits – Roll	Kapanış Jeneriği – Kayan
@@ -5613,27 +3449,11 @@
 	Table	Tablo
 	No contributor data was built into this copy.	Bu kopyaya katkıda bulunan verisi dahil edilmedi.
 	No model credits were built into this copy.	Bu kopyaya model katkı bilgisi dahil edilmedi.
->>>>>>> upstream/main
 	Company	Şirket
 	Model	Model
 	Version	Sürüm
 	Commits	Commit'ler
 	% of all commits	Tüm commit'lerin %'si
-<<<<<<< HEAD
-	Lines +/−	Satır +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Ses çıkışı başarısız oldu: Sessiz oynatılıyor (Ayarlar ▸ Ses Donanımı kısmını kontrol edin)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Ses çıkışı yanıt vermiyor: Sessiz oynatılıyor (Ayarlar ▸ Ses Donanımı kısmını kontrol edin)
-	Clip Speed / Duration	Klip Hızı / Süresi
-	Speed:	Hız:
-	Reverse Speed	Ters Hız
-	Ripple Edit, Shifting Trailing Clips	Dalgalı Düzenleme, Takip Eden Klipleri Kaydırma
-	About	Hakkında
-	Contributors	Katkıda Bulunanlar
-	Models	Modeller
-	Main (8-bit)	Main (8-bit)
-	Main 10 (10-bit, HDR)	Main 10 (10-bit, HDR)
-	Main (8-bit; Main 10 for HDR sequences)	Main (8-bit; HDR dizileri için Main 10)
-=======
 	Lines +/−	Satırlar +/−
 	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Ses çıkışı başarısız oldu: sessiz oynatılıyor (Ayarlar ▸ Ses Donanımı bölümünü kontrol edin)
 	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Ses çıkışı yanıt vermiyor: sessiz oynatılıyor (Ayarlar ▸ Ses Donanımı bölümünü kontrol edin)
@@ -5647,7 +3467,6 @@
 	Main (8-bit)	Main (8 bit)
 	Main 10 (10-bit, HDR)	Main 10 (10 bit, HDR)
 	Main (8-bit; Main 10 for HDR sequences)	Main (8 bit; HDR sekansları için Main 10)
->>>>>>> upstream/main
 	Encoder	Kodlayıcı
 	Hardware (H.265 has no software encoder)	Donanım (H.265'in yazılımsal kodlayıcısı yoktur)
 	Hardware (AV1 has no software encoder)	Donanım (AV1'in yazılımsal kodlayıcısı yoktur)
@@ -5656,19 +3475,6 @@
 	Paragraph Text	Paragraf Metni
 	Point Text	Nokta Metni
 	Text Layer Type	Metin Katmanı Türü
-<<<<<<< HEAD
-	Text Styling	Metin Stili
-	New Color Matte	Yeni Renk Maskesi (Color Matte)
-	Color Matte Color	Renk Maskesi Rengi
-	Color:	Renk:
-	 · {time} left	 · {time} kaldı
-	Discard take	Çekimi/Kaydı at
-	Voice-over take discarded	Dış ses kaydı atıldı
-	Binary assets added	İkili varlıklar eklendi
-	Binary assets removed	İkili varlıklar kaldırıldı
-	Deselect All Project Items	Tüm Proje Öğelerinin Seçimini Kaldır
-	Display name	Görüntülenen ad
-=======
 	Text Styling	Metin Biçimlendirme
 	New Color Matte	Yeni Renk Matı
 	Color Matte Color	Renk Matı Rengi
@@ -5680,7 +3486,6 @@
 	Binary assets removed	İkili varlıklar kaldırıldı
 	Deselect All Project Items	Tüm Proje Ögelerinin Seçimini Kaldır
 	Display name	Görünen ad
->>>>>>> upstream/main
 	First commit	İlk commit
 	H.265 (HEVC)	H.265 (HEVC)
 	Last commit	Son commit
@@ -5690,11 +3495,7 @@
 	Merged PRs	Birleştirilen PR'lar
 	Name (A–Z)	Ad (A–Z)
 	Real name	Gerçek ad
-<<<<<<< HEAD
-	Select All Project Items	Tüm Proje Öğelerini Seç
-=======
 	Select All Project Items	Tüm Proje Ögelerini Seç
->>>>>>> upstream/main
 	Username	Kullanıcı adı
 	Vertical Type Tool	Dikey Yazı Aracı
 	Go to previous keyframe	Önceki anahtar kareye git
@@ -5702,24 +3503,6 @@
 	Add keyframe	Anahtar kare ekle
 	Remove keyframe	Anahtar kareyi kaldır
 	Turn on animation and add keyframe	Animasyonu aç ve anahtar kare ekle
-<<<<<<< HEAD
-	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	Seçmek için tıklayın veya seçim kutusu oluşturmak için boş bir alana tıklayıp sürükleyin. Diğer seçenekler için Shift, Alt ve Ctrl kullanın.
-	Click to zoom in; Alt-click to zoom out.	Yakınlaşmak için tıklayın; Alt+tık ile uzaklaşın.
-	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Sürükle: taşı · Alt+tık: yumuşat/köşe · Ctrl+tık: sil
-	Drag inward to round the corners	Köşeleri yuvarlatmak için içe doğru sürükleyin
-	Include Alpha Channel	Alfa Kanalını Dahil Et
-	Sequence Settings	Dizi Ayarları
-	Color Management	Renk Yönetimi
-	VR Properties	VR Özellikleri
-	Editing Mode:	Kurgu Modu:
-	Timebase:	Zaman Tabanı:
-	Frame Size:	Kare Boyutu:
-	Pixel Aspect Ratio:	Piksel En Boy Oranı:
-	Fields:	Sahalar (Fields):
-	Channel Format:	Kanal Biçimi:
-	Number of Channels:	Kanal Sayısı:
-	Preview File Format:	Önizleme Dosya Biçimi:
-=======
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Alt, and Ctrl for other options.	Seçmek için tıklayın veya çerçeve seçimi yapmak için boş alana tıklayıp sürükleyin. Diğer seçenekler için Shift, Alt ve Ctrl tuşlarını kullanın.
 	Click to zoom in; Alt-click to zoom out.	Yakınlaştırmak için tıklayın; uzaklaştırmak için Alt tuşuyla tıklayın.
 	Drag: move · Alt-click: smooth/corner · Ctrl-click: delete	Sürükle: taşı · Alt-tıkla: yumuşat/köşe · Ctrl-tıkla: sil
@@ -5736,35 +3519,11 @@
 	Channel Format:	Kanal Formatı:
 	Number of Channels:	Kanal Sayısı:
 	Preview File Format:	Önizleme Dosyası Formatı:
->>>>>>> upstream/main
 	Working Color Space:	Çalışma Renk Uzayı:
 	Projection:	Projeksiyon:
 	Layout:	Düzen:
 	Captured View:	Yakalanan Görünüm:
 	Video Previews	Video Önizlemeleri
-<<<<<<< HEAD
-	No Fields (Progressive Scan)	Sahasız (Aşamalı Taramalı / Progressive)
-	Custom ({ratio})	Özel ({ratio})
-	{rate} frames/second	{rate} kare/saniye
-	{rate} fps Drop-Frame Timecode	{rate} fps Drop-Frame Zaman Kodu
-	{rate} fps Non Drop-Frame Timecode	{rate} fps Non Drop-Frame Zaman Kodu
-	{rate} fps Timecode	{rate} fps Zaman Kodu
-	horizontal	yatay
-	vertical	dikey
-	Scale motion effects proportionally when changing frame size	Kare boyutunu değiştirirken hareket efektlerini orantılı ölçeklendir
-	Maximum Bit Depth	Maksimum Bit Derinliği
-	Maximum Render Quality	Maksimum Render Kalitesi
-	Composite in Linear Color	Lineer Renkte Birleştir (Composite)
-	Auto Tone Map Media (HDR and log into SDR)	Medya Tonlarını Otomatik Eşle (HDR ve log'dan SDR'ye)
-	Configure…	Yapılandır…
-	Not supported in FilmCraft yet	Henüz FilmCraft'ta desteklenmiyor
-	FilmCraft always composites in linear light	FilmCraft her zaman lineer ışıkta birleştirme yapar
-	Loop marked range	İşaretli aralığı döngüye al
-	Play Source	Kaynağı Oynat
-	Source Play/Stop	Kaynağı Oynat/Durdur
-	Stop Source	Kaynağı Durdur
-	New Sequence	Yeni Dizi
-=======
 	No Fields (Progressive Scan)	Alan Yok (Aşamalı Tarama)
 	Custom ({ratio})	Özel ({ratio})
 	{rate} frames/second	{rate} kare/saniye
@@ -5786,46 +3545,23 @@
 	Source Play/Stop	Kaynak Oynat/Durdur
 	Stop Source	Kaynağı Durdur
 	New Sequence	Yeni Sekans
->>>>>>> upstream/main
 	Tracks	İzler
 	tracks	izler
 	Clear Transition	Geçişi Temizle
 	Set Transition Duration	Geçiş Süresini Ayarla
 	Active	Etkin
 	Appearance Mode	Görünüm Modu
-<<<<<<< HEAD
-	Dark Theme	Karanlık Tema
-	Light Theme	Aydınlık Tema
-	Next Appearance Mode	Sonraki Görünüm Modu
-	Sync with system	Sistemle senkronize et
-	UI Scale	Kullanıcı Arayüzü Ölçeği
-=======
 	Dark Theme	Koyu Tema
 	Light Theme	Açık Tema
 	Next Appearance Mode	Sonraki Görünüm Modu
 	Sync with system	Sistemle eşitle
 	UI Scale	Arayüz Ölçeği
->>>>>>> upstream/main
 	Auto (system)	Otomatik (sistem)
 	In	Giriş
 	Out	Çıkış
 	Export Markers as CSV…	İşaretçileri CSV Olarak Dışa Aktar…
 	Fill Type	Dolgu Türü
 	Gradient Angle	Gradyan Açısı
-<<<<<<< HEAD
-	Linear Gradient	Lineer Gradyan
-	Solid	Düz Renk (Solid)
-	GPU Rendering	GPU İşleme (Render)
-	Composite on the GPU when available	Mümkün olduğunda birleştirmeyi (compositing) GPU'da yap
-	Text to Speech	Metinden Sese (Text to Speech)
-	Use the hardware encoder when available	Mevcut olduğunda donanım kodlayıcıyı kullanın
-	Edit Narration	Anlatımı Düzenle
-	Hardware Encoding	Donanımsal Kodlama
-	Dock Panel	Paneli Sabitle
-	Undock Panel	Paneli Ayır
-	Docking Action	Sabitleme Eylemi
-	Resize floating panel	Yüzen paneli yeniden boyutlandır
-=======
 	Linear Gradient	Doğrusal Gradyan
 	Solid	Düz Renk
 	GPU Rendering	GPU İşleme
@@ -5836,52 +3572,10 @@
 	Undock Panel	Paneli Ayır
 	Docking Action	Kenetleme Eylemi
 	Resize floating panel	Kayan paneli yeniden boyutlandır
->>>>>>> upstream/main
 	Project Notes	Proje Notları
 	Get Project Notes	Proje Notlarını Al
 	Edit Project Notes	Proje Notlarını Düzenle
 	Notes for this project: to-dos, instructions, frame numbers… Saved with the project.	Bu proje için notlar: yapılacaklar, talimatlar, kare numaraları… Projeyle birlikte kaydedilir.
-<<<<<<< HEAD
-	Use Effect Shutter Angle	Efekt Enstantane Açısını Kullan
-	Appearance Settings…	Görünüm Ayarları…
-	Add to favorites	Favorilere ekle
-	Remove from favorites	Favorilerden çıkar
-	Compression	Sıkıştırma
-	ZIP (1 scan line)	ZIP (1 tarama çizgisi)
-	ZIP (16 scan lines)	ZIP (16 tarama çizgisi)
-	Safe graphics mode: {mode}	Güvenli grafik modu: {mode}
-	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	Daha önceki bir başlatma varsayılan grafiklerle başarısız oldu. Grafik sürücüsünü güncellemek genellikle bunu çözer.
-	Use Default Graphics	Varsayılan Grafikleri Kullan
-	The default graphics are used from the next start.	Varsayılan grafikler bir sonraki başlatmadan itibaren kullanılır.
-	DirectX 12 only	Yalnızca DirectX 12
-	software rendering	yazılımsal işleme (software rendering)
-	Label Color Presets	Etiket Rengi Hazır Ayarları
-	{name} (Modified)	{name} (Değiştirildi)
-	Revert to the preset's colors and names	Hazır ayarın renklerine ve adlarına geri dön
-	Import a preset file…	Bir hazır ayar dosyası içe aktar…
-	Export the labels to a preset file…	Etiketleri bir hazır ayar dosyasına dışa aktar…
-	Show the presets folder	Hazır ayarlar klasörünü göster
-	Delete this preset	Bu hazır ayarı sil
-	Settings	Ayarlar
-	Open Recent	Son Kullanılanları Aç
-	Clear Recent Files	Son Kullanılan Dosyaları Temizle
-	Recent	Son Kullanılanlar
-	32 bit	32 bit
-	32 bit float	32 bit kayan noktalı (float)
-	FLAC stores whole-number samples only	FLAC yalnızca tam sayı örneklerini depolar
-	MXF export writes integer PCM only	MXF dışa aktarımı yalnızca tam sayı PCM yazar
-	Opens in your web browser: {url}	Web tarayıcınızda açılır: {url}
-	Saves this session's log and shows it in your file manager.	Bu oturumun günlüğünü kaydeder ve dosya yöneticinizde gösterir.
-	Shows a report on this computer.	Bu bilgisayar hakkında bir rapor gösterir.
-	Shows the version, community links and credits in a FilmCraft window.	Sürümü, topluluk bağlantılarını ve emeği geçenleri bir FilmCraft penceresinde gösterir.
-	Couldn't open your web browser	Web tarayıcınız açılamadı
-	Open this address in your browser yourself:	Bu adresi tarayıcınızda kendiniz açın:
-	Reset Interface Zoom	Arayüz Yakınlaştırmasını Sıfırla
-	Track Color	İz Rengi
-	Open a sequence to search its graphics	Grafiklerinde arama yapmak için bir dizi açın
-	No text graphics in this sequence. Add text with the Type tool.	Bu dizide metin grafiği yok. Yazı aracıyla metin ekleyin.
-	No matching text.	Nessun testo corrispondente. -> Eşleşen metin yok.
-=======
 	Use Effect Shutter Angle	Efekt Örtücü Açısını Kullan
 	Appearance Settings…	Görünüm Ayarları…
 	Add to favorites	Sık kullanılanlara ekle
@@ -5932,4 +3626,3 @@
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 bir donanım kodlayıcısı gerektirir; bu makinede hiçbiri bulunamadı ve FilmCraft henüz yazılımsal AV1 kodlayıcıya sahip değil.
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Donanım kod çözme: Otomatik, desteklediği akışlar için sistemin video kod çözücüsünü (macOS'ta VideoToolbox, Windows'ta Media Foundation, Linux'ta H.264 ve HEVC için VA-API), diğer her şey veya donanım başarısız olduğunda ise FilmCraft'ın kendi kod çözücüsünü kullanır. Zaten açık olan medya yeniden açılana kadar kod çözücüsünü korur.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Denetim sunucusu devre dışı: FILMCRAFT_CONTROL_TOKEN 64 rastgele onaltılık karakter içermelidir (bkz. docs/control-protocol.md)
->>>>>>> upstream/main

@@ -591,12 +591,6 @@ fn system_language_picks_italian_korean_and_the_first_known() {
     for tag in ["ko", "ko-KR", "ko_KR.UTF-8"] {
         assert_eq!(l(&[tag]), Language::Ko, "{tag}");
     }
-    // --- TÜRKÇE EKLENTİSİ BURADAN BAŞLIYOR ---
-    for tag in ["tr", "TR", "tr-TR", "tr_TR.UTF-8", "tr_TR", "tr-CY"] {
-        assert_eq!(l(&[tag]), Language::Tr, "{tag}");
-    }
-    // -----------------------------------------
-    for none in [&["ita"][..], &["i"], &["-it"], &["tur"], &["-tr"]] {
     for tag in ["cs", "CS", "cs-CZ", "cs_CZ.UTF-8"] {
         assert_eq!(l(&[tag]), Language::Cs, "{tag}");
     }
@@ -607,10 +601,10 @@ fn system_language_picks_italian_korean_and_the_first_known() {
     for none in [&["swe"][..], &["s"], &["-sv"], &["da"], &["nb-NO"], &["nn"], &["no"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
-    for tag in ["tr", "TR", "tr-TR", "tr_TR.UTF-8", "tr_TR"] {
+    for tag in ["tr", "TR", "tr-TR", "tr_TR.UTF-8", "tr_TR", "tr-CY"] {
         assert_eq!(l(&[tag]), Language::Tr, "{tag}");
     }
-    for none in [&["ita"][..], &["i"], &["-it"]] {
+    for none in [&["ita"][..], &["i"], &["-it"], &["tur"], &["-tr"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
     assert_eq!(l(&["da-DK", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
