@@ -24,11 +24,7 @@ impl Driver {
         session.execute("sequence.snap", json!({"on": false})).expect("snapping off");
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
-        let harness = Harness::builder()
-            .with_size(egui::vec2(1600.0, 980.0))
-            .with_step_dt(1.0 / 60.0)
-            .with_max_steps(10_000)
-            .build_eframe(move |_cc| app);
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);
         d.ok("ui.elements", json!({"prefix": "timeline.clip."}));
@@ -66,15 +62,8 @@ impl Driver {
         self.frames(2);
         let els = self.ok("ui.elements", json!({"prefix": id}));
         let el = els.as_array()?.iter().find(|e| e["id"] == id)?.clone();
-        let r: Vec<f32> = el["rect"]
-            .as_array()?
-            .iter()
-            .filter_map(|v| v.as_f64().map(|v| v as f32))
-            .collect();
-        Some(Rect::from_min_size(
-            pos2(*r.first()?, *r.get(1)?),
-            egui::vec2(*r.get(2)?, *r.get(3)?),
-        ))
+        let r: Vec<f32> = el["rect"].as_array()?.iter().filter_map(|v| v.as_f64().map(|v| v as f32)).collect();
+        Some(Rect::from_min_size(pos2(*r.first()?, *r.get(1)?), egui::vec2(*r.get(2)?, *r.get(3)?)))
     }
 
     fn captions(&mut self) -> Vec<(i64, i64)> {
@@ -91,25 +80,13 @@ impl Driver {
         let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
         push(self, egui::Event::PointerMoved(from));
         self.frames(1);
-        push(self, egui::Event::PointerButton {
-            pos: from,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Default::default(),
-        });
+        push(self, egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
         self.frames(1);
         for i in 1..=steps {
-            push(self, egui::Event::PointerMoved(
-                from + (to - from) * (i as f32 / steps as f32),
-            ));
+            push(self, egui::Event::PointerMoved(from + (to - from) * (i as f32 / steps as f32)));
             self.frames(1);
         }
-        push(self, egui::Event::PointerButton {
-            pos: to,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        });
+        push(self, egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
         self.frames(2);
     }
 }
@@ -122,10 +99,7 @@ fn snap_for_captions_uses_video_track_edges_not_audio() {
     let mut d = Driver::demo();
 
     // Add a caption on C1 at the 1-second mark.
-    let id = d.exec("captions.add", json!({"seconds": 1.0, "durationSeconds": 1.0, "text": "snap"}))
-        ["caption"]
-        .as_u64()
-        .expect("caption id");
+    let id = d.exec("captions.add", json!({"seconds": 1.0, "durationSeconds": 1.0, "text": "snap"}))["caption"].as_u64().expect("caption id");
     d.frames(4);
 
     // Enable snapping so the caption drag path calls snap_for_captions.
@@ -154,8 +128,5 @@ fn snap_for_captions_uses_video_track_edges_not_audio() {
     let (before_start, _) = before[0];
     let (after_start, _) = after[0];
     let delta = (after_start - before_start).abs();
-    assert!(
-        delta < ticks_per_sec * 2,
-        "caption moved by {delta} ticks — unexpectedly large, suggesting a snap to a distant audio-only boundary"
-    );
+    assert!(delta < ticks_per_sec * 2, "caption moved by {delta} ticks — unexpectedly large, suggesting a snap to a distant audio-only boundary");
 }

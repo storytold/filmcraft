@@ -6,6 +6,41 @@ pub(in super::super) fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &La
     snap_to(app, seq, layout, t, exclude, true)
 }
 
+/// Like [snap] but only uses video-track clip edges as snap candidates, not audio.
+/// Caption drags snap to video clip boundaries only (#2192).
+pub(in super::super) fn snap_for_captions(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick) -> Tick {
+    if !app.session.state.snapping {
+        return t;
+    }
+    let mut cands: Vec<Tick> = Vec::with_capacity(64);
+    // Only video-track clip edges; audio boundaries are irrelevant for caption drags.
+    for tr in &seq.video_tracks {
+        for it in &tr.items {
+            cands.push(it.start);
+            cands.push(it.end());
+        }
+    }
+    cands.push(app.session.playhead());
+    cands.extend(seq.markers.iter().map(|m| m.start));
+    cands.extend(seq.mark_in);
+    cands.extend(seq.mark_out);
+    let x = layout.x_of(t);
+    let mut best: Option<(f32, Tick)> = None;
+    for c in cands {
+        let d = (layout.x_of(c) - x).abs();
+        if d < SNAP_PX && best.is_none_or(|b| d < b.0) {
+            best = Some((d, c));
+        }
+    }
+    match best {
+        Some((_, c)) => {
+            app.tl.snap_x = Some(layout.x_of(c));
+            c
+        }
+        None => t,
+    }
+}
+
 /// Where a dragged playhead lands: [`snap`], but not onto itself, or it would stick where it is
 /// and only move in jumps of `SNAP_PX` (#164).
 pub(super) fn snap_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick) -> Tick {
@@ -46,39 +81,6 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
             c
         }
         None => t,
-    }
-}
-
-/// Where a dragged caption edge lands (#2192): [`snap`], or the nearest edge of a caption not in
-/// `exclude` (the captions being dragged) when that is closer.
-pub(in super::super) fn snap_caption(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
-    if !app.session.state.snapping {
-        return t;
-    }
-    let x = layout.x_of(t);
-    let caption = seq
-        .caption_tracks
-        .iter()
-        .flat_map(|tr| &tr.captions)
-        .filter(|c| !exclude.contains(&c.id))
-        .flat_map(|c| [c.start, c.end()])
-        .map(|c| ((layout.x_of(c) - x).abs(), c))
-        .filter(|(d, _)| *d < SNAP_PX)
-        .min_by(|a, b| a.0.total_cmp(&b.0));
-    // `snap` sets the indicator only when it snaps: that tells a snap onto `t` itself from none
-    let prev = app.tl.snap_x.take();
-    let clip = snap(app, seq, layout, t, &[]);
-    let clip_d = app.tl.snap_x.map(|sx| (sx - x).abs());
-    match (caption, clip_d) {
-        (Some((d, c)), cd) if cd.is_none_or(|cd| d < cd) => {
-            app.tl.snap_x = Some(layout.x_of(c));
-            c
-        }
-        (_, Some(_)) => clip,
-        _ => {
-            app.tl.snap_x = prev;
-            t
-        }
     }
 }
 
