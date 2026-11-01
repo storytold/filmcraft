@@ -742,6 +742,15 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             let c = col.to_srgba_unmultiplied();
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "color": c})));
         }
+        let mut wrap = (st.max_width * 100.0).round();
+        let resp = ui
+            .add(crate::widgets::number_drag(&mut wrap).range(5.0..=100.0).speed(0.5).prefix(tl!("Wrap ")).suffix(" %"))
+            .on_hover_text(tl!("Wrap lines at this share of the frame width"));
+        app.auto.add("text.captions.style.maxWidth", resp.rect, "Caption wrap width");
+        let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
+            actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "maxWidth": wrap / 100.0})));
+        }
         let mut bg = st.background;
         let resp = ui.checkbox(&mut bg, tl!("Box"));
         app.auto.add("text.captions.style.background", resp.rect, "Background box");
