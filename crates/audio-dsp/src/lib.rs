@@ -29,6 +29,8 @@ pub mod loudness;
 pub mod oversample;
 pub mod remix;
 pub mod resample;
+pub mod silence;
+
 mod smooth;
 pub mod sync;
 
