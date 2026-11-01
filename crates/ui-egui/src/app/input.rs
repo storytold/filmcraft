@@ -3,7 +3,8 @@ use super::{FilmcraftApp, PanelKind, dock_ui, json};
 impl FilmcraftApp {
     /// Import dropped files, on the main window and on dock panels in their own OS windows.
     /// With Timeline ▸ drop imports to the timeline, the new items are also queued to be placed
-    /// at the pointer (see `timeline::interact`).
+    /// at the pointer (see `timeline::interact`); a drop over the Source monitor opens the first
+    /// new item there, ready to cut.
     pub(super) fn handle_drops(&mut self, ctx: &egui::Context) {
         let to_timeline = self.session.prefs.timeline.drop_import_to_timeline;
         // While files hover, the OS sends no cursor events: poll the cursor each frame to draw the Timeline preview.
@@ -16,7 +17,7 @@ impl FilmcraftApp {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
             let pointer = self.drop_pointer(ctx, egui::ViewportId::ROOT, None);
-            self.import_dropped(&dropped, pointer.map(|p| (p, egui::ViewportId::ROOT)));
+            self.import_dropped(&dropped, None, pointer.map(|p| (p, egui::ViewportId::ROOT)));
         }
         for files in std::mem::take(&mut self.window_files) {
             // Only the Timeline places files at the pointer; elsewhere they go to the bin.
@@ -27,29 +28,116 @@ impl FilmcraftApp {
                 self.file_drag_hover = pointer.map(|p| (files.hovered.len(), p, files.viewport));
             }
             if !files.dropped.is_empty() {
-                self.import_dropped(&files.dropped, pointer.map(|p| (p, files.viewport)));
+                self.import_dropped(&files.dropped, Some(files.panel), pointer.map(|p| (p, files.viewport)));
             }
         }
     }
 
     /// Import the dropped files that exist; with a pointer and Timeline ▸ drop imports to the
-    /// timeline, queue the new items for the Timeline drawn in that viewport.
-    fn import_dropped(&mut self, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
-        let paths: Vec<String> = dropped.iter().map(|f| f.path()).filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()).collect();
-        if paths.is_empty() {
-            return;
-        }
-        let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
-        if let Ok(v) = imported
-            && let Some((pos, viewport)) = pointer
-            && self.session.prefs.timeline.drop_import_to_timeline
-        {
-            let items: Vec<filmcraft_engine::project::ItemId> =
-                v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
-            if !items.is_empty() {
-                self.pending_timeline_drop = Some((items, pos, viewport));
+    /// timeline, queue the new items for the Timeline drawn in that viewport; a drop over
+    /// the Source monitor opens the first item there.
+    fn import_dropped(&mut self, dropped: &[egui::DroppedFileHandle], panel: Option<PanelKind>, pointer: Option<(egui::Pos2, egui::ViewportId)>) {
+        let mut paths = Vec::new();
+        let mut drop_errors = Vec::new();
+        for f in dropped {
+            let p = f.path();
+            match std::fs::metadata(p) {
+                Ok(_) => paths.push(p.to_string_lossy().to_string()),
+                Err(e) => drop_errors.push(format!("{}: {e}", p.display())),
             }
         }
+        if paths.is_empty() {
+            // The web handles drops itself (browser files → take_files): their names
+            // are not filesystem paths, so there is nothing to import here and no
+            // error to report.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.ui.status = tl!("Could not import the dropped files").to_string();
+            }
+            return;
+        }
+        let bin = self.import_bin().0;
+        match self.session.execute("file.import", json!({"paths": paths, "bin": bin})) {
+            Ok(v) => {
+                let items: Vec<filmcraft_engine::project::ItemId> =
+                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+                let mut errors: Vec<String> =
+                    v["errors"].as_array().map(|a| a.iter().filter_map(|e| e.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                errors.extend(drop_errors);
+                let docs = v["documents"].as_array().map_or(0, |a| a.len());
+                let seqs = if docs == 0 { v["sequences"].as_array().map_or(0, |a| a.len()) } else { 0 };
+                let count = items.len() + docs + seqs;
+                self.ui.status = if count == 0 {
+                    errors.join("; ")
+                } else {
+                    let mut s = if count == 1 { tl!("Imported 1 file").to_string() } else { tlf!("Imported {n} files", n = count) };
+                    if !errors.is_empty() {
+                        s.push_str("; ");
+                        s.push_str(&errors.join("; "));
+                    }
+                    s
+                };
+                if items.is_empty() {
+                    return;
+                }
+                if let Some((pos, viewport)) = pointer
+                    && self.session.prefs.timeline.drop_import_to_timeline
+                {
+                    self.pending_timeline_drop = Some((items.clone(), pos, viewport));
+                }
+                let over_source = match panel {
+                    Some(p) => p == PanelKind::Source,
+                    None => pointer.is_some_and(|(pos, viewport)| self.over_panel(pos, viewport, "panel.Source")),
+                };
+                if over_source
+                    && let Some(first) = items.first()
+                    && self.session.execute("source.open", json!({"item": first.0})).is_err()
+                {
+                    // the import already landed in the bin; a Source that cannot open
+                    // this item (a caption sidecar, say) is not an error worth surfacing
+                }
+            }
+            Err(e) => {
+                let mut all = vec![e.to_string()];
+                all.extend(drop_errors);
+                self.ui.status = all.join("; ");
+            }
+        }
+    }
+
+    /// Whether `pos` falls on last frame's rect of the automation element `id` in `viewport`
+    /// (a `panel.<Name>` body, a Timeline row target…).
+    pub(crate) fn over_panel(&self, pos: egui::Pos2, viewport: egui::ViewportId, id: &str) -> bool {
+        self.auto.all().iter().find(|e| e.id == id && e.viewport == viewport).is_some_and(|e| {
+            let [x, y, w, h] = e.rect;
+            egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h)).contains(pos)
+        })
+    }
+
+    /// While files from the OS file manager hover over the window, say where they
+    /// will land: the Timeline previews its own placeholder, this banner covers
+    /// everywhere else (Project bin, Source monitor…).
+    pub(super) fn drop_hint(&self, ctx: &egui::Context) {
+        if !matches!(self.ui.mode, crate::state::Mode::Edit) {
+            return;
+        }
+        let hovering = ctx.input(|i| i.raw.hovered_files.len());
+        if hovering == 0 {
+            return;
+        }
+        let files = if hovering == 1 { tl!("1 file").to_string() } else { tlf!("{n} files", n = hovering) };
+        egui::Area::new(egui::Id::unique("os_file_drop_hint"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_TOP, [0.0, 60.0])
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new(format!("{} {files}", tl!("Drop to import"))).strong());
+                    if self.session.prefs.timeline.drop_import_to_timeline {
+                        ui.label(egui::RichText::new(tl!("Drop on the Timeline to place the clips")).small());
+                    }
+                });
+            });
     }
 
     /// Where files dragged in from the OS are over `viewport`. The OS reports no cursor motion during such a drag

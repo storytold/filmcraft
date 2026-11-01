@@ -3619,3 +3619,9 @@
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Der Kontrollserver ist deaktiviert: FILMCRAFT_CONTROL_TOKEN muss 64 zufällige Hexzeichen enthalten (siehe docs/control-protocol.md)
 
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Could not import the dropped files	Die abgelegten Dateien konnten nicht importiert werden
+	Imported 1 file	1 Datei importiert
+	Imported {n} files	{n} Dateien importiert
+	Drop to import	Ablegen zum Importieren
+	Drop on the Timeline to place the clips	In der Timeline ablegen, um die Clips zu platzieren
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	Füge deinem Projekt Medien hinzu. Drag-and-Drop benötigt X11 (ohne WAYLAND_DISPLAY ausführen) oder wähle unten eine Quelle.

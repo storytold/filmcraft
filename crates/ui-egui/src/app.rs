@@ -105,6 +105,7 @@ impl FilmcraftApp {
             clip_mismatch: None,
             file_drag_hover: None,
             window_files: Vec::new(),
+            os_file_drop_unsupported: false,
             timeline_view_last: None,
             fps: 60.0,
             last_time: 0.0,

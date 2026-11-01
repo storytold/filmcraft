@@ -360,4 +360,10 @@
 	Zoom Out	Зменшити
 	Zoom to Sequence	Умістити секвенцію
 	Project Notes	Нотатки проєкту
+	Could not import the dropped files	Не вдалося імпортувати перетягнуті файли
+	Imported 1 file	Імпортовано 1 файл
+	Imported {n} files	Імпортовано {n} файлів
+	Drop to import	Відпустіть для імпорту
+	Drop on the Timeline to place the clips	Відпустіть на часовій шкалі, щоб розмістити кліпи
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	Додайте медіафайли до проєкту. Для перетягування потрібен X11 (запустіть без WAYLAND_DISPLAY) або виберіть джерело нижче.
 

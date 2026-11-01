@@ -3672,3 +3672,10 @@
 	Change the sequence to match the clip's settings?	シーケンスをクリップの設定に合わせますか？
 	Change Sequence Settings	シーケンス設定を変更
 	Keep Existing Settings	現在の設定を維持
+
+	Could not import the dropped files	ドロップされたファイルを読み込めませんでした
+	Imported 1 file	1 個のファイルを読み込みました
+	Imported {n} files	{n} 個のファイルを読み込みました
+	Drop to import	ドロップして読み込む
+	Drop on the Timeline to place the clips	タイムラインにドロップするとクリップを配置します
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	プロジェクトにメディアを追加します。ドラッグ＆ドロップには X11 が必要です（WAYLAND_DISPLAY を外して実行）。または下から選んでください。

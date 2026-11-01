@@ -3611,3 +3611,9 @@
 	Flash Cue Point	Titik Isyarat Flash
 	Invalid duration: {error}	Durasi tidak valid: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Could not import the dropped files	Tidak dapat mengimpor berkas yang diletakkan
+	Imported 1 file	1 berkas diimpor
+	Imported {n} files	{n} berkas diimpor
+	Drop to import	Letakkan untuk mengimpor
+	Drop on the Timeline to place the clips	Letakkan di Linimasa untuk menempatkan klip
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	Tambahkan media ke proyek Anda. Seret dan lepas memerlukan X11 (jalankan tanpa WAYLAND_DISPLAY), atau pilih sumber di bawah.

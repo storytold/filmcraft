@@ -349,6 +349,10 @@ pub struct FilmcraftApp {
     /// Files dragged over or dropped on dock panels in their own OS windows last frame; the
     /// dock area reports them after the panels have drawn, so they are imported next frame.
     window_files: Vec<craft_ui::docking::WindowFiles<PanelKind>>,
+    /// The windowing backend cannot deliver OS file drops (winit has no drag-and-drop
+    /// on Wayland): the UI says so instead of promising drops that never arrive.
+    /// Set once at startup by the host; tests leave it off.
+    pub os_file_drop_unsupported: bool,
     timeline_view_last: Option<filmcraft_engine::project::SequenceView>,
     pub fps: f32,
     last_time: f64,
@@ -396,4 +400,44 @@ pub struct GpuState {
     pub broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Largest texture side the device accepts.
     pub max_texture: u32,
+}
+
+/// Whether files dragged in from the OS file manager can never arrive: winit
+/// implements file drag-and-drop on X11, Windows and macOS, but not on Wayland,
+/// so on a Wayland session drops are silently lost and the UI must say so
+/// (Import mode points at Browse files… instead). The host sets
+/// [`FilmcraftApp::os_file_drop_unsupported`] from this once at startup.
+pub fn os_file_drop_unsupported() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        wayland_env_active(std::env::var_os("WAYLAND_DISPLAY").as_deref(), std::env::var_os("WAYLAND_SOCKET").as_deref())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn wayland_env_active(display: Option<&std::ffi::OsStr>, socket: Option<&std::ffi::OsStr>) -> bool {
+    display.is_some_and(|v| !v.is_empty()) || socket.is_some_and(|v| !v.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn wayland_env_detection() {
+        assert!(!wayland_env_active(None, None));
+        assert!(!wayland_env_active(Some(OsStr::new("")), None));
+        assert!(!wayland_env_active(None, Some(OsStr::new(""))));
+        assert!(!wayland_env_active(Some(OsStr::new("")), Some(OsStr::new(""))));
+        assert!(wayland_env_active(Some(OsStr::new("wayland-0")), None));
+        assert!(wayland_env_active(None, Some(OsStr::new("3"))));
+        assert!(wayland_env_active(Some(OsStr::new("wayland-0")), Some(OsStr::new("3"))));
+        assert!(wayland_env_active(Some(OsStr::new("wayland-0")), Some(OsStr::new(""))));
+        assert!(wayland_env_active(Some(OsStr::new("")), Some(OsStr::new("3"))));
+    }
 }

@@ -3614,3 +3614,9 @@
 	Flash Cue Point	Ponto de referência Flash
 	Invalid duration: {error}	Duração inválida: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Could not import the dropped files	Não foi possível importar os arquivos soltos
+	Imported 1 file	1 arquivo importado
+	Imported {n} files	Importados {n} arquivos
+	Drop to import	Solte para importar
+	Drop on the Timeline to place the clips	Solte na linha do tempo para colocar os clipes
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	Adicione mídia ao projeto. Arrastar e soltar precisa do X11 (execute sem WAYLAND_DISPLAY) ou escolha uma origem abaixo.

@@ -3636,3 +3636,9 @@
 	Flash Cue Point	Punto Flash Cue
 	Invalid duration: {error}	Durata non valida: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Could not import the dropped files	Impossibile importare i file rilasciati
+	Imported 1 file	1 file importato
+	Imported {n} files	{n} file importati
+	Drop to import	Rilascia per importare
+	Drop on the Timeline to place the clips	Rilascia sulla timeline per posizionare le clip
+	Add media to your project. Drag-and-drop needs X11 (run with WAYLAND_DISPLAY unset), or choose a source below.	Aggiungi media al progetto. Trascina e rilascia richiede X11 (esegui senza WAYLAND_DISPLAY), o scegli una sorgente qui sotto.
