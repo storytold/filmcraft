@@ -7,7 +7,8 @@
 //! - **FCPXML** 1.9–1.11 ([`fcpxml`]);
 //! - **OpenTimelineIO** JSON (`.otio`) ([`otio`]);
 //! - **AAF** (`.aaf`, Edit Protocol, structured storage) ([`aaf`]);
-//! - **OMF Interchange 2.0** (`.omf`, Bento) for audio post ([`omf`]).
+//! - **OMF Interchange 2.0** (`.omf`, Bento) for audio post ([`omf`]);
+//! - **Kdenlive projects** (`.kdenlive`) and other MLT XML documents (`.mlt`), import only ([`mlt`]).
 //!
 //! AAF and OMF can embed or consolidate audio: [`essence::audio_needs`] lists what the caller
 //! (the engine) has to render, and [`essence::MediaOptions`] passes the result back in.
@@ -31,6 +32,7 @@ pub mod edl;
 pub mod essence;
 pub mod fcp7;
 pub mod fcpxml;
+pub mod mlt;
 pub mod omf;
 pub mod otio;
 
@@ -104,10 +106,17 @@ pub enum Format {
     Aaf,
     /// OMF Interchange 2.0 (Bento container).
     Omf,
+    /// MLT XML: Kdenlive projects (`.kdenlive`) and other MLT documents (`.mlt`). Import only.
+    Mlt,
 }
 
 impl Format {
-    pub const ALL: [Format; 6] = [Format::Edl, Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf, Format::Omf];
+    pub const ALL: [Format; 7] = [Format::Edl, Format::Fcp7Xml, Format::Fcpxml, Format::Otio, Format::Aaf, Format::Omf, Format::Mlt];
+
+    /// Whether [`export`] writes this format (Kdenlive projects are read only).
+    pub fn can_export(self) -> bool {
+        self != Format::Mlt
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -117,6 +126,7 @@ impl Format {
             Format::Otio => "OpenTimelineIO",
             Format::Aaf => "AAF",
             Format::Omf => "OMF",
+            Format::Mlt => "Kdenlive (MLT XML)",
         }
     }
 
@@ -129,6 +139,7 @@ impl Format {
             Format::Otio => "otio",
             Format::Aaf => "aaf",
             Format::Omf => "omf",
+            Format::Mlt => "kdenlive",
         }
     }
 
@@ -142,6 +153,7 @@ impl Format {
             "otio" => Some(Format::Otio),
             "aaf" => Some(Format::Aaf),
             "omf" | "omfi" => Some(Format::Omf),
+            "kdenlive" | "mlt" => Some(Format::Mlt),
             _ => None,
         }
     }
@@ -164,7 +176,10 @@ pub fn detect(bytes: &[u8], extension: Option<&str>) -> Option<Format> {
         if head.contains("<fcpxml") {
             return Some(Format::Fcpxml);
         }
-        return extension.and_then(Format::from_extension).filter(|f| matches!(f, Format::Fcp7Xml | Format::Fcpxml));
+        if root_element(head) == Some("mlt") {
+            return Some(Format::Mlt);
+        }
+        return extension.and_then(Format::from_extension).filter(|f| matches!(f, Format::Fcp7Xml | Format::Fcpxml | Format::Mlt));
     }
     if head.starts_with('{') {
         if head.contains("\"OTIO_SCHEMA\"") {
@@ -176,6 +191,27 @@ pub fn detect(bytes: &[u8], extension: Option<&str>) -> Option<Format> {
         return Some(Format::Edl);
     }
     extension.and_then(Format::from_extension).filter(|f| *f == Format::Edl)
+}
+
+/// The name of the first element of an XML document's start, past its declaration, processing
+/// instructions, comments and document type. `None` if `head` ends first.
+fn root_element(head: &str) -> Option<&str> {
+    let mut rest = head;
+    loop {
+        rest = rest.trim_start();
+        let skip_to = |end: &str| rest.find(end).map(|i| i + end.len());
+        rest = if rest.starts_with("<?") {
+            &rest[skip_to("?>")?..]
+        } else if rest.starts_with("<!--") {
+            &rest[skip_to("-->")?..]
+        } else if rest.starts_with("<!") {
+            &rest[skip_to(">")?..]
+        } else {
+            let name = rest.strip_prefix('<')?;
+            let end = name.find(|c: char| c.is_whitespace() || c == '>' || c == '/')?;
+            return Some(&name[..end]);
+        };
+    }
 }
 
 /// Error from an importer or exporter. Unsupported *features* never error; they go in the [`Report`].
@@ -314,6 +350,7 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         Format::Fcp7Xml => fcp7::import(&text, opts, &mut report)?,
         Format::Fcpxml => fcpxml::import(&text, opts, &mut report)?,
         Format::Otio => otio::import(&text, opts, &mut report)?,
+        Format::Mlt => mlt::import(&text, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
     };
     let mut imported = imported;
@@ -468,6 +505,7 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
         Format::Fcp7Xml => fcp7::export(project, sequence, opts, &mut report)?,
         Format::Fcpxml => fcpxml::export(project, sequence, opts, &mut report)?,
         Format::Otio => otio::export(project, sequence, opts, &mut report)?,
+        Format::Mlt => return Err(Error::Other(format!("{} is import only", format.name()))),
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
     };
     Ok((text.into_bytes(), report))
