@@ -346,3 +346,158 @@ fn quad_bounds_clamps_and_handles_non_finite() {
     assert_eq!(quad_bounds(&l(Affine::scale(f64::INFINITY, 1.0)), 100, 100), Some((0, 0, 100, 100)));
     assert_eq!(quad_bounds(&l(Affine::translate(-50.0, 0.0)), 100, 100), None);
 }
+
+/// #1558: a Y'CbCr layer scaled up is interpolated in linear light, as the CPU resamples its
+/// linear image, not in code values. Interpolating gamma-encoded codes darkens fine bright detail
+/// (here 3 px luma stripes of a portrait frame drawn at 200 %, untagged so BT.709 limited).
+#[test]
+fn upscaled_yuv_detail_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (fw, fh) = (270u32, 480u32);
+    let (cw, ch) = (fw.div_ceil(2), fh.div_ceil(2));
+    let y: Vec<u8> = (0..fw * fh).map(|i| if ((i % fw) / 3 + (i / fw) / 5) % 2 == 0 { 235 } else { 60 }).collect();
+    let u: Vec<u8> = (0..cw * ch).map(|i| (110 + (i / cw) * 40 / ch) as u8).collect();
+    let v: Vec<u8> = (0..cw * ch).map(|i| (140 - (i % cw) * 30 / cw) as u8).collect();
+    let frame = Arc::new(VideoFrame {
+        width: fw,
+        height: fh,
+        data: PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: Chroma::C420, alpha: None },
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let plan =
+        FramePlan::Layers { width: 2 * fw as usize, height: 2 * fh as usize, layers: vec![PlanLayer::new(frame, Affine::scale(2.0, 2.0), 1.0, Blend::Normal)] };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.composite(&plan);
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let (p99, mean, max) = stats8(&cpu, &gpu, &interior(&plan));
+    eprintln!("upscaled Y'CbCr detail: p99 {p99} mean {mean:.3} max {max}");
+    assert!(p99 <= 6 && mean < 1.5, "p99 {p99}, mean {mean}");
+}
+
+/// #1558: a Y'CbCr layer scaled up along one axis only is magnified too, and is interpolated in
+/// linear light like the CPU (the detail of `upscaled_yuv_detail_matches_cpu`, at 2 × 1 and 1 × 2).
+#[test]
+fn mixed_axis_yuv_detail_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (fw, fh) = (270u32, 480u32);
+    let (cw, ch) = (fw.div_ceil(2), fh.div_ceil(2));
+    let y: Vec<u8> = (0..fw * fh).map(|i| if ((i % fw) / 3 + (i / fw) / 5) % 2 == 0 { 235 } else { 60 }).collect();
+    let u: Vec<u8> = (0..cw * ch).map(|i| (110 + (i / cw) * 40 / ch) as u8).collect();
+    let v: Vec<u8> = (0..cw * ch).map(|i| (140 - (i % cw) * 30 / cw) as u8).collect();
+    let frame = Arc::new(VideoFrame {
+        width: fw,
+        height: fh,
+        data: PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: Chroma::C420, alpha: None },
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let mut failed = Vec::new();
+    for (sx, sy) in [(2.0, 1.0), (1.0, 2.0)] {
+        let (w, h) = ((fw as f64 * sx) as usize, (fh as f64 * sy) as usize);
+        let plan = FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer::new(frame.clone(), Affine::scale(sx, sy), 1.0, Blend::Normal)] };
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        let mut c = GpuCompositor::new(&dev, &q);
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let (p99, mean, max) = stats8(&cpu, &gpu, &interior(&plan));
+        eprintln!("Y'CbCr detail at {sx} x {sy}: p99 {p99} mean {mean:.3} max {max}");
+        if p99 > 6 || mean >= 1.5 {
+            failed.push(format!("{sx} x {sy}: p99 {p99}, mean {mean}"));
+        }
+    }
+    assert!(failed.is_empty(), "{failed:?}");
+}
+
+/// #1558: scaled up, a Y'CbCr layer takes each luma texel's chroma from the chroma texel that
+/// covers it (`x >> 1`, `y >> 1` in 4:2:0), as the CPU decodes it before resampling. Interpolating
+/// the chroma plane too smears hard red/white edges (here blocks of 3×4 chroma texels of a
+/// portrait frame drawn at 200 %, the edges hard in luma and chroma alike).
+#[test]
+fn upscaled_yuv_chroma_edges_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (fw, fh) = (270u32, 480u32);
+    let (cw, ch) = (fw.div_ceil(2), fh.div_ceil(2));
+    // BT.709 limited: red (63, 102, 240), white (235, 128, 128)
+    let red = |cx: u32, cy: u32| (cx / 3 + cy / 4).is_multiple_of(2);
+    let y: Vec<u8> = (0..fw * fh).map(|i| if red((i % fw) / 2, (i / fw) / 2) { 63 } else { 235 }).collect();
+    let u: Vec<u8> = (0..cw * ch).map(|i| if red(i % cw, i / cw) { 102 } else { 128 }).collect();
+    let v: Vec<u8> = (0..cw * ch).map(|i| if red(i % cw, i / cw) { 240 } else { 128 }).collect();
+    let frame = Arc::new(VideoFrame {
+        width: fw,
+        height: fh,
+        data: PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(u), Arc::new(v)], chroma: Chroma::C420, alpha: None },
+        color: filmcraft_color::ColorInfo::REC709,
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let plan =
+        FramePlan::Layers { width: 2 * fw as usize, height: 2 * fh as usize, layers: vec![PlanLayer::new(frame, Affine::scale(2.0, 2.0), 1.0, Blend::Normal)] };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.composite(&plan);
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let (p99, mean, max) = stats8(&cpu, &gpu, &interior(&plan));
+    eprintln!("upscaled Y'CbCr chroma edges: p99 {p99} mean {mean:.3} max {max}");
+    // (both decode the same texels and interpolate in linear light: tighter than the criterion)
+    assert!(p99 <= 2 && mean < 0.5, "p99 {p99}, mean {mean}");
+}
+
+/// #1558: only a magnified Y'CbCr layer is interpolated in linear light; 1:1 and scaled-down draws
+/// keep interpolating code values and converting once, as before. Columns of 1 px alternating
+/// between Y' 236 and 60, drawn half a texel off (1:1) or at 50 % with every tap between two
+/// columns, must come out as a flat Y' 148 drawn the same way; the linear-light mix is far brighter.
+#[test]
+fn yuv_not_magnified_keeps_code_value_sampling() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (fw, fh) = (128u32, 64u32);
+    let (cw, ch) = (fw.div_ceil(2), fh.div_ceil(2));
+    let frame = |y: Vec<u8>| {
+        Arc::new(VideoFrame {
+            width: fw,
+            height: fh,
+            data: PixelData::Yuv8 {
+                planes: [Arc::new(y), Arc::new(vec![128; (cw * ch) as usize]), Arc::new(vec![128; (cw * ch) as usize])],
+                chroma: Chroma::C420,
+                alpha: None,
+            },
+            color: filmcraft_color::ColorInfo::REC709,
+            par: (1, 1),
+            pts: Default::default(),
+        })
+    };
+    let stripes = frame((0..fw * fh).map(|i| if (i % fw).is_multiple_of(2) { 236 } else { 60 }).collect());
+    let flat = frame(vec![148; (fw * fh) as usize]);
+    // (scale, x offset): the source position of each tap falls on a texel boundary in x
+    for (s, e) in [(1.0, 0.5), (0.5, 0.25)] {
+        let m = Affine { a: s, b: 0.0, c: 0.0, d: s, e, f: 0.0 };
+        let (w, h) = ((fw as f64 * s) as usize, (fh as f64 * s) as usize);
+        let draw = |f: &Arc<VideoFrame>| {
+            let plan = FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer::new(f.clone(), m, 1.0, Blend::Normal)] };
+            let mut c = GpuCompositor::new(&dev, &q);
+            c.composite(&plan);
+            let (_, _, px) = c.read_output().expect("readback");
+            (px, interior(&plan))
+        };
+        let (a, keep) = draw(&stripes);
+        let (b, _) = draw(&flat);
+        let (p99, mean, max) = stats8(&a, &b, &keep);
+        eprintln!("Y'CbCr at {s}x: p99 {p99} mean {mean:.3} max {max}");
+        assert!(max <= 1, "scale {s}: p99 {p99}, mean {mean}, max {max}");
+    }
+}
