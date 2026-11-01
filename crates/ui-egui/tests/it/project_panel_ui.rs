@@ -12,7 +12,7 @@
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use filmcraft_engine::Session;
 use filmcraft_engine::project_panel::{FREEFORM_POS, FREEFORM_STACK, ViewMode};
 use filmcraft_project::{BinEntry, ItemId};
@@ -545,6 +545,8 @@ fn metadata_display_dialog_and_view_presets() {
     assert_eq!(cols[0], "Name");
     assert_eq!(cols[1], "Label", "{cols:?}");
     assert!(cols.contains(&"Video Usage".to_string()) && !cols.contains(&"Tape Name".to_string()));
+    d.frames(2);
+    d.ok("ui.scroll", json!({"id": "panel.Project", "dx": -80, "dy": 0}));
     d.frames(2);
     assert!(d.has("project.list.header.Label") && d.has("project.list.header.Video Usage"));
 
@@ -1145,6 +1147,627 @@ fn dragging_a_selection_to_the_timeline_places_every_item() {
     assert_eq!(d.app().session.history.undo.len(), steps + 1, "the drag is one undo step");
     d.exec("edit.undo", json!({}));
     assert_eq!(clips(&mut d), 0);
+}
+
+// Imported media, real Select All, and pointer events exercise the same drag as an editor.
+fn imported_drag_driver(view: &str) -> (Driver, tempfile::TempDir, Vec<ItemId>) {
+    let dir = tempfile::tempdir().unwrap();
+    let paths: Vec<_> = ["z-shot.png", "a-sound.wav", "m-shot.png"].iter().map(|name| dir.path().join(name)).collect();
+    for path in [&paths[0], &paths[2]] {
+        image::RgbaImage::from_pixel(32, 18, image::Rgba([30, 90, 150, 255])).save(path).unwrap();
+    }
+    std::fs::write(&paths[1], filmcraft_engine::previews::write_wav_f32(&vec![0.0; 48_000], 48_000)).unwrap();
+    let mut d = Driver::with(Session::default());
+    d.exec("file.newSequence", json!({"name": "Sequence 01", "video": 2, "audio": 2}));
+    let bin = d.exec("file.newBin", json!({"name": "Imported"}))["bin"].as_u64().unwrap();
+    d.exec("file.import", json!({"paths": paths, "bin": bin}));
+    d.exec("project.view.set", json!({"view": view, "iconSize": 80}));
+    {
+        let prefs = &mut d.app().session.prefs.project_panel.view;
+        prefs.sort = filmcraft_engine::project_panel::SortSpec { column: "Name".into(), descending: false };
+        prefs.icon_sort = prefs.sort.clone();
+    }
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.frames(4);
+    d.key("Cmd+A");
+    let selected = d.app().session.state.project_selection.clone();
+    assert_eq!(selected.len(), 3, "{view}: Select All includes every imported file");
+    (d, dir, selected)
+}
+
+fn project_drag_pointer(d: &mut Driver, at: egui::Pos2, pressed: Option<bool>) {
+    d.harness.input_mut().events.push(egui::Event::PointerMoved(at));
+    if let Some(pressed) = pressed {
+        d.harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    d.frames(1);
+}
+
+fn start_imported_drag(d: &mut Driver, anchor: ItemId, change_selection: bool) -> egui::Pos2 {
+    let [x, y, w, h] = d.rect(&format!("project.item.{}", anchor.0));
+    let from = egui::pos2(x + w / 2.0, y + h / 2.0);
+    let [tx, ty, tw, th] = d.rect("panel.Timeline");
+    let to = if d.app().session.active_sequence().is_some() {
+        let [_, ry, _, rh] = d.rect("timeline.track.V1.target");
+        egui::pos2(tx + d.app().ui.timeline.header_w + 50.0, ry + rh / 2.0)
+    } else {
+        egui::pos2(tx + tw / 2.0, ty + th / 2.0)
+    };
+    project_drag_pointer(d, from, None);
+    project_drag_pointer(d, from, Some(true));
+    project_drag_pointer(d, from + egui::vec2(12.0, 0.0), None);
+    if change_selection {
+        // Also covers Freeform's internal move before the pointer leaves the panel.
+        d.exec("project.select", json!({"items": [anchor.0]}));
+    }
+    project_drag_pointer(d, to, None);
+    to
+}
+
+fn drag_imported_selection(d: &mut Driver, anchor: ItemId, change_selection: bool) {
+    let to = start_imported_drag(d, anchor, change_selection);
+    project_drag_pointer(d, to, Some(false));
+    d.frames(3);
+}
+
+fn placed_imports(d: &mut Driver) -> Vec<(String, i64, i64)> {
+    let q = d.app().session.active_sequence().unwrap();
+    let mut clips: Vec<_> = q.video_tracks.iter().chain(&q.audio_tracks).flat_map(|t| &t.items).map(|c| (c.name.clone(), c.start.0, c.end().0)).collect();
+    clips.sort_by_key(|c| c.1);
+    clips
+}
+
+fn assert_selection_badges(d: &mut Driver, ordered: &[ItemId]) {
+    d.frames(2);
+    for (index, id) in ordered.iter().enumerate() {
+        assert_eq!(d.label(&format!("project.item.{}.selectionOrder", id.0)), (index + 1).to_string(), "badge for {id:?}");
+    }
+}
+
+#[test]
+fn imported_click_order_survives_sort_view_changes_and_a_nonfirst_drag_anchor() {
+    for view in ["list", "icon", "freeform"] {
+        for change_selection in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths: Vec<_> = (1..=5).map(|i| dir.path().join(format!("{i}.png"))).collect();
+            for path in &paths {
+                image::RgbaImage::from_pixel(32, 18, image::Rgba([30, 90, 150, 255])).save(path).unwrap();
+            }
+            let mut d = Driver::with(Session::default());
+            d.exec("file.newSequence", json!({"name": "Selection order", "video": 2, "audio": 2}));
+            let bin = d.exec("file.newBin", json!({"name": "Imported"}))["bin"].as_u64().unwrap();
+            d.exec("file.import", json!({"paths": paths, "bin": bin}));
+            d.app().session.prefs.project_panel.freeform.card_size = 80.0;
+            d.exec("project.view.set", json!({"view": view, "iconSize": 80}));
+            d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+            d.ok("ui.set", json!({"focused": "Project"}));
+            d.exec("project.select", json!({"items": []}));
+            let expected: Vec<_> =
+                [4, 1, 5, 2].iter().map(|i| d.app().session.project.items.values().find(|item| item.name == format!("{i}.png")).unwrap().id).collect();
+            for (index, id) in expected.iter().enumerate() {
+                d.ok("ui.click", json!({"id": format!("project.item.{}", id.0), "modifiers": {"command": index > 0}}));
+                d.frames(2);
+                assert_eq!(d.app().session.state.project_selection, expected[..=index], "{view}: clicks append in order");
+                assert_selection_badges(&mut d, &expected[..=index]);
+            }
+            {
+                let prefs = &mut d.app().session.prefs.project_panel.view;
+                prefs.sort = filmcraft_engine::project_panel::SortSpec { column: "Name".into(), descending: true };
+                prefs.icon_sort = prefs.sort.clone();
+            }
+            let other_view = if view == "list" { "icon" } else { "list" };
+            d.exec("project.view.set", json!({"view": other_view}));
+            d.exec("project.view.set", json!({"view": view}));
+            d.frames(3);
+            assert_eq!(d.app().session.state.project_selection, expected, "{view}: sorting and view changes keep selection order");
+            assert_selection_badges(&mut d, &expected);
+            let before = d.app().session.project.clone();
+            let history = d.app().session.history.undo.len();
+            let to = start_imported_drag(&mut d, expected[2], change_selection);
+            assert_selection_badges(&mut d, &expected);
+            let preview = d.rect("timeline.projectDropPreview");
+            let session = &d.app().session;
+            let seconds = 4.0 * session.prefs.timeline.still_duration(session.sequence_rate()).seconds();
+            assert!((preview[2] as f64 - seconds * d.app().ui.timeline.pps).abs() < 1.0);
+            project_drag_pointer(&mut d, to, Some(false));
+            d.frames(3);
+            let placed = placed_imports(&mut d);
+            assert_eq!(placed.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["4.png", "1.png", "5.png", "2.png"], "{view}");
+            assert!(placed.windows(2).all(|w| w[0].2 == w[1].1));
+            assert_eq!(d.app().session.history.undo.len(), history + 1);
+            d.exec("edit.undo", json!({}));
+            assert_eq!(d.app().session.project, before);
+            d.exec("edit.redo", json!({}));
+            assert_eq!(placed_imports(&mut d), placed);
+        }
+    }
+}
+
+#[test]
+fn imported_bulk_selections_keep_their_recorded_order_on_drop() {
+    for view in ["list", "icon", "freeform"] {
+        for gesture in ["all", "range", "marquee"] {
+            let (mut d, _files, visible) = imported_drag_driver(view);
+            let expected = if gesture == "all" {
+                visible.clone()
+            } else {
+                d.click(&format!("project.item.{}", visible[2].0));
+                if gesture == "range" {
+                    d.ok("ui.click", json!({"id": format!("project.item.{}", visible[0].0), "modifiers": {"shift": true}}));
+                    visible.clone()
+                } else {
+                    let rects: Vec<_> = visible.iter().map(|id| d.rect(&format!("project.item.{}", id.0))).collect();
+                    let left = rects.iter().map(|r| r[0]).fold(f32::INFINITY, f32::min);
+                    let top = rects.iter().map(|r| r[1]).fold(f32::INFINITY, f32::min);
+                    let right = rects.iter().map(|r| r[0] + r[2]).fold(0.0, f32::max);
+                    let bottom = rects.iter().map(|r| r[1] + r[3]).fold(0.0, f32::max);
+                    let (from, to) = if view == "list" {
+                        ((left + 5.0, bottom + 12.0), (right - 5.0, top + 5.0))
+                    } else {
+                        ((left - 4.0, top - 4.0), (right - 2.0, bottom - 2.0))
+                    };
+                    marquee(&mut d, from, to, true);
+                    vec![visible[2], visible[0], visible[1]]
+                }
+            };
+            d.frames(2);
+            assert_eq!(d.app().session.state.project_selection, expected, "{view}: {gesture}");
+            assert_selection_badges(&mut d, &expected);
+            {
+                let prefs = &mut d.app().session.prefs.project_panel.view;
+                prefs.sort.descending = true;
+                prefs.icon_sort.descending = true;
+            }
+            d.frames(2);
+            let names: Vec<_> = expected.iter().map(|id| d.app().session.project.item(*id).unwrap().name.clone()).collect();
+            drag_imported_selection(&mut d, expected[1], false);
+            assert_eq!(placed_imports(&mut d).into_iter().map(|c| c.0).collect::<Vec<_>>(), names, "{view}: {gesture}");
+        }
+    }
+    let (mut d, _files, visible) = imported_drag_driver("list");
+    d.click(&format!("project.item.{}", visible[2].0));
+    d.key("Shift+Up");
+    d.key("Shift+Up");
+    let expected: Vec<_> = visible.into_iter().rev().collect();
+    assert_eq!(d.app().session.state.project_selection, expected, "keyboard range retains its anchor-first order");
+    assert_selection_badges(&mut d, &expected);
+    let names: Vec<_> = expected.iter().map(|id| d.app().session.project.item(*id).unwrap().name.clone()).collect();
+    drag_imported_selection(&mut d, expected[1], false);
+    assert_eq!(placed_imports(&mut d).into_iter().map(|c| c.0).collect::<Vec<_>>(), names);
+}
+
+#[test]
+fn selection_badges_renumber_on_deselect_and_append_on_reselect() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, _files, selected) = imported_drag_driver(view);
+        assert_selection_badges(&mut d, &selected);
+        let item_rects: Vec<_> = selected.iter().map(|id| d.rect(&format!("project.item.{}", id.0))).collect();
+        let names: Vec<_> = selected.iter().map(|id| d.rect(&format!("project.item.{}.name", id.0))).collect();
+        let badge = format!("project.item.{}.selectionOrder", selected[1].0);
+        // The painted badge is deliberately the pointer target: it must not intercept the click.
+        d.ok("ui.click", json!({"id": badge, "modifiers": {"command": true}}));
+        d.frames(2);
+        assert!(!d.has(&badge));
+        assert_selection_badges(&mut d, &[selected[0], selected[2]]);
+        d.ok("ui.click", json!({"id": format!("project.item.{}", selected[1].0), "modifiers": {"command": true}}));
+        let expected = [selected[0], selected[2], selected[1]];
+        assert_selection_badges(&mut d, &expected);
+        for (index, id) in selected.iter().enumerate() {
+            assert_eq!(d.rect(&format!("project.item.{}", id.0)), item_rects[index], "selection must not move the card/row");
+            assert_eq!(d.rect(&format!("project.item.{}.name", id.0)), names[index], "selection must not move the name");
+        }
+        let expected_names: Vec<_> = expected.iter().map(|id| d.app().session.project.item(*id).unwrap().name.clone()).collect();
+        let from = format!("project.item.{}.selectionOrder", expected[1].0);
+        let [tx, _, _, _] = d.rect("panel.Timeline");
+        let [_, ty, _, th] = d.rect("timeline.track.V1.target");
+        let x = tx + d.app().ui.timeline.header_w + 50.0;
+        d.ok("ui.drag", json!({"from": {"id": from}, "to": {"x": x, "y": ty + th / 2.0}, "steps": 16}));
+        d.frames(3);
+        assert_eq!(
+            placed_imports(&mut d).into_iter().map(|c| c.0).collect::<Vec<_>>(),
+            expected_names,
+            "{view}: dragging a nonfirst badge uses its displayed order"
+        );
+    }
+}
+
+#[test]
+fn selection_badges_keep_hidden_positions_and_do_not_count_bins() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, _files, selected) = imported_drag_driver(view);
+        let parent = d.app().ui.project_panel.bin.unwrap();
+        let bin = d.exec("file.newBin", json!({"name": "Organization", "parent": parent}))["bin"].as_u64().unwrap();
+        d.exec("project.select", json!({"items": [selected[2].0, bin, selected[0].0, selected[1].0]}));
+        let expected = [selected[2], selected[0], selected[1]];
+        assert_selection_badges(&mut d, &expected);
+        assert!(!d.has(&format!("project.item.{bin}.selectionOrder")));
+        let name = d.app().session.project.item(selected[1]).unwrap().name.clone();
+        d.app().ui.project_search = name;
+        d.frames(3);
+        assert!(!d.has(&format!("project.item.{}", selected[2].0)));
+        assert_eq!(d.label(&format!("project.item.{}.selectionOrder", selected[1].0)), "3", "hidden selections keep their positions");
+        d.app().ui.project_search.clear();
+        assert_selection_badges(&mut d, &expected);
+        let to = start_imported_drag(&mut d, expected[1], false);
+        d.key("Escape");
+        project_drag_pointer(&mut d, to, Some(false));
+        assert_selection_badges(&mut d, &expected);
+        assert!(placed_imports(&mut d).is_empty());
+    }
+}
+
+#[test]
+fn selection_badges_fit_double_digits_and_expose_accessible_order() {
+    for view in ["list", "icon", "freeform"] {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<_> = (1..=12).map(|i| dir.path().join(format!("Clip {i:02}.png"))).collect();
+        for (index, path) in paths.iter().enumerate() {
+            image::RgbaImage::from_fn(96, 54, |x, y| image::Rgba([30 + index as u8 * 12, 50 + x as u8, 80 + y as u8, 255])).save(path).unwrap();
+        }
+        let mut d = Driver::with(Session::default());
+        d.exec("file.import", json!({"paths": paths}));
+        d.app().session.prefs.project_panel.freeform.card_size = 80.0;
+        d.exec("project.view.set", json!({"view": view, "iconSize": 80, "fontSize": "extraLarge"}));
+        d.ok("ui.set", json!({"focused": "Project"}));
+        d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+        d.harness.set_size(egui::vec2(1100.0, 800.0));
+        d.frames(3);
+        let selected: Vec<_> = [4, 1, 5, 2, 12, 3, 11, 6, 10, 7, 9, 8]
+            .iter()
+            .map(|i| d.app().session.project.items.values().find(|item| item.name == format!("Clip {i:02}.png")).unwrap().id)
+            .collect();
+        for (index, id) in selected.iter().enumerate() {
+            d.ok("ui.click", json!({"id": format!("project.item.{}", id.0), "modifiers": {"command": index > 0}}));
+            d.frames(2);
+        }
+        assert_selection_badges(&mut d, &selected);
+        for (index, id) in selected.iter().enumerate() {
+            let rect = |[x, y, w, h]: [f32; 4]| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
+            let badge = rect(d.rect(&format!("project.item.{}.selectionOrder", id.0)));
+            let text = rect(d.rect(&format!("project.item.{}.selectionOrder.text", id.0)));
+            let item = rect(d.rect(&format!("project.item.{}", id.0)));
+            let name_rect = rect(d.rect(&format!("project.item.{}.name", id.0)));
+            assert!(item.contains_rect(badge), "{view}: badge stays in the item");
+            assert!(badge.shrink(1.0).contains_rect(text), "{view}: digits fit the pill");
+            assert!(!badge.intersects(name_rect), "{view}: badge cannot cover the clip name");
+            assert!(name_rect.width() >= 44.0, "{view}: compact footer retains room for a filename prefix");
+            let name = d.app().session.project.item(*id).unwrap().name.clone();
+            let node = d.harness.get_by_label(&name).accesskit_node();
+            assert_eq!(node.description(), Some(format!("Selection order: {} of 12", index + 1)));
+            assert_eq!(node.is_selected(), Some(true));
+            assert_eq!(node.toggled(), None);
+        }
+        if d.snapshots.is_some() {
+            let image = d.harness.render().expect("headless badge render");
+            let [x, y, w, h] = d.rect(&format!("project.item.{}.selectionOrder", selected[11].0));
+            let scale = image.width() as f32 / 1100.0;
+            let color = egui::Color32::from_rgb(0x2f, 0x6b, 0xdf);
+            let crop = image::imageops::crop_imm(&image, (x * scale) as u32, (y * scale) as u32, (w * scale) as u32, (h * scale) as u32).to_image();
+            assert!(crop.pixels().filter(|p| p.0[..3] == [color.r(), color.g(), color.b()]).count() > 30, "blue fill rendered");
+            assert!(crop.pixels().filter(|p| p[0] > 230 && p[1] > 230 && p[2] > 230).count() > 5, "white digits rendered");
+            d.snapshot(&format!("project-selection-order-badges-{view}"), None);
+        }
+    }
+    let luminance = |color: egui::Color32| {
+        let linear = |v: u8| {
+            let s = f64::from(v) / 255.0;
+            if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+    };
+    let blue = egui::Color32::from_rgb(0x2f, 0x6b, 0xdf);
+    assert!(1.05 / (luminance(blue) + 0.05) >= 4.5, "white badge text contrast");
+}
+
+#[test]
+fn selection_badges_keep_small_card_status_and_custom_accents_readable() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, _files, selected) = imported_drag_driver(view);
+        d.app().session.prefs.project_panel.freeform.card_size = 48.0;
+        d.exec("project.view.set", json!({"view": view, "iconSize": 48, "fontSize": "extraLarge"}));
+        let id = selected[1];
+        if let filmcraft_project::ItemKind::Media(m) = &mut std::sync::Arc::make_mut(&mut d.app().session.project).item_mut(id).unwrap().kind {
+            m.offline = true;
+            m.proxy = Some(m.media.clone());
+        }
+        if view == "freeform" {
+            d.exec("project.freeform.stack", json!({"items": [id.0, selected[2].0]}));
+        }
+        d.frames(3);
+        d.app().ui.language = filmcraft_ui_egui::i18n::Language::De;
+        d.app().tokens = d.app().tokens.with_appearance(Some([255, 255, 255]), false);
+        d.frames(3);
+        assert_eq!(d.app().tokens.accent, egui::Color32::WHITE);
+        let rect = |[x, y, w, h]: [f32; 4]| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
+        let badge = rect(d.rect(&format!("project.item.{}.selectionOrder", id.0)));
+        assert!(rect(d.rect(&format!("project.item.{}", id.0))).contains_rect(badge));
+        if view != "list" {
+            for suffix in ["proxy", "offline"] {
+                assert!(!badge.intersects(rect(d.rect(&format!("project.item.{}.{suffix}", id.0)))), "{view}: {suffix}");
+            }
+        }
+        if view == "freeform" {
+            assert!(!badge.intersects(rect(d.rect(&format!("project.stack.{}", id.0)))));
+        }
+        let name = d.app().session.project.item(id).unwrap().name.clone();
+        let node = d.harness.get_by_label(&name).accesskit_node();
+        assert_eq!(node.description(), Some("Auswahlreihenfolge: 2 von 3".into()));
+        assert_eq!(node.is_selected(), Some(true));
+        assert_eq!(node.toggled(), None);
+        if d.snapshots.is_some() {
+            let image = d.harness.render().expect("small card headless render");
+            let scale = image.width() as f32 / 1600.0;
+            let crop = image::imageops::crop_imm(
+                &image,
+                (badge.min.x * scale) as u32,
+                (badge.min.y * scale) as u32,
+                (badge.width() * scale) as u32,
+                (badge.height() * scale) as u32,
+            )
+            .to_image();
+            assert!(crop.pixels().filter(|p| p.0[..3] == [0x2f, 0x6b, 0xdf]).count() > 30, "blue fill survives a white accent");
+            d.snapshot(&format!("project-selection-badges-small-status-{view}"), None);
+        }
+        d.ok("ui.click", json!({"id": format!("project.item.{}.selectionOrder", id.0), "modifiers": {"command": true}}));
+        d.frames(3);
+        let node = d.harness.get_by_label(&name).accesskit_node();
+        assert_eq!(node.is_selected(), Some(false));
+        assert_eq!(node.toggled(), None);
+        assert_ne!(node.description().as_deref(), Some("Auswahlreihenfolge: 2 von 3"));
+    }
+}
+
+#[test]
+fn selection_badges_preserve_custom_clip_label_colors() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, _files, selected) = imported_drag_driver(view);
+        let id = selected[1];
+        d.app().session.prefs.project_panel.freeform.card_size = 80.0;
+        d.exec("project.view.set", json!({"view": view, "iconSize": 80, "fontSize": "extraLarge"}));
+        d.exec("edit.label", json!({"items": [id.0], "label": "#12ABCD"}));
+        assert_eq!(d.app().session.project.item(id).unwrap().custom_label_color, Some(filmcraft_project::HexColor([18, 171, 205])));
+        assert_eq!(d.app().session.state.project_selection, selected);
+        assert_selection_badges(&mut d, &selected);
+        let label_id = format!("project.item.{}.{}", id.0, if view == "list" { "label" } else { "name" });
+        if view == "list" {
+            assert_eq!(d.label(&label_id), "#12ABCD");
+        }
+        let rect = |[x, y, w, h]: [f32; 4]| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
+        let label = rect(d.rect(&label_id));
+        let badge = rect(d.rect(&format!("project.item.{}.selectionOrder", id.0)));
+        assert!(!label.intersects(badge), "{view}: custom label and selection number have separate space");
+        if d.snapshots.is_some() {
+            let image = d.harness.render().expect("custom label and badge render");
+            let scale = image.width() as f32 / 1600.0;
+            for (region, rgb, description) in [(label, [18, 171, 205], "custom clip label"), (badge, [0x2f, 0x6b, 0xdf], "selection number")] {
+                let crop = image::imageops::crop_imm(
+                    &image,
+                    (region.min.x * scale) as u32,
+                    (region.min.y * scale) as u32,
+                    (region.width() * scale) as u32,
+                    (region.height() * scale) as u32,
+                )
+                .to_image();
+                assert!(crop.pixels().filter(|p| p.0[..3] == rgb).count() > 20, "{view}: {description} retains its color");
+            }
+            d.snapshot(&format!("project-custom-label-and-selection-order-{view}"), None);
+        }
+    }
+}
+
+#[test]
+fn selection_badges_preserve_saved_freeform_card_spacing() {
+    for size in [48.0_f32, 128.0] {
+        let (mut d, _files, selected) = imported_drag_driver("freeform");
+        for (index, id) in selected.iter().enumerate() {
+            std::sync::Arc::make_mut(&mut d.app().session.project)
+                .item_mut(*id)
+                .unwrap()
+                .metadata
+                .insert(FREEFORM_POS.into(), format!("12,{},{}", 12.0 + index as f32 * (size * 9.0 / 16.0 + 44.0), size));
+        }
+        let before = d.app().session.project.clone();
+        d.ok("ui.set", json!({"focused": "Project"}));
+        d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+        d.frames(3);
+        for pair in selected.windows(2) {
+            let [_, y, _, h] = d.rect(&format!("project.item.{}.name", pair[0].0));
+            let [_, next_y, _, _] = d.rect(&format!("project.item.{}.selected", pair[1].0));
+            assert!(y + h <= next_y, "{size}: saved card footer must remain clear of the next card");
+        }
+        assert_eq!(d.app().session.project, before, "drawing preserves saved arrangements");
+    }
+}
+
+#[test]
+fn imported_select_all_drag_places_all_media_in_view_order() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, _files, selected) = imported_drag_driver(view);
+        assert_selection_badges(&mut d, &selected);
+        let before = d.app().session.project.clone();
+        let history = d.app().session.history.undo.len();
+        drag_imported_selection(&mut d, selected[0], false);
+        let clips = placed_imports(&mut d);
+        assert_eq!(clips.len(), 3, "{view}: status {}", d.app().ui.status);
+        let expected = if view == "freeform" { vec!["z-shot.png", "a-sound.wav", "m-shot.png"] } else { vec!["a-sound.wav", "m-shot.png", "z-shot.png"] };
+        assert_eq!(clips.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), expected, "{view}");
+        assert!(clips.windows(2).all(|w| w[0].2 == w[1].1), "{view}: end to end: {clips:?}");
+        assert_eq!(d.app().session.history.undo.len(), history + 1, "one drop is one edit");
+        d.exec("edit.undo", json!({}));
+        assert_eq!(d.app().session.project, before);
+        d.exec("edit.redo", json!({}));
+        assert_eq!(placed_imports(&mut d), clips);
+    }
+}
+
+#[test]
+fn imported_project_drag_retains_its_selection_until_drop() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, _files, selected) = imported_drag_driver(view);
+        drag_imported_selection(&mut d, selected[0], true);
+        assert_eq!(placed_imports(&mut d).len(), 3, "{view}: a later selection change cannot truncate the drag");
+    }
+}
+
+#[test]
+fn imported_project_drag_preview_matches_the_batch_and_escape_changes_nothing() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, _files, selected) = imported_drag_driver(view);
+        let project = d.app().session.project.clone();
+        let undo = d.app().session.history.undo.len();
+        let to = start_imported_drag(&mut d, selected[0], false);
+        let preview = d.rect("timeline.projectDropPreview");
+        let session = &d.app().session;
+        let expected_seconds = 2.0 * session.prefs.timeline.still_duration(session.sequence_rate()).seconds() + 0.5;
+        assert!((preview[2] as f64 - expected_seconds * d.app().ui.timeline.pps).abs() < 1.0, "{view}: {preview:?}");
+        for lane in ["V1", "A1"] {
+            let band = d.rect(&format!("timeline.dropPreview.{lane}"));
+            assert_eq!((band[0], band[2]), (preview[0], preview[2]), "{view}: {lane} spans the captured batch");
+        }
+        d.snapshot(&format!("project-batch-preview-{view}"), None);
+        d.key("Escape");
+        project_drag_pointer(&mut d, to, Some(false));
+        d.frames(3);
+        assert_eq!(d.app().session.project, project, "{view}: Escape must not drop");
+        assert_eq!(d.app().session.history.undo.len(), undo);
+        assert_eq!(d.app().session.state.project_selection, selected);
+    }
+}
+
+#[test]
+fn short_audio_batch_preview_matches_placed_frames() {
+    let files = tempfile::tempdir().unwrap();
+    let paths: Vec<_> = ["a.wav", "b.wav"].iter().map(|name| files.path().join(name)).collect();
+    for path in &paths {
+        std::fs::write(path, filmcraft_engine::previews::write_wav_f32(&vec![0.0; 960], 48_000)).unwrap();
+    }
+    let mut d = Driver::with(Session::default());
+    d.exec("file.newSequence", json!({"name": "Short audio", "video": 1, "audio": 1}));
+    let bin = d.exec("file.newBin", json!({"name": "Short files"}))["bin"].as_u64().unwrap();
+    d.exec("file.import", json!({"paths": paths, "bin": bin}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.frames(4);
+    d.key("Cmd+A");
+    let selected = d.app().session.state.project_selection.clone();
+    assert_eq!(selected.len(), 2);
+    let to = start_imported_drag(&mut d, selected[0], false);
+    let preview = d.rect("timeline.projectDropPreview");
+    let pps = d.app().ui.timeline.pps;
+    project_drag_pointer(&mut d, to, Some(false));
+    d.frames(3);
+    let clips = placed_imports(&mut d);
+    assert_eq!(clips.len(), 2);
+    let frame = d.app().session.sequence_rate().frame_duration().0;
+    assert!(clips.iter().all(|c| c.2 - c.1 == frame));
+    assert_eq!(clips[0].2, clips[1].1);
+    let placed_seconds = filmcraft_time::Tick(clips[1].2 - clips[0].1).seconds();
+    assert!((f64::from(preview[2]) - placed_seconds * pps).abs() < 1.0, "preview {preview:?}, clips {clips:?}");
+}
+
+#[test]
+fn project_batch_preview_matches_placement_at_a_subframe_snap_target() {
+    let (mut d, _files, selected) = imported_drag_driver("list");
+    let rate = d.app().session.sequence_rate();
+    let target = filmcraft_time::Tick(rate.frame_duration().0 * 21 / 4);
+    d.app().ui.timeline.pps = 240.0;
+    d.app().ui.timeline.target_pps = 240.0;
+    d.exec("markers.add", json!({"time": target.0, "target": "program"}));
+    assert_eq!(d.app().session.active_sequence().unwrap().markers[0].start, target);
+    d.frames(3);
+    let to = start_imported_drag(&mut d, selected[0], false);
+    let preview = d.rect("timeline.projectDropPreview");
+    let pps = d.app().ui.timeline.pps;
+    project_drag_pointer(&mut d, to, Some(false));
+    d.frames(3);
+    let clips = placed_imports(&mut d);
+    assert_eq!(clips.len(), 3);
+    assert_eq!(clips[0].1, rate.snap_nearest(target).0, "the drop snaps to the fractional marker");
+    let first = d.app().session.active_sequence().unwrap().audio_tracks[0].items[0].id.0;
+    let edge = d.ok("ui.timeline.locate", json!({"clip": first, "edge": "in"}));
+    assert!((f64::from(preview[0]) - (edge["x"].as_f64().unwrap() - 2.0)).abs() < 1.0, "preview begins where placement does");
+    let placed_seconds = filmcraft_time::Tick(clips[2].2 - clips[0].1).seconds();
+    assert!((f64::from(preview[2]) - placed_seconds * pps).abs() < 1.0, "preview {preview:?}, clips {clips:?}");
+}
+
+#[test]
+fn imported_selection_can_create_a_sequence_from_an_empty_timeline() {
+    let (mut d, _files, selected) = imported_drag_driver("list");
+    d.exec("sequence.close", json!({}));
+    d.frames(3);
+    let before = d.app().session.project.clone();
+    let undo = d.app().session.history.undo.len();
+    drag_imported_selection(&mut d, selected[0], true);
+    assert_eq!(placed_imports(&mut d).len(), 3, "the empty Timeline consumes the captured selection");
+    assert_eq!(d.app().session.history.undo.len(), undo + 1);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project, before);
+}
+
+#[test]
+fn imported_batch_failure_preserves_project_history_and_can_be_retried() {
+    let (mut d, _files, selected) = imported_drag_driver("list");
+    d.exec("timeline.setTrack", json!({"track": "V1", "locked": true}));
+    d.exec("timeline.setTrack", json!({"track": "V2", "locked": true}));
+    d.exec("edit.undo", json!({}));
+    let before = d.app().session.project.clone();
+    let history = (d.app().session.history.undo.len(), d.app().session.history.redo.len());
+    drag_imported_selection(&mut d, selected[0], false);
+    assert_eq!(d.app().session.project, before, "failure after the audio item must roll back the entire batch");
+    assert_eq!((d.app().session.history.undo.len(), d.app().session.history.redo.len()), history);
+    assert_eq!(d.app().session.state.project_selection, selected);
+    assert!(d.app().ui.status.contains("locked"), "{}", d.app().ui.status);
+    d.exec("timeline.setTrack", json!({"track": "V1", "locked": false}));
+    drag_imported_selection(&mut d, selected[0], false);
+    assert_eq!(placed_imports(&mut d).len(), 3);
+}
+
+#[test]
+fn project_drag_to_bin_retains_selected_bins_beside_media() {
+    let (mut d, _files, selected) = imported_drag_driver("list");
+    let parent = d.app().ui.project_panel.bin.unwrap();
+    let moved = d.exec("file.newBin", json!({"name": "Moved bin", "parent": parent}))["bin"].as_u64().unwrap();
+    let target = d.exec("file.newBin", json!({"name": "Destination", "parent": parent}))["bin"].as_u64().unwrap();
+    d.exec("project.select", json!({"items": [selected[0].0, moved]}));
+    d.frames(3);
+    let before = d.app().session.project.clone();
+    d.ok("ui.drag", json!({"from": {"id": format!("project.item.{}", selected[0].0)}, "to": {"id": format!("project.bin.{target}")}, "steps": 16}));
+    d.frames(3);
+    let destination = d.app().session.project.root.find_bin(filmcraft_project::BinId(target)).unwrap();
+    assert!(destination.children.iter().any(|e| matches!(e, BinEntry::Item(id) if *id == selected[0])));
+    assert!(destination.children.iter().any(|e| matches!(e, BinEntry::Bin(b) if b.id.0 == moved)));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project, before);
+}
+
+#[test]
+fn freeform_drag_reports_an_item_removed_before_leaving_the_panel() {
+    let (mut d, _files, selected) = imported_drag_driver("freeform");
+    let [x, y, w, h] = d.rect(&format!("project.item.{}", selected[0].0));
+    let from = egui::pos2(x + w / 2.0, y + h / 2.0);
+    project_drag_pointer(&mut d, from, None);
+    project_drag_pointer(&mut d, from, Some(true));
+    project_drag_pointer(&mut d, from + egui::vec2(12.0, 0.0), None);
+    d.exec("project.select", json!({"items": [selected[1].0]}));
+    d.exec("project.delete", json!({}));
+    assert!(d.app().session.project.item(selected[1]).is_none());
+    let before = d.app().session.project.clone();
+    let history = d.app().session.history.undo.len();
+    let [tx, _, _, _] = d.rect("panel.Timeline");
+    let [_, ry, _, rh] = d.rect("timeline.track.V1.target");
+    let to = egui::pos2(tx + d.app().ui.timeline.header_w + 50.0, ry + rh / 2.0);
+    project_drag_pointer(&mut d, to, None);
+    project_drag_pointer(&mut d, to, Some(false));
+    d.frames(3);
+    assert_eq!(d.app().session.project, before, "a stale item fails the entire drop instead of silently omitting it");
+    assert_eq!(d.app().session.history.undo.len(), history);
+    assert!(d.app().ui.status.contains("no such item"), "{}", d.app().ui.status);
 }
 
 /// Double-clicking empty space in the Project panel opens Import, also between and beside the

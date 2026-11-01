@@ -1,4 +1,5 @@
 # Swedish (sv) catalog. Columns, separated by a TAB:  context <TAB> source <TAB> translation
+	Selection order: {position} of {total}	Markeringsordning: {position} av {total}
 #
 #   context  empty          a plain UI string; `source` is the English text in the code (`tl!("…")`,
 #                           a menu label, or a name the UI translates with `i18n::t`)

@@ -18,6 +18,7 @@ const OFFLINE: Color32 = Color32::from_rgb(0xe8, 0x5c, 0x5c);
 const BIN_COLOR: Color32 = Color32::from_rgb(237, 150, 58);
 /// Width of the label chip lead-in before the Name column.
 const LEAD: f32 = 26.0;
+const ORDER_BLUE: Color32 = Color32::from_rgb(0x2f, 0x6b, 0xdf);
 
 pub fn item_icon(k: &ItemKind) -> Icon {
     match k {
@@ -198,6 +199,14 @@ fn menu_targets(selection: &[ItemId], id: ItemId) -> Vec<ItemId> {
     if selection.contains(&id) { selection.to_vec() } else { vec![id] }
 }
 
+/// Keep the selection's recorded order even when the view is sorted differently or the drag
+/// starts from a later selected item. Organization drops retain selected bins too.
+fn project_drag_payload(app: &FilmcraftApp, anchor: ItemId) -> crate::panels::ItemDrag {
+    let selected = &app.session.state.project_selection;
+    let selection = if selected.contains(&anchor) { selected.clone() } else { vec![anchor] };
+    crate::panels::ItemDrag::capture(anchor, selection, &app.session.project)
+}
+
 /// Click / double-click / drag / context menu of an item (row, card).
 pub(super) struct ItemInteraction<'a> {
     view: &'a View,
@@ -234,7 +243,7 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
         }
     }
     if drag && resp.drag_started_by(egui::PointerButton::Primary) {
-        crate::panels::start_drag_item(ui, id);
+        crate::panels::start_drag_items(ui, project_drag_payload(app, id));
     }
     if menu {
         resp.context_menu(|ui| item_menu(app, ui, id, kind, actions));
@@ -403,9 +412,8 @@ pub fn clear_params(selection: &[filmcraft_project::ItemId], selected_bin: Optio
 /// Drop project items dragged onto a bin: move them (the selection when the dragged item is in it).
 /// A dragged bin nests in it, unless that would put the bin inside itself.
 fn accept_bin_drop(app: &FilmcraftApp, ui: &egui::Ui, r: Rect, bin: u64, actions: &mut Actions) -> bool {
-    let items: Vec<u64> = if let Some(item) = crate::panels::dragged_project_item(ui) {
-        let sel = &app.session.state.project_selection;
-        if sel.contains(&item) { sel.iter().map(|i| i.0).collect() } else { vec![item.0] }
+    let items: Vec<u64> = if crate::panels::dragged_project_item(ui).is_some() {
+        crate::panels::dragged_selection(ui).iter().map(|i| i.0).collect()
     } else if let Some(dragged) = crate::panels::dragged_bin(ui) {
         let root = &app.session.project.root;
         if root.find_bin(BinId(dragged)).is_none_or(|d| d.find_bin(BinId(bin)).is_some()) {
@@ -520,7 +528,74 @@ fn slow_click_rename(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respons
 
 // ------------------------------------------------------------------------------------ list view
 
+/// Ranks come from the same batch as placement, including selected items outside the current view.
+struct SelectionOrder(std::collections::BTreeMap<ItemId, usize>);
+
+impl SelectionOrder {
+    fn new(app: &FilmcraftApp, ui: &egui::Ui, v: &View) -> Self {
+        let moving = (v.mode == ViewMode::Freeform && ui.input(|i| i.pointer.primary_down()))
+            .then(|| ui.data(|d| d.get_temp::<crate::panels::ItemDrag>(egui::Id::unique((&v.prefix, "ff-drag")).with("selection"))))
+            .flatten();
+        let items = if crate::panels::dragged_panel_item(ui).is_some() {
+            crate::panels::dragged_items(ui)
+        } else if let Some(drag) = moving {
+            drag.items
+        } else if let Some(anchor) = app.session.state.project_selection.first() {
+            project_drag_payload(app, *anchor).items
+        } else {
+            Vec::new()
+        };
+        Self(items.into_iter().enumerate().map(|(index, id)| (id, index + 1)).collect())
+    }
+
+    fn describe(&self, id: ItemId) -> Option<String> {
+        self.0.get(&id).map(|position| tlf!("Selection order: {position} of {total}", position, total = self.0.len()))
+    }
+
+    fn annotate(&self, ui: &egui::Ui, response: &egui::Response, id: ItemId, name: &str, selected: bool) {
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ListBoxOption, response.enabled(), name));
+        ui.ctx().accesskit_node_builder(response.id, |node| node.set_selected(selected));
+        if let Some(description) = self.describe(id) {
+            ui.ctx().accesskit_node_builder(response.id, |node| node.set_description(description.clone()));
+            response.clone().on_hover_text(format!("{name}\n{description}"));
+        }
+    }
+}
+
+fn order_galley(ui: &egui::Ui, text: String, font: f32) -> std::sync::Arc<egui::Galley> {
+    ui.painter().layout_no_wrap(text, Tokens::mono((font - 2.0).max(10.0)), Color32::WHITE)
+}
+
+fn order_slot_size(app: &FilmcraftApp, ui: &egui::Ui, order: &SelectionOrder) -> egui::Vec2 {
+    let digits = app.session.project.items.len().max(order.0.len()).max(1).to_string().len();
+    (order_galley(ui, "8".repeat(digits), font(app)).size() + vec2(8.0, 4.0)).max(vec2(16.0, 16.0))
+}
+
+/// Paint only: the row/card keeps every click, modifier and drag on the badge.
+fn paint_order_badge(app: &mut FilmcraftApp, ui: &egui::Ui, bounds: Rect, id: ItemId, pre: &str, order: &SelectionOrder) -> Option<Rect> {
+    let position = order.0.get(&id)?;
+    let text = position.to_string();
+    let mut galley = order_galley(ui, text.clone(), font(app));
+    let available = (bounds.size() - vec2(8.0, 4.0)).max(vec2(1.0, 1.0));
+    let scale = (available.x / galley.size().x.max(1.0)).min(available.y / galley.size().y.max(1.0)).min(1.0);
+    if scale < 1.0 {
+        let fitted = (font(app) - 2.0).max(10.0) * scale;
+        galley = ui.painter().layout_no_wrap(text.clone(), Tokens::mono(fitted), Color32::WHITE);
+    }
+    let size = (galley.size() + vec2(8.0, 4.0)).max(vec2(16.0, 16.0));
+    let r = Rect::from_min_size(pos2(bounds.min.x, bounds.center().y - size.y / 2.0), size);
+    let text_rect = Rect::from_center_size(r.center(), galley.size());
+    ui.painter().rect_filled(r, size.y / 2.0, ORDER_BLUE);
+    ui.painter().galley(text_rect.min, galley, Color32::WHITE);
+    app.auto.add(&format!("{pre}.item.{}.selectionOrder", id.0), r.intersect(ui.clip_rect()), &text);
+    app.auto.add(&format!("{pre}.item.{}.selectionOrder.text", id.0), text_rect.intersect(ui.clip_rect()), &text);
+    Some(r)
+}
+
 struct ListCtx {
+    order: SelectionOrder,
+    lead: f32,
+    badge_h: f32,
     cols: Vec<pp::Column>,
     row_h: f32,
     font: f32,
@@ -538,8 +613,21 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
     {
         c.width = *w;
     }
-    let width = LEAD + cols.iter().map(|c| c.width).sum::<f32>() + 8.0;
-    let lc = ListCtx { row_h: if thumbs { (f * 3.6).max(44.0) } else { (f * 2.0).max(22.0) }, font: f, thumbs, width: width.max(rect.width()), cols };
+    let order = SelectionOrder::new(app, ui, v);
+    // Reserve by project size, not selection size, so selecting never moves names or columns.
+    let badge = order_slot_size(app, ui, &order);
+    let lead = LEAD + badge.x.max(16.0) + 6.0;
+    let width = lead + cols.iter().map(|c| c.width).sum::<f32>() + 8.0;
+    let lc = ListCtx {
+        order,
+        lead,
+        badge_h: badge.y.max(16.0),
+        row_h: if thumbs { (f * 3.6).max(44.0) } else { (f * 2.0).max(22.0) },
+        font: f,
+        thumbs,
+        width: width.max(rect.width()),
+        cols,
+    };
     let header_h = (f * 1.8).max(20.0);
     let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + header_h), rect.max);
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt((&v.prefix, "list-body")));
@@ -563,7 +651,7 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
     let hp = ui.painter().with_clip_rect(hr.intersect(ui.clip_rect()));
     hp.rect_filled(hr, 0.0, t.panel_bg);
     hp.line_segment([hr.left_bottom(), hr.right_bottom()], Stroke::new(1.0, t.separator));
-    let mut x = rect.min.x + LEAD - out.state.clamped_offset().x;
+    let mut x = rect.min.x + lc.lead - out.state.clamped_offset().x;
     let sort = app.session.prefs.project_panel.view.sort.clone();
     for c in &lc.cols {
         let cr = Rect::from_min_size(pos2(x, hr.min.y), vec2(c.width, header_h));
@@ -741,11 +829,11 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
             ui.painter().rect_filled(r, 0.0, t.row_alt);
         }
         *row += 1;
-        let x = r.min.x + LEAD + depth as f32 * 14.0;
+        let x = r.min.x + lc.lead + depth as f32 * 14.0;
         let tri = Rect::from_center_size(pos2(x + 5.0, r.center().y), vec2(14.0, 14.0));
         icons::paint(ui.painter(), tri.shrink(2.0), if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
         icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 20.0, r.center().y), vec2(14.0, 14.0)), Icon::Folder, BIN_COLOR);
-        let name_r = Rect::from_min_max(pos2(x + 30.0, r.min.y + 2.0), pos2((r.min.x + LEAD + lc.cols[0].width - 4.0).max(x + 80.0), r.max.y - 2.0));
+        let name_r = Rect::from_min_max(pos2(x + 30.0, r.min.y + 2.0), pos2((r.min.x + lc.lead + lc.cols[0].width - 4.0).max(x + 80.0), r.max.y - 2.0));
         if !rename_field(app, ui, name_r, None, Some(b.id.0), &v.prefix) {
             ui.painter().with_clip_rect(name_r).text(pos2(name_r.min.x + 2.0, r.center().y), Align2::LEFT_CENTER, &b.name, Tokens::ui(lc.font), t.text);
         }
@@ -797,7 +885,10 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         let chip = Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(12.0, 12.0));
         ui.painter().rect_filled(chip, 2.5, label_color(app, it.label, it.custom_label_color));
         app.auto.add(&format!("{}.item.{}.label", v.prefix, id.0), chip, &it.label_value());
-        let mut x = r.min.x + LEAD;
+        let bounds = Rect::from_min_size(pos2(r.min.x + LEAD, r.center().y - lc.badge_h / 2.0), vec2(lc.lead - LEAD - 6.0, lc.badge_h));
+        paint_order_badge(app, ui, bounds, id, &v.prefix, &lc.order);
+        lc.order.annotate(ui, &resp, id, &it.name, selected);
+        let mut x = r.min.x + lc.lead;
         let name_w = lc.cols.first().map(|c| c.width).unwrap_or(200.0);
         let nx = x + depth as f32 * 14.0 + 14.0;
         let mut icon_x = nx;
@@ -808,6 +899,7 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         }
         icons::paint(ui.painter(), Rect::from_center_size(pos2(icon_x + 7.0, r.center().y), vec2(14.0, 14.0)), item_icon(&it.kind), t.icon);
         let name_r = Rect::from_min_max(pos2(icon_x + 18.0, r.min.y + 2.0), pos2(x + name_w - 4.0, r.max.y - 2.0));
+        app.auto.add(&format!("{}.item.{}.name", v.prefix, id.0), name_r.intersect(ui.clip_rect()), &it.name);
         let badge = media_badge(app, &it);
         if !rename_field(app, ui, name_r, Some(id.0), None, &v.prefix) {
             let nr = ui.painter().with_clip_rect(name_r).text(
@@ -883,13 +975,23 @@ fn hover_time(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Response, r: R
 
 /// A clip card: thumbnail (hover scrub, poster frame), In/Out bar, badges, name and duration.
 #[allow(clippy::too_many_arguments)]
-fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &str, show_name: bool, show_dur: bool, sense: Sense) -> Option<egui::Response> {
+fn card(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    r: Rect,
+    id: ItemId,
+    pre: &str,
+    show_name: bool,
+    show_dur: bool,
+    sense: Sense,
+    order: &SelectionOrder,
+) -> Option<(egui::Response, Option<Rect>)> {
     let t = app.tokens;
     let it = app.session.project.item(id).cloned()?;
     let mut resp = ui.interact(r.expand(2.0), egui::Id::unique((pre, "card", id.0)), sense);
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
     let selected = app.session.state.project_selection.contains(&id);
-    let card_bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
+    let card_bg = Rect::from_min_max(r.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
     ui.painter().rect_filled(card_bg, 4.0, if selected { t.row_selected } else { t.panel_bg });
     if selected {
         ui.painter().rect_stroke(card_bg, 4.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
@@ -949,26 +1051,45 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     }
     let f = font(app);
     let ty = th.max.y + 11.0;
+    let slot = order_slot_size(app, ui, order);
+    // Small cards reserve footer space; larger cards leave room for stack and proxy overlays.
+    // The project-sized slot keeps filenames still when the selected batch changes.
+    let compact = th.width() < slot.x + 60.0;
+    let lead = if compact { slot.x.min((th.width() - 12.0).max(16.0)) + 4.0 } else { 0.0 };
+    let bounds =
+        if compact { Rect::from_min_size(pos2(th.min.x, th.max.y + 1.0), vec2(lead - 4.0, 20.0)) } else { Rect::from_min_size(th.min + vec2(4.0, 4.0), slot) };
+    let order_badge = paint_order_badge(app, ui, bounds, id, pre, order);
     let mut dw = 0.0;
     if show_dur {
         let secs = dur.seconds().max(0.0) as u64;
         let dtext = if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) };
-        let dg = ui.painter().layout_no_wrap(dtext, Tokens::ui(f - 1.0), t.text_dim);
-        dw = dg.size().x;
-        ui.painter().galley(pos2(th.max.x - dw, ty - dg.size().y / 2.0), dg, t.text_dim);
+        let dg = ui.painter().layout_no_wrap(dtext.clone(), Tokens::ui(f - 1.0), t.text_dim);
+        let name_space = if compact && show_name { f * 2.0 } else { 0.0 };
+        if lead + dg.size().x + 12.0 + name_space <= th.width() {
+            dw = dg.size().x;
+            ui.painter().galley(pos2(th.max.x - dw, ty - dg.size().y / 2.0), dg, t.text_dim);
+        } else {
+            resp = resp.on_hover_text(dtext);
+        }
     }
-    let nr = Rect::from_min_max(pos2(th.min.x, th.max.y + 2.0), pos2(th.max.x - dw - 6.0, th.max.y + 20.0));
+    let nr = Rect::from_min_max(pos2(th.min.x + lead, th.max.y + 2.0), pos2((th.max.x - dw - 6.0).max(th.min.x + lead), th.max.y + 20.0));
     if show_name && !rename_field(app, ui, nr, Some(id.0), None, pre) {
-        ui.painter().rect_filled(Rect::from_min_size(pos2(th.min.x, ty - 5.0), vec2(8.0, 10.0)), 1.5, label_color(app, it.label, it.custom_label_color));
-        let g = elided_name(ui, &it.name, Tokens::ui(f - 0.5), if badge.offline { OFFLINE } else { t.text }, nr.max.x - th.min.x - 12.0);
+        ui.painter().with_clip_rect(nr.intersect(ui.clip_rect())).rect_filled(
+            Rect::from_min_size(pos2(nr.min.x, ty - 5.0), vec2(8.0, 10.0)),
+            1.5,
+            label_color(app, it.label, it.custom_label_color),
+        );
+        let g = elided_name(ui, &it.name, Tokens::ui(f - 0.5), if badge.offline { OFFLINE } else { t.text }, (nr.width() - 12.0).max(0.0));
         let elided = g.elided;
-        ui.painter().galley(pos2(th.min.x + 12.0, ty - g.size().y / 2.0), g, t.text);
+        ui.painter().with_clip_rect(nr.intersect(ui.clip_rect())).galley(pos2(nr.min.x + 12.0, ty - g.size().y / 2.0), g, t.text);
         if elided {
             resp = resp.on_hover_text(&it.name);
         }
     }
-    app.auto.add(&format!("{pre}.item.{}", id.0), th, &it.name);
-    Some(resp)
+    app.auto.add(&format!("{pre}.item.{}.name", id.0), nr.intersect(ui.clip_rect()), &it.name);
+    app.auto.add(&format!("{pre}.item.{}", id.0), r.expand(2.0), &it.name);
+    order.annotate(ui, &resp, id, &it.name, selected);
+    Some((resp, order_badge))
 }
 
 /// A one-line tile name cut to `max_width` with a trailing "…"; `elided` says whether it was cut,
@@ -987,7 +1108,7 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     let th = Rect::from_min_size(r.min, vec2(r.width(), r.width() * 9.0 / 16.0));
     let mut resp = ui.interact(r.expand(2.0), egui::Id::unique((&v.prefix, "bincard", b.id.0)), Sense::click_and_drag());
     let selected = app.ui.project_panel.selected_bin == Some(b.id.0);
-    let bg = Rect::from_min_max(th.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
+    let bg = Rect::from_min_max(r.min - vec2(6.0, 6.0), pos2(th.max.x + 6.0, r.max.y + 2.0));
     ui.painter().rect_filled(bg, 4.0, if selected { t.row_selected } else { t.panel_bg });
     if selected {
         ui.painter().rect_stroke(bg, 4.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
@@ -1029,6 +1150,7 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
 
 pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, filter: &str, actions: &mut Actions) {
     let Some(bin) = app.session.project.root.find_bin(v.bin).cloned() else { return };
+    let order = SelectionOrder::new(app, ui, v);
     let size = v.icon_size;
     let th_h = size * 9.0 / 16.0;
     let cell = vec2(size + 20.0, th_h + 34.0);
@@ -1061,7 +1183,7 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
                 let id = ids[i - bins.len()];
                 let Some(kind) = app.session.project.item(id).map(|x| x.kind.clone()) else { continue };
                 let was_selected = app.session.state.project_selection.contains(&id);
-                if let Some(resp) = card(app, ui, r, id, &v.prefix, true, true, Sense::click_and_drag()) {
+                if let Some((resp, _)) = card(app, ui, r, id, &v.prefix, true, true, Sense::click_and_drag(), &order) {
                     note_hit(ui, v, id, r);
                     let name_r = Rect::from_min_max(pos2(r.min.x, r.min.y + th_h), r.max);
                     slow_click_rename(app, ui, &resp, name_r, id, was_selected);
@@ -1083,9 +1205,11 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
 pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, filter: &str, actions: &mut Actions) {
     let t = app.tokens;
     let opts = app.session.prefs.project_panel.freeform.clone();
+    let selection_order = SelectionOrder::new(app, ui, v);
     let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, rect.width());
     cards.retain(|c| matches_filter(app, ItemId(c.item), filter));
     let drag_key = egui::Id::unique((&v.prefix, "ff-drag"));
+    let selection_key = drag_key.with("selection");
     // (dragged item, offset so far)
     let dragging: Option<(u64, egui::Vec2)> = ui.ctx().data(|d| d.get_temp(drag_key));
     let sel: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
@@ -1146,13 +1270,18 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             let off = if moving(&c) { dragging.map(|d| d.1).unwrap_or_default() } else { egui::Vec2::ZERO };
             let r = Rect::from_min_size(canvas.min + vec2(c.x, c.y) + off, vec2(c.size, c.size * 9.0 / 16.0 + 20.0));
             let Some(kind) = app.session.project.item(ItemId(c.item)).map(|x| x.kind.clone()) else { continue };
-            let Some(resp) = card(app, ui, r, ItemId(c.item), &v.prefix, opts.show_names, opts.show_durations, Sense::click_and_drag()) else { continue };
+            let Some((resp, order_badge)) =
+                card(app, ui, r, ItemId(c.item), &v.prefix, opts.show_names, opts.show_durations, Sense::click_and_drag(), &selection_order)
+            else {
+                continue;
+            };
             note_hit(ui, v, ItemId(c.item), r);
             if let Some(s) = c.stack
                 && s == c.item
                 && let Some(n) = stack_n.get(&s)
             {
-                let br = Rect::from_min_size(r.min + vec2(4.0, 4.0), vec2(26.0, 16.0));
+                let at = order_badge.filter(|b| b.min.y < r.min.y + r.width() * 9.0 / 16.0).map_or(r.min + vec2(4.0, 4.0), |b| pos2(b.max.x + 2.0, b.min.y));
+                let br = Rect::from_min_size(at, vec2(26.0, 16.0));
                 ui.painter().rect_filled(br, 3.0, t.accent);
                 ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("×{n}"), Tokens::ui(10.0), Color32::WHITE);
                 app.auto.add(&format!("{}.stack.{s}", v.prefix), br, &format!("Stack of {n}"));
@@ -1163,13 +1292,20 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                 actions,
                 ItemInteraction { view: v, response: &resp, item: ItemId(c.item), kind: &kind, allow_drag: false, allow_menu: false },
             );
+            if resp.drag_started_by(egui::PointerButton::Primary) {
+                let items = project_drag_payload(app, ItemId(c.item));
+                ui.ctx().data_mut(|d| d.insert_temp(selection_key, items));
+            }
             // Escape puts the cards back and drops nothing until the button comes up (#580); egui
             // also ends the drag on Escape, so it arrives as a stop as often as during the drag
             let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
             // only the primary button moves cards: a middle-button drag pans the canvas (#579)
             let (dragged, stopped) = (resp.dragged_by(egui::PointerButton::Primary), resp.drag_stopped_by(egui::PointerButton::Primary));
             if (dragged || stopped) && (escape || crate::panels::drag_cancelled(ui)) {
-                ui.ctx().data_mut(|d| d.remove::<(u64, egui::Vec2)>(drag_key));
+                ui.ctx().data_mut(|d| {
+                    d.remove::<(u64, egui::Vec2)>(drag_key);
+                    d.remove::<crate::panels::ItemDrag>(selection_key);
+                });
                 crate::panels::cancel_drag(ui);
             } else if dragged {
                 let total = dragging.filter(|d| d.0 == c.item).map(|d| d.1).unwrap_or_default() + resp.drag_delta();
@@ -1178,8 +1314,9 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                 if let Some(p) = ui.ctx().pointer_latest_pos()
                     && !rect.contains(p)
                     && crate::panels::dragged_project_item(ui).is_none()
+                    && let Some(drag) = ui.ctx().data(|d| d.get_temp::<crate::panels::ItemDrag>(selection_key))
                 {
-                    crate::panels::start_drag_item(ui, ItemId(c.item));
+                    crate::panels::start_drag_items(ui, drag);
                 }
             }
             if stopped && !crate::panels::drag_cancelled(ui) {
@@ -1189,7 +1326,10 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         }
         marquee(app, ui, v, &bg, canvas.min, actions);
         if let Some((item, off)) = released {
-            ui.ctx().data_mut(|d| d.remove::<(u64, egui::Vec2)>(drag_key));
+            ui.ctx().data_mut(|d| {
+                d.remove::<(u64, egui::Vec2)>(drag_key);
+                d.remove::<crate::panels::ItemDrag>(selection_key);
+            });
             let inside = ui.ctx().pointer_latest_pos().is_some_and(|p| rect.contains(p));
             if inside && off.length() > 1.0 {
                 let c = cards.iter().find(|c| c.item == item).cloned();

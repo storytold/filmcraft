@@ -71,6 +71,30 @@ and UI behaviour in other languages (switching, search, font coverage); `cargo x
 workspace gates. Visual checks use the control channel to switch language and capture the resulting
 panels.
 
+## Project drags
+
+Project List, Icon and Freeform views capture the selection's recorded order when a drag begins.
+Ctrl/Cmd-click appends each item in the order chosen; sorting, changing views or dragging from a
+later selected item does not reorder the batch. Select All records the current List/Icon display
+order, or the bin's item order in Freeform. Range and marquee selections retain the order
+established by those gestures. Blue numbered badges show the same media order in all three views,
+including mixed media and selected items hidden by filtering. Bins do not take a clip number.
+Deselecting closes the numbering gap; reselecting appends the item. During a drag the numbers follow
+the captured batch. The badges paint over the existing hit regions, so clicking or dragging a badge
+acts on its clip. Small cards reserve a footer slot for the number; larger cards leave space beside
+thumbnail status badges. Card sizes and saved Freeform positions stay unchanged. Durations that do
+not fit a compact footer are available on hover. The badge stays blue with custom highlight colors.
+Accessible descriptions and hover text give its position and the batch count.
+Dragging an unselected item carries only that item. The snapshot
+also reaches bin tabs, floating panels, the New Item button and an empty Timeline. A subsequent
+selection change cannot reduce the payload. Media Browser drags carry their imported item set
+directly. Source Monitor drags retain their own range and video/audio choices.
+
+The existing Timeline previews the batch span and submits one `timeline.place` command with
+`items`, preserving each source's marks, media types and frame-aligned sequential placement.
+One Undo removes the whole drop; a failed placement rolls back the batch. The imported-media
+regressions in `project_panel_ui` exercise real Select All and pointer input through FilmcraftApp.
+
 ## Source playback
 
 `source_playback.rs` auditions media independently of Program playback. It reuses MediaSource

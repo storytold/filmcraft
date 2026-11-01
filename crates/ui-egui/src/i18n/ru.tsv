@@ -1,4 +1,5 @@
 # Russian (ru) catalog. Columns separated by TAB: context <TAB> source <TAB> translation
+	Selection order: {position} of {total}	Порядок выбора: {position} из {total}
 # Empty context is a plain UI string. Escapes: \n, \t, \\; preserve placeholders and trailing …
 # Full interface coverage: every string of the reference catalog is translated into Russian with
 # ordinary video-editing vocabulary. Clean-room: written from the plain meaning of the English

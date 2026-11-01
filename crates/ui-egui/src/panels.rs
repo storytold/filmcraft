@@ -115,9 +115,28 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
 pub mod source_drag;
 pub mod source_range;
 
+/// Ordered snapshot captured at gesture start, including Freeform moves still inside the panel.
+#[derive(Clone, Debug)]
+pub struct ItemDrag {
+    anchor: ItemId,
+    selection: Vec<ItemId>,
+    items: Vec<ItemId>,
+}
+
+impl ItemDrag {
+    pub fn capture(anchor: ItemId, mut selection: Vec<ItemId>, project: &filmcraft_project::Project) -> Self {
+        let mut seen = std::collections::BTreeSet::new();
+        selection.retain(|item| seen.insert(*item));
+        // Bins participate in organization drops, but cannot become timeline clips. Both sets are
+        // captured at gesture start so removing an item during a drag produces an engine error, not silent omission.
+        let items = selection.iter().copied().filter(|id| project.item(*id).is_some()).collect();
+        Self { anchor, selection, items }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum DragPayload {
-    Item(ItemId),
+    Items(ItemDrag),
     /// A bin (by id) dragged in the Project panel.
     Bin(u64),
     Source(source_drag::SourceDrag),
@@ -140,8 +159,8 @@ pub fn dragged_source(ui: &egui::Ui) -> Option<source_drag::SourceDrag> {
         _ => None,
     }
 }
-pub fn start_drag_item(ui: &egui::Ui, item: ItemId) {
-    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Item(item)))));
+pub fn start_drag_items(ui: &egui::Ui, drag: ItemDrag) {
+    ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Items(drag)))));
 }
 pub fn start_drag_bin(ui: &egui::Ui, bin: u64) {
     ui.ctx().data_mut(|d| d.insert_temp(payload_id(), Some(DragPayloadBox(DragPayload::Bin(bin)))));
@@ -184,7 +203,7 @@ fn payload(ui: &egui::Ui) -> Option<DragPayload> {
 }
 pub fn dragged_project_item(ui: &egui::Ui) -> Option<ItemId> {
     match payload(ui) {
-        Some(DragPayload::Item(i)) => Some(i),
+        Some(DragPayload::Items(drag)) => Some(drag.anchor),
         Some(DragPayload::Source(s)) => Some(s.item),
         _ => None,
     }
@@ -193,16 +212,26 @@ pub fn dragged_project_item(ui: &egui::Ui) -> Option<ItemId> {
 /// whose In/Out range and video/audio choice only a timeline drop keeps.
 pub fn dragged_panel_item(ui: &egui::Ui) -> Option<ItemId> {
     match payload(ui) {
-        Some(DragPayload::Item(i)) => Some(i),
+        Some(DragPayload::Items(drag)) => Some(drag.anchor),
         _ => None,
     }
 }
-/// The items a drag from the Project panel carries: the whole selection when the dragged item is
-/// one of several selected, otherwise just the dragged item.
-pub fn dragged_selection(app: &FilmcraftApp, item: ItemId) -> Vec<ItemId> {
-    let sel = &app.session.state.project_selection;
-    // the selection can hold bins beside items (one id space): only items can be placed
-    if sel.len() > 1 && sel.contains(&item) { sel.iter().copied().filter(|i| app.session.project.item(*i).is_some()).collect() } else { vec![item] }
+/// Every drop target consumes the selection captured when the gesture began.
+pub fn dragged_selection(ui: &egui::Ui) -> Vec<ItemId> {
+    match payload(ui) {
+        Some(DragPayload::Items(drag)) => drag.selection,
+        Some(DragPayload::Source(s)) => vec![s.item],
+        _ => Vec::new(),
+    }
+}
+
+/// Placeable items captured by a Project/Media Browser drag; Source drags remain independent.
+pub fn dragged_items(ui: &egui::Ui) -> Vec<ItemId> {
+    match payload(ui) {
+        Some(DragPayload::Items(drag)) => drag.items,
+        Some(DragPayload::Source(s)) => vec![s.item],
+        _ => Vec::new(),
+    }
 }
 pub fn dragged_effect(ui: &egui::Ui) -> Option<String> {
     match payload(ui) {
@@ -244,8 +273,8 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     }
     if let Some(p) = ctx.pointer_hover_pos() {
         let label = match &pl {
-            DragPayload::Item(i) => match dragged_selection(app, *i).len() {
-                1 => app.session.project.item(*i).map(|x| x.name.clone()).unwrap_or_default(),
+            DragPayload::Items(drag) => match drag.items.len() {
+                1 => app.session.project.item(drag.anchor).map(|x| x.name.clone()).unwrap_or_default(),
                 n => format!("{n} items"),
             },
             DragPayload::Bin(b) => app.session.project.root.find_bin(filmcraft_project::BinId(*b)).map(|x| x.name.clone()).unwrap_or_default(),

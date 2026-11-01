@@ -262,19 +262,11 @@ pub fn visible_items(app: &FilmcraftApp, inst: Inst) -> Vec<ItemId> {
     crate::panels::project_views::items_in_view(app, &v, &app.ui.project_search.to_ascii_lowercase())
 }
 
-/// The command Select All (Cmd+A) runs with the Project panel focused: the items of the shown
-/// bin, plus those of sub-bins twirled open in List view (`project.selectAll {bin, expanded}`).
-/// Items in closed bins and in bins of other tabs stay unselected, as in Premiere (#456). While a
-/// search filters the panel, exactly the rows it shows (`project.select {items}`).
+/// Select All records panel order (bin order in Freeform). Closed bins and other tabs stay out;
+/// expanded List bins and filtered search results follow the visible-item walk.
 pub fn select_all_command(app: &FilmcraftApp) -> (String, Value) {
-    let inst = shown_inst(app);
-    if !app.ui.project_search.is_empty() {
-        let items: Vec<u64> = visible_items(app, inst).into_iter().map(|i| i.0).collect();
-        return ("project.select".into(), json!({"items": items}));
-    }
-    let v = view_of(app, inst);
-    let expanded: &[u64] = if v.mode == ViewMode::List { &app.ui.expanded_bins } else { &[] };
-    ("project.selectAll".into(), json!({"bin": v.bin.0, "expanded": expanded}))
+    let items: Vec<u64> = visible_items(app, shown_inst(app)).into_iter().map(|i| i.0).collect();
+    ("project.select".into(), json!({"items": items}))
 }
 
 // ------------------------------------------------------------------------------------ panel
@@ -651,12 +643,10 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         icons::paint(ui.painter(), r.shrink(5.0), icon, if enabled { t.icon } else { t.text_faint });
         if id == "new-item" {
             // a clip dropped here makes a sequence that matches it, as in Premiere (#2855)
-            if let Some(item) = crate::panels::dragged_panel_item(ui)
-                && ui.rect_contains_pointer(r)
-            {
+            if crate::panels::dragged_panel_item(ui).is_some() && ui.rect_contains_pointer(r) {
                 ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, app.tokens.accent), egui::StrokeKind::Inside);
                 if ui.input(|i| i.pointer.any_released()) {
-                    let items: Vec<u64> = crate::panels::dragged_selection(app, item).iter().map(|i| i.0).collect();
+                    let items: Vec<u64> = crate::panels::dragged_items(ui).iter().map(|i| i.0).collect();
                     actions.push(("file.newSequenceFromClip".into(), json!({"items": items})));
                     crate::panels::clear_drag(ui);
                 }
