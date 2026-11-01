@@ -1,6 +1,6 @@
 # Localization parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-30 · **Change:** minor (German covers the whole interface; Czech and Polish interface catalogs; Swedish and Russian cover the whole interface; Turkish catalog; Bosnian covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-31 · **Change:** minor (Bosnian covers the strings added since it landed; previously minor: German covers the whole interface; Czech and Polish interface catalogs; Swedish and Russian cover the whole interface; Turkish catalog; Bosnian covers the whole interface) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Per-language status of FilmCraft's interface. Premiere 26.5.2 ships 10 interface languages (the
 installed bundle's `.lproj` folders): German, English, Spanish, French, Italian, Japanese, Korean,
@@ -59,7 +59,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | *Other shipped:* Polish | pl | every Spanish entry plus the native macOS menu items; counts written count-neutral | as Spanish | Latin (bundled fonts) | not recorded; AI-drafted, review welcome | partial | review |
 | *Other shipped:* Swedish | sv | 3,581 (100%) | as Spanish | Latin (bundled fonts, å ä ö) | not recorded; welcome | partial | review |
 | *Other shipped:* Turkish | tr | 3,590 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
-| *Other shipped:* Bosnian | bs | 3,610 (every entry of the other catalogs) | as Spanish | Latin (bundled fonts) | AI-assisted, not yet native-reviewed; welcome | partial | review |
+| *Other shipped:* Bosnian | bs | 3,651 (every entry of the other catalogs) | as Spanish | Latin (bundled fonts) | AI-assisted, not yet native-reviewed; welcome | partial | review |
 | *Other shipped:* Ukrainian | uk | 351 (10.0%) | menus only | Cyrillic (bundled) | not recorded | menus only | 5–9 h |
 
 UI strings are catalog entries (the non-comment lines of `src/i18n/<code>.tsv`; English counts the
@@ -101,6 +101,7 @@ creative effect names, and the shared `Subtitle` key (caption format and graphic
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-31 | minor | Bosnian (bs): 41 strings added since it landed translated (markers, clip mismatch, updates, work area bar, track names), 3,651 entries |
 | 2026-10-30 | minor | Bosnian (bs, Latin, Ijekavian) covers the whole interface: 3,610 entries, Edit ▸ Language ▸ Bosanski, every `bs-*` locale; AI-assisted, not native-reviewed |
 | 2026-10-26 | minor | Swedish (sv) covers the whole interface (all 3,581 strings); System Language picks it for `sv-*` locales |
 | 2026-10-23 | minor | Missing translations never fail a test or build (they show in English); `cargo xtask i18n-report`, also run by `cargo xtask ci`, lists them per language |
