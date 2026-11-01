@@ -264,6 +264,19 @@ fn push_plan_preserves_reference_track_order_and_reverse() {
 }
 
 #[test]
+fn hdr_sequence_frames_take_the_gpu_export_path() {
+    // the export's pool skipped every HDR / wide-gamut frame, so an HDR export of log footage
+    // composited and decoded entirely on the CPU although the planner hands it out as layers
+    let (mut p, red, _ocean, seq, map) = setup();
+    place(&mut p, seq, 0, red, 0, 24);
+    p.sequence_mut(seq).unwrap().settings.color.working = filmcraft_color::WorkingSpace::Rec2100Hlg;
+    let t = FrameRate::FPS_24.tick_of(10);
+    let plan = plan::plan_frame(&p, seq, t, RenderOptions { scale: 0.5, ..Default::default() }, &map);
+    assert!(matches!(plan, plan::FramePlan::Layers { .. }), "an HLG sequence plans as layers");
+    assert!(!plan::is_cpu_frame(&p, seq, t), "so the export renders it on the GPU");
+}
+
+#[test]
 fn morph_cut_frames_render_on_the_cpu_with_the_morph() {
     // the GPU compositor can only cross-fade layers: a Morph Cut frame is planned whole on the
     // CPU, so preview and export show the optical-flow morph, not a dissolve
