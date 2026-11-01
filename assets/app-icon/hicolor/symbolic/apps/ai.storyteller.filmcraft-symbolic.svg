@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FilmCraft symbolic icon for GNOME Shell, status areas, and system trays.
+  Uses currentColor so it adapts to light/dark themes automatically.
+  The mark is a simplified film-frame square with a play triangle inside.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Film frame outer rectangle with sprocket notches -->
+  <rect x="1" y="1" width="14" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <!-- Top sprocket holes -->
+  <rect x="3" y="2" width="2" height="1.5" rx="0.3" fill="currentColor"/>
+  <rect x="7" y="2" width="2" height="1.5" rx="0.3" fill="currentColor"/>
+  <rect x="11" y="2" width="2" height="1.5" rx="0.3" fill="currentColor"/>
+  <!-- Bottom sprocket holes -->
+  <rect x="3" y="12.5" width="2" height="1.5" rx="0.3" fill="currentColor"/>
+  <rect x="7" y="12.5" width="2" height="1.5" rx="0.3" fill="currentColor"/>
+  <rect x="11" y="12.5" width="2" height="1.5" rx="0.3" fill="currentColor"/>
+  <!-- Play triangle centered in frame -->
+  <path d="M6 5.5 L6 10.5 L11 8 Z" fill="currentColor"/>
+</svg>
