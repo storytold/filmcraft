@@ -30,7 +30,6 @@ mod clips;
 mod headers;
 mod interact;
 mod layout;
-mod marker_dialog;
 mod menus;
 mod ruler;
 mod scrollbars;
@@ -284,7 +283,6 @@ fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
-    marker_dialog::show(app, &ctx);
     let Some(seq_id) = app.session.state.active_sequence else {
         empty_state(app, ui, rect);
         return;
