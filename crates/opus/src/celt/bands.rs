@@ -13,23 +13,40 @@ pub fn lcg_rand(seed: u32) -> u32 {
     seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223)
 }
 
-/// Decodes a PVQ codeword of `k` pulses in `n` dimensions; returns the sum of squares.
-fn decode_pulses(y: &mut [i32], n: usize, k: usize, dec: &mut RangeDecoder, v: &mut Vec<u64>) -> f32 {
-    // Table of V(nn, kk) for nn in 0..=n, kk in 0..=k (saturating).
-    let w = k + 1;
-    v.clear();
-    v.resize((n + 1) * w, 0);
-    v[0] = 1;
-    for nn in 1..=n {
-        v[nn * w] = 1;
-        for kk in 1..=k {
-            let a = v[(nn - 1) * w + kk];
-            let b = v[nn * w + kk - 1];
-            let c = v[(nn - 1) * w + kk - 1];
-            v[nn * w + kk] = a.saturating_add(b).saturating_add(c);
+/// Largest band partition (n) and pulse count (k) that can be coded: the last band of a 20 ms
+/// frame has 176 bins, and `get_pulses` yields at most 128 pulses.
+const PVQ_MAX_N: usize = 176;
+const PVQ_MAX_K: usize = 128;
+const PVQ_W: usize = PVQ_MAX_K + 1;
+
+/// V(n, k) for n <= PVQ_MAX_N, k <= PVQ_MAX_K, saturated at `u32::MAX`, built once.
+///
+/// Every (n, k) the bitstream can code has V(n, k) < 2^32 (see `rate::fits_in32`), and the
+/// decoder only reads entries V(n', k') <= V(n, k), so the saturation is never observable.
+fn pvq_table() -> &'static [u32] {
+    static TABLE: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut v = vec![0u32; (PVQ_MAX_N + 1) * PVQ_W];
+        v[0] = 1;
+        for n in 1..=PVQ_MAX_N {
+            v[n * PVQ_W] = 1;
+            for k in 1..PVQ_W {
+                let a = v[(n - 1) * PVQ_W + k];
+                let b = v[n * PVQ_W + k - 1];
+                let c = v[(n - 1) * PVQ_W + k - 1];
+                v[n * PVQ_W + k] = a.saturating_add(b).saturating_add(c);
+            }
         }
-    }
-    let total = v[n * w + k];
+        v
+    })
+}
+
+/// Decodes a PVQ codeword of `k` pulses in `n` dimensions; returns the sum of squares.
+fn decode_pulses(y: &mut [i32], n: usize, k: usize, dec: &mut RangeDecoder) -> f32 {
+    debug_assert!(n <= PVQ_MAX_N && k <= PVQ_MAX_K);
+    let table = pvq_table();
+    let vv = |nn: usize, kx: usize| table[nn * PVQ_W + kx] as u64;
+    let total = vv(n, k);
     let ft = total.min(u32::MAX as u64) as u32;
     let mut i = if ft >= 2 { dec.uint(ft) as u64 } else { 0 };
     let mut kk = k;
@@ -40,7 +57,6 @@ fn decode_pulses(y: &mut [i32], n: usize, k: usize, dec: &mut RangeDecoder, v: &
             y[j] = 0;
             continue;
         }
-        let vv = |nn: usize, kx: usize| v[nn * w + kx];
         let mut p = (vv(rem - 1, kk) + vv(rem, kk)) / 2;
         let neg = i >= p;
         if neg {
@@ -255,7 +271,6 @@ pub struct BandCtx<'m, 'd, 'b> {
     pub seed: u32,
     pub disable_inv: bool,
     pub avoid_split_noise: bool,
-    pub pvq_v: Vec<u64>,
     pub iy: Vec<i32>,
     pub tmp: Vec<f32>,
 }
@@ -472,7 +487,7 @@ impl BandCtx<'_, '_, '_> {
             let mut iy = std::mem::take(&mut self.iy);
             iy.clear();
             iy.resize(n, 0);
-            let ryy = decode_pulses(&mut iy, n, k, self.dec, &mut self.pvq_v);
+            let ryy = decode_pulses(&mut iy, n, k, self.dec);
             let g = gain / ryy.sqrt();
             for (xv, &yv) in x[..n].iter_mut().zip(iy.iter()) {
                 *xv = g * yv as f32;
@@ -753,7 +768,6 @@ pub fn quant_all_bands(input: QuantAllBandsInput<'_, '_>) {
         seed: *seed,
         disable_inv,
         avoid_split_noise: bb > 1,
-        pvq_v: Vec::new(),
         iy: Vec::new(),
         tmp: Vec::new(),
     };
@@ -996,6 +1010,18 @@ mod tests {
     }
 
     #[test]
+    fn pvq_table_matches_reference_counts() {
+        let table = pvq_table();
+        for n in 0..=PVQ_MAX_N {
+            for k in 0..=PVQ_MAX_K {
+                let want = super::super::rate::pvq_v(n, k).min(u32::MAX as u128) as u32;
+                // V(0, k > 0) = 0 and V(n, 0) = 1 in both.
+                assert_eq!(table[n * PVQ_W + k], want, "n={n} k={k}");
+            }
+        }
+    }
+
+    #[test]
     fn pvq_roundtrip_all_codewords_small() {
         use crate::range::enc::RangeEncoder;
         // Enumerate every index for small N,K, decode, and check uniqueness + sum |y| == K.
@@ -1009,8 +1035,7 @@ mod tests {
                     let buf = e.done();
                     let mut d = RangeDecoder::new(&buf);
                     let mut y = vec![0i32; n];
-                    let mut v = Vec::new();
-                    let ryy = decode_pulses(&mut y, n, k, &mut d, &mut v);
+                    let ryy = decode_pulses(&mut y, n, k, &mut d);
                     assert_eq!(y.iter().map(|v| v.unsigned_abs() as usize).sum::<usize>(), k);
                     assert_eq!(ryy as i32, y.iter().map(|v| v * v).sum::<i32>());
                     assert!(seen.insert(y.clone()), "duplicate codeword n={n} k={k} idx={idx}");

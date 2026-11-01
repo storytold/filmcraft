@@ -1,7 +1,7 @@
 # ADR 0001: `unsafe` OS media FFI in `crates/platform`, and nowhere else
 
 - **Status:** accepted (2026-10-05, approved by the project owner; recorded in
-  [AGENTS.md](../../AGENTS.md) §0 item 3 and the craftrules never-crash standard)
+  [AGENTS.md](../../AGENTS.md) §0 item 3)
 - **Issue:** #30 (hardware acceleration)
 
 ## Context
@@ -25,24 +25,109 @@ Containment rules:
 
 1. The crate does not use `lints.workspace = true`. Its own `[lints]` table copies the workspace
    lints except `unsafe_code = "deny"` (not `forbid`), and adds
-   `clippy::undocumented_unsafe_blocks = "deny"`. Only the FFI modules (`videotoolbox`, `media_foundation::gpu` / `media_foundation::mft`,
-   `nvenc::ffi` / `nvenc::session` / `nvenc::device` on Windows and 64-bit Linux, and `vaapi::va` on Linux) carry `#[allow(unsafe_code)]`; the rest of the crate
-   (the fallback logic in `hybrid`, the decoder logic in `media_foundation`, `annexb`, `biplanar`,
-   the encoder logic in `nvenc`, H.264 and H.265 alike) has no `unsafe`. NVENC's H.265 support
+   `clippy::undocumented_unsafe_blocks = "deny"`. Only FFI modules may opt in with
+   `#[allow(unsafe_code)]`; the current allowances and deviations are recorded below. The fallback
+   logic in `hybrid`, the decoder logic in `media_foundation`, `annexb`, `biplanar`, and the encoder
+   logic in `nvenc` (H.264 and H.265 alike) keep `unsafe` denied. NVENC's H.265 support
    added no `unsafe` module: it reuses `nvenc::ffi` and `nvenc::session` (new data declarations and
    a second codec-configuration member of an existing union).
 2. Every `unsafe` block has a `// SAFETY:` comment saying why it is sound.
 3. The public API is safe: no `pub unsafe fn`, no raw pointers or FFI types in public signatures;
    failures are `Result`s. The crate keeps the never-crash `deny(clippy::unwrap_used, …)`
    attribute of every clean crate.
-4. No panic crosses the FFI boundary: the VideoToolbox output callback runs under `catch_unwind`
-   and reports a panic as a failed frame. The Windows backend has no callbacks into Rust (it drives
-   a synchronous decoder MFT with `ProcessInput` / `ProcessOutput`), so nothing can unwind into
-   COM. NVENC loads the driver library at run time and has no callbacks into Rust either.
+4. No panic crosses the FFI boundary. This applies to VideoToolbox's decoder and encoder output
+   callbacks, NVDEC's parser callbacks, and VA-API's error-message callback; their current unwind
+   guards are described below. Media Foundation drives a synchronous decoder MFT with
+   `ProcessInput` / `ProcessOutput` and registers no Rust callbacks. NVENC loads the driver library
+   at run time and registers no Rust callbacks either.
 5. The crate compiles on every target. OS bindings are target-specific dependencies (the
    `objc2-*` crates on macOS, the official `windows` crate on Windows: MIT OR Apache-2.0, already
    in the lockfile through wgpu / winit, with only the Win32 features the backend uses); elsewhere
    `register()` reports `Unavailable` and does nothing. It is not part of the wasm check (L5).
+
+## Current implementation (source audit, 2026-10-24)
+
+Checked against `main` at
+[`552f008d2757e307194256b3e672c9c1de4fa9b2`](https://github.com/storytold/filmcraft/commit/552f008d2757e307194256b3e672c9c1de4fa9b2)
+for [#2814](https://github.com/storytold/filmcraft/issues/2814). This section records source
+facts, not new architecture approvals or evidence that builds, hardware tests or a complete
+soundness review passed. The accepted decision, its approval date and the containment rules above
+remain in effect; implementation differences are not exceptions to those rules.
+
+### Unsafe allowances and module boundaries
+
+[`Cargo.toml`](../../crates/platform/Cargo.toml) still denies `unsafe_code` and
+`clippy::undocumented_unsafe_blocks`. The following are the actual allowance scopes:
+
+| Target | Scope carrying `#[allow(unsafe_code)]` | Work at the boundary |
+|---|---|---|
+| macOS | [`videotoolbox`](../../crates/platform/src/videotoolbox.rs) | VideoToolbox decoding, CoreMedia/CoreVideo buffers and its output callback. |
+| macOS | [`videotoolbox_encode`](../../crates/platform/src/videotoolbox_encode.rs) | VideoToolbox H.264/HEVC encoding and its output callback; `dlsym` resolves an optional VideoToolbox property. |
+| Windows | [`media_foundation::gpu`](../../crates/platform/src/media_foundation/gpu.rs), [`media_foundation::mft`](../../crates/platform/src/media_foundation/mft.rs) | COM, Media Foundation, D3D11 device setup and surface readback. |
+| Windows / 64-bit Linux | [`nvenc::ffi`](../../crates/platform/src/nvenc/ffi.rs), [`nvenc::session`](../../crates/platform/src/nvenc/session.rs), [`nvenc::device`](../../crates/platform/src/nvenc/device.rs) | NVENC declarations and calls, driver loading, D3D11 or CUDA device/context operations. |
+| 64-bit Linux | [`nvdec::cuvid`](../../crates/platform/src/nvdec/cuvid.rs) | NVDEC driver calls, parser callbacks and CUDA readback, using `nvenc::device`. |
+| Linux | [`vaapi::va`](../../crates/platform/src/vaapi/va.rs) | libva/libva-drm loading, displays, decoding, surface readback and logging. |
+| Windows | [`cursor::cursor_screen_position`](../../crates/platform/src/cursor.rs) (function only) | `GetCursorPos`; a non-media deviation, discussed below. |
+
+The media allowances are on module declarations in
+[`lib.rs`](../../crates/platform/src/lib.rs) and the backend module files
+([Media Foundation](../../crates/platform/src/media_foundation.rs),
+[NVENC](../../crates/platform/src/nvenc.rs),
+[NVDEC](../../crates/platform/src/nvdec.rs), [VA-API](../../crates/platform/src/vaapi.rs)).
+They apply to the module's contents, rather than to individual blocks; the cursor allowance is
+on the Windows function itself. There is no crate-wide `allow(unsafe_code)`.
+`vaapi::ffi` and `nvdec::ffi` contain public declarations but do not carry an unsafe allowance.
+
+### Callbacks into Rust and panic handling
+
+The registered production callbacks are:
+
+| Backend and entry point | Guard and outcome visible in the source |
+|---|---|
+| `videotoolbox::output_callback` (`extern "C-unwind"`) | `catch_unwind(AssertUnwindSafe(..))` guards decoded-picture processing. A caught panic becomes `Output::Failed`, queued through `Shared::push`. |
+| `videotoolbox_encode::output_callback` (`extern "C-unwind"`) | The same guard covers compressed-packet processing; a caught panic becomes `Output::Failed`. |
+| `nvdec::cuvid::{sequence, decode, display}` (`extern "C"`) | All three call the shared `callback` helper, whose processing closure runs under `catch_unwind(AssertUnwindSafe(..))`. The first error or caught panic is stored in `State::error` and returns `0`; `Session::parse` checks that error after the driver call. |
+| `vaapi::va::on_error` (`extern "C"`) | `catch_unwind` surrounds message conversion and logging; a caught panic is ignored. `Display::init` registers this callback and disables libva's info callback. |
+
+NVDEC installs its three callbacks in `Session::create_parser`; they run synchronously within
+`cuvidParseVideoData`. The VideoToolbox callbacks deliver output asynchronously through their
+shared queues. NVENC's function-table entries are driver functions called by Rust, not callbacks
+registered with the driver. Media Foundation uses `Mft::input` / `Mft::poll` and rejects
+asynchronous MFTs in `Mft::configure`.
+
+These guards do not validate foreign pointers, prevent driver faults or prove state lifetimes
+and aliasing sound. Error recording and queueing outside a guarded closure must also obey rule 4;
+in particular, the VideoToolbox callbacks call `Shared::push` after `catch_unwind` returns.
+An `extern "C-unwind"` signature does not relax the requirement that no panic reach foreign code.
+
+### Known deviations and follow-up
+
+- **Non-media scope:** `cursor::cursor_screen_position()` returns `Option<(i32, i32)>`, calling
+  `GetCursorPos` on Windows and returning `None` elsewhere. Its purpose is to locate file drops
+  when the windowing layer supplies no pointer position. It is outside the media-only decision
+  above, even though its Rust API is safe and read-only. Its presence is not approval to add other
+  OS integration. Removing/replacing it or granting a separate scope exception needs maintainer
+  resolution; [#2725](https://github.com/storytold/filmcraft/pull/2725) contains a proposed
+  window-system ADR and is still open and unmerged at this audit revision.
+- **Public FFI surface:** rule 3 is not fully satisfied. `vaapi` publicly exports `ffi`, Linux
+  `va`, and the `Accel` trait. `vaapi::va::Session::new` takes `&[ffi::VAProfile]`, and
+  `Accel::decode_h264` / `decode_hevc` expose VA picture, matrix and slice parameter structures.
+  `nvdec` publicly exports `ffi` and `cuvid`; for example, `ffi::CUVIDPICPARAMS` exposes the raw
+  `pBitstreamData` and `pSliceDataOffsets` fields, and `nvdec::ffi` callback types contain raw pointers.
+  There is no production `pub unsafe fn`, but that alone does not meet the no-public-FFI-types
+  rule. [#2800](https://github.com/storytold/filmcraft/issues/2800) tracks the VA-API visibility
+  and driver-input validation problem: `Session::decode_into` forwards supplied parameter
+  structures and slice data to libva. Restoring encapsulation and checking caller-controlled
+  driver inputs are code follow-ups; this document does not waive rule 3 or fix #2800.
+- **Separate FFI hardening:** [#2812](https://github.com/storytold/filmcraft/issues/2812) remains
+  open. Callback guards are not a resolution of its lifetime, COM-apartment or cleanup concerns.
+  For example, `media_foundation::mft::Mft` still has a `Send` implementation based on a
+  free-threaded assumption, `gpu::init_com` accepts `RPC_E_CHANGED_MODE`, and
+  `gpu::Readback::read` calls `Unmap` after its Rust closure rather than through an unwind guard.
+  Conversely, NVDEC's callback state now uses `Box::into_raw`; `Session::drop` reclaims it with
+  `Box::from_raw` after parser destruction, or leaks it if the parser cannot be destroyed.
+  That part of the older issue description must not be treated as an unchanged snapshot.
+  None of these observations changes the safety requirements.
 
 ## The fallback guarantee
 
@@ -93,7 +178,8 @@ deliberate:
 
 Everything else in this record applies unchanged: `unsafe` stays in `crates/platform`, every block
 has a `// SAFETY:` comment, no panic crosses the FFI boundary, the public API is safe, and the crate
-compiles everywhere (`register()` is a no-op off macOS).
+compiles everywhere (the VideoToolbox backend is macOS-only; `register()` also selects the other
+backends described in this record).
 
 ## Addendum (2026-10-08): NVENC HEVC Main 10 (HDR)
 
