@@ -246,30 +246,39 @@ impl<T> Pool<T> {
 impl<T: Clone> Pool<T> {
     /// A buffer of `len` elements with unspecified contents (recycled memory when available;
     /// `fill` only initialises fresh memory).
+    ///
+    /// Invariant for callers: every element that is read must have been written first. For the
+    /// sample planes and mode info grids this holds because every sample inside the mode info grid
+    /// is predicted before a later stage (loop filter, reference reads, intra edges) reads it, and
+    /// every mode info position is written by its tile before it is read. Reads are clamped to
+    /// that grid (intra edges to `max_x` / `max_y`, references to the visible size). A change that
+    /// reads outside the grid would see stale data from a recycled buffer.
     pub fn take_any(&self, len: usize, fill: T) -> Vec<T> {
         let found = {
             let mut b = self.bufs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            b.iter().position(|v| v.len() >= len).map(|i| b.swap_remove(i))
-        };
-        match found {
-            Some(mut v) => {
-                v.truncate(len);
-                v
+            // Best fit by capacity: the first fit handed large buffers to small requests (band
+            // scratch rows, chroma bands), and once truncated they never served a large one
+            // again, so large requests kept allocating fresh (zeroed) memory.
+            let mut best: Option<(usize, usize)> = None;
+            for (i, v) in b.iter().enumerate() {
+                let c = v.capacity();
+                if c >= len && best.is_none_or(|(_, bc)| c < bc) {
+                    best = Some((i, c));
+                    if c == len {
+                        break;
+                    }
+                }
             }
-            None => vec![fill; len],
-        }
-    }
-
-    /// A buffer of `len` copies of `fill` (recycled memory when available).
-    pub fn take(&self, len: usize, fill: T) -> Vec<T> {
-        let found = {
-            let mut b = self.bufs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            b.iter().position(|v| v.capacity() >= len).map(|i| b.swap_remove(i))
+            best.map(|(i, _)| b.swap_remove(i))
         };
         match found {
             Some(mut v) => {
-                v.clear();
-                v.resize(len, fill);
+                // Contents are unspecified: only memory beyond the current length is written.
+                if v.len() >= len {
+                    v.truncate(len);
+                } else {
+                    v.resize(len, fill);
+                }
                 v
             }
             None => vec![fill; len],
