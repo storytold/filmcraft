@@ -20,8 +20,8 @@ const MAX_DISCOVERY_VISITS: usize = 65_536;
 const MAX_EXPANSION_VISITS: usize = 1_048_576;
 const MAX_SEGMENT_DEPTH: usize = 32;
 
-fn traversal_error(message: &str) -> Error {
-    Error::Parse { format: "OMF", message: message.into() }
+fn traversal_error(message: &str, object: impl std::fmt::Display) -> Error {
+    Error::Parse { format: "OMF", message: format!("{message} at object {object}") }
 }
 
 fn ref_keys(value: &[u8]) -> impl ExactSizeIterator<Item = &[u8; 4]> {
@@ -103,25 +103,25 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
 }
 
 impl R<'_, '_> {
-    fn visit(&mut self) -> Result<()> {
-        self.spend_visits(1)
+    fn visit(&mut self, object: u32) -> Result<()> {
+        self.spend_visits(1, object)
     }
 
-    fn spend_visits(&mut self, count: usize) -> Result<()> {
+    fn spend_visits(&mut self, count: usize, object: u32) -> Result<()> {
         self.remaining_expansion_visits = self
             .remaining_expansion_visits
             .checked_sub(count)
-            .ok_or_else(|| traversal_error("composition/automation expansion budget exceeded (1,048,576 visits)"))?;
+            .ok_or_else(|| traversal_error("composition/automation expansion budget exceeded (1,048,576 visits)", object))?;
         Ok(())
     }
 
     fn enter_segment(&mut self, seg: u32, path: &mut Vec<u32>) -> Result<()> {
-        self.visit()?;
+        self.visit(seg)?;
         if path.contains(&seg) {
-            return Err(traversal_error("cycle in segment references"));
+            return Err(traversal_error("cycle in segment references", seg));
         }
         if path.len() > MAX_SEGMENT_DEPTH {
-            return Err(traversal_error("segment nesting exceeds depth limit (32 edges)"));
+            return Err(traversal_error("segment nesting exceeds depth limit (32 edges)", seg));
         }
         path.push(seg);
         Ok(())
@@ -172,7 +172,7 @@ impl R<'_, '_> {
         let keys = ref_keys(&v);
         // Charge complete keys actually present, before resolving or collecting
         // the list, even if the caller will stop at its first matching entry.
-        self.spend_visits(keys.len())?;
+        self.spend_visits(keys.len(), o)?;
         Ok(keys.map(|k| self.c.resolve(o, u32::from_be_bytes(*k))).collect())
     }
     fn data_kind(&self, o: u32) -> String {
@@ -184,12 +184,12 @@ impl R<'_, '_> {
 
     fn collect_refs(&mut self, o: u32, out: &mut HashSet<Uid>, visited: &mut HashSet<u32>, depth: usize) -> Result<()> {
         self.remaining_discovery_visits =
-            self.remaining_discovery_visits.checked_sub(1).ok_or_else(|| traversal_error("reference discovery budget exceeded (65,536 visits)"))?;
+            self.remaining_discovery_visits.checked_sub(1).ok_or_else(|| traversal_error("reference discovery budget exceeded (65,536 visits)", o))?;
         if !visited.insert(o) {
             return Ok(());
         }
         if depth > 64 {
-            return Err(traversal_error("reference nesting exceeds depth limit (64 edges)"));
+            return Err(traversal_error("reference nesting exceeds depth limit (64 edges)", o));
         }
         if self.class(o) == *b"SCLP"
             && let Some(id) = self.uid(o, "OMFI:SCLP:SourceID")
@@ -210,7 +210,7 @@ impl R<'_, '_> {
     }
 
     fn composition(&mut self, m: u32) -> Result<Composition> {
-        self.visit()?;
+        self.visit(m)?;
         let name = self.string(m, "OMFI:MOBJ:Name").unwrap_or_else(|| "Sequence".into());
         let mut comp = Composition {
             name,
@@ -226,7 +226,7 @@ impl R<'_, '_> {
         let slots = self.refs(m, "OMFI:MOBJ:Slots");
         let mut na = 0;
         for s in slots {
-            self.visit()?;
+            self.visit(s)?;
             let Some(seg) = self.r#ref(s, "OMFI:MSLT:Segment") else { continue };
             let rate = self.rational(s, "OMFI:MSLT:EditRate").filter(|r| r.0 > 0 && r.1 > 0).unwrap_or((25, 1));
             let kind = self.data_kind(seg);
@@ -402,7 +402,8 @@ impl R<'_, '_> {
 
     fn resolve(&mut self, id: Uid, track: u32, start: Tick, master: Option<String>, depth: usize) -> Result<Option<(usize, Tick)>> {
         if depth > 16 {
-            return Err(traversal_error("source chain exceeds depth limit (16 edges)"));
+            let object = self.mobs.get(&id).map(u32::to_string).unwrap_or_else(|| format!("UID {id:02x?}"));
+            return Err(traversal_error("source chain exceeds depth limit (16 edges)", object));
         }
         let Some(&mob) = self.mobs.get(&id) else {
             self.report.warn("a clip references a mob that is not in the file (imported as a gap)");

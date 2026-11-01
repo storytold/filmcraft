@@ -64,7 +64,8 @@ A project sequence that claims to be inside itself is exported as a gap with a r
 The AAF importer likewise reports recursive nested compositions as gaps.
 
 OMF import rejects cycles in sequence/effect inputs and in master/file-source segment lookups
-with an OMF parse error. Segment nesting is limited to 32 edges (64 during reference discovery).
+with an OMF parse error. Traversal errors identify the offending object ID (or the source UID
+if its mob is missing). Segment nesting is limited to 32 edges (64 during reference discovery).
 Source-mob chains exceeding 16 edges, including cycles, likewise return an error instead of audio gaps.
 Reference discovery has its own 65,536-visit budget. Composition slots, segment expansion,
 source lookups and automation share a separate 1,048,576-visit budget (16 times larger), so
@@ -126,8 +127,11 @@ OMF carries no video at all.
 - `src/omf/traversal_tests.rs`: synthetic Bento graphs exercise cyclic sequences/effects and
   source lookups, repeated-reference/automation-point expansion, independent discovery/expansion budgets,
   preservation of all 131,072 gain points in a dense-automation import, shared expansion budgets across tracks/compositions,
-  the depth boundary, preserved repeated edits, and truncation/bit-flip mutations under
+  self-cycles and two-segment cycles, the 32-edge accepted / 33-edge rejected boundary,
+  object IDs in errors, preserved repeated edits, and truncation/bit-flip mutations under
   `catch_unwind`. The master-source cycle regression aborts with stack overflow before the fix.
 - `src/omf/read/tests.rs`: source metadata lists exhaust a small expansion budget even when the
   first entry matches; path, channel and timecode selection stay unchanged, missing metadata
-  stays optional, and truncated reference arrays charge only complete declared entries.
+  stays optional, and truncated reference arrays charge only complete declared entries. A wide
+  decoded graph with 1,000,000 distinct objects is rejected after exactly 65,536 discovery visits;
+  it checks the work bound without a machine-dependent timing assertion or a binary fixture.

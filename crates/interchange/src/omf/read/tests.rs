@@ -84,17 +84,78 @@ fn with_reader(bytes: &[u8], budget: usize, test: impl FnOnce(&mut R<'_, '_>)) {
 fn source_lookup_lists_exhaust_the_expansion_budget() {
     // Each case exhausts the budget in a different source metadata list. The
     // locator and tape lookup match the first entry but must charge the full list.
-    for (locators, slots, tape_slots, budget) in [(8, 1, 1, 8), (0, 4, 0, 7), (0, 1, 8, 10)] {
+    for (locators, slots, tape_slots, budget, object) in [(8, 1, 1, 8, DESC), (0, 4, 0, 7, FILE), (0, 1, 8, 10, TAPE)] {
         let bytes = source_fixture(locators, slots, tape_slots);
         std::panic::catch_unwind(|| {
             with_reader(&bytes, budget, |r| {
                 let result = r.resolve(FILE_UID, 1, Tick::ZERO, None, 0);
-                assert!(matches!(result, Err(Error::Parse { format: "OMF", message }) if message.contains("expansion budget")));
+                assert!(matches!(result, Err(Error::Parse { format: "OMF", message })
+                    if message.contains("expansion budget") && message.ends_with(&format!("object {object}"))));
                 assert!(r.doc.sources.is_empty());
             });
         })
         .expect("source lookup panicked");
     }
+}
+
+#[test]
+fn million_object_wide_graph_stops_at_discovery_budget() {
+    const OBJECTS: u32 = 1_000_000;
+    const ROOT: u32 = 2_000_000;
+    const BRANCHES: u32 = 16;
+    const FIRST_LEAF: u32 = 10_000;
+    const LEAVES: u32 = OBJECTS - BRANCHES - 1;
+    let mut w = Writer::new();
+    let branches: Vec<u32> = (ROOT + 1..=ROOT + BRANCHES).collect();
+    w.set(ROOT, "OMFI:OOBJ:ObjClass", "omfi:ClassID", b"SEQU");
+    references(&mut w, ROOT, "OMFI:SEQU:Components", &branches);
+    let leaves: Vec<u32> = (FIRST_LEAF..FIRST_LEAF + LEAVES).collect();
+    for (&branch, children) in branches.iter().zip(leaves.chunks(u16::MAX as usize)) {
+        w.set(branch, "OMFI:OOBJ:ObjClass", "omfi:ClassID", b"SEQU");
+        references(&mut w, branch, "OMFI:SEQU:Components", children);
+    }
+    w.set(FIRST_LEAF, "OMFI:OOBJ:ObjClass", "omfi:ClassID", b"FILL");
+    let bytes = w.finish();
+    let mut c = Container::open(&bytes).unwrap();
+    // Build the decoded graph with distinct object IDs. Cloning the common
+    // filler properties avoids serialising a million equivalent Bento records;
+    // the reader still receives all one million objects and their real edges.
+    let filler = c.objects[&FIRST_LEAF].clone();
+    for &leaf in &leaves[1..] {
+        c.objects.insert(leaf, filler.clone());
+    }
+    assert!(c.objects.contains_key(&ROOT));
+    assert!(branches.iter().chain(&leaves).all(|id| c.objects.contains_key(id)));
+    assert_eq!(1 + branches.len() + leaves.len(), OBJECTS as usize);
+
+    let mut report = Report::default();
+    let mut r = R {
+        c: &c,
+        report: &mut report,
+        be: true,
+        mobs: HashMap::new(),
+        media: HashMap::new(),
+        doc: Document::default(),
+        sources: HashMap::new(),
+        remaining_discovery_visits: MAX_DISCOVERY_VISITS,
+        remaining_expansion_visits: MAX_EXPANSION_VISITS,
+    };
+    let mut visited = HashSet::new();
+    let mut referenced = HashSet::new();
+    let started = std::time::Instant::now();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| r.collect_refs(ROOT, &mut referenced, &mut visited, 0)))
+        .expect("wide graph traversal panicked");
+    eprintln!("million-object discovery stopped after {} visits in {:?}", visited.len(), started.elapsed());
+    // Root and first branch take two visits. Refuse the next leaf immediately
+    // after the allowance is exhausted, without walking the remaining graph.
+    let rejected_object = FIRST_LEAF + MAX_DISCOVERY_VISITS as u32 - 2;
+    assert!(matches!(result, Err(Error::Parse { format: "OMF", message })
+        if message.contains("reference discovery budget") && message.ends_with(&format!("object {rejected_object}"))));
+    assert_eq!(visited.len(), MAX_DISCOVERY_VISITS);
+    assert_eq!(r.remaining_discovery_visits, 0);
+    assert_eq!(r.remaining_expansion_visits, MAX_EXPANSION_VISITS);
+    assert!(!visited.contains(&rejected_object));
+    assert!(!visited.contains(branches.last().unwrap()));
 }
 
 #[test]

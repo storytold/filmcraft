@@ -88,10 +88,11 @@ impl Graph {
     }
 }
 
-fn rejected(bytes: &[u8], reason: &str) {
+fn rejected(bytes: &[u8], reason: &str) -> String {
     let result = std::panic::catch_unwind(|| import(bytes, &ImportOptions::default())).expect("OMF import panicked");
     let Err(Error::Parse { format: "OMF", message }) = result else { panic!("expected OMF parse error") };
     assert!(message.contains(reason), "{message}");
+    message
 }
 
 #[test]
@@ -100,8 +101,19 @@ fn sequence_cycle_is_rejected() {
         let mut g = Graph::new();
         let seq = g.component(b"SEQU");
         g.refs(seq, "OMFI:SEQU:Components", &vec![seq; fanout]);
-        rejected(&g.finish(seq), "cycle");
+        let message = rejected(&g.finish(seq), "cycle");
+        assert!(message.ends_with(&format!("object {seq}")), "{message}");
     }
+}
+
+#[test]
+fn two_segment_cycle_identifies_the_reentered_object() {
+    let mut g = Graph::new();
+    let first = g.component(b"SEQU");
+    let second = g.sequence(&[first]);
+    g.refs(first, "OMFI:SEQU:Components", &[second]);
+    let message = rejected(&g.finish(first), "cycle");
+    assert!(message.ends_with(&format!("object {first}")), "{message}");
 }
 
 #[test]
@@ -154,7 +166,8 @@ fn effect_input_cycle_is_rejected() {
 fn segment_depth_limit_is_explicit() {
     for levels in [32, 33] {
         let mut g = Graph::new();
-        let mut seg = g.component(b"FILL");
+        let leaf = g.component(b"FILL");
+        let mut seg = leaf;
         for _ in 0..levels {
             seg = g.sequence(&[seg]);
         }
@@ -162,7 +175,8 @@ fn segment_depth_limit_is_explicit() {
         if levels == 32 {
             assert!(import(&bytes, &ImportOptions::default()).is_ok());
         } else {
-            rejected(&bytes, "depth limit");
+            let message = rejected(&bytes, "depth limit");
+            assert!(message.ends_with(&format!("object {leaf}")), "{message}");
         }
     }
 }
@@ -202,6 +216,7 @@ fn source_chain_depth_limit_preserves_audio_or_returns_an_error() {
         let mut g = Graph::new();
         let filler = g.component(b"FILL");
         let mut clip = g.source_clip(b"SMOB", filler);
+        let file_mob = *g.mobs.last().unwrap();
         for _ in 0..depth {
             clip = g.source_clip(b"MMOB", clip);
         }
@@ -211,7 +226,8 @@ fn source_chain_depth_limit_preserves_audio_or_returns_an_error() {
             assert_eq!(doc.sources.len(), 1);
             assert!(matches!(doc.compositions[0].tracks[0].items.as_slice(), [CItem::Clip(c)] if c.source == 0));
         } else {
-            rejected(&bytes, "source chain exceeds depth limit");
+            let message = rejected(&bytes, "source chain exceeds depth limit");
+            assert!(message.ends_with(&format!("object {file_mob}")), "{message}");
         }
     }
 }
