@@ -3608,13 +3608,22 @@ fn build() -> Vec<CommandSpec> {
             "Set Effect Parameter",
             [],
             None,
-            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated, kept there even outside the clip; default: the playhead, pinned to the clip; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"merge":bool|key?,"begin":bool?}"##,
+            r##"{"clip":id,"clips":[id]? (instead of `clip`: every one of these clips gets the value in one undo step; `effect` is then an id such as "volume" that each of them has, and `mask` is not taken),"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated, kept there even outside the clip; default: the playhead, pinned to the clip; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"merge":bool|key?,"begin":bool?}"##,
             has_seq,
             |s, p| {
-                let c = clip_p(p, "clip").ok_or_else(|| bad("effects.setParam", "need `clip`"))?;
+                // several clips (the selected clips' Volume, #3710) name their effect by id: an
+                // index or a mask is one clip's own
+                let clips = match p.get("clips") {
+                    Some(_) => target_clips_p(s, p, "effects.setParam")?.unwrap_or_default(),
+                    None => vec![clip_p(p, "clip").ok_or_else(|| bad("effects.setParam", "need `clip`"))?],
+                };
                 let pid = str_p(p, "param").ok_or_else(|| bad("effects.setParam", "need `param`"))?.to_string();
                 let val = p.get("value").cloned().ok_or_else(|| bad("effects.setParam", "need `value`"))?;
                 let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
+                if p.get("clips").is_some() && (!eff.is_string() || p.get("mask").is_some_and(|m| !m.is_null())) {
+                    return Err(bad("effects.setParam", "with `clips`, name the effect by its id (such as \"volume\") and give no `mask`"));
+                }
+                let ids = clips.iter().map(|c| c.0.to_string()).collect::<Vec<_>>().join(",");
                 let keyframe = bool_p(p, "keyframe").unwrap_or(false);
                 // an explicit `time` outside the clip keeps its keyframe there, before the start as after
                 // the end, so a ramp across a cut keeps its slope (#1055); the playhead is pinned to the clip
@@ -3624,13 +3633,13 @@ fn build() -> Vec<CommandSpec> {
                 // `merge`: a drag of one parameter is one undo step (#201), and a key makes one of a
                 // drag that changes several (the Program monitor's handles); `begin` starts a new one
                 let merge = match p.get("merge") {
-                    Some(Value::String(key)) => Some(format!("setParam:{}:{key}", c.0)),
-                    _ => bool_p(p, "merge").unwrap_or(false).then(|| format!("setParam:{}:{eff}:{pid}:{}", c.0, p.get("mask").unwrap_or(&Value::Null))),
+                    Some(Value::String(key)) => Some(format!("setParam:{ids}:{key}")),
+                    _ => bool_p(p, "merge").unwrap_or(false).then(|| format!("setParam:{ids}:{eff}:{pid}:{}", p.get("mask").unwrap_or(&Value::Null))),
                 };
                 if bool_p(p, "begin").unwrap_or(false) {
                     s.history.merge_key = None;
                 }
-                let (keyframes, value) = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
+                let set = |q: &mut filmcraft_project::Sequence, c: ClipId| -> Result<(usize, Value)> {
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                     let mt = it.effect_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
                     let e = match &eff {
@@ -3701,8 +3710,16 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                     Ok((keyframes, accepted_value))
+                };
+                let (keyframes, value) = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
+                    let mut first = None;
+                    for c in &clips {
+                        let r = set(q, *c)?;
+                        first.get_or_insert(r);
+                    }
+                    first.ok_or_else(|| bad("effects.setParam", "need `clip`"))
                 })?;
-                // 0 keyframes: the value is static (`time` was not used)
+                // 0 keyframes: the value is static (`time` was not used); with `clips`, the first clip's
                 Ok(json!({"keyframes": keyframes, "param": pid, "value": value}))
             }
         ),
