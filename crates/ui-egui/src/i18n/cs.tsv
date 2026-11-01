@@ -3674,6 +3674,8 @@
 	Search name, notes, author	Hledat v názvu, poznámkách a jménu autora
 	Select all	Vybrat vše
 	Select all visible markers	Vybrat všechny viditelné značky
+	Delete Markers	Odstranit značky
+	Edit Markers	Upravit značky
 	{count} selected	Vybráno: {count}
 
 # Project colour swatches and the shared custom-colour picker.
@@ -3697,6 +3699,7 @@
 	No saved colors	Žádné uložené barvy
 	Project Colors	Barvy projektu
 	Remove saved color	Odebrat uloženou barvu
+	Remove Custom Color	Odebrat vlastní barvu
 	Save color	Uložit barvu
 	System color picker unavailable: {error}	Systémový nástroj pro výběr barvy není k dispozici: {error}
 
