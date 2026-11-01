@@ -128,7 +128,7 @@ impl FilmcraftApp {
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }
-            self.source_playback.clock.audio_retry_at = 0.0;
+            self.source_playback.clock.audio_retry_at = None;
             return;
         }
         let Some(item) = self.source_playback.item else { return };
@@ -145,7 +145,7 @@ impl FilmcraftApp {
             ItemKind::Media(media) => {
                 if !media.info.has_audio() {
                     audio.stop();
-                    self.source_playback.clock.audio_retry_at = 0.0;
+                    self.source_playback.clock.audio_retry_at = None;
                     return;
                 }
                 let project = self.session.project.clone();
@@ -206,12 +206,12 @@ impl FilmcraftApp {
             ItemKind::Sequence(seq) => {
                 if seq.audio_tracks.iter().all(|t| t.items.is_empty()) {
                     audio.stop();
-                    self.source_playback.clock.audio_retry_at = 0.0;
+                    self.source_playback.clock.audio_retry_at = None;
                     return;
                 }
                 let Some((mix_rate, mix)) = shuttle::mix(&self.session, item, sr, self.source_playback.clock.speed) else {
                     audio.stop();
-                    self.source_playback.clock.audio_retry_at = 0.0;
+                    self.source_playback.clock.audio_retry_at = None;
                     return;
                 };
                 let cursor = self.session.state.source_playhead.to_units_floor(i64::from(mix_rate));
@@ -234,11 +234,11 @@ impl FilmcraftApp {
         match audio.start(fill) {
             Ok(_) => {
                 self.source_playback.clock.audio_clock = true;
-                self.source_playback.clock.audio_retry_at = 0.0;
+                self.source_playback.clock.audio_retry_at = None;
             }
             Err(e) => {
                 self.ui.status = format!("Source audio output failed: {e}");
-                self.source_playback.clock.audio_retry_at = now + AUDIO_RETRY_S;
+                self.source_playback.clock.audio_retry_at = Some(now + AUDIO_RETRY_S);
             }
         }
     }
@@ -268,10 +268,10 @@ impl FilmcraftApp {
             self.source_playback.clock.audio_seen = (0, now);
             self.start_source_audio(now);
         }
-        if !self.source_playback.clock.audio_clock && self.source_playback.clock.audio_retry_at > 0.0 && now >= self.source_playback.clock.audio_retry_at {
+        if !self.source_playback.clock.audio_clock && self.source_playback.clock.audio_retry_at.is_some_and(|t| now >= t) {
             // The output failed mid-play: open it again where the wall clock got to, so a
             // recovering device brings the sound back without a pause/play.
-            self.source_playback.clock.audio_retry_at = now + AUDIO_RETRY_S;
+            self.source_playback.clock.audio_retry_at = Some(now + AUDIO_RETRY_S);
             self.source_playback.clock.anchor_tick = time;
             self.source_playback.clock.anchor_time = now;
             self.source_playback.clock.audio_seen = (0, now);
@@ -300,7 +300,7 @@ impl FilmcraftApp {
             clock.audio_clock = false;
             // A dead stream is reopened on a timer; a stalled one keeps the wall clock (#136).
             if reading.is_none() {
-                clock.audio_retry_at = now + AUDIO_RETRY_S;
+                clock.audio_retry_at = Some(now + AUDIO_RETRY_S);
             }
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();

@@ -58,7 +58,7 @@ impl FilmcraftApp {
         self.playback.audio_seen = (0, now);
         // An armed retry keeps its deadline: a loop restart (or any play while the output is
         // still missing) does not reopen the output more often than AUDIO_RETRY_S.
-        if self.playback.audio_retry_at == 0.0 || now >= self.playback.audio_retry_at {
+        if self.playback.audio_retry_at.is_none_or(|t| now >= t) {
             self.start_audio(now);
         }
         // Audio Track Mixer: an automation pass runs while playing forward in real time
@@ -130,7 +130,7 @@ impl FilmcraftApp {
         }
         self.scrub.device_stopped();
         self.playback.audio_clock = false;
-        self.playback.audio_retry_at = 0.0;
+        self.playback.audio_retry_at = None;
         if self.session.mixrec.active() {
             let t = self.session.playhead();
             if let Err(e) = self.session.execute("mixer.recordStop", json!({"time": t.0})) {
@@ -160,7 +160,7 @@ impl FilmcraftApp {
         // either the original rate conversion or pitch-corrected program audio.
         let Some((mix_rate, mix)) = shuttle::mix(&self.session, seq_id, sr, self.playback.speed) else {
             a.stop();
-            self.playback.audio_retry_at = 0.0;
+            self.playback.audio_retry_at = None;
             return;
         };
         let cursor = start_tick.to_units_floor(i64::from(mix_rate));
@@ -180,7 +180,7 @@ impl FilmcraftApp {
         match a.start(fill) {
             Ok(_) => {
                 self.playback.audio_clock = true;
-                self.playback.audio_retry_at = 0.0;
+                self.playback.audio_retry_at = None;
                 if let Some(note) = self.audio.as_ref().and_then(|audio| audio.note()) {
                     self.ui.status = note;
                 }
@@ -188,11 +188,11 @@ impl FilmcraftApp {
             Err(e) => {
                 // The timer retries while playing, so warn on the first lost open only:
                 // a device that stays missing must not log every AUDIO_RETRY_S.
-                if self.playback.audio_retry_at == 0.0 {
+                if self.playback.audio_retry_at.is_none() {
                     log::warn!("audio output unavailable: {e}");
                 }
                 self.playback.audio_clock = false;
-                self.playback.audio_retry_at = now + AUDIO_RETRY_S;
+                self.playback.audio_retry_at = Some(now + AUDIO_RETRY_S);
             }
         }
     }
@@ -243,10 +243,10 @@ impl FilmcraftApp {
         if self.playback.anchor_time < 0.0 {
             self.playback.anchor_time = now;
         }
-        if !self.playback.audio_clock && self.playback.audio_retry_at > 0.0 && now >= self.playback.audio_retry_at {
+        if !self.playback.audio_clock && self.playback.audio_retry_at.is_some_and(|t| now >= t) {
             // The output failed mid-play: open it again where the wall clock got to (what
             // pause/play does by hand), so a recovering device brings the sound back.
-            self.playback.audio_retry_at = now + AUDIO_RETRY_S;
+            self.playback.audio_retry_at = Some(now + AUDIO_RETRY_S);
             self.playback.anchor_tick = self.session.playhead();
             self.playback.anchor_time = now;
             self.playback.audio_seen = (0, now);
@@ -265,7 +265,7 @@ impl FilmcraftApp {
             self.playback.anchor_tick = self.session.playhead();
             self.playback.anchor_time = now;
             self.playback.audio_clock = false;
-            self.playback.audio_retry_at = now + AUDIO_RETRY_S;
+            self.playback.audio_retry_at = Some(now + AUDIO_RETRY_S);
             if let Some(audio) = self.audio.as_mut() {
                 audio.stop();
             }

@@ -149,9 +149,9 @@ pub struct Playback {
     /// consuming samples hands the clock back to the wall clock (see [`AUDIO_STALL_S`]).
     audio_seen: (u64, f64),
     /// When playback lost its output (a failed open or a dead stream), when it is opened again
-    /// (monotonic host s; 0 = not retrying). Pause/play proves a fresh stream works, so a stream the
+    /// (monotonic host s; None = not retrying). Pause/play proves a fresh stream works, so a stream the
     /// device keeps dropping is reopened on a timer (see [`AUDIO_RETRY_S`]).
-    audio_retry_at: f64,
+    audio_retry_at: Option<f64>,
     /// Audio underruns for the current (or last) play (desktop: sound is mixed ahead).
     #[cfg(not(target_arch = "wasm32"))]
     pub audio_stats: std::sync::Arc<play_ahead::AudioStats>,
