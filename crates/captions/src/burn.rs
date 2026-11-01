@@ -486,7 +486,17 @@ mod tests {
             over(&mut p, tc, cover[j]);
             out[j * 4..j * 4 + 4].copy_from_slice(&p);
         }
-        Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
+        // Apply drop shadow if requested.
+    let px = if style.drop_shadow {
+        let scale = frame_h as f32 / 1080.0;
+        let ox = (style.shadow_offset[0] * scale).round() as i32;
+        let oy = (style.shadow_offset[1] * scale).round() as i32;
+        let blur = ((style.shadow_blur * scale / 2.0).round() as usize).min(32);
+        apply_drop_shadow(&px, w, h, style.shadow_color, ox, oy, blur)
+    } else {
+        px
+    };
+    Some(Overlay { x: ox, y: oy, w: ow, h: oh, px: out })
     }
 
     /// Styles and captions existing projects use, at the frame sizes they are drawn at.
@@ -546,4 +556,130 @@ mod tests {
         t.enabled = false;
         assert!(track_overlay(&t, Tick(5), 100, 100).is_none());
     }
+
+    #[test]
+    fn drop_shadow_renders_offset_copy() {
+        use filmcraft_project::{Caption, CaptionAnchor, CaptionFormat, CaptionTrack};
+        use filmcraft_time::TimeRange;
+        use filmcraft_time::Tick;
+
+        let cap = Caption {
+            range: TimeRange { start: Tick(0), end: Tick(1_000_000) },
+            text: "Shadow test".into(),
+            cue_settings: String::new(),
+        };
+        let mut plain_style = filmcraft_project::CaptionStyle::default();
+        plain_style.drop_shadow = false;
+        let track_plain = CaptionTrack {
+            id: filmcraft_project::TrackId(1),
+            format: CaptionFormat::Subtitle,
+            label: String::new(),
+            style: plain_style,
+            captions: vec![cap.clone()],
+        };
+
+        let mut shadow_style = filmcraft_project::CaptionStyle::default();
+        shadow_style.drop_shadow = true;
+        shadow_style.shadow_color = [0, 0, 0, 255];
+        shadow_style.shadow_offset = [4.0, 4.0];
+        shadow_style.shadow_blur = 0.0;
+        let track_shadow = CaptionTrack {
+            id: filmcraft_project::TrackId(2),
+            format: CaptionFormat::Subtitle,
+            label: String::new(),
+            style: shadow_style,
+            captions: vec![cap],
+        };
+
+        let plain_ov = overlay(&track_plain, Tick(0), 1920, 1080)
+            .expect("plain overlay missing");
+        let shadow_ov = overlay(&track_shadow, Tick(0), 1920, 1080)
+            .expect("shadow overlay missing");
+
+        let diffs: usize = plain_ov.px.iter().zip(shadow_ov.px.iter())
+            .filter(|(a, b)| (a - b).abs() > 1e-6)
+            .count();
+        assert!(diffs > 0, "drop shadow produced no change in pixel output");
+    }
+
+}/// Apply a drop shadow: for each pixel in `px` (w×h premultiplied RGBA f32),
+/// produce a new pixel buffer that has the shadow composited beneath the original.
+/// `ox`/`oy` are shadow offset in pixels; `blur` is a simple box-blur radius.
+fn apply_drop_shadow(
+    px: &[f32],
+    w: usize,
+    h: usize,
+    shadow_color: [u8; 4],
+    ox: i32,
+    oy: i32,
+    blur: usize,
+) -> Vec<f32> {
+    // Build an alpha mask of the text, offset and blurred, then tint it with shadow_color.
+    let sc = lin(shadow_color);
+
+    // Shadow layer: same size as the overlay.
+    let mut shadow = vec![0.0f32; w * h * 4];
+    for sy in 0..h {
+        let src_y = sy as i32 - oy;
+        if src_y < 0 || src_y >= h as i32 { continue; }
+        for sx in 0..w {
+            let src_x = sx as i32 - ox;
+            if src_x < 0 || src_x >= w as i32 { continue; }
+            let alpha = px[(src_y as usize * w + src_x as usize) * 4 + 3];
+            if alpha <= 0.0 { continue; }
+            let di = (sy * w + sx) * 4;
+            // accumulate (will normalise after blur)
+            for c in 0..3 { shadow[di + c] += sc[c] * alpha; }
+            shadow[di + 3] += alpha;
+        }
+    }
+
+    // Simple box blur on the shadow alpha (radius `blur`).
+    if blur > 0 {
+        let r = blur.min(w / 2).min(h / 2);
+        // Horizontal pass.
+        let mut tmp = vec![0.0f32; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let x0 = x.saturating_sub(r);
+                let x1 = (x + r + 1).min(w);
+                let count = (x1 - x0) as f32;
+                let di = (y * w + x) * 4;
+                for c in 0..4 {
+                    let sum: f32 = (x0..x1).map(|sx| shadow[(y * w + sx) * 4 + c]).sum();
+                    tmp[di + c] = sum / count;
+                }
+            }
+        }
+        // Vertical pass.
+        let mut blurred = vec![0.0f32; w * h * 4];
+        for y in 0..h {
+            let y0 = y.saturating_sub(r);
+            let y1 = (y + r + 1).min(h);
+            let count = (y1 - y0) as f32;
+            for x in 0..w {
+                let di = (y * w + x) * 4;
+                for c in 0..4 {
+                    let sum: f32 = (y0..y1).map(|sy| tmp[(sy * w + x) * 4 + c]).sum();
+                    blurred[di + c] = sum / count;
+                }
+            }
+        }
+        shadow = blurred;
+    }
+
+    // Composite: shadow under text.
+    let mut out = shadow;
+    for i in 0..w * h {
+        let si = i * 4;
+        let sa = out[si + 3];
+        let ta = px[si + 3];
+        if ta <= 0.0 { continue; }
+        let k = 1.0 - ta;
+        for c in 0..4 { out[si + c] = px[si + c] + out[si + c] * k; }
+        let _ = sa; // suppress unused warning
+    }
+    out
 }
+
+
