@@ -7,6 +7,7 @@ use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
@@ -212,6 +213,42 @@ fn a_newer_revision_keeps_the_frame_being_rendered() {
     d.ready(key(9001));
 }
 
+/// #1142, #1606: a backlog of frames to render does not make the UI repaint at 60 Hz on native
+/// builds (the workers wake it when a frame is done; only the web pumps frames in the UI pass).
+#[test]
+fn queued_frames_do_not_poll_the_ui() {
+    let mut d = Driver::demo();
+    // a frame server with no workers keeps its queue: what a slow backlog looks like to the UI
+    let (pool, services, previews) = {
+        let s = &d.harness.state().session;
+        (s.media.clone(), s.services.clone(), s.previews.clone())
+    };
+    d.harness.state_mut().frames = std::sync::Arc::new(filmcraft_ui_egui::frames::FrameServer::new(pool, services, previews, 0));
+    d.exec("playhead.set", json!({"frame": 7}));
+    d.frames(3);
+    assert!(d.harness.state().frames.queue_len() > 0, "frames are queued");
+    // with nothing else going on the UI goes idle (no repaint asked for) instead of polling
+    let idle = (0..5).any(|_| {
+        d.frames(1);
+        d.harness.output().viewport_output[&egui::ViewportId::ROOT].repaint_delay > std::time::Duration::from_secs(1)
+    });
+    assert!(idle, "the UI kept repainting while frames were queued");
+}
+
+/// #2438 review: when another project's media pool replaces the session's, the frame server is
+/// rebuilt in the middle of a frame; it must be able to wake the UI at once, since nothing polls
+/// for its queued frames any more.
+#[test]
+fn a_rebuilt_frame_server_wakes_the_ui_from_its_first_frame() {
+    let mut d = Driver::demo();
+    let before = d.harness.state().frames.clone();
+    d.harness.state_mut().session.media = std::sync::Arc::new(filmcraft_engine::media_pool::MediaPool::default());
+    d.harness.step();
+    let after = d.harness.state().frames.clone();
+    assert!(!std::sync::Arc::ptr_eq(&before, &after), "the frame server was rebuilt");
+    assert!(after.wakes_ui(), "its finished frames wake the UI");
+}
+
 /// #1682: thumbnail textures (timeline tiles, hover scrubs) are capped instead of one being kept
 /// for every frame ever shown.
 #[test]
@@ -236,4 +273,85 @@ fn thumbnail_textures_are_capped() {
     }
     let n = d.harness.state().thumbnail_textures();
     assert!((100..=512).contains(&n), "{n} thumbnail textures");
+}
+
+/// #3361: Effect Controls of a graphic clip with Responsive Design – Time says its clip effects are
+/// not remapped; a video clip shows no such hint.
+#[test]
+fn effect_controls_hint_that_clip_effects_are_not_remapped() {
+    let mut d = Driver::demo();
+    let hint = |d: &mut Driver| {
+        d.frames(4);
+        d.ok("ui.elements", json!({"prefix": "effectControls.graphicTimeHint"})).as_array().is_some_and(|a| !a.is_empty())
+    };
+    d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
+    let first = d.harness.state().session.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    d.exec("timeline.select", json!({"clips": [first]}));
+    assert!(!hint(&mut d), "no hint for a video clip");
+    let g = d.exec("graphics.newText", json!({"text": "Title"}))["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [g]}));
+    assert!(!hint(&mut d), "no hint without a responsive intro / outro");
+    d.exec("graphics.setResponsiveTime", json!({"clip": g, "introFrames": 12, "outroFrames": 12}));
+    d.exec("timeline.select", json!({"clips": [g]}));
+    assert!(hint(&mut d), "the hint shows for a graphic with responsive time");
+    // it is a labelled button a keyboard can reach, naming both the layer and the clip effects
+    let label = "Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time";
+    let _ = d.harness.get_by_role_and_label(egui::accesskit::Role::Button, label);
+}
+/// #1673: a value dragged in Effect Controls while playing makes a revision per UI pass, so the
+/// frame due is never ready at the project's revision. The Program monitor shows the frames the
+/// workers finish for the last few revisions and keeps playing; it used to hold the picture from
+/// before the drag until the mouse rested.
+#[test]
+fn program_monitor_plays_on_while_a_value_is_dragged() {
+    let mut d = Driver::demo();
+    let clip = d.exec("sequence.inspect", json!({}))["video"][0]["items"][0]["clip"].as_u64().unwrap();
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "crop"}));
+    d.exec("playhead.set", json!({"seconds": 1.0}));
+    let at_rest = d.settled();
+    d.harness.state_mut().play(1.0);
+    let mut frames = std::collections::BTreeSet::new();
+    let mut newest = at_rest.revision;
+    for i in 0..90 {
+        // one change and one UI pass, as a mouse move while dragging the value
+        d.exec("effects.setParam", json!({"clip": clip, "effect": "crop", "param": "left", "value": (i % 30) as f64}));
+        let shown = d.harness.state().program_picture().unwrap();
+        frames.insert(shown.frame);
+        newest = newest.max(shown.revision);
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    assert!(frames.len() >= 5, "the picture kept playing during the drag: frames shown {frames:?}");
+    assert!(newest > at_rest.revision, "the picture showed the dragged value, not only the one from before");
+}
+
+/// The same for playback scheduling: a frame being rendered ahead of the playhead is kept when
+/// playback asks for frames at a newer revision (CPU effects take longer than a pass).
+#[test]
+fn playback_at_a_newer_revision_keeps_the_frame_being_rendered() {
+    let d = Driver::demo();
+    let app = d.harness.state();
+    let idle = || {
+        for _ in 0..200_000 {
+            if app.frames.queue_len() == 0 {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(50));
+        }
+        panic!("the frame queue never emptied");
+    };
+    // the clip with Lumetri Color at full resolution: tens of milliseconds on the CPU
+    let seq = app.session.state.active_sequence.unwrap();
+    let rate = app.session.active_sequence().unwrap().settings.frame_rate;
+    let frame = rate.frame_at(filmcraft_time::Tick::from_seconds_f64(15.0));
+    let key = |frame, revision| FrameKey { target: Target::Sequence(seq), frame, size: 1000, revision, draft: false };
+    let project = app.session.project.clone();
+    idle();
+    // starting to play from the frame before it (preroll: every frame, none skipped as too
+    // expensive): that one, then `frame` and the next ones as prefetch
+    app.frames.schedule_playback(key(frame - 1, 9001), rate, 1.0, &project, 1.0, true);
+    idle(); // the workers have taken them
+    // one change later, still playing from there
+    app.frames.schedule_playback(key(frame - 1, 9002), rate, 1.0, &project, 1.0, true);
+    d.ready(key(frame, 9001));
+    d.ready(key(frame, 9002));
 }

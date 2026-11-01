@@ -1,48 +1,175 @@
 //! Small custom widgets in Premiere's visual language.
 
+pub mod color_picker;
+
 use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use filmcraft_time::{FrameRate, Tick, parse_timecode};
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
+#[derive(Clone, Copy)]
+pub(crate) enum MarkerPart {
+    Whole,
+    Left,
+    Right,
+}
+
+/// Point markers use the whole flag; a range places its two halves at its endpoints.
+pub(crate) fn marker_glyph(painter: &egui::Painter, rect: Rect, tip_height: f32, part: MarkerPart, color: Color32) {
+    let x = rect.center().x;
+    let y = rect.top();
+    let shoulder = rect.bottom() - tip_height;
+    let points = match part {
+        MarkerPart::Whole => {
+            vec![pos2(rect.left(), y), pos2(rect.right(), y), pos2(rect.right(), shoulder), pos2(x, rect.bottom()), pos2(rect.left(), shoulder)]
+        }
+        MarkerPart::Left => vec![pos2(rect.left(), y), pos2(x, y), pos2(x, rect.bottom()), pos2(rect.left(), shoulder)],
+        MarkerPart::Right => vec![pos2(x, y), pos2(rect.right(), y), pos2(rect.right(), shoulder), pos2(x, rect.bottom())],
+    };
+    painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+}
+
+/// Give a widget an explicit accessible name without changing its visible hint text.
+///
+/// `egui_kittest` 0.37 hard-fails visible input roles that have neither a label nor a placeholder.
+/// Text fields that sit beside a drawn label (or that have no room for a placeholder) still need a
+/// stable name for screen readers and `get_by_label`.
+pub fn accessible_name(response: Response, name: impl Into<String>) -> Response {
+    let name = name.into();
+    if response.ctx.has_accesskit_node(response.id) {
+        response.ctx.accesskit_node_builder(response.id, |node| {
+            if node.label().is_none_or(|label| label.trim().is_empty()) {
+                node.set_label(name);
+            }
+        });
+    }
+    response
+}
+
+/// Numeric formatting and theme context for a [`hot_number`] field.
+///
+/// Grouping the related knobs keeps the widget's call sites readable and below the argument-count
+/// limit; the fields are exactly the values the hot-number editor and drag handling need.
+pub struct HotNumberOptions<'a> {
+    /// Value change per dragged point at the normal modifier setting.
+    pub speed: f64,
+    /// Inclusive value bounds used when committing a drag or a typed calculation.
+    pub range: (f64, f64),
+    /// Digits after the decimal point in the displayed value.
+    pub decimals: usize,
+    /// Unit text drawn after the value and stripped from typed expressions.
+    pub suffix: &'a str,
+    /// Theme tokens for the hot-text colours.
+    pub tokens: &'a Tokens,
+}
+
+impl<'a> HotNumberOptions<'a> {
+    /// Const constructor grouping speed, range, decimals, suffix and theme tokens; it performs no validation.
+    pub const fn new(speed: f64, range: (f64, f64), decimals: usize, suffix: &'a str, tokens: &'a Tokens) -> Self {
+        Self { speed, range, decimals, suffix, tokens }
+    }
+}
+
 /// Premiere "hot text": a blue number you drag horizontally to scrub, click to type a number or a
-/// calculation ([`crate::calc`]).
+/// calculation ([`crate::calc`]). `label` is the property's accessible name (for example
+/// "Position X"), used when the field switches to a text editor so screen readers can tell the
+/// value fields apart.
 /// Returns (response, Some(new value) when changed).
-pub fn hot_number(ui: &mut Ui, id: egui::Id, value: f64, speed: f64, range: (f64, f64), decimals: usize, suffix: &str, t: &Tokens) -> (Response, Option<f64>) {
+pub fn hot_number(ui: &mut Ui, label: &str, id: egui::Id, value: f64, options: HotNumberOptions<'_>) -> (Response, Option<f64>) {
+    let editing_id = id.with("editing");
+    let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
+    if let Some(buf) = editing.as_mut() {
+        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf);
+    }
+    hot_number_display(ui, id, value, options)
+}
+
+/// The single-line text editor shown after a click on a hot number.
+fn hot_number_editor(ui: &mut Ui, label: &str, id: egui::Id, value: f64, range: (f64, f64), suffix: &str, buf: &mut String) -> (Response, Option<f64>) {
     let editing_id = id.with("editing");
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
-    let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
-    if let Some(buf) = editing.as_mut() {
-        let r = ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0)));
-        let mut out = None;
-        if r.lost_focus() {
-            // the field's own unit can be typed anywhere; calc ignores the common ones
-            let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
-            if let Some(v) = crate::calc::eval(&typed, value) {
-                out = Some(v.clamp(range.0, range.1));
-            }
-            ui.data_mut(|d| d.remove::<String>(editing_id));
-        } else {
-            let b = buf.clone();
-            ui.data_mut(|d| d.insert_temp(editing_id, b));
-            // select the whole value once the field has focus (egui collapses a selection to a caret
-            // in a field that does not have it yet), so typing replaces it as in Premiere
-            let selected_now = r.has_focus() && ui.data_mut(|d| d.remove_temp::<bool>(select_all_id)).is_some();
-            if selected_now {
-                let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
-                st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
-                st.store(ui.ctx(), edit_id);
-            }
-            // the focus and the selection show on the next frame, which nothing else would trigger
-            if !r.has_focus() || selected_now {
-                ui.ctx().request_repaint();
-            }
+    arrows_start_from_the_end(ui, edit_id, buf);
+    let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
+    let mut out = None;
+    if r.lost_focus() {
+        // the field's own unit can be typed anywhere; calc ignores the common ones
+        let typed = if suffix.trim().is_empty() { buf.clone() } else { buf.replace(suffix.trim(), "") };
+        if let Some(v) = crate::calc::eval(&typed, value) {
+            out = Some(v.clamp(range.0, range.1));
+        }
+        ui.data_mut(|d| d.remove::<String>(editing_id));
+    } else {
+        let b = buf.clone();
+        ui.data_mut(|d| d.insert_temp(editing_id, b));
+        // select the whole value once the field has focus (egui collapses a selection to a caret
+        // in a field that does not have it yet), so typing replaces it as in Premiere
+        let focused = holds_focus(&r);
+        let selected_now = focused && ui.data_mut(|d| d.remove_temp::<bool>(select_all_id)).is_some();
+        if selected_now {
+            let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
+            st.store(ui.ctx(), edit_id);
+        }
+        // the focus and the selection show on the next frame, which nothing else would trigger
+        if !focused || selected_now {
+            ui.ctx().request_repaint();
+        }
+        // only until it has focus: `request_focus` resets the field's focus-lock filter, and the
+        // arrow keys would then move focus out of the field (committing it) instead of the caret
+        if !focused {
             r.request_focus();
         }
-        return (r, out);
     }
+    (r, out)
+}
+
+/// Whether a field has keyboard focus, also while the window is in the background: `has_focus` is
+/// false then, as it is between control-channel inputs.
+fn holds_focus(r: &Response) -> bool {
+    r.ctx.memory(|m| m.has_focus(r.id))
+}
+
+/// Left/Right on a field's whole selected value start from its last digit: egui would jump to the
+/// start. Call before drawing the `TextEdit` with id `edit_id` that holds `text`.
+fn arrows_start_from_the_end(ui: &Ui, edit_id: egui::Id, text: &str) {
+    let arrow = ui.input(|i| i.modifiers.is_none() && (i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowRight)));
+    if arrow && let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), edit_id) {
+        let len = text.chars().count();
+        let all = [egui::text::CCursor::new(0), egui::text::CCursor::new(len)];
+        if len > 0 && st.cursor.char_range().is_some_and(|c| c.sorted_cursors() == all) {
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(len))));
+            st.store(ui.ctx(), edit_id);
+        }
+    }
+}
+
+/// Select the whole text of a single-line field when a click or Tab focuses it, so typing replaces the value as in Premiere.
+/// A drag that focuses the field still selects from where it started.
+pub fn select_all_on_focus(ui: &Ui, r: &Response, text: &str) {
+    let pending_id = r.id.with("select-all-on-click");
+    if r.gained_focus() && r.is_pointer_button_down_on() {
+        // wait for the release: only a click (not a drag) selects everything
+        ui.data_mut(|d| d.insert_temp(pending_id, true));
+        return;
+    }
+    let pending = ui.data(|d| d.get_temp::<bool>(pending_id)).is_some();
+    if pending && (r.clicked() || r.dragged() || !r.is_pointer_button_down_on()) {
+        ui.data_mut(|d| d.remove_temp::<bool>(pending_id));
+    }
+    let select = if pending { r.clicked() } else { r.gained_focus() };
+    if select {
+        let mut st = egui::text_edit::TextEditState::load(ui.ctx(), r.id).unwrap_or_default();
+        st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+        st.store(ui.ctx(), r.id);
+        ui.ctx().request_repaint();
+    }
+}
+
+/// The painted, draggable value shown while the field is not in text-edit mode.
+fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberOptions<'_>) -> (Response, Option<f64>) {
+    let HotNumberOptions { speed, range, decimals, suffix, tokens: t } = options;
     let text = format!("{value:.decimals$}{suffix}");
     let galley = ui.painter().layout_no_wrap(text, Tokens::ui(12.0), t.hot_text);
     let (rect, resp) = ui.allocate_exact_size(galley.size() + vec2(4.0, 4.0), Sense::click_and_drag());
@@ -56,15 +183,7 @@ pub fn hot_number(ui: &mut Ui, id: egui::Id, value: f64, speed: f64, range: (f64
     let mut out = None;
     if resp.dragged() {
         let dx = resp.drag_delta().x as f64;
-        let mult = ui.input(|i| {
-            if i.modifiers.shift {
-                10.0
-            } else if i.modifiers.command {
-                0.1
-            } else {
-                1.0
-            }
-        });
+        let mult = hot_number_drag_multiplier(ui);
         let nv = (value + dx * speed * mult).clamp(range.0, range.1);
         if (nv - value).abs() > f64::EPSILON {
             out = Some(nv);
@@ -72,12 +191,25 @@ pub fn hot_number(ui: &mut Ui, id: egui::Id, value: f64, speed: f64, range: (f64
     }
     if resp.clicked() {
         ui.data_mut(|d| {
-            d.insert_temp(editing_id, format!("{value:.decimals$}"));
-            d.insert_temp(select_all_id, true);
+            d.insert_temp(id.with("editing"), format!("{value:.decimals$}"));
+            d.insert_temp(id.with("select-all"), true);
         });
         ui.ctx().request_repaint();
     }
     (resp, out)
+}
+
+/// Drag sensitivity: Shift ×10, Command ×0.1, otherwise ×1. Typed values are unaffected.
+fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
+    ui.input(|i| {
+        if i.modifiers.shift {
+            10.0
+        } else if i.modifiers.command {
+            0.1
+        } else {
+            1.0
+        }
+    })
 }
 
 /// A large blue timecode readout (monitors/timeline) that moves its playhead: drag horizontally to
@@ -99,17 +231,9 @@ pub fn timecode_field(
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
     if let Some(mut buf) = ui.data(|d| d.get_temp::<String>(editing_id)) {
-        // Left/Right on the whole selected value start from its last digit (egui would jump to the start)
-        let arrow = ui.input(|i| i.modifiers.is_none() && (i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowRight)));
-        if arrow && let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), edit_id) {
-            let len = buf.chars().count();
-            let all = [egui::text::CCursor::new(0), egui::text::CCursor::new(len)];
-            if len > 0 && st.cursor.char_range().is_some_and(|c| c.sorted_cursors() == all) {
-                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(len))));
-                st.store(ui.ctx(), edit_id);
-            }
-        }
-        let r = ui.put(rect, egui::TextEdit::singleline(&mut buf).id(edit_id).font(Tokens::timecode()).desired_width(rect.width()));
+        arrows_start_from_the_end(ui, edit_id, &buf);
+        let r =
+            accessible_name(ui.put(rect, egui::TextEdit::singleline(&mut buf).id(edit_id).font(Tokens::timecode()).desired_width(rect.width())), "Timecode");
         if r.lost_focus() {
             ui.data_mut(|d| d.remove::<String>(editing_id));
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -120,20 +244,21 @@ pub fn timecode_field(
         }
         // select the whole value once the field has focus: egui collapses a selection to a caret
         // in a field that does not have it yet
-        let selected_now = r.has_focus() && ui.data_mut(|d| d.remove_temp::<bool>(select_all_id)).is_some();
+        let focused = holds_focus(&r);
+        let selected_now = focused && ui.data_mut(|d| d.remove_temp::<bool>(select_all_id)).is_some();
         if selected_now {
             let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
             st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(buf.chars().count()))));
             st.store(ui.ctx(), edit_id);
         }
         // the focus and the selection show on the next frame, which nothing else would trigger
-        if !r.has_focus() || selected_now {
+        if !focused || selected_now {
             ui.ctx().request_repaint();
         }
         ui.data_mut(|d| d.insert_temp(editing_id, buf));
         // only until it has focus: `request_focus` resets the field's focus-lock filter, and the
         // arrow keys would then move focus out of the field (committing it) instead of the caret
-        if !r.has_focus() {
+        if !focused {
             r.request_focus();
         }
         return None;
@@ -236,7 +361,20 @@ pub fn section_header(ui: &mut Ui, id: egui::Id, title: &str, open: bool, t: &To
 
 /// A small pill toggle button with text (e.g. "M", "S" on track headers).
 pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: Color32, t: &Tokens, id: egui::Id) -> Response {
-    let resp = ui.interact(rect, id, Sense::click());
+    letter_toggle_clipped(ui, rect, ui.clip_rect(), letter, on, on_color, t, id)
+}
+
+/// [`letter_toggle`] shown only where `rect` meets `clip`, such as a Timeline track header scrolled
+/// partly out of its half: the button keeps its size and is cut off at the edge, takes clicks only
+/// where it shows, and draws nothing once it is scrolled out entirely.
+#[allow(clippy::too_many_arguments)]
+pub fn letter_toggle_clipped(ui: &mut Ui, rect: Rect, clip: Rect, letter: &str, on: bool, on_color: Color32, t: &Tokens, id: egui::Id) -> Response {
+    let visible = rect.intersect(clip);
+    let resp = ui.interact(if visible.is_positive() { visible } else { Rect::NOTHING }, id, Sense::click());
+    if !visible.is_positive() {
+        return resp;
+    }
+    let p = ui.painter().with_clip_rect(visible.intersect(ui.clip_rect()));
     let bg = if on {
         on_color
     } else if resp.hovered() {
@@ -244,11 +382,11 @@ pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: 
     } else {
         Color32::TRANSPARENT
     };
-    ui.painter().rect_filled(rect, 2.0, bg);
+    p.rect_filled(rect, 2.0, bg);
     if !on {
-        ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
+        p.rect_stroke(rect, 2.0, Stroke::new(1.0, t.separator), StrokeKind::Inside);
     }
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, letter, Tokens::semibold(10.5), if on { Color32::BLACK } else { t.text_dim });
+    p.text(rect.center(), Align2::CENTER_CENTER, letter, Tokens::semibold(10.5), if on { Color32::BLACK } else { t.text_dim });
     resp
 }
 
@@ -271,8 +409,19 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &
     ui.painter().rect_stroke(rect, h / 2.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 12.0, rect.center().y), vec2(12.0, 12.0)), Icon::Search, t.text_dim);
     let inner = Rect::from_min_max(pos2(rect.min.x + 22.0, rect.min.y + 2.0), pos2(rect.max.x - 8.0, rect.max.y - 2.0));
+    // centred across the field: a text edit aligns its text to the top unless told otherwise
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-    let resp = child.add(egui::TextEdit::singleline(text).hint_text(hint).frame(egui::Frame::NONE).desired_width(inner.width()).font(Tokens::ui(12.0)));
+    let resp = accessible_name(
+        child.add(
+            egui::TextEdit::singleline(text)
+                .hint_text(hint)
+                .frame(egui::Frame::NONE)
+                .desired_width(inner.width())
+                .font(Tokens::ui(12.0))
+                .align(egui::Align2::LEFT_CENTER),
+        ),
+        hint,
+    );
     // Select Find Box (Shift+F) / Open Search (Cmd+Shift+F)
     crate::panels::keyboard::take_search_focus(ui, rect, &resp);
     resp
@@ -354,26 +503,146 @@ pub fn number_drag<Num: egui::emath::Numeric>(value: &mut Num) -> egui::DragValu
     egui::DragValue::new(value).custom_parser(move |s| crate::calc::eval(s, current))
 }
 
+/// What a pointer is over on a zoom scroll bar (the Timeline's and the monitors'): the circular
+/// handle at either end of the thumb zooms, the middle scrolls, and a press beside the thumb brings
+/// it there. The press and the hover cursor ask the same question here, so they cannot disagree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ZoomThumbPart {
+    Beside,
+    Left,
+    Middle,
+    Right,
+}
+
+impl ZoomThumbPart {
+    pub(crate) fn at(thumb: Rect, pos: egui::Pos2) -> Self {
+        if !thumb.expand2(vec2(0.0, 4.0)).contains(pos) {
+            Self::Beside
+        } else if (pos.x - thumb.min.x).abs() < 9.0 {
+            Self::Left
+        } else if (pos.x - thumb.max.x).abs() < 9.0 {
+            Self::Right
+        } else {
+            Self::Middle
+        }
+    }
+}
+
+/// The horizontal resize cursor of a zoom scroll bar: over either handle of its `thumb`, and for as
+/// long as a drag of a handle goes on (`handle_grabbed`), which the pointer can take off the bar.
+/// `resp` is the bar's response.
+pub(crate) fn zoom_thumb_cursor(ui: &Ui, resp: &Response, thumb: Rect, handle_grabbed: bool) {
+    let on_handle = if resp.dragged() {
+        handle_grabbed
+    } else {
+        resp.hover_pos().is_some_and(|pos| matches!(ZoomThumbPart::at(thumb, pos), ZoomThumbPart::Left | ZoomThumbPart::Right))
+    };
+    if on_handle {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
+
+    /// The vertical centres of the text shapes `search_field` draws, for a field 22 points tall
+    /// drawn at the top of the Ui (its centre is at y = 11).
+    fn search_text_centres(text: &str) -> Vec<f32> {
+        let ctx = egui::Context::default();
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 200.0))), ..Default::default() }, |ui| {
+            let mut value = text.to_string();
+            search_field(ui, &mut value, "Search", 200.0, &t);
+        });
+        out.textures_delta.clear();
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.visual_bounding_rect().center().y),
+                _ => None,
+            })
+            // (an empty text has no extent)
+            .filter(|c| c.is_finite())
+            .collect()
+    }
+
+    #[test]
+    fn the_text_of_a_search_field_is_centred_vertically_in_it() {
+        for text in ["", "effects"] {
+            let centres = search_text_centres(text);
+            assert!(!centres.is_empty(), "no text drawn for {text:?}");
+            for c in centres {
+                assert!((c - 11.0).abs() <= 1.0, "{text:?}: text centred at {c}, the field's centre is 11");
+            }
+        }
+    }
 
     fn frame(ctx: &egui::Context, events: Vec<egui::Event>, id: egui::Id) {
         let t = Tokens::for_kind(ThemeKind::Dark);
         let input = egui::RawInput { events, ..Default::default() };
         // no renderer takes the font atlas upload here; drop it explicitly (epaint panics otherwise)
         ctx.run_ui(input, |ui| {
-            hot_number(ui, id, 123.5, 1.0, (0.0, 1000.0), 1, "", &t);
+            hot_number(ui, "Value", id, 123.5, HotNumberOptions::new(1.0, (0.0, 1000.0), 1, "", &t));
         })
         .textures_delta
         .clear();
     }
 
+    /// The edit field behind a hot number uses the caller's property label, not the generic
+    /// "Value", so Effect Controls and graphics fields are distinguishable by screen readers.
+    #[test]
+    fn a_hot_number_edit_field_uses_the_parameter_label() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        let id = egui::Id::unique("hot-labelled");
+        let mut harness = Harness::builder().with_size(egui::vec2(240.0, 60.0)).build_ui_state(
+            move |ui, _: &mut ()| {
+                let t = Tokens::for_kind(ThemeKind::Dark);
+                ui.data_mut(|d| {
+                    d.insert_temp(id.with("editing"), "12.5".to_string());
+                    d.insert_temp(id.with("select-all"), false);
+                });
+                hot_number(ui, "Position X", id, 12.5, HotNumberOptions::new(1.0, (-1000.0, 1000.0), 1, "", &t));
+            },
+            (),
+        );
+        harness.run_steps(2);
+        harness.check_accessibility();
+        assert!(harness.query_by_label("Position X").is_some(), "the field is reachable by its parameter label");
+        assert!(harness.query_by_label("Value").is_none(), "the generic label is gone");
+    }
+
+    /// A Timeline track's Mute and Solo buttons drew their letter outside the header once its track
+    /// was scrolled out of the audio half, over the video tracks: what a clipped letter toggle
+    /// draws stays inside the clip, and nothing is drawn once it is out entirely.
+    #[test]
+    fn a_clipped_letter_toggle_draws_only_inside_its_clip() {
+        let t = Tokens::for_kind(ThemeKind::Dark);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &t); // the letters' semibold font
+        let clip = Rect::from_min_max(pos2(0.0, 100.0), pos2(200.0, 300.0));
+        for (y, shows) in [(80.0, false), (95.0, true), (150.0, true), (295.0, true), (310.0, false)] {
+            for _ in 0..2 {
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    let r = Rect::from_min_size(pos2(20.0, y), vec2(14.0, 14.0));
+                    letter_toggle_clipped(ui, r, clip, "M", false, Color32::WHITE, &t, egui::Id::unique("m"));
+                    letter_toggle_clipped(ui, r.translate(vec2(20.0, 0.0)), clip, "S", true, Color32::YELLOW, &t, egui::Id::unique("s"));
+                });
+                out.textures_delta.clear();
+                assert_eq!(!out.shapes.is_empty(), shows, "button at y {y}");
+                for s in &out.shapes {
+                    assert!(clip.contains_rect(s.clip_rect), "button at y {y} draws outside its clip: {:?}", s.clip_rect);
+                }
+            }
+        }
+    }
+
     #[test]
     fn clicking_a_hot_number_selects_its_whole_value() {
         let ctx = egui::Context::default();
-        let id = egui::Id::new("hot");
+        let id = egui::Id::unique("hot");
         let pos = egui::pos2(14.0, 12.0);
         let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         frame(&ctx, vec![egui::Event::PointerMoved(pos)], id);
@@ -385,6 +654,52 @@ mod tests {
         let st = egui::text_edit::TextEditState::load(&ctx, id.with("edit")).unwrap_or_default();
         let range = st.cursor.char_range().map(|c| c.sorted_cursors());
         assert_eq!(range, Some([egui::text::CCursor::new(0), egui::text::CCursor::new(5)]));
+    }
+
+    /// Runs one frame per entry of `frames` over a "Hello" field using [`select_all_on_focus`] and returns its sorted selection.
+    fn text_field_selection(frames: Vec<Vec<egui::Event>>) -> Option<[egui::text::CCursor; 2]> {
+        let ctx = egui::Context::default();
+        let mut buf = "Hello".to_string();
+        let mut field_id = egui::Id::NULL;
+        for events in frames.into_iter().chain(std::iter::repeat_with(Vec::new).take(3)) {
+            ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                let r = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(160.0));
+                select_all_on_focus(ui, &r, &buf);
+                field_id = r.id;
+            })
+            .textures_delta
+            .clear();
+        }
+        let st = egui::text_edit::TextEditState::load(&ctx, field_id).unwrap_or_default();
+        st.cursor.char_range().map(|c| c.sorted_cursors())
+    }
+
+    fn primary_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    #[test]
+    fn clicking_a_single_line_text_field_selects_its_whole_text() {
+        let pos = egui::pos2(14.0, 12.0);
+        let range = text_field_selection(vec![vec![egui::Event::PointerMoved(pos)], vec![primary_button(pos, true)], vec![primary_button(pos, false)]]);
+        assert_eq!(range, Some([egui::text::CCursor::new(0), egui::text::CCursor::new(5)]));
+    }
+
+    /// A drag that focuses the field selects from where it started, not from the start of the text.
+    #[test]
+    fn dragging_into_a_single_line_text_field_keeps_drag_selection() {
+        let start = egui::pos2(34.0, 12.0);
+        let end = egui::pos2(150.0, 12.0);
+        let range = text_field_selection(vec![
+            vec![egui::Event::PointerMoved(start)],
+            vec![primary_button(start, true)],
+            vec![egui::Event::PointerMoved(egui::pos2(80.0, 12.0))],
+            vec![egui::Event::PointerMoved(end)],
+            vec![primary_button(end, false)],
+        ]);
+        let Some([from, to]) = range else { panic!("the drag leaves a selection") };
+        assert_ne!(from, egui::text::CCursor::new(0), "the selection starts where the drag began");
+        assert_eq!(to, egui::text::CCursor::new(5));
     }
 
     /// Dialogs open centred and can be dragged by their title bar (anchored ones could not).

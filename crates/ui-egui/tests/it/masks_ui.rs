@@ -542,10 +542,13 @@ fn presets_bin_drag_and_save_dialog() {
         d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}.twirl")}));
         d.frames(2);
     }
+    // Effect Controls: property fields must be reachable by name as well.
+    d.harness.check_accessibility();
     d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast", "button": "right"}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast.savePreset"}));
     d.frames(2);
+    d.harness.check_accessibility();
     d.rect("savePreset.name");
     d.ok("ui.click", json!({"id": "savePreset.name"}));
     d.ok("ui.key", json!({"key": "Cmd+A"}));

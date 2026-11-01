@@ -203,14 +203,14 @@ fn lumetri_presets_list_apply_and_thumbnails() {
     assert_eq!(r["folders"], json!(["Cinematic", "Film Emulation", "Monochrome", "Technical"]));
     let mono = s.execute("lumetri.presets", json!({"folder": "monochrome"})).unwrap();
     assert!(mono["presets"].as_array().unwrap().iter().all(|p| p["folder"] == "Monochrome"));
-    // apply: one undo step adding a configured Lumetri Color before the intrinsic effects
+    // apply: one undo step adding a configured Lumetri Color at the end of the clip's effects
     let before = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.len();
     let r = s.execute("lumetri.applyPreset", json!({"name": "Neutral Mono"})).unwrap();
     assert_eq!(r["clips"], 1);
     let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
     assert_eq!(it.effects.len(), before + 1);
     let k = it.effects.iter().position(|e| e.effect == "lumetri").unwrap();
-    assert!(it.effects[k + 1..].iter().all(|e| e.def().is_some_and(|d| d.intrinsic)) || k + 1 == it.effects.len());
+    assert_eq!(k + 1, it.effects.len());
     assert_eq!(it.effects[k].param("saturation").unwrap().value, ParamValue::Float(0.0));
     let img = s.render_program(0.25).unwrap();
     let grey = img.px.as_chunks::<4>().0.iter().filter(|p| p[3] > 0.5).all(|p| (p[0] - p[1]).abs() < 0.01 && (p[1] - p[2]).abs() < 0.01);
@@ -376,11 +376,12 @@ fn hsl_key_color_picker_samples_where_motion_places_the_clip() {
     .unwrap();
     let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
     s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
-    // Lumetri goes after the gradient, before the intrinsic Motion
+    // Lumetri goes at the end of the stack, after the gradient and the intrinsic Motion (#1879);
+    // the renderer still applies Motion after it
     s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
     let effects = &s.active_sequence().unwrap().find_item(clip).unwrap().1.effects;
     let idx = effects.iter().position(|e| e.effect == "lumetri").unwrap();
-    assert!(effects.iter().position(|e| e.effect == "motion").unwrap() > idx, "Motion follows Lumetri in the stack");
+    assert_eq!(idx + 1, effects.len(), "Lumetri ends the stack");
     // the colour the Program monitor shows at a point on the placed clip (default Lumetri: neutral)
     let (x, y) = (0.15, 0.2);
     let seq = s.state.active_sequence.unwrap();
@@ -453,11 +454,11 @@ fn hsl_key_color_picker_refused_leaves_no_lumetri_behind() {
         assert_eq!(effects(&s), before, "no Lumetri added: {mode}");
         assert_eq!(s.history.undo.len(), undo, "no undo step: {mode}");
     }
-    // a point on the placed picture applies Lumetri where effects.apply puts it, before Motion
+    // a point on the placed picture applies Lumetri where effects.apply puts it, at the end
     s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "x": 0.15, "y": 0.2})).unwrap();
     let after = effects(&s);
     let idx = after.iter().position(|e| e.effect == "lumetri").expect("Lumetri applied");
-    assert!(after.iter().position(|e| e.effect == "motion").unwrap() > idx, "Motion follows Lumetri");
+    assert_eq!(idx + 1, after.len(), "Lumetri ends the stack");
     assert_eq!(after[idx].param("hsl_on").map(|p| &p.value), Some(&ParamValue::Bool(true)));
     // applying Lumetri and setting the key is one undo step: one Undo leaves no Lumetri behind
     assert_eq!(s.history.undo.len(), undo + 1, "one undo step for the first pick");

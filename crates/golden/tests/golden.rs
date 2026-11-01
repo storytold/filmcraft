@@ -55,7 +55,7 @@ impl Builder {
         let id = self.p.add_item(
             &info.name.clone(),
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(src.generator.clone()),
                 info,
                 interpret: Default::default(),
@@ -65,7 +65,7 @@ impl Builder {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         self.map.0.insert(id, Arc::new(src) as SharedSource);
