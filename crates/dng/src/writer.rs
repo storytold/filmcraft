@@ -79,6 +79,11 @@ pub enum Compression {
         restart_lines: usize,
         pt: u8,
     },
+    /// Baseline (lossy) JPEG at `quality` 1–100 (8-bit samples; one sample per pixel as a
+    /// greyscale JPEG, three as a colour one, which the encoder stores as YCbCr).
+    LossyJpeg {
+        quality: u8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,6 +323,20 @@ fn write_entropy(out: Vec<u8>, coded: &[Coded], tables: &[HuffTable], restart_li
     out
 }
 
+/// Encode `w` × `h` × `spp` 8-bit samples (1 or 3 per pixel) as a baseline JPEG (empty if the
+/// encoder refuses them).
+pub fn lossy_jpeg(samples: &[u16], w: usize, h: usize, spp: usize, quality: u8) -> Vec<u8> {
+    use image::ImageEncoder;
+    let bytes: Vec<u8> = samples.iter().map(|&v| v.min(255) as u8).collect();
+    let color = if spp == 3 { image::ExtendedColorType::Rgb8 } else { image::ExtendedColorType::L8 };
+    let mut out = Vec::new();
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
+    if enc.write_image(&bytes, w as u32, h as u32, color).is_err() {
+        return Vec::new();
+    }
+    out
+}
+
 /// Encode `samples` (`width` × `height` × `comps`, interleaved) as lossless JPEG.
 pub fn lj92(samples: &[u16], params: &Lj92Params) -> Vec<u8> {
     let p = Lj92Params { comps: params.comps.clamp(1, 4), ..*params };
@@ -401,6 +420,7 @@ fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> (Vec<u32>, Vec
                     let params = Lj92Params { width: cw * spp / comps, height: rows, comps, precision: o.bits as u8, predictor, restart_lines, pt };
                     lj92(&chunk, &params)
                 }
+                Compression::LossyJpeg { quality } => lossy_jpeg(&chunk, cw, rows, spp, quality),
             };
             if buf.len() % 2 == 1 {
                 buf.push(0);
@@ -423,7 +443,14 @@ pub fn write(samples: &[u16], o: &Options) -> Vec<u8> {
         (tags::IMAGE_WIDTH, Value::Long(vec![o.width as u32])),
         (tags::IMAGE_LENGTH, Value::Long(vec![o.height as u32])),
         (tags::BITS_PER_SAMPLE, Value::Short(vec![o.bits as u16; o.samples_per_pixel])),
-        (tags::COMPRESSION, Value::Short(vec![if o.compression == Compression::None { 1 } else { 7 }])),
+        (
+            tags::COMPRESSION,
+            Value::Short(vec![match o.compression {
+                Compression::None => 1,
+                Compression::LosslessJpeg { .. } => 7,
+                Compression::LossyJpeg { .. } => 34892,
+            }]),
+        ),
         (tags::SAMPLES_PER_PIXEL, Value::Short(vec![o.samples_per_pixel as u16])),
         (tags::PLANAR_CONFIGURATION, Value::Short(vec![1])),
     ];

@@ -2031,7 +2031,10 @@ name = "filmcraft-dng"
 version = "0.15.0"
 dependencies = [
  "filmcraft-dng",
+ "image",
  "rayon",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
