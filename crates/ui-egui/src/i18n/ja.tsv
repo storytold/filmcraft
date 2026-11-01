@@ -3731,3 +3731,15 @@
 	Previous	前へ
 	Next	次へ
 	Enter a valid HH:MM:SS:FF timecode	有効なタイムコードを HH:MM:SS:FF 形式で入力してください
+	Replace With EffectCraft Composition	EffectCraft コンポジションで置き換え
+	Edit in EffectCraft	EffectCraft で編集
+	Render Changed EffectCraft Compositions	変更された EffectCraft コンポジションをレンダリング
+	Effectcraft	Effectcraft
+	Files from an earlier replacement of this clip already exist:	このクリップの以前の置き換えで作成されたファイルが既に存在します:
+	Overwrite them, or keep them and write new files beside them (numbered -2, -3, …)?	上書きしますか？それとも既存のファイルを残して、隣に新しいファイル（-2、-3、… の連番）を書き出しますか？
+	Keep Old	既存を残す
+	Rendering the EffectCraft composition… the clip is replaced when it is done	EffectCraft コンポジションをレンダリング中… 完了するとクリップが置き換わります
+	Replaced the clip with the EffectCraft composition	クリップを EffectCraft コンポジションに置き換えました
+	Imported the EffectCraft composition	EffectCraft コンポジションを読み込みました
+	EffectCraft: preparing…	EffectCraft: 準備中…
+	EffectCraft: rendering {pct}%	EffectCraft: レンダリング中 {pct}%

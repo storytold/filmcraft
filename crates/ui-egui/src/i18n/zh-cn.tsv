@@ -3698,3 +3698,15 @@
 	Previous	上一个
 	Next	下一个
 	Enter a valid HH:MM:SS:FF timecode	请输入有效的 HH:MM:SS:FF 时间码
+	Replace With EffectCraft Composition	替换为 EffectCraft 合成
+	Edit in EffectCraft	在 EffectCraft 中编辑
+	Render Changed EffectCraft Compositions	渲染已更改的 EffectCraft 合成
+	Effectcraft	Effectcraft
+	Files from an earlier replacement of this clip already exist:	此剪辑之前替换生成的文件已存在：
+	Overwrite them, or keep them and write new files beside them (numbered -2, -3, …)?	要覆盖它们，还是保留它们并在旁边写入新文件（编号 -2、-3、……）？
+	Keep Old	保留旧文件
+	Rendering the EffectCraft composition… the clip is replaced when it is done	正在渲染 EffectCraft 合成… 完成后将替换该剪辑
+	Replaced the clip with the EffectCraft composition	已用 EffectCraft 合成替换该剪辑
+	Imported the EffectCraft composition	已导入 EffectCraft 合成
+	EffectCraft: preparing…	EffectCraft：准备中…
+	EffectCraft: rendering {pct}%	EffectCraft：正在渲染 {pct}%

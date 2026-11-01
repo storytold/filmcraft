@@ -38,7 +38,10 @@ mod waveforms;
 
 #[cfg(test)]
 use clips::MAX_THUMBNAIL_TILES;
-use clips::{DuplicateMarkers, DuplicatesKey, draw_clip, draw_transition, duplicate_markers, paint_duplicate_stripes, paint_hatch, paint_through_edit};
+use clips::{
+    DuplicateMarkers, DuplicatesKey, draw_clip, draw_effectcraft_overlay, draw_transition, duplicate_markers, paint_duplicate_stripes, paint_hatch,
+    paint_through_edit,
+};
 pub use clips::{thumbnail_tiles, zoomed_thumbnail_tiles};
 use headers::draw_headers;
 pub(crate) use interact::wheel_input;
@@ -647,6 +650,7 @@ fn draw_clips(
             let x1 = layout.x_of(start + dur);
             let body = Rect::from_min_max(pos2(x0, r.rect.min.y + 1.0), pos2(x1.max(x0 + 1.0), r.rect.max.y - 1.0));
             draw_clip(app, ctx, &p, body, it, r.kind, selection.contains(&it.id), &t, rate);
+            draw_effectcraft_overlay(app, &p, body, it);
             if volume_line {
                 super::timeline_volume::paint(&p, body, it);
             }

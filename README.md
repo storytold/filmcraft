@@ -226,6 +226,8 @@ Move timelines between FilmCraft and every other editor:
 
 Import merges the document's bins, media and sequences into your project as one undoable step, and links each media file it finds on disk.
 
+Round-trip motion graphics with [EffectCraft](https://github.com/storytold/effectcraft), the same workflow as Replace With After Effects Composition: **Clip ▸ Replace With EffectCraft Composition** (or import or drop an `.ecproj`) renders a composition into the timeline in the background, with progress on the clip and in the monitor, and saving it in EffectCraft updates the clip. See [docs/effectcraft-link.md](docs/effectcraft-link.md).
+
 <br>
 
 ## Built for agents

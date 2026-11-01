@@ -3672,3 +3672,13 @@
 	Previous	Anterior
 	Next	Próximo
 	Enter a valid HH:MM:SS:FF timecode	Digite um timecode válido HH:MM:SS:FF
+	Replace With EffectCraft Composition	Substituir por composição do EffectCraft
+	Edit in EffectCraft	Editar no EffectCraft
+	Files from an earlier replacement of this clip already exist:	Já existem arquivos de uma substituição anterior deste clipe:
+	Overwrite them, or keep them and write new files beside them (numbered -2, -3, …)?	Sobrescrevê-los ou mantê-los e gravar novos arquivos ao lado (numerados -2, -3, …)?
+	Keep Old	Manter antigos
+	Rendering the EffectCraft composition… the clip is replaced when it is done	Renderizando a composição do EffectCraft… o clipe é substituído ao terminar
+	Replaced the clip with the EffectCraft composition	Clipe substituído pela composição do EffectCraft
+	Imported the EffectCraft composition	Composição do EffectCraft importada
+	EffectCraft: preparing…	EffectCraft: preparando…
+	EffectCraft: rendering {pct}%	EffectCraft: renderizando {pct}%

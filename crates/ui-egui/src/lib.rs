@@ -359,6 +359,10 @@ pub struct FilmcraftApp {
     menu_sent: Vec<menus::MenuItem>,
     /// Keyboard Shortcuts dialog state.
     pub shortcut_editor: panels::shortcuts_dialog::EditorState,
+    pub toast: Option<(String, f64)>,
+    /// The Overwrite / Keep Old question of Replace With EffectCraft Composition: the command's
+    /// parameters and the files that already exist ([`menus::show_effectcraft_prompt`]).
+    pub ec_prompt: Option<(serde_json::Value, Vec<String>)>,
     pub tl: panels::timeline::TlState,
     pub(crate) transcript_cache: panels::transcript_cache::TranscriptCache,
     /// Commands from outside the UI (native menu bar), invoked on the UI thread.

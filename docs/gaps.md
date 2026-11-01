@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (G11: the EffectCraft link covers Replace With After Effects Composition; G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -218,6 +218,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Missing:** VST3 / Audio Units, OpenFX, Premiere / After Effects plug-in APIs, UXP panels
   (#325).
+- **Covered:** the Replace With After Effects Composition workflow, through EffectCraft
+  ([effectcraft-link.md](effectcraft-link.md)): a clip or an `.ecproj` becomes a composition rendered
+  in the background and re-rendered when it is saved. Not covered: live (non-rendered) playback of the
+  composition, linked audio from an imported project, links that survive a restart.
 - **Impact:** many professional editors depend on third-party effects and audio plug-ins.
 - **Needs:** an owner decision (FFI under the `unsafe` rule, AGENTS.md §0.3). **200–400 h.**
 
@@ -352,3 +356,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-21 | minor | G10: PSD stills import the flattened composite, 8/16-bit grayscale and RGB (#2116) |
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |
+| 2026-10-28 | minor | G11: Replace With EffectCraft Composition and `.ecproj` import (docs/effectcraft-link.md) |

@@ -418,6 +418,8 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
         if e.is_dir {
             exec(app, &ctx, "mediaBrowser.navigate", json!({"path": e.path}));
             refresh(&ctx);
+        } else if e.kind == "effectcraft" {
+            exec(app, &ctx, "effectcraft.openProject", json!({"path": e.path}));
         } else if matches!(e.kind, "project" | "caption") {
             exec(app, &ctx, "mediaBrowser.import", json!({"paths": [e.path]}));
         } else {
@@ -731,7 +733,7 @@ fn thumbnails(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Ent
                             "audio" => Icon::Audio,
                             "image" => Icon::Image,
                             "caption" => Icon::Captions,
-                            "project" => Icon::Sequence,
+                            "project" | "effectcraft" => Icon::Sequence,
                             _ => Icon::Film,
                         };
                         icons::paint(ui.painter(), Rect::from_center_size(tr.center(), vec2(26.0, 26.0)), icon, t.text_faint);
