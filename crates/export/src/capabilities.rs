@@ -11,7 +11,7 @@ use filmcraft_media::capabilities::{
 /// H.264 is a configuration-dependent candidate; HEVC and AV1 are not implemented.
 pub fn software_encoder_capabilities() -> Result<Vec<CodecCapability>> {
     // A compile-time connection to the actual built-in encoder factory.
-    let _: crate::EncoderFactory = crate::h264_factory;
+    let _: crate::EncoderFactory = crate::encoders::h264_factory;
     let formats = [VideoProfile::H264ConstrainedBaseline, VideoProfile::H264Main, VideoProfile::H264High]
         .into_iter()
         .map(|profile| {
