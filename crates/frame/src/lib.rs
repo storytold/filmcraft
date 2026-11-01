@@ -516,6 +516,43 @@ impl VideoFrame {
                     });
                     return;
                 }
+                if n == 1 {
+                    // One source pixel per output pixel (export, full-size playback): each row's
+                    // samples are found once, not per pixel, and the arithmetic is the general
+                    // loop's (`0 + q(..) * a`, then `* inv`), so every value is the same, bit for bit.
+                    // Samples the planes do not hold come out transparent instead of panicking.
+                    let ytab: [f32; 256] = std::array::from_fn(|v| ytab.get(v).copied().unwrap_or(0.0));
+                    let ctab: [f32; 256] = std::array::from_fn(|v| ctab.get(v).copied().unwrap_or(0.0));
+                    /// The samples a plane of rows `len` samples long holds of row `at`: the whole
+                    /// row, the part of it before the plane ends, or none.
+                    fn line(p: &[u8], at: usize, len: usize) -> &[u8] {
+                        let start = at.saturating_mul(len);
+                        p.get(start..start.saturating_add(len).min(p.len())).unwrap_or(&[])
+                    }
+                    out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
+                        let y = (r.y + ry).min(h - 1);
+                        let cy = y >> sy;
+                        let (yrow, urow, vrow) = (line(&planes[0], y, w), line(&planes[1], cy, cw), line(&planes[2], cy, cw));
+                        let arow = alpha.as_ref().map(|al| line(al, y, w));
+                        for (rx, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                            let x = (r.x + rx).min(w - 1);
+                            let cx = x >> sx;
+                            let (Some(&ys), Some(&us), Some(&vs)) = (yrow.get(x), urow.get(cx), vrow.get(cx)) else {
+                                *px = [0.0; 4];
+                                continue;
+                            };
+                            let (yy, u, v) = (ytab[usize::from(ys)], ctab[usize::from(us)], ctab[usize::from(vs)]);
+                            let a = arow.map_or(1.0, |al| al.get(x).map_or(0.0, |&s| f32::from(s) / 255.0));
+                            *px = [
+                                (0.0 + q(yy + cr_r * v) * a) * inv,
+                                (0.0 + q(yy - cr_g * v - cb_g * u) * a) * inv,
+                                (0.0 + q(yy + cb_b * u) * a) * inv,
+                                (0.0 + a) * inv,
+                            ];
+                        }
+                    });
+                    return;
+                }
                 out.par_chunks_mut(r.w * 4).enumerate().for_each(|(ry, row)| {
                     let oy = r.y + ry;
                     for rx in 0..r.w {

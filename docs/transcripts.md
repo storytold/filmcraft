@@ -57,7 +57,15 @@ Both are **optional features**, off by default and never built for the web:
 Without `whisper`, and with no recogniser installed, `transcript.generate` and Transcribe Sequence
 are disabled, with "speech-to-text is not available in this build" as the reason (`describe`,
 `command_list {"enabled_only": true}` and the menus show it); with Automatically transcribe clips
-on, `file.import` reports the same reason as a `transcription: …` entry in its `errors`.
+on with the all-imported scope, `file.import` reports the same reason as a `transcription: …`
+entry in its `errors`.
+
+The default sequence-only scope waits until enabled audio is placed in a sequence (including
+Source Insert/Overwrite, timeline placement, paste and sequence expansion). It transcribes the
+underlying media once, preserving any existing transcript, and includes the new transcript in
+the placement's undo step. Undo/Redo and opening or recovering a project do not run recognition.
+If recognition fails, the clips stay placed and a warning appears in the Events panel and a toast.
+
 Without `speech-download`, `transcript.downloadModel` is disabled the same way. Transcripts can
 still be imported with `transcript.set` and edited with every other command. Hosts and tests can
 install any recogniser in `Session::transcriber`, which enables transcription in any build.
@@ -89,3 +97,7 @@ Apple-silicon laptop CPU).
 - Transcription runs synchronously inside the command (no background job or progress bar yet).
 - Track items that refer to a subclip are looked up by the subclip's id, so a transcript made for
   the parent media is not shown through subclip clips yet.
+- Word bounds are only moved across pauses. A start that the alignment places late inside
+  continuous speech (no pause of 0.2 s between the two words) stays where it is, so the word
+  before it can hold the beginning of the next one: the audio level gives no boundary to move it
+  to. Words that the alignment places a whole sentence away are not moved back either.
