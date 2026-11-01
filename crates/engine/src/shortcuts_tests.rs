@@ -390,3 +390,13 @@ fn default_keymaps_have_no_conflicts_on_any_platform() {
         assert!(mac.iter().any(|b| b.command == cmd && b.keys == keys), "{cmd} {keys} on macOS");
     }
 }
+
+#[test]
+fn nest_command_has_default_shortcut_and_is_rebindable() {
+    // #2024: clip.nest must ship with a default shortcut so the keyboard
+    // shortcut editor lists it and users can rebind it.
+    let s = Session::default();
+    // The command spec carries a non-None shortcut, making it appear in the
+    // keyboard shortcut editor with a default binding.
+    assert_eq!(s.shortcuts.primary("clip.nest").as_deref(), Some("Alt+G"), "clip.nest must have Alt+G as its default shortcut");
+}
