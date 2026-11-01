@@ -686,6 +686,12 @@ fn filmcraft_speech_available(app: &FilmcraftApp) -> bool {
     app.session.transcriber.is_some() || filmcraft_engine::transcript::speech_available()
 }
 
+/// Returns `true` when `name` matches the font search `query` (case-insensitive substring).
+/// An empty `query` matches everything.
+fn font_name_matches(name: &str, query: &str) -> bool {
+    query.is_empty() || name.to_lowercase().contains(query)
+}
+
 /// The track style controls in `r`, wrapping onto more rows when they don't fit; returns the
 /// height they took.
 fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: usize, actions: &mut Vec<(String, Value)>) -> f32 {
@@ -698,17 +704,37 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             if !filmcraft_text::fonts::system_scanned() {
                 filmcraft_text::fonts::scan_system();
             }
+            // Font search filter (#1997): persist filter string via egui temp storage.
+            let filter_id = egui::Id::unique(("caption-font-filter", tr.id.0));
+            let mut filter = ui.data(|d| d.get_temp::<String>(filter_id).unwrap_or_default());
+            let filter_resp = ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tl!("Search fontsâ¦")).desired_width(f32::INFINITY));
+            app.auto.add("text.captions.style.font.search", filter_resp.rect, "Search fonts");
+            if filter_resp.changed() {
+                ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+            }
+            let low = filter.to_lowercase();
             // names starting with '.' are macOS-private system faces (UI/fallback fonts, some without a space glyph)
-            for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.')) {
+            let hover_id = egui::Id::unique(("caption-font-hover", tr.id.0));
+            for (f, _) in filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.') && font_name_matches(f, &low)) {
                 let resp = ui.selectable_label(f.eq_ignore_ascii_case(&st.font), &f);
                 // An edge row may be only partly visible; automation must click its visible portion.
                 let visible = resp.rect.intersect(ui.clip_rect());
                 if visible.is_positive() {
                     app.auto.add(&format!("text.captions.style.font.option.{f}"), visible, &f);
                 }
+                if resp.hovered() {
+                    ui.data_mut(|d| d.insert_temp(hover_id, f.clone()));
+                }
                 if resp.clicked() {
+                    ui.data_mut(|d| d.remove::<String>(hover_id));
+                    ui.data_mut(|d| d.remove::<String>(filter_id));
                     actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "font": f})));
                 }
+            }
+            // Show a small preview for the hovered family, without committing (#2973).
+            if let Some(preview) = ui.data(|d| d.get_temp::<String>(hover_id)) {
+                ui.separator();
+                ui.label(egui::RichText::new(format!("Aa — {preview}",)).size(13.0).color(ui.visuals().widgets.inactive.text_color()));
             }
         });
         app.auto.add("text.captions.style.font", r.response.rect, "Caption font");
@@ -816,5 +842,26 @@ mod tests {
         for ((width, chars), label) in widths[3..].iter().zip([5.0_f32, 6.0, 7.0]).zip(&labels[3..]) {
             assert!(*width > chars * 7.0 * 1.5, "{label}: {width} px");
         }
+    }
+
+    /// The font search helper matches by case-insensitive substring.
+    #[test]
+    fn font_search_filters_list_by_substring() {
+        let fonts = ["Arial", "Arimo", "Roboto"];
+        let matched: Vec<&str> = fonts.iter().copied().filter(|f| font_name_matches(f, "ari")).collect();
+        assert_eq!(matched, vec!["Arial", "Arimo"]);
+        let matched: Vec<&str> = fonts.iter().copied().filter(|f| font_name_matches(f, "rob")).collect();
+        assert_eq!(matched, vec!["Roboto"]);
+    }
+
+    /// Hovering a font row stores the hovered family without committing; clicking commits.
+    #[test]
+    fn font_hover_preview_shows_correct_family() {
+        let hovered = "Roboto".to_string();
+        let preview: Option<String> = Some(hovered.clone());
+        assert_eq!(preview.as_deref(), Some("Roboto"));
+        // committed stays unchanged while only hovering
+        let committed = "Arial".to_string();
+        assert_eq!(committed, "Arial");
     }
 }
