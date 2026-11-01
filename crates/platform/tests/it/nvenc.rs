@@ -104,3 +104,95 @@ fn the_stream_decodes_to_the_source() {
     assert!(worst > 34.0, "luma PSNR {worst:.1} dB");
     eprintln!("worst luma PSNR {worst:.1} dB, {} bytes", packets.iter().map(|p| p.data.len()).sum::<usize>());
 }
+
+#[test]
+fn dropping_pictures_in_flight() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    const CHILD: &str = "FILMCRAFT_TEST_NVENC_DROP";
+    let cfg = config(256, 128);
+    if let Some(input) = std::env::var_os(CHILD) {
+        let rgba_inputs: &[bool] = if input == "rgba" { &[false, true] } else { &[false] };
+        let y = vec![96; 256 * 128];
+        let uv = vec![128; 256 * 128 / 4];
+        let rgb = rgba(256, 128, 0);
+        #[cfg(target_os = "windows")]
+        let decoding_modes = [false];
+        #[cfg(target_os = "linux")]
+        let decoding_modes = [false, true];
+        for decoding in decoding_modes {
+            #[cfg(target_os = "linux")]
+            let _decoder = if decoding {
+                let (enc, packets, _) = encode_all(&cfg, 24).unwrap();
+                let (sps, pps) = enc.parameter_sets();
+                let entry = SampleEntry::avc(AvcConfig::new(vec![sps.to_vec()], vec![pps.to_vec()], 4), 256, 128);
+                let Some(dec) = filmcraft_platform::nvdec_factory(&entry) else {
+                    eprintln!("SKIPPED: no NVDEC hardware decoder");
+                    continue;
+                };
+                let mut dec = dec.unwrap();
+                for p in packets.iter().take(5) {
+                    dec.decode(&p.data, p.pts).unwrap();
+                }
+                eprintln!("active decoder: {}", dec.name());
+                Some(dec)
+            } else {
+                None
+            };
+            for &rgba_input in rgba_inputs {
+                for frames in [0, 1, 8, 16] {
+                    for flush in [false, true] {
+                        eprintln!("dropping: decoding={decoding}, rgba={rgba_input}, frames={frames}, flush={flush}");
+                        let mut enc = if rgba_input { NvencH264::with_rgba_input(&cfg, &Default::default()).unwrap() } else { NvencH264::new(&cfg).unwrap() };
+                        assert_eq!(enc.delay(), 1);
+                        let mut count = 0;
+                        for i in 0..frames {
+                            count += if rgba_input { enc.encode_rgba(&rgb, i).unwrap() } else { enc.encode(&y, &uv, &uv, i).unwrap() }.len();
+                        }
+                        if flush {
+                            count += enc.flush().unwrap().len();
+                            assert_eq!(count, frames as usize);
+                        }
+                        drop(enc);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    let probe = match NvencH264::new(&cfg) {
+        Ok(enc) => enc,
+        Err(why) => {
+            eprintln!("SKIPPED: {why}");
+            return;
+        }
+    };
+    if probe.delay() == 0 {
+        eprintln!("SKIPPED: no NVENC B-frames");
+        return;
+    }
+    drop(probe);
+    let input = match NvencH264::with_rgba_input(&cfg, &Default::default()) {
+        Ok(_) => "rgba",
+        Err(why) => {
+            eprintln!("SKIPPED: RGBA input: {why}");
+            "planar"
+        }
+    };
+    let mut child =
+        Command::new(std::env::current_exe().unwrap()).args(["--exact", "dropping_pictures_in_flight", "--nocapture"]).env(CHILD, input).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "NVENC teardown failed: {status}");
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("NVENC teardown timed out");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
