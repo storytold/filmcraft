@@ -1,6 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use super::play_ahead;
 use super::{AUDIO_RETRY_S, AUDIO_STALL_S, FilmcraftApp, Tick, frames, json, panels, shuttle};
+
 #[cfg(test)]
 use filmcraft_engine::Session;
 
@@ -304,6 +305,33 @@ mod clock_tests {
         assert_eq!(app.now(), 2_000.0, "an egui clock ahead of host+offset still wins");
         app.set_now_for_test(7.0);
         assert_eq!(app.now(), 7.0, "the deterministic test override keeps precedence");
+    }
+}
+
+#[cfg(test)]
+mod preroll_tests {
+    use super::*;
+
+    /// #3600: however slowly the first frames arrive (here: never), Play starts its clock after the
+    /// 0.1 s start cap, on the UI clock, so the test does not depend on machine load. It waited 0.5 s
+    /// (30 UI frames at 60 fps) before.
+    #[test]
+    fn play_starts_its_clock_at_the_start_cap_when_no_frame_is_ready() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        app.audio = None;
+        app.play(1.0);
+        let mut frames = 0;
+        while app.playback.preroll.is_some() && frames < 120 {
+            app.set_now_for_test(10.0 + f64::from(frames) / 60.0);
+            app.advance_playback(&ctx);
+            frames += 1;
+        }
+        assert!(app.playback.preroll.is_none(), "the clock never started");
+        let waited = f64::from(frames - 1) / 60.0;
+        assert!((0.1..0.14).contains(&waited), "waited {waited:.3} s");
     }
 }
 
