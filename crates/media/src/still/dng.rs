@@ -336,6 +336,70 @@ mod tests {
         assert_eq!(src.info().video.as_ref().unwrap().width, 16);
     }
 
+    /// A 64 x 48 RGGB DNG with a sharp vertical edge at x = 32 and a horizontal ramp on each side.
+    fn edge_dng() -> Vec<u8> {
+        let (w, h) = (64usize, 48usize);
+        let neutral = [0.5, 1.0, 0.5];
+        let pat = [0usize, 1, 1, 2];
+        let px: Vec<u16> = (0..w * h)
+            .map(|i| {
+                let x = i % w;
+                let level = if x < 32 { 0.1 + 0.2 * (x as f64 / 32.0) } else { 0.7 + 0.2 * ((x - 32) as f64 / 32.0) };
+                (level * neutral[pat[(i / w % 2) * 2 + x % 2]] * 4095.0).round() as u16
+            })
+            .collect();
+        let o = Options {
+            width: w,
+            height: h,
+            bits: 12,
+            compression: Compression::LosslessJpeg { predictor: 1, components: 2, restart_lines: 0, pt: 0 },
+            raw_tags: vec![(tags::WHITE_LEVEL, Value::Short(vec![4095]))],
+            main_tags: vec![(tags::AS_SHOT_NEUTRAL, Value::rationals(&neutral))],
+            preview: true,
+            ..Default::default()
+        };
+        write(&px, &o)
+    }
+
+    /// The picture is as sharp as developing the full frame and then averaging it down: at 1/2 and
+    /// 1/4 the reduced development differs from that box-filtered full development by under 0.01 on average
+    /// (0.06 at the single edge pixel) and keeps the edge at least as steep.
+    #[test]
+    fn reduced_development_matches_the_box_filtered_full_picture() {
+        let bytes = edge_dng();
+        let src = crate::open_bytes("edge.dng", bytes.into(), &[]).unwrap();
+        let full = src.video_frame(FrameRequest::full(filmcraft_time::Tick(0))).unwrap();
+        for (scale, k) in [(0.5f32, 2usize), (0.25, 4)] {
+            let small = src.video_frame(FrameRequest { time: filmcraft_time::Tick(0), scale }).unwrap();
+            assert_eq!((small.width as usize * k, small.height as usize * k), (full.width as usize, full.height as usize), "1/{k}");
+            let (sw, sh) = (small.width as usize, small.height as usize);
+            let mut worst = 0.0f32;
+            let mut sum = 0.0f32;
+            for y in 0..sh {
+                for x in 0..sw {
+                    let mut avg = 0.0;
+                    for dy in 0..k {
+                        for dx in 0..k {
+                            avg += red_at(&full, x * k + dx, y * k + dy);
+                        }
+                    }
+                    let d = (red_at(&small, x, y) - avg / (k * k) as f32).abs();
+                    worst = worst.max(d);
+                    sum += d;
+                }
+            }
+            // steepest step between neighbouring pixels in the middle row, in units of the picture's edge
+            let row = sh / 2;
+            let step_small = (1..sw).map(|x| (red_at(&small, x, row) - red_at(&small, x - 1, row)).abs()).fold(0.0f32, f32::max);
+            let step_full = (1..full.width as usize).map(|x| (red_at(&full, x, row * k) - red_at(&full, x - 1, row * k)).abs()).fold(0.0f32, f32::max);
+            // the edge is not softer than the box-filtered full picture's (which spreads it over k pixels)
+            assert!(step_small >= step_full, "1/{k}: edge step {step_small} < full {step_full}");
+            let mean = sum / (sw * sh) as f32;
+            assert!(mean < 0.01, "1/{k}: mean abs diff {mean}");
+            assert!(worst < 0.06, "1/{k}: worst diff {worst}");
+        }
+    }
+
     #[test]
     fn raw_settings_reach_every_sequence_frame() {
         let files: HashMap<String, Vec<u8>> = (0..2).map(|i| (format!("/c/B_{i:04}.dng"), grey_dng(0.1 + 0.2 * f64::from(i), vec![]))).collect();

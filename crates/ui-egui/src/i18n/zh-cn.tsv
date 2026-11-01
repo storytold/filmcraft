@@ -3655,3 +3655,62 @@
 	Change the sequence to match the clip's settings?	是否更改序列以匹配剪辑的设置？
 	Change Sequence Settings	更改序列设置
 	Keep Existing Settings	保留现有设置
+	Temporal Interpolation	时间插值
+	Select items to clear	选择要清除的项目
+	Opens in your web browser: {url}	在网页浏览器中打开：{url}
+	A range marker needs a positive duration	范围标记的持续时间必须大于零
+	Add Custom Color	添加自定义颜色
+	Add and apply	添加并应用
+	Add color	添加颜色
+	Add custom color	添加自定义颜色
+	Add custom color…	添加自定义颜色…
+	Author	作者
+	Chapter	章节
+	Choose Color…	选择颜色…
+	Choose color with system picker	使用系统取色器选择颜色
+	Color picker	取色器
+	Color selected markers	更改所选标记的颜色
+	Custom Color…	自定义颜色…
+	Delete Marker	删除标记
+	Delete selected markers	删除所选标记
+	Edit Custom Color	编辑自定义颜色
+	Edit Marker	编辑标记
+	Edit color	编辑颜色
+	Editing or removing a swatch leaves assigned colors unchanged.	编辑或移除色板不会更改已分配的颜色。
+	Enter six hex digits, for example FF80C0.	请输入六位十六进制数，例如 FF80C0。
+	Hex	十六进制
+	Hex color	十六进制颜色
+	Manage Colors	管理颜色
+	Manage Colors…	管理颜色…
+	Marker owner is unavailable	标记所属对象不可用
+	No markers	没有标记
+	No matching markers	没有匹配的标记
+	No saved colors	没有已保存的颜色
+	No sequence open	未打开序列
+	No source clip open	未打开源片段
+	Notes	备注
+	Project Colors	项目颜色
+	Range marker	范围标记
+	Remove saved color	移除已保存的颜色
+	Save color	保存颜色
+	Search markers	搜索标记
+	Search name, notes, author	搜索名称、备注、作者
+	Select all	全选
+	Select all visible markers	选择所有可见标记
+	Sequence: {name}	序列：{name}
+	Source: {name}	源：{name}
+	Source: {name} (shared source markers)	源：{name}（共享源标记）
+	System color picker unavailable: {error}	系统取色器不可用：{error}
+	Time is outside the supported range	时间超出支持的范围
+	{count} selected	已选择 {count} 个
+	Remove Custom Color	移除自定义颜色
+	Edit Markers	编辑标记
+	Delete Markers	删除标记
+	Marker changed or was removed. Reopen it to continue.	标记已更改或删除。请重新打开以继续。
+	URL	网址
+	Open Link	打开链接
+	Opens this address in your web browser	在网页浏览器中打开此地址
+	Enter a valid HTTP or HTTPS URL without credentials	请输入不含凭据的有效 HTTP 或 HTTPS 网址
+	Previous	上一个
+	Next	下一个
+	Enter a valid HH:MM:SS:FF timecode	请输入有效的 HH:MM:SS:FF 时间码

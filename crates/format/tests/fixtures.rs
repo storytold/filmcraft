@@ -292,7 +292,7 @@ fn v15_dng_item_loads_without_raw_settings() {
     assert_eq!(m.info.video.as_ref().unwrap().codec, "DNG sequence");
     let again = decode(&encode(p, true)).unwrap();
     assert_eq!(again.schema_version, SCHEMA_VERSION);
-    const { assert!(SCHEMA_VERSION >= 16) };
+    const { assert!(SCHEMA_VERSION >= 18) };
     assert_eq!(&again.project, p);
     // no settings: nothing new is written
     assert!(!String::from_utf8(encode(p, false)).unwrap().contains("\"raw\""));
@@ -328,6 +328,9 @@ fn next_id_is_raised_past_every_id_in_the_file() {
     let base = decode(&fixture("v1-edit.fcproj")).unwrap().project;
     let seq = ItemId(21);
     let marker = |id| Marker {
+        url: String::new(),
+        author: String::new(),
+        custom_color: None,
         id: MarkerId(id),
         start: Tick::ZERO,
         duration: Tick::ZERO,
