@@ -345,16 +345,26 @@ impl Unwrap {
     const WRAP: i64 = 1 << 33;
     /// 1 minute at 90 kHz: how close to the wrap point a pre-wrap timestamp must be.
     const NEAR_WRAP: i64 = 90_000 * 60;
+    /// Start a stream-local unwrapper at a value already aligned to its program's clock epoch.
+    pub fn aligned(raw: i64, value: i64) -> Self {
+        Self { last: Some(value), base: value.saturating_sub(raw) }
+    }
+    /// Advance a program-level epoch anchor to a stream that has progressed farther.
+    pub fn observe(&mut self, stream: Self) {
+        if stream.last > self.last {
+            *self = stream;
+        }
+    }
     pub fn unwrap(&mut self, raw: i64) -> i64 {
         let mut v = raw.saturating_add(self.base);
         if let Some(l) = self.last {
             if v < l.saturating_sub(Self::WRAP / 2) {
                 self.base = self.base.saturating_add(Self::WRAP);
                 v = v.saturating_add(Self::WRAP);
-            } else if v > l.saturating_add(Self::WRAP / 2) && (self.base > 0 || (l < Self::NEAR_WRAP && v >= Self::WRAP - Self::NEAR_WRAP)) {
+            } else if v > l.saturating_add(Self::WRAP / 2) && raw >= Self::WRAP - Self::NEAR_WRAP && l < self.base.saturating_add(Self::NEAR_WRAP) {
                 // a timestamp from before the wrap: it does not move the timeline. Before the
-                // first wrap this only applies right at the wrap point; any other forward jump is
-                // a new time base (spliced capture) and is followed.
+                // first wrap and after later wraps this applies only right at the boundary; any
+                // other forward jump is a new time base (spliced capture) and is followed.
                 return v.saturating_sub(Self::WRAP);
             }
         }

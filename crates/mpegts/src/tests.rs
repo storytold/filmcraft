@@ -31,6 +31,10 @@ fn pes(stream_id: u8, pts: Option<i64>, dts: Option<i64>, payload: &[u8], bounde
     v
 }
 
+fn ps_pack() -> [u8; 14] {
+    [0, 0, 1, 0xBA, 0x44, 0, 4, 0, 4, 1, 1, 0x89, 0xC3, 0xF8]
+}
+
 /// A tiny TS muxer: PAT, PMT and PES packets cut into 188-byte packets (192 with `m2ts`).
 struct TsMux {
     out: Vec<u8>,
@@ -409,6 +413,33 @@ fn pcr_range_unwraps_the_33_bit_base() {
 }
 
 #[test]
+fn pcr_range_continues_when_a_later_pmt_changes_the_pcr_pid() {
+    let mut mux = TsMux::new(false);
+    let pat = [0x00, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0x00];
+    mux.section(0, &pat);
+    mux.section(0x100, &pmt_section_for(1, 0, true, 0x101, &[(0x03, 0x1100)]));
+    let near = (1i64 << 33) - 1000;
+    mux.pcr(0x101, near);
+    mux.section(0x100, &pmt_section_for(1, 1, true, 0x102, &[(0x03, 0x1100)]));
+    mux.pcr(0x101, near + 500); // no longer active
+    mux.pcr(0x102, 500);
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &mp2_frame(0), true));
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((near * 300, ((1 << 33) + 500) * 300)));
+}
+
+#[test]
+fn pcr_before_the_pmt_is_kept_when_the_pmt_confirms_its_pid() {
+    let mut mux = TsMux::new(false);
+    mux.pcr(0x101, 1000);
+    mux.psi_pcr(&[(0x03, 0x1100)], 0x101);
+    mux.pcr(0x101, 2000);
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &mp2_frame(0), true));
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.pcr_range, Some((1000 * 300, 2000 * 300)));
+}
+
+#[test]
 fn streams_sharing_a_clock_stay_in_step_across_the_33_bit_wrap() {
     // video's first PTS is just before the wrap, audio's just after: one clock, so audio is
     // 2^33 + 500, not 500 (26.5 hours apart)
@@ -455,6 +486,52 @@ fn a_forward_jump_from_a_small_first_timestamp_is_followed() {
     let b = u.unwrap(0x1_8000_0000);
     let c = u.unwrap(0x1_8000_0000 + 3_000);
     assert_eq!((a, b, c), (90_000, 0x1_8000_0000, 0x1_8000_0000 + 3_000));
+}
+
+#[test]
+fn a_forward_jump_after_a_wrap_stays_in_the_current_epoch() {
+    let wrap = 1i64 << 33;
+    let mut u = Unwrap::default();
+    assert_eq!(u.unwrap(wrap - 1000), wrap - 1000);
+    assert_eq!(u.unwrap(500), wrap + 500);
+    let jump = 0x1_8000_0000;
+    assert_eq!(u.unwrap(jump), wrap + jump);
+    assert_eq!(u.unwrap(jump + 3000), wrap + jump + 3000);
+}
+
+#[test]
+fn program_streams_share_their_initial_wrap_epoch() {
+    let wrap = 1i64 << 33;
+    for audio_first in [false, true] {
+        let video = pes(0xE0, Some(wrap - 1000), None, &mpeg2_frame(1, 0, false, 100), true);
+        let audio = pes(0xC0, Some(500), None, &mp2_frame(0), true);
+        let mut out = ps_pack().to_vec();
+        if audio_first {
+            out.extend(audio);
+            out.extend(video);
+        } else {
+            out.extend(video);
+            out.extend(audio);
+        }
+        out.extend([0, 0, 1, 0xB9]);
+        let f = open(&out).unwrap();
+        let pts =
+            |id| f.streams.iter().find(|s| s.id == (StreamId::Ps { stream_id: id, sub_id: None })).and_then(|s| s.units.first()).and_then(|u| u.pts).unwrap();
+        assert_eq!(pts(0xC0) - pts(0xE0), 1500, "audio_first {audio_first}");
+    }
+}
+
+#[test]
+fn a_program_stream_first_seen_after_a_wrap_joins_the_current_epoch() {
+    let wrap = 1i64 << 33;
+    let mut out = ps_pack().to_vec();
+    out.extend(pes(0xC0, Some(wrap - 1000), None, &mp2_frame(0), true));
+    out.extend(pes(0xC0, Some(500), None, &mp2_frame(1), true));
+    out.extend(pes(0xC1, Some(600), None, &mp2_frame(2), true));
+    out.extend([0, 0, 1, 0xB9]);
+    let f = open(&out).unwrap();
+    let pts = |id| f.streams.iter().find(|s| s.id == (StreamId::Ps { stream_id: id, sub_id: None })).and_then(|s| s.units.first()).and_then(|u| u.pts).unwrap();
+    assert_eq!(pts(0xC1), wrap + 600);
 }
 
 #[test]
@@ -711,9 +788,22 @@ fn duplicate_packet_is_dropped_but_a_different_payload_with_the_same_counter_is_
     assert!(total(&f) > total(&base), "the differing packet's payload is kept");
 }
 
-/// A PMT section for program 1 with the given version / current_next / streams (valid CRC).
-fn pmt_section(version: u8, current_next: bool, streams: &[(u8, u16)]) -> Vec<u8> {
-    let mut pmt = vec![0x02, 0xB0, 0, 0, 1, 0xC0 | (version << 1) | current_next as u8, 0, 0, 0xE1, 0x00, 0xF0, 0];
+/// A PMT section with the given program, version, applicability, PCR PID and streams (valid CRC).
+fn pmt_section_for(program: u16, version: u8, current_next: bool, pcr_pid: u16, streams: &[(u8, u16)]) -> Vec<u8> {
+    let mut pmt = vec![
+        0x02,
+        0xB0,
+        0,
+        (program >> 8) as u8,
+        program as u8,
+        0xC0 | (version << 1) | current_next as u8,
+        0,
+        0,
+        0xE0 | (pcr_pid >> 8) as u8,
+        pcr_pid as u8,
+        0xF0,
+        0,
+    ];
     for &(st, pid) in streams {
         pmt.extend([st, 0xE0 | (pid >> 8) as u8, pid as u8, 0xF0, 0]);
     }
@@ -721,6 +811,11 @@ fn pmt_section(version: u8, current_next: bool, streams: &[(u8, u16)]) -> Vec<u8
     pmt[1] = 0xB0 | (len >> 8) as u8;
     pmt[2] = len as u8;
     pmt
+}
+
+/// A PMT section for program 1 with the given version / current_next / streams (valid CRC).
+fn pmt_section(version: u8, current_next: bool, streams: &[(u8, u16)]) -> Vec<u8> {
+    pmt_section_for(1, version, current_next, 0x100, streams)
 }
 
 #[test]
@@ -776,6 +871,39 @@ fn pmt_not_yet_applicable_is_ignored() {
     assert_eq!(f.streams.len(), 1);
     assert_eq!(f.streams[0].id, StreamId::Pid(0x1100));
     assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+}
+
+#[test]
+fn a_bad_crc_on_the_current_pmt_version_is_reported() {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x03, 0x1100)]);
+    mux.section(0x100, &pmt_section(0, true, &[(0x03, 0x1100)]));
+    // A short PSI section is placed at the end of its stuffed packet, so the final byte is CRC.
+    if let Some(last) = mux.out.last_mut() {
+        *last ^= 1;
+    }
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &mp2_frame(0), true));
+    let f = open(&mux.out).unwrap();
+    assert!(f.warnings.iter().any(|w| w == "1 PSI section(s) with bad CRC"), "{:?}", f.warnings);
+}
+
+#[test]
+fn a_pmt_for_another_program_on_the_same_pid_is_ignored() {
+    let mut mux = TsMux::new(false);
+    let pat = [0x00, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0x00];
+    mux.section(0, &pat);
+    // The other program deliberately has the same PMT version and arrives first.
+    mux.section(0x100, &pmt_section_for(2, 0, true, 0x102, &[(0x03, 0x1200)]));
+    mux.section(0x100, &pmt_section_for(1, 0, true, 0x101, &[(0x03, 0x1100)]));
+    mux.pcr(0x101, 1000);
+    mux.pcr(0x101, 2000);
+    mux.pcr(0x102, 50_000);
+    mux.pes(0x1100, &pes(0xC0, Some(90_000), None, &mp2_frame(0), true));
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.program, Some(1));
+    assert_eq!(f.streams.len(), 1);
+    assert_eq!(f.streams[0].id, StreamId::Pid(0x1100));
+    assert_eq!(f.pcr_range, Some((1000 * 300, 2000 * 300)));
 }
 
 #[test]

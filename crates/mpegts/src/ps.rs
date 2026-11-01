@@ -96,8 +96,20 @@ fn lpcm_format(h: &[u8]) -> Option<LpcmFormat> {
 struct EsState {
     stream: Stream,
     split: Splitter,
-    /// timestamps are unwrapped per stream
-    unwrap: Unwrap,
+    /// Progression is unwrapped per stream after its first timestamp is aligned to the program.
+    unwrap: Option<Unwrap>,
+}
+
+fn unwrap_time(epoch: &mut Unwrap, stream: &mut Option<Unwrap>, raw: i64) -> i64 {
+    if let Some(unwrap) = stream {
+        let value = unwrap.unwrap(raw);
+        epoch.observe(*unwrap);
+        value
+    } else {
+        let value = epoch.unwrap(raw);
+        *stream = Some(Unwrap::aligned(raw, value));
+        value
+    }
 }
 
 /// Length of the packet (pack header, system header, PES…) starting at `b` (which begins with a
@@ -134,6 +146,10 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
     let mut order = Vec::new();
     let mut psm: HashMap<u8, u8> = HashMap::new();
     let mut scr = ClockRange::default();
+    // Program-stream elementary streams share one clock epoch. The anchor follows the farthest
+    // progressed stream so a stream first seen after a wrap joins that epoch, while each stream
+    // keeps independent progression so its reordered timestamps cannot move another stream.
+    let mut timestamp_epoch = Unwrap::default();
     let mut resyncs = 0u64;
     while pos + 4 <= len {
         let head = win.get(pos, 32)?;
@@ -223,10 +239,11 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
                         pes_packets: 0,
                         skipped_bytes: 0,
                     };
-                    EsState { stream, split: Splitter::new(&codec), unwrap: Unwrap::default() }
+                    EsState { stream, split: Splitter::new(&codec), unwrap: None }
                 });
                 e.stream.pes_packets += 1;
-                let (pts, dts) = (h.pts.map(|t| e.unwrap.unwrap(t)), h.dts.map(|t| e.unwrap.unwrap(t)));
+                let pts = h.pts.map(|t| unwrap_time(&mut timestamp_epoch, &mut e.unwrap, t));
+                let dts = h.dts.map(|t| unwrap_time(&mut timestamp_epoch, &mut e.unwrap, t));
                 e.split.pes_start(pts, dts);
                 e.split.feed(pos, &payload[skip..]);
             }

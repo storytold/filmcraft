@@ -423,13 +423,16 @@ fn feed_pmt<'a>(pk: &Packet<'a>, pmt: &mut PmtState, packet_size: usize, es: &mu
         if sec[5] & 1 == 0 || sec[6] != 0 || sec[7] != 0 {
             continue;
         }
-        let version = (sec[5] >> 1) & 0x1F;
-        if pmt.pmt_version == Some(version) {
-            // a repeat of the PMT already used: no need to check it again
+        if Some(u16::from_be_bytes([sec[3], sec[4]])) != pmt.program {
             continue;
         }
         if crc32_mpeg(&sec) != 0 {
             *crc_errors += 1;
+            continue;
+        }
+        let version = (sec[5] >> 1) & 0x1F;
+        if pmt.pmt_version == Some(version) {
+            // a repeat of the PMT already used: no need to check it again
             continue;
         }
         let later = pmt.pmt_version.is_some();
@@ -454,9 +457,9 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
     // one timestamp unwrapper for the program: its streams share one clock, so a stream whose
     // first timestamp lies just after the 33-bit wrap stays in step with one just before it
     let mut unwrap = Unwrap::default();
-    // one clock per PID that carries PCRs, and the PMT's PCR_PID; the PCR_PID's clock is the
-    // file's `pcr_range`, the first PCR PID seen stands in until (or unless) a PMT names one
-    let mut clocks: HashMap<u16, ClockRange> = HashMap::new();
+    // One program clock across every PCR_PID that is active in packet order. Before a PMT names
+    // the clock, the first PID carrying a PCR stands in.
+    let mut pcr_clock = ClockRange::default();
     let mut first_pcr_pid: Option<u16> = None;
     let (mut lost_sync, mut cc_errors, mut crc_errors) = (0u64, 0u64, 0u64);
     let (mut tei_dropped, mut scrambled, mut duplicates) = (0u64, 0u64, 0u64);
@@ -504,7 +507,9 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
             p += packet_size;
             if let Some(pcr) = pk.pcr {
                 first_pcr_pid.get_or_insert(pk.pid);
-                clocks.entry(pk.pid).or_default().push(pcr);
+                if pmt.pcr_pid.or(first_pcr_pid) == Some(pk.pid) {
+                    pcr_clock.push(pcr);
+                }
             }
             if is_scrambled {
                 // encrypted payload is noise to the splitter; keep the counter in step
@@ -521,7 +526,13 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                 continue;
             }
             if Some(pk.pid) == pmt.pmt_pid {
+                let had_pcr_pid = pmt.pcr_pid.is_some();
                 feed_pmt(&pk, &mut pmt, packet_size, &mut es, &mut order, &mut crc_errors);
+                if !had_pcr_pid && pmt.pcr_pid.is_some() && pmt.pcr_pid != first_pcr_pid {
+                    // Discard a provisional fallback clock only when the authoritative PMT names
+                    // another PID (including 0x1fff, which means that there is no PCR PID).
+                    pcr_clock = ClockRange::default();
+                }
                 continue;
             }
             let Some(e) = es.get_mut(&pk.pid) else { continue };
@@ -589,7 +600,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         }
         streams.push(e.stream);
     }
-    let pcr_range = pmt.pcr_pid.or(first_pcr_pid).and_then(|p| clocks.get(&p)).and_then(ClockRange::range);
+    let pcr_range = pcr_clock.range();
     Ok(File { format: Format::Ts { packet_size, sync_offset }, streams, program: pmt.program, pcr_range, warnings })
 }
 
