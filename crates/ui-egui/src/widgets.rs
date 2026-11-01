@@ -550,12 +550,14 @@ pub fn paint_tabular(painter: &egui::Painter, left_center: egui::Pos2, pieces: V
     }
 }
 
-/// [`tabular_text`] as a label in `ui`'s layout.
+/// [`tabular_text`] as a label in `ui`'s layout, read by screen readers as `egui::Label` is.
 pub fn tabular_label(ui: &mut egui::Ui, text: &str, font: &egui::FontId, color: Color32) -> egui::Response {
     let (pieces, width) = tabular_text(ui.painter(), text, font, color);
     let height = pieces.iter().map(|(_, g)| g.size().y).fold(font.size, f32::max);
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+    let sense = if ui.memory(|m| m.options.screen_reader) { egui::Sense::focusable_noninteractive() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), sense);
     paint_tabular(ui.painter(), pos2(rect.min.x, rect.center().y), pieces, color);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), text));
     resp
 }
 
@@ -623,6 +625,22 @@ mod tests {
         })
         .textures_delta
         .clear();
+    }
+
+    /// The queue's progress line is painted digit by digit; a screen reader still reads it whole.
+    #[test]
+    fn a_tabular_label_is_read_as_its_text() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        let mut harness = Harness::builder().with_size(egui::vec2(240.0, 60.0)).build_ui_state(
+            |ui, _: &mut ()| {
+                tabular_label(ui, "Encoding 88% · 37:00 left", &Tokens::ui(11.0), Color32::WHITE);
+            },
+            (),
+        );
+        harness.run_steps(2);
+        harness.check_accessibility();
+        assert!(harness.query_by_label("Encoding 88% · 37:00 left").is_some());
     }
 
     /// The edit field behind a hot number uses the caller's property label, not the generic
