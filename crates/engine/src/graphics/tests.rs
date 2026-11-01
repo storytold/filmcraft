@@ -946,3 +946,13 @@ fn applied_effects_render_the_same_before_or_after_the_intrinsic_ones() {
     }
     check(s, clip, "video clip");
 }
+
+#[test]
+fn graphics_duplicate_layer_command_registered() {
+    // #2265: graphics.duplicateLayer must be registered so the Text panel context menu
+    // can wire a Duplicate item to it, mirroring the existing Delete item.
+    let cmds = crate::graphics::commands();
+    let ids: Vec<&str> = cmds.iter().map(|c| c.id).collect();
+    assert!(ids.contains(&"graphics.duplicateLayer"), "graphics.duplicateLayer must be registered; got {ids:?}");
+    assert!(ids.contains(&"graphics.deleteLayer"), "graphics.deleteLayer must also be registered (sanity check)");
+}
