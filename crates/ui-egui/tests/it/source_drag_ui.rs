@@ -470,3 +470,16 @@ fn header_search_puts_the_cursor_in_the_effects_search() {
     assert!(h.ctx.egui_wants_keyboard_input());
     assert!(!h.state().ui.focus_effects_search, "the request was taken");
 }
+
+/// #3443: the header's Volume opens the mixer it points at, not only a status line.
+#[test]
+fn header_volume_brings_up_the_audio_track_mixer() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut h = harness(5);
+    let at = control_rect(&h, "header.volume").center();
+    pointer(&mut h, at, Some(true));
+    pointer(&mut h, at, Some(false));
+    step(&mut h);
+    assert_eq!(h.state().ui.focused, PanelKind::AudioTrackMixer);
+    assert!(h.state().ui.dock.contains(&PanelKind::AudioTrackMixer));
+}

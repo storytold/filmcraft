@@ -91,6 +91,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
     }
     if btn(ui, Icon::Speaker, "volume", tl!("Volume"), app).clicked() {
+        app.show_panel(crate::dock::PanelKind::AudioTrackMixer);
         app.ui.status = tl!("Master volume: use the Audio Track Mixer").into();
     }
     if btn(ui, Icon::Search, "search", tl!("Search"), app).clicked() {
