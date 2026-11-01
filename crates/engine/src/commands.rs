@@ -1633,7 +1633,7 @@ fn build() -> Vec<CommandSpec> {
             "Sequence…",
             ["File", "New"],
             Some("Cmd+N"),
-            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?,"bin":binId?}"#,
+            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?,"fromSource":{"item":itemId,"sourceIn":t?,"duration":t?,"video":bool?,"audio":bool?}?,"bin":binId?}"#,
             always,
             |s, p| s.edit_group("New Sequence", |s| {
                 let bin = bin_p(s, p, "file.newSequence")?;
@@ -1647,6 +1647,14 @@ fn build() -> Vec<CommandSpec> {
                 };
                 if let Some(one) = item_p(p, "fromItem") {
                     from_ids.insert(0, one);
+                }
+                // A Source Monitor drag: one item, placed as `timeline.place` would (#3569)
+                let source = p.get("fromSource");
+                if let Some(one) = source.and_then(|v| item_p(v, "item")) {
+                    from_ids.insert(0, one);
+                }
+                if source.is_some_and(|v| !v.is_object()) || (source.is_some() && from_ids.len() != 1) {
+                    return Err(bad("file.newSequence", "`fromSource` needs its `item`, and no other items"));
                 }
                 let mut st = SequenceSettings::default();
                 if let Some(from) = from_ids.first().and_then(|i| s.project.item(*i)).and_then(|i| i.as_media()) {
@@ -1699,7 +1707,11 @@ fn build() -> Vec<CommandSpec> {
                     }
                     Ok(id)
                 })?;
-                if let Some((&from, rest)) = from_ids.split_first() {
+                if let Some(source) = source {
+                    let mut place = source.clone();
+                    place["time"] = json!(0);
+                    place_one(s, &place)?;
+                } else if let Some((&from, rest)) = from_ids.split_first() {
                     let dur = s.project.item(from).map(|i| i.duration()).unwrap_or_default();
                     let tg = s.targeting();
                     let ids = place_item(

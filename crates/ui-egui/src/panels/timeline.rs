@@ -848,9 +848,14 @@ fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         && ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| app.timeline_drop_target(ui.ctx(), pos))
         && ui.input(|i| i.pointer.any_released())
     {
-        // a multi-selection makes the sequence from its first item and follows it, back to back, in one undo step
-        let items: Vec<u64> = crate::panels::dragged_selection(app, item).iter().map(|i| i.0).collect();
-        if let Err(e) = app.session.execute("file.newSequence", json!({"fromItems": items})) {
+        let params = match crate::panels::dragged_source(ui) {
+            Some(s) => {
+                json!({"fromSource": {"item": s.item.0, "sourceIn": s.range.start.0, "duration": s.range.duration.0, "video": s.video, "audio": s.audio}})
+            }
+            // a multi-selection makes the sequence from its first item and follows it, back to back, in one undo step
+            None => json!({"fromItems": crate::panels::dragged_selection(app, item).iter().map(|i| i.0).collect::<Vec<u64>>()}),
+        };
+        if let Err(e) = app.session.execute("file.newSequence", params) {
             app.ui.status = e.to_string();
         }
     }
