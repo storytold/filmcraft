@@ -1524,6 +1524,44 @@ fn selection_badges_keep_small_card_status_and_custom_accents_readable() {
 }
 
 #[test]
+fn selection_badges_preserve_custom_clip_label_colors() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, _files, selected) = imported_drag_driver(view);
+        let id = selected[1];
+        d.app().session.prefs.project_panel.freeform.card_size = 80.0;
+        d.exec("project.view.set", json!({"view": view, "iconSize": 80, "fontSize": "extraLarge"}));
+        d.exec("edit.label", json!({"items": [id.0], "label": "#12ABCD"}));
+        assert_eq!(d.app().session.project.item(id).unwrap().custom_label_color, Some(filmcraft_project::HexColor([18, 171, 205])));
+        assert_eq!(d.app().session.state.project_selection, selected);
+        assert_selection_badges(&mut d, &selected);
+        let label_id = format!("project.item.{}.{}", id.0, if view == "list" { "label" } else { "name" });
+        if view == "list" {
+            assert_eq!(d.label(&label_id), "#12ABCD");
+        }
+        let rect = |[x, y, w, h]: [f32; 4]| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
+        let label = rect(d.rect(&label_id));
+        let badge = rect(d.rect(&format!("project.item.{}.selectionOrder", id.0)));
+        assert!(!label.intersects(badge), "{view}: custom label and selection number have separate space");
+        if d.snapshots.is_some() {
+            let image = d.harness.render().expect("custom label and badge render");
+            let scale = image.width() as f32 / 1600.0;
+            for (region, rgb, description) in [(label, [18, 171, 205], "custom clip label"), (badge, [0x2f, 0x6b, 0xdf], "selection number")] {
+                let crop = image::imageops::crop_imm(
+                    &image,
+                    (region.min.x * scale) as u32,
+                    (region.min.y * scale) as u32,
+                    (region.width() * scale) as u32,
+                    (region.height() * scale) as u32,
+                )
+                .to_image();
+                assert!(crop.pixels().filter(|p| p.0[..3] == rgb).count() > 20, "{view}: {description} retains its color");
+            }
+            d.snapshot(&format!("project-custom-label-and-selection-order-{view}"), None);
+        }
+    }
+}
+
+#[test]
 fn selection_badges_preserve_saved_freeform_card_spacing() {
     for size in [48.0_f32, 128.0] {
         let (mut d, _files, selected) = imported_drag_driver("freeform");
