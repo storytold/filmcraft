@@ -2,7 +2,9 @@
 //! effects) is carried in egui temp data so the timeline/monitors can accept drops.
 
 pub mod audio_fx_editor;
+pub mod caption_dialog;
 pub mod caption_export;
+pub mod caption_preview;
 pub mod clip_dialogs;
 pub mod clip_mismatch;
 pub mod color_dialogs;
@@ -44,6 +46,8 @@ pub mod scopes;
 pub mod sequence_settings;
 pub mod settings;
 pub mod shortcuts_dialog;
+pub mod speaker_dialog;
+pub mod speech_model;
 pub mod text;
 pub mod timecode;
 pub mod timeline;
@@ -422,4 +426,5 @@ pub(crate) fn panel_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKin
     close
 }
 
+pub(crate) mod media_search;
 pub(crate) mod transcript_cache;

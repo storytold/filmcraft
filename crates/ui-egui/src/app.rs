@@ -38,6 +38,7 @@ impl FilmcraftApp {
             frames,
             playback: Playback { speed: 1.0, ..Default::default() },
             source_playback: Default::default(),
+            caption_preview: None,
             audio: None,
             scrub: Default::default(),
             hooks: HostHooks::default(),
@@ -114,6 +115,7 @@ impl FilmcraftApp {
             shortcut_editor: Default::default(),
             graphics_notice: None,
             tl: Default::default(),
+            media_search: Default::default(),
             transcript_cache: Default::default(),
             command_inbox: None,
             v_down: false,
@@ -317,6 +319,7 @@ impl FilmcraftApp {
         self.logic_background(ctx, now);
         self.logic_session_events();
         self.logic_command_inbox(ctx);
+        panels::caption_preview::poll(self);
         self.advance_playback(ctx);
         self.advance_source_playback(ctx);
         self.poll_jobs(ctx);

@@ -3621,3 +3621,57 @@
 	No matching text.	Brak pasującego tekstu.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) wymaga sprzętowego kodera (NVENC na kartach NVIDIA, VideoToolbox w macOS); na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera H.265. Wybierz H.264 lub ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 wymaga sprzętowego kodera; na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera AV1.
+
+# Project audio transcription options
+	Transcribe Audio	Transkrybuj dźwięk
+	Transcribe Audio…	Transkrybuj dźwięk…
+	Transcribe Again	Transkrybuj ponownie
+	Transcribe Again…	Transkrybuj ponownie…
+	Already transcribed with {model}	Już transkrybowano modelem {model}
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Istniejące transkrypcje pozostaną do pomyślnego zastąpienia. Napisy nie ulegną zmianie.
+	Select clips with audio first	Najpierw wybierz klipy z dźwiękiem
+
+# Speech model cache controls
+	Delete downloaded model	Usuń pobrany model
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet automatycznie wykrywa język. Wybierz Whisper, aby ręcznie wybrać język.
+	Delete Downloaded Model	Usuń pobrany model
+	Delete {model} from this app's model cache?	Usunąć {model} z pamięci podręcznej modeli tej aplikacji?
+	Transcripts and captions stay unchanged. You can download the model again later.	Transkrypcje i napisy pozostaną bez zmian. Model można później pobrać ponownie.
+	Shared model files are kept; only this app’s cache link is removed.	Współdzielone pliki modelu zostaną zachowane; usunięty zostanie tylko link w pamięci podręcznej tej aplikacji.
+	Download model	Pobierz model
+
+# Transcript workflows and project search
+	Assign passage to speaker	Przypisz fragment do mówcy
+	Assign to new speaker	Przypisz do nowego mówcy
+	Choose a passage from one source clip.	Wybierz fragment jednego klipu źródłowego.
+	Correct transcript word	Popraw słowo transkrypcji
+	Find spoken words in any transcribed source, including unused clips.	Znajdź słowa we wszystkich przepisanych źródłach, także w nieużywanych klipach.
+	Identify Speakers	Rozpoznaj mówców
+	Maximum speakers	Maksymalna liczba mówców
+	No speaker	Bez mówcy
+	Open a sequence or Source clip to see its transcript	Otwórz sekwencję lub klip źródłowy, aby zobaczyć transkrypcję
+	Rename speaker	Zmień nazwę mówcy
+	Replaces speaker names and assignments. Undo is available.	Zastępuje nazwy i przypisania mówców. Można cofnąć.
+	Search all source transcripts	Przeszukaj wszystkie transkrypcje źródłowe
+	Search limit reached. Refine your query.	Osiągnięto limit wyszukiwania. Uściślij zapytanie.
+	Searching…	Wyszukiwanie…
+	Speaker name	Nazwa mówcy
+	Speakers	Mówcy
+	View Transcript	Pokaż transkrypcję
+	Show Source Transcript	Pokaż transkrypcję źródła
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} wyników · {sources} przepisanych · {missing} bez transkrypcji
+	Stopping…	Zatrzymywanie…
+	Transcribing…	Transkrypcja…
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Za dużo mówców. Otwórz jeden klip źródłowy.
+	Names are specific to each source clip.	Nazwy są oddzielne dla każdego klipu źródłowego.
+	No speakers identified yet.	Nie rozpoznano jeszcze mówców.
+	Transcript changed. Close and reopen Speakers.	Transkrypcja się zmieniła. Zamknij i otwórz ponownie Mówców.
+	Identify Speakers…	Rozpoznaj mówców…
+	Apply name changes before identifying speakers.	Zastosuj nazwy przed rozpoznawaniem mówców.
+
+# Caption navigation and preview
+	Play caption	Odtwórz napis
+	Stop caption preview	Zatrzymaj podgląd napisu
+	Stop recording before navigating or previewing captions.	Zatrzymaj nagrywanie przed przechodzeniem do napisów lub ich podglądem.

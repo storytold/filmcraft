@@ -3633,3 +3633,57 @@
 	Could not check for updates:\n{error}	Aktualizace se nepodařilo zkontrolovat:\n{error}
 	FilmCraft {version} is currently the newest version available.	FilmCraft {version} je nejnovější dostupná verze.
 	Looks for a newer FilmCraft release and offers to update.	Vyhledá novější vydání FilmCraftu a nabídne aktualizaci.
+
+# Project audio transcription options
+	Transcribe Audio	Přepsat zvuk
+	Transcribe Audio…	Přepsat zvuk…
+	Transcribe Again	Přepsat znovu
+	Transcribe Again…	Přepsat znovu…
+	Already transcribed with {model}	Již přepsáno modelem {model}
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Stávající přepisy zůstanou zachovány do úspěšného nahrazení. Titulky se nezmění.
+	Select clips with audio first	Nejprve vyberte klipy se zvukem
+
+# Speech model cache controls
+	Delete downloaded model	Smazat stažený model
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet rozpoznává jazyk automaticky. Pro ruční výběr jazyka zvolte Whisper.
+	Delete Downloaded Model	Smazat stažený model
+	Delete {model} from this app's model cache?	Smazat {model} z mezipaměti modelů této aplikace?
+	Transcripts and captions stay unchanged. You can download the model again later.	Přepisy a titulky zůstanou beze změny. Model můžete později znovu stáhnout.
+	Shared model files are kept; only this app’s cache link is removed.	Sdílené soubory modelu zůstanou zachovány; odstraní se pouze odkaz v mezipaměti této aplikace.
+	Download model	Stáhnout model
+
+# Transcript workflows and project search
+	Assign passage to speaker	Přiřadit pasáž mluvčímu
+	Assign to new speaker	Přiřadit novému mluvčímu
+	Choose a passage from one source clip.	Vyberte pasáž z jednoho zdrojového klipu.
+	Correct transcript word	Opravit slovo přepisu
+	Find spoken words in any transcribed source, including unused clips.	Hledat slova ve všech přepsaných zdrojích včetně nepoužitých klipů.
+	Identify Speakers	Rozpoznat mluvčí
+	Maximum speakers	Maximální počet mluvčích
+	No speaker	Bez mluvčího
+	Open a sequence or Source clip to see its transcript	Otevřete sekvenci nebo zdrojový klip a zobrazte jeho přepis
+	Rename speaker	Přejmenovat mluvčího
+	Replaces speaker names and assignments. Undo is available.	Nahradí jména a přiřazení mluvčích. Lze vrátit zpět.
+	Search all source transcripts	Hledat ve všech zdrojových přepisech
+	Search limit reached. Refine your query.	Dosažen limit hledání. Upřesněte dotaz.
+	Searching…	Hledání…
+	Speaker name	Jméno mluvčího
+	Speakers	Mluvčí
+	View Transcript	Zobrazit přepis
+	Show Source Transcript	Zobrazit zdrojový přepis
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} výsledků · {sources} přepsáno · {missing} nepřepsáno
+	Stopping…	Zastavování…
+	Transcribing…	Přepisování…
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Příliš mnoho mluvčích. Otevřete jeden zdrojový klip.
+	Names are specific to each source clip.	Jména jsou samostatná pro každý zdrojový klip.
+	No speakers identified yet.	Zatím nebyli rozpoznáni žádní mluvčí.
+	Transcript changed. Close and reopen Speakers.	Přepis se změnil. Zavřete a znovu otevřete Mluvčí.
+	Identify Speakers…	Rozpoznat mluvčí…
+	Apply name changes before identifying speakers.	Před rozpoznáváním mluvčích použijte změny jmen.
+
+# Caption navigation and preview
+	Play caption	Přehrát titulek
+	Stop caption preview	Zastavit náhled titulku
+	Stop recording before navigating or previewing captions.	Před procházením nebo náhledem titulků zastavte nahrávání.

@@ -1,13 +1,16 @@
 //! The speech model catalogue and the model store.
 //!
-//! Models are downloaded on first use, after the user confirms (the dialog shows the size, the
-//! source URL and the licence), into `<data dir>/models/<id>/`. They are never bundled with
-//! FilmCraft or committed to the repository. Every file is pinned to a Hugging Face revision of
-//! OpenAI's own repositories and checked against its SHA-256 before it is used.
+//! Models are downloaded only when asked for (`transcript.downloadModel`), into
+//! `<data dir>/models/<id>/`. They are never bundled with FilmCraft or committed to the
+//! repository. Every file is pinned to a Hugging Face revision of its publisher's own repository
+//! (OpenAI's or NVIDIA's) and checked against its SHA-256 and size before it is used.
 //!
 //! Licence: OpenAI released the Whisper code and model weights under the MIT licence
 //! (<https://github.com/openai/whisper/blob/main/LICENSE>); the safetensors conversions OpenAI
-//! publishes at `huggingface.co/openai/whisper-*` are labelled Apache-2.0. Both are permissive.
+//! publishes at `huggingface.co/openai/whisper-*` are labelled Apache-2.0. NVIDIA publishes
+//! Parakeet TDT 0.6B v3 at `huggingface.co/nvidia/parakeet-tdt-0.6b-v3` under CC-BY-4.0, which
+//! allows use and redistribution with attribution (the catalogue entry carries it). All are
+//! permissive.
 
 use std::path::{Path, PathBuf};
 
@@ -23,10 +26,19 @@ pub struct ModelFile {
     pub size: u64,
 }
 
+/// The recogniser that runs a model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    Whisper,
+    Parakeet,
+}
+
 /// A downloadable speech model.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ModelInfo {
     pub id: &'static str,
+    pub engine: Engine,
     pub name: &'static str,
     /// Recognises languages other than English (and detects the language).
     pub multilingual: bool,
@@ -55,11 +67,26 @@ macro_rules! hf {
     };
 }
 
+#[cfg(test)]
+const PARAKEET_REV: &str = "541d1f99c6b0c3cd0b11a95167540bb8edefd82b";
+
+macro_rules! nvidia {
+    ($name:literal, $sha:literal, $size:expr) => {
+        ModelFile {
+            name: $name,
+            url: concat!("https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/", "541d1f99c6b0c3cd0b11a95167540bb8edefd82b", "/", $name),
+            sha256: $sha,
+            size: $size,
+        }
+    };
+}
+
 const TOKENIZER_MULTI: &str = "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566";
 
 static CATALOGUE: &[ModelInfo] = &[
     ModelInfo {
         id: "whisper-tiny",
+        engine: Engine::Whisper,
         name: "Whisper tiny (multilingual)",
         multilingual: true,
         description: "39 M parameters. Fastest; fine for clear speech, rough on noisy audio.",
@@ -100,6 +127,7 @@ static CATALOGUE: &[ModelInfo] = &[
     },
     ModelInfo {
         id: "whisper-base",
+        engine: Engine::Whisper,
         name: "Whisper base (multilingual)",
         multilingual: true,
         description: "74 M parameters. The default: a good balance of speed and accuracy.",
@@ -140,6 +168,7 @@ static CATALOGUE: &[ModelInfo] = &[
     },
     ModelInfo {
         id: "whisper-small",
+        engine: Engine::Whisper,
         name: "Whisper small (multilingual)",
         multilingual: true,
         description: "244 M parameters. Most accurate here; about 4× slower than base.",
@@ -178,6 +207,22 @@ static CATALOGUE: &[ModelInfo] = &[
             ),
         ],
     },
+    ModelInfo {
+        id: "parakeet-tdt-0.6b-v3",
+        engine: Engine::Parakeet,
+        name: "Parakeet TDT 0.6B v3 (25 European languages)",
+        multilingual: true,
+        description: "600 M parameters (NVIDIA). Punctuation and per-word timing for word-by-word captions. English and 24 other European languages, detected automatically. Needs about 4 GB of memory.",
+        license: "CC-BY-4.0 (NVIDIA Parakeet TDT 0.6B v3)",
+        license_url: "https://creativecommons.org/licenses/by/4.0/",
+        author: "NVIDIA",
+        source: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+        files: &[
+            nvidia!("config.json", "e747b85e1bdfd300c8b8ac63bac8dd5221f8fe9bc275b48d06c735fcd6971b6e", 1153),
+            nvidia!("tokenizer.json", "bd321b096832a3f270bd3b2a88823957920f1a5c5ada71114a26ea729d0cbe91", 1159960),
+            nvidia!("model.safetensors", "3a2026366188c8c68598edbbff92f8d11590a08e0ae2e6775544e7b07d6a5e11", 2508311120),
+        ],
+    },
 ];
 
 /// The default model.
@@ -194,6 +239,69 @@ pub fn find(id: &str) -> Option<&'static ModelInfo> {
 /// Where model `m` lives under `models_dir`.
 pub fn model_dir(models_dir: &Path, m: &ModelInfo) -> PathBuf {
     models_dir.join(m.id)
+}
+
+/// Fast completeness hint for UI controls; inference/download still verify SHA-256.
+pub fn cached(models_dir: &Path, m: &ModelInfo) -> bool {
+    let dir = model_dir(models_dir, m);
+    m.files.iter().all(|file| std::fs::metadata(dir.join(file.name)).is_ok_and(|metadata| metadata.is_file() && metadata.len() == file.size))
+}
+
+/// Cooperative cross-process lease. Readers retain it for inference; download/delete use
+/// an exclusive lease. Lock files stay outside the removable model directory.
+pub fn lease(models_dir: &Path, m: &ModelInfo, exclusive: bool) -> Result<std::fs::File, crate::SpeechError> {
+    if !valid_name(m.id) {
+        return Err(crate::SpeechError::UnknownModel(m.id.into()));
+    }
+    std::fs::create_dir_all(models_dir)?;
+    let canonical_model = std::fs::canonicalize(model_dir(models_dir, m)).ok();
+    let root = canonical_model.as_ref().and_then(|p| p.parent()).unwrap_or(models_dir);
+    let locks = root.join(".locks");
+    std::fs::create_dir_all(&locks)?;
+    let file = std::fs::File::options().read(true).write(true).create(true).truncate(false).open(locks.join(format!("{}.lock", m.id)))?;
+    let result = if exclusive { file.try_lock() } else { file.try_lock_shared() };
+    result.map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => {
+            crate::SpeechError::Model("this model is in use or downloading in another FilmCraft session; stop it and try again".into())
+        }
+        std::fs::TryLockError::Error(error) => crate::SpeechError::Io(error.to_string()),
+    })?;
+    Ok(file)
+}
+
+/// Remove only this catalogue model's cache. Symlinks are unlinked, never followed;
+/// unexpected subdirectories or excessive entries are rejected before deleting anything.
+pub fn remove(models_dir: &Path, id: &str) -> Result<bool, crate::SpeechError> {
+    let model = find(id).ok_or_else(|| crate::SpeechError::UnknownModel(id.into()))?;
+    let _lease = lease(models_dir, model, true)?;
+    let dir = model_dir(models_dir, model);
+    let metadata = match std::fs::symlink_metadata(&dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() {
+        // remove_dir_all does not follow a directory symlink, including on Windows.
+        std::fs::remove_dir_all(&dir)?;
+    } else if metadata.is_dir() {
+        let entries = std::fs::read_dir(&dir)?.take(65).collect::<Result<Vec<_>, _>>()?;
+        if entries.len() > 64
+            || entries.iter().any(|entry| {
+                let name = entry.file_name();
+                let known = model.files.iter().any(|file| name == file.name || name == format!("{}.part", file.name).as_str());
+                !known || entry.file_type().map_or(true, |kind| kind.is_dir())
+            })
+        {
+            return Err(crate::SpeechError::Io("model cache contains unexpected files or folders; nothing was deleted".into()));
+        }
+        for entry in entries {
+            std::fs::remove_file(entry.path())?;
+        }
+        std::fs::remove_dir(&dir)?;
+    } else {
+        return Err(crate::SpeechError::Io("model cache is not a directory; nothing was deleted".into()));
+    }
+    Ok(true)
 }
 
 fn valid_name(name: &str) -> bool {
@@ -243,6 +351,7 @@ pub type DownloadProgress<'a> = &'a mut dyn FnMut(u64, u64, &str) -> bool;
 /// verifier.
 #[cfg(feature = "download")]
 pub fn download(models_dir: &Path, m: &ModelInfo, progress: DownloadProgress) -> Result<(), crate::SpeechError> {
+    let _lease = lease(models_dir, m, true)?;
     download_files(&model_dir(models_dir, m), m.files, progress)
 }
 
@@ -277,6 +386,13 @@ pub fn download_files(dir: &Path, files: &[ModelFile], progress: DownloadProgres
             let n = reader.read(&mut buf).map_err(|e| SpeechError::Download(format!("{}: {e}", f.name)))?;
             if n == 0 {
                 break;
+            }
+            // The server is untrusted: never fill the disk beyond the catalogue's pinned size
+            // while waiting for the final checksum. Reject before hashing or writing excess bytes.
+            if n as u64 > f.size.saturating_sub(got) {
+                drop(out);
+                let _ = std::fs::remove_file(&part);
+                return Err(SpeechError::Download(format!("{}: response exceeds pinned size of {} bytes", f.name, f.size)));
             }
             hasher.update(&buf[..n]);
             out.write_all(&buf[..n])?;
@@ -321,16 +437,101 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_cache_deletion_is_scoped_and_requires_a_catalogue_id() {
+        let root = tempfile::tempdir().unwrap();
+        let model = find("whisper-tiny").unwrap();
+        let dir = model_dir(root.path(), model);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("model.safetensors"), b"synthetic weights").unwrap();
+        std::fs::write(dir.join("model.safetensors.part"), b"partial").unwrap();
+        std::fs::write(root.path().join("project.fcproj"), b"keep project and transcript").unwrap();
+        let other = root.path().join("whisper-base");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("config.json"), b"keep other model").unwrap();
+        for id in ["../whisper-tiny", "/whisper-tiny", "", "not-a-model"] {
+            assert!(remove(root.path(), id).is_err());
+            assert!(dir.join("model.safetensors").exists());
+        }
+        assert!(remove(root.path(), model.id).unwrap());
+        assert!(!dir.exists());
+        assert_eq!(std::fs::read(root.path().join("project.fcproj")).unwrap(), b"keep project and transcript");
+        assert!(other.join("config.json").exists());
+        assert!(!remove(root.path(), model.id).unwrap());
+    }
+
+    #[test]
+    fn model_cache_deletion_refuses_nested_or_excessive_entries_before_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let model = find("whisper-tiny").unwrap();
+        let dir = model_dir(root.path(), model);
+        std::fs::create_dir_all(dir.join("unexpected")).unwrap();
+        std::fs::write(dir.join("config.json"), b"keep").unwrap();
+        assert!(remove(root.path(), model.id).is_err());
+        assert!(dir.join("config.json").exists());
+        std::fs::remove_dir(dir.join("unexpected")).unwrap();
+        std::fs::write(dir.join("personal-notes.txt"), b"keep user data").unwrap();
+        assert!(remove(root.path(), model.id).is_err());
+        assert!(dir.join("config.json").exists());
+        assert_eq!(std::fs::read(dir.join("personal-notes.txt")).unwrap(), b"keep user data");
+        std::fs::remove_file(dir.join("personal-notes.txt")).unwrap();
+        for n in 0..65 {
+            std::fs::write(dir.join(format!("file{n}")), []).unwrap();
+        }
+        assert!(remove(root.path(), model.id).is_err());
+        assert!(dir.join("config.json").exists());
+    }
+
+    #[test]
+    fn model_leases_protect_inference_download_and_deletion() {
+        let root = tempfile::tempdir().unwrap();
+        let model = find("whisper-tiny").unwrap();
+        let first = lease(root.path(), model, false).unwrap();
+        let second = lease(root.path(), model, false).unwrap();
+        assert!(lease(root.path(), model, true).is_err());
+        assert!(remove(root.path(), model.id).is_err());
+        drop(first);
+        assert!(lease(root.path(), model, true).is_err());
+        drop(second);
+        let writer = lease(root.path(), model, true).unwrap();
+        assert!(lease(root.path(), model, false).is_err());
+        assert!(lease(root.path(), model, true).is_err());
+        drop(writer);
+        assert!(lease(root.path(), model, false).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_cache_symlinks_share_leases_and_deletion_keeps_shared_weights() {
+        let shared = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let model = find("whisper-tiny").unwrap();
+        let target = model_dir(shared.path(), model);
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("model.safetensors"), b"keep shared weights").unwrap();
+        let link = model_dir(cache.path(), model);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let reader = lease(shared.path(), model, false).unwrap();
+        assert!(remove(cache.path(), model.id).is_err());
+        drop(reader);
+        assert!(remove(cache.path(), model.id).unwrap());
+        assert!(!link.exists());
+        assert_eq!(std::fs::read(target.join("model.safetensors")).unwrap(), b"keep shared weights");
+    }
+
+    #[test]
     fn catalogue_is_pinned_and_checksummed() {
         assert!(find(DEFAULT_MODEL).is_some());
         for m in catalogue() {
             assert!(m.size() > 100_000_000, "{}", m.id);
             for f in m.files {
-                assert!(f.url.starts_with("https://huggingface.co/openai/whisper-"), "{}", f.url);
+                match m.engine {
+                    Engine::Whisper => assert!(f.url.starts_with("https://huggingface.co/openai/whisper-"), "{}", f.url),
+                    Engine::Parakeet => assert!(f.url.starts_with("https://huggingface.co/nvidia/parakeet-") && f.url.contains(PARAKEET_REV), "{}", f.url),
+                }
                 assert!(f.url.contains("/resolve/") && f.url.ends_with(f.name));
                 assert_eq!(f.sha256.len(), 64);
                 assert!(f.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
-                if f.name == "tokenizer.json" {
+                if f.name == "tokenizer.json" && m.engine == Engine::Whisper {
                     assert_eq!(f.sha256, shared_tokenizer_sha());
                 }
             }
@@ -364,6 +565,7 @@ mod tests {
         }];
         let model = ModelInfo {
             id: "integrity-test",
+            engine: Engine::Whisper,
             name: "integrity test",
             multilingual: false,
             description: "",
@@ -381,5 +583,43 @@ mod tests {
         assert_eq!(missing_bytes(root.path(), &model), 3);
         std::fs::write(directory.join("tiny.bin"), b"abc").unwrap();
         assert!(installed(root.path(), &model));
+    }
+
+    #[cfg(feature = "download")]
+    #[test]
+    fn oversized_download_stops_at_the_pinned_size_without_publishing() {
+        use std::io::{Read, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/tiny.bin", server.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            for byte in std::io::BufReader::new(Read::by_ref(&mut stream).take(8192)).bytes() {
+                request.push(byte.unwrap());
+                if request.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd").unwrap();
+        });
+        let file = ModelFile {
+            name: "tiny.bin",
+            url: Box::leak(url.into_boxed_str()),
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            size: 3,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let mut reported = Vec::new();
+        let error = download_files(root.path(), &[file], &mut |done, total, _| {
+            reported.push((done, total));
+            true
+        })
+        .unwrap_err();
+        worker.join().unwrap();
+        assert!(error.to_string().contains("exceeds pinned size"), "{error}");
+        assert!(reported.iter().all(|(done, total)| done <= total));
+        assert!(!root.path().join("tiny.bin").exists());
+        assert!(!root.path().join("tiny.bin.part").exists());
     }
 }

@@ -28,6 +28,11 @@ fn quit_item(app: &FilmcraftApp) -> (&'static str, Option<Accelerator>) {
     ("app.quit", accel(&keys))
 }
 
+// FilmCraft labels contain literal ampersands; muda otherwise treats them as mnemonics.
+fn menu_text(text: &str) -> String {
+    text.replace('&', "&&")
+}
+
 /// Updates native item labels, key equivalents and enablement when the menu tree changes.
 pub type MenuUpdater = Box<dyn FnMut(&[Item])>;
 
@@ -40,18 +45,18 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
     let app_menu = Submenu::new("FilmCraft", true);
     let [settings_label, hide_label, hide_others_label, quit_label] = NATIVE_APP_MENU;
     // FilmCraft ▸ Settings ▸ <category> (Premiere's app-menu layout; General is Cmd+,)
-    let settings = Submenu::new(app.ui.language.tr(settings_label), true);
+    let settings = Submenu::new(menu_text(app.ui.language.tr(settings_label)), true);
     titles.push((settings_label.into(), settings.clone()));
     for it in items.iter().filter(|i| i.id.starts_with("app.settings.")) {
-        let label = it.label.trim_end_matches('…').to_string();
+        let label = menu_text(it.label.trim_end_matches('…'));
         let mi = MenuItem::with_id(it.id.clone(), label, it.enabled, it.shortcut.as_deref().and_then(accel));
         native.push((it.clone(), mi.clone()));
         let _ = settings.append(&mi);
     }
     // About and Discord repeat Help menu commands: same translated labels, updated with them
     let label = |id: &str, english: &str| items.iter().find(|i| i.id == id).map_or_else(|| english.to_string(), |i| i.label.clone());
-    let about = MenuItem::with_id("app.about", label("app.about", "About FilmCraft"), true, None);
-    let discord = MenuItem::with_id("help.discord", label("help.discord", "Join the ArtCraft Discord…"), true, None);
+    let about = MenuItem::with_id("app.about", menu_text(&label("app.about", "About FilmCraft")), true, None);
+    let discord = MenuItem::with_id("help.discord", menu_text(&label("help.discord", "Join the ArtCraft Discord…")), true, None);
     for (id, mi) in [("app.about", &about), ("help.discord", &discord)] {
         if let Some(it) = items.iter().find(|i| i.id == id) {
             // recorded as built (enabled, no shortcut), so the first update applies the real state
@@ -60,14 +65,14 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
     }
     // the predefined items keep their native actions; our text lets them follow the language
     let predefined = [
-        (hide_label, PredefinedMenuItem::hide(Some(app.ui.language.tr(hide_label)))),
-        (hide_others_label, PredefinedMenuItem::hide_others(Some(app.ui.language.tr(hide_others_label)))),
+        (hide_label, PredefinedMenuItem::hide(Some(&menu_text(app.ui.language.tr(hide_label))))),
+        (hide_others_label, PredefinedMenuItem::hide_others(Some(&menu_text(app.ui.language.tr(hide_others_label))))),
     ];
     let [(_, hide), (_, hide_others)] = &predefined;
     // Quit is ours, not the predefined item: that one calls `terminate:` and skips the unsaved
     // changes prompt (#1943); the `app.quit` command closes the window through it
     let (quit_id, quit_accel) = quit_item(app);
-    let quit = MenuItem::with_id(quit_id, app.ui.language.tr(quit_label), true, quit_accel);
+    let quit = MenuItem::with_id(quit_id, menu_text(app.ui.language.tr(quit_label)), true, quit_accel);
     let _ = app_menu.append_items(&[
         &about,
         &discord,
@@ -81,14 +86,14 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
     ]);
     let _ = bar.append(&app_menu);
     for top in MENUS {
-        let sub = Submenu::new(app.ui.language.tr(top), true);
+        let sub = Submenu::new(menu_text(app.ui.language.tr(top)), true);
         titles.push((top.into(), sub.clone()));
         let mine: Vec<&Item> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top) && !i.id.starts_with("app.settings.")).collect();
         // submenus by path prefix (e.g. Clip ▸ Video Options ▸ Time Interpolation), created where
         // their first item appears
         let mut subs: Vec<(Vec<String>, Submenu)> = Vec::new();
         for it in mine {
-            let mi = MenuItem::with_id(it.id.clone(), &it.label, it.enabled, it.shortcut.as_deref().and_then(accel));
+            let mi = MenuItem::with_id(it.id.clone(), menu_text(&it.label), it.enabled, it.shortcut.as_deref().and_then(accel));
             native.push(((*it).clone(), mi.clone()));
             let mut parent = sub.clone();
             for depth in 1..it.path.len() {
@@ -96,7 +101,7 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
                 parent = match subs.iter().find(|(k, _)| *k == key) {
                     Some((_, s)) => s.clone(),
                     None => {
-                        let s = Submenu::new(app.ui.language.tr(&it.path[depth]), true);
+                        let s = Submenu::new(menu_text(app.ui.language.tr(&it.path[depth])), true);
                         titles.push((it.path[depth].clone(), s.clone()));
                         let _ = parent.append(&s);
                         subs.push((key, s.clone()));
@@ -163,18 +168,18 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
         if language != shown_language {
             shown_language = language;
             for (title, submenu) in &titles {
-                submenu.set_text(language.tr(title));
+                submenu.set_text(menu_text(language.tr(title)));
             }
         }
         for (label, item) in &predefined {
-            item.set_text(language.tr(label));
+            item.set_text(menu_text(language.tr(label)));
         }
-        quit.set_text(language.tr(quit_label));
+        quit.set_text(menu_text(language.tr(quit_label)));
         for (shown, mi) in &mut native {
             let Some(it) = items.iter().find(|i| i.id == shown.id) else { continue };
             if it.label != shown.label {
                 // Settings entries drop the trailing ellipsis, as when the menu was built
-                mi.set_text(if it.id.starts_with("app.settings.") { it.label.trim_end_matches('…') } else { &it.label });
+                mi.set_text(menu_text(if it.id.starts_with("app.settings.") { it.label.trim_end_matches('…') } else { &it.label }));
             }
             if it.shortcut != shown.shortcut {
                 let _ = mi.set_accelerator(it.shortcut.as_deref().and_then(accel));
@@ -192,6 +197,13 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
 mod tests {
     use super::*;
     use filmcraft_engine::Session;
+
+    #[test]
+    fn literal_menu_ampersands_are_preserved_by_muda() {
+        assert_eq!(menu_text("Media Analysis & Transcription"), "Media Analysis && Transcription");
+        assert_eq!(menu_text("A && B"), "A &&&& B");
+        assert_eq!(menu_text("Settings…"), "Settings…");
+    }
 
     /// #1943: Cmd+Q must reach the `app.quit` command, which closes the window through the unsaved
     /// changes prompt, instead of the predefined Quit item's `terminate:`.

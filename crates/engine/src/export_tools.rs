@@ -544,6 +544,8 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     Ok(id)
 }
 
+pub(crate) const INTERNAL_JOB_ERROR: &str = "internal error (see the crash log); the job was stopped";
+
 /// Last-resort guard for a background job body (export, previews, proxies, …): a panic marks the
 /// job failed with an error instead of killing its thread and leaving the job "running" forever.
 /// The panic hook has already logged where it happened.
@@ -554,7 +556,7 @@ pub(crate) fn guard_job(
 ) -> impl FnOnce() + Send + 'static {
     move || {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
-            let msg = "internal error (see the crash log); the job was stopped".to_string();
+            let msg = INTERNAL_JOB_ERROR.to_string();
             *progress.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(msg.clone());
             progress.finished.store(true, Ordering::Relaxed);
             *result.lock().unwrap_or_else(|x| x.into_inner()) = Some(Err(msg));

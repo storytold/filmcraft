@@ -18,13 +18,13 @@
 //! 4. Speakers are numbered in order of first appearance ("Speaker 1", "Speaker 2"…).
 //!
 //! It works for interviews and dialogue with distinct voices and clean turns; overlapping speech,
-//! very similar voices or music beds confuse it. Labels are editable in the Text panel (rename a
-//! speaker, or assign words to a speaker by hand), which is the fallback when it gets them wrong.
+//! very similar voices or music beds confuse it. `transcript.renameSpeaker` can rename labels;
+//! the Text panel also supports word correction and passage-level speaker assignment.
 
 use filmcraft_project::{Speaker, Transcript};
 use filmcraft_time::Tick;
 
-use crate::{SAMPLE_RATE, TICKS_PER_SAMPLE};
+use crate::{ProgressFn, SAMPLE_RATE, SpeechError, TICKS_PER_SAMPLE};
 
 /// Tunables (defaults chosen on LibriSpeech test-clean dialogues; see `docs/transcripts.md`).
 #[derive(Clone, Debug, PartialEq)]
@@ -112,11 +112,64 @@ fn rms_distance(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Label the speakers of `t` from `audio` (mono 16 kHz, the transcript's time base). Replaces
-/// `t.speakers` and every word's speaker; returns the number of speakers found.
+/// `t.speakers` and every word's speaker; returns the number of speakers found. Invalid
+/// input returns zero without changing `t`; long valid recordings fall back to one speaker.
+/// Use `diarize_with_progress` to report the turn limit instead of falling back.
 pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
+    if validate_analysis(audio, t, p).is_err() {
+        return 0;
+    }
+    if !t.words.is_empty() && chunks(t, p).len() > MAX_CLUSTER_CHUNKS {
+        t.speakers = vec![Speaker { name: "Speaker 1".into() }];
+        for word in &mut t.words {
+            word.speaker = Some(0);
+        }
+        return 1;
+    }
+    diarize_with_progress(audio, t, p, &mut |_, _| true).unwrap_or(0)
+}
+
+/// Cancellable, bounded speaker analysis. Failure leaves the supplied transcript unchanged.
+/// The clustering algorithm is quadratic in storage and expensive for many turns, so refuse
+/// more than 256 chunks instead of allocating or running without a bound.
+pub fn diarize_with_progress(audio: &[f32], t: &mut Transcript, p: &Params, progress: ProgressFn) -> Result<usize, SpeechError> {
+    if !progress(0.0, "Checking speaker analysis") {
+        return Err(SpeechError::Cancelled);
+    }
+    validate_analysis(audio, t, p)?;
+    if chunks(t, p).len() > MAX_CLUSTER_CHUNKS {
+        return Err(SpeechError::Model("speaker analysis supports up to 256 speech chunks; use a shorter source".into()));
+    }
+    let mut next = t.clone();
+    let speakers = diarize_inner(audio, &mut next, p, progress)?;
+    if !progress(1.0, "Speakers identified") {
+        return Err(SpeechError::Cancelled);
+    }
+    *t = next;
+    Ok(speakers)
+}
+
+fn validate_analysis(audio: &[f32], t: &Transcript, p: &Params) -> Result<(), SpeechError> {
+    t.check().map_err(SpeechError::Model)?;
+    if audio.len() > SAMPLE_RATE as usize * 3600
+        || audio.iter().any(|x| !x.is_finite())
+        || t.words.iter().any(|w| w.start.0 < 0 || w.end > crate::sample_tick(audio.len() as i64))
+        || p.chunk_gap <= Tick::ZERO
+        || p.min_chunk <= Tick::ZERO
+        || p.max_chunk < p.min_chunk
+        || !p.threshold.is_finite()
+        || p.threshold < 0.0
+        || !(1..=32).contains(&p.max_speakers)
+    {
+        return Err(SpeechError::Model("invalid or oversized speaker analysis input".into()));
+    }
+    Ok(())
+}
+
+fn diarize_inner(audio: &[f32], t: &mut Transcript, p: &Params, progress: ProgressFn) -> Result<usize, SpeechError> {
     let ch = chunks(t, p);
     if t.words.is_empty() {
-        return 0;
+        return Ok(0);
     }
     let one = |t: &mut Transcript| {
         t.speakers = vec![Speaker { name: "Speaker 1".into() }];
@@ -126,17 +179,20 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
         1
     };
     if ch.len() < 2 {
-        return one(t);
+        return Ok(one(t));
     }
-    if ch.len() > MAX_CLUSTER_CHUNKS {
-        return one(t);
+    if !progress(0.05, "Measuring voices") {
+        return Err(SpeechError::Cancelled);
     }
     let (frames, energy, mfcc) = mfcc_frames(audio);
     // chunk vectors: mean and std of MFCC 1..N over voiced frames
     let dim = 2 * (N_MFCC - 1);
     let mut vecs: Vec<Vec<f32>> = Vec::new();
     let mut weight: Vec<f32> = Vec::new();
-    for c in &ch {
+    for (index, c) in ch.iter().enumerate() {
+        if !progress(0.1 + 0.3 * index as f32 / ch.len() as f32, "Measuring voices") {
+            return Err(SpeechError::Cancelled);
+        }
         let a = ((t.words[c.start].start.0 / FRAME_TICKS).max(0) as usize).min(frames);
         let b = ((t.words[c.end - 1].end.0 / FRAME_TICKS).max(0) as usize).min(frames).max(a);
         let peak = energy[a..b].iter().copied().fold(f32::NEG_INFINITY, f32::max);
@@ -191,6 +247,9 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
     };
     let max_speakers = p.max_speakers.max(1);
     loop {
+        if !progress(0.4 + 0.5 * (n - clusters.len()) as f32 / n as f32, "Grouping voices") {
+            return Err(SpeechError::Cancelled);
+        }
         if clusters.len() <= 1 {
             break;
         }
@@ -222,7 +281,7 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
         clusters[near].extend(s);
     }
     if clusters.len() == 1 {
-        return one(t);
+        return Ok(one(t));
     }
     // number speakers by first appearance
     let mut label = vec![0usize; n];
@@ -244,7 +303,7 @@ pub fn diarize(audio: &[f32], t: &mut Transcript, p: &Params) -> usize {
         }
     }
     t.speakers = (0..order.len()).map(|i| Speaker { name: format!("Speaker {}", i + 1) }).collect();
-    order.len()
+    Ok(order.len())
 }
 
 #[cfg(test)]
@@ -337,10 +396,43 @@ mod tests {
     }
 
     #[test]
-    fn excessive_turns_fall_back_without_clustering() {
-        let words = (0..=MAX_CLUSTER_CHUNKS).map(|i| Word::new("x", seconds_tick(i as f64 * 2.0), seconds_tick(i as f64 * 2.0 + 1.0))).collect();
-        let mut t = Transcript { words, ..Default::default() };
-        assert_eq!(diarize(&[], &mut t, &Params::default()), 1);
-        assert!(t.words.iter().all(|word| word.speaker == Some(0)));
+    fn cancellation_and_invalid_inputs_leave_labels_unchanged() {
+        let audio = voice(140.0, [(500.0, 90.0), (1500.0, 120.0)], 6.0, 1);
+        let original = Transcript {
+            words: vec![Word::new("a", seconds_tick(0.0), seconds_tick(1.0)), Word::new("b", seconds_tick(2.0), seconds_tick(3.0))],
+            ..Default::default()
+        };
+        for stop in [0.0, 0.1, 0.4, 1.0] {
+            let mut t = original.clone();
+            assert_eq!(diarize_with_progress(&audio, &mut t, &Params::default(), &mut |fraction, _| fraction < stop), Err(SpeechError::Cancelled));
+            assert_eq!(t, original);
+        }
+        for p in [
+            Params { threshold: f32::NAN, ..Default::default() },
+            Params { max_speakers: usize::MAX, ..Default::default() },
+            Params { chunk_gap: Tick::ZERO, ..Default::default() },
+        ] {
+            let mut t = original.clone();
+            assert!(diarize_with_progress(&audio, &mut t, &p, &mut |_, _| true).is_err());
+            assert_eq!(t, original);
+        }
+        let mut t = original.clone();
+        assert!(diarize_with_progress(&[f32::NAN], &mut t, &Params::default(), &mut |_, _| true).is_err());
+        assert_eq!(t, original);
+        t.words[0].start = Tick(i64::MIN);
+        assert!(diarize_with_progress(&audio, &mut t, &Params::default(), &mut |_, _| true).is_err());
+    }
+
+    #[test]
+    fn oversized_clustering_is_rejected_before_feature_allocation() {
+        let mut t = Transcript {
+            words: (0..257).map(|i| Word::new("x", seconds_tick(i as f64 * 2.0), seconds_tick(i as f64 * 2.0 + 1.0))).collect(),
+            ..Default::default()
+        };
+        let audio = vec![0.0; 514 * SAMPLE_RATE as usize];
+        let before = t.clone();
+        let e = diarize_with_progress(&audio, &mut t, &Params::default(), &mut |_, _| true).unwrap_err();
+        assert!(e.to_string().contains("256"));
+        assert_eq!(t, before);
     }
 }

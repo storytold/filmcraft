@@ -3626,3 +3626,57 @@
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 bir donanım kodlayıcısı gerektirir; bu makinede hiçbiri bulunamadı ve FilmCraft henüz yazılımsal AV1 kodlayıcıya sahip değil.
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Donanım kod çözme: Otomatik, desteklediği akışlar için sistemin video kod çözücüsünü (macOS'ta VideoToolbox, Windows'ta Media Foundation, Linux'ta H.264 ve HEVC için VA-API), diğer her şey veya donanım başarısız olduğunda ise FilmCraft'ın kendi kod çözücüsünü kullanır. Zaten açık olan medya yeniden açılana kadar kod çözücüsünü korur.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Denetim sunucusu devre dışı: FILMCRAFT_CONTROL_TOKEN 64 rastgele onaltılık karakter içermelidir (bkz. docs/control-protocol.md)
+
+# Project audio transcription options
+	Transcribe Audio	Sesi Yazıya Dök
+	Transcribe Audio…	Sesi Yazıya Dök…
+	Transcribe Again	Yeniden Yazıya Dök
+	Transcribe Again…	Yeniden Yazıya Dök…
+	Already transcribed with {model}	{model} ile zaten yazıya döküldü
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Mevcut dökümler değiştirme başarıyla tamamlanana kadar korunur. Altyazılar değişmez.
+	Select clips with audio first	Önce ses içeren klipleri seçin
+
+# Speech model cache controls
+	Delete downloaded model	İndirilen modeli sil
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet dili otomatik algılar. Dili elle seçmek için Whisper seçin.
+	Delete Downloaded Model	İndirilen Modeli Sil
+	Delete {model} from this app's model cache?	{model} bu uygulamanın model önbelleğinden silinsin mi?
+	Transcripts and captions stay unchanged. You can download the model again later.	Dökümler ve altyazılar değişmez. Modeli daha sonra yeniden indirebilirsiniz.
+	Shared model files are kept; only this app’s cache link is removed.	Paylaşılan model dosyaları korunur; yalnızca bu uygulamanın önbellek bağlantısı kaldırılır.
+	Download model	Modeli indir
+
+# Transcript workflows and project search
+	Assign passage to speaker	Bölümü konuşmacıya ata
+	Assign to new speaker	Yeni konuşmacıya ata
+	Choose a passage from one source clip.	Tek bir kaynak klipten bir bölüm seçin.
+	Correct transcript word	Döküm sözcüğünü düzelt
+	Find spoken words in any transcribed source, including unused clips.	Kullanılmayan klipler dahil tüm dökümü çıkarılmış kaynaklarda sözcük arayın.
+	Identify Speakers	Konuşmacıları Belirle
+	Maximum speakers	En fazla konuşmacı
+	No speaker	Konuşmacı yok
+	Open a sequence or Source clip to see its transcript	Dökümünü görmek için bir sekans veya kaynak klip açın
+	Rename speaker	Konuşmacıyı yeniden adlandır
+	Replaces speaker names and assignments. Undo is available.	Konuşmacı adlarını ve atamalarını değiştirir. Geri alınabilir.
+	Search all source transcripts	Tüm kaynak dökümlerinde ara
+	Search limit reached. Refine your query.	Arama sınırına ulaşıldı. Sorgunuzu daraltın.
+	Searching…	Aranıyor…
+	Speaker name	Konuşmacı adı
+	Speakers	Konuşmacılar
+	View Transcript	Dökümü Görüntüle
+	Show Source Transcript	Kaynak Dökümünü Göster
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} sonuç · {sources} dökümü çıkarıldı · {missing} çıkarılmadı
+	Stopping…	Durduruluyor…
+	Transcribing…	Döküm çıkarılıyor…
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Çok fazla konuşmacı var. Tek bir kaynak klip açın.
+	Names are specific to each source clip.	Adlar her kaynak klibe özeldir.
+	No speakers identified yet.	Henüz konuşmacı belirlenmedi.
+	Transcript changed. Close and reopen Speakers.	Döküm değişti. Konuşmacıları kapatıp yeniden açın.
+	Identify Speakers…	Konuşmacıları Belirle…
+	Apply name changes before identifying speakers.	Konuşmacıları belirlemeden önce ad değişikliklerini uygulayın.
+
+# Caption navigation and preview
+	Play caption	Altyazıyı oynat
+	Stop caption preview	Altyazı önizlemesini durdur
+	Stop recording before navigating or previewing captions.	Altyazılarda gezinmeden veya önizlemeden önce kaydı durdurun.

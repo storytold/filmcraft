@@ -6,6 +6,23 @@ use filmcraft_time::{FrameRate, Tick, parse_timecode};
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
+/// Center a compact row of ordinary text buttons in the available width.
+pub fn centered_buttons(ui: &mut Ui, labels: &[&str], add: impl FnOnce(&mut Ui)) {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let width: f32 = labels
+        .iter()
+        .map(|label| {
+            (ui.painter().layout_no_wrap((*label).to_string(), font.clone(), ui.visuals().text_color()).size().x + 2.0 * ui.spacing().button_padding.x)
+                .max(ui.spacing().interact_size.x)
+        })
+        .sum::<f32>()
+        + ui.spacing().item_spacing.x * labels.len().saturating_sub(1) as f32;
+    ui.horizontal(|ui| {
+        ui.add_space(((ui.available_width() - width) * 0.5).max(0.0));
+        add(ui);
+    });
+}
+
 /// Give a widget an explicit accessible name without changing its visible hint text.
 ///
 /// `egui_kittest` 0.37 hard-fails visible input roles that have neither a label nor a placeholder.

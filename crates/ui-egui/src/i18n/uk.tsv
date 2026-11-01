@@ -361,3 +361,57 @@
 	Zoom to Sequence	Умістити секвенцію
 	Project Notes	Нотатки проєкту
 
+# Project audio transcription options
+	Transcribe Audio	Транскрибувати аудіо
+	Transcribe Audio…	Транскрибувати аудіо…
+	Transcribe Again	Транскрибувати знову
+	Transcribe Again…	Транскрибувати знову…
+	Already transcribed with {model}	Уже транскрибовано за допомогою {model}
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Наявні розшифровки зберігаються до успішної заміни. Субтитри не зміняться.
+	Select clips with audio first	Спочатку виберіть кліпи зі звуком
+
+# Speech model cache controls
+	Delete downloaded model	Видалити завантажену модель
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet визначає мову автоматично. Для ручного вибору мови виберіть Whisper.
+	Delete Downloaded Model	Видалити завантажену модель
+	Delete {model} from this app's model cache?	Видалити {model} з кешу моделей цього застосунку?
+	Transcripts and captions stay unchanged. You can download the model again later.	Транскрипції та субтитри не зміняться. Модель можна завантажити повторно пізніше.
+	Shared model files are kept; only this app’s cache link is removed.	Спільні файли моделі збережуться; буде видалено лише посилання в кеші цього застосунку.
+	Download model	Завантажити модель
+
+# Transcript workflows and project search
+	Assign passage to speaker	Призначити уривок мовцю
+	Assign to new speaker	Призначити новому мовцю
+	Choose a passage from one source clip.	Виберіть уривок одного вихідного кліпу.
+	Correct transcript word	Виправити слово транскрипції
+	Find spoken words in any transcribed source, including unused clips.	Знайти слова в усіх транскрибованих джерелах, зокрема невикористаних кліпах.
+	Identify Speakers	Визначити мовців
+	Maximum speakers	Максимум мовців
+	No speaker	Без мовця
+	Open a sequence or Source clip to see its transcript	Відкрийте секвенцію або вихідний кліп для перегляду транскрипції
+	Rename speaker	Перейменувати мовця
+	Replaces speaker names and assignments. Undo is available.	Замінює імена та призначення мовців. Можна скасувати.
+	Search all source transcripts	Пошук усіх вихідних транскрипцій
+	Search limit reached. Refine your query.	Досягнуто межі пошуку. Уточніть запит.
+	Searching…	Пошук…
+	Speaker name	Ім’я мовця
+	Speakers	Мовці
+	View Transcript	Показати транскрипцію
+	Show Source Transcript	Показати вихідну транскрипцію
+	Show Program Transcript	Показати транскрипцію програми
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} результатів · {sources} транскрибовано · {missing} без транскрипції
+	Stopping…	Зупинення…
+	Transcribing…	Транскрибування…
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Забагато мовців. Відкрийте один вихідний кліп.
+	Names are specific to each source clip.	Імена задаються окремо для кожного вихідного кліпу.
+	No speakers identified yet.	Мовців ще не визначено.
+	Transcript changed. Close and reopen Speakers.	Транскрипція змінилася. Закрийте й знову відкрийте Мовців.
+	Identify Speakers…	Визначити мовців…
+	Apply name changes before identifying speakers.	Застосуйте імена перед визначенням мовців.
+
+# Caption navigation and preview
+	Play caption	Відтворити субтитр
+	Stop caption preview	Зупинити перегляд субтитру
+	Stop recording before navigating or previewing captions.	Зупиніть запис перед переходом до субтитрів або їх переглядом.

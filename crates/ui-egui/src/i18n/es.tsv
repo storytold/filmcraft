@@ -3664,3 +3664,95 @@
 	Change the sequence to match the clip's settings?	¿Cambiar la secuencia para que coincida con los ajustes del clip?
 	Change Sequence Settings	Cambiar ajustes de secuencia
 	Keep Existing Settings	Mantener los ajustes actuales
+	Transcription runs on this computer with {model}. It needs a one-time download of {size}.	La transcripción se hace en este ordenador con {model}. Necesita una descarga única de {size}.
+	The audio is not sent anywhere.	El audio no se envía a ningún sitio.
+	Licence:	Licencia:
+	Download and Transcribe	Descargar y transcribir
+	Try Again	Reintentar
+	Transcribing…	Transcribiendo…
+	Stopping…	Deteniendo…
+	Transcribing in the background (see the Text panel or Progress)	Transcribiendo en segundo plano (ver el panel Texto o Progreso)
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (máxima precisión, tiempos por palabra)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = sin límite. 1 crea subtítulos palabra por palabra; con una duración mínima de 0, cada palabra conserva su propia temporización.
+	A shorter caption is held into the silence after it, never over the next caption.	Un subtítulo más corto se mantiene en el silencio que le sigue, nunca sobre el siguiente subtítulo.
+	Caption preset	Ajuste preestablecido de subtítulos
+	Captioning Preferences (format, max/min length, lines)	Preferencias de subtítulos (formato, longitud máx./mín., líneas)
+	Couldn't save caption settings: {e}	No se pudieron guardar los ajustes de subtítulos: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	Cree subtítulos a partir de la transcripción, empiece una pista de subtítulos vacía o importe un archivo de subtítulos.
+	Create captions from transcript	Crear subtítulos a partir de la transcripción
+	Created {n} captions	Se crearon {n} subtítulos
+	Delete preset	Eliminar ajuste preestablecido
+	Double Line	Dos líneas
+	Frames left empty between one caption and the next.	Fotogramas que quedan vacíos entre un subtítulo y el siguiente.
+	Gap between captions (frames)	Separación entre subtítulos (fotogramas)
+	Layout	Diseño
+	Maximum length in characters	Longitud máxima en caracteres
+	Maximum words per caption	Máximo de palabras por subtítulo
+	Minimum duration in seconds	Duración mínima en segundos
+	Save as preset…	Guardar como ajuste preestablecido…
+	Single Line	Una línea
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	El estilo de pista de subtítulos de la nueva pista: el estilo predeterminado o el estilo de una pista de subtítulos de esta secuencia.
+	Words wrap to a new line, or a new caption, at this many characters.	Las palabras pasan a una nueva línea, o a un nuevo subtítulo, al llegar a este número de caracteres.
+	characters	caracteres
+	words	palabras
+	words (no limit)	palabras (sin límite)
+
+# Project audio transcription options
+	Transcribe Audio	Transcribir audio
+	Transcribe Audio…	Transcribir audio…
+	Transcribe Again	Volver a transcribir
+	Transcribe Again…	Volver a transcribir…
+	Already transcribed with {model}	Ya transcrito con {model}
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	Las transcripciones existentes se conservan hasta que se sustituyan correctamente. Los subtítulos no cambian.
+	Select clips with audio first	Selecciona primero clips con audio
+
+# Speech model cache controls
+	Delete downloaded model	Eliminar modelo descargado
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet detecta el idioma automáticamente. Elige Whisper para seleccionar un idioma manualmente.
+	Delete Downloaded Model	Eliminar modelo descargado
+	Delete {model} from this app's model cache?	¿Eliminar {model} de la caché de modelos de esta aplicación?
+	Transcripts and captions stay unchanged. You can download the model again later.	Las transcripciones y los subtítulos no cambian. Puedes volver a descargar el modelo más adelante.
+	Shared model files are kept; only this app’s cache link is removed.	Los archivos compartidos del modelo se conservan; solo se elimina el enlace de caché de esta aplicación.
+	Download model	Descargar modelo
+
+# Source transcript editing and project search
+	Speech models	Modelos de voz
+	Installed	Instalado
+	Open a sequence or Source clip to see its transcript	Abre una secuencia o un clip de origen para ver su transcripción
+	Correct transcript word	Corregir palabra de la transcripción
+	Correct Transcript Word	Corregir palabra de la transcripción
+	Inspect Source Transcript	Inspeccionar transcripción de origen
+	Use model	Usar modelo
+	Assign passage to speaker	Asignar pasaje a un hablante
+	Assign to new speaker	Asignar a un nuevo hablante
+	Choose a passage from one source clip.	Elige un pasaje de un solo clip de origen.
+	Identify Speakers	Identificar hablantes
+	Maximum speakers	Máximo de hablantes
+	No speaker	Sin hablante
+	Rename speaker	Cambiar nombre del hablante
+	Replaces speaker names and assignments. Undo is available.	Reemplaza los nombres y las asignaciones de hablantes. Se puede deshacer.
+	Speaker name	Nombre del hablante
+	Speakers	Hablantes
+	Open Transcript Search Result	Abrir resultado de búsqueda de transcripción
+	Search all source transcripts	Buscar en todas las transcripciones de origen
+	Searching…	Buscando…
+	Find spoken words in any transcribed source, including unused clips.	Busca palabras en cualquier origen transcrito, incluidos los clips sin usar.
+	{count} results · {sources} transcribed · {missing} not transcribed	{count} resultados · {sources} transcritos · {missing} sin transcribir
+	Search limit reached. Refine your query.	Se alcanzó el límite de búsqueda. Precisa la consulta.
+
+# Transcript workflows and project search
+	View Transcript	Ver transcripción
+	Show Source Transcript	Mostrar transcripción de origen
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	Demasiados hablantes. Abre un solo clip de origen.
+	Names are specific to each source clip.	Los nombres son específicos de cada clip de origen.
+	No speakers identified yet.	Aún no se han identificado hablantes.
+	Transcript changed. Close and reopen Speakers.	La transcripción cambió. Cierra y vuelve a abrir Hablantes.
+	Identify Speakers…	Identificar hablantes…
+	Apply name changes before identifying speakers.	Aplica los cambios de nombre antes de identificar hablantes.
+
+# Caption navigation and preview
+	Play caption	Reproducir subtítulo
+	Stop caption preview	Detener vista previa del subtítulo
+	Stop recording before navigating or previewing captions.	Detén la grabación antes de navegar o previsualizar subtítulos.

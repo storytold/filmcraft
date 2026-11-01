@@ -196,6 +196,7 @@ pub struct FilmcraftApp {
     pub tokens: Tokens,
     pub frames: Arc<FrameServer>,
     pub playback: Playback,
+    pub(crate) caption_preview: Option<panels::caption_preview::Preview>,
     pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
     /// Audio during scrubbing (#211).
@@ -360,6 +361,7 @@ pub struct FilmcraftApp {
     /// Keyboard Shortcuts dialog state.
     pub shortcut_editor: panels::shortcuts_dialog::EditorState,
     pub tl: panels::timeline::TlState,
+    pub(crate) media_search: panels::media_search::Search,
     pub(crate) transcript_cache: panels::transcript_cache::TranscriptCache,
     /// Commands from outside the UI (native menu bar), invoked on the UI thread.
     pub command_inbox: Option<Receiver<String>>,

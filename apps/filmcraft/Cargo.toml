@@ -11,7 +11,9 @@ build = "build.rs"
 workspace = true
 
 [features]
-default = []
+# Speech-to-text is on in release builds (G19): the model itself is not bundled, it is
+# downloaded once after the user confirms (size, source and licence shown).
+default = ["whisper"]
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
 # Natural Text to Speech voices (Kokoro-82M on the CPU, downloaded on first use).

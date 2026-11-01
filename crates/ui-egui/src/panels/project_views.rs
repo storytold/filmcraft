@@ -243,6 +243,8 @@ pub(super) fn item_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, actions: 
 
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
     let sel = || json!({"items": [id.0]});
+    let targets = menu_targets(&app.session.state.project_selection, id);
+    transcribe_entry(app, ui, &targets, "project.itemMenu.transcribeAudio", actions);
     if ui.button(tl!("Rename")).clicked() {
         actions.push(("projectPanel.rename".into(), json!({"item": id.0})));
         ui.close();
@@ -709,6 +711,8 @@ fn marquee(app: &mut FilmcraftApp, ui: &egui::Ui, v: &View, bg: &egui::Response,
 }
 
 fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, actions: &mut Actions) {
+    let targets = app.session.state.project_selection.clone();
+    transcribe_entry(app, ui, &targets, &format!("{}.backgroundMenu.transcribeAudio", v.prefix), actions);
     for (label, cmd) in [
         (tl!("New Bin"), "file.newBin"),
         (tl!("New Search Bin"), "file.newSearchBin"),
@@ -723,6 +727,28 @@ fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Opt
         }
     }
     ui.menu_button(tl!("New Item"), |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, actions));
+}
+
+fn transcribe_entry(app: &mut FilmcraftApp, ui: &mut egui::Ui, targets: &[ItemId], id: &str, actions: &mut Actions) {
+    let items = super::menu_dialogs::audio_items(app, targets);
+    if items.len() == 1 && app.session.project.transcripts.contains_key(&items[0]) {
+        let response = ui.button(tl!("View Transcript"));
+        app.auto.add_response(&id.replace("transcribeAudio", "viewTranscript"), &response, tl!("View Transcript"));
+        if response.clicked() {
+            actions.push(("textPanel.showSourceTranscript".into(), json!({"item":items[0].0})));
+            ui.close();
+        }
+    }
+    let again = !items.is_empty() && items.iter().all(|id| app.session.project.transcripts.contains_key(id));
+    let label = if again { tl!("Transcribe Again…") } else { tl!("Transcribe Audio…") };
+    let response = ui
+        .add_enabled(!items.is_empty() && app.session.is_enabled("transcript.generate"), egui::Button::new(label))
+        .on_disabled_hover_text(tl!("Select clips with audio first"));
+    app.auto.add_response(id, &response, label);
+    if response.clicked() {
+        actions.push(("transcript.generate".into(), json!({"options": true, "items": items.iter().map(|id| id.0).collect::<Vec<_>>()})));
+        ui.close();
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

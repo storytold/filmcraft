@@ -16,6 +16,7 @@ use egui_kittest::kittest::Queryable;
 use filmcraft_engine::Session;
 use filmcraft_engine::project_panel::{FREEFORM_POS, FREEFORM_STACK, ViewMode};
 use filmcraft_project::{BinEntry, ItemId};
+use filmcraft_time::Tick;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
@@ -1598,4 +1599,296 @@ fn a_dragged_media_browser_thumbnail_size_is_written_to_preferences() {
     assert_eq!(saved_prefs(&path).media_browser.thumbnail_size, s1, "preferences.json");
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A host recognizer keeps these UI tests offline and records the confirmed options.
+struct ContextRecognizer(std::sync::Mutex<Vec<filmcraft_engine::speech::Options>>);
+impl filmcraft_engine::speech::Transcriber for ContextRecognizer {
+    fn id(&self) -> String {
+        "context-test".into()
+    }
+    fn transcribe(
+        &self,
+        _: &[f32],
+        options: &filmcraft_engine::speech::Options,
+        _: filmcraft_engine::speech::ProgressFn,
+    ) -> Result<filmcraft_project::Transcript, filmcraft_engine::speech::SpeechError> {
+        self.0.lock().unwrap().push(options.clone());
+        Ok(filmcraft_project::Transcript {
+            language: "fr".into(),
+            words: vec![filmcraft_project::Word::new("Bonjour", Tick::ZERO, Tick::from_seconds_f64(0.2))],
+            ..Default::default()
+        })
+    }
+}
+
+fn transcription_project() -> (Driver, u64, u64, std::sync::Arc<ContextRecognizer>) {
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name":"Transcription options"})).unwrap();
+    let a = s.execute("file.newBarsAndTone", json!({"seconds":1})).unwrap()["item"].as_u64().unwrap();
+    let b = s.execute("file.newBarsAndTone", json!({"seconds":1})).unwrap()["item"].as_u64().unwrap();
+    let recognizer = std::sync::Arc::new(ContextRecognizer(std::sync::Mutex::new(Vec::new())));
+    s.transcriber = Some(recognizer.clone());
+    (Driver::with(s), a, b, recognizer)
+}
+
+#[test]
+fn project_transcribe_audio_opens_options_from_clips_and_empty_space() {
+    let (mut d, a, b, _) = transcription_project();
+    for view in ["list", "icon", "freeform"] {
+        d.exec("project.view.set", json!({"view":view}));
+        d.exec("project.select", json!({"items":[a,b]}));
+        d.frames(3);
+        d.ok("ui.click", json!({"id":format!("project.item.{a}"),"button":"right"}));
+        d.frames(2);
+        d.click("project.itemMenu.transcribeAudio");
+        assert!(d.has("transcribeAudio.model") && d.has("transcribeAudio.language"));
+        assert_eq!(d.app().ui.extras.dialog.as_ref().unwrap().params["items"], json!([a, b]));
+        assert!(d.app().session.jobs.is_empty(), "opening options starts nothing");
+        d.snapshot(&format!("transcribe-options-{view}"), None);
+        d.click("transcribeAudio.cancel");
+        let bg = if view == "freeform" { "project.freeform" } else { "project.empty" };
+        let r = d.rect(bg);
+        d.ok("ui.click", json!({"x":r[0]+r[2]*0.5,"y":r[1]+r[3]*0.5,"button":"right"}));
+        d.frames(2);
+        d.click("project.backgroundMenu.transcribeAudio");
+        assert_eq!(d.app().ui.extras.dialog.as_ref().unwrap().params["items"], json!([a, b]));
+        d.click("transcribeAudio.cancel");
+    }
+}
+
+#[test]
+fn project_transcribe_audio_freezes_targets_and_keeps_existing_transcripts_until_confirmed() {
+    let (mut d, a, b, recognizer) = transcription_project();
+    d.exec("transcript.set", json!({"item":a,"transcript":{"language":"en","source":"whisper-tiny","words":[{"text":"Original","start":0,"end":1000}]}}));
+    let original = d.app().session.project.transcripts.clone();
+    d.exec("project.select", json!({"items":[a]}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id":format!("project.item.{a}"),"button":"right"}));
+    d.frames(2);
+    assert_eq!(d.label("project.itemMenu.transcribeAudio"), "Transcribe Again…");
+    d.click("project.itemMenu.transcribeAudio");
+    assert_eq!(d.label("transcribeAudio.ok"), "Transcribe Again");
+    assert_eq!(d.app().ui.extras.dialog.as_ref().unwrap().info["sources"], json!(["whisper-tiny"]));
+    d.snapshot("transcribe-again", None);
+    d.click("transcribeAudio.cancel");
+    assert_eq!(d.app().session.project.transcripts, original);
+    d.ok("ui.menu.invoke", json!({"id":"transcript.generate","params":{"options":true,"items":[a]}}));
+    d.ok("ui.set", json!({"menuDialog":{"model":"whisper-small","language":"fr","diarize":false}}));
+    d.exec("project.select", json!({"items":[b]}));
+    d.click("transcribeAudio.ok");
+    for _ in 0..300 {
+        if !recognizer.0.lock().unwrap().is_empty() && d.app().session.project.transcripts.get(&ItemId(a)).is_some_and(|t| t.words[0].text == "Bonjour") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+    }
+    assert!(!d.app().session.project.transcripts.contains_key(&ItemId(b)), "selection changes do not retarget the request");
+    let options = recognizer.0.lock().unwrap();
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0].language.as_deref(), Some("fr"));
+    assert!(!options[0].diarize);
+    drop(options);
+    assert_eq!(d.app().session.project.transcripts[&ItemId(a)].words[0].text, "Bonjour");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.project.transcripts, original);
+}
+
+#[test]
+fn project_transcribe_audio_does_not_follow_a_new_document() {
+    let (mut d, a, _, _) = transcription_project();
+    d.ok("ui.menu.invoke", json!({"id":"transcript.generate","params":{"options":true,"items":[a]}}));
+    d.exec("file.newProject", json!({"name":"Other"}));
+    d.frames(3);
+    assert!(d.app().ui.extras.dialog.is_none());
+    assert!(d.app().session.jobs.is_empty());
+}
+
+#[test]
+fn project_transcribe_audio_prompts_for_the_chosen_model_without_replacing_existing_words() {
+    if !filmcraft_engine::transcript::speech_available() {
+        return;
+    }
+    // Guarantee a missing model without reading or modifying the user's model cache.
+    if std::env::var_os("FILMCRAFT_TEST_TRANSCRIBE_PROMPT_CHILD").is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "project_panel_ui::project_transcribe_audio_prompts_for_the_chosen_model_without_replacing_existing_words", "--nocapture"])
+            .env("FILMCRAFT_TEST_TRANSCRIBE_PROMPT_CHILD", "1")
+            .env("FILMCRAFT_DATA_DIR", temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let (mut d, a, b, _) = transcription_project();
+    d.app().session.transcriber = None;
+    // Read-only use of this isolated directory: no Download click or network access.
+    let dir = filmcraft_engine::transcript::models_dir().unwrap();
+    let missing = filmcraft_engine::transcript::find_model("whisper-small").unwrap();
+    assert!(!filmcraft_engine::speech::models::cached(&dir, missing));
+    d.exec("transcript.set", json!({"item":a,"transcript":{"language":"en","source":"whisper-tiny","words":[{"text":"Original","start":0,"end":1000}]}}));
+    let before = d.app().session.project.transcripts.clone();
+    d.app().session.prefs.media_analysis.whisper_model = "invalid-old-setting".into();
+    d.ok("ui.menu.invoke", json!({"id":"transcript.generate","params":{"options":true,"items":[a]}}));
+    d.ok("ui.set", json!({"menuDialog":{"model":missing.id}}));
+    d.exec("project.select", json!({"items":[b]}));
+    d.click("transcribeAudio.ok");
+    let download = d.app().ui.speech_download.as_ref().unwrap();
+    assert_eq!(download.model, missing.id);
+    assert_eq!(download.then_params["model"], missing.id);
+    assert_eq!(download.then_params["items"], json!([a]));
+    assert!(download.job.is_none());
+    assert_eq!(d.app().session.project.transcripts, before);
+    d.click("speechModel.cancel");
+    assert_eq!(d.app().session.project.transcripts, before);
+    assert!(d.app().session.jobs.is_empty());
+}
+
+#[test]
+fn project_transcribe_audio_restored_ui_drafts_cannot_follow_reused_item_ids() {
+    let (mut d, a, _, _) = transcription_project();
+    d.ok("ui.menu.invoke", json!({"id":"transcript.generate","params":{"options":true,"items":[a]}}));
+    let restored = serde_json::from_value(serde_json::to_value(&d.app().ui.extras).unwrap()).unwrap();
+    d.app().ui.extras = restored;
+    d.frames(2);
+    assert!(d.app().ui.extras.dialog.is_none());
+}
+
+fn verify_corrupt_cached_model_in_worker(d: &mut Driver, item: u64, model: &str) {
+    if !filmcraft_engine::transcript::speech_available() {
+        return;
+    }
+    let before = d.app().session.project.clone();
+    let undo = d.app().session.history.undo.len();
+    d.app().session.transcriber = None;
+    d.ok("ui.menu.invoke", json!({"id":"transcript.generate","params":{"options":true,"items":[item]}}));
+    d.ok("ui.set", json!({"menuDialog":{"model":model}}));
+    d.click("transcribeAudio.ok");
+    assert!(d.app().ui.speech_download.is_none(), "cached files must be verified by a worker, not the UI");
+    assert_eq!(d.app().session.jobs.len(), 1);
+    let started = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(120) {
+        d.frames(1);
+        if d.app().session.transcribe_jobs.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(d.app().session.transcribe_jobs.is_empty());
+    let error = d.app().session.jobs.last().unwrap().progress.error.lock().unwrap().clone().unwrap();
+    assert!(error.contains("not downloaded"), "invalid fixture weights must fail verification: {error}");
+    assert_eq!(d.app().session.project, before);
+    assert_eq!(d.app().session.history.undo.len(), undo);
+}
+
+#[test]
+fn transcription_model_controls_are_compact_centered_and_delete_only_after_confirmation() {
+    // Run this destructive-cache UI test in its own process and temporary data directory.
+    // Never create fixtures in a developer's or user's actual model cache.
+    if std::env::var_os("FILMCRAFT_TEST_MODEL_CONTROLS_CHILD").is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "project_panel_ui::transcription_model_controls_are_compact_centered_and_delete_only_after_confirmation", "--nocapture"])
+            .env("FILMCRAFT_TEST_MODEL_CONTROLS_CHILD", "1")
+            .env("FILMCRAFT_DATA_DIR", temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    let (mut d, a, _, _) = transcription_project();
+    let dir = filmcraft_engine::transcript::models_dir().unwrap();
+    let model = filmcraft_engine::transcript::find_model("whisper-small").unwrap();
+    let cached = filmcraft_engine::speech::models::model_dir(&dir, model);
+    // Sparse files supply sizes for the UI hint; these are never valid model weights.
+    assert!(!cached.exists(), "test fixture must not overwrite an existing model");
+    std::fs::create_dir_all(&cached).unwrap();
+    for file in model.files {
+        std::fs::File::create(cached.join(file.name)).unwrap().set_len(file.size).unwrap();
+    }
+    struct Fixture(std::path::PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            for file in filmcraft_engine::transcript::find_model("whisper-small").unwrap().files {
+                let _ = std::fs::remove_file(self.0.join(file.name));
+            }
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+    let _fixture = Fixture(cached.clone());
+    let before = d.app().session.project.clone();
+    let undo = d.app().session.history.undo.len();
+    verify_corrupt_cached_model_in_worker(&mut d, a, model.id);
+    let job_count = d.app().session.jobs.len();
+    d.ok("ui.menu.invoke", json!({"id":"transcript.generate","params":{"options":true,"items":[a]}}));
+    d.ok("ui.set", json!({"menuDialog":{"model":"parakeet-tdt-0.6b-v3","language":"fr"}}));
+    assert_eq!(d.label("transcribeAudio.language"), "Auto");
+    assert_eq!(d.app().ui.extras.dialog.as_ref().unwrap().params["language"], "auto");
+    let bounds = d.rect("transcribeAudio.window");
+    let cancel = d.rect("transcribeAudio.cancel");
+    let ok = d.rect("transcribeAudio.ok");
+    assert!(((cancel[0] + ok[0] + ok[2]) * 0.5 - (bounds[0] + bounds[2] * 0.5)).abs() < 2.0, "buttons centered: {bounds:?} {cancel:?} {ok:?}");
+    d.snapshot("transcribe-controls-parakeet", None);
+    let model_width = d.rect("transcribeAudio.model")[2];
+    d.click("transcribeAudio.downloadModel");
+    assert_eq!(d.label("speechModel.download"), "Download model");
+    assert!(d.app().ui.speech_download.as_ref().unwrap().then_command.is_empty());
+    assert_eq!(d.app().session.jobs.len(), job_count, "opening a download prompt starts nothing");
+    d.click("speechModel.cancel");
+    assert!(d.has("transcribeAudio.ok"));
+
+    d.ok("ui.set", json!({"menuDialog":{"model":"whisper-small","language":"fr"}}));
+    assert_eq!(d.app().ui.extras.dialog.as_ref().unwrap().params["language"], "fr");
+    assert!((d.rect("transcribeAudio.model")[2] - model_width).abs() < 1.0, "model choice does not resize the chooser");
+    assert!(!d.has("transcribeAudio.downloadModel"));
+    d.click("transcribeAudio.deleteModel");
+    assert!(d.has("speechModelDelete.confirm"));
+    assert!(cached.join("config.json").exists(), "opening confirmation does not delete");
+    d.snapshot("transcribe-delete-confirmation", None);
+    d.click("speechModelDelete.cancel");
+    assert!(cached.join("config.json").exists());
+    assert!(d.has("transcribeAudio.ok"));
+    d.click("transcribeAudio.deleteModel");
+    d.ok("ui.set", json!({"menuDialog":{"model":"whisper-base"}}));
+    d.click("speechModelDelete.confirm");
+    assert!(!cached.exists(), "confirmation retains the originally named model");
+    assert_eq!(d.app().session.project, before);
+    assert_eq!(d.app().session.history.undo.len(), undo);
+    assert!(d.has("transcribeAudio.ok"), "deleting a model keeps options open");
+    assert!(d.has("transcribeAudio.downloadModel"));
+    assert!(!d.has("transcribeAudio.deleteModel"));
+    // A document switch cancels a pending confirmation rather than acting on reused ids.
+    std::fs::create_dir(&cached).unwrap();
+    for file in model.files {
+        std::fs::File::create(cached.join(file.name)).unwrap().set_len(file.size).unwrap();
+    }
+    d.ok("ui.set", json!({"menuDialog":{"model":"whisper-small"}}));
+    d.frames(2);
+    d.click("transcribeAudio.deleteModel");
+    d.exec("file.newProject", json!({"name":"Other"}));
+    d.frames(2);
+    assert!(!d.has("speechModelDelete.confirm"));
+    assert!(cached.join("config.json").exists());
+    drop(_fixture);
+}
+
+#[test]
+fn project_view_transcript_opens_an_unused_clip_without_project_edits() {
+    let (mut d, a, _, _) = transcription_project();
+    d.exec("transcript.set", json!({"item":a,"transcript":{"words":[{"text":"Unused","start":0,"end":1000}]}}));
+    let before = d.app().session.project.clone();
+    let undo = d.app().session.history.undo.len();
+    assert!(d.app().session.active_sequence().is_none());
+    d.ok("ui.click", json!({"id":format!("project.item.{a}"),"button":"right"}));
+    d.frames(2);
+    d.click("project.itemMenu.viewTranscript");
+    assert!(d.app().ui.transcript_source);
+    assert_eq!(d.app().ui.text_tab, "Transcript");
+    assert_eq!(d.app().session.state.source_item, Some(ItemId(a)));
+    assert_eq!(d.label("text.transcript.word.0"), "Unused");
+    assert_eq!(d.app().session.project, before);
+    assert_eq!(d.app().session.history.undo.len(), undo);
+    d.snapshot("view-unused-transcript", None);
 }

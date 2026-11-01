@@ -3631,3 +3631,87 @@
 	Flash Cue Point	Flash 큐 포인트
 	Invalid duration: {error}	잘못된 지속 시간: {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Transcription runs on this computer with {model}. It needs a one-time download of {size}.	전사는 이 컴퓨터에서 {model}(으)로 실행됩니다. {size}를 한 번 다운로드해야 합니다.
+	The audio is not sent anywhere.	오디오는 어디로도 전송되지 않습니다.
+	Licence:	라이선스:
+	Download and Transcribe	다운로드 후 전사
+	Try Again	다시 시도
+	Transcribing…	전사 중…
+	Stopping…	중지 중…
+	Transcribing in the background (see the Text panel or Progress)	백그라운드에서 전사 중(텍스트 패널 또는 진행률 참조)
+	Parakeet TDT v3 (best accuracy, word-level timing)	Parakeet TDT v3 (최고 정확도, 단어 단위 타이밍)
+	0 = no limit. 1 makes word-by-word captions; with a minimum duration of 0, each word keeps its own timing.	0 = 제한 없음. 1은 단어별 캡션을 만듭니다. 최소 지속 시간이 0이면 각 단어가 자체 타이밍을 유지합니다.
+	A shorter caption is held into the silence after it, never over the next caption.	짧은 캡션은 뒤따르는 무음 구간까지 늘어나지만 다음 캡션과 겹치지는 않습니다.
+	Caption preset	캡션 사전 설정
+	Captioning Preferences (format, max/min length, lines)	캡션 환경설정(형식, 최대/최소 길이, 줄 수)
+	Couldn't save caption settings: {e}	캡션 설정을 저장할 수 없습니다: {e}
+	Create captions from the transcript, start an empty caption track or import a caption file.	대본에서 캡션을 만들거나, 빈 캡션 트랙을 시작하거나, 캡션 파일을 가져옵니다.
+	Create captions from transcript	대본에서 캡션 만들기
+	Created {n} captions	캡션 {n}개를 만들었습니다
+	Delete preset	사전 설정 삭제
+	Double Line	두 줄
+	Frames left empty between one caption and the next.	한 캡션과 다음 캡션 사이에 비워 두는 프레임 수입니다.
+	Gap between captions (frames)	캡션 간 간격(프레임)
+	Layout	레이아웃
+	Maximum length in characters	최대 길이(문자)
+	Maximum words per caption	캡션당 최대 단어 수
+	Minimum duration in seconds	최소 지속 시간(초)
+	Save as preset…	사전 설정으로 저장…
+	Single Line	한 줄
+	The caption track style of the new track: the default style, or the style of a caption track in this sequence.	새 트랙의 캡션 트랙 스타일: 기본 스타일 또는 이 시퀀스에 있는 캡션 트랙의 스타일입니다.
+	Words wrap to a new line, or a new caption, at this many characters.	이 문자 수에서 단어가 새 줄이나 새 캡션으로 넘어갑니다.
+	characters	문자
+	words	단어
+	words (no limit)	단어(제한 없음)
+
+# Project audio transcription options
+	Transcribe Audio	오디오 받아쓰기
+	Transcribe Audio…	오디오 받아쓰기…
+	Transcribe Again	다시 받아쓰기
+	Transcribe Again…	다시 받아쓰기…
+	Already transcribed with {model}	{model} 모델로 받아쓰기 완료
+	Existing transcripts remain until replacement succeeds. Captions stay unchanged.	새 받아쓰기가 성공할 때까지 기존 내용이 유지됩니다. 캡션은 변경되지 않습니다.
+	Select clips with audio first	먼저 오디오가 있는 클립을 선택하세요
+
+# Speech model cache controls
+	Delete downloaded model	다운로드한 모델 삭제
+	Parakeet detects the language automatically. Choose Whisper to select a language manually.	Parakeet은 언어를 자동으로 감지합니다. 언어를 직접 선택하려면 Whisper를 선택하세요.
+	Delete Downloaded Model	다운로드한 모델 삭제
+	Delete {model} from this app's model cache?	이 앱의 모델 캐시에서 {model}을 삭제할까요?
+	Transcripts and captions stay unchanged. You can download the model again later.	전사와 자막은 변경되지 않습니다. 나중에 모델을 다시 다운로드할 수 있습니다.
+	Shared model files are kept; only this app’s cache link is removed.	공유 모델 파일은 유지되며 이 앱의 캐시 링크만 제거됩니다.
+	Download model	모델 다운로드
+
+# Transcript workflows and project search
+	Assign passage to speaker	구간을 화자에게 할당
+	Assign to new speaker	새 화자에게 할당
+	Choose a passage from one source clip.	하나의 소스 클립에서 구간을 선택하세요.
+	Correct transcript word	전사 단어 수정
+	Find spoken words in any transcribed source, including unused clips.	사용하지 않는 클립을 포함한 모든 전사된 소스에서 단어를 찾습니다.
+	Identify Speakers	화자 식별
+	Maximum speakers	최대 화자 수
+	No speaker	화자 없음
+	Open a sequence or Source clip to see its transcript	전사를 보려면 시퀀스 또는 소스 클립을 여세요
+	Rename speaker	화자 이름 변경
+	Replaces speaker names and assignments. Undo is available.	화자 이름과 할당을 바꿉니다. 실행 취소할 수 있습니다.
+	Search all source transcripts	모든 소스 전사 검색
+	Search limit reached. Refine your query.	검색 한도에 도달했습니다. 검색어를 좁혀 주세요.
+	Searching…	검색 중…
+	Speaker name	화자 이름
+	Speakers	화자
+	View Transcript	전사 보기
+	Show Source Transcript	소스 전사 표시
+	{count} results · {sources} transcribed · {missing} not transcribed	결과 {count}개 · 전사됨 {sources}개 · 미전사 {missing}개
+
+# Speaker management
+	Too many speakers to show. Open one Source clip.	화자가 너무 많습니다. 소스 클립 하나를 여세요.
+	Names are specific to each source clip.	이름은 각 소스 클립별로 설정됩니다.
+	No speakers identified yet.	아직 식별된 화자가 없습니다.
+	Transcript changed. Close and reopen Speakers.	전사가 변경되었습니다. 화자 창을 닫고 다시 여세요.
+	Identify Speakers…	화자 식별…
+	Apply name changes before identifying speakers.	화자를 식별하기 전에 이름 변경을 적용하세요.
+
+# Caption navigation and preview
+	Play caption	캡션 재생
+	Stop caption preview	캡션 미리보기 중지
+	Stop recording before navigating or previewing captions.	캡션으로 이동하거나 미리보기 전에 녹음을 중지하세요.

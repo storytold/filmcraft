@@ -29,6 +29,17 @@ impl FilmcraftApp {
         }
     }
 
+    /// Audition a bounded transcript passage without changing source or sequence marks.
+    pub fn preview_source_passage(&mut self, start: Tick, end: Tick) -> Result<(), String> {
+        let old_looping = self.source_playback.clock.looping;
+        self.source_playback.clock.looping = false;
+        let result = self.start_source_playback(Some(start), Some(end), 1.0);
+        if result.is_err() {
+            self.source_playback.clock.looping = old_looping;
+        }
+        result
+    }
+
     pub fn play_source(&mut self) -> Result<(), String> {
         self.start_source_playback(None, None, 1.0)
     }
