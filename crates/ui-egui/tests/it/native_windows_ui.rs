@@ -238,6 +238,24 @@ fn the_quit_prompt_blocks_native_windows() {
     assert_eq!(d.element("panel.menu.Timeline")["enabled"], json!(false), "the native window is blocked");
 }
 
+/// The Save Project prompt of Open Project blocks the panels in native windows, as the Quit
+/// prompt does.
+#[test]
+fn the_open_project_prompt_blocks_native_windows() {
+    let mut d = Driver::new(5);
+    d.float("Timeline", [900.0, 120.0, 680.0, 420.0]);
+    assert_eq!(d.element("panel.menu.Timeline")["enabled"], json!(true));
+    d.ok("engine.execute", json!({"command": "sequence.addTracks", "params": {}}));
+    assert!(d.app().session.is_dirty());
+    let chosen = std::env::temp_dir().join(format!("fc-native-open-project-prompt-{}.fcproj", std::process::id()));
+    let chosen = chosen.to_string_lossy().into_owned();
+    d.harness.state_mut().hooks.pick_open_project = Some(Box::new(move || Some(chosen.clone())));
+    d.ok("ui.menu.invoke", json!({"id": "file.open"}));
+    d.frames(3);
+    assert!(d.elements("openProject.").iter().any(|e| e["id"] == "openProject.cancel"), "Open Project asks first");
+    assert_eq!(d.element("panel.menu.Timeline")["enabled"], json!(false), "the native window is blocked");
+}
+
 /// A Source Monitor drag in the main window reaches the Timeline in its own OS window, and drops
 /// the clip there.
 #[test]
