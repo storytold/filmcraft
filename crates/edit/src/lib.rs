@@ -102,15 +102,30 @@ pub fn split_track_at(track: &mut Track, t: Tick, ctx: &mut EditCtx, links: &mut
     right.id = new_id;
     right.start = t;
     right.duration -= cut;
-    if !right.reverse && right.frame_hold.is_none() {
-        right.source_in += Tick((cut.0 as f64 * right.speed.abs()).round() as i64);
-    } else if right.reverse {
-        // reversed: the left piece now shows the later media; keep content continuous
-        let left_ref = &mut track.items[idx];
-        let consumed = Tick((cut.0 as f64 * left_ref.speed.abs()).round() as i64);
-        let total_src = Tick(((cut + right.duration).0 as f64 * left_ref.speed.abs()).round() as i64);
-        right.source_in = left_ref.source_in;
-        left_ref.source_in += total_src - consumed;
+    // the media each piece consumes, under the item's Time Remapping curve (a plain multiple of
+    // `speed` when the clip has no animated one); computed on the intact item before the right
+    // piece's curve is shifted below
+    let left_span = left.media_span(Tick::ZERO, cut);
+    let right_span = left.media_span(cut, cut + right.duration);
+    if right.reverse {
+        // reversed: the left piece now shows the later media; keep content continuous by starting
+        // it where the right piece's media ends (advancing the original source In by the media
+        // span of the right piece — not a total-span-minus-cut difference, which drifts by
+        // rounding and falls apart entirely under a variable speed curve)
+        let orig_in = left.source_in;
+        right.source_in = orig_in;
+        left.source_in = orig_in + right_span;
+    } else if right.frame_hold.is_none() {
+        right.source_in += left_span;
+    }
+    // the right piece's timeline restarts at the cut, so its Time Remapping curve shifts with it
+    // (keyframes left of the cut go negative and hold their value, keeping the ramp continuous)
+    if right.time_remap_speed().is_some()
+        && let Some(p) = right.effect_mut("time_remap").and_then(|e| e.param_mut("speed"))
+    {
+        for k in &mut p.keyframes {
+            k.time -= cut;
+        }
     }
     if let Some(l) = right.link {
         let nl = *links.entry(l).or_insert_with(|| ctx.alloc());
