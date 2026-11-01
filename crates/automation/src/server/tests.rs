@@ -44,6 +44,7 @@ async fn rendering_at_a_time_does_not_move_the_playhead() {
 struct Client {
     tx: tokio::io::DuplexStream,
     rx: tokio::io::Lines<tokio::io::BufReader<tokio::io::DuplexStream>>,
+    task: tokio::task::JoinHandle<Result<(), AutomationError>>,
 }
 
 impl Client {
@@ -51,8 +52,8 @@ impl Client {
         use tokio::io::AsyncBufReadExt;
         let (tx, server_in) = tokio::io::duplex(1 << 22);
         let (server_out, rx) = tokio::io::duplex(1 << 22);
-        tokio::spawn(FilmcraftMcp::headless(s).serve_io(server_in, server_out));
-        Self { tx, rx: tokio::io::BufReader::new(rx).lines() }
+        let task = tokio::spawn(FilmcraftMcp::headless(s).serve_io(server_in, server_out));
+        Self { tx, rx: tokio::io::BufReader::new(rx).lines(), task }
     }
     async fn send(&mut self, line: &str) {
         use tokio::io::AsyncWriteExt;
@@ -309,6 +310,11 @@ async fn export_progress_and_cancel() {
     })
     .await
     .expect("cancelled export must reach an observed terminal job state within 30 seconds");
+    let Client { tx, rx, task } = c;
+    drop(tx);
+    tokio::time::timeout(std::time::Duration::from_secs(70), task).await.unwrap().unwrap().unwrap();
+    assert!(partial.exists(), "output with unconfirmed ownership must be retained after cleanup");
+    drop(rx);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
