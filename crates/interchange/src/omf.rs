@@ -71,3 +71,6 @@ pub fn sniff(bytes: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod traversal_tests;
