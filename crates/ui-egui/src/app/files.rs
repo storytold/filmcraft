@@ -54,6 +54,9 @@ impl FilmcraftApp {
             }
             "file.open" => self.pick(FileDialog::OpenProject, |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                if let Some(asked) = crate::panels::clip_dialogs::ask_before_open(app, &path) {
+                    return asked;
+                }
                 app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
             }),
             "graphics.newFromFile" => {

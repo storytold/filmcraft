@@ -16,7 +16,7 @@ impl FilmcraftApp {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
             let pointer = self.drop_pointer(ctx, egui::ViewportId::ROOT, None);
-            self.import_dropped(&dropped, pointer.map(|p| (p, egui::ViewportId::ROOT)));
+            self.import_dropped(ctx, &dropped, pointer.map(|p| (p, egui::ViewportId::ROOT)));
         }
         for files in std::mem::take(&mut self.window_files) {
             // Only the Timeline places files at the pointer; elsewhere they go to the bin.
@@ -27,15 +27,21 @@ impl FilmcraftApp {
                 self.file_drag_hover = pointer.map(|p| (files.hovered.len(), p, files.viewport));
             }
             if !files.dropped.is_empty() {
-                self.import_dropped(&files.dropped, pointer.map(|p| (p, files.viewport)));
+                self.import_dropped(ctx, &files.dropped, pointer.map(|p| (p, files.viewport)));
             }
         }
     }
 
     /// Import the dropped files that exist; with a pointer and Timeline ▸ drop imports to the
-    /// timeline, queue the new items for the Timeline drawn in that viewport.
-    fn import_dropped(&mut self, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
+    /// timeline, queue the new items for the Timeline drawn in that viewport. A dropped project
+    /// file opens instead, as File ▸ Open would (asking first about unsaved changes, #3843).
+    fn import_dropped(&mut self, ctx: &egui::Context, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
         let paths: Vec<String> = dropped.iter().map(|f| f.path()).filter(|p| p.exists()).map(|p| p.to_string_lossy().to_string()).collect();
+        if let Some(project) = paths.iter().find(|p| is_project_file(p)) {
+            // one project is open at a time: the rest of the drop is not imported into either
+            let _ = crate::menus::invoke(self, ctx, "file.open", json!({"path": project}));
+            return;
+        }
         if paths.is_empty() {
             return;
         }
@@ -108,6 +114,11 @@ impl FilmcraftApp {
             self.value_press = Some((press, self.session.undo_mark()));
         }
     }
+}
+
+/// Whether a dropped file is a FilmCraft project (opened, not imported).
+fn is_project_file(path: &str) -> bool {
+    std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"))
 }
 
 /// A physical-pixel screen position as a point in the window's UI space, given the window's content origin in points.
