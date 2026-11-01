@@ -18,7 +18,7 @@ fn json_out(o: &Output) -> Value {
 fn help_and_usage_errors() {
     let h = cli(&["help"]);
     assert!(h.status.success());
-    assert!(String::from_utf8_lossy(&h.stdout).contains("exec <id>"));
+    assert!(String::from_utf8_lossy(&h.stdout).contains("exec"));
     assert_eq!(cli(&[]).status.code(), Some(2));
     assert_eq!(cli(&["frobnicate"]).status.code(), Some(2));
     assert_eq!(cli(&["exec", "file.newBin", "notkv"]).status.code(), Some(2));
@@ -30,27 +30,70 @@ fn help_and_usage_errors() {
 #[test]
 fn version_after_global_options() {
     let want = format!("filmcraft-cli {}\n", env!("CARGO_PKG_VERSION"));
-    for args in [&["--version"][..], &["-V"], &["version"], &["--demo", "--version"], &["--compact", "-V"], &["--demo", "version"]] {
+    for args in [&["--version"][..], &["-V"], &["--demo", "--version"], &["--compact", "-V"]] {
         let o = cli(args);
         assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
         assert_eq!(String::from_utf8_lossy(&o.stdout), want, "{args:?}");
     }
 }
 
+/// RFC-0012 and photocraft's decision: the version is `--version` / `-V`, not a subcommand.
 #[test]
-fn long_help_matches_help_command() {
-    let reference = cli(&["help"]);
-    assert!(reference.status.success());
-    let long_help = cli(&["--help"]);
-    assert!(long_help.status.success(), "--help failed: {}", String::from_utf8_lossy(&long_help.stderr));
-    assert_eq!(long_help.stdout, reference.stdout);
-    assert!(long_help.stderr.is_empty());
-    let short_help = cli(&["-h"]);
-    assert!(short_help.status.success());
-    assert_eq!(short_help.stdout, reference.stdout);
-    let sub_help = cli(&["export", "--help"]);
-    assert!(sub_help.status.success(), "export --help failed: {}", String::from_utf8_lossy(&sub_help.stderr));
-    assert_eq!(sub_help.stdout, reference.stdout);
+fn there_is_no_version_subcommand() {
+    for args in [&["version"][..], &["--demo", "version"]] {
+        let o = cli(args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(o.stdout.is_empty() && String::from_utf8_lossy(&o.stderr).starts_with("error:"), "{args:?}");
+    }
+}
+
+#[test]
+fn help_is_on_stdout_with_status_0() {
+    let reference = cli(&["--help"]);
+    assert!(reference.status.success(), "--help failed: {}", String::from_utf8_lossy(&reference.stderr));
+    assert!(reference.stderr.is_empty());
+    let text = String::from_utf8_lossy(&reference.stdout);
+    for word in ["exec", "run", "export", "render", "probe", "mcp", "--project", "--bridge", "Exit status"] {
+        assert!(text.contains(word), "{word} missing from --help: {text}");
+    }
+    assert_eq!(cli(&["help"]).stdout, reference.stdout);
+    let sub = cli(&["export", "--help"]);
+    assert!(sub.status.success() && sub.stderr.is_empty());
+    let sub_text = String::from_utf8_lossy(&sub.stdout);
+    assert!(sub_text.contains("--preset") && sub_text.contains("--allow-offline"), "{sub_text}");
+    assert_eq!(cli(&["help", "export"]).stdout, sub.stdout);
+}
+
+/// RFC-0012: a flag the subcommand doesn't take, a repeated flag, a bad value and flags that
+/// conflict are usage errors (exit 2, on stderr, `error:` first) found before any work starts.
+#[test]
+fn strict_parsing_is_a_usage_error_before_any_work() {
+    let dir = std::env::temp_dir().join(format!("fc-cli-strict-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("never.wav");
+    let o = out.to_str().unwrap();
+    let cases: &[&[&str]] = &[
+        &["--demo", "exec", "file.newBin", "--nme", "x"],
+        &["--demo", "export", o, "--format", "wav", "--format", "aiff"],
+        &["--demo", "export", o, "--fromat", "wav"],
+        &["--demo", "export", o, "--quality", "101"],
+        &["--demo", "export", o, "--range", "sometimes"],
+        &["--demo", "export", o, "--settings", "{oops"],
+        &["--demo", "export", o, "--range", "entire", "--start", "0"],
+        &["--demo", "--project", "a.fcproj", "exec", "inspect.project"],
+        &["--demo", "--save", "--save-as", "p.fcproj", "exec", "inspect.project"],
+        &["mcp", "--automation-read-root", "X"],
+        &["export", "--preset", "--queue", o],
+    ];
+    for args in cases {
+        let o = cli(args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {err}");
+        assert!(o.stdout.is_empty() && err.starts_with("error:"), "{args:?}: {err}");
+    }
+    assert!(!out.exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -125,7 +168,7 @@ fn exec_save_as_then_reopen() {
 #[test]
 fn run_keep_going_reports_failures() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
-        .args(["--demo", "--keep-going", "run", "-"])
+        .args(["--demo", "run", "--keep-going", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -336,7 +379,7 @@ fn closed_stdout_still_runs_the_script_and_saves() {
     let out = run_with_closed_stdout(&["--demo", "run", "-"], b"{\"id\":\"no.such.command\"}\n");
     assert_eq!(out.status.code(), Some(1));
     let out = run_with_closed_stdout(
-        &["--demo", "--keep-going", "run", "-"],
+        &["--demo", "run", "--keep-going", "-"],
         b"{\"id\":\"no.such.command\"}\n{\"id\":\"file.newBin\",\"params\":{\"name\":\"x\"}}\n",
     );
     assert_eq!(out.status.code(), Some(1));
@@ -358,7 +401,7 @@ fn render_rejects_bad_numbers() {
         let o = cli(&["--demo", "render", "--seconds", secs, "--scale", scale, "--out", &still]);
         let err = String::from_utf8_lossy(&o.stderr);
         assert_eq!(o.status.code(), Some(2), "{opt} {bad}: {err}");
-        assert!(err.contains("filmcraft-cli:") && err.contains(opt), "{opt} {bad}: {err}");
+        assert!(err.starts_with("error:") && err.contains(opt), "{opt} {bad}: {err}");
         assert!(!std::path::Path::new(&still).exists(), "{opt} {bad} wrote a file");
     }
     let _ = std::fs::remove_dir_all(&dir);
