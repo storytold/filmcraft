@@ -516,6 +516,13 @@ fn media_reference_dimensions(clip: &Value) -> Option<(u32, u32)> {
     reference_dimensions(reference)
 }
 
+/// Returns the size a nested stack keeps in its saved FilmCraft sequence settings.
+fn saved_stack_dimensions(stack: &Value) -> Option<(u32, u32)> {
+    let settings: SequenceSettings = serde_json::from_value(fc(stack)?.get("settings")?.clone()).ok()?;
+    filmcraft_project::validate_frame_size(settings.width, settings.height).ok()?;
+    Some((settings.width, settings.height))
+}
+
 /// Finds dimensions from the first importable video clip, respecting nested stacks.
 fn first_video_dimensions_at(stack: &Value, depth: usize) -> Option<(u32, u32)> {
     if depth >= 64 {
@@ -528,7 +535,8 @@ fn first_video_dimensions_at(stack: &Value, depth: usize) -> Option<(u32, u32)> 
         for child in track.get("children").and_then(Value::as_array).into_iter().flatten() {
             let dimensions = match schema_name(child) {
                 "Clip" => media_reference_dimensions(child),
-                "Stack" => child.get("source_range").and_then(read_tr).and_then(|_| first_video_dimensions_at(child, depth + 1)),
+                "Stack" if child.get("source_range").and_then(read_tr).is_none() => None,
+                "Stack" => saved_stack_dimensions(child).or_else(|| first_video_dimensions_at(child, depth + 1)),
                 _ => None,
             };
             if dimensions.is_some() {
@@ -605,17 +613,20 @@ impl Imp<'_, '_> {
 
     /// Imports a sequence, preferring explicit settings over inferred video dimensions.
     fn sequence(&mut self, stack: &Value, name: &str, meta: Option<&Value>, rate: FrameRate) -> ItemId {
-        let settings: SequenceSettings =
-            meta.and_then(|m| m.get("settings")).and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_else(|| match first_video_dimensions(stack) {
-                Some((width, height)) => {
-                    self.report.info(format!("OTIO sequence size {width}x{height} was inferred from the first usable video clip"));
-                    settings_for(rate, width, height, false)
-                }
-                None => {
-                    self.report.warn("no OTIO sequence settings or video clip frame size; the sequence uses the default 1920x1080");
-                    settings_for(rate, 1920, 1080, false)
-                }
-            });
+        let saved = meta.and_then(|m| m.get("settings")).map(|s| serde_json::from_value::<SequenceSettings>(s.clone()));
+        if let Some(Err(error)) = &saved {
+            self.report.warn(format!("OTIO sequence settings could not be read and were ignored: {error}"));
+        }
+        let settings = saved.and_then(|settings| settings.ok()).unwrap_or_else(|| match first_video_dimensions(stack) {
+            Some((width, height)) => {
+                self.report.info(format!("OTIO sequence size {width}x{height} was inferred from the first usable video clip"));
+                settings_for(rate, width, height, false)
+            }
+            None => {
+                self.report.warn("no usable OTIO sequence settings or video clip frame size; the sequence uses the default 1920x1080");
+                settings_for(rate, 1920, 1080, false)
+            }
+        });
         let id = self.b.reserve_sequence(name, settings.clone(), None);
         if let Some(l) = meta.and_then(|m| m.get("label")).and_then(|l| serde_json::from_value::<Label>(l.clone()).ok())
             && let Some(it) = self.b.p.item_mut(id)

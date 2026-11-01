@@ -364,6 +364,76 @@ fn sequence_dimensions_warn_on_default_fallback() {
     assert_eq!((sequence.settings.width, sequence.settings.height), (1920, 1080));
 }
 
+/// Unreadable saved settings are reported, and the size still comes from the first usable clip.
+#[test]
+fn sequence_dimensions_report_unreadable_settings() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "metadata":{"filmcraft":{"settings":{"width":"wide"}}},
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"portrait",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"portrait.mp4",
+                    "available_image_bounds":{"OTIO_SCHEMA":"Box2d.1","min":{"x":0,"y":0},"max":{"x":1080,"y":1920}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, report) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    assert!(report.mentions("settings could not be read"), "{report}");
+    assert!(report.mentions("1080x1920 was inferred"), "{report}");
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
+}
+
+/// OTIO image bounds can be centred on the origin, so the size is max minus min.
+#[test]
+fn sequence_dimensions_read_image_bounds_with_negative_min() {
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Clip.2","name":"centred",
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"centred.mp4",
+                    "available_image_bounds":{"OTIO_SCHEMA":"Box2d.1","min":{"x":-540,"y":-960},"max":{"x":540,"y":960}}}}
+            ]}
+        ]}
+    }"#;
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
+}
+
+/// A nested stack's saved settings beat its clips, so the outer size matches the nested sequence.
+#[test]
+fn sequence_dimensions_use_saved_settings_of_a_nested_stack() {
+    let settings = filmcraft_project::SequenceSettings { width: 1080, height: 1920, ..Default::default() };
+    let document = r#"{
+        "OTIO_SCHEMA":"Timeline.1",
+        "tracks":{"OTIO_SCHEMA":"Stack.1","children":[
+            {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                {"OTIO_SCHEMA":"Stack.1","name":"nested","metadata":{"filmcraft":{"settings":SETTINGS}},
+                 "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                 "children":[
+                    {"OTIO_SCHEMA":"Track.1","kind":"Video","children":[
+                        {"OTIO_SCHEMA":"Clip.2","name":"landscape",
+                         "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":0},"duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24,"value":24}},
+                         "media_reference":{"OTIO_SCHEMA":"ExternalReference.1","target_url":"landscape.mp4",
+                            "available_image_bounds":{"OTIO_SCHEMA":"Box2d.1","min":{"x":0,"y":0},"max":{"x":1920,"y":1080}}}}
+                    ]}
+                ]}
+            ]}
+        ]}
+    }"#
+    .replace("SETTINGS", &serde_json::to_string(&settings).unwrap());
+    let (imp, _) = import(document.as_bytes(), Format::Otio, None).unwrap();
+    let sequence = imp.project.sequence(imp.sequences[0]).unwrap();
+    assert_eq!((sequence.settings.width, sequence.settings.height), (1080, 1920));
+    let nested = imp.project.sequence(sequence.video_tracks[0].items[0].item).unwrap();
+    assert_eq!((nested.settings.width, nested.settings.height), (1080, 1920));
+}
+
 /// Integral JSON floats preserve portrait dimensions for both the sequence and imported media.
 #[test]
 fn sequence_dimensions_accept_integral_float_media_metadata() {
