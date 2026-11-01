@@ -128,7 +128,8 @@ fn selected_clips(app: &FilmcraftApp) -> Vec<(ClipId, TrackItem, TrackKind)> {
 
 /// The selected audio clips a Volume change on `clip` applies to, `clip` first (#3710): the panel
 /// shows one clip of a selection, and its Volume sets every selected audio clip's, as Audio Gain
-/// and the [ and ] keys do. `None` when the change is `clip`'s alone.
+/// and the [ and ] keys do. Clips on locked tracks are left out, `clip` too, so a selection whose
+/// shown clip is locked changes the others only. `None` when the change is `clip`'s alone.
 fn volume_clips(app: &FilmcraftApp, clip: ClipId) -> Option<Vec<u64>> {
     let seq = app.session.active_sequence()?;
     let selected = filmcraft_engine::commands::with_links(&app.session, &app.session.state.selection);
@@ -139,7 +140,7 @@ fn volume_clips(app: &FilmcraftApp, clip: ClipId) -> Option<Vec<u64>> {
         })
         .map(|c| c.0)
         .collect();
-    (clips.len() > 1 && clips.first() == Some(&clip.0)).then_some(clips)
+    (clips.len() > 1 || clips.first().is_some_and(|c| *c != clip.0)).then_some(clips)
 }
 
 /// `effects.setParam` for a parameter of `clip`'s Volume, on every clip of [`volume_clips`].
