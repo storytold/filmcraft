@@ -440,4 +440,22 @@ mod tests {
             assert!(tail_rms(&l, &r) >= 0.5 * clean, "level {:e} after {bad}, {clean:e} without", tail_rms(&l, &r));
         }
     }
+
+    /// A NaN written to any parameter of any effect never reaches the output (`set_param` ignores NaN).
+    #[test]
+    fn nan_parameter_values_never_produce_non_finite_output() {
+        let mut bad = Vec::new();
+        for e in crate::effects() {
+            let ids: Vec<&str> = crate::create_effect(e.id, SR as f32, 2).unwrap().params().iter().map(|p| p.id).collect();
+            for id in ids {
+                let mut fx = crate::create_effect(e.id, SR as f32, 2).unwrap();
+                fx.set_param(id, f32::NAN);
+                let (l, r, _) = run_fx(fx, None);
+                if l.iter().chain(&r).any(|v| !v.is_finite()) {
+                    bad.push(format!("{}.{id}", e.id));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
+    }
 }
