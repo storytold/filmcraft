@@ -38,6 +38,9 @@ const MAX_DECODED_FRAME_BYTES: usize = 512 << 20;
 /// Shared budget of decoded animated image frames (1 GiB, matching GOP cache budget).
 pub const ANIMATED_BUDGET: usize = 1 << 30;
 
+// The shared cache synchronizes frame storage, memory accounting, and LRU eviction
+// under its internal mutex. NEXT_ID is an atomic counter used only to issue unique
+// source IDs for (source_id, frame_index) composite keys.
 static CACHE: LazyLock<Arc<FrameCache<(u64, usize)>>> = LazyLock::new(|| Arc::new(FrameCache::new(ANIMATED_BUDGET)));
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
