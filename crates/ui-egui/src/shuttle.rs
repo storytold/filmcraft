@@ -74,9 +74,10 @@ fn reverse_wrap(
             buf.fill(0.0);
             return;
         }
-        // Read `in_frames` forward-in-time ending at `timeline_end`, then reverse them.
-        let in_frames = ((out_frames as f64 * abs_speed).ceil() as usize).max(1);
-        let read_start = timeline_end.saturating_sub(in_frames as i64).max(0);
+        // Derive read_start from the same absolute cursor mapping as timeline_end so both
+        // boundaries use round(), avoiding a one-frame overlap at non-half fractional speeds.
+        let next_elapsed = device_elapsed.saturating_add(out_frames as i64);
+        let read_start = s.saturating_sub((next_elapsed as f64 * abs_speed).round() as i64).max(0);
         let actual_in = (timeline_end - read_start).max(0) as usize;
         if actual_in == 0 {
             buf.fill(0.0);
