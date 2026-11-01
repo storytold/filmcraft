@@ -97,7 +97,13 @@ pub fn transcode(
     preset: &Preset,
     progress: &Progress,
 ) -> std::result::Result<Report, String> {
-    transcode_with_file(clip, name, src, range, out, None, preset, progress)
+    transcode_with_file(clip, name, src, range, Dest { path: out, file: None }, preset, progress)
+}
+
+/// Output path, plus the already-open file to write into when the caller holds one.
+struct Dest<'a> {
+    path: &'a str,
+    file: Option<Arc<std::fs::File>>,
 }
 
 fn transcode_with_file(
@@ -105,11 +111,11 @@ fn transcode_with_file(
     name: &str,
     src: SharedSource,
     range: Option<TimeRange>,
-    out: &str,
-    output_file: Option<Arc<std::fs::File>>,
+    dest: Dest<'_>,
     preset: &Preset,
     progress: &Progress,
 ) -> std::result::Result<Report, String> {
+    let Dest { path: out, file: output_file } = dest;
     let info = &clip.info;
     let rate = clip.frame_rate();
     let mut st = SequenceSettings::default();
@@ -125,7 +131,7 @@ fn transcode_with_file(
     let mut c = clip.clone();
     c.offline = false;
     c.proxy = None;
-    let item = p.add_item(name, filmcraft_project::Label::Iris, ItemKind::Media(c), None);
+    let item = p.add_item(name, filmcraft_project::Label::Iris, ItemKind::Media(Box::new(c)), None);
     let has_v = info.video.is_some();
     let has_a = info.has_audio();
     let seq = p.new_sequence("transcode", st, usize::from(has_v), usize::from(has_a), None);
@@ -204,7 +210,7 @@ fn reserve_unique_path(dir: &Path, stem: &str, suffix: &str, ext: &str, taken: &
             n += 1;
             continue;
         }
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        match std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
             Ok(file) => {
                 return Ok(ReservedOutput { path, file: Some(Arc::new(file)), keep: false });
             }
@@ -268,7 +274,21 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     job.progress.total.store(total, std::sync::atomic::Ordering::Relaxed);
     let outputs: Arc<Mutex<Vec<(ItemId, String)>>> = Arc::default();
     let (prog, res, outs) = (job.progress.clone(), job.result.clone(), outputs.clone());
+    // Media jobs run one after another, in the order they were started (#1831); the browser has no
+    // threads to wait on, and runs each job where it is started.
+    #[cfg(not(target_arch = "wasm32"))]
+    let ticket = {
+        let ahead = crate::media_queue::MEDIA_JOBS.ahead();
+        if ahead > 0 {
+            *job.progress.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("Waiting for {ahead} earlier job{}", if ahead == 1 { "" } else { "s" });
+        }
+        crate::media_queue::MEDIA_JOBS.ticket()
+    };
+    let (pool, project, services) = (s.media.clone(), s.project.clone(), s.services.clone());
     let run = move || {
+        // a job cancelled while it waits raises the same flag the loop below checks
+        #[cfg(not(target_arch = "wasm32"))]
+        ticket.wait(&prog.cancel);
         let t0 = web_time::Instant::now();
         let mut bytes = 0;
         let mut err = None;
@@ -280,7 +300,10 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
             }
             *prog.status.lock().unwrap_or_else(|e| e.into_inner()) = format!("{name} ({} of {n})", k + 1);
             let out = output.path().to_string_lossy().into_owned();
-            match transcode_with_file(&clip, &name, src, None, &out, output.file(), pr, &prog) {
+            // its own copy of the file, opened here rather than on the main thread, so the
+            // monitors keep their decoder
+            let src = pool.own_source(&project, item, &*services).unwrap_or(src);
+            match transcode_with_file(&clip, &name, src, None, Dest { path: &out, file: output.file() }, pr, &prog) {
                 Ok(r) => {
                     bytes += r.bytes;
                     output.preserve();
@@ -508,13 +531,24 @@ pub fn ingest(s: &mut Session, items: &[ItemId]) -> Result<Value> {
     if !ing.enabled || items.is_empty() {
         return Ok(Value::Null);
     }
+    // Ingest settings travel in a project file. A destination only becomes active after this
+    // machine has chosen it, or when it is safely inside the project folder.
+    let destination = ing
+        .destination
+        .as_deref()
+        .filter(|d| !d.is_empty())
+        .and_then(|d| crate::project_tools::trusted_scratch(Some(d), s.path.as_deref(), &s.prefs.auto_save.scratch_folders));
+    if ing.destination.as_deref().is_some_and(|d| !d.is_empty()) && destination.is_none() {
+        s.toast("Ingest: ignoring an untrusted project destination; choose it locally in Ingest Settings to enable copying.");
+        return Ok(json!({"skipped": "untrusted ingest destination"}));
+    }
     let mut copied = Vec::new();
     let copy = matches!(ing.action, IngestAction::Copy | IngestAction::CopyAndCreateProxies);
     if copy {
         for &i in items {
             let Some((_, path, _)) = media_path(&s.project, i) else { continue };
-            let dir = match &ing.destination {
-                Some(d) if !d.is_empty() => PathBuf::from(d),
+            let dir = match &destination {
+                Some(d) => d.clone(),
                 _ => Path::new(&path).parent().unwrap_or(Path::new(".")).join("Ingested Media"),
             };
             if Path::new(&path).file_name().is_some_and(|name| Path::new(&path) == dir.join(name)) {
@@ -527,7 +561,7 @@ pub fn ingest(s: &mut Session, items: &[ItemId]) -> Result<Value> {
     let mut job = Value::Null;
     match ing.action {
         IngestAction::CreateProxies | IngestAction::CopyAndCreateProxies => {
-            let p = json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>(), "preset": if ing.preset.is_empty() { DEFAULT_PROXY_PRESET } else { ing.preset.as_str() }, "destination": ing.destination});
+            let p = json!({"items": items.iter().map(|i| i.0).collect::<Vec<_>>(), "preset": if ing.preset.is_empty() { DEFAULT_PROXY_PRESET } else { ing.preset.as_str() }, "destination": destination.as_ref().map(|d| d.to_string_lossy().into_owned())});
             if items.iter().any(|i| s.project.item(*i).and_then(|x| x.as_media()).is_some_and(|m| m.info.video.is_some() && m.info.kind == MediaKind::Movie)) {
                 job = create(s, &p)?;
             }
@@ -542,8 +576,8 @@ pub fn ingest(s: &mut Session, items: &[ItemId]) -> Result<Value> {
                 if clip.info.video.is_none() {
                     continue;
                 }
-                let dir = match &ing.destination {
-                    Some(d) if !d.is_empty() => PathBuf::from(d),
+                let dir = match &destination {
+                    Some(d) => d.clone(),
                     _ => Path::new(&path).parent().unwrap_or(Path::new(".")).join("Ingested Media"),
                 };
                 let stem = Path::new(&path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);
@@ -569,7 +603,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Create Proxies…",
             menu: &["Clip", "Proxy"],
             shortcut: None,
-            params: r#"{"items":[id]?,"preset":"prores_proxy_quarter|prores_proxy_half|prores_lt_half|h264_quarter|h264_half","destination":str?,"attach":bool=true,"wait":bool=false}"#,
+            params: r#"{"items":[id]?,"preset":"prores_proxy_quarter|prores_proxy_half|prores_lt_half|h264_quarter|h264_half"?,"destination":str?,"attach":bool=true,"wait":bool=false}"#,
             enabled: has_file_media,
             run: create,
             journal: true,
@@ -680,6 +714,9 @@ pub fn commands() -> Vec<CommandSpec> {
                 }
                 if let Some(d) = p.get("destination") {
                     ing.destination = d.as_str().filter(|d| !d.is_empty()).map(str::to_string);
+                    if let Some(d) = ing.destination.as_ref() {
+                        crate::project_tools::remember_scratch_folders(s, std::slice::from_ref(d));
+                    }
                 }
                 if let Some(pr) = str_p(p, "preset") {
                     if !pr.is_empty() && preset(pr).is_none() {

@@ -28,77 +28,69 @@ impl Contexts {
 }
 
 /// The arithmetic encoder writing into a byte buffer.
+///
+/// `low` holds the 10-bit coding window plus `queue + 8` pending bits above it; whole bytes are emitted
+/// as soon as they are complete. A pending byte of 0xff may still receive a carry, so runs of them are
+/// counted in `outstanding` until a byte that is not 0xff resolves the carry.
 #[derive(Clone)]
 pub struct CabacEncoder {
     pub ctx: Contexts,
     low: u32,
     range: u32,
-    outstanding: u32,
-    first_bit: bool,
+    queue: i32,
+    outstanding: usize,
     buf: Vec<u8>,
-    acc: u64,
-    nbits: u32,
-    bins: u64,
 }
 
 impl CabacEncoder {
     /// Start encoding after a slice header; `header` must be byte aligned (cabac_alignment_one_bits written).
     pub fn new(ctx: Contexts, header: Vec<u8>) -> Self {
-        CabacEncoder { ctx, low: 0, range: 510, outstanding: 0, first_bit: true, buf: header, acc: 0, nbits: 0, bins: 0 }
+        // queue = -9: the first bit out of the window is the spec's discarded first bit, which is always 0.
+        CabacEncoder { ctx, low: 0, range: 510, queue: -9, outstanding: 0, buf: header }
     }
 
     #[inline]
-    fn write_bit_raw(&mut self, b: u32) {
-        self.acc = (self.acc << 1) | b as u64;
-        self.nbits += 1;
-        if self.nbits == 32 {
-            self.buf.extend_from_slice(&(self.acc as u32).to_be_bytes());
-            self.acc = 0;
-            self.nbits = 0;
-        }
-    }
-
-    #[inline]
-    fn put_bit(&mut self, b: u32) {
-        if self.first_bit {
-            self.first_bit = false;
-        } else {
-            self.write_bit_raw(b);
-        }
-        while self.outstanding > 0 {
-            self.write_bit_raw(1 - b);
-            self.outstanding -= 1;
+    fn put_byte(&mut self) {
+        if self.queue >= 0 {
+            let out = self.low >> (self.queue + 10);
+            self.low &= (0x400 << self.queue) - 1;
+            self.queue -= 8;
+            if out & 0xff == 0xff {
+                self.outstanding += 1;
+            } else {
+                let carry = out >> 8;
+                if let Some(last) = self.buf.last_mut() {
+                    *last = last.wrapping_add(carry as u8);
+                }
+                let fill = (carry as u8).wrapping_sub(1);
+                self.buf.extend(std::iter::repeat_n(fill, self.outstanding));
+                self.buf.push(out as u8);
+                self.outstanding = 0;
+            }
         }
     }
 
     #[inline]
     fn renorm(&mut self) {
-        while self.range < 256 {
-            if self.low < 256 {
-                self.put_bit(0);
-            } else if self.low >= 512 {
-                self.low -= 512;
-                self.put_bit(1);
-            } else {
-                self.low -= 256;
-                self.outstanding += 1;
-            }
-            self.range <<= 1;
-            self.low <<= 1;
-        }
+        let shift = self.range.leading_zeros() - 23;
+        self.range <<= shift;
+        self.low <<= shift;
+        self.queue += shift as i32;
+        self.put_byte();
     }
 
     /// Terminate with end_of_slice_flag = 1 and flush; returns the RBSP bytes (with rbsp trailing bits).
     pub fn finish(mut self) -> Vec<u8> {
         self.terminate(1);
-        // EncodeFlush wrote the stop bit as the last bit; pad with zeros to byte alignment.
-        while !self.nbits.is_multiple_of(8) {
-            self.write_bit_raw(0);
+        // EncodeFlush: the window's top two bits, then the stop bit, then zeros to byte alignment.
+        let bits = self.queue + 11;
+        let pad = (8 - bits % 8) % 8;
+        self.low = ((self.low >> 7) | 1) << (pad + 10);
+        self.queue = bits + pad - 8;
+        while self.queue >= 0 {
+            self.put_byte();
         }
-        let nbytes = self.nbits / 8;
-        for i in 0..nbytes {
-            self.buf.push((self.acc >> (8 * (nbytes - 1 - i))) as u8);
-        }
+        self.buf.extend(std::iter::repeat_n(0xff, self.outstanding));
         self.buf
     }
 }
@@ -106,7 +98,6 @@ impl CabacEncoder {
 impl BinSink for CabacEncoder {
     #[inline]
     fn decision(&mut self, ctx: usize, bin: u32) {
-        self.bins += 1;
         let s = self.ctx.0[ctx];
         let state = (s >> 1) as usize;
         let mps = (s & 1) as u32;
@@ -125,37 +116,21 @@ impl BinSink for CabacEncoder {
 
     #[inline]
     fn bypass(&mut self, bin: u32) {
-        self.bins += 1;
         self.low <<= 1;
         if bin != 0 {
             self.low += self.range;
         }
-        if self.low >= 1024 {
-            self.put_bit(1);
-            self.low -= 1024;
-        } else if self.low < 512 {
-            self.put_bit(0);
-        } else {
-            self.low -= 512;
-            self.outstanding += 1;
-        }
+        self.queue += 1;
+        self.put_byte();
     }
 
     fn terminate(&mut self, bin: u32) {
-        self.bins += 1;
         self.range -= 2;
         if bin != 0 {
             self.low += self.range;
-            // EncodeFlush
             self.range = 2;
-            self.renorm();
-            self.put_bit((self.low >> 9) & 1);
-            let v = ((self.low >> 7) & 3) | 1;
-            self.write_bit_raw((v >> 1) & 1);
-            self.write_bit_raw(v & 1);
-        } else {
-            self.renorm();
         }
+        self.renorm();
     }
 }
 
@@ -297,18 +272,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn roundtrip_random_bins() {
+    fn roundtrip(n: usize, seed: u32) {
         let table = crate::tables::cabac_init_pb0();
         let ctx = Contexts::init(&table, 26);
-        let mut enc = CabacEncoder::new(ctx.clone(), Vec::new());
-        let mut seed = 12345u32;
+        let mut enc = CabacEncoder::new(ctx.clone(), vec![0xa5]);
+        let mut seed = seed;
         let mut rnd = || {
             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
             seed >> 8
         };
         let mut ops = Vec::new();
-        for _ in 0..20000 {
+        for _ in 0..n {
             let kind = rnd() % 10;
             let c = (rnd() % 400) as usize;
             // skewed bins so contexts adapt
@@ -325,15 +299,46 @@ mod tests {
             }
         }
         let data = enc.finish();
-        let mut dec = Dec::new(&data, ctx);
+        assert_eq!(data[0], 0xa5, "header byte changed");
+        let mut dec = Dec::new(&data[1..], ctx);
         for (i, &(k, c, bin)) in ops.iter().enumerate() {
             let got = match k {
                 0 => dec.decision(c),
                 1 => dec.bypass(),
                 _ => dec.terminate(),
             };
-            assert_eq!(got, bin, "op {i}");
+            assert_eq!(got, bin, "n {n} op {i}");
         }
         assert_eq!(dec.terminate(), 1);
+        assert!(dec.pos.div_ceil(8) < data.len(), "n {n}: decoder read past the end");
+    }
+
+    #[test]
+    fn roundtrip_random_bins() {
+        roundtrip(20000, 12345);
+    }
+
+    #[test]
+    fn roundtrip_short_streams() {
+        for n in 0..300 {
+            roundtrip(n, n as u32 * 7919 + 1);
+        }
+    }
+
+    #[test]
+    fn long_bypass_runs_and_carries() {
+        let ctx = Contexts::init(&crate::tables::cabac_init_pb0(), 26);
+        for bin in 0..2 {
+            let mut enc = CabacEncoder::new(ctx.clone(), Vec::new());
+            for _ in 0..5000 {
+                enc.bypass(bin);
+            }
+            let data = enc.finish();
+            let mut dec = Dec::new(&data, ctx.clone());
+            for i in 0..5000 {
+                assert_eq!(dec.bypass(), bin, "bin {bin} op {i}");
+            }
+            assert_eq!(dec.terminate(), 1);
+        }
     }
 }

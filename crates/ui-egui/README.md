@@ -3,23 +3,45 @@
 The egui frontend draws panels and dialogs, and dispatches project changes through the engine.
 Interactive controls keep stable automation ids regardless of the interface language.
 
+## Export range warnings
+
+The Export panel shows the selected range's length in sequence frames and seconds beside Range
+(`export.range.duration`). When Source In/Out covers just one sequence frame and at least one
+mark is set, `export.range.warning` explains how to export the whole sequence instead (#3364).
+The warning is advisory: exporting one frame remains valid. Entire Source, Work Area and Custom
+ranges do not show this warning. `export_ui::single_frame_in_out_warning_updates_with_range_and_marks`
+checks the warning and duration as marks and range selections change; the same test can render
+`export-single-frame-warning.png` with `FILMCRAFT_UI_SNAPSHOT_DIR`.
+
+## Control input limits
+
+The control channel bounds `ui.click` to 10 clicks and `ui.drag` to 1024 movement steps (#2784).
+The MCP bridge sends null for omitted counts/steps, so the validator treats null like an absent
+field: one click or 12 drag steps. Negative, fractional, non-numeric and over-limit values still
+return errors before queuing any input. Zero clicks emit no button events; 0–1 drag steps use 2.
+`control::input_bounds_tests` covers defaults, rejection, unchanged pending input and valid
+gestures; `keyboard_ui` verifies that rejected requests leave the UI usable. See the
+[control protocol](../../docs/control-protocol.md).
+
 ## Transition drop previews
 
 Dragging a video or audio transition over a compatible clip shows its actual time span, the
 selected cut and an In/Out label. Shared cuts center the span; isolated edges use a one-sided
 span. The preview uses the engine's read-only transition planner, including Timeline duration
 preferences, and release dispatches `effects.apply` with the same edge. Locked tracks and
-incompatible clip types show no valid transition preview. Ordinary effects retain their clip
-outline. `timeline.transitionDropPreview` exposes the span and edge to automation.
+incompatible clip types show no valid transition preview. The drop snaps to Start at Cut, Center
+at Cut or End at Cut by where the pointer is relative to the cut. Ordinary effects retain their
+clip outline. `timeline.transitionDropPreview` exposes the span and alignment to automation.
 
-`transition_drop_ui` covers both edges of short video/audio clips, hover without project edits,
-the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to render screenshots with wgpu.
+`transition_drop_ui` covers the three alignments on video/audio cuts and a one-sided clip edge,
+hover without project edits, the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to
+render screenshots with wgpu.
 
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified
-Chinese, German, Russian, French, Indonesian, Korean and Italian (all but Ukrainian and Russian cover
-the whole interface; those two cover the core menus). The language is stored in the engine's `general.interfaceLanguage` preference,
+Chinese, German, Russian, French, Indonesian, Korean, Italian, Czech, Polish, Swedish and Turkish (all but Ukrainian cover
+the whole interface; Ukrainian covers the core menus). The language is stored in the engine's `general.interfaceLanguage` preference,
 restored on startup, and also available in Settings > General.
 Its default, System Language (`system`), follows the operating system: the first of the user's
 preferred languages that the interface has (the host supplies them through
@@ -33,14 +55,21 @@ fills translated templates, and `i18n::t` translates names from registries. Plac
 (including user filenames containing braces) are inserted literally. Catalog translations are
 original work using ordinary language, without proprietary localisation resources.
 
-Spanish, Japanese, Simplified Chinese, French, Brazilian Portuguese and German cover menus, panels, dialogs, settings and registry labels. Searches accept both the
+Spanish, Japanese, Simplified Chinese, French, Brazilian Portuguese, German and Russian cover
+menus, panels, dialogs, settings and registry labels. Searches accept both the
 translated label and its English source, including Unicode capitals. Project content, command ids
 and preference values retain their original values. Engine errors, CLI and MCP messages remain
-English. Ukrainian and Russian currently cover the core menus; they fall back to English elsewhere.
+English. Ukrainian currently covers the core menus; it falls back to English elsewhere.
 
-Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders,
-literal/menu/registry coverage and UI behaviour; `cargo xtask ci` runs the workspace gates. Visual
-checks use the control channel to switch language and capture the resulting panels.
+A string a catalog lacks shows in English, so a missing translation never fails a test or a
+build. `cargo xtask i18n-report` prints each language's missing strings (menus, `tl!` literals and
+registry names) and its entries whose source the interface no longer has; `cargo xtask ci` prints
+the same report in its log.
+
+Verification: `cargo test -p filmcraft-ui-egui` checks catalog syntax, duplicate keys, placeholders
+and UI behaviour in other languages (switching, search, font coverage); `cargo xtask ci` runs the
+workspace gates. Visual checks use the control channel to switch language and capture the resulting
+panels.
 
 ## Source playback
 
@@ -62,15 +91,33 @@ keeps Source navigation, markers and marked-range playback separate from Program
 
 ## Pane layout controls
 
-Dock transactions and pointer targets use `craft-ui::docking`; bounded split geometry and
-keyboard-accessible resize handles use `craft-ui::layout`. FilmCraft adapts its existing saved
-dock tree and panel identities to the shared model. Panel tabs or their header grip can move
-between tab groups, split at an edge, reorder, or float when released with Cmd/Ctrl. Floating
-panels move by their empty header and resize from the bottom-right corner. Timeline sequence
-tabs retain their sequence-opening, closing and horizontal reorder behavior; the header grip
-moves the Timeline panel. Workspace saves retain floating groups alongside the legacy layout
-JSON, and workspaces without floating data still load. Automation IDs and workspace commands
-remain the integration boundary.
+The panels use `craft-ui::docking` with its split-tree settings: craft-ui draws the frames, tab
+strips, floating windows and drag previews and owns the gestures; `dock_ui.rs` draws the panel
+bodies, the ≡ panel menu and the Timeline's sequence tabs. Bounded split geometry and
+keyboard-accessible resize handles use `craft-ui::layout`. Panel tabs or their group's drag bar
+move between tab groups, split at a group's or the window's edge, reorder, or float when released
+with Cmd/Ctrl; a release over no target cancels. Tools and the Audio Meters keep their widths
+as the window resizes (fixed split sizes, which a divider drag keeps fixed); the other groups
+resize with the window. Every group resizes down to the same minimum and has no maximum.
+Timeline sequence tabs retain their sequence-opening, closing and horizontal reorder behavior.
+
+On desktop each floating panel opens in its own OS window. Tool panels are palettes: they stay
+above other windows and hide while another application is active. The video viewers (Program,
+Source, Reference Monitor, Lumetri Scopes) are normal windows, say on a second display: they
+stack with the main window and stay shown in the background. A floating window moves by its
+title bar, resizes from every edge and splits like the main window. While a modal dialog is open
+(Settings, Recovery, Revert, a file dialog), the native windows are dimmed and take no input.
+The main window's input rewrite (macOS Control+Click as a secondary click,
+`--control-input-only`) also runs in each native window, and files dropped on one are imported
+like files dropped on the main window; on the Timeline they land at the drop point. A drag from
+a panel (a clip from the Source Monitor or the Project panel, an effect, a template) drops on a
+panel in any of the app's windows. On Wayland
+floating windows stay inside the main window. Where egui embeds viewports (tests), floating
+windows stay inside the main window too.
+
+Named workspaces save the layout, floating windows included; workspaces saved in the earlier
+layout format still load. While every floating window is one tab group, a save also writes the
+earlier format, so earlier versions still open the workspace. Automation IDs and workspace commands remain the integration boundary.
 
 Tools and dock tabs expose their actual egui widget IDs, paint keyboard focus, and support
 Tab/Shift-Tab traversal and Space/Enter activation. Control-injected keys can reach focused
@@ -84,3 +131,89 @@ buttons use `craft-ui::layout::fit_toolbar`; commands beyond the available width
 through More, including their selected state and Source/Program routing. A scrolling fallback
 retains all commands if even More cannot fit. `monitor_geometry` checks the painted readouts,
 control bounds, overflow actions and Source drag payloads across monitor widths and themes.
+
+## Marker properties
+
+Right-click a timeline or Markers-panel marker and choose **Edit Marker…**. The window
+edits time/duration, name, notes, author, type, and color. Existing presets are
+shown as swatches; project custom swatches are below them. Done makes one undoable marker
+edit; Cancel discards the marker draft.
+The compact form orders Name, Author, Time/Duration, scrolling Notes, then Color and
+marker types. Previous/Next save valid changes before opening the neighbouring marker;
+unchanged navigation adds no Undo step. Unchecked Duration saves a point marker even
+when its disabled field retains a draft value. Timecodes require complete numeric fields
+with colons; Done stays disabled until timing is valid. Text fields support normal
+clipboard shortcuts and local text Undo/Redo.
+
+The **+** square below the presets opens a separate color editor. macOS uses the native
+Colors panel; other hosts and native-picker failures reuse the established egui picker.
+FilmCraft retains exact six-digit sRGB hex entry and explicit confirmation. Add color
+saves a reusable swatch to this project's palette through `colors.addCustom` (a separate
+undoable operation) and selects it in the marker draft. Canceling the marker edit afterward
+does not remove a deliberately saved palette color. The project stores at most 64 custom
+swatches shared by markers and clips; duplicate additions are no-ops. Used custom colors also appear for reuse.
+Marker/color dialogs belong to the opened project instance, close when that project is replaced,
+and are not restored from saved UI preferences. Unrelated edits keep marker drafts open;
+editing or removing that marker elsewhere closes its stale draft rather than overwriting newer data.
+
+Markers and clips now share the existing 16 clip preset colors; clip RGB values and preset
+names are unchanged. Markers no longer collapse those names onto seven display colors.
+Red/Rose, Orange/Mango, Cyan/Teal and Pink/Magenta resolve to the same presets. Exact custom colors
+(including white, black, pink, and gray) override a marker's preset. Preset color filters
+leave custom markers visible. Selecting a preset clears the override, preserving the author. The preset colors also follow Settings → Labels in both views.
+
+The opaque sRGB editor lives in `widgets::color_picker`, independently of marker models,
+dialogs and project commands. Callers provide a `ColorDraft`, automation registry and id
+prefix. Its HSV conversion operates on sRGB channels; using linear-light saturation would
+make the center too white. Lumetri's grading wheels remain separate: they edit grading
+offsets. Existing effect/graphics pickers retain their alpha/float/color-space semantics.
+
+The same author and hex values are available to Source marker commands. Existing markers
+have an empty author; FilmCraft never infers authorship from the operating-system account.
+Projects (schema 17) retain marker properties, Web Link URLs and the project palette. Marker CSV reports
+and FilmCraft OTIO metadata retain individual marker authors, URLs and colors. OTIO also
+retains custom clip label colors and the palette in FilmCraft metadata. Other interchange exports warn when they cannot preserve those marker properties.
+Importing an OTIO document merges its saved swatches after the current project's swatches, omitting duplicates and respecting the 64-swatch limit.
+This does not add AVB marker import or Avid track-bound markers.
+
+Regression coverage includes project palette persistence/isolation/bounds/undo, marker
+commands and reopen, separate picker and marker drafts, preset/custom swatch reuse,
+sRGB wheel conversion, CSV escaping, and OTIO round trips.
+
+Clip and Project-panel Label menus expose the same project custom palette below the presets.
+Add custom color opens the shared picker; Add and apply saves the swatch and applies it to
+the captured selection in one undoable operation. `edit.label` accepts a preset/alias or hex,
+explicit `clips`/`items` targets, and optional `saveColor:true`. Choosing a named preset clears
+that item's custom override. Duplicated items and newly inserted source clips retain the exact
+custom label color. Bright custom timeline fills use dark text for readability.
+
+The marker editor also edits exact frame time and duration, switches between point and range
+markers, and deletes by marker ID. Double-click a timeline, monitor, or panel marker to edit it;
+right-click exposes Edit Marker and Delete Marker. Source and sequence ownership is shown and
+captured at opening, so changing the open clip or sequence does not redirect edits. Unchanged
+time fields preserve imported subframe ticks. A source range cannot extend beyond its source.
+
+The Markers panel switches between Sequence and Source, searches name/notes/author, filters
+preset and custom colors, and supports Command/Ctrl-click, Shift-click, and Select all for the
+visible rows. Bulk color changes and deletion are each one undo step. Hidden rows leave the
+selection. `markers.edit` and `markers.delete` take an explicit `sequence` (program) or `item`
+(source) and either `marker` or `markers`; invalid IDs reject the entire operation.
+
+Manage Colors is available from the Markers panel and clip Label menus. The separate project
+palette manager adds, names, edits, and removes swatches using the shared color picker. Editing
+or removing a saved swatch preserves already assigned hex values; used colors remain available
+for reuse. `colors.addCustom`, `colors.updateCustom`, and `colors.removeCustom` are undoable.
+Names persist in the project and FilmCraft OTIO metadata; existing sixteen presets are unchanged.
+
+### Editable clip duration
+
+The Clip Speed / Duration dialog lets you type a duration as timecode. Duration and
+Speed describe the same source span: editing either updates the other. Duration uses
+the sequence frame rate; invalid, zero, or out-of-range durations cannot be applied.
+The field is available to automation as `speedDuration.duration`. OK uses the existing
+speed command, including its linked-clip, ripple, neighbour, and Undo behaviour;
+Cancel discards the draft. The selected clip's duration is the reference when more
+than one clip is selected, matching the existing Speed control.
+
+`clip_dialogs_ui::duration_text_edits_speed_and_rejects_invalid_input` exercises real
+text input, validation, application, Cancel, and Undo/Redo.

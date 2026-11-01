@@ -17,6 +17,11 @@
 #   - "Horizontal"/"Vertical" are 水平/垂直 (guides, blur, axes); vertical text is "Vertical Text".
 
 	About FilmCraft	FilmCraft について
+	Check for Updates…	アップデートを確認…
+	Checking for updates…	アップデートを確認中…
+	Could not check for updates:\n{error}	アップデートを確認できませんでした:\n{error}
+	FilmCraft Updates	FilmCraft のアップデート
+	FilmCraft {version} is currently the newest version available.	FilmCraft {version} は最新バージョンです。
 	Add Audio Submix Track	オーディオサブミックストラックを追加
 	Add Caption at Playhead	再生ヘッドの位置にキャプションを追加
 	Add Chapter Marker…	チャプターマーカーを追加…
@@ -71,6 +76,10 @@
 	Captions and Graphics	キャプションとグラフィックス
 	Captions…	キャプション…
 	Caribbean	カリビアン
+	Center at Cut	カット中央
+	Start at Cut	カット開始
+	End at Cut	カット終了
+	Custom Start	カスタム開始
 	Center Horizontally	水平方向の中央に整列
 	Center Vertically	垂直方向の中央に整列
 	Cerulean	セルリアン
@@ -171,6 +180,9 @@
 	Hide All Caption Tracks	すべてのキャプショントラックを非表示
 	High Quality Playback	高画質再生
 	History	履歴
+	Delete Redoable Actions	やり直し可能な操作を削除
+	Clear History	履歴を消去
+	Delete the dimmed actions after the current state? They cannot be redone.	現在の状態より後の淡色表示の操作を削除しますか？ 削除した操作はやり直せません。
 	Import From	読み込み元
 	Import Image Sequence…	連番画像を読み込み…
 	Import from Media Browser	メディアブラウザーから読み込み
@@ -320,6 +332,7 @@
 	Show Active Caption Tracks Only	アクティブなキャプショントラックのみ表示
 	Show All Caption Tracks	すべてのキャプショントラックを表示
 	Show All Marker Colors	すべての色のマーカーを表示
+	Show Duplicate Frame Markers	重複フレームマーカーを表示
 	Show Guides	ガイドを表示
 	Show Rulers	ルーラーを表示
 	Show Through Edits	スルー編集点を表示
@@ -345,6 +358,7 @@
 	Transcribe Sequence…	シーケンスを文字起こし…
 	Transcribe…	文字起こし…
 	Transcript	文字起こし
+	Transparency Grid	透明グリッド
 	Transparent Video…	透明ビデオ…
 	Trim Edit	トリム編集
 	Trim…	トリム…
@@ -444,6 +458,9 @@
 	Recover	復元
 	Not Now	後で
 	Are you sure you want to discard your changes to '{file}'?	「{file}」への変更を破棄してもよろしいですか？
+	Replace File	ファイルを置き換え
+	“{file}” already exists in “{folder}”. Do you want to replace it?	「{file}」は「{folder}」に既に存在します。置き換えますか？
+	Replace	置き換え
 	Yes	はい
 	No	いいえ
 	Add media to your project. Drop files anywhere in the window, or choose a source below.	プロジェクトにメディアを追加します。ウィンドウ内の任意の場所にファイルをドロップするか、下のソースを選択してください。
@@ -505,6 +522,10 @@
 	Reveal Sequence in Project	プロジェクトでシーケンスを表示
 	Video Thumbnails	ビデオサムネイル
 	Audio Waveforms	オーディオ波形
+	Work Area Bar	ワークエリアバー
+	Start: {tc}	開始: {tc}
+	End: {tc}	終了: {tc}
+	Duration: {tc}	長さ: {tc}
 	Delete Preset	プリセットを削除
 	Export Preset…	プリセットを書き出し…
 	Import Presets…	プリセットを読み込み…
@@ -984,7 +1005,6 @@
 	Show graphs	グラフを表示
 	Toggle animation	アニメーションのオン / オフを切り替え
 	Add/Remove Keyframe	キーフレームを追加/削除
-	Temporal Interpolation	時間補間
 	Linear	リニア
 	Bezier	ベジェ
 	Auto Bezier	自動ベジェ
@@ -1033,6 +1053,7 @@
 	All Caps	すべて大文字
 	Small Caps	スモールキャップ
 	Underline	下線
+	Strikethrough	取り消し線
 	OpenType	OpenType
 	Kerning	カーニング
 	Ligatures	合字
@@ -1173,7 +1194,7 @@
 	New Bin	新規ビン
 	Find	検索
 	Automate to Sequence	シーケンスに自動配置
-	Select items to clear	消去する項目を選択してください
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	名前を変更するには、タイムラインでクリップ（またはリンクされたクリップ）を1つ、またはプロジェクトパネルで項目を1つ選択してください
 	User Order	ユーザー定義の順序
 	Descending	降順
 	Refresh Project	プロジェクトを更新
@@ -3225,6 +3246,9 @@
 	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime、ProRes 4444 (4:4:4) アルファチャンネル付き、24-bit 48 kHz PCM
 	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime、ProRes 4444 XQ (4:4:4)、24-bit 48 kHz PCM
 	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime、ProRes 422、24-bit 48 kHz PCM
+	Settings	設定
+	Hide FilmCraft	FilmCraft を隠す
+	Hide Others	ほかを隠す
 	Quit FilmCraft	FilmCraft を終了
 	Rate Stretch Tool	レートストレッチツール
 	Razor Tool	カミソリツール
@@ -3443,8 +3467,8 @@
 	Commits	コミット
 	% of all commits	全コミットに占める割合 (%)
 	Lines +/−	行数 +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	オーディオ出力に失敗したため、無音で再生しています (「環境設定 ▸ オーディオハードウェア」を確認してください)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	オーディオ出力が応答しないため、無音で再生しています (「環境設定 ▸ オーディオハードウェア」を確認してください)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	オーディオ出力に失敗したため、無音で再生しています (「環境設定 > オーディオハードウェア」を確認してください)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	オーディオ出力が応答しないため、無音で再生しています (「環境設定 > オーディオハードウェア」を確認してください)
 	Clip Speed / Duration	クリップの速度 / 長さ
 	Speed:	速度:
 	Reverse Speed	逆再生する
@@ -3604,15 +3628,106 @@
 	Export the labels to a preset file…	ラベルをプリセットファイルに書き出し…
 	Show the presets folder	プリセットフォルダーを表示
 	Delete this preset	このプリセットを削除
-	Opens in your web browser: {url}	ウェブブラウザーで開きます：{url}
 	Saves this session's log and shows it in your file manager.	このセッションのログを保存し、ファイルマネージャーで表示します。
 	Shows a report on this computer.	このコンピューターのレポートを表示します。
 	Shows the version, community links and credits in a FilmCraft window.	バージョン、コミュニティへのリンク、クレジットを FilmCraft のウィンドウに表示します。
+	Looks for a newer FilmCraft release and offers to update.	FilmCraft の新しいリリースを確認し、アップデートを提案します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：
-# View ▸ Reset Interface Zoom (#2253).
+# View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	インターフェイスのズームをリセット
 	Track Color	トラックカラー
 	Open a sequence to search its graphics	シーケンスを開くとグラフィックスを検索できます
 	No text graphics in this sequence. Add text with the Type tool.	このシーケンスにはテキストのグラフィックスがありません。文字ツールでテキストを追加してください。
 	No matching text.	一致するテキストはありません。
+# Markers: the Edit Marker dialog (#2416).
+	Edit Marker…	マーカーを編集…
+	In:	イン:
+	Marker Color:	マーカーのカラー:
+	Options:	オプション:
+	Comment Marker	コメントマーカー
+	Chapter Marker	チャプターマーカー
+	Segmentation Marker	セグメンテーションマーカー
+	Web Link	Web リンク
+	Flash Cue Point	フラッシュキューポイント
+	Invalid duration: {error}	無効なデュレーション: {error}
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) にはハードウェアエンコーダー（NVIDIA GPU の NVENC、macOS の VideoToolbox）が必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの H.265 エンコーダーがありません。代わりに H.264 または ProRes を選んでください。
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 にはハードウェアエンコーダーが必要です。このマシンには見つからず、FilmCraft にはまだソフトウェアの AV1 エンコーダーがありません。
+	Enter a positive duration within the supported speed range.	対応する速度の範囲内で正の長さを入力してください。
+	Show Video Names	ビデオ名を表示
+	Show Audio Names	オーディオ名を表示
+	Video Names	ビデオ名
+	Audio Names	オーディオ名
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	コントロールサーバーが無効です: FILMCRAFT_CONTROL_TOKEN には 64 文字のランダムな 16 進数文字が必要です (docs/control-protocol.md を参照)
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Clip Mismatch Warning dialog.
+	Clip Mismatch Warning	クリップの不一致警告
+	This clip does not match the sequence settings.	このクリップはシーケンス設定と一致しません。
+	Clip: {settings}	クリップ: {settings}
+	Sequence: {settings}	シーケンス: {settings}
+	Change the sequence to match the clip's settings?	シーケンスをクリップの設定に合わせますか？
+	Change Sequence Settings	シーケンス設定を変更
+	Keep Existing Settings	現在の設定を維持
+	Temporal Interpolation	時間補間
+	Select items to clear	消去する項目を選択してください
+	Opens in your web browser: {url}	ウェブブラウザーで開きます：{url}
+	A range marker needs a positive duration	範囲マーカーのデュレーションは正の値にしてください
+	Add Custom Color	カスタムカラーを追加
+	Add and apply	追加して適用
+	Add color	カラーを追加
+	Add custom color	カスタムカラーを追加
+	Add custom color…	カスタムカラーを追加…
+	Author	作成者
+	Chapter	チャプター
+	Choose Color…	カラーを選択…
+	Choose color with system picker	システムのカラーピッカーで選択
+	Color picker	カラーピッカー
+	Color selected markers	選択したマーカーのカラーを変更
+	Custom Color…	カスタムカラー…
+	Delete Marker	マーカーを削除
+	Delete selected markers	選択したマーカーを削除
+	Edit Custom Color	カスタムカラーを編集
+	Edit Marker	マーカーを編集
+	Edit color	カラーを編集
+	Editing or removing a swatch leaves assigned colors unchanged.	スウォッチを編集または削除しても、割り当て済みのカラーは変わりません。
+	Enter six hex digits, for example FF80C0.	16進数を6桁入力してください（例：FF80C0）。
+	Hex	16進数
+	Hex color	16進数カラー
+	Manage Colors	カラーを管理
+	Manage Colors…	カラーを管理…
+	Marker owner is unavailable	マーカーの所有元を利用できません
+	No markers	マーカーがありません
+	No matching markers	一致するマーカーがありません
+	No saved colors	保存済みのカラーがありません
+	No sequence open	シーケンスが開かれていません
+	No source clip open	ソースクリップが開かれていません
+	Notes	メモ
+	Project Colors	プロジェクトカラー
+	Range marker	範囲マーカー
+	Remove saved color	保存済みのカラーを削除
+	Save color	カラーを保存
+	Search markers	マーカーを検索
+	Search name, notes, author	名前、メモ、作成者を検索
+	Select all	すべて選択
+	Select all visible markers	表示中のすべてのマーカーを選択
+	Sequence: {name}	シーケンス：{name}
+	Source: {name}	ソース：{name}
+	Source: {name} (shared source markers)	ソース：{name}（共有ソースマーカー）
+	System color picker unavailable: {error}	システムのカラーピッカーを利用できません：{error}
+	Time is outside the supported range	時刻が対応範囲外です
+	{count} selected	{count} 個選択中
+	Remove Custom Color	カスタムカラーを削除
+	Edit Markers	マーカーを編集
+	Delete Markers	マーカーを削除
+	Marker changed or was removed. Reopen it to continue.	マーカーが変更または削除されました。続行するには開き直してください。
+	URL	URL
+	Open Link	リンクを開く
+	Opens this address in your web browser	このアドレスをウェブブラウザーで開きます
+	Enter a valid HTTP or HTTPS URL without credentials	認証情報を含まない有効な HTTP または HTTPS URL を入力してください
+	Previous	前へ
+	Next	次へ
+	Enter a valid HH:MM:SS:FF timecode	有効なタイムコードを HH:MM:SS:FF 形式で入力してください
