@@ -67,7 +67,7 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
 
     #[inline]
     fn mv_at(&self, x: i32, y: i32) -> MvField {
-        self.pic.mvf[(y as usize >> 2) * self.pic.w4 + (x as usize >> 2)]
+        self.pic.mvf[self.pic.bidx(x, y)]
     }
 
     #[inline]
@@ -151,38 +151,35 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
             col.ref_idx[1] = 0;
             col_avail = true;
         }
-        let mut cands: Vec<MvField> = list[..n].to_vec();
         if col_avail {
-            cands.push(col);
+            list[n] = col;
+            n += 1;
         }
-        if merge_idx < cands.len() {
-            return self.finish_merge(cands[merge_idx], w0, h0);
+        if merge_idx < n {
+            return self.finish_merge(list[merge_idx], w0, h0);
         }
         // combined bi-predictive candidates (8.5.3.2.4)
-        let num_orig = cands.len();
+        let num_orig = n;
         if self.sh.is_b() && num_orig > 1 && num_orig < max {
             let mut comb = 0;
-            while comb < num_orig * (num_orig - 1) && cands.len() < max {
+            while comb < num_orig * (num_orig - 1) && n < max {
                 let (i0, i1) = COMB[comb];
-                let (c0, c1) = (cands[i0], cands[i1]);
+                let (c0, c1) = (list[i0], list[i1]);
                 if c0.pred(0) && c1.pred(1) && (self.ref_pic(0, c0.ref_idx[0]).poc != self.ref_pic(1, c1.ref_idx[1]).poc || c0.mv[0] != c1.mv[1]) {
-                    cands.push(MvField { mv: [c0.mv[0], c1.mv[1]], ref_idx: [c0.ref_idx[0], c1.ref_idx[1]] });
+                    list[n] = MvField { mv: [c0.mv[0], c1.mv[1]], ref_idx: [c0.ref_idx[0], c1.ref_idx[1]] };
+                    n += 1;
                 }
                 comb += 1;
             }
         }
-        if merge_idx < cands.len() {
-            return self.finish_merge(cands[merge_idx], w0, h0);
+        if merge_idx < n {
+            return self.finish_merge(list[merge_idx], w0, h0);
         }
-        // zero candidates (8.5.3.2.5)
+        // zero candidates (8.5.3.2.5): candidate merge_idx is the (merge_idx - n)-th one
         let num_ref = if self.sh.is_b() { self.sh.num_ref_idx[0].min(self.sh.num_ref_idx[1]) } else { self.sh.num_ref_idx[0] } as usize;
-        let mut zero_idx = 0;
-        while cands.len() <= merge_idx {
-            let r = if zero_idx < num_ref { zero_idx as i8 } else { 0 };
-            cands.push(MvField { mv: [[0; 2]; 2], ref_idx: [r, if self.sh.is_b() { r } else { -1 }] });
-            zero_idx += 1;
-        }
-        self.finish_merge(cands[merge_idx], w0, h0)
+        let zero_idx = merge_idx - n;
+        let r = if zero_idx < num_ref { zero_idx as i8 } else { 0 };
+        self.finish_merge(MvField { mv: [[0; 2]; 2], ref_idx: [r, if self.sh.is_b() { r } else { -1 }] }, w0, h0)
     }
 
     fn finish_merge(&self, mut f: MvField, w: i32, h: i32) -> MvField {
