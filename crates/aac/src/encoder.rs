@@ -25,7 +25,7 @@ use crate::tables::{sample_rate_index, swb_offsets_long, swb_offsets_short, tns_
 use crate::tns::{self, TnsData, TnsFilter};
 use crate::{Error, FRAME_LEN, Result};
 use psy::Psy;
-use quant::{ChannelInput, QuantChannel, quantise_channel, write_ics};
+use quant::{ChannelInput, QuantCache, QuantChannel, quantise_channel, write_ics};
 
 /// Rate control mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -110,6 +110,8 @@ struct ElementState {
 struct ElementFrame {
     info: IcsInfo,
     chans: Vec<ChannelInput>,
+    /// Rate-loop memo per channel, filled while the frame is quantised.
+    caches: Vec<QuantCache>,
     ms_mask: Option<(u32, Vec<bool>)>,
 }
 
@@ -575,14 +577,15 @@ impl Encoder {
             };
             ms_mask = Some((present, used));
         }
-        let chans = specs.iter().zip(thrs.iter()).zip(tnss).map(|((s, th), tn)| ChannelInput::new(info, swb, s, th, tn)).collect();
+        let chans: Vec<ChannelInput> = specs.iter().zip(thrs.iter()).zip(tnss).map(|((s, th), tn)| ChannelInput::new(info, swb, s, th, tn)).collect();
+        let caches = chans.iter().map(QuantCache::new).collect();
         let e = &mut self.elements[ei];
         e.prev_seq = seq;
         e.short_next = Some(short_next);
         if short {
             self.stats.short_blocks += 1;
         }
-        (ElementFrame { info, chans, ms_mask }, pe)
+        (ElementFrame { info, chans, caches, ms_mask }, pe)
     }
 
     fn element_overhead(&self, ei: usize, f: &ElementFrame) -> u32 {
@@ -599,15 +602,18 @@ impl Encoder {
         }
     }
 
-    fn quantise_all(frames: &[ElementFrame], lambda: f32) -> Vec<Vec<QuantChannel>> {
+    fn quantise_all(frames: &mut [ElementFrame], lambda: f32) -> Vec<Vec<QuantChannel>> {
         #[cfg(feature = "rayon")]
         {
             use rayon::prelude::*;
-            frames.par_iter().map(|f| f.chans.par_iter().map(|c| quantise_channel(c, lambda)).collect()).collect()
+            frames
+                .par_iter_mut()
+                .map(|f| f.chans.par_iter().zip(f.caches.par_iter_mut()).map(|(c, cache)| quantise_channel(c, cache, lambda)).collect())
+                .collect()
         }
         #[cfg(not(feature = "rayon"))]
         {
-            frames.iter().map(|f| f.chans.iter().map(|c| quantise_channel(c, lambda)).collect()).collect()
+            frames.iter_mut().map(|f| f.chans.iter().zip(f.caches.iter_mut()).map(|(c, cache)| quantise_channel(c, cache, lambda)).collect()).collect()
         }
     }
 
@@ -660,16 +666,16 @@ impl Encoder {
             BitrateMode::Vbr(q) => {
                 let d = q.clamp(0.5, 6.0) - 1.0;
                 let mut lambda = 10f32.powf(-0.2 - 1.2 * d + 0.09 * d * d);
-                let mut res = Self::quantise_all(&frames, lambda);
+                let mut res = Self::quantise_all(&mut frames, lambda);
                 while total_bits(&res) > target && lambda < 1e9 {
                     lambda *= 2.0;
-                    res = Self::quantise_all(&frames, lambda);
+                    res = Self::quantise_all(&mut frames, lambda);
                 }
                 res
             }
             BitrateMode::Cbr(_) => {
                 let mut lam = self.lambda.clamp(1e-6, 1e9);
-                let mut cur = Self::quantise_all(&frames, lam);
+                let mut cur = Self::quantise_all(&mut frames, lam);
                 let (mut lo, mut hi, mut best);
                 if total_bits(&cur) <= target {
                     hi = lam;
@@ -680,7 +686,7 @@ impl Encoder {
                         if lo < 1e-6 {
                             break;
                         }
-                        cur = Self::quantise_all(&frames, lo);
+                        cur = Self::quantise_all(&mut frames, lo);
                         if total_bits(&cur) > target {
                             break;
                         }
@@ -691,7 +697,7 @@ impl Encoder {
                     lo = lam;
                     loop {
                         lam *= 4.0;
-                        cur = Self::quantise_all(&frames, lam);
+                        cur = Self::quantise_all(&mut frames, lam);
                         if total_bits(&cur) <= target || lam > 1e9 {
                             break;
                         }
@@ -705,7 +711,7 @@ impl Encoder {
                         break;
                     }
                     let mid = (lo * hi).sqrt();
-                    let r = Self::quantise_all(&frames, mid);
+                    let r = Self::quantise_all(&mut frames, mid);
                     if total_bits(&r) <= target {
                         hi = mid;
                         best = r;

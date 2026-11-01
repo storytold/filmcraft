@@ -1,7 +1,7 @@
 use super::layer_identity::{current_layer_fingerprint, current_layer_layout_fingerprint, current_layer_text, current_layer_uid, layer_fingerprint};
 use super::overlay::TEXT_EDIT_ID;
 use super::text_edit::{char_boundary_floor, text_of};
-use super::*;
+use super::{ClipId, Color32, FilmcraftApp, GfxEdit, ImeTarget, LayerView, Pos2, Rect, Session, Stroke, layer_indices, pos2, vec2};
 
 /// The Program monitor editor drawn in one pass, remembered so the end-of-pass IME check can run
 /// after that pass's control requests have been drained. It holds only geometry, never a copy of

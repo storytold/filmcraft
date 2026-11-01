@@ -92,7 +92,7 @@ impl VideoEncoder for NvencEncoder {
                 // `Nvenc::new` built and validated the record, so there is always one for HEVC
                 let mut e = SampleEntry::hevc(self.enc.hevc_config().cloned().unwrap_or_default(), w, h);
                 // HDR: `colr` (BT.2020 + PQ / HLG) and, for PQ, `mdcv` / `clli`, as the software H.264 encoder does
-                // (nclx, whatever the container: readers take it from either). SDR stays as it was, with the VUI only.
+                // (nclx, whatever the container: readers take it from either). SDR gets a BT.709 `colr` only (#2142).
                 self.signal.apply_to(&mut e, false);
                 e
             }
@@ -114,7 +114,7 @@ impl VideoEncoder for NvencEncoder {
             (true, Some(rgb)) => {
                 let (kr, kb) = self.signal.kr_kb();
                 filmcraft_export::timed(filmcraft_export::Stage::Convert, || {
-                    filmcraft_export::rgbf_to_yuv420_10(rgb, w, h, kr, kb, &mut self.y16, &mut self.u16, &mut self.v16)
+                    filmcraft_export::rgbf_to_yuv420_10(rgb, w, h, filmcraft_export::Matrix::new(kr, kb), &mut self.y16, &mut self.u16, &mut self.v16)
                 })?;
                 self.enc.encode_10(&self.y16, &self.u16, &self.v16, f.index).map_err(|e| ExportError::Encode(format!("NVENC: {e}{hint}")))?
             }

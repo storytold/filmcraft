@@ -6,7 +6,10 @@ use filmcraft_project::EffectInstance;
 use filmcraft_time::Tick;
 use rayon::prelude::*;
 
-use super::*;
+use super::{
+    FxCtx, Image, Vec2, alpha_of, blend_simple, blur_plane, bv, chv, cv, dec, enc, fbm, fv, generate, hash01, lerp3, lin, luma, noise3, offv, over, pv,
+    smoothstep,
+};
 
 /// Brush Strokes: a painterly look from short directional strokes (angle jittered per cell).
 pub fn brush_strokes(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {

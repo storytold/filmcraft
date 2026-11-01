@@ -573,19 +573,32 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let c = rect.center();
         icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
         ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, tl!("Transcribe sequence"), Tokens::semibold(16.0), t.text);
-        let note = if filmcraft_speech_available(app) {
+        let available = filmcraft_speech_available(app);
+        let note = if available {
             tl!("Speech-to-text turns the dialogue into editable text.")
         } else {
             tl!("This build has no speech-to-text; import a transcript with transcript.set.")
         };
         ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, note, Tokens::ui(12.0), t.text_dim);
         let r = Rect::from_center_size(c + vec2(0.0, 26.0), vec2(200.0, 26.0));
-        let resp = ui.interact(r, egui::Id::unique("text.transcript.generate"), Sense::click());
-        ui.painter().rect_filled(r, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), Color32::WHITE);
+        // without speech-to-text the button is shown disabled: it looked ready and a click did
+        // nothing visible (the refusal only flashed in the status bar, #2402)
+        let resp = ui.interact(r, egui::Id::unique("text.transcript.generate"), if available { Sense::click() } else { Sense::hover() });
+        let fill = match (available, resp.hovered()) {
+            (false, _) => t.separator,
+            (true, true) => t.accent_hover,
+            (true, false) => t.accent,
+        };
+        ui.painter().rect_filled(r, 13.0, fill);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, tl!("Transcribe"), Tokens::semibold(12.0), if available { Color32::WHITE } else { t.text_dim });
         app.auto.add("text.transcript.generate", r, "Transcribe");
-        if resp.clicked() {
+        if let Some(e) = app.auto.elements.last_mut() {
+            e.enabled = Some(available);
+        }
+        if available && resp.clicked() {
             actions.push(("transcript.generate".into(), json!({})));
+        } else if !available {
+            resp.on_hover_text(note);
         }
         run(app, ui, actions);
         return;
@@ -699,6 +712,21 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             }
         });
         app.auto.add("text.captions.style.font", r.response.rect, "Caption font");
+        // the styles of the track's family, next to the font
+        let styles = filmcraft_text::families().into_iter().find(|(f, _)| f.eq_ignore_ascii_case(&st.font)).map(|(_, v)| v).unwrap_or_default();
+        let r = craft_ui::ComboBox::from_id_salt(("caption-font-style", tr.id.0)).selected_text(&st.font_style).width(100.0).height(300.0).show_ui(ui, |ui| {
+            for name in &styles {
+                let resp = ui.selectable_label(name.eq_ignore_ascii_case(&st.font_style), name);
+                let visible = resp.rect.intersect(ui.clip_rect());
+                if visible.is_positive() {
+                    app.auto.add(&format!("text.captions.style.fontStyle.option.{name}"), visible, name);
+                }
+                if resp.clicked() {
+                    actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "fontStyle": name})));
+                }
+            }
+        });
+        app.auto.add("text.captions.style.fontStyle", r.response.rect, "Caption font style");
         let mut size = st.size;
         let resp = ui.add(crate::widgets::number_drag(&mut size).range(8.0..=200.0).speed(0.5).suffix(" px"));
         app.auto.add("text.captions.style.size", resp.rect, "Caption size");

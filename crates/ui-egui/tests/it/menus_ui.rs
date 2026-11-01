@@ -121,6 +121,33 @@ fn menu_items_toggles_and_help() {
     assert_eq!(d.call("ui.menu.invoke", json!({"id": "file.importFromMediaBrowser"}))["ok"], false);
 }
 
+/// #2623: the engine's on/off commands in the Sequence and Markers menus show their state, so
+/// choosing one visibly turns it on or off.
+#[test]
+fn engine_toggles_show_their_checkmark() {
+    let mut d = Driver::new();
+    let checked = |d: &mut Driver, id: &str| {
+        let menus = d.ok("ui.menu.list", json!({}));
+        menus.as_array().unwrap().iter().find(|m| m["id"] == id).unwrap_or_else(|| panic!("{id} not in menus"))["checked"].clone()
+    };
+    for (id, on) in [
+        ("sequence.snap", true),
+        ("sequence.linkedSelection", true),
+        ("sequence.selectionFollowsPlayhead", false),
+        ("sequence.showThroughEdits", false),
+        ("markers.rippleSequenceMarkers", false),
+        ("markers.copyPasteIncludesSequenceMarkers", false),
+    ] {
+        assert_eq!(checked(&mut d, id), json!(on), "{id} before");
+        d.menu(id);
+        assert_eq!(checked(&mut d, id), json!(!on), "{id} after choosing it");
+    }
+    assert!(d.app().session.state.ripple_sequence_markers);
+    d.menu("markers.rippleSequenceMarkers");
+    assert_eq!(checked(&mut d, "markers.rippleSequenceMarkers"), json!(false));
+    assert!(!d.app().session.state.ripple_sequence_markers);
+}
+
 #[test]
 fn import_image_sequence_from_the_file_menu_and_media_browser() {
     let dir = std::env::temp_dir().join(format!("fc-ui-imgseq-{}", std::process::id()));
@@ -358,5 +385,26 @@ fn saved_projects_are_listed_in_home_and_open_recent() {
     let clear = menus.as_array().unwrap().iter().find(|m| m["id"] == "file.clearRecent").cloned().expect("Clear Recent Files");
     assert_eq!(clear["enabled"], false);
     assert!(!menus.as_array().unwrap().iter().any(|m| m["id"].as_str().is_some_and(|id| id.starts_with("file.openRecent."))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn saving_the_project_says_where_in_the_status_bar() {
+    let dir = std::env::temp_dir().join(format!("fc-ui-saved-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut d = Driver::new();
+    let status = |d: &mut Driver| d.app().ui.status.clone();
+    let first = dir.join("first.fcproj").to_string_lossy().to_string();
+    d.ok("ui.menu.invoke", json!({"id": "file.saveAs", "params": {"path": first}}));
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    d.app().ui.status.clear();
+    d.menu("file.save");
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    d.app().ui.status.clear();
+    d.menu("file.saveAll");
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    let copy = dir.join("copy.fcproj").to_string_lossy().to_string();
+    d.ok("ui.menu.invoke", json!({"id": "file.saveCopy", "params": {"path": copy}}));
+    assert_eq!(status(&mut d), format!("Copy of the project saved to {copy}"));
     let _ = std::fs::remove_dir_all(&dir);
 }

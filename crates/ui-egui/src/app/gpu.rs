@@ -1,4 +1,4 @@
-use super::*;
+use super::{FilmcraftApp, FrameKey, GpuState, frames, gpu_compositor_unsupported, plan_side};
 
 impl FilmcraftApp {
     /// Enable the GPU compositor on the eframe wgpu device.
