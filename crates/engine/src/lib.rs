@@ -689,7 +689,7 @@ impl Session {
             return;
         }
         if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+            p.send_dirty(self.project.clone(), self.media.clone(), self.revision, self.path.clone());
         } else {
             p.send_clean();
         }
