@@ -398,9 +398,10 @@ const VOLUME_MAX_DB: f64 = 15.0;
 /// Change the Volume level of the selected audio clips by `db` (keyframed levels shift as a whole).
 pub fn adjust_clip_volume(s: &mut Session, db: f64) -> Result<Value> {
     s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let audio = audio_clips_of(s, &s.state.selection.clone());
+    let selection = s.state.selection.clone();
+    let audio = audio_clips_of(s, &selection);
     if audio.is_empty() {
-        return Err(EngineError::Other("select audio clips".into()));
+        return Err(EngineError::Other(no_audio_why(s, &selection).into()));
     }
     let label = if db > 0.0 { "Increase Clip Volume" } else { "Decrease Clip Volume" };
     shift_audio_param(s, &audio, AudioParam::Volume, db, label, None)?;
@@ -469,20 +470,35 @@ fn audio_values(s: &Session, clips: &[ClipId], param: AudioParam) -> Vec<Value> 
 }
 
 /// The audio clips among `clips` and, when linked selection is on, their linked partners: what the
-/// clip volume keys and the Properties panel act on.
+/// clip volume keys and the Properties panel act on. Video clips and clips on locked tracks are
+/// left out (skipped, not an error).
 pub fn audio_clips_of(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
     let Some(seq) = s.active_sequence() else { return Vec::new() };
-    with_links(s, clips).into_iter().filter(|c| seq.find_item(*c).and_then(|(t, _)| seq.track(t)).is_some_and(|t| t.kind == TrackKind::Audio)).collect()
+    with_links(s, clips)
+        .into_iter()
+        .filter(|c| seq.find_item(*c).and_then(|(t, _)| seq.track(t)).is_some_and(|t| t.kind == TrackKind::Audio && !t.locked))
+        .collect()
+}
+
+/// Why there is nothing for the clip volume keys or `clip.adjustAudio` to change.
+fn no_audio_why(s: &Session, clips: &[ClipId]) -> &'static str {
+    let Some(seq) = s.active_sequence() else { return "select audio clips" };
+    let locked =
+        with_links(s, clips).into_iter().any(|c| seq.find_item(c).and_then(|(t, _)| seq.track(t)).is_some_and(|t| t.kind == TrackKind::Audio && t.locked));
+    if locked { "the selected audio clips are on locked tracks" } else { "select audio clips" }
 }
 
 /// `clip.adjustAudio {clips?, volumeDb?, pan?, merge?, begin?}`: the Properties panel's Level and
-/// Pan with several audio clips selected (#3710). Each clip moves by the same difference.
+/// Pan with several audio clips selected (#3710). Each clip moves by the same difference, whether the
+/// panel's value was dragged or typed: the panel sends the shown clip's change (typed value minus
+/// shown value), so clips with different levels keep their differences. Video clips and clips on
+/// locked tracks in the selection are skipped.
 fn adjust_audio_command(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "clip.adjustAudio";
     let picked = target_clips_p(s, p, C)?.unwrap_or_else(|| s.state.selection.clone());
     let audio = audio_clips_of(s, &picked);
     if audio.is_empty() {
-        return Err(bad(C, "select audio clips"));
+        return Err(bad(C, no_audio_why(s, &picked)));
     }
     let delta = |k: &str| -> Result<Option<f64>> {
         match p.get(k).filter(|v| !v.is_null()) {
@@ -866,7 +882,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "clip.adjustAudio",
             "Adjust Clip Volume and Pan",
             None,
-            r#"{"clips":[id]? (default: the selection; linked audio follows when linked selection is on),"volumeDb":f64? (added to each clip's Volume level, keyframes too),"pan":f64? (added to each clip's Panner balance),"merge":bool?,"begin":bool?}"#,
+            r#"{"clips":[id]? (default: the selection; linked audio follows when linked selection is on; video clips and locked tracks are skipped),"volumeDb":f64? (added to each clip's Volume level, keyframes too),"pan":f64? (added to each clip's Panner balance),"merge":bool?,"begin":bool?}"#,
             has_selection,
             adjust_audio_command,
         ),

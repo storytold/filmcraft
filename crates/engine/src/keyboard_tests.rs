@@ -351,6 +351,39 @@ fn adjust_audio_moves_every_selected_clip_by_the_same_amount() {
     assert!(s.execute("clip.adjustAudio", json!({"clips": [v], "volumeDb": 1.0})).is_err(), "a video clip alone has no audio to change");
 }
 
+/// #3738 review: a selection that mixes audio with video clips and with a clip on a locked track
+/// changes only the unlocked audio clips; the others are skipped, not an error. With every audio
+/// clip locked, the command says so.
+#[test]
+fn adjust_audio_skips_video_and_locked_clips() {
+    let mut s = demo();
+    s.state.linked_selection = false;
+    let (first, start, end) = items(&s, TrackKind::Audio, 0)[0];
+    s.execute("timeline.razor", json!({"clip": first, "time": (start + Tick((end.0 - start.0) / 2)).0})).unwrap();
+    let (a, b) = (items(&s, TrackKind::Audio, 0)[0].0, items(&s, TrackKind::Audio, 0)[1].0);
+    // a clip on a second audio track, which gets locked
+    s.execute("timeline.place", json!({"item": clip(&s, a).item.0, "track": "A2", "seconds": 0.0, "insert": false})).unwrap();
+    let locked = items(&s, TrackKind::Audio, 1)[0].0;
+    s.execute("timeline.setTrack", json!({"track": "A2", "locked": true})).unwrap();
+    let video = items(&s, TrackKind::Video, 0)[0].0;
+    s.execute("effects.setParam", json!({"clip": a, "effect": "volume", "param": "level", "value": -4.0})).unwrap();
+    let before = (level(&s, a), level(&s, b), level(&s, locked));
+
+    let r = s.execute("clip.adjustAudio", json!({"clips": [a, b, locked, video], "volumeDb": 2.0})).unwrap();
+    assert_eq!(r["clips"], json!([a, b]), "only the unlocked audio clips: {r}");
+    assert_eq!((level(&s, a), level(&s, b), level(&s, locked)), (before.0 + 2.0, before.1 + 2.0, before.2), "the locked clip keeps its level");
+    s.undo();
+    assert_eq!((level(&s, a), level(&s, b), level(&s, locked)), before);
+
+    // the clip volume keys skip it too
+    s.execute("timeline.select", json!({"clips": [a, locked, video]})).unwrap();
+    s.execute("clip.volumeUp", json!({})).unwrap();
+    assert_eq!((level(&s, a), level(&s, locked)), (before.0 + 1.0, before.2));
+
+    let e = s.execute("clip.adjustAudio", json!({"clips": [locked, video], "volumeDb": 1.0})).unwrap_err();
+    assert!(e.to_string().contains("locked tracks"), "{e}");
+}
+
 #[test]
 fn text_layer_keys_change_size_leading_alignment_and_position() {
     let mut s = demo();
