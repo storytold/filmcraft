@@ -745,13 +745,7 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
         }
         // Font style (#3357): Regular, SemiBold, Bold, Italic, BoldItalic.
         ui.label(egui::RichText::new(tl!("Style")).size(11.0).color(app.tokens.text_dim));
-        for (style_name, label) in [
-            ("Regular", "Reg"),
-            ("SemiBold", "SemB"),
-            ("Bold", "Bld"),
-            ("Italic", "It"),
-            ("BoldItalic", "BdIt"),
-        ] {
+        for (style_name, label) in [("Regular", "Reg"), ("SemiBold", "SemB"), ("Bold", "Bld"), ("Italic", "It"), ("BoldItalic", "BdIt")] {
             let active = st.font_style == style_name || (style_name == "SemiBold" && st.font_style.is_empty());
             let resp = ui.selectable_label(active, label).on_hover_text(style_name);
             app.auto.add(&format!("text.captions.style.fontStyle.{style_name}"), resp.rect, style_name);
