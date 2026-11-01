@@ -799,7 +799,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
 }
 
 /// Go on after the unsaved-changes prompt (Don't Save, or Save once it saved): close the project,
-/// then for Quit close the window; for Open open the chosen project instead of closing.
+/// then for Quit close the window; for Open open the chosen project instead of closing; and open
+/// the files the OS asked for while the project had unsaved changes (`params.open`, a Finder
+/// double-click).
 fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) {
     let command = prompt.command.as_str();
     // Quit ▸ Don't Save discards the changes: closing the project also clears their recovery
@@ -822,6 +824,11 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
             Ok(_) => edit_after_open(app, prompt),
             Err(e) => app.ui.status = e.to_string(),
         }
+    }
+    if let Some(open) = prompt.params.get("open") {
+        let project = open["project"].as_str().map(str::to_string);
+        let media = open["media"].as_array().map(|m| m.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+        app.open_files(ctx, project, media);
     }
 }
 
