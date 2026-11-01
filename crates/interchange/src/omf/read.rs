@@ -10,6 +10,8 @@ use crate::{Error, Report, Result};
 
 type Uid = [u8; 12];
 
+const MAX_REFERENCE_VISITS: usize = 65_536;
+
 struct R<'a, 'b> {
     c: &'b Container<'a>,
     report: &'b mut Report,
@@ -51,8 +53,10 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
     }
     let cmobs: Vec<u32> = mob_list.iter().copied().filter(|&m| class_of(m) == Some(*b"CMOB")).collect();
     let mut referenced = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut visits = 0;
     for &m in &cmobs {
-        r.collect_refs(m, &mut referenced, 0);
+        r.collect_refs(m, &mut referenced, &mut visited, &mut visits, 0);
     }
     let primary: Vec<u32> = r.refs(head, "OMFI:HEAD:PrimaryMobs").into_iter().filter(|m| cmobs.contains(m)).collect();
     let top: Vec<u32> = if !primary.is_empty() {
@@ -122,10 +126,11 @@ impl R<'_, '_> {
         self.i32(o, "OMFI:CPNT:Length").unwrap_or(0).max(0)
     }
 
-    fn collect_refs(&self, o: u32, out: &mut HashSet<Uid>, depth: usize) {
-        if depth > 64 {
+    fn collect_refs(&self, o: u32, out: &mut HashSet<Uid>, visited: &mut HashSet<u32>, visits: &mut usize, depth: usize) {
+        if depth > 64 || !visited.insert(o) || *visits >= MAX_REFERENCE_VISITS {
             return;
         }
+        *visits += 1;
         if self.class(o) == *b"SCLP"
             && let Some(id) = self.uid(o, "OMFI:SCLP:SourceID")
         {
@@ -133,12 +138,12 @@ impl R<'_, '_> {
         }
         for p in ["OMFI:MOBJ:Slots", "OMFI:SEQU:Components", "OMFI:EFFE:EffectSlots"] {
             for c in self.refs(o, p) {
-                self.collect_refs(c, out, depth + 1);
+                self.collect_refs(c, out, visited, visits, depth + 1);
             }
         }
         for p in ["OMFI:MSLT:Segment", "OMFI:ESLT:ArgValue"] {
             if let Some(c) = self.r#ref(o, p) {
-                self.collect_refs(c, out, depth + 1);
+                self.collect_refs(c, out, visited, visits, depth + 1);
             }
         }
     }

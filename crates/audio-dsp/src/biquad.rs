@@ -228,4 +228,99 @@ mod tests {
         }
         assert_eq!(last, 0.0);
     }
+
+    // ----------------------------------------------------------------- non-finite input
+
+    fn flush_reference(x: f64) -> f64 {
+        if x.abs() < 1e-30 { 0.0 } else { x }
+    }
+
+    fn flush32_reference(x: f32) -> f32 {
+        if x.abs() < 1e-25 { 0.0 } else { x }
+    }
+
+    #[test]
+    fn flush_is_unchanged_for_finite_values() {
+        let mut rng = Rng::new(21);
+        let mut xs = vec![0.0, -0.0, 1e-30, -1e-30, 1e-300, f64::MIN_POSITIVE, 5e-324, f64::MAX, f64::MIN, 1.0, -1.0];
+        xs.extend([1e-30f64.next_down(), 1e-30f64.next_up(), (-1e-30f64).next_down(), (-1e-30f64).next_up()]);
+        for _ in 0..100_000 {
+            let m = rng.uniform() as f64;
+            let e = (rng.uniform() * 300.0) as i32;
+            xs.push(m * 10f64.powi(e));
+        }
+        for &x in &xs {
+            assert_eq!(crate::flush(x).to_bits(), flush_reference(x).to_bits(), "{x:e}");
+            let y = x as f32;
+            if y.is_finite() {
+                assert_eq!(crate::flush32(y).to_bits(), flush32_reference(y).to_bits(), "{y:e}");
+            }
+        }
+        for y in [1e-25f32, 1e-25f32.next_down(), -1e-25f32, f32::MAX, f32::MIN, 1e-45] {
+            assert_eq!(crate::flush32(y).to_bits(), flush32_reference(y).to_bits(), "{y:e}");
+        }
+        for x in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(crate::flush(x), 0.0);
+            assert_eq!(crate::flush32(x as f32), 0.0);
+        }
+    }
+
+    /// Run `tick` over noise with one non-finite sample at index 100 and return the output.
+    fn run_with_bad_sample(bad: f32, mut tick: impl FnMut(f32) -> f32) -> Vec<f32> {
+        let mut rng = Rng::new(4);
+        (0..4800)
+            .map(|i| {
+                let x = if i == 100 { bad } else { 0.5 * rng.uniform() };
+                tick(x)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn one_non_finite_sample_does_not_poison_filter_state() {
+        use crate::effects::util::{AllPass1, DcBlock, OnePole};
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let c = Coeffs::design(FilterType::Peaking, SR, 1000.0, 1.0, 6.0);
+            let mut bq = Biquad::new();
+            let mut lp = OnePole::default();
+            let mut hp = OnePole::default();
+            let a = OnePole::alpha(500.0, SR as f32);
+            let mut ap = AllPass1::default();
+            let apc = AllPass1::coef(1000.0, SR as f32);
+            let mut dc = DcBlock::default();
+            let r = DcBlock::r(SR as f32);
+            let outputs = [
+                ("Biquad", run_with_bad_sample(bad, |x| bq.tick(&c, x as f64) as f32)),
+                ("OnePole lp", run_with_bad_sample(bad, |x| lp.lp(a, x))),
+                ("OnePole hp", run_with_bad_sample(bad, |x| hp.hp(a, x))),
+                ("AllPass1", run_with_bad_sample(bad, |x| ap.tick(apc, x as f64) as f32)),
+                ("DcBlock", run_with_bad_sample(bad, |x| dc.tick(r, x))),
+            ];
+            for (name, y) in outputs {
+                assert!(y[..100].iter().all(|v| v.is_finite()), "{name} {bad}");
+                assert!(y[102..].iter().all(|v| v.is_finite()), "{name} stays non-finite after {bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn effects_recover_after_one_nan_sample() {
+        for id in ["parametric_eq", "simple_eq", "graphic_eq_10", "notch_filter"] {
+            let mut fx = crate::create_effect(id, SR as f32, 2).unwrap_or_else(|| panic!("{id}"));
+            for p in fx.params() {
+                if p.unit == crate::Unit::Decibels && p.id != "output" {
+                    fx.set_param(p.id, 6.0);
+                }
+            }
+            let mut rng = Rng::new(8);
+            let mut l: Vec<f32> = (0..4800).map(|_| 0.5 * rng.uniform()).collect();
+            let mut r: Vec<f32> = (0..4800).map(|_| 0.5 * rng.uniform()).collect();
+            l[100] = f32::NAN;
+            fx.process(&mut [&mut l, &mut r]);
+            let mut l: Vec<f32> = (0..4800).map(|_| 0.5 * rng.uniform()).collect();
+            let mut r: Vec<f32> = (0..4800).map(|_| 0.5 * rng.uniform()).collect();
+            fx.process(&mut [&mut l, &mut r]);
+            assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{id} stays NaN after one NaN input sample");
+        }
+    }
 }

@@ -224,16 +224,17 @@ pub fn gain_to_db(g: f32) -> f32 {
     20.0 * g.abs().log10()
 }
 
-/// Flush tiny values to zero (denormal protection for recursive state).
+/// Flush tiny values to zero (denormal protection for recursive state). Non-finite values are
+/// zeroed too, so one NaN or infinite input sample cannot poison the state until `reset`.
 #[inline(always)]
 pub(crate) fn flush(x: f64) -> f64 {
-    if x.abs() < 1e-30 { 0.0 } else { x }
+    if (1e-30..=f64::MAX).contains(&x.abs()) { x } else { 0.0 }
 }
 
 /// f32 variant of [`flush`] for f32 delay lines.
 #[inline(always)]
 pub(crate) fn flush32(x: f32) -> f32 {
-    if x.abs() < 1e-25 { 0.0 } else { x }
+    if (1e-25..=f32::MAX).contains(&x.abs()) { x } else { 0.0 }
 }
 
 /// Common block length of planar channels.

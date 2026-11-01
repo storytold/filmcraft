@@ -12,8 +12,18 @@ element count checked against the declared dimensions.
 """
 import re
 import sys
+from pathlib import Path
 
-text = open(sys.argv[1], encoding="utf-8").read().replace("−", "-").replace("–", "-")
+
+def _spec_path(arg):
+    """Resolve a CLI path argument and require it to be an existing regular file."""
+    path = Path(arg).resolve()
+    if not path.is_file():
+        sys.exit(f"not a readable file: {arg}")
+    return path
+
+
+text = open(_spec_path(sys.argv[1]), encoding="utf-8").read().replace("−", "-").replace("–", "-")
 lines = [l for l in text.split("\n") if "Copyright" not in l and "VP9 Bitstream & Decoding Process Specification" not in l]
 text = "\n".join(lines)
 

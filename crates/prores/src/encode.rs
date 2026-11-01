@@ -3,7 +3,7 @@
 use crate::bits::{Counter, Sink, Writer};
 use crate::dct::fdct8x8;
 use crate::header::{FRAME_ID, FrameHeader, PictureHeader, row_slice_widths};
-use crate::tables::*;
+use crate::tables::{DC_CB, DC_CTX_INIT, FIRST_DC_CB, LEVEL_CB, LEVEL_CTX_INIT, RUN_CB, RUN_CTX_INIT, SCAN_PROGRESSIVE, qscale};
 use crate::{AlphaType, ChromaFormat, ColorInfo, Error, Frame, Interlace, Profile, Result};
 
 /// Encoder configuration.
@@ -49,6 +49,8 @@ impl EncoderConfig {
 #[derive(Debug, Clone)]
 pub struct Encoder {
     cfg: EncoderConfig,
+    /// The previous frame's uniform quantiser: where the next frame's search starts.
+    last_q: u8,
 }
 
 /// Quantiser search range (RDD 36 allows 1..=224).
@@ -57,11 +59,11 @@ const Q_MAX: u8 = 224;
 
 impl Encoder {
     pub fn new(profile: Profile, width: u32, height: u32) -> Encoder {
-        Encoder { cfg: EncoderConfig::new(profile, width, height) }
+        Encoder::with_config(EncoderConfig::new(profile, width, height))
     }
 
     pub fn with_config(cfg: EncoderConfig) -> Encoder {
-        Encoder { cfg }
+        Encoder { cfg, last_q: Q_MIN }
     }
 
     pub fn config(&self) -> &EncoderConfig {
@@ -134,7 +136,8 @@ impl Encoder {
         };
         let threads = cfg.threads;
         let prepared: Vec<SliceData> = par_map(threads, &jobs, |&(x, row, sw)| prepare_slice(&src, x, row, sw));
-        let qs = choose_quantisers(&prepared, &src, mb_width * mb_height, threads);
+        let (qs, qg) = choose_quantisers(&prepared, &src, mb_width * mb_height, threads, self.last_q);
+        self.last_q = qg;
         let items: Vec<(&SliceData, u8)> = prepared.iter().zip(qs).collect();
         let slices: Vec<Vec<u8>> = par_map(threads, &items, |&(sd, q)| write_slice(sd, q));
 
@@ -345,58 +348,115 @@ fn slice_bits(sd: &SliceData, q: u8) -> u64 {
     lv.iter().map(|l| component_bits(l)).sum()
 }
 
+/// Per-slice coded bits at the quantisers tried so far, so no quantiser is measured twice.
+struct Probes<'a> {
+    slices: &'a [SliceData],
+    threads: bool,
+    tried: Vec<(u8, Vec<u64>, u64)>,
+}
+
+impl Probes<'_> {
+    /// The frame's coded bits at `q` (the sum over slices).
+    fn total(&mut self, q: u8) -> u64 {
+        if let Some((_, _, t)) = self.tried.iter().find(|(tq, _, _)| *tq == q) {
+            return *t;
+        }
+        let v = par_map(self.threads, self.slices, |sd| slice_bits(sd, q));
+        let t = v.iter().sum();
+        self.tried.push((q, v, t));
+        t
+    }
+
+    /// The per-slice bits at `q`, measuring them if `q` was not tried yet.
+    fn take(&mut self, q: u8) -> Vec<u64> {
+        match self.tried.iter().position(|(tq, _, _)| *tq == q) {
+            Some(i) => self.tried.swap_remove(i).1,
+            None => par_map(self.threads, self.slices, |sd| slice_bits(sd, q)),
+        }
+    }
+}
+
+/// The smallest quantiser in `Q_MIN..=Q_MAX` whose frame fits `budget` (`Q_MAX` when none does),
+/// assuming bits fall as the quantiser grows. The search starts at `hint` (the previous frame's
+/// quantiser) and widens its steps away from it until the answer is bracketed, then bisects: the
+/// frames of a shot need the same quantiser or a neighbour, which takes two measurements instead of
+/// the eight of a bisection over the whole range.
+fn smallest_fitting(total: &mut impl FnMut(u8) -> u64, hint: u8, budget: u64) -> u8 {
+    let h = hint.clamp(Q_MIN, Q_MAX);
+    // `lo` does not fit, `hi` does: the answer is in `lo + 1..=hi`.
+    let (mut lo, mut hi) = if total(h) <= budget {
+        let (mut hi, mut step) = (h, 1u8);
+        loop {
+            if hi == Q_MIN {
+                return Q_MIN;
+            }
+            let q = hi.saturating_sub(step).max(Q_MIN);
+            if total(q) > budget {
+                break (q, hi);
+            }
+            hi = q;
+            step = step.saturating_mul(2);
+        }
+    } else {
+        let (mut lo, mut step) = (h, 1u8);
+        loop {
+            if lo == Q_MAX {
+                return Q_MAX;
+            }
+            let q = lo.saturating_add(step).min(Q_MAX);
+            if total(q) <= budget {
+                break (lo, q);
+            }
+            lo = q;
+            step = step.saturating_mul(2);
+        }
+    };
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if total(mid) <= budget {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
 /// Frame-level rate control: the smallest uniform quantiser whose frame fits the budget, then
 /// one step finer on as many slices as the remaining budget allows. Uniform quantisation
-/// approximately minimises frame MSE for a given size.
-fn choose_quantisers(slices: &[SliceData], src: &Source, total_mbs: usize, threads: bool) -> Vec<u8> {
+/// approximately minimises frame MSE for a given size. Returns the slices' quantisers and the
+/// uniform one (the next frame's `hint`).
+fn choose_quantisers(slices: &[SliceData], src: &Source, total_mbs: usize, threads: bool, hint: u8) -> (Vec<u8>, u8) {
     let n = slices.len();
     let hsize = slices.first().map_or(6, SliceData::header_size);
     let fixed = 8 * (8 + 20 + 8 + n * (2 + hsize)) as u64;
     let budget = (src.bits_per_mb as u64 * total_mbs as u64).saturating_sub(fixed);
-    let bits_at = |q: u8| -> Vec<u64> { par_map(threads, slices, |sd| slice_bits(sd, q)) };
-    let sum = |v: &[u64]| v.iter().sum::<u64>();
-
-    let mut best = bits_at(Q_MIN);
-    let mut qg = Q_MIN;
-    if sum(&best) > budget {
-        let (mut lo, mut hi) = (Q_MIN + 1, Q_MAX);
-        let mut hi_bits = None;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let v = bits_at(mid);
-            if sum(&v) <= budget {
-                hi = mid;
-                hi_bits = Some(v);
-            } else {
-                lo = mid + 1;
-            }
-        }
-        qg = lo;
-        best = hi_bits.unwrap_or_else(|| bits_at(qg));
-    }
+    let mut probes = Probes { slices, threads, tried: Vec::new() };
+    let qg = smallest_fitting(&mut |q| probes.total(q), hint, budget);
     let mut qs = vec![qg; n];
-    let mut cur = best;
-    let total = sum(&cur);
+    let mut cur = probes.take(qg);
+    let total = cur.iter().sum::<u64>();
     if qg > Q_MIN && total < budget {
-        let finer = bits_at(qg - 1);
+        // usually measured already: the search's last quantiser that did not fit
+        let finer = probes.take(qg - 1);
         let mut left = budget - total;
-        for i in 0..n {
-            let d = finer[i].saturating_sub(cur[i]);
-            if d <= left && finer[i] <= slices[i].limit_bits() {
+        for (((sd, f), c), q) in slices.iter().zip(&finer).zip(cur.iter_mut()).zip(qs.iter_mut()) {
+            let d = f.saturating_sub(*c);
+            if d <= left && *f <= sd.limit_bits() {
                 left -= d;
-                qs[i] = qg - 1;
-                cur[i] = finer[i];
+                *q = qg - 1;
+                *c = *f;
             }
         }
     }
     // Keep every slice within its 16-bit size fields.
-    for i in 0..n {
-        while cur[i] > slices[i].limit_bits() && qs[i] < Q_MAX {
-            qs[i] += 1;
-            cur[i] = slice_bits(&slices[i], qs[i]);
+    for ((sd, q), c) in slices.iter().zip(qs.iter_mut()).zip(cur.iter_mut()) {
+        while *c > sd.limit_bits() && *q < Q_MAX {
+            *q += 1;
+            *c = slice_bits(sd, *q);
         }
     }
-    qs
+    (qs, qg)
 }
 
 fn write_slice(sd: &SliceData, q: u8) -> Vec<u8> {
@@ -472,9 +532,9 @@ pub(crate) fn encode_alpha(w: &mut Writer, vals: &[u32], bits: u32) {
         }
         prev = v;
         idx += 1;
-        if idx >= n {
-            break;
-        }
+        // RDD 36:2022 §5.3.3 requires a run after every alpha difference,
+        // including a singleton at the end of the slice. Do not replace that
+        // final `1` with byte-alignment zeros: native decoders reject it.
         let mut run = 0;
         while idx + run < n && vals[idx + run] == prev && run < 2047 {
             run += 1;
@@ -491,5 +551,222 @@ pub(crate) fn encode_alpha(w: &mut Writer, vals: &[u32], bits: u32) {
             w.put(run as u32, 11);
         }
         idx += run;
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    /// `take` gives a quantiser's measured per-slice bits whether or not `total` tried it: an
+    /// empty list would skip the slices' 16-bit size checks in `choose_quantisers`.
+    #[test]
+    fn take_measures_an_untried_quantiser() {
+        let block = |v: f32| std::array::from_fn::<f32, 64, _>(|i| v * (64 - i) as f32);
+        let slices: Vec<SliceData> =
+            (1..=3).map(|k| SliceData { comps: [vec![block(40.0 * k as f32); 4], vec![block(10.0); 2], vec![block(5.0); 2]], alpha: None }).collect();
+        let want = |q| slices.iter().map(|sd| slice_bits(sd, q)).collect::<Vec<_>>();
+        assert!(want(4).iter().all(|&b| b > 0));
+        let mut probes = Probes { slices: &slices, threads: false, tried: Vec::new() };
+        assert_eq!(probes.take(4), want(4), "untried");
+        probes.total(6);
+        assert_eq!(probes.take(6), want(6), "tried");
+        assert!(probes.tried.is_empty());
+    }
+
+    /// Frame bits falling with the quantiser (steeply at first, then flat), as real content does.
+    fn bits(q: u8) -> u64 {
+        4_000_000 / (q as u64 + 3) + 1_000
+    }
+
+    #[test]
+    fn hinted_search_finds_the_smallest_fitting_quantiser() {
+        for budget in (0..1_200_000).step_by(997).chain([0, 1_000, 2_000, bits(Q_MIN), bits(Q_MAX), u64::MAX]) {
+            // the reference: a scan from the finest quantiser
+            let want = (Q_MIN..=Q_MAX).find(|&q| bits(q) <= budget).unwrap_or(Q_MAX);
+            for hint in [0, Q_MIN, 2, 7, 64, 128, 223, Q_MAX, 255] {
+                let mut calls = 0;
+                let got = smallest_fitting(
+                    &mut |q| {
+                        assert!((Q_MIN..=Q_MAX).contains(&q), "measured an invalid quantiser {q}");
+                        calls += 1;
+                        bits(q)
+                    },
+                    hint,
+                    budget,
+                );
+                assert_eq!(got, want, "budget {budget}, hint {hint}");
+                assert!(calls <= 16, "budget {budget}, hint {hint}: {calls} measurements");
+            }
+        }
+    }
+
+    /// The common case (the previous frame's quantiser, or a neighbour) takes two measurements.
+    #[test]
+    fn a_good_hint_takes_two_measurements() {
+        for want in [Q_MIN + 1, 9, 40, 150, Q_MAX] {
+            let budget = bits(want);
+            for hint in [want - 1, want] {
+                let mut calls = 0;
+                let got = smallest_fitting(
+                    &mut |q| {
+                        calls += 1;
+                        bits(q)
+                    },
+                    hint,
+                    budget,
+                );
+                assert_eq!((got, calls), (want, 2), "hint {hint}");
+            }
+        }
+    }
+
+    /// Two frames, the second encoded after very different content: the encoder's memory of the
+    /// previous quantiser changes the work, not the stream.
+    #[test]
+    fn previous_frames_do_not_change_the_stream() {
+        let (w, h) = (256, 64);
+        let frame = |seed: u32, detail: u32| {
+            let mut f = Frame::new(w, h, ChromaFormat::Yuv422, 10, false);
+            let mut s = seed;
+            let cw = f.chroma_width() as usize;
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    s ^= s << 13;
+                    s ^= s >> 17;
+                    s ^= s << 5;
+                    f.y[y * w as usize + x] = (400 + (x * 3 + y) as u32 % 200 + s % detail) as u16;
+                }
+                for x in 0..cw {
+                    f.cb[y * cw + x] = (500 + (x + y) as u32 % 40) as u16;
+                    f.cr[y * cw + x] = (520 + (x * 5) as u32 % 30) as u16;
+                }
+            }
+            f
+        };
+        let (busy, plain) = (frame(7, 400), frame(9, 2));
+        for profile in [Profile::Proxy, Profile::Standard, Profile::Hq] {
+            let alone = |f: &Frame| Encoder::new(profile, w, h).encode(f).unwrap();
+            let mut enc = Encoder::new(profile, w, h);
+            enc.encode(&plain).unwrap();
+            assert!(enc.encode(&busy).unwrap() == alone(&busy), "{profile:?}: busy after plain");
+            assert!(enc.encode(&plain).unwrap() == alone(&plain), "{profile:?}: plain after busy");
+            assert!(enc.encode(&plain).unwrap() == alone(&plain), "{profile:?}: plain after plain");
+        }
+    }
+}
+
+#[cfg(test)]
+mod alpha_tests {
+    use super::*;
+
+    #[test]
+    fn alpha_final_singleton_has_a_run_code() {
+        // RDD 36:2022 §5.3.3: every difference is followed by a run, including
+        // the final one. Tables 13/14 encode -1; Table 12 encodes run 1 as `1`.
+        // With 16-bit alpha the difference occupies exactly one byte, so the
+        // required final run must start another byte, followed by zero padding.
+        for (bits, expected) in [(16, vec![0x01, 0x80]), (8, vec![0x0c])] {
+            let mut w = Writer::new();
+            encode_alpha(&mut w, &[(1 << bits) - 2], bits);
+            assert_eq!(w.finish(), expected, "{bits}-bit final singleton");
+        }
+    }
+}
+
+#[cfg(test)]
+mod alpha_conformance_tests {
+    use super::*;
+    use filmcraft_bitstream::BitReader;
+
+    /// RDD 36:2022 §5.3.3 and Tables 12–14, using a bounds-checked reader.
+    /// Unlike the production decoder's zero-padded hot path, this checks every
+    /// final run and all alignment bits, so a truncated run cannot be accepted.
+    fn read_alpha(data: &[u8], bits: u32, count: usize) -> Vec<u32> {
+        let mut r = BitReader::new(data);
+        let mask = (1u32 << bits) - 1;
+        let mut prev = mask;
+        let mut out = Vec::new();
+        while out.len() < count {
+            let diff = if r.read_bits(1).unwrap() == 1 {
+                r.read_bits(bits).unwrap()
+            } else {
+                let code = r.read_bits(if bits == 16 { 7 } else { 4 }).unwrap();
+                let magnitude = (code >> 1) + 1;
+                if code & 1 == 0 { magnitude } else { magnitude.wrapping_neg() }
+            };
+            prev = prev.wrapping_add(diff) & mask;
+            let run = if r.read_bits(1).unwrap() == 1 {
+                1
+            } else {
+                let short = r.read_bits(4).unwrap();
+                if short == 0 { r.read_bits(11).unwrap() + 1 } else { short + 1 }
+            } as usize;
+            assert!(run <= count - out.len(), "alpha run exceeds the slice");
+            out.extend(std::iter::repeat_n(prev, run));
+        }
+        assert!(r.bits_left() < 8, "only byte-alignment padding may remain");
+        while r.bits_left() > 0 {
+            assert_eq!(r.read_bits(1).unwrap(), 0, "alignment padding must be zero");
+        }
+        out
+    }
+
+    #[test]
+    fn alpha_runs_cover_boundaries_and_final_values() {
+        for bits in [8, 16] {
+            let mask = (1 << bits) - 1;
+            for run in [1, 2, 15, 16, 17, 2047, 2048, 2049, 4096] {
+                for tail in 0..=8 {
+                    let mut values = vec![mask - 1; run];
+                    // Short negative/positive deltas, modulo transitions and
+                    // escaped full-width deltas, ending on every bit alignment.
+                    values.extend([0, mask, 1, 7, 8, 64, 65, mask / 2].into_iter().take(tail));
+                    let mut w = Writer::new();
+                    encode_alpha(&mut w, &values, bits);
+                    assert_eq!(read_alpha(&w.finish(), bits, values.len()), values, "bits={bits}, run={run}, tail={tail}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn encoded_alpha_slices_have_complete_final_runs() {
+        for profile in [Profile::P4444, Profile::P4444Xq] {
+            for log2_slice_mbs in 0..=3 {
+                let (width, height) = (128, 32);
+                let mut frame = Frame::new(width, height, ChromaFormat::Yuv444, 16, true);
+                frame.y.fill(32768);
+                frame.cb.fill(32768);
+                frame.cr.fill(32768);
+                let alpha = frame.alpha.as_mut().unwrap();
+                for (i, a) in alpha.iter_mut().enumerate() {
+                    *a = (i as u16).wrapping_mul(257);
+                }
+                let mut cfg = EncoderConfig::new(profile, width, height);
+                cfg.log2_slice_mbs = log2_slice_mbs;
+                let bytes = Encoder::with_config(cfg).encode(&frame).unwrap();
+                let (_, start, _) = FrameHeader::parse(&bytes).unwrap();
+                let picture = &bytes[start..];
+                let header = PictureHeader::parse(picture).unwrap();
+                let table = &picture[header.header_size..][..2 * header.num_slices];
+                let mut offset = header.header_size + table.len();
+                let sw = 16 << log2_slice_mbs;
+                for (i, size) in table.as_chunks::<2>().0.iter().enumerate() {
+                    let size = u16::from_be_bytes([size[0], size[1]]) as usize;
+                    let slice = &picture[offset..offset + size];
+                    offset += size;
+                    let color_bytes: usize = slice[2..8].as_chunks::<2>().0.iter().map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).sum();
+                    let payload = &slice[(slice[0] >> 3) as usize + color_bytes..];
+                    let actual = read_alpha(payload, 16, sw * 16);
+                    let x0 = i % (width as usize / sw) * sw;
+                    let y0 = i / (width as usize / sw) * 16;
+                    let alpha = frame.alpha.as_ref().unwrap();
+                    let expected: Vec<u32> = (y0..y0 + 16).flat_map(|y| (x0..x0 + sw).map(move |x| alpha[y * width as usize + x] as u32)).collect();
+                    assert_eq!(actual, expected, "{profile:?}, slice {i}, log2={log2_slice_mbs}");
+                }
+                assert_eq!(offset, picture.len());
+            }
+        }
     }
 }

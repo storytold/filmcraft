@@ -73,7 +73,7 @@ fn project(src: (u32, u32), src_par: (u32, u32), seq: (u32, u32), seq_par: (u32,
         proxy: None,
         identity: None,
     };
-    let item = p.add_item("halves", Label::Iris, ItemKind::Media(clip), None);
+    let item = p.add_item("halves", Label::Iris, ItemKind::Media(Box::new(clip)), None);
     let settings = SequenceSettings { width: seq.0, height: seq.1, par: seq_par, frame_rate: FPS, ..Default::default() };
     let sid = p.new_sequence("s", settings, 1, 0, None);
     let mut ti = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, FPS.tick_of(24)), FPS).unwrap();

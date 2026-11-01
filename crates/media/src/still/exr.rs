@@ -27,6 +27,10 @@ const MAGIC: [u8; 4] = [0x76, 0x2f, 0x31, 0x01];
 
 /// Largest picture we decode (each pixel takes 16 bytes as RGBA floats).
 const MAX_PIXELS: u64 = 1 << 26;
+/// Maximum memory retained while decoding the data window and, when different,
+/// the display window. Both buffers coexist during placement.
+/// 2 GiB: an 8K RGBA f32 plate is 566 MB and the data and display windows may both be held.
+const MAX_DECODED_BYTES: usize = 2 << 30;
 /// Most attributes / channels we read from a header.
 const MAX_ATTRIBUTES: usize = 4096;
 const MAX_CHANNELS: usize = 1024;
@@ -418,6 +422,34 @@ pub fn decode(name: &str, b: &[u8]) -> Result<Decoded> {
     }
     let table = h.end;
     let px_len = dw.checked_mul(dh).and_then(|n| n.checked_mul(4)).ok_or_else(|| bad("size".into()))?;
+    let frame_len = fw.checked_mul(fh).and_then(|n| n.checked_mul(4)).ok_or_else(|| bad("display window size".into()))?;
+    let decoded_bytes = px_len
+        .checked_mul(std::mem::size_of::<f32>())
+        .and_then(|n| if h.data == h.display { Some(n) } else { frame_len.checked_mul(std::mem::size_of::<f32>()).and_then(|m| n.checked_add(m)) })
+        .ok_or_else(|| bad("decoded size".into()))?;
+    if decoded_bytes > MAX_DECODED_BYTES {
+        return Err(MediaError::Unsupported(format!("{name}: EXR decoded buffers exceed the {MAX_DECODED_BYTES}-byte limit")));
+    }
+    let chunks = dh.div_ceil(lpc);
+    let table_end = table.checked_add(chunks.checked_mul(8).ok_or_else(|| bad("offset table size".into()))?).ok_or_else(|| bad("offset table size".into()))?;
+    if table_end > b.len() {
+        return Err(bad("offset table is truncated".into()));
+    }
+    for i in 0..chunks {
+        let at = table + i * 8;
+        let off = le32(b, at).zip(le32(b, at + 4)).map(|(lo, hi)| u64::from(lo) | u64::from(hi) << 32);
+        let off = off.and_then(|o| usize::try_from(o).ok()).ok_or_else(|| bad(format!("offset of chunk {i}")))?;
+        let size = le32(b, off.checked_add(4).ok_or_else(|| bad(format!("chunk {i}")))?).ok_or_else(|| bad(format!("chunk {i}")))? as usize;
+        let end = off.checked_add(8).and_then(|n| n.checked_add(size)).ok_or_else(|| bad(format!("chunk {i}")))?;
+        if end > b.len() {
+            return Err(bad(format!("chunk {i} is truncated")));
+        }
+        let y = le32(b, off).map(|y| y as i32);
+        let want = i64::from(h.data.y0) + (i * lpc) as i64;
+        if y.map(i64::from) != Some(want) {
+            return Err(bad(format!("chunk {i} is not at line {want}")));
+        }
+    }
     let mut px = vec![0f32; px_len];
     if !alpha {
         px.par_chunks_mut(4).for_each(|p| {

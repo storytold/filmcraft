@@ -249,13 +249,61 @@ fn read_mode_does_not_record_and_commits_once_without_a_pass() {
     let r = s.execute("mixer.recordStop", json!({"time": sec(3.0)})).unwrap();
     assert_eq!(r["lanes"], 0);
     assert!(a1(&s).lane_keyframes(LANE_VOLUME).is_empty());
+    // with no automation to read, the level set during the pass is kept (#2857; see
+    // fader_moves_during_playback_in_read_mode)
+    assert_eq!(a1(&s).volume_db, -9.0);
     // stopped: a drag is heard live, then committed as one undo step
     let undo0 = s.history.undo.len();
     gesture(&mut s, "A1", &[(0.0, -2.0), (0.0, -4.0), (0.0, -5.0)]);
-    assert_eq!(a1(&s).volume_db, 0.0);
+    assert_eq!(a1(&s).volume_db, -9.0);
     s.execute("mixer.release", json!({"strip": "A1"})).unwrap();
     assert_eq!(a1(&s).volume_db, -5.0);
     assert_eq!(s.history.undo.len(), undo0 + 1);
+}
+
+/// While playing in Read mode a fader move over a lane with no automation is kept (#2857), as in
+/// Premiere Pro; over an automated lane it returns to the automation when let go.
+#[test]
+fn fader_moves_during_playback_in_read_mode() {
+    let mut s = demo();
+    s.execute("mixer.recordStart", json!({"time": 0})).unwrap();
+    let undo0 = s.history.undo.len();
+    gesture(&mut s, "A1", &[(1.0, -6.0), (1.1, -9.0)]);
+    assert_eq!(s.previews.live.get(a1(&s).id, LANE_VOLUME).map(|o| o.value), Some(-9.0), "heard while held");
+    s.execute("mixer.release", json!({"strip": "A1", "time": sec(1.2)})).unwrap();
+    assert_eq!(a1(&s).volume_db, -9.0, "no automation to return to: the level stays");
+    assert!(s.previews.live.get(a1(&s).id, LANE_VOLUME).is_none());
+    assert_eq!(s.history.undo.len(), undo0 + 1);
+    // a second move during the same pass, and the pass ends without writing automation
+    gesture(&mut s, "A1", &[(2.0, -3.0)]);
+    s.execute("mixer.release", json!({"strip": "A1", "time": sec(2.0)})).unwrap();
+    assert_eq!(a1(&s).volume_db, -3.0);
+    let r = s.execute("mixer.recordStop", json!({"time": sec(3.0)})).unwrap();
+    assert_eq!(r["lanes"], 0);
+    assert!(a1(&s).lane_keyframes(LANE_VOLUME).is_empty());
+
+    // Off ignores automation: the fader is a plain control too
+    let mut s = demo();
+    s.execute("mixer.setKeyframe", json!({"strip": "A1", "time": sec(1.0), "value": -10.0})).unwrap();
+    s.execute("mixer.setKeyframe", json!({"strip": "A1", "time": sec(2.0), "value": 0.0})).unwrap();
+    set_mode(&mut s, "A1", "Off");
+    s.execute("mixer.recordStart", json!({"time": 0})).unwrap();
+    gesture(&mut s, "A1", &[(1.0, -20.0)]);
+    s.execute("mixer.release", json!({"strip": "A1", "time": sec(1.0)})).unwrap();
+    assert_eq!(a1(&s).volume_db, -20.0);
+    assert_eq!(a1(&s).lane_keyframes(LANE_VOLUME).len(), 2, "no keyframe added");
+
+    // Read over an automated lane: the move is not recorded and the control returns to the automation
+    let mut s = demo();
+    s.execute("mixer.setKeyframe", json!({"strip": "A1", "time": sec(1.0), "value": -10.0})).unwrap();
+    s.execute("mixer.setKeyframe", json!({"strip": "A1", "time": sec(2.0), "value": 0.0})).unwrap();
+    let before = s.project.clone();
+    s.execute("mixer.recordStart", json!({"time": 0})).unwrap();
+    gesture(&mut s, "A1", &[(1.0, -20.0)]);
+    s.execute("mixer.release", json!({"strip": "A1", "time": sec(1.0)})).unwrap();
+    assert!(s.previews.live.get(a1(&s).id, LANE_VOLUME).is_none());
+    s.execute("mixer.recordStop", json!({"time": sec(3.0)})).unwrap();
+    assert_eq!(*s.project, *before, "automation untouched");
 }
 
 #[test]
@@ -460,6 +508,50 @@ fn clip_mixer_latch_and_write_hold_until_stop() {
     s.execute("clipMixer.release", json!({"track": "A1", "lane": "volume", "time": t0.0})).unwrap();
     assert!((clip_level(&s, clip, t0) + 3.0).abs() < 1e-9);
     assert_eq!(clip_level_kfs(&s, clip), kf0, "static value, no keyframe");
+}
+
+/// A Clip Mixer control let go after playback crossed a clip boundary changes the clip it was
+/// grabbed on, not the one now under the playhead, and letting go over a gap is not an error.
+#[test]
+fn clip_mixer_release_commits_to_the_clip_that_was_grabbed() {
+    let mut s = demo();
+    let (c0, c1) = (a1(&s).items[0].clone(), a1(&s).items[1].clone());
+    let (in0, in1) = (Tick(c0.start.0 + c0.duration.0 / 2), Tick(c1.start.0 + c1.duration.0 / 2));
+    let before1 = clip_level(&s, c1.id, in1);
+    s.execute("clipMixer.touch", json!({"track": "A1", "lane": "volume", "value": -7.0, "time": in0.0})).unwrap();
+    s.execute("clipMixer.release", json!({"track": "A1", "lane": "volume", "time": in1.0})).unwrap();
+    assert!((clip_level(&s, c0.id, in0) + 7.0).abs() < 1e-9, "the grabbed clip changed");
+    assert!((clip_level(&s, c1.id, in1) - before1).abs() < 1e-9, "the clip now under the playhead did not");
+    // let go well past the last clip: still fine, still the grabbed clip
+    let end = a1(&s).items.last().map(|c| c.end().0).unwrap_or(0) + sec(60.0);
+    s.execute("clipMixer.touch", json!({"track": "A1", "lane": "volume", "value": -4.0, "time": in0.0})).unwrap();
+    s.execute("clipMixer.release", json!({"track": "A1", "lane": "volume", "time": end})).unwrap();
+    assert!((clip_level(&s, c0.id, in0) + 4.0).abs() < 1e-9);
+}
+
+/// In Off mode a Clip Mixer commit sets the parameter's static value even when it has keyframes,
+/// instead of adding a keyframe.
+#[test]
+fn clip_mixer_off_mode_commits_a_static_value_over_keyframes() {
+    let mut s = demo();
+    let (clip, t0, _) = a1_clip(&s);
+    let track = a1(&s).id;
+    s.edit_sequence("keyframes", |q, _, _| {
+        let c = q.mix_track_mut(track).and_then(|tr| tr.items.first_mut()).ok_or(EngineError::NoSequence)?;
+        let mt = c.source_time_at(Tick(c.start.0 + 1));
+        let p = c.effect_mut("volume").and_then(|e| e.param_mut("level")).ok_or(EngineError::NoSequence)?;
+        p.put_keyframe(mt, ParamValue::Float(-10.0));
+        Ok(())
+    })
+    .unwrap();
+    let kf = clip_level_kfs(&s, clip);
+    assert!(kf >= 1);
+    s.execute("clipMixer.setMode", json!({"track": "A1", "mode": "Off"})).unwrap();
+    s.execute("clipMixer.touch", json!({"track": "A1", "lane": "volume", "value": -3.0, "time": t0.0})).unwrap();
+    s.execute("clipMixer.release", json!({"track": "A1", "lane": "volume", "time": t0.0})).unwrap();
+    assert_eq!(clip_level_kfs(&s, clip), kf, "no keyframe added");
+    let (_, c) = s.active_sequence().unwrap().find_item(clip).unwrap();
+    assert_eq!(c.effect("volume").unwrap().param("level").unwrap().value, ParamValue::Float(-3.0), "the static value is set");
 }
 
 #[test]

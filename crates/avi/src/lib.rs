@@ -21,6 +21,8 @@ mod tests;
 
 pub use source::ByteSource;
 
+use std::collections::HashSet;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// Not an AVI file (no `RIFF` … `AVI ` header).
@@ -175,6 +177,9 @@ pub struct OpenOptions {
 
 /// Headers larger than this are refused (a real `hdrl` is a few kilobytes).
 const MAX_HEADER: u64 = 16 << 20;
+/// Total OpenDML standard-index bytes accepted while opening one file. This bounds hostile
+/// repeated index references without constraining practical large-file indexes.
+const MAX_ODML_INDEX_BYTES: u64 = 64 << 20;
 /// Streams beyond this are ignored.
 const MAX_STREAMS: usize = 64;
 /// `LIST rec ` inside `movi` nests once; deeper is refused.
@@ -292,15 +297,36 @@ pub fn open_with<S: ByteSource + ?Sized>(src: &S, opts: OpenOptions) -> Result<A
     } else if let (false, Some((at, size)), Some(first)) = (opts.ignore_idx1, idx1, movis.first()) {
         clear(&mut streams);
         read_idx1(src, &mut streams, at, size, first.0);
-        // idx1 only covers the first RIFF: the AVIX extensions are scanned
-        for &(_, from, to) in movis.iter().skip(1) {
-            scan(src, &mut streams, from, to, 0);
+        if streams.iter().all(|s| s.chunks.is_empty()) {
+            scan_all(src, &mut streams, &movis)
+        } else {
+            scan_missing(src, &mut streams, first);
+            // idx1 only covers the first RIFF: the AVIX extensions are scanned
+            for &(_, from, to) in movis.iter().skip(1) {
+                scan(src, &mut streams, &|_| true, from, to, 0);
+            }
+            IndexSource::Idx1
         }
-        if streams.iter().all(|s| s.chunks.is_empty()) { scan_all(src, &mut streams, &movis) } else { IndexSource::Idx1 }
     } else {
         scan_all(src, &mut streams, &movis)
     };
     Ok(AviFile { header, streams, index })
+}
+
+/// A stream that declares data (`length`) but that `idx1` left without a single chunk while
+/// others have theirs (its entries damaged or missing) gets its chunks from a scan of the first
+/// `movi` list (the one `idx1` covers), as a file without an index does, before the AVIX
+/// extensions add theirs; its key frames are then unknown. The indexed streams keep their
+/// tables, and a stream that declares no data is not looked for.
+fn scan_missing<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], &(_, from, to): &(u64, u64, u64)) {
+    let missing: Vec<bool> = streams.iter().map(|s| s.chunks.is_empty() && s.length > 0).collect();
+    if !missing.contains(&true) {
+        return;
+    }
+    scan(src, streams, &|n| missing.get(n) == Some(&true), from, to, 0);
+    for (s, _) in streams.iter_mut().zip(&missing).filter(|(_, m)| **m) {
+        s.keyframes_known = false;
+    }
 }
 
 fn clear(streams: &mut [Stream]) {
@@ -313,7 +339,7 @@ fn clear(streams: &mut [Stream]) {
 fn scan_all<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], movis: &[(u64, u64, u64)]) -> IndexSource {
     clear(streams);
     for &(_, from, to) in movis {
-        scan(src, streams, from, to, 0);
+        scan(src, streams, &|_| true, from, to, 0);
     }
     for s in streams.iter_mut() {
         s.keyframes_known = false;
@@ -443,34 +469,52 @@ fn super_index(b: &[u8]) -> Vec<u64> {
 /// Fill the chunk tables from the OpenDML standard indexes; false (tables cleared) when a stream
 /// that has data lacks one or none could be read.
 fn read_odml<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream]) -> bool {
-    let limit = src.len() / 8;
-    let mut total = 0u64;
+    let entry_limit = src.len() / 8;
+    let mut entries = 0u64;
+    let mut index_bytes = 0u64;
+    let mut seen = HashSet::new();
     for s in streams.iter_mut() {
         s.chunks.clear();
         s.keyframes_known = true;
         for &at in &s.super_index {
+            // A super index can repeat an offset (even across streams). Read and process a
+            // standard index once, rather than multiplying its work and allocations.
+            if !seen.insert(at) {
+                continue;
+            }
             let Ok((id, size, data)) = header_at(src, at) else { continue };
             if &id[..2] != b"ix" {
                 continue;
             }
-            let Ok(b) = read(src, data, size.min(MAX_HEADER * 8)) else { continue };
-            let (longs, subtype, itype) = (usize::from(le16(&b, 0)), b.get(2).copied().unwrap_or(0), b.get(3).copied().unwrap_or(0));
+            // Validate the fixed header before allocating the variable entry body.
+            if size < 24 || index_bytes.checked_add(24).is_none_or(|n| n > MAX_ODML_INDEX_BYTES) {
+                return false;
+            }
+            let Ok(header) = read(src, data, 24) else { continue };
+            index_bytes += 24;
+            let (longs, subtype, itype) = (usize::from(le16(&header, 0)), header.get(2).copied().unwrap_or(0), header.get(3).copied().unwrap_or(0));
             // AVI_INDEX_OF_CHUNKS; 2 longs per entry, or 3 for the field index (AVI_INDEX_2FIELD)
             if itype != 1 || !(longs == 2 && subtype == 0 || longs == 3 && subtype == 1) {
                 continue;
             }
-            let base = le64(&b, 12);
             let step = longs * 4;
-            let n = (le32(&b, 4) as usize).min(b.len().saturating_sub(24) / step);
+            let n = u64::from(le32(&header, 4)).min(size.saturating_sub(24) / step as u64);
+            let body = n.saturating_mul(step as u64);
+            let Some(next_bytes) = index_bytes.checked_add(body) else { return false };
+            let Some(next_entries) = entries.checked_add(n) else { return false };
+            if next_bytes > MAX_ODML_INDEX_BYTES || next_entries > entry_limit {
+                return false;
+            }
+            let Ok(b) = read(src, data, 24 + body) else { continue };
+            index_bytes = next_bytes;
+            entries = next_entries;
+            let base = le64(&b, 12);
+            let n = usize::try_from(n).unwrap_or(0);
             for k in 0..n {
                 let e = 24 + k * step;
                 let (off, raw) = (u64::from(le32(&b, e)), le32(&b, e + 4));
                 let size = raw & 0x7FFF_FFFF;
                 let Some(offset) = base.checked_add(off).filter(|o| o.checked_add(u64::from(size)).is_some_and(|end| end <= src.len())) else { continue };
-                total += 1;
-                if total > limit {
-                    return false;
-                }
                 s.chunks.push(Chunk { offset, size, key: raw & 0x8000_0000 == 0 });
             }
         }
@@ -512,22 +556,23 @@ fn read_idx1<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], at: u64, s
     }
 }
 
-/// Append the data chunks of a `movi` list (`[from, to)`) to the streams' tables, in file order.
-fn scan<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], from: u64, to: u64, depth: u32) {
+/// Append the data chunks of a `movi` list (`[from, to)`) to the tables of the streams `want`
+/// picks, in file order.
+fn scan<S: ByteSource + ?Sized>(src: &S, streams: &mut [Stream], want: &dyn Fn(usize) -> bool, from: u64, to: u64, depth: u32) {
     if depth >= MAX_DEPTH {
         return;
     }
     for (id, size, data) in children(src, from, to) {
         if id == *b"LIST" {
             if size >= 4 {
-                scan(src, streams, data + 4, data + size, depth + 1);
+                scan(src, streams, want, data + 4, data + size, depth + 1);
             }
             continue;
         }
         if &id[..2] == b"ix" || &id[2..] == b"pc" {
             continue;
         }
-        if let Some(s) = Stream::number(&id).and_then(|n| streams.get_mut(n)) {
+        if let Some(s) = Stream::number(&id).filter(|&n| want(n)).and_then(|n| streams.get_mut(n)) {
             s.chunks.push(Chunk { offset: data, size: u32::try_from(size).unwrap_or(u32::MAX), key: true });
         }
     }
