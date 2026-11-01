@@ -361,6 +361,17 @@ fn float_wav_round_trip() {
     assert_eq!(crate::previews::read_wav_f32(&crate::previews::write_wav_f32(&x, 48_000)).unwrap(), x);
 }
 
+/// Previews composite on the GPU when the host has one, as the monitor does; export settings
+/// default to the CPU.
+#[test]
+fn previews_render_on_the_gpu_when_available() {
+    let range = TimeRange::from_bounds(Tick::ZERO, FrameRate::FPS_24.tick_of(24));
+    let s = crate::previews::segment_settings(std::path::Path::new("x.part"), range);
+    assert_eq!(s.gpu_rendering, filmcraft_export::GpuRendering::Auto);
+    assert_eq!(s.format, filmcraft_export::Format::ProRes);
+    assert_eq!(s.range, Some(range));
+}
+
 #[test]
 fn bar_state_serializes_lowercase() {
     assert_eq!(serde_json::to_value(BarState::Green).unwrap(), json!("green"));
