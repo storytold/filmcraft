@@ -70,6 +70,7 @@ use filmcraft_time::FrameRate;
 use rayon::prelude::*;
 
 use crate::audio_out::AudioOut;
+use crate::mkv_out::{EncodedAudio, MkvMux};
 use crate::mxf_out::{MxfMux, MxfSetup};
 use crate::pipeline::Pipeline;
 use crate::settings::{AudioCodec, BitrateMode};
@@ -183,6 +184,8 @@ pub struct Exporter {
     mux: Option<Mp4Writer<Out>>,
     /// MXF exports write through this instead of `mux`.
     mxf: Option<MxfMux>,
+    /// Matroska exports write through this instead of `mux`.
+    mkv: Option<MkvMux>,
     seq: ItemId,
     project: Arc<Project>,
     vt: usize,
@@ -305,6 +308,7 @@ impl Exporter {
             queued: Vec::new(),
             mux: None,
             mxf: None,
+            mkv: None,
             seq,
             project: project.clone(),
             vt: 0,
@@ -367,6 +371,17 @@ impl Exporter {
     }
 
     fn write_audio(&mut self, planar: Option<Vec<Vec<f32>>>) -> Result<()> {
+        if let Some(m) = self.mkv.as_mut() {
+            let Some(buf) = planar else { return Ok(()) };
+            return match self.aenc.as_mut() {
+                Some(enc) => {
+                    let n = enc.frame_size();
+                    let aus: Vec<(Vec<u8>, u32)> = enc.encode(&buf)?.into_iter().map(|au| (au, n)).collect();
+                    m.write_encoded_audio(&aus)
+                }
+                None => m.write_audio(&buf),
+            };
+        }
         if let Some(m) = self.mxf.as_mut() {
             return match planar {
                 Some(buf) => m.write_audio(&buf),
@@ -398,6 +413,9 @@ impl Exporter {
     }
 
     fn write_video(&mut self, packets: Vec<EncodedPacket>) -> Result<()> {
+        if let Some(m) = self.mkv.as_mut() {
+            return m.write_video(packets);
+        }
         if let Some(m) = self.mxf.as_mut() {
             return m.write_video(packets);
         }
@@ -411,6 +429,25 @@ impl Exporter {
 
     /// Create the muxer and its tracks (after the first batch was encoded).
     fn open_mux(&mut self) -> Result<()> {
+        if self.settings.multiplexer == crate::Multiplexer::Mkv {
+            let name = self.project.item(self.seq).map(|i| i.name.clone()).unwrap_or_default();
+            let audio_entry = self.aenc.as_ref().map(|a| a.sample_entry());
+            let encoded = match (self.aenc.as_deref(), audio_entry.as_ref()) {
+                (Some(enc), Some(entry)) => Some(EncodedAudio { entry, frame_size: enc.frame_size(), priming: enc.priming() }),
+                _ => None,
+            };
+            self.mkv = Some(MkvMux::new(
+                &self.settings,
+                &name,
+                self.pipe.w,
+                self.pipe.h,
+                self.pipe.rate,
+                &self.venc.sample_entry(),
+                self.audio.as_ref().map(|a| (a.sr, a.channels as u32)),
+                encoded,
+            )?);
+            return Ok(());
+        }
         if self.settings.format.is_mxf() {
             let q = self.project.sequence(self.seq).ok_or(ExportError::NoSequence)?;
             // start timecode of the first exported frame, at the output rate
@@ -502,13 +539,19 @@ impl Exporter {
         if filmcraft_media::pending::take() {
             return Ok(Step::Pending);
         }
-        if self.mux.is_none() && self.mxf.is_none() {
+        if self.mux.is_none() && self.mxf.is_none() && self.mkv.is_none() {
             self.open_mux()?;
         }
         let mut tail = std::mem::take(&mut self.queued);
         tail.extend(self.venc.flush()?);
         self.write_video(tail)?;
         self.write_audio(mixed)?;
+        if let Some(m) = self.mkv.as_mut()
+            && let Some(a) = self.aenc.as_mut()
+        {
+            let aus = a.flush_timed()?;
+            m.write_encoded_audio(&aus)?;
+        }
         if let (Some(at), Some(a)) = (self.at, self.aenc.as_mut()) {
             let mux = self.mux.as_mut().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
             for (au, duration) in a.flush_timed()? {
@@ -518,15 +561,18 @@ impl Exporter {
                 mux.set_sample_entry(at, entry).map_err(|e| ExportError::Io(e.to_string()))?;
             }
         }
-        let (bytes, extra_files) = match self.mxf.take() {
+        let (bytes, extra_files) = match self.mkv.take() {
             Some(m) => m.finish(&self.settings)?,
-            None => {
-                let mux = self.mux.take().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
-                // Upload services and progressive players need the MP4 metadata before media.
-                // The muxer relocates data in bounded chunks and adjusts every sample offset.
-                let w = if self.brand == Brand::Mp4 { mux.finish_faststart() } else { mux.finish() }.map_err(|e| ExportError::Io(e.to_string()))?;
-                (w.finish(&self.settings)?, Vec::new())
-            }
+            None => match self.mxf.take() {
+                Some(m) => m.finish(&self.settings)?,
+                None => {
+                    let mux = self.mux.take().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
+                    // Upload services and progressive players need the MP4 metadata before media.
+                    // The muxer relocates data in bounded chunks and adjusts every sample offset.
+                    let w = if self.brand == Brand::Mp4 { mux.finish_faststart() } else { mux.finish() }.map_err(|e| ExportError::Io(e.to_string()))?;
+                    (w.finish(&self.settings)?, Vec::new())
+                }
+            },
         };
         note_stage(Stage::Finish, finishing.elapsed());
         let secs = self.t0.elapsed().as_secs_f64();
@@ -643,7 +689,7 @@ impl Exporter {
             self.queued.extend(packets);
             if cuts.contains(&(fi + 1)) {
                 timed(Stage::Mux, || -> Result<()> {
-                    if self.mux.is_none() && self.mxf.is_none() {
+                    if self.mux.is_none() && self.mxf.is_none() && self.mkv.is_none() {
                         self.open_mux()?;
                     }
                     let packets = std::mem::take(&mut self.queued);

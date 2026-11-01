@@ -25,8 +25,10 @@ mod text;
 #[cfg(test)]
 mod tests;
 
+use std::sync::Arc;
+
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::{EffectInstance, ParamValue, Project, Sequence, TrackItem};
+use filmcraft_project::{EffectInstance, ParamValue, Project, Sequence, TrackItem, TrackMethod};
 use filmcraft_time::{Tick, TimeDisplay, format_time};
 use rayon::prelude::*;
 
@@ -34,7 +36,7 @@ use crate::effects::FxCtx;
 use crate::image::Image;
 use crate::{RenderOptions, SourceProvider};
 
-pub use temporal::{StabilizerPath, clear_stabilizer_cache, stabilizer_path};
+pub use temporal::{StabilizerPath, cached_stabilizer_path, clear_stabilizer_cache, stabilizer_path};
 
 /// What an effect may know about the clip beyond its own pixels.
 pub trait FxEnv: Sync {
@@ -162,19 +164,50 @@ impl FxEnv for ItemEnv<'_> {
         crate::source_size(self.project, self.item.item).unwrap_or((self.seq.settings.width, self.seq.settings.height))
     }
     fn clip_key(&self) -> u64 {
-        let mut h = 0xcbf2_9ce4_8422_2325u64;
-        for v in [
-            self.item.item.0,
-            self.item.start.0 as u64,
-            self.item.duration.0 as u64,
-            self.item.source_in.0 as u64,
-            self.item.speed.to_bits(),
-            self.item.reverse as u64,
-        ] {
-            h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
-        }
-        h
+        clip_key(self.item)
     }
+}
+
+/// FNV-1a identity of a clip instance and the source range an analysis covers (media item,
+/// timeline start and duration, source in-point, speed and reverse). The in-memory analysis cache
+/// and a project-stored analysis use the same key, so both invalidate together when the clip moves
+/// or its source range changes.
+pub fn clip_key(item: &TrackItem) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for v in [item.item.0, item.start.0 as u64, item.duration.0 as u64, item.source_in.0 as u64, item.speed.to_bits(), item.reverse as u64] {
+        h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// Analyse `item` for Warp Stabilizer without rendering it: the clip's frames are decoded small
+/// and tracked, and the result is cached for the renderer. This is what the Stabilize button runs
+/// in the background; it returns `None` when the clip has no picture or was cancelled.
+///
+/// `on_frame` is called with the frame number as each analysed frame is decoded (the caller's
+/// progress accounting), and the analysis honours [`filmcraft_media::cancel`].
+pub fn analyze_stabilizer(
+    project: &Project,
+    seq: &Sequence,
+    item: &TrackItem,
+    sources: &dyn SourceProvider,
+    method: TrackMethod,
+    detailed: bool,
+    on_frame: Option<&(dyn Fn(usize) + Sync)>,
+) -> Option<Arc<StabilizerPath>> {
+    let env = ItemEnv {
+        project,
+        seq,
+        item,
+        t: item.start,
+        opts: RenderOptions { effects: false, ..RenderOptions::default() },
+        sources,
+        want: 1.0,
+        layer_size: crate::output_size(seq, 1.0),
+        layer_to_output: Affine::IDENTITY,
+        tc: "",
+    };
+    temporal::stabilizer_path_with(&env, 0.0, method, detailed, on_frame)
 }
 
 // ------------------------------------------------------------------ parameters

@@ -1009,14 +1009,26 @@ fn posterize_time_and_echo_read_other_frames() {
     assert!(close(img.get(40, 4)[0], 0.5, 1e-5), "echo bar {:?}", img.get(40, 4));
 }
 
+/// The stabilizer analysis cache is process-global; these tests clear and fill it, so they must not
+/// run at the same time or one test's `clear` would empty another test's cache mid-render.
+fn stabilizer_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn warp_stabilizer_removes_camera_jitter() {
+    let _guard = stabilizer_test_lock();
     let (w, h) = (192, 128);
     let mk = |now: f64| ClipEnv { w, h, fps: 24.0, secs: 1.0, now, key: 0xC0FFEE, seq: (w as u32, h as u32), pic: shaky };
     let mut e = inst("warp_stabilizer");
     set(&mut e, "result", ParamValue::Choice(1)); // No Motion
     set(&mut e, "framing", ParamValue::Choice(0)); // Stabilize Only
+    set(&mut e, "stabilize", ParamValue::Bool(true));
     clear_stabilizer_cache();
+    // the Stabilize button analyses the clip; rendering then reads the cache
+    let env0 = mk(0.0);
+    assert!(stabilizer_path(&env0, 0.0, filmcraft_project::TrackMethod::PositionScaleRotation, false).is_some());
     let frames: Vec<(Image, Image)> = [3usize, 9, 15, 21]
         .iter()
         .map(|&f| {
@@ -1052,8 +1064,35 @@ fn warp_stabilizer_removes_camera_jitter() {
     let mut st = env.render(9.0 / 24.0, 1.0);
     crate::effects::apply(&mut st, &e, &FxCtx { seconds: 9.0 / 24.0, env: Some(&env), ..cx() });
     assert!(st.px.as_chunks::<4>().0.iter().all(|p| p[3] > 0.99), "auto-scale leaves no border");
-    // the path cache is reused
-    assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
+    // the path cache is reused by rendering, and rendering alone never analyses
+    assert!(cached_stabilizer_path(&env, filmcraft_project::TrackMethod::PositionScaleRotation, false).is_some());
+}
+
+#[test]
+fn warp_stabilizer_only_reads_a_cached_analysis() {
+    let _guard = stabilizer_test_lock();
+    let (w, h) = (96, 64);
+    let mk = |now: f64| ClipEnv { w, h, fps: 24.0, secs: 1.0, now, key: 0x5A17_AB1E, seq: (w as u32, h as u32), pic: shaky };
+    clear_stabilizer_cache();
+    // the flag is on but nothing was analysed: the picture is unchanged and no analysis starts
+    let mut e = inst("warp_stabilizer");
+    set(&mut e, "stabilize", ParamValue::Bool(true));
+    let env = mk(0.2);
+    let raw = env.render(0.2, 1.0);
+    let mut img = raw.clone();
+    crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.2, env: Some(&env), ..cx() });
+    assert_eq!(img.px, raw.px, "rendering must not analyse or warp without a cached path");
+    assert!(cached_stabilizer_path(&env, filmcraft_project::TrackMethod::PositionScaleRotation, false).is_none());
+    // an analysis fills the cache; the same effect then stabilises
+    assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::PositionScaleRotation, false).is_some());
+    let mut img = raw.clone();
+    crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.2, env: Some(&env), ..cx() });
+    assert_ne!(img.px, raw.px, "a cached analysis is applied");
+    // without the Stabilize flag the effect leaves the picture alone, even with the cache
+    set(&mut e, "stabilize", ParamValue::Bool(false));
+    let mut img = raw.clone();
+    crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.2, env: Some(&env), ..cx() });
+    assert_eq!(img.px, raw.px);
 }
 
 /// #1381: the stabilizer's analysis kept the pyramid of every frame of the clip until all steps
@@ -1155,6 +1194,48 @@ mod stabilizer_analysis {
         let r = chunked_steps(1_000, 10, Some, |_: &usize| (1, 1), |_: &usize, _: &usize, _| Affine::IDENTITY, || calls.fetch_add(1, Ordering::SeqCst) >= 12);
         assert!(r.is_none());
     }
+}
+
+#[test]
+fn warp_stabilizer_uses_the_analysis_saved_in_the_project() {
+    let _guard = stabilizer_test_lock();
+    let (w, h) = (192, 128);
+    let mk = |now: f64, key: u64| ClipEnv { w, h, fps: 24.0, secs: 1.0, now, key, seq: (w as u32, h as u32), pic: shaky };
+    let method = filmcraft_project::TrackMethod::PositionScaleRotation;
+    let fresh = mk(0.0, 0x5EED);
+    clear_stabilizer_cache();
+    let path = stabilizer_path(&fresh, 0.0, method, false).unwrap();
+    let mut e = inst("warp_stabilizer");
+    set(&mut e, "result", ParamValue::Choice(1)); // No Motion
+    set(&mut e, "framing", ParamValue::Choice(0)); // Stabilize Only
+    set(&mut e, "stabilize", ParamValue::Bool(true));
+    e.analysis = Some(path.to_analysis(fresh.clip_key(), method, false));
+    // a reopened project has no in-memory cache: only the analysis saved with the effect remains
+    clear_stabilizer_cache();
+    assert!(cached_stabilizer_path(&fresh, method, false).is_none());
+    let now = 9.0 / 24.0;
+    let env = mk(now, fresh.key);
+    let raw = env.render(now, 1.0);
+    let mut st = raw.clone();
+    crate::effects::apply(&mut st, &e, &FxCtx { seconds: now, env: Some(&env), ..cx() });
+    assert_ne!(st.px, raw.px, "the saved analysis stabilises the clip after reopening the project");
+    // a clip that moved or was trimmed no longer matches the saved analysis and stays untouched
+    clear_stabilizer_cache();
+    let moved = mk(now, fresh.key + 1);
+    let raw = moved.render(now, 1.0);
+    let mut img = raw.clone();
+    crate::effects::apply(&mut img, &e, &FxCtx { seconds: now, env: Some(&moved), ..cx() });
+    assert_eq!(img.px, raw.px, "a stored analysis is ignored once the clip key changed");
+    // a damaged analysis is ignored rather than applied
+    clear_stabilizer_cache();
+    if let Some(a) = e.analysis.as_mut() {
+        a.steps = "not base64!!".to_string();
+    }
+    let env = mk(now, fresh.key);
+    let raw = env.render(now, 1.0);
+    let mut img = raw.clone();
+    crate::effects::apply(&mut img, &e, &FxCtx { seconds: now, env: Some(&env), ..cx() });
+    assert_eq!(img.px, raw.px, "a damaged saved analysis is ignored");
 }
 
 #[test]

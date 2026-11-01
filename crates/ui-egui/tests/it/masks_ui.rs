@@ -563,3 +563,69 @@ fn presets_bin_drag_and_save_dialog() {
     assert_eq!(mine["masks"], 1);
     d.rect("effects.preset.My Vignette");
 }
+
+/// Effect Controls ▸ right-click an effect offers both Save Preset and Apply Preset, and a preset
+/// chosen there configures that effect in place instead of adding a duplicate below it.
+#[test]
+fn effect_context_menu_applies_a_saved_preset_in_place() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Effects"}));
+    let seq = d.exec("sequence.inspect", json!({}));
+    let items = seq["video"][0]["items"].as_array().unwrap().clone();
+    let (a, b) = (items[0]["clip"].as_u64().unwrap(), items[1]["clip"].as_u64().unwrap());
+    d.exec("timeline.select", json!({"clips": [a]}));
+    d.exec("effects.apply", json!({"clips": [a], "effect": "brightness_contrast"}));
+    d.exec("effects.setParam", json!({"clip": a, "effect": "brightness_contrast", "param": "contrast", "value": 60.0}));
+    d.exec("presets.save", json!({"clip": a, "name": "Punchy", "keyframes": "none"}));
+
+    d.exec("timeline.select", json!({"clips": [b]}));
+    d.exec("effects.apply", json!({"clips": [b], "effect": "brightness_contrast"}));
+    // collapse the intrinsic effect so its rows and the new effect are on screen
+    d.ok("ui.click", json!({"id": "effectControls.effect.motion.twirl"}));
+    d.frames(3);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let before = seq["video"][0]["items"][1]["effects"].as_array().unwrap().clone();
+    let bc = before.iter().find(|e| e["effect"] == "brightness_contrast").expect("effect added: {before:?}");
+    assert_eq!(bc["params"]["contrast"]["value"], json!("Float(0.0)"));
+
+    d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast", "button": "right"}));
+    d.frames(2);
+    d.rect("effectControls.effect.brightness_contrast.savePreset");
+    d.rect("effectControls.effect.brightness_contrast.applyPreset");
+    d.rect("effectControls.effect.brightness_contrast.reset");
+    d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast.applyPreset"}));
+    d.frames(2);
+    d.harness.check_accessibility();
+    d.rect("effectControls.effect.brightness_contrast.applyPreset.Punchy");
+    d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast.applyPreset.Punchy"}));
+    d.frames(3);
+
+    let seq = d.exec("sequence.inspect", json!({}));
+    let after = seq["video"][0]["items"][1]["effects"].as_array().unwrap().clone();
+    assert_eq!(after.len(), before.len(), "configured in place, no duplicate: {after:?}");
+    let bc = after.iter().find(|e| e["effect"] == "brightness_contrast").unwrap();
+    assert_eq!(bc["params"]["contrast"]["value"], json!("Float(60.0)"), "{bc}");
+    // one undo step puts the old settings back
+    d.ok("ui.key", json!({"key": "Cmd+Z"}));
+    d.frames(2);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let undone = seq["video"][0]["items"][1]["effects"].as_array().unwrap().clone();
+    let bc = undone.iter().find(|e| e["effect"] == "brightness_contrast").unwrap();
+    assert_eq!(bc["params"]["contrast"]["value"], json!("Float(0.0)"), "{bc}");
+
+    // the same menu resets the effect to its defaults
+    d.exec("effects.setParam", json!({"clip": b, "effect": "brightness_contrast", "param": "contrast", "value": 30.0}));
+    d.frames(2);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let changed = seq["video"][0]["items"][1]["effects"].as_array().unwrap().clone();
+    let bc = changed.iter().find(|e| e["effect"] == "brightness_contrast").unwrap();
+    assert_eq!(bc["params"]["contrast"]["value"], json!("Float(30.0)"), "the temporary value is in place: {bc}");
+    d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast", "button": "right"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast.reset"}));
+    d.frames(3);
+    let seq = d.exec("sequence.inspect", json!({}));
+    let reset = seq["video"][0]["items"][1]["effects"].as_array().unwrap().clone();
+    let bc = reset.iter().find(|e| e["effect"] == "brightness_contrast").unwrap();
+    assert_eq!(bc["params"]["contrast"]["value"], json!("Float(0.0)"), "Reset Effect restored the default: {bc}");
+}

@@ -335,11 +335,21 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
             {
                 audio_section(ui, &mut reg, s, &t, seq_sr);
             }
-            if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t) {
+            if matches!(s.format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::Mjpeg)
+                && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t)
+            {
                 row(ui, &t, tl!("Multiplexer"), |ui| {
-                    let cur = if s.multiplexer == Multiplexer::Mp4 { "MP4" } else { "QuickTime" };
-                    if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), 160.0) {
-                        s.multiplexer = if i == 0 { Multiplexer::Mp4 } else { Multiplexer::Mov };
+                    let choices: Vec<(&str, Multiplexer)> = match s.format {
+                        Format::H264 | Format::Hevc => vec![("MP4", Multiplexer::Mp4), ("QuickTime", Multiplexer::Mov), ("Matroska (MKV)", Multiplexer::Mkv)],
+                        Format::Av1 => vec![("MP4", Multiplexer::Mp4), ("Matroska (MKV)", Multiplexer::Mkv)],
+                        _ => vec![("QuickTime", Multiplexer::Mov), ("Matroska (MKV)", Multiplexer::Mkv)],
+                    };
+                    let cur = choices.iter().find(|(_, m)| *m == s.multiplexer).map_or("", |(label, _)| *label);
+                    let labels = opts(&choices.iter().map(|(label, _)| *label).collect::<Vec<_>>());
+                    if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &labels, 160.0)
+                        && let Some((_, mux)) = choices.get(i)
+                    {
+                        s.multiplexer = *mux;
                     }
                 });
             }
@@ -663,7 +673,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             AudioCodec::Flac => tl!("FLAC (lossless)"),
             _ => tl!("Uncompressed (PCM)"),
         };
-        // MP4 takes AAC or FLAC; QuickTime any of the three
+        // MP4 takes AAC or FLAC; QuickTime and Matroska any of the three
         let labels = vec![
             ("AAC".to_string(), !audio_only),
             (tl!("Uncompressed (PCM)").to_string(), !s.format.is_mp4_with(s.multiplexer)),

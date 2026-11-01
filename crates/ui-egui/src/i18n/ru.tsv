@@ -3658,3 +3658,18 @@
 	Previous	Предыдущий
 	Next	Следующий
 	Enter a valid HH:MM:SS:FF timecode	Введите допустимый тайм-код ЧЧ:ММ:СС:КК (HH:MM:SS:FF)
+
+	Centering Grid	Сетка центрирования
+	Full Screen on Monitor	Полноэкранный режим на мониторе
+	Stabilize	Стабилизировать
+	Stabilizing	Стабилизация
+	Rule of Thirds	Правило третей
+	Centre Cross	Центральный крест
+	Golden Ratio	Золотое сечение
+	Diagonals	Диагонали
+	Centering Grid Pattern	Шаблон сетки центрирования
+	Restore Program Monitor	Восстановить монитор программы
+	Choose the display for the full screen preview.	Выберите дисплей для полноэкранного предпросмотра.
+	{name} — {width} × {height} (Primary)	{name} — {width} × {height} (Основной)
+	{name} — {width} × {height}	{name} — {width} × {height}
+	Monitor {n}	Монитор {n}

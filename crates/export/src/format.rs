@@ -212,6 +212,9 @@ impl Format {
     }
     /// Whether the file is MPEG-4 rather than QuickTime for `mux`.
     pub fn is_mp4_with(self, mux: Multiplexer) -> bool {
+        if mux == Multiplexer::Mkv {
+            return false;
+        }
         self == Format::Av1 || (self.is_h26x() && mux == Multiplexer::Mp4)
     }
     pub const ALL: [Format; 21] = [
@@ -488,6 +491,20 @@ impl ExportSettings {
         Ok(())
     }
 
+    /// Matroska carries the video codecs FilmCraft writes for it, and AAC, FLAC or PCM audio.
+    fn validate_multiplexer(&self) -> Result<()> {
+        if self.multiplexer != Multiplexer::Mkv {
+            return Ok(());
+        }
+        if !matches!(self.format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::Mjpeg) {
+            return Err(ExportError::Unsupported(format!(
+                "{} cannot be written in Matroska: choose H.264, H.265, AV1, ProRes or Motion JPEG",
+                self.format.label()
+            )));
+        }
+        Ok(())
+    }
+
     fn validate_bitrate_mode(&self) -> Result<()> {
         if self.format == Format::Hevc && self.bitrate_mode == BitrateMode::Vbr2Pass {
             return Err(ExportError::Unsupported("H.265 export has no two-pass mode: choose CBR or VBR, 1 pass".into()));
@@ -531,6 +548,7 @@ impl ExportSettings {
             return Err(ExportError::Unsupported("output frame rate must be positive and at most 1000 fps".into()));
         }
         self.validate_audio_settings()?;
+        self.validate_multiplexer()?;
         if self.field_order != FieldOrder::Progressive && self.has_video() {
             return Err(ExportError::Unsupported(format!("{} field order: FilmCraft's encoders write progressive frames", self.field_order.label())));
         }

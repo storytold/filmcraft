@@ -3731,3 +3731,17 @@
 	Previous	前へ
 	Next	次へ
 	Enter a valid HH:MM:SS:FF timecode	有効なタイムコードを HH:MM:SS:FF 形式で入力してください
+	Centering Grid	センタリンググリッド
+	Full Screen on Monitor	モニターで全画面表示
+	Stabilize	安定化
+	Stabilizing	安定化中
+	Rule of Thirds	三分割法
+	Centre Cross	中央十字
+	Golden Ratio	黄金比
+	Diagonals	対角線
+	Centering Grid Pattern	センタリンググリッドのパターン
+	Restore Program Monitor	プログラムモニターを復元
+	Choose the display for the full screen preview.	全画面プレビューを表示するモニターを選択してください。
+	{name} — {width} × {height} (Primary)	{name} — {width} × {height}（プライマリ）
+	{name} — {width} × {height}	{name} — {width} × {height}
+	Monitor {n}	モニター {n}

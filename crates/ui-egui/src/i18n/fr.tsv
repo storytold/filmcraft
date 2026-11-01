@@ -3725,3 +3725,17 @@
 	Options:	Options :
 	Invalid duration: {error}	Durée non valide : {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Centering Grid	Grille de centrage
+	Full Screen on Monitor	Plein écran sur moniteur
+	Stabilize	Stabiliser
+	Stabilizing	Stabilisation
+	Rule of Thirds	Règle des tiers
+	Centre Cross	Croix centrale
+	Golden Ratio	Nombre d'or
+	Diagonals	Diagonales
+	Centering Grid Pattern	Motif de grille de centrage
+	Restore Program Monitor	Restaurer le moniteur Programme
+	Choose the display for the full screen preview.	Choisissez l'écran pour l'aperçu en plein écran.
+	{name} — {width} × {height} (Primary)	{name} — {width} × {height} (Principal)
+	{name} — {width} × {height}	{name} — {width} × {height}
+	Monitor {n}	Moniteur {n}
