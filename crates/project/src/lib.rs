@@ -120,6 +120,11 @@ pub struct Project {
     /// instructions for whoever opens it next, frame numbers and the like. Schema v15.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
+    /// Panel and dock layout for this project (#2258). Opaque JSON stored by the UI layer;
+    /// the project format ignores unknown fields so older versions open this file cleanly.
+    /// Schema v17.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_layout: Option<serde_json::Value>,
 }
 
 impl Default for Project {
@@ -149,6 +154,7 @@ impl Project {
             source_graphics: BTreeMap::new(),
             narrations: BTreeMap::new(),
             notes: String::new(),
+            workspace_layout: None,
         }
     }
 

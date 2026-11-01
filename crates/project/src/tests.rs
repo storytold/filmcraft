@@ -394,3 +394,26 @@ fn source_par_follows_interpret_footage_subclips_and_sequences() {
     assert_eq!(p.conformed_source_size(adj, (4, 3)), Some((1440.0, 1080.0)));
     assert_eq!(p.source_par(ItemId(987_654_321)), None);
 }
+
+#[test]
+fn project_workspace_layout_field_round_trips() {
+    // Regression for #2258: Project must persist and restore the workspace_layout field
+    // through a serialise/deserialise round-trip without losing data.
+    use serde_json::json;
+    let mut project = Project::default();
+    assert!(project.workspace_layout.is_none(), "starts empty");
+
+    let layout = json!({"dock": [{"id": "timeline", "width": 800}], "zoom": 1.5});
+    project.workspace_layout = Some(layout.clone());
+
+    let serialised = serde_json::to_string(&project).expect("serialise");
+    let restored: Project = serde_json::from_str(&serialised).expect("deserialise");
+    assert_eq!(restored.workspace_layout.as_ref(), Some(&layout), "workspace_layout round-trips (#2258)");
+
+    // A project without the field (older file) deserialises without error.
+    // Serialise a default project, remove workspace_layout, and re-parse.
+    let mut base = serde_json::to_value(Project::default()).expect("base to value");
+    base.as_object_mut().unwrap().remove("workspace_layout");
+    let from_old: Project = serde_json::from_value(base).expect("old format still loads");
+    assert!(from_old.workspace_layout.is_none(), "absent field defaults to None");
+}
