@@ -774,9 +774,8 @@ impl Driver {
 /// as it now is for File ▸ Open and Open Recent too.
 #[test]
 fn a_dropped_project_file_opens_and_asks_about_unsaved_changes() {
-    let dir = std::env::temp_dir().join(format!("fc-drop-project-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
     let (a, b) = (dir.join("A.fcproj"), dir.join("B.FCPROJ"));
     let mut d = Driver::new();
     d.exec("file.saveCopy", json!({"path": b.to_string_lossy()}));
@@ -840,5 +839,4 @@ fn a_dropped_project_file_opens_and_asks_about_unsaved_changes() {
     assert!(d.has("openProject.dontSave"), "File ▸ Open asks too");
     d.click("openProject.dontSave");
     assert!(d.path().is_some_and(|p| p.ends_with("B.FCPROJ")));
-    let _ = std::fs::remove_dir_all(&dir);
 }
