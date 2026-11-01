@@ -66,6 +66,7 @@ pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod play_ahead;
 mod rtl;
+pub mod scope_worker;
 pub mod scrub;
 mod shuttle;
 pub mod source_playback;
@@ -200,6 +201,8 @@ pub struct FilmcraftApp {
     pub ui: UiState,
     pub tokens: Tokens,
     pub frames: Arc<FrameServer>,
+    /// Lumetri Scopes signals and images, computed off the UI pass.
+    pub scope_worker: scope_worker::ScopeWorker,
     pub playback: Playback,
     pub source_playback: source_playback::SourcePlayback,
     pub audio: Option<Box<dyn AudioOut>>,
