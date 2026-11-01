@@ -349,6 +349,9 @@ pub struct EditorState {
     /// Selected captions (caption tracks / Captions panel).
     #[serde(default)]
     pub caption_selection: Vec<ClipId>,
+    /// Clipboard for caption track style (captions.copyStyle / captions.pasteStyle).
+    #[serde(skip)]
+    pub caption_style_clipboard: Option<filmcraft_project::CaptionStyle>,
     /// Selected transitions (clicked in the Timeline): Effect Controls shows one, Delete removes
     /// them. Selecting clips clears it and selecting transitions clears the clip selection.
     #[serde(default)]
