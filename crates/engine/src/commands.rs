@@ -2473,6 +2473,45 @@ fn build() -> Vec<CommandSpec> {
             crate::clip_ops::add_frame_hold(s, p)
         }),
         cmd!("clip.nest", "Nest…", ["Clip"], None, r#"{"name":str?}"#, has_selection, |s, p| nest(s, p)),
+        cmd!("clip.mute", "Mute Clip", ["Clip"], None, r#"{"clips":[id]?,"clip":id?,"muted":bool?}"#, has_seq, |s, p| {
+            let ids = clips_p(s, p);
+            if ids.is_empty() {
+                return Err(bad("clip.mute", "no clips selected"));
+            }
+            let explicit = bool_p(p, "muted");
+            let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+            // Collect distinct track ids that own any of the given clips.
+            let mut track_ids: Vec<filmcraft_project::TrackId> = ids.iter().filter_map(|c| seq.find_item(*c).map(|(tid, _)| tid)).collect();
+            track_ids.dedup();
+            let _ = seq;
+            s.edit_sequence("Mute Clip", |q, _, _| {
+                for tid in &track_ids {
+                    let t = q.track_mut(*tid).ok_or(filmcraft_edit::EditError::NoTrack(*tid))?;
+                    t.muted = explicit.unwrap_or(!t.muted);
+                }
+                Ok(())
+            })?;
+            Ok(Value::Null)
+        }),
+        cmd!("clip.solo", "Solo Clip", ["Clip"], None, r#"{"clips":[id]?,"clip":id?,"solo":bool?}"#, has_seq, |s, p| {
+            let ids = clips_p(s, p);
+            if ids.is_empty() {
+                return Err(bad("clip.solo", "no clips selected"));
+            }
+            let explicit = bool_p(p, "solo");
+            let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+            let mut track_ids: Vec<filmcraft_project::TrackId> = ids.iter().filter_map(|c| seq.find_item(*c).map(|(tid, _)| tid)).collect();
+            track_ids.dedup();
+            let _ = seq;
+            s.edit_sequence("Solo Clip", |q, _, _| {
+                for tid in &track_ids {
+                    let t = q.track_mut(*tid).ok_or(filmcraft_edit::EditError::NoTrack(*tid))?;
+                    t.solo = explicit.unwrap_or(!t.solo);
+                }
+                Ok(())
+            })?;
+            Ok(Value::Null)
+        }),
         // Reveal in Project (clip context menu) and Reveal Sequence in Project (Timeline tab menu):
         // select the item in the Project panel and show it there
         cmd!("clip.revealInProject", "Reveal in Project", [], None, r#"{"clip":id?}"#, has_seq, |s, p| {

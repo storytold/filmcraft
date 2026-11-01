@@ -1493,3 +1493,30 @@ fn negative_place_and_marker_times_are_refused() {
     s.execute("markers.add", json!({"frame": 0, "name": "start"})).unwrap();
     assert!(s.active_sequence().unwrap().markers.iter().any(|m| m.start == Tick::ZERO && m.name == "start"));
 }
+
+/// clip.mute and clip.solo toggle the muted/solo flag on the track that owns the clip.
+#[test]
+fn clip_mute_and_solo_toggle_track_flags() {
+    let mut s = demo();
+    let seq = s.active_sequence().unwrap();
+    let clip_id = seq.video_tracks[0].items[0].id;
+    let track_id = seq.video_tracks[0].id;
+    let was_muted = seq.video_tracks[0].muted;
+    let was_solo = seq.video_tracks[0].solo;
+    drop(seq);
+
+    // Toggle mute on
+    s.execute("clip.mute", json!({"clip": clip_id.0})).unwrap();
+    let muted_once = s.active_sequence().unwrap().track(track_id).unwrap().muted;
+    assert_eq!(muted_once, !was_muted, "first toggle changes muted");
+
+    // Toggle mute off — back to original
+    s.execute("clip.mute", json!({"clip": clip_id.0})).unwrap();
+    let muted_twice = s.active_sequence().unwrap().track(track_id).unwrap().muted;
+    assert_eq!(muted_twice, was_muted, "second toggle restores muted");
+
+    // Explicit solo set
+    s.execute("clip.solo", json!({"clip": clip_id.0, "solo": !was_solo})).unwrap();
+    let solo_set = s.active_sequence().unwrap().track(track_id).unwrap().solo;
+    assert_eq!(solo_set, !was_solo, "explicit solo value is applied");
+}
