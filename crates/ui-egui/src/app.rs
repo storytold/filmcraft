@@ -287,8 +287,6 @@ impl FilmcraftApp {
                     // A sequence switch (including opening/reverting/recovering a project, which
                     // emits this event for the newly active sequence) is a new IME owner context.
                     self.restart_ime_target();
-                    // a project just opened brings its export settings
-                    panels::export_mode::restore_settings(self);
                     // show the sequence with its own view (or fitted, the first time)
                     self.timeline_view_of = None;
                     self.ui.dock.restore_timeline();
