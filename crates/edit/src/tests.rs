@@ -1390,3 +1390,98 @@ fn trim_caption_shorter_than_min_duration_does_not_cross_bounds() {
         assert!(c.duration >= Tick(1000), "{edge:?}: caption shrank: {:?}", c.duration);
     }
 }
+
+// ---------- time remapping ----------
+
+use filmcraft_project::{ParamValue, find_effect};
+
+/// A clip with an animated Time Remapping speed curve (percent keyframes at clip-relative
+/// timeline time), placed with `overwrite`.
+fn put_remapped(fx: &mut Fx, track: TrackId, start: i64, dur: i64, src_in: i64, speed: f64, reverse: bool, keys: &[(i64, f64)]) -> TrackItem {
+    let mut it = fx.item(start, dur, src_in);
+    it.speed = speed;
+    it.reverse = reverse;
+    let mut e = find_effect("time_remap").unwrap().instance();
+    let p = e.param_mut("speed").unwrap();
+    for (t, v) in keys {
+        p.put_keyframe(f(*t), ParamValue::Float(*v));
+    }
+    it.effects.push(e);
+    let mut n = fx.next;
+    overwrite(&mut fx.seq, vec![(track, it)], &mut Fx::ctx(&mut n)).unwrap();
+    fx.next = n;
+    fx.seq.track(track).unwrap().items.last().unwrap().clone()
+}
+
+/// Every frame the two pieces cover shows the media the intact clip showed there.
+fn assert_track_shows_like(fx: &Fx, orig: &TrackItem, from: i64, to: i64) {
+    for k in from..to {
+        let t = f(k);
+        let it = fx.seq.track(fx.v(0)).unwrap().items.iter().find(|i| i.start <= t && t < i.end()).unwrap();
+        assert_eq!(it.source_time_at(t), orig.source_time_at(t), "frame {k} diverges after the split");
+    }
+}
+
+#[test]
+fn razor_keeps_a_reversed_clip_continuous_despite_rounding() {
+    // 10 frames at 150% cut at frame 3: the old total-span-minus-cut advance (15-5=10) disagreed
+    // with the right piece's real media span (7*1.5=10.5) by half a frame
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let orig = put_remapped(&mut fx, v1, 10, 10, 200, 1.5, true, &[]);
+    let mut n = fx.next;
+    let new = razor(&mut fx.seq, &[], f(13), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 1);
+    let items = &fx.seq.track(v1).unwrap().items;
+    let (left, right) = (&items[0], &items[1]);
+    assert_eq!(right.source_in, orig.source_in);
+    // the left piece starts exactly where the right piece's media ends (the review's fix)
+    assert_eq!(left.source_in, orig.source_in + right.media_span(Tick::ZERO, right.duration));
+    assert_track_shows_like(&fx, &orig, 10, 20);
+}
+
+#[test]
+fn razor_keeps_a_time_remap_curve_across_the_cut() {
+    // 100% up to the middle key, ramping to 200% over 10 frames: both pieces reproduce the
+    // intact clip's mapping
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let orig = put_remapped(&mut fx, v1, 10, 20, 200, 1.0, false, &[(0, 100.0), (10, 200.0)]);
+    // the curve bends the mapping onto fractional frames: 6.25 frames of media in the first 5
+    assert_eq!(orig.source_time_at(f(15)), f(200) + Tick(25 * f(1).0 / 4));
+    assert_eq!(orig.source_time_at(f(20)), f(215)); // 15 frames of media in the first 10
+    assert_eq!(orig.source_time_at(f(25)), f(225)); // + 5 frames at 200%
+    let mut n = fx.next;
+    let new = razor(&mut fx.seq, &[], f(15), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 1);
+    let right = &fx.seq.track(v1).unwrap().items[1];
+    // the right piece's curve shifted with its timeline restart
+    let p = right.effect("time_remap").unwrap().param("speed").unwrap();
+    assert_eq!(p.keyframes.iter().map(|k| k.time.0).collect::<Vec<_>>(), vec![-5 * f(1).0, 5 * f(1).0]);
+    assert_track_shows_like(&fx, &orig, 10, 30);
+}
+
+#[test]
+fn razor_keeps_a_reversed_time_remap_curve_continuous() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let orig = put_remapped(&mut fx, v1, 10, 20, 200, 1.0, true, &[(0, 100.0), (10, 300.0)]);
+    let mut n = fx.next;
+    let new = razor(&mut fx.seq, &[], f(18), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 1);
+    assert_track_shows_like(&fx, &orig, 10, 30);
+}
+
+#[test]
+fn time_remap_speed_drives_the_media_mapping() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[(0, 50.0), (5, 50.0), (15, 150.0)]);
+    // 50% for 5 frames, ramp to 150% over 10, 150% after: the mapping integrates the curve
+    assert_eq!(it.source_time_at(f(0)), f(100));
+    assert_eq!(it.source_time_at(f(5)), f(100) + Tick(5 * f(1).0 / 2)); // 2.5 frames of media
+    assert_eq!(it.source_out() - it.source_in, f(20)); // 2.5 + ramp avg 1.0 * 10 + 5 * 1.5
+    // a clip without an animated remap keeps the constant-speed mapping
+    let plain = fx.item(0, 20, 100);
+    assert_eq!(plain.source_time_at(f(5)), f(105));
+}

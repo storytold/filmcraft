@@ -3601,7 +3601,7 @@ fn build() -> Vec<CommandSpec> {
                 }
                 let (keyframes, value) = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
                     let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                    let mt = it.effect_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
+                    let mt = keyframe_store_time(it, &eff, &pid, at, ph);
                     let e = match &eff {
                         Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
                         Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -3682,7 +3682,7 @@ fn build() -> Vec<CommandSpec> {
             let ph = s.playhead();
             s.edit_sequence("Toggle Animation", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-                let mt = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+                let mt = keyframe_store_time(it, &eff, &pid, None, ph);
                 let e = match &eff {
                     Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
                     Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -4046,6 +4046,19 @@ fn reset_params(e: &mut filmcraft_project::EffectInstance, only: Option<&str>, f
     any
 }
 
+/// The time a keyframe created at `t` (an explicit `time`, else the playhead pinned to the clip)
+/// is stored at: media time for every effect but Time Remapping's speed, whose curve anchors to
+/// the clip's timeline time ([`filmcraft_project::TrackItem::timeline_keyframed`]).
+fn keyframe_store_time(it: &filmcraft_project::TrackItem, eff: &Value, pid: &str, at: Option<Tick>, ph: Tick) -> Tick {
+    let t = at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
+    let eff_id = match eff {
+        Value::Number(n) => it.effects.get(n.as_u64().unwrap_or(u64::MAX) as usize).map(|e| e.effect.as_str()),
+        Value::String(s) => Some(s.as_str()),
+        _ => None,
+    };
+    if eff_id.is_some_and(|e| filmcraft_project::TrackItem::timeline_keyframed(e, pid)) { t - it.start } else { it.effect_time_at(t) }
+}
+
 /// The `interpolation` parameter; a missing or unknown name is linear.
 pub(crate) fn interpolation_p(p: &Value) -> filmcraft_project::Interpolation {
     match str_p(p, "interpolation").unwrap_or("linear").to_ascii_lowercase().as_str() {
@@ -4088,7 +4101,7 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     s.edit_sequence_as(label, merge.as_deref(), |q, _, _| {
         let mut reply = Value::Null;
         let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
-        let mt_now = it.effect_time_at(at.unwrap_or_else(|| playhead.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
+        let mt_now = keyframe_store_time(it, &eff, &pid, at, playhead);
         let e = match &eff {
             Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
             Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
