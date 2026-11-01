@@ -958,7 +958,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, op: &str, params: &Val
             Ok(Value::Null)
         }
         "saveArrangement" => {
-            let bin = Some(view_of(app, inst).bin.0);
+            // the canvas the menu was opened on, which may be a floating bin window
+            let bin = params.get("bin").and_then(Value::as_u64).or_else(|| Some(view_of(app, inst).bin.0));
             let width = params.get("width").and_then(Value::as_f64);
             app.ui.project_panel.dialog = Some(ProjectDialog::SaveArrangement { name: String::new(), bin, width });
             Ok(Value::Null)

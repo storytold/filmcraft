@@ -1686,3 +1686,25 @@ fn a_zoomed_freeform_canvas_aligns_the_cards_it_shows() {
         assert!((x - sx).abs() <= 20.0 && (y - sy).abs() <= 20.0, "item {i}: aligned to {x},{y}, shown at {sx},{sy}");
     }
 }
+
+/// #3774 review: a card's menu acts on the selected cards of its own bin. A selection that also
+/// holds an item of another bin stacks only this bin's cards (laid out at this canvas's width).
+#[test]
+fn a_card_menu_stacks_only_the_selected_cards_of_its_bin() {
+    let mut d = project_driver();
+    let (bin, items) = d.footage();
+    let project = d.app().session.project.clone();
+    let other =
+        project.items.values().map(|i| i.id).find(|i| project.root.parent_of(*i).map(|b| b.0) != Some(bin)).map(|i| i.0).expect("an item outside Footage");
+    d.exec("project.view.set", json!({"view": "freeform"}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    let card = format!("project.item.{}", items[0]);
+    d.wait_for(&card);
+    d.exec("project.select", json!({"items": [other, items[0], items[1]]}));
+    d.ok("ui.click", json!({"id": card, "button": "right"}));
+    d.frames(2);
+    d.click("project.cardMenu.stack");
+    let stack = |d: &mut Driver, i: u64| d.app().session.project.item(ItemId(i)).unwrap().metadata.get(FREEFORM_STACK).cloned();
+    assert!(stack(&mut d, items[0]).is_some() && stack(&mut d, items[1]).is_some(), "this bin's cards are stacked");
+    assert_eq!(stack(&mut d, other), None, "the other bin's item is left alone");
+}

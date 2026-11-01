@@ -1263,7 +1263,9 @@ fn cards_stack(cards: &[Card], item: u64) -> Option<u64> {
 
 fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, width: f32, actions: &mut Actions) {
     let sel: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
-    let items: Vec<u64> = if sel.contains(&item) { sel.clone() } else { vec![item] };
+    // the selection's cards in this bin: its width lays them out, not another bin's cards
+    let here = |i: &u64| app.session.project.root.parent_of(ItemId(*i)) == Some(v.bin);
+    let items: Vec<u64> = if sel.contains(&item) { sel.iter().copied().filter(here).collect() } else { vec![item] };
     let b = ui.add_enabled(items.len() > 1, egui::Button::new(tl!("Stack")));
     app.auto.add(&format!("{}.cardMenu.stack", v.prefix), b.rect, "Stack");
     if b.clicked() {
@@ -1309,7 +1311,7 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
     entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), ("project.freeform.alignToGrid", json!({"bin": bin, "width": width})));
     entry(app, ui, v, actions, "resetToGrid", tl!("Reset to Grid"), ("project.freeform.reset", json!({"bin": bin})));
     ui.separator();
-    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), ("projectPanel.saveArrangement", json!({"width": width})));
+    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), ("projectPanel.saveArrangement", json!({"bin": bin, "width": width})));
     let names: Vec<String> = app
         .session
         .execute("project.freeform.arrangements", json!({"bin": bin}))
