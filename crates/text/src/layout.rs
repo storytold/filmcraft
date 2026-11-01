@@ -760,8 +760,10 @@ pub fn layout_rich_uncached(text: &str, style: &TextStyle, runs: &[StyleRun], pa
         }
         prev_desc = pl.descent;
         // spaces at a hard line end count into the width the line is aligned by; in a right-to-left paragraph they
-        // sit left of the content, so the block starts at the aligned position instead of the content
+        // sit left of the content, so the block starts at the aligned position instead of the content; left and
+        // justified lines keep the content at the edge
         let aw = pl.content + pl.trail;
+        let hang = if matches!(para.align, Align::Center | Align::Right) { pl.trail } else { 0.0 };
         let shift = match (para.width, para.align) {
             (None, Align::Left | Align::Justify) => 0.0,
             (None, Align::Center) => -aw / 2.0,
@@ -769,7 +771,7 @@ pub fn layout_rich_uncached(text: &str, style: &TextStyle, runs: &[StyleRun], pa
             (Some(_), Align::Left | Align::Justify) => 0.0,
             (Some(w), Align::Center) => (w - aw) / 2.0,
             (Some(w), Align::Right) => w - aw,
-        } - if pl.left_trim > 0.0 { pl.left_trim - pl.trail } else { 0.0 };
+        } - if pl.left_trim > 0.0 { pl.left_trim - hang } else { 0.0 };
         let g0 = lay.glyphs.len();
         lay.glyphs.extend(pl.glyphs.into_iter().map(|mut g| {
             g.x += shift;
@@ -1009,5 +1011,51 @@ mod trailing_space_tests {
         let alone = lines("ab", Some(lines("ab", None)[0].width + 4.0));
         assert_eq!(wrapped.len(), 2);
         assert_eq!(wrapped[0].x, alone[0].x);
+    }
+
+    fn aligned(text: &str, align: Align, width: Option<f32>) -> Vec<Line> {
+        let st = TextStyle { size: 40.0, ..Default::default() };
+        let para = ParagraphStyle { align, width, ..Default::default() };
+        layout_uncached(text, &st, &para).lines
+    }
+
+    fn space_width() -> f32 {
+        lines("a b", None)[0].width - lines("ab", None)[0].width
+    }
+
+    #[test]
+    fn rtl_left_and_justified_lines_keep_their_content_at_the_edge() {
+        for align in [Align::Left, Align::Justify] {
+            for width in [None, Some(400.0)] {
+                let plain = aligned("\u{5d0}\u{5d1}", align, width);
+                let spaced = aligned("\u{5d0}\u{5d1}   ", align, width);
+                assert_eq!(plain[0].x, spaced[0].x, "{align:?} {width:?}");
+                assert_eq!(plain[0].width, spaced[0].width, "{align:?} {width:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn trailing_spaces_shift_a_right_aligned_last_line_by_their_full_width() {
+        let plain = aligned("ab\ncd", Align::Right, Some(400.0));
+        let spaced = aligned("ab\ncd   ", Align::Right, Some(400.0));
+        assert_eq!(plain[0].x, spaced[0].x);
+        let dx = plain[1].x - spaced[1].x;
+        assert!((dx - 3.0 * space_width()).abs() < 0.01, "dx {dx}");
+    }
+
+    #[test]
+    fn empty_and_spaces_only_paragraphs_lay_out_sanely() {
+        for align in [Align::Left, Align::Center, Align::Right, Align::Justify] {
+            for width in [None, Some(400.0)] {
+                for text in ["", "   ", "ab\n", "ab\n   "] {
+                    for l in aligned(text, align, width) {
+                        assert!(l.x.is_finite() && l.width.is_finite() && l.width >= 0.0, "{text:?} {align:?}");
+                    }
+                }
+            }
+        }
+        let empty = aligned("", Align::Center, Some(400.0));
+        assert!(empty.iter().all(|l| l.width == 0.0));
     }
 }
