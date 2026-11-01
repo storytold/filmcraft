@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened-runtime entitlements for filmcraft-cli. Deliberately minimal, like entitlements.plist;
+     the CLI records no audio, so it has only the exception that opening media needs. -->
+<plist version="1.0">
+<dict>
+  <!-- Blackmagic RAW: .braw files are decoded by Blackmagic's runtime (BlackmagicRawAPI.framework),
+       which the user installs and Blackmagic signs. Library validation only lets the hardened
+       runtime load code signed by FilmCraft's own team or Apple, so it refuses that framework
+       without this (docs/adr/0001-platform-ffi.md, crates/platform/src/braw). -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
