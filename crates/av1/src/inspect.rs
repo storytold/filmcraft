@@ -1,7 +1,7 @@
 //! Checked restart evidence from our own uncompressed-header parser (spec 5.9, 7.5).
 use crate::bits::BitReader;
-use crate::header::{HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, default_gm_params};
 use crate::header::FrameHeader;
+use crate::header::{HeaderState, LoopFilterDeltas, RefInfo, SegmentationFeatures, default_gm_params};
 use crate::{Error, Result, SequenceHeader};
 
 /// An independently restartable, shown key frame's declared geometry.

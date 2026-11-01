@@ -2,20 +2,57 @@
 use super::*;
 
 #[derive(Clone)]
+struct DecoderModel {
+    buffer_delay_length_minus_1: u8,
+    decoding_tick: u32,
+    decoder_delay: u32,
+    encoder_delay: u32,
+    low_delay: bool,
+}
+
+#[derive(Clone)]
+struct Timing {
+    display_tick: u32,
+    time_scale: u32,
+    equal_ticks: Option<u8>,
+    decoder: Option<DecoderModel>,
+}
+
+#[derive(Clone)]
 struct Sequence {
     profile: u8,
     size: (u32, u32),
     depth: u8,
     mono: bool,
     color: (u8, u8, u8),
+    color_present: bool,
     range: bool,
     location: u8,
     separate_uv: bool,
     reduced: bool,
+    level: u8,
+    tier: bool,
+    initial_delay: Option<u8>,
+    timing: Option<Timing>,
 }
 impl Default for Sequence {
     fn default() -> Self {
-        Self { profile: 0, size: (64, 64), depth: 10, mono: false, color: (1, 1, 1), range: false, location: 0, separate_uv: false, reduced: false }
+        Self {
+            profile: 0,
+            size: (64, 64),
+            depth: 10,
+            mono: false,
+            color: (1, 1, 1),
+            color_present: true,
+            range: false,
+            location: 0,
+            separate_uv: false,
+            reduced: false,
+            level: 0,
+            tier: false,
+            initial_delay: None,
+            timing: None,
+        }
     }
 }
 #[derive(Default)]
@@ -45,11 +82,46 @@ fn payload(s: &Sequence) -> Vec<u8> {
     if s.reduced {
         b.f(0, 5);
     } else {
-        b.f(0, 1);
-        b.f(0, 1);
+        b.f(u32::from(s.timing.is_some()), 1);
+        if let Some(timing) = &s.timing {
+            b.f(timing.display_tick, 32);
+            b.f(timing.time_scale, 32);
+            b.f(u32::from(timing.equal_ticks.is_some()), 1);
+            if let Some(ticks) = timing.equal_ticks {
+                // uvlc(0) is 1 and uvlc(1) is 010; fixtures use only these values.
+                if ticks == 0 {
+                    b.f(1, 1);
+                } else {
+                    b.f(0, 1);
+                    b.f(2, 2);
+                }
+            }
+            b.f(u32::from(timing.decoder.is_some()), 1);
+            if let Some(decoder) = &timing.decoder {
+                b.f(u32::from(decoder.buffer_delay_length_minus_1), 5);
+                b.f(decoder.decoding_tick, 32);
+                b.f(0, 5); // buffer_removal_time_length_minus_1
+                b.f(0, 5); // frame_presentation_time_length_minus_1
+            }
+        }
+        b.f(u32::from(s.initial_delay.is_some()), 1);
         b.f(0, 5);
         b.f(0, 12);
-        b.f(0, 5);
+        b.f(u32::from(s.level), 5);
+        if s.level > 7 {
+            b.f(u32::from(s.tier), 1);
+        }
+        if let Some(decoder) = s.timing.as_ref().and_then(|timing| timing.decoder.as_ref()) {
+            b.f(1, 1); // decoder_model_present_for_this_op
+            let n = u32::from(decoder.buffer_delay_length_minus_1) + 1;
+            b.f(decoder.decoder_delay, n);
+            b.f(decoder.encoder_delay, n);
+            b.f(u32::from(decoder.low_delay), 1);
+        }
+        if let Some(delay) = s.initial_delay {
+            b.f(1, 1);
+            b.f(u32::from(delay), 4);
+        }
     }
     b.f(7, 4);
     b.f(7, 4);
@@ -70,10 +142,12 @@ fn payload(s: &Sequence) -> Vec<u8> {
     if s.profile != 1 {
         b.f(u32::from(s.mono), 1);
     }
-    b.f(1, 1);
-    b.f(u32::from(s.color.0), 8);
-    b.f(u32::from(s.color.1), 8);
-    b.f(u32::from(s.color.2), 8);
+    b.f(u32::from(s.color_present), 1);
+    if s.color_present {
+        b.f(u32::from(s.color.0), 8);
+        b.f(u32::from(s.color.1), 8);
+        b.f(u32::from(s.color.2), 8);
+    }
     b.f(u32::from(s.range), 1);
     if !s.mono {
         if s.profile == 2 && s.depth == 12 {
@@ -105,15 +179,15 @@ fn obu(kind: u8, payload: &[u8]) -> Vec<u8> {
 fn stream(s: &Sequence) -> FrameStreamInfo {
     let config = filmcraft_isobmff::Av1Config {
         seq_profile: s.profile,
-        seq_level_idx_0: 0,
-        seq_tier_0: false,
+        seq_level_idx_0: s.level,
+        seq_tier_0: s.tier,
         high_bitdepth: s.depth > 8,
         twelve_bit: s.depth == 12,
         monochrome: s.mono,
         chroma_subsampling_x: true,
         chroma_subsampling_y: true,
         chroma_sample_position: s.location,
-        initial_presentation_delay_minus_one: None,
+        initial_presentation_delay_minus_one: s.initial_delay,
         config_obus: obu(1, &payload(s)),
     };
     FrameStreamInfo::from_av1(&config, s.size).unwrap()
@@ -122,6 +196,167 @@ fn sample(s: &Sequence) -> Vec<u8> {
     let mut out = obu(1, &payload(s));
     out.extend(obu(6, if s.reduced { &[0x90, 0, 0] } else { &[0x19, 0, 0] }));
     out
+}
+
+#[test]
+fn av1_color_candidate_allows_absent_color_description() {
+    let original = Sequence::default();
+    let info = stream(&original);
+    let changed = Sequence { color_present: false, color: (2, 2, 2), ..original };
+    let bytes = sample(&changed);
+    assert_eq!(info.av1_parameter_difference(&bytes).unwrap(), Av1ParameterDifference::ColorDescription { before: (1, 1, 1), after: (2, 2, 2) });
+    assert!(info.initial_av1_color_candidate(&bytes).unwrap().is_some());
+}
+
+#[test]
+fn av1_explicit_unspecified_color_matches_absent_description() {
+    let original = Sequence { color_present: false, color: (2, 2, 2), ..Default::default() };
+    let info = stream(&original);
+    let changed = Sequence { color_present: true, ..original };
+    assert_eq!(info.av1_parameter_difference(&sample(&changed)).unwrap(), Av1ParameterDifference::Unchanged);
+}
+
+#[test]
+fn av1_color_candidate_rejects_removing_initial_display_delay() {
+    let original = Sequence { initial_delay: Some(2), ..Default::default() };
+    let info = stream(&original);
+    let changed = Sequence { initial_delay: None, color: (9, 16, 9), ..original };
+    assert_eq!(info.av1_parameter_difference(&sample(&changed)).unwrap(), Av1ParameterDifference::Structural);
+}
+
+#[test]
+fn av1_comparison_detects_tier_change_without_color_change() {
+    let original = Sequence { level: 8, ..Default::default() };
+    let info = stream(&original);
+    let changed = Sequence { tier: true, ..original };
+    assert_eq!(info.av1_parameter_difference(&sample(&changed)).unwrap(), Av1ParameterDifference::Structural);
+}
+
+#[test]
+fn av1_comparison_detects_timing_change_without_color_change() {
+    let original = timing_sequence();
+    let info = stream(&original);
+    let mut changed = original;
+    changed.timing.as_mut().unwrap().display_tick = 1000;
+    assert_eq!(info.av1_parameter_difference(&sample(&changed)).unwrap(), Av1ParameterDifference::Structural);
+}
+
+#[test]
+fn av1_repeated_sequence_headers_exhaust_bounded_work() {
+    let original = Sequence::default();
+    let mut info = stream(&original);
+    let mut large = payload(&original);
+    large.resize(65_536, 0);
+    info.sequence_header = Some(large.clone());
+    let short_obu = obu(1, &payload(&original));
+    let mut many = Vec::new();
+    for _ in 0..80 {
+        many.extend_from_slice(&short_obu);
+    }
+    assert!(info.av1_parameter_difference(&many).is_err());
+
+    let long_obu = obu(1, &large);
+    let mut many_large = Vec::new();
+    for _ in 0..80 {
+        many_large.extend_from_slice(&long_obu);
+    }
+    assert!(info.initial_av1_color_candidate(&many_large).is_err());
+}
+
+#[test]
+fn av1_color_candidate_rejects_a_tier_change() {
+    let original = Sequence { level: 8, ..Default::default() };
+    let info = stream(&original);
+    let changed = Sequence { tier: true, color: (9, 16, 9), ..original };
+    let bytes = sample(&changed);
+    assert_eq!(info.av1_parameter_difference(&bytes).unwrap(), Av1ParameterDifference::Structural);
+    assert!(info.initial_av1_color_candidate(&bytes).unwrap().is_none());
+}
+
+#[test]
+fn av1_color_candidate_rejects_an_initial_display_delay_change() {
+    let original = Sequence { initial_delay: Some(2), ..Default::default() };
+    let info = stream(&original);
+    let changed = Sequence { initial_delay: Some(3), color: (9, 16, 9), ..original };
+    let bytes = sample(&changed);
+    assert_eq!(info.av1_parameter_difference(&bytes).unwrap(), Av1ParameterDifference::Structural);
+    assert!(info.initial_av1_color_candidate(&bytes).unwrap().is_none());
+}
+
+fn timing_sequence() -> Sequence {
+    Sequence {
+        timing: Some(Timing {
+            display_tick: 1001,
+            time_scale: 60_000,
+            equal_ticks: Some(0),
+            decoder: Some(DecoderModel { buffer_delay_length_minus_1: 0, decoding_tick: 1000, decoder_delay: 0, encoder_delay: 0, low_delay: false }),
+        }),
+        ..Default::default()
+    }
+}
+
+fn assert_color_and_timing_change_is_structural(mut changed: Sequence) {
+    let info = stream(&timing_sequence());
+    changed.color = (9, 16, 9);
+    let bytes = sample(&changed);
+    assert_eq!(info.av1_parameter_difference(&bytes).unwrap(), Av1ParameterDifference::Structural);
+    assert!(info.initial_av1_color_candidate(&bytes).unwrap().is_none());
+}
+
+#[test]
+fn av1_color_comparison_detects_display_tick_change() {
+    let mut changed = timing_sequence();
+    changed.timing.as_mut().unwrap().display_tick = 1000;
+    assert_color_and_timing_change_is_structural(changed);
+}
+
+#[test]
+fn av1_color_comparison_detects_time_scale_change() {
+    let mut changed = timing_sequence();
+    changed.timing.as_mut().unwrap().time_scale = 50_000;
+    assert_color_and_timing_change_is_structural(changed);
+}
+
+#[test]
+fn av1_color_comparison_detects_equal_picture_interval_change() {
+    let mut changed = timing_sequence();
+    changed.timing.as_mut().unwrap().equal_ticks = Some(1);
+    assert_color_and_timing_change_is_structural(changed);
+}
+
+#[test]
+fn av1_color_comparison_detects_buffer_delay_length_change() {
+    let mut changed = timing_sequence();
+    changed.timing.as_mut().unwrap().decoder.as_mut().unwrap().buffer_delay_length_minus_1 = 1;
+    assert_color_and_timing_change_is_structural(changed);
+}
+
+#[test]
+fn av1_color_comparison_detects_decoding_tick_change() {
+    let mut changed = timing_sequence();
+    changed.timing.as_mut().unwrap().decoder.as_mut().unwrap().decoding_tick = 1001;
+    assert_color_and_timing_change_is_structural(changed);
+}
+
+#[test]
+fn av1_color_comparison_detects_decoder_buffer_delay_change() {
+    let mut changed = timing_sequence();
+    changed.timing.as_mut().unwrap().decoder.as_mut().unwrap().decoder_delay = 1;
+    assert_color_and_timing_change_is_structural(changed);
+}
+
+#[test]
+fn av1_color_comparison_detects_encoder_buffer_delay_change() {
+    let mut changed = timing_sequence();
+    changed.timing.as_mut().unwrap().decoder.as_mut().unwrap().encoder_delay = 1;
+    assert_color_and_timing_change_is_structural(changed);
+}
+
+#[test]
+fn av1_color_comparison_detects_low_delay_mode_change() {
+    let mut changed = timing_sequence();
+    changed.timing.as_mut().unwrap().decoder.as_mut().unwrap().low_delay = true;
+    assert_color_and_timing_change_is_structural(changed);
 }
 
 #[test]

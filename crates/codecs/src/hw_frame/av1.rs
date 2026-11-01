@@ -5,6 +5,7 @@ use filmcraft_av1::SequenceHeader;
 
 const MAX_CONFIGURATION: usize = 65_536;
 const MAX_OBUS: usize = 4096;
+const MAX_SEQUENCE_WORK: usize = 4 * 1024 * 1024;
 
 /// The picture-format difference declared by in-band AV1 sequence headers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +119,56 @@ fn checked_sequence(payload: &[u8]) -> Result<SequenceHeader> {
     SequenceHeader::parse_checked(payload).map_err(|e| CodecError::Decode(e.to_string()))
 }
 
+// Charge both parsing and comparisons so many large sequence OBUs cannot amplify work.
+fn charge_sequence_work(work: &mut usize, bytes: usize) -> Result<()> {
+    *work = work.checked_add(bytes).ok_or_else(|| invalid("AV1 sequence inspection work overflow"))?;
+    if *work > MAX_SEQUENCE_WORK {
+        return Err(invalid("AV1 sequence inspection work limit exceeded"));
+    }
+    Ok(())
+}
+
+// Compare all validated syntax except the color-description flag and its three optional codes.
+// The syntax end excludes trailing bits: both inputs have already passed trailing-bit validation.
+type SequenceSyntaxCache<'a> = Option<(&'a [u8], std::ops::Range<usize>, usize)>;
+
+fn same_sequence_syntax<'a>(a: &'a [u8], b: &[u8], work: &mut usize, cache: &mut SequenceSyntaxCache<'a>) -> Result<bool> {
+    let cached = cache.as_ref().filter(|(data, _, _)| std::ptr::eq(*data, a));
+    let (ar, ae) = if let Some((_, range, end)) = cached {
+        (range.clone(), *end)
+    } else {
+        charge_sequence_work(work, a.len())?;
+        let (_, range, end) = SequenceHeader::parse_checked_with_color_range(a).map_err(|e| CodecError::Decode(e.to_string()))?;
+        *cache = Some((a, range.clone(), end));
+        (range, end)
+    };
+    // Even cached syntax must be charged when comparing it again.
+    charge_sequence_work(work, a.len())?;
+    charge_sequence_work(work, b.len())?;
+    let (_, br, be) = SequenceHeader::parse_checked_with_color_range(b).map_err(|e| CodecError::Decode(e.to_string()))?;
+    let Some(asuffix) = ae.checked_sub(ar.end) else {
+        return Err(invalid("invalid AV1 color range"));
+    };
+    let Some(bsuffix) = be.checked_sub(br.end) else {
+        return Err(invalid("invalid AV1 color range"));
+    };
+    if ar.start != br.start || asuffix != bsuffix {
+        return Ok(false);
+    }
+    let bit = |data: &[u8], pos: usize| data.get(pos / 8).map(|byte| (byte >> (7 - pos % 8)) & 1);
+    for i in 0..ar.start {
+        if bit(a, i) != bit(b, i) {
+            return Ok(false);
+        }
+    }
+    for i in 0..asuffix {
+        if bit(a, ar.end + i) != bit(b, br.end + i) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Specified values must have an existing software interpretation; unspecified (2) deliberately
 /// uses that same software default. Container nclx precedence is outside this API.
 fn supported_color(h: &SequenceHeader) -> bool {
@@ -190,6 +241,11 @@ impl FrameStreamInfo {
         if self.codec != FrameCodec::Av1 {
             return Err(CodecError::Unsupported("AV1 parameter comparison for another codec".into()));
         }
+        let mut sequence_work = 0;
+        let mut syntax_cache = None;
+        if let Some(original) = self.sequence_header.as_deref() {
+            charge_sequence_work(&mut sequence_work, original.len())?;
+        }
         let before = self.sequence_header.as_deref().map(checked_sequence).transpose();
         let mut result = Av1ParameterDifference::Unchanged;
         let mut walker = Obus::new(sample);
@@ -200,9 +256,19 @@ impl FrameStreamInfo {
             if obu.payload.len() > MAX_CONFIGURATION {
                 return Err(invalid("AV1 sequence header exceeds 64 KiB inspection limit"));
             }
+            charge_sequence_work(&mut sequence_work, obu.payload.len())?;
             let after = checked_sequence(obu.payload);
             let next = match (&before, after) {
-                (Ok(Some(before)), Ok(after)) => difference(before, &after),
+                (Ok(Some(before)), Ok(after)) => {
+                    let Some(original) = self.sequence_header.as_deref() else {
+                        return Err(invalid("missing AV1 sequence header"));
+                    };
+                    if same_sequence_syntax(original, obu.payload, &mut sequence_work, &mut syntax_cache)? {
+                        difference(before, &after)
+                    } else {
+                        Av1ParameterDifference::Structural
+                    }
+                }
                 _ => Av1ParameterDifference::InvalidHeader,
             };
             result = match (result, next) {
@@ -227,6 +293,11 @@ impl FrameStreamInfo {
         if self.config_obus.len() > MAX_CONFIGURATION {
             return Err(invalid("AV1 configuration exceeds 64 KiB inspection limit"));
         }
+        let mut sequence_work = 0;
+        let mut syntax_cache = None;
+        if let Some(original) = self.sequence_header.as_deref() {
+            charge_sequence_work(&mut sequence_work, original.len())?;
+        }
         let before = self.sequence_header.as_deref().map(checked_sequence).transpose()?;
         let mut sequence: Option<(SequenceHeader, &[u8])> = None;
         let mut frame = None;
@@ -238,12 +309,13 @@ impl FrameStreamInfo {
             }
             match obu.kind {
                 1 => {
+                    charge_sequence_work(&mut sequence_work, obu.payload.len())?;
                     let h = checked_sequence(obu.payload)?;
                     if frame.is_some() {
                         decline = true;
                     }
-                    if let Some((previous, _)) = &sequence {
-                        if *previous != h {
+                    if let Some((previous, previous_payload)) = &sequence {
+                        if *previous != h || !same_sequence_syntax(previous_payload, obu.payload, &mut sequence_work, &mut syntax_cache)? {
                             decline = true;
                         }
                     } else {
@@ -277,13 +349,16 @@ impl FrameStreamInfo {
         // Validate stored configuration too: do not discard unexamined metadata or bad tails.
         let mut configuration = Obus::new(&self.config_obus);
         let mut config_sequence = None;
+        let mut config_payload = None;
         while let Some(obu) = configuration.next()? {
             if obu.kind == 1 {
+                charge_sequence_work(&mut sequence_work, obu.payload.len())?;
                 let h = checked_sequence(obu.payload)?;
                 if config_sequence.is_some() {
                     decline = true;
                 }
                 config_sequence = Some(h);
+                config_payload = Some(obu.payload);
                 if !obu.has_size || obu.temporal_id != 0 || obu.spatial_id != 0 {
                     decline = true;
                 }
@@ -294,10 +369,19 @@ impl FrameStreamInfo {
         let (Some(before), Some(config_sequence), Some((after, payload)), Some(frame)) = (before, config_sequence, sequence, frame) else {
             return Ok(None);
         };
-        if decline || config_sequence != before {
+        let Some(original_payload) = self.sequence_header.as_deref() else {
+            return Ok(None);
+        };
+        let Some(config_payload) = config_payload else {
+            return Ok(None);
+        };
+        if decline || config_sequence != before || !same_sequence_syntax(original_payload, config_payload, &mut sequence_work, &mut syntax_cache)? {
             return Ok(None);
         }
-        if !matches!(difference(&before, &after), Av1ParameterDifference::ColorDescription { .. }) || !supported_color(&after) {
+        if !same_sequence_syntax(original_payload, payload, &mut sequence_work, &mut syntax_cache)?
+            || !matches!(difference(&before, &after), Av1ParameterDifference::ColorDescription { .. })
+            || !supported_color(&after)
+        {
             return Ok(None);
         }
         // Public fields must still agree with the stored session configuration.
