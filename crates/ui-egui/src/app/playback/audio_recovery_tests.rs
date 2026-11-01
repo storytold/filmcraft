@@ -174,7 +174,7 @@ fn changing_pitch_preference_restarts_audio_at_the_current_playhead() {
         app.apply_prefs(&ctx);
         assert_eq!(starts.load(Ordering::Relaxed), expected_starts, "unchanged settings do not restart");
     }
-    for speed in [-1.0, 8.0] {
+    for speed in [-8.0, 8.0] {
         app.play(speed);
         app.end_preroll(0.0);
         assert!(!app.playback.audio_clock, "unsupported speed {speed} remains silent");
