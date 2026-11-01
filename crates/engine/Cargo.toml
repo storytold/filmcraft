@@ -48,6 +48,7 @@ web-time = "1"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
+filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
 filmcraft-dng = { workspace = true, features = ["writer"] }
 filmcraft-isobmff = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }

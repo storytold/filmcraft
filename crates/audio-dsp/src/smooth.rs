@@ -39,11 +39,6 @@ impl Smoothed {
         self.current = self.target;
         self.remaining = 0;
     }
-    /// Set and jump.
-    pub fn set_immediate(&mut self, v: f32) {
-        self.target = v as f64;
-        self.snap();
-    }
     /// Advance one sample and return the new value.
     #[inline]
     pub fn tick(&mut self) -> f32 {
