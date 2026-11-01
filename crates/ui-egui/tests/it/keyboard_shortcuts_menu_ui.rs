@@ -19,9 +19,10 @@ fn keyboard_shortcuts_command_is_registered_and_dispatches() {
     harness.run();
 
     // Dispatch app.keyboardShortcuts — it must not panic or return an error
-    let (reply_tx, reply_rx) = channel();
-    tx.send(ControlRequest::Execute { id: "app.keyboardShortcuts".into(), params: json!({}), reply: reply_tx }).unwrap();
+    let (req, reply_rx) = ControlRequest::new("engine.execute", json!({"command": "app.keyboardShortcuts", "params": {}}));
+    tx.send(req).unwrap();
     harness.run();
-    let reply = reply_rx.try_recv().unwrap_or(Ok(json!(null)));
-    assert!(reply.is_ok(), "app.keyboardShortcuts returned error: {:?}", reply);
+    let reply = reply_rx.try_recv().unwrap_or(json!(null));
+    // The command either opens the shortcuts panel (ok) or returns a result — must not be an error
+    assert!(!reply.get("error").is_some(), "app.keyboardShortcuts returned error: {}", reply);
 }

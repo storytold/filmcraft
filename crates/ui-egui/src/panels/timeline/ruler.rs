@@ -231,6 +231,8 @@ fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     app.auto.add("timeline.settings.showVideoNames", c.rect, "Show Video Names");
     let c = ui.checkbox(&mut app.ui.timeline.show_audio_names, tl!("Show Audio Names"));
     app.auto.add("timeline.settings.showAudioNames", c.rect, "Show Audio Names");
+    let c = ui.checkbox(&mut app.ui.timeline.combined_av_lanes, tl!("Combined A/V Lanes"));
+    app.auto.add("timeline.settings.combinedAvLanes", c.rect, "Combined A/V Lanes");
     ui.separator();
     let mut te = app.session.state.show_through_edits;
     let c = ui.checkbox(&mut te, tl!("Show Through Edits"));
