@@ -264,10 +264,12 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let track = seq.caption_track(tid).ok_or_else(|| bad("captions.export", "no such caption track"))?;
     let doc: Document = filmcraft_captions::document_from_track(track, Tick::ZERO);
     let df = bool_p(p, "dropFrame").unwrap_or(true);
-    let bytes = filmcraft_captions::write(&doc, format, WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate) });
+    let opts = WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate) };
+    let bytes = filmcraft_captions::write(&doc, format, opts);
+    let warnings = filmcraft_captions::charset_warnings(&doc, format, opts);
     let n = doc.cues.len();
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
-    Ok(json!({"path": path, "format": format.name(), "captions": n, "bytes": bytes.len()}))
+    Ok(json!({"path": path, "format": format.name(), "captions": n, "bytes": bytes.len(), "warnings": warnings}))
 }
 
 fn delta_p(s: &Session, p: &Value) -> Option<Tick> {

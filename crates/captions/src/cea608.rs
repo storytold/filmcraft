@@ -58,14 +58,25 @@ fn basic_byte(c: char) -> Option<u8> {
     (0x20u8..=0x7f).find(|&b| basic_char(b) == Some(c))
 }
 
-/// Encode one character (`None` if 608 cannot show it).
-pub fn encode_char(c: char) -> Option<Encoded> {
-    let c = match c {
+/// The close basic-set character sent for one 608 has no code for, else `c`.
+fn stand_in(c: char) -> char {
+    match c {
         '’' | 'ʼ' => '\'',
         '\t' => ' ',
         '–' => '-',
         _ => c,
-    };
+    }
+}
+
+/// What a 608 decoder shows for `c`: `c`, the stand-in [`encode_char`] sends instead (’ as '),
+/// or `None` when 608 has no code for it and the writer drops it.
+pub fn shown_as(c: char) -> Option<char> {
+    encode_char(c).map(|_| stand_in(c))
+}
+
+/// Encode one character (`None` if 608 cannot show it).
+pub fn encode_char(c: char) -> Option<Encoded> {
+    let c = stand_in(c);
     if let Some(b) = basic_byte(c) {
         return Some(Encoded::Basic(b));
     }
