@@ -15,7 +15,12 @@ impl FilmcraftApp {
         // A focused dock divider or floating-window grip takes the arrow keys to nudge it, but no
         // other key: Space and the other shortcuts keep working (#1482).
         let divider_focused = self.divider_focused(ctx);
-        if (ctx.egui_wants_keyboard_input() && !divider_focused) || self.dialog == Some(Dialog::Shortcuts) || self.ui.clip_dialog.is_some() {
+        if (ctx.egui_wants_keyboard_input() && !divider_focused)
+            || self.dialog == Some(Dialog::Shortcuts)
+            || self.ui.clip_dialog.is_some()
+            // a Controls box is naming a new shortcut: nothing else may hear the key
+            || panels::timeline::controls_listening(ctx)
+        {
             return;
         }
         // A focused text field takes every unmodified key, including the ones our shortest
@@ -40,7 +45,7 @@ impl FilmcraftApp {
     /// arrive, so shortcuts work while a floating window has focus. craft-ui forwards nothing
     /// while that window's text field has focus.
     pub(crate) fn handle_forwarded_keys(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
-        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) {
+        if events.is_empty() || self.dialog == Some(Dialog::Shortcuts) || panels::timeline::controls_listening(ctx) {
             return;
         }
         let mut input = egui::InputState::default();

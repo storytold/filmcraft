@@ -40,6 +40,8 @@
 	Align to Video Frame as Group	Als Gruppe am Videobild ausrichten
 	All Panels	Alle Bedienfelder
 	Alpha	Alpha
+	Alternate Drag Speed	Alternative Ziehgeschwindigkeit
+	Alternate Drag Speed:	Alternative Ziehgeschwindigkeit:
 	Appearance	Erscheinungsbild
 	Appearance…	Darstellung…
 	Apply Audio Transition	Audioübergang anwenden
@@ -79,6 +81,7 @@
 	Captions…	Untertitel…
 	Caribbean	Karibik
 	Center Horizontally	Horizontal zentrieren
+	Center on Playhead:	Auf Abspielposition zentrieren:
 	Center Vertically	Vertikal zentrieren
 	Cerulean	Himmelblau
 	Clear	Löschen
@@ -101,6 +104,7 @@
 	Comparison View	Vergleichsansicht
 	Composite Video	Composite-Video
 	Consolidate Duplicates	Duplikate zusammenführen
+	Controls	Steuerung
 	Copy	Kopieren
 	Copy Paste Includes Sequence Markers	Kopieren und Einfügen mit Sequenzmarkern
 	Create Captions from Transcript…	Untertitel aus Transkript erstellen…
@@ -137,9 +141,11 @@
 	Ellipse	Ellipse
 	Enable	Aktivieren
 	Enable Remix	Remix aktivieren
+	Enter Shortcut	Tastenkürzel eingeben
 	Essential Graphics	Essential Graphics
 	Essential Sound	Essential Sound
 	Events	Ereignisse
+	Explode Slider:	Slider ausklappen:
 	Export	Exportieren
 	Export As Motion Graphics Template…	Als Motion-Graphics-Vorlage exportieren…
 	Export Markers as CSV…	Marker als CSV exportieren…
@@ -200,6 +206,7 @@
 	Insert Frame Hold Segment	Standbildsegment einfügen
 	Install Motion Graphics Template…	Motion-Graphics-Vorlage installieren…
 	Interpret Footage…	Material interpretieren…
+	Invert Scrolling	Scrollen umkehren
 	Iris	Iris
 	Join the ArtCraft Discord…	Dem ArtCraft-Discord beitreten…
 	Keyboard Shortcuts…	Tastenkürzel…
@@ -265,6 +272,7 @@
 	Paused Resolution	Auflösung bei Pause
 	Playback Resolution	Wiedergabeauflösung
 	Playback…	Wiedergabe…
+	Playhead Centering Range	Bereich der Abspielposition-Zentrierung
 	Plugins…	Plug-ins…
 	Polygon	Polygon
 	Preferences	Voreinstellungen
@@ -355,6 +363,7 @@
 	Simplify Sequence…	Sequenz vereinfachen…
 	Snap in Program Monitor	Im Programmmonitor einrasten
 	Snap in Timeline	In der Timeline einrasten
+	Snap to Tracks	An Spuren einrasten
 	Source	Quelle
 	Source Settings…	Quelleinstellungen…
 	Speed/Duration…	Geschwindigkeit/Dauer…
