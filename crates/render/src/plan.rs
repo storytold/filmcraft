@@ -477,7 +477,7 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         let pipe = &seq.settings.color;
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
         let plain = (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame))
-            && crate::interpolation_blend(item, t, src.info().frame_rate(), seq.settings.frame_rate).is_none();
+            && crate::media_interpolation(item, t, &src, seq.settings.frame_rate).is_none();
         if plain && !chain.is_empty() {
             // GPU effect stage: the working image the CPU would decode (`base_layer`), the
             // effects evaluated for it, placed as `item_layer` places it

@@ -559,3 +559,23 @@ fn over_black_rows_match_the_per_value_conversion() {
         assert_eq!(opaque[i], if i % 4 == 3 { 255 } else { want }, "{s:e} at {i}");
     }
 }
+
+#[test]
+fn a_still_image_needs_no_in_between_frame() {
+    // a still reports 29.97 fps, so in a 23.976 sequence at 100 % it looks like a frame rate
+    // conform, but its one picture needs neither Frame Blending nor Optical Flow (#3948)
+    let (mut p, red, _, _, _) = setup();
+    let rate = FrameRate::FPS_23_976;
+    let mut it = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(48)), rate).unwrap();
+    it.time_interpolation = filmcraft_project::TimeInterpolation::OpticalFlow;
+    let t = rate.tick_of(1);
+    let still: SharedSource = Arc::new(filmcraft_media::still::StillSource::from_rgba("still.png", 4, 4, vec![128; 64], false, 64));
+    assert_eq!(still.info().frame_rate(), FrameRate::FPS_29_97);
+    assert!(interpolation_blend(&it, t, FrameRate::FPS_29_97, rate).is_some());
+    assert!(media_interpolation(&it, t, &still, rate).is_none());
+    // a 29.97 source that is not a still still gets the in-between frame
+    let movie: SharedSource =
+        Arc::new(GeneratorSource::new(Generator::ColorMatte { color: [1.0; 4] }, 4, 4, FrameRate::FPS_29_97, Tick(10 * TICKS_PER_SECOND)));
+    let (_, w) = media_interpolation(&it, t, &movie, rate).unwrap();
+    assert!((w - 0.25).abs() < 1e-3, "a quarter into the source frame: {w}");
+}

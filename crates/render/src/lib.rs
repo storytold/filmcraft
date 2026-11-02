@@ -559,7 +559,7 @@ pub(crate) fn item_layer_ex(
         let px_scale = lw as f32 / src_size.0.max(1) as f32;
         let m =
             Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
-        if (lw, lh) == (w, h) && identity_placement(&m) && interpolation_blend(item, t, src.info().frame_rate(), seq.settings.frame_rate).is_none() {
+        if (lw, lh) == (w, h) && identity_placement(&m) && media_interpolation(item, t, &src, seq.settings.frame_rate).is_none() {
             let cs = colorman::source_space(project, item.item, &frame);
             if !colorman::needs_management(&seq.settings.color, cs, &frame) {
                 let (op, bl) = opacity_blend(item, mt);
@@ -654,7 +654,7 @@ struct MediaFrame<'a> {
 fn media_image(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, mf: MediaFrame<'_>, want: f32) -> Image {
     let MediaFrame { src, frame, n } = mf;
     let img = colorman::decode(project, item.item, frame, n, &seq.settings.color);
-    match interpolation_blend(item, t, src.info().frame_rate(), seq.settings.frame_rate) {
+    match media_interpolation(item, t, src, seq.settings.frame_rate) {
         Some((next_time, wgt)) => match src.video_frame(FrameRequest { time: next_time, scale: want }) {
             Ok(f2) if f2.width == frame.width && f2.height == frame.height => {
                 let b = colorman::decode(project, item.item, &f2, n, &seq.settings.color);
@@ -756,6 +756,15 @@ pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::
     }
     // the mix depends only on the media position, so reversed clips blend the same pair
     Some((src_rate.tick_of(f + 1), frac.clamp(0.0, 1.0) as f32))
+}
+
+/// [`interpolation_blend`] for a clip showing `src`. A still image has one picture (it reports
+/// 29.97 fps whatever the sequence), so it never needs an in-between frame.
+pub(crate) fn media_interpolation(item: &TrackItem, t: Tick, src: &SharedSource, seq_rate: filmcraft_time::FrameRate) -> Option<(Tick, f32)> {
+    if src.info().kind == filmcraft_media::MediaKind::Still {
+        return None;
+    }
+    interpolation_blend(item, t, src.info().frame_rate(), seq_rate)
 }
 
 /// Largest power-of-two box decimation that keeps at least `target_w` pixels of width.
