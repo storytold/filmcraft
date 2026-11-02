@@ -1038,8 +1038,9 @@ fn card(
     if badge.offline {
         let band = Rect::from_min_max(pos2(th.min.x, (th.max.y - 20.0).max(th.min.y)), th.max);
         ui.painter().rect_filled(band, 0.0, Color32::from_rgba_unmultiplied(0x5c, 0x10, 0x16, 230));
-        icons::paint(ui.painter(), Rect::from_center_size(pos2(band.min.x + 12.0, band.center().y), vec2(13.0, 13.0)), Icon::Offline, Color32::WHITE);
-        ui.painter().text(pos2(band.min.x + 24.0, band.center().y), Align2::LEFT_CENTER, badge.offline_text, Tokens::ui(10.5), Color32::WHITE);
+        let in_band = ui.painter().with_clip_rect(band);
+        icons::paint(&in_band, Rect::from_center_size(pos2(band.min.x + 12.0, band.center().y), vec2(13.0, 13.0)), Icon::Offline, Color32::WHITE);
+        in_band.text(pos2(band.min.x + 24.0, band.center().y), Align2::LEFT_CENTER, badge.offline_text, Tokens::ui(10.5), Color32::WHITE);
         app.auto.add(&format!("{pre}.item.{}.offline", id.0), band, badge.offline_text);
     }
     if badge.proxy {
@@ -1055,8 +1056,13 @@ fn card(
     // The project-sized slot keeps filenames still when the selected batch changes.
     let compact = th.width() < slot.x + 60.0;
     let lead = if compact { slot.x.min((th.width() - 12.0).max(16.0)) + 4.0 } else { 0.0 };
-    let bounds =
-        if compact { Rect::from_min_size(pos2(th.min.x, th.max.y + 1.0), vec2(lead - 4.0, 20.0)) } else { Rect::from_min_size(th.min + vec2(4.0, 4.0), slot) };
+    // the compact badge takes the footer's left end, within the card's own rect (which the
+    // Freeform Zoom scales as a whole); the pill is centred in it
+    let bounds = if compact {
+        Rect::from_min_max(pos2(th.min.x, th.max.y + 1.0), pos2(th.min.x + lead - 4.0, r.max.y.max(th.max.y + 1.0)))
+    } else {
+        Rect::from_min_size(th.min + vec2(4.0, 4.0), slot)
+    };
     let order_badge = paint_order_badge(app, ui, bounds, id, pre, order);
     let mut dw = 0.0;
     if show_dur {
@@ -1086,7 +1092,7 @@ fn card(
         }
     }
     app.auto.add(&format!("{pre}.item.{}.name", id.0), nr.intersect(ui.clip_rect()), &it.name);
-    app.auto.add(&format!("{pre}.item.{}", id.0), r.expand(2.0), &it.name);
+    app.auto.add(&format!("{pre}.item.{}", id.0), r, &it.name);
     order.annotate(ui, &resp, id, &it.name, selected);
     Some((resp, order_badge))
 }
@@ -1284,12 +1290,15 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                 && s == c.item
                 && let Some(n) = stack_n.get(&s)
             {
-                // beside the order badge wherever it sits (on the thumbnail, or in the footer of a
-                // card too small for one there), so the two never cover each other
-                let at = order_badge.map_or(r.min + vec2(4.0, 4.0), |b| pos2(b.max.x + 2.0, b.min.y));
-                let br = Rect::from_min_size(at, vec2(26.0, 16.0));
-                ui.painter().rect_filled(br, 3.0, t.accent);
-                ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("×{n}"), Tokens::ui(10.0), Color32::WHITE);
+                // on the thumbnail: beside the order badge when that is there too, else its top
+                // left corner, and no taller than the thumbnail, so a card the Zoom has shrunk
+                // keeps the counter off its footer badge, its name and the next card
+                let th_h = r.width() * 9.0 / 16.0;
+                let at = order_badge.filter(|b| b.min.y < r.min.y + th_h).map_or(r.min + vec2(4.0, 4.0), |b| pos2(b.max.x + 2.0, b.min.y));
+                let scale = ((th_h - 4.0) / 16.0).clamp(0.4, 1.0);
+                let br = Rect::from_min_size(at, vec2(26.0 * scale, 16.0 * scale));
+                ui.painter().rect_filled(br, 3.0 * scale, t.accent);
+                ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("×{n}"), Tokens::ui((10.0 * scale).max(6.0)), Color32::WHITE);
                 app.auto.add(&format!("{}.stack.{s}", v.prefix), br, &format!("Stack of {n}"));
             }
             item_interactions(

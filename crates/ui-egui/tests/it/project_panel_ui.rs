@@ -1500,7 +1500,20 @@ fn selection_badges_keep_small_card_status_and_custom_accents_readable() {
             }
         }
         if view == "freeform" {
-            assert!(!badge.intersects(rect(d.rect(&format!("project.stack.{}", id.0)))));
+            // the stack counter stays on its own card's thumbnail: off the selection badge, the
+            // name and every other card and badge
+            let stack = rect(d.rect(&format!("project.stack.{}", id.0)));
+            let name_rect = rect(d.rect(&format!("project.item.{}.name", id.0)));
+            assert!(!badge.intersects(stack));
+            assert!(rect(d.rect(&format!("project.item.{}", id.0))).contains_rect(stack), "{stack:?}");
+            assert!(stack.max.y <= name_rect.min.y + 0.5, "counter {stack:?} reaches the name {name_rect:?}");
+            // (the card stacked under this one sits at the same place: skip it)
+            for other in selected.iter().filter(|o| **o != id && **o != selected[2]) {
+                let card = rect(d.rect(&format!("project.item.{}", other.0)));
+                assert!(!stack.intersects(card), "counter {stack:?} reaches card {card:?}");
+                let other_badge = rect(d.rect(&format!("project.item.{}.selectionOrder", other.0)));
+                assert!(!stack.intersects(other_badge), "counter {stack:?} covers badge {other_badge:?}");
+            }
         }
         let name = d.app().session.project.item(id).unwrap().name.clone();
         let node = d.harness.get_by_label(&name).accesskit_node();
