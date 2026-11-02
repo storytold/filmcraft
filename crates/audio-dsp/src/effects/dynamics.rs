@@ -268,6 +268,10 @@ pub struct Limiter {
     lag_pos: usize,
     /// Monotonic deque for the sliding minimum: (sample index, gain).
     minq: VecDeque<(u64, f32)>,
+    /// After the ramp shortens: the longer window the sliding minimum keeps until this sample, so
+    /// a request already in it stays until its peak has left the delay line.
+    long_window: u64,
+    long_until: u64,
     /// Box filter ring (the look-ahead ramp) and running sum.
     box_ring: Vec<f32>,
     box_pos: usize,
@@ -312,6 +316,8 @@ impl Limiter {
             lag: Vec::new(),
             lag_pos: 0,
             minq: VecDeque::with_capacity(look + 2),
+            long_window: 0,
+            long_until: 0,
             box_ring: vec![1.0; look + 1],
             box_pos: 0,
             box_sum: (look + 1) as f64,
@@ -339,10 +345,16 @@ impl Limiter {
         // of the delay line first. Resized to the new ramp without losing anything: the requests
         // waiting in the lag ring stay (the oldest ones a shorter ring cannot hold are released
         // into the sliding minimum now, so a peak already in the delay line keeps its reduction),
-        // the sliding minimum keeps its entries (its window is read each sample), and the moving
-        // average is refilled with its current output, so the gain does not step.
+        // the sliding minimum keeps its entries (for the longer window, until they have all come
+        // out), and the moving average is refilled with its current output, so the gain does not
+        // step.
         let ramp = self.ramp();
         if ramp != self.box_ring.len() {
+            let held = if self.t < self.long_until { self.long_window } else { 0 }.max(self.box_ring.len() as u64);
+            if (ramp as u64) < held {
+                self.long_window = held;
+                self.long_until = self.t + held;
+            }
             let g = if self.box_ring.is_empty() { self.rel_state } else { (self.box_sum / self.box_ring.len() as f64) as f32 };
             self.box_ring = vec![g; ramp];
             self.box_pos = 0;
@@ -389,6 +401,7 @@ impl AudioEffect for Limiter {
         self.box_sum = self.box_ring.len() as f64;
         self.rel_state = 1.0;
         self.t = 0;
+        self.long_until = 0;
         self.gr_meter = 0.0;
     }
     fn process(&mut self, channels: &mut [&mut [f32]]) {
@@ -429,6 +442,7 @@ impl AudioEffect for Limiter {
                 }
             }
             self.minq.push_back((self.t, greq));
+            let window = if self.t < self.long_until { window.max(self.long_window) } else { window };
             while let Some(&(idx, _)) = self.minq.front() {
                 if idx + window <= self.t {
                     self.minq.pop_front();
@@ -805,6 +819,33 @@ mod tests {
         // held down below the sine's untouched level
         let before = y[exit - 240..exit - 1].iter().fold(0.0f32, |a, v| a.max(v.abs()));
         assert!(before < 0.075, "the reduction requested for the pulse survived the ramp change: peak before the pulse {before}");
+    }
+
+    /// #905: a request older than the new, shorter ramp still holds until its peak has left the
+    /// delay line: with a fast release, the gain would otherwise rise again before the pulse and
+    /// only the final clip would catch it.
+    #[test]
+    fn limiter_shorter_lookahead_holds_requests_older_than_the_new_ramp() {
+        let ceiling = -6.0f32;
+        let pulse_at = 12000usize;
+        let input: Vec<f32> = (0..48000)
+            .map(|n| if (pulse_at..pulse_at + 48).contains(&n) { 0.9 } else { 0.08 * (2.0 * std::f32::consts::PI * 997.0 * n as f32 / SR).sin() })
+            .collect();
+        let mut lim = Limiter::new(SR, 1);
+        lim.set_param("ceiling", ceiling);
+        lim.set_param("true_peak", 0.0);
+        lim.set_param("release", 1.0);
+        lim.set_param("lookahead", 30.0);
+        let lat = lim.latency();
+        let mut y = input.clone();
+        // 600 samples after the pulse came in: older than the 241-sample ramp of 5 ms
+        let cut = pulse_at + 600;
+        lim.process(&mut [&mut y[..cut]]);
+        lim.set_param("lookahead", 5.0);
+        lim.process(&mut [&mut y[cut..]]);
+        let exit = pulse_at + lat;
+        let before = y[exit - 240..exit - 1].iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        assert!(before < 0.075, "the request was dropped before its pulse came out: peak before the pulse {before}");
     }
 
     /// #905: at the default look-ahead (5 ms, the value the old fixed window had, and what the
