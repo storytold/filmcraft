@@ -239,10 +239,20 @@ fn saved_view(ex: &ExportUi) -> Value {
 /// Keep the session's copy of the export settings current, so saving the project saves them. A
 /// project just opened or created first brings its own ([`restore_settings`]).
 pub fn note_settings(app: &mut FilmcraftApp) {
-    if app.ui.export.epoch != Some(app.session.document_epoch) {
+    let opened = app.ui.export.epoch != Some(app.session.document_epoch);
+    if opened {
         restore_settings(app);
         app.ui.export.epoch = Some(app.session.document_epoch);
     }
+    // only Export mode and Quick Export change them: no serializing on every frame elsewhere
+    // (it slowed playback while dragging a value)
+    if opened || app.ui.mode == crate::state::Mode::Export || app.ui.export.quick_open {
+        store_settings(app);
+    }
+}
+
+/// Copy the export settings into the session now (`ui.set`, so a save right after has them).
+pub fn store_settings(app: &mut FilmcraftApp) {
     let v = saved_view(&app.ui.export);
     if app.session.state.export_ui.as_ref() != Some(&v) {
         app.session.state.export_ui = Some(v);

@@ -203,7 +203,7 @@ fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outc
                 let epoch = app.ui.export.epoch;
                 app.ui.export = crate::panels::export_mode::ExportUi { epoch, ..e };
                 // so a `file.save` right after saves them
-                crate::panels::export_mode::note_settings(app);
+                crate::panels::export_mode::store_settings(app);
             }
             Err(e) => return err(format!("`export`: {e}")),
         }
