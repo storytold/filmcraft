@@ -880,6 +880,9 @@ fn subclip_source_monitor_trims_and_markers() {
     if let Some(ItemKind::Media(m)) = p.item_mut(ocean).map(|i| &mut i.kind) {
         for (k, n) in [10, 30, 60, 90].into_iter().enumerate() {
             m.markers.push(filmcraft_project::Marker {
+                url: String::new(),
+                author: String::new(),
+                custom_color: None,
                 id: filmcraft_project::MarkerId(9000 + k as u64),
                 start: f(n),
                 duration: Tick::ZERO,
@@ -1317,6 +1320,17 @@ fn set_param_rejects_colour_component_that_overflows_f32() {
     s.execute("effects.apply", json!({"clips": [a.id.0], "effect": "tint"})).unwrap();
     let r = s.execute("effects.setParam", json!({"clip": a.id.0, "effect": "tint", "param": "black", "value": [1e300, 0, 0, 1]}));
     assert!(r.is_err(), "an overflowing colour component must be refused");
+    let bytes = filmcraft_format::encode(&s.project, false);
+    filmcraft_format::decode(&bytes).unwrap();
+}
+
+#[test]
+fn set_param_rejects_curve_coordinate_that_overflows_f32() {
+    let mut s = demo();
+    let a = v1(&s)[0].clone();
+    s.execute("effects.apply", json!({"clips": [a.id.0], "effect": "lumetri"})).unwrap();
+    let r = s.execute("effects.setParam", json!({"clip": a.id.0, "effect": "lumetri", "param": "curve_luma", "value": [[1e300, 0.5], [1.0, 1.0]]}));
+    assert!(r.is_err(), "an overflowing curve coordinate must be refused");
     let bytes = filmcraft_format::encode(&s.project, false);
     filmcraft_format::decode(&bytes).unwrap();
 }

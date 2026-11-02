@@ -87,8 +87,8 @@ fn name_matches(name: &str, filter: &str) -> bool {
     filter.split_whitespace().all(|word| name.contains(word))
 }
 
-fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
-    let c = app.session.prefs.labels.rgb(l);
+fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label, custom: Option<filmcraft_project::HexColor>) -> Color32 {
+    let c = custom.map_or_else(|| app.session.prefs.labels.rgb(l), |c| c.0);
     Color32::from_rgb(c[0], c[1], c[2])
 }
 
@@ -316,6 +316,7 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
                 ui.close();
             }
         }
+        super::custom_colors::menu(app, ui, json!({"items":[id.0]}), "project.itemMenu.label");
     });
     app.auto.add("project.itemMenu.label", r.response.rect, tl!("Label"));
     let can_reveal = app.session.project.resolve_media(id).is_some_and(|(_, m, _)| matches!(m.media, filmcraft_project::MediaRef::File { .. }));
@@ -537,8 +538,14 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
     {
         c.width = *w;
     }
+    let row_h = if thumbs { list_thumb_row_height(v.icon_size, f) } else { (f * 2.0).max(22.0) };
+    // a zoomed thumbnail keeps room for the name beside it: the Name column is drawn wide enough
+    // (its saved width is unchanged)
+    if thumbs && let Some(name) = cols.first_mut() {
+        name.width = name.width.max(list_name_width(row_h));
+    }
     let width = LEAD + cols.iter().map(|c| c.width).sum::<f32>() + 8.0;
-    let lc = ListCtx { row_h: if thumbs { (f * 3.6).max(44.0) } else { (f * 2.0).max(22.0) }, font: f, thumbs, width: width.max(rect.width()), cols };
+    let lc = ListCtx { row_h, font: f, thumbs, width: width.max(rect.width()), cols };
     let header_h = (f * 1.8).max(20.0);
     let body = Rect::from_min_max(pos2(rect.min.x, rect.min.y + header_h), rect.max);
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt((&v.prefix, "list-body")));
@@ -794,8 +801,8 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         *row += 1;
         // label chip
         let chip = Rect::from_center_size(pos2(r.min.x + 13.0, r.center().y), vec2(12.0, 12.0));
-        ui.painter().rect_filled(chip, 2.5, label_color(app, it.label));
-        app.auto.add(&format!("{}.item.{}.label", v.prefix, id.0), chip, it.label.name());
+        ui.painter().rect_filled(chip, 2.5, label_color(app, it.label, it.custom_label_color));
+        app.auto.add(&format!("{}.item.{}.label", v.prefix, id.0), chip, &it.label_value());
         let mut x = r.min.x + LEAD;
         let name_w = lc.cols.first().map(|c| c.width).unwrap_or(200.0);
         let nx = x + depth as f32 * 14.0 + 14.0;
@@ -825,8 +832,12 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
             let cr = Rect::from_min_size(pos2(x, r.min.y), vec2(c.width, r.height()));
             let p = ui.painter().with_clip_rect(cr.shrink2(vec2(2.0, 0.0)).intersect(ui.clip_rect()));
             if c.name == "Label" {
-                p.rect_filled(Rect::from_center_size(pos2(cr.min.x + 12.0, cr.center().y), vec2(10.0, 10.0)), 2.0, label_color(app, it.label));
-                p.text(pos2(cr.min.x + 22.0, cr.center().y), Align2::LEFT_CENTER, crate::i18n::t(it.label.name()), Tokens::ui(lc.font - 0.5), t.text_dim);
+                p.rect_filled(
+                    Rect::from_center_size(pos2(cr.min.x + 12.0, cr.center().y), vec2(10.0, 10.0)),
+                    2.0,
+                    label_color(app, it.label, it.custom_label_color),
+                );
+                p.text(pos2(cr.min.x + 22.0, cr.center().y), Align2::LEFT_CENTER, crate::i18n::t(&it.label_value()), Tokens::ui(lc.font - 0.5), t.text_dim);
             } else {
                 let (text, _) = pp::cell(&app.session.project, &it, &c.name);
                 let text = if c.name == "Media Type" { crate::i18n::t(&text).to_string() } else { text };
@@ -954,7 +965,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     }
     let nr = Rect::from_min_max(pos2(th.min.x, th.max.y + 2.0), pos2(th.max.x - dw - 6.0, th.max.y + 20.0));
     if show_name && !rename_field(app, ui, nr, Some(id.0), None, pre) {
-        ui.painter().rect_filled(Rect::from_min_size(pos2(th.min.x, ty - 5.0), vec2(8.0, 10.0)), 1.5, label_color(app, it.label));
+        ui.painter().rect_filled(Rect::from_min_size(pos2(th.min.x, ty - 5.0), vec2(8.0, 10.0)), 1.5, label_color(app, it.label, it.custom_label_color));
         let g = elided_name(ui, &it.name, Tokens::ui(f - 0.5), if badge.offline { OFFLINE } else { t.text }, nr.max.x - th.min.x - 12.0);
         let elided = g.elided;
         ui.painter().galley(pos2(th.min.x + 12.0, ty - g.size().y / 2.0), g, t.text);
@@ -1078,7 +1089,11 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
 pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View, filter: &str, actions: &mut Actions) {
     let t = app.tokens;
     let opts = app.session.prefs.project_panel.freeform.clone();
-    let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, rect.width());
+    // the footer's Zoom scales the canvas (#3774); cards keep their positions and sizes unscaled
+    let z = freeform_zoom(v.icon_size);
+    // the canvas width the cards wrap at, unscaled: the layout commands below get the same one
+    let width = rect.width() / z;
+    let mut cards: Vec<Card> = pp::freeform_layout(&app.session.project, Some(v.bin), &opts, width);
     cards.retain(|c| matches_filter(app, ItemId(c.item), filter));
     let drag_key = egui::Id::unique((&v.prefix, "ff-drag"));
     // (dragged item, offset so far)
@@ -1090,7 +1105,8 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             c.item == d || (sel.contains(&d) && sel.contains(&c.item)) || (stack_of_d.is_some() && c.stack == stack_of_d)
         })
     };
-    let extent = cards.iter().fold(vec2(rect.width(), rect.height()), |e, c| vec2(e.x.max(c.x + c.size + 40.0), e.y.max(c.y + c.size * 9.0 / 16.0 + 60.0)));
+    let extent =
+        cards.iter().fold(vec2(rect.width(), rect.height()), |e, c| vec2(e.x.max((c.x + c.size + 40.0) * z), e.y.max((c.y + c.size * 9.0 / 16.0 + 60.0) * z)));
     // a middle-button drag anywhere on the canvas pans it, the content following the pointer, as in
     // the Timeline and the monitors (#579); cards move only with the primary button
     let (offset_key, pan_key) = (egui::Id::unique((&v.prefix, "ff-offset")), egui::Id::unique((&v.prefix, "ff-pan")));
@@ -1113,7 +1129,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         let (canvas, bg) = ui.allocate_exact_size(extent, Sense::click_and_drag());
         app.auto.add(&format!("{}.freeform", v.prefix), canvas, "Freeform canvas");
         if opts.snap {
-            let g = opts.grid.max(4.0);
+            let g = opts.grid.max(4.0) * z;
             let mut x = canvas.min.x;
             while x < canvas.max.x {
                 ui.painter().line_segment([pos2(x, canvas.min.y), pos2(x, canvas.max.y)], Stroke::new(0.5, t.separator.gamma_multiply(0.5)));
@@ -1139,7 +1155,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
         for i in order {
             let c = cards[i].clone();
             let off = if moving(&c) { dragging.map(|d| d.1).unwrap_or_default() } else { egui::Vec2::ZERO };
-            let r = Rect::from_min_size(canvas.min + vec2(c.x, c.y) + off, vec2(c.size, c.size * 9.0 / 16.0 + 20.0));
+            let r = Rect::from_min_size(canvas.min + vec2(c.x, c.y) * z + off, vec2(c.size * z, c.size * z * 9.0 / 16.0 + 20.0));
             let Some(kind) = app.session.project.item(ItemId(c.item)).map(|x| x.kind.clone()) else { continue };
             let Some(resp) = card(app, ui, r, ItemId(c.item), &v.prefix, opts.show_names, opts.show_durations, Sense::click_and_drag()) else { continue };
             note_hit(ui, v, ItemId(c.item), r);
@@ -1180,7 +1196,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             if stopped && !crate::panels::drag_cancelled(ui) {
                 released = dragging.filter(|d| d.0 == c.item).map(|d| (d.0, d.1 + resp.drag_delta()));
             }
-            resp.context_menu(|ui| card_menu(app, ui, v, c.item, actions));
+            resp.context_menu(|ui| card_menu(app, ui, v, c.item, width, actions));
         }
         marquee(app, ui, v, &bg, canvas.min, actions);
         if let Some((item, off)) = released {
@@ -1202,9 +1218,10 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                         items.insert(0, s);
                     }
                     let lead = cards.iter().find(|x| x.item == items[0]).cloned().unwrap_or(c);
+                    // the drag moved on screen, the cards live on the unscaled canvas
                     actions.push((
                         "project.freeform.move".into(),
-                        json!({"items": items, "x": (lead.x + off.x).max(0.0), "y": (lead.y + off.y).max(0.0), "width": rect.width()}),
+                        json!({"items": items, "x": (lead.x + off.x / z).max(0.0), "y": (lead.y + off.y / z).max(0.0), "width": width}),
                     ));
                 }
             }
@@ -1217,40 +1234,61 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             actions.push(("file.import".into(), json!({})));
         }
         let bin = Some(v.bin.0);
-        bg.context_menu(|ui| canvas_menu(app, ui, v, bin, actions));
+        bg.context_menu(|ui| canvas_menu(app, ui, v, bin, width, actions));
     });
     ui.ctx().data_mut(|d| d.insert_temp(offset_key, out.state.unclamped_offset()));
+}
+
+/// The Freeform canvas scale for the footer's Zoom: 1 at the default size, as Icon view's card size.
+pub(crate) fn freeform_zoom(icon_size: f32) -> f32 {
+    if icon_size.is_finite() { (icon_size / pp::ViewSettings::default().icon_size).clamp(0.25, 4.0) } else { 1.0 }
+}
+
+/// The List view row height with thumbnails for the footer's Zoom: the thumbnail follows it
+/// (#3774), never smaller than a row without one.
+fn list_thumb_row_height(icon_size: f32, font: f32) -> f32 {
+    let plain = (font * 2.0).max(22.0);
+    if icon_size.is_finite() { (icon_size * 0.4).max(plain) } else { (font * 3.6).max(44.0) }
+}
+
+/// The narrowest Name column that shows a row's thumbnail and still 120 points of its name, for
+/// items one bin deep (the row draws the thumbnail 16:9 at the row height less 6).
+fn list_name_width(row_h: f32) -> f32 {
+    (row_h - 6.0).max(0.0) * 16.0 / 9.0 + 14.0 * 2.0 + 18.0 + 120.0
 }
 
 fn cards_stack(cards: &[Card], item: u64) -> Option<u64> {
     cards.iter().find(|c| c.item == item).and_then(|c| c.stack)
 }
 
-fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, actions: &mut Actions) {
+fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, width: f32, actions: &mut Actions) {
     let sel: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
-    let items: Vec<u64> = if sel.contains(&item) { sel.clone() } else { vec![item] };
+    // the selection's cards in this bin: its width lays them out, not another bin's cards
+    let here = |i: &u64| app.session.project.root.parent_of(ItemId(*i)) == Some(v.bin);
+    let items: Vec<u64> = if sel.contains(&item) { sel.iter().copied().filter(here).collect() } else { vec![item] };
     let b = ui.add_enabled(items.len() > 1, egui::Button::new(tl!("Stack")));
     app.auto.add(&format!("{}.cardMenu.stack", v.prefix), b.rect, "Stack");
     if b.clicked() {
-        actions.push(("project.freeform.stack".into(), json!({"items": items})));
+        actions.push(("project.freeform.stack".into(), json!({"items": items, "width": width})));
         ui.close();
     }
     let stacked = app.session.project.item(ItemId(item)).is_some_and(|i| i.metadata.contains_key(pp::FREEFORM_STACK));
     let b = ui.add_enabled(stacked, egui::Button::new(tl!("Unstack")));
     app.auto.add(&format!("{}.cardMenu.unstack", v.prefix), b.rect, "Unstack");
     if b.clicked() {
-        actions.push(("project.freeform.unstack".into(), json!({"items": items})));
+        actions.push(("project.freeform.unstack".into(), json!({"items": items, "width": width})));
         ui.close();
     }
     ui.menu_button(tl!("Clip Size"), |ui| {
         for (label, step) in [(tl!("Larger"), 1), (tl!("Smaller"), -1)] {
             if ui.button(label).clicked() {
-                actions.push(("project.freeform.resize".into(), json!({"items": items, "step": step})));
+                actions.push(("project.freeform.resize".into(), json!({"items": items, "step": step, "width": width})));
                 ui.close();
             }
         }
         if ui.button(tl!("Default")).clicked() {
-            actions.push(("project.freeform.resize".into(), json!({"items": items, "size": app.session.prefs.project_panel.freeform.card_size})));
+            actions
+                .push(("project.freeform.resize".into(), json!({"items": items, "size": app.session.prefs.project_panel.freeform.card_size, "width": width})));
             ui.close();
         }
     });
@@ -1261,7 +1299,7 @@ fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, act
     }
 }
 
-fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, actions: &mut Actions) {
+fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<u64>, width: f32, actions: &mut Actions) {
     fn entry(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, actions: &mut Actions, id: &str, label: &str, (cmd, p): (&str, serde_json::Value)) {
         let b = ui.button(label);
         app.auto.add(&format!("{}.canvasMenu.{id}", v.prefix), b.rect, label);
@@ -1270,10 +1308,10 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
             ui.close();
         }
     }
-    entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), ("project.freeform.alignToGrid", json!({"bin": bin})));
+    entry(app, ui, v, actions, "alignToGrid", tl!("Align to Grid"), ("project.freeform.alignToGrid", json!({"bin": bin, "width": width})));
     entry(app, ui, v, actions, "resetToGrid", tl!("Reset to Grid"), ("project.freeform.reset", json!({"bin": bin})));
     ui.separator();
-    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), ("projectPanel.saveArrangement", json!({})));
+    entry(app, ui, v, actions, "saveArrangement", tl!("Save Arrangement…"), ("projectPanel.saveArrangement", json!({"bin": bin, "width": width})));
     let names: Vec<String> = app
         .session
         .execute("project.freeform.arrangements", json!({"bin": bin}))

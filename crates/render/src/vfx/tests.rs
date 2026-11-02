@@ -488,6 +488,34 @@ fn track_matte_uses_the_other_tracks_alpha_and_luma() {
     assert!(close(o.get(1, 1)[3], 1.0, 1e-3) && close(o.get(6, 1)[3], 0.0, 1e-4));
 }
 
+/// 4-Color Gradient has a position for each colour (#3682); the old fixed ones are the defaults.
+#[test]
+fn four_color_gradient_points_default_to_the_old_positions_and_move() {
+    let (w, h) = (40usize, 24usize);
+    let base = Image::filled(w, h, [0.0, 0.0, 0.0, 1.0]);
+    let (fw, fh) = (w as f64, h as f64);
+    let old = run("four_color_gradient", &inst("four_color_gradient"), &base, &cx());
+    // a project saved before the points existed has no such params
+    let mut legacy = inst("four_color_gradient");
+    for id in ["p1", "p2", "p3", "p4"] {
+        assert!(legacy.params.remove(id).is_some(), "no {id}");
+    }
+    assert_eq!(max_diff(&old, &run("four_color_gradient", &legacy, &base, &cx())), 0.0, "a project without the points renders as before");
+    // the defaults are the corners of the inner quarter box the gradient always used
+    let mut explicit = inst("four_color_gradient");
+    for (id, (x, y)) in [("p1", (0.25, 0.25)), ("p2", (0.75, 0.25)), ("p3", (0.25, 0.75)), ("p4", (0.75, 0.75))] {
+        set(&mut explicit, id, ParamValue::Vec2(Vec2::new(x * fw, y * fh)));
+    }
+    assert!(max_diff(&old, &run("four_color_gradient", &explicit, &base, &cx())) < 1e-5, "the default points are the old positions");
+    // moving the fourth point pulls its colour across the frame
+    let mut moved = inst("four_color_gradient");
+    set(&mut moved, "p4", ParamValue::Vec2(Vec2::new(0.25 * fw, 0.75 * fh)));
+    let m = run("four_color_gradient", &moved, &base, &cx());
+    assert!(max_diff(&old, &m) > 0.05, "moving Point 4 changes the picture");
+    let (a, b) = (old.get(w / 4, 3 * h / 4), m.get(w / 4, 3 * h / 4));
+    assert!(a[0] - b[0] > 0.3, "the pixel at the moved point loses Color 3's red to Color 4 (blue): {a:?} {b:?}");
+}
+
 #[test]
 fn keyers_known_values() {
     // Ultra Key: pure green screen → transparent, grey foreground → opaque
@@ -884,6 +912,54 @@ fn bokeh_and_focus_blur() {
     assert!(max_diff(&o, &pic) > 0.01);
     let (a, b) = (o.get(32, 32), pic.get(32, 32));
     assert!((0..4).all(|k| close(a[k], b[k], 1e-4)));
+}
+
+/// Bokeh Blur gathers through a kernel of whole-pixel weights (`bokeh_kernel`). It must give what
+/// the mean of the bilinear taps it replaced gave (that gather, kept here), at the image's edges
+/// too, for every shape, rotation and radius, and radii larger than the image (3e9: offsets past
+/// `i32`, which the kernel keeps within its reach).
+#[test]
+fn bokeh_kernel_matches_the_bilinear_taps() {
+    let img = picture(37, 23);
+    for (sides, rot, rr, rings) in
+        [(0u32, 0.0f32, 0.7f32, 1u32), (6, 0.35, 10.0, 10), (3, -1.3, 4.5, 5), (5, 7.0, 6.2, 7), (8, 2.0, 12.0, 12), (4, 0.0, 60.0, 12), (6, 0.3, 3e9, 12)]
+    {
+        let mut taps: Vec<(f32, f32)> = vec![(0.0, 0.0)];
+        for ring in 1..=rings as usize {
+            let rad = rr * ring as f32 / rings as f32;
+            let n = (ring * 8).max(6);
+            for i in 0..n {
+                let th = std::f32::consts::TAU * (i as f32 + 0.5 * (ring % 2) as f32) / n as f32;
+                let pr = rad * blur::poly_radius(sides, th, rot);
+                taps.push((th.cos() * pr, th.sin() * pr));
+            }
+        }
+        let kernel = bokeh_kernel(sides, rot, rr, rings);
+        assert!(kernel.len() <= taps.len() * 4);
+        assert!(kernel.iter().all(|c| c.0.abs() <= KERNEL_REACH && c.1.abs() <= KERNEL_REACH), "offsets past the reach");
+        assert!(close(kernel.iter().map(|c| c.2).sum::<f32>(), 1.0, 1e-5));
+        let mut worst = 0f32;
+        for y in 0..img.h {
+            for x in 0..img.w {
+                let mut want = [0f32; 4];
+                for &(dx, dy) in &taps {
+                    let p = img.sample_bilinear_clamped(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
+                    for k in 0..4 {
+                        want[k] += p[k] / taps.len() as f32;
+                    }
+                }
+                let mut got = [0f32; 4];
+                for &(dx, dy, wt) in &kernel {
+                    let p = img.get_clamped(x as isize + dx as isize, y as isize + dy as isize);
+                    for k in 0..4 {
+                        got[k] += p[k] * wt;
+                    }
+                }
+                worst = (0..4).map(|k| (want[k] - got[k]).abs()).fold(worst, f32::max);
+            }
+        }
+        assert!(worst < 2e-5, "{sides} sides, {rot} rad, radius {rr}: off by {worst}");
+    }
 }
 
 #[test]
