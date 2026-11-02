@@ -261,12 +261,13 @@ struct Reviving {
     starts: Arc<AtomicUsize>,
     opens: Arc<AtomicBool>,
     ticking: Arc<AtomicBool>,
+    err: &'static str,
 }
 
 impl AudioOut for Reviving {
     fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
         self.starts.fetch_add(1, Ordering::Relaxed);
-        if self.opens.load(Ordering::Relaxed) { Ok(48_000) } else { Err("device unavailable".into()) }
+        if self.opens.load(Ordering::Relaxed) { Ok(48_000) } else { Err(self.err.into()) }
     }
     fn stop(&mut self) {}
     fn sample_rate(&self) -> u32 {
@@ -286,7 +287,8 @@ fn a_lost_output_is_reopened_and_the_sound_returns() {
     let mut app = FilmcraftApp::new(session);
     let starts = Arc::new(AtomicUsize::new(0));
     let ticking = Arc::new(AtomicBool::new(true));
-    app.audio = Some(Box::new(Reviving { starts: starts.clone(), opens: Arc::new(AtomicBool::new(true)), ticking: ticking.clone() }));
+    app.audio =
+        Some(Box::new(Reviving { starts: starts.clone(), opens: Arc::new(AtomicBool::new(true)), ticking: ticking.clone(), err: "device unavailable" }));
     app.play(1.0);
     app.end_preroll(0.0);
     assert!(app.playback.audio_clock && starts.load(Ordering::Relaxed) == 1);
@@ -315,7 +317,7 @@ fn a_device_that_appears_mid_playback_starts_sounding() {
     let mut app = FilmcraftApp::new(session);
     let starts = Arc::new(AtomicUsize::new(0));
     let opens = Arc::new(AtomicBool::new(false));
-    app.audio = Some(Box::new(Reviving { starts: starts.clone(), opens: opens.clone(), ticking: Arc::new(AtomicBool::new(true)) }));
+    app.audio = Some(Box::new(Reviving { starts: starts.clone(), opens: opens.clone(), ticking: Arc::new(AtomicBool::new(true)), err: "device unavailable" }));
     app.play(1.0);
     app.end_preroll(0.0);
     assert!(!app.playback.audio_clock, "no device yet: playing on the wall clock");
@@ -410,4 +412,83 @@ fn a_scrub_stops_a_text_to_speech_preview_but_not_an_idle_output() {
     assert_eq!(stops.load(Ordering::Relaxed), before + 1, "the preview ends when the playhead moves");
     app.stop_for_scrub();
     assert_eq!(stops.load(Ordering::Relaxed), before + 1, "and a second seek has nothing left to stop");
+}
+
+struct Warnings;
+static WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+impl log::Log for Warnings {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        WARNINGS.lock().unwrap().push(record.args().to_string());
+    }
+    fn flush(&self) {}
+}
+
+fn capture_warnings() {
+    let _ = log::set_logger(&Warnings);
+    log::set_max_level(log::LevelFilter::Warn);
+}
+
+fn warn_count(needle: &str) -> usize {
+    WARNINGS.lock().unwrap().iter().filter(|m| m.contains(needle)).count()
+}
+
+#[test]
+fn a_missing_output_warns_once_not_every_retry() {
+    capture_warnings();
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    let mut app = FilmcraftApp::new(session);
+    let starts = Arc::new(AtomicUsize::new(0));
+    app.audio = Some(Box::new(Reviving {
+        starts: starts.clone(),
+        opens: Arc::new(AtomicBool::new(false)),
+        ticking: Arc::new(AtomicBool::new(true)),
+        err: "warn-once probe",
+    }));
+    app.play(1.0);
+    app.end_preroll(0.0);
+    for t in [AUDIO_RETRY_S + 0.5, AUDIO_RETRY_S * 2.0 + 1.0, AUDIO_RETRY_S * 3.0 + 1.5] {
+        app.set_now_for_test(t);
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(t), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+    }
+    assert_eq!(starts.load(Ordering::Relaxed), 4, "the retries keep opening the output");
+    assert_eq!(warn_count("warn-once probe"), 1, "a missing output warns once, not on every retry");
+    app.stop();
+}
+
+#[test]
+fn a_loop_restart_does_not_warn_again_while_the_output_is_missing() {
+    capture_warnings();
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    session.execute("markers.markIn", json!({"seconds": 0.0})).unwrap();
+    session.execute("markers.markOut", json!({"seconds": 0.25})).unwrap();
+    let ctx = egui::Context::default();
+    let mut app = FilmcraftApp::new(session);
+    let starts = Arc::new(AtomicUsize::new(0));
+    app.audio = Some(Box::new(Reviving {
+        starts: starts.clone(),
+        opens: Arc::new(AtomicBool::new(false)),
+        ticking: Arc::new(AtomicBool::new(true)),
+        err: "loop probe",
+    }));
+    app.playback.looping = true;
+    app.play(1.0);
+    app.end_preroll(0.0);
+    // short loops wrap every couple of frames; each wrap calls play() again
+    for i in 1..14 {
+        app.set_now_for_test(0.5 * f64::from(i));
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(0.5 * f64::from(i)), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+    }
+    let n = starts.load(Ordering::Relaxed);
+    assert!(n > 1, "the loop restarts still reopen the output");
+    assert!(n <= 5, "the reopens keep the {AUDIO_RETRY_S}s deadline instead of the loop period: {n}");
+    assert_eq!(warn_count("loop probe"), 1, "a continuous outage warns once across loop restarts");
+    app.stop();
 }
