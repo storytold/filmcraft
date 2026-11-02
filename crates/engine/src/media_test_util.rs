@@ -22,13 +22,12 @@ pub fn tmp_dir(name: &str) -> PathBuf {
 /// Write a `frames`-frame `w`×`h` 24 fps movie of a demo scene (with its audio) to `path`.
 /// `.mov` = ProRes 422 HQ + PCM, `.mp4` = H.264 + AAC.
 pub fn make_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64) {
-    make_movie_at(path, scene, w, h, frames, 0);
+    make_movie_at(path, scene, w, h, FrameRate::FPS_24, frames, 0);
 }
 
-/// [`make_movie`] whose first frame is at timecode `start_tc` (frames at 24 fps). Only `.mxf`
-/// (OP1a, ProRes + PCM) records it: MOV and MP4 exports write no timecode track.
-pub fn make_movie_at(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64, start_tc: i64) {
-    let rate = FrameRate::FPS_24;
+/// [`make_movie`] at `rate`, whose first frame is at timecode `start_tc` (frames at `rate`). Only
+/// `.mxf` (OP1a, ProRes + PCM) records it: MOV and MP4 exports write no timecode track.
+pub fn make_movie_at(path: &Path, scene: DemoScene, w: u32, h: u32, rate: FrameRate, frames: i64, start_tc: i64) {
     let dur = rate.tick_of(frames);
     let src = GeneratorSource::new(Generator::Demo(scene), w, h, rate, dur);
     let info = src.info().clone();

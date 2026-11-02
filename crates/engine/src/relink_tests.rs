@@ -498,12 +498,20 @@ fn first_clip(s: &Session) -> (ItemId, filmcraft_time::Tick) {
 // time, so it showed the file's last frame.
 #[test]
 fn edl_media_relinked_with_align_timecode_lands_where_import_puts_it() {
-    let root = tmp_dir("relink-edl-timecode");
+    // The EDL is read at 24 fps. Its file runs at 24 fps, or at 25, where each timecode counts in
+    // its own file's frames.
+    for (fps, rate) in [(24, FrameRate::FPS_24), (25, FrameRate::FPS_25)] {
+        edl_media_relinked_at(fps, rate);
+    }
+}
+
+fn edl_media_relinked_at(fps: i64, rate: FrameRate) {
+    let root = tmp_dir(&format!("relink-edl-timecode-{fps}"));
     let media = root.join("Media");
     std::fs::create_dir_all(&media).unwrap();
-    // 2 s at 24 fps from 01:00:00:00; the EDL cuts in at 01:00:01:00, one second in
+    // 2 s from 01:00:00:00; the EDL cuts in at 01:00:01:00, one second in
     let file = media.join("A001.mxf");
-    make_movie_at(&file, DemoScene::Aurora, W, H, 48, 3600 * 24);
+    make_movie_at(&file, DemoScene::Aurora, W, H, rate, 2 * fps, 3600 * fps);
     let edl = "TITLE: CUT\nFCM: NON-DROP FRAME\n\n001  A001     V     C        01:00:01:00 01:00:01:12 01:00:00:00 01:00:00:12\n* FROM CLIP NAME: A001.mxf\n";
     let import = |dir: &std::path::Path| {
         std::fs::create_dir_all(dir).unwrap();
@@ -514,7 +522,7 @@ fn edl_media_relinked_with_align_timecode_lands_where_import_puts_it() {
     };
 
     let mut next_to_media = import(&media);
-    assert_eq!(first_clip(&next_to_media).1, FrameRate::FPS_24.tick_of(24), "one second into the file");
+    assert_eq!(first_clip(&next_to_media).1, FrameRate::FPS_24.tick_of(24), "one second into the {fps} fps file");
 
     let mut s = import(&root.join("Edit"));
     let (item, _) = first_clip(&s);
@@ -528,7 +536,7 @@ fn edl_media_relinked_with_align_timecode_lands_where_import_puts_it() {
         )
         .unwrap();
     assert_eq!(r["remaining"], json!([]), "{r}");
-    assert_eq!(first_clip(&s).1, first_clip(&next_to_media).1);
-    assert_eq!(frame_rgba(&mut s, 6, 1.0).2, frame_rgba(&mut next_to_media, 6, 1.0).2, "same picture");
+    assert_eq!(first_clip(&s).1, first_clip(&next_to_media).1, "{fps} fps");
+    assert_eq!(frame_rgba(&mut s, 6, 1.0).2, frame_rgba(&mut next_to_media, 6, 1.0).2, "same picture at {fps} fps");
     let _ = std::fs::remove_dir_all(&root);
 }
