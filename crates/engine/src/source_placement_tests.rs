@@ -161,6 +161,23 @@ fn place_source_in_outside_the_clip_is_refused() {
     }
 }
 
+/// The error names the frames the check accepts when the item's bounds fall between frame
+/// boundaries: a subclip from 10.5 to 25.5 frames takes frames 11 to 25, not 10 to 24.
+#[test]
+fn place_source_in_error_names_the_frames_it_accepts() {
+    let (mut s, item) = timecoded_session();
+    let fd = s.project.item(item).unwrap().frame_rate().frame_duration().0;
+    let p = json!({"item":item.0,"start":fd * 10 + fd / 2,"end":fd * 25 + fd / 2});
+    let sub = s.execute("clip.makeSubclip", p).unwrap()["item"].as_u64().unwrap();
+    for frame in [11, 25] {
+        s.execute("timeline.place", json!({"item":sub,"track":"V1","time":0,"sourceIn":{"frame":frame},"duration":{"frame":1}})).unwrap();
+    }
+    for frame in [10, 26] {
+        let e = s.execute("timeline.place", json!({"item":sub,"track":"V1","time":0,"sourceIn":{"frame":frame}})).unwrap_err().to_string();
+        assert!(e.contains("whose frames run 00:00:00:11 to 00:00:01:00"), "frame {frame}: {e}");
+    }
+}
+
 /// An item with no frames (an empty sequence) takes no `sourceIn`: frame 0 is already its end.
 #[test]
 fn place_source_in_on_an_item_with_no_frames_is_refused() {
