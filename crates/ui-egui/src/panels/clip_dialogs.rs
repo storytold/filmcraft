@@ -368,6 +368,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let project_name = app.session.project.name.clone();
     // a never-saved project is saved through the Save dialog
     let can_save = app.session.path.is_some() || crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
+    if matches!(d.command.as_str(), "file.closeProject" | "app.quit" | "file.open") {
+        let action = ask_to_save(app, ctx, title, pre, &project_name, can_save);
+        answer(app, ctx, d, action);
+        return;
+    }
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("clip-dialog", pre));
     egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
@@ -634,28 +639,6 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 }
             }
-            "file.closeProject" | "app.quit" | "file.open" => {
-                ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let r = ui.button(tl!("Cancel"));
-                    push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
-                    if r.clicked() {
-                        action = Some("cancel");
-                    }
-                    let r = ui.button(tl!("Don't Save"));
-                    push(&mut elems, format!("{pre}.dontSave"), &r, "Don't Save");
-                    if r.clicked() {
-                        action = Some("dontSave");
-                    }
-                    let r = ui.add_enabled(can_save, egui::Button::new(tl!("Save")));
-                    push(&mut elems, format!("{pre}.save"), &r, "Save");
-                    if r.clicked() {
-                        action = Some("save");
-                    }
-                });
-                return;
-            }
             _ => {}
         }
         if !d.error.is_empty() {
@@ -681,12 +664,49 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if crate::widgets::escape_closes(ctx) {
         action = Some("cancel");
     }
-    if action.is_none()
-        && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.pointer.any_down())
-        && !matches!(d.command.as_str(), "file.closeProject" | "app.quit" | "file.open")
-    {
+    if action.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.pointer.any_down()) {
         action = Some("ok");
     }
+    answer(app, ctx, d, action);
+}
+
+/// The Save changes? prompt of Close Project, Quit and Open: a modal with the Revert
+/// confirmation's layout. Returns the button pressed, or "cancel" for Escape or a click outside.
+fn ask_to_save(app: &mut FilmcraftApp, ctx: &egui::Context, title: &str, pre: &str, project_name: &str, can_save: bool) -> Option<&'static str> {
+    let t = app.tokens;
+    let mut action = None;
+    let r = egui::Modal::new(egui::Id::unique(("clip-dialog", pre))).frame(super::file_dialogs::modal_frame(&t)).show(ctx, |ui| {
+        ui.set_width(460.0);
+        egui::Frame::new().inner_margin(egui::Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
+            ui.label(RichText::new(title).size(18.0).strong().color(t.text));
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.label(RichText::new(tlf!("Save changes to “{project_name}” before closing?", project_name)).size(13.5).color(t.text));
+            ui.add_space(18.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let save = ui.add_enabled_ui(can_save, |ui| super::file_dialogs::button(app, ui, &format!("{pre}.save"), tl!("Save"), true)).inner;
+                if save {
+                    action = Some("save");
+                }
+                if super::file_dialogs::button(app, ui, &format!("{pre}.dontSave"), tl!("Don't Save"), false) {
+                    action = Some("dontSave");
+                }
+                if super::file_dialogs::button(app, ui, &format!("{pre}.cancel"), tl!("Cancel"), false) {
+                    action = Some("cancel");
+                }
+            });
+        });
+    });
+    // (the modal's own close also fires on Escape: not while a drag is being cancelled, #580)
+    if action.is_none() && r.should_close() && !ctx.input(|i| i.pointer.any_down()) {
+        action = Some("cancel");
+    }
+    action
+}
+
+/// Carry out the button pressed in the open dialog; the dialog stays open without one.
+fn answer(app: &mut FilmcraftApp, ctx: &egui::Context, mut d: ClipDialogDraft, action: Option<&'static str>) {
     if action.is_some() {
         ctx.data_mut(|d| {
             d.remove::<bool>(egui::Id::unique("nest-name-focused"));
