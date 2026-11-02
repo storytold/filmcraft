@@ -4941,7 +4941,8 @@ fn set_transition(s: &mut Session, p: &Value) -> Result<Value> {
             q.all_tracks().find_map(|tr| tr.transitions.iter().find(|x| x.id == tid).and_then(|x| edit::transitions::bounds(tr, x).map(|b| (x.clone(), b.1))))
         })
         .map(|(x, cut)| edit::transitions::alignment(&x, cut, frame).id());
-    Ok(json!({"transition": id, "effect": cur.effect.effect, "reverse": cur.reverse, "start": st.0, "duration": d.0, "align": al}))
+    let short = crate::handles::transition_short(s, tid);
+    Ok(json!({"transition": id, "effect": cur.effect.effect, "reverse": cur.reverse, "start": st.0, "duration": d.0, "align": al, "short": short}))
 }
 
 fn apply_transition(s: &mut Session, p: &Value, kind: TrackKind) -> Result<Value> {
@@ -4953,7 +4954,7 @@ fn apply_transition(s: &mut Session, p: &Value, kind: TrackKind) -> Result<Value
     let (track, tr) = preview_transition(s, p, kind)?;
     let label = format!("Apply {}", tr.effect.def().map_or("Transition", |d| d.name));
     let id = s.edit_sequence(&label, |q, ctx, _| Ok(edit::add_transition(q, track, tr, ctx)?))?;
-    Ok(json!({"transition": id.0}))
+    Ok(json!({"transition": id.0, "short": crate::handles::transition_short(s, id)}))
 }
 
 /// Plan an applied transition without editing the project or allocating an id.

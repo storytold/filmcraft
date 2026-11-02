@@ -408,6 +408,7 @@ pub fn apply_default_transitions(s: &mut Session) -> Result<Value> {
     let pts = s.state.edit_points.clone();
     let n0 = s.history.undo.len();
     let mut ids = Vec::new();
+    let mut short = Vec::new();
     for ep in &pts {
         let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
         let Some((tid, _)) = seq.find_item(ep.clip) else { continue };
@@ -415,13 +416,14 @@ pub fn apply_default_transitions(s: &mut Session) -> Result<Value> {
         let cmd = if video { "sequence.applyVideoTransition" } else { "sequence.applyAudioTransition" };
         if let Ok(r) = s.execute(cmd, json!({"clip": ep.clip.0, "edge": if ep.out { "out" } else { "in" }})) {
             ids.push(r["transition"].clone());
+            short.extend(r.get("short").and_then(Value::as_array).into_iter().flatten().cloned());
         }
     }
     if ids.is_empty() {
         return Err(EngineError::Other("no transition could be applied at the selected edit points".into()));
     }
     crate::clip_ops::collapse_history(s, n0, "Apply Default Transitions");
-    Ok(json!({"transitions": ids}))
+    Ok(json!({"transitions": ids, "short": short}))
 }
 
 // ------------------------------------------------------------------ dynamic trimming

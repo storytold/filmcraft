@@ -1,11 +1,13 @@
 //! Media handles: the media a clip has before its In point and after its Out point.
 //!
-//! A trim, roll or extend stops where a clip's media ends. The results of those commands list
-//! each clip edge that needed more media than it has as `{clip, edge, shortByFrames}`, so a
-//! script or agent can tell an edit the media stopped from one that happened.
+//! A trim, roll or extend stops where a clip's media ends, and a transition plays the clips it
+//! joins past the cut (with no media there, the picture repeats a frame and the sound is
+//! silent). The results of those commands list each clip edge that needed more media than it has
+//! as `{clip, edge, shortByFrames}`, so a script or agent can tell an edit the media stopped from
+//! one that happened, and which frames of a transition repeat.
 
 use filmcraft_edit::Edge;
-use filmcraft_project::ClipId;
+use filmcraft_project::{ClipId, TransitionId};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
@@ -65,4 +67,16 @@ pub(crate) fn trim_short(s: &Session, clips: &[ClipId], edge: Edge, delta: Tick)
             Edge::Out => cut_short(s, Some(*c), None, delta),
         })
         .collect()
+}
+
+/// What the clips transition `id` joins lack under it: the outgoing clip plays on past its Out
+/// point to the transition's end, the incoming one from the transition's start up to its In point.
+pub(crate) fn transition_short(s: &Session, id: TransitionId) -> Vec<Value> {
+    let Some(q) = s.active_sequence() else { return Vec::new() };
+    let Some((track, tr)) = q.all_tracks().find_map(|t| t.transitions.iter().find(|x| x.id == id).map(|x| (t, x))) else {
+        return Vec::new();
+    };
+    let from = tr.from.and_then(|c| track.item(c)).and_then(|a| short(s, a.id, Edge::Out, tr.end() - a.end()));
+    let to = tr.to.and_then(|c| track.item(c)).and_then(|b| short(s, b.id, Edge::In, b.start - tr.start));
+    from.into_iter().chain(to).collect()
 }

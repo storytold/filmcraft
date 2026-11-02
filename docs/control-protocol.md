@@ -173,6 +173,16 @@ track and `edits`, the number of edit points that moved. Each one also returns `
 of media missing before its In point (`edge: "in"`) or after its Out point (`"out"`) for the move
 asked. It is empty when the media covers the move.
 
+**Transitions without media**: a transition plays the clips it joins past the cut, into their
+handles: the outgoing clip after its Out point, the incoming one before its In point. Where a
+clip has no media there, the picture repeats its last or first frame and the sound is silent. The
+transition is applied as asked (Premiere does the same, with a warning about insufficient media).
+`sequence.applyVideoTransition`, `sequence.applyAudioTransition`,
+`sequence.applyDefaultTransitionsToSelection`, `trim.applyDefaultTransition` and
+`sequence.setTransition` return `short`: one `{clip, edge, shortByFrames}` per clip edge with no
+media under part of the transition, with the sequence frames it lacks. It is empty when both clips
+have the media.
+
 **Replace With Clip**: `clip.replaceFromSource`, `clip.replaceFromSourceMatchFrame` and
 `clip.replaceFromBin {clips?, item?, keepSourceIn?}` swap the media of the clips and return
 `{clips: [ids], item, short: [{clip, shortByFrames}]}`. `short` lists the replaced clips that now

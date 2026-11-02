@@ -1457,6 +1457,8 @@ mod track_params_tests;
 #[cfg(test)]
 mod transcript_tests;
 #[cfg(test)]
+mod transition_handles_tests;
+#[cfg(test)]
 mod trim_tests;
 #[cfg(test)]
 mod vfx_tests;
