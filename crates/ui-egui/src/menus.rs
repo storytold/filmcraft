@@ -672,6 +672,11 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             saved_status(app, id, &path);
         }
     }
+    if r.is_ok() && id == "playhead.set" {
+        // A playhead move while playback runs continues from the new position (the pump would
+        // otherwise overwrite it on the next tick: #1622).
+        app.reanchor_playback(ctx.input(|i| i.time));
+    }
     if r.is_ok() && matches!(id, "playhead.start" | "playhead.end") {
         crate::panels::timeline::reveal_playhead(app, ctx);
     }
