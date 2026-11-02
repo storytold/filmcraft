@@ -218,9 +218,13 @@ fn a_document_given_by_a_relative_path_links_its_relative_media() {
     std::fs::create_dir_all(root.join("media")).unwrap();
     make_movie(&root.join("edit").join("sub").join("a.mov"), DemoScene::Aurora, W, H, 12);
     make_movie(&root.join("media").join("b.mov"), DemoScene::CityNight, W, H, 12);
-    let Some(doc) = from_working_dir(&root.join("edit").join("cut.xml")) else { return };
-    for url in ["sub/a.mov", "../media/b.mov"] {
-        std::fs::write(&doc, xml(url)).unwrap();
+    let edit = root.join("edit");
+    // the same document also through a folder and back: its absolute path keeps `sub/..`
+    let (Some(doc), Some(via_sub)) = (from_working_dir(&edit.join("cut.xml")), from_working_dir(&edit.join("sub").join("..").join("cut.xml"))) else {
+        return;
+    };
+    for (doc, url) in [(&doc, "sub/a.mov"), (&doc, "../media/b.mov"), (&via_sub, "../media/b.mov")] {
+        std::fs::write(doc, xml(url)).unwrap();
         let mut s = Session::default();
         let r = s.execute("file.import", json!({"paths": [doc.to_string_lossy()]})).unwrap();
         assert_eq!(r["documents"][0]["linkedMedia"], json!(1), "{url} from {}: {r}", doc.display());

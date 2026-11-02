@@ -117,18 +117,19 @@ fn join(base: &str, rel: &str) -> String {
     for seg in rel.split(['/', '\\']) {
         match seg {
             "" | "." => {}
-            // An absolute path stops at its root (`/`, `C:`); a relative one climbs out of its
-            // first folder too, and above it (#3998).
+            // A `..` takes off the last folder. One after another `..` (which an absolute base
+            // can end in, as `std::path::absolute` keeps it) or past the start of a relative base
+            // is kept; only the root of an absolute path (`/`, `C:`) has no parent (#3998).
             ".." => match parts.last().copied() {
-                Some(last) if !matches!(last, "." | "..") && (parts.len() > 1 || !absolute) => {
-                    parts.pop();
-                }
-                _ if absolute => {}
+                None | Some("..") => parts.push(".."),
                 Some(".") => {
                     parts.pop();
                     parts.push("..");
                 }
-                _ => parts.push(".."),
+                Some(_) if absolute && parts.len() == 1 => {}
+                Some(_) => {
+                    parts.pop();
+                }
             },
             s => parts.push(s),
         }
@@ -766,6 +767,8 @@ mod tests {
         assert_eq!(resolve_path(r"..\media\a.mov", Some(r"proj\edit")), r"proj\media\a.mov");
         assert_eq!(resolve_path("../../a.mov", Some("/proj")), "/a.mov");
         assert_eq!(resolve_path(r"..\..\a.mov", Some(r"C:\proj")), r"C:\a.mov");
+        // an absolute base can still end in `..` (`std::path::absolute` keeps it on POSIX)
+        assert_eq!(resolve_path("../media/b.mov", Some("/work/edit/..")), "/work/edit/../../media/b.mov");
         // #2195: relative URLs are percent-decoded, plain names are not
         assert_eq!(resolve_url("media/Clip%20A.mov", Some("/proj")), "/proj/media/Clip A.mov");
         assert_eq!(resolve_url("file:///m/Clip%20A.mov", Some("/proj")), "/m/Clip A.mov");
