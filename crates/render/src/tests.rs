@@ -579,3 +579,37 @@ fn a_still_image_needs_no_in_between_frame() {
     let (_, w) = media_interpolation(&it, t, &movie, rate).unwrap();
     assert!((w - 0.25).abs() < 1e-3, "a quarter into the source frame: {w}");
 }
+
+#[test]
+fn in_between_frames_stay_inside_the_source_range() {
+    // the later frame of a Frame Blending / Optical Flow pair never comes from the clip's source
+    // out on: a reversed clip starts just before it, and a forward one can end next to it (#3948)
+    let (mut p, red, _, _, _) = setup();
+    let src = FrameRate::FPS_23_976;
+    let mut it = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), src).unwrap();
+    it.time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    it.source_in = src.tick_of(10);
+    // 100 % on 29.97 moves 0.8 of a source frame per frame, so 5 frames end exactly on source frame
+    // 14; 50 % at the media's own rate ends half-way into frame 13 (7 frames) or on frame 14 (8)
+    for (seq, speed, frames) in [(FrameRate::FPS_29_97, 1.0, 5), (src, 0.5, 7), (src, 0.5, 8)] {
+        for reverse in [false, true] {
+            it.speed = speed;
+            it.reverse = reverse;
+            it.start = seq.tick_of(3);
+            it.duration = seq.tick_of(frames);
+            let (source_in, out) = (it.source_in, it.source_out());
+            let mut blended = 0;
+            for k in 0..frames {
+                let t = seq.tick_of(3 + k);
+                if let Some((next, w)) = interpolation_blend(&it, t, src, seq) {
+                    assert!(
+                        next > source_in && next < out,
+                        "{seq:?} at {speed}, reverse {reverse}, frame {k}: next {next:?} outside {source_in:?}..{out:?} (w {w})"
+                    );
+                    blended += 1;
+                }
+            }
+            assert!(blended > 0, "{seq:?} at {speed}, reverse {reverse}: no frame blended");
+        }
+    }
+}

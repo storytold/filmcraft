@@ -733,9 +733,9 @@ pub fn render_clip(
 /// Frame Blending / Optical Flow on a speed-changed clip, or on media whose frame rate differs from
 /// the sequence's (24 fps on 29.97 at 100 %): the later source frame to mix in and its weight
 /// (0..1) at timeline `t`, or None when the exact media time falls on a source frame (or the clip
-/// plays at 100 % at the sequence's rate, is frame-held, or uses Frame Sampling). Frame Blending
-/// cross-fades the two frames; Optical Flow synthesises the in-between frame from their motion
-/// ([`flow`]).
+/// plays at 100 % at the sequence's rate, is frame-held, or uses Frame Sampling), or when the later
+/// frame lies past the clip's source out. Frame Blending cross-fades the two frames; Optical Flow
+/// synthesises the in-between frame from their motion ([`flow`]).
 pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::FrameRate, seq_rate: filmcraft_time::FrameRate) -> Option<(Tick, f32)> {
     if item.time_interpolation == filmcraft_project::TimeInterpolation::FrameSampling || item.frame_hold.is_some() {
         return None;
@@ -754,8 +754,15 @@ pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::
     if frac <= 1e-6 {
         return None;
     }
+    // the later frame must be part of the clip: from its source out on, the media was trimmed
+    // away. A reversed clip starts just before its source out and a forward one can end there;
+    // both show their last frame alone.
+    let next = src_rate.tick_of(f + 1);
+    if next >= item.source_out() {
+        return None;
+    }
     // the mix depends only on the media position, so reversed clips blend the same pair
-    Some((src_rate.tick_of(f + 1), frac.clamp(0.0, 1.0) as f32))
+    Some((next, frac.clamp(0.0, 1.0) as f32))
 }
 
 /// [`interpolation_blend`] for a clip showing `src`. A still image has one picture (it reports
