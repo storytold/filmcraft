@@ -638,13 +638,15 @@ pub(crate) struct Sent {
 
 struct Snapshot {
     project: Arc<Project>,
+    view: filmcraft_project::ProjectView,
     revision: u64,
     path: Option<String>,
 }
 
 enum Msg {
-    /// The project has unsaved changes at this revision.
-    Dirty(Snapshot),
+    /// The project has unsaved changes at this revision. Boxed: the other messages are a few
+    /// words and the enum is sent after every command.
+    Dirty(Box<Snapshot>),
     /// Nothing unsaved (just saved / opened): drop the journal.
     Clean,
     Prefs(AutoSavePrefs),
@@ -787,8 +789,8 @@ impl Persistence {
         })
     }
 
-    pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>) {
-        self.send(Msg::Dirty(Snapshot { project, revision, path }));
+    pub(crate) fn send_dirty(&self, project: Arc<Project>, view: filmcraft_project::ProjectView, revision: u64, path: Option<String>) {
+        self.send(Msg::Dirty(Box::new(Snapshot { project, view, revision, path })));
     }
 
     pub(crate) fn send_clean(&self) {
@@ -977,7 +979,7 @@ impl Worker {
                     let now = Instant::now();
                     self.first_pending.get_or_insert(now);
                     self.last_change = now;
-                    self.latest = Some(s);
+                    self.latest = Some(*s);
                 }
                 Some(Msg::Clean) => {
                     self.latest = None;
@@ -1033,7 +1035,7 @@ impl Worker {
     fn write_journal(&mut self) -> Result<u64, String> {
         let Some(s) = &self.latest else { return Err("no unsaved recovery state to write".into()) };
         let t0 = Instant::now();
-        let bytes = filmcraft_format::encode(&s.project, false);
+        let bytes = filmcraft_format::encode_with_view(&s.project, Some(&s.view), false);
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
         let unix = unix_now();
@@ -1087,7 +1089,7 @@ impl Worker {
             (None, _) => (self.data_dir.join(names::AUTO_SAVE_DIR), s.project.name.clone()),
         };
         let t0 = Instant::now();
-        let bytes = filmcraft_format::encode(&s.project, false);
+        let bytes = filmcraft_format::encode_with_view(&s.project, Some(&s.view), false);
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let t1 = Instant::now();
         let unix = unix_now();
