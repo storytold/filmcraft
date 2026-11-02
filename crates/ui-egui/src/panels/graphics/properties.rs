@@ -240,7 +240,10 @@ impl Ctx<'_> {
     }
     fn check(&mut self, vui: &mut egui::Ui, id: &str, label: &str) -> bool {
         let mut b = self.value(id).as_bool().unwrap_or(false);
-        let r = vui.checkbox_drag(&mut b, label);
+        // its own scope: a checkbox above that shows or hides rows must not change this one's id in
+        // the middle of a sweep, which recognises the box it began on by id
+        let scope = egui::UiBuilder::new().scope_id(egui::Id::unique(("gfxp-check", self.clip.0, self.layer, id)));
+        let r = vui.scope_builder(scope, |ui| ui.checkbox_drag(&mut b, label)).inner;
         self.auto(id, r.rect, label);
         if r.changed() {
             self.set(id, json!(b));
