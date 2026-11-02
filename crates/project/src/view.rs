@@ -116,6 +116,9 @@ pub struct TimelineUiSettings {
     /// sliders yet.
     pub track_slider_smooth: bool,
     pub track_slider_alternate_position: bool,
+    /// Snap to Tracks: an end-circle drag's landing snaps to the track dividing lines. Stored and
+    /// toggled, but it does not drive the sliders yet (the snap is being rebuilt).
+    pub track_slider_snap: bool,
     /// Decouple Edges: dragging one end circle of a track slider moves only that end -- the
     /// other end stays exactly where it is instead of mirroring about the thumb's middle.
     pub track_slider_decouple: bool,
@@ -131,6 +134,13 @@ pub struct TimelineUiSettings {
     /// The last Custom Alternate Drag Speed the user typed, restored when Custom is picked
     /// again (`shift_drag_last_custom` the same way).
     pub track_slider_shift_drag_last_custom: f64,
+    /// Controls (the flyouts): the input the user chose for each action, as its display text
+    /// ("Ctrl + K", "Right Click"). Empty means the built-in gesture (Double Click / Triple
+    /// Click / Shift + Drag / Right Click).
+    pub control_center_on_playhead: String,
+    pub control_explode_slider: String,
+    pub control_alternate_drag_speed: String,
+    pub control_settings: String,
 }
 
 fn default_playhead_custom() -> f64 {
@@ -173,11 +183,16 @@ impl Default for TimelineUiSettings {
             track_slider_hidden: false,
             track_slider_smooth: false,
             track_slider_alternate_position: false,
+            track_slider_snap: true,
             track_slider_decouple: true,
             show_position_indicator: true,
             track_slider_shift_drag_speed: 1.0,
             track_slider_shift_drag_custom: false,
             track_slider_shift_drag_last_custom: 1.0,
+            control_center_on_playhead: String::new(),
+            control_explode_slider: String::new(),
+            control_alternate_drag_speed: String::new(),
+            control_settings: String::new(),
         }
     }
 }
@@ -191,8 +206,7 @@ impl TimelineUiSettings {
         self.shift_drag_last_custom = if self.shift_drag_last_custom.is_finite() { self.shift_drag_last_custom.clamp(0.1, 50.0) } else { 1.0 };
         // a non-positive Maximum Zoom Level is "unset": the documented 0.4 s default, never the
         // clamp floor (0.05), or the fallback could no longer apply
-        self.max_zoom_seconds =
-            if self.max_zoom_seconds.is_finite() && self.max_zoom_seconds > 0.0 { self.max_zoom_seconds.clamp(0.05, 3.0) } else { 0.4 };
+        self.max_zoom_seconds = if self.max_zoom_seconds.is_finite() && self.max_zoom_seconds > 0.0 { self.max_zoom_seconds.clamp(0.05, 3.0) } else { 0.4 };
         self.max_zoom_last_custom =
             if self.max_zoom_last_custom.is_finite() && self.max_zoom_last_custom > 0.0 { self.max_zoom_last_custom.clamp(0.05, 3.0) } else { 0.4 };
         self.track_slider_shift_drag_speed =
@@ -263,6 +277,18 @@ pub struct ProjectLut {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Controls bindings start empty (the built-in gestures do the actions) and Snap to
+    /// Tracks starts on: the defaults of everything the slider menus added.
+    #[test]
+    fn the_controls_bindings_start_empty_and_snap_to_tracks_starts_on() {
+        let s = TimelineUiSettings::default().checked();
+        assert!(s.control_center_on_playhead.is_empty());
+        assert!(s.control_explode_slider.is_empty());
+        assert!(s.control_alternate_drag_speed.is_empty());
+        assert!(s.control_settings.is_empty());
+        assert!(s.track_slider_snap, "Snap to Tracks is on by default");
+    }
 
     /// Values a project file may carry (hostile or stale) come back clamped and finite, so no
     /// setting read from disk can drive UI geometry outside its range.

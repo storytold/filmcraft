@@ -84,11 +84,28 @@ fn zoom_about_center(v: &mut crate::state::TimelineView, view_w: f32, total: f64
 
 /// The zoom scroll bar's settings popup content. Opened by right-clicking the bar, and by the
 /// Timeline menu's "Timeline Slider Settings" row while the bar is hidden -- the same settings,
-/// the same way, in both places.
+/// the same way, in both places. The popup only becomes scrollable when the window is too small
+/// to show it whole (the height cap is the screen's, so at a normal window size nothing changes).
+pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+    // Scrollable only in an emergency: the scroll area is given a whole screen of room (a
+    // popup's own ui only offers the space left below its anchor, which forced a scrollbar and
+    // cut the menu at a normal window size). On any window big enough for the menu nothing
+    // changes and no scrollbar ever appears.
+    let max_h = ui.ctx().content_rect().height().max(320.0);
+    let r = ui.available_rect_before_wrap();
+    let r = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + max_h));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+        egui::ScrollArea::vertical().id_salt("timeline-zoombar-settings-scroll").max_height(max_h).show(ui, |ui| {
+            zoombar_settings_rows(app, ui);
+        });
+    });
+}
+
+/// The rows of the zoom bar's settings popup (see [`zoombar_settings`]).
 // one section per setting keeps the popup's rows in visual order; splitting the function would
 // scatter the popup's layout over the file
 #[allow(clippy::cognitive_complexity)]
-pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+fn zoombar_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     /// The settings popup's inner content width. Fixed, never derived from the frame's layout, so
     /// widgets measure identically on the popup's first frame and forever after (a first-frame
     /// mismatch is what made the popup jitter).
@@ -96,6 +113,7 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.set_max_width(CONTENT_W + 16.0);
     let mut changed = false;
     family_reset(ui);
+    capture_controls(app, ui);
     let content_w = CONTENT_W.min(ui.available_width());
 
     // The very top row: Hide Slider (red) while the bar is showing -- pressing it hides the bar at
@@ -129,6 +147,34 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             ui.ctx().request_repaint();
         }
     });
+    // "Controls": not a switch -- a list of the slider's gestures, in a flyout beside the menu
+    // (the Minimap Settings flyout's exact recipe). The text centers like Hide Slider's; the
+    // arrow stays where it was.
+    let full_w = ui.available_width();
+    let (row, _) = ui.allocate_exact_size(egui::vec2(full_w, 30.0), Sense::hover());
+    let label = tl!("Controls");
+    let galley = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(11.5), app.tokens.text);
+    ui.painter().galley(pos2(row.center().x - galley.size().x / 2.0, row.center().y - galley.size().y / 2.0), galley, app.tokens.text);
+    // the arrow points at whichever side the flyout fits on, the same distance from that wall
+    controls_arrow(ui, row, content_w, content_right, flyout_to_the_right(ui, row, content_right, CONTROLS_FLYOUT_W), app.tokens.text_dim);
+    app.auto.add("timeline.zoomBar.settings.controls", row, "Controls");
+    hover_flyout(
+        app,
+        ui,
+        egui::Id::unique("timeline-zoombar-advanced-flyout"),
+        row,
+        content_right,
+        CONTROLS_FLYOUT_W,
+        true,
+        "timeline.zoomBar.settings.controlsFlyout",
+        "Controls",
+        &[
+            (tl!("Center on Playhead:"), "Double Click", 0),
+            (tl!("Explode Slider:"), "Triple Click", 1),
+            (tl!("Alternate Drag Speed:"), "Shift + Drag", 2),
+            (tl!("Settings:"), "Right Click", 3),
+        ],
+    );
     let settings = &mut app.session.state.timeline_ui;
 
     // Smooth Animations: a centered pill switch (left) + label group instead of a checkbox
@@ -150,14 +196,14 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     // Inverted Controls: the wheel over the tracks scrolls the Timeline the other way in time,
     // and the wheel while grabbing the slider's middle zooms the other way
     let (row, _) = ui.allocate_exact_size(egui::vec2(content_w, 30.0), Sense::hover());
-    let label = tl!("Inverted Controls");
+    let label = tl!("Invert Scrolling");
     let galley = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(11.5), t.text);
     let group_w = sw_w + 10.0 + galley.size().x;
     let x0 = row.min.x + ((content_w - group_w) / 2.0).max(0.0);
     let sw = Rect::from_min_size(pos2(x0, row.center().y - 8.0), egui::vec2(sw_w, 16.0));
-    let c = pill_switch(ui, sw, settings.inverted_controls, t, egui::Id::unique("timeline-zoombar-inverted"), "Inverted Controls");
+    let c = pill_switch(ui, sw, settings.inverted_controls, t, egui::Id::unique("timeline-zoombar-inverted"), "Invert Scrolling");
     ui.painter().galley(pos2(x0 + sw_w + 10.0, row.center().y - galley.size().y / 2.0), galley, t.text);
-    app.auto.add("timeline.zoomBar.settings.invertedControls", c.rect, "Inverted Controls");
+    app.auto.add("timeline.zoomBar.settings.invertedControls", c.rect, "Invert Scrolling");
     if c.clicked() {
         settings.inverted_controls = !settings.inverted_controls;
         changed = true;
@@ -252,7 +298,11 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     }
     ui.separator();
     // Alternate Drag Speed first
-    settings_heading(ui, t, tl!("Alternate Drag Speed (Shift + Left Click)"));
+    // the gesture is part of the heading only while it is still the way to do it: a Controls
+    // rebinding makes it disappear
+    let alt_speed_label =
+        if settings.control_alternate_drag_speed.is_empty() { tl!("Alternate Drag Speed (Shift + Left Click)") } else { tl!("Alternate Drag Speed") };
+    settings_heading(ui, t, alt_speed_label);
     let speed_presets = [0.25, 0.5, 1.0, 2.0];
     let mut speed_choice =
         if settings.shift_drag_custom { 4 } else { speed_presets.iter().position(|v| (*v - settings.shift_drag_speed).abs() < f64::EPSILON).unwrap_or(3) };
@@ -302,7 +352,9 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     });
     ui.separator();
     // Playhead Centering Range second
-    settings_heading(ui, t, tl!("Playhead Centering Range (Double Click)"));
+    let range_label =
+        if settings.control_center_on_playhead.is_empty() { tl!("Playhead Centering Range (Double Click)") } else { tl!("Playhead Centering Range") };
+    settings_heading(ui, t, range_label);
     let mut range_choice = if settings.playhead_side_custom {
         4
     } else {
@@ -370,7 +422,8 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let c = pill_switch(ui, sw, minimap_on, t, egui::Id::unique("timeline-zoombar-minimap"), "Slider Minimap");
     ui.painter().galley(pos2(x0 + sw_w + 10.0, row.center().y - galley.size().y / 2.0), galley, label_color);
     if minimap_on {
-        ui.painter().text(pos2(row.max.x - 6.0, row.center().y), Align2::CENTER_CENTER, "\u{25b6}", Tokens::ui(8.0), t.text_dim);
+        // the same side-aware arrow as the Controls row, at the same distance from the wall
+        controls_arrow(ui, row, content_w, content_right, flyout_to_the_right(ui, row, content_right, CONTENT_W), t.text_dim);
     }
     app.auto.add("timeline.zoomBar.settings.sliderMinimap", c.rect, "Slider Minimap");
     if c.clicked() {
@@ -583,10 +636,10 @@ pub(super) fn zoombar_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     if changed {
         // the colour wheel and the number fields report every frame of a drag: remember the
         // change, but bump the (cache-invalidating) revision only once the gesture ends
-        ui.data_mut(|d| d.insert_temp(egui::Id::new("tl-zoombar-view-pending"), true));
+        ui.data_mut(|d| d.insert_temp(egui::Id::unique("tl-zoombar-view-pending"), true));
     }
-    if ui.data(|d| d.get_temp::<bool>(egui::Id::new("tl-zoombar-view-pending"))).unwrap_or(false) && !ui.input(|i| i.pointer.any_down()) {
-        ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("tl-zoombar-view-pending")));
+    if ui.data(|d| d.get_temp::<bool>(egui::Id::unique("tl-zoombar-view-pending"))).unwrap_or(false) && !ui.input(|i| i.pointer.any_down()) {
+        ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique("tl-zoombar-view-pending")));
         app.session.project_view_changed();
     }
 }
@@ -620,6 +673,270 @@ fn settings_pill_row(ui: &mut egui::Ui, t: &Tokens, row_w: f32, label: &str, id:
     let c = pill_switch(ui, sw, on, t, id, label);
     ui.painter().galley(pos2(x0 + sw_w + 10.0, row.center().y - galley.size().y / 2.0), galley, t.text);
     c
+}
+
+/// The next input this frame, as the text a Controls box shows: a key chord ("Ctrl + Shift + K")
+/// or a mouse button ("Right Click"). One per frame, the last one wins.
+fn input_text(ui: &egui::Ui) -> Option<String> {
+    ui.input(|i| {
+        let mut out = None;
+        for e in &i.events {
+            match e {
+                // the press OR the release: the shortcut matcher consumes presses out of the
+                // frame's events (bound keys), but the release always survives
+                egui::Event::Key { key, modifiers, .. } => {
+                    let mut s = String::new();
+                    if modifiers.ctrl || modifiers.mac_cmd {
+                        s.push_str("Ctrl + ");
+                    }
+                    if modifiers.shift {
+                        s.push_str("Shift + ");
+                    }
+                    if modifiers.alt {
+                        s.push_str("Alt + ");
+                    }
+                    s.push_str(&format!("{key:?}"));
+                    out = Some(s);
+                }
+                egui::Event::PointerButton { button, pressed: true, .. } => {
+                    out = Some(
+                        match button {
+                            egui::PointerButton::Primary => "Left Click",
+                            egui::PointerButton::Secondary => "Right Click",
+                            egui::PointerButton::Middle => "Middle Click",
+                            _ => "Extra Click",
+                        }
+                        .to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        out
+    })
+}
+
+/// One Controls binding (0 = Center on Playhead, 1 = Explode Slider, 2 = Alternate Drag Speed,
+/// 3 = Settings): empty means "the built-in gesture".
+fn control_binding(app: &mut FilmcraftApp, slot: usize) -> &mut String {
+    let s = &mut app.session.state.timeline_ui;
+    match slot {
+        0 => &mut s.control_center_on_playhead,
+        1 => &mut s.control_explode_slider,
+        2 => &mut s.control_alternate_drag_speed,
+        _ => &mut s.control_settings,
+    }
+}
+
+/// The width the Controls flyout always has -- the main slider's -- in every menu.
+const CONTROLS_FLYOUT_W: f32 = 257.4;
+
+/// The Shift-drag rates of the track sliders: thumb points per pointer point for the height zoom,
+/// content points for the scroll. Both are fixed constants times the Alternate Drag Speed setting
+/// SQUARED -- never anything the track counts or the scroll range can skew, so the two sliders
+/// move 1:1 with each other.
+const SHIFT_THUMB_RATE: f64 = 0.06;
+const SHIFT_CONTENT_RATE: f64 = 0.2;
+
+/// The Alternate Drag Speed setting squared: 1x is the slow rate, Custom 10x a hundred times it.
+fn shift_drag_rate(speed: f32) -> f64 {
+    let s = f64::from(speed.max(0.01));
+    s * s
+}
+
+/// Whether the minimap's clip indicators fit on screen: hidden below a quarter of the SCREEN's
+/// width (the height never matters). A pure predicate, decided fresh every frame.
+fn minimap_clips_fit(bar_w: f32, screen_w: f32) -> bool {
+    bar_w >= 0.25 * screen_w.max(1.0)
+}
+
+/// Which side a flyout fits on: to the right of the menu when there is room there, otherwise to
+/// the left. Computed from geometry alone, so the row's arrow points the right way on the very
+/// frame the menu opens -- never a frame of one side and then the other.
+fn flyout_to_the_right(ui: &egui::Ui, _row: Rect, content_right: f32, flyout_content_w: f32) -> bool {
+    let margin = ui.spacing().menu_margin;
+    let popup_right = content_right + f32::from(margin.right);
+    let flyout_w = flyout_content_w + 16.0 + f32::from(margin.left) + f32::from(margin.right);
+    popup_right + 4.0 + flyout_w <= ui.ctx().content_rect().right()
+}
+
+/// The little arrow on a Controls / Minimap row: at the same distance from whichever wall the
+/// flyout opens on -- 6 pt past the content edge on the right, the mirror of that distance on the
+/// left -- pointing at the flyout. (Measured off the popup's content edge, never the row's own
+/// width: the switch rows are narrower and used to sit almost against the left wall.)
+fn controls_arrow(ui: &egui::Ui, row: Rect, menu_w: f32, content_right: f32, to_the_right: bool, color: Color32) {
+    let x = if to_the_right { row.min.x + menu_w - 6.0 } else { content_right - menu_w + 6.0 };
+    let glyph = if to_the_right { "\u{25b6}" } else { "\u{25c0}" };
+    ui.painter().text(pos2(x, row.center().y), Align2::CENTER_CENTER, glyph, Tokens::ui(8.0), color);
+}
+
+/// Where a Controls box that is listening for a new input remembers itself.
+fn controls_listen_key() -> egui::Id {
+    egui::Id::unique("tl-controls-listening")
+}
+
+/// Whether a Controls box is listening for a new shortcut. While it is, the rest of the
+/// application must not hear the key: the shortcut matcher consumes presses from the frame's
+/// events (which is also why the capture used to miss them), and a bound key would fire its
+/// action in the background while the user is naming a new binding.
+pub fn controls_listening(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<Option<usize>>(controls_listen_key())).flatten().is_some()
+}
+
+/// While a Controls box listens, the next input becomes its binding (Escape cancels). Runs from
+/// the settings menus every frame -- not only while the flyout draws -- so a flicker of the flyout
+/// can never eat the input.
+fn capture_controls(app: &mut FilmcraftApp, ui: &egui::Ui) {
+    let key = controls_listen_key();
+    let Some(slot) = ui.ctx().data(|d| d.get_temp::<Option<usize>>(key)).flatten() else {
+        return;
+    };
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ui.ctx().data_mut(|d| d.insert_temp(key, None::<usize>));
+        return;
+    }
+    if let Some(text) = input_text(ui) {
+        *control_binding(app, slot) = text;
+        app.session.project_view_changed();
+        ui.ctx().data_mut(|d| d.insert_temp(key, None::<usize>));
+    }
+}
+
+/// The hover flyout beside a settings row (the Minimap Settings' sibling): the very same shape as
+/// the minimap's own flyout -- placed beside the menu (to the right when the screen has room for
+/// it there, otherwise to the left), bottom-aligned with the row's bottom edge, always fully
+/// opaque -- and the very same keep-alive: plain geometry against the raw pointer position (the
+/// row, the ring of gaps around the menu, the flyout itself, the settings' own popups) plus the
+/// colour pickers' 3 s grace. egui's `rect_contains_pointer` is layer-bound and reports false for
+/// the gap strips and for the flyout's own Area, which is exactly why a flyout used to vanish the
+/// moment the pointer left its row. Only `trigger` (a real hover of the row, after the pointer has
+/// moved) OPENS it; everything else merely keeps it open. No settings in it yet.
+#[allow(clippy::too_many_arguments)]
+fn hover_flyout(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    flyout_id: egui::Id,
+    row: Rect,
+    content_right: f32,
+    content_w: f32,
+    open_now: bool,
+    auto_id: &str,
+    auto_label: &str,
+    items: &[(&str, &str, usize)],
+) {
+    let rect_key = flyout_id.with("rect");
+    let height_key = flyout_id.with("height");
+    let stamp_key = flyout_id.with("stamp");
+    let margin = ui.spacing().menu_margin;
+    let popup_right = content_right + f32::from(margin.right);
+    let popup_left = row.min.x - f32::from(margin.left);
+    let flyout_w = content_w + 16.0 + f32::from(margin.left) + f32::from(margin.right);
+    let screen = ui.ctx().content_rect();
+    let gap = 4.0;
+    let to_the_right = flyout_to_the_right(ui, row, content_right, content_w);
+    let (x, to_the_right) = if to_the_right { (popup_right + gap, true) } else { ((popup_left - gap - flyout_w).max(screen.left()), false) };
+    let popup_bottom = row.max.y + f32::from(margin.bottom);
+    let flyout_h = ui.data(|d| d.get_temp::<f32>(height_key)).unwrap_or(110.0);
+    // the flyout centers on the setting row (its own middle at the row's middle), never past the
+    // screen's edges
+    let y = (row.center().y - flyout_h / 2.0).clamp(screen.top(), (screen.bottom() - flyout_h).max(screen.top()));
+    let flyout_rect = Rect::from_min_size(pos2(x, y), egui::vec2(flyout_w, flyout_h));
+    // the keep-alive frame around the menu: the pointer may travel anywhere on the menu or in a
+    // 24 pt ring of gaps around it (and across the gap strip to the flyout) without losing it
+    let menu = Rect::from_min_max(pos2(popup_left, row.min.y - 30.0 - f32::from(margin.top)), pos2(popup_right, popup_bottom));
+    let (gx0, gx1) = if to_the_right { (popup_right, x) } else { (x + flyout_w, popup_left) };
+    let side = Rect::from_min_max(pos2(gx0.min(gx1), y), pos2(gx0.max(gx1), popup_bottom.max(y + flyout_h)));
+    let under = Rect::from_min_max(pos2(popup_left, popup_bottom), pos2(popup_right, popup_bottom + 24.0));
+    let around = Rect::from_min_max(pos2(menu.min.x - 24.0, menu.min.y - 24.0), pos2(menu.max.x + 24.0, menu.max.y + 24.0));
+    let pointer = ui.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
+    let over = |r: Rect| pointer.is_some_and(|p| r.contains(p));
+    let prev_flyout = ui.data(|d| d.get_temp::<Rect>(rect_key)).unwrap_or(flyout_rect);
+    let now = ui.input(|i| i.time);
+    // working in one of the settings' own popups (or the three seconds after it) keeps the flyout
+    // alive no matter where the pointer goes
+    let keep = ui.data(|d| d.get_temp::<f64>(grace_key())).unwrap_or(-1e9);
+    let row_hot = over(row) && open_now;
+    let keep_alive = row_hot
+        || over(menu)
+        || over(side)
+        || over(under)
+        || over(around)
+        || over(prev_flyout)
+        || over(flyout_rect)
+        || pointer.is_some_and(|p| family_contains_prev(ui, p))
+        || now - keep < 3.0;
+    // the ROW opens it -- and only on a real hover of it: the menu appears under the cursor, often
+    // right on this row, so the pointer has to move first
+    let opened_at = ui.data(|d| d.get_temp::<Pos2>(open_pointer_key())).unwrap_or(pos2(-1e9, -1e9));
+    let moved = pointer.is_some_and(|p| (p - opened_at).length() > 6.0);
+    let trigger = row_hot && moved;
+    let was_open = ui.data(|d| d.get_temp::<bool>(flyout_id.with("open"))).unwrap_or(false);
+    let stamp = ui.data(|d| d.get_temp::<f64>(stamp_key)).unwrap_or(-1e9);
+    let open = open_now && (trigger || (was_open && (keep_alive || now - stamp < 0.3)));
+    if open {
+        ui.data_mut(|d| d.insert_temp(stamp_key, now));
+    }
+    ui.data_mut(|d| d.insert_temp(flyout_id.with("open"), open));
+    if open {
+        let panel = egui::Area::new(flyout_id).order(egui::Order::Foreground).fixed_pos(pos2(x, y)).fade_in(false).interactable(true).show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_min_width(content_w + 16.0);
+                ui.set_max_width(content_w + 16.0);
+                // the control list: an action and the input that does it (the default gesture in
+                // the dark box until the user rebinds it). Clicking a box listens for the next
+                // input -- a key chord or a mouse button -- which becomes the new way to do it;
+                // the circular arrow at the row's end restores the default. (The listening itself
+                // happens in [`capture_controls`], from the menus, every frame.)
+                let listening = ui.ctx().data(|d| d.get_temp::<Option<usize>>(controls_listen_key())).flatten();
+                for (idx, &(name, default, slot)) in items.iter().enumerate() {
+                    // the row spans the flyout's content width, exactly as the Minimap colour
+                    // rows do, so the reset arrow lands at their distance from the right wall
+                    let row_w = ui.available_width().max(170.0);
+                    let (irow, _) = ui.allocate_exact_size(egui::vec2(row_w, 28.0), Sense::hover());
+                    let n_galley = ui.painter().layout_no_wrap((*name).to_string(), Tokens::ui(11.5), app.tokens.text);
+                    let bound = control_binding(app, slot).clone();
+                    let shown = if listening == Some(slot) {
+                        tl!("Enter Shortcut").to_string()
+                    } else if bound.is_empty() {
+                        (*default).to_string()
+                    } else {
+                        bound.clone()
+                    };
+                    let a_galley = ui.painter().layout_no_wrap(shown.clone(), Tokens::ui(11.5), egui::Color32::WHITE);
+                    let gap = 6.0;
+                    let box_w = a_galley.size().x.max(52.0) + 14.0;
+                    let group_w = n_galley.size().x + gap + box_w;
+                    let ix0 = irow.center().x - group_w / 2.0;
+                    let ibox = Rect::from_min_size(pos2(ix0 + n_galley.size().x + gap, irow.center().y - 10.0), egui::vec2(box_w, 20.0));
+                    let bresp = ui.interact(ibox, flyout_id.with(("box", idx)), Sense::click());
+                    if bresp.hovered() {
+                        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                    }
+                    if bresp.clicked() {
+                        ui.ctx().data_mut(|d| d.insert_temp(controls_listen_key(), Some(slot)));
+                    }
+                    app.auto.add(&format!("{auto_id}.box{idx}"), ibox, name);
+                    ui.painter().rect_filled(ibox, 3.0, egui::Color32::from_gray(16));
+                    ui.painter().rect_stroke(ibox, 3.0, egui::Stroke::new(1.0, egui::Color32::from_gray(64)), egui::StrokeKind::Inside);
+                    ui.painter().text(ibox.center(), Align2::CENTER_CENTER, shown, Tokens::ui(11.0), egui::Color32::WHITE);
+                    ui.painter().galley(pos2(ix0, irow.center().y - n_galley.size().y / 2.0), n_galley, app.tokens.text);
+                    // the circular reset arrow, the Effect Controls / Minimap colour rows' one
+                    let rr = Rect::from_center_size(pos2(irow.max.x - 14.0, irow.center().y), vec2(16.0, 16.0));
+                    let rresp = ui.interact(rr, flyout_id.with(("reset", idx)), Sense::click()).on_hover_text(tl!("Reset"));
+                    app.auto.add(&format!("{auto_id}.reset{idx}"), rr, tl!("Reset"));
+                    icons::paint(ui.painter(), rr.shrink(2.0), Icon::Reset, if rresp.hovered() { app.tokens.text } else { app.tokens.text_dim });
+                    if rresp.clicked() {
+                        *control_binding(app, slot) = String::new();
+                        app.session.project_view_changed();
+                    }
+                }
+            });
+        });
+        app.auto.add(auto_id, panel.response.rect, auto_label);
+        family_push(ui, panel.response.rect);
+        ui.data_mut(|d| d.insert_temp(rect_key, panel.response.rect));
+        ui.data_mut(|d| d.insert_temp(height_key, panel.response.rect.height()));
+    }
 }
 
 /// The zoom-bar settings' own little popups (the Minimap Settings flyout, the colour pickers):
@@ -678,6 +995,7 @@ pub(super) fn zoombar_state_reset(ctx: &egui::Context) {
     let pointer = ctx.input(|i| i.pointer.hover_pos()).unwrap_or(pos2(-1e9, -1e9));
     ctx.data_mut(|d| {
         d.insert_temp(color_open_key(), None::<egui::Id>);
+        d.insert_temp(controls_listen_key(), None::<usize>);
         d.insert_temp(color_rect_key(), Rect::NOTHING);
         d.insert_temp(grace_key(), -1e9f64);
         d.insert_temp(open_pointer_key(), pointer);
@@ -687,6 +1005,12 @@ pub(super) fn zoombar_state_reset(ctx: &egui::Context) {
         d.insert_temp(egui::Id::unique("timeline-zoombar-minimap-flyout").with("stamp"), -1e9f64);
         d.insert_temp(egui::Id::unique("timeline-zoombar-minimap-flyout").with("height"), 110.0f32);
         d.insert_temp(egui::Id::unique("timeline-zoombar-minimap-flyout").with("open"), false);
+        for id in ["timeline-zoombar-advanced-flyout", "timeline-track-slider-advanced-flyout"] {
+            d.insert_temp(egui::Id::unique(id).with("rect"), Rect::NOTHING);
+            d.insert_temp(egui::Id::unique(id).with("stamp"), -1e9f64);
+            d.insert_temp(egui::Id::unique(id).with("height"), 110.0f32);
+            d.insert_temp(egui::Id::unique(id).with("open"), false);
+        }
     });
 }
 
@@ -988,13 +1312,6 @@ fn track_height_of(len: f32, bar_h: f32) -> f32 {
     22.0 * (220.0f32 / 22.0).powf(1.0 - f)
 }
 
-/// How far a Shift drag on a track slider moves per point of pointer motion, as a fraction of an
-/// ordinary 1:1 drag: about 0.075 at one track in view up to 0.125 at the full view (the Alternate
-/// Drag Speed setting multiplies on top; its 1x default is half as slow again as the 1x before it).
-fn track_drag_base(visible_fraction: f64) -> f64 {
-    (0.075 + 0.05 * visible_fraction.clamp(0.0, 1.0)).clamp(0.05, 0.125)
-}
-
 /// How far a Shift drag on the zoom bar moves the view per point of pointer motion, as a fraction
 /// of an ordinary 1:1 drag. Tuned by feel -- log-interpolated between fixed points: one frame of
 /// footage in view -> 0.00025 (per-pixel nudges at the tightest zoom), one second -> 0.00575,
@@ -1144,6 +1461,49 @@ mod zoom_drag_scale_tests {
 }
 
 #[cfg(test)]
+mod controls_tests {
+    use super::{SHIFT_CONTENT_RATE, SHIFT_THUMB_RATE, minimap_clips_fit, shift_drag_rate};
+
+    /// The minimap's clips vanish below a quarter of the screen's width -- exactly at the quarter
+    /// they still show -- and nothing else (the width alone decides).
+    #[test]
+    fn minimap_clips_vanish_below_a_quarter_of_the_screen() {
+        assert!(!minimap_clips_fit(249.0, 1000.0), "a hair under the quarter is hidden");
+        assert!(minimap_clips_fit(250.0, 1000.0), "exactly the quarter shows");
+        assert!(minimap_clips_fit(800.0, 1000.0));
+        assert!(!minimap_clips_fit(0.0, 1000.0));
+        // a hostile screen width can never divide by zero or flip the answer
+        assert!(minimap_clips_fit(10.0, 0.0) == minimap_clips_fit(10.0, 1.0));
+    }
+
+    /// The Alternate Drag Speed setting squares: 1x keeps the slow rate, 0.5x a quarter of it and
+    /// Custom 10x a hundred times it -- nothing caps at 1x.
+    #[test]
+    fn the_speed_setting_squares_and_never_caps_at_one() {
+        let one = shift_drag_rate(1.0);
+        assert!((shift_drag_rate(0.5) - one * 0.25).abs() < 1e-9);
+        assert!((shift_drag_rate(10.0) - one * 100.0).abs() < 1e-9);
+        assert!(shift_drag_rate(10.0) > shift_drag_rate(1.0));
+        // hostile settings fall back to a slow rate, never zero or NaN
+        assert!(shift_drag_rate(f32::NAN) > 0.0);
+        assert!(shift_drag_rate(0.0) > 0.0);
+    }
+
+    /// Both Shift rates are fixed constants times the same setting term, so a 12 track video
+    /// slider and a 3 track audio slider move 1:1 with each other -- there is no per-slider input
+    /// left to skew them -- and the scroll rate is a little over three times the height rate.
+    #[test]
+    fn the_shift_rates_are_constants_so_the_sliders_feel_one_to_one() {
+        let one = shift_drag_rate(1.0);
+        let ten = shift_drag_rate(10.0);
+        assert!(SHIFT_THUMB_RATE * one > 0.0 && SHIFT_CONTENT_RATE * one > 0.0);
+        assert!((SHIFT_CONTENT_RATE * one / (SHIFT_THUMB_RATE * one) - 10.0 / 3.0).abs() < 0.01);
+        // the setting scales both rates together, never one slider's alone
+        assert!((SHIFT_CONTENT_RATE * ten / (SHIFT_CONTENT_RATE * one) - 100.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
 mod color_picker_tests {
     use super::closest_six;
 
@@ -1197,7 +1557,11 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     // while it is being worked (the highlight follows the drag, not just the pointer)
     let hover = ui.rect_contains_pointer(thumb) || matches!(app.tl.drag, Some(Drag::ZoomBar { .. })) && resp.dragged();
     p.rect_filled(thumb, thumb.height() / 2.0, if hover { t.scroll_thumb_hover } else { t.scroll_thumb });
-    if app.session.state.timeline_ui.slider_minimap {
+    // Below 25% of the SCREEN's width the minimap's clip indicators disappear (they become
+    // unreadable that narrow): a fresh decision every frame from the bar's width alone, so it can
+    // never stick. The window's height never enters into it. The position indicator stays.
+    let minimap_room = minimap_clips_fit(bar.width(), ui.ctx().content_rect().width());
+    if app.session.state.timeline_ui.slider_minimap && minimap_room {
         // One class per x column: 0 empty, 1 the lower-priority kind, 2 the higher, 3 offline
         // media (always on top, whatever Prioritise Audio says). The covered kind's rectangle
         // simply ends where the winner begins. Drawn after the thumb (slightly transparent), so
@@ -1283,9 +1647,9 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             // modes land their edges on the SAME x (the stroke's outer edge == the fill's edge)
             let ins = inset + px;
             let mid = (top + bot) / 2.0;
-            // the semicircle begins 2 device pixels right of where it did, so its leftmost point
-            // can never poke through the slider's rounded outline (and the right one 2 px left)
-            let sh = 2.0 * px;
+            // the semicircle sits exactly 2 device pixels in from the slider's edge (the 1 px
+            // stroke inset plus this 1 px), the same clearance the runs in the middle keep
+            let sh = 1.0 * px;
             let cap_r = ((bot - top) / 2.0).min((xb - (bar.min.x + ins + sh)).max(2.0 * px));
             // the right cap is the left one mirrored exactly: its centre sits the same distance
             // in from the bar's right edge and the curve bends the other way
@@ -1448,12 +1812,36 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
     app.auto.add("timeline.zoomBar.track", bar, "zoom scroll bar track");
     let popup_id = egui::Popup::default_response_id(&resp);
     let anchor_id = popup_id.with("timeline-settings-anchor");
+    // a Controls binding the user chose: its chord does what the gesture used to do (the
+    // built-in gestures still work). A chord with Ctrl/Alt fires even while a text field has
+    // focus (it is a shortcut, not typing); a plain key only when nothing else wants the keyboard.
+    let chord = input_text(ui);
+    let chord_text = chord.clone().unwrap_or_default();
+    // while a Controls box is naming a new shortcut, no binding may fire on that key. A chord
+    // with Ctrl/Alt fires even in a text field (it is a shortcut, not typing); a plain key only
+    // when no text field has focus (`egui_wants_keyboard_input` is not enough: any clicked widget
+    // counts there, including the box itself).
+    let chord_ok = !controls_listening(ui.ctx()) && (chord_text.contains("Ctrl") || chord_text.contains("Alt") || !ui.ctx().text_edit_focused());
+    let binds = {
+        let s = &app.session.state.timeline_ui;
+        [s.control_center_on_playhead.clone(), s.control_explode_slider.clone(), s.control_alternate_drag_speed.clone(), s.control_settings.clone()]
+    };
+    // mouse buttons are capturable and shown in the box, but only a key chord triggers an
+    // action here -- a "Left Click" binding must never hijack every click in the app
+    let bound = |slot: usize| -> bool {
+        chord_ok && !binds[slot].is_empty() && chord.as_deref() == Some(binds[slot].as_str()) && chord.as_deref().is_some_and(|c| !c.ends_with("Click"))
+    };
+    let center_bound = bound(0);
+    let explode_bound = bound(1);
+    // the Settings binding opens the bar's own menu, so it only fires over the bar
+    let settings_bound = bound(3) && ui.rect_contains_pointer(bar);
     let right_click = ui.input(|input| {
         input.pointer.button_clicked(egui::PointerButton::Secondary).then(|| input.pointer.interact_pos()).flatten().filter(|pos| bar.contains(*pos))
     });
+    let open_at = right_click.or_else(|| settings_bound.then(|| ui.input(|i| i.pointer.hover_pos().unwrap_or_else(|| bar.center()))));
     let screen = ui.ctx().content_rect();
     let popup_width = 274.0;
-    if let Some(pos) = right_click {
+    if let Some(pos) = open_at {
         let space_above = pos.y - screen.top();
         let space_below = screen.bottom() - pos.y;
         let above = space_above > space_below;
@@ -1470,7 +1858,7 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
             .clamp(screen.left(), (screen.right() - popup_width).max(screen.left())),
         requested_pos.y.clamp(screen.top(), screen.bottom()),
     );
-    let popup_open = if right_click.is_some() {
+    let popup_open = if open_at.is_some() {
         Some(egui::SetOpenCommand::Bool(true))
     } else if resp.clicked() || resp.drag_started() {
         // a drag anywhere on the bar (the middle or either edge) takes the settings menu with it
@@ -1495,16 +1883,14 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         egui::Popup::close_id(&ctx, popup_id);
     }
     let range = (total - vis).max(0.0);
-    let triple = resp.triple_clicked();
-    let double = resp.double_clicked();
+    let triple = resp.triple_clicked() || explode_bound;
+    let double = resp.double_clicked() || center_bound;
     if triple {
         // triple-click: the whole Timeline in view
         let v = &mut app.ui.timeline;
         // fitting the whole Timeline: the floor is the sequence-dependent one (the same value
         // the fit computes), never a fixed 0.05, or a long sequence can never fit
-        let fit_pps = (view_w.max(1.0) as f64 / timeline_extent(seq_seconds).max(1e-9))
-            .min(max_pps(view_w, min_view))
-            .max(1e-6);
+        let fit_pps = (view_w.max(1.0) as f64 / timeline_extent(seq_seconds).max(1e-9)).min(max_pps(view_w, min_view)).max(1e-6);
         v.target_pps = fit_pps;
         v.target_scroll = 0.0;
         if !app.session.state.timeline_ui.smooth_animations {
@@ -1769,10 +2155,22 @@ pub(super) fn zoom_scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rec
         // the wheel while grabbing the middle: zoom evenly about the view's center -- both edges of
         // the thumb move toward or away from each other symmetrically, no matter where within the
         // middle was grabbed. Wheel up zooms IN (the thumb shrinks), wheel down zooms out. Shift
-        // changes nothing here: its slowdown belongs to the drag itself ([`shift_drag_base`]).
+        // slows the wheel down (the Alternate Drag Speed setting on top of a tenth of the ordinary
+        // effect: 1x is ten times slower, Custom 50x five times faster) and counts a sideways
+        // gesture too -- Shift + wheel reports as horizontal scroll on some platforms.
         if mode == 0 {
-            let wheel = ui.input(|i| i.smooth_scroll_delta.y);
+            let shift = ui.input(|i| i.modifiers.shift);
+            let (wy, wx) = ui.input(|i| (i.smooth_scroll_delta.y, i.smooth_scroll_delta.x));
+            let wheel = if shift { wy + wx } else { wy };
             let mut factor = (wheel as f64 / 600.0).clamp(-0.30, 0.30);
+            if shift {
+                let speed = if app.session.state.timeline_ui.shift_drag_speed.is_finite() {
+                    app.session.state.timeline_ui.shift_drag_speed.clamp(0.1, 50.0)
+                } else {
+                    1.0
+                };
+                factor = (factor * speed / 10.0).clamp(-0.9, 0.9);
+            }
             // Inverted controls: the wheel zooms the other way here too
             if app.session.state.timeline_ui.inverted_controls {
                 factor = -factor;
@@ -1902,8 +2300,8 @@ pub fn zoombar_cursor_watchdog(tl: &mut super::TlState, ctx: &egui::Context) {
 /// grows the thumb (shorter tracks), an inward pull shrinks it, always about the view's CENTER.
 /// Double-click copies
 /// the thumb's length and position to the other slider, Shift+double-click fits every track.
-/// Shift drags run at a fraction of the ordinary speed ([`track_drag_base`] times the Alternate
-/// Drag Speed setting). Right-click opens the settings popup, to the left of the sliders. Returns
+/// Shift drags run at a fraction of the ordinary speed (the Alternate Drag Speed setting's own
+/// rate -- the same rate on both sliders). Right-click opens the settings popup, to the left of the sliders. Returns
 /// (pointer on an end circle, the thumb's rect for automation ids, 1 = double-click,
 /// 2 = Shift+double-click).
 // one parameter per piece of slider state keeps the two sliders (video/audio) symmetric at
@@ -1939,7 +2337,10 @@ pub(super) fn vertical_scrollbar(
     p.rect_filled(bar, bar.width() / 2.0, t.separator);
     // with nothing to scroll the thumb fills the track -- the slider is always there, it never
     // just disappears at the ends of the A/V divider's range
-    let h = track_thumb(*track_h, bar.height()).max(bar.width() + 4.0);
+    // the thumb is the track-height meter, unbounded: 22 pt tracks fill the bar (full zoom out)
+    // and 220 pt leave the MIN_THUMB_W minimum. (A cap here once kept the scroll a travel to use,
+    // but it also made full zoom-out unreachable and the drag fought the cap and vibrated.)
+    let h = track_thumb(*track_h, bar.height()).min(bar.height()).max(bar.width() + 4.0);
     let travel = (bar.height() - h).max(1.0);
     // with nothing to scroll the thumb sits in the MIDDLE of the track: pinned to an end it
     // could never collapse about its middle (the dragged edge then barely moved while the other
@@ -2063,14 +2464,16 @@ pub(super) fn vertical_scrollbar(
             // one frame of no movement: the final warp back to the pin settles here
             tl.zoombar_unlock_catchup = false;
         }
-        // Alternate Drag Speed: a Shift drag runs at [`track_drag_base`] (a fraction of the
-        // ordinary motion) times the setting
-        let base = if shift && tl.zoombar_cursor_lock.is_some() {
-            track_drag_base(if max > 0.5 { f64::from(window_h / (window_h + max)) } else { 1.0 }) * f64::from(shift_speed.max(0.01))
-        } else {
-            1.0
-        };
-        let dy = (moved * base) as f32;
+        // Alternate Drag Speed (Shift drags): the setting SQUARED on a FIXED rate per point of
+        // pointer motion -- the same rate on both sliders whatever their track counts, so a 12
+        // track video slider and a 3 track audio slider feel 1:1 with each other. 1x is slow,
+        // Custom 10x is a hundred times it (many times faster than the plain drag).
+        let shift_on = shift && tl.zoombar_cursor_lock.is_some();
+        let rate = shift_drag_rate(shift_speed);
+        // the height zoom moves the THUMB (0.06 thumb points per pointer point at 1x), the scroll
+        // moves the CONTENT (0.2 content points): each rate is a constant, never one the track
+        // count or the scroll range can skew
+        let dy = (moved * if shift_on { rate * SHIFT_THUMB_RATE } else { 1.0 }) as f32;
         match mode {
             // an end circle or the edge zone under it: zoom the tracks' height. The dragged edge
             // follows the mouse 1:1 and the other edge mirrors it, so the thumb collapses/grows
@@ -2103,28 +2506,42 @@ pub(super) fn vertical_scrollbar(
                 // with `lo == hi` every drag frame would clamp to the bar and snap the tracks
                 // to their tallest
                 if hi > lo {
-                let new_len = (h + if edge { out } else { 2.0 * out }).clamp(lo, hi);
-                if (new_len - h).abs() > f32::EPSILON {
-                    let len = new_len;
-                    let new_h = height_of(len);
-                    let max_new = (slots * new_h - window_h).max(0.0);
-                    let top = top_of(len);
-                    let travel2 = (bar_h - len.clamp(lo, hi)).max(1.0);
-                    let p2 = ((top - bar.min.y) / travel2).clamp(0.0, 1.0);
-                    *value = if invert { (1.0 - p2) * max_new } else { p2 * max_new };
-                    *track_h = new_h;
-                }
+                    let new_len = (h + if edge { out } else { 2.0 * out }).clamp(lo, hi);
+                    if (new_len - h).abs() > f32::EPSILON {
+                        let len = new_len;
+                        let new_h = height_of(len);
+                        let max_new = (slots * new_h - window_h).max(0.0);
+                        let top = top_of(len);
+                        let travel2 = (bar_h - len.clamp(lo, hi)).max(1.0);
+                        let p2 = ((top - bar.min.y) / travel2).clamp(0.0, 1.0);
+                        *value = if invert { (1.0 - p2) * max_new } else { p2 * max_new };
+                        *track_h = new_h;
+                    }
                 }
             }
             // the middle: 1:1 scroll, as the zoom bar's middle (Inverted controls never touches
             // it). The wheel while the middle is held zooms the tracks' height about the thumb's
-            // middle, like the end circles -- the other way with Inverted controls.
+            // middle, like the end circles -- the other way with Inverted controls. Shift slows
+            // the wheel down (the Alternate Drag Speed setting on top of a tenth of the ordinary
+            // effect) and counts a sideways gesture too. The wheel and the drag run together:
+            // while the middle is dragged the scroll keeps its fraction of the new range, so the
+            // slider never freezes for the length of a wheel gesture.
             _ => {
                 if max > 0.5 {
-                    let d = dy / travel * max;
+                    // plain: the thumb follows the pointer 1:1; Shift: the content moves at the
+                    // fixed Shift rate above. A thumb that fills the bar (22 pt tracks) leaves no
+                    // travel to follow, so the scroll per point is floored -- one pixel can never
+                    // sweep the whole range again.
+                    let d = if shift_on { (moved * rate * SHIFT_CONTENT_RATE) as f32 } else { dy / travel.max(24.0) * max };
                     *value = (*value + if invert { -d } else { d }).clamp(0.0, max);
                 }
-                let mut wheel = ui.input(|i| i.smooth_scroll_delta.y);
+                let shift = ui.input(|i| i.modifiers.shift);
+                let (wy, wx) = ui.input(|i| (i.smooth_scroll_delta.y, i.smooth_scroll_delta.x));
+                let mut wheel = if shift { wy + wx } else { wy };
+                if shift {
+                    // Custom 10x is a real speed-up (2.5x the plain wheel), not a wash
+                    wheel *= shift_speed.max(0.01) / 4.0;
+                }
                 if inverted {
                     wheel = -wheel;
                 }
@@ -2135,10 +2552,18 @@ pub(super) fn vertical_scrollbar(
                     let new_h = (*track_h * (1.0 + factor)).clamp(22.0, 220.0);
                     let glen = track_thumb(new_h, bar_h).clamp(THUMB_MIN.min(bar_h), bar_h);
                     let max_new = (slots * new_h - window_h).max(0.0);
-                    let mid_y = y + h / 2.0;
-                    let travel2 = (bar_h - glen).max(1.0);
-                    let p2 = ((mid_y - glen / 2.0 - bar.min.y) / travel2).clamp(0.0, 1.0);
-                    *value = if invert { (1.0 - p2) * max_new } else { p2 * max_new };
+                    // a drag writes the scroll this frame already: keep its fraction of the new
+                    // range (the thumb's position fraction, the same `p2` the drawn geometry
+                    // gave). Deriving it from the drawn thumb instead threw every frame of the
+                    // drag away and froze the slider until the wheel gesture ended.
+                    let frac = if resp.dragged() {
+                        if max > 0.5 { (if invert { 1.0 - *value / max } else { *value / max }).clamp(0.0, 1.0) } else { 0.5 }
+                    } else {
+                        let mid_y = y + h / 2.0;
+                        let travel2 = (bar_h - glen).max(1.0);
+                        ((mid_y - glen / 2.0 - bar.min.y) / travel2).clamp(0.0, 1.0)
+                    };
+                    *value = if invert { (1.0 - frac) * max_new } else { frac * max_new };
                     *track_h = new_h;
                     tl.track_anim = None;
                 }
@@ -2183,18 +2608,34 @@ pub(super) fn vertical_scrollbar(
     (point, thumb, clicks)
 }
 
-/// The track sliders' settings popup content. Only Hide Slider does anything yet; the rows below
-/// it are stored but do not drive the sliders.
+/// The track sliders' settings popup content. Opened by right-clicking a slider and by the
+/// Timeline menu's "Track Slider Settings" row. The popup only becomes scrollable when the window
+/// is too small to show it whole.
 pub(super) fn track_slider_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+    // the same emergency-only scrolling as the zoom bar's menu
+    let max_h = ui.ctx().content_rect().height().max(320.0);
+    let r = ui.available_rect_before_wrap();
+    let r = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + max_h));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+        egui::ScrollArea::vertical().id_salt("timeline-track-slider-settings-scroll").max_height(max_h).show(ui, |ui| {
+            track_slider_settings_rows(app, ui);
+        });
+    });
+}
+
+/// The rows of the track sliders' settings popup (see [`track_slider_settings`]).
+fn track_slider_settings_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     /// 20% narrower than the zoom bar's settings popup (274 pt of frame).
     const CONTENT_W: f32 = 193.38;
     ui.set_max_width(CONTENT_W + 16.0);
     ui.set_min_width(CONTENT_W + 16.0);
     let t = app.tokens;
+    family_reset(ui);
     // every row spans the popup's full width and centers its content in it: rows of a fixed
     // narrower width left an uneven gap on the right of the Hide Slider row
     let row_w = ui.available_width();
     let hidden = app.session.state.timeline_ui.track_slider_hidden;
+    capture_controls(app, ui);
     // the top row: Hide Slider (red) while the sliders show, Unhide Slider (blue) while hidden
     let (r, _) = ui.allocate_exact_size(egui::vec2(row_w, 30.0), Sense::click());
     let hide_resp = ui.interact(r, egui::Id::unique(if hidden { "timeline-track-slider-unhide" } else { "timeline-track-slider-hide" }), Sense::click());
@@ -2213,6 +2654,31 @@ pub(super) fn track_slider_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         app.tl.track_slider_settings_pos = None;
         ui.ctx().request_repaint();
     }
+    // "Controls": not a switch -- the slider's gestures in a flyout beside the menu (the Minimap
+    // Settings flyout's exact recipe, in this menu too).
+    let (arow, _) = ui.allocate_exact_size(egui::vec2(row_w, 30.0), Sense::hover());
+    let alabel = tl!("Controls");
+    let agalley = ui.painter().layout_no_wrap(alabel.to_string(), Tokens::ui(11.5), t.text);
+    ui.painter().galley(pos2(arow.center().x - agalley.size().x / 2.0, arow.center().y - agalley.size().y / 2.0), agalley, t.text);
+    controls_arrow(ui, arow, CONTENT_W, r.max.x, flyout_to_the_right(ui, arow, r.max.x, CONTROLS_FLYOUT_W), t.text_dim);
+    app.auto.add("timeline.trackSlider.settings.controls", arow, "Controls");
+    hover_flyout(
+        app,
+        ui,
+        egui::Id::unique("timeline-track-slider-advanced-flyout"),
+        arow,
+        r.max.x,
+        CONTROLS_FLYOUT_W,
+        true,
+        "timeline.trackSlider.settings.controlsFlyout",
+        "Controls",
+        &[
+            (tl!("Center on Playhead:"), "Double Click", 0),
+            (tl!("Explode Slider:"), "Triple Click", 1),
+            (tl!("Alternate Drag Speed:"), "Shift + Drag", 2),
+            (tl!("Settings:"), "Right Click", 3),
+        ],
+    );
     // Smooth Animations eases the double-click moves (which land on the OTHER slider);
     // Alternate Slider Position moves the sliders to the left edge of the Timeline.
     let smooth = app.session.state.timeline_ui.track_slider_smooth;
@@ -2224,10 +2690,19 @@ pub(super) fn track_slider_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     }
     // Inverted Controls: the very same switch as the Timeline slider's menu
     let inv = app.session.state.timeline_ui.inverted_controls;
-    let c = settings_pill_row(ui, &t, row_w, tl!("Inverted Controls"), egui::Id::unique("timeline-track-slider-inverted"), inv);
-    app.auto.add("timeline.trackSlider.settings.invertedControls", c.rect, "Inverted Controls");
+    let c = settings_pill_row(ui, &t, row_w, tl!("Invert Scrolling"), egui::Id::unique("timeline-track-slider-inverted"), inv);
+    app.auto.add("timeline.trackSlider.settings.invertedControls", c.rect, "Invert Scrolling");
     if c.clicked() {
         app.session.state.timeline_ui.inverted_controls = !inv;
+        app.session.project_view_changed();
+    }
+    // Snap to Tracks: on by default. It does not drive the sliders yet -- the snap is being
+    // rebuilt -- but the setting is stored and toggled like the others.
+    let snap = app.session.state.timeline_ui.track_slider_snap;
+    let c = settings_pill_row(ui, &t, row_w, tl!("Snap to Tracks"), egui::Id::unique("timeline-track-slider-snap"), snap);
+    app.auto.add("timeline.trackSlider.settings.snapToTracks", c.rect, "Snap to Tracks");
+    if c.clicked() {
+        app.session.state.timeline_ui.track_slider_snap = !snap;
         app.session.project_view_changed();
     }
     // Decouple Edges: an end circle drag moves only that end, the other one stays put
@@ -2323,6 +2798,8 @@ pub(super) fn track_slider_settings_popup(app: &mut FilmcraftApp, ui: &mut egui:
     if ui.input(|i| i.pointer.any_pressed())
         && let Some(p) = ui.input(|i| i.pointer.interact_pos())
         && !panel.response.rect.contains(p)
+        // a click on one of the settings' own popups (the Advanced flyout) is not an outside click
+        && !family_contains(ui, p)
     {
         app.tl.track_slider_settings_pos = None;
     }

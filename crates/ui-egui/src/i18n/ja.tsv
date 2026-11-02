@@ -36,6 +36,7 @@
 	Align to Video Frame as Group	グループとしてビデオフレームに整列
 	All Panels	すべてのパネル
 	Alpha	アルファ
+	Alternate Drag Speed:	代替ドラッグ速度:
 	Appearance	外観
 	Appearance…	外観…
 	Apply Audio Transition	オーディオトランジションを適用
@@ -72,6 +73,7 @@
 	Captions…	キャプション…
 	Caribbean	カリビアン
 	Center Horizontally	水平方向の中央に整列
+	Center on Playhead:	再生ヘッドに中央合わせ:
 	Center Vertically	垂直方向の中央に整列
 	Cerulean	セルリアン
 	Clear	消去
@@ -91,6 +93,7 @@
 	Comparison View	比較表示
 	Composite Video	コンポジットビデオ
 	Consolidate Duplicates	重複を統合
+	Controls	操作
 	Copy	コピー
 	Copy Paste Includes Sequence Markers	コピーと貼り付けにシーケンスマーカーを含める
 	Create Captions from Transcript…	文字起こしからキャプションを作成…
@@ -124,9 +127,11 @@
 	Ellipse	楕円
 	Enable	有効
 	Enable Remix	リミックスを有効にする
+	Enter Shortcut	ショートカットを入力
 	Essential Graphics	基本グラフィックス
 	Essential Sound	基本サウンド
 	Events	イベント
+	Explode Slider:	スライダーを展開:
 	Export	書き出し
 	Export As Motion Graphics Template…	モーショングラフィックステンプレートとして書き出し…
 	Extract	抽出
@@ -184,6 +189,7 @@
 	Insert Frame Hold Segment	フレームホールドセグメントを挿入
 	Install Motion Graphics Template…	モーショングラフィックステンプレートをインストール…
 	Interpret Footage…	素材を解釈…
+	Invert Scrolling	スクロール反転
 	Join the ArtCraft Discord…	ArtCraft の Discord に参加…
 	Keyboard Shortcuts…	キーボードショートカット…
 	Label	ラベル
@@ -236,6 +242,7 @@
 	Open Project…	プロジェクトを開く…
 	Open Recent	最近使ったファイルを開く
 	Clear Recent Files	最近使ったファイルを消去
+	Playhead Centering Range	再生ヘッド中央合わせ範囲
 	Recent	最近
 	Optical Flow	オプティカルフロー
 	Overwrite	上書き
@@ -330,6 +337,7 @@
 	Simplify Sequence…	シーケンスを簡略化…
 	Snap in Program Monitor	プログラムモニターでスナップ
 	Snap in Timeline	タイムラインでスナップ
+	Snap to Tracks	トラックにスナップ
 	Source	ソース
 	Source Settings…	ソース設定…
 	Speed/Duration…	速度・長さ…
