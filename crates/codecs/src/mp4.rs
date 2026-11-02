@@ -908,7 +908,8 @@ fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
 ///
 /// Edit durations are whole movie-timescale units (milliseconds in ffmpeg / x264 files and our own
 /// exports), so 320 frames at 24 fps (13.3333 s) are written as 13 333 and would read as 319 frames.
-/// When the last edit plays the media to its end (within one unit), that edit lasts exactly until
+/// When the last edit plays the media to its end (less than one unit off: rounding is always less,
+/// so exactly one unit is a real trim), that edit lasts exactly until
 /// the last picture's presentation ends (its `pts` plus duration: with B-frames that is past
 /// `mdhd`, which ends on the decode timeline).
 fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
@@ -926,7 +927,7 @@ fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
     {
         let exact = rest.saturating_mul(tps) / t.timescale as u128;
         let rounded = (last.segment_duration as u128).saturating_mul(tps) / movie;
-        if exact.abs_diff(rounded) <= tps.div_ceil(movie) {
+        if exact.abs_diff(rounded) < tps.div_ceil(movie) {
             let before = edits.saturating_sub(last.segment_duration as u128).saturating_mul(tps) / movie;
             ticks = before.saturating_add(exact);
         }

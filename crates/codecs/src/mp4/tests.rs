@@ -27,15 +27,15 @@ fn rotated_mov(matrix: [i32; 9]) -> Arc<[u8]> {
 
 /// A four-frame 25 fps ProRes MOV (64×32) whose video track carries `edits`.
 fn mov_with_edits(edits: Vec<filmcraft_isobmff::Edit>) -> Arc<[u8]> {
-    mov_at(25, 4, edits)
+    mov_at(25, 1000, 4, edits)
 }
 
-/// An `n`-frame ProRes MOV (64×32) at `fps` (track timescale `fps`, one tick per frame) whose
-/// video track carries `edits`.
-fn mov_at(fps: u32, n: usize, edits: Vec<filmcraft_isobmff::Edit>) -> Arc<[u8]> {
+/// An `n`-frame ProRes MOV (64×32) at `fps` (track timescale `fps`, one tick per frame) with movie
+/// timescale `movie`, whose video track carries `edits`.
+fn mov_at(fps: u32, movie: u32, n: usize, edits: Vec<filmcraft_isobmff::Edit>) -> Arc<[u8]> {
     let fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
     let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
-    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
+    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions { movie_timescale: movie, ..WriterOptions::new(Brand::Mov) }).expect("writer");
     let mut cfg = TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), fps);
     cfg.edits = edits;
     let t = mux.add_track(cfg).expect("track");
@@ -76,7 +76,7 @@ fn duration_follows_the_edit_list() {
 fn an_edit_rounded_to_the_movie_timescale_keeps_the_last_frame() {
     use filmcraft_isobmff::Edit;
     let frames = |s: &Mp4Source| s.info().duration.to_rational_floor(1, 24);
-    let open = |n: usize, edits: Vec<Edit>| Mp4Source::open("rounded.mov", mov_at(24, n, edits)).expect("open");
+    let open = |n: usize, edits: Vec<Edit>| Mp4Source::open("rounded.mov", mov_at(24, 1000, n, edits)).expect("open");
     // the whole media: 5 frames = 208.33 ms, written as 208
     let whole = vec![Edit { segment_duration: 208, media_time: 0, media_rate: 0x10000 }];
     let s = open(5, whole);
@@ -96,6 +96,13 @@ fn an_edit_rounded_to_the_movie_timescale_keeps_the_last_frame() {
     // an edit that ends a frame or more before the media does still trims it
     let trimmed = vec![Edit { segment_duration: 125, media_time: 0, media_rate: 0x10000 }];
     assert_eq!(frames(&open(5, trimmed)), 3);
+    // with the movie timescale the track's (24), nothing is rounded: an edit exactly one unit
+    // (one frame) short of the media is a real trim and keeps its four frames
+    let one_short = vec![Edit { segment_duration: 4, media_time: 0, media_rate: 0x10000 }];
+    let s = Mp4Source::open("one_short.mov", mov_at(24, 24, 5, one_short)).expect("open");
+    assert_eq!(s.info().duration, Tick::from_rational(4, 1, 24));
+    let whole = vec![Edit { segment_duration: 5, media_time: 0, media_rate: 0x10000 }];
+    assert_eq!(frames(&Mp4Source::open("whole24.mov", mov_at(24, 24, 5, whole)).expect("open")), 5);
     // a dwell (rate 0) or a media_time past the end keeps the edit's own length
     let dwell = vec![Edit { segment_duration: 208, media_time: 0, media_rate: 0 }];
     assert_eq!(frames(&open(5, dwell)), 4);
