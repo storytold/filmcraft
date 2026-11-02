@@ -694,6 +694,9 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
     Some(AudioStreamInfo { sample_rate: rate, channels: ch, codec, bits_per_sample: bits })
 }
 
+/// The display name of a sample entry's codec in the stream info, such as "H.264 (High)", "Apple
+/// ProRes 422 HQ", "AAC" or "Apple Intermediate Codec". The no-decoder errors also use it for
+/// entries the parser keeps as `CodecConfig::Unknown`.
 pub(crate) fn codec_label(c: &CodecConfig) -> String {
     match c {
         CodecConfig::Avc(a) => format!(

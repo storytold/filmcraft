@@ -43,6 +43,9 @@ pub struct Badge {
     pub proxy_on: bool,
 }
 
+/// An item's badges in the Project panel, read from its media (a subclip reads its parent's):
+/// offline, with the word the badge shows and, for an Unreadable file, the error the media pool
+/// recorded; then whether a proxy is attached and whether proxies are on.
 pub fn media_badge(app: &FilmcraftApp, it: &filmcraft_project::ProjectItem) -> Badge {
     let mut b = Badge { offline: false, offline_text: "", offline_reason: None, proxy: false, proxy_on: false };
     let target = match &it.kind {
