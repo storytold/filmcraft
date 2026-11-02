@@ -118,9 +118,8 @@ fn hot_number_editor(
         // digits and one decimal point remain, and the cursor moves back over whatever was
         // removed so typing in the middle of a number cannot make it jump to the end.
         let before: String = buf.chars().map(|c| if c == ',' { '.' } else { c }).collect();
-        let cursor = egui::text_edit::TextEditState::load(ui.ctx(), edit_id)
-            .and_then(|st| st.cursor.char_range().map(|r| usize::from(r.primary.index)))
-            .unwrap_or(0);
+        let cursor =
+            egui::text_edit::TextEditState::load(ui.ctx(), edit_id).and_then(|st| st.cursor.char_range().map(|r| usize::from(r.primary.index))).unwrap_or(0);
         let mut decimal_seen = false;
         let mut kept = String::with_capacity(before.len());
         let mut kept_before_cursor = 0usize;
@@ -130,10 +129,8 @@ fn hot_number_editor(
             } else if ch == '.' && !decimal_seen {
                 decimal_seen = true;
                 true
-            } else if ch == '-' && range.0 < 0.0 && kept.is_empty() {
-                true
             } else {
-                false
+                ch == '-' && range.0 < 0.0 && kept.is_empty()
             };
             if ok {
                 if i < cursor {
@@ -457,16 +454,7 @@ pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id
 /// partly out of its half: the button keeps its size and is cut off at the edge (the painter
 /// clips, the layout rectangle is never shortened) and takes clicks only where it shows.
 #[allow(clippy::too_many_arguments)]
-pub fn icon_toggle_clipped(
-    ui: &mut Ui,
-    rect: Rect,
-    clip: Rect,
-    icon: Icon,
-    on: bool,
-    t: &Tokens,
-    id: egui::Id,
-    on_color: Option<Color32>,
-) -> Response {
+pub fn icon_toggle_clipped(ui: &mut Ui, rect: Rect, clip: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
     // a degenerate (clipped-away) rect paints nothing and can never blow the icon up: a
     // negative width would make the shrink below grow the icon instead
     let rect = if rect.is_positive() { rect } else { Rect::NOTHING };

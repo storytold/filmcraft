@@ -34,6 +34,7 @@
 	Align to Video Frame as Group	Alinear con el fotograma de video como grupo
 	All Panels	Todos los paneles
 	Alpha	Alfa
+	Alternate Drag Speed:	Velocidad de arrastre alternativa:
 	Appearance	Apariencia
 	Appearance…	Apariencia…
 	Apply Audio Transition	Aplicar transición de audio
@@ -70,6 +71,7 @@
 	Captions…	Subtítulos…
 	Caribbean	Caribe
 	Center Horizontally	Centrar horizontalmente
+	Center on Playhead:	Centrar en el cabezal:
 	Center Vertically	Centrar verticalmente
 	Cerulean	Cerúleo
 	Clear	Borrar
@@ -89,6 +91,7 @@
 	Comparison View	Vista de comparación
 	Composite Video	Video compuesto
 	Consolidate Duplicates	Consolidar duplicados
+	Controls	Controles
 	Copy	Copiar
 	Copy Paste Includes Sequence Markers	Copiar y pegar incluye marcadores de secuencia
 	Create Captions from Transcript…	Crear subtítulos a partir de la transcripción…
@@ -122,9 +125,11 @@
 	Ellipse	Elipse
 	Enable	Activar
 	Enable Remix	Activar remezcla
+	Enter Shortcut	Introducir atajo
 	Essential Graphics	Gráficos esenciales
 	Essential Sound	Sonido esencial
 	Events	Eventos
+	Explode Slider:	Expandir el control deslizante:
 	Export	Exportar
 	Export As Motion Graphics Template…	Exportar como plantilla de animación…
 	Extract	Extraer
@@ -182,6 +187,7 @@
 	Insert Frame Hold Segment	Insertar segmento de fotograma congelado
 	Install Motion Graphics Template…	Instalar plantilla de animación…
 	Interpret Footage…	Interpretar material…
+	Invert Scrolling	Invertir desplazamiento
 	Join the ArtCraft Discord…	Únete al Discord de ArtCraft…
 	Keyboard Shortcuts…	Atajos de teclado…
 	Label	Etiqueta
@@ -195,6 +201,7 @@
 	Light	Claro
 	Link	Vincular
 	Link Media…	Vincular medios…
+	Playhead Centering Range	Rango de centrado del cabezal
 	Refresh Changed Media	Actualizar medios cambiados
 	Linked Selection	Selección vinculada
 	Lock Guides	Bloquear guías
@@ -329,6 +336,7 @@
 	Simplify Sequence…	Simplificar secuencia…
 	Snap in Program Monitor	Ajustar en el monitor de programa
 	Snap in Timeline	Ajustar en la línea de tiempo
+	Snap to Tracks	Ajustar a pistas
 	Source	Origen
 	Source Settings…	Ajustes de origen…
 	Speed/Duration…	Velocidad/duración…

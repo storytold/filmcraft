@@ -720,8 +720,14 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
                 let s1 = snap(app, seq, layout, first + raw, &clips) - first;
                 let offset = if s1 != raw { s1 } else { snap(app, seq, layout, last + raw, &clips) - last };
                 let offset = offset.max(-first);
-                let cur_row = layout.row_at(p.y);
                 let start_row = layout.rows.iter().find(|r| r.track == start_track);
+                // a clip dragged off its own pane (a video clip below the A/V divider, an audio
+                // one above it) lands on the NEAREST row of its own kind instead of snapping back
+                // to where the drag started
+                let cur_row = layout.row_at(p.y).filter(|r| start_row.is_some_and(|s| r.kind == s.kind)).or_else(|| {
+                    let kind = start_row?.kind;
+                    layout.rows.iter().filter(|r| r.kind == kind).min_by(|a, b| (a.rect.center().y - p.y).abs().total_cmp(&(b.rect.center().y - p.y).abs()))
+                });
                 let track_delta = match (cur_row, start_row) {
                     (Some(c), Some(s)) if c.kind == s.kind => c.index as i32 - s.index as i32,
                     _ => 0,
@@ -830,15 +836,61 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
         ) {
             ctx.set_cursor_icon(CursorIcon::ResizeColumn);
         }
-        // auto-scroll when dragging near the edges
-        if !matches!(app.tl.drag, Some(Drag::Pan { .. }) | Some(Drag::ZoomBar { .. }) | Some(Drag::Volume(_))) {
+        // auto-scroll when dragging a CLIP near the edges -- a marquee box or a trim/remix handle
+        // is anchored to the pointer and must never have the view slide out from under it. It runs
+        // every frame for as long as the pointer sits in an edge zone -- a stationary hand scrolls
+        // too, so the frame is asked for here (without it the view only moved whenever some other
+        // input happened to repaint). The ramp runs over a long stretch (80 pt at the right edge,
+        // 40 at the left), so it stays gentle well before the edge, and tops out at 9 pt per
+        // 1/60 s on it.
+        if matches!(app.tl.drag, Some(Drag::Move { .. })) {
+            let dt = f64::from(ui.input(|i| i.stable_dt).clamp(1.0 / 240.0, 1.0 / 15.0));
+            let base = 9.0 * dt * 60.0 / app.ui.timeline.pps.max(1e-9);
+            let right_zone = 80.0f32;
+            let left_zone = 40.0f32;
+            let over_right = ((p.x - (layout.content.max.x - right_zone)) / right_zone).clamp(0.0, 1.0);
+            let over_left = (((layout.content.min.x + left_zone) - p.x) / left_zone).clamp(0.0, 1.0);
             let v = &mut app.ui.timeline;
-            if p.x > layout.content.max.x - 20.0 {
-                v.target_scroll += 6.0 / v.pps;
+            if over_right > 0.0 {
+                v.target_scroll += base * f64::from(over_right);
                 v.scroll = v.target_scroll;
-            } else if p.x < layout.content.min.x + 10.0 && v.scroll > 0.0 {
-                v.target_scroll = (v.target_scroll - 6.0 / v.pps).max(0.0);
+                ctx.request_repaint();
+            } else if over_left > 0.0 && v.scroll > 0.0 {
+                v.target_scroll = (v.target_scroll - base * f64::from(over_left)).max(0.0);
                 v.scroll = v.target_scroll;
+                ctx.request_repaint();
+            }
+            // the same ramp up and down the tracks: dragging a clip past the top or bottom of its
+            // own pane moves that pane's track slider (the video clips scroll the video slider,
+            // audio clips theirs), so a drag can reach tracks that are off screen
+            if let Some(Drag::Move { clips, start_track, .. }) = app.tl.drag.clone() {
+                let video = clips
+                    .first()
+                    .and_then(|c| seq.find_item(*c).and_then(|(tid, _)| seq.track(tid)))
+                    .or_else(|| seq.track(start_track))
+                    .is_some_and(|t| t.kind == TrackKind::Video);
+                let (top, bottom) =
+                    if video { (layout.content.min.y, layout.split_y) } else { (layout.split_y + super::DIVIDER_H, layout.content.max.y - super::MASTER_H) };
+                // only past the pane's own edges (above it / below it), ramped over 24 pt
+                let up = ((top - p.y) / 24.0).clamp(0.0, 1.0);
+                let down = ((p.y - bottom) / 24.0).clamp(0.0, 1.0);
+                if up > 0.0 {
+                    let s = (f64::from(up.min(1.0).powi(2)) * 360.0 * dt).max(0.0) as f32;
+                    if video {
+                        app.ui.timeline.v_scroll = (app.ui.timeline.v_scroll + s).max(0.0);
+                    } else {
+                        app.ui.timeline.a_scroll = (app.ui.timeline.a_scroll - s).max(0.0);
+                    }
+                    ctx.request_repaint();
+                } else if down > 0.0 {
+                    let s = (f64::from(down.min(1.0).powi(2)) * 360.0 * dt).max(0.0) as f32;
+                    if video {
+                        app.ui.timeline.v_scroll = (app.ui.timeline.v_scroll - s).max(0.0);
+                    } else {
+                        app.ui.timeline.a_scroll += s;
+                    }
+                    ctx.request_repaint();
+                }
             }
         }
     }

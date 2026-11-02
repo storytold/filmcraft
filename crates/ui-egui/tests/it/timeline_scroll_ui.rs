@@ -754,3 +754,63 @@ fn timeline_slider_settings_is_the_menus_row_while_the_bar_is_hidden() {
     d.frames(2);
     assert!(!d.app().session.state.timeline_ui.zoom_bar_hidden, "Unhide Slider brings the bar back");
 }
+
+/// The rows this session added to both slider menus: the Controls row and Invert Scrolling on the
+/// Timeline slider, the Controls row and Snap to Tracks on the track sliders -- and Snap to
+/// Tracks toggles and persists even though it drives nothing yet.
+#[test]
+fn both_slider_menus_carry_the_controls_rows_and_snap_to_tracks() {
+    let mut d = Driver::demo();
+    let bar = d.rect("timeline.zoomBar.track");
+    d.click_at(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, "right");
+    d.frames(2);
+    assert!(d.has("timeline.zoomBar.settings.controls"), "the Controls row on the Timeline slider's menu");
+    assert!(d.has("timeline.zoomBar.settings.invertedControls"), "Invert Scrolling (the old Inverted Controls)");
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.invertedControls"}));
+    d.frames(2);
+    assert!(d.app().session.state.timeline_ui.inverted_controls, "the switch flips and the menu stays open");
+    assert!(d.has("timeline.zoomBar.settings.controls"), "still open");
+    // the track sliders' menu: Snap to Tracks above Decouple Edges, on by default
+    let slider = d.rect("timeline.trackSlider.video");
+    d.click_at(slider[0] + slider[2] / 2.0, slider[1] + slider[3] / 2.0, "right");
+    d.frames(2);
+    assert!(d.has("timeline.trackSlider.settings.controls"), "the Controls row on the track sliders' menu");
+    assert!(d.has("timeline.trackSlider.settings.snapToTracks"), "Snap to Tracks");
+    assert!(d.app().session.state.timeline_ui.track_slider_snap, "on by default");
+    d.ok("ui.click", json!({"id": "timeline.trackSlider.settings.snapToTracks"}));
+    d.frames(2);
+    assert!(!d.app().session.state.timeline_ui.track_slider_snap, "the toggle takes (it drives nothing yet)");
+}
+
+/// The Controls boxes: clicking one listens ("Enter Shortcut"), the next key becomes the binding
+/// and then that chord does what the gesture did -- fitting the Playhead Centering Range.
+#[test]
+fn clicking_a_controls_box_takes_the_next_key_and_that_key_does_the_action() {
+    let mut d = Driver::demo();
+    let bar = d.rect("timeline.zoomBar.track");
+    d.click_at(bar[0] + bar[2] / 2.0, bar[1] + bar[3] / 2.0, "right");
+    d.frames(2);
+    // the flyout opens on a real hover of the Controls row: the pointer has to move first
+    let row = d.rect("timeline.zoomBar.settings.controls");
+    d.move_to(row[0] + 10.0, row[1] + 8.0);
+    d.frames(2);
+    d.move_to(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
+    d.frames(3);
+    assert!(d.has("timeline.zoomBar.settings.controlsFlyout"), "the flyout opens beside the row");
+    assert!(d.has("timeline.zoomBar.settings.controlsFlyout.box0"), "the first box");
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.controlsFlyout.box0"}));
+    d.frames(2);
+    assert_eq!(d.app().session.state.timeline_ui.control_center_on_playhead, "", "nothing is bound until a key arrives");
+    d.ok("ui.key", json!({"key": "K"}));
+    d.frames(2);
+    assert_eq!(d.app().session.state.timeline_ui.control_center_on_playhead, "K", "the key became the binding");
+    // the binding replaces the double click: pressing K fits the Playhead Centering Range
+    let before = d.app().ui.timeline.target_pps;
+    d.ok("ui.key", json!({"key": "K"}));
+    d.frames(3);
+    assert!(d.app().ui.timeline.target_pps != before, "K does what Double Click did");
+    // and the row's reset arrow puts the built-in gesture back
+    d.ok("ui.click", json!({"id": "timeline.zoomBar.settings.controlsFlyout.reset0"}));
+    d.frames(2);
+    assert_eq!(d.app().session.state.timeline_ui.control_center_on_playhead, "", "Reset restores the default gesture");
+}
