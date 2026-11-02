@@ -218,6 +218,33 @@ fn mp4_ms_rounded_frame_times_get_back_to_a_standard_rate() {
     assert!(failures.is_empty(), "mov:\n{}", failures.join("\n"));
 }
 
+/// A sample's `stts` duration is a plain `u32`, so a hostile file can carry one near the top of the
+/// range: the rate window is computed for every file the opener reads, and it must not wrap (a debug
+/// build panics on the multiply; a release build wrapped the outlier into the mean).
+#[test]
+fn mp4_with_huge_sample_durations_opens_at_a_usable_rate() {
+    // two durations a whole `u32` apart: no mean of them is a frame rate, so the default rate
+    let src = crate::open_bytes("synthetic.mov", mp4_90k(&[1, u32::MAX])).unwrap();
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::default()));
+    // 30 fps with one duration 2^30 above the median: `* 4` wrapped to 0 in a release build, so the
+    // outlier joined the mean and the track read as 0.005 fps
+    let mut durations = vec![3000u32; 60];
+    durations.push(1_073_744_824);
+    let src = crate::open_bytes("synthetic.mov", mp4_90k(&durations)).unwrap();
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_30));
+}
+
+/// The standard-rate window is 0.1%: the averaged 30 fps clips in #1700 sit inside it (30.02 and
+/// 29.95 fps are 0.067% off 30 and 29.97 and read as the standard rate they are near), while a clip
+/// averaging 29.9 fps, 0.23% off 29.97, keeps its own rate instead of being rounded onto it.
+#[test]
+fn mp4_with_average_durations_just_off_a_standard_rate_read_as_it() {
+    let read = |durations: &[u32]| crate::open_bytes("synthetic.mov", mp4_90k(durations)).unwrap().info().video.as_ref().map(|v| v.frame_rate);
+    assert_eq!(read(&[2998; 90]), Some(FrameRate::FPS_30), "30.02 fps");
+    assert_eq!(read(&[3005; 90]), Some(FrameRate::FPS_29_97), "29.95 fps");
+    assert_eq!(read(&[3010; 90]), Some(FrameRate::new(299, 10)), "29.9 fps stays 29.9");
+}
+
 /// Files that are not a constant rate gone slightly off its grid keep their own times: whatever is
 /// asked (each frame's start, the unit before it, every 30 fps grid point), the frame shown is the
 /// last one starting at or before it.

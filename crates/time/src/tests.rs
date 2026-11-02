@@ -270,6 +270,23 @@ fn rational_conversions() {
     assert_eq!(FrameRate::FPS_23_976.label(), "23.976");
 }
 
+/// Rates a container reports from timestamps rounded to a coarse unit sit slightly off a standard
+/// rate; the MP4 opener takes them back with a 0.1% window (#1700).
+#[test]
+fn standard_rate_within_a_tolerance() {
+    assert_eq!(FrameRate::from_f64_within(30.02, 0.001), FrameRate::FPS_30);
+    assert_eq!(FrameRate::from_f64_within(29.95, 0.001), FrameRate::FPS_29_97);
+    assert_eq!(FrameRate::from_f64_within(60.005, 0.001), FrameRate::FPS_60);
+    // the nearest standard rate wins when two are in range
+    assert_eq!(FrameRate::from_f64_within(59.99, 0.001), FrameRate::FPS_60);
+    // a clip averaging 29.9 fps is 0.23% off 29.97: outside the window, so it keeps its own rate
+    // instead of being read as the standard one (a 0.5% window used to reach it)
+    assert_eq!(FrameRate::from_f64_within(29.9, 0.001), FrameRate::from_f64(29.9));
+    // a rate near no standard rate keeps its own value, as `from_f64` does
+    assert_eq!(FrameRate::from_f64_within(20.0, 0.001), FrameRate::new(20, 1));
+    assert_eq!(FrameRate::from_f64_within(37.516, 0.001), FrameRate::from_f64(37.516));
+}
+
 #[test]
 fn exotic_frame_rate_roundtrip() {
     // Issue #301: 37.516 fps footage.  The frame duration is

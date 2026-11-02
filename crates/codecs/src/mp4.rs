@@ -26,10 +26,16 @@ struct DecodedAudioPacket {
     failed: bool,
 }
 
-/// How far a track's nominal rate may sit from a standard rate and still be read as it. Timestamps
-/// rounded to a coarse unit (whole milliseconds in a 90 kHz track, as phones and messaging apps
-/// write them) move the average by less than this at every standard rate (#1700).
-const STANDARD_RATE_TOLERANCE: f64 = 0.005;
+/// How far a track's nominal rate may sit from a standard rate and still be read as it.
+///
+/// Whole-millisecond timestamps (#1700) move the mean duration by at most the rounding over the
+/// track, so the error shrinks as the clip gets longer: the report's clips land 0.033% off (3 s, the
+/// first frame a millisecond late) to 0.067% off (its 30.02 and 29.95 fps averages), and 0.1% clears
+/// every one of them with a third of the window to spare. The half a percent this started with also
+/// swallowed a clip averaging 29.9 fps, 0.23% off 29.97. Re-timing stays guarded by the quarter-frame
+/// check in [`snap_to_frame_grid`]: the reported rate may change, but a clip whose pictures are not on
+/// that grid keeps its times.
+const STANDARD_RATE_TOLERANCE: f64 = 0.001;
 
 /// A video track's nominal frame rate: the mean of the sample durations within a quarter frame of
 /// the median duration, read as the closest standard rate when close enough.
@@ -42,7 +48,11 @@ fn nominal_rate(timescale: u32, samples: &[Sample]) -> Option<FrameRate> {
     let mut durs: Vec<u32> = samples.iter().map(|s| s.duration).filter(|&d| d > 0).collect();
     durs.sort_unstable();
     let &median = durs.get(durs.len() / 2)?;
-    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) * 4 <= median).map(|&d| f64::from(d)).collect();
+    // A duration comes from the `stts` as a plain `u32`, so a hostile file can hold one near the top
+    // of the range: widen before multiplying, or the window compare wraps (and panics in a debug
+    // build) for a duration more than a quarter of the range away from the median.
+    let window = u64::from(median);
+    let near: Vec<f64> = durs.iter().filter(|&&d| u64::from(d.abs_diff(median)) * 4 <= window).map(|&d| f64::from(d)).collect();
     let mean = near.iter().sum::<f64>() / near.len().max(1) as f64;
     if mean <= 0.0 {
         return None;
