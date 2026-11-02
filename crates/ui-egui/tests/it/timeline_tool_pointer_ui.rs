@@ -291,6 +291,66 @@ fn the_razor_preview_line_is_drawn_on_the_linked_tracks_or_every_track_with_shif
     assert_eq!(d.white_vertical_lines() - base, every, "Shift: every track");
     d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
     d.frames(2);
+    // a locked track is not cut, so it gets no line, with or without Shift
+    let audio = {
+        let seq = d.app().session.active_sequence().unwrap();
+        let link = seq.find_item(ClipId(city)).unwrap().1.link;
+        seq.audio_tracks.iter().find(|t| t.items.iter().any(|i| link.is_some() && i.link == link)).expect("the clip's linked audio").id
+    };
+    d.ok("engine.execute", json!({"command": "timeline.setTrack", "params": {"track": audio.0, "locked": true}}));
+    d.hover(at);
+    assert_eq!(d.white_vertical_lines() - base, linked - 1, "the locked linked track is left out");
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    d.hover(at);
+    assert_eq!(d.white_vertical_lines() - base, every - 1, "Shift: every track but the locked one");
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    d.frames(2);
+}
+
+/// A clip's edge, in the band of its track where edges are grabbed.
+fn clip_edge(d: &mut Driver, clip: u64) -> Pos2 {
+    let r = d.rect(&format!("timeline.clip.{clip}"));
+    pos2(r[0] + 2.0, r[1] + 8.0)
+}
+
+/// A trim of a clip on a locked track, or with a linked clip on one, is refused, so its edge shows
+/// the blocked pointer under every trimming tool and not the tool's icon.
+#[test]
+fn a_locked_edge_shows_the_blocked_pointer_under_every_trimming_tool() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let edge = clip_edge(&mut d, city);
+    let v1 = d.app().session.active_sequence().unwrap().video_tracks[0].id.0;
+    d.ok("engine.execute", json!({"command": "timeline.setTrack", "params": {"track": v1, "locked": true}}));
+    d.frames(2);
+    for tool in ["Selection", "Ripple", "Rolling", "RateStretch"] {
+        d.ok("ui.set", json!({"tool": tool}));
+        d.frames(2);
+        d.hover(edge);
+        assert_eq!(d.cursor(), CursorIcon::NotAllowed, "{tool}: the trim is refused");
+    }
+}
+
+/// A locked clip elsewhere in the selection stops a move of the selection, not the trim of an edge,
+/// which changes only that clip and the clips linked to it.
+#[test]
+fn a_locked_clip_in_the_selection_leaves_another_clips_edge_trimmable() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let edge = clip_edge(&mut d, city);
+    let at = clip_center(&mut d, city);
+    let (top, other) = {
+        let seq = d.app().session.active_sequence().unwrap();
+        let track = seq.video_tracks.iter().skip(1).find(|t| !t.items.is_empty()).expect("a clip on a higher video track");
+        (track.id.0, track.items[0].id.0)
+    };
+    d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [city, other], "linked": false}}));
+    d.ok("engine.execute", json!({"command": "timeline.setTrack", "params": {"track": top, "locked": true}}));
+    d.frames(2);
+    d.hover(edge);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "the edge can still be trimmed");
+    d.hover(at);
+    assert_eq!(d.cursor(), CursorIcon::NotAllowed, "the selection cannot move");
 }
 
 impl Driver {
