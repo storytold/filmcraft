@@ -39,7 +39,7 @@ fn parent_dir(path: &Path) -> PathBuf {
 /// is removed and `path` is untouched.
 ///
 /// A symlink at `path` is followed: the file it points to is the one replaced, with the temp file
-/// in that file's folder, and the link stays as it was (#4005).
+/// in that file's folder, and the link stays as it was (#4005). A link to nothing is an error.
 pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
     let target = follow_links(path)?;
     let path = target.as_path();
@@ -112,20 +112,31 @@ fn sync_dir(dir: &Path) {
 /// Most symlinks followed from one path, the limit Linux uses.
 const MAX_LINKS: usize = 40;
 
-/// The file a write to `path` replaces: `path` itself, or the end of the chain of symlinks that
-/// starts there, which may not exist yet. Renaming over a link would replace the link and leave the
-/// file it points to as it was.
+/// The file a write to `path` replaces: `path` itself, or the file at the end of the chain of
+/// symlinks that starts there. Renaming over a link would replace the link and leave the file it
+/// points to as it was. A link to nothing is an error: the save would land wherever it points, in
+/// the empty mount point of a drive that isn't plugged in, for one.
 fn follow_links(path: &Path) -> io::Result<PathBuf> {
     let mut path = path.to_path_buf();
-    for _ in 0..MAX_LINKS {
+    let mut followed = 0;
+    loop {
         match fs::symlink_metadata(&path) {
-            // a relative target is relative to the link's folder; `join` keeps an absolute one
-            Ok(meta) if meta.file_type().is_symlink() => path = parent_dir(&path).join(fs::read_link(&path)?),
-            // not a link, or nothing there yet: the write itself reports any other problem
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if followed == MAX_LINKS {
+                    return Err(io::Error::other(format!("{}: too many levels of symbolic links", path.display())));
+                }
+                followed += 1;
+                // a relative target is relative to the link's folder; `join` keeps an absolute one
+                let next = parent_dir(&path).join(fs::read_link(&path)?);
+                if matches!(fs::symlink_metadata(&next), Err(e) if e.kind() == io::ErrorKind::NotFound) {
+                    return Err(io::Error::new(io::ErrorKind::NotFound, format!("the symbolic link points to {}, which doesn't exist", next.display())));
+                }
+                path = next;
+            }
+            // not a link (or nothing there yet: a new file); the write itself reports any other problem
             _ => return Ok(path),
         }
     }
-    Err(io::Error::other(format!("{}: too many levels of symbolic links", path.display())))
 }
 
 #[cfg(test)]
@@ -231,21 +242,42 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_dangling_symlink_gets_its_file_and_a_loop_is_an_error() {
+    fn a_dangling_symlink_or_a_loop_is_an_error_and_writes_nothing() {
         use std::os::unix::fs::symlink;
 
         let d = tmpdir("symlink-ends");
         let dangling = d.join("dangling.fcproj");
         symlink("new.fcproj", &dangling).unwrap();
-        atomic_write(&dangling, b"new").unwrap();
+        assert_eq!(atomic_write(&dangling, b"new").unwrap_err().kind(), io::ErrorKind::NotFound);
         assert!(fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
-        assert_eq!(fs::read(d.join("new.fcproj")).unwrap(), b"new");
+        assert!(!d.join("new.fcproj").exists());
         let (a, b) = (d.join("a.fcproj"), d.join("b.fcproj"));
         symlink(&b, &a).unwrap();
         symlink(&a, &b).unwrap();
         assert!(atomic_write(&a, b"x").is_err());
         assert!(fs::symlink_metadata(&a).unwrap().file_type().is_symlink());
         assert!(fs::symlink_metadata(&b).unwrap().file_type().is_symlink());
+        assert!(no_temp_files(&d));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_chain_of_forty_symlinks_is_followed_and_one_of_forty_one_is_not() {
+        let d = tmpdir("symlink-chain");
+        let real = d.join("real.fcproj");
+        fs::write(&real, b"before").unwrap();
+        // link-1 points to the file, and each next one to the one before
+        let mut previous = real.clone();
+        for n in 1..=41 {
+            let link = d.join(format!("link-{n}"));
+            std::os::unix::fs::symlink(&previous, &link).unwrap();
+            previous = link;
+        }
+        atomic_write(&d.join("link-40"), b"after").unwrap();
+        assert_eq!(fs::read(&real).unwrap(), b"after");
+        assert!(atomic_write(&d.join("link-41"), b"x").is_err());
+        assert_eq!(fs::read(&real).unwrap(), b"after");
         assert!(no_temp_files(&d));
         fs::remove_dir_all(&d).unwrap();
     }

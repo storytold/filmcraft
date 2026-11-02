@@ -107,7 +107,8 @@ the one that saves last replaces what the other saved. `filmcraft-cli --save` ru
 to avoid that ([agents.md](agents.md)); the desktop app and `mcp` sessions don't.
 
 A save through a symbolic link follows it. The file the link points to is replaced, with the temp file
-in that file's folder, and the link stays as it was.
+in that file's folder, and the link stays as it was. A link to a file that doesn't exist is an error,
+and nothing is written.
 
 ## Commands
 
