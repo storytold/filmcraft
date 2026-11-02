@@ -179,3 +179,11 @@ eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc79968157
 egui_demo_lib = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 egui_inspection = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }
+
+# Until storytold/craft-libs#526 (MP4/MOV chapters) merges, build craft-libs from that PR's
+# commit on texjer/craft-libs. Before merging: drop this section and bump the craft-libs rev above.
+[patch."https://github.com/storytold/craft-libs"]
+craft-media = { git = "https://github.com/texjer/craft-libs", rev = "7e1de8972a241729c99d59884c58ad731f00e16a" }
+craft-docpath = { git = "https://github.com/texjer/craft-libs", rev = "7e1de8972a241729c99d59884c58ad731f00e16a" }
+craft-ui = { git = "https://github.com/texjer/craft-libs", rev = "7e1de8972a241729c99d59884c58ad731f00e16a" }
+craft-update = { git = "https://github.com/texjer/craft-libs", rev = "7e1de8972a241729c99d59884c58ad731f00e16a" }
