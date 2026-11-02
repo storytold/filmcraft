@@ -164,6 +164,15 @@ Dynamic trimming takes an explicit clock (seconds) so it is deterministic: `trim
 {direction, slow?, clock}` (J/L), `trim.tick {clock}`, `trim.shuttleStop {clock?}` (K, one undo step),
 `trim.cancelDynamic` (Esc), `trim.playAround {clock, loop?}` (Space / Shift+K).
 
+**Trim limits**: a trim or roll stops where a clip's media ends, and before a clip gets shorter
+than a frame. The result says how far it went. `timeline.trim` and `timeline.roll` return the
+`delta` they applied. `trim.nudge` and `trim.extendToPlayhead` return the `applied` delta of each
+edit point. `trim.extendPreviousEdit` and `trim.extendNextEdit` return `applied` for each targeted
+track and `edits`, the number of edit points that moved. Each one also returns `short`: one
+`{clip, edge, shortByFrames}` per clip edge whose media stopped the move, with the sequence frames
+of media missing before its In point (`edge: "in"`) or after its Out point (`"out"`) for the move
+asked. It is empty when the media covers the move.
+
 **Replace With Clip**: `clip.replaceFromSource`, `clip.replaceFromSourceMatchFrame` and
 `clip.replaceFromBin {clips?, item?, keepSourceIn?}` swap the media of the clips and return
 `{clips: [ids], item, short: [{clip, shortByFrames}]}`. `short` lists the replaced clips that now
