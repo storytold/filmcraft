@@ -598,6 +598,11 @@ struct Out {
     has_text: bool,
     breaks: Vec<Fmt>,
     tags: Vec<&'static str>,
+    /// The text holds a literal `<` or `>`. Caption text has no escape for them, so a cue
+    /// wrapped in style tags would lose them to tag parsing; such a cue keeps its text plain.
+    literal_brackets: bool,
+    /// Emit no tags at all (the second pass over a cue with literal brackets).
+    plain: bool,
 }
 
 impl Out {
@@ -622,6 +627,9 @@ impl Out {
 
     /// Keep the common tag prefix open and close removed tags in reverse order to preserve nesting.
     fn set_fmt(&mut self, fmt: Fmt) {
+        if self.plain {
+            return;
+        }
         let tags = [(fmt.italic, "i"), (fmt.bold, "b"), (fmt.underline, "u")].into_iter().filter(|x| x.0).map(|x| x.1);
         let common = self.tags.iter().copied().zip(tags.clone()).take_while(|(a, b)| a == b).count();
         for t in self.tags.iter().skip(common).rev() {
@@ -649,6 +657,7 @@ fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, FmtSpe
                     out.set_fmt(fmt);
                     out.s.push(ch);
                     out.has_text = true;
+                    out.literal_brackets |= matches!(ch, '<' | '>');
                 }
             }
         } else if node.is_element() {
@@ -673,10 +682,18 @@ fn is_xml_space(ch: char) -> bool {
 
 /// Defer root tags until visible text so styled cues retain formatting while empty cues stay empty.
 fn cue_text(n: roxmltree::Node, styles: &std::collections::HashMap<String, FmtSpec>, fmt: Fmt) -> String {
-    let mut o = Out { s: String::new(), pending: None, has_text: false, breaks: Vec::new(), tags: Vec::new() };
+    let mut o = Out { s: String::new(), pending: None, has_text: false, breaks: Vec::new(), tags: Vec::new(), literal_brackets: false, plain: false };
     collect(n, styles, fmt, &mut o);
     o.set_fmt(Fmt::default());
-    o.s
+    if !o.literal_brackets {
+        return o.s;
+    }
+    // Styled text around a literal bracket reads as broken markup downstream (plain text, burn-in
+    // and export cut at the next `>`), which loses words. The cue keeps its words and drops its
+    // styling instead.
+    let mut plain = Out { s: String::new(), pending: None, has_text: false, breaks: Vec::new(), tags: Vec::new(), literal_brackets: false, plain: true };
+    collect(n, styles, fmt, &mut plain);
+    plain.s
 }
 
 pub fn parse(text: &str) -> Result<Document> {

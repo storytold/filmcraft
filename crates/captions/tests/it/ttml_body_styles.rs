@@ -203,3 +203,30 @@ fn deeply_nested_inline_styles_respect_the_xml_depth_limit() {
         }
     }
 }
+
+/// A cue whose text holds a literal `<` or `>` keeps its words: styled, the bracket would read as
+/// a tag downstream (plain text, burn-in and export cut at the next `>`), so the inherited style
+/// is dropped for that cue and the text survives every path unchanged.
+#[test]
+fn literal_brackets_keep_their_words_instead_of_their_style() {
+    for (xml, want) in [
+        (
+            r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><body tts:fontStyle="italic"><div><p begin="1s" end="2s">1 &lt; 2</p></div></body></tt>"#,
+            "1 < 2",
+        ),
+        (
+            r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><body><div><p begin="1s" end="2s">a <span tts:fontWeight="bold">b &gt; c</span> d</p></div></body></tt>"#,
+            "a b > c d",
+        ),
+    ] {
+        let text = caption(xml, Format::Ttml);
+        assert_eq!(text, want);
+        assert_eq!(filmcraft_project::caption::plain_text(&text), want);
+    }
+    // a styled cue without brackets keeps its tags
+    let styled = caption(
+        r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><body tts:fontStyle="italic"><div><p begin="1s" end="2s">1 then 2</p></div></body></tt>"#,
+        Format::Ttml,
+    );
+    assert_eq!(styled, "<i>1 then 2</i>");
+}
