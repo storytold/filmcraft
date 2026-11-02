@@ -22,9 +22,19 @@ fn lock_path(project: &Path) -> PathBuf {
     project.with_file_name(format!(".{}.lock", &name[..name.floor_char_boundary(MAX_NAME_BYTES)]))
 }
 
-/// Do two paths name one existing file?
+/// `path` absolute and without `.`, `..` or symlinked folders. For a file that doesn't exist yet,
+/// `canonicalize` fails, so its folder is resolved and its own name kept.
+fn resolved(path: &str) -> Option<PathBuf> {
+    let path = Path::new(path);
+    std::fs::canonicalize(path).ok().or_else(|| {
+        let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        Some(std::fs::canonicalize(dir).ok()?.join(path.file_name()?))
+    })
+}
+
+/// Do two paths name one file, existing or not?
 fn same_file(a: &str, b: &str) -> bool {
-    a == b || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
+    a == b || matches!((resolved(a), resolved(b)), (Some(a), Some(b)) if a == b)
 }
 
 /// The path this run saves over, when that is the file it opens. `--save-as` somewhere else replaces
@@ -48,7 +58,7 @@ fn saved_in_place(a: &Args) -> Result<Option<&Path>, String> {
     let path = Path::new(target);
     match path.metadata() {
         Ok(meta) if meta.is_file() => Ok(Some(path)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{target}: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{project}: {e}")),
         _ => Ok(None),
     }
 }
@@ -97,11 +107,21 @@ mod tests {
     /// decision that closes it: a save in place never goes on to open a project that wasn't there.
     #[test]
     fn a_missing_project_stops_a_save_in_place_before_anything_opens_it() {
-        let gone = std::env::temp_dir().join(format!("fc-cli-gone-{}.fcproj", std::process::id()));
+        let name = format!("fc-cli-gone-{}.fcproj", std::process::id());
+        let gone = std::env::temp_dir().join(&name);
         let gone = gone.to_str().unwrap();
-        for list in [&["--project", gone, "--save", "exec"][..], &["--project", gone, "--save-as", gone, "exec"]] {
+        // the same file spelt another way: `canonicalize` fails on both, since it doesn't exist
+        let alias = std::env::temp_dir().join(".").join(&name);
+        let alias = alias.to_str().unwrap();
+        let dotted = format!("./{name}");
+        for list in [
+            &["--project", gone, "--save", "exec"][..],
+            &["--project", gone, "--save-as", gone, "exec"],
+            &["--project", gone, "--save-as", alias, "exec"],
+            &["--project", &name, "--save-as", &dotted, "exec"],
+        ] {
             let error = saved_in_place(&args(list)).unwrap_err();
-            assert!(error.starts_with(gone), "{list:?}: {error}");
+            assert!(error.starts_with(list[1]), "{list:?}: {error}");
         }
         // These save nothing over it, or are a usage error: they leave it to `Backend::open`.
         for list in [
