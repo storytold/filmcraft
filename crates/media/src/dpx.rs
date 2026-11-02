@@ -271,7 +271,15 @@ mod tests {
     use super::*;
 
     /// A minimal DPX file (header + `data`) in the given byte order.
-    fn file(big: bool, w: u32, h: u32, descriptor: u8, bits: u8, packing: u16, orientation: u16, data: &[u8]) -> Vec<u8> {
+    /// Image element fields of a test DPX header.
+    struct Element {
+        descriptor: u8,
+        bits: u8,
+        packing: u16,
+    }
+
+    fn file(big: bool, w: u32, h: u32, element: Element, orientation: u16, data: &[u8]) -> Vec<u8> {
+        let Element { descriptor, bits, packing } = element;
         let mut f = vec![0u8; 2048];
         let p32 = |f: &mut Vec<u8>, at: usize, v: u32| f[at..at + 4].copy_from_slice(&if big { v.to_be_bytes() } else { v.to_le_bytes() });
         let p16 = |f: &mut Vec<u8>, at: usize, v: u16| f[at..at + 2].copy_from_slice(&if big { v.to_be_bytes() } else { v.to_le_bytes() });
@@ -296,13 +304,13 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&word(1023, 0, 512, 2));
         data.extend_from_slice(&word(4, 1019, 0, 2));
-        let r = decode("a.dpx", &file(true, 2, 1, 50, 10, 1, 0, &data)).unwrap();
+        let r = decode("a.dpx", &file(true, 2, 1, Element { descriptor: 50, bits: 10, packing: 1 }, 0, &data)).unwrap();
         assert_eq!(r.rgba, [255, 0, 128, 255, 1, 254, 0, 255]);
         assert!(!r.has_alpha);
         let mut data = Vec::new();
         data.extend_from_slice(&word(1023, 0, 512, 0));
         data.extend_from_slice(&word(4, 1019, 0, 0));
-        let r = decode("a.dpx", &file(true, 2, 1, 50, 10, 2, 0, &data)).unwrap();
+        let r = decode("a.dpx", &file(true, 2, 1, Element { descriptor: 50, bits: 10, packing: 2 }, 0, &data)).unwrap();
         assert_eq!(r.rgba, [255, 0, 128, 255, 1, 254, 0, 255]);
     }
 
@@ -315,7 +323,7 @@ mod tests {
             let get = |i: usize| c.get(i).copied().unwrap_or(0);
             data.extend_from_slice(&((get(0) << 22) | (get(1) << 12) | (get(2) << 2)).to_le_bytes());
         }
-        let r = decode("a.dpx", &file(false, 2, 1, 51, 10, 1, 0, &data)).unwrap();
+        let r = decode("a.dpx", &file(false, 2, 1, Element { descriptor: 51, bits: 10, packing: 1 }, 0, &data)).unwrap();
         assert_eq!(r.rgba, [255, 0, 0, 255, 0, 255, 0, 0]);
         assert!(r.has_alpha);
     }
@@ -323,12 +331,13 @@ mod tests {
     #[test]
     fn eight_bit_lines_pad_to_words_and_orientation_flips() {
         // 1 × 2 RGB: each 3-byte line padded to 4; bottom-to-top, right-to-left orientation 3
-        let r = decode("a.dpx", &file(false, 1, 2, 50, 8, 0, 3, &[1, 2, 3, 0, 4, 5, 6, 0])).unwrap();
+        let r = decode("a.dpx", &file(false, 1, 2, Element { descriptor: 50, bits: 8, packing: 0 }, 3, &[1, 2, 3, 0, 4, 5, 6, 0])).unwrap();
         assert_eq!(r.rgba, [4, 5, 6, 255, 1, 2, 3, 255]);
         // 2 × 1 luma, 16-bit big-endian; ABGR, 12-bit method A
-        let r = decode("a.dpx", &file(true, 2, 1, 6, 16, 0, 0, &[0xFF, 0xFF, 0x80, 0x00])).unwrap();
+        let r = decode("a.dpx", &file(true, 2, 1, Element { descriptor: 6, bits: 16, packing: 0 }, 0, &[0xFF, 0xFF, 0x80, 0x00])).unwrap();
         assert_eq!(r.rgba, [255, 255, 255, 255, 128, 128, 128, 255]);
-        let r = decode("a.dpx", &file(true, 1, 1, 52, 12, 1, 0, &[0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF0])).unwrap();
+        let r =
+            decode("a.dpx", &file(true, 1, 1, Element { descriptor: 52, bits: 12, packing: 1 }, 0, &[0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xF0])).unwrap();
         assert_eq!(r.rgba, [255, 0, 0, 128]);
     }
 
@@ -360,12 +369,12 @@ mod tests {
         // 2 × 2 RGB 10-bit: 6 components (60 bits) per line, the fourth straddles two words
         let lines: [&[u32]; 2] = [&[1023, 0, 512, 4, 1019, 1023], &[0, 1023, 0, 1023, 1023, 1023]];
         for big in [true, false] {
-            let r = decode("a.dpx", &file(big, 2, 2, 50, 10, 0, 0, &packed(&lines, 10, big))).unwrap();
+            let r = decode("a.dpx", &file(big, 2, 2, Element { descriptor: 50, bits: 10, packing: 0 }, 0, &packed(&lines, 10, big))).unwrap();
             assert_eq!(r.rgba, [255, 0, 128, 255, 1, 254, 255, 255, 0, 255, 0, 255, 255, 255, 255, 255]);
         }
         // 3 × 1 RGB 12-bit: 9 components, 108 bits in 4 words
         let line: [&[u32]; 1] = [&[4095, 0, 2048, 16, 4079, 0, 0, 0, 4095]];
-        let r = decode("a.dpx", &file(true, 3, 1, 50, 12, 0, 0, &packed(&line, 12, true))).unwrap();
+        let r = decode("a.dpx", &file(true, 3, 1, Element { descriptor: 50, bits: 12, packing: 0 }, 0, &packed(&line, 12, true))).unwrap();
         assert_eq!(r.rgba, [255, 0, 128, 255, 1, 254, 0, 255, 0, 0, 255, 255]);
     }
 
@@ -373,29 +382,30 @@ mod tests {
     fn ycbcr_descriptors_convert_to_rgb() {
         // 8-bit CbYCrY, video range, BT.709 (colorimetric 6): black, white, then a red pixel pair
         // (the 709 code triple of red is rounded, hence green 1)
-        let mut f = file(true, 4, 1, 100, 8, 0, 0, &[128, 16, 128, 235, 102, 63, 240, 63]);
+        let mut f = file(true, 4, 1, Element { descriptor: 100, bits: 8, packing: 0 }, 0, &[128, 16, 128, 235, 102, 63, 240, 63]);
         f[ELEMENT + 22] = 6;
         let r = decode("a.dpx", &f).unwrap();
         assert_eq!(r.rgba, [0, 0, 0, 255, 255, 255, 255, 255, 255, 1, 0, 255, 255, 1, 0, 255]);
         assert!(!r.has_alpha);
         // red in BT.601 (colorimetric 7): the 601 code triple, rounded
-        let mut f = file(true, 2, 1, 100, 8, 0, 0, &[90, 81, 240, 81]);
+        let mut f = file(true, 2, 1, Element { descriptor: 100, bits: 8, packing: 0 }, 0, &[90, 81, 240, 81]);
         f[ELEMENT + 22] = 7;
         assert_eq!(decode("a.dpx", &f).unwrap().rgba, [254, 0, 0, 255, 254, 0, 0, 255]);
         // 10-bit CbYCr filled (method A), full range from the reference codes: mid grey
         let word = |a: u32, b: u32, c: u32| ((a << 22) | (b << 12) | (c << 2)).to_be_bytes();
-        let mut f = file(true, 1, 1, 102, 10, 1, 0, &word(512, 512, 512));
+        let mut f = file(true, 1, 1, Element { descriptor: 102, bits: 10, packing: 1 }, 0, &word(512, 512, 512));
         f[ELEMENT + 4..ELEMENT + 8].copy_from_slice(&0u32.to_be_bytes());
         f[ELEMENT + 12..ELEMENT + 16].copy_from_slice(&1023u32.to_be_bytes());
         assert_eq!(decode("a.dpx", &f).unwrap().rgba, [128, 128, 128, 255]);
         // 16-bit CbYCrA: white at half opacity
         let v = |x: u16| x.to_be_bytes();
         let data: Vec<u8> = [v(32768), v(60160), v(32768), v(32768)].concat();
-        let r = decode("a.dpx", &file(true, 1, 1, 103, 16, 0, 0, &data)).unwrap();
+        let r = decode("a.dpx", &file(true, 1, 1, Element { descriptor: 103, bits: 16, packing: 0 }, 0, &data)).unwrap();
         assert_eq!(r.rgba, [255, 255, 255, 128]);
         assert!(r.has_alpha);
         // 8-bit CbYACrYA, 3 pixels: the last pixel has no Cr and is neutral
-        let r = decode("a.dpx", &file(true, 3, 1, 101, 8, 0, 0, &[128, 235, 255, 128, 16, 0, 128, 235, 255, 0, 0, 0])).unwrap();
+        let r = decode("a.dpx", &file(true, 3, 1, Element { descriptor: 101, bits: 8, packing: 0 }, 0, &[128, 235, 255, 128, 16, 0, 128, 235, 255, 0, 0, 0]))
+            .unwrap();
         assert_eq!(r.rgba, [255, 255, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255]);
         assert!(r.has_alpha);
     }
@@ -403,23 +413,23 @@ mod tests {
     #[test]
     fn hostile_headers_fail_cleanly() {
         // huge dimensions with no data, truncated data, unsupported layouts
-        assert!(decode("a.dpx", &file(true, u32::MAX, u32::MAX, 50, 10, 1, 0, &[])).is_err());
-        assert!(decode("a.dpx", &file(true, 4096, 4096, 50, 10, 1, 0, &[0; 64])).is_err());
-        assert!(decode("a.dpx", &file(true, 2, 2, 50, 10, 1, 0, &[0; 12])).is_err());
-        assert!(decode("a.dpx", &file(true, 1, 1, 150, 8, 0, 0, &[0; 4])).is_err());
-        assert!(decode("a.dpx", &file(true, 1, 1, 50, 10, 3, 0, &[0; 4])).is_err());
-        assert!(decode("a.dpx", &file(true, 1, 1, 50, 16, 0, 0, &[0; 4])).is_err());
-        assert!(decode("a.dpx", &file(true, 3, 3, 100, 12, 0, 0, &[0; 20])).is_err());
-        assert!(decode("a.dpx", &file(true, 1, 1, 50, 32, 0, 0, &[0; 16])).is_err());
-        assert!(decode("a.dpx", &file(true, 1, 1, 50, 8, 0, 5, &[0; 4])).is_err());
-        assert!(decode("a.dpx", &file(true, 0, 1, 50, 8, 0, 0, &[0; 4])).is_err());
+        assert!(decode("a.dpx", &file(true, u32::MAX, u32::MAX, Element { descriptor: 50, bits: 10, packing: 1 }, 0, &[])).is_err());
+        assert!(decode("a.dpx", &file(true, 4096, 4096, Element { descriptor: 50, bits: 10, packing: 1 }, 0, &[0; 64])).is_err());
+        assert!(decode("a.dpx", &file(true, 2, 2, Element { descriptor: 50, bits: 10, packing: 1 }, 0, &[0; 12])).is_err());
+        assert!(decode("a.dpx", &file(true, 1, 1, Element { descriptor: 150, bits: 8, packing: 0 }, 0, &[0; 4])).is_err());
+        assert!(decode("a.dpx", &file(true, 1, 1, Element { descriptor: 50, bits: 10, packing: 3 }, 0, &[0; 4])).is_err());
+        assert!(decode("a.dpx", &file(true, 1, 1, Element { descriptor: 50, bits: 16, packing: 0 }, 0, &[0; 4])).is_err());
+        assert!(decode("a.dpx", &file(true, 3, 3, Element { descriptor: 100, bits: 12, packing: 0 }, 0, &[0; 20])).is_err());
+        assert!(decode("a.dpx", &file(true, 1, 1, Element { descriptor: 50, bits: 32, packing: 0 }, 0, &[0; 16])).is_err());
+        assert!(decode("a.dpx", &file(true, 1, 1, Element { descriptor: 50, bits: 8, packing: 0 }, 5, &[0; 4])).is_err());
+        assert!(decode("a.dpx", &file(true, 0, 1, Element { descriptor: 50, bits: 8, packing: 0 }, 0, &[0; 4])).is_err());
         assert!(decode("a.dpx", b"SDPX").is_err());
-        let mut f = file(true, 1, 1, 50, 8, 0, 0, &[0; 4]);
+        let mut f = file(true, 1, 1, Element { descriptor: 50, bits: 8, packing: 0 }, 0, &[0; 4]);
         f[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(decode("a.dpx", &f).is_err());
-        let mut f = file(true, 1, 1, 50, 8, 0, 0, &[0; 4]);
+        let mut f = file(true, 1, 1, Element { descriptor: 50, bits: 8, packing: 0 }, 0, &[0; 4]);
         f[ELEMENT + 32..ELEMENT + 36].copy_from_slice(&(u32::MAX - 1).to_be_bytes());
-        assert!(decode("a.dpx", &file(true, 1, 2, 50, 8, 0, 0, &[0; 4])).is_err());
+        assert!(decode("a.dpx", &file(true, 1, 2, Element { descriptor: 50, bits: 8, packing: 0 }, 0, &[0; 4])).is_err());
         assert!(decode("a.dpx", &f).is_ok());
     }
 }

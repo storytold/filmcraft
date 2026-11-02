@@ -11,9 +11,10 @@
 //! [`trn::drag_span`]); each drag is one undo step. Clicking or dragging the ruler moves the
 //! playhead. The divider between the settings and the timeline is the clip view's.
 //!
-//! Dragging the cut line where it crosses the transition moves the cut and the transition
-//! together, as Premiere's Move a cut and transition together describes it: one `timeline.roll`
-//! on release, so the clips' In and Out points change and the sequence keeps its length.
+//! Dragging the cut line, over the transition or where it crosses clip A or B, moves the cut and
+//! the transition together, as Premiere's Move a cut and transition together describes it: one
+//! `timeline.roll` on release, so the clips' In and Out points change and the sequence keeps its
+//! length.
 //!
 //! Not here yet: the A/B preview thumbnails with their Start / End sliders, Show Actual Sources,
 //! and a rolling edit by dragging clip A or B in the transition's timeline.
@@ -24,7 +25,8 @@
 //! `effectControls.transition.timeline`, `.timeline.ruler`, `.timeline.a` / `.timeline.b` (the
 //! clips, labelled with their names), `.timeline.span` (the transition) with its ends
 //! `.timeline.span.in` / `.timeline.span.out`, `.timeline.cut` (the cut line over the transition,
-//! between two clips), `.timeline.playhead`; `effectControls.divider`;
+//! between two clips) and `.timeline.cut.a` / `.timeline.cut.b` (where it crosses the clips),
+//! `.timeline.playhead`; `effectControls.divider`;
 //! the dialog's `transitionDuration.value`, `.ok`, `.cancel`.
 
 use egui::{Align2, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
@@ -132,19 +134,20 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
             row_line(ui);
 
             ui.label(tl!("Alignment"));
-            let shown = align.label();
+            let shown = crate::i18n::t(align.label());
             let r = ui
                 .add_enabled_ui(!one_sided, |ui| {
-                    egui::ComboBox::from_id_salt(("tr-align", id.0))
+                    craft_ui::ComboBox::from_id_salt(("tr-align", id.0))
                         .selected_text(shown)
                         .width(170.0)
                         .show_ui(ui, |ui| {
                             for a in Alignment::MENU {
-                                let o = ui.selectable_label(a == align, a.label());
+                                let label = crate::i18n::t(a.label());
+                                let o = ui.selectable_label(a == align, label);
                                 if o.clicked() && a != align {
                                     changes.push(json!({"align": a.id()}));
                                 }
-                                elems.push((format!("effectControls.transition.alignment.option.{}", a.id()), o.rect, a.label().to_string()));
+                                elems.push((format!("effectControls.transition.alignment.option.{}", a.id()), o.rect, label.to_string()));
                             }
                         })
                         .response
@@ -166,8 +169,9 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
 
             for pd in def.map(|d| d.params.as_slice()).unwrap_or(&[]) {
                 let value = x.effect.params.get(pd.id).map_or(&pd.default, |p| &p.value);
-                ui.label(crate::i18n::t(pd.label));
-                if let Some(v) = param_widget(ui, &mut elems, pd.id, &pd.kind, value, (fw, fh)) {
+                let label = crate::i18n::t(pd.label);
+                ui.label(label);
+                if let Some(v) = param_widget(ui, &mut elems, pd.id, label, &pd.kind, value, (fw, fh)) {
                     changes.push(v);
                 }
                 ui.end_row();
@@ -186,7 +190,7 @@ pub fn effect_controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, id
             changes.push(c);
         }
         let divider = Rect::from_min_max(pos2(split - 2.0, rect.min.y), pos2(split + 4.0, rect.max.y));
-        let dresp = ui.interact(divider, egui::Id::new("tr-ec-divider"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        let dresp = ui.interact(divider, egui::Id::unique("tr-ec-divider"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
         if dresp.dragged() {
             app.ui.effect_controls_split = (list_w + dresp.drag_delta().x).clamp(MIN_LIST_W, max_list);
         }
@@ -262,7 +266,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     let (_, cut, _) = trn::bounds(track, x)?;
     let clip_a = x.from.and_then(|c| track.item(c)).map(|it| (it.start, it.end(), it.name.clone()));
     let clip_b = x.to.and_then(|c| track.item(c)).map(|it| (it.start, it.end(), it.name.clone()));
-    let mem = egui::Id::new(("tr-ec-lane-drag", id.0));
+    let mem = egui::Id::unique(("tr-ec-lane-drag", id.0));
     let mut drag: Option<LaneDrag> = ui.data(|d| d.get_temp(mem));
     let v = drag.map_or_else(|| view(x, cut, frame), |d| d.view);
     // while the cut is dragged, the clips' edges at the cut and the transition are drawn where it goes
@@ -319,6 +323,20 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     if let Some(z) = cut_zone {
         elems.push(("effectControls.transition.timeline.cut".into(), z, "cut".into()));
     }
+    // and where it crosses the clips' rows, which also holds when the cut is at the transition's
+    // edge (Start or End at Cut) or the transition is too narrow for the zone over it
+    let cut_rows: Vec<Rect> = if two_sided {
+        [(row_a, "a"), (row_b, "b")]
+            .into_iter()
+            .map(|(r, k)| {
+                let z = Rect::from_min_max(pos2(cx - CUT_PX, r.min.y), pos2(cx + CUT_PX, r.max.y));
+                elems.push((format!("effectControls.transition.timeline.cut.{k}"), z, "cut".into()));
+                z
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     // the playhead, while it is in view
     let ph = app.session.playhead();
     if ph >= v.0 && ph <= v.1 {
@@ -333,7 +351,7 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
     elems.push(("effectControls.transition.timeline.ruler".into(), ruler, "time ruler".into()));
     // the ruler moves the playhead (once the sequence is no longer borrowed, below)
     let mut seek = None;
-    let rresp = ui.interact(ruler, egui::Id::new(("tr-ec-ruler", id.0)), Sense::click_and_drag());
+    let rresp = ui.interact(ruler, egui::Id::unique(("tr-ec-ruler", id.0)), Sense::click_and_drag());
     if (rresp.dragged() || rresp.clicked())
         && let Some(pos) = rresp.interact_pointer_pos()
     {
@@ -349,7 +367,10 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
             None
         }
     };
-    let sresp = ui.interact(span, egui::Id::new(("tr-ec-span", id.0)), Sense::click_and_drag());
+    let sresp = ui.interact(span, egui::Id::unique(("tr-ec-span", id.0)), Sense::click_and_drag());
+    let cresp = cut_rows.iter().enumerate().map(|(i, z)| ui.interact(*z, egui::Id::unique(("tr-ec-cut", id.0, i)), Sense::drag())).reduce(|a, b| a.union(b));
+    // the transition's drag or the cut's, whichever is going on
+    let resp = cresp.as_ref().map_or_else(|| sresp.clone(), |c| sresp.union(c.clone()));
     if let Some(h) = sresp.hover_pos() {
         ui.ctx().set_cursor_icon(if grab(h.x).is_some() { egui::CursorIcon::ResizeColumn } else { egui::CursorIcon::Grab });
     }
@@ -359,11 +380,17 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
         let cut = edge.is_none() && on_cut(from);
         drag = Some(LaneDrag { edge, cut, roll: Tick::ZERO, start: x.start, duration: x.duration, view: v, from_x: from, begun: false });
     }
+    if let Some(c) = &cresp
+        && c.drag_started()
+    {
+        let from = ui.input(|i| i.pointer.press_origin()).or(c.interact_pointer_pos()).map_or(cx, |p: Pos2| p.x);
+        drag = Some(LaneDrag { edge: None, cut: true, roll: Tick::ZERO, start: x.start, duration: x.duration, view: v, from_x: from, begun: false });
+    }
     let mut change = None;
-    if sresp.dragged()
+    if resp.dragged()
         && let Some(d) = drag.as_mut()
         && d.cut
-        && let (Some(pos), Some(a), Some(b)) = (sresp.interact_pointer_pos(), x.from, x.to)
+        && let (Some(pos), Some(a), Some(b)) = (resp.interact_pointer_pos(), x.from, x.to)
     {
         // as far as `timeline.roll` will move it on release; 0 when the roll would fail
         d.roll = filmcraft_engine::commands::roll_delta(&app.session, a, b, rate.snap_nearest(ticks_for(lane, d.view, pos.x - d.from_x))).unwrap_or(Tick::ZERO);
@@ -382,20 +409,20 @@ fn timeline(app: &mut FilmcraftApp, ui: &mut egui::Ui, lane: Rect, id: Transitio
         }
     }
     // over the cut line (and not an end), the pointer shows that it moves the cut
-    if sresp.hover_pos().is_some_and(|h| grab(h.x).is_none() && on_cut(h.x)) || drag.is_some_and(|d| d.cut) {
+    if sresp.hover_pos().is_some_and(|h| grab(h.x).is_none() && on_cut(h.x)) || cresp.as_ref().is_some_and(|c| c.hovered()) || drag.is_some_and(|d| d.cut) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
     // a drag of the cut is one rolling edit, made when it is released
     let rolled = match (drag, x.from, x.to) {
-        (Some(d), Some(a), Some(b)) if sresp.drag_stopped() && d.cut && d.roll != Tick::ZERO => Some((a, b, d.roll)),
+        (Some(d), Some(a), Some(b)) if resp.drag_stopped() && d.cut && d.roll != Tick::ZERO => Some((a, b, d.roll)),
         _ => None,
     };
     // released, or a drag that lost its transition (deleted, deselected) while it went on
-    if !sresp.dragged() && !sresp.drag_started() {
+    if !resp.dragged() && !resp.drag_started() {
         drag = None;
     }
     if let Some(tk) = seek {
-        app.stop();
+        app.stop_for_scrub();
         app.session.set_playhead(tk);
     }
     if let Some((a, b, d)) = rolled
@@ -445,7 +472,7 @@ fn paint_ruler(p: &egui::Painter, ruler: Rect, view: (Tick, Tick), rate: FrameRa
 }
 
 /// One of a transition's own settings. Returns the change, as `sequence.setTransition` params.
-fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKind, value: &ParamValue, frame: (f64, f64)) -> Option<Value> {
+fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, label: &str, kind: &ParamKind, value: &ParamValue, frame: (f64, f64)) -> Option<Value> {
     let eid = format!("effectControls.transition.param.{pid}");
     let drag = |r: &egui::Response| json!({"merge": true, "begin": r.drag_started() || !r.dragged()});
     match (kind, value) {
@@ -472,7 +499,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
         }
         (ParamKind::Bool, ParamValue::Bool(b)) => {
             let mut b = *b;
-            let r = ui.checkbox(&mut b, "");
+            let r = crate::widgets::accessible_name(ui.checkbox(&mut b, ""), label);
             elems.push((eid, r.rect, b.to_string()));
             r.changed().then(|| json!({"params": { pid: b }}))
         }
@@ -480,7 +507,7 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
             let shown = opts.get(*c as usize).copied().unwrap_or("");
             let mut picked = None;
             let mut options = Vec::new();
-            let r = egui::ComboBox::from_id_salt(("tr-param", pid.to_string())).selected_text(crate::i18n::t(shown)).show_ui(ui, |ui| {
+            let r = craft_ui::ComboBox::from_id_salt(("tr-param", pid.to_string())).selected_text(crate::i18n::t(shown)).show_ui(ui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
                     let r = ui.selectable_label(i == *c as usize, crate::i18n::t(o));
                     if r.clicked() && i != *c as usize {
@@ -490,7 +517,8 @@ fn param_widget(ui: &mut egui::Ui, elems: &mut Elems, pid: &str, kind: &ParamKin
                 }
             });
             elems.extend(options);
-            elems.push((eid, r.response.rect, shown.to_string()));
+            let response = crate::widgets::accessible_name(r.response, label);
+            elems.push((eid, response.rect, shown.to_string()));
             picked.map(|i| json!({"params": { pid: i }}))
         }
         (ParamKind::Color, ParamValue::Color(c)) => {

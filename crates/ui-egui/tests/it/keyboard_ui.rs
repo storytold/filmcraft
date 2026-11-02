@@ -214,6 +214,69 @@ fn new_keys_work_in_the_app() {
     assert_eq!(d.app().ui.program.zoom, None);
 }
 
+/// Maximize Frame Under Cursor matches the pointer only against the panels of the window
+/// holding it: a panel floated into its own OS window has that window's coordinates, which
+/// overlap the main window's.
+#[test]
+fn maximize_under_cursor_ignores_native_window_rects() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::new();
+    // A stand-in for OS windows: each native viewport runs its own frame, with no input.
+    egui::Context::set_immediate_viewport_renderer(|ctx, mut viewport| {
+        let size = viewport.builder.inner_size.unwrap_or(egui::vec2(400.0, 300.0));
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let info = egui::ViewportInfo { inner_rect: Some(screen), ..Default::default() };
+        let id = viewport.ids.this;
+        let input = egui::RawInput { viewport_id: id, viewports: std::iter::once((id, info)).collect(), screen_rect: Some(screen), ..Default::default() };
+        ctx.run_ui(input, |ui| (viewport.viewport_ui_cb)(ui)).textures_delta.clear();
+    });
+    d.harness.ctx.set_embed_viewports(false);
+    // The main window reports its outer rect, as under X11: without a display variable craft-ui
+    // otherwise takes the session for Wayland and keeps floating windows in-window.
+    d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().outer_rect =
+        Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0)));
+    d.ok("ui.menu.invoke", json!({"id": "window.floatPanel", "params": {"panel": "Info", "rect": [0, 0, 700, 500]}}));
+    d.frames(4);
+    let elements = d.ok("ui.elements", json!({"prefix": "panel."}));
+    let elements = elements.as_array().unwrap();
+    let rect = |e: &Value| {
+        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+        egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+    };
+    let floated = elements.iter().find(|e| e["id"] == "panel.Info").unwrap();
+    assert!(floated["window"].is_u64(), "the native window's body carries its window: {floated}");
+    let (under, pos) = elements
+        .iter()
+        .filter(|e| e["window"].is_null())
+        .find_map(|e| {
+            let panel = PanelKind::from_name(e["id"].as_str()?.strip_prefix("panel.")?)?;
+            let overlap = rect(e).intersect(rect(floated));
+            overlap.is_positive().then(|| (panel, overlap.center()))
+        })
+        .expect("a main-window panel overlaps the native window's body rect");
+    d.harness.event(egui::Event::PointerMoved(pos));
+    d.key("`");
+    assert_eq!(d.app().ui.keys.maximized, Some(under));
+}
+
+/// Select Next / Previous Panel skip the narrow Tools and Audio Meters strips.
+#[test]
+fn panel_cycling_skips_tools_and_audio_meters() {
+    use filmcraft_ui_egui::dock::{LayoutExt as _, PanelKind};
+    let mut d = Driver::new();
+    let shown = d.app().ui.dock.visible_panels();
+    assert!(shown.contains(&PanelKind::Tools) && shown.contains(&PanelKind::AudioMeters), "{shown:?}");
+    for key in ["Ctrl+Shift+.", "Ctrl+Shift+,"] {
+        let mut seen = Vec::new();
+        for _ in 0..shown.len() * 2 {
+            d.key(key);
+            seen.push(d.app().ui.focused);
+        }
+        assert!(!seen.contains(&PanelKind::Tools) && !seen.contains(&PanelKind::AudioMeters), "{key}: {seen:?}");
+        assert!(seen.len() > 1 && seen.iter().any(|p| *p != seen[0]), "{key} cycles: {seen:?}");
+    }
+}
+
 /// The Audio Track Mixer's Show/Hide Tracks (Cmd+Alt+T) and Meter Input(s) Only (Ctrl+Shift+I)
 /// keys with the mixer focused, and the two commands run from another panel.
 #[test]
@@ -241,6 +304,24 @@ fn audio_track_mixer_keys_open_show_hide_and_toggle_meter_input_only() {
     d.frames(2);
     assert!(dialog(&mut d), "mixer.showHideTracks opens the dialog");
     assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::AudioTrackMixer);
+}
+
+/// `mixer.meterInputOnly` refuses parameters that are not an object and leaves the option as it
+/// was; null parameters toggle it.
+#[test]
+fn meter_input_only_refuses_parameters_that_are_not_an_object() {
+    let mut d = Driver::new();
+    assert!(!d.app().ui.mixer_meter_input_only);
+    for params in [json!(true), json!(1), json!("on"), json!([true])] {
+        let (req, reply) = ControlRequest::new("ui.menu.invoke", json!({"id": "mixer.meterInputOnly", "params": params}));
+        d.tx.send(req).unwrap();
+        d.frames(3);
+        let response = reply.try_recv().expect("the command is answered");
+        assert_eq!(response["ok"], false, "{params}: {response}");
+        assert!(!d.app().ui.mixer_meter_input_only, "{params} leaves Meter Input(s) Only off");
+    }
+    let r = d.ok("ui.menu.invoke", json!({"id": "mixer.meterInputOnly", "params": null}));
+    assert_eq!(r, json!({"meterInputOnly": true}));
 }
 
 /// Off macOS the menus show `Ctrl+…`, so that is what agents send: a `Ctrl` chord through

@@ -52,7 +52,7 @@ fn encoder_output_decodes_in_ffmpeg() {
         let chroma = profile.chroma();
         for c in contents(chroma) {
             let alpha = chroma == ChromaFormat::Yuv444;
-            let src = source_frames(&ff, c.name, c.lavfi, 2, W, H, chroma, alpha);
+            let src = source_frames(&ff, SourceFrameSpec { name: c.name, lavfi: c.lavfi, frames: 2, width: W, height: H, chroma, alpha });
             let mut enc = Encoder::new(profile, W, H);
             let coded: Vec<Vec<u8>> = src.iter().map(|f| enc.encode(f).unwrap()).collect();
             let target = enc.target_frame_bytes() as f64;
@@ -124,7 +124,7 @@ fn odd_geometry_encodes() {
             format!("mandelbrot=s={w}x{h}:r=25")
         };
         let name = format!("src_odd_{w}x{h}");
-        let src = source_frames(&ff, Box::leak(name.into_boxed_str()), &lav, 1, w, h, chroma, alpha);
+        let src = source_frames(&ff, SourceFrameSpec { name: &name, lavfi: &lav, frames: 1, width: w, height: h, chroma, alpha });
         let mut enc = Encoder::new(profile, w, h);
         let coded = vec![enc.encode(&src[0]).unwrap()];
         let mov = fixture_dir().join(format!("enc_odd_{w}x{h}.mov"));

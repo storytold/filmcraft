@@ -112,14 +112,21 @@ fn right_clicking_a_cut_opens_the_edit_point_menu() {
     }
     assert!(!d.has("timeline.clipMenu.edit.cut"), "not the clip menu");
     let eps = d.harness.state_mut().session.state.edit_points.clone();
-    assert_eq!(eps.len(), 1, "the cut is selected as an edit point");
+    assert_eq!(eps.len(), 2, "the picture cut and its linked sound are selected");
     assert!((eps[0].clip == a && eps[0].out) || (eps[0].clip == b && !eps[0].out), "{eps:?}");
+    let seq = d.seq();
+    let picture = seq.find_item(eps[0].clip).unwrap().1;
+    let (track, sound) = seq.find_item(eps[1].clip).unwrap();
+    assert!(seq.audio_tracks.iter().any(|t| t.id == track));
+    assert!(picture.link.is_some());
+    assert_eq!(sound.link, picture.link);
 
     // Trim In: the incoming clip's In edge, as a regular trim
     d.click("timeline.editPointMenu.trimIn");
     let ep = d.harness.state_mut().session.state.edit_points.clone();
-    assert_eq!(ep.len(), 1);
+    assert_eq!(ep.len(), 2);
     assert_eq!((ep[0].clip, ep[0].out, serde_json::to_value(ep[0].kind).unwrap()), (b, false, json!("trim")));
+    assert_eq!((ep[1].out, ep[1].kind), (ep[0].out, ep[0].kind), "sound has the same trim edge and kind");
 
     // Apply Default Transitions puts a transition on the cut
     d.right_click(b, 0.0);

@@ -7,6 +7,7 @@ use filmcraft_project::{
     ClipId, ItemId, ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind, Transition, TransitionAlign, TransitionId, find_effect,
 };
 use filmcraft_time::{FrameRate, Tick, TimeRange};
+use std::ops::Range;
 
 pub fn media_info(name: &str, video: bool, audio: bool, rate: FrameRate, secs: i64) -> filmcraft_media::MediaInfo {
     filmcraft_media::MediaInfo {
@@ -41,7 +42,7 @@ pub fn media(p: &mut Project, path: &str, video: bool, audio: bool, rate: FrameR
     p.add_item(
         &name,
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::File { path: path.into() },
             info,
             interpret: Default::default(),
@@ -51,7 +52,7 @@ pub fn media(p: &mut Project, path: &str, video: bool, audio: bool, rate: FrameR
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     )
 }
@@ -62,7 +63,7 @@ pub fn generator(p: &mut Project, name: &str, g: Generator) -> ItemId {
     p.add_item(
         name,
         Label::Lavender,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g),
             info,
             interpret: Default::default(),
@@ -72,7 +73,7 @@ pub fn generator(p: &mut Project, name: &str, g: Generator) -> ItemId {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     )
 }
@@ -83,9 +84,10 @@ pub fn sequence(p: &mut Project, name: &str, rate: FrameRate, df: bool) -> ItemI
 }
 
 /// Place a clip (frames at the sequence rate). Returns its id.
-pub fn clip(p: &mut Project, seq: ItemId, kind: TrackKind, track: usize, item: ItemId, start: i64, dur: i64, src: i64) -> ClipId {
+pub fn clip(p: &mut Project, seq: ItemId, kind: TrackKind, track: usize, item: ItemId, frames: Range<i64>, src: i64) -> ClipId {
     let rate = p.sequence(seq).unwrap().settings.frame_rate;
-    let ti = p.make_track_item(item, kind, rate.tick_of(start), TimeRange::new(rate.tick_of(src), rate.tick_of(dur)), rate).unwrap();
+    let duration = frames.end - frames.start;
+    let ti = p.make_track_item(item, kind, rate.tick_of(frames.start), TimeRange::new(rate.tick_of(src), rate.tick_of(duration)), rate).unwrap();
     let id = ti.id;
     let t = &mut p.sequence_mut(seq).unwrap().tracks_mut(kind)[track];
     t.items.push(ti);
@@ -104,25 +106,22 @@ pub fn link(p: &mut Project, seq: ItemId, clips: &[ClipId]) {
 pub fn transition(
     p: &mut Project,
     seq: ItemId,
-    kind: TrackKind,
-    track: usize,
+    track: (TrackKind, usize),
     effect: &str,
-    from: Option<ClipId>,
-    to: Option<ClipId>,
-    start: i64,
-    dur: i64,
+    clips: (Option<ClipId>, Option<ClipId>),
+    frames: Range<i64>,
     align: TransitionAlign,
 ) {
     let id = TransitionId(p.alloc_id());
     let rate = p.sequence(seq).unwrap().settings.frame_rate;
-    let t = &mut p.sequence_mut(seq).unwrap().tracks_mut(kind)[track];
+    let t = &mut p.sequence_mut(seq).unwrap().tracks_mut(track.0)[track.1];
     t.transitions.push(Transition {
         id,
         effect: find_effect(effect).unwrap().instance(),
-        start: rate.tick_of(start),
-        duration: rate.tick_of(dur),
-        from,
-        to,
+        start: rate.tick_of(frames.start),
+        duration: rate.tick_of(frames.end - frames.start),
+        from: clips.0,
+        to: clips.1,
         align,
         reverse: false,
     });

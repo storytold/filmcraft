@@ -484,24 +484,14 @@ impl Decoder {
         let Some(p) = self.pending.take() else { return };
         let PendingPic { frame, sps, pps, layout, first_sh, poc, output, meta, slices, .. } = p;
         let scaling = self.layout_cache.iter().find(|(pp, ss, _, _)| Arc::ptr_eq(pp, &pps) && Arc::ptr_eq(ss, &sps)).and_then(|(_, _, _, s)| s.clone());
-        self.dispatch(frame.clone(), sps, pps, layout, scaling, slices, meta.draft);
+        self.dispatch(PicJob { frame: frame.clone(), sps, pps, layout, scaling, slices, draft: meta.draft });
         self.poc_state.update(&first_sh, poc);
         let mut outs = Vec::new();
         self.dpb.insert(frame, poc, output, meta, &mut outs);
         self.out_queue.extend(outs);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn dispatch(
-        &mut self,
-        frame: FrameRef,
-        sps: Arc<Sps>,
-        pps: Arc<Pps>,
-        layout: Arc<Layout>,
-        scaling: Option<Arc<Vec<Vec<u8>>>>,
-        slices: Vec<SliceJob>,
-        draft: bool,
-    ) {
+    fn dispatch(&mut self, job: PicJob) {
         let shared = self.shared.clone();
         #[cfg(feature = "threads")]
         if let Some(pool) = &self.pool {
@@ -511,44 +501,32 @@ impl Decoder {
                     f.wait_complete();
                 }
             }
-            self.in_flight.push_back(frame.clone());
-            pool.spawn_fifo(move || run_job(frame, sps, pps, layout, scaling, slices, draft, &shared));
+            self.in_flight.push_back(job.frame.clone());
+            pool.spawn_fifo(move || run_job(job, &shared));
             return;
         }
-        run_job(frame, sps, pps, layout, scaling, slices, draft, &shared);
+        run_job(job, &shared);
     }
+}
+
+/// Everything needed to decode one picture on a worker.
+struct PicJob {
+    frame: FrameRef,
+    sps: Arc<Sps>,
+    pps: Arc<Pps>,
+    layout: Arc<Layout>,
+    scaling: Option<Arc<Vec<Vec<u8>>>>,
+    slices: Vec<SliceJob>,
+    draft: bool,
 }
 
 /// Decode all slices of one picture and publish its rows, in the picture's sample type.
-#[allow(clippy::too_many_arguments)]
-fn run_job(
-    frame: FrameRef,
-    sps: Arc<Sps>,
-    pps: Arc<Pps>,
-    layout: Arc<Layout>,
-    scaling: Option<Arc<Vec<Vec<u8>>>>,
-    slices: Vec<SliceJob>,
-    draft: bool,
-    shared: &Shared,
-) {
-    if stores_u8(frame.bit_depth, frame.bit_depth_c) {
-        run_job_as::<u8>(frame, sps, pps, layout, scaling, slices, draft, shared)
-    } else {
-        run_job_as::<u16>(frame, sps, pps, layout, scaling, slices, draft, shared)
-    }
+fn run_job(job: PicJob, shared: &Shared) {
+    if stores_u8(job.frame.bit_depth, job.frame.bit_depth_c) { run_job_as::<u8>(job, shared) } else { run_job_as::<u16>(job, shared) }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_job_as<S: Sample>(
-    frame: FrameRef,
-    sps: Arc<Sps>,
-    pps: Arc<Pps>,
-    layout: Arc<Layout>,
-    scaling: Option<Arc<Vec<Vec<u8>>>>,
-    slices: Vec<SliceJob>,
-    draft: bool,
-    shared: &Shared,
-) {
+fn run_job_as<S: Sample>(job: PicJob, shared: &Shared) {
+    let PicJob { frame, sps, pps, layout, scaling, slices, draft } = job;
     let mut pic = PicState::<S>::new(frame.clone(), sps, pps, layout, scaling);
     pic.draft = draft;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
