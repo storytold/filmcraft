@@ -865,7 +865,8 @@ fn carry_transition(
         Some(partner) => copies.iter().filter(|&&(id, track, offset, _)| id == partner && track == dest && offset == delta).collect(),
         None => Vec::new(),
     };
-    // For two-sided transitions, visit the first endpoint only.
+    // A two-sided transition is carried from its outgoing clip only: carried from the incoming
+    // clip as well, it would be placed twice.
     if partner.is_some() && (partners.is_empty() || tr.from != Some(source)) {
         return;
     }

@@ -125,8 +125,12 @@ fn interior_overwrites_do_not_link_the_fragments_of_an_unpaired_copy() {
     fx.seq.find_item_mut(sound).unwrap().1.link = Some(7);
     let filler_a = fx.put(v2, 100, 2, 0);
     let filler_b = fx.put(v2, 200, 2, 0);
-    let mut n = fx.next;
+    // `Fx::item` takes `next` after incrementing it and `EditCtx::alloc` before, so allocate past
+    // the fixture's own ids
+    let mut n = fx.next + 1;
     let copied = copy_items(&mut fx.seq, &[(video, v1, f(20)), (filler_a, v1, f(26)), (filler_b, v1, f(22))], false, &mut Fx::ctx(&mut n)).unwrap();
+    let ids: Vec<_> = fx.seq.all_tracks().flat_map(|t| t.items.iter().map(|it| it.id)).collect();
+    assert_eq!(ids.len(), ids.iter().collect::<std::collections::HashSet<_>>().len(), "every clip id is unique: {ids:?}");
     let track = fx.seq.track(v1).unwrap();
     // the fillers landed at 22 and 26; the video copy survives as the three pieces between them
     let fragments: Vec<_> = track.items.iter().filter(|it| [f(20), f(24), f(28)].contains(&it.start)).collect();
