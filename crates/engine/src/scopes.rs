@@ -52,7 +52,7 @@ fn scopes_read(s: &mut Session, p: &Value) -> Result<Value> {
     }
     .resolve(hdr_seq);
     let hdr = space == ColorSpace::Rec2100 && hdr_seq;
-    let t = rate.snap(time_p(s, p, "").unwrap_or(s.playhead()));
+    let t = rate.snap(time_p(s, p, "")?.unwrap_or(s.playhead()));
     let scale = p.get("scale").and_then(Value::as_f64).unwrap_or(0.5).clamp(1.0 / 32.0, 1.0) as f32;
     let params = Params { matrix: space.matrix(), clamp: bool_p(p, "clamp").unwrap_or(true), ..Params::default() };
     let wt = match str_p(p, "waveformType") {

@@ -260,41 +260,50 @@ pub(crate) fn checked_u32_p(p: &Value, key: &str, cmd: &str) -> Result<Option<u3
 }
 
 /// Parse a time from params: `time` (ticks), `frame`, `seconds` or `timecode`, with `prefix`.
-pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
+/// `Ok(None)` when none is given. A key that is given (not null) in the wrong form, or a timecode
+/// that does not parse, is an error of the command being run, never skipped: a skipped `time`
+/// put a clip on the playhead, over the clip there (#4008).
+pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Result<Option<Tick>> {
     let rate = s.sequence_rate();
     let df = s.active_sequence().map(|q| q.settings.drop_frame).unwrap_or(false);
-    time_p_at(p, prefix, rate, df, s.playhead())
+    time_p_at(p, prefix, rate, df, s.playhead(), s.command_origin.as_deref().unwrap_or("command"))
 }
 
-/// Same formats as [`time_p`], against an explicit rate (Source monitor, remix duration, …).
-pub(crate) fn time_p_at(p: &Value, prefix: &str, rate: FrameRate, drop_frame: bool, current: Tick) -> Option<Tick> {
+/// Same formats as [`time_p`], against an explicit rate (Source monitor, remix duration, …). Every
+/// key given is checked, so a wrong one is refused even next to a right one; the first of `time`,
+/// `frame`, `seconds` and `timecode` given is the time.
+pub(crate) fn time_p_at(p: &Value, prefix: &str, rate: FrameRate, drop_frame: bool, current: Tick, cmd: &str) -> Result<Option<Tick>> {
     let k = |n: &str| if prefix.is_empty() { n.to_string() } else { format!("{prefix}{}{}", n[..1].to_uppercase(), &n[1..]) };
-    if let Some(t) = p.get(k("time")).and_then(Value::as_i64) {
-        return Some(Tick(t));
-    }
-    if let Some(f) = p.get(k("frame")).and_then(Value::as_i64) {
-        return Some(rate.tick_of(f));
-    }
-    if let Some(sec) = p.get(k("seconds")).and_then(Value::as_f64) {
-        return Some(Tick::from_seconds_f64(sec));
-    }
-    if let Some(tc) = p.get(k("timecode")).and_then(Value::as_str) {
-        return parse_timecode(tc, rate, drop_frame, rate.frame_at(current)).ok().map(|f| rate.tick_of(f));
-    }
-    None
+    let given = |n: &str| p.get(k(n)).filter(|v| !v.is_null());
+    let wrong = |n: &str, what: &str| {
+        let others: Vec<String> = ["time", "frame", "seconds", "timecode"].into_iter().filter(|o| *o != n).map(|o| format!("`{}`", k(o))).collect();
+        bad(cmd, format!("`{}` must be {what} (another unit goes in one of {})", k(n), others.join(", ")))
+    };
+    let time = given("time").map(|v| v.as_i64().map(Tick).ok_or_else(|| wrong("time", "integer ticks"))).transpose()?;
+    let frame = given("frame").map(|v| v.as_i64().map(|f| rate.tick_of(f)).ok_or_else(|| wrong("frame", "a whole number of frames"))).transpose()?;
+    let seconds = given("seconds").map(|v| v.as_f64().map(Tick::from_seconds_f64).ok_or_else(|| wrong("seconds", "a number"))).transpose()?;
+    let timecode = given("timecode")
+        .map(|v| {
+            let tc = v.as_str().ok_or_else(|| wrong("timecode", "a timecode string such as \"00:00:10:00\""))?;
+            let f = parse_timecode(tc, rate, drop_frame, rate.frame_at(current)).map_err(|e| bad(cmd, format!("`{}`: {e}", k("timecode"))))?;
+            Ok::<_, EngineError>(rate.tick_of(f))
+        })
+        .transpose()?;
+    Ok(time.or(frame).or(seconds).or(timecode))
 }
 
 /// In/Out / split time on the Source monitor: explicit `time`/`frame`/`seconds`/`timecode`, else the Source playhead.
-pub(crate) fn source_mark_time(s: &Session, p: &Value, item: ItemId) -> Tick {
+pub(crate) fn source_mark_time(s: &Session, p: &Value, item: ItemId) -> Result<Tick> {
     let view = crate::clip_ops::source_view(s, item);
     let rate = view.as_ref().map(|v| v.rate).unwrap_or_else(|| s.project.item(item).map(|i| i.frame_rate()).unwrap_or_else(|| s.sequence_rate()));
     let df = s.project.sequence(item).map(|q| q.settings.drop_frame).unwrap_or(false);
-    time_p_at(p, "", rate, df, s.state.source_playhead).unwrap_or(s.state.source_playhead)
+    let cmd = s.command_origin.as_deref().unwrap_or("command");
+    Ok(time_p_at(p, "", rate, df, s.state.source_playhead, cmd)?.unwrap_or(s.state.source_playhead))
 }
 
 /// Sequence time from params. Times before 0 are unreachable in the GUI and cut off on export.
 pub(crate) fn sequence_time_p(s: &Session, p: &Value, prefix: &str, cmd: &str) -> Result<Option<Tick>> {
-    let Some(t) = time_p(s, p, prefix) else { return Ok(None) };
+    let Some(t) = time_p(s, p, prefix)? else { return Ok(None) };
     if t < Tick::ZERO {
         return Err(bad(cmd, "time must not be negative"));
     }
@@ -316,7 +325,7 @@ pub(crate) fn tick_or_time_p(p: &Value, key: &str, rate: FrameRate, drop_frame: 
             if !v.is_object() {
                 return Err(wrong());
             }
-            time_p_at(v, "", rate, drop_frame, Tick::ZERO).map(Some).ok_or_else(wrong)
+            time_p_at(v, "", rate, drop_frame, Tick::ZERO, cmd)?.map(Some).ok_or_else(wrong)
         }
     }
 }
@@ -2539,7 +2548,7 @@ fn build() -> Vec<CommandSpec> {
             Ok(json!({"index": to}))
         }),
         cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
-            let t = time_p(s, p, "").unwrap_or(s.playhead());
+            let t = time_p(s, p, "")?.unwrap_or(s.playhead());
             // Like Premiere: selected clips under the playhead are cut, and only they (#164);
             // with none, the targeted tracks are.
             let sel = s.state.selection.clone();
@@ -2554,7 +2563,7 @@ fn build() -> Vec<CommandSpec> {
             Ok(json!({"cuts": n.len()}))
         }),
         cmd!("sequence.addEditAllTracks", "Add Edit to All Tracks", ["Sequence"], Some("Cmd+Shift+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
-            let t = time_p(s, p, "").unwrap_or(s.playhead());
+            let t = time_p(s, p, "")?.unwrap_or(s.playhead());
             let n = s.edit_sequence("Add Edit to All Tracks", |q, ctx, _| {
                 let mut n = edit::razor(q, &[], t, ctx);
                 n.extend(edit::captions::split_captions_at(q, &[], t, ctx));
@@ -2639,7 +2648,7 @@ fn build() -> Vec<CommandSpec> {
                 };
             }
             let tr = track_p(s, p, "track", "sequence.closeGap")?.ok_or_else(|| bad("sequence.closeGap", "need `track`"))?;
-            let t = time_p(s, p, "").unwrap_or(s.playhead());
+            let t = time_p(s, p, "")?.unwrap_or(s.playhead());
             close_gap(s, tr, t)?;
             Ok(Value::Null)
         }),
@@ -3048,7 +3057,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("colors.removeCustom", "Remove Custom Color", [], None, r#"{"color":hex}"#, always, crate::palette::remove),
         // ================= Playhead / navigation =================
         cmd!("playhead.set", "Set Playhead", [], None, r#"{"time":ticks|"frame":i64|"seconds":f64|"timecode":str}"#, has_seq, |s, p| {
-            let t = time_p(s, p, "").ok_or_else(|| bad("playhead.set", "need time/frame/seconds/timecode"))?;
+            let t = time_p(s, p, "")?.ok_or_else(|| bad("playhead.set", "need time/frame/seconds/timecode"))?;
             s.set_playhead(t);
             Ok(json!({"time": s.playhead().0}))
         }),
@@ -3423,7 +3432,7 @@ fn build() -> Vec<CommandSpec> {
             Ok(json!({"speed": sp}))
         }),
         cmd!("timeline.razor", "Razor", [], None, r#"{"time":ticks,"track":"V1"|id?,"clip":id?}"#, has_seq, |s, p| {
-            let t = time_p(s, p, "").unwrap_or(s.playhead());
+            let t = time_p(s, p, "")?.unwrap_or(s.playhead());
             let tr = track_p(s, p, "track", "timeline.razor")?;
             let clip = clip_p(p, "clip");
             let n = if let Some(c) = clip {
@@ -3625,7 +3634,7 @@ fn build() -> Vec<CommandSpec> {
                 let keyframe = bool_p(p, "keyframe").unwrap_or(false);
                 // an explicit `time` outside the clip keeps its keyframe there, before the start as after
                 // the end, so a ramp across a cut keeps its slope (#1055); the playhead is pinned to the clip
-                let at = time_p(s, p, "");
+                let at = time_p(s, p, "")?;
                 let ph = s.playhead();
                 let pq = p.clone();
                 // `merge`: a drag of one parameter is one undo step (#201), and a key makes one of a
@@ -4106,7 +4115,7 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     let c = clip_p(p, "clip").ok_or_else(|| bad("keyframe", "need `clip`"))?;
     let pid = str_p(p, "param").ok_or_else(|| bad("keyframe", "need `param`"))?.to_string();
     let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
-    let at = time_p(s, p, "");
+    let at = time_p(s, p, "")?;
     let playhead = s.playhead();
     let mtime = p.get("mediaTime").and_then(Value::as_i64).map(Tick);
     let to = p.get("to").and_then(Value::as_i64).map(Tick);
@@ -4199,11 +4208,11 @@ fn mark(s: &mut Session, p: &Value, is_in: bool) -> Result<Value> {
     let target_source = str_p(p, "target") == Some("source");
     if target_source {
         let item = s.state.source_item.ok_or_else(|| EngineError::Other("no source clip".into()))?;
-        let t = source_mark_time(s, p, item);
+        let t = source_mark_time(s, p, item)?;
         let key = if is_in { "in" } else { "out" };
         return s.execute("project.setMarks", json!({"item": item.0, key: t.0}));
     }
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     s.edit_sequence(if is_in { "Mark In" } else { "Mark Out" }, |q, _, _| {
         if is_in {
             q.mark_in = Some(t);
@@ -4782,7 +4791,7 @@ fn remove_transitions(s: &mut Session, ids: &[TransitionId], label: &str) -> Res
 fn select_gap(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "timeline.selectGap";
     let track = track_p(s, p, "track", CMD)?.ok_or_else(|| bad(CMD, "need `track`"))?;
-    let t = time_p(s, p, "").ok_or_else(|| bad(CMD, "need `time`, `frame` or `seconds`"))?;
+    let t = time_p(s, p, "")?.ok_or_else(|| bad(CMD, "need `time`, `frame` or `seconds`"))?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let tr = q.track(track).ok_or_else(|| bad(CMD, format!("no track {}", track.0)))?;
     if tr.locked {

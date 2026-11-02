@@ -124,7 +124,7 @@ pub(crate) fn place_video_clip(
     source: impl FnOnce(&mut filmcraft_project::Project, (u32, u32, filmcraft_time::FrameRate)) -> (ItemId, Tick),
 ) -> Result<ClipId> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    let t = time_p(s, p, "").unwrap_or_else(|| s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or_else(|| s.playhead());
     let want_track = u64_p(p, "track").map(|v| v as usize);
     let name = name.to_string();
     s.edit(label, |pr, st| {
@@ -1118,7 +1118,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 let clip = target_clip(s, p).ok_or_else(|| bad("graphics.set", "no graphic clip"))?;
                 let (_, ei) = layer_effect_index(s, clip, p)?;
                 let props = p.get("props").and_then(Value::as_object).ok_or_else(|| bad("graphics.set", "need `props`"))?.clone();
-                let tl = time_p(s, p, "").unwrap_or_else(|| s.playhead());
+                let tl = time_p(s, p, "")?.unwrap_or_else(|| s.playhead());
                 // `merge`: a drag of a property is one undo step; `begin` starts a new one (#201)
                 let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("graphics.set:{}:{ei}", clip.0));
                 if bool_p(p, "begin").unwrap_or(false) {

@@ -226,7 +226,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "tts.create";
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let mut n = settings(cmd, p, None)?;
-    let at = time_p(s, p, "").unwrap_or(s.playhead());
+    let at = time_p(s, p, "")?.unwrap_or(s.playhead());
     if at < Tick::ZERO {
         return Err(bad(cmd, "the start time cannot be negative"));
     }

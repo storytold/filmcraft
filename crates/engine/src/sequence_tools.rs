@@ -1046,7 +1046,7 @@ fn mark_split(s: &mut Session, p: &Value, side: Side) -> Result<Value> {
     let label = format!("Mark Split {}", side.label());
     if str_p(p, "target") == Some("source") {
         let item = s.state.source_item.ok_or_else(|| EngineError::Other("no clip in the Source monitor".into()))?;
-        let t = source_mark_time(s, p, item);
+        let t = source_mark_time(s, p, item)?;
         let split = s.edit(&label, |pr, _| {
             let it = pr.item_mut(item).ok_or_else(|| EngineError::Other("no such item".into()))?;
             side.set(&mut it.split, t);
@@ -1055,7 +1055,7 @@ fn mark_split(s: &mut Session, p: &Value, side: Side) -> Result<Value> {
         return Ok(serde_json::to_value(split).unwrap_or_default());
     }
     s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let split = s.edit_sequence(&label, |q, _, _| {
         side.set(&mut q.split, t);
         Ok(q.split)

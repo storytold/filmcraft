@@ -443,7 +443,7 @@ fn preset_thumbnails(_: &mut Session, p: &Value) -> Result<Value> {
 fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
     let (clip, idx) = lumetri_clip(s, p, "lumetri.applyMatch")?;
     let seq_id = s.state.active_sequence.ok_or_else(|| bad("lumetri.applyMatch", "no active sequence"))?;
-    let reference_t = time_p(s, p, "reference").ok_or_else(|| bad("lumetri.applyMatch", "need `referenceTime`, `referenceFrame` or `referenceTimecode`"))?;
+    let reference_t = time_p(s, p, "reference")?.ok_or_else(|| bad("lumetri.applyMatch", "need `referenceTime`, `referenceFrame` or `referenceTimecode`"))?;
     let skin = bool_p(p, "faceDetection").unwrap_or(true);
     let q = s.active_sequence().ok_or_else(|| bad("lumetri.applyMatch", "no active sequence"))?;
     let (_, it) = q.find_item(clip).ok_or_else(|| bad("lumetri.applyMatch", "no such clip"))?;

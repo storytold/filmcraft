@@ -371,7 +371,7 @@ fn range_with_warnings(s: &Session, project: &Project, seq: ItemId, v: Option<&V
     let fd = q.settings.frame_rate.frame_duration();
     let whole = TimeRange::from_bounds(Tick::ZERO, q.duration().max(fd));
     let mode = match v {
-        None | Some(Value::Null) if time_p(s, p, "start").is_some() || time_p(s, p, "end").is_some() => "custom".to_string(),
+        None | Some(Value::Null) if time_p(s, p, "start")?.is_some() || time_p(s, p, "end")?.is_some() => "custom".to_string(),
         None | Some(Value::Null) => {
             let range = filmcraft_export::export_range(project, seq, &ExportSettings::default()).map_err(|e| bad(cmd, e.to_string()))?;
             let warnings = if single_frame_in_out(q, range) { vec![SINGLE_FRAME_WARNING] } else { Vec::new() };
@@ -386,8 +386,8 @@ fn range_with_warnings(s: &Session, project: &Project, seq: ItemId, v: Option<&V
         "inout" | "sequenceinout" => filmcraft_export::export_range(project, seq, &ExportSettings::default()).map_err(|e| bad(cmd, e.to_string()))?,
         "workarea" => q.work_area.ok_or_else(|| bad(cmd, "the sequence has no work area"))?,
         "custom" => {
-            let a = time_p(s, p, "start").ok_or_else(|| bad(cmd, "custom range: need start (startTime / startSeconds / startFrame / startTimecode)"))?;
-            let b = time_p(s, p, "end").ok_or_else(|| bad(cmd, "custom range: need end (endTime / endSeconds / endFrame / endTimecode)"))?;
+            let a = time_p(s, p, "start")?.ok_or_else(|| bad(cmd, "custom range: need start (startTime / startSeconds / startFrame / startTimecode)"))?;
+            let b = time_p(s, p, "end")?.ok_or_else(|| bad(cmd, "custom range: need end (endTime / endSeconds / endFrame / endTimecode)"))?;
             if b <= a {
                 return Err(bad(cmd, "custom range: end must be after start"));
             }

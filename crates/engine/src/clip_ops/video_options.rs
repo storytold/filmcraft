@@ -22,7 +22,7 @@ pub(super) fn frame_hold_options(s: &mut Session, p: &Value) -> Result<Value> {
     let hold_filters = bool_p(p, "holdFilters").unwrap_or(false);
     let mode = str_p(p, "holdOn").unwrap_or("in").to_string();
     let ph = s.playhead();
-    let seq_t = time_p(s, p, "");
+    let seq_t = time_p(s, p, "")?;
     let tc = str_p(p, "timecode").map(str::to_string);
     let rates: BTreeMap<ClipId, (FrameRate, i64)> = {
         let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
@@ -79,7 +79,7 @@ pub(super) fn frame_hold_options(s: &mut Session, p: &Value) -> Result<Value> {
 /// Add Frame Hold: the selected clips (or the targeted video clip under the playhead) hold the
 /// frame at the playhead from there to their end; the clip is split at the playhead first.
 pub(crate) fn add_frame_hold(s: &mut Session, p: &Value) -> Result<Value> {
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let mut clips: Vec<ClipId> = video_clips(s, p).into_iter().filter(|c| q.find_item(*c).is_some_and(|(_, i)| i.start <= t && t < i.end())).collect();
     if clips.is_empty() && p.get("clips").is_none() && p.get("clip").is_none() {
@@ -109,7 +109,7 @@ pub(crate) fn add_frame_hold(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub(super) fn insert_frame_hold_segment(s: &mut Session, p: &Value) -> Result<Value> {
-    let t = time_p(s, p, "").unwrap_or(s.playhead());
+    let t = time_p(s, p, "")?.unwrap_or(s.playhead());
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let rate = q.settings.frame_rate;
     let pick = |c: &ClipId| q.video_tracks.iter().find_map(|tr| tr.item(*c).filter(|i| i.start <= t && t < i.end()).map(|i| (tr.id, i.clone())));

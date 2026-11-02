@@ -177,7 +177,7 @@ fn source_size(s: &Session, clip: ClipId) -> (f64, f64) {
 fn edit_mask<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut Mask, Tick) -> Result<R>) -> Result<R> {
     let clip = target_clip(s, p)?;
     let sel = s.state.selected_mask;
-    let ph = time_p(s, p, "").unwrap_or(s.playhead());
+    let ph = time_p(s, p, "")?.unwrap_or(s.playhead());
     let eff = p.get("effect").cloned();
     let mask_i = u64_p(p, "mask").map(|m| m as usize).or(sel.filter(|x| x.clip == clip).map(|x| x.mask));
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
@@ -549,7 +549,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
 /// Masks of a clip (or every clip with masks) evaluated at the playhead.
 fn list(s: &mut Session, p: &Value) -> Result<Value> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let ph = time_p(s, p, "").unwrap_or(s.playhead());
+    let ph = time_p(s, p, "")?.unwrap_or(s.playhead());
     let only = clip_p(p, "clip");
     let mut out = Vec::new();
     for tr in &seq.video_tracks {
@@ -637,7 +637,7 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let rate = s.project.item(it.item).map(|i| i.frame_rate()).unwrap_or(seq.settings.frame_rate);
     let fd = rate.frame_duration();
-    let ph = time_p(s, p, "").unwrap_or(s.playhead());
+    let ph = time_p(s, p, "")?.unwrap_or(s.playhead());
     let mt0 = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let (a, b) = (it.source_time_at(it.start), it.source_time_at(it.end() - Tick(1)));
     let (lo, hi) = (a.min(b), a.max(b));
