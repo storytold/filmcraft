@@ -109,6 +109,7 @@ pub fn path_to_file_url(path: &str, localhost: bool) -> String {
 
 fn join(base: &str, rel: &str) -> String {
     let sep = if base.contains('\\') && !base.contains('/') { '\\' } else { '/' };
+    let absolute = is_absolute(base);
     let mut parts: Vec<&str> = base.split(['/', '\\']).collect();
     if parts.last() == Some(&"") && parts.len() > 1 {
         parts.pop();
@@ -116,11 +117,19 @@ fn join(base: &str, rel: &str) -> String {
     for seg in rel.split(['/', '\\']) {
         match seg {
             "" | "." => {}
-            ".." => {
-                if parts.len() > 1 {
+            // An absolute path stops at its root (`/`, `C:`); a relative one climbs out of its
+            // first folder too, and above it (#3998).
+            ".." => match parts.last().copied() {
+                Some(last) if !matches!(last, "." | "..") && (parts.len() > 1 || !absolute) => {
                     parts.pop();
                 }
-            }
+                _ if absolute => {}
+                Some(".") => {
+                    parts.pop();
+                    parts.push("..");
+                }
+                _ => parts.push(".."),
+            },
             s => parts.push(s),
         }
     }
@@ -748,6 +757,15 @@ mod tests {
         assert_eq!(resolve_path("media/a.mov", Some("/proj")), "/proj/media/a.mov");
         assert_eq!(resolve_path("../a.mov", Some("/proj/x/")), "/proj/a.mov");
         assert_eq!(resolve_path("/abs/a.mov", Some("/proj")), "/abs/a.mov");
+        // #3998: `..` climbs out of a relative document folder; an absolute one stops at its root
+        assert_eq!(resolve_path("../media/a.mov", Some("edit")), "media/a.mov");
+        assert_eq!(resolve_path("../../a.mov", Some("a/edit")), "a.mov");
+        assert_eq!(resolve_path("../../a.mov", Some("edit")), "../a.mov");
+        assert_eq!(resolve_path("../a.mov", Some("..")), "../../a.mov");
+        assert_eq!(resolve_path("../a.mov", Some(".")), "../a.mov");
+        assert_eq!(resolve_path(r"..\media\a.mov", Some(r"proj\edit")), r"proj\media\a.mov");
+        assert_eq!(resolve_path("../../a.mov", Some("/proj")), "/a.mov");
+        assert_eq!(resolve_path(r"..\..\a.mov", Some(r"C:\proj")), r"C:\a.mov");
         // #2195: relative URLs are percent-decoded, plain names are not
         assert_eq!(resolve_url("media/Clip%20A.mov", Some("/proj")), "/proj/media/Clip A.mov");
         assert_eq!(resolve_url("file:///m/Clip%20A.mov", Some("/proj")), "/m/Clip A.mov");
