@@ -186,8 +186,9 @@ const WINDOW_FILE: &str = "window.ron";
 /// The main window's options; built for each start attempt (they hold a one-shot hook).
 ///
 /// The window's position, size and maximized / full-screen state are kept in `window.ron` in the
-/// data directory and restored on the next launch (#1994); eframe moves a remembered position back
-/// onto a monitor and sizes the window to one. Nothing else is persisted (see
+/// data directory and restored on the next launch (#1994); eframe sizes the window to a monitor
+/// and, on Windows and macOS, moves a remembered position back onto one (on X11 a position on a
+/// monitor since removed is kept as it is). Nothing else is persisted (see
 /// [`eframe::App::persist_egui_memory`] in the UI crate). A window started for an agent
 /// (`--control`) opens where the user's window was but writes nothing back: an automation run
 /// sharing the data directory must not move the user's window.
