@@ -292,6 +292,7 @@ fn an_image_sequence_reports_the_stills_it_wrote() {
     assert!(first.ends_with("a000.png") && last.ends_with(&format!("a{:03}.png", frames - 1)), "{v}");
     assert!(Path::new(first).exists() && Path::new(last).exists() && !asked.exists(), "{v}");
     assert_eq!(v["result"]["path"], v["path"], "{v}");
+    assert_eq!(v["basePath"], json!(asked.to_string_lossy()), "the name the stills are numbered from: {v}");
     assert_eq!(files_in(&dir.0).len() as u64, frames);
 
     let quick = dir.0.join("q.png");
@@ -304,7 +305,7 @@ fn an_image_sequence_reports_the_stills_it_wrote() {
     let p = json!({"path": wav.to_string_lossy(), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "wait": true});
     let v = s.execute("file.exportMedia", p).unwrap();
     assert_eq!(v["path"], json!(wav.to_string_lossy()), "{v}");
-    assert!(v.get("lastPath").is_none() && wav.exists(), "{v}");
+    assert!(v.get("lastPath").is_none() && v.get("basePath").is_none() && wav.exists(), "{v}");
 }
 
 /// Every built-in preset: 1.0 to 1.08 s of the demo sequence (three frames at 23.976) exported

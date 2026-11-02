@@ -581,12 +581,14 @@ fn sequence_files(project: &Project, seq: ItemId, settings: &ExportSettings) -> 
 }
 
 /// An export's `path` in a command result: the file written, for an image sequence its first
-/// still, with `lastPath` beside it.
+/// still, with `lastPath` beside it and `basePath`, the name the stills are numbered from (what
+/// cleaning up after a cancelled export goes by).
 fn output_json(out: &mut Value, path: &str, files: Option<(String, String)>) {
     match files {
         Some((first, last)) => {
             out["path"] = json!(first);
             out["lastPath"] = json!(last);
+            out["basePath"] = json!(path);
         }
         None => out["path"] = json!(path),
     }

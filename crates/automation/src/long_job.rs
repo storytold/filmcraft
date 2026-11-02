@@ -63,7 +63,7 @@ impl FilmcraftMcp {
         let Some(job) = start.get("job").and_then(Value::as_u64) else {
             return CallToolResult::error(vec![Content::text(format!("{id} started no job: {start}"))]);
         };
-        let path = start.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
+        let path = partial_output(&start);
         let mut rep = Reporter { peer: context.peer.clone(), token: context.meta.get_progress_token(), last: 0.0 };
         loop {
             let state = self.job_state(job).await;
@@ -109,6 +109,12 @@ impl FilmcraftMcp {
         let jobs = self.run("jobs.list", json!({})).await.ok()?;
         jobs.as_array()?.iter().find(|j| j["id"].as_u64() == Some(job)).cloned()
     }
+}
+
+/// The name a started export's partial output is found by: an image sequence's `basePath`, since
+/// its `path` is the first numbered still, else its `path`.
+fn partial_output(start: &Value) -> String {
+    start.get("basePath").or_else(|| start.get("path")).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
 /// Delete what an interrupted export wrote, and nothing else: the output file itself, the numbered
@@ -222,6 +228,37 @@ mod tests {
         }
         remove_partial(&dir.join("shot.tiff").to_string_lossy(), started);
         for f in ours {
+            assert!(!dir.join(f).exists(), "{f} should be removed");
+        }
+        for f in theirs {
+            assert!(dir.join(f).exists(), "{f} must not be removed");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cancelled image sequence: the stills and the caption sidecar go by the name the stills are
+    /// numbered from, not by the first still `file.exportMedia` reports as `path` (#4009).
+    #[test]
+    fn a_cancelled_image_sequence_removes_its_stills_and_sidecar() {
+        let dir = std::env::temp_dir().join(format!("fc-remove-partial-sequence-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let started = SystemTime::now();
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let path = dir.join("a.png").to_string_lossy().to_string();
+        let p = json!({"path": path, "format": "png", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "scale": 0.125, "wait": true});
+        let start = s.execute("file.exportMedia", p).unwrap();
+        assert!(start["path"].as_str().is_some_and(|f| f.ends_with("a000.png")), "{start}");
+        let mut ours: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(ours.len() >= 3, "{ours:?}");
+        ours.push("a.srt".into());
+        let theirs = ["b000.png", "a2.png", "a.mp4", "a.png.bak"];
+        for f in ours.iter().map(String::as_str).filter(|f| f.ends_with(".srt")).chain(theirs) {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        remove_partial(&partial_output(&start), started);
+        for f in &ours {
             assert!(!dir.join(f).exists(), "{f} should be removed");
         }
         for f in theirs {

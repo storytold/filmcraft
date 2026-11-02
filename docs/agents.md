@@ -148,7 +148,8 @@ progress and stop it:
 - An image sequence (PNG, TIFF, DPX, ... stills) never writes the path it is given: `a.png` becomes
   `a000.png`, `a001.png` and so on. `file.exportMedia`, `export.quick` and the job's `result` then
   name the first still as `path`, the name `file.import` takes for the sequence, and the two commands
-  add `lastPath`, the last still. `filmcraft-cli export` prints both.
+  add `lastPath`, the last still, and `basePath`, the name the stills are numbered from (what a
+  cancelled long export's clean-up goes by). `filmcraft-cli export` prints the first and the last.
 - `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
   strings, empty when none). If the default or explicitly selected In/Out range covers one
   sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
