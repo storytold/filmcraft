@@ -1,8 +1,8 @@
 use super::layout::Row;
 use super::menus::{run_track_menu, track_column_menu, track_header_popup};
 use super::{
-    Align2, Color32, CursorIcon, FilmcraftApp, Icon, MASTER_H, Rect, Sense, Sequence, Stroke, StrokeKind, TRACK_HEADER_TINT, Tokens, TrackKind, Value, json,
-    label_color, pos2, vec2,
+    Align2, Color32, FilmcraftApp, Icon, MASTER_H, Rect, Sense, Sequence, Stroke, StrokeKind, TRACK_HEADER_TINT, Tokens, TrackKind, Value, json, label_color,
+    pos2, vec2,
 };
 
 /// A Premiere track-header button (patch / target): highlight-blue fill when on, full track height.
@@ -14,6 +14,13 @@ struct PatchButton<'a> {
     show_inactive: bool,
     id: egui::Id,
     tokens: &'a Tokens,
+}
+
+/// A header control's rect clipped to its area: it stays visible (clipped) until it is fully
+/// out, and never hands a negative-sized rect to the painters.
+fn clipped(r: Rect, visible: Rect) -> Rect {
+    let r = r.intersect(visible);
+    if r.is_positive() { r } else { Rect::NOTHING }
 }
 
 fn patch_button(ui: &mut egui::Ui, button: PatchButton<'_>) -> egui::Response {
@@ -122,9 +129,10 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         // 2. track lock
         let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
         let lock_r = small(49.0, hrect.center().y);
-        let lresp = crate::widgets::icon_toggle(
+        let lresp = crate::widgets::icon_toggle_clipped(
             ui,
-            lock_r.intersect(visible),
+            lock_r,
+            visible,
             if tr.locked { Icon::Lock } else { Icon::Unlock },
             true,
             t,
@@ -165,28 +173,9 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
         if hrect.height() >= 40.0 {
             p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
         }
-        // resize track height by dragging the header's bottom edge, or the outer edge of the top video
-        // track or the last audio track, which also reaches into the empty space past it
-        let header_column = Rect::from_min_max(pos2(hrect.min.x, clip_rect.min.y), pos2(hrect.max.x, clip_rect.max.y));
-        let last_audio = r.kind == TrackKind::Audio && r.index + 1 == seq.audio_tracks.len();
-        let bottom = Rect::from_min_max(pos2(hrect.min.x, hrect.max.y - 3.0), pos2(hrect.max.x, hrect.max.y + 2.0));
-        let top = (r.kind == TrackKind::Video && r.index + 1 == seq.video_tracks.len())
-            .then(|| ("resizeTop", Rect::from_min_max(pos2(hrect.min.x, hrect.min.y - 2.0), pos2(hrect.max.x, hrect.min.y + 3.0)).intersect(header_column)));
-        for (name, edge) in std::iter::once(("resize", bottom.intersect(if last_audio { header_column } else { visible }))).chain(top) {
-            if edge.height() <= 0.0 {
-                continue;
-            }
-            app.auto.add(&format!("timeline.track.{label}.{name}"), edge, "Drag to change the track height");
-            let eresp = ui.interact(edge, egui::Id::unique(("trackh", name, r.track.0)), Sense::drag());
-            if eresp.hovered() || eresp.dragged() {
-                ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
-            }
-            if eresp.dragged() {
-                let d = eresp.drag_delta().y * if r.kind == TrackKind::Video { -1.0 } else { 1.0 };
-                let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
-                *h = (*h + d).clamp(22.0, 220.0);
-            }
-        }
+        // track height is zoomed by the side sliders' end circles now: the old header-edge drag
+        // (whose zone for the top video track reached over the A/V divider) kept firing by
+        // accident and broke the sliders
         let resp = ui.interact(
             Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible),
             egui::Id::unique(("hdr", r.track.0)),
@@ -231,7 +220,7 @@ fn header_line_buttons(
     let mut x = 102.0;
     let sr = small(x, upper_y);
     let sresp =
-        crate::widgets::icon_toggle(ui, sr.intersect(visible), Icon::SyncLock, tr.sync_lock, t, egui::Id::unique(("syncLock", r.track.0)), Some(t.text_dim));
+        crate::widgets::icon_toggle_clipped(ui, sr, visible, Icon::SyncLock, tr.sync_lock, t, egui::Id::unique(("syncLock", r.track.0)), Some(t.text_dim));
     app.auto.add(&format!("timeline.track.{label}.syncLock"), sr, "Toggle Sync Lock");
     if sresp.clicked() {
         actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
@@ -239,9 +228,10 @@ fn header_line_buttons(
     x += 24.0;
     if r.kind == TrackKind::Video {
         let er = small(x, upper_y);
-        let eresp = crate::widgets::icon_toggle(
+        let eresp = crate::widgets::icon_toggle_clipped(
             ui,
-            er.intersect(visible),
+            er,
+            visible,
             if tr.enabled { Icon::Eye } else { Icon::EyeOff },
             true,
             t,
