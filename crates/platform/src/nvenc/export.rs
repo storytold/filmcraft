@@ -240,12 +240,15 @@ fn factory_with(
     s: &ExportSettings,
     open: impl FnOnce(&Config) -> std::result::Result<Nvenc, String>,
 ) -> Option<Result<Box<dyn VideoEncoder>>> {
-    if s.hardware_encoding != HardwareEncoding::Auto || format != Format::H264 {
+    if !matches!(s.hardware_encoding, HardwareEncoding::Auto | HardwareEncoding::GpuRequired | HardwareEncoding::NvencRequired) || format != Format::H264 {
         return None;
     }
     let declined = |why: &str| {
         log::info!("hardware encoding declined: {why}");
         filmcraft_export::note_hw_encode_declined();
+        if s.hardware_encoding == HardwareEncoding::NvencRequired {
+            return Some(Err(ExportError::Unsupported(format!("NVENC is required, and it declined: {why}"))));
+        }
         None
     };
     let cfg = match config(format, w, h, rate, s) {

@@ -36,7 +36,7 @@ fn project(working: WorkingSpace) -> (Arc<Project>, filmcraft_project::ItemId, S
     let clip = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -46,7 +46,7 @@ fn project(working: WorkingSpace) -> (Arc<Project>, filmcraft_project::ItemId, S
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let color = ColorPipeline { working, ..ColorPipeline::REC709 };

@@ -152,3 +152,36 @@ fn transcript_tab_selects_and_extracts_words() {
     assert_eq!(left, ["Hello", "there", "friend."]);
     assert_eq!(d.ids("text.transcript.word.").len(), 3);
 }
+
+#[test]
+fn retranscribe_replaces_current_text_and_can_be_undone() {
+    use filmcraft_project::{Transcript, Word};
+    use filmcraft_speech::FixedTranscriber;
+    use std::sync::Arc;
+
+    let mut d = Driver::demo();
+    let clip = d.harness.state().session.active_sequence().unwrap().audio_tracks[0].items[0].clone();
+    let start = clip.source_in + filmcraft_time::Tick::from_seconds_f64(0.5);
+    let end = start + filmcraft_time::Tick::from_seconds_f64(0.4);
+    d.ok(
+        "engine.execute",
+        json!({"command":"transcript.set", "params":{"item":clip.item.0,
+        "transcript":{"language":"en","words":[{"text":"Original","start":start.0,"end":end.0}]}}}),
+    );
+    d.harness.state_mut().session.transcriber = Some(Arc::new(FixedTranscriber {
+        transcript: Transcript { language: "de".into(), words: vec![Word::new("Neu", start, end)], ..Default::default() },
+        id: "new-transcription".into(),
+    }));
+    d.ok("ui.set", json!({"workspace":"Captions and Graphics"}));
+    d.harness.state_mut().ui.text_tab = "Transcript".into();
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"text.transcript.retranscribe"}));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while d.harness.state().session.project.transcripts[&clip.item].text() != "Neu" {
+        d.frames(1);
+        assert!(std::time::Instant::now() < deadline, "retranscribe did not replace the transcript");
+    }
+    assert_eq!(d.harness.state().session.project.transcripts[&clip.item].text(), "Neu");
+    d.ok("engine.execute", json!({"command":"edit.undo"}));
+    assert_eq!(d.harness.state().session.project.transcripts[&clip.item].text(), "Original");
+}

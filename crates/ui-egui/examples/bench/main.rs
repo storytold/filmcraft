@@ -52,7 +52,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "bench [--sections {}] [--repeat N] [--quick] [--cpu] [--only SUBSTRING] [--hw auto|off] [--label NAME] [--out DIR]\n       bench --section NAME [--json FILE]   (one section in this process)",
+            "bench [--sections {}] [--repeat N] [--quick] [--cpu] [--only SUBSTRING] [--hw auto|off] [--label NAME] [--out DIR]\n       bench --section NAME [--json FILE]   (one section in this process)\n--hw controls hardware decode; export sections map auto to strict AMD hardwareExport and fail when unavailable.",
             SECTIONS.join(",")
         );
         return;

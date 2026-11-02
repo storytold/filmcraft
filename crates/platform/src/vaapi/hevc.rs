@@ -18,11 +18,11 @@ use filmcraft_hevc::dpb::{Dpb, Marking, Output, OutputMeta, PocState, Ref, RefPi
 use filmcraft_hevc::params::{Layout, Pps, ScalingList, Sps};
 use filmcraft_hevc::slice::{NalHeader, SliceHeader, SliceType, nal_type};
 
-use super::Accel;
 use super::ffi::{
     self, VAIQMatrixBufferHEVC, VAPictureHEVC, VAPictureParameterBufferHEVC, VASliceParameterBufferHEVC, hevc_pic_bits, hevc_slice_bits,
     hevc_slice_parsing_bits,
 };
+use super::{Accel, CpuFrameSink, FrameSink, ResidentFrameMetadata};
 
 /// A picture in the DPB: its surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,9 +99,9 @@ impl<A: Accel> Front<A> {
             skip_rasl: false,
             after_eos: false,
         };
-        let mut frames = Vec::new();
+        let mut sink = CpuFrameSink::default();
         for nal in parameter_sets {
-            f.handle_nal(nal, 0, &mut frames)?;
+            f.handle_nal(nal, 0, &mut sink)?;
         }
         Ok(f)
     }
@@ -112,25 +112,55 @@ impl<A: Accel> Front<A> {
 
     /// Decode one access unit; pictures that left the DPB come back in output order.
     pub fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+        let mut sink = CpuFrameSink::default();
+        self.decode_with_sink(sample, pts, &mut sink)?;
+        Ok(sink.frames)
+    }
+
+    fn decode_with_sink<S: FrameSink<A>>(&mut self, sample: &[u8], pts: i64, sink: &mut S) -> Result<()> {
         let nals = length_prefixed_nals(sample, self.length_size).map_err(decode_err)?;
-        let mut frames = Vec::new();
         for nal in nals {
-            self.handle_nal(nal, pts, &mut frames)?;
+            self.handle_nal(nal, pts, sink)?;
         }
-        self.submit_pending(&mut frames)?;
-        Ok(frames)
+        self.submit_pending(sink)
+    }
+
+    /// Decode through the same parser/DPB as CPU mode, transferring each output surface at the
+    /// DPB boundary before a later NAL can reuse it. Unsupported accelerators fail closed.
+    #[cfg(target_os = "linux")]
+    pub fn decode_resident_into<S: super::ResidentFrameSink>(
+        &mut self,
+        sample: &[u8],
+        pts: i64,
+        color: filmcraft_color::ColorInfo,
+        par: (u32, u32),
+        sink: &mut S,
+    ) -> Result<()> {
+        let mut output = super::ResidentOutputSink { sink, color, par };
+        self.decode_with_sink(sample, pts, &mut output)
     }
 
     /// Output every picture still held for reordering; what follows starts like a new stream
     /// (a CRA's RASL pictures are left out), as in software.
     pub fn flush(&mut self) -> Result<Vec<DecodedFrame>> {
-        let mut frames = Vec::new();
-        self.submit_pending(&mut frames)?;
+        let mut sink = CpuFrameSink::default();
+        self.flush_with_sink(&mut sink)?;
+        Ok(sink.frames)
+    }
+
+    fn flush_with_sink<S: FrameSink<A>>(&mut self, sink: &mut S) -> Result<()> {
+        self.submit_pending(sink)?;
         let mut outs = Vec::new();
         self.dpb.flush(&mut outs);
-        self.read_out(outs, &mut frames)?;
+        self.read_out(outs, sink)?;
         self.first_picture = true;
-        Ok(frames)
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn flush_resident_into<S: super::ResidentFrameSink>(&mut self, color: filmcraft_color::ColorInfo, par: (u32, u32), sink: &mut S) -> Result<()> {
+        let mut output = super::ResidentOutputSink { sink, color, par };
+        self.flush_with_sink(&mut output)
     }
 
     /// Forget every picture (after a seek).
@@ -145,15 +175,23 @@ impl<A: Accel> Front<A> {
     }
 
     /// Read back the pictures the DPB output, right away: a surface leaving the DPB is reused.
-    fn read_out(&mut self, outs: Vec<Output<Surface>>, frames: &mut Vec<DecodedFrame>) -> Result<()> {
-        for o in outs {
-            let frame = self.accel.read(o.frame.index).map_err(decode_err)?;
-            frames.push(DecodedFrame { pts: o.meta.pts, frame, draft: false });
-        }
-        Ok(())
+    fn read_out<S: FrameSink<A>>(&mut self, outs: Vec<Output<Surface>>, sink: &mut S) -> Result<()> {
+        let outputs = outs.into_iter().map(|o| ResidentFrameMetadata {
+            index: o.frame.index,
+            pts: o.meta.pts,
+            crop: o.meta.crop,
+            color: super::ResidentColorMetadata {
+                full_range: o.meta.full_range,
+                primaries: o.meta.colour_primaries,
+                transfer: o.meta.transfer_characteristics,
+                matrix: o.meta.matrix_coefficients,
+                sar: o.meta.sar,
+            },
+        });
+        super::emit_outputs(&mut self.accel, outputs, sink)
     }
 
-    fn handle_nal(&mut self, nal: &[u8], pts: i64, frames: &mut Vec<DecodedFrame>) -> Result<()> {
+    fn handle_nal<S: FrameSink<A>>(&mut self, nal: &[u8], pts: i64, sink: &mut S) -> Result<()> {
         if nal.len() < 2 {
             return Ok(());
         }
@@ -174,21 +212,21 @@ impl<A: Accel> Front<A> {
                 *slot = Some(Arc::new(pps));
             }
             nal_type::EOS | nal_type::EOB => {
-                self.submit_pending(frames)?;
+                self.submit_pending(sink)?;
                 self.after_eos = true;
             }
-            0..=9 | 16..=21 => self.handle_slice(nal, hdr, pts, frames)?,
+            0..=9 | 16..=21 => self.handle_slice(nal, hdr, pts, sink)?,
             // VPS, AUD, SEI, filler, reserved: nothing to decode
             _ => {}
         }
         Ok(())
     }
 
-    fn handle_slice(&mut self, nal: &[u8], hdr: NalHeader, pts: i64, frames: &mut Vec<DecodedFrame>) -> Result<()> {
+    fn handle_slice<S: FrameSink<A>>(&mut self, nal: &[u8], hdr: NalHeader, pts: i64, sink: &mut S) -> Result<()> {
         let rbsp = unescape_rbsp(nal.get(2..).unwrap_or_default());
         let first = rbsp.first().is_some_and(|b| b & 0x80 != 0);
         if first {
-            self.submit_pending(frames)?;
+            self.submit_pending(sink)?;
         }
         if hdr.is_rasl() && (self.skip_rasl || self.first_picture) {
             return Ok(());
@@ -210,7 +248,7 @@ impl<A: Accel> Front<A> {
         sps.check_supported().map_err(decode_err)?;
         pps.check_supported().map_err(decode_err)?;
         if first {
-            self.start_picture(&sh, &sps, &pps, pts, frames)?;
+            self.start_picture(&sh, &sps, &pps, pts, sink)?;
         }
         let Some(p) = self.pending.as_mut() else { return Err(decode_err("slice segment without the first slice of its picture")) };
         if !Arc::ptr_eq(&p.pps, &pps) {
@@ -227,7 +265,7 @@ impl<A: Accel> Front<A> {
         Ok(())
     }
 
-    fn start_picture(&mut self, sh: &SliceHeader, sps: &Arc<Sps>, pps: &Arc<Pps>, pts: i64, frames: &mut Vec<DecodedFrame>) -> Result<()> {
+    fn start_picture<S: FrameSink<A>>(&mut self, sh: &SliceHeader, sps: &Arc<Sps>, pps: &Arc<Pps>, pts: i64, sink: &mut S) -> Result<()> {
         if !sh.first_slice_segment_in_pic || sh.dependent {
             return Err(decode_err("invalid first slice segment"));
         }
@@ -268,9 +306,11 @@ impl<A: Accel> Front<A> {
         } else {
             self.dpb.bump_before_decode(&mut outs);
         }
-        self.read_out(outs, frames)?;
+        self.read_out(outs, sink)?;
         let surfaces = self.accel.surfaces();
-        let target = (0..surfaces.len()).find(|&i| !self.dpb.entries.iter().any(|e| e.frame.index == i)).ok_or_else(|| decode_err("no free surface"))?;
+        let target = (0..surfaces.len())
+            .find(|&i| !self.dpb.entries.iter().any(|e| e.frame.index == i) && !self.accel.is_surface_leased(i))
+            .ok_or_else(|| decode_err("no free surface"))?;
         let target_id = surfaces.get(target).copied().ok_or_else(|| decode_err("surface out of range"))?;
         let mut pic = picture_params(sps, pps, sh)?;
         pic.CurrPic = VAPictureHEVC { picture_id: target_id, pic_order_cnt: poc, flags: 0, va_reserved: [0; ffi::VA_PADDING_LOW] };
@@ -322,7 +362,7 @@ impl<A: Accel> Front<A> {
     }
 
     /// Decode the collected picture, then insert it into the DPB.
-    fn submit_pending(&mut self, frames: &mut Vec<DecodedFrame>) -> Result<()> {
+    fn submit_pending<S: FrameSink<A>>(&mut self, sink: &mut S) -> Result<()> {
         let Some(mut p) = self.pending.take() else { return Ok(()) };
         let Some(last) = p.slices.last_mut() else { return Err(decode_err("a picture without slices")) };
         last.0.LongSliceFlags |= 1 << hevc_slice_bits::LAST_SLICE_OF_PIC;
@@ -333,7 +373,7 @@ impl<A: Accel> Front<A> {
         self.poc_state.update(&p.first, p.poc);
         let mut outs = Vec::new();
         self.dpb.insert(Surface { index: p.target }, p.poc, p.output, p.meta, &mut outs);
-        self.read_out(outs, frames)
+        self.read_out(outs, sink)
     }
 }
 

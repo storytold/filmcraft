@@ -14,6 +14,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::fx_multipass::MultipassRunner;
+
 use filmcraft_render::gpufx::FxOp;
 use filmcraft_render::plan::LayerFx;
 
@@ -52,6 +54,15 @@ const OP_MIRROR: u32 = 28;
 const OP_OFFSET: u32 = 29;
 const OP_VIDEO_LIMITER: u32 = 30;
 const OP_LUMETRI: u32 = 31;
+const OP_COLOR_KEY: u32 = 32;
+const OP_LUMA_KEY: u32 = 33;
+const OP_CINEON: u32 = 34;
+const OP_NOISE: u32 = 35;
+const OP_LOGO_CUTOUT: u32 = 36;
+const OP_SHADOW_MASK: u32 = 37;
+const OP_SHADOW_COMPOSITE: u32 = 38;
+const OP_ALPHA_GLOW_MASK: u32 = 39;
+const OP_ALPHA_GLOW_COMPOSITE: u32 = 40;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -63,6 +74,8 @@ pub(crate) struct FxStage {
     source: wgpu::RenderPipeline,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
+    /// One runner per routed effect: its pipelines, and the slots it reuses across layers.
+    multipass: HashMap<&'static str, MultipassRunner>,
 }
 
 /// One compute pass of a job.
@@ -70,6 +83,8 @@ struct Dispatch {
     run: bool,
     bg: wgpu::BindGroup,
     groups: (u32, u32),
+    /// A routed pass's own pipeline (`run` is ignored then).
+    own: Option<wgpu::ComputePipeline>,
 }
 
 /// The recorded work of one layer's effects (bind groups made; recorded into the frame's encoder
@@ -91,8 +106,8 @@ struct Step {
     p: [f32; 24],
     /// Unsharp combine: reads the blurred image and the original.
     combine: bool,
-    /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
-    unsharp_blur: bool,
+    /// Preserve the original input for a final operation that reads it as `aux`.
+    preserve_original: bool,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -100,13 +115,18 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false }
+    Step { run: false, code, i1, p: q, combine: false, preserve_original: false }
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
 fn boxes(radii: &[u32], vertical: bool, repeat: bool, out: &mut Vec<Step>) {
+    boxes_channel(radii, vertical, repeat, 4, out);
+}
+
+/// Box passes that replace one channel while copying the other three unchanged.
+fn boxes_channel(radii: &[u32], vertical: bool, repeat: bool, channel: u32, out: &mut Vec<Step>) {
     for &r in radii.iter().filter(|r| **r > 0) {
-        let mut s = step(OP_BOX, [r, repeat as u32, vertical as u32, 0], &[]);
+        let mut s = step(OP_BOX, [r, repeat as u32, vertical as u32, channel], &[]);
         s.run = r > BOX_PER_PIXEL_MAX;
         out.push(s);
     }
@@ -122,6 +142,8 @@ fn steps(op: &FxOp) -> Vec<Step> {
             out.push(step(OP_TINT, [0; 4], &[black[0], black[1], black[2], *amount, white[0], white[1], white[2]]));
         }
         FxOp::BlackWhite => out.push(step(OP_BLACK_WHITE, [0; 4], &[])),
+        // routed ops run through `FxStage::job`'s multi-pass branch, never as steps
+        FxOp::Multipass(_) => {}
         FxOp::ColorBalance { sh, md, hi, preserve } => {
             out.push(step(OP_COLOR_BALANCE, [*preserve as u32, 0, 0, 0], &[sh[0], sh[1], sh[2], 0.0, md[0], md[1], md[2], 0.0, hi[0], hi[1], hi[2]]))
         }
@@ -131,12 +153,53 @@ fn steps(op: &FxOp) -> Vec<Step> {
         FxOp::Gamma { g } => out.push(step(OP_GAMMA, [0; 4], &[*g])),
         FxOp::Levels { ib, iw, ob, ow, g } => out.push(step(OP_LEVELS, [0; 4], &[*ib, *iw, *ob, *ow, *g])),
         FxOp::Extract { lo, hi, soft, invert } => out.push(step(OP_EXTRACT, [*invert as u32, 0, 0, 0], &[*lo, *hi, *soft])),
+        FxOp::ColorKey { key_ycc, tol, soft } => out.push(step(OP_COLOR_KEY, [0; 4], &[key_ycc[0], key_ycc[1], key_ycc[2], *tol, *soft])),
+        FxOp::LumaKey { threshold, cutoff } => out.push(step(OP_LUMA_KEY, [0; 4], &[*threshold, *cutoff])),
+        FxOp::Cineon { mode, black, white, ib, iw, gamma, roll } => {
+            out.push(step(OP_CINEON, [*mode, 0, 0, 0], &[*black, *white, *ib, *iw, *gamma, *roll]));
+        }
+        FxOp::Noise { amount, grain, seed, colored, clip } => {
+            if *amount > 0.0 {
+                out.push(step(OP_NOISE, [*seed as u32, (*seed >> 32) as u32, *colored as u32, *clip as u32], &[*amount, *grain]));
+            }
+        }
+        FxOp::Spatial(op) => {
+            let (code, i, p) = op.packed();
+            out.push(step(code, i, &p));
+        }
+        FxOp::Procedural(op) => {
+            let (code, i, p) = op.pack();
+            out.push(step(code, i, &p));
+        }
+        FxOp::Filter(op) => {
+            if op.radius > 0 {
+                let (code, i, p) = op.pack();
+                out.push(step(code, i, &p));
+            }
+        }
+        FxOp::Stylize(op) => {
+            let (code, i, p) = op.pack();
+            out.push(step(code, i, &p));
+        }
+        FxOp::LegacyWipe(op) => {
+            let (code, i, p) = op.pack();
+            out.push(step(code, i, &p));
+        }
+        FxOp::LogoCutout { background, threshold, softness, unmultiply, invert } => {
+            out.push(step(OP_LOGO_CUTOUT, [*unmultiply as u32, *invert as u32, 0, 0], &[background[0], background[1], background[2], *threshold, *softness]));
+        }
         FxOp::Invert { channel: 4, blend } => out.push(step(OP_INVERT_ALPHA, [0; 4], &[*blend])),
         FxOp::Invert { channel, blend } => out.push(step(OP_INVERT, [*channel, 0, 0, 0], &[*blend])),
         FxOp::Posterize { n } => out.push(step(OP_POSTERIZE, [0; 4], &[*n])),
         FxOp::Gaussian { rx, ry, repeat } => {
             boxes(rx, false, *repeat, &mut out);
             boxes(ry, true, *repeat, &mut out);
+        }
+        FxOp::ChannelBlur { rx, ry, repeat } => {
+            for channel in 0..4 {
+                boxes_channel(&rx[channel], false, *repeat, channel as u32, &mut out);
+                boxes_channel(&ry[channel], true, *repeat, channel as u32, &mut out);
+            }
         }
         FxOp::DirectionalBlur { dx, dy, steps } => {
             if *steps >= 2 {
@@ -147,11 +210,46 @@ fn steps(op: &FxOp) -> Vec<Step> {
             boxes(rx, false, true, &mut out);
             boxes(ry, true, true, &mut out);
             for s in &mut out {
-                s.unsharp_blur = true;
+                s.preserve_original = true;
             }
             let mut s = step(OP_UNSHARP, [0; 4], &[*amount, *threshold]);
             s.combine = true;
             out.push(s);
+        }
+        FxOp::DropShadow { dx, dy, color, opacity, rx, ry, only } => {
+            let mut mask = step(OP_SHADOW_MASK, [0; 4], &[color[0], color[1], color[2], *opacity, *dx as f32, *dy as f32]);
+            mask.preserve_original = !only;
+            out.push(mask);
+            let start = out.len();
+            boxes(rx, false, false, &mut out);
+            boxes(ry, true, false, &mut out);
+            if !only {
+                for s in &mut out[start..] {
+                    s.preserve_original = true;
+                }
+                let mut composite = step(OP_SHADOW_COMPOSITE, [0; 4], &[]);
+                composite.combine = true;
+                out.push(composite);
+            } else {
+                out.push(step(OP_SHADOW_COMPOSITE, [1, 0, 0, 0], &[]));
+            }
+        }
+        FxOp::AlphaGlow { start, end, brightness, use_end, fade, enabled, rx, ry } => {
+            if *enabled {
+                let mut mask = step(OP_ALPHA_GLOW_MASK, [0; 4], &[]);
+                mask.preserve_original = true;
+                out.push(mask);
+                let first_blur = out.len();
+                boxes(rx, false, false, &mut out);
+                boxes(ry, true, false, &mut out);
+                for s in &mut out[first_blur..] {
+                    s.preserve_original = true;
+                }
+                let mut composite =
+                    step(OP_ALPHA_GLOW_COMPOSITE, [*use_end as u32, *fade as u32, 0, 0], &[*brightness, start[0], start[1], start[2], end[0], end[1], end[2]]);
+                composite.combine = true;
+                out.push(composite);
+            }
         }
         FxOp::Crop { x0, x1, y0, y1, feather } => out.push(step(OP_CROP, [0; 4], &[*x0, *x1, *y0, *y1, *feather])),
         FxOp::Resample(r) => {
@@ -264,7 +362,22 @@ impl FxStage {
     pub(crate) fn new(device: &wgpu::Device, composite: &wgpu::ShaderModule, layer_bgl: &wgpu::BindGroupLayout) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("filmcraft-fx"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("fx.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("fx.wgsl"),
+                    "\n",
+                    include_str!("fx_spatial.wgsl"),
+                    "\n",
+                    include_str!("fx_procedural.wgsl"),
+                    "\n",
+                    include_str!("fx_filters.wgsl"),
+                    "\n",
+                    include_str!("fx_stylize.wgsl"),
+                    "\n",
+                    include_str!("fx_legacy_wipes.wgsl")
+                )
+                .into(),
+            ),
         });
         let tex = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -331,7 +444,7 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new() }
+        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new(), multipass: HashMap::new() }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -391,6 +504,21 @@ impl FxStage {
         if w > max || h > max {
             return None;
         }
+        if let Some(route) = fx.ops.iter().find_map(|op| if let FxOp::Multipass(m) = op { Some(m) } else { None }) {
+            // a routed effect is the whole chain (the planner guarantees it): its passes read the
+            // source draw and write the runner's result slot, which the layer draws right after
+            if fx.ops.len() != 1 {
+                return None;
+            }
+            let source_target = self.targets(device, (w, h), 1).first()?.1.clone();
+            let runner = match self.multipass.entry(route.route.id) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(v) => v.insert(MultipassRunner::new(device, route.route.wgsl, route.route.kernels).ok()?),
+            };
+            let prepared = runner.prepare(device, &route.route.plan, &source_target, (w, h)).ok()?;
+            let dispatches = prepared.passes.into_iter().map(|p| Dispatch { run: false, bg: p.bind, groups: p.groups, own: Some(p.pipeline) }).collect();
+            return Some(FxJob { source_bg, source_target, dispatches, result: prepared.result, result_texture: prepared.result_texture });
+        }
         let all: Vec<Step> = fx.ops.iter().flat_map(steps).collect();
         let n = if all.iter().any(|s| s.combine) { 3 } else { 2 };
         let targets = self.targets(device, (w, h), n);
@@ -401,10 +529,10 @@ impl FxStage {
         let mut orig: Option<usize> = None;
         for s in &all {
             // (an Unsharp without blur passes, radius 0, combines the original with itself)
-            if (s.unsharp_blur || s.combine) && orig.is_none() {
+            if (s.preserve_original || s.combine) && orig.is_none() {
                 orig = Some(cur);
             }
-            let keep = if s.unsharp_blur || s.combine { orig } else { None };
+            let keep = if s.preserve_original || s.combine { orig } else { None };
             let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
             let aux = match (s.combine, orig) {
                 (true, Some(o)) => views.get(o)?,
@@ -440,7 +568,7 @@ impl FxStage {
             } else {
                 (w.div_ceil(16), h.div_ceil(16))
             };
-            dispatches.push(Dispatch { run: s.run, bg, groups });
+            dispatches.push(Dispatch { run: s.run, bg, groups, own: None });
             cur = dst;
             if s.combine {
                 orig = None;
@@ -480,7 +608,11 @@ impl FxStage {
         }
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("fx"), timestamp_writes: None });
         for d in &job.dispatches {
-            pass.set_pipeline(if d.run { &self.run } else { &self.px });
+            pass.set_pipeline(match &d.own {
+                Some(pipeline) => pipeline,
+                None if d.run => &self.run,
+                None => &self.px,
+            });
             pass.set_bind_group(0, &d.bg, &[]);
             pass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
         }

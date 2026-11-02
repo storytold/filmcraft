@@ -93,6 +93,7 @@ fn wait_for(what: &str, pause: Duration, mut done: impl FnMut() -> bool) {
 #[test]
 fn perf_stats_reports_playback_frames_and_decode() {
     let mut d = Driver::demo();
+    d.harness.state_mut().enable_cpu_composite();
     // let the Program monitor render a few frames on the workers
     for _ in 0..50 {
         d.frames(1);
@@ -125,6 +126,7 @@ fn perf_stats_reports_playback_frames_and_decode() {
 #[test]
 fn program_monitor_follows_a_value_that_changes_every_pass() {
     let mut d = Driver::demo();
+    d.harness.state_mut().enable_cpu_composite();
     let clip = d.exec("sequence.inspect", json!({}))["video"][0]["items"][0]["clip"].as_u64().unwrap();
     d.exec("playhead.set", json!({"seconds": 1.0}));
     let at_rest = d.settled();
@@ -147,6 +149,7 @@ fn program_monitor_follows_a_value_that_changes_every_pass() {
 #[test]
 fn program_monitor_follows_a_backward_scrub() {
     let mut d = Driver::demo();
+    d.harness.state_mut().enable_cpu_composite();
     d.exec("playhead.set", json!({"frame": 60}));
     let at_rest = d.settled();
     let mut before = at_rest;

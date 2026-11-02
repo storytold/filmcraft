@@ -361,3 +361,8 @@
 	Next Appearance Mode	Следующий режим оформления
 	Project Notes	Заметки проекта
 
+	Enter renders: CPU	Enter рендерит: CPU
+	Enter renders: GPU	Enter рендерит: GPU
+	Choose whether Enter renders effects and transitions on the CPU or the GPU. The GPU route is not available yet and fails without rendering.	Выберите, рендерить ли эффекты и переходы по Enter на CPU или GPU. Путь GPU пока недоступен и завершается ошибкой без рендеринга.
+	Saving preferences failed	Не удалось сохранить настройки
+	Enter render backend	Бэкенд рендеринга для Enter

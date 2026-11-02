@@ -24,6 +24,7 @@ mod pace;
 mod pcm;
 mod pipeline;
 pub mod presets;
+mod ram_guard;
 mod raster;
 pub mod settings;
 pub mod still;
@@ -49,9 +50,13 @@ mod encoders;
 mod format;
 mod output;
 mod registry;
+mod resident;
 mod run;
 mod stats;
 mod still_encode;
+
+#[cfg(test)]
+mod encoder_registry_tests;
 
 pub use convert::{Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10};
 pub(crate) use encoders::FlacAudio;
@@ -70,9 +75,13 @@ pub use registry::{
     register_hdr_probe,
 };
 use registry::{audio_factories, video_factories};
+pub use resident::{
+    AmdExportAdmission, AmdExportProvider, ResidentAllocation, ResidentConsumer, ResidentProducer, ResidentReservation, ResidentSendError,
+    ResidentVideoSession, resident_queue,
+};
 #[cfg(test)]
 use run::gif_delay_cs;
-pub use run::{export, export_range, frame_span, validate_range};
+pub use run::{export, export_range, export_with_admission, frame_span, validate_range};
 pub(crate) use stats::note_lock_wait;
 pub use stats::{
     GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_hw_encode_declined,
@@ -92,9 +101,31 @@ pub enum ExportError {
     Encode(String),
     #[error("cancelled")]
     Cancelled,
+    #[error("export stopped by RAM pressure: {0}")]
+    MemoryPressure(String),
 }
 
 pub type Result<T> = std::result::Result<T, ExportError>;
+
+/// Build guard only: refuse to start or continue a build at 83% host RAM use (emergency-style
+/// stop at 85%). This is the build helper, separate from the export runtime ceiling below.
+pub fn check_ram_pressure() -> Result<()> {
+    ram_guard::check()
+}
+
+/// Runtime RAM ceiling for exports: the 90% host-RAM ceiling the user approved for export runtime,
+/// separate from the build guard's 83/85% thresholds. Supported Linux hosts stop new export work
+/// when `MemAvailable` would take total use to 90%; unsupported/unsane readings are treated as
+/// "cannot prove pressure" and do not gate exports.
+pub fn check_runtime_ram_ceiling() -> Result<()> {
+    ram_guard::check_runtime_ram_ceiling()
+}
+
+/// Runtime RAM headroom before the export 90% ceiling, in KiB, on supported Linux hosts; `None`
+/// when the host reading is unavailable or nonsensical (never used as a headroom estimate).
+pub fn runtime_ram_headroom_kib() -> Option<u64> {
+    ram_guard::runtime_ram_headroom_kib()
+}
 
 /// Shared progress/cancel state of an export job.
 #[derive(Default)]

@@ -50,6 +50,101 @@ const OP_MIRROR: u32 = 28u;
 const OP_OFFSET: u32 = 29u;
 const OP_VIDEO_LIMITER: u32 = 30u;
 const OP_LUMETRI: u32 = 31u;
+const OP_COLOR_KEY: u32 = 32u;
+const OP_LUMA_KEY: u32 = 33u;
+const OP_CINEON: u32 = 34u;
+const OP_NOISE: u32 = 35u;
+const OP_LOGO_CUTOUT: u32 = 36u;
+const OP_SHADOW_MASK: u32 = 37u;
+const OP_SHADOW_COMPOSITE: u32 = 38u;
+const OP_ALPHA_GLOW_MASK: u32 = 39u;
+const OP_ALPHA_GLOW_COMPOSITE: u32 = 40u;
+
+fn noise_mul_hi(a: u32, b: u32) -> u32 {
+    let a0 = a & 0xffffu;
+    let a1 = a >> 16u;
+    let b0 = b & 0xffffu;
+    let b1 = b >> 16u;
+    let p0 = a0 * b0;
+    let p1 = a0 * b1;
+    let p2 = a1 * b0;
+    let middle = (p0 >> 16u) + (p1 & 0xffffu) + (p2 & 0xffffu);
+    return a1 * b1 + (p1 >> 16u) + (p2 >> 16u) + (middle >> 16u);
+}
+
+// Pair stores low word first; all operations wrap modulo 2^64 like Rust u64.
+fn noise_mul64(a: vec2<u32>, b: vec2<u32>) -> vec2<u32> {
+    return vec2(a.x * b.x, noise_mul_hi(a.x, b.x) + a.x * b.y + a.y * b.x);
+}
+
+fn noise_shr64(a: vec2<u32>, n: u32) -> vec2<u32> {
+    return vec2((a.x >> n) | (a.y << (32u - n)), a.y >> n);
+}
+
+fn noise_add64(a: vec2<u32>, b: vec2<u32>) -> vec2<u32> {
+    let lo = a.x + b.x;
+    return vec2(lo, a.y + b.y + select(0u, 1u, lo < a.x));
+}
+
+fn noise_hash(x: u32, y: u32, z: vec2<u32>) -> f32 {
+    var h = noise_mul64(vec2(x, 0u), vec2(0x7f4a7c15u, 0x9e3779b9u));
+    h = h ^ noise_mul64(vec2(y, 0u), vec2(0x27d4eb4fu, 0xc2b2ae3du));
+    h = h ^ noise_mul64(z, vec2(0x9e3779f9u, 0x165667b1u));
+    h = h ^ noise_shr64(h, 31u);
+    h = noise_mul64(h, vec2(0x1ce4e5b9u, 0xbf58476du));
+    h = h ^ noise_shr64(h, 29u);
+    return f32(h.y >> 8u) / 16777216.0;
+}
+
+fn noise_apply(p: vec2<i32>) -> vec4<f32> {
+    let o = ld(p);
+    let amount = u.p0.x;
+    if amount <= 0.0 || o.a <= 0.0 { return o; }
+    let grain = u.p0.y;
+    let gx = u32(f32(p.x) / grain);
+    let gy = u32(f32(p.y) / grain);
+    let seed = vec2(u.i1.x, u.i1.y);
+    let n0 = noise_hash(gx, gy, seed) - 0.5;
+    var n = vec3(n0);
+    if u.i1.z != 0u {
+        n.y = noise_hash(gx, gy, noise_add64(seed, vec2(7777u, 0u))) - 0.5;
+        n.z = noise_hash(gx, gy, noise_add64(seed, vec2(99991u, 0u))) - 0.5;
+    }
+    var c = enc(o.rgb / o.a) + n * amount;
+    if u.i1.w != 0u { c = clamp(c, vec3(0.0), vec3(1.0)); }
+    return vec4(dec(c) * o.a, o.a);
+}
+
+fn cineon_value(v: f32) -> f32 {
+    let mode = u.i1.x;
+    let black = u.p0.x;
+    let white = u.p0.y;
+    let ib = u.p0.z;
+    let iw = u.p0.w;
+    let gamma = u.p1.x;
+    let roll = u.p1.y;
+    let k = 0.002 / 0.6;
+    let offset = pow(10.0, (black - white) * k);
+    if mode == 0u {
+        let code = v * 1023.0;
+        let linv = max((pow(10.0, (code - white) * k) - offset) / (1.0 - offset), 0.0);
+        var o = pow(linv, 1.0 / gamma);
+        o = ib + o * (iw - ib);
+        let r0 = 1.0 - roll;
+        if roll > 1e-4 && o > r0 {
+            o = r0 + roll * (1.0 - exp(-(o - r0) / roll));
+        }
+        return clamp(o, 0.0, 1.0);
+    }
+    if mode == 1u {
+        let d = clamp((v - ib) / max(iw - ib, 1e-4), 0.0, 1.0);
+        let linv = pow(d, gamma);
+        let code = white + log(max(linv * (1.0 - offset) + offset, 1e-6)) / log(10.0) / k;
+        return clamp(code / 1023.0, 0.0, 1.0);
+    }
+    let code = v * 1023.0;
+    return (((code - black) / (white - black)) * 590.0 + 95.0) / 1023.0;
+}
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -534,7 +629,71 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
     let pc = vec2<f32>(p) + 0.5;
+    if op >= 64u && op <= 75u { return spatial_apply(p); }
+    if (op >= 96u && op <= 106u) || op == 109u { return procedural_apply(p); }
+    if op == 160u { return median_apply(p); }
+    if op >= 128u && op <= 129u { return stylize_apply(p); }
+    if op >= 107u && op <= 108u { return legacy_wipes_apply(p); }
     switch op {
+        case OP_COLOR_KEY: {
+            let o = ld(p);
+            if o.a <= 0.0 { return o; }
+            let c = enc(o.rgb / o.a);
+            let y = luma709(c);
+            let ycc = vec3(y, (c.z - y) / (2.0 * (1.0 - 0.0722)), (c.x - y) / (2.0 * (1.0 - 0.2126)));
+            let key = u.p0.xyz;
+            let d = sqrt(pow(ycc.y - key.y, 2.0) + pow(ycc.z - key.z, 2.0)) + abs(ycc.x - key.x) * 0.15;
+            let alpha = clamp((d - u.p0.w) / u.p1.x, 0.0, 1.0);
+            let a = o.a * alpha;
+            return vec4(dec(c) * a, a);
+        }
+        case OP_LOGO_CUTOUT: {
+            let o = ld(p);
+            if o.a <= 1e-6 { return o; }
+            let v = enc(o.rgb / o.a);
+            let bg = u.p0.xyz;
+            var a0 = 0.0;
+            for (var k = 0u; k < 3u; k += 1u) {
+                let d = v[k] - bg[k];
+                let room = select(bg[k], 1.0 - bg[k], d >= 0.0);
+                if room > 1e-6 { a0 = max(a0, abs(d) / room); }
+            }
+            a0 = clamp(a0, 0.0, 1.0);
+            var alpha = clamp((a0 - u.p0.w) / (max(1.0 - u.p0.w, 1e-3) * u.p1.x), 0.0, 1.0);
+            if u.i1.y != 0u { alpha = 1.0 - alpha; }
+            var c = v;
+            if u.i1.x != 0u && a0 > 1e-4 && u.i1.y == 0u {
+                c = clamp(bg + (v - bg) / a0, vec3(0.0), vec3(1.0));
+            }
+            let rgb = dec(c);
+            let out_alpha = alpha * o.a;
+            return vec4(rgb * out_alpha, out_alpha);
+        }
+        case OP_LUMA_KEY: {
+            let o = ld(p);
+            if o.a <= 0.0 { return o; }
+            let l = linear_to_srgb1(max(luma709(o.rgb / o.a), 0.0));
+            let threshold = u.p0.x;
+            let cutoff = u.p0.y;
+            var alpha: f32;
+            if l <= cutoff {
+                alpha = 0.0;
+            } else if l >= max(threshold, cutoff + 1e-3) {
+                alpha = 1.0;
+            } else {
+                alpha = (l - cutoff) / max(threshold - cutoff, 1e-3);
+            }
+            return o * alpha;
+        }
+        case OP_CINEON: {
+            let o = ld(p);
+            if o.a <= 1e-6 { return o; }
+            let c = enc(o.rgb / o.a);
+            return vec4(dec(vec3(cineon_value(c.x), cineon_value(c.y), cineon_value(c.z))) * o.a, o.a);
+        }
+        case OP_NOISE: {
+            return noise_apply(p);
+        }
         case OP_INVERT_ALPHA: {
             let o = ld(p);
             let a = o.a;
@@ -575,7 +734,13 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                     acc += ld(select(vec2(j, p.y), vec2(p.x, j), vertical));
                 }
             }
-            return acc * (1.0 / f32(2 * r + 1));
+            let blurred = acc * (1.0 / f32(2 * r + 1));
+            if u.i1.w == 4u {
+                return blurred;
+            }
+            var out = ld(p);
+            out[u.i1.w] = blurred[u.i1.w];
+            return out;
         }
         case OP_DIRECTIONAL: {
             let steps = u.i1.x;
@@ -599,6 +764,41 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 }
             }
             return o;
+        }
+        case OP_SHADOW_MASK: {
+            let shadow = sample_bilinear(pc.x - u.p1.x, pc.y - u.p1.y);
+            let a = shadow.a * u.p0.w;
+            return vec4(u.p0.xyz * a, a);
+        }
+        case OP_SHADOW_COMPOSITE: {
+            let shadow = ld(p);
+            if u.i1.x != 0u { return shadow; }
+            let foreground = textureLoad(aux, p, 0);
+            return foreground + shadow * (1.0 - foreground.a);
+        }
+        case OP_ALPHA_GLOW_MASK: {
+            return vec4(0.0, 0.0, 0.0, ld(p).a);
+        }
+        case OP_ALPHA_GLOW_COMPOSITE: {
+            let mask = ld(p).a;
+            let gv = min(mask * 2.0, 1.0);
+            let brightness = u.p0.x;
+            var k = 0.0;
+            if u.i1.y != 0u {
+                k = gv * brightness;
+            } else if gv > 0.02 {
+                k = brightness;
+            }
+            let front = textureLoad(aux, p, 0);
+            if k <= 0.0 || front.a >= 1.0 {
+                return front;
+            }
+            var color = u.p0.yzw;
+            if u.i1.x != 0u {
+                color = u.p1.xyz + (u.p0.yzw - u.p1.xyz) * gv;
+            }
+            let alpha = k * (1.0 - front.a);
+            return vec4(front.rgb + color * alpha, front.a + alpha);
         }
         case OP_CROP: {
             let x0 = u.p0.x; let x1 = u.p0.y; let y0 = u.p0.z; let y1 = u.p0.w; let fe = u.p1.x;
@@ -758,7 +958,15 @@ fn fx_run(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     for (var x = 0; x < n; x++) {
-        textureStore(dst, select(vec2(x, line), vec2(line, x), vertical), acc * inv);
+        let pos = select(vec2(x, line), vec2(line, x), vertical);
+        let blurred = acc * inv;
+        if u.i1.w == 4u {
+            textureStore(dst, pos, blurred);
+        } else {
+            var output = ld(pos);
+            output[u.i1.w] = blurred[u.i1.w];
+            textureStore(dst, pos, output);
+        }
         let out_i = x - r;
         let in_i = x + r + 1;
         if repeat || out_i >= 0 {

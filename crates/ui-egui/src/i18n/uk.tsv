@@ -361,3 +361,8 @@
 	Zoom to Sequence	Умістити секвенцію
 	Project Notes	Нотатки проєкту
 
+	Enter renders: CPU	Enter рендерить: CPU
+	Enter renders: GPU	Enter рендерить: GPU
+	Choose whether Enter renders effects and transitions on the CPU or the GPU. The GPU route is not available yet and fails without rendering.	Оберіть, чи рендерити ефекти та переходи по Enter на CPU чи GPU. Шлях GPU ще недоступний і завершується помилкою без рендерингу.
+	Saving preferences failed	Не вдалося зберегти налаштування
+	Enter render backend	Бекенд рендерингу для Enter

@@ -77,6 +77,11 @@ fn settings(path: String, hw: HardwareEncoding) -> ExportSettings {
 #[test]
 fn hardware_export_matches_the_software_export() {
     let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    #[cfg(target_os = "linux")]
+    if !filmcraft_platform::nvenc::available() && filmcraft_platform::vaapi::h264enc::available() {
+        eprintln!("SKIPPED: VA-API is this machine's hardware encoder (tests/it/vaapi_export.rs)");
+        return;
+    }
     filmcraft_platform::register();
     let (p, seq, m) = project(1280, 720, 72);
     let soft_path = tmp("soft.mp4");
@@ -115,6 +120,13 @@ fn hardware_export_matches_the_software_export() {
 #[test]
 fn what_nvenc_does_not_take_goes_to_the_software_encoder() {
     let _one = crate::common::NVENC_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // the decline counts below are NVENC's alone: VA-API (this machine's encoder, or a second GPU
+    // next to an NVIDIA one) declines and counts the same requests too
+    #[cfg(target_os = "linux")]
+    if filmcraft_platform::vaapi::h264enc::available() {
+        eprintln!("SKIPPED: VA-API also encodes here, so the decline counts include it (tests/it/vaapi_export.rs)");
+        return;
+    }
     filmcraft_platform::register();
     let (p, seq, m) = project(640, 360, 24);
     let run = |name: &str, f: &dyn Fn(&mut ExportSettings)| {

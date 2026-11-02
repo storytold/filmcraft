@@ -196,7 +196,7 @@ fn project(frames: i64) -> (Arc<Project>, filmcraft_project::ItemId, SourceMap) 
     let item = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -206,7 +206,7 @@ fn project(frames: i64) -> (Arc<Project>, filmcraft_project::ItemId, SourceMap) 
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let seq = p.new_sequence("s", SequenceSettings { width: W, height: H, frame_rate: FPS, ..Default::default() }, 1, 1, None);

@@ -86,7 +86,10 @@ pub(super) fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let r = ui.add_enabled(!m.save_name.trim().is_empty(), egui::Button::new(tl!("Save")));
                 reg.add("presetManager.save", r.rect, "Save");
                 if r.clicked() {
-                    cmd = Some(("export.presets.save", json!({"name": m.save_name.trim(), "settings": settings_json(&app.ui.export.settings)})));
+                    cmd = Some((
+                        "export.presets.save",
+                        json!({"name": m.save_name.trim(), "settings": settings_json(&super::effective_settings(&app.ui.export))}),
+                    ));
                     m.selected = m.save_name.trim().to_string();
                 }
             });

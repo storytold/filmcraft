@@ -366,6 +366,8 @@ pub struct TimelinePrefs {
     pub add_tracks_automatically: bool,
     /// Files dropped onto the Timeline are placed directly on it.
     pub drop_import_to_timeline: bool,
+    /// Backend for Render Effects In to Out (Enter): `cpu` | `gpu`. Set from the status bar.
+    pub render_backend: String,
 }
 
 impl Default for TimelinePrefs {
@@ -392,6 +394,7 @@ impl Default for TimelinePrefs {
             match_frame_sets_in: false,
             restore_open_sequences: true,
             add_tracks_automatically: true,
+            render_backend: "cpu".into(),
             drop_import_to_timeline: true,
         }
     }

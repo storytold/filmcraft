@@ -2,7 +2,7 @@ use super::convert::{Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv422_10, rgb
 use super::format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PrepareAhead, VideoEncoder};
 use super::stats::{Stage, timed};
-use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat};
+use super::{BitrateMode, ExportError, FrameRate, H264Profile, HardwareEncoding, Result, SampleEntry, SampleFormat};
 use std::sync::{Arc, Mutex, PoisonError};
 
 struct MjpegEncoder {
@@ -450,7 +450,10 @@ pub(crate) fn h264_slices(height: u32) -> usize {
 }
 
 pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
-    if format != Format::H264 {
+    // GPU-required and hardware-required modes never get the software encoder: no hardware factory
+    // means an error, not CPU.
+    if format != Format::H264 || matches!(s.hardware_encoding, HardwareEncoding::AmdRequired | HardwareEncoding::GpuRequired | HardwareEncoding::NvencRequired)
+    {
         return None;
     }
     let mut cfg = filmcraft_h264enc::EncoderConfig::new(w, h, rate.num as u32, rate.den as u32);

@@ -2,8 +2,8 @@ use super::format::{ExportSettings, Format};
 use super::output::{AudioWriter, Out, SharedBuf, write_output};
 use super::still_encode::encode_still_with;
 use super::{
-    Arc, ExportError, Exporter, FrameRate, IntoParallelIterator, ItemId, Ordering, ParallelIterator, PoisonError, Progress, Project, Report, Result,
-    SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, pcm, pipeline, stepped,
+    AmdExportAdmission, Arc, ExportError, Exporter, FrameRate, IntoParallelIterator, ItemId, Ordering, ParallelIterator, PoisonError, Progress, Project,
+    Report, Result, SourceProvider, Step, Tick, TimeRange, Write, aac_out, audio_out, check_runtime_ram_ceiling, pcm, pipeline, stepped,
 };
 
 /// The range to export (settings → In/Out → whole sequence).
@@ -69,18 +69,39 @@ fn capped_pool(max_threads: u32) -> Option<rayon::ThreadPool> {
 /// Run an export (blocking; call from a worker thread). With `settings.max_threads` set it runs on
 /// a pool of that many threads, so its rendering and software encoding use at most that many cores.
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
+    export_with_admission(project, seq, settings, sources, progress, None)
+}
+
+/// [`export`] with explicit host capability admission (the GPU-resident AMD path).
+pub fn export_with_admission(
+    project: &Arc<Project>,
+    seq: ItemId,
+    settings: &ExportSettings,
+    sources: &dyn SourceProvider,
+    progress: &Progress,
+    admission: Option<Arc<dyn AmdExportAdmission>>,
+) -> Result<Report> {
     match capped_pool(settings.max_threads) {
-        Some(pool) => pool.install(|| export_here(project, seq, settings, sources, progress)),
-        None => export_here(project, seq, settings, sources, progress),
+        Some(pool) => pool.install(|| export_here(project, seq, settings, sources, progress, admission)),
+        None => export_here(project, seq, settings, sources, progress, admission),
     }
 }
 
 /// [`export`] on the threads it is called from.
-fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
+fn export_here(
+    project: &Arc<Project>,
+    seq: ItemId,
+    settings: &ExportSettings,
+    sources: &dyn SourceProvider,
+    progress: &Progress,
+    admission: Option<Arc<dyn AmdExportAdmission>>,
+) -> Result<Report> {
+    check_runtime_ram_ceiling()?;
     settings.validate()?;
     if stepped(settings.format) {
-        let mut ex = Exporter::new(project.clone(), seq, settings, progress)?;
+        let mut ex = Exporter::new_with_admission(project.clone(), seq, settings, progress, admission)?;
         loop {
+            check_runtime_ram_ceiling()?;
             match ex.step(sources, progress)? {
                 Step::Progress => {}
                 Step::Done(r) => return Ok(r),
@@ -125,7 +146,9 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
             let io = |e: std::io::Error| ExportError::Io(e.to_string());
             out.write_all(&head).map_err(io)?;
             let mut buf = Vec::new();
-            while let Some(planar) = a.pull(a.out.saturating_add(chunk), sources) {
+            loop {
+                check_runtime_ram_ceiling()?;
+                let Some(planar) = a.pull(a.out.saturating_add(chunk), sources) else { break };
                 if cancelled() {
                     return Err(ExportError::Cancelled);
                 }
@@ -181,12 +204,14 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
             };
             let mut f = f0;
             while f < f1 {
+                check_runtime_ram_ceiling()?;
                 if cancelled() {
                     return Err(ExportError::Cancelled);
                 }
                 let end = (f + batch).min(f1);
                 if let Some(enc) = gif.as_mut() {
-                    let frames: Vec<Vec<u8>> = (f..end).into_par_iter().map(|fi| pipe.frame(fi, sources).0).collect();
+                    let frames: Result<Vec<Vec<u8>>> = (f..end).into_par_iter().map(|fi| pipe.frame(fi, sources).map(|frame| frame.0)).collect();
+                    let frames = frames?;
                     for (fi, rgba) in (f..end).zip(frames) {
                         let img = image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| ExportError::Encode("frame".into()))?;
                         let delay = image::Delay::from_numer_denom_ms(u32::from(gif_delay_cs(pipe.rate, fi - f0)) * 10, 1);
@@ -198,7 +223,7 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
                         .map(|fi| {
                             let data = encode_still_with(
                                 settings.format,
-                                pipe.frame(fi, sources).0,
+                                pipe.frame(fi, sources)?.0,
                                 w,
                                 h,
                                 settings.alpha,

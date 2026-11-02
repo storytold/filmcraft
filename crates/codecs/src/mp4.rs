@@ -57,6 +57,22 @@ pub struct Mp4Source {
     audios: Vec<Mp4Audio>,
 }
 
+/// Compressed video sample metadata. `dts` is the demuxed track timestamp; `pts` reflects the
+/// existing open-time video corrections; `presentation_pts` also applies the edit-list offset.
+/// No sample bytes are allocated here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mp4VideoSample {
+    pub index: usize,
+    pub offset: u64,
+    pub size: u32,
+    pub dts: i64,
+    pub pts: i64,
+    pub presentation_pts: i64,
+    pub duration: u32,
+    pub is_sync: bool,
+    pub description_index: u32,
+}
+
 pub fn sniff(b: &[u8]) -> bool {
     b.len() >= 12 && matches!(&b[4..8], b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip")
 }
@@ -373,6 +389,72 @@ impl Mp4Source {
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
         self.file.read_sample(&self.bytes, track, i).map_err(|e| CodecError::Container(e.to_string()))
+    }
+
+    /// Number of samples in the playable H.264 video track. Other codecs fail closed.
+    pub fn h264_sample_count(&self) -> crate::Result<usize> {
+        let track = self.h264_track()?;
+        Ok(track.samples.len())
+    }
+
+    /// Track timebase for H.264 sample DTS/PTS/duration.
+    pub fn h264_timescale(&self) -> crate::Result<u32> {
+        Ok(self.h264_track()?.timescale)
+    }
+
+    /// Metadata for sample index. Call before `read_h264_sample` to reserve its `size`.
+    pub fn h264_sample_metadata(&self, index: usize) -> crate::Result<Mp4VideoSample> {
+        let track = self.h264_track()?;
+        let sample = track.samples.get(index).ok_or_else(|| CodecError::Container("video sample out of range".into()))?;
+        if sample.description_index != 1 || !matches!(track.entries.first().map(|entry| &entry.codec), Some(CodecConfig::Avc(_))) {
+            return Err(CodecError::Unsupported("H.264 sample description change or unsupported codec".into()));
+        }
+        let presentation_pts = track.presentation_pts(index).ok_or_else(|| CodecError::Container("video sample has no presentation time".into()))?;
+        Ok(Mp4VideoSample {
+            index,
+            offset: sample.offset,
+            size: sample.size,
+            dts: sample.dts,
+            pts: sample.pts,
+            presentation_pts,
+            duration: sample.duration,
+            is_sync: sample.is_sync,
+            description_index: sample.description_index,
+        })
+    }
+
+    /// Borrow the sample description for H.264 configuration parsing (for example avcC/SPS/PPS).
+    pub fn h264_sample_entry(&self, index: usize) -> crate::Result<&filmcraft_isobmff::SampleEntry> {
+        let track = self.h264_track()?;
+        let _ = self.h264_sample_metadata(index)?;
+        let entry = track.entries.first().ok_or_else(|| CodecError::Container("video track has no sample description".into()))?;
+        if !matches!(&entry.codec, CodecConfig::Avc(_)) {
+            return Err(CodecError::Unsupported("H.264 sample description change or unsupported codec".into()));
+        }
+        Ok(entry)
+    }
+
+    /// Read one compressed H.264 access unit after caller has reserved its reported byte size.
+    pub fn read_h264_sample(&self, index: usize) -> crate::Result<Vec<u8>> {
+        let _ = self.h264_sample_metadata(index)?;
+        let ti = self.vtrack.ok_or_else(|| CodecError::Unsupported("no video".into()))?;
+        self.read(ti, index)
+    }
+
+    /// Locate displayed sample at project time using the existing edit-adjusted MP4 presentation index.
+    pub fn h264_sample_at(&self, time: Tick) -> crate::Result<Option<usize>> {
+        let track = self.h264_track()?;
+        let at = time.to_rational_round(1, i64::from(track.timescale));
+        Ok(track.sample_at_presentation_time(at))
+    }
+
+    fn h264_track(&self) -> crate::Result<&filmcraft_isobmff::Track> {
+        let index = self.vtrack.ok_or_else(|| CodecError::Unsupported("no video".into()))?;
+        let track = self.file.tracks.get(index).ok_or_else(|| CodecError::Container("video track missing".into()))?;
+        if track.timescale == 0 || track.entries.len() != 1 || !matches!(track.entries.first().map(|entry| &entry.codec), Some(CodecConfig::Avc(_))) {
+            return Err(CodecError::Unsupported("video track is not H.264".into()));
+        }
+        Ok(track)
     }
 
     fn video_at(&self, t: Tick) -> crate::Result<Arc<VideoFrame>> {

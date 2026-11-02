@@ -19,6 +19,7 @@ speech-download = ["filmcraft-speech/download"]
 neural-voices = ["filmcraft-tts/kokoro", "speech-download"]
 
 [dependencies]
+filmcraft-isobmff = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-geom = { workspace = true }
 filmcraft-color = { workspace = true }
@@ -49,5 +50,4 @@ web-time = "1"
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
 filmcraft-dng = { workspace = true, features = ["writer"] }
-filmcraft-isobmff = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }

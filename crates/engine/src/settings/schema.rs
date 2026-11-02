@@ -182,6 +182,7 @@ const TRANSCRIBE_SCOPE: &[(&str, &str)] =
 const MODELS: &[(&str, &str)] =
     &[("whisper-tiny", "Whisper tiny (fastest)"), ("whisper-base", "Whisper base (balanced)"), ("whisper-small", "Whisper small (most accurate)")];
 
+const RENDER_BACKEND: &[(&str, &str)] = &[("cpu", "CPU"), ("gpu", "GPU")];
 const AUTO_SCROLL: &[(&str, &str)] = &[("noScroll", "No Scroll"), ("pageScroll", "Page Scroll"), ("smoothScroll", "Smooth Scroll")];
 
 const MOUSE_SCROLL: &[(&str, &str)] = &[("vertical", "Vertical"), ("horizontal", "Horizontal")];
@@ -540,6 +541,7 @@ pub(super) static CATEGORIES: &[Category] = &[
             f("timeline.stillImageDuration", "Still Image Default Duration", Kind::Duration { unit_key: "timeline.stillImageUnit" }, true),
             f("timeline.autoScroll", "Timeline Playback Auto-Scrolling", Kind::Choice(AUTO_SCROLL), true),
             f("timeline.mouseScrolling", "Timeline Mouse Scrolling", Kind::Choice(MOUSE_SCROLL), true),
+            f("timeline.renderBackend", "Enter render backend", Kind::Choice(RENDER_BACKEND), true),
             Row::Group(
                 "Default Audio Tracks",
                 &[

@@ -29,6 +29,7 @@ use crate::image::Image;
 
 pub mod cards;
 mod dissolve;
+pub mod gpu_plan;
 mod grunge;
 mod legacy;
 mod lights;

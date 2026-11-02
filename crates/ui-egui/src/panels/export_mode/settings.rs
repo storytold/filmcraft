@@ -1,6 +1,6 @@
 use super::{
-    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
-    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, pos2, vec2,
+    AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, H264Profile, Multiplexer, MxfVideoCodec,
+    Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, pos2, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -314,7 +314,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
         ui.add_space(8.0);
         let s = &mut ex.settings;
         if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
-            video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
+            video_section(ui, &mut reg, s, &mut ex.cpu_export, &mut ex.nvenc_export, &t, seq_w, seq_h, seq_hdr);
         }
         if (s.has_audio()
             || !s.has_video()
@@ -406,7 +406,18 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     reg.flush(app);
 }
 
-fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, seq_hdr: bool) {
+#[expect(clippy::too_many_arguments, reason = "the encoder choice is two flags kept beside the settings")]
+fn video_section(
+    ui: &mut egui::Ui,
+    reg: &mut Reg,
+    s: &mut ExportSettings,
+    cpu: &mut bool,
+    nvenc: &mut bool,
+    t: &Tokens,
+    seq_w: u32,
+    seq_h: u32,
+    seq_hdr: bool,
+) {
     // frame size
     let mut match_size = s.frame_size.is_none();
     row(ui, t, tl!("Frame Size"), |ui| {
@@ -557,10 +568,11 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             // every machine without one keeps the built-in encoder.
             // H.265 and AV1 have only hardware encoders: choosing the format is the opt-in.
             if !hevc {
+                // on = the GPU route (AMD VA-API, or NVENC when picked in Encoder); off = CPU
                 row(ui, t, "Hardware Encoding", |ui| {
-                    let mut on = s.hardware_encoding == HardwareEncoding::Auto;
+                    let mut on = !*cpu;
                     if check(ui, reg, "export.video.hardwareEncoding", &mut on, "Use the hardware encoder when available") {
-                        s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
+                        *cpu = !on;
                     }
                 });
             }
@@ -620,14 +632,39 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
         _ => {}
     }
-    // Composite the picture on the GPU (filmcraft-gpu) instead of the CPU reference renderer;
-    // Auto falls back to the CPU wherever the GPU cannot render the frame.
-    row(ui, t, tl!("GPU Rendering"), |ui| {
-        let mut on = s.gpu_rendering == GpuRendering::Auto;
-        if check(ui, reg, "export.gpuRendering", &mut on, tl!("Composite on the GPU when available")) {
-            s.gpu_rendering = if on { GpuRendering::Auto } else { GpuRendering::Off };
+    row(ui, t, tl!("Encoder"), |ui| {
+        // a format without a GPU route (not H.264 or H.265) exports on the CPU whatever the choice says
+        let gpu = super::gpu_capable(s);
+        let current = if !gpu || *cpu {
+            super::ENCODER_CPU
+        } else if *nvenc {
+            super::ENCODER_NVENC
+        } else {
+            super::ENCODER_AMD
+        };
+        let labels = [(super::ENCODER_AMD.to_string(), true), (super::ENCODER_NVENC.to_string(), true), (super::ENCODER_CPU.to_string(), true)];
+        let mut chosen = None;
+        ui.add_enabled_ui(gpu, |ui| {
+            chosen = combo(ui, reg, "export.video.encoder", current, &labels, 220.0);
+        });
+        match chosen {
+            Some(0) => {
+                *cpu = false;
+                *nvenc = false;
+            }
+            Some(1) => {
+                *cpu = false;
+                *nvenc = true;
+            }
+            Some(2) => *cpu = true,
+            _ => {}
         }
     });
+    // NVENC H.265 is Windows-only; elsewhere it has no route
+    if super::gpu_capable(s) && !*cpu && *nvenc && s.format == Format::Hevc && !cfg!(target_os = "windows") {
+        // NVENC has no H.265 route on this platform: say so, and keep the choice (never switch silently)
+        row(ui, t, "", |ui| ui.label(egui::RichText::new(tl!("Not supported by FilmCraft's encoders yet")).color(t.danger).size(12.0)));
+    }
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxDepth", &mut s.render_at_max_depth, tl!("Render at Maximum Depth")));
     row(ui, t, "", |ui| check(ui, reg, "export.video.maxQuality", &mut s.max_render_quality, tl!("Use Maximum Render Quality")));
 }
