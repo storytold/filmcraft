@@ -1,5 +1,5 @@
 use super::clips::paint_hatch;
-use super::layout::{Layout, max_scroll, min_pps, new_track_at};
+use super::layout::{Layout, max_pps, max_scroll, min_pps, new_track_at};
 use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker_menu, multicam_menu, ruler_menu};
 use super::snap::{snap, snap_playhead};
 use super::{
@@ -86,8 +86,8 @@ pub(super) fn preview_drag(
 }
 
 /// The transition a clip drag will leave behind, by the same rule `edit::move_items` applies:
-/// the transition travels when every clip it sits on moves — to one track, by the same (clamped)
-/// offset — and is dropped when only some of its clips move (a partner that stays behind ends the
+/// the transition travels when every clip it sits on moves â€” to one track, by the same (clamped)
+/// offset â€” and is dropped when only some of its clips move (a partner that stays behind ends the
 /// move, as in Premiere), shifted by that offset. The preview draws carried ones where they land,
 /// so a dragged clip's transition follows it instead of lagging behind until the drop, and a cut
 /// transition does not ride along on a clip whose partner stays. Returns the transition's
@@ -244,53 +244,77 @@ fn scrub_playhead(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, p: Po
     app.session.set_playhead(tt);
 }
 
-/// Wheel input over the Timeline, as in Premiere Pro on macOS (checked in 26.5.2): the wheel
-/// moves the tracks under the pointer, Cmd + wheel the Timeline sideways, Option + wheel
-/// zooms about the pointer.
+/// Wheel input over the Timeline: the wheel scrolls the Timeline in time (up = backwards),
+/// Shift+wheel does the same a lot faster, Ctrl+wheel moves the tracks up and down and
+/// Option+wheel zooms about the pointer.
 fn wheel_scroll(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, layout: &Layout, seq: &Sequence) {
     let ctx = ui.ctx().clone();
-    // ---- wheel, as in Premiere Pro on macOS (checked in 26.5.2):
-    //   wheel            the tracks under the pointer, up and down
-    //   Cmd + wheel      the Timeline, sideways
+    // ---- wheel:
+    //   wheel            the Timeline in time (up = backwards); Inverted controls flips it
+    //   Shift + wheel    the same, a lot faster
+    //   Ctrl + wheel     the tracks under the pointer, up and down
     //   Option + wheel   zoom about the pointer
-    // Settings ▸ Timeline ▸ Timeline Mouse Scrolling "Horizontal" swaps the first two. A sideways
-    // gesture (trackpad swipe, tilt wheel, Shift + wheel) always scrolls sideways; a pinch zooms.
+    // Settings â–¸ Timeline â–¸ Timeline Mouse Scrolling "Horizontal" swaps the wheel and Ctrl +
+    // wheel. A sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
+    // time; a pinch zooms.
     if ui.rect_contains_pointer(rect)
         && let Some(p) = ctx.pointer_hover_pos()
+        // While a zoom-bar drag is going on the wheel belongs to the zoom bar: the track area
+        // below must not pan or scroll underneath the grab. The same for a track slider grab.
+        && !matches!(app.tl.drag, Some(Drag::ZoomBar { .. }))
+        && !app.tl.track_slider_dragging
     {
         let w = wheel_input(&ctx);
-        if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) {
-            let f = if (w.pinch - 1.0).abs() > 1e-4 { w.pinch as f64 } else { (1.0_f64 + w.delta.y as f64 * 0.01).clamp(0.5, 2.0) };
+        let inv = app.session.state.timeline_ui.inverted_controls;
+        // Ctrl + Shift + wheel zooms about the pointer, and Inverted controls turns that around
+        if (w.pinch - 1.0).abs() > 1e-4 || (w.alt && w.delta.y != 0.0) || (w.command && w.shift && w.delta.y != 0.0) {
+            let f = if (w.pinch - 1.0).abs() > 1e-4 {
+                w.pinch as f64
+            } else {
+                let mut d = w.delta.y;
+                if w.command && w.shift && inv {
+                    d = -d;
+                }
+                (1.0_f64 + f64::from(d) * 0.01).clamp(0.5, 2.0)
+            };
             let anchor_t = layout.tick_at(p.x).seconds();
             let v = &mut app.ui.timeline;
-            v.target_pps = (v.target_pps * f).clamp(min_pps(seq.duration().seconds(), app.last_timeline_width), 24_000.0);
+            v.target_pps = (v.target_pps * f).clamp(min_pps(seq.duration().seconds(), layout.content.width()).min(max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs())), max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs()));
             app.tl.zoom_anchor = Some((anchor_t, p.x));
         } else if w.delta != egui::Vec2::ZERO {
-            let wheel_sideways = (app.session.prefs.timeline.mouse_scrolling == "horizontal") != w.command;
-            let sideways = if w.delta.x.abs() > w.delta.y.abs() {
-                Some(w.delta.x)
-            } else if wheel_sideways || w.shift {
+            // A sideways gesture (trackpad swipe, tilt wheel) always scrolls the Timeline in
+            // time. The wheel itself does the same -- up = backwards in time -- and with Shift a
+            // lot faster; Ctrl + wheel moves the tracks up and down. Settings â–¸ Timeline â–¸
+            // Timeline Mouse Scrolling "Horizontal" swaps those two.
+            let swap = app.session.prefs.timeline.mouse_scrolling == "horizontal";
+            let time = if w.shift {
+                Some(w.delta.y * 10.0)
+            } else if w.command == swap {
                 Some(w.delta.y)
             } else {
                 None
             };
+            let sideways = if w.delta.x.abs() > w.delta.y.abs() { Some(w.delta.x) } else { time };
             match sideways {
                 Some(d) => {
+                    // Inverted controls: the wheel scrolls the Timeline the other way in time
+                    let sign = if app.session.state.timeline_ui.inverted_controls { -1.0 } else { 1.0 };
                     let v = &mut app.ui.timeline;
                     let limit = max_scroll(seq.duration().seconds(), layout.content.width(), v.pps);
-                    v.target_scroll = (v.target_scroll - d as f64 / v.pps).clamp(0.0, limit);
+                    v.target_scroll = (v.target_scroll - sign * d as f64 / v.pps).clamp(0.0, limit);
                     v.scroll = v.target_scroll;
                 }
                 // up and down: the video tracks above the divider, the audio tracks below it (the
-                // lowest video track is at the bottom, so wheeling up brings higher ones in)
-                None if p.y < layout.split_y => app.ui.timeline.v_scroll += w.delta.y,
-                None => app.ui.timeline.a_scroll -= w.delta.y,
+                // lowest video track is at the bottom, so wheeling up brings higher ones in).
+                // Inverted controls turns both around too.
+                None if p.y < layout.split_y => app.ui.timeline.v_scroll += if inv { -w.delta.y } else { w.delta.y },
+                None => app.ui.timeline.a_scroll -= if inv { -w.delta.y } else { w.delta.y },
             }
         }
     }
 }
 
-/// Cursor feedback: what a press here would grab (#259) — the cursor for it, the trim
+/// Cursor feedback: what a press here would grab (#259) â€” the cursor for it, the trim
 /// bracket on an edge, and the razor's preview line.
 fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &Layout, pos: Option<Pos2>) {
     let ctx = ui.ctx().clone();
@@ -337,7 +361,7 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 _ => CursorIcon::Default,
             }
         };
-        ctx.set_cursor_icon(cur);
+        ctx.set_cursor_icon(if app.tl.zoombar_point_cursor { CursorIcon::PointingHand } else { cur });
         // the edge a press here would grab, and the trim it starts (#259)
         if let Grab::Edge { track, clip, edge, kind } = g {
             crate::panels::trim_monitor::paint_hover_bracket(ui.painter(), seq, layout, track, clip, edge, kind);
@@ -431,7 +455,11 @@ fn start_drag(
         (Tool::Zoom, _) => {
             if resp.clicked() {
                 let f = if mods.alt { 1.0 / 2.0 } else { 2.0 };
-                app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(min_pps(seq.duration().seconds(), app.last_timeline_width), 24_000.0);
+                app.ui.timeline.target_pps = (app.ui.timeline.target_pps * f).clamp(
+                    min_pps(seq.duration().seconds(), layout.content.width())
+                        .min(max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs())),
+                    max_pps(layout.content.width(), app.session.state.timeline_ui.max_zoom_secs()),
+                );
                 app.tl.zoom_anchor = Some((t.seconds(), p.x));
             }
             None
@@ -656,7 +684,7 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
         let new = match d {
             Drag::Scrub { initial } => {
                 let mut tt = rate.snap_nearest(t_here.max(Tick::ZERO));
-                // Shift snaps; Settings ▸ Timeline ▸ "Snap playhead in Timeline when Snap is enabled"
+                // Shift snaps; Settings â–¸ Timeline â–¸ "Snap playhead in Timeline when Snap is enabled"
                 if mods.shift || app.session.prefs.timeline.snap_playhead {
                     tt = snap_playhead(app, seq, layout, tt);
                 }
@@ -993,7 +1021,7 @@ fn drop_targets(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             crate::panels::clear_drag(ui);
         }
     }
-    // graphics templates from Essential Graphics ▸ Browse: placed on the video track under the pointer
+    // graphics templates from Essential Graphics â–¸ Browse: placed on the video track under the pointer
     if let Some(template) = crate::panels::dragged_template(ui)
         && let Some(p) = ctx.pointer_hover_pos()
         && layout.content.contains(p)
@@ -1323,6 +1351,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
     }
     resp.context_menu(|ui| {
         // a long menu scrolls instead of running off the bottom of the screen (#2852)
+        let unhide_bar = app.session.state.timeline_ui.zoom_bar_hidden;
         let max_height = (ui.ctx().content_rect().height() - 16.0).max(0.0);
         egui::ScrollArea::vertical().id_salt("clip-menu-scroll").max_height(max_height).min_scrolled_height(max_height).show(ui, |ui| {
             ui.set_min_width(220.0);
@@ -1336,68 +1365,110 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
             }
             if let Some(target) = ctx.data(|d| d.get_temp::<Option<EditPointTarget>>(edit_point_menu_id)).flatten() {
                 edit_point_menu(app, &ctx, ui, seq, target);
-                return;
-            }
-            if ctx.data(|d| d.get_temp::<bool>(gap_menu_id)).unwrap_or(false) {
+            } else if ctx.data(|d| d.get_temp::<bool>(gap_menu_id)).unwrap_or(false) {
                 gap_menu(app, &ctx, ui);
-                return;
-            }
-            let sel = app.session.state.selection.clone();
-            let picked: Vec<&filmcraft_project::TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
-            let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
-            let linked = picked.iter().any(|it| it.link.is_some());
-            let mut first = true;
-            for group in CLIP_MENU {
-                if !std::mem::take(&mut first) {
-                    ui.separator();
-                }
-                for &(label, cmd) in *group {
-                    if cmd == "edit.label" {
-                        ui.add_enabled_ui(!picked.is_empty(), |ui| {
-                            let menu = ui.menu_button(crate::i18n::t(label), |ui| {
-                                // the user's label names and colours, as in Edit ▸ Label (#786)
-                                let labels = app.session.prefs.labels.clone();
-                                for l in filmcraft_project::Label::ALL {
-                                    if crate::menus::label_choice(ui, &mut app.auto, &labels, l, "timeline.clipMenu.label").clicked() {
-                                        if let Err(error) = app.session.execute("edit.label", json!({"label":l.name()})) {
-                                            app.ui.status = error.to_string();
+            } else {
+                let sel = app.session.state.selection.clone();
+                let picked: Vec<&filmcraft_project::TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
+                let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
+                let linked = picked.iter().any(|it| it.link.is_some());
+                let mut first = true;
+                for group in CLIP_MENU {
+                    if !std::mem::take(&mut first) {
+                        ui.separator();
+                    }
+                    for &(label, cmd) in *group {
+                        if cmd == "edit.label" {
+                            ui.add_enabled_ui(!picked.is_empty(), |ui| {
+                                let menu = ui.menu_button(crate::i18n::t(label), |ui| {
+                                    // the user's label names and colours, as in Edit â–¸ Label (#786)
+                                    let labels = app.session.prefs.labels.clone();
+                                    for l in filmcraft_project::Label::ALL {
+                                        if crate::menus::label_choice(ui, &mut app.auto, &labels, l, "timeline.clipMenu.label").clicked() {
+                                            if let Err(error) = app.session.execute("edit.label", json!({"label":l.name()})) {
+                                                app.ui.status = error.to_string();
+                                            }
+                                            ui.close();
                                         }
-                                        ui.close();
+                                    }
+                                });
+                                app.auto.add_response("timeline.clipMenu.edit.label", &menu.response, crate::i18n::t(label));
+                            });
+                            continue;
+                        }
+                        if cmd == "clip.multicam" {
+                            multicam_menu(app, ui, &picked);
+                            continue;
+                        }
+                        let label = match cmd {
+                            "clip.enable" if all_enabled => tl!("âœ“ Enable"),
+                            "clip.link" if linked => tl!("Unlink"),
+                            _ => crate::i18n::t(label),
+                        };
+                        let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
+                        app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
+                        if r.clicked() {
+                            match crate::menus::invoke(app, &ctx, cmd, json!({})) {
+                                // Unlink (#220): the clips were selected together because they were linked;
+                                // keep only the one right-clicked, so it can be dragged away from the others
+                                Ok(v) if cmd == "clip.link" && v["linked"] == json!(false) => {
+                                    if let Some(clip) = ctx.data(|d| d.get_temp::<ClipId>(menu_clip_id))
+                                        && app.session.state.selection.contains(&clip)
+                                    {
+                                        let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
                                     }
                                 }
-                                super::super::custom_colors::menu(app, ui,
-                                    json!({"clips":sel.iter().map(|id| id.0).collect::<Vec<_>>(),"items":[],"sequence":app.session.state.active_sequence.map(|id|id.0)}),
-                                    "timeline.clipMenu.label");
-                            });
-                            app.auto.add_response("timeline.clipMenu.edit.label", &menu.response, crate::i18n::t(label));
-                        });
-                        continue;
-                    }
-                    if cmd == "clip.multicam" {
-                        multicam_menu(app, ui, &picked);
-                        continue;
-                    }
-                    let label = match cmd {
-                        "clip.enable" if all_enabled => tl!("✓ Enable"),
-                        "clip.link" if linked => tl!("Unlink"),
-                        _ => crate::i18n::t(label),
-                    };
-                    let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
-                    app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
-                    if r.clicked() {
-                        match crate::menus::invoke(app, &ctx, cmd, json!({})) {
-                            // Unlink (#220): the clips were selected together because they were linked;
-                            // keep only the one right-clicked, so it can be dragged away from the others
-                            Ok(v) if cmd == "clip.link" && v["linked"] == json!(false) => {
-                                if let Some(clip) = ctx.data(|d| d.get_temp::<ClipId>(menu_clip_id))
-                                    && app.session.state.selection.contains(&clip)
-                                {
-                                    let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
-                                }
+                                Ok(_) => {}
+                                Err(e) => app.ui.status = e,
                             }
-                            Ok(_) => {}
-                            Err(e) => app.ui.status = e,
+                            ui.close();
                         }
+                    }
+                }
+            }
+            // Timeline Slider Settings / Track Slider Settings and the Unhide rows: the list's
+            // last rows under a divider, each only while its own sliders are hidden; they scroll
+            // away with the menu like every other row
+            let unhide_tracks = app.session.state.timeline_ui.track_slider_hidden;
+            if unhide_bar || unhide_tracks {
+                ui.separator();
+                if unhide_bar {
+                    let r = ui.button(tl!("Timeline Slider Settings"));
+                    app.auto.add("timeline.zoomBarSettings", r.rect, "Timeline Slider Settings");
+                    if r.clicked() {
+                        // the same settings popup as right-clicking the bar itself, in its default
+                        // state (no flyout or colour picker left over from last time)
+                        super::scrollbars::zoombar_state_reset(&ctx);
+                        app.tl.zoombar_settings_pos = Some(r.rect.min);
+                        // the two settings menus are mutually exclusive
+                        app.tl.track_slider_settings_pos = None;
+                        ui.close();
+                    }
+                }
+                if unhide_tracks {
+                    let r = ui.button(tl!("Track Slider Settings"));
+                    app.auto.add("timeline.trackSliderSettings", r.rect, "Track Slider Settings");
+                    if r.clicked() {
+                        app.tl.track_slider_settings_pos = Some(r.rect.min);
+                        // the two settings menus are mutually exclusive
+                        app.tl.zoombar_settings_pos = None;
+                        super::scrollbars::close_zoombar_popup(&ctx);
+                        ui.close();
+                    }
+                }
+                if unhide_bar {
+                    let r = ui.button(tl!("Unhide Timeline Slider"));
+                    app.auto.add("timeline.unhideZoomBar", r.rect, "Unhide Timeline Slider");
+                    if r.clicked() {
+                        crate::panels::timeline::set_zoombar_hidden(app, &ctx, false);
+                        ui.close();
+                    }
+                }
+                if unhide_tracks {
+                    let r = ui.button(tl!("Unhide Track Slider"));
+                    app.auto.add("timeline.unhideTrackSlider", r.rect, "Unhide Track Slider");
+                    if r.clicked() {
+                        crate::panels::timeline::set_track_slider_hidden(app, &ctx, false);
                         ui.close();
                     }
                 }

@@ -3669,3 +3669,40 @@
 	Previous	Sebelumnya
 	Next	Berikutnya
 	Enter a valid HH:MM:SS:FF timecode	Masukkan kode waktu HH:MM:SS:FF yang valid
+	Hide Slider	Sembunyikan Penggeser
+	Unhide Slider	Tampilkan Penggeser
+	Maximum Zoom Level	Tingkat Zoom Maksimum
+	Alternate Drag Speed (Shift + Left Click)	Kecepatan Seret Alternatif (Shift + Klik Kiri)
+	Playhead Centering Range (Triple Click)	Rentang Pemusatan Kepala Putar (Klik Tiga Kali)
+	Alternate Drag Speed	Kecepatan Seret Alternatif
+	Value:	Nilai:
+	Closest	Terdekat
+	Very Slow	Sangat Lambat
+	Far	Jauh
+	3s	3 dtk
+	5s	5 dtk
+	10s	10 dtk
+	30s	30 dtk
+	Position Indicator Color:	Warna Indikator Posisi:
+	Video Indicator Color:	Warna Indikator Video:
+	Audio Indicator Color:	Warna Indikator Audio:
+	Offline Indicator Color:	Warna Indikator Luring:
+	Timeline Slider Settings	Pengaturan Penggeser Linimasa
+	Track Slider Settings	Pengaturan Penggeser Trek
+	Unhide Timeline Slider	Tampilkan Penggeser Linimasa
+	Unhide Track Slider	Tampilkan Penggeser Trek
+	Inverted Controls	Kontrol Terbalik
+	Slider Minimap	Peta Mini Penggeser
+	Show Whole Timeline	Tampilkan Seluruh Linimasa
+	Prioritise Audio	Prioritaskan Audio
+	Position Indicator	Indikator Posisi
+	Fill Clips	Isi Klip
+	Decouple Edges	Lepaskan Sisi
+	Alternate Slider Position	Posisi Penggeser Alternatif
+	Playhead Centering	Pemusatan Kepala Putar
+	Smooth Animations	Animasi Halus
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	Anda dapat mengembalikannya kapan saja dengan mengklik kanan linimasa dan memilih "{row}" di bagian bawah daftar.
+	Maximum zoom level in seconds	Tingkat zoom maksimum dalam detik
+	Alternate drag speed multiplier	Pengali kecepatan seret alternatif
+	Playhead centering range in seconds	Rentang pemusatan kepala putar dalam detik
+	Alternate drag speed for the track sliders	Kecepatan seret alternatif untuk penggeser trek
