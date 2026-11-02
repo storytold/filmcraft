@@ -5,10 +5,11 @@
 use filmcraft_media::DemoScene;
 use filmcraft_project::ItemId;
 use filmcraft_render::offline::{OfflineReason, slate_rgba8};
+use filmcraft_time::FrameRate;
 use serde_json::json;
 
 use crate::Session;
-use crate::media_test_util::{frame_rgba, make_movie, psnr, session_with, tmp_dir};
+use crate::media_test_util::{frame_rgba, make_movie, make_movie_at, psnr, session_with, tmp_dir};
 use crate::relink::{apply_remap, derive_remap};
 
 const W: u32 = 160;
@@ -482,5 +483,51 @@ fn offline_all_is_saved_and_reopening_does_not_ask_again() {
     .unwrap();
     s.execute("file.save", json!({})).unwrap();
     assert!(open(&path).offline.prompt, "newly missing media asks again");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The first video clip of the active sequence: (its media item, its source in-point).
+fn first_clip(s: &Session) -> (ItemId, filmcraft_time::Tick) {
+    let seq = s.project.sequence(s.state.active_sequence.unwrap()).unwrap();
+    let ti = &seq.video_tracks[0].items[0];
+    (ti.item, ti.source_in)
+}
+
+// An EDL's source times are timecodes. Imported next to its media, a clip lands on the file's
+// own time. Imported elsewhere and relinked with Align Timecode, it kept the timecode as media
+// time, so it showed the file's last frame.
+#[test]
+fn edl_media_relinked_with_align_timecode_lands_where_import_puts_it() {
+    let root = tmp_dir("relink-edl-timecode");
+    let media = root.join("Media");
+    std::fs::create_dir_all(&media).unwrap();
+    // 2 s at 24 fps from 01:00:00:00; the EDL cuts in at 01:00:01:00, one second in
+    let file = media.join("A001.mxf");
+    make_movie_at(&file, DemoScene::Aurora, W, H, 48, 3600 * 24);
+    let edl = "TITLE: CUT\nFCM: NON-DROP FRAME\n\n001  A001     V     C        01:00:01:00 01:00:01:12 01:00:00:00 01:00:00:12\n* FROM CLIP NAME: A001.mxf\n";
+    let import = |dir: &std::path::Path| {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("cut.edl"), edl).unwrap();
+        let mut s = Session::default();
+        s.execute("file.import", json!({"paths": [dir.join("cut.edl").to_string_lossy()]})).unwrap();
+        s
+    };
+
+    let mut next_to_media = import(&media);
+    assert_eq!(first_clip(&next_to_media).1, FrameRate::FPS_24.tick_of(24), "one second into the file");
+
+    let mut s = import(&root.join("Edit"));
+    let (item, _) = first_clip(&s);
+    assert!(s.project.item(item).unwrap().as_media().unwrap().offline, "setup: the media is not next to the EDL");
+    // The EDL gives neither a duration nor a picture size, so those checks are off.
+    let r = s
+        .execute(
+            "media.relink",
+            json!({"item": item.0, "path": file.to_string_lossy(), "alignTimecode": true, "match": {"duration": false, "metadata": false}}),
+        )
+        .unwrap();
+    assert_eq!(r["remaining"], json!([]), "{r}");
+    assert_eq!(first_clip(&s).1, first_clip(&next_to_media).1);
+    assert_eq!(frame_rgba(&mut s, 6, 1.0).2, frame_rgba(&mut next_to_media, 6, 1.0).2, "same picture");
     let _ = std::fs::remove_dir_all(&root);
 }

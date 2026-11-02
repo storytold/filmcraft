@@ -8,7 +8,8 @@
 //!
 //! EDLs carry no frame rate and no media identity beyond reels/comments; see [`ImportOptions`].
 //! Source timecodes are imported as media time (a file starting at 01:00:00:00 would need
-//! [`crate::rebase_source_timecode`] after probing).
+//! [`crate::rebase_source_timecode`] after probing), so media items start at timecode 0 until
+//! a file is linked.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -331,6 +332,9 @@ impl Ctx<'_> {
             duration: None,
             video: chans.contains(&Ch::V).then_some((w, h, self.rate)).or(self.has_video.then_some((w, h, self.rate))),
             audio: chans.iter().any(|c| matches!(c, Ch::A(_))).then_some((48_000, 2)).or(self.has_audio.then_some((48_000, 2))),
+            // Source times are the list's timecodes, so they count from 00:00:00:00. Saying so
+            // lets Link Media's Align Timecode move them onto the file's own start (#3990).
+            start_tc: Some(0),
             ..Default::default()
         };
         if let Some(f) = file {
