@@ -582,7 +582,7 @@ fn paint_order_badge(app: &mut FilmcraftApp, ui: &egui::Ui, bounds: Rect, id: It
         let fitted = (font(app) - 2.0).max(10.0) * scale;
         galley = ui.painter().layout_no_wrap(text.clone(), Tokens::mono(fitted), Color32::WHITE);
     }
-    let size = (galley.size() + vec2(8.0, 4.0)).max(vec2(16.0, 16.0));
+    let size = (galley.size() + vec2(8.0, 4.0)).max(vec2(16.0, 16.0).min(bounds.size()));
     let r = Rect::from_min_size(pos2(bounds.min.x, bounds.center().y - size.y / 2.0), size);
     let text_rect = Rect::from_center_size(r.center(), galley.size());
     ui.painter().rect_filled(r, size.y / 2.0, ORDER_BLUE);
@@ -981,6 +981,7 @@ fn card(
     show_name: bool,
     show_dur: bool,
     sense: Sense,
+    footer_scale: f32,
     order: &SelectionOrder,
 ) -> Option<(egui::Response, Option<Rect>)> {
     let t = app.tokens;
@@ -1056,10 +1057,10 @@ fn card(
     // The project-sized slot keeps filenames still when the selected batch changes.
     let compact = th.width() < slot.x + 60.0;
     let lead = if compact { slot.x.min((th.width() - 12.0).max(16.0)) + 4.0 } else { 0.0 };
-    // the compact badge takes the footer's left end, within the card's own rect (which the
-    // Freeform Zoom scales as a whole); the pill is centred in it
+    // Compact badge bounds shrink with Freeform zoom so normally spaced rows stay clear.
     let bounds = if compact {
-        Rect::from_min_max(pos2(th.min.x, th.max.y + 1.0), pos2(th.min.x + lead - 4.0, r.max.y.max(th.max.y + 1.0)))
+        let bottom = r.max.y.min(th.max.y + 20.0 * footer_scale.min(1.0));
+        Rect::from_min_max(pos2(th.min.x, th.max.y + 1.0), pos2(th.min.x + lead - 4.0, bottom.max(th.max.y + 1.0)))
     } else {
         Rect::from_min_size(th.min + vec2(4.0, 4.0), slot)
     };
@@ -1188,7 +1189,7 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
                 let id = ids[i - bins.len()];
                 let Some(kind) = app.session.project.item(id).map(|x| x.kind.clone()) else { continue };
                 let was_selected = app.session.state.project_selection.contains(&id);
-                if let Some((resp, _)) = card(app, ui, r, id, &v.prefix, true, true, Sense::click_and_drag(), &order) {
+                if let Some((resp, _)) = card(app, ui, r, id, &v.prefix, true, true, Sense::click_and_drag(), 1.0, &order) {
                     note_hit(ui, v, id, r);
                     let name_r = Rect::from_min_max(pos2(r.min.x, r.min.y + th_h), r.max);
                     slow_click_rename(app, ui, &resp, name_r, id, was_selected);
@@ -1281,7 +1282,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             let r = Rect::from_min_size(canvas.min + vec2(c.x, c.y) * z + off, vec2(c.size * z, c.size * z * 9.0 / 16.0 + 20.0));
             let Some(kind) = app.session.project.item(ItemId(c.item)).map(|x| x.kind.clone()) else { continue };
             let Some((resp, order_badge)) =
-                card(app, ui, r, ItemId(c.item), &v.prefix, opts.show_names, opts.show_durations, Sense::click_and_drag(), &selection_order)
+                card(app, ui, r, ItemId(c.item), &v.prefix, opts.show_names, opts.show_durations, Sense::click_and_drag(), z, &selection_order)
             else {
                 continue;
             };
