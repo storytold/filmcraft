@@ -183,6 +183,8 @@ fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, lay
         let x = layout.x_of(m.start);
         let c = m.custom_color.map_or_else(|| app.session.prefs.labels.rgb(m.color), |c| c.0);
         let c = Color32::from_rgb(c[0], c[1], c[2]);
+        // locked (Markers ▸ Lock Markers): the darker fill of a disabled clip
+        let c = if seq.markers_locked { Color32::from_rgb(c.r() / 2, c.g() / 2, c.b() / 2) } else { c };
         let glyph = |x| Rect::from_min_size(pos2(x - 4.0, marker_y), vec2(8.0, 12.0));
         if let Some(band) = marker_range_rect(layout, m).filter(|r| r.width() > 0.0) {
             clip.rect_filled(band, 0.0, c.gamma_multiply(0.6));

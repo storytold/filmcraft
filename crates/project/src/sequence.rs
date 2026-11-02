@@ -169,6 +169,10 @@ pub struct Sequence {
     /// Split In/Out points (Markers ▸ Mark Split): per-channel overrides of `mark_in`/`mark_out`.
     #[serde(default, skip_serializing_if = "SplitMarks::is_empty")]
     pub split: SplitMarks,
+    /// Markers ▸ Lock Markers: the sequence's markers keep their times. A time change is refused
+    /// and ripple edits leave them where they are; renaming, recolouring and deleting still work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub markers_locked: bool,
 }
 
 /// Split edit points: separate video and audio In/Out points (Markers ▸ Mark Split). `None` means

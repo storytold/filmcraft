@@ -114,3 +114,46 @@ fn mark_selection_in_the_ruler_menu_marks_the_selected_clips() {
     assert_eq!(q.mark_in, Some(start), "the In point is the selection's start");
     assert_eq!(q.mark_out, Some(end - frame), "the Out point is its last frame");
 }
+
+/// Lock Markers in the ruler menu locks the sequence's markers, shows its checkmark in the
+/// Markers menu while they are locked, and the markers draw darker.
+#[test]
+fn lock_markers_in_the_ruler_menu_locks_them_and_dims_them() {
+    fn fills(shape: &egui::Shape, r: egui::Rect, out: &mut Vec<egui::Color32>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| fills(s, r, out)),
+            egui::Shape::Path(p) if p.visual_bounding_rect().intersects(r) => out.push(p.fill),
+            _ => {}
+        }
+    }
+    let mut d = Driver::demo();
+    let id = d.ok("engine.execute", json!({"command": "markers.add", "params": {"seconds": 2.0}}))["marker"].as_u64().unwrap();
+    d.frames(2);
+    let rect = {
+        let v = d.ok("ui.elements", json!({"prefix": format!("timeline.marker.{id}")}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == format!("timeline.marker.{id}")).unwrap().clone();
+        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
+        egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+    };
+    let painted = |d: &Driver| {
+        let mut out = Vec::new();
+        d.harness.output().shapes.iter().for_each(|c| fills(&c.shape, rect, &mut out));
+        out
+    };
+    let [r, g, b] = {
+        let app = d.harness.state();
+        let m = app.session.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == id).unwrap().clone();
+        app.session.prefs.labels.rgb(m.color)
+    };
+    assert!(painted(&d).contains(&egui::Color32::from_rgb(r, g, b)), "unlocked, the marker's own colour");
+    let (x, y) = d.centre("timeline.ruler");
+    d.ok("ui.click", json!({"x": x + 300.0, "y": y, "button": "right"}));
+    assert!(has(&mut d, "timeline.rulerMenu.markers.lock"), "Lock Markers is offered");
+    d.ok("ui.click", json!({"id": "timeline.rulerMenu.markers.lock"}));
+    assert!(d.harness.state().session.active_sequence().unwrap().markers_locked, "it locks the markers");
+    let checked = filmcraft_ui_egui::menus::menu_items(d.harness.state()).into_iter().find(|i| i.id == "markers.lock").and_then(|i| i.checked);
+    assert_eq!(checked, Some(true), "Markers ▸ Lock Markers shows its checkmark");
+    d.frames(2);
+    let dim = egui::Color32::from_rgb(r / 2, g / 2, b / 2);
+    assert!(painted(&d).contains(&dim) && !painted(&d).contains(&egui::Color32::from_rgb(r, g, b)), "locked, the darker fill");
+}
