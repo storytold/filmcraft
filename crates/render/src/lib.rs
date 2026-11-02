@@ -603,11 +603,20 @@ pub(crate) fn item_layer_ex(
 }
 
 /// The layer of a plain media frame (see [`item_layer_ex`]): only the part with alpha when the frame
-/// has an alpha plane, the whole picture otherwise (opaque when it has no alpha at all).
+/// has an alpha plane, the whole picture otherwise (opaque when it has no alpha at all, or when its
+/// alpha is opaque everywhere).
 fn plain_layer(frame: &Arc<VideoFrame>, n: usize, opacity: f32, blend: Blend) -> Layer {
     match frame.alpha_region(n) {
         Some(r) => {
             let (r, px) = frame.to_linear_f32_region(n, None, r);
+            // An RGB PNG or a JPEG decodes to RGBA8 with alpha 255 everywhere: the whole picture,
+            // every pixel opaque. Like a frame with no alpha, it becomes the canvas when it is the
+            // bottom layer, instead of being mixed over a zero-filled one (another 33 MB a frame at
+            // 1080p, for every frame an export renders at once).
+            let (w, h) = frame.decimated_size(n);
+            if (r.x, r.y, r.w, r.h) == (0, 0, w, h) && px.as_chunks::<4>().0.iter().all(|p| p[3] == 1.0) {
+                return Layer::Full { image: Image { w: r.w, h: r.h, px }, opacity, blend, opaque: true };
+            }
             Layer::Region { image: Image { w: r.w, h: r.h, px }, x: r.x, y: r.y, opacity, blend }
         }
         None if matches!(frame.data, PixelData::Yuv8 { alpha: None, .. }) => Layer::Frame { frame: Arc::clone(frame), n, opacity, blend },
