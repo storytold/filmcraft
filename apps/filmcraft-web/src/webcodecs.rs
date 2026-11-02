@@ -448,6 +448,8 @@ pub struct WcSource {
 enum Drive {
     /// Work is under way (or bytes are loading): retry later.
     Waiting,
+    /// Missing source bytes cannot be repaired by switching decoders.
+    ReadError(std::io::Error),
     /// The decoder failed: use our own.
     Failed,
 }
@@ -512,7 +514,7 @@ impl WcSource {
                     Ok(()) => {}
                     // the bytes are being fetched (pending is marked): feed on the next try
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Drive::Waiting,
-                    Err(_) => return Drive::Failed,
+                    Err(e) => return Drive::ReadError(e),
                 }
                 let Some(chunk_ctor) = ctor("EncodedVideoChunk") else { return Drive::Failed };
                 let init = obj(&[
@@ -604,6 +606,7 @@ impl MediaSource for WcSource {
             return Ok(f.clone());
         }
         match self.drive(i, want) {
+            Drive::ReadError(e) => Err(MediaError::Io(format!("{}: {e}", self.info.name))),
             Drive::Waiting => {
                 self.collect(&mut c, want);
                 if let Some(f) = c.frames.get(&want) {

@@ -4,7 +4,7 @@ use filmcraft_render::Blend;
 use filmcraft_render::plan::execute_cpu;
 
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
+    let instance = crate::adapter::native_instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }
@@ -553,4 +553,146 @@ fn hdr_input_gpu_matches_cpu() {
         assert!(error <= 2, "{name}: GPU differs from the CPU by up to {error} codes");
         assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
     }
+}
+
+/// Regression for #3418: several threads creating instances and devices, using them and dropping
+/// them at once deadlocked inside the NVIDIA driver (Vulkan loader critical section in
+/// `vkDestroyDevice` against other devices' `create_texture`/`submit`, plus WGL threads started by
+/// GL-enabled instances). Each thread makes its own instance and device, as concurrent windows and exports do.
+#[test]
+fn many_threads_create_use_and_drop_devices_at_once() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    const THREADS: usize = 16;
+    const ROUNDS: usize = 4;
+    let (tx, rx) = mpsc::channel();
+    for _ in 0..THREADS {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut used = 0usize;
+            for _ in 0..ROUNDS {
+                let Some((device, queue)) = device() else { break };
+                let tex = device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::RED), store: wgpu::StoreOp::Store },
+                    })],
+                    ..Default::default()
+                }));
+                queue.submit([enc.finish()]);
+                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                used += 1;
+                drop((view, tex, queue, device));
+            }
+            let _ = tx.send(used);
+        });
+    }
+    drop(tx);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    for i in 0..THREADS {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(rx.recv_timeout(left).is_ok(), "only {i} of {THREADS} threads finished within 120 s: device setup deadlocked");
+    }
+}
+
+/// Require an adapter for the explicit lifecycle regressions; absence is not a passing skip.
+fn retained_readback_compositor() -> GpuCompositor {
+    let (dev, q) = device().expect("GPU adapter required for explicit readback regression");
+    let mut compositor = GpuCompositor::new(&dev, &q);
+    compositor.accum_readback_buf = Some((
+        dev.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback-cleanup-regression"),
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        }),
+        256,
+    ));
+    compositor
+}
+
+/// Failed buffers must leave the cache; a new copy must recreate usable staging storage.
+fn assert_readback_retired_and_rendering_recovers(compositor: &mut GpuCompositor) {
+    assert!(compositor.accum_readback_buf.is_none(), "failed staging buffer remained cached");
+    let plan = FramePlan::Layers { width: 1, height: 1, layers: vec![] };
+    let (width, height, rgba) = compositor.render_export_prepared(&plan, None).expect("readback recovers with new staging storage");
+    assert_eq!((width, height, rgba.len()), (1, 1, 4));
+    assert!(compositor.accum_readback_buf.is_some(), "successful readback must retain its cache");
+    let again = compositor.read_accumulator().expect("successful staging storage remains reusable");
+    assert_eq!(again, (width, height, rgba));
+}
+
+/// A wait failure after a real completed map must not retain the failed staging storage.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_after_failed_wait() {
+    let mut compositor = retained_readback_compositor();
+    assert!(
+        compositor
+            .map_accumulator_with_wait((1, 1, 256), |device, rx| {
+                assert!(wait_mapped(device, rx).is_some());
+                None
+            })
+            .is_none()
+    );
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+}
+
+/// Reject hostile conversion dimensions without retaining a successfully mapped buffer.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_after_rejected_conversion() {
+    let mut compositor = retained_readback_compositor();
+    assert!(compositor.map_accumulator((u32::MAX, u32::MAX, 256)).is_none());
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+}
+
+/// Retire a still-pending map before the next copy/readback attempt uses the cache.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_pending_map_after_failed_wait() {
+    let mut compositor = retained_readback_compositor();
+    assert!(compositor.map_accumulator_with_wait((1, 1, 256), |_, _| None).is_none());
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+}
+
+/// Real callback rejection may already leave native storage unmapped; do not unmap it twice.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_rejected_native_map() {
+    let mut compositor = retained_readback_compositor();
+    let errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let observed = errors.clone();
+    compositor.device.on_uncaptured_error(Arc::new(move |error| {
+        observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(format!("{error}"));
+    }));
+    compositor.accum_readback_buf.as_ref().unwrap().0.destroy();
+    assert!(
+        compositor
+            .map_accumulator_with_wait((1, 1, 256), |device, rx| {
+                device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }).unwrap();
+                assert!(matches!(rx.recv_timeout(MAP_TIMEOUT), Ok(Err(_))), "expected an actual rejected map callback");
+                None
+            })
+            .is_none()
+    );
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+    assert!(
+        !errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|error| error.contains("Buffer is not mapped")),
+        "cleanup attempted to unmap an already rejected mapping"
+    );
 }
