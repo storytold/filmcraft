@@ -198,11 +198,11 @@ fn is_word_char(c: char) -> bool {
     c.is_alphabetic() || c == '\'' || c == '’'
 }
 
-/// Whether a '-' right after `prev` and before a digit is a negative sign. Only at the
-/// start of a number (after whitespace or an opening bracket); inside "COVID-19" or
-/// "F-16" the hyphen joins a name to a number.
+/// Whether a '-' right after `prev` and before a digit is a negative sign. Right after a
+/// letter or digit ("COVID-19", "F-16") the hyphen joins a name to a number; anywhere else
+/// (after whitespace, brackets, '=', quotes, commas, colons) it is a minus.
 fn starts_negative_number(prev: char) -> bool {
-    prev.is_whitespace() || matches!(prev, '(' | '[' | '{')
+    !prev.is_alphanumeric()
 }
 
 /// The char at byte offset `i` in `s`, if `i` is a char boundary inside `s`.

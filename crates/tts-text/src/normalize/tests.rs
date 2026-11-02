@@ -109,6 +109,9 @@ fn hyphen_inside_a_name_is_not_minus() {
     }
     assert!(words("Temp: -5", Lang::EnUs).ends_with("minus five"));
     assert!(words("(-5)", Lang::EnUs).contains("minus five"));
+    for s in ["x=-5", "\"-5\"", ",-5", "Temp:-5"] {
+        assert!(words(s, Lang::EnUs).contains("minus five"), "{s:?} lost its sign");
+    }
 }
 
 #[test]
