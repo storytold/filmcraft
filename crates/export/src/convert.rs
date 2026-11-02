@@ -23,7 +23,7 @@ pub struct Planes444<'a> {
 
 /// Limited-range 10-bit 4:4:4 with matrix (Kr, Kb) from straight RGBA8, or from encoded R'G'B'
 /// floats (3 per pixel) when `hdr` is given. `alpha` (full range, 0 = transparent) takes the
-/// RGBA8 alpha; it stays opaque for float input, which carries none.
+/// RGBA8 alpha; it is opaque where `rgba` holds none (HDR frames, which carry no RGBA8).
 pub fn to_yuv444_10(rgba: &[u8], hdr: Option<&[f32]>, w: usize, h: usize, m: Matrix, planes: Planes444<'_>) {
     let Matrix { kr, kb } = m;
     let Planes444 { y, cb, cr, alpha } = planes;
@@ -45,7 +45,7 @@ pub fn to_yuv444_10(rgba: &[u8], hdr: Option<&[f32]>, w: usize, h: usize, m: Mat
             *crv = (512.0 + 896.0 * (r - yy) / sr).round().clamp(4.0, 1019.0) as u16;
         }
     });
-    if let (Some(a), None) = (alpha, hdr) {
+    if let Some(a) = alpha {
         for (i, dst) in a.iter_mut().enumerate().take(n) {
             *dst = rgba.get(i * 4 + 3).map_or(1023, |&v| ((v as u32 * 1023 + 127) / 255) as u16);
         }

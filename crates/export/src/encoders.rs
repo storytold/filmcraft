@@ -125,7 +125,7 @@ pub(crate) fn aac_factory(_format: Format, sample_rate: u32, channels: u32, s: &
     )
 }
 
-/// ProRes 422 encoder (HQ unless the settings pick another flavour): sRGB/709 RGBA8 → 10-bit limited-range BT.709 4:2:2.
+/// ProRes 422 encoder (HQ unless the settings pick another flavour): encoded floats → 10-bit limited-range 4:2:2.
 struct ProResEncoder {
     enc: filmcraft_prores::Encoder,
     profile: filmcraft_prores::Profile,
@@ -207,7 +207,7 @@ pub fn dnx_profile(name: &str) -> filmcraft_dnx::Profile {
     }
 }
 
-/// DNxHR encoder (RGBA8 or HDR floats → BT.709 / BT.2020 limited-range 4:2:2; 8-bit for
+/// DNxHR encoder (RGBA8 or encoded floats → BT.709 / BT.2020 limited-range 4:2:2; 8-bit for
 /// LB/SQ/HQ, 10-bit for HQX).
 struct DnxEncoder {
     enc: filmcraft_dnx::Encoder,
