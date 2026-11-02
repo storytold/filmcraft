@@ -149,6 +149,9 @@ pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 /// Egui memory key of the open Delete Redoable Actions confirmation.
 const CONFIRM_DELETE_REDOABLE: &str = "history-delete-redoable";
 
+/// Egui memory key of the open Delete Work Area Render Files confirmation.
+const CONFIRM_DELETE_WORK_AREA: &str = "sequence-delete-work-area-render-files";
+
 /// The History panel's ≡ menu: Delete Redoable Actions and Clear History (automation ids
 /// `panel.menu.History.deleteRedoable` and `panel.menu.History.clear`). Returns true to close it.
 pub fn history_panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
@@ -179,6 +182,54 @@ pub fn route_history(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, para
     }
     ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CONFIRM_DELETE_REDOABLE), true));
     Some(Ok(serde_json::json!({"dialog": "deleteRedoable"})))
+}
+
+/// Delete Work Area Render Files from the Sequence menu or a key (no parameters) asks for OK
+/// first. Returns None for other ids, and for calls with parameters, which run the command.
+pub fn route_work_area_delete(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &serde_json::Value) -> Option<Result<serde_json::Value, String>> {
+    if id != "sequence.deleteWorkAreaRenderFiles" || !params.as_object().is_none_or(|m| m.is_empty()) {
+        return None;
+    }
+    if app.session.active_sequence().and_then(|q| q.work_area).is_none() {
+        return Some(Err("enable the Work Area Bar before deleting its render files".into()));
+    }
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CONFIRM_DELETE_WORK_AREA), true));
+    Some(Ok(serde_json::json!({"dialog": "deleteWorkAreaRenderFiles"})))
+}
+
+/// The Delete Work Area Render Files confirmation (automation ids
+/// `sequence.deleteWorkAreaRenderFiles.cancel` and `sequence.deleteWorkAreaRenderFiles.ok`).
+pub fn work_area_delete_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let key = egui::Id::unique(CONFIRM_DELETE_WORK_AREA);
+    if !ctx.data(|d| d.get_temp::<bool>(key)).unwrap_or(false) {
+        return;
+    }
+    let mut close = false;
+    egui::Window::new(tl!("Delete Work Area Render Files"))
+        .id(key.with("window"))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .show(ctx, |ui| {
+            ui.label(tl!("Delete preview files that overlap the work area?"));
+            ui.horizontal(|ui| {
+                let r = ui.button(tl!("Cancel"));
+                app.auto.add("sequence.deleteWorkAreaRenderFiles.cancel", r.rect, "Cancel");
+                close |= r.clicked();
+                let r = ui.button(tl!("OK"));
+                app.auto.add("sequence.deleteWorkAreaRenderFiles.ok", r.rect, "OK");
+                if r.clicked() {
+                    if let Err(e) = app.session.execute("sequence.deleteWorkAreaRenderFiles", serde_json::json!({})) {
+                        app.ui.status = e.to_string();
+                    }
+                    close = true;
+                }
+            });
+        });
+    if close || crate::widgets::escape_closes(ctx) {
+        ctx.data_mut(|d| d.remove::<bool>(key));
+    }
 }
 
 /// The Delete Redoable Actions confirmation (automation ids `history.deleteRedoable.cancel` and

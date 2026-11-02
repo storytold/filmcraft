@@ -97,6 +97,7 @@
 	Darkest	最暗
 	Delete Render Files	删除渲染文件
 	Delete Render Files In to Out	删除入点到出点间的渲染文件
+	Delete Work Area Render Files	删除工作区域渲染文件
 	Delete Tracks…	删除轨道…
 	Delete Transcript	删除转录文稿
 	Demo Footage	演示素材
@@ -271,6 +272,8 @@
 	Rename…	重命名…
 	Render Audio	渲染音频
 	Render Effects In to Out	渲染入点到出点间的效果
+	Render Effects in Work Area	渲染工作区域中的效果
+	Render Entire Work Area	渲染整个工作区域
 	Render In to Out	渲染入点到出点
 	Render Selection	渲染所选对象
 	Replace Fonts in Projects…	替换项目中的字体…
@@ -3639,6 +3642,9 @@
 	Change the sequence to match the clip's settings?	是否更改序列以匹配剪辑的设置？
 	Change Sequence Settings	更改序列设置
 	Keep Existing Settings	保留现有设置
+
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	删除与工作区域重叠的预览文件？
 	Temporal Interpolation	时间插值
 	Select items to clear	选择要清除的项目
 	Opens in your web browser: {url}	在网页浏览器中打开：{url}

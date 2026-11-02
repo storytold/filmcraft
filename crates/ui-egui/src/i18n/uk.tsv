@@ -91,6 +91,7 @@
 	Darkest	Найтемніший
 	Delete Render Files	Видалити файли рендерингу
 	Delete Render Files In to Out	Видалити файли рендерингу між початковою та кінцевою позначками
+	Delete Work Area Render Files	Видалити файли рендерингу робочої області
 	Delete Tracks…	Видалити доріжки…
 	Delete Transcript	Видалити транскрипцію
 	Demo Footage	Демонстраційні матеріали
@@ -260,6 +261,8 @@
 	Rename…	Перейменувати…
 	Render Audio	Рендерити аудіо
 	Render Effects In to Out	Рендерити ефекти між початковою та кінцевою позначками
+	Render Effects in Work Area	Рендерити ефекти в робочій області
+	Render Entire Work Area	Рендерити всю робочу область
 	Render In to Out	Рендерити між початковою та кінцевою позначками
 	Render Selection	Рендерити виділення
 	Replace Fonts in Projects…	Замінити шрифти в проєктах…
@@ -361,6 +364,8 @@
 	Zoom to Sequence	Умістити секвенцію
 	Project Notes	Нотатки проєкту
 
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	Видалити файли попереднього перегляду, що перетинають робочу область?
 # Marker editing and shared custom colors
 	A range marker needs a positive duration	Тривалість маркера діапазону має бути додатною
 	Add Custom Color	Додати власний колір

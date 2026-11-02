@@ -96,6 +96,7 @@
 	Darkest	Najciemniejsze
 	Delete Render Files	Usuń pliki renderowania
 	Delete Render Files In to Out	Usuń pliki renderowania od wejścia do wyjścia
+	Delete Work Area Render Files	Usuń pliki renderowania obszaru roboczego
 	Delete Tracks…	Usuń ścieżki…
 	Delete Transcript	Usuń transkrypcję
 	Demo Footage	Materiał demonstracyjny
@@ -267,6 +268,8 @@
 	Rename…	Zmień nazwę…
 	Render Audio	Renderuj audio
 	Render Effects In to Out	Renderuj efekty od wejścia do wyjścia
+	Render Effects in Work Area	Renderuj efekty w obszarze roboczym
+	Render Entire Work Area	Renderuj cały obszar roboczy
 	Render In to Out	Renderuj od wejścia do wyjścia
 	Render Selection	Renderuj zaznaczenie
 	Replace Fonts in Projects…	Zastąp czcionki w projektach…
@@ -3621,3 +3624,6 @@
 	No matching text.	Brak pasującego tekstu.
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265 (HEVC) wymaga sprzętowego kodera (NVENC na kartach NVIDIA, VideoToolbox w macOS); na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera H.265. Wybierz H.264 lub ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 wymaga sprzętowego kodera; na tym komputerze nie znaleziono żadnego, a FilmCraft nie ma jeszcze programowego kodera AV1.
+
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	Usunąć pliki podglądu nakładające się na obszar roboczy?

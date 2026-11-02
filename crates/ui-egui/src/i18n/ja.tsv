@@ -109,6 +109,7 @@
 	Darkest	最も暗い
 	Delete Render Files	レンダリングファイルを削除
 	Delete Render Files In to Out	イン点からアウト点までのレンダリングファイルを削除
+	Delete Work Area Render Files	ワークエリアのレンダリングファイルを削除
 	Delete Tracks…	トラックを削除…
 	Delete Transcript	文字起こしを削除
 	Demo Footage	デモ素材
@@ -282,6 +283,8 @@
 	Rename…	名前を変更…
 	Render Audio	オーディオをレンダリング
 	Render Effects In to Out	イン点からアウト点までのエフェクトをレンダリング
+	Render Effects in Work Area	ワークエリアのエフェクトをレンダリング
+	Render Entire Work Area	ワークエリア全体をレンダリング
 	Render In to Out	イン点からアウト点までをレンダリング
 	Render Selection	選択範囲をレンダリング
 	Replace Fonts in Projects…	プロジェクト内のフォントを置換…
@@ -3672,6 +3675,9 @@
 	Change the sequence to match the clip's settings?	シーケンスをクリップの設定に合わせますか？
 	Change Sequence Settings	シーケンス設定を変更
 	Keep Existing Settings	現在の設定を維持
+
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	ワークエリアと重なるプレビューファイルを削除しますか？
 	Temporal Interpolation	時間補間
 	Select items to clear	消去する項目を選択してください
 	Opens in your web browser: {url}	ウェブブラウザーで開きます：{url}

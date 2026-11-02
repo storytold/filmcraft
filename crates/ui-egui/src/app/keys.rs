@@ -135,6 +135,9 @@ impl FilmcraftApp {
     /// Run the commands of the bindings `match_shortcuts` fired, as the focused panel scopes them.
     fn fire_shortcuts(&mut self, ctx: &egui::Context, fire: Vec<String>) {
         for id in fire {
+            // The keys of an In/Out render or delete command and of its work-area command run the
+            // one of the two that the Sequence menu shows.
+            let id = menus::shown_render_command(&self.session, &id).to_string();
             // Clear in the Project panel removes the selected bin when no item is selected (#587).
             let clear = if self.ui.focused == PanelKind::Project && id == "project.delete" {
                 self.ui.project_panel.rename = None;

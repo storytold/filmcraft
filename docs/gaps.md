@@ -291,6 +291,10 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   software decode of a single-tile stream is bound by its serial tile decode (65–80 % of a
   frame; no row-level frame threading, references are waited for as whole frames); 8K is not
   real time.
+- **Done:** With the Work Area Bar on, Sequence ▸ Render Effects in Work Area renders the red
+  render-bar sections inside the work area and Render Entire Work Area renders the red and yellow
+  ones, keeping existing previews; Delete Work Area Render Files asks for OK, then deletes the
+  preview files that hold frames in the work area.
 - **Done:** Render (Effects) In to Out renders only the frames between In and Out, as partial
   previews named by segment hash and relative frames, instead of every segment In/Out touches
   (#424); Render Audio still renders whole audio segments. AV1 software decode runs deblocking,

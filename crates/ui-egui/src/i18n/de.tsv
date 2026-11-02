@@ -111,6 +111,7 @@
 	Darkest	Sehr dunkel
 	Delete Render Files	Renderdateien löschen
 	Delete Render Files In to Out	Renderdateien von In bis Out löschen
+	Delete Work Area Render Files	Renderdateien im Arbeitsbereich löschen
 	Delete Tracks…	Spuren löschen…
 	Delete Transcript	Transkript löschen
 	Demo Footage	Demomaterial
@@ -295,6 +296,8 @@
 	Rename…	Umbenennen…
 	Render Audio	Audio rendern
 	Render Effects In to Out	Effekte von In bis Out rendern
+	Render Effects in Work Area	Effekte im Arbeitsbereich rendern
+	Render Entire Work Area	Gesamten Arbeitsbereich rendern
 	Render In to Out	Von In bis Out rendern
 	Render Selection	Auswahl rendern
 	Replace Fonts in Projects…	Schriften in Projekten ersetzen…
@@ -3619,6 +3622,9 @@
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Der Kontrollserver ist deaktiviert: FILMCRAFT_CONTROL_TOKEN muss 64 zufällige Hexzeichen enthalten (siehe docs/control-protocol.md)
 
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	Vorschaudateien löschen, die den Arbeitsbereich überlappen?
 	Temporal Interpolation	Zeitliche Interpolation
 	Select items to clear	Wähle die zu löschenden Elemente aus
 	A range marker needs a positive duration	Ein Bereichsmarker benötigt eine positive Dauer

@@ -96,6 +96,7 @@
 	Darkest	En Koyu
 	Delete Render Files	İşleme Dosyalarını Sil
 	Delete Render Files In to Out	Girişten Çıkışa İşleme Dosyalarını Sil
+	Delete Work Area Render Files	Çalışma Alanı İşleme Dosyalarını Sil
 	Delete Tracks…	İzleri Sil…
 	Delete Transcript	Transkripti Sil
 	Demo Footage	Demo Görüntü
@@ -267,6 +268,8 @@
 	Rename…	Yeniden Adlandır…
 	Render Audio	Sesi İşle
 	Render Effects In to Out	Girişten Çıkışa Efektleri İşle
+	Render Effects in Work Area	Çalışma Alanındaki Efektleri İşle
+	Render Entire Work Area	Tüm Çalışma Alanını İşle
 	Render In to Out	Girişten Çıkışa İşle
 	Render Selection	Seçimi İşle
 	Replace Fonts in Projects…	Projelerdeki Yazı Tiplerini Değiştir…
@@ -3626,3 +3629,6 @@
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1 bir donanım kodlayıcısı gerektirir; bu makinede hiçbiri bulunamadı ve FilmCraft henüz yazılımsal AV1 kodlayıcıya sahip değil.
 	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Donanım kod çözme: Otomatik, desteklediği akışlar için sistemin video kod çözücüsünü (macOS'ta VideoToolbox, Windows'ta Media Foundation, Linux'ta H.264 ve HEVC için VA-API), diğer her şey veya donanım başarısız olduğunda ise FilmCraft'ın kendi kod çözücüsünü kullanır. Zaten açık olan medya yeniden açılana kadar kod çözücüsünü korur.
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Denetim sunucusu devre dışı: FILMCRAFT_CONTROL_TOKEN 64 rastgele onaltılık karakter içermelidir (bkz. docs/control-protocol.md)
+
+# Sequence: the Delete Work Area Render Files confirmation.
+	Delete preview files that overlap the work area?	Çalışma alanıyla çakışan önizleme dosyaları silinsin mi?

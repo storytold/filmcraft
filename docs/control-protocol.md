@@ -174,6 +174,18 @@ covers every clip. The edit is the same either way. From Bin starts each clip at
 no media outside its range, so there a kept In is moved to the subclip's first or last frame, and
 the result's `sourceInClamped: [ids]` (present with `keepSourceIn`) names the clips it was moved for.
 
+**Work area previews**: `sequence.renderEffectsInWorkArea {wait?}` renders the red sections of
+the render bar inside the active sequence's work area, and `sequence.renderEntireWorkArea
+{wait?}` renders the red and yellow ones; frames that already have a preview are kept, and
+`wait` defaults to `false`. `sequence.deleteWorkAreaRenderFiles` deletes every preview file that
+holds a frame inside the work area, except a file another sequence also uses, and returns
+`{deleted}`. All three return an error when the active sequence has no work area. `engine.execute`
+and `ui.menu.invoke` with a non-empty `params` object run the delete at once; `ui.menu.invoke`
+without params, the Sequence menu and a key open a confirmation first (ids
+`sequence.deleteWorkAreaRenderFiles.ok|cancel`). While the Work Area Bar is on, the keys of
+`sequence.renderEffectsInToOut`, `sequence.renderInToOut` and `sequence.deleteRenderFilesInToOut`
+run the matching work-area command.
+
 **Colour** (`crates/engine/src/color.rs`): `sequence.colorSettings {workingSpace: rec709|rec2100-pq|
 rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpace?: auto|<id>, pixelAspect?: [num, den]|file}`,
 `color.spaces`, `media.colorInfo {item}`; LUTs: `lut.import {path, name?}`, `lut.list`,
