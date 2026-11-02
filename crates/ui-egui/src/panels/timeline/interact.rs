@@ -1383,7 +1383,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                         _ => crate::i18n::t(label),
                     };
                     let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
-                    app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
+                    app.auto.add_response(&format!("timeline.clipMenu.{cmd}"), &r, label);
                     if r.clicked() {
                         match crate::menus::invoke(app, &ctx, cmd, json!({})) {
                             // Unlink (#220): the clips were selected together because they were linked;

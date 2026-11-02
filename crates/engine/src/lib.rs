@@ -864,6 +864,9 @@ impl Session {
     /// them standing in for the selection, so every other condition (an open sequence, a filled
     /// clipboard, the kind of item…) still applies. The selections are put back before returning.
     fn enabled_for(&mut self, spec: &CommandSpec, params: &Value) -> std::result::Result<(), String> {
+        if commands::names_its_cut(spec.id, params) {
+            return Ok(());
+        }
         let by_selection = (spec.enabled)(self);
         if by_selection.is_ok() {
             return by_selection;

@@ -1162,3 +1162,38 @@ fn reveal_nested_and_join_through_edits_are_enabled_only_when_they_can_act() {
     s.execute("sequence.joinThroughEdits", json!({})).unwrap();
     assert!(!s.is_enabled("sequence.joinThroughEdits"), "all joined");
 }
+
+/// A sequence whose only cuts are ones the link rule keeps: the command stays reachable so a named
+/// cut gets its own reason and Join All answers that there is nothing to join, while
+/// `joinable_through_edits` (what the clip menu asks) is empty.
+#[test]
+fn only_protected_cuts_keep_the_exact_reason_and_leave_nothing_joinable() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Pair", "video": 1, "audio": 1})).unwrap();
+    let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
+    s.execute("timeline.place", json!({"item": item.0, "seconds": 0.0})).unwrap();
+    s.execute("playhead.set", json!({"frame": 30})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    let audio = s.active_sequence().unwrap().audio_tracks[0].clone();
+    let video = s.active_sequence().unwrap().video_tracks[0].clone();
+    assert_eq!((video.items.len(), audio.items.len()), (2, 2));
+    s.execute("timeline.select", json!({"clips": [audio.items[1].id.0]})).unwrap();
+    s.execute("clip.audioChannels", json!({"channels": [1]})).unwrap();
+    s.execute("edit.deselectAll", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert!(filmcraft_edit::through::joinable_through_edits(q).is_empty(), "the audio cut differs and the video cut is kept for it");
+    // nothing can join: menus and command discovery say so
+    assert!(!s.is_enabled("sequence.joinThroughEdits"));
+    let listed = s.execute("command.list", json!({})).unwrap();
+    let listed = listed.as_array().unwrap().iter().find(|c| c["id"] == "sequence.joinThroughEdits").unwrap().clone();
+    assert_eq!(listed["enabled"], json!(false));
+    let before = s.project.clone();
+    // a named cut still reaches the command and gets its own reason, not the gate's
+    assert_eq!(
+        s.execute("sequence.joinThroughEdits", json!({"cut": [video.items[0].id.0, video.items[1].id.0]})).unwrap_err().to_string(),
+        "that cut cannot be joined while its track is locked or its linked audio cannot join"
+    );
+    let all = s.execute("sequence.joinThroughEdits", json!({"all": true})).unwrap_err().to_string();
+    assert!(all.contains("there are no through edits to join"), "{all}");
+    assert_eq!(*s.project, *before);
+}
