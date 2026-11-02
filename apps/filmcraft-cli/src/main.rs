@@ -280,6 +280,7 @@ impl filmcraft_export::FrameRenderer for GpuFrameRenderer {
 }
 
 fn register_gpu_frame_renderer() {
+    filmcraft_gpu::export_renderer::on_device_failed(filmcraft_export::note_gpu_render_disabled);
     filmcraft_export::register_frame_renderer(|| {
         let renderer = filmcraft_gpu::ExportRenderer::new().map(|r| Box::new(GpuFrameRenderer(r)) as Box<dyn filmcraft_export::FrameRenderer>);
         // no renderer: say why, so `perf.stats` can (#1616)

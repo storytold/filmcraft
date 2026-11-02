@@ -121,7 +121,8 @@ mod tests {
         for k in ["frames", "fallbacks"] {
             assert!(v["export"]["gpu"][k].is_number(), "export.gpu.{k} in {v}");
         }
-        assert!(v["export"]["gpu"]["disabled"].is_null() || v["export"]["gpu"]["disabled"].is_string());
+        let disabled = v["export"]["gpu"].get("disabled").expect("export.gpu.disabled");
+        assert!(disabled.is_null() || disabled.is_string(), "export.gpu.disabled in {v}");
         for k in ["setupMs", "loudnessMs", "renderMs", "encodeMs", "convertMs", "audioMs", "muxMs", "finishMs", "waitMs"] {
             assert!(v["export"]["stages"][k].is_number(), "export.stages.{k} in {v}");
         }

@@ -172,10 +172,25 @@ pub(crate) fn gpu_disabled() -> &'static std::sync::Mutex<Option<String>> {
 pub fn note_gpu_render_disabled(why: &str) {
     let mut d = gpu_disabled().lock().unwrap_or_else(|e| e.into_inner());
     if d.is_none() {
-        let mut kept: String = why.chars().take(500).collect();
-        if why.chars().count() > 500 {
-            kept.push('…');
-        }
-        *d = Some(kept);
+        *d = Some(bounded(why));
+    }
+}
+
+/// At most 500 characters, the ellipsis included.
+fn bounded(why: &str) -> String {
+    if why.chars().count() > 500 { why.chars().take(499).chain(['…']).collect() } else { why.to_string() }
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::bounded;
+
+    #[test]
+    fn a_reason_stays_within_its_bound_ellipsis_included() {
+        assert_eq!(bounded("short"), "short");
+        assert_eq!(bounded(&"é".repeat(500)), "é".repeat(500));
+        let long = bounded(&"é".repeat(501));
+        assert_eq!(long.chars().count(), 500);
+        assert!(long.ends_with('…'));
     }
 }

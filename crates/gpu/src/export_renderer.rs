@@ -77,6 +77,14 @@ pub mod timing {
 /// renderer and lives in a `OnceLock`, so it is not recreated in this process.
 static DEVICE_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+static DEVICE_FAILED_LISTENER: std::sync::OnceLock<fn(&str)> = std::sync::OnceLock::new();
+
+/// Call `listener` with the reason when the shared export device fails, at any time: a driver can
+/// report it after the last frame of an export, when no frame comes back to carry it.
+pub fn on_device_failed(listener: fn(&str)) {
+    let _ = DEVICE_FAILED_LISTENER.set(listener);
+}
+
 /// Retire the shared export device, logging the first reason only and keeping it for
 /// [`disabled_reason`].
 fn mark_device_failed(why: &str) {
@@ -86,6 +94,10 @@ fn mark_device_failed(why: &str) {
     if slot.is_none() {
         *slot = Some(why.to_string());
         log::error!("GPU export disabled for this session ({why}); exports render on the CPU");
+        // for `perf.stats` too, also when this comes after the last frame of an export (#1616)
+        if let Some(listener) = DEVICE_FAILED_LISTENER.get() {
+            listener(why);
+        }
     }
     DEVICE_FAILED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
