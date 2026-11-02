@@ -94,19 +94,63 @@ pub fn sniff(head: &[u8]) -> bool {
 
 /// CRC-32 of RFC 3533 §6: polynomial 0x04C11DB7, initial value 0, no reflection, no final XOR.
 pub fn crc32(data: &[u8]) -> u32 {
-    static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
-    let t = TABLE.get_or_init(|| {
-        let mut t = [0u32; 256];
-        for (i, e) in t.iter_mut().enumerate() {
-            let mut r = (i as u32) << 24;
-            for _ in 0..8 {
-                r = if r & 0x8000_0000 != 0 { (r << 1) ^ 0x04C1_1DB7 } else { r << 1 };
-            }
-            *e = r;
+    crc32_update(0, data)
+}
+
+/// `CRC_TABLES[k][b]`: the CRC register after feeding byte `b` followed by `k` zero bytes
+/// (slice-by-16: sixteen independent lookups per 16 input bytes instead of a serial chain of 16).
+static CRC_TABLES: [[u32; 256]; 16] = crc_tables();
+
+const fn crc_tables() -> [[u32; 256]; 16] {
+    let mut t = [[0u32; 256]; 16];
+    let mut i = 0;
+    while i < 256 {
+        let mut r = (i as u32) << 24;
+        let mut b = 0;
+        while b < 8 {
+            r = if r & 0x8000_0000 != 0 { (r << 1) ^ 0x04C1_1DB7 } else { r << 1 };
+            b += 1;
         }
-        t
-    });
-    data.iter().fold(0u32, |c, &b| (c << 8) ^ t[((c >> 24) as u8 ^ b) as usize])
+        t[0][i] = r;
+        i += 1;
+    }
+    let mut k = 1;
+    while k < 16 {
+        let mut i = 0;
+        while i < 256 {
+            let p = t[k - 1][i];
+            t[k][i] = (p << 8) ^ t[0][(p >> 24) as usize];
+            i += 1;
+        }
+        k += 1;
+    }
+    t
+}
+
+/// Continue an RFC 3533 CRC-32 over `data` from register `crc`.
+pub fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
+    let t = &CRC_TABLES;
+    let (chunks, rest) = data.as_chunks::<16>();
+    for c in chunks {
+        let w = crc ^ u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+        crc = t[15][(w >> 24) as usize]
+            ^ t[14][((w >> 16) & 0xFF) as usize]
+            ^ t[13][((w >> 8) & 0xFF) as usize]
+            ^ t[12][(w & 0xFF) as usize]
+            ^ t[11][c[4] as usize]
+            ^ t[10][c[5] as usize]
+            ^ t[9][c[6] as usize]
+            ^ t[8][c[7] as usize]
+            ^ t[7][c[8] as usize]
+            ^ t[6][c[9] as usize]
+            ^ t[5][c[10] as usize]
+            ^ t[4][c[11] as usize]
+            ^ t[3][c[12] as usize]
+            ^ t[2][c[13] as usize]
+            ^ t[1][c[14] as usize]
+            ^ t[0][c[15] as usize];
+    }
+    rest.iter().fold(crc, |c, &b| (c << 8) ^ t[0][((c >> 24) as u8 ^ b) as usize])
 }
 
 /// The codec of a logical bitstream (from its first packet).
