@@ -145,7 +145,8 @@ fn vsplit(size: SplitSize, a: Node<PanelKind>, b: Node<PanelKind>) -> Node<Panel
     Node::Split { axis: SplitAxis::Vertical, size, first: Box::new(a), second: Box::new(b) }
 }
 
-pub const WORKSPACES: [&str; 9] = ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Learning", "Review", "All Panels"];
+pub const WORKSPACES: [&str; 10] =
+    ["Editing", "Assembly", "Color", "Effects", "Audio", "Captions and Graphics", "Vertical", "Learning", "Review", "All Panels"];
 
 /// The user's workspaces file, beside `preferences.json` in the data directory.
 pub const WORKSPACES_FILE: &str = "workspaces.json";
@@ -477,6 +478,21 @@ fn workspace_root(name: &str) -> Node<PanelKind> {
             ),
             tabs(&[EssentialGraphics, Properties], 0),
         ),
+        // Vertical (9:16 editing, #1822): the Program monitor runs the full height on the right, beside
+        // the source and project panels and the timeline
+        "Vertical" => hsplit(
+            Ratio(0.78),
+            vsplit(
+                Ratio(0.5),
+                hsplit(
+                    Ratio(0.5),
+                    tabs(&[Source, EffectControls, AudioClipMixer, Metadata], 0),
+                    tabs(&[Project, MediaBrowser, Effects, Info, Markers, History], 0),
+                ),
+                bottom_editing(),
+            ),
+            tabs(&[Program], 0),
+        ),
         "All Panels" => vsplit(
             Ratio(0.5),
             hsplit(
@@ -688,12 +704,12 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
         });
         paint_widget_focus(&painter, &resp, t);
         seq_rects.push((*id, tab_rect));
-        if resp.dragged() {
+        if resp.dragged_by(egui::PointerButton::Primary) {
             dragged = Some(*id);
         }
         // Escape puts a dragged tab back where it was (egui ends the drag on Escape, #580)
         let home = egui::Id::unique(("tab-seq-home", *id));
-        if resp.drag_started() {
+        if resp.drag_started_by(egui::PointerButton::Primary) {
             ui.data_mut(|d| d.insert_temp(home, i));
         }
         if resp.drag_stopped()
@@ -725,7 +741,7 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
             let uy = strip.max.y - 2.0;
             painter.line_segment([pos2(label_x, uy), pos2(label_x + label_w, uy)], Stroke::new(1.0, t.tab_text_active));
         }
-        if (resp.clicked() || resp.drag_started()) && !closed && !is_active {
+        if (resp.clicked() || resp.drag_started_by(egui::PointerButton::Primary)) && !closed && !is_active {
             actions.push(SeqAction::Open(*id));
         }
         if resp.middle_clicked() {
@@ -798,6 +814,13 @@ pub fn placeholder(ui: &mut egui::Ui, rect: Rect, t: &Tokens, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vertical_workspace_gives_program_the_full_height() {
+        // #1822: Program alone on the right of the root split, spanning the window's height
+        let Some(Node::Split { axis: SplitAxis::Horizontal, second, .. }) = workspace("Vertical").root else { panic!("a side-by-side root split") };
+        assert!(matches!(*second, Node::Tabs { ref panels, .. } if panels == &[PanelKind::Program]), "{second:?}");
+    }
 
     #[test]
     fn workspaces_contain_core_panels() {

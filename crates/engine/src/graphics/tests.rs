@@ -714,3 +714,235 @@ fn align_to_frame_moves_selected_video_clips_by_position_only() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!((pos(&s).0.y - 200.0).abs() < 1e-6, "one undo step per alignment");
 }
+
+/// #1877: `graphics.set` with `time` only changes a keyframe of a property that is already
+/// animated; `keyframe: true` puts keyframes on the properties it lists, as `effects.setParam` does.
+mod set_with_keyframes {
+    use super::*;
+    use filmcraft_project::ParamValue;
+
+    const AT_1_5_S: i64 = 381_024_000_000;
+
+    fn ellipse() -> (Session, ClipId) {
+        let mut s = Session::default();
+        s.execute("file.newSequence", json!({"name": "R", "width": 1920, "height": 1080, "fps": 30, "video": 4, "audio": 1})).unwrap();
+        let r = s.execute("graphics.newEllipse", json!({"position": [300, 540], "size": [200, 200], "track": 1, "time": 0, "seconds": 2})).unwrap();
+        let clip = ClipId(r["clip"].as_u64().unwrap());
+        (s, clip)
+    }
+
+    /// The layer's `position`: its keyframes (time, x) and its fixed value's x.
+    fn position(s: &Session, clip: ClipId) -> (Vec<(i64, f32)>, f32) {
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(clip).unwrap();
+        let e = &it.effects[layer_indices(&it.effects)[0]];
+        let p = &e.params["position"];
+        let x = |v: &ParamValue| v.as_vec2().unwrap().x as f32;
+        (p.keyframes.iter().map(|k| (k.time.0, x(&k.value))).collect(), x(&p.value))
+    }
+
+    #[test]
+    fn without_keyframe_the_last_call_wins_as_before() {
+        let (mut s, clip) = ellipse();
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": 0, "props": {"position": [300, 540]}})).unwrap();
+        let r = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": AT_1_5_S, "props": {"position": [1600, 540]}})).unwrap();
+        assert!(r.is_null(), "the result of a call without `keyframe` is unchanged: {r}");
+        let (keys, fixed) = position(&s, clip);
+        assert!(keys.is_empty(), "{keys:?}");
+        assert_eq!(fixed, 1600.0);
+    }
+
+    #[test]
+    fn keyframe_true_animates_the_property() {
+        let (mut s, clip) = ellipse();
+        let r = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": 0, "keyframe": true, "props": {"position": [300, 540]}})).unwrap();
+        assert_eq!(r, json!({"keyframes": {"position": 1}}));
+        let r = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": AT_1_5_S, "keyframe": true, "props": {"position": [1600, 540]}})).unwrap();
+        assert_eq!(r, json!({"keyframes": {"position": 2}}));
+        let (keys, _) = position(&s, clip);
+        assert_eq!(keys, vec![(0, 300.0), (AT_1_5_S, 1600.0)]);
+        // the layer really moves: between the keyframes it is between the two positions
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(clip).unwrap();
+        let e = &it.effects[layer_indices(&it.effects)[0]];
+        let mid = e.params["position"].value_at(it.source_time_at(Tick(AT_1_5_S / 2))).as_vec2().unwrap().x as f32;
+        assert!(mid > 300.0 && mid < 1600.0, "{mid}");
+    }
+
+    #[test]
+    fn a_property_that_is_already_animated_keeps_following_time() {
+        let (mut s, clip) = ellipse();
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": 0, "keyframe": true, "props": {"position": [300, 540]}})).unwrap();
+        // no `keyframe`: the property is animated now, so a call with `time` adds a keyframe (as before)
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": AT_1_5_S, "props": {"position": [1600, 540]}})).unwrap();
+        assert_eq!(position(&s, clip).0.len(), 2);
+    }
+
+    #[test]
+    fn one_undo_step_per_call_and_properties_that_cannot_be_animated_are_refused() {
+        let (mut s, clip) = ellipse();
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": 0, "keyframe": true, "props": {"position": [300, 540]}})).unwrap();
+        s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": AT_1_5_S, "keyframe": true, "props": {"position": [1600, 540]}})).unwrap();
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(position(&s, clip).0.len(), 1, "undo takes back the second keyframe only");
+        let e = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "keyframe": true, "props": {"font": "Inter"}}));
+        assert!(e.is_err(), "a font cannot be keyframed");
+        let e = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "keyframe": true, "props": {"nope": 1}}));
+        assert!(e.is_err());
+    }
+}
+
+/// #2186: several layers move together by one delta, as one undo step, keeping their spacing.
+#[test]
+fn selected_layers_move_together_in_one_undo_step() {
+    let mut s = demo();
+    let clip = three_shapes(&mut s);
+    let before = layers(&s, ClipId(clip));
+    s.execute("graphics.selectLayer", json!({"clip": clip, "layers": [0, 2]})).unwrap();
+    let undo = s.history.undo.len();
+    let r = s.execute("graphics.moveLayers", json!({"clip": clip, "delta": [40, -25]})).unwrap();
+    assert_eq!(r["layers"], json!([0, 2]), "the selected layers by default");
+    let after = layers(&s, ClipId(clip));
+    for i in [0, 2] {
+        assert!((after[i].transform.position.x - before[i].transform.position.x - 40.0).abs() < 1e-9);
+        assert!((after[i].transform.position.y - before[i].transform.position.y + 25.0).abs() < 1e-9);
+    }
+    assert_eq!(after[1].transform.position, before[1].transform.position, "an unselected layer stays");
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(
+        layers(&s, ClipId(clip)).iter().map(|l| l.transform.position).collect::<Vec<_>>(),
+        before.iter().map(|l| l.transform.position).collect::<Vec<_>>()
+    );
+    // explicit layers, duplicates ignored; bad deltas and layers are refused
+    s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [1, 1], "delta": [10, 0]})).unwrap();
+    assert!((layers(&s, ClipId(clip))[1].transform.position.x - before[1].transform.position.x - 10.0).abs() < 1e-9);
+    assert!(s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [0], "delta": [f64::MAX, "x"]})).is_err());
+    assert!(s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [9], "delta": [1, 1]})).is_err());
+    assert!(s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [0]})).is_err());
+}
+
+/// a pinned layer moved together with the layer it is pinned to moves once, with
+/// it, not twice (once with its target, once by its own offsets); undo puts both back.
+#[test]
+fn a_pinned_layer_moved_with_its_target_moves_once() {
+    let mut s = demo();
+    let clip = three_shapes(&mut s);
+    s.execute("graphics.pin", json!({"clip": clip, "layer": 0, "to": 1, "edges": ["left", "top"]})).unwrap();
+    // where each layer is shown, pins resolved (not the position stored in it)
+    let shown = |s: &Session, l: usize| {
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(ClipId(clip)).unwrap();
+        let ei = layer_indices(&it.effects)[l];
+        let specs = filmcraft_render::graphic_clip::item_layer_specs(it, Tick::ZERO, (q.settings.width, q.settings.height));
+        specs.iter().find(|(x, _)| *x == ei).unwrap().1.transform.position
+    };
+    let (p0, p1) = (shown(&s, 0), shown(&s, 1));
+    s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [0, 1], "delta": [40, -25]})).unwrap();
+    let (a0, a1) = (shown(&s, 0), shown(&s, 1));
+    assert!((a1.x - p1.x - 40.0).abs() < 1e-6 && (a1.y - p1.y + 25.0).abs() < 1e-6, "the target moved: {p1:?} → {a1:?}");
+    assert!((a0.x - p0.x - 40.0).abs() < 1e-6 && (a0.y - p0.y + 25.0).abs() < 1e-6, "the pinned layer moved once: {p0:?} → {a0:?}");
+    // moved on its own it still moves (its offsets to the target change)
+    s.execute("graphics.moveLayers", json!({"clip": clip, "layers": [0], "delta": [10, 0]})).unwrap();
+    assert!((shown(&s, 0).x - a0.x - 10.0).abs() < 1e-6);
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!((shown(&s, 0), shown(&s, 1)), (p0, p1), "undo puts both back");
+}
+
+/// Align moves a pinned layer and its target by different amounts; the pinned
+/// layer ends where Align put it, not where its target's move would drag it.
+#[test]
+fn align_puts_a_pinned_layer_where_it_asks() {
+    let mut s = demo();
+    let clip = three_shapes(&mut s);
+    s.execute("graphics.pin", json!({"clip": clip, "layer": 0, "to": 1, "edges": ["left", "top"]})).unwrap();
+    let shown = |s: &Session, l: usize| {
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(ClipId(clip)).unwrap();
+        let ei = layer_indices(&it.effects)[l];
+        let specs = filmcraft_render::graphic_clip::item_layer_specs(it, Tick::ZERO, (q.settings.width, q.settings.height));
+        specs.iter().find(|(x, _)| *x == ei).unwrap().1.transform.position
+    };
+    let (rect, ellipse) = (shown(&s, 0), shown(&s, 1));
+    // left edges to the selection's: the rectangle is already leftmost, so only the ellipse moves
+    s.execute("graphics.align", json!({"clip": clip, "layers": [0, 1], "align": "left", "to": "selection"})).unwrap();
+    let (r1, e1) = (shown(&s, 0), shown(&s, 1));
+    assert!(e1.x < ellipse.x - 100.0, "the ellipse moved left: {ellipse:?} → {e1:?}");
+    assert!((r1.x - rect.x).abs() < 1e-6 && (r1.y - rect.y).abs() < 1e-6, "the pinned rectangle stays where Align put it: {rect:?} → {r1:?}");
+}
+#[test]
+fn applied_effects_stack_after_the_clip_s_own_and_keep_their_indices() {
+    // #1879
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "R", "width": 1920, "height": 1080, "fps": 30, "video": 2, "audio": 1})).unwrap();
+    let r = s.execute("graphics.newEllipse", json!({"position": [960, 540], "size": [400, 400], "track": 1, "time": 0, "seconds": 2})).unwrap();
+    let clip = r["clip"].as_u64().unwrap();
+    let ids = |s: &Session| s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.effects.iter().map(|e| e.effect.clone()).collect::<Vec<_>>();
+    let before = ids(&s);
+    let layer = s.execute("graphics.list", json!({"clip": clip})).unwrap()["layers"][0]["effectIndex"].clone();
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"})).unwrap();
+    s.execute("effects.apply", json!({"clips": [clip], "effect": "tint"})).unwrap();
+    let after = ids(&s);
+    assert_eq!(after[..before.len()], before[..], "{after:?}");
+    assert_eq!(after[before.len()..], ["gaussian_blur", "tint"], "{after:?}");
+    assert_eq!(s.execute("graphics.list", json!({"clip": clip})).unwrap()["layers"][0]["effectIndex"], layer);
+    s.execute("effects.setParam", json!({"clip": clip, "effect": layer, "param": "position", "value": [100, 100]})).unwrap();
+}
+
+/// #1879 moved applied effects from before the clip's intrinsic effects to the end of its stack.
+/// The frame must not change: the same clips render the same pixels with the effects laid out the
+/// old way (built by hand) and the new way.
+#[test]
+fn applied_effects_render_the_same_before_or_after_the_intrinsic_ones() {
+    fn frame(s: &Session) -> Vec<f32> {
+        s.render_program(0.25).unwrap().px
+    }
+    // the layout `effects.apply` gave before #1879: the applied effects (the last `n`) before the
+    // clip's first intrinsic effect, in the order they were applied
+    fn before_intrinsics(s: &mut Session, clip: ClipId, n: usize) {
+        let seq = s.state.active_sequence.unwrap();
+        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+        let it = q.video_tracks.iter_mut().flat_map(|t| t.items.iter_mut()).find(|i| i.id == clip).unwrap();
+        let applied = it.effects.split_off(it.effects.len() - n);
+        let pos = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap();
+        it.effects.splice(pos..pos, applied);
+    }
+    let apply = |s: &mut Session, clip: u64| {
+        s.execute("effects.apply", json!({"clips": [clip], "effect": "gaussian_blur"})).unwrap();
+        s.execute("effects.setParam", json!({"clip": clip, "effect": "gaussian_blur", "param": "blurriness", "value": 12.0})).unwrap();
+        s.execute("effects.apply", json!({"clips": [clip], "effect": "posterize"})).unwrap();
+        s.execute("effects.setParam", json!({"clip": clip, "effect": "posterize", "param": "levels", "value": 3.0})).unwrap();
+    };
+    let check = |mut s: Session, clip: u64, case: &str| {
+        let plain = frame(&s);
+        apply(&mut s, clip);
+        let ids: Vec<_> = s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.effects.iter().map(|e| e.effect.clone()).collect();
+        assert_eq!(ids[ids.len() - 2..], ["gaussian_blur", "posterize"], "{case}: {ids:?}");
+        let after = frame(&s);
+        assert!(after != plain, "{case}: the applied effects show in the frame");
+        before_intrinsics(&mut s, ClipId(clip), 2);
+        let ids: Vec<_> = s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.effects.iter().map(|e| e.effect.clone()).collect();
+        assert!(ids.iter().position(|e| e == "posterize") < ids.iter().position(|e| e == "motion"), "{case}: {ids:?}");
+        assert!(after == frame(&s), "{case}: same pixels with the applied effects before the intrinsic ones");
+    };
+
+    // (a) a graphic clip with its layer
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "R", "width": 640, "height": 360, "fps": 30, "video": 2, "audio": 1})).unwrap();
+    let r = s.execute("graphics.newEllipse", json!({"position": [320, 180], "size": [200, 120], "track": 1, "time": 0, "seconds": 2})).unwrap();
+    let clip = r["clip"].as_u64().unwrap();
+    check(s, clip, "graphic clip");
+
+    // (b) a video clip with Motion and Opacity off their defaults
+    let mut s = demo();
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    // past the dip to black that opens the demo
+    s.execute("playhead.set", json!({"seconds": 2.5})).unwrap();
+    for (effect, param, value) in
+        [("motion", "position", json!([700, 400])), ("motion", "scale", json!(70.0)), ("motion", "rotation", json!(15.0)), ("opacity", "opacity", json!(80.0))]
+    {
+        s.execute("effects.setParam", json!({"clip": clip, "effect": effect, "param": param, "value": value})).unwrap();
+    }
+    check(s, clip, "video clip");
+}

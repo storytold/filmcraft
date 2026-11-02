@@ -1,6 +1,6 @@
 use super::{
     CBF_CHROMA, CBF_LUMA, CODED_SUB_BLOCK, CTX_IDX_MAP, CU_QP_DELTA_ABS, E_TU_H, E_TU_V, F_CBF, F_INTRA, GT1, GT2, LAST_X_PREFIX, LAST_Y_PREFIX, LEVEL_SCALE,
-    PartMode, PicState, Result, SCAN_4, SIG_COEFF, SPLIT_TRANSFORM, Sample, SliceDecoder, TRANSFORM_SKIP, ensure, intra, scan_order, transform,
+    PartMode, Result, SCAN_4, SIG_COEFF, SPLIT_TRANSFORM, Sample, SliceDecoder, TRANSFORM_SKIP, ensure, for_runs, intra, scan_order, transform,
 };
 
 /// Significant scan positions of one sub-block, in decoding (descending) order.
@@ -213,37 +213,46 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         let mut al = [false; 129];
         let mut at = [false; 129];
         let addr = self.slice_addr;
-        let avail =
-            |pic: &PicState<S>, xn: i32, yn: i32| -> bool { pic.zavail(xl, yl, xn, yn, addr) && (!constrained || pic.blk_at(xn, yn).flags & F_INTRA != 0) };
-        let plane = &self.pic.planes[c];
+        let pic = &*self.pic;
+        let units = (2 * n / unit) as u32;
+        let mut ml = pic.zavail_run((xl, yl), (xl - 1, yl), true, units, addr);
+        let mut mt = pic.zavail_run((xl, yl), (xl, yl - 1), false, units, addr);
+        let mut corner = pic.zavail(xl, yl, xl - 1, yl - 1, addr);
+        if constrained {
+            let intra = |x: i32, y: i32| pic.blk_at(x, y).flags & F_INTRA != 0;
+            for k in 0..units {
+                if ml & (1 << k) != 0 && !intra(xl - 1, yl + 4 * k as i32) {
+                    ml &= !(1 << k);
+                }
+                if mt & (1 << k) != 0 && !intra(xl + 4 * k as i32, yl - 1) {
+                    mt &= !(1 << k);
+                }
+            }
+            corner = corner && intra(xl - 1, yl - 1);
+        }
+        let plane = &pic.planes[c];
         let r = &mut self.refs_buf;
-        // corner
-        if avail(self.pic, xl - 1, yl - 1) {
+        if corner {
             al[0] = true;
             at[0] = true;
             let v = plane[(y0 - 1) as usize * stride + (x0 - 1) as usize].to_u16();
             r.left[0] = v;
             r.top[0] = v;
         }
-        let mut k = 0;
-        while k < 2 * n {
-            let yn = y0 + k as i32;
-            if avail(self.pic, xl - 1, yn * sc) {
-                for i in 0..unit {
-                    al[1 + k + i] = true;
-                    r.left[1 + k + i] = plane[(yn as usize + i) * stride + (x0 - 1) as usize].to_u16();
-                }
+        for_runs(ml, unit, |a, b| {
+            let left = (y0 as usize + a) * stride + x0 as usize - 1;
+            al[1 + a..1 + b].fill(true);
+            for (k, v) in r.left[1 + a..1 + b].iter_mut().enumerate() {
+                *v = plane[left + k * stride].to_u16();
             }
-            let xn = x0 + k as i32;
-            if avail(self.pic, xn * sc, yl - 1) {
-                let o = (y0 - 1) as usize * stride + xn as usize;
-                for i in 0..unit {
-                    at[1 + k + i] = true;
-                    r.top[1 + k + i] = plane[o + i].to_u16();
-                }
+        });
+        for_runs(mt, unit, |a, b| {
+            let top = (y0 as usize - 1) * stride + x0 as usize;
+            at[1 + a..1 + b].fill(true);
+            for (v, s) in r.top[1 + a..1 + b].iter_mut().zip(&plane[top + a..top + b]) {
+                *v = s.to_u16();
             }
-            k += unit;
-        }
+        });
         let bd = if c == 0 { self.pic.bd_y } else { self.pic.bd_c };
         intra::substitute(r, &al, &at, n, bd);
         if c == 0 {

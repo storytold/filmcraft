@@ -143,7 +143,15 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
 - **What it takes:** H.264 in MP4 / MOV, 8-bit SDR, even picture sizes up to 8192, Baseline / Main /
   High (the level is chosen by the OS), constant or one-pass variable bitrate with the settings'
   target and ceiling, the keyframe distance (closed GOPs: every keyframe is an IDR picture).
-  Pictures are converted exactly like the built-in encoder's (BT.709, limited range), 4:2:0 NV12.
+- **Pictures go in as the export's RGBA** (`32BGRA` buffers tagged BT.709 primaries and transfer)
+  and VideoToolbox converts them to limited-range BT.709 4:2:0 itself, so the export's encode
+  thread only copies the picture into the input buffer. The CPU conversion used to run on that
+  thread, where it competed with the render of the next frames for the thread pool and took longer
+  than the hardware encode: 20 ms a 1080p frame on an M2 Max, 88 % of the export's wall time, with
+  the hardware encoder idle meanwhile. A VideoToolbox that refuses RGB input (known from the first
+  picture; creating the session does not tell) gets that CPU conversion into NV12 instead, exactly
+  like the built-in encoder's (BT.709, limited range), and the stream starts over from its first
+  frame; `encode_rgba` returns the copy's time, which goes into `perf.stats` `export.stages.convertMs`.
 - **No B-frames.** On real 1080p footage the quality is the same with and without them (±0.3 dB at
   equal bitrate) and the bitrate lands closer to the target without them, so frame reordering is
   off: compressed frames come out in presentation order, with no composition offsets or edit list.

@@ -85,6 +85,19 @@ impl Driver {
         v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
     }
 
+    /// The id and rect of each automation element whose id starts with `prefix`.
+    fn rects(&mut self, prefix: &str) -> Vec<(String, egui::Rect)> {
+        let v = self.ok("ui.elements", json!({"prefix": prefix}));
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
+                (e["id"].as_str().unwrap().to_string(), egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3])))
+            })
+            .collect()
+    }
+
     fn has(&mut self, id: &str) -> bool {
         self.ids(id).iter().any(|i| i == id)
     }
@@ -250,6 +263,66 @@ fn history_panel_menu_deletes_redoable_actions_and_clears_the_history() {
     assert_eq!(d.exec("history.list", json!({})), json!({"undo": [], "redo": []}));
     assert_eq!(*d.app().session.project, *project, "the project does not change");
     assert!(!d.app().session.is_enabled("history.clear"), "an empty history has nothing to clear");
+}
+
+/// Each History row shows the icon of the command that made its step, oldest first, and an undone
+/// step keeps its icon. The Open row has none. Clicking a row still moves the project to it.
+#[test]
+fn history_rows_show_the_command_icon() {
+    let mut d = Driver::demo();
+    let n0 = d.app().session.history.undo.len();
+    d.exec("file.newBin", json!({"name": "A"}));
+    d.exec("markers.add", json!({}));
+    d.exec("edit.undo", json!({}));
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.History"}));
+    d.frames(3);
+    let (bin, marker) = (format!("history.row.{}", n0 + 1), format!("history.row.{}", n0 + 2));
+    assert_eq!(d.label("history.row.0"), "Open");
+    assert!(!d.has("history.row.0.icon"), "the starting state is not an action");
+    assert_eq!(d.label(&format!("{bin}.icon")), "Folder");
+    assert_eq!(d.label(&format!("{marker}.icon")), "Marker", "an undone step keeps its icon");
+    assert!(!d.has(&format!("history.row.{}", n0 + 3)));
+
+    d.click(&marker);
+    assert_eq!(d.app().session.history.redo.len(), 0, "clicking the undone row redoes it");
+    assert_eq!(d.label(&format!("{marker}.icon")), "Marker");
+    d.click(&bin);
+    assert_eq!(d.app().session.history.redo.len(), 1);
+    assert_eq!(d.label(&format!("{marker}.icon")), "Marker", "the icon stays with its row through undo");
+}
+
+/// On a History row partly scrolled out of the panel, the `.icon` target is the part of the drawn
+/// icon that still shows: it lies inside its row, at the drawn icon's left edge, and it is not
+/// registered once the icon itself is scrolled out.
+#[test]
+fn history_icon_targets_follow_rows_scrolled_part_out() {
+    let mut d = Driver::demo();
+    for i in 0..60 {
+        d.exec("file.newBin", json!({"name": format!("Bin {i}")}));
+    }
+    d.ok("ui.menu.invoke", json!({"id": "window.panel.History"}));
+    d.frames(3);
+    let mut clipped = 0;
+    for _ in 0..40 {
+        let rects = d.rects("history.row.");
+        let rows: Vec<&(String, egui::Rect)> = rects.iter().filter(|(id, _)| !id.ends_with(".icon")).collect();
+        for (id, row) in &rows {
+            let icon = rects.iter().find(|(i, _)| *i == format!("{id}.icon")).map(|(_, r)| *r);
+            if row.height() < 19.5 {
+                clipped += 1;
+            }
+            let Some(icon) = icon else { continue };
+            let inside = row.expand(0.01).contains_rect(icon);
+            assert!(inside, "{id}: icon {icon:?} outside its row {row:?}");
+            assert!((icon.min.x - (row.min.x + 6.0)).abs() < 0.01, "{id}: icon {icon:?} is not at the drawn icon's left edge in {row:?}");
+            assert!(icon.height() <= 14.01 && icon.height() > 0.0, "{id}: icon {icon:?}");
+        }
+        let Some((last, _)) = rows.last() else { panic!("no History rows") };
+        let last = last.clone();
+        d.ok("ui.scroll", json!({"id": last, "dy": -7.0}));
+        d.frames(3);
+    }
+    assert!(clipped > 0, "no row was ever partly scrolled out");
 }
 
 /// The wheel over a tab strip switches that group's tab: down = next, up = previous, one tab per
@@ -466,7 +539,7 @@ fn events_and_progress_panels() {
     d.ok("ui.menu.invoke", json!({"id": "window.panel.Events"}));
     d.frames(2);
     // a failed command shows up as an error row
-    let r = d.call("engine.execute", json!({"command": "clip.rename", "params": {}}));
+    let r = d.call("engine.execute", json!({"command": "presets.rename", "params": {}}));
     assert_eq!(r["ok"], json!(false));
     d.frames(2);
     let rows = d.ids("events.row.");
@@ -826,6 +899,19 @@ fn effects_are_indented_under_their_folders() {
     }
 }
 
+#[test]
+fn effects_search_matches_turkish_casing() {
+    let mut d = Driver::demo();
+    d.exec("prefs.set", json!({"key": "general.interfaceLanguage", "value": "tr"}));
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+    for query in ["IŞIK", "ışık", "Işık"] {
+        d.ok("ui.set", json!({"effectsSearch": query}));
+        d.frames(2);
+        assert!(d.has("effects.item.light_leaks"), "query `{query}` through Effects search caller must find `light_leaks`");
+    }
+}
+
 /// The font of the first run of every text shape drawn this frame, with the text, position and colour.
 fn painted_text(d: &Driver) -> Vec<(String, egui::Pos2, egui::FontId, egui::Color32)> {
     fn walk(s: &egui::Shape, out: &mut Vec<(String, egui::Pos2, egui::FontId, egui::Color32)>) {
@@ -895,4 +981,46 @@ fn menu_bar_menus_use_the_13pt_menu_text() {
             .unwrap_or_else(|| panic!("`{label}` is not drawn in {rect:?}"));
         assert_eq!(font.size, 13.0, "`{label}` in the File menu");
     }
+}
+
+/// #3669: opening a clip in the Source monitor must also focus it, so Space plays that clip.
+#[test]
+fn opening_a_clip_in_source_focuses_it_so_space_plays_it() {
+    let (mut d, a, _, _) = inspector_selection_driver();
+    d.click("panel.tab.Project");
+    // what a double-click on a Project item runs
+    d.exec("source.open", json!({"item": a.0}));
+    d.frames(3);
+    assert_eq!(d.app().session.state.source_item, Some(a));
+    assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::Source, "Source takes focus");
+    assert!(!d.app().source_playback.clock.playing);
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().source_playback.clock.playing, "Space plays the Source clip");
+}
+
+/// #3669: a closed Source panel is reopened (not left hidden) when a clip opens in it.
+#[test]
+fn opening_a_clip_in_source_reopens_a_closed_source_panel() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let (mut d, a, _, _) = inspector_selection_driver();
+    d.ok("ui.panel.close", json!({"panel": PanelKind::Source.id()}));
+    d.frames(2);
+    assert!(!d.app().ui.dock.contains(&PanelKind::Source), "Source is closed");
+    d.exec("source.open", json!({"item": a.0}));
+    d.frames(3);
+    assert!(d.app().ui.dock.contains(&PanelKind::Source), "Source is docked again");
+    assert_eq!(d.app().ui.focused, PanelKind::Source);
+}
+
+/// #3669: another maximized panel no longer hides the Source monitor that just got focus.
+#[test]
+fn opening_a_clip_in_source_clears_another_panels_maximize() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let (mut d, a, _, _) = inspector_selection_driver();
+    d.app().ui.keys.maximized = Some(PanelKind::Project);
+    d.exec("source.open", json!({"item": a.0}));
+    d.frames(3);
+    assert_eq!(d.app().ui.keys.maximized, None, "the maximize is cleared so Source is visible");
+    assert_eq!(d.app().ui.focused, PanelKind::Source);
 }

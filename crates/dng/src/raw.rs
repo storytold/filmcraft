@@ -145,6 +145,7 @@ fn chunks<'a>(t: &Tiff<'a>, ifd: &Ifd, l: &RawLayout) -> Result<Vec<Chunk<'a>>> 
         return Err(Error::Malformed("fewer strips or tiles than the image needs"));
     }
     let mut out = Vec::with_capacity(n);
+    let mut ranges = Vec::with_capacity(n);
     for i in 0..n {
         let (x, y) = ((i % across) * tw, (i / across) * th);
         let start = usize::try_from(offs[i]).map_err(|_| Error::Truncated)?;
@@ -154,6 +155,14 @@ fn chunks<'a>(t: &Tiff<'a>, ifd: &Ifd, l: &RawLayout) -> Result<Vec<Chunk<'a>>> 
         // strips end at the image; tiles are coded whole
         let h = if ifd.get(tags::TILE_OFFSETS).is_some() { th } else { th.min(l.height - y) };
         out.push(Chunk { x, y, w: tw, h, bytes });
+        if len != 0 {
+            ranges.push((start, end));
+        }
+    }
+    // chunks that share bytes would decode the same data again and again
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|w| w[1].0 < w[0].1) {
+        return Err(Error::Malformed("strips or tiles overlap"));
     }
     Ok(out)
 }
@@ -200,6 +209,8 @@ fn decode_chunk(c: &Chunk, l: &RawLayout, big_endian: bool) -> Result<Vec<u16>> 
         _ => {
             // the JPEG's samples fill the chunk in raster order (its own width × components may
             // differ from the chunk's, e.g. two components of half the width)
+            // slack for a JPEG coded larger than its chunk (e.g. a last strip at full RowsPerStrip);
+            // the samples past `need` are dropped below
             let d = ljpeg::decode(c.bytes, need.saturating_add(65_536 * 4))?;
             if d.samples.len() < need {
                 return Err(Error::Malformed("lossless JPEG smaller than its tile or strip"));
@@ -222,7 +233,7 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
     let chunks = chunks(t, ifd, &l)?;
     // every sample takes at least one bit of file (a Huffman code is at least one bit long)
     let coded: usize = chunks.iter().map(|c| c.bytes.len()).fold(0usize, usize::saturating_add);
-    if total / 8 > coded {
+    if total.div_ceil(8) > coded {
         return Err(Error::Truncated);
     }
     let mut decoded_samples = 0usize;
@@ -232,7 +243,7 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
         if n > MAX_SAMPLES || decoded_samples > MAX_DECODED_TILE_SAMPLES {
             return Err(Error::TooLarge);
         }
-        if n / 8 > c.bytes.len() {
+        if n.div_ceil(8) > c.bytes.len() {
             return Err(Error::Truncated);
         }
     }
