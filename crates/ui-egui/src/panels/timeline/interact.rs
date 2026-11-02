@@ -1181,8 +1181,20 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
 
     commit_drag(app, &ctx, &resp, seq, layout);
 
+    // Marker flags overlap the work area's hit padding; a double-click has one owner.
+    let marker_double_clicked = if resp.double_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Some(marker) = marker_under_pointer(seq, layout, p)
+    {
+        crate::panels::marker_properties::open(app, marker);
+        true
+    } else {
+        false
+    };
+
     // ---- double-click the work area bar: it spans the part of the sequence the ruler shows
     if resp.double_clicked()
+        && !marker_double_clicked
         && let Some(p) = resp.interact_pointer_pos()
         && let Hit::WorkArea { .. } = hit(seq, layout, p)
     {
@@ -1201,7 +1213,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
         && let Some(p) = resp.interact_pointer_pos()
         && let Some(marker) = marker_under_pointer(seq, layout, p)
     {
-        super::marker_dialog::open(app, &ctx, marker.id);
+        super::super::marker_properties::open(app, marker);
     }
 
     // ---- double-click a transition: Set Transition Duration (Premiere)
@@ -1353,6 +1365,9 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                                         ui.close();
                                     }
                                 }
+                                super::super::custom_colors::menu(app, ui,
+                                    json!({"clips":sel.iter().map(|id| id.0).collect::<Vec<_>>(),"items":[],"sequence":app.session.state.active_sequence.map(|id|id.0)}),
+                                    "timeline.clipMenu.label");
                             });
                             app.auto.add_response("timeline.clipMenu.edit.label", &menu.response, crate::i18n::t(label));
                         });
