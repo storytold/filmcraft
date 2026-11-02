@@ -34,8 +34,12 @@ pub fn parse_timecode(s: &str) -> Option<i64> {
     let df = s.contains([';', '.', ',']);
     let parts: Vec<&str> = s.split([':', ';', '.', ',']).collect();
     let [h, m, sec, f] = parts.as_slice() else { return None };
-    let n = |p: &str| if (1..=3).contains(&p.len()) { p.parse::<i64>().ok() } else { None };
-    Some(fields_to_frames(n(h)?, n(m)?, n(sec)?, n(f)?, RATE, df))
+    let n = |p: &str| if (1..=3).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()) { p.parse::<i64>().ok() } else { None };
+    let (h, m, sec, f) = (n(h)?, n(m)?, n(sec)?, n(f)?);
+    if m >= 60 || sec >= 60 || f >= 30 {
+        return None;
+    }
+    Some(fields_to_frames(h, m, sec, f, RATE, df))
 }
 
 pub fn format_timecode(frame: i64, drop_frame: bool) -> String {
@@ -304,7 +308,12 @@ pub fn wrap_rows(text: &str) -> Vec<String> {
     for line in text.lines() {
         let mut cur = String::new();
         for word in line.split_whitespace() {
-            let mut word = word.to_string();
+            if rows.len() == 15 {
+                return rows;
+            }
+            // SCC can emit at most 15 32-column rows.  Do not repeatedly copy an unbounded word
+            // only to discard all but that small prefix below.
+            let mut word: String = word.chars().take(COLS * (15 - rows.len())).collect();
             loop {
                 let need = if cur.is_empty() { word.chars().count() } else { cur.chars().count() + 1 + word.chars().count() };
                 if need <= COLS {
@@ -316,11 +325,17 @@ pub fn wrap_rows(text: &str) -> Vec<String> {
                 }
                 if !cur.is_empty() {
                     rows.push(std::mem::take(&mut cur));
+                    if rows.len() == 15 {
+                        return rows;
+                    }
                     continue;
                 }
                 let head: String = word.chars().take(COLS).collect();
                 word = word.chars().skip(COLS).collect();
                 rows.push(head);
+                if rows.len() == 15 {
+                    return rows;
+                }
                 if word.is_empty() {
                     break;
                 }
@@ -485,6 +500,21 @@ mod tests {
     }
 
     #[test]
+    fn timecode_rejects_signed_fields() {
+        assert_eq!(parse_timecode("00:00:-5:00"), None);
+        assert_eq!(parse_timecode("00:+1:00:00"), None);
+        assert_eq!(parse_timecode("00:00:00:"), None);
+        assert_eq!(parse_timecode("00:00:01:00"), Some(30));
+    }
+
+    #[test]
+    fn timecode_rejects_out_of_range_fields() {
+        assert_eq!(parse_timecode("00:60:00:00"), None);
+        assert_eq!(parse_timecode("00:00:60:00"), None);
+        assert_eq!(parse_timecode("00:00:00:30"), None);
+    }
+
+    #[test]
     fn timecodes() {
         assert_eq!(parse_timecode("00:01:00;02"), Some(1800));
         assert_eq!(parse_timecode("00:01:00:00"), Some(1800));
@@ -531,6 +561,13 @@ mod tests {
         let rows = wrap_rows("the quick brown fox jumps over the lazy dog and keeps running far away");
         assert!(rows.iter().all(|r| r.chars().count() <= 32));
         assert_eq!(rows.join(" "), "the quick brown fox jumps over the lazy dog and keeps running far away");
+    }
+
+    #[test]
+    fn wrapping_discards_an_unrepresentable_word_without_quadratic_copying() {
+        let rows = wrap_rows(&"x".repeat(100_000));
+        assert_eq!(rows.len(), 15);
+        assert!(rows.iter().all(|row| row.len() == COLS));
     }
 
     #[test]

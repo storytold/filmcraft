@@ -111,7 +111,9 @@ impl Encoder {
             total_samples: 0,
             min_frame: 0,
             max_frame: 0,
-            md5: md5::Md5::default(),
+            // RFC 9639 requires an MD5 signature of the unencoded audio in STREAMINFO; this is an
+            // integrity checksum, not a password hash or a security boundary.
+            md5: md5::Md5::default(), // NOSONAR
         })
     }
 

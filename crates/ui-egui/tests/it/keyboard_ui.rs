@@ -1,0 +1,458 @@
+//! Keyboard parity (M3.12): every Premiere-table entry names a real command, the active key sets
+//! have no conflicts in the new commands, and a few of the new keys pressed headlessly.
+
+use std::sync::mpsc::{Sender, channel};
+
+use egui_kittest::Harness;
+use filmcraft_engine::Session;
+use filmcraft_engine::shortcut_presets as presets;
+use filmcraft_engine::shortcuts::{PREMIERE_PRESET, Platform};
+use filmcraft_ui_egui::FilmcraftApp;
+use filmcraft_ui_egui::control::ControlRequest;
+use serde_json::{Value, json};
+
+struct Driver {
+    harness: Harness<'static, FilmcraftApp>,
+    tx: Sender<ControlRequest>,
+}
+
+impl Driver {
+    fn new() -> Self {
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let (tx, rx) = channel();
+        let mut app = FilmcraftApp::new(s).with_control(rx);
+        app.hooks.open_path = Some(Box::new(|_, _| Ok(())));
+        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let mut d = Driver { harness, tx };
+        d.frames(4);
+        d
+    }
+
+    fn frames(&mut self, n: usize) {
+        for _ in 0..n {
+            let ctx = self.harness.ctx.clone();
+            let mut raw = std::mem::take(self.harness.input_mut());
+            eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
+            *self.harness.input_mut() = raw;
+            self.harness.step();
+        }
+    }
+
+    fn ok(&mut self, method: &str, params: Value) -> Value {
+        let (req, reply) = ControlRequest::new(method, params.clone());
+        self.tx.send(req).unwrap();
+        for _ in 0..600 {
+            self.frames(1);
+            if let Ok(v) = reply.try_recv() {
+                assert_eq!(v["ok"], json!(true), "{method} {params} failed: {v}");
+                return v["result"].clone();
+            }
+        }
+        panic!("no reply to {method} {params}");
+    }
+
+    fn exec(&mut self, command: &str, params: Value) -> Value {
+        self.ok("engine.execute", json!({"command": command, "params": params}))
+    }
+
+    fn key(&mut self, key: &str) {
+        self.ok("ui.key", json!({"key": key}));
+        self.frames(3);
+    }
+
+    fn focus(&mut self, panel: &str) {
+        self.ok("ui.set", json!({"focused": panel}));
+        self.frames(2);
+    }
+
+    fn app(&self) -> &FilmcraftApp {
+        self.harness.state()
+    }
+}
+
+/// Rejected pointer counts must preserve the editor and allow later MCP-default and double clicks.
+#[test]
+fn rejected_pointer_counts_leave_the_ui_usable() {
+    let mut d = Driver::new();
+    let project = d.app().session.project.clone();
+    for (method, params) in [
+        ("ui.click", json!({"id": "tools.Razor", "count": u64::MAX})),
+        ("ui.drag", json!({"from": {"id": "tools.Razor"}, "to": {"id": "tools.Selection"}, "steps": u64::MAX})),
+    ] {
+        let (req, reply) = ControlRequest::new(method, params);
+        d.tx.send(req).unwrap();
+        d.frames(3);
+        let response = reply.try_recv().expect("invalid counts must be answered without queuing input");
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Selection);
+        assert_eq!(*d.app().session.project, *project);
+    }
+    d.ok("ui.click", json!({"id": "tools.Razor", "count": null}));
+    d.frames(3);
+    assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Razor);
+    d.ok("ui.click", json!({"id": "tools.Selection", "count": 2}));
+    d.frames(3);
+    assert_eq!(d.app().ui.tool, filmcraft_ui_egui::state::Tool::Selection);
+    assert_eq!(*d.app().session.project, *project);
+}
+
+/// Ids added for keyboard parity (engine + UI).
+fn new_ids() -> Vec<String> {
+    let mut v: Vec<String> = filmcraft_engine::keyboard::commands().iter().map(|c| c.id.to_string()).collect();
+    v.extend(filmcraft_ui_egui::panels::keyboard::COMMANDS.iter().map(|c| c.id.to_string()));
+    v
+}
+
+#[test]
+fn premiere_table_has_no_dangling_ids_or_new_conflicts() {
+    let ui: Vec<String> = filmcraft_ui_egui::menus::external_commands().into_iter().map(|c| c.id).collect();
+    for (id, keys, panel) in presets::premiere() {
+        assert!(filmcraft_engine::find_command(id).is_some() || ui.iter().any(|u| u == id), "Premiere table: `{id}` ({keys} {panel}) is not a command");
+    }
+    for (id, _, _) in presets::FILMCRAFT_PANEL.iter().chain(presets::PREMIERE_PANEL) {
+        assert!(filmcraft_engine::find_command(id).is_some() || ui.iter().any(|u| u == id), "panel table: `{id}` is not a command");
+    }
+    let mut s = Session::default();
+    s.shortcuts.register_external(filmcraft_ui_egui::menus::external_commands());
+    let new = new_ids();
+    for preset in [None, Some(PREMIERE_PRESET)] {
+        if let Some(p) = preset {
+            s.shortcuts.load_preset(p).unwrap();
+        }
+        for (ctx, key, ids) in s.shortcuts.conflicts(Platform::Mac) {
+            assert!(!ids.iter().any(|i| new.contains(i)), "{preset:?}: {key} in {ctx} is bound to {ids:?}");
+        }
+    }
+    // the Premiere preset binds every new command that Premiere has a key for
+    for id in [
+        "timeline.selectClipAtPlayhead",
+        "file.exportFrame",
+        "window.maximizeFrame",
+        "timeline.nudgeRight",
+        "clip.volumeUp",
+        "mixer.showHideTracks",
+        "mixer.meterInputOnly",
+    ] {
+        assert!(!s.shortcuts.for_command(id).is_empty(), "{id} has no key in the Premiere preset");
+    }
+}
+
+#[test]
+fn new_keys_work_in_the_app() {
+    let mut d = Driver::new();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let v1 = seq["video"][0]["items"].as_array().unwrap().clone();
+    let second = &v1[1];
+    let (clip, start) = (second["clip"].as_u64().unwrap(), second["start"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + 1_000_000_000}));
+
+    // D selects the clip at the playhead
+    d.focus("Timeline");
+    d.key("D");
+    assert!(d.app().session.state.selection.iter().any(|c| c.0 == clip), "D selects the clip under the playhead");
+
+    // Cmd+Right (Timeline panel): nudge one frame right; undoable
+    d.key("Cmd+Right");
+    let rate = d.app().session.sequence_rate();
+    let now = d.exec("sequence.inspect", json!({}))["video"][0]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["clip"].as_u64() == Some(clip))
+        .map(|i| i["start"].as_i64().unwrap())
+        .unwrap();
+    assert_eq!(now, start + rate.tick_of(1).0);
+    d.key("Cmd+Z");
+
+    // Cmd+0 toggles all video targets
+    let n0 = d.app().session.targeting().targeted.len();
+    d.key("Cmd+0");
+    assert!(d.app().session.targeting().targeted.len() < n0);
+    d.key("Cmd+0");
+    assert_eq!(d.app().session.targeting().targeted.len(), n0);
+
+    // Shift+` maximizes the focused frame, again restores it
+    d.key("Shift+`");
+    assert_eq!(d.app().ui.keys.maximized, Some(filmcraft_ui_egui::dock::PanelKind::Timeline));
+    let r = d.ok("ui.elements", json!({"prefix": "panel."}));
+    let frames: Vec<&Value> = r.as_array().unwrap().iter().filter(|e| e["id"].as_str().is_some_and(|i| !i["panel.".len()..].contains('.'))).collect();
+    assert_eq!(frames.len(), 1, "only the maximized panel is laid out: {r}");
+    d.key("Shift+`");
+    assert_eq!(d.app().ui.keys.maximized, None);
+
+    // Shift+= expands all tracks, pressing again restores
+    let h0 = d.app().ui.timeline.video_track_h;
+    d.key("Shift+=");
+    assert!(d.app().ui.timeline.video_track_h > h0);
+    d.key("Shift+=");
+    assert_eq!(d.app().ui.timeline.video_track_h, h0);
+
+    // Ctrl+Shift+. cycles panel focus
+    d.key("Ctrl+Shift+.");
+    assert_ne!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::Timeline);
+
+    // Project panel: Down moves the selection; Shift+\ toggles the view
+    d.focus("Project");
+    // the Icon view shows a bin's clips (sub-bins are folder cards): open the first bin in place
+    let bin = d.app().session.project.root.children.iter().find_map(|e| if let filmcraft_project::BinEntry::Bin(b) = e { Some(b.id.0) } else { None }).unwrap();
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.exec("project.select", json!({"items": []}));
+    d.key("Down");
+    assert_eq!(d.app().session.state.project_selection.len(), 1);
+    let first = d.app().session.state.project_selection[0];
+    d.key("Down");
+    assert_ne!(d.app().session.state.project_selection[0], first);
+    let view0 = d.app().session.prefs.project_panel.view.mode;
+    d.key("Shift+\\");
+    assert_ne!(d.app().session.prefs.project_panel.view.mode, view0);
+
+    // Cmd+Shift+1 zooms the Program monitor to 100%
+    d.key("Cmd+Shift+1");
+    assert_eq!(d.app().ui.program.zoom, Some(1.0));
+    d.key("Cmd+Shift+0");
+    assert_eq!(d.app().ui.program.zoom, None);
+}
+
+/// Maximize Frame Under Cursor matches the pointer only against the panels of the window
+/// holding it: a panel floated into its own OS window has that window's coordinates, which
+/// overlap the main window's.
+#[test]
+fn maximize_under_cursor_ignores_native_window_rects() {
+    use filmcraft_ui_egui::dock::PanelKind;
+    let mut d = Driver::new();
+    // A stand-in for OS windows: each native viewport runs its own frame, with no input.
+    egui::Context::set_immediate_viewport_renderer(|ctx, mut viewport| {
+        let size = viewport.builder.inner_size.unwrap_or(egui::vec2(400.0, 300.0));
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let info = egui::ViewportInfo { inner_rect: Some(screen), ..Default::default() };
+        let id = viewport.ids.this;
+        let input = egui::RawInput { viewport_id: id, viewports: std::iter::once((id, info)).collect(), screen_rect: Some(screen), ..Default::default() };
+        ctx.run_ui(input, |ui| (viewport.viewport_ui_cb)(ui)).textures_delta.clear();
+    });
+    d.harness.ctx.set_embed_viewports(false);
+    // The main window reports its outer rect, as under X11: without a display variable craft-ui
+    // otherwise takes the session for Wayland and keeps floating windows in-window.
+    d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().outer_rect =
+        Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0)));
+    d.ok("ui.menu.invoke", json!({"id": "window.floatPanel", "params": {"panel": "Info", "rect": [0, 0, 700, 500]}}));
+    d.frames(4);
+    let elements = d.ok("ui.elements", json!({"prefix": "panel."}));
+    let elements = elements.as_array().unwrap();
+    let rect = |e: &Value| {
+        let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+        egui::Rect::from_min_size(egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3]))
+    };
+    let floated = elements.iter().find(|e| e["id"] == "panel.Info").unwrap();
+    assert!(floated["window"].is_u64(), "the native window's body carries its window: {floated}");
+    let (under, pos) = elements
+        .iter()
+        .filter(|e| e["window"].is_null())
+        .find_map(|e| {
+            let panel = PanelKind::from_name(e["id"].as_str()?.strip_prefix("panel.")?)?;
+            let overlap = rect(e).intersect(rect(floated));
+            overlap.is_positive().then(|| (panel, overlap.center()))
+        })
+        .expect("a main-window panel overlaps the native window's body rect");
+    d.harness.event(egui::Event::PointerMoved(pos));
+    d.key("`");
+    assert_eq!(d.app().ui.keys.maximized, Some(under));
+}
+
+/// Select Next / Previous Panel skip the narrow Tools and Audio Meters strips.
+#[test]
+fn panel_cycling_skips_tools_and_audio_meters() {
+    use filmcraft_ui_egui::dock::{LayoutExt as _, PanelKind};
+    let mut d = Driver::new();
+    let shown = d.app().ui.dock.visible_panels();
+    assert!(shown.contains(&PanelKind::Tools) && shown.contains(&PanelKind::AudioMeters), "{shown:?}");
+    for key in ["Ctrl+Shift+.", "Ctrl+Shift+,"] {
+        let mut seen = Vec::new();
+        for _ in 0..shown.len() * 2 {
+            d.key(key);
+            seen.push(d.app().ui.focused);
+        }
+        assert!(!seen.contains(&PanelKind::Tools) && !seen.contains(&PanelKind::AudioMeters), "{key}: {seen:?}");
+        assert!(seen.len() > 1 && seen.iter().any(|p| *p != seen[0]), "{key} cycles: {seen:?}");
+    }
+}
+
+/// The Audio Track Mixer's Show/Hide Tracks (Cmd+Alt+T) and Meter Input(s) Only (Ctrl+Shift+I)
+/// keys with the mixer focused, and the two commands run from another panel.
+#[test]
+fn audio_track_mixer_keys_open_show_hide_and_toggle_meter_input_only() {
+    let mut d = Driver::new();
+    d.ok("ui.set", json!({"workspace": "Audio"}));
+    d.focus("AudioTrackMixer");
+    let dialog = |d: &mut Driver| !d.ok("ui.elements", json!({"prefix": "mixer.showHide.A1"})).as_array().unwrap().is_empty();
+    assert!(!dialog(&mut d));
+    d.key("Cmd+Alt+T");
+    assert!(dialog(&mut d), "Cmd+Alt+T opens Show/Hide Tracks");
+    d.ok("ui.click", json!({"id": "mixer.showHide.ok"}));
+    d.frames(2);
+    assert!(!dialog(&mut d), "OK closes it");
+    assert!(!d.app().ui.mixer_meter_input_only);
+    d.key("Ctrl+Shift+I");
+    assert!(d.app().ui.mixer_meter_input_only, "Ctrl+Shift+I turns Meter Input(s) Only on");
+    d.key("Ctrl+Shift+I");
+    assert!(!d.app().ui.mixer_meter_input_only, "and off again");
+    // the commands, from anywhere: Show/Hide Tracks brings the mixer forward
+    d.focus("Timeline");
+    let r = d.ok("ui.menu.invoke", json!({"id": "mixer.meterInputOnly", "params": {"on": true}}));
+    assert_eq!(r, json!({"meterInputOnly": true}));
+    d.ok("ui.menu.invoke", json!({"id": "mixer.showHideTracks"}));
+    d.frames(2);
+    assert!(dialog(&mut d), "mixer.showHideTracks opens the dialog");
+    assert_eq!(d.app().ui.focused, filmcraft_ui_egui::dock::PanelKind::AudioTrackMixer);
+}
+
+/// `mixer.meterInputOnly` refuses parameters that are not an object and leaves the option as it
+/// was; null parameters toggle it.
+#[test]
+fn meter_input_only_refuses_parameters_that_are_not_an_object() {
+    let mut d = Driver::new();
+    assert!(!d.app().ui.mixer_meter_input_only);
+    for params in [json!(true), json!(1), json!("on"), json!([true])] {
+        let (req, reply) = ControlRequest::new("ui.menu.invoke", json!({"id": "mixer.meterInputOnly", "params": params}));
+        d.tx.send(req).unwrap();
+        d.frames(3);
+        let response = reply.try_recv().expect("the command is answered");
+        assert_eq!(response["ok"], false, "{params}: {response}");
+        assert!(!d.app().ui.mixer_meter_input_only, "{params} leaves Meter Input(s) Only off");
+    }
+    let r = d.ok("ui.menu.invoke", json!({"id": "mixer.meterInputOnly", "params": null}));
+    assert_eq!(r, json!({"meterInputOnly": true}));
+}
+
+/// Off macOS the menus show `Ctrl+…`, so that is what agents send: a `Ctrl` chord through
+/// `ui.key` (and `ctrl` in `ui.click` modifiers) must act like the physical key, which egui-winit
+/// reports as `ctrl` + `command`. Bindings are written `Cmd+…`, so this failed to match (#245).
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn ctrl_chords_fire_shortcuts_off_macos() {
+    let mut d = Driver::new();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let second = &seq["video"][0]["items"].as_array().unwrap()[1];
+    let (clip, start) = (second["clip"].as_u64().unwrap(), second["start"].as_i64().unwrap());
+    let start_of = |d: &mut Driver| {
+        d.exec("sequence.inspect", json!({}))["video"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["clip"].as_u64() == Some(clip))
+            .map(|i| i["start"].as_i64().unwrap())
+            .unwrap()
+    };
+    d.exec("playhead.set", json!({"time": start + 1_000_000_000}));
+    d.focus("Timeline");
+    d.key("D");
+    assert!(d.app().session.state.selection.iter().any(|c| c.0 == clip));
+    // Ctrl+Right nudges one frame right, like Cmd+Right; Ctrl+Z undoes it
+    let rate = d.app().session.sequence_rate();
+    d.key("Ctrl+Right");
+    assert_eq!(start_of(&mut d), start + rate.tick_of(1).0, "Ctrl+Right nudges");
+    d.key("Ctrl+Z");
+    assert_eq!(start_of(&mut d), start, "Ctrl+Z undoes");
+    // the same chord spelt with the modifier flag
+    d.ok("ui.key", json!({"key": "Right", "ctrl": true}));
+    d.frames(3);
+    assert_eq!(start_of(&mut d), start + rate.tick_of(1).0, "`ctrl: true` nudges");
+    d.ok("ui.key", json!({"key": "Z", "ctrl": true}));
+    d.frames(3);
+    assert_eq!(start_of(&mut d), start, "`ctrl: true` undoes");
+    // and the bare key still does not
+    d.key("Z");
+    assert_eq!(start_of(&mut d), start);
+}
+
+#[test]
+fn delete_key_clears_the_selected_timeline_clip() {
+    // #243: on Windows and Linux keyboards Delete is the forward-delete key; with the Timeline
+    // focused it ran Project ▸ Clear (nothing selected there), so the clip stayed.
+    let mut d = Driver::new();
+    let items = |d: &mut Driver| d.exec("sequence.inspect", json!({}))["video"][0]["items"].as_array().unwrap().clone();
+    let second = items(&mut d)[1].clone();
+    let (clip, start) = (second["clip"].as_u64().unwrap(), second["start"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + 1_000_000_000}));
+    d.focus("Timeline");
+    d.key("D");
+    assert!(d.app().session.state.selection.iter().any(|c| c.0 == clip), "D selects the clip under the playhead");
+    d.key("Delete");
+    assert!(!items(&mut d).iter().any(|i| i["clip"].as_u64() == Some(clip)), "Delete removed the selected clip");
+    d.key("Cmd+Z");
+    assert!(items(&mut d).iter().any(|i| i["clip"].as_u64() == Some(clip)), "and undo brings it back");
+}
+
+#[test]
+fn shift_delete_ripple_deletes_with_the_timeline_focused() {
+    // #680: the Timeline's own `Delete` (Clear) was tried before the app-wide `Shift+Delete`
+    // (Ripple Delete), and egui ignores the extra Shift, so Shift+Delete left a gap.
+    let mut d = Driver::new();
+    // the demo's other tracks have clips in the way of a sync-locked ripple
+    for t in ["V2", "V3", "A2", "A3"] {
+        d.exec("timeline.setTrack", json!({"track": t, "syncLock": false}));
+    }
+    let items = |d: &mut Driver| d.exec("sequence.inspect", json!({}))["video"][0]["items"].as_array().unwrap().clone();
+    let v1 = items(&mut d);
+    let (clip, start) = (v1[1]["clip"].as_u64().unwrap(), v1[1]["start"].as_i64().unwrap());
+    let next = v1[2]["clip"].as_u64().unwrap();
+    d.exec("playhead.set", json!({"time": start + 1_000_000_000}));
+    d.focus("Timeline");
+    d.key("D");
+    assert!(d.app().session.state.selection.iter().any(|c| c.0 == clip), "D selects the clip under the playhead");
+    d.key("Shift+Delete");
+    let after = items(&mut d);
+    assert!(!after.iter().any(|i| i["clip"].as_u64() == Some(clip)), "Shift+Delete removed the selected clip");
+    let moved = after.iter().find(|i| i["clip"].as_u64() == Some(next)).map(|i| i["start"].as_i64().unwrap());
+    assert_eq!(moved, Some(start), "and closed the gap");
+}
+
+#[test]
+fn alt_click_isolates_already_selected_linked_clip_before_delete() {
+    for audio in [false, true] {
+        let mut d = Driver::new();
+        d.focus("Timeline");
+        let q = d.app().session.active_sequence().unwrap();
+        let video = q.video_tracks[0].items[0].clone();
+        let sound = q.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.link == video.link).unwrap().clone();
+        let (selected, partner) = if audio { (sound.id, video.id) } else { (video.id, sound.id) };
+        d.exec("timeline.select", json!({"clips": [selected.0]}));
+        assert_eq!(d.app().session.state.selection.len(), 2);
+        let before = d.app().session.project.clone();
+        let r = d.app().auto.find(&format!("timeline.clip.{}", selected.0)).unwrap().rect;
+        d.ok("ui.click", json!({"x": r[0] + r[2] * 0.5, "y": r[1] + r[3] * 0.3, "modifiers": {"alt": true}}));
+        d.frames(3);
+        assert_eq!(d.app().session.state.selection, vec![selected], "Alt-click isolates the already-selected side");
+        assert!(d.app().session.state.linked_selection, "the global Linked Selection toggle stays on");
+        d.key("Delete");
+        let q = d.app().session.active_sequence().unwrap();
+        assert!(q.find_item(selected).is_none());
+        assert!(q.find_item(partner).is_some(), "Delete keeps the unselected linked partner");
+        d.key("Cmd+Z");
+        assert_eq!(*d.app().session.project, *before, "one undo restores both sides");
+    }
+}
+
+#[test]
+fn shift_alt_click_toggles_only_the_clicked_linked_side() {
+    for audio in [false, true] {
+        let mut d = Driver::new();
+        d.focus("Timeline");
+        let q = d.app().session.active_sequence().unwrap();
+        let video = q.video_tracks[0].items[0].clone();
+        let sound = q.audio_tracks.iter().flat_map(|t| &t.items).find(|i| i.link == video.link).unwrap().id;
+        let (clicked, partner) = if audio { (sound, video.id) } else { (video.id, sound) };
+        d.exec("timeline.select", json!({"clips": [clicked.0]}));
+        let before = d.app().session.project.clone();
+        let r = d.app().auto.find(&format!("timeline.clip.{}", clicked.0)).unwrap().rect;
+        let params = json!({"x": r[0] + r[2] * 0.5, "y": r[1] + r[3] * 0.3, "modifiers": {"alt": true, "shift": true}});
+        d.ok("ui.click", params.clone());
+        d.frames(3);
+        assert_eq!(d.app().session.state.selection, vec![partner], "Shift+Alt removes only the clicked side");
+        d.ok("ui.click", params);
+        d.frames(3);
+        assert_eq!(d.app().session.state.selection, vec![partner, clicked], "Shift+Alt adds that side back");
+        assert!(d.app().session.state.linked_selection);
+        assert_eq!(*d.app().session.project, *before, "selection does not edit the document");
+    }
+}

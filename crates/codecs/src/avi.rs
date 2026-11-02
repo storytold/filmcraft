@@ -154,6 +154,8 @@ fn random_access(data: &[u8], hevc: bool) -> bool {
 
 /// The packets of a framed audio stream: every frame header found in the stream of chunks, and
 /// the samples each frame decodes to. Bytes that start no frame are skipped (resynchronisation).
+const MAX_FRAMED_AUDIO_SCAN_BYTES: u64 = 256 << 20;
+
 fn split_frames(
     file: &AviFile,
     bytes: &crate::Src,
@@ -161,12 +163,18 @@ fn split_frames(
     ts: &filmcraft_mpegts::Codec,
 ) -> (Vec<Piece>, Vec<usize>, Vec<u32>, Option<filmcraft_mpegts::FrameInfo>) {
     let Some(st) = file.streams.get(s) else { return Default::default() };
+    // AVI indexes can reference the same physical chunk repeatedly. Keep header scanning bounded
+    // by both the source itself and a practical absolute limit before issuing those repeated reads.
+    let budget = bytes.0.len().saturating_mul(4).min(MAX_FRAMED_AUDIO_SCAN_BYTES);
     // chunk start positions in the concatenated stream
     let mut at = Vec::with_capacity(st.chunks.len());
     let mut total = 0usize;
     for c in &st.chunks {
         at.push(total);
         total = total.saturating_add(c.size as usize);
+        if total as u64 > budget {
+            return Default::default();
+        }
     }
     let locate = |pos: usize| -> Option<(usize, usize)> {
         let k = at.partition_point(|&a| a <= pos).checked_sub(1)?;
@@ -186,10 +194,11 @@ fn split_frames(
         let Some(here) = win.get(pos - base..) else { break };
         match filmcraft_mpegts::frame_bytes(ts, here) {
             Some(n) if pos + n <= total => {
+                let fi = filmcraft_mpegts::frame_info(ts, here);
                 if info.is_none() {
-                    info = filmcraft_mpegts::frame_info(ts, here);
+                    info = fi;
                 }
-                let k = filmcraft_mpegts::frame_info(ts, here).map_or(0, |f| f.samples);
+                let k = fi.map_or(0, |f| f.samples);
                 first.push(pieces.len());
                 let mut p = pos;
                 while p < pos + n {
@@ -226,7 +235,12 @@ impl AviSource {
     pub fn open_reader(name: &str, reader: filmcraft_media::SharedReader) -> crate::Result<Self> {
         let bytes = crate::Src(reader);
         let file = filmcraft_avi::open(&bytes).map_err(|e| CodecError::Container(e.to_string()))?;
-        let vstream = file.streams.iter().position(|s| s.kind == StreamKind::Video && s.video.is_some() && !s.chunks.is_empty());
+        // A video stream that declares frames but whose chunks a damaged file lost is still the
+        // file's video when no other has pictures: its frames say so, rather than the file passing
+        // for audio only.
+        let video = |has: fn(&filmcraft_avi::Stream) -> bool| file.streams.iter().position(|s| s.kind == StreamKind::Video && s.video.is_some() && has(s));
+        let vstream = video(|s| !s.chunks.is_empty()).or_else(|| video(|s| s.length > 0));
+        let pictures = vstream.and_then(|i| file.streams.get(i)).is_some_and(|s| !s.chunks.is_empty());
         let astreams: Vec<usize> = file
             .streams
             .iter()
@@ -235,7 +249,7 @@ impl AviSource {
             .map(|(i, _)| i)
             .take(filmcraft_media::MAX_AUDIO_STREAMS)
             .collect();
-        if vstream.is_none() && astreams.is_empty() {
+        if !pictures && astreams.is_empty() {
             return Err(CodecError::Unsupported("no playable streams".into()));
         }
         // video: frame slots, pictures and key frames
@@ -329,10 +343,12 @@ impl AviSource {
         let mut audio_streams = Vec::new();
         for &s in &astreams {
             let Some(st) = file.streams.get(s) else { continue };
-            let w = st.audio.clone().unwrap_or_default();
+            let mut w = st.audio.clone().unwrap_or_default();
+            let Ok((sample_rate, channels)) = filmcraft_media::bounded_audio_dimensions(w.sample_rate, u32::from(w.channels)) else { continue };
+            w.sample_rate = sample_rate;
+            w.channels = u16::try_from(channels).unwrap_or(u16::MAX);
             let (codec, label) = audio_codec(&w);
-            let mut sample_rate = w.sample_rate.max(1);
-            let mut channels = u32::from(w.channels.max(1));
+            let (mut sample_rate, mut channels) = (sample_rate, channels);
             let (pieces, first, starts) = match &codec {
                 ACodec::Pcm(cfg) => {
                     let block = usize::from(w.block_align.max(1)).max((usize::from(cfg.bits).div_ceil(8)) * channels as usize);
@@ -512,6 +528,9 @@ impl MediaSource for AviSource {
 
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>, MediaError> {
         let s = self.vstream.ok_or(MediaError::NoStream("video"))?;
+        if self.vframes.is_empty() {
+            return Err(MediaError::Decode("the video stream's frames are missing (a damaged file)".into()));
+        }
         let t = req.time.max(Tick::ZERO);
         let slot = |t: Tick| self.rate.frame_at(t);
         let late = filmcraft_media::cancel::catch_up().map(|m| slot(t - m));
@@ -529,14 +548,18 @@ impl MediaSource for AviSource {
             return Err(MediaError::Unsupported(format!("{name} audio")));
         }
         let ch = ainfo.channels.max(1) as usize;
-        let ratio = f64::from(ainfo.sample_rate) / f64::from(sample_rate.max(1));
+        let source_frames = filmcraft_media::resample_source_frames(frames, ainfo.sample_rate, sample_rate)?;
+        let need = source_frames.checked_add(2).ok_or_else(|| MediaError::Decode("audio source window overflows".into()))?;
+        filmcraft_media::validate_audio_buffer_shape(ch, need)?;
+        filmcraft_media::validate_audio_buffer_shape(ch, frames)?;
+        let ratio = f64::from(ainfo.sample_rate) / f64::from(sample_rate);
         let s0 = (start as f64 * ratio).floor() as i64;
-        let need = (frames as f64 * ratio).ceil() as i64 + 2;
-        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need.max(0) as usize]; ch];
+        let need_i64 = i64::try_from(need).unwrap_or(i64::MAX);
+        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need]; ch];
         let mut st = a.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut i = a.starts.partition_point(|&x| x <= s0).saturating_sub(1);
         while let Some(&pk_start) = a.starts.get(i) {
-            if pk_start >= s0 + need {
+            if pk_start >= s0.saturating_add(need_i64) {
                 break;
             }
             let pk = self.audio_packet(a, &mut st, ainfo, i)?;

@@ -21,3 +21,6 @@ unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
 # UAX #29 extended grapheme clusters (MIT OR Apache-2.0).
 unicode-segmentation = "1.13"
+
+[dev-dependencies]
+tempfile = "3.27"
