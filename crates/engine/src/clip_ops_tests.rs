@@ -1,7 +1,7 @@
 //! Tests of the M3.10 Edit / Clip / File menu commands (`clip_ops`): each one executes, checks the
 //! result, undoes / redoes where it edits, and checks its disabled state.
 
-use filmcraft_project::{AudioChannels, FieldProcessing, ItemId, ItemKind, Label, TimeInterpolation, TrackItem};
+use filmcraft_project::{AudioChannels, ClipId, FieldProcessing, ItemId, ItemKind, Label, TimeInterpolation, TrackItem};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde_json::json;
 
@@ -993,6 +993,77 @@ fn speed_duration_moves_fade_out_to_the_new_clip_end() {
     assert_eq!(fade.to, None);
 }
 
+/// An edit that moves a crossfade's clips apart drops the crossfade, whatever the command: a
+/// regular trim opening a gap, a razor through the outgoing clip, an insert on the cut. Ripple
+/// trims keep the cut, so the crossfade stays on it. `Session::edit` does this for every command.
+#[test]
+fn a_regular_trim_that_opens_a_gap_drops_the_crossfade() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "Trim crossfade", "video": 1, "audio": 0})).unwrap();
+    let rate = s.sequence_rate();
+    let matte = s.execute("file.newColorMatte", json!({"color": "#00aa00", "seconds": 5.0})).unwrap()["item"].as_u64().unwrap();
+    let dur = rate.tick_of(60);
+    let a = s.execute("timeline.place", json!({"item": matte, "track": "V1", "time": Tick::ZERO.0, "insert": true, "duration": dur.0})).unwrap()["clips"][0]
+        .as_u64()
+        .unwrap();
+    let b = s.execute("timeline.place", json!({"item": matte, "track": "V1", "time": dur.0, "insert": true, "duration": dur.0})).unwrap()["clips"][0]
+        .as_u64()
+        .unwrap();
+    s.execute("sequence.applyVideoTransition", json!({"clip": a, "edge": "out", "frames": 24})).unwrap();
+    let transitions = |s: &Session| s.active_sequence().unwrap().video_tracks[0].transitions.len();
+    assert_eq!(transitions(&s), 1);
+    // a's end trimmed back: gap before b, the crossfade goes away
+    s.execute("timeline.trim", json!({"clip": a, "edge": "out", "mode": "regular", "deltaFrames": -10})).unwrap();
+    assert_eq!(transitions(&s), 0, "a gap before b must drop the crossfade");
+    // b's start trimmed later is just as fatal
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(transitions(&s), 1);
+    s.execute("timeline.trim", json!({"clip": b, "edge": "in", "mode": "regular", "deltaFrames": 10})).unwrap();
+    assert_eq!(transitions(&s), 0, "a gap after a must drop the crossfade");
+    // ripples keep the cut, so the crossfade stays centred on it
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("timeline.trim", json!({"clip": a, "edge": "out", "mode": "ripple", "deltaFrames": -10})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks[0].transitions.len(), 1, "a ripple trim keeps the crossfade");
+    let tr = &q.video_tracks[0].transitions[0];
+    let cut = q.video_tracks[0].items.iter().find(|i| i.id.0 == b).unwrap().start;
+    assert_eq!(tr.start + rate.tick_of(12), cut, "still centred on the surviving cut");
+    // a razor through the crossfade's outgoing half splits a away from b
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(transitions(&s), 1);
+    s.execute("timeline.razor", json!({"frame": 54})).unwrap();
+    assert_eq!(transitions(&s), 0, "a cut through the outgoing clip drops the crossfade");
+    // a clip inserted on the cut pushes b away from a
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("timeline.place", json!({"item": matte, "track": "V1", "time": dur.0, "insert": true, "duration": rate.tick_of(5).0})).unwrap();
+    assert_eq!(transitions(&s), 0, "an insert on the cut drops the crossfade");
+}
+
+/// The sweep runs on the sequences an edit changes only: a project saved with a stale transition
+/// still opens and keeps it, in a sequence no command touched.
+#[test]
+fn edits_leave_untouched_sequences_alone() {
+    let mut s = Session::default();
+    let old = s.execute("file.newSequence", json!({"name": "Old", "video": 1, "audio": 0})).unwrap()["sequence"].as_u64().unwrap();
+    {
+        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(ItemId(old)).unwrap();
+        q.video_tracks[0].transitions.push(filmcraft_project::Transition {
+            id: filmcraft_project::TransitionId(9999),
+            effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+            start: Tick::ZERO,
+            duration: Tick(1),
+            from: Some(ClipId(1)),
+            to: Some(ClipId(2)),
+            align: Default::default(),
+            reverse: false,
+        });
+    }
+    s.execute("file.newSequence", json!({"name": "New", "video": 1, "audio": 0})).unwrap();
+    let matte = s.execute("file.newColorMatte", json!({"color": "#00aa00", "seconds": 5.0})).unwrap()["item"].as_u64().unwrap();
+    s.execute("timeline.place", json!({"item": matte, "track": "V1", "time": 0})).unwrap();
+    assert_eq!(s.project.sequence(ItemId(old)).unwrap().video_tracks[0].transitions.len(), 1);
+}
+
 /// A damaged project whose subclip is its own parent (#66): `media_duration` followed the chain
 /// without a bound and overflowed the stack. It gives up after a few hops now.
 #[test]
@@ -1051,6 +1122,31 @@ fn linked_slip_keeps_picture_and_sound_aligned_at_unequal_media_limits() {
     assert_eq!(clip(&s, a).source_in, Tick(fr.0 * 20), "sound must not slip alone");
     s.execute("timeline.slip", json!({"clip": v, "deltaFrames": -10})).unwrap();
     assert_eq!((clip(&s, v).source_in, clip(&s, a).source_in), (Tick(fr.0 * 10), Tick(fr.0 * 10)));
+}
+
+#[test]
+fn slipping_by_the_most_negative_delta_clamps_instead_of_overflowing() {
+    // `slip_together` took `abs()` of the requested delta: i64::MIN (from the control channel, MCP
+    // or a script, as ticks or as frames, which saturate to it) overflowed, a panic in debug builds
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "Slip"})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Sequence", "fps": 25, "video": 1, "audio": 1, "width": 16, "height": 16})).unwrap();
+    let r = s.execute("file.newOfflineFile", json!({"name": "Media", "seconds": 4, "fps": 25, "video": true, "audio": true})).unwrap();
+    let item = r["item"].as_u64().unwrap();
+    let fr = s.sequence_rate().tick_of(1);
+    let r =
+        s.execute("timeline.place", json!({"item": item, "track": "V1", "audioTrack": "A1", "time": 0, "sourceIn": fr.0 * 20, "duration": fr.0 * 60})).unwrap();
+    let (v, a) = (r["clips"][0].as_u64().unwrap(), r["clips"][1].as_u64().unwrap());
+    for params in [json!({"clip": v, "delta": i64::MIN}), json!({"clip": a, "deltaFrames": i64::MIN})] {
+        s.execute("timeline.slip", params).unwrap();
+        // both stop at the start of the media, together
+        assert_eq!((clip(&s, v).source_in, clip(&s, a).source_in), (Tick::ZERO, Tick::ZERO));
+        // back off the start, so a case that slipped nothing could not pass on the previous one's result
+        s.execute("timeline.slip", json!({"clip": v, "deltaFrames": 20})).unwrap();
+        assert_eq!((clip(&s, v).source_in, clip(&s, a).source_in), (Tick(fr.0 * 20), Tick(fr.0 * 20)));
+    }
+    s.execute("timeline.slip", json!({"clip": v, "delta": i64::MAX})).unwrap();
+    assert_eq!((clip(&s, v).source_in, clip(&s, a).source_in), (Tick(fr.0 * 40), Tick(fr.0 * 40)), "and at its end the other way");
 }
 
 #[test]
@@ -1136,6 +1232,26 @@ fn linked_rate_stretch_keeps_one_speed_when_a_neighbour_blocks_the_sound() {
     assert!((r["speed"].as_f64().unwrap() - 60.0 / 70.0).abs() < 1e-9);
 }
 
+/// `document_epoch` changes whenever another project replaces the session's (so work that
+/// finishes later, like a Save dialog's answer, can tell), and never with an ordinary edit.
+#[test]
+fn document_epoch_changes_with_the_project_not_with_edits() {
+    let mut s = crate::Session::default();
+    let g = |s: &crate::Session| s.document_epoch;
+    let mut last = g(&s);
+    s.execute("file.newBin", serde_json::json!({"name": "B"})).unwrap();
+    assert_eq!(g(&s), last, "an edit");
+    for (cmd, p) in [
+        ("file.openDemoProject", serde_json::json!({})),
+        ("file.newProject", serde_json::json!({"name": "N"})),
+        ("file.closeProject", serde_json::json!({"force": true})),
+    ] {
+        s.execute(cmd, p).unwrap();
+        assert!(g(&s) > last, "{cmd}");
+        last = g(&s);
+    }
+}
+
 /// #2358: Toggle Animation on a parameter an older effect instance lacks (it was added to the
 /// effect later) creates it from its default and animates it, instead of "no such param".
 #[test]
@@ -1215,4 +1331,29 @@ fn video_effect_on_only_an_audio_clip_is_refused_without_an_undo_step() {
     let r = s.execute("effects.apply", json!({"clips": [a], "effect": "gaussian_blur"}));
     assert!(r.is_err(), "{r:?}");
     assert_eq!(s.history.undo.len(), undo0, "no undo step");
+}
+
+/// `clip.rename` with `clips` renames every one of them (a linked picture and sound) in one step.
+#[test]
+fn rename_takes_several_clips() {
+    let mut s = demo();
+    let ids: Vec<u64> = v1(&s).iter().take(2).map(|c| c.id.0).collect();
+    let undo = s.history.undo.len();
+    s.execute("clip.rename", json!({"clips": ids, "name": "Both"})).unwrap();
+    for id in &ids {
+        assert_eq!(clip(&s, *id).name, "Both");
+    }
+    assert_eq!(s.history.undo.len(), undo + 1);
+    assert!(s.execute("clip.rename", json!({"clips": [ids[0], 999_999], "name": "x"})).is_err(), "an unknown clip renames nothing");
+    assert_eq!(clip(&s, ids[0]).name, "Both");
+    // nothing to rename and a blank name are refused without an undo step
+    let undo = s.history.undo.len();
+    assert!(s.execute("clip.rename", json!({"clips": [], "name": "x"})).is_err());
+    assert!(s.execute("clip.rename", json!({"clips": ids, "name": "  "})).is_err());
+    // a list with one entry that is not an id renames nothing
+    assert!(s.execute("clip.rename", json!({"clips": [ids[0], "x"], "name": "y"})).is_err());
+    assert_eq!(clip(&s, ids[0]).name, "Both");
+    // the same name again changes nothing and records nothing
+    s.execute("clip.rename", json!({"clips": ids, "name": "Both"})).unwrap();
+    assert_eq!(s.history.undo.len(), undo);
 }

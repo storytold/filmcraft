@@ -46,6 +46,15 @@ pub fn split_voice(text: &str) -> (Option<String>, String) {
     (None, text.to_string())
 }
 
+/// Undo [`write`]'s cue-text escape, so `A --> B` comes back as `A --> B` and not `A --&gt; B`.
+///
+/// Only the one substitution the writer makes is reversed: a literal `-->` in cue text would read
+/// as a timing line to anything scanning the block, so it is written `--&gt;`. Other entities
+/// (`&amp;`, `&lt;`, …) are cue markup and stay verbatim, as `parse` has always kept them.
+fn unescape_text(text: &str) -> String {
+    text.replace("--&gt;", "-->")
+}
+
 pub fn parse(text: &str) -> Result<Document> {
     let mut doc = Document::default();
     let mut lines = text.lines().peekable();
@@ -79,19 +88,21 @@ pub fn parse(text: &str) -> Result<Document> {
     let mut seen_cue = false;
     for b in blocks {
         let first = b[0].trim();
-        if !b.iter().any(|l| l.contains("-->")) && (first == "NOTE" || first.starts_with("NOTE ") || first.starts_with("NOTE\t")) {
+        let timing_idx = b.iter().position(|line| parse_timing_line(line).is_some());
+        if timing_idx.is_none() && (first == "NOTE" || first.starts_with("NOTE ") || first.starts_with("NOTE\t")) {
             doc.blocks.push(b.join("\n"));
             continue;
         }
-        if !seen_cue && !b.iter().any(|l| l.contains("-->")) && (first == "STYLE" || first == "REGION") {
+        if !seen_cue && timing_idx.is_none() && (first == "STYLE" || first == "REGION") {
             doc.blocks.push(b.join("\n"));
             continue;
         }
-        let (id, timing_idx) = if b[0].contains("-->") { (None, 0) } else { (Some(b[0].trim().to_string()), 1) };
-        let Some(timing) = b.get(timing_idx) else {
+        let Some(timing_idx) = timing_idx else {
             doc.warnings.push(format!("ignored block \"{first}\""));
             continue;
         };
+        let id = (timing_idx > 0).then(|| b[..timing_idx].join("\n").trim().to_string());
+        let timing = &b[timing_idx];
         let Some((start, end, settings)) = parse_timing_line(timing) else {
             doc.warnings.push(format!("bad timing line \"{}\"", timing.trim()));
             continue;
@@ -102,7 +113,7 @@ pub fn parse(text: &str) -> Result<Document> {
             continue;
         }
         let raw = b[timing_idx + 1..].iter().map(|l| l.trim_end()).collect::<Vec<_>>().join("\n");
-        let (speaker, text) = split_voice(&raw);
+        let (speaker, text) = split_voice(&unescape_text(&raw));
         doc.cues.push(Cue { start, end, text, speaker, id, settings: settings.to_string() });
     }
     if !has_sig && doc.cues.is_empty() && !text.trim().is_empty() {
@@ -122,7 +133,7 @@ pub fn write(doc: &Document) -> String {
     }
     for c in &doc.cues {
         if let Some(id) = c.id.as_deref().map(str::trim).filter(|i| !i.is_empty() && !i.contains("-->")) {
-            out.push_str(id);
+            out.push_str(&id.replace(['\r', '\n'], " "));
             out.push('\n');
         }
         out.push_str(&format!("{} --> {}", format_clock(c.start, '.'), format_clock(c.end, '.')));
@@ -149,6 +160,7 @@ pub fn write(doc: &Document) -> String {
 mod tests {
     use super::*;
     use crate::TICKS_PER_MS;
+    use filmcraft_time::Tick;
 
     const SAMPLE: &str = "WEBVTT - with header\nKind: captions\n\nSTYLE\n::cue { color: yellow }\n\nNOTE a comment\nspanning lines\n\nintro\n00:01.000 --> 00:00:03.500 line:90% align:start\n<v.loud Ann Smith>Hello there\nsecond line\n\n00:00:04.000 --> 00:00:05.000\n<i>plain</i> &amp; tags\n";
 
@@ -177,6 +189,24 @@ mod tests {
         let w = write(&d);
         assert!(w.starts_with("WEBVTT\n\nSTYLE\n::cue { color: yellow }\n\nNOTE a comment\nspanning lines\n\nintro\n00:00:01.000 --> 00:00:03.500 line:90% align:start\n<v Ann Smith>Hello there\n"));
         assert_eq!(parse(&w).unwrap().cues, d.cues);
+    }
+
+    #[test]
+    fn newline_in_cue_id_round_trips() {
+        let mut doc = Document::default();
+        doc.cues.push(Cue {
+            start: crate::Tick(0),
+            end: crate::Tick(254_016_000),
+            text: "x".into(),
+            speaker: None,
+            id: Some("first\nsecond".into()),
+            settings: String::new(),
+        });
+
+        let output = write(&doc);
+        assert!(output.contains("first second\n00:00:00.000 --> 00:00:00.001\n"), "{output:?}");
+        assert!(!output.contains("first\nsecond"));
+        assert_eq!(parse(&output).unwrap().cues[0].id.as_deref(), Some("first second"));
     }
 
     #[test]
@@ -212,5 +242,34 @@ mod tests {
         let d = parse("00:00:01.000 --> 00:00:02.000\nx\n").unwrap();
         assert_eq!(d.cues.len(), 1);
         assert!(parse("just text").is_err());
+    }
+
+    /// #2066: the writer escapes a cue's `-->` as `--&gt;` (it would read as a timing line
+    /// otherwise), but the parser never decoded it, so `A --> B` came back as `A --&gt; B` on
+    /// every VTT round trip.
+    #[test]
+    fn an_arrow_in_cue_text_survives_a_round_trip() {
+        let mut d = Document::default();
+        // A second of ticks: `format_clock` writes milliseconds, so a sub-millisecond end would
+        // re-parse as `end == start` and the cue would be dropped as backwards.
+        let ms = TICKS_PER_MS;
+        d.cues.push(Cue { start: Tick(0), end: Tick(1000 * ms), text: "A --> B".into(), ..Cue::default() });
+        let w = write(&d);
+        assert!(w.contains("A --&gt; B"), "the writer still escapes it: {w}");
+        let back = parse(&w).unwrap();
+        assert_eq!(back.cues.len(), 1);
+        assert_eq!(back.cues[0].text, "A --> B", "the parser decodes the writer's escape");
+        assert_eq!(write(&back), w, "stable from there on");
+    }
+
+    /// Only the writer's own `-->` escape is reversed: cue markup keeps its entities verbatim,
+    /// as `parse` has always done.
+    #[test]
+    fn other_entities_stay_verbatim_in_cue_text() {
+        let d = parse(SAMPLE).unwrap();
+        assert_eq!(d.cues[1].text, "<i>plain</i> &amp; tags");
+        let w = write(&d);
+        assert!(w.contains("&amp; tags"), "not re-escaped on the way out: {w}");
+        assert_eq!(parse(&w).unwrap().cues[1].text, "<i>plain</i> &amp; tags");
     }
 }

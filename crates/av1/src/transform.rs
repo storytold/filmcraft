@@ -15,15 +15,25 @@ pub(crate) fn round2(x: i32, n: u32) -> i32 {
     if n == 0 { x } else { (x + (1 << (n - 1))) >> n }
 }
 
+/// cos128( angle ) for every `angle & 255`.
+static COS128: [i32; 256] = {
+    let mut t = [0; 256];
+    let mut a = 0;
+    while a < 256 {
+        t[a] = match a {
+            0..=64 => COS128_LOOKUP[a] as i32,
+            65..=128 => -(COS128_LOOKUP[128 - a] as i32),
+            129..=192 => -(COS128_LOOKUP[a - 128] as i32),
+            _ => COS128_LOOKUP[256 - a] as i32,
+        };
+        a += 1;
+    }
+    t
+};
+
 #[inline(always)]
 fn cos128(angle: i32) -> i64 {
-    let a = (angle & 255) as usize;
-    (match a {
-        0..=64 => COS128_LOOKUP[a] as i32,
-        65..=128 => -(COS128_LOOKUP[128 - a] as i32),
-        129..=192 => -(COS128_LOOKUP[a - 128] as i32),
-        _ => COS128_LOOKUP[256 - a] as i32,
-    }) as i64
+    COS128[(angle & 255) as usize] as i64
 }
 
 #[inline(always)]
@@ -125,14 +135,31 @@ impl<const L: usize> Lane for [i32; L] {
     }
 }
 
-fn brev(num_bits: u32, x: usize) -> usize {
+const fn brev(num_bits: u32, x: usize) -> usize {
     let mut t = 0;
-    for i in 0..num_bits {
+    let mut i = 0;
+    while i < num_bits {
         let bit = (x >> i) & 1;
         t += bit << (num_bits - 1 - i);
+        i += 1;
     }
     t
 }
+
+/// BREV[n][x] = brev( n, x ) for n <= 6.
+const BREV: [[u8; 64]; 7] = {
+    let mut t = [[0; 64]; 7];
+    let mut n = 0;
+    while n < 7 {
+        let mut x = 0;
+        while x < 1 << n {
+            t[n][x] = brev(n as u32, x) as u8;
+            x += 1;
+        }
+        n += 1;
+    }
+    t
+};
 
 /// Butterfly rotation B( a, b, angle, flip ).
 #[inline(always)]
@@ -158,57 +185,57 @@ fn hd<T: Lane>(t: &mut [T], a: usize, b: usize, flip: bool, r: u32) {
 
 /// Rotations and Hadamards that build the odd half of the larger transforms (first part of 7.13.2.3).
 #[inline(always)]
-fn dct_stage_outer_rotations<T: Lane>(t: &mut [T], n: u32, r: u32) {
-    if n == 6 {
+fn dct_stage_outer_rotations<T: Lane, const N: u32>(t: &mut [T], r: u32) {
+    if N == 6 {
         for i in 0..16 {
-            bf(t, 32 + i, 63 - i, 63 - 4 * brev(4, i) as i32, false);
+            bf(t, 32 + i, 63 - i, 63 - 4 * BREV[4][i] as i32, false);
         }
     }
-    if n >= 5 {
+    if N >= 5 {
         for i in 0..8 {
-            bf(t, 16 + i, 31 - i, 6 + ((brev(3, 7 - i) as i32) << 3), false);
+            bf(t, 16 + i, 31 - i, 6 + ((BREV[3][7 - i] as i32) << 3), false);
         }
     }
-    if n == 6 {
+    if N == 6 {
         for i in 0..16 {
             hd(t, 32 + i * 2, 33 + i * 2, i & 1 == 1, r);
         }
     }
-    if n >= 4 {
+    if N >= 4 {
         for i in 0..4 {
-            bf(t, 8 + i, 15 - i, 12 + ((brev(2, 3 - i) as i32) << 4), false);
+            bf(t, 8 + i, 15 - i, 12 + ((BREV[2][3 - i] as i32) << 4), false);
         }
     }
-    if n >= 5 {
+    if N >= 5 {
         for i in 0..8 {
             hd(t, 16 + 2 * i, 17 + 2 * i, i & 1 == 1, r);
         }
     }
-    if n == 6 {
+    if N == 6 {
         for i in 0..4 {
             for j in 0..2 {
-                bf(t, 62 - i * 4 - j, 33 + i * 4 + j, 60 - 16 * brev(2, i) as i32 + 64 * j as i32, true);
+                bf(t, 62 - i * 4 - j, 33 + i * 4 + j, 60 - 16 * BREV[2][i] as i32 + 64 * j as i32, true);
             }
         }
     }
-    if n >= 3 {
+    if N >= 3 {
         for i in 0..2 {
             bf(t, 4 + i, 7 - i, 56 - 32 * i as i32, false);
         }
     }
-    if n >= 4 {
+    if N >= 4 {
         for i in 0..4 {
             hd(t, 8 + 2 * i, 9 + 2 * i, i & 1 == 1, r);
         }
     }
-    if n >= 5 {
+    if N >= 5 {
         for i in 0..2 {
             for j in 0..2 {
                 bf(t, 30 - 4 * i - j, 17 + 4 * i + j, 24 + ((j as i32) << 6) + (((1 - i) as i32) << 5), true);
             }
         }
     }
-    if n == 6 {
+    if N == 6 {
         for i in 0..8 {
             for j in 0..2 {
                 hd(t, 32 + i * 4 + j, 35 + i * 4 - j, i & 1 == 1, r);
@@ -219,28 +246,28 @@ fn dct_stage_outer_rotations<T: Lane>(t: &mut [T], n: u32, r: u32) {
 
 /// Butterflies of the smallest sub-transforms (second part of 7.13.2.3).
 #[inline(always)]
-fn dct_stage_even_half<T: Lane>(t: &mut [T], n: u32, r: u32) {
+fn dct_stage_even_half<T: Lane, const N: u32>(t: &mut [T], r: u32) {
     for i in 0..2 {
         bf(t, 2 * i, 2 * i + 1, 32 + 16 * i as i32, i == 0);
     }
-    if n >= 3 {
+    if N >= 3 {
         for i in 0..2 {
             hd(t, 4 + 2 * i, 5 + 2 * i, i == 1, r);
         }
     }
-    if n >= 4 {
+    if N >= 4 {
         for i in 0..2 {
             bf(t, 14 - i, 9 + i, 48 + 64 * i as i32, true);
         }
     }
-    if n >= 5 {
+    if N >= 5 {
         for i in 0..4 {
             for j in 0..2 {
                 hd(t, 16 + 4 * i + j, 19 + 4 * i - j, i & 1 == 1, r);
             }
         }
     }
-    if n == 6 {
+    if N == 6 {
         for i in 0..2 {
             for j in 0..4 {
                 bf(t, 61 - i * 8 - j, 34 + i * 8 + j, 56 - i as i32 * 32 + (j as i32 >> 1) * 64, true);
@@ -251,50 +278,50 @@ fn dct_stage_even_half<T: Lane>(t: &mut [T], n: u32, r: u32) {
 
 /// Merges the quarter-size sub-transforms (third part of 7.13.2.3).
 #[inline(always)]
-fn dct_stage_merge_quarters<T: Lane>(t: &mut [T], n: u32, r: u32) {
+fn dct_stage_merge_quarters<T: Lane, const N: u32>(t: &mut [T], r: u32) {
     for i in 0..2 {
         hd(t, i, 3 - i, false, r);
     }
-    if n >= 3 {
+    if N >= 3 {
         bf(t, 6, 5, 32, true);
     }
-    if n >= 4 {
+    if N >= 4 {
         for i in 0..2 {
             for j in 0..2 {
                 hd(t, 8 + 4 * i + j, 11 + 4 * i - j, i == 1, r);
             }
         }
     }
-    if n >= 5 {
+    if N >= 5 {
         for i in 0..4 {
             bf(t, 29 - i, 18 + i, 48 + (i as i32 >> 1) * 64, true);
         }
     }
-    if n == 6 {
+    if N == 6 {
         for i in 0..4 {
             for j in 0..4 {
                 hd(t, 32 + 8 * i + j, 39 + 8 * i - j, i & 1 == 1, r);
             }
         }
     }
-    if n >= 3 {
+    if N >= 3 {
         for i in 0..4 {
             hd(t, i, 7 - i, false, r);
         }
     }
-    if n >= 4 {
+    if N >= 4 {
         for i in 0..2 {
             bf(t, 13 - i, 10 + i, 32, true);
         }
     }
-    if n >= 5 {
+    if N >= 5 {
         for i in 0..2 {
             for j in 0..4 {
                 hd(t, 16 + i * 8 + j, 23 + i * 8 - j, i == 1, r);
             }
         }
     }
-    if n == 6 {
+    if N == 6 {
         for i in 0..8 {
             bf(t, 59 - i, 36 + i, if i < 4 { 48 } else { 112 }, true);
         }
@@ -303,34 +330,34 @@ fn dct_stage_merge_quarters<T: Lane>(t: &mut [T], n: u32, r: u32) {
 
 /// Final merges of the half-size sub-transforms (last part of 7.13.2.3).
 #[inline(always)]
-fn dct_stage_merge_halves<T: Lane>(t: &mut [T], n: u32, r: u32) {
-    if n >= 4 {
+fn dct_stage_merge_halves<T: Lane, const N: u32>(t: &mut [T], r: u32) {
+    if N >= 4 {
         for i in 0..8 {
             hd(t, i, 15 - i, false, r);
         }
     }
-    if n >= 5 {
+    if N >= 5 {
         for i in 0..4 {
             bf(t, 27 - i, 20 + i, 32, true);
         }
     }
-    if n == 6 {
+    if N == 6 {
         for i in 0..8 {
             hd(t, 32 + i, 47 - i, false, r);
             hd(t, 48 + i, 63 - i, true, r);
         }
     }
-    if n >= 5 {
+    if N >= 5 {
         for i in 0..16 {
             hd(t, i, 31 - i, false, r);
         }
     }
-    if n == 6 {
+    if N == 6 {
         for i in 0..8 {
             bf(t, 55 - i, 40 + i, 32, true);
         }
     }
-    if n == 6 {
+    if N == 6 {
         for i in 0..32 {
             hd(t, i, 63 - i, false, r);
         }
@@ -339,17 +366,27 @@ fn dct_stage_merge_halves<T: Lane>(t: &mut [T], n: u32, r: u32) {
 
 /// Inverse DCT of length 2^n (7.13.2.3), in place.
 pub(crate) fn inverse_dct<T: Lane>(t: &mut [T], n: u32, r: u32) {
+    match n {
+        2 => inverse_dct_n::<T, 2>(t, r),
+        3 => inverse_dct_n::<T, 3>(t, r),
+        4 => inverse_dct_n::<T, 4>(t, r),
+        5 => inverse_dct_n::<T, 5>(t, r),
+        _ => inverse_dct_n::<T, 6>(t, r),
+    }
+}
+
+fn inverse_dct_n<T: Lane, const N: u32>(t: &mut [T], r: u32) {
     // 7.13.2.2 permutation
-    let len = 1usize << n;
+    let len = 1usize << N;
     let mut copy = [T::ZERO; 64];
     copy[..len].copy_from_slice(&t[..len]);
     for i in 0..len {
-        t[i] = copy[brev(n, i)];
+        t[i] = copy[BREV[N as usize][i] as usize];
     }
-    dct_stage_outer_rotations(t, n, r);
-    dct_stage_even_half(t, n, r);
-    dct_stage_merge_quarters(t, n, r);
-    dct_stage_merge_halves(t, n, r);
+    dct_stage_outer_rotations::<T, N>(t, r);
+    dct_stage_even_half::<T, N>(t, r);
+    dct_stage_merge_quarters::<T, N>(t, r);
+    dct_stage_merge_halves::<T, N>(t, r);
 }
 
 const SINPI_1_9: i64 = 1321;
@@ -543,8 +580,9 @@ fn col_kind(tx_type: usize) -> Kind1d {
 }
 
 /// 2D inverse transform (7.13.3). `dequant` is 64x64 (row stride 64, only the top-left 32x32
-/// may be non-zero); the residual is written to `residual` with row stride `w`.
-pub(crate) fn inverse_transform_2d(dequant: &[i32], residual: &mut [i32], tx_sz: usize, tx_type: usize, lossless: bool, bit_depth: u32) {
+/// may be non-zero; with `dc_only` only the first value); the residual is written to
+/// `residual` with row stride `w`.
+pub(crate) fn inverse_transform_2d(dequant: &[i32], residual: &mut [i32], tx_sz: usize, tx_type: usize, lossless: bool, bit_depth: u32, dc_only: bool) {
     let log2w = TX_WIDTH_LOG2[tx_sz] as u32;
     let log2h = TX_HEIGHT_LOG2[tx_sz] as u32;
     let w = 1usize << log2w;
@@ -559,6 +597,9 @@ pub(crate) fn inverse_transform_2d(dequant: &[i32], residual: &mut [i32], tx_sz:
     let rect2 = log2w.abs_diff(log2h) == 1;
     if !lossless && bit_depth <= 10 {
         let p = Tx2d { w, h, log2w, log2h, row_shift, col_shift, row_clamp, col_clamp, rk, ck, rect2 };
+        if dc_only && rk == Kind1d::Dct && ck == Kind1d::Dct && transform_dc_only(dequant[0], residual, &p) {
+            return;
+        }
         if w >= 8 && h >= 8 {
             transform_lanes::<8>(dequant, residual, &p);
         } else {
@@ -638,6 +679,32 @@ fn transform_1d<T: Lane>(t: &mut [T], kind: Kind1d, n: u32, r: u32) {
     }
 }
 
+/// [`transform_lanes`] for a DCT_DCT block whose only coefficient is DC: the other rows are
+/// zero and every column gets the same input, so one row and one column are transformed and
+/// the column is replicated. Returns false (nothing written) if the row output is not flat.
+fn transform_dc_only(dc: i32, residual: &mut [i32], p: &Tx2d) -> bool {
+    let (w, h) = (p.w, p.h);
+    let lo = -(1i32 << (p.col_clamp - 1));
+    let hi = (1i32 << (p.col_clamp - 1)) - 1;
+    let mut t = [[0i32; 1]; 64];
+    t[0] = [dc];
+    if p.rect2 {
+        t[0] = t[0].mul_round12(2896);
+    }
+    inverse_dct(&mut t[..], p.log2w, p.row_clamp);
+    let v = round2(t[0][0], p.row_shift).clamp(lo, hi);
+    if t[1..w].iter().any(|x| round2(x[0], p.row_shift).clamp(lo, hi) != v) {
+        return false;
+    }
+    let mut c = [[0i32; 1]; 64];
+    c[0] = [v];
+    inverse_dct(&mut c[..], p.log2h, p.col_clamp);
+    for i in 0..h {
+        residual[i * w..i * w + w].fill(round2(c[i][0], p.col_shift));
+    }
+    true
+}
+
 /// The 2D inverse transform with `L` rows (row pass) or columns (column pass) at a time;
 /// bit-identical to the one-at-a-time process for bit depths up to 10.
 fn transform_lanes<const L: usize>(dequant: &[i32], residual: &mut [i32], p: &Tx2d) {
@@ -692,6 +759,7 @@ fn transform_lanes<const L: usize>(dequant: &[i32], residual: &mut [i32], p: &Tx
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec_tables::{TX_HEIGHT, TX_SIZES_ALL, TX_WIDTH};
 
     /// The DCT step list must implement an orthogonal transform: a DC-only input gives a flat
     /// output equal to DC * cos(pi/4) (in the 2^12 fixed-point scale).
@@ -704,6 +772,26 @@ mod tests {
             inverse_dct(&mut t, n, 24);
             for v in &t[..len] {
                 assert_eq!(*v, 2896, "n={n}: {:?}", &t[..len]);
+            }
+        }
+    }
+
+    /// The DC-only shortcut gives the same residual as the full 2D transform.
+    #[test]
+    fn dc_only_matches_full_transform() {
+        for tx_sz in 0..TX_SIZES_ALL {
+            let (w, h) = (TX_WIDTH[tx_sz] as usize, TX_HEIGHT[tx_sz] as usize);
+            for bd in [8, 10] {
+                let lim = 1i32 << (7 + bd);
+                for dc in [1, -1, 37, -1000, 4096, lim - 1, -lim] {
+                    let mut dequant = vec![0; 64 * 64];
+                    dequant[0] = dc;
+                    let mut full = vec![0; 64 * 64];
+                    let mut fast = vec![1; 64 * 64];
+                    inverse_transform_2d(&dequant, &mut full, tx_sz, DCT_DCT, false, bd, false);
+                    inverse_transform_2d(&dequant, &mut fast, tx_sz, DCT_DCT, false, bd, true);
+                    assert_eq!(full[..w * h], fast[..w * h], "tx_sz {tx_sz} bd {bd} dc {dc}");
+                }
             }
         }
     }

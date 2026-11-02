@@ -297,6 +297,19 @@ fn parse_money(rest: &str, lang: Lang) -> Option<(Vec<String>, usize)> {
         return Some((words, used + skip));
     }
     let (unit, sub) = money_units(symbol, lang);
+    if let Some((scale, scale_len)) = scale_word_after(rest.get(skip + used..)?) {
+        // "$2.5 billion" is 2.5 billion dollars, not two dollars fifty.
+        let mut words = english_cardinal(value);
+        if had_minor {
+            let amount = rest.get(skip..skip + used)?;
+            let frac = amount.split_once('.').map_or("", |(_, f)| f);
+            words.push("point".into());
+            words.extend(digit_run_as_words(frac).0);
+        }
+        words.push(scale.into());
+        words.push(unit.into());
+        return Some((words, skip + used + scale_len));
+    }
     let mut words = english_cardinal(value);
     push_unit(&mut words, unit, value == 1);
     if had_minor && minor > 0 {
@@ -306,6 +319,17 @@ fn parse_money(rest: &str, lang: Lang) -> Option<(Vec<String>, usize)> {
         words.extend(cents);
     }
     Some((words, used + skip))
+}
+
+/// A scale word (`thousand`, `million`, `billion`, `trillion`, any case) after optional
+/// whitespace, as a whole word. Returns it lowercased and the bytes consumed.
+fn scale_word_after(after: &str) -> Option<(&'static str, usize)> {
+    let word_start = after.len() - after.trim_start().len();
+    let tail = after.get(word_start..)?;
+    let word_len = tail.find(|c: char| !c.is_alphabetic()).unwrap_or(tail.len());
+    let word = tail.get(..word_len)?.to_lowercase();
+    let scale = ["thousand", "million", "billion", "trillion"].into_iter().find(|s| *s == word)?;
+    Some((scale, word_start + word_len))
 }
 
 fn money_units(symbol: char, lang: Lang) -> (&'static str, &'static str) {
@@ -348,11 +372,12 @@ fn parse_amount(rest: &str, _lang: Lang) -> Option<(u64, usize, usize, u32, bool
                 if frac_digits.len() < 9 {
                     frac_digits.push(ch);
                 }
-            } else if int_digits.len() > MAX_CARDINAL_DIGITS {
-                break;
-            } else {
+            } else if int_digits.len() <= MAX_CARDINAL_DIGITS {
                 int_digits.push(ch);
             }
+            // Past the cap the digit is not collected, but the run is still consumed: `used`
+            // must cover all of it, or the caller reads only the collected digits and speaks
+            // the rest of the amount as a separate number.
             used = i + 1;
         } else if ch == ',' && !int_digits.is_empty() && !after_decimal {
             if !grouping_followed_by_3(rest, i) {
@@ -587,16 +612,11 @@ fn parse_fraction(rest: &str) -> Option<(Vec<Token>, usize)> {
 fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     let mut digits = String::new();
     let mut used = 0usize;
-    let mut overflowed = false;
     let mut grouped = false;
     for (i, ch) in rest.char_indices() {
         if ch.is_ascii_digit() {
             digits.push(ch);
             used = i + 1;
-            if digits.len() > 19 {
-                overflowed = true;
-                break;
-            }
         } else if ch == ',' && !digits.is_empty() {
             if grouping_followed_by_3(rest, i) {
                 // Grouping is visual only; drop the mark.
@@ -612,7 +632,7 @@ fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     if digits.is_empty() {
         return None;
     }
-    if overflowed || digits.len() > MAX_CARDINAL_DIGITS {
+    if digits.len() > MAX_CARDINAL_DIGITS {
         let words: Vec<Token> = digits.chars().map(|c| Token::Word(english_digit_word(c).into())).collect();
         return Some((words, used));
     }

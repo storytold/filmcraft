@@ -301,7 +301,7 @@ fn imported_yuv_preserves_managed_input_transform() {
 }
 
 #[test]
-fn failed_readback_wait_releases_the_buffer_for_the_next_frame() {
+fn failed_readback_wait_retires_storage_and_recovers_the_next_frame() {
     let Some((dev, queue)) = device() else {
         eprintln!("SKIPPED: no GPU adapter for readback lifetime regression");
         return;
@@ -319,12 +319,15 @@ fn failed_readback_wait_releases_the_buffer_for_the_next_frame() {
     FAIL_NEXT_MAP_WAIT.with(|fail| fail.set(true));
     assert!(compositor.render_export_prepared(&red, None).unwrap().is_none(), "injected wait failure must decline readback");
     assert!(!FAIL_NEXT_MAP_WAIT.with(|fail| fail.get()), "the real readback path must consume the injected failure");
+    assert!(compositor.accum_readback_buf.is_none(), "failed staging storage must leave the cache");
     eprintln!("readback lifetime: map requested and wait failure consumed");
     let green = plan([0, 255, 0, 255]);
     assert_eq!(compositor.render_export_prepared(&green, None).unwrap(), Some((1, 1, vec![0.0, 1.0, 0.0, 1.0])));
-    assert_eq!(&buffer, &compositor.accum_readback_buf.as_ref().unwrap().0, "recovery must reuse the same staging buffer");
+    let recovered = compositor.accum_readback_buf.as_ref().unwrap().0.clone();
+    assert_ne!(&buffer, &recovered, "recovery must allocate fresh staging storage");
     assert_eq!(compositor.render_export_prepared(&red, None).unwrap(), Some((1, 1, vec![1.0, 0.0, 0.0, 1.0])));
-    eprintln!("readback lifetime: same-buffer green then red pixels verified");
+    assert_eq!(&recovered, &compositor.accum_readback_buf.as_ref().unwrap().0, "successful staging storage remains reusable");
+    eprintln!("readback lifetime: fresh-buffer green then reused-buffer red pixels verified");
 }
 
 #[derive(Debug)]
@@ -1005,4 +1008,92 @@ fn many_threads_create_use_and_drop_devices_at_once() {
         let left = deadline.saturating_duration_since(Instant::now());
         assert!(rx.recv_timeout(left).is_ok(), "only {i} of {THREADS} threads finished within 120 s: device setup deadlocked");
     }
+}
+
+/// Require an adapter for the explicit lifecycle regressions; absence is not a passing skip.
+fn retained_readback_compositor() -> GpuCompositor {
+    let (dev, q) = device().expect("GPU adapter required for explicit readback regression");
+    let mut compositor = GpuCompositor::new(&dev, &q);
+    compositor.accum_readback_buf = Some((
+        dev.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback-cleanup-regression"),
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        }),
+        256,
+    ));
+    compositor
+}
+
+/// Failed buffers must leave the cache; a new copy must recreate usable staging storage.
+fn assert_readback_retired_and_rendering_recovers(compositor: &mut GpuCompositor) {
+    assert!(compositor.accum_readback_buf.is_none(), "failed staging buffer remained cached");
+    let plan = FramePlan::Layers { width: 1, height: 1, layers: vec![] };
+    let (width, height, rgba) = compositor.render_export_prepared(&plan, None).unwrap().expect("readback recovers with new staging storage");
+    assert_eq!((width, height, rgba.len()), (1, 1, 4));
+    assert!(compositor.accum_readback_buf.is_some(), "successful readback must retain its cache");
+    let again = compositor.read_accumulator().expect("successful staging storage remains reusable");
+    assert_eq!(again, (width, height, rgba));
+}
+
+/// A wait failure after a real completed map must not retain the failed staging storage.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_after_failed_wait() {
+    let mut compositor = retained_readback_compositor();
+    assert!(
+        compositor
+            .map_accumulator_with_wait((1, 1, 256), |device, rx| {
+                assert!(wait_mapped(device, rx).is_some());
+                None
+            })
+            .is_none()
+    );
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+}
+
+/// Reject hostile conversion dimensions without retaining a successfully mapped buffer.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_after_rejected_conversion() {
+    let mut compositor = retained_readback_compositor();
+    assert!(compositor.map_accumulator((u32::MAX, u32::MAX, 256)).is_none());
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+}
+
+/// Retire a still-pending map before the next copy/readback attempt uses the cache.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_pending_map_after_failed_wait() {
+    let mut compositor = retained_readback_compositor();
+    assert!(compositor.map_accumulator_with_wait((1, 1, 256), |_, _| None).is_none());
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+}
+
+/// Real callback rejection may already leave native storage unmapped; do not unmap it twice.
+#[test]
+#[ignore = "requires a working GPU adapter for staging-buffer lifecycle verification"]
+fn accumulator_readback_retires_rejected_native_map() {
+    let mut compositor = retained_readback_compositor();
+    let errors = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let observed = errors.clone();
+    compositor.device.on_uncaptured_error(Arc::new(move |error| {
+        observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(format!("{error}"));
+    }));
+    compositor.accum_readback_buf.as_ref().unwrap().0.destroy();
+    assert!(
+        compositor
+            .map_accumulator_with_wait((1, 1, 256), |device, rx| {
+                device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }).unwrap();
+                assert!(matches!(rx.recv_timeout(MAP_TIMEOUT), Ok(Err(_))), "expected an actual rejected map callback");
+                None
+            })
+            .is_none()
+    );
+    assert_readback_retired_and_rendering_recovers(&mut compositor);
+    assert!(
+        !errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|error| error.contains("Buffer is not mapped")),
+        "cleanup attempted to unmap an already rejected mapping"
+    );
 }

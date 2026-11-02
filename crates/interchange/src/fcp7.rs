@@ -27,9 +27,9 @@ use filmcraft_time::{FrameRate, Tick, format_timecode_frames};
 use roxmltree::Node;
 
 use crate::common::{
-    Builder, MAX_IMPORTED_TRACKS, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, frames_round, gain_to_db, item_media, item_path, kind_from_ext,
-    label_from, on_frame, param, param_modified, path_to_file_url, rate_from_timebase, resolve_path, set_param, settings_for, standard_effects, timebase,
-    transition_effect, transition_name, unscaled,
+    Builder, MAX_IMPORTED_TRACKS, MAX_RATE, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, frames_round, gain_to_db, item_media, item_path,
+    kind_from_ext, label_from, on_frame, param, param_modified, path_to_file_url, rate_from_timebase, resolve_path, resolve_url, set_param, settings_for,
+    standard_effects, timebase, transition_effect, transition_name, unscaled,
 };
 use crate::xml::{XmlWriter, bool_str, child, child_bool, child_f64, child_i64, child_text, children, elements, num, path_text};
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
@@ -156,6 +156,9 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
     let root = doc.root_element();
     if root.tag_name().name() != "xmeml" {
         return Err(Error::parse(Format::Fcp7Xml, "root element is not <xmeml>"));
+    }
+    if root.descendants().any(|n| n.has_tag_name("timebase") && n.text().and_then(|t| t.trim().parse::<f64>().ok()).is_some_and(|tb| tb > MAX_RATE as f64)) {
+        report.warn(format!("a timebase above {MAX_RATE} per second is not a frame rate; it was limited to {MAX_RATE}"));
     }
     let mut imp = Imp {
         b: Builder::new(root.descendants().find(|n| n.has_tag_name("project")).and_then(|p| child_text(p, "name")).unwrap_or("Imported XML")),
@@ -299,7 +302,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         let id = match path {
             Some(url) => {
-                let p = resolve_path(url, self.opts.base_dir.as_deref());
+                let p = resolve_url(url, self.opts.base_dir.as_deref());
                 self.b.file_media(&format!("file:{p}"), &name, &p, &spec, bin)
             }
             None => {
