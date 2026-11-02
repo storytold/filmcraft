@@ -197,7 +197,7 @@ impl Param {
         match self.keyframes.binary_search_by_key(&t, |k| k.time) {
             Ok(i) => self.keyframes[i].value = value,
             Err(i) => {
-                let interp = self.keyframes.get(i.saturating_sub(1)).map(|k| k.interp).unwrap_or_default();
+                let interp = i.checked_sub(1).and_then(|j| self.keyframes.get(j)).map(|k| k.interp).unwrap_or_default();
                 let mut k = Keyframe::new(t, value);
                 k.interp = interp;
                 self.keyframes.insert(i, k);
@@ -415,6 +415,18 @@ mod tests {
         assert_eq!(p.f64_at(Tick(500)), 10.0);
         p.keyframes[0].interp = Interpolation::Hold;
         assert_eq!(p.f64_at(Tick(99)), 0.0);
+    }
+
+    #[test]
+    fn set_at_before_first_keyframe_uses_default_interp() {
+        let mut p = Param::new(ParamValue::Float(0.0));
+        p.toggle_animation(Tick(100));
+        p.keyframes[0].interp = Interpolation::Hold;
+        p.set_at(Tick(0), ParamValue::Float(5.0));
+        assert_eq!(p.keyframes[0].interp, Interpolation::Linear);
+        assert_eq!(p.keyframes[1].interp, Interpolation::Hold);
+        p.set_at(Tick(200), ParamValue::Float(7.0));
+        assert_eq!(p.keyframes[2].interp, Interpolation::Hold);
     }
 
     #[test]

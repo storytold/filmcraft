@@ -207,19 +207,50 @@ fn rayon_frame_requests_while_decoding_on_rayon_never_deadlock() {
         let _ = tx.send(());
     });
     // A deadlock stops every request of a round for good. On a loaded machine the 3,840
-    // requests can take minutes, so the limit applies to the time between two answered ones.
-    let mut answered = 0;
+    // requests can take minutes, so the limit applies to the time since the last answered one.
+    if let Err(frames) = wait_while_answered(&rx, &done, Duration::from_secs(120)) {
+        panic!("frame requests deadlocked after {frames} frames");
+    }
+}
+
+/// Waits for `rx` while `done` keeps growing. Returns `Err` with the count in `done` once
+/// `limit` has passed since the count last grew (or since the call, before it grows).
+fn wait_while_answered(rx: &std::sync::mpsc::Receiver<()>, done: &AtomicUsize, limit: Duration) -> Result<(), usize> {
+    let mut answered = done.load(Ordering::Relaxed);
+    let mut last_answer = Instant::now();
     loop {
-        match rx.recv_timeout(Duration::from_secs(120)) {
-            Ok(()) => break,
+        match rx.recv_timeout(limit / 120) {
+            Ok(()) => return Ok(()),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let now = done.load(Ordering::Relaxed);
-                assert!(now > answered, "frame requests deadlocked after {now} frames");
-                answered = now;
+                if now > answered {
+                    answered = now;
+                    last_answer = Instant::now();
+                } else if last_answer.elapsed() >= limit {
+                    return Err(now);
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("a frame request failed"),
         }
     }
+}
+
+#[test]
+fn a_stall_right_after_an_answer_is_reported_once_the_limit_has_passed() {
+    let (_tx, rx) = std::sync::mpsc::channel();
+    let done = Arc::new(AtomicUsize::new(0));
+    let answering = done.clone();
+    let (answer_tx, answer_rx) = std::sync::mpsc::channel();
+    let limit = Duration::from_secs(2);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        let answer = Instant::now();
+        answering.fetch_add(1, Ordering::Relaxed);
+        let _ = answer_tx.send(answer);
+    });
+    assert_eq!(wait_while_answered(&rx, &done, limit), Err(1));
+    let waited = answer_rx.recv().expect("answer time").elapsed();
+    assert!(waited >= limit && waited < limit * 3 / 2, "the stall was reported {waited:?} after the answer");
 }
 
 #[test]
@@ -786,4 +817,39 @@ fn long_gop_continue_does_not_restart_for_the_next_frame() {
     assert_eq!(index_of(&c.frame(&s, 81_000).expect("frame")), 81);
     assert_eq!(s.resets.load(Ordering::Relaxed), resets);
     assert!(s.decodes.load(Ordering::Relaxed) - decodes <= 8 + 2);
+}
+
+#[test]
+fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
+    let pool = Arc::new(Pool::new(MAX_LIVE_DECODERS, IDLE, FRAME_BUDGET).tiered(RECENT, HARD_DECODERS));
+    let s: Vec<Samples> = (0..3).map(|_| samples(300, 250, 3, false)).collect();
+    let c: Vec<GopCache> = (0..3).map(|_| GopCache::in_pool(None, pool.clone())).collect();
+    for k in 0..3 {
+        assert_eq!(index_of(&c[k].frame(&s[k], 10_000).expect("frame")), 10);
+    }
+    assert!(pool.bytes.load(Ordering::Relaxed) > 0);
+    assert_eq!(pool.decoders.load(Ordering::Relaxed), 3);
+
+    // a cache another thread holds (it is decoding) keeps its frames and decoder
+    let busy = c[2].shared.state.lock().unwrap();
+    let held_bytes = busy.bytes;
+    pool.release_idle();
+    assert_eq!(busy.bytes, held_bytes);
+    assert!(busy.decoder.is_some() && !busy.frames.is_empty());
+    drop(busy);
+    for k in 0..2 {
+        let st = c[k].shared.state.lock().unwrap();
+        assert!(st.frames.is_empty() && st.drafts.is_empty() && st.bytes == 0 && st.decoder.is_none() && st.spare.is_empty());
+    }
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), held_bytes, "only the busy cache still counts");
+    assert_eq!(pool.decoders.load(Ordering::Relaxed), 1);
+
+    // an emptied cache decodes again from its sync sample, and a second release is harmless
+    assert_eq!(index_of(&c[0].frame(&s[0], 20_000).expect("frame")), 20);
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), held_bytes + c[0].shared.state.lock().unwrap().bytes);
+    // the cache that was in use is idle now: nothing is left, and a second release is harmless
+    pool.release_idle();
+    pool.release_idle();
+    assert_eq!(pool.bytes.load(Ordering::Relaxed), 0);
+    assert_eq!(pool.decoders.load(Ordering::Relaxed), 0);
 }

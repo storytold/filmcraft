@@ -113,7 +113,8 @@ pub(crate) struct TileDecoder<'a, 'f> {
     pub b: Block,
     pub mvs: crate::mvpred::MvStack,
     pub nb: crate::inter_info::Neighbours,
-    /// Quant[] for the current transform block (raster order, stride per Adjusted size).
+    /// Quant[] for the current transform block (raster order, stride per Adjusted size); all
+    /// zero between transform blocks (`reconstruct` clears what it reads).
     quant: Vec<i32>,
     dequant: Vec<i32>,
     residual: Vec<i32>,

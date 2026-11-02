@@ -146,7 +146,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     record(app, ctx);
     let t = app.tokens;
     let screen = ctx.content_rect();
-    let size = vec2((screen.width() - 40.0).clamp(760.0, 1320.0), (screen.height() - 60.0).clamp(560.0, 900.0));
+    let size = dialog_size(screen.size());
     let mut close: Option<bool> = None; // Some(true) = OK, Some(false) = Cancel
     let mut open = true;
     egui::Window::new(tl!("Keyboard Shortcuts"))
@@ -163,7 +163,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             ui.set_width(size.x);
             header(app, ui, &t);
             ui.add_space(8.0);
-            let kb_h = (size.y * 0.42).clamp(220.0, 360.0);
+            let kb_h = keyboard_height(size);
             let (kb, _) = ui.allocate_exact_size(vec2(size.x, kb_h), Sense::hover());
             keyboard(app, ui, kb, &t);
             legend(ui, &t);
@@ -198,6 +198,16 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         }
         None => true,
     }
+}
+
+/// The dialog's inner size on a screen of `screen`.
+fn dialog_size(screen: egui::Vec2) -> egui::Vec2 {
+    vec2((screen.x - 40.0).clamp(760.0, 1320.0), (screen.y - 60.0).clamp(560.0, 900.0))
+}
+
+/// Height of the drawn keyboard in a dialog of `size`.
+fn keyboard_height(size: egui::Vec2) -> f32 {
+    (size.y * 0.42).clamp(220.0, 360.0)
 }
 
 fn small_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str, label: &str, enabled: bool) -> bool {
@@ -246,7 +256,8 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
             });
         }
         if small_button(app, ui, "shortcuts.import", tl!("Import…"), true) {
-            app.pick_ui(FileDialog::open_file(tl!("Keyboard Shortcuts"), &["json"]), |app, paths| match paths.into_iter().next() {
+            // .kys (Premiere's) too, so choosing one says why it can't be read (#2489)
+            app.pick_ui(FileDialog::open_file(tl!("Keyboard Shortcuts"), &["json", "kys"]), |app, paths| match paths.into_iter().next() {
                 Some(path) => {
                     if let Some(r) = exec(app, "shortcuts.import", json!({"path": path})) {
                         app.shortcut_editor.message = tlf!("Imported “{name}”", name = r["name"].as_str().unwrap_or(""));
@@ -458,10 +469,9 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
     }
     let panel = app.shortcut_editor.panel().map(str::to_string);
     let map = app.session.shortcuts.keyboard(mods, panel.as_deref());
-    let units_w = 15.0 + 0.5 + 3.0;
     let gap = 3.0;
-    let u = (area.width() / units_w).min(area.height() / 6.2);
-    let row_h = u * 0.98;
+    let (ux, uy) = key_units(area.size());
+    let row_h = uy * 0.98;
     let origin = area.min;
     let mut clicked_key: Option<String> = None;
     let mut toggled: Option<&str> = None;
@@ -505,18 +515,20 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
         if app.shortcut_editor.key.as_deref() == Some(name) {
             p.rect_stroke(r, CornerRadius::same(3), Stroke::new(2.0, t.accent), StrokeKind::Inside);
         }
-        let fs = (u * 0.2).clamp(8.5, 12.0);
+        let fs = (uy * 0.2).clamp(8.5, 12.0);
         if let Some(cmd) = app_cmd.as_ref().or(panel_cmd.as_ref()) {
+            // the name gets the key above its legend: 3 pt margins top and bottom, 1 pt between
+            let legend_h = ui.fonts_mut(|f| f.row_height(&FontId::proportional(fs)));
+            let space = vec2(r.width() - 8.0, r.height() - 7.0 - legend_h);
             let label = label_of(app, cmd);
-            let mut job = LayoutJob::single_section(label, TextFormat::simple(FontId::proportional(fs), Color32::WHITE));
-            job.wrap.max_width = r.width() - 8.0;
-            job.wrap.max_rows = if r.height() > 3.5 * fs { 2 } else { 1 };
-            job.wrap.break_anywhere = false;
-            job.wrap.overflow_character = Some('…');
+            let fit = remembered_key_label(ui, &label, space, fs);
+            let mut job = LayoutJob::single_section(fit.rows.join("\n"), TextFormat::simple(FontId::proportional(fit.size), Color32::WHITE));
+            job.wrap.max_width = f32::INFINITY;
             let g = ui.fonts_mut(|f| f.layout_job(job));
-            ui.painter().galley(r.min + vec2(4.0, 3.0), g, Color32::WHITE);
+            ui.painter().with_clip_rect(r).galley(r.min + vec2(4.0, 3.0), g, Color32::WHITE);
         }
-        ui.painter().text(
+        // the key's own legend stays inside the key too ("⌦ Fwd Del" ran into End)
+        ui.painter().with_clip_rect(r).text(
             r.left_bottom() + vec2(4.0, -3.0),
             Align2::LEFT_BOTTOM,
             key_legend(name, mac),
@@ -530,6 +542,8 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
             _ => key_legend(name, mac),
         };
         app.auto.add(&id, r, &tip);
+        // a name cut short on the key reads in full on hover
+        let resp = if app_cmd.is_some() || panel_cmd.is_some() { resp.on_hover_text(tip) } else { resp };
         if resp.clicked() {
             if is_mod {
                 toggled = Some(match name {
@@ -545,20 +559,20 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
     };
     for (ri, row) in MAIN_ROWS.iter().enumerate() {
         let mut x = origin.x;
-        let y = origin.y + ri as f32 * row_h + if ri > 0 { u * 0.15 } else { 0.0 };
+        let y = origin.y + ri as f32 * row_h + if ri > 0 { uy * 0.15 } else { 0.0 };
         for (name, w) in row.iter() {
-            let r = Rect::from_min_size(pos2(x, y), vec2(w * u, row_h));
+            let r = Rect::from_min_size(pos2(x, y), vec2(w * ux, row_h));
             if !name.is_empty() {
                 draw(ui, r, name);
             }
-            x += w * u;
+            x += w * ux;
         }
     }
-    let nav_x = origin.x + 15.5 * u;
+    let nav_x = origin.x + 15.5 * ux;
     for (ri, row) in NAV_ROWS.iter().enumerate() {
-        let y = origin.y + ri as f32 * row_h + if ri > 0 { u * 0.15 } else { 0.0 };
+        let y = origin.y + ri as f32 * row_h + if ri > 0 { uy * 0.15 } else { 0.0 };
         for (name, off) in row.iter() {
-            draw(ui, Rect::from_min_size(pos2(nav_x + off * u, y), vec2(u, row_h)), name);
+            draw(ui, Rect::from_min_size(pos2(nav_x + off * ux, y), vec2(ux, row_h)), name);
         }
     }
     let ed = &mut app.shortcut_editor;
@@ -572,6 +586,181 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
     }
     if let Some(k) = clicked_key {
         ed.key = Some(k);
+    }
+}
+
+/// Key units across the drawn keyboard: 15 main columns, a half-unit gap and the navigation cluster.
+const KEYBOARD_UNITS_W: f32 = 15.0 + 0.5 + 3.0;
+/// Keys widen to fill the dialog up to this many times their height.
+const MAX_KEY_ASPECT: f32 = 1.5;
+
+/// Width and height of one key unit in a keyboard area of `size`. Six rows (plus the gap under the
+/// function keys) fill the height; keys then widen to fill the width, up to [`MAX_KEY_ASPECT`] times
+/// their height, so command names get the room the dialog has instead of square keys leaving a
+/// quarter of it empty.
+fn key_units(size: egui::Vec2) -> (f32, f32) {
+    let uy = (size.y / 6.2).min(size.x / KEYBOARD_UNITS_W);
+    let ux = (size.x / KEYBOARD_UNITS_W).min(uy * MAX_KEY_ASPECT);
+    (ux, uy)
+}
+
+/// Smallest size a key's command name shrinks to before it is cut short.
+const MIN_KEY_LABEL_FS: f32 = 7.5;
+
+/// A key's command name as drawn: its rows, its font size and whether any of it was cut short.
+#[derive(Clone, Debug, PartialEq)]
+struct KeyLabel {
+    rows: Vec<String>,
+    size: f32,
+    cut: bool,
+}
+
+/// [`fit_key_label`] with the app's fonts, remembered per name, room and size: a fit measures many
+/// trial layouts (about 60 µs), and the keyboard draws some seventy names every frame.
+fn remembered_key_label(ui: &egui::Ui, label: &str, space: egui::Vec2, max_fs: f32) -> KeyLabel {
+    type Fits = std::collections::HashMap<(String, [u32; 4]), KeyLabel>;
+    let id = egui::Id::unique("shortcuts.keyLabels");
+    let key = (label.to_owned(), [space.x.to_bits(), space.y.to_bits(), max_fs.to_bits(), ui.ctx().pixels_per_point().to_bits()]);
+    if let Some(fit) = ui.data_mut(|d| d.get_temp_mut_or_default::<Fits>(id).get(&key).cloned()) {
+        return fit;
+    }
+    let fit =
+        ui.fonts_mut(|f| fit_key_label(label, space, max_fs, |s, size| f.layout_no_wrap(s.to_owned(), FontId::proportional(size), Color32::WHITE).size()));
+    ui.data_mut(|d| {
+        let fits = d.get_temp_mut_or_default::<Fits>(id);
+        // names, sizes and languages change rarely; a resize drag can add many sizes
+        if fits.len() > 4096 {
+            fits.clear();
+        }
+        fits.insert(key, fit.clone());
+    });
+    fit
+}
+
+/// Fit a key's command name in `space` (the key above its legend): the largest size from `max_fs`
+/// down to [`MIN_KEY_LABEL_FS`] at which the whole name fits, in rows broken only where a line may
+/// break (between words, and between the characters of Chinese and Japanese). A name that doesn't
+/// fit even then is cut short with "…". A word is never split across two rows: longer translations
+/// used to break mid-word ("Desmar / car", "Centrali / zar"). `measure` is the size of one line of
+/// text at a font size.
+fn fit_key_label(label: &str, space: egui::Vec2, max_fs: f32, mut measure: impl FnMut(&str, f32) -> egui::Vec2) -> KeyLabel {
+    let mut size = max_fs.max(MIN_KEY_LABEL_FS);
+    loop {
+        let row_h = measure("M", size).y.max(1.0);
+        let max_rows = ((space.y / row_h).floor() as usize).clamp(1, 3);
+        let (rows, cut) = wrap_label(label, space.x, max_rows, |s| measure(s, size).x);
+        if !cut || size <= MIN_KEY_LABEL_FS {
+            return KeyLabel { rows, size, cut };
+        }
+        size = (size - 0.5).max(MIN_KEY_LABEL_FS);
+    }
+}
+
+/// `text` in at most `max_rows` rows no wider than `max_w` (as `width` measures them), broken only
+/// between [`break_units`]. A unit wider than a row is cut short with "…", and so is the last row
+/// when text is left over; the flag says whether anything was cut.
+fn wrap_label(text: &str, max_w: f32, max_rows: usize, mut width: impl FnMut(&str) -> f32) -> (Vec<String>, bool) {
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut cut = false;
+    for (spaced, unit) in break_units(text) {
+        let joined = match (row.is_empty(), spaced) {
+            (true, _) => unit.clone(),
+            (false, true) => format!("{row} {unit}"),
+            (false, false) => format!("{row}{unit}"),
+        };
+        if width(&joined) <= max_w {
+            row = joined;
+            continue;
+        }
+        if !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+        }
+        if width(&unit) <= max_w {
+            row = unit;
+        } else {
+            rows.push(ellipsize(&unit, max_w, &mut width));
+            cut = true;
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    let max_rows = max_rows.max(1);
+    if rows.len() > max_rows {
+        rows.truncate(max_rows);
+        if let Some(last) = rows.last_mut() {
+            *last = ellipsize(last, max_w, &mut width);
+        }
+        cut = true;
+    }
+    (rows, cut)
+}
+
+/// `text` split where a line may break: at spaces, after a slash or hyphen ("Speed/ Duration"), and
+/// between the characters of Chinese and Japanese, which don't put spaces between words (an opening
+/// bracket stays with what follows it; closing punctuation, the long-vowel mark and small kana stay
+/// with what precedes them). Each unit says whether a space preceded it.
+fn break_units(text: &str) -> Vec<(bool, String)> {
+    let mut units = Vec::new();
+    let mut unit = String::new();
+    let mut spaced = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            if !unit.is_empty() {
+                units.push((spaced, std::mem::take(&mut unit)));
+            }
+            spaced = true;
+            continue;
+        }
+        if let Some(prev) = unit.chars().last()
+            && (breaks_between(prev) || breaks_between(c) || matches!(prev, '/' | '-'))
+            && !opens(prev)
+            && !closes(c)
+        {
+            units.push((spaced, std::mem::take(&mut unit)));
+            spaced = false;
+        }
+        unit.push(c);
+    }
+    if !unit.is_empty() {
+        units.push((spaced, unit));
+    }
+    units
+}
+
+/// Chinese characters, kana and full-width forms: a line may break on either side of them.
+fn breaks_between(c: char) -> bool {
+    matches!(c as u32,
+        0x3000..=0x303F // CJK symbols and punctuation
+        | 0x3040..=0x30FF // hiragana, katakana
+        | 0x31F0..=0x31FF // katakana phonetic extensions
+        | 0x3400..=0x4DBF // CJK extension A
+        | 0x4E00..=0x9FFF // CJK unified ideographs
+        | 0xF900..=0xFAFF // CJK compatibility ideographs
+        | 0xFF00..=0xFFEF // half-width and full-width forms
+        | 0x20000..=0x2FFFF) // CJK extensions B–F
+}
+
+/// Opening brackets: a line doesn't end with one.
+fn opens(c: char) -> bool {
+    matches!(c, '(' | '[' | '（' | '［' | '「' | '『' | '【' | '〔' | '〈' | '《' | '“' | '‘')
+}
+
+/// Closing punctuation, the long-vowel mark and small kana: a line doesn't start with one.
+fn closes(c: char) -> bool {
+    ")],.:;!?…、。，．：；！？）］」』】〕〉》”’・ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ".contains(c)
+}
+
+/// `text` cut short with "…" so that it fits `max_w` (just "…" when nothing more fits).
+fn ellipsize(text: &str, max_w: f32, width: &mut impl FnMut(&str) -> f32) -> String {
+    let mut chars: Vec<char> = text.trim_end_matches(['…', ' ']).chars().collect();
+    loop {
+        let s = format!("{}…", chars.iter().collect::<String>().trim_end());
+        if chars.is_empty() || width(&s) <= max_w {
+            return s;
+        }
+        chars.pop();
     }
 }
 
@@ -607,8 +796,8 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
     ui.add_space(4.0);
     let rows = app.session.execute("shortcuts.list", json!({})).unwrap_or_default();
     let rows = rows.as_array().cloned().unwrap_or_default();
-    let query = app.shortcut_editor.search.to_lowercase();
-    let rows: Vec<_> = rows.into_iter().filter(|row| matches_search(row, &query)).collect();
+    let query = app.shortcut_editor.search.trim();
+    let rows: Vec<_> = rows.into_iter().filter(|row| matches_search(row, query)).collect();
     let w = ui.available_width();
     // column header
     let (hr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
@@ -837,5 +1026,167 @@ mod localization_tests {
             assert!(!matches_search(&row, &redo), "{}: {redo}", l.code());
         }
         crate::i18n::set_current(crate::i18n::Language::En);
+    }
+
+    #[test]
+    fn command_search_accepts_turkish_casing() {
+        crate::i18n::set_current(crate::i18n::Language::Tr);
+        let row = json!({"id": "marker.in_out", "label": "Add Range Marker to In and Out", "category": "Marker", "shortcuts": []});
+        for query in ["ÇIKIŞ", "çıkış", "Çıkış"] {
+            assert!(matches_search(&row, query), "{query}");
+        }
+        crate::i18n::set_current(crate::i18n::Language::En);
+    }
+}
+
+#[cfg(test)]
+mod key_label_tests {
+    use super::*;
+
+    /// One unit per character: easy to reason about in the expected rows.
+    fn chars(s: &str) -> f32 {
+        s.chars().count() as f32
+    }
+
+    #[test]
+    fn key_names_break_between_words_not_inside_them() {
+        assert_eq!(wrap_label("Desmarcar tudo", 10.0, 2, chars), (vec!["Desmarcar".to_string(), "tudo".to_string()], false));
+        assert_eq!(wrap_label("Undo", 10.0, 2, chars), (vec!["Undo".to_string()], false));
+    }
+
+    #[test]
+    fn names_also_break_after_a_slash_or_hyphen() {
+        assert_eq!(wrap_label("Speed/Duration…", 10.0, 2, chars), (vec!["Speed/".to_string(), "Duration…".to_string()], false));
+        assert_eq!(wrap_label("Ripple-Delete", 8.0, 2, chars), (vec!["Ripple-".to_string(), "Delete".to_string()], false));
+    }
+
+    #[test]
+    fn a_word_wider_than_the_key_is_cut_short_not_split() {
+        assert_eq!(wrap_label("Centralizar", 8.0, 2, chars), (vec!["Central…".to_string()], true));
+    }
+
+    #[test]
+    fn names_left_over_end_the_last_row_with_an_ellipsis() {
+        let (rows, cut) = wrap_label("Ferramenta Seleção de Faixa", 10.0, 2, chars);
+        assert_eq!(rows, ["Ferramenta", "Seleção d…"]);
+        assert!(cut);
+    }
+
+    #[test]
+    fn chinese_and_japanese_break_between_characters() {
+        let units = |s: &str| break_units(s).into_iter().map(|(_, u)| u).collect::<Vec<_>>();
+        assert_eq!(units("選択ツール"), ["選", "択", "ツー", "ル"]);
+        assert_eq!(units("（テスト）"), ["（テ", "ス", "ト）"]);
+        assert_eq!(units("H.264 書き出し"), ["H.264", "書", "き", "出", "し"]);
+        assert_eq!(wrap_label("選択ツール", 3.0, 2, chars), (vec!["選択".to_string(), "ツール".to_string()], false));
+    }
+
+    #[test]
+    fn a_name_shrinks_before_it_is_cut() {
+        let measure = |s: &str, size: f32| vec2(chars(s) * size * 0.5, size * 1.2);
+        let fit = fit_key_label("Desmarcar tudo", vec2(40.0, 30.0), 12.0, measure);
+        assert_eq!(fit, KeyLabel { rows: vec!["Desmarcar".into(), "tudo".into()], size: 8.5, cut: false });
+    }
+
+    #[test]
+    fn empty_and_degenerate_keys_do_not_panic() {
+        let measure = |s: &str, size: f32| vec2(chars(s) * size * 0.5, size * 1.2);
+        assert_eq!(fit_key_label("", vec2(0.0, 0.0), 12.0, measure), KeyLabel { rows: vec![], size: 12.0, cut: false });
+        let fit = fit_key_label("Desmarcar", vec2(-5.0, f32::NAN), f32::NAN, measure);
+        assert_eq!(fit.rows, ["…"]);
+        assert!(fit.cut);
+    }
+
+    #[test]
+    fn keys_widen_to_fill_the_dialog_up_to_one_and_a_half_times_their_height() {
+        let (ux, uy) = key_units(vec2(1320.0, 360.0));
+        assert!((uy - 360.0 / 6.2).abs() < 0.01);
+        assert!((ux - 1320.0 / KEYBOARD_UNITS_W).abs() < 0.01, "{ux}");
+        let (ux, uy) = key_units(vec2(3000.0, 360.0));
+        assert!((ux - uy * MAX_KEY_ASPECT).abs() < 0.01);
+    }
+
+    /// Report, not a check: how many command names on the drawn keyboard are cut short, per
+    /// interface language and screen size, with square keys (before) and widened ones.
+    /// `cargo test --release -p filmcraft-ui-egui key_label_report -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn key_label_report() {
+        use filmcraft_engine::shortcuts::BUILTIN_PRESETS;
+        filmcraft_text::fonts::scan_system();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, &Tokens::for_kind(crate::theme::ThemeKind::Dark));
+        ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
+        let mut session = filmcraft_engine::Session::default();
+        let mut keyed: std::collections::BTreeSet<(&'static str, String)> = std::collections::BTreeSet::new();
+        for preset in BUILTIN_PRESETS {
+            session.shortcuts.load_preset(preset).unwrap();
+            for b in &session.shortcuts.bindings {
+                let Ok(c) = Chord::parse(&b.keys) else { continue };
+                let label = session
+                    .shortcuts
+                    .command(&b.command)
+                    .map(|c| c.label)
+                    .or_else(|| filmcraft_engine::find_command(&b.command).map(|c| c.label.to_string()))
+                    .unwrap_or_else(|| b.command.clone());
+                keyed.insert((c.key, label));
+            }
+        }
+        let width_units = |key: &str| -> Option<f32> {
+            MAIN_ROWS
+                .iter()
+                .flat_map(|r| r.iter())
+                .find(|(n, _)| *n == key)
+                .map(|(_, w)| *w)
+                .or_else(|| NAV_ROWS.iter().flat_map(|r| r.iter()).find(|(n, _)| *n == key).map(|_| 1.0))
+        };
+        let screens = [(800.0, 600.0), (1280.0, 800.0), (1440.0, 900.0), (1512.0, 982.0), (1728.0, 1117.0)];
+        eprintln!("{} (key, name) pairs across {} presets", keyed.len(), BUILTIN_PRESETS.len());
+        let started = std::time::Instant::now();
+        let mut fits = 0;
+        for lang in crate::i18n::Language::ALL {
+            crate::i18n::set_current(lang);
+            for (sw, sh) in screens {
+                let size = dialog_size(vec2(sw, sh));
+                let area = vec2(size.x, keyboard_height(size));
+                let square = (area.x / KEYBOARD_UNITS_W).min(area.y / 6.2);
+                let mut line = format!("{:6} {sw}x{sh}:", lang.code());
+                for (geometry, (ux, uy)) in [("square", (square, square)), ("wide", key_units(area))] {
+                    let fs = (uy * 0.2).clamp(8.5, 12.0);
+                    let (mut cut, mut small, mut examples) = (0, 0, Vec::new());
+                    let mut n = 0;
+                    for (key, label) in &keyed {
+                        let Some(w) = width_units(key) else { continue };
+                        let label = crate::i18n::t(label).to_string();
+                        let r = vec2(w * ux - 3.0, uy * 0.98 - 3.0);
+                        let fit = ctx.fonts_mut(|f| {
+                            let legend_h = f.row_height(&FontId::proportional(fs));
+                            fit_key_label(&label, vec2(r.x - 8.0, r.y - 7.0 - legend_h), fs, |s, size| {
+                                f.layout_no_wrap(s.to_owned(), FontId::proportional(size), Color32::WHITE).size()
+                            })
+                        });
+                        fits += 1;
+                        n += 1;
+                        if fit.cut {
+                            cut += 1;
+                            examples.push((label.chars().count(), format!("{label} → {}", fit.rows.join(" / "))));
+                        } else if fit.size < 9.0 {
+                            small += 1;
+                        }
+                    }
+                    examples.sort();
+                    let shortest = examples.first().map_or(0, |e| e.0);
+                    line += &format!("  {geometry} u={ux:.0}x{uy:.0}: {cut}/{n} cut (shortest {shortest} chars), {small} under 9 pt");
+                    if geometry == "wide" && sw == 1512.0 {
+                        for (len, e) in &examples {
+                            line += &format!("\n        [{len}] {e}");
+                        }
+                    }
+                }
+                eprintln!("{line}");
+            }
+        }
+        crate::i18n::set_current(crate::i18n::Language::En);
+        eprintln!("{fits} fits in {:?} ({:.1} µs each)", started.elapsed(), started.elapsed().as_secs_f64() * 1e6 / fits as f64);
     }
 }

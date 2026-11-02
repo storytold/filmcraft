@@ -1,6 +1,7 @@
 use super::{
     AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
-    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, pos2, vec2,
+    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, is_export_busy,
+    pos2, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -28,7 +29,9 @@ pub(super) fn combo(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, 
 /// [`combo`] whose options carry why they are greyed out (label, `Some(reason)` when disabled).
 fn combo_why(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options: &[(String, Option<&str>)], width: f32) -> Option<usize> {
     let mut chosen = None;
-    let r = craft_ui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).show_ui(ui, |ui| {
+    // no row limit of our own: the list grows to the popup limit, so Frame Rate's last rates
+    // (119.88, 120) show without scrolling (the default 200 px cut them off)
+    let r = craft_ui::ComboBox::from_id_salt(id).selected_text(crate::i18n::t(selected)).width(width).height(f32::INFINITY).show_ui(ui, |ui| {
         for (i, (label, why)) in options.iter().enumerate() {
             let enabled = why.is_none();
             let resp = ui.add_enabled(enabled, egui::Button::selectable(label == selected, crate::i18n::t(label)));
@@ -188,7 +191,8 @@ pub(super) fn location_link(ui: &mut egui::Ui, t: &Tokens, folder: &str) -> egui
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hover)
 }
 
-const RATES: [(&str, FrameRate); 11] = [
+/// Video > Frame Rate when Match Source is off: up to the high rates a sequence can have (119.88, 120).
+const RATES: [(&str, FrameRate); 13] = [
     ("10", FrameRate { num: 10, den: 1 }),
     ("12", FrameRate { num: 12, den: 1 }),
     ("15", FrameRate { num: 15, den: 1 }),
@@ -200,6 +204,8 @@ const RATES: [(&str, FrameRate); 11] = [
     ("50", FrameRate::FPS_50),
     ("59.94", FrameRate::FPS_59_94),
     ("60", FrameRate::FPS_60),
+    ("119.88", FrameRate::FPS_119_88),
+    ("120", FrameRate::FPS_120),
 ];
 
 pub(crate) const PARS: [(&str, Option<(u32, u32)>); 6] = [
@@ -216,6 +222,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     let mut reg = Reg::default();
     let mut open_manager = false;
     let mut chosen_preset: Option<String> = None;
+    let busy = is_export_busy(app);
     let (seq_w, seq_h, seq_rate, seq_sr) = app
         .session
         .active_sequence()
@@ -231,156 +238,158 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 10.0))).id_salt("export-settings"));
     let ex = &mut app.ui.export;
     egui::ScrollArea::vertical().id_salt("export-settings-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
-        ui.label(egui::RichText::new(tl!("Media File")).strong().size(14.0));
-        ui.add_space(6.0);
-        row(ui, &t, tl!("File Name"), |ui| {
-            if let Some(v) = draft_text(ui, &mut reg, "export.fileName", &ex.file_name, tl!("Sequence name")) {
-                ex.file_name = v;
-            }
-        });
-        row(ui, &t, tl!("Location"), |ui| {
-            let r = ui.small_button("…");
-            reg.add("export.location.browse", r.rect, "Choose folder");
-            pick_folder = r.clicked();
-            if let Some(v) = draft_text(ui, &mut reg, "export.location", &ex.location, tl!("Folder")) {
-                ex.location = v;
-            }
-        });
-        // Preset: favourites, then every preset by category, then More presets…
-        row(ui, &t, tl!("Preset"), |ui| {
-            let r = craft_ui::ComboBox::from_id_salt("export.preset").selected_text(crate::i18n::t(&ex.preset)).width(ui.available_width() - 4.0).show_ui(
-                ui,
-                |ui| {
-                    if !favs.is_empty() {
-                        ui.label(egui::RichText::new(tl!("Favorites")).color(t.text_dim).size(11.0));
-                        for f in &favs {
-                            if ui.selectable_label(*f == ex.preset, crate::i18n::t(f)).clicked() {
-                                chosen_preset = Some(f.clone());
+        ui.add_enabled_ui(!busy, |ui| {
+            ui.label(egui::RichText::new(tl!("Media File")).strong().size(14.0));
+            ui.add_space(6.0);
+            row(ui, &t, tl!("File Name"), |ui| {
+                if let Some(v) = draft_text(ui, &mut reg, "export.fileName", &ex.file_name, tl!("Sequence name")) {
+                    ex.file_name = v;
+                }
+            });
+            row(ui, &t, tl!("Location"), |ui| {
+                let r = ui.small_button("…");
+                reg.add("export.location.browse", r.rect, "Choose folder");
+                pick_folder = r.clicked();
+                if let Some(v) = draft_text(ui, &mut reg, "export.location", &ex.location, tl!("Folder")) {
+                    ex.location = v;
+                }
+            });
+            // Preset: favourites, then every preset by category, then More presets…
+            row(ui, &t, tl!("Preset"), |ui| {
+                let r = craft_ui::ComboBox::from_id_salt("export.preset").selected_text(crate::i18n::t(&ex.preset)).width(ui.available_width() - 4.0).show_ui(
+                    ui,
+                    |ui| {
+                        if !favs.is_empty() {
+                            ui.label(egui::RichText::new(tl!("Favorites")).color(t.text_dim).size(11.0));
+                            for f in &favs {
+                                if ui.selectable_label(*f == ex.preset, crate::i18n::t(f)).clicked() {
+                                    chosen_preset = Some(f.clone());
+                                }
+                            }
+                            ui.separator();
+                        }
+                        let mut cat = String::new();
+                        for p in &all_presets {
+                            if p.category != cat {
+                                cat = p.category.clone();
+                                ui.label(egui::RichText::new(crate::i18n::t(&cat)).color(t.text_dim).size(11.0));
+                            }
+                            if ui.selectable_label(p.name == ex.preset, crate::i18n::t(&p.name)).clicked() {
+                                chosen_preset = Some(p.name.clone());
                             }
                         }
                         ui.separator();
-                    }
-                    let mut cat = String::new();
-                    for p in &all_presets {
-                        if p.category != cat {
-                            cat = p.category.clone();
-                            ui.label(egui::RichText::new(crate::i18n::t(&cat)).color(t.text_dim).size(11.0));
+                        if ui.button(tl!("More presets…")).clicked() {
+                            open_manager = true;
                         }
-                        if ui.selectable_label(p.name == ex.preset, crate::i18n::t(&p.name)).clicked() {
-                            chosen_preset = Some(p.name.clone());
-                        }
-                    }
-                    ui.separator();
-                    if ui.button(tl!("More presets…")).clicked() {
-                        open_manager = true;
-                    }
-                },
-            );
-            reg.add("export.preset", r.response.rect, ex.preset.clone());
-        });
-        ui.horizontal(|ui| {
-            ui.add_space(LABEL_W + 8.0);
-            let r = ui.link(tl!("More presets…"));
-            reg.add("export.preset.more", r.rect, "More presets…");
-            if r.clicked() {
-                open_manager = true;
-            }
-        });
-        row(ui, &t, tl!("Format"), |ui| {
-            // a format without an encoder here says why: H.265 and AV1 have hardware encoders only
-            let labels: Vec<(String, Option<&str>)> = Format::ALL.iter().map(|f| (f.label().to_string(), unavailable_why(*f))).collect();
-            if let Some(i) = combo_why(ui, &mut reg, "export.format", ex.settings.format.label(), &labels, ui.available_width() - 4.0) {
-                let f = Format::ALL[i];
-                if f != ex.settings.format {
-                    // a format switch starts from that format's defaults (keeping size / rate / range)
-                    let keep = ex.settings.clone();
-                    ex.settings = ExportSettings {
-                        format: f,
-                        frame_size: keep.frame_size,
-                        frame_rate: keep.frame_rate,
-                        effects: keep.effects,
-                        metadata: keep.metadata,
-                        ..Default::default()
-                    };
-                }
-            }
-        });
-        // a preset can name a format this machine cannot encode (an H.265 preset without a hardware
-        // encoder): say so where the format is chosen, before the export fails
-        if let Some(why) = unavailable_why(ex.settings.format) {
-            let r = ui.label(egui::RichText::new(why).color(t.danger).small());
-            reg.add("export.format.unavailable", r.rect, why);
-        }
-        ui.add_space(8.0);
-        let s = &mut ex.settings;
-        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
-            video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
-        }
-        if (s.has_audio()
-            || !s.has_video()
-            || s.format.is_mp4_video()
-            || matches!(s.format, Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
-            || s.format.is_mxf())
-            && !s.is_image_sequence()
-            && s.format != Format::Gif
-            && section(ui, &mut reg, &mut ex.open_sections, "audio", tl!("Audio"), &t)
-        {
-            audio_section(ui, &mut reg, s, &t, seq_sr);
-        }
-        if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t) {
-            row(ui, &t, tl!("Multiplexer"), |ui| {
-                let cur = if s.multiplexer == Multiplexer::Mp4 { "MP4" } else { "QuickTime" };
-                if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), 160.0) {
-                    s.multiplexer = if i == 0 { Multiplexer::Mp4 } else { Multiplexer::Mov };
+                    },
+                );
+                reg.add("export.preset", r.response.rect, ex.preset.clone());
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(LABEL_W + 8.0);
+                let r = ui.link(tl!("More presets…"));
+                reg.add("export.preset.more", r.rect, "More presets…");
+                if r.clicked() {
+                    open_manager = true;
                 }
             });
-        }
-        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "captions", tl!("Captions"), &t) {
-            if !has_captions {
-                ui.label(egui::RichText::new(tl!("The sequence has no caption track.")).color(t.text_dim).size(11.5));
-            }
-            row(ui, &t, tl!("Export Options"), |ui| {
-                let modes = [tl!("None"), tl!("Burn Captions Into Video"), tl!("Create Sidecar File")];
-                let cur = if s.burn_captions {
-                    modes[1]
-                } else if s.caption_sidecar.is_some() {
-                    modes[2]
-                } else {
-                    modes[0]
-                };
-                if let Some(i) = combo(ui, &mut reg, "export.captions.mode", cur, &opts(&modes), 220.0) {
-                    s.burn_captions = i == 1;
-                    s.caption_sidecar = (i == 2).then(|| s.caption_sidecar.clone().unwrap_or_else(|| "srt".into()));
+            row(ui, &t, tl!("Format"), |ui| {
+                // a format without an encoder here says why: H.265 and AV1 have hardware encoders only
+                let labels: Vec<(String, Option<&str>)> = Format::ALL.iter().map(|f| (f.label().to_string(), unavailable_why(*f))).collect();
+                if let Some(i) = combo_why(ui, &mut reg, "export.format", ex.settings.format.label(), &labels, ui.available_width() - 4.0) {
+                    let f = Format::ALL[i];
+                    if f != ex.settings.format {
+                        // a format switch starts from that format's defaults (keeping size / rate / range)
+                        let keep = ex.settings.clone();
+                        ex.settings = ExportSettings {
+                            format: f,
+                            frame_size: keep.frame_size,
+                            frame_rate: keep.frame_rate,
+                            effects: keep.effects,
+                            metadata: keep.metadata,
+                            ..Default::default()
+                        };
+                    }
                 }
             });
-            if let Some(kind) = s.caption_sidecar.clone() {
-                row(ui, &t, tl!("File Format"), |ui| {
-                    let formats = [tl!("SubRip Subtitle (.srt)"), tl!("WebVTT (.vtt)")];
-                    let cur = if kind == "vtt" { formats[1] } else { formats[0] };
-                    if let Some(i) = combo(ui, &mut reg, "export.captions.format", cur, &opts(&formats), 220.0) {
-                        s.caption_sidecar = Some(if i == 0 { "srt" } else { "vtt" }.into());
+            // a preset can name a format this machine cannot encode (an H.265 preset without a hardware
+            // encoder): say so where the format is chosen, before the export fails
+            if let Some(why) = unavailable_why(ex.settings.format) {
+                let r = ui.label(egui::RichText::new(why).color(t.danger).small());
+                reg.add("export.format.unavailable", r.rect, why);
+            }
+            ui.add_space(8.0);
+            let s = &mut ex.settings;
+            if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", tl!("Video"), &t) {
+                video_section(ui, &mut reg, s, &t, seq_w, seq_h, seq_hdr);
+            }
+            if (s.has_audio()
+                || !s.has_video()
+                || s.format.is_mp4_video()
+                || matches!(s.format, Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
+                || s.format.is_mxf())
+                && !s.is_image_sequence()
+                && s.format != Format::Gif
+                && section(ui, &mut reg, &mut ex.open_sections, "audio", tl!("Audio"), &t)
+            {
+                audio_section(ui, &mut reg, s, &t, seq_sr);
+            }
+            if s.format.is_h26x() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", tl!("Multiplexer"), &t) {
+                row(ui, &t, tl!("Multiplexer"), |ui| {
+                    let cur = if s.multiplexer == Multiplexer::Mp4 { "MP4" } else { "QuickTime" };
+                    if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), 160.0) {
+                        s.multiplexer = if i == 0 { Multiplexer::Mp4 } else { Multiplexer::Mov };
                     }
                 });
             }
-        }
-        if section(ui, &mut reg, &mut ex.open_sections, "effects", tl!("Effects"), &t) {
-            pick_overlay = effects_section(ui, &mut reg, s, &t);
-        }
-        if matches!(s.format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
-            && section(ui, &mut reg, &mut ex.open_sections, "metadata", tl!("Metadata"), &t)
-        {
-            let m = &mut s.metadata;
-            for (key, label, v) in [
-                ("title", tl!("Title"), &mut m.title),
-                ("creator", tl!("Creator"), &mut m.creator),
-                ("copyright", tl!("Copyright"), &mut m.copyright),
-                ("description", tl!("Description"), &mut m.description),
-                ("comment", tl!("Comment"), &mut m.comment),
-            ] {
-                row(ui, &t, label, |ui| text(ui, &mut reg, &format!("export.metadata.{key}"), v, ""));
+            if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "captions", tl!("Captions"), &t) {
+                if !has_captions {
+                    ui.label(egui::RichText::new(tl!("The sequence has no caption track.")).color(t.text_dim).size(11.5));
+                }
+                row(ui, &t, tl!("Export Options"), |ui| {
+                    let modes = [tl!("None"), tl!("Burn Captions Into Video"), tl!("Create Sidecar File")];
+                    let cur = if s.burn_captions {
+                        modes[1]
+                    } else if s.caption_sidecar.is_some() {
+                        modes[2]
+                    } else {
+                        modes[0]
+                    };
+                    if let Some(i) = combo(ui, &mut reg, "export.captions.mode", cur, &opts(&modes), 220.0) {
+                        s.burn_captions = i == 1;
+                        s.caption_sidecar = (i == 2).then(|| s.caption_sidecar.clone().unwrap_or_else(|| "srt".into()));
+                    }
+                });
+                if let Some(kind) = s.caption_sidecar.clone() {
+                    row(ui, &t, tl!("File Format"), |ui| {
+                        let formats = [tl!("SubRip Subtitle (.srt)"), tl!("WebVTT (.vtt)")];
+                        let cur = if kind == "vtt" { formats[1] } else { formats[0] };
+                        if let Some(i) = combo(ui, &mut reg, "export.captions.format", cur, &opts(&formats), 220.0) {
+                            s.caption_sidecar = Some(if i == 0 { "srt" } else { "vtt" }.into());
+                        }
+                    });
+                }
             }
-        }
-        let _ = seq_rate;
+            if section(ui, &mut reg, &mut ex.open_sections, "effects", tl!("Effects"), &t) {
+                pick_overlay = effects_section(ui, &mut reg, s, &t);
+            }
+            if matches!(s.format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
+                && section(ui, &mut reg, &mut ex.open_sections, "metadata", tl!("Metadata"), &t)
+            {
+                let m = &mut s.metadata;
+                for (key, label, v) in [
+                    ("title", tl!("Title"), &mut m.title),
+                    ("creator", tl!("Creator"), &mut m.creator),
+                    ("copyright", tl!("Copyright"), &mut m.copyright),
+                    ("description", tl!("Description"), &mut m.description),
+                    ("comment", tl!("Comment"), &mut m.comment),
+                ] {
+                    row(ui, &t, label, |ui| text(ui, &mut reg, &format!("export.metadata.{key}"), v, ""));
+                }
+            }
+            let _ = seq_rate;
+        });
     });
     if let Some(name) = chosen_preset {
         apply_preset(app, &name);
@@ -388,14 +397,14 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     if open_manager {
         app.ui.export.manager = Some(PresetManager { selected: app.ui.export.preset.clone(), ..Default::default() });
     }
-    if pick_folder {
+    if pick_folder && !busy {
         app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {
             if let Some(d) = paths.into_iter().next() {
                 app.ui.export.location = d;
             }
         });
     }
-    if pick_overlay {
+    if pick_overlay && !busy {
         app.pick_ui(FileDialog::open_file(tl!("Image"), &["png", "jpg", "jpeg"]), |app, paths| {
             if let Some(f) = paths.into_iter().next() {
                 app.ui.export.settings.effects.image_overlay.path = f;
@@ -463,6 +472,13 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         row(ui, t, tl!("Alpha"), |ui| {
             check(ui, reg, "export.video.alpha", &mut s.alpha, tl!("Include Alpha Channel"));
         });
+        if s.format == Format::Gif {
+            row(ui, t, "", |ui| {
+                let hint = tl!("When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.");
+                let r = ui.add(egui::Label::new(hint).wrap());
+                reg.add("export.video.alpha.hint", r.rect, hint);
+            });
+        }
     }
     match s.video_format() {
         f @ (Format::H264 | Format::Hevc | Format::Av1) => {

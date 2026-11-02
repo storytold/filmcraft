@@ -184,7 +184,7 @@ fn edit_mask<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut Mas
     let body = move |pr: &mut filmcraft_project::Project, _: &mut crate::EditorState| -> Result<R> {
         let q = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-        let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+        let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
         let ei = effect_index(&it.effects, eff.as_ref(), sel, clip).ok_or_else(|| bad(label, "no such effect on clip"))?;
         let e = &mut it.effects[ei];
         let mi = mask_i.ok_or_else(|| bad(label, "need `mask`"))?;
@@ -557,7 +557,7 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
             if only.is_some_and(|c| c != it.id) {
                 continue;
             }
-            let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+            let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
             for (ei, e) in it.effects.iter().enumerate() {
                 for (mi, m) in e.masks.iter().enumerate() {
                     out.push(json!({
@@ -603,6 +603,8 @@ pub struct PendingTrack {
     /// (media time, path) in tracking order.
     pub keys: Arc<Mutex<Vec<(Tick, MaskPath)>>>,
     applied: usize,
+    /// `Session::document_epoch` when the job started; a different value means the project was replaced.
+    epoch: u64,
 }
 
 /// Longest side of the frames the tracker works on (speed; the result is in clip pixels).
@@ -722,7 +724,7 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.mask_jobs.push(PendingTrack { job: id, target: MaskSel { clip, effect: ei, mask: mi }, seq: seq_id, keys, applied: 0 });
+    s.mask_jobs.push(PendingTrack { job: id, target: MaskSel { clip, effect: ei, mask: mi }, seq: seq_id, keys, applied: 0, epoch: s.document_epoch });
     let wait = crate::commands::bool_p(p, "wait").unwrap_or(false);
     if wait || cfg!(target_arch = "wasm32") {
         run();
@@ -738,13 +740,33 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Cancel and drop every pending tracking job. Called when the project is replaced, so a job started
+/// on the old project can never write its result into the new one.
+pub fn discard_jobs(s: &mut Session) {
+    use std::sync::atomic::Ordering;
+    for pj in std::mem::take(&mut s.mask_jobs) {
+        if let Some(j) = s.jobs.iter().find(|j| j.id == pj.job) {
+            j.progress.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Write newly tracked paths as Mask Path keyframes (one merged undo step per tracking job) and
-/// drop finished jobs. Called from [`Session::poll_persistence`] (once per UI frame) and after
-/// synchronous runs.
+/// drop finished jobs. Called from [`Session::poll_persistence`] (once per UI frame), before each
+/// top-level [`Session::execute`] (headless sessions) and after synchronous runs.
 pub fn poll(s: &mut Session) {
     use std::sync::atomic::Ordering;
     let mut i = 0;
     while i < s.mask_jobs.len() {
+        if s.mask_jobs[i].epoch != s.document_epoch {
+            // the project was replaced under the job: its result belongs to a document that is gone
+            s.error_toast("masks.track", "the project was replaced; mask tracking stopped");
+            if let Some(j) = s.jobs.iter().find(|j| j.id == s.mask_jobs[i].job) {
+                j.progress.cancel.store(true, Ordering::Relaxed);
+            }
+            s.mask_jobs.remove(i);
+            continue;
+        }
         let finished = s.jobs.iter().find(|j| j.id == s.mask_jobs[i].job).is_none_or(|j| j.progress.finished.load(Ordering::Relaxed));
         let new: Vec<(Tick, MaskPath)> = {
             let pj = &s.mask_jobs[i];
