@@ -113,21 +113,6 @@ fn move_rejects_repeated_clip_ids_without_mutation() {
 }
 
 #[test]
-fn move_rejects_repeated_clip_ids_without_mutation() {
-    for insert_mode in [false, true] {
-        let mut fx = Fx::new();
-        let (v1, v2) = (fx.v(0), fx.v(1));
-        let c = fx.put(v1, 0, 10, 0);
-        let before = fx.seq.clone();
-        let mut n = fx.next;
-        let result = move_items(&mut fx.seq, &[(c, v1, f(20)), (c, v2, f(20))], insert_mode, &mut Fx::ctx(&mut n));
-        assert!(result.is_err(), "moving one identity to two tracks must be rejected: {result:?}");
-        assert_eq!(fx.seq, before);
-        assert_eq!(n, fx.next, "a rejected move consumes no ids");
-    }
-}
-
-#[test]
 fn repeated_copies_are_independent_and_each_keeps_its_fade() {
     let mut fx = Fx::new();
     let (v1, v2, v3) = (fx.v(0), fx.v(1), fx.v(2));
