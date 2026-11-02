@@ -87,12 +87,12 @@ pub const INTERLEAVE: i64 = 16;
 /// the one being rendered), see [`overlap_batch`].
 pub const IN_FLIGHT_BUDGET: u64 = 1 << 29;
 
-/// One rendered picture: straight RGBA8, or for HDR exports the encoded R'G'B' floats.
+/// One rendered picture: straight RGBA8, or the encoded R'G'B' floats ([`Pipeline::frame`]).
 type Frame = (Vec<u8>, Vec<f32>);
 
-/// Bytes of one [`Frame`] of a `w` x `h` export (RGBA8, or three f32 per pixel for HDR).
-pub(crate) fn frame_bytes(w: u32, h: u32, hdr: bool) -> u64 {
-    u64::from(w).saturating_mul(u64::from(h)).saturating_mul(if hdr { 12 } else { 4 })
+/// Bytes of one [`Frame`] of a `w` x `h` export (RGBA8, or three f32 per pixel for float frames).
+pub(crate) fn frame_bytes(w: u32, h: u32, float: bool) -> u64 {
+    u64::from(w).saturating_mul(u64::from(h)).saturating_mul(if float { 12 } else { 4 })
 }
 
 /// Frames per batch when two batches are in flight: `batch` (what a sequential export would use),
@@ -126,7 +126,7 @@ fn render_batch(pipe: &Pipeline, f: i64, end: i64, sources: &dyn SourceProvider,
             }
             if let Some(prepare) = prepare {
                 let index = u64::try_from(fi - f0).unwrap_or(u64::MAX);
-                prepare(&EncoderFrame { width: pipe.w, height: pipe.h, rgba: &frame.0, hdr: pipe.hdr_out.then_some(frame.1.as_slice()), index });
+                prepare(&EncoderFrame { width: pipe.w, height: pipe.h, rgba: &frame.0, hdr: pipe.float_frames.then_some(frame.1.as_slice()), index });
             }
             frame
         })
@@ -359,7 +359,7 @@ impl Exporter {
     /// Frames in the next batch, bounded before Rayon can steal nested frame tasks.
     fn batch_len(&self) -> i64 {
         let batch = self.pipe.render_batch_limit(self.batch);
-        if self.overlapping() { overlap_batch(batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.hdr_out), self.budget) } else { batch }
+        if self.overlapping() { overlap_batch(batch, frame_bytes(self.pipe.w, self.pipe.h, self.pipe.float_frames), self.budget) } else { batch }
     }
 
     fn sample_at_frame(&self, f: i64, sr: u32) -> i64 {
@@ -663,7 +663,7 @@ impl Exporter {
                 width: self.pipe.w,
                 height: self.pipe.h,
                 rgba,
-                hdr: self.pipe.hdr_out.then_some(hdr.as_slice()),
+                hdr: self.pipe.float_frames.then_some(hdr.as_slice()),
                 index: (f - self.f0) as u64 + k as u64,
             };
             packets.extend(self.venc.encode(&fr)?);
