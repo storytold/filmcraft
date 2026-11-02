@@ -23,14 +23,7 @@ and other OS integration do not go in it.
 
 Containment rules:
 
-1. The crate does not use `lints.workspace = true`. Its own `[lints]` table copies the workspace
-   lints except `unsafe_code = "deny"` (not `forbid`), and adds
-   `clippy::undocumented_unsafe_blocks = "deny"`. Only FFI modules may opt in with
-   `#[allow(unsafe_code)]`; the current allowances and deviations are recorded below. The fallback
-   logic in `hybrid`, the decoder logic in `media_foundation`, `annexb`, `biplanar`, and the encoder
-   logic in `nvenc` (H.264 and H.265 alike) keep `unsafe` denied. NVENC's H.265 support
-   added no `unsafe` module: it reuses `nvenc::ffi` and `nvenc::session` (new data declarations and
-   a second codec-configuration member of an existing union).
+1. The crate does not use `lints.workspace = true`. Its own `[lints]` table copies the workspace lints except `unsafe_code = "deny"` (not `forbid`), and adds `clippy::undocumented_unsafe_blocks = "deny"`. Only FFI modules may opt in with `#[allow(unsafe_code)]`; the current allowances and deviations are recorded below. The fallback logic in `hybrid`, the decoder logic in `media_foundation`, `annexb`, `biplanar`, and the encoder logic in `nvenc` (H.264 and H.265 alike) keep `unsafe` denied. NVENC's H.265 support added no `unsafe` module: it reuses `nvenc::ffi` and `nvenc::session` (new data declarations and a second codec-configuration member of an existing union).
 2. Every `unsafe` block has a `// SAFETY:` comment saying why it is sound.
 3. The public API is safe: no `pub unsafe fn`, no raw pointers or FFI types in public signatures;
    failures are `Result`s. The crate keeps the never-crash `deny(clippy::unwrap_used, …)`
@@ -68,6 +61,8 @@ remain in effect; implementation differences are not exceptions to those rules.
 | 64-bit Linux | [`nvdec::cuvid`](../../crates/platform/src/nvdec/cuvid.rs) | NVDEC driver calls, parser callbacks and CUDA readback, using `nvenc::device`. |
 | Linux | [`vaapi::va`](../../crates/platform/src/vaapi/va.rs) | libva/libva-drm loading, displays, decoding, surface readback and logging. |
 | Windows | [`cursor::cursor_screen_position`](../../crates/platform/src/cursor.rs) (function only) | `GetCursorPos`; a non-media deviation, discussed below. |
+
+The resident-frame branch additionally allows `unsafe` in [`media_foundation::interop`](../../crates/platform/src/media_foundation/interop.rs) for D3D11/DX12 shared-texture import, behind a safe fallible API; see [proposed ADR 0002](0002-zero-copy-decode-interop.md). This branch extension is separate from the pinned source audit above.
 
 The media allowances are on module declarations in
 [`lib.rs`](../../crates/platform/src/lib.rs) and the backend module files

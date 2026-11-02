@@ -200,6 +200,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 }
                 let backend = cc.wgpu_render_state.as_ref().map(|rs| rs.adapter.get_info().backend);
                 set_info("backend", json!(backend.map(|b| format!("{b:?}"))));
+                filmcraft_codecs::hw::set_gpu_frames(false);
                 // The GPU compositor needs float render targets everywhere: WebGPU only (WebGL2
                 // composites on the CPU).
                 if let Some(rs) = cc.wgpu_render_state.clone()
@@ -207,10 +208,12 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                     && !query_flag("cpu")
                 {
                     app.set_wgpu(rs);
-                    set_info("compositor", json!("gpu"));
-                } else {
-                    set_info("compositor", json!("cpu"));
                 }
+                let gpu = app.gpu_compositor_active();
+                if gpu && query_flag("resident") {
+                    webcodecs::enable_resident();
+                }
+                set_info("compositor", json!(if gpu { "gpu" } else { "cpu" }));
                 let audio = audio::Handle::new();
                 if let Some(a) = &audio {
                     app.audio = Some(Box::new(a.clone()));

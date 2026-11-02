@@ -20,6 +20,7 @@ filmcraft-ui-egui = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-frame = { workspace = true }
+filmcraft-gpu = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-format = { workspace = true }
@@ -76,6 +77,7 @@ web-sys = { version = "0.3", features = [
     "StorageManager",
     "Url",
     "UrlSearchParams",
+    "VideoFrame",
     "Window",
     "WritableStream",
 ] }

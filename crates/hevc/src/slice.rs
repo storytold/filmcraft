@@ -62,6 +62,14 @@ impl NalHeader {
     pub fn is_rasl(&self) -> bool {
         self.nal_type == nal_type::RASL_N || self.nal_type == nal_type::RASL_R
     }
+    /// IRAP's NoRaslOutputFlag; first_picture/after_eos: decoder run-start state.
+    pub fn no_rasl_output(&self, first_picture: bool, after_eos: bool) -> bool {
+        self.is_irap() && (self.is_idr() || self.is_bla() || first_picture || after_eos)
+    }
+    /// RASL discarded before slice parsing; first_picture/skip_rasl: current run state.
+    pub fn skips_rasl(&self, first_picture: bool, skip_rasl: bool) -> bool {
+        self.is_rasl() && (first_picture || skip_rasl)
+    }
     pub fn is_radl(&self) -> bool {
         self.nal_type == nal_type::RADL_N || self.nal_type == nal_type::RADL_R
     }

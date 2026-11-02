@@ -13,6 +13,29 @@ use filmcraft_isobmff::SampleEntry;
 /// process-wide: one NVENC test at a time across every module of the binary.
 pub static NVENC_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Attribute decoder recovery warnings to the test/fixture; no product logging policy changes.
+pub fn decoder_diagnostics(fixture: &str) {
+    struct RecoveryLog;
+    impl log::Log for RecoveryLog {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                eprintln!("decoder diagnostic [{}] {}: {}", std::thread::current().name().unwrap_or("unnamed"), record.target(), record.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: RecoveryLog = RecoveryLog;
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        log::set_logger(&LOGGER).expect("install platform test recovery logger");
+        log::set_max_level(log::LevelFilter::Warn);
+    });
+    log::warn!(target: "filmcraft_platform::parity_probe", "recovery logging ready: {fixture}");
+}
+
 /// The parity fixtures: (file, ffmpeg arguments). B-frames everywhere (reordering), a 360-line
 /// picture (coded 368: cropping), two GOPs or more (seeks), and an open-GOP HEVC stream (CRA with
 /// RASL pictures).
@@ -125,7 +148,7 @@ pub fn decode_all(d: &mut dyn VideoDecoder, samples: &[(Vec<u8>, i64)]) -> Vec<D
     for (s, p) in samples {
         out.extend(d.decode(s, *p).unwrap_or_else(|e| panic!("{}: {e}", d.name())));
     }
-    out.extend(d.flush());
+    out.extend(d.flush().unwrap());
     out
 }
 

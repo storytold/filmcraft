@@ -28,7 +28,7 @@ fn grade(working: WorkingSpace, nits: &[f32], e: &EffectInstance) -> Vec<f32> {
     for (i, n) in nits.iter().enumerate() {
         img.px[i * 4..i * 4 + 4].copy_from_slice(&[n / RW, n / RW, n / RW, 1.0]);
     }
-    apply(&mut img, e, &cx(working));
+    apply(&mut img, e, &cx(working)).unwrap();
     (0..nits.len()).map(|i| img.px[i * 4 + 1] * RW).collect()
 }
 
@@ -141,7 +141,7 @@ fn key(denoise: f64, blur: f64) -> Image {
         ("hsl_denoise", F(denoise)),
         ("hsl_blur", F(blur)),
     ]);
-    apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+    apply(&mut img, &e, &cx(WorkingSpace::Rec709)).unwrap();
     img
 }
 
@@ -175,7 +175,7 @@ fn hsl_refine_blur_softens_the_key() {
     let mut img = keyed_image();
     let e =
         lumetri(&[("hsl_on", ParamValue::Bool(true)), ("hsl_hue", F(0.0)), ("hsl_hue_range", F(40.0)), ("hsl_hue_shift", F(120.0)), ("hsl_denoise", F(100.0))]);
-    apply(&mut img, &e, &cx(WorkingSpace::Rec709));
+    apply(&mut img, &e, &cx(WorkingSpace::Rec709)).unwrap();
     let inside = img.get(20, 20);
     assert!(inside[1] > inside[0], "red turned green inside: {inside:?}");
     let speck = img.get(3, 3);

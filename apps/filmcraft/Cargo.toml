@@ -68,3 +68,5 @@ winresource = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 craft-update = { workspace = true }
+# DX12/DXC setup for resident decode frames.
+pollster = "1"

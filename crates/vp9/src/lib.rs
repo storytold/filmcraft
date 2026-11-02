@@ -39,6 +39,7 @@ mod transform;
 mod transform_gen;
 
 pub use decoder::{DecodeStats, Decoder};
+pub use header::display_count;
 
 /// Stream parameters read from a key frame's uncompressed header (see [`keyframe_info`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

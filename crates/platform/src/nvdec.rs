@@ -92,16 +92,10 @@ impl VideoDecoder for NvDecoder {
         self.session.feed(&data, pts).map(frames).map_err(CodecError::Decode)
     }
 
-    fn flush(&mut self) -> Vec<DecodedFrame> {
+    fn flush(&mut self) -> filmcraft_codecs::Result<Vec<DecodedFrame>> {
         // the parser starts over after an end of stream
         self.primed = false;
-        match self.session.flush() {
-            Ok(out) => frames(out),
-            Err(e) => {
-                log::warn!("{}: {e} while flushing", self.name);
-                Vec::new()
-            }
-        }
+        self.session.flush().map(frames).map_err(CodecError::Decode)
     }
 
     fn reset(&mut self) {

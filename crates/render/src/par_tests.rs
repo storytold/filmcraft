@@ -88,7 +88,7 @@ fn project(src: (u32, u32), src_par: (u32, u32), seq: (u32, u32), seq_par: (u32,
 }
 
 fn render(p: &Project, seq: ItemId, map: &SourceMap) -> Image {
-    render_sequence(p, seq, Tick::ZERO, RenderOptions::default(), map)
+    render_sequence(p, seq, Tick::ZERO, RenderOptions::default(), map).unwrap()
 }
 
 /// Middle-row colour of column `x`: 'r', 'b' or '.' (transparent).
@@ -140,8 +140,8 @@ fn the_gpu_plan_places_an_anamorphic_clip_like_the_cpu() {
     let (p, seq, _, map) = project((144, 108), (4, 3), (192, 108), (1, 1), false);
     for scale in [1.0, 0.5] {
         let opts = RenderOptions { scale, ..Default::default() };
-        let want = render_sequence(&p, seq, Tick::ZERO, opts, &map);
-        let got = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, opts, &map));
+        let want = render_sequence(&p, seq, Tick::ZERO, opts, &map).unwrap();
+        let got = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, opts, &map).unwrap()).unwrap();
         assert_eq!((got.w, got.h), (want.w, want.h));
         assert_row(&row(&got), &row(&want));
     }
@@ -245,7 +245,7 @@ fn hostile_pixel_aspect_ratios_render_square_without_panicking() {
         // a sequence's ratio (a damaged project): square, so a 4:3-pixel clip fills it
         let r = std::panic::catch_unwind(|| {
             let (p, seq, _, map) = project((144, 108), (4, 3), (192, 108), bad, true);
-            let plan = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, RenderOptions::default(), &map));
+            let plan = plan::execute_cpu(&plan::plan_frame(&p, seq, Tick::ZERO, RenderOptions::default(), &map).unwrap()).unwrap();
             (row(&render(&p, seq, &map)), row(&plan))
         });
         let (cpu, gpu) = r.unwrap_or_default();
