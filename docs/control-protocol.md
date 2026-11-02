@@ -120,7 +120,8 @@ Essential Sound: `essentialSound.inspect`, `essentialSound.setType {type: dialog
 `creative.reverbPreset`, `ducking.against`, `ducking.reduceDb`, `ducking.fadeS`, `pan.value`,
 `volume.levelDb`, `mute`, section switches `<section>.enabled`), `essentialSound.applyPreset {preset, type?}`,
 `essentialSound.savePreset {name}`, `essentialSound.deletePreset {name}`, `essentialSound.autoMatch {target?}`,
-`essentialSound.generateDucking`; all take `clips` (default: the selected audio clips). UI ids:
+`essentialSound.generateDucking` (replaces the clip's Volume level keyframes; `replacedKeyframes` in each
+clip's result counts the ones it removed); all take `clips` (default: the selected audio clips). UI ids:
 `essentialSound.tab.<Browse|Edit>`, `essentialSound.type.<Dialogue|Music|SFX|Ambience>`,
 `essentialSound.clearType`, `essentialSound.preset[.save|.delete|.name|.ok]`,
 `essentialSound.section.<Name>[.toggle]`, a row per setting key (`essentialSound.repair.noise.on`,
