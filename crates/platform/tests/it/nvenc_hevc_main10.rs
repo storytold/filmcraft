@@ -58,7 +58,7 @@ fn picture(i: usize) -> Vec<f32> {
 fn planes(rgb: &[f32], signal: &ColorSignal) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let (kr, kb) = signal.kr_kb();
     let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
-    rgbf_to_yuv420_10(rgb, W, H, kr, kb, &mut y, &mut u, &mut v).expect("convert");
+    rgbf_to_yuv420_10(rgb, W, H, filmcraft_export::Matrix::new(kr, kb), &mut y, &mut u, &mut v).expect("convert");
     (y, u, v)
 }
 

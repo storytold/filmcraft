@@ -297,6 +297,7 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
 /// [`layered_at`] `t`). `nest` counts the nested sequences already followed to reach `seq`.
 fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider, nest: u32, layers: &mut PlanStack) {
     let (w, h) = output_size(seq, opts.scale);
+    let sc = Scene { project, seq, t, opts, sources, nest };
     for tr in &seq.video_tracks {
         if layers.exhausted {
             return;
@@ -315,7 +316,7 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
                     for (slot, item) in inputs.iter_mut().zip([a, b]) {
                         if let Some(item) = item {
                             let mut input = PlanStack::default();
-                            push_item(project, seq, item, t, opts, sources, 1.0, Some(Blend::Normal), nest, &mut input);
+                            push_item(sc, item, 1.0, Some(Blend::Normal), &mut input);
                             let Some(input_layers) = input.into_layers(w, h) else {
                                 layers.exhausted = true;
                                 return;
@@ -336,16 +337,16 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
                     layers.push(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(1, 1, col.to_vec())), Affine::scale(w as f64, h as f64), 1.0, Blend::Normal));
                     let (it, k) = if p < 0.5 { (a, 1.0 - p * 2.0) } else { (b, (p - 0.5) * 2.0) };
                     if let Some(it) = it {
-                        push_item(project, seq, it, t, opts, sources, k, Some(Blend::Normal), nest, layers);
+                        push_item(sc, it, k, Some(Blend::Normal), layers);
                     }
                 }
                 _ => {
                     // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
                     if let Some(it) = a {
-                        push_item(project, seq, it, t, opts, sources, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), nest, layers);
+                        push_item(sc, it, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), layers);
                     }
                     if let Some(it) = b {
-                        push_item(project, seq, it, t, opts, sources, p, Some(Blend::Normal), nest, layers);
+                        push_item(sc, it, p, Some(Blend::Normal), layers);
                     }
                 }
             }
@@ -355,7 +356,7 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
         if !item.enabled {
             continue;
         }
-        push_item(project, seq, item, t, opts, sources, 1.0, None, nest, layers);
+        push_item(sc, item, 1.0, None, layers);
     }
 }
 
@@ -375,23 +376,24 @@ fn nest_is_plain(project: &Project, seq: &Sequence, nested: &Sequence, ft: Tick)
         })
 }
 
+/// What a layer is pushed against: the sequence at time `t`, how it is rendered and how many
+/// nests were followed to reach it.
+#[derive(Clone, Copy)]
+struct Scene<'a> {
+    project: &'a Project,
+    seq: &'a Sequence,
+    t: Tick,
+    opts: RenderOptions,
+    sources: &'a dyn SourceProvider,
+    nest: u32,
+}
+
 /// Push the layer(s) of `item`. `blend` overrides the item's own blend mode: inside a transition
 /// the CPU reference mixes the clips and composites the result Normal, ignoring their modes.
 /// `nest` counts the multi-camera clips already followed to reach `item` (see
 /// [`crate::MAX_NEST_DEPTH`]).
-#[allow(clippy::too_many_arguments)]
-fn push_item(
-    project: &Project,
-    seq: &Sequence,
-    item: &TrackItem,
-    t: Tick,
-    opts: RenderOptions,
-    sources: &dyn SourceProvider,
-    extra_opacity: f32,
-    blend: Option<Blend>,
-    nest: u32,
-    out: &mut PlanStack,
-) {
+fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blend>, out: &mut PlanStack) {
+    let Scene { project, seq, t, opts, sources, nest } = sc;
     if out.exhausted {
         return;
     }
@@ -415,7 +417,7 @@ fn push_item(
         // Inside the nested sequence the angle's clip is composited onto an empty canvas, where
         // every mode but Dissolve is Normal; the multicam clip's own mode then applies to it.
         if let Some(inner) = tr.item_at(ft).filter(|i| i.enabled) {
-            push_item(project, nested, inner, ft, opts, sources, extra_opacity * op, Some(bl), nest + 1, out);
+            push_item(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, inner, extra_opacity * op, Some(bl), out);
         }
         return;
     }

@@ -334,9 +334,46 @@ impl Enc {
 
     fn macroblock(&mut self, p: &Pic, st: &mut St, mbx: usize, mby: usize) {
         let frame_pic = p.structure == 3;
-        // macroblock_type
+        let (table, flags) = self.pick_mb_type(p);
+        let intra = flags & MB_INTRA != 0;
+        let concealment = intra && self.cfg.concealment;
+        let mut pmv = st.pmv;
+        let moving = flags & (MB_FWD | MB_BWD) != 0;
+        let mut m = self.pick_motion(p, flags, concealment, (mbx, mby), pmv);
+        self.w.code(code_of(table, flags));
+        if moving {
+            self.w.put(m.mtype as u32, 2);
+        }
+        let dct_type = frame_pic && !p.fpfd && (intra || flags & MB_PATTERN != 0);
+        if dct_type {
+            self.w.put(self.rng.below(2), 1);
+        }
+        if flags & MB_QUANT != 0 {
+            let q = self.rng.range(1, 31);
+            self.set_q(q);
+            self.w.put(q as u32, 5);
+        }
+        self.put_vectors(p, &m, concealment, &mut pmv);
+        // predictor resets
+        if intra {
+            if !concealment {
+                pmv = [[[0; 2]; 2]; 2];
+            }
+        } else {
+            st.dc = [self.dc_reset(); 3];
+            if p.ptype == PictureType::P && flags & MB_FWD == 0 {
+                pmv = [[[0; 2]; 2]; 2];
+                m.select[0][0] = p.parity;
+            }
+        }
+        st.pmv = pmv;
+        self.put_blocks(st, flags, intra);
+        st.last = m;
+    }
+
+    fn pick_mb_type(&mut self, p: &Pic) -> (&'static [(&'static str, i16)], i16) {
         let quant = self.rng.chance(25);
-        let (table, mut flags): (&[(&str, i16)], i16) = match p.ptype {
+        let (table, mut flags): (&'static [(&'static str, i16)], i16) = match p.ptype {
             PictureType::I => (MBTYPE_I, MB_INTRA),
             PictureType::P => (
                 MBTYPE_P,
@@ -364,12 +401,15 @@ impl Enc {
         if quant && (flags & (MB_INTRA | MB_PATTERN) != 0) {
             flags |= MB_QUANT;
         }
-        let intra = flags & MB_INTRA != 0;
-        let concealment = intra && self.cfg.concealment;
-        // motion description: pick vectors until the prediction fits
+        (table, flags)
+    }
+
+    /// Pick vectors until the prediction fits the picture and the predictors can reach them.
+    fn pick_motion(&mut self, p: &Pic, flags: i16, concealment: bool, pos: (usize, usize), pmv: [[[i32; 2]; 2]; 2]) -> M {
+        let (mbx, mby) = pos;
+        let frame_pic = p.structure == 3;
         let mut m = M { flags, ..Default::default() };
         let moving = flags & (MB_FWD | MB_BWD) != 0;
-        let mut pmv = st.pmv;
         if moving || concealment {
             let mut ok = false;
             for _ in 0..40 {
@@ -431,20 +471,13 @@ impl Enc {
                 assert!(representable(p, &m, concealment, pmv));
             }
         }
-        self.w.code(code_of(table, flags));
-        if moving {
-            self.w.put(m.mtype as u32, 2);
-        }
-        let dct_type = frame_pic && !p.fpfd && (intra || flags & MB_PATTERN != 0);
-        if dct_type {
-            self.w.put(self.rng.below(2), 1);
-        }
-        if flags & MB_QUANT != 0 {
-            let q = self.rng.range(1, 31);
-            self.set_q(q);
-            self.w.put(q as u32, 5);
-        }
-        // vectors (differentially against the predictors, as the decoder forms them)
+        m
+    }
+
+    /// Vectors, coded differentially against the predictors as the decoder forms them.
+    fn put_vectors(&mut self, p: &Pic, m: &M, concealment: bool, pmv: &mut [[[i32; 2]; 2]; 2]) {
+        let frame_pic = p.structure == 3;
+        let flags = m.flags;
         let (count, field_fmt, dualp) = match (frame_pic, m.mtype) {
             (true, 1) => (2, true, false),
             (_, 3) => (1, true, true),
@@ -479,20 +512,10 @@ impl Enc {
         if concealment {
             self.w.put(1, 1);
         }
-        // predictor resets
-        if intra {
-            if !concealment {
-                pmv = [[[0; 2]; 2]; 2];
-            }
-        } else {
-            st.dc = [self.dc_reset(); 3];
-            if p.ptype == PictureType::P && flags & MB_FWD == 0 {
-                pmv = [[[0; 2]; 2]; 2];
-                m.select[0][0] = p.parity;
-            }
-        }
-        st.pmv = pmv;
-        // coded_block_pattern and blocks
+    }
+
+    /// coded_block_pattern and the blocks it selects.
+    fn put_blocks(&mut self, st: &mut St, flags: i16, intra: bool) {
         let nblocks = if self.cfg.chroma == 2 { 8 } else { 6 };
         let cbp: u32 = if flags & MB_PATTERN != 0 {
             // the coded_block_pattern code for 0 is only for 4:2:2 and 4:4:4 (Table B.9)
@@ -513,7 +536,6 @@ impl Enc {
                 self.block(st, cc, intra);
             }
         }
-        st.last = m;
     }
 
     fn motion_code(&mut self, delta: i32) {
