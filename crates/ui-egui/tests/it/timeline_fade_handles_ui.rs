@@ -278,3 +278,23 @@ fn a_click_on_a_one_frame_clip_applies_no_fade() {
     d.frames(2);
     assert!(transitions_to(&d, city).is_empty(), "no fade on a one-frame clip");
 }
+
+/// A video row scrolled under the audio tracks shows no fade handles there: they would cover the
+/// audio clips and take their clicks.
+#[test]
+fn a_video_row_scrolled_under_the_audio_tracks_has_no_fade_handles() {
+    let mut d = Driver::demo();
+    d.exec("sequence.addTracks", json!({"video": 12, "audio": 0}));
+    d.frames(4);
+    let city = d.v1_clip(CITY);
+    d.exec("timeline.select", json!({"clips": [city], "linked": false}));
+    d.frames(2);
+    let prefix = format!("timeline.clip.{city}.fade.");
+    let handles = |d: &mut Driver| d.ok("ui.elements", json!({"prefix": prefix})).as_array().map_or(0, Vec::len);
+    // its Out edge has the demo's transition, so only the In edge has a handle
+    assert_eq!(handles(&mut d), 1, "a selected clip in view has its handle");
+    d.harness.state_mut().ui.timeline.v_scroll = f32::MAX;
+    d.frames(3);
+    assert!(d.app().ui.timeline.v_scroll > 0.0, "the video tracks scrolled");
+    assert_eq!(handles(&mut d), 0, "V1 is under the audio tracks: no handles there");
+}

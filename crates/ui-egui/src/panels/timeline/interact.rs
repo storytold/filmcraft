@@ -193,12 +193,15 @@ fn fade_handles(seq: &Sequence, layout: &Layout, row: &Row, it: &TrackItem) -> V
     if !track.transitions.iter().any(|t| t.from == Some(it.id)) {
         out.push((pos2(x1 - 13.0, y), filmcraft_edit::Edge::Out));
     }
+    // only where all of a handle shows: a row scrolled under the other pane or the divider has
+    // none there, so it neither covers nor takes the clicks of what is drawn over it
+    out.retain(|(c, _)| [c.y - FADE_HANDLE_R, c.y + FADE_HANDLE_R].iter().all(|y| layout.row_at(*y).is_some_and(|r| r.track == row.track)));
     out
 }
 
 /// The fade handle under `p`: (clip, edge, whether it is on an audio track).
 fn fade_handle_at(seq: &Sequence, layout: &Layout, p: Pos2) -> Option<(ClipId, filmcraft_edit::Edge, bool)> {
-    let row = layout.rows.iter().find(|r| r.rect.contains(p))?;
+    let row = layout.row_at(p.y).filter(|r| r.rect.contains(p))?;
     let track = seq.track(row.track)?;
     track.items.iter().find_map(|it| {
         fade_handles(seq, layout, row, it)
@@ -264,7 +267,7 @@ fn fade_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         match &app.tl.drag {
             None => {
                 let over = pos.and_then(|p| {
-                    layout.rows.iter().find(|r| r.rect.contains(p)).and_then(|r| {
+                    layout.row_at(p.y).filter(|r| r.rect.contains(p)).and_then(|r| {
                         seq.track(r.track).and_then(|t| t.items.iter().find(|i| layout.x_of(i.start) <= p.x && p.x <= layout.x_of(i.end())).map(|i| i.id))
                     })
                 });
