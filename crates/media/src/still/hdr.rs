@@ -197,8 +197,17 @@ pub fn decode(name: &str, b: &[u8]) -> Result<VideoFrame> {
     if (b.len().saturating_sub(pos) as u64).saturating_mul(4096) < (w as u64).saturating_mul(h as u64) {
         return Err(err(name, "truncated pixel data"));
     }
-    let mut px = vec![1f32; w * h * 4];
+    // Validate every encoded scanline before allocating the complete float image. A short HDR
+    // header can otherwise request up to a GiB of zero-initialized pixels and only then fail on
+    // its first missing or malformed scanline.
+    let pixel_data = pos;
     let mut scan = vec![[0u8; 4]; n2];
+    for _ in 0..n1 {
+        scanline(name, b, &mut pos, &mut scan)?;
+    }
+
+    let mut px = vec![1f32; w * h * 4];
+    pos = pixel_data;
     for i in 0..n1 {
         scanline(name, b, &mut pos, &mut scan)?;
         for (j, &p) in scan.iter().enumerate() {

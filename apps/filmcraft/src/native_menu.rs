@@ -1,7 +1,11 @@
 //! Native macOS menu bar (muda), generated from the command registry — like Premiere, menus live in
 //! the system menu bar. Items send command ids to the app's command inbox.
 
-use std::sync::mpsc::{Receiver, channel};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::mpsc::{Receiver, channel},
+};
 
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::menus::{MENUS, MenuItem as Item, NATIVE_APP_MENU, menu_items};
@@ -19,10 +23,23 @@ fn accel(s: &str) -> Option<Accelerator> {
     mapped.parse().ok()
 }
 
+/// The app menu's Quit item: the `app.quit` command (which asks to save unsaved changes) on its
+/// shortcut, Cmd+Q unless remapped in the Keyboard Shortcuts editor. The key equivalent is read
+/// once, when the menu bar is built: `app.quit` has no menu path, so it is not in the menu tree the
+/// updater receives, and a remap shows on the Quit item after the next launch.
+fn quit_item(app: &FilmcraftApp) -> (&'static str, Option<Accelerator>) {
+    let keys = app.session.shortcuts.primary("app.quit").unwrap_or_else(|| "Cmd+Q".into());
+    ("app.quit", accel(&keys))
+}
+
 /// Updates native item labels, key equivalents and enablement when the menu tree changes.
 pub type MenuUpdater = Box<dyn FnMut(&[Item])>;
 
-pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, MenuUpdater) {
+/// Swap only Edit while a native color window owns keyboard focus. Native predefined
+/// actions go to AppKit's first responder, rather than FilmCraft's timeline inbox.
+pub type NativeTextMenu = Rc<dyn Fn(bool) -> Result<(), String>>;
+
+pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, MenuUpdater, NativeTextMenu) {
     let items = menu_items(app);
     // each native item with the menu entry it currently shows, so updates touch only what changed
     let mut native: Vec<(Item, MenuItem)> = Vec::new();
@@ -53,9 +70,12 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
     let predefined = [
         (hide_label, PredefinedMenuItem::hide(Some(app.ui.language.tr(hide_label)))),
         (hide_others_label, PredefinedMenuItem::hide_others(Some(app.ui.language.tr(hide_others_label)))),
-        (quit_label, PredefinedMenuItem::quit(Some(app.ui.language.tr(quit_label)))),
     ];
-    let [(_, hide), (_, hide_others), (_, quit)] = &predefined;
+    let [(_, hide), (_, hide_others)] = &predefined;
+    // Quit is ours, not the predefined item: that one calls `terminate:` and skips the unsaved
+    // changes prompt (#1943); the `app.quit` command closes the window through it
+    let (quit_id, quit_accel) = quit_item(app);
+    let quit = MenuItem::with_id(quit_id, app.ui.language.tr(quit_label), true, quit_accel);
     let _ = app_menu.append_items(&[
         &about,
         &discord,
@@ -65,9 +85,10 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
         hide,
         hide_others,
         &PredefinedMenuItem::separator(),
-        quit,
+        &quit,
     ]);
     let _ = bar.append(&app_menu);
+    let mut edit_menu = None;
     for top in MENUS {
         let sub = Submenu::new(app.ui.language.tr(top), true);
         titles.push((top.into(), sub.clone()));
@@ -94,8 +115,42 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
             }
             let _ = parent.append(&mi);
         }
+        if top == "Edit" {
+            edit_menu = Some(sub.clone());
+        }
         let _ = bar.append(&sub);
     }
+    let native_edit = Submenu::new(app.ui.language.tr("Edit"), true);
+    let text_items = [
+        ("Undo", PredefinedMenuItem::undo(Some(app.ui.language.tr("Undo")))),
+        ("Redo", PredefinedMenuItem::redo(Some(app.ui.language.tr("Redo")))),
+        ("Cut", PredefinedMenuItem::cut(Some(app.ui.language.tr("Cut")))),
+        ("Copy", PredefinedMenuItem::copy(Some(app.ui.language.tr("Copy")))),
+        ("Paste", PredefinedMenuItem::paste(Some(app.ui.language.tr("Paste")))),
+        ("Delete", PredefinedMenuItem::delete(Some(app.ui.language.tr("Delete")))),
+        ("Select All", PredefinedMenuItem::select_all(Some(app.ui.language.tr("Select All")))),
+    ];
+    for (_, item) in &text_items {
+        let _ = native_edit.append(item);
+    }
+    let menu_bar = bar.clone();
+    let color_edit = native_edit.clone();
+    let native_shown = Cell::new(false);
+    let text_menu: NativeTextMenu = Rc::new(move |use_native| {
+        if use_native == native_shown.get() {
+            return Ok(());
+        }
+        let regular = edit_menu.as_ref().ok_or("FilmCraft Edit menu is unavailable")?;
+        let index = MENUS.iter().position(|top| *top == "Edit").ok_or("FilmCraft Edit menu is unavailable")? + 1;
+        let (old, new) = if use_native { (regular, &color_edit) } else { (&color_edit, regular) };
+        menu_bar.insert(new, index).map_err(|e| e.to_string())?;
+        if let Err(error) = menu_bar.remove(old) {
+            let _ = menu_bar.remove(new);
+            return Err(error.to_string());
+        }
+        native_shown.set(use_native);
+        Ok(())
+    });
     bar.init_for_nsapp();
     if let Some(help) = bar.items().last().and_then(|i| i.as_submenu().cloned()) {
         help.set_as_help_menu_for_nsapp();
@@ -133,8 +188,18 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
             filmcraft_ui_egui::i18n::Language::Id
         } else if checked("app.language.italian") {
             filmcraft_ui_egui::i18n::Language::It
+        } else if checked("app.language.bosnian") {
+            filmcraft_ui_egui::i18n::Language::Bs
         } else if checked("app.language.korean") {
             filmcraft_ui_egui::i18n::Language::Ko
+        } else if checked("app.language.czech") {
+            filmcraft_ui_egui::i18n::Language::Cs
+        } else if checked("app.language.polish") {
+            filmcraft_ui_egui::i18n::Language::Pl
+        } else if checked("app.language.swedish") {
+            filmcraft_ui_egui::i18n::Language::Sv
+        } else if checked("app.language.turkish") {
+            filmcraft_ui_egui::i18n::Language::Tr
         } else {
             filmcraft_ui_egui::i18n::Language::En
         };
@@ -144,9 +209,14 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
                 submenu.set_text(language.tr(title));
             }
         }
+        native_edit.set_text(language.tr("Edit"));
+        for (label, item) in &text_items {
+            item.set_text(language.tr(label));
+        }
         for (label, item) in &predefined {
             item.set_text(language.tr(label));
         }
+        quit.set_text(language.tr(quit_label));
         for (shown, mi) in &mut native {
             let Some(it) = items.iter().find(|i| i.id == shown.id) else { continue };
             if it.label != shown.label {
@@ -162,5 +232,22 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
             *shown = it.clone();
         }
     });
-    (rx, update)
+    (rx, update, text_menu)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use filmcraft_engine::Session;
+
+    /// #1943: Cmd+Q must reach the `app.quit` command, which closes the window through the unsaved
+    /// changes prompt, instead of the predefined Quit item's `terminate:`.
+    #[test]
+    fn quit_item_runs_the_app_quit_command_on_cmd_q() {
+        let app = FilmcraftApp::new(Session::default());
+        let (id, accelerator) = quit_item(&app);
+        assert_eq!(id, "app.quit");
+        assert_eq!(accelerator, accel("Cmd+Q"));
+        assert!(accelerator.is_some(), "Cmd+Q is a native key equivalent");
+    }
 }

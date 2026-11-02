@@ -54,9 +54,11 @@ pub fn decode_frame_with(data: &[u8], opts: &DecodeOptions) -> Result<Frame> {
     } else {
         (decode_unit(&h1, &data[..off], opts), decode_unit(&h2, &data[off..], opts))
     };
+    let (top, bottom) = if h1.field == FieldCode::Field2 { (p2?, p1?) } else { (p1?, p2?) };
+    // Both field payloads must be valid before committing the full-frame
+    // allocation; a damaged header alone must not allocate an output picture.
     let mut f = Frame::new_like(&h1, h1.width, h1.lines * 2);
     f.interlace = Interlace::TopFieldFirst;
-    let (top, bottom) = if h1.field == FieldCode::Field2 { (p2?, p1?) } else { (p1?, p2?) };
     top.copy_into(&mut f, 0, 2);
     bottom.copy_into(&mut f, 1, 2);
     Ok(f)
@@ -287,7 +289,7 @@ fn decode_row(ctx: &Ctx, data: &[u8], bands: [&mut [u16]; 4]) -> Result<Vec<bool
             let slot = if rgb && !acf { 3 + comp } else { comp };
             let w = &wq[(comp != 0) as usize];
             decode_block(ctx, &mut r, &mut pred[slot], w, &mut block)?;
-            store(ctx, bands[comp], comp, mb, xo as usize, yo as usize, mff, &mut block);
+            store(ctx, bands[comp], BlockPosition { plane: comp, macroblock: mb, x_offset: xo as usize, y_offset: yo as usize, field: mff }, &mut block);
         }
         if rgb {
             acfs.push(acf);
@@ -316,7 +318,12 @@ fn decode_row(ctx: &Ctx, data: &[u8], bands: [&mut [u16]; 4]) -> Result<Vec<bool
                 let wq = scaled_weights(ctx.info.weights, qsf);
                 for &(plane, xo, yo) in &LAYOUT_ALPHA {
                     decode_block(ctx, &mut r, &mut pred[6], &wq[0], &mut block)?;
-                    store(ctx, bands[3], plane as usize, mb, xo as usize, yo as usize, false, &mut block);
+                    store(
+                        ctx,
+                        bands[3],
+                        BlockPosition { plane: plane as usize, macroblock: mb, x_offset: xo as usize, y_offset: yo as usize, field: false },
+                        &mut block,
+                    );
                 }
             }
         }
@@ -392,12 +399,21 @@ fn decode_block(ctx: &Ctx, r: &mut Reader, pred: &mut i32, wq: &[(u32, u32); 64]
 }
 
 /// IDCT a block and store it (with level adjustment and clipping) into a plane band.
+struct BlockPosition {
+    plane: usize,
+    macroblock: usize,
+    x_offset: usize,
+    y_offset: usize,
+    field: bool,
+}
+
 #[inline]
-fn store(ctx: &Ctx, band: &mut [u16], plane: usize, mb: usize, xo: usize, yo: usize, field: bool, block: &mut [f32; 64]) {
+fn store(ctx: &Ctx, band: &mut [u16], position: BlockPosition, block: &mut [f32; 64]) {
     idct8x8(block);
+    let BlockPosition { plane, macroblock, x_offset, y_offset, field } = position;
     let stride = ctx.strides[plane];
-    let x0 = mb * ctx.mb_size[plane].0 + xo;
-    let (first, step) = if field { (yo / 8, 2) } else { (yo, 1) };
+    let x0 = macroblock * ctx.mb_size[plane].0 + x_offset;
+    let (first, step) = if field { (y_offset / 8, 2) } else { (y_offset, 1) };
     let (scale, mid, max) = (ctx.scale, ctx.mid + 0.5, ctx.max);
     for j in 0..8 {
         let row = &mut band[(first + j * step) * stride + x0..][..8];

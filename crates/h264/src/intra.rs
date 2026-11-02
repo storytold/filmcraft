@@ -59,128 +59,109 @@ fn load_edge(plane: &[u8], stride: usize, x: usize, y: usize, n: usize, a: Avail
     e
 }
 
+/// Fill an `n`x`n` block at `out` with `f(x, y)`.
+fn fill_nxn(n: i32, out: &mut [u8], stride: usize, f: impl Fn(i32, i32) -> i32) {
+    for y in 0..n {
+        for x in 0..n {
+            out[y as usize * stride + x as usize] = f(x, y) as u8;
+        }
+    }
+}
+
+/// DC value of Intra_NxN prediction (mode 2).
+fn dc_nxn(e: &Edge, n: i32, a: Avail) -> i32 {
+    let shift = if n == 4 { 2 } else { 3 };
+    let st: i32 = (0..n).map(|x| e.t(x)).sum();
+    let sl: i32 = (0..n).map(|y| e.l(y)).sum();
+    match (a.top, a.left) {
+        (true, true) => (st + sl + n) >> (shift + 1),
+        (false, true) => (sl + (n >> 1)) >> shift,
+        (true, false) => (st + (n >> 1)) >> shift,
+        _ => 128,
+    }
+}
+
+/// Diagonal down-left sample (mode 3).
+fn diag_down_left(e: &Edge, n: i32, x: i32, y: i32) -> i32 {
+    if x == n - 1 && y == n - 1 { (e.t(2 * n - 2) + 3 * e.t(2 * n - 1) + 2) >> 2 } else { (e.t(x + y) + 2 * e.t(x + y + 1) + e.t(x + y + 2) + 2) >> 2 }
+}
+
+/// Diagonal down-right sample (mode 4).
+fn diag_down_right(e: &Edge, x: i32, y: i32) -> i32 {
+    if x > y {
+        (e.t(x - y - 2) + 2 * e.t(x - y - 1) + e.t(x - y) + 2) >> 2
+    } else if x < y {
+        (e.l(y - x - 2) + 2 * e.l(y - x - 1) + e.l(y - x) + 2) >> 2
+    } else {
+        (e.t(0) + 2 * e.tl + e.l(0) + 2) >> 2
+    }
+}
+
+/// Vertical-right sample (mode 5).
+fn vertical_right(e: &Edge, x: i32, y: i32) -> i32 {
+    let z = 2 * x - y;
+    if z >= 0 && z % 2 == 0 {
+        (e.t(x - (y >> 1) - 1) + e.t(x - (y >> 1)) + 1) >> 1
+    } else if z > 0 {
+        (e.t(x - (y >> 1) - 2) + 2 * e.t(x - (y >> 1) - 1) + e.t(x - (y >> 1)) + 2) >> 2
+    } else if z == -1 {
+        (e.l(0) + 2 * e.tl + e.t(0) + 2) >> 2
+    } else {
+        (e.l(y - 2 * x - 1) + 2 * e.l(y - 2 * x - 2) + e.l(y - 2 * x - 3) + 2) >> 2
+    }
+}
+
+/// Horizontal-down sample (mode 6).
+fn horizontal_down(e: &Edge, x: i32, y: i32) -> i32 {
+    let z = 2 * y - x;
+    if z >= 0 && z % 2 == 0 {
+        (e.l(y - (x >> 1) - 1) + e.l(y - (x >> 1)) + 1) >> 1
+    } else if z > 0 {
+        (e.l(y - (x >> 1) - 2) + 2 * e.l(y - (x >> 1) - 1) + e.l(y - (x >> 1)) + 2) >> 2
+    } else if z == -1 {
+        (e.l(0) + 2 * e.tl + e.t(0) + 2) >> 2
+    } else {
+        (e.t(x - 2 * y - 1) + 2 * e.t(x - 2 * y - 2) + e.t(x - 2 * y - 3) + 2) >> 2
+    }
+}
+
+/// Vertical-left sample (mode 7).
+fn vertical_left(e: &Edge, x: i32, y: i32) -> i32 {
+    let i = x + (y >> 1);
+    if y % 2 == 0 { (e.t(i) + e.t(i + 1) + 1) >> 1 } else { (e.t(i) + 2 * e.t(i + 1) + e.t(i + 2) + 2) >> 2 }
+}
+
+/// Horizontal-up sample (mode 8).
+fn horizontal_up(e: &Edge, n: i32, x: i32, y: i32) -> i32 {
+    let zmax = 2 * n - 3;
+    let z = x + 2 * y;
+    let i = y + (x >> 1);
+    if z < zmax && z % 2 == 0 {
+        (e.l(i) + e.l(i + 1) + 1) >> 1
+    } else if z < zmax {
+        (e.l(i) + 2 * e.l(i + 1) + e.l(i + 2) + 2) >> 2
+    } else if z == zmax {
+        (e.l(n - 2) + 3 * e.l(n - 1) + 2) >> 2
+    } else {
+        e.l(n - 1)
+    }
+}
+
 /// Directional / DC prediction shared by Intra_4x4 and Intra_8x8 (8.3.1.2.x, 8.3.2.2.x).
 fn pred_nxn(mode: u8, e: &Edge, n: i32, a: Avail, out: &mut [u8], stride: usize) {
-    let mut put = |x: i32, y: i32, v: i32| out[y as usize * stride + x as usize] = v as u8;
     match mode {
-        0 => {
-            for y in 0..n {
-                for x in 0..n {
-                    put(x, y, e.t(x));
-                }
-            }
-        }
-        1 => {
-            for y in 0..n {
-                for x in 0..n {
-                    put(x, y, e.l(y));
-                }
-            }
-        }
+        0 => fill_nxn(n, out, stride, |x, _| e.t(x)),
+        1 => fill_nxn(n, out, stride, |_, y| e.l(y)),
         2 => {
-            let shift = if n == 4 { 2 } else { 3 };
-            let st: i32 = (0..n).map(|x| e.t(x)).sum();
-            let sl: i32 = (0..n).map(|y| e.l(y)).sum();
-            let dc = match (a.top, a.left) {
-                (true, true) => (st + sl + n) >> (shift + 1),
-                (false, true) => (sl + (n >> 1)) >> shift,
-                (true, false) => (st + (n >> 1)) >> shift,
-                _ => 128,
-            };
-            for y in 0..n {
-                for x in 0..n {
-                    put(x, y, dc);
-                }
-            }
+            let dc = dc_nxn(e, n, a);
+            fill_nxn(n, out, stride, |_, _| dc);
         }
-        3 => {
-            for y in 0..n {
-                for x in 0..n {
-                    let v = if x == n - 1 && y == n - 1 {
-                        (e.t(2 * n - 2) + 3 * e.t(2 * n - 1) + 2) >> 2
-                    } else {
-                        (e.t(x + y) + 2 * e.t(x + y + 1) + e.t(x + y + 2) + 2) >> 2
-                    };
-                    put(x, y, v);
-                }
-            }
-        }
-        4 => {
-            for y in 0..n {
-                for x in 0..n {
-                    let v = if x > y {
-                        (e.t(x - y - 2) + 2 * e.t(x - y - 1) + e.t(x - y) + 2) >> 2
-                    } else if x < y {
-                        (e.l(y - x - 2) + 2 * e.l(y - x - 1) + e.l(y - x) + 2) >> 2
-                    } else {
-                        (e.t(0) + 2 * e.tl + e.l(0) + 2) >> 2
-                    };
-                    put(x, y, v);
-                }
-            }
-        }
-        5 => {
-            for y in 0..n {
-                for x in 0..n {
-                    let z = 2 * x - y;
-                    let v = if z >= 0 && z % 2 == 0 {
-                        (e.t(x - (y >> 1) - 1) + e.t(x - (y >> 1)) + 1) >> 1
-                    } else if z > 0 {
-                        (e.t(x - (y >> 1) - 2) + 2 * e.t(x - (y >> 1) - 1) + e.t(x - (y >> 1)) + 2) >> 2
-                    } else if z == -1 {
-                        (e.l(0) + 2 * e.tl + e.t(0) + 2) >> 2
-                    } else {
-                        (e.l(y - 2 * x - 1) + 2 * e.l(y - 2 * x - 2) + e.l(y - 2 * x - 3) + 2) >> 2
-                    };
-                    put(x, y, v);
-                }
-            }
-        }
-        6 => {
-            for y in 0..n {
-                for x in 0..n {
-                    let z = 2 * y - x;
-                    let v = if z >= 0 && z % 2 == 0 {
-                        (e.l(y - (x >> 1) - 1) + e.l(y - (x >> 1)) + 1) >> 1
-                    } else if z > 0 {
-                        (e.l(y - (x >> 1) - 2) + 2 * e.l(y - (x >> 1) - 1) + e.l(y - (x >> 1)) + 2) >> 2
-                    } else if z == -1 {
-                        (e.l(0) + 2 * e.tl + e.t(0) + 2) >> 2
-                    } else {
-                        (e.t(x - 2 * y - 1) + 2 * e.t(x - 2 * y - 2) + e.t(x - 2 * y - 3) + 2) >> 2
-                    };
-                    put(x, y, v);
-                }
-            }
-        }
-        7 => {
-            for y in 0..n {
-                for x in 0..n {
-                    let i = x + (y >> 1);
-                    let v = if y % 2 == 0 { (e.t(i) + e.t(i + 1) + 1) >> 1 } else { (e.t(i) + 2 * e.t(i + 1) + e.t(i + 2) + 2) >> 2 };
-                    put(x, y, v);
-                }
-            }
-        }
-        _ => {
-            let zmax = 2 * n - 3;
-            for y in 0..n {
-                for x in 0..n {
-                    let z = x + 2 * y;
-                    let i = y + (x >> 1);
-                    let v = if z < zmax && z % 2 == 0 {
-                        (e.l(i) + e.l(i + 1) + 1) >> 1
-                    } else if z < zmax {
-                        (e.l(i) + 2 * e.l(i + 1) + e.l(i + 2) + 2) >> 2
-                    } else if z == zmax {
-                        (e.l(n - 2) + 3 * e.l(n - 1) + 2) >> 2
-                    } else {
-                        e.l(n - 1)
-                    };
-                    put(x, y, v);
-                }
-            }
-        }
+        3 => fill_nxn(n, out, stride, |x, y| diag_down_left(e, n, x, y)),
+        4 => fill_nxn(n, out, stride, |x, y| diag_down_right(e, x, y)),
+        5 => fill_nxn(n, out, stride, |x, y| vertical_right(e, x, y)),
+        6 => fill_nxn(n, out, stride, |x, y| horizontal_down(e, x, y)),
+        7 => fill_nxn(n, out, stride, |x, y| vertical_left(e, x, y)),
+        _ => fill_nxn(n, out, stride, |x, y| horizontal_up(e, n, x, y)),
     }
 }
 

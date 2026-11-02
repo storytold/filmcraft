@@ -65,7 +65,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Simplify Sequence…",
             &["Sequence"],
             None,
-            r#"{"name":str?,"removeDisabled":bool=true,"removeEmptyTracks":bool=true,"closeGaps":bool=false,"moveClipsDown":bool=false,"removeVideoEffects":bool=false,"removeAudioEffects":bool=false,"removeText":bool=false,"keep":"both|video|audio"}"#,
+            r#"{"name":str?,"removeDisabled":bool=true,"removeEmptyTracks":bool=true,"closeGaps":bool=false,"moveClipsDown":bool=false,"removeVideoEffects":bool=false,"removeAudioEffects":bool=false,"removeText":bool=false,"keep":"both|video|audio"?}"#,
             has_seq,
             simplify,
         ),
@@ -83,7 +83,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Add Flash Cue Marker…",
             &["Markers"],
             None,
-            r#"{"time":ticks?,"name":str?,"comment":str?,"color":label?}"#,
+            r#"{"time":ticks?,"name":str?,"comment":str?,"color":label_or_hex?,"author":str?}"#,
             has_seq,
             add_flash_cue,
         ),
@@ -367,7 +367,6 @@ pub fn simplify_sequence(proj: &filmcraft_project::Project, q: &mut Sequence, o:
                 it.link = None;
             }
         }
-        edit::remove_orphan_transitions(t);
     }
     if o.remove_text {
         q.caption_tracks.clear();
@@ -413,27 +412,8 @@ pub fn simplify_sequence(proj: &filmcraft_project::Project, q: &mut Sequence, o:
     // close gaps: spans where no track has anything
     let mut closed = Tick::ZERO;
     if o.close_gaps {
-        let mut spans: Vec<TimeRange> = q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.range())).collect();
-        spans.extend(q.caption_tracks.iter().flat_map(|t| t.captions.iter().map(|c| c.range())));
-        spans.sort_by_key(|r| r.start);
-        let mut gaps: Vec<TimeRange> = Vec::new();
-        let mut cursor = Tick::ZERO;
-        for r in &spans {
-            if r.start > cursor {
-                gaps.push(TimeRange::from_bounds(cursor, r.start));
-            }
-            cursor = cursor.max(r.end());
-        }
-        for g in gaps.iter().rev() {
-            for t in q.video_tracks.iter_mut().chain(q.audio_tracks.iter_mut()) {
-                edit::shift_track_from(t, g.end(), Tick::ZERO - g.duration);
-            }
-            for t in &mut q.caption_tracks {
-                for c in t.captions.iter_mut().filter(|c| c.start >= g.end()) {
-                    c.start -= g.duration;
-                }
-            }
-            crate::sequence_tools::ripple_markers(&mut q.markers, g.end(), Tick::ZERO - g.duration);
+        for g in sequence_gaps(q, None).iter().rev() {
+            close_sequence_gap(q, *g, true);
             closed += g.duration;
         }
     }
@@ -454,6 +434,43 @@ pub fn simplify_sequence(proj: &filmcraft_project::Project, q: &mut Sequence, o:
         }
     }
     json!({"removedClips": removed_clips, "removedEffects": removed_effects, "movedClips": moved, "closedGaps": closed.0, "removedTracks": removed_tracks})
+}
+
+/// Spans where no track has anything (clips or captions), in time order: the gaps before, between
+/// and inside the material, never the open time after the last clip. With `within`, only the gaps
+/// that lie entirely inside it (Close Gap between In and Out).
+pub(crate) fn sequence_gaps(q: &Sequence, within: Option<TimeRange>) -> Vec<TimeRange> {
+    let mut spans: Vec<TimeRange> = q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.range())).collect();
+    spans.extend(q.caption_tracks.iter().flat_map(|t| t.captions.iter().map(|c| c.range())));
+    spans.sort_by_key(|r| r.start);
+    let mut gaps: Vec<TimeRange> = Vec::new();
+    let mut cursor = Tick::ZERO;
+    for r in &spans {
+        if r.start > cursor {
+            gaps.push(TimeRange::from_bounds(cursor, r.start));
+        }
+        cursor = cursor.max(r.end());
+    }
+    if let Some(w) = within {
+        gaps.retain(|g| g.start >= w.start && g.end() <= w.end());
+    }
+    gaps
+}
+
+/// Ripple one of [`sequence_gaps`] closed: everything after it, on every track, moves left by its
+/// length (it is empty on all of them, so nothing can collide). Close later gaps first.
+pub(crate) fn close_sequence_gap(q: &mut Sequence, g: TimeRange, markers: bool) {
+    for t in q.video_tracks.iter_mut().chain(q.audio_tracks.iter_mut()) {
+        edit::shift_track_from(t, g.end(), Tick::ZERO - g.duration);
+    }
+    for t in &mut q.caption_tracks {
+        for c in t.captions.iter_mut().filter(|c| c.start >= g.end()) {
+            c.start -= g.duration;
+        }
+    }
+    if markers {
+        crate::sequence_tools::ripple_markers(&mut q.markers, g.end(), Tick::ZERO - g.duration);
+    }
 }
 
 fn simplify(s: &mut Session, p: &Value) -> Result<Value> {
@@ -526,11 +543,12 @@ fn add_flash_cue(s: &mut Session, p: &Value) -> Result<Value> {
     let n = s.active_sequence().map(|q| q.markers.iter().filter(|m| m.kind == MarkerKind::FlashCue).count()).unwrap_or(0) + 1;
     let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Cue Point {n}"));
     let comment = str_p(p, "comment").unwrap_or("").to_string();
-    let color = marker_color_p(p, "markers.addFlashCue")?.unwrap_or(Label::Green);
+    let (color, custom_color) = marker_color_p(p, "markers.addFlashCue")?.unwrap_or((Label::Green, None));
+    let author = crate::commands::marker_author_p(p, "markers.addFlashCue")?.unwrap_or_default();
     let dur = u64_p(p, "durationFrames").map(|f| s.sequence_rate().tick_of(f as i64)).unwrap_or(Tick::ZERO);
     let id = s.edit_sequence("Add Flash Cue Marker", |q, ctx, _| {
         let id = MarkerId(ctx.alloc());
-        q.markers.push(Marker { id, start: t, duration: dur, name, comment, kind: MarkerKind::FlashCue, color });
+        q.markers.push(Marker { url: String::new(), author, custom_color, id, start: t, duration: dur, name, comment, kind: MarkerKind::FlashCue, color });
         q.markers.sort_by_key(|m| m.start);
         Ok(id)
     })?;
@@ -538,5 +556,4 @@ fn add_flash_cue(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 #[cfg(test)]
-#[path = "sequence_extras_tests.rs"]
 mod tests;
