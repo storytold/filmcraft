@@ -52,7 +52,7 @@ pub use layout::{Layout, Row, max_pps, max_scroll, min_pps, scroll_to_reveal, ti
 pub(crate) use menus::{CLIP_MENU, EDIT_POINT_TYPES};
 use ruler::draw_top;
 pub use ruler::ruler_steps;
-pub use scrollbars::{set_track_slider_hidden, set_zoombar_hidden, zoombar_cursor_watchdog};
+pub use scrollbars::{controls_listening, set_track_slider_hidden, set_zoombar_hidden, zoombar_cursor_watchdog};
 use scrollbars::{vertical_scrollbar, zoom_scrollbar};
 pub use snap::{hit_json, locate};
 pub(super) use snap::{snap, snap_caption};
@@ -410,9 +410,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         rows.push(Row { track: tr.id, kind: TrackKind::Video, index: i, rect, lane: false });
     }
     let na = seq.audio_tracks.len();
-    // one extra track height of empty space below the last audio track (space for a new track),
-    // as the video side keeps above its topmost row
-    let max_as = ((na + 1) as f32 * ah - audio_area.height()).max(0.0);
+    // a third of a track's height of empty space below the last audio track (space for a new
+    // track), the same reveal the video side keeps above its topmost row
+    let max_as = ((na as f32 + 1.0 / 3.0) * ah - audio_area.height()).max(0.0);
     app.ui.timeline.a_scroll = app.ui.timeline.a_scroll.clamp(0.0, max_as);
     for (i, tr) in seq.audio_tracks.iter().enumerate() {
         let top = audio_area.min.y + i as f32 * ah - app.ui.timeline.a_scroll;
@@ -568,15 +568,20 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             (rect.max.x - TRACK_SLIDER_GAP - TRACK_SLIDER_W, rect.max.x - TRACK_SLIDER_GAP)
         };
         // the video slider spans its space (top of the tracks down to the divider); the audio
-        // one reaches all the way to the bottom of the tracks column, Mix row included
+        // one reaches all the way to the bottom of the tracks column, Mix row included. Both are
+        // inset at their OUTER end -- 2 pt normally, 5 pt with Alternate Slider Position (where
+        // the audio slider's bottom would otherwise crowd the window's edge; 3 more points there).
+        // The same inset on both keeps the two sliders the same length at the default split and
+        // the A/V divider centered between their outer ends.
+        let outer = if bar_top { 5.0 } else { 2.0 };
         let (on_vs, vthumb, vclicks) = vertical_scrollbar(
             ui,
             &mut app.tl,
-            Rect::from_min_max(pos2(sx0, video_area.min.y), pos2(sx1, split_y - 3.0)),
+            Rect::from_min_max(pos2(sx0, video_area.min.y + outer), pos2(sx1, split_y - 3.0)),
             &mut app.ui.timeline.v_scroll,
             max_vs,
             video_area.height(),
-            (nv + 1) as f32,
+            nv as f32 + 1.0 / 3.0,
             &mut app.ui.timeline.video_track_h,
             true,
             smooth,
@@ -589,11 +594,11 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let (on_as, athumb, aclicks) = vertical_scrollbar(
             ui,
             &mut app.tl,
-            Rect::from_min_max(pos2(sx0, split_y + DIVIDER_H + 3.0), pos2(sx1, content.max.y)),
+            Rect::from_min_max(pos2(sx0, split_y + DIVIDER_H + 3.0), pos2(sx1, content.max.y - outer)),
             &mut app.ui.timeline.a_scroll,
             max_as,
             audio_area.height(),
-            (na + 1) as f32,
+            na as f32 + 1.0 / 3.0,
             &mut app.ui.timeline.audio_track_h,
             false,
             smooth,
@@ -635,7 +640,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 // other slider is the mirror image: this one at the bottom sends it to the top)
                 let raw = if max_s > 0.5 { (val_s / max_s).clamp(0.0, 1.0) } else { 0.0 };
                 let win_o = if video { audio_area.height() } else { video_area.height() };
-                let slots = if video { (na + 1) as f32 } else { (nv + 1) as f32 };
+                let slots = if video { na as f32 + 1.0 / 3.0 } else { nv as f32 + 1.0 / 3.0 };
                 let h_new = if video { app.ui.timeline.video_track_h } else { app.ui.timeline.audio_track_h };
                 let max_new = (slots * h_new - win_o).max(0.0);
                 let v_new = (raw * max_new).clamp(0.0, max_new);
@@ -1388,7 +1393,8 @@ mod new_track_tests {
     use filmcraft_project::{Project, SequenceSettings};
 
     /// #483: a drop above the top video track adds a video track, one below the last audio track an
-    /// audio track; over a track, between the areas or on the Mix row it adds none.
+    /// audio track -- anywhere in those regions (the Mix row included: the visible gap is small),
+    /// but over a track or between the areas it adds none.
     #[test]
     fn empty_space_past_the_tracks_adds_a_track() {
         let mut p = Project::new("t");
@@ -1415,7 +1421,14 @@ mod new_track_tests {
         let at = |y| new_track_at(&seq, &layout, y, 50.0, 50.0);
         assert_eq!(at(40.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 100.0), pos2(800.0, 150.0)))));
         assert_eq!(at(300.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
-        for y in [160.0, 202.0, 230.0, 480.0] {
+        // the Mix row counts as "below the last audio track" now, with the same band
+        assert_eq!(at(480.0), Some((TrackKind::Audio, Rect::from_min_max(pos2(0.0, 255.0), pos2(800.0, 305.0)))));
+        // anywhere above the video rows -- over the ruler, or past the Timeline's own rect --
+        // wants a new video track; anywhere below the audio rows a new audio one
+        assert_eq!(at(-20.0).map(|(k, _)| k), Some(TrackKind::Video), "over the ruler");
+        assert_eq!(at(-400.0).map(|(k, _)| k), Some(TrackKind::Video), "far above the window");
+        assert_eq!(at(900.0).map(|(k, _)| k), Some(TrackKind::Audio), "far below the window");
+        for y in [160.0, 202.0, 230.0] {
             assert_eq!(at(y), None, "y = {y}");
         }
     }
@@ -1458,8 +1471,9 @@ mod new_track_tests {
         assert_eq!(at(470.0), None, "the Mix row is no track");
     }
 
-    /// #1522: when the video tracks fill the video area, scrolling all the way up still leaves a
-    /// track's height of empty space above the top one, so a drop there can add a fourth track.
+    /// #1522 (cut down to what is usable): when the video tracks fill the video area, scrolling all
+    /// the way up reveals a THIRD of a track's height of empty space above the top one -- just
+    /// enough to drop a clip there and to add a fourth track.
     #[test]
     fn a_full_video_area_scrolls_to_space_for_a_new_track() {
         let mut p = Project::new("t");
@@ -1468,7 +1482,9 @@ mod new_track_tests {
         // video area 0..150 holds V1..V3 exactly; scrolled up as far as it goes
         let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 150.0));
         let mut v_scroll = f32::MAX;
-        let (tops, _) = video_row_tops(area, 3, 50.0, &mut v_scroll);
+        let (tops, max_vs) = video_row_tops(area, 3, 50.0, &mut v_scroll);
+        assert!((max_vs - 50.0 / 3.0).abs() < 0.01, "the reveal is a third of a track: {max_vs}");
+        assert!((tops[2] - 50.0 / 3.0).abs() < 0.01, "the topmost row leaves a third of a track above it: {:?}", tops);
         let rows = seq
             .video_tracks
             .iter()
@@ -1492,7 +1508,10 @@ mod new_track_tests {
             v_scroll: 0.0,
             a_scroll: 0.0,
         };
-        assert_eq!(new_track_at(&seq, &layout, 10.0, 50.0, 50.0), Some((TrackKind::Video, Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 50.0)))));
+        let (kind, band) = new_track_at(&seq, &layout, 10.0, 50.0, 50.0).expect("a drop in the third of a track adds a video track");
+        assert_eq!(kind, TrackKind::Video);
+        assert!((band.min.y).abs() < 0.01, "{band:?}");
+        assert!((band.max.y - 50.0 / 3.0).abs() < 0.01, "the band is the visible third, never a whole track: {band:?}");
         // scrolled to the bottom, V1..V3 fill the area as before
         let mut v_scroll = 0.0;
         assert_eq!(video_row_tops(area, 3, 50.0, &mut v_scroll).0, vec![100.0, 50.0, 0.0]);

@@ -76,6 +76,7 @@
 	About FilmCraft	FilmCraft 정보
 	Accent Color	강조 색상
 	Accessible color contrast	접근성 색상 대비
+	Alternate Drag Speed:	대체 드래그 속도:
 	Animate zoom, scrolling and menus	확대/축소, 스크롤 및 메뉴 애니메이션
 	Action and Title Safe Areas	액션 및 제목 안전 영역
 	Action Safe Area	액션 안전 영역
@@ -231,6 +232,12 @@
 	APV 422-10	APV 422-10
 	APV 422-12	APV 422-12
 	Are you sure you want to discard your changes to '{file}'?	'{file}'의 변경 사항을 버릴까요?
+	Center on Playhead:	재생 헤드 중앙 맞춤:
+	Controls	컨트롤
+	Enter Shortcut	단축키 입력
+	Explode Slider:	슬라이더 펼치기:
+	Invert Scrolling	스크롤 반전
+	Playhead Centering Range	재생 헤드 중앙 맞춤 범위
 	Replace File	파일 바꾸기
 	“{file}” already exists in “{folder}”. Do you want to replace it?	“{folder}”에 “{file}” 파일이 이미 있습니다. 바꿀까요?
 	Replace	바꾸기
@@ -514,6 +521,7 @@
 	Center Channel Pan	센터 채널 팬
 	Center Gradient	중앙 그레이디언트
 	Center at Cut	컷 중앙
+	Snap to Tracks	트랙에 스냅
 	Start at Cut	컷 시작
 	End at Cut	컷 끝
 	Custom Start	사용자 정의 시작
