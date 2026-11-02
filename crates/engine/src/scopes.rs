@@ -12,17 +12,17 @@ use crate::{Result, Session};
 
 /// The scope signal of the active sequence at `t` (`scale` = render scale): R'G'B' code values
 /// of the monitor picture, or PQ code values of the working-space render for HDR scopes.
-pub fn scope_signal(s: &Session, t: Tick, scale: f32, hdr: bool) -> Option<Signal> {
-    let seq = s.state.active_sequence?;
+pub fn scope_signal(s: &Session, t: Tick, scale: f32, hdr: bool) -> Result<Option<Signal>> {
+    let Some(seq) = s.state.active_sequence else { return Ok(None) };
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     if hdr {
         let opts = filmcraft_render::RenderOptions { scale, working_output: true, ..Default::default() };
-        let img = filmcraft_render::render_sequence(&s.project, seq, t, opts, &provider);
-        return Some(Signal::from_rgba_f32_with(img.w, img.h, &img.px, scopes::MAX_W, scopes::MAX_H, scopes::linear_to_pq));
+        let img = filmcraft_render::render_sequence(&s.project, seq, t, opts, &provider).map_err(crate::EngineError::Other)?;
+        return Ok(Some(Signal::from_rgba_f32_with(img.w, img.h, &img.px, scopes::MAX_W, scopes::MAX_H, scopes::linear_to_pq)));
     }
     let opts = filmcraft_render::RenderOptions { scale, captions: true, ..Default::default() };
-    let img = filmcraft_render::render_sequence(&s.project, seq, t, opts, &provider);
-    Some(Signal::from_rgba8(img.w, img.h, &img.over_black_rgba8()))
+    let img = filmcraft_render::render_sequence(&s.project, seq, t, opts, &provider).map_err(crate::EngineError::Other)?;
+    Ok(Some(Signal::from_rgba8(img.w, img.h, &img.over_black_rgba8())))
 }
 
 fn levels_json(w: &scopes::Waveform, columns: usize) -> Value {
@@ -73,7 +73,7 @@ fn scopes_read(s: &mut Session, p: &Value) -> Result<Value> {
     let columns = u64_p(p, "columns").unwrap_or(8).clamp(1, 512) as usize;
     let npeaks = u64_p(p, "peaks").unwrap_or(8).clamp(1, 64) as usize;
     let bins = bool_p(p, "bins").unwrap_or(true);
-    let sig = scope_signal(s, t, scale, hdr).ok_or(crate::EngineError::NoSequence)?;
+    let sig = scope_signal(s, t, scale, hdr)?.ok_or(crate::EngineError::NoSequence)?;
     let mut out = json!({
         "time": t.0,
         "frame": rate.frame_at(t),

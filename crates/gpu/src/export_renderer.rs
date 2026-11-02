@@ -145,27 +145,27 @@ impl ExportRenderer {
 
     /// One frame as `render_sequence` would return it (premultiplied linear-light RGBA at the
     /// render size), or `None` when this frame must go to the CPU renderer.
-    pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
-        let plan = plan_frame(project, seq, t, opts, sources);
-        match &plan {
+    pub fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Result<Option<Image>, String> {
+        let plan = plan_frame(project, seq, t, opts, sources)?;
+        Ok(match &plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
             FramePlan::Layers { .. } => {
                 if device_failed() {
-                    return None;
+                    return Ok(None);
                 }
                 let prep = prepare(&plan);
-                let (w, h, px) = self.compositor.render_export_prepared(&plan, Some(&prep))?;
+                let Some((w, h, px)) = self.compositor.render_export_prepared(&plan, Some(&prep))? else { return Ok(None) };
                 // an error reported while this frame was drawn leaves its pixels untrusted
                 if device_failed() {
-                    return None;
+                    return Ok(None);
                 }
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
             // Transitions: the export path leaves them to the CPU reference renderer.
             FramePlan::Composite { .. } => None,
-        }
+        })
     }
 }
 
@@ -277,8 +277,8 @@ mod tests {
         };
         let (p, seq, m) = project(false);
         let t = Tick::ZERO;
-        let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
-        let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+        let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m).unwrap();
+        let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).unwrap().expect("GPU rendered the frame");
         assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "solid fixture must contain a visible picture");
         // The linear premultiplied accumulator should be very close to the CPU float image.
         assert_eq!((cpu.w, cpu.h), (gpu.w, gpu.h));
@@ -296,8 +296,8 @@ mod tests {
         };
         let (p, seq, m) = project(true);
         let t = filmcraft_time::FrameRate::FPS_24.tick_of(10);
-        let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m);
-        let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).expect("GPU rendered the frame");
+        let cpu = filmcraft_render::render_sequence(&p, seq, t, RenderOptions::default(), &m).unwrap();
+        let gpu = r.render(&p, seq, t, RenderOptions::default(), &m).unwrap().expect("GPU rendered the frame");
         assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "transformed fixture must contain a visible picture");
         assert_parity(&cpu, &gpu, "transformed");
     }
@@ -337,9 +337,9 @@ mod tests {
                 motion.param_mut("scale_width").unwrap().value = filmcraft_project::ParamValue::Float(width);
                 for scale in [1.0, 0.5] {
                     let opts = RenderOptions { scale, ..Default::default() };
-                    let cpu = filmcraft_render::render_sequence(&p, outer, Tick::ZERO, opts, &sources);
+                    let cpu = filmcraft_render::render_sequence(&p, outer, Tick::ZERO, opts, &sources).unwrap();
                     assert!(cpu.px.as_chunks::<4>().0.iter().any(|pixel| pixel[..3].iter().any(|x| *x > 0.1)), "fixture must contain a visible picture");
-                    let gpu = renderer.render(&p, outer, Tick::ZERO, opts, &sources).expect("GPU rendered the nest");
+                    let gpu = renderer.render(&p, outer, Tick::ZERO, opts, &sources).unwrap().expect("GPU rendered the nest");
                     assert_parity(&cpu, &gpu, "transformed nest");
                 }
             }
@@ -351,7 +351,7 @@ mod tests {
         // dev-dependency: the same wrapper the app and CLI register.
         struct R(ExportRenderer);
         impl FrameRenderer for R {
-            fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Option<Image> {
+            fn render(&mut self, project: &Project, seq: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> Result<Option<Image>, String> {
                 self.0.render(project, seq, t, opts, sources)
             }
         }
@@ -360,8 +360,8 @@ mod tests {
             return;
         };
         let (p, seq, m) = project(false);
-        let gpu = R(r).render(&p, seq, Tick::ZERO, RenderOptions::default(), &m).expect("rendered");
-        let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &m);
+        let gpu = R(r).render(&p, seq, Tick::ZERO, RenderOptions::default(), &m).unwrap().expect("rendered");
+        let cpu = filmcraft_render::render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &m).unwrap();
         assert_parity(&cpu, &gpu, "frame renderer");
     }
 

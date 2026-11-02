@@ -298,32 +298,6 @@ fn effect_controls_hint_that_clip_effects_are_not_remapped() {
     let label = "Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time";
     let _ = d.harness.get_by_role_and_label(egui::accesskit::Role::Button, label);
 }
-/// #1673: a value dragged in Effect Controls while playing makes a revision per UI pass, so the
-/// frame due is never ready at the project's revision. The Program monitor shows the frames the
-/// workers finish for the last few revisions and keeps playing; it used to hold the picture from
-/// before the drag until the mouse rested.
-#[test]
-fn program_monitor_plays_on_while_a_value_is_dragged() {
-    let mut d = Driver::demo();
-    let clip = d.exec("sequence.inspect", json!({}))["video"][0]["items"][0]["clip"].as_u64().unwrap();
-    d.exec("effects.apply", json!({"clips": [clip], "effect": "crop"}));
-    d.exec("playhead.set", json!({"seconds": 1.0}));
-    let at_rest = d.settled();
-    d.harness.state_mut().play(1.0);
-    let mut frames = std::collections::BTreeSet::new();
-    let mut newest = at_rest.revision;
-    for i in 0..90 {
-        // one change and one UI pass, as a mouse move while dragging the value
-        d.exec("effects.setParam", json!({"clip": clip, "effect": "crop", "param": "left", "value": (i % 30) as f64}));
-        let shown = d.harness.state().program_picture().unwrap();
-        frames.insert(shown.frame);
-        newest = newest.max(shown.revision);
-        std::thread::sleep(std::time::Duration::from_millis(16));
-    }
-    assert!(frames.len() >= 5, "the picture kept playing during the drag: frames shown {frames:?}");
-    assert!(newest > at_rest.revision, "the picture showed the dragged value, not only the one from before");
-}
-
 /// The same for playback scheduling: a frame being rendered ahead of the playhead is kept when
 /// playback asks for frames at a newer revision (CPU effects take longer than a pass).
 #[test]

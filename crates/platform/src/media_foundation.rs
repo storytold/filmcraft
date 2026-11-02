@@ -319,20 +319,19 @@ impl VideoDecoder for MfDecoder {
         r
     }
 
-    fn flush(&mut self) -> Vec<DecodedFrame> {
+    fn flush(&mut self) -> filmcraft_codecs::Result<Vec<DecodedFrame>> {
         let mut out = Vec::new();
-        if gpu::ensure_com().is_err() {
-            return out;
-        }
+        gpu::ensure_com().map_err(CodecError::Decode)?;
         let drained = self.mft.as_ref().map(Mft::drain).transpose().and_then(|_| self.collect(&mut out));
-        if let Err(e) = drained {
-            log::warn!("{}: {e} while flushing", self.name);
-        }
         self.in_flight.clear();
         // what follows a drain starts like a new run: the decoder is given the headers again
         self.need_headers = true;
         self.drained = true;
-        out
+        drained.map_err(|error| {
+            self.gpu.note_failure();
+            CodecError::Decode(error)
+        })?;
+        Ok(out)
     }
 
     fn reset(&mut self) {

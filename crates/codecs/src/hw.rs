@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use filmcraft_isobmff::{CodecConfig, SampleEntry};
 
 pub use crate::hw_frame::{FrameCodec, FrameStreamInfo, PictureParams};
+pub use crate::hw_output::{OutputInspector, SampleOutput};
 use crate::video::{avcc_length_size, h264_disposable, hevc_disposable, hvcc_length_size_and_tid, sar_par, vui_color};
 use crate::{CodecError, Result};
 
@@ -208,7 +209,7 @@ impl StreamInfo {
 /// A NAL unit without the zero bytes after its last byte: a NAL unit never ends with 0x00
 /// (H.264 7.4.1, H.265 7.4.2), so they are trailing_zero_8bits some muxers keep (ffmpeg in `hvcC`), not
 /// part of the parameter set.
-fn without_trailing_zeros(nal: &[u8]) -> &[u8] {
+pub(crate) fn without_trailing_zeros(nal: &[u8]) -> &[u8] {
     let end = nal.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
     nal.get(..end).unwrap_or_default()
 }

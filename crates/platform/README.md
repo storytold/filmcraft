@@ -52,7 +52,7 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   - *VP9 and AV1* (`codecs::hw::FrameStreamInfo`, `media_foundation/stream.rs`): the container
     sample goes in as it is (a VP9 frame or superframe, an AV1 temporal unit; the `av1C` sequence
     header goes first after a seek). The MFT outputs only shown pictures, in presentation order, so
-    hidden alt-ref frames and `show_existing_frame` need nothing special. Picture size and colour
+    hidden alt-ref frames and `show_existing_frame` are checked by the shared output ledger. AV1 currently selects software because its per-input output obligations are not classified. Picture size and colour
     are read from the bitstream the way the software decoders do (`hw_frame::vp9_color` /
     `av1_color` are shared with them). A VP9 key frame of another size or format, or an AV1 sequence
     header unlike `av1C`'s, hands the stream to the software decoder (`HybridDecoder`).
@@ -122,14 +122,9 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   - An HEVC `flush` ends the stream as in software (references are dropped and the next CRA
     leaves out its RASL pictures); the GOP cache always seeks after a flush.
 - **Other systems:** `register()` does nothing and returns `Availability::Unavailable`.
-- **`HybridDecoder`** (`hybrid.rs`, safe code): the hardware decoder plus the means to build our
-  software decoder for the same `SampleEntry` (`filmcraft_codecs::software_video_decoder`). On a
-  mid-stream failure (decode error, invalidated session, changed in-band parameter sets) it replays
-  the samples since the last restart point (IDR / IRAP; for an HEVC CRA the one before, so its RASL
-  pictures decode) through the software decoder, drops pictures already returned, keeps the ones
-  the hardware had decoded but not returned, and stays in software for that instance. The replay
-  log is bounded (600 samples / 256 MB); beyond it one error is returned and the next seek restarts
-  in software. Streams our decoders cannot decode (HEVC 4:2:2) have no fallback: the error stands.
+- **`HybridDecoder`** (`hybrid.rs`, safe code): hardware decoding with a bounded per-input output ledger and software recovery for the same `SampleEntry` (`filmcraft_codecs::software_video_decoder`). Shared header inspection distinguishes known non-display input from pending displayed pictures; a later timestamp alone does not complete earlier input. Hardware batches are checked before publication, so missing earlier pictures trigger replay before newer pictures reach callers.
+  Decode/drain failures replay retained dependency input from the restart point (including the preceding restart for CRA leading pictures), deduplicate delivered occurrences and preserve eligible buffered hardware pictures. Unknown or multi-picture input, ambiguous timestamps and uncertain prior-output cancellation select software before submitting that input or draining hardware. Header intent does not depend on software pixel-format support; AV1 currently takes software because its output obligations remain unclassified.
+  Input history is bounded to 600 samples / 256 MiB and buffered output to 4096 pictures; exhausted input bounds select software while retained history is still available. The instance stays in software, including after reset. If the software decoder cannot handle the format (for example HEVC 4:2:2), recovery returns an error rather than claiming success.
 
 ## Hardware H.264 encoding (macOS)
 

@@ -46,6 +46,71 @@ pub fn gpu_compositor_unsupported(adapter: &eframe::wgpu::Adapter) -> Option<Str
 mod gpu_fallback_tests {
     use filmcraft_render::plan::{FramePlan, PlanLayer};
 
+    #[test]
+    fn review_regression_returned_compositor_error_disables_gpu_and_reports_failure() {
+        use crate::*;
+        use filmcraft_frame::{Chroma, GpuPixels, GpuSurface, PixelData, VideoFrame};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        const FAILURE: &str = "injected compositor readback failure";
+        #[derive(Debug, Default)]
+        struct LostSurface(AtomicUsize);
+        impl GpuSurface for LostSurface {
+            fn size(&self) -> (u32, u32) {
+                (2, 2)
+            }
+            fn byte_len(&self) -> usize {
+                2 * 2 + 2
+            }
+            fn id(&self) -> u64 {
+                u64::MAX
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn download(&self) -> Result<PixelData, String> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Err(FAILURE.into())
+            }
+        }
+
+        let instance = eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor {
+            backends: eframe::wgpu::Backends::PRIMARY,
+            ..eframe::wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let rs = match pollster::block_on(eframe::egui_wgpu::RenderState::create(&Default::default(), &instance, None, Default::default())) {
+            Ok(rs) => rs,
+            Err(error) => {
+                eprintln!("SKIPPED (returned compositor error): GPU adapter unavailable: {error}");
+                return;
+            }
+        };
+        eprintln!("returned compositor error adapter: {:?}", rs.adapter.get_info());
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.set_wgpu(rs);
+        if app.gpu.is_none() {
+            eprintln!("SKIPPED (returned compositor error): unsupported compositor adapter");
+            return;
+        }
+        let surface = Arc::new(LostSurface::default());
+        let frame =
+            Arc::new(VideoFrame { data: PixelData::Gpu(GpuPixels::new(surface.clone(), Chroma::C420, 8)), ..VideoFrame::rgba8(2, 2, vec![0; 2 * 2 * 4]) });
+        let plan = FramePlan::Layers {
+            width: 2,
+            height: 2,
+            layers: vec![PlanLayer::new(frame, filmcraft_geom::Affine::IDENTITY, 1.0, filmcraft_render::Blend::Normal)],
+        };
+        let plan = frames::GpuPlan { prepared: filmcraft_gpu::prepare(&plan), plan };
+        let key = FrameKey { target: frames::Target::SequencePlan(filmcraft_project::ItemId(1)), frame: 0, size: 1000, revision: 0, draft: false };
+        assert!(app.gpu_present(key, &plan).is_none());
+        assert_eq!(surface.0.load(Ordering::Relaxed), 1, "failure probe must execute");
+        assert!(app.frames.take_error().unwrap().contains(FAILURE));
+        assert!(app.gpu.is_none(), "next monitor pass must select CPU compositing");
+    }
+
     /// Software rasterizers must not be treated as a GPU compositor: the preview crawled while
     /// "GPU" usage read 0 % because wgpu had silently fallen back to llvmpipe.
     #[test]

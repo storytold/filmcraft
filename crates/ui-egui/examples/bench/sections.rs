@@ -26,7 +26,7 @@ fn gpu_export_frame_renderer_factory() -> Option<Box<dyn filmcraft_export::Frame
             t: Tick,
             opts: filmcraft_render::RenderOptions,
             sources: &dyn filmcraft_render::SourceProvider,
-        ) -> Option<filmcraft_render::Image> {
+        ) -> Result<Option<filmcraft_render::Image>, String> {
             self.0.render(project, seq, t, opts, sources)
         }
     }

@@ -1331,6 +1331,65 @@ mod tests {
     }
 
     #[test]
+    fn playing_monitor_presents_completed_frames_across_edits() {
+        use std::time::{Duration, Instant};
+
+        // Small monitor fixture; bound readiness, not throughput on a shared test machine.
+        const WIDTH: u32 = 64;
+        const READY_LIMIT: Duration = Duration::from_secs(120);
+        const POLL_DELAY: Duration = Duration::from_millis(5);
+        let mut session = filmcraft_engine::Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = session.execute("sequence.inspect", json!({})).unwrap()["video"][0]["items"][0]["clip"].as_u64().unwrap();
+        session.execute("effects.apply", json!({"clips": [clip], "effect": "crop"})).unwrap();
+        let seq = session.state.active_sequence.unwrap();
+        let rate = session.sequence_rate();
+        let scale = WIDTH as f32 / session.active_sequence().unwrap().settings.width as f32;
+        let first = rate.frame_at(Tick::from_seconds_f64(1.0));
+        let mut app = FilmcraftApp::new(session);
+        let ctx = egui::Context::default();
+        let deadline = Instant::now() + READY_LIMIT;
+        let ready = |app: &FilmcraftApp, key: FrameKey| {
+            while !app.frames.is_ready(&key) {
+                assert!(Instant::now() < deadline, "worker did not finish {key:?}: {:?}", app.frames.stats());
+                let error = app.frames.take_error();
+                assert!(error.is_none(), "worker failed to prepare {key:?}: {error:?}");
+                std::thread::sleep(POLL_DELAY);
+            }
+        };
+        let mut previous = FrameKey { target: Target::Sequence(seq), frame: first, size: WIDTH, revision: app.session.revision, draft: false };
+        app.frames.request(previous, rate.tick_of(first), scale, &app.session.project, 0);
+        ready(&app, previous);
+        let (_, shown) = cpu_texture(&mut app, &ctx, "program-progress", previous, &[], None, DisplayMode::Composite);
+        assert_eq!(shown, Some(previous), "responsive initial presentation");
+        app.play(1.0);
+
+        // Each pair edits again before awaiting the older revision; the current revision stays unrequested/unready.
+        for (step, (rendered_crop, pending_crop)) in [(1.0, 2.0), (3.0, 4.0)].into_iter().enumerate() {
+            app.session.execute("effects.setParam", json!({"clip": clip, "effect": "crop", "param": "left", "value": rendered_crop})).unwrap();
+            let completed = FrameKey { frame: first + step as i64 + 1, revision: app.session.revision, ..previous };
+            app.frames.request(completed, rate.tick_of(completed.frame), scale, &app.session.project, 0);
+            app.session.execute("effects.setParam", json!({"clip": clip, "effect": "crop", "param": "left", "value": pending_crop})).unwrap();
+            let due = FrameKey { revision: app.session.revision, ..completed };
+            assert!(due.revision > completed.revision);
+            ready(&app, completed);
+            assert!(!app.frames.is_ready(&due), "latest revision must remain unavailable for this control");
+            let absent = playing_recent(&app, due, None);
+            let (_, held) = cpu_texture(&mut app, &ctx, "program-progress", due, &[], absent, DisplayMode::Composite);
+            assert_eq!(held, Some(previous), "without a playback candidate the old texture stays put");
+            assert!(app.playback.playing);
+            let recent = playing_recent(&app, due, Some(play_direction(app.playback.speed)));
+            assert_eq!(recent, Some(completed), "completed older revision is eligible during playback");
+            let (texture, shown) = cpu_texture(&mut app, &ctx, "program-progress", due, &[], recent, DisplayMode::Composite);
+            assert!(texture.is_some());
+            assert_eq!(shown, Some(completed));
+            assert_eq!(app.texture_key("program-progress"), Some(completed));
+            assert!(completed.frame > previous.frame && completed.revision > previous.revision);
+            previous = completed;
+        }
+    }
+
+    #[test]
     fn button_editor_updates_visibility_without_affecting_other_monitor() {
         let mut program = crate::state::MonitorView::default().transport_hidden;
         let source = program.clone();
