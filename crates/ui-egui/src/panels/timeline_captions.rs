@@ -186,7 +186,6 @@ pub fn paint(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Re
 /// are on top).
 pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area: Rect, layout: &Layout) {
     let ctx = ui.ctx().clone();
-    let rate = seq.settings.frame_rate;
     let drag = drag_state(&ctx);
     let sel = app.session.state.caption_selection.clone();
     let mut actions: Vec<(String, Value)> = Vec::new();
@@ -200,7 +199,7 @@ pub fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, area:
             if app.ui.tool == Tool::Razor {
                 razor_block(app, ui, seq, layout, tr, c, r, row, &mut actions);
             } else {
-                interact_block(app, ui, tr, c, r, rate, &mut actions);
+                interact_block(app, ui, seq, layout, tr, c, r, &mut actions);
             }
         }
     }
@@ -248,13 +247,15 @@ fn razor_block(
 
 /// Handle one caption block: 5 px trim edges (capped at a quarter width), hover cursor, selection and double-click, and drag state; locked tracks are
 /// read-only.
+#[allow(clippy::too_many_arguments)]
 fn interact_block(
     app: &mut FilmcraftApp,
     ui: &mut egui::Ui,
+    seq: &Sequence,
+    layout: &Layout,
     tr: &CaptionTrack,
     c: &filmcraft_project::Caption,
     r: Rect,
-    rate: filmcraft_time::FrameRate,
     actions: &mut Vec<(String, Value)>,
 ) {
     let ctx = ui.ctx().clone();
@@ -292,7 +293,7 @@ fn interact_block(
     }
     // decide on what was under the pointer when the button went down, not where egui recognised
     // the drag (6 pt later, past the 5 px edge zones) (#259)
-    if resp.drag_started()
+    if resp.drag_started_by(egui::PointerButton::Primary)
         && let Some(p) = ctx.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
         let g = match gesture_at(p.x) {
@@ -315,7 +316,20 @@ fn interact_block(
         }
         let x0 = ctx.data(|d| d.get_temp::<f32>(egui::Id::unique("caption-drag-origin"))).unwrap_or(p.x);
         let pps = app.ui.timeline.pps;
-        let d = rate.snap_nearest(Tick::from_seconds_f64((p.x - x0) as f64 / pps));
+        let raw = seq.settings.frame_rate.snap_nearest(Tick::from_seconds_f64((p.x - x0) as f64 / pps));
+        // snap the edge(s) the gesture moves, as a clip drag does (#2192)
+        let snap = |app: &mut FilmcraftApp, edge: Tick, exclude: &[ClipId]| super::timeline::snap_caption(app, seq, layout, edge + raw, exclude) - edge;
+        let d = match g {
+            0 => {
+                // the captions that move are no targets, or a short drag would stick where it began
+                let sel = &app.session.state.caption_selection;
+                let moving = if sel.contains(&c.id) { sel.clone() } else { vec![c.id] };
+                let s = snap(app, c.start, &moving);
+                if s != raw { s } else { snap(app, c.end(), &moving) }
+            }
+            1 => snap(app, c.start, &[c.id]),
+            _ => snap(app, c.end(), &[c.id]),
+        };
         ctx.data_mut(|dd| dd.insert_temp(drag_id(), (id, g, d.0)));
     }
     if resp.drag_stopped()

@@ -14,13 +14,24 @@ pub fn sad(a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize) -> u32 
 /// SAD of a 16-wide block (fast path).
 #[inline]
 pub fn sad16(a: &[u8], sa: usize, b: &[u8], sb: usize, h: usize) -> u32 {
+    sad_n::<16>(a, sa, b, sb, h)
+}
+
+/// SAD of an 8-wide block (fast path).
+#[inline]
+pub fn sad8(a: &[u8], sa: usize, b: &[u8], sb: usize, h: usize) -> u32 {
+    sad_n::<8>(a, sa, b, sb, h)
+}
+
+#[inline(always)]
+fn sad_n<const N: usize>(a: &[u8], sa: usize, b: &[u8], sb: usize, h: usize) -> u32 {
     let mut s = 0u32;
     for r in 0..h {
-        let (Some(ra), Some(rb)) = (a.get(r * sa..).and_then(|x| x.first_chunk::<16>()), b.get(r * sb..).and_then(|x| x.first_chunk::<16>())) else {
+        let (Some(ra), Some(rb)) = (a.get(r * sa..).and_then(|x| x.first_chunk::<N>()), b.get(r * sb..).and_then(|x| x.first_chunk::<N>())) else {
             break;
         };
         let mut acc = 0u16;
-        for i in 0..16 {
+        for i in 0..N {
             acc += ra[i].abs_diff(rb[i]) as u16;
         }
         s += acc as u32;
