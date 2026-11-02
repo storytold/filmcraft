@@ -161,6 +161,18 @@ fn place_source_in_outside_the_clip_is_refused() {
     }
 }
 
+/// An item with no frames (an empty sequence) takes no `sourceIn`: frame 0 is already its end.
+#[test]
+fn place_source_in_on_an_item_with_no_frames_is_refused() {
+    let mut s = Session::default();
+    let empty = s.execute("file.newSequence", json!({"name":"Empty"})).unwrap()["sequence"].as_u64().unwrap();
+    s.execute("file.newSequence", json!({"name":"Main"})).unwrap();
+    let before = s.project.to_json();
+    let e = s.execute("timeline.place", json!({"item":empty,"track":"V1","time":0,"sourceIn":{"frame":0}})).unwrap_err();
+    assert!(matches!(&e, EngineError::BadParams { cmd, msg } if cmd == "timeline.place" && msg.contains("no frames")), "{e:?}");
+    assert_eq!(s.project.to_json(), before);
+}
+
 /// A `sourceIn` or `duration` that is neither ticks nor a time object (or is negative) is refused
 /// before anything changes, also when `track` or `audioTrack` is `"new"`: no new track, the same
 /// revision, and the redo history intact.
