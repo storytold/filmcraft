@@ -15,8 +15,13 @@ fn range(s: &Session, c: ClipId) -> (Tick, Tick) {
 /// Two consecutive 48-frame A/V clips that start at the first frame of their media, so neither
 /// has media before its In point (plenty after its Out point).
 fn no_head_handles(s: &mut Session) -> [(ClipId, ClipId); 2] {
+    no_head_handles_at(s, 23.976)
+}
+
+/// [`no_head_handles`] in a sequence at `fps`.
+fn no_head_handles_at(s: &mut Session, fps: f64) -> [(ClipId, ClipId); 2] {
     s.execute("file.openDemoProject", json!({})).unwrap();
-    s.execute("file.newSequence", json!({"name": "Handles", "video": 1, "audio": 1})).unwrap();
+    s.execute("file.newSequence", json!({"name": "Handles", "fps": fps, "video": 1, "audio": 1})).unwrap();
     let rate = s.sequence_rate();
     let item = s.project.items.values().find(|i| i.has_video() && i.has_audio() && i.as_media().is_some()).map(|i| i.id).unwrap();
     for n in 0..2 {
@@ -93,4 +98,19 @@ fn extend_edit_reports_the_edits_it_moved() {
     assert_eq!(r["applied"], json!([f(12).0, f(12).0]), "{r}");
     assert_eq!(r["short"], json!([]), "{r}");
     assert_eq!((range(&s, v0), range(&s, a0)), ((f(0), f(60)), (f(0), f(60))));
+}
+
+/// At a rate whose frame is not a whole number of ticks, the missing media is counted on the
+/// sequence's frame boundaries: dividing by the rounded-down frame length counted one too many.
+#[test]
+fn short_frames_follow_the_frame_boundaries_at_an_odd_rate() {
+    let mut s = Session::default();
+    let [(v0, _), (v1, a1)] = no_head_handles_at(&mut s, 37.516);
+    let rate = s.sequence_rate();
+    assert_ne!(rate.tick_of(1), rate.frame_duration(), "a frame is not a whole number of ticks");
+    let r = s.execute("timeline.roll", json!({"left": v0.0, "right": v1.0, "deltaFrames": -12})).unwrap();
+    assert_eq!(r["short"], json!([short(v1, "in", 12), short(a1, "in", 12)]), "{r}");
+    // a two-frame dissolve centred on the cut plays one frame before the right clip's In point
+    let r = s.execute("sequence.applyVideoTransition", json!({"clip": v1.0, "edge": "in", "frames": 2})).unwrap();
+    assert_eq!(r["short"], json!([short(v1, "in", 1)]), "{r}");
 }

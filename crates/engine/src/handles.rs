@@ -42,9 +42,11 @@ pub(crate) fn short(s: &Session, clip: ClipId, edge: Edge, need: Tick) -> Option
     if missing <= 0 {
         return None;
     }
-    let frame = q.settings.frame_rate.frame_duration().0.max(1);
+    // counted on the sequence's frame boundaries: at a rate whose frame is not a whole number of
+    // ticks (37.516 fps), `frame_duration` rounds down and dividing by it counts a frame too many
+    let frames = q.settings.frame_rate.frame_at(Tick(missing - 1)).saturating_add(1);
     let edge = if edge == Edge::In { "in" } else { "out" };
-    Some(json!({"clip": clip.0, "edge": edge, "shortByFrames": missing.saturating_add(frame - 1) / frame}))
+    Some(json!({"clip": clip.0, "edge": edge, "shortByFrames": frames}))
 }
 
 /// What moving the cut between `left` (ending there) and `right` (starting there) by `delta`
