@@ -1255,6 +1255,45 @@ fn auto_reframe_follows_the_subject() {
     assert_eq!(img.px, raw.px);
 }
 
+#[test]
+fn auto_reframe_keeps_letterbox_bars_out_of_the_frame() {
+    // a 2.4:1 picture (rows 12 to 77) letterboxed in 160 x 90, a bright disc right of centre
+    fn scope(x: f64, y: f64, _t: f64) -> [f32; 3] {
+        if !(12.0..78.0).contains(&y) {
+            return [0.0; 3];
+        }
+        if (x - 110.0).hypot(y - 45.0) < 10.0 { [0.8; 3] } else { [0.3; 3] }
+    }
+    // for a 9:16 sequence the frame shows the layer's centred 9:16 window, columns 55 to 105
+    let env = ClipEnv { w: 160, h: 90, fps: 24.0, secs: 1.0, now: 0.5, key: 0xBA55, seq: (90, 160), pic: scope };
+    let mut img = env.render(0.5, 1.0);
+    crate::effects::apply(&mut img, &inst("auto_reframe"), &FxCtx { seconds: 0.5, env: Some(&env), ..cx() });
+    for y in 0..90 {
+        for x in 56..104 {
+            assert!(img.get(x, y)[0] > 0.2, "black at ({x}, {y})");
+        }
+    }
+}
+
+#[test]
+fn the_active_picture_is_inside_bars_on_both_sides_only() {
+    fn pillarbox(x: f64, _y: f64, _t: f64) -> [f32; 3] {
+        if (40.0..120.0).contains(&x) { [0.3; 3] } else { [0.0; 3] }
+    }
+    fn dark_top(_x: f64, y: f64, _t: f64) -> [f32; 3] {
+        if y < 30.0 { [0.0; 3] } else { [0.3; 3] }
+    }
+    fn black(_x: f64, _y: f64, _t: f64) -> [f32; 3] {
+        [0.0; 3]
+    }
+    let active = |key, pic| temporal::active_picture(&ClipEnv { w: 160, h: 90, fps: 24.0, secs: 1.0, now: 0.0, key, seq: (90, 160), pic }, 0.0);
+    // 4:3 in 16:9: columns 40 to 119, and one more on each side
+    assert_eq!(active(0xBA56, pillarbox), [41.0 / 160.0, 0.0, 1.0 - 41.0 / 160.0, 1.0]);
+    // black on one side only (a night sky) and a black clip have no bars
+    assert_eq!(active(0xBA57, dark_top), [0.0, 0.0, 1.0, 1.0]);
+    assert_eq!(active(0xBA58, black), [0.0, 0.0, 1.0, 1.0]);
+}
+
 // ------------------------------------------------------------------ through the compositor
 
 mod pipeline {
