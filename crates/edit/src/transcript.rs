@@ -71,8 +71,11 @@ pub fn sequence_words(seq: &Sequence, transcripts: &Transcripts) -> Vec<SeqWord>
             }
             let Some(tr) = transcripts.get(&it.item) else { continue };
             mine.push(it.range());
-            let speed = it.speed;
-            let media_end = it.source_in + ticks(it.duration.0 as f64 * speed);
+            // word times are media times; the clip's playback maps them to sequence time. A Time
+            // Remapping curve makes that mapping non-linear — the rate at the clip's In point
+            // stands for the whole clip, and the media end is the curve's far end
+            let speed = it.remap_speed_at(Tick::ZERO).max(1e-6);
+            let media_end = it.source_out();
             let to_tl = |m: Tick| it.start + ticks((m - it.source_in).0 as f64 / speed);
             for wi in tr.words_in(TimeRange::from_bounds(it.source_in, media_end.max(it.source_in))) {
                 let w = &tr.words[wi];

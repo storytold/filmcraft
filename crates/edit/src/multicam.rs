@@ -153,9 +153,10 @@ pub fn record(seq: &mut Sequence, tracks: &[TrackId], source: ItemId, cuts: &[Cu
 /// The clips a multi-camera (or any nested) clip shows, as track items of the outer sequence:
 /// the parts of `source_track`'s items inside the clip's source range, moved to timeline time.
 /// Inner links are remapped through `links` (so a flattened video/audio pair stays linked).
-/// Fails for clips with a speed change, reverse or frame hold (no exact flattening).
+/// Fails for clips with a speed change (Speed/Duration or an animated Time Remapping curve),
+/// reverse or frame hold (no exact flattening).
 pub fn flatten_items(outer: &TrackItem, source_track: &Track, ctx: &mut EditCtx, links: &mut HashMap<u64, u64>) -> Result<Vec<TrackItem>> {
-    if (outer.speed - 1.0).abs() > 1e-9 || outer.reverse || outer.frame_hold.is_some() {
+    if (outer.speed - 1.0).abs() > 1e-9 || outer.time_remap_speed().is_some() || outer.reverse || outer.frame_hold.is_some() {
         return Err(EditError::Other("can't flatten a clip with a speed change, reverse or frame hold".into()));
     }
     let (s0, s1) = (outer.source_in, outer.source_out());
@@ -164,7 +165,14 @@ pub fn flatten_items(outer: &TrackItem, source_track: &Track, ctx: &mut EditCtx,
         let mut it = ni.clone();
         if it.start < s0 {
             let cut = s0 - it.start;
-            it.source_in += Tick((cut.0 as f64 * it.speed.abs()).round() as i64);
+            // the inner piece's media skips what its own Time Remapping curve consumes over the cut
+            it.source_in += it.media_span(Tick::ZERO, cut);
+            // its timeline restarts at the cut, so its curve shifts with the content
+            if let Some(p) = it.effect_mut("time_remap").and_then(|e| e.param_mut("speed")) {
+                for k in &mut p.keyframes {
+                    k.time -= cut;
+                }
+            }
             it.duration -= cut;
             it.start = s0;
         }

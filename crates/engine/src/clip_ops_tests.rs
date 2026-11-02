@@ -1371,3 +1371,28 @@ fn rename_takes_several_clips() {
     s.execute("clip.rename", json!({"clips": ids, "name": "Both"})).unwrap();
     assert_eq!(s.history.undo.len(), undo);
 }
+
+/// A Time Remapping speed change retakes the clip's length: at one constant rate the clip ends
+/// where its media ends, instead of holding a still frame past it.
+#[test]
+fn a_time_remap_speed_change_retakes_the_clips_length() {
+    let mut s = demo();
+    let c = v1(&s)[0].clone();
+    let span = c.source_out() - c.source_in;
+    // Effect Controls: the stopwatch goes on (one keyframe at the playhead) and the speed doubles
+    s.execute(
+        "effects.setParam",
+        json!({"clip": c.id.0, "effect": "time_remap", "param": "speed", "value": 200.0, "keyframe": true, "time": c.start.0}),
+    )
+    .unwrap();
+    let it = clip(&s, c.id.0);
+    assert!(it.effect("time_remap").unwrap().param("speed").unwrap().is_animated());
+    let halved = Tick((span.0 as f64 / 2.0).round() as i64);
+    assert_eq!(it.duration, halved, "200% consumes the media in half the timeline");
+    assert_eq!(it.source_out() - it.source_in, span, "the same media, no frozen frame past it");
+    // the retaken length is one undo step with the parameter
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(clip(&s, c.id.0).duration, c.duration);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(clip(&s, c.id.0).duration, halved);
+}

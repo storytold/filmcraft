@@ -152,7 +152,8 @@ pub(crate) fn effect_rows(
             continue;
         }
         for pd in defs {
-            crate::panels::effect_controls::param_row(app, ui, body, clip, idx, e, Some(k), pd, mt, actions, lane, lx, it, keys);
+            // mask params always key on media time, so the clip-relative `pt` argument is unused here
+            crate::panels::effect_controls::param_row(app, ui, body, clip, idx, e, Some(k), pd, mt, actions, lane, lx, it, keys, mt);
             if pd.id != "path"
                 && app.ui.expanded_fx.contains(&crate::panels::effect_controls::graph_key(clip, idx, &format!("mask{k}.{}", pd.id)))
                 && let Some(param) = m.param(pd.id)
