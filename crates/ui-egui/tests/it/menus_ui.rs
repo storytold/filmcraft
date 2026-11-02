@@ -121,6 +121,33 @@ fn menu_items_toggles_and_help() {
     assert_eq!(d.call("ui.menu.invoke", json!({"id": "file.importFromMediaBrowser"}))["ok"], false);
 }
 
+/// #2623: the engine's on/off commands in the Sequence and Markers menus show their state, so
+/// choosing one visibly turns it on or off.
+#[test]
+fn engine_toggles_show_their_checkmark() {
+    let mut d = Driver::new();
+    let checked = |d: &mut Driver, id: &str| {
+        let menus = d.ok("ui.menu.list", json!({}));
+        menus.as_array().unwrap().iter().find(|m| m["id"] == id).unwrap_or_else(|| panic!("{id} not in menus"))["checked"].clone()
+    };
+    for (id, on) in [
+        ("sequence.snap", true),
+        ("sequence.linkedSelection", true),
+        ("sequence.selectionFollowsPlayhead", false),
+        ("sequence.showThroughEdits", false),
+        ("markers.rippleSequenceMarkers", false),
+        ("markers.copyPasteIncludesSequenceMarkers", false),
+    ] {
+        assert_eq!(checked(&mut d, id), json!(on), "{id} before");
+        d.menu(id);
+        assert_eq!(checked(&mut d, id), json!(!on), "{id} after choosing it");
+    }
+    assert!(d.app().session.state.ripple_sequence_markers);
+    d.menu("markers.rippleSequenceMarkers");
+    assert_eq!(checked(&mut d, "markers.rippleSequenceMarkers"), json!(false));
+    assert!(!d.app().session.state.ripple_sequence_markers);
+}
+
 #[test]
 fn import_image_sequence_from_the_file_menu_and_media_browser() {
     let dir = std::env::temp_dir().join(format!("fc-ui-imgseq-{}", std::process::id()));
@@ -363,6 +390,27 @@ fn saved_projects_are_listed_in_home_and_open_recent() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn saving_the_project_says_where_in_the_status_bar() {
+    let dir = std::env::temp_dir().join(format!("fc-ui-saved-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut d = Driver::new();
+    let status = |d: &mut Driver| d.app().ui.status.clone();
+    let first = dir.join("first.fcproj").to_string_lossy().to_string();
+    d.ok("ui.menu.invoke", json!({"id": "file.saveAs", "params": {"path": first}}));
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    d.app().ui.status.clear();
+    d.menu("file.save");
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    d.app().ui.status.clear();
+    d.menu("file.saveAll");
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    let copy = dir.join("copy.fcproj").to_string_lossy().to_string();
+    d.ok("ui.menu.invoke", json!({"id": "file.saveCopy", "params": {"path": copy}}));
+    assert_eq!(status(&mut d), format!("Copy of the project saved to {copy}"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Home (the header's Home button): New Project and Open, the size cards, and the Community
 /// links. A size card adds a sequence of that size to the open project and goes to Edit, so the
 /// project's work is kept; New Project starts an empty one in Edit.
@@ -496,17 +544,17 @@ fn home_asks_to_save_changes_before_replacing_the_project() {
     d.click("header.home");
     let rows = d.ok("ui.elements", json!({"prefix": "home.recent."}));
     let row_a = rows.as_array().unwrap().iter().find(|e| e["label"] == "a.fcproj").unwrap()["id"].as_str().unwrap().to_string();
-    // Cancel: nothing happens
+    // Cancel: nothing happens (opening a project asks with upstream's Open prompt, #3843)
     d.click(&row_a);
-    assert!(d.has("closeProject.cancel"), "Save / Don't Save / Cancel is asked");
+    assert!(d.has("openProject.cancel"), "Save / Don't Save / Cancel is asked");
     assert_eq!(d.app().session.path.as_deref(), Some(b.as_str()));
-    d.click("closeProject.cancel");
+    d.click("openProject.cancel");
     assert_eq!(d.app().session.path.as_deref(), Some(b.as_str()));
     assert!(d.app().session.is_dirty(), "the changes are still there");
     assert_eq!(d.app().ui.mode, Mode::Home);
     // Don't Save: the chosen project opens, in Edit
     d.click(&row_a);
-    d.click("closeProject.dontSave");
+    d.click("openProject.dontSave");
     assert_eq!(d.app().session.path.as_deref(), Some(a.as_str()));
     assert!(!d.app().session.is_dirty());
     assert_eq!(d.app().ui.mode, Mode::Edit);

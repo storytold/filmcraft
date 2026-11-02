@@ -250,3 +250,47 @@ fn the_divider_beside_tools_moves_both_ways() {
     let narrower = width(&h);
     assert!(narrower <= wider - 100.0, "Tools narrowed only from {wider} to {narrower}");
 }
+
+fn drag_with(h: &mut Harness<'_, FilmcraftApp>, button: PointerButton, from: egui::Pos2, to: egui::Pos2) {
+    h.event(Event::PointerMoved(from));
+    step(h);
+    h.event(Event::PointerButton { pos: from, button, pressed: true, modifiers: Modifiers::NONE });
+    step(h);
+    for fraction in [0.05, 0.25, 0.5, 0.75, 1.0] {
+        h.event(Event::PointerMoved(from.lerp(to, fraction)));
+        step(h);
+    }
+    h.event(Event::PointerButton { pos: to, button, pressed: false, modifiers: Modifiers::NONE });
+    frames(h, 4);
+}
+
+/// Only the primary button moves a panel or resizes a floating one: a right-button drag on a
+/// panel's grip or on a floating panel's corner changes nothing, a left-button one does.
+#[test]
+fn only_a_left_button_drag_moves_or_resizes_a_panel() {
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).unwrap();
+    let app = FilmcraftApp::new(session);
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_max_steps(10_000).build_eframe(move |_| app);
+    frames(&mut h, 4);
+    let center = |h: &Harness<'_, FilmcraftApp>, id: &str| {
+        let r = h.state().auto.find(id).unwrap_or_else(|| panic!("{id} is missing")).rect;
+        pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+    };
+    let before = h.state().ui.dock.clone();
+    let (grip, target) = (center(&h, "panel.drag.Tools"), center(&h, "panel.Program"));
+    drag_with(&mut h, PointerButton::Secondary, grip, target);
+    assert_eq!(h.state().ui.dock, before, "a right-button drag on a grip moved the panel");
+    drag_with(&mut h, PointerButton::Primary, grip, target);
+    assert_ne!(h.state().ui.dock, before, "a left-button drag on a grip did not move the panel");
+
+    let ctx = h.ctx.clone();
+    filmcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
+    frames(&mut h, 4);
+    let floated = h.state().ui.dock.floating[0].rect;
+    let corner = center(&h, "panel.float.0.resize");
+    drag_with(&mut h, PointerButton::Secondary, corner, corner + vec2(36.0, 24.0));
+    assert_eq!(h.state().ui.dock.floating[0].rect, floated, "a right-button drag on the corner resized the window");
+    drag_with(&mut h, PointerButton::Primary, corner, corner + vec2(36.0, 24.0));
+    assert_ne!(h.state().ui.dock.floating[0].rect, floated, "a left-button drag on the corner left the window as it was");
+}

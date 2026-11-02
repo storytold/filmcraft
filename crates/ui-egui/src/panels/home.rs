@@ -75,7 +75,9 @@ fn existing_recent(app: &mut FilmcraftApp) -> Vec<String> {
 /// the action after Save or Don't Save. The editor replaces Home once the new project is open
 /// (`Event::ProjectOpened`).
 fn replace_project(app: &mut FilmcraftApp, ctx: &egui::Context, cmd: &str, params: serde_json::Value) {
-    if crate::panels::clip_dialogs::ask_to_save_before(app, cmd, &params) {
+    // `file.open` asks by itself once it has a path (`clip_dialogs::ask_before_open`), keeping
+    // the current project if the chosen one fails to open
+    if cmd != "file.open" && crate::panels::clip_dialogs::ask_to_save_before(app, cmd, &params) {
         return;
     }
     if let Err(e) = crate::menus::invoke(app, ctx, cmd, params) {
