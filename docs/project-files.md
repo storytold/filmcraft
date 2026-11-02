@@ -102,6 +102,10 @@ Every write of a project file, auto-save, recovery snapshot or preferences file 
 A crash, `kill -9` or power cut at any point leaves either the complete old file or the complete new
 one. If a step fails, the temp file is removed and the old file is untouched.
 
+Atomic writes keep the file whole, but they don't merge: of two sessions that opened the same project,
+the one that saves last replaces what the other saved. `filmcraft-cli --save` runs take turns on a lock
+to avoid that ([agents.md](agents.md)); the desktop app and `mcp` sessions don't.
+
 ## Commands
 
 | Id | Menu | |

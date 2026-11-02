@@ -249,6 +249,14 @@ strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 (`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.
 `--save` writes back to `--project`; `--save-as path` writes elsewhere.
 
+Runs that save over the project they opened take turns, so parallel scripts don't lose edits. Each
+holds an OS lock on `.<name>.lock` next to the project from before it reads the file until it exits;
+the next one says so on stderr, waits, and then edits what the first one saved. A crash releases the
+lock, and the empty file left behind is harmless. Only these CLI runs take the lock: the desktop app,
+`mcp`, and a `file.save` line in a script run without `--save` don't. OS locks can also be unreliable
+over network shares and synced folders. If the lock can't be taken, the run warns on stderr and
+saves anyway.
+
 Media that is offline when it is needed (the file is missing, was made offline, or can't be read)
 renders as the "media not found" placeholder. `export` and `render` then name each such item on
 stderr (`item 8 a.mp4 (missing): /path/a.mp4`) and exit 1 after writing the output, so a moved or

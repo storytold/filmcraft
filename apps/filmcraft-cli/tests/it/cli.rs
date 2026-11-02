@@ -97,6 +97,129 @@ fn exec_inspect_and_describe() {
     assert_eq!(bad.status.code(), Some(1));
 }
 
+/// A project in a new folder of its own.
+fn lock_test_project(tag: &str) -> (std::path::PathBuf, String) {
+    let dir = std::env::temp_dir().join(format!("fc-cli-lock-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let proj = dir.join("p.fcproj").to_str().unwrap().to_string();
+    json_out(&cli(&["--demo", "--save-as", &proj, "exec", "file.newBin", "name=start"]));
+    (dir, proj)
+}
+
+/// The project's lock, held by this process.
+fn hold_lock(dir: &std::path::Path) -> std::fs::File {
+    let lock = std::fs::File::options().create(true).truncate(false).read(true).write(true).open(dir.join(".p.fcproj.lock")).unwrap();
+    lock.lock().unwrap();
+    lock
+}
+
+#[test]
+fn parallel_saves_keep_every_edit() {
+    let (dir, proj) = lock_test_project("parallel");
+    let names = |writer: usize| (0..300).map(move |i| format!("edit-{writer}-{i}"));
+    let mut writers: Vec<_> = (0..4)
+        .map(|_| {
+            Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
+                .args(["--project", &proj, "--save", "run", "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    // Each writer reads its whole script before it opens the project, so closing the stdins together
+    // starts all the edits at once, and long scripts keep each read-to-save span over the others.
+    for (n, writer) in writers.iter_mut().enumerate() {
+        let script: String = names(n).map(|name| format!("{}\n", json!({"id": "file.newBin", "params": {"name": name}}))).collect();
+        writer.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+    }
+    for mut writer in writers {
+        assert!(writer.wait().unwrap().success());
+    }
+    let tree = json_out(&cli(&["--project", &proj, "inspect", "project"])).to_string();
+    let lost: Vec<String> = (0..4).flat_map(names).filter(|name| !tree.contains(&format!("\"{name}\""))).collect();
+    assert!(lost.is_empty(), "lost {} edits: {lost:?}", lost.len());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_save_in_place_waits_for_the_lock_then_edits_the_latest_project() {
+    use std::io::BufRead;
+    let (dir, proj) = lock_test_project("wait");
+    for save in [&["--save"][..], &["--save-as", proj.as_str()]] {
+        let held = hold_lock(&dir);
+        let before = std::fs::read(&proj).unwrap();
+        let name = format!("name=waited-{}", save.len());
+        let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
+            .args(["--project", &proj])
+            .args(save)
+            .args(["exec", "file.newBin", &name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
+        let mut line = String::new();
+        stderr.read_line(&mut line).unwrap();
+        assert!(line.contains("waiting for another run saving"), "{save:?}: {line}");
+        assert_eq!(std::fs::read(&proj).unwrap(), before, "{save:?} wrote while another run held the lock");
+        assert!(child.try_wait().unwrap().is_none(), "{save:?} did not wait");
+        // an edit made meanwhile by the holder must survive: the waiter reads only after the lock is free
+        json_out(&cli(&["--project", &proj, "--save-as", &format!("{proj}.tmp"), "exec", "file.newBin", &format!("name=held-{}", save.len())]));
+        std::fs::rename(format!("{proj}.tmp"), &proj).unwrap();
+        drop(held);
+        assert!(child.wait().unwrap().success(), "{save:?}");
+        let tree = json_out(&cli(&["--project", &proj, "inspect", "project"])).to_string();
+        for want in [format!("waited-{}", save.len()), format!("held-{}", save.len())] {
+            assert!(tree.contains(&want), "{save:?} lost {want}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn runs_that_do_not_save_in_place_ignore_the_lock() {
+    let (dir, proj) = lock_test_project("ignore");
+    let other = dir.join("other.fcproj").to_str().unwrap().to_string();
+    let _held = hold_lock(&dir);
+    let cases: [&[&str]; 3] = [
+        &["--project", &proj, "inspect", "project"],
+        &["--project", &proj, "exec", "file.newBin", "name=copy-only"],
+        &["--project", &proj, "--save-as", &other, "exec", "file.newBin", "name=copy-only"],
+    ];
+    for args in cases {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                panic!("{args:?} is waiting for a lock it doesn't need");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(status.success(), "{args:?}");
+    }
+    assert!(!std::fs::read_to_string(&proj).unwrap().contains("\"copy-only\""));
+    assert!(std::fs::read_to_string(&other).unwrap().contains("\"copy-only\""));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_missing_project_gets_no_lock_file_and_keeps_its_error() {
+    let (dir, _) = lock_test_project("missing");
+    let gone = dir.join("gone.fcproj").to_str().unwrap().to_string();
+    let o = cli(&["--project", &gone, "--save", "exec", "file.newBin", "name=copy-only"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("gone.fcproj"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!dir.join(".gone.fcproj.lock").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn exec_save_as_then_reopen() {
     let dir = std::env::temp_dir().join(format!("fc-cli-{}", std::process::id()));
