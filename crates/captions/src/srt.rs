@@ -84,7 +84,8 @@ pub fn write(doc: &Document) -> String {
         out.push_str(&format!("{}\n{} --> {}\n", n + 1, format_clock(c.start, ','), format_clock(c.end, ',')));
         // blank lines inside text would end the cue: drop them
         for l in c.text.lines().filter(|l| !l.trim().is_empty()) {
-            out.push_str(l);
+            // SRT has tags but no entities: a stored `&lt;` or `&amp;` is its character
+            out.push_str(&filmcraft_project::caption::decode_entities(l));
             out.push('\n');
         }
         out.push('\n');
@@ -99,6 +100,13 @@ mod tests {
 
     fn ms(v: i64) -> Tick {
         Tick(v * TICKS_PER_MS)
+    }
+
+    #[test]
+    fn entities_are_written_as_their_characters() {
+        let mut d = Document::default();
+        d.cues.push(Cue { start: Tick(TICKS_PER_MS * 1000), end: Tick(TICKS_PER_MS * 2000), text: "1 &lt; 2 &amp; <i>x</i>".into(), ..Default::default() });
+        assert_eq!(write(&d), "1\n00:00:01,000 --> 00:00:02,000\n1 < 2 & <i>x</i>\n\n");
     }
 
     #[test]

@@ -236,10 +236,15 @@ fn encode_text(text: &str) -> Vec<u8> {
                 continue;
             }
         }
+        if let Some((decoded, len)) = filmcraft_project::caption::entity_at(rest) {
+            out.extend(encode_6937(decoded).unwrap_or_else(|| vec![b'?']));
+            rest = &rest[len..];
+            continue;
+        }
         if is_tag_start && !rest.contains('>') {
             // This cannot become markup later.  Encode the remaining literal text in one pass
             // instead of searching the shrinking suffix after every opening bracket.
-            for ch in rest.chars() {
+            for ch in filmcraft_project::caption::decode_entities(rest).chars() {
                 if ch == '\n' {
                     out.push(0x8a);
                 } else {
@@ -531,6 +536,14 @@ mod tests {
         // Recognized styling still becomes STL control bytes.
         assert_eq!(encode_text("<i>Hi</i>"), vec![0x80, b'H', b'i', 0x81]);
         assert_eq!(encode_text("<i >Hi</i >"), vec![0x80, b'H', b'i', 0x81]);
+    }
+
+    #[test]
+    fn entities_are_encoded_as_their_characters() {
+        // a stored `&lt;` is the character, not an entity spelled out; the tag beside it stays a tag
+        assert_eq!(encode_text("1 &lt; 2 &amp; <i>x</i>"), encode_text("1 < 2 & <i>x</i>"));
+        assert_eq!(encode_text("x &lt;y> z"), b"x <y> z".to_vec(), "a decoded bracket is text, not a tag");
+        assert_eq!(encode_text("a &lt;b"), encode_text("a <b"));
     }
 
     #[test]

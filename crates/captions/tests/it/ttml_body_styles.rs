@@ -1,5 +1,6 @@
 //! TTML body styles reach caption paragraphs; timed spans, whitespace, and nested cue content retain their styles.
 
+use filmcraft_captions::ttml::{Flavor, write};
 use filmcraft_captions::{Format, parse};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
@@ -204,29 +205,52 @@ fn deeply_nested_inline_styles_respect_the_xml_depth_limit() {
     }
 }
 
-/// A cue whose text holds a literal `<` or `>` keeps its words: styled, the bracket would read as
-/// a tag downstream (plain text, burn-in and export cut at the next `>`), so the inherited style
-/// is dropped for that cue and the text survives every path unchanged.
+/// A literal `<` in cue text is kept as `&lt;`, the way a VTT import keeps its entities, so the
+/// style tags around it stay tags and plain text (burn-in, export) decodes the bracket instead of
+/// cutting at it; a `>` starts no tag and stays literal.
 #[test]
-fn literal_brackets_keep_their_words_instead_of_their_style() {
-    for (xml, want) in [
+fn literal_brackets_keep_their_words_and_their_style() {
+    for (xml, stored, plain) in [
         (
             r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><body tts:fontStyle="italic"><div><p begin="1s" end="2s">1 &lt; 2</p></div></body></tt>"#,
+            "<i>1 &lt; 2</i>",
             "1 < 2",
         ),
         (
             r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><body><div><p begin="1s" end="2s">a <span tts:fontWeight="bold">b &gt; c</span> d</p></div></body></tt>"#,
+            "a <b>b > c</b> d",
             "a b > c d",
+        ),
+        (
+            r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><body><div><p begin="1s" end="2s">Use &lt;<span tts:fontWeight="bold">input</span>&gt;</p></div></body></tt>"#,
+            "Use &lt;<b>input</b>>",
+            "Use <input>",
+        ),
+        (
+            r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><body tts:fontStyle="italic"><div><p begin="1s" end="2s">2 &lt; 3 &gt; 1</p></div></body></tt>"#,
+            "<i>2 &lt; 3 > 1</i>",
+            "2 < 3 > 1",
+        ),
+        (
+            // a literal "&lt;" in the source text (an escaped ampersand) stays distinct from `<`
+            r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><body><div><p begin="1s" end="2s">Type &lt; and &amp;lt;</p></div></body></tt>"#,
+            "Type &lt; and &amp;lt;",
+            "Type < and &lt;",
         ),
     ] {
         let text = caption(xml, Format::Ttml);
-        assert_eq!(text, want);
-        assert_eq!(filmcraft_project::caption::plain_text(&text), want);
+        assert_eq!(text, stored);
+        assert_eq!(filmcraft_project::caption::plain_text(&text), plain);
+        // written back out, the XML text is the source text escaped once (not the stored entity
+        // escaped again), and imported again, in both flavours, the cue reads the same
+        let doc = parse(xml.as_bytes(), Format::Ttml).unwrap();
+        for flavor in [Flavor::Imsc1, Flavor::Dfxp] {
+            let again = write(&doc, flavor, None, "en");
+            assert!(!again.contains("&amp;lt;") || stored.contains("&amp;lt;"), "{flavor:?}: {again}");
+            if stored == "<i>1 &lt; 2</i>" {
+                assert!(again.contains(">1 &lt; 2<"), "{flavor:?}: {again}");
+            }
+            assert_eq!(caption(&again, Format::Ttml), stored, "{flavor:?}: {again}");
+        }
     }
-    // a styled cue without brackets keeps its tags
-    let styled = caption(
-        r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling"><body tts:fontStyle="italic"><div><p begin="1s" end="2s">1 then 2</p></div></body></tt>"#,
-        Format::Ttml,
-    );
-    assert_eq!(styled, "<i>1 then 2</i>");
 }

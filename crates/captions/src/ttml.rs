@@ -177,6 +177,12 @@ fn inline(text: &str) -> String {
         }
         let Some(ch) = rest.chars().next() else { break };
         sync(&mut out, &active, &mut emitted);
+        // a stored entity is the character it names, escaped once for XML (not its `&` again)
+        if let Some((decoded, len)) = filmcraft_project::caption::entity_at(rest) {
+            out.push_str(&esc(&decoded.to_string()));
+            rest = &rest[len..];
+            continue;
+        }
         if ch == '\n' {
             out.push_str("<br/>");
         } else {
@@ -598,11 +604,6 @@ struct Out {
     has_text: bool,
     breaks: Vec<Fmt>,
     tags: Vec<&'static str>,
-    /// The text holds a literal `<` or `>`. Caption text has no escape for them, so a cue
-    /// wrapped in style tags would lose them to tag parsing; such a cue keeps its text plain.
-    literal_brackets: bool,
-    /// Emit no tags at all (the second pass over a cue with literal brackets).
-    plain: bool,
 }
 
 impl Out {
@@ -627,9 +628,6 @@ impl Out {
 
     /// Keep the common tag prefix open and close removed tags in reverse order to preserve nesting.
     fn set_fmt(&mut self, fmt: Fmt) {
-        if self.plain {
-            return;
-        }
         let tags = [(fmt.italic, "i"), (fmt.bold, "b"), (fmt.underline, "u")].into_iter().filter(|x| x.0).map(|x| x.1);
         let common = self.tags.iter().copied().zip(tags.clone()).take_while(|(a, b)| a == b).count();
         for t in self.tags.iter().skip(common).rev() {
@@ -649,16 +647,26 @@ fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, FmtSpe
     let mut pending = vec![(n, fmt)];
     while let Some((node, fmt)) = pending.pop() {
         if node.is_text() {
-            for ch in node.text().unwrap_or("").chars() {
+            let mut rest = node.text().unwrap_or("");
+            while let Some(ch) = rest.chars().next() {
                 if is_xml_space(ch) {
                     out.pending.get_or_insert(fmt);
                 } else {
                     out.flush();
                     out.set_fmt(fmt);
-                    out.s.push(ch);
+                    // Cue text carries its own `<i>`/`<b>`/`<u>` tags, so a literal `<` is kept
+                    // as `&lt;` (as a VTT import keeps its entities), and a literal `&` that would
+                    // read as an entity ("&lt;" typed as text) as `&amp;`, so the two stay
+                    // distinct; plain text, burn-in and the exporters decode them. Any other `&`,
+                    // and a `>`, start nothing and stay as they are.
+                    match ch {
+                        '<' => out.s.push_str("&lt;"),
+                        '&' if filmcraft_project::caption::entity_at(rest).is_some() => out.s.push_str("&amp;"),
+                        _ => out.s.push(ch),
+                    }
                     out.has_text = true;
-                    out.literal_brackets |= matches!(ch, '<' | '>');
                 }
+                rest = &rest[ch.len_utf8()..];
             }
         } else if node.is_element() {
             if node.tag_name().name() == "br" {
@@ -682,18 +690,10 @@ fn is_xml_space(ch: char) -> bool {
 
 /// Defer root tags until visible text so styled cues retain formatting while empty cues stay empty.
 fn cue_text(n: roxmltree::Node, styles: &std::collections::HashMap<String, FmtSpec>, fmt: Fmt) -> String {
-    let mut o = Out { s: String::new(), pending: None, has_text: false, breaks: Vec::new(), tags: Vec::new(), literal_brackets: false, plain: false };
+    let mut o = Out { s: String::new(), pending: None, has_text: false, breaks: Vec::new(), tags: Vec::new() };
     collect(n, styles, fmt, &mut o);
     o.set_fmt(Fmt::default());
-    if !o.literal_brackets {
-        return o.s;
-    }
-    // Styled text around a literal bracket reads as broken markup downstream (plain text, burn-in
-    // and export cut at the next `>`), which loses words. The cue keeps its words and drops its
-    // styling instead.
-    let mut plain = Out { s: String::new(), pending: None, has_text: false, breaks: Vec::new(), tags: Vec::new(), literal_brackets: false, plain: true };
-    collect(n, styles, fmt, &mut plain);
-    plain.s
+    o.s
 }
 
 pub fn parse(text: &str) -> Result<Document> {
