@@ -254,3 +254,24 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
     assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
 }
+
+#[test]
+fn lumetri_add_point_command_exists() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    // Verify command is registered.
+    assert!(crate::commands::find("lumetri.addPoint").is_some(), "lumetri.addPoint must be registered");
+    let r = s.execute("lumetri.addPoint", serde_json::json!({"clip": clip.0, "curve": "curve_luma", "x": 0.3, "y": 0.4})).unwrap();
+    assert_eq!(r["curve"], "curve_luma");
+    let q = s.active_sequence().unwrap();
+    let (_, it) = q.find_item(clip).unwrap();
+    let e = it.effects.iter().find(|e| e.effect == "lumetri").unwrap();
+    if let Some(filmcraft_project::ParamValue::Curve(pts)) = e.param("curve_luma").map(|v| &v.value) {
+        assert!(
+            pts.iter().any(|pt| (pt[0] - 0.3_f32).abs() < 0.001 && (pt[1] - 0.4_f32).abs() < 0.001),
+            "added point [0.3, 0.4] must be in curve_luma; got {pts:?}"
+        );
+    } else {
+        panic!("curve_luma must be a Curve param after adding a point");
+    }
+}

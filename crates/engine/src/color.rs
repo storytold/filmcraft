@@ -80,6 +80,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             has_seq,
             set_section,
         ),
+        spec(
+            "lumetri.addPoint",
+            "Add Curve Control Point",
+            &[],
+            r#"{"clip":id?,"curve":"curve_luma"|"curve_red"|"curve_green"|"curve_blue"|"hsl_hue_hue"|"hsl_hue_sat"|"hsl_hue_luma"|"hsl_sat_sat"|"hsl_luma_sat","x":f,"y":f}"#,
+            has_seq,
+            add_curve_point,
+        ),
     ]
 }
 
@@ -491,4 +499,26 @@ fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
         "lightness": m.lightness, "saturation": m.saturation,
         "distanceBefore": m.before, "distanceAfter": m.after,
     }))
+}
+
+fn add_curve_point(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "lumetri.addPoint";
+    let (clip, idx) = lumetri_clip(s, p, cmd)?;
+    let curve_name = str_p(p, "curve").ok_or_else(|| bad(cmd, "missing curve parameter"))?;
+    let x = p.get("x").and_then(Value::as_f64).ok_or_else(|| bad(cmd, "missing x parameter"))? as f32;
+    let y = p.get("y").and_then(Value::as_f64).ok_or_else(|| bad(cmd, "missing y parameter"))? as f32;
+    let x = x.clamp(0.0, 1.0);
+    let y = y.clamp(0.0, 1.0);
+    let curve_name = curve_name.to_string();
+    let pts = {
+        let q = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
+        let (_, it) = q.find_item(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        let e = it.effects.get(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
+        if let Some(filmcraft_project::ParamValue::Curve(c)) = e.param(&curve_name).map(|v| &v.value) { c.clone() } else { vec![[0.0_f32, 0.0], [1.0, 1.0]] }
+    };
+    let mut pts = pts;
+    pts.push([x, y]);
+    pts.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal));
+    set_lumetri_param(s, clip, idx, &curve_name, filmcraft_project::ParamValue::Curve(pts), "Add Curve Point")?;
+    Ok(serde_json::json!({"clip": clip.0, "curve": curve_name, "x": x, "y": y}))
 }
