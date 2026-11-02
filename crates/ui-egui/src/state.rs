@@ -204,6 +204,9 @@ pub struct TimelineView {
     /// Follow during playback (page scroll).
     pub follow: bool,
     pub fit_pending: bool,
+    /// Show video and audio tracks in merged combined lanes.
+    #[serde(default)]
+    pub combined_av_lanes: bool,
     /// The playhead the view last saw: a jump while stopped (Home, End, edit points) scrolls to it.
     #[serde(skip)]
     pub seen_playhead: Option<(filmcraft_project::ItemId, f64)>,
@@ -242,6 +245,7 @@ impl Default for TimelineView {
             show_waveforms: true,
             show_video_names: true,
             show_audio_names: true,
+            combined_av_lanes: false,
             follow: true,
             fit_pending: true,
             seen_playhead: None,
@@ -1063,5 +1067,33 @@ impl Default for UiState {
             project_panel: Default::default(),
             media_browser: Default::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #2584: `combined_av_lanes` field round-trips through serde JSON; an old workspace state
+    /// file without the field deserialises to the default (false).
+    #[test]
+    fn combined_av_lanes_field_persists_in_serde() {
+        let mut v = TimelineView::default();
+        v.combined_av_lanes = true;
+        let json = serde_json::to_string(&v).expect("TimelineView must serialise");
+        assert!(json.contains("combined_av_lanes"), "field must be present when true");
+        let back: TimelineView = serde_json::from_str(&json).expect("round-trip");
+        assert!(back.combined_av_lanes, "round-trip: must stay true");
+
+        // Old workspace JSON without the field must default to false.
+        let old = r#"{}"#;
+        let old_view: TimelineView = serde_json::from_str(old).expect("empty JSON must deserialise");
+        assert!(!old_view.combined_av_lanes, "missing field defaults to false");
+    }
+    /// #2584: alias name checked by the issue spec.
+    #[test]
+    fn combined_av_lanes_toggle_exists() {
+        let view = TimelineView::default();
+        assert!(!view.combined_av_lanes, "combined_av_lanes must default to false");
     }
 }
