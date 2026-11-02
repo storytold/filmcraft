@@ -128,10 +128,21 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
 }
 
+/// The sharpest zoom: `min_view_secs` seconds (the Maximum Zoom Level setting — 0.4 s = 24 frames
+/// at 60 fps by default) fill the whole view width.
+pub fn max_pps(width: f32, min_view_secs: f64) -> f64 {
+    let min_view = if min_view_secs.is_finite() && min_view_secs > 0.0 { min_view_secs.clamp(0.05, 3.0) } else { 0.4 };
+    width.max(1.0) as f64 / min_view
+}
+
 /// Zoom about a time (keeps it under the same screen x).
-pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) {
+pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, min_view_secs: f64, sequence_seconds: f64) {
     let old = v.target_pps;
-    let new = (old * factor).clamp(min_pps(sequence_seconds, width), 24_000.0);
+    // the widest zoom stays the sequence-dependent floor (a long sequence must fit in full),
+    // the sharpest is the Maximum Zoom Level setting
+    let floor = min_pps(sequence_seconds, width);
+    let ceiling = max_pps(width, min_view_secs);
+    let new = (old * factor).clamp(floor.min(ceiling), ceiling);
     let x = ((anchor_secs - v.target_scroll) * old) as f32;
     let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
     v.target_pps = new;
