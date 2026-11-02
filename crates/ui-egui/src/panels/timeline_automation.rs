@@ -97,16 +97,14 @@ fn band(r: &Row) -> Rect {
 pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, r: &Row, rect: Rect, visible: Rect, label: &str, t: &Tokens) {
     let Some(tr) = seq.track(r.track) else { return };
     let showing = app.ui.timeline.track_lanes.get(&r.track.0).cloned();
-    let resp = crate::widgets::icon_toggle(
-        ui,
-        rect.intersect(visible),
-        Icon::Keyframe,
-        showing.is_some(),
-        t,
-        egui::Id::unique(("lanebtn", r.track.0)),
-        Some(LANE_COL),
-    )
-    .on_hover_text(tl!("Show Keyframes"));
+    // clipped to its area: visible until fully out, and never a negative-sized rect (which used
+    // to blow the icon up over the neighbouring section)
+    let vis_rect = {
+        let r = rect.intersect(visible);
+        if r.is_positive() { r } else { Rect::NOTHING }
+    };
+    let resp = crate::widgets::icon_toggle(ui, vis_rect, Icon::Keyframe, showing.is_some(), t, egui::Id::unique(("lanebtn", r.track.0)), Some(LANE_COL))
+        .on_hover_text(tl!("Show Keyframes"));
     app.auto.add(&format!("timeline.track.{label}.keyframes"), rect, "Show Keyframes");
     let opts = lane_options(tr);
     egui::Popup::menu(&resp).show(|ui| {
