@@ -761,7 +761,7 @@ pub(crate) fn to_project(doc: Document, opts: &ImportOptions, report: &mut Repor
             extracted.push(ExtractedMedia {
                 item: id,
                 path: resolved.clone(),
-                wav: crate::wav::wav_file(data, s.file_channels.max(1) as u16, s.sample_rate, s.bits),
+                wav: crate::wav::wav_file(data, u16::try_from(s.file_channels.max(1)).unwrap_or(u16::MAX), s.sample_rate, s.bits),
             });
         }
         for &i in members {

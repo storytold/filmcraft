@@ -728,11 +728,12 @@ impl Exp<'_> {
             .and_then(|i| i.as_media())
             .and_then(|m| m.info.start_timecode.map(|tc| self.rate.frame_at(m.frame_rate().tick_of(tc))))
             .unwrap_or(0);
-        start + frames_round(self.rate, t)
+        // Start timecodes come from the project file: saturate rather than overflow.
+        start.saturating_add(frames_round(self.rate, t))
     }
 
     fn rec_frames(&self, t: Tick) -> i64 {
-        self.seq.start_timecode + frames_round(self.rate, t)
+        self.seq.start_timecode.saturating_add(frames_round(self.rate, t))
     }
 
     fn file_comment(&self, item: ItemId) -> Option<String> {
