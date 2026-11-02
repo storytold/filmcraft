@@ -177,6 +177,26 @@ fn source_play_from_the_end_returns_to_where_it_started_over() {
     assert_eq!(h.state().session.state.source_playhead, first);
 }
 
+/// Another clip opened in the Source monitor during playback: a stop that returns does not carry the
+/// first clip's start position over to it.
+#[test]
+fn a_source_stop_after_opening_another_clip_stays_on_that_clip() {
+    let mut h = harness(true);
+    h.state_mut().session.execute("source.setPlayhead", json!({"seconds": 2})).unwrap();
+    invoke(&mut h, "playback.toggle", json!({"monitor": "source"}));
+    for _ in 0..8 {
+        h.step();
+    }
+    assert!(h.state().source_playback.clock.playing, "the Source monitor plays");
+    let other = h.state().session.project.items.values().find(|i| i.id.0 != 5 && matches!(i.kind, filmcraft_project::ItemKind::Media(_))).map(|i| i.id.0);
+    h.state_mut().session.execute("source.open", json!({"item": other.expect("another clip")})).unwrap();
+    let opened = h.state().session.state.source_playhead;
+    invoke(&mut h, "playback.toggle", json!({"monitor": "source"}));
+    h.step();
+    assert!(!h.state().source_playback.clock.playing);
+    assert_eq!(h.state().session.state.source_playhead, opened, "the stop stays where the clip just opened was");
+}
+
 /// Opening another sequence during playback does not stop it; the stop then stays where playback
 /// got to instead of jumping to a tick of the sequence it began in.
 #[test]

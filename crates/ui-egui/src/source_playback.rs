@@ -94,8 +94,9 @@ impl FilmcraftApp {
         let first = if looping { range.start } else { view.start };
         let end = stop.unwrap_or(if looping { range.end() } else { view.end });
         self.stop();
-        // a speed change keeps where a stop goes back to; a new run takes it from where it starts
-        let kept = self.source_playback.clock.playing.then_some(self.source_playback.clock.origin);
+        // a speed change keeps where a stop goes back to; a new run, or a run of another Source
+        // item, takes it from where it starts
+        let kept = (self.source_playback.clock.playing && self.source_playback.item == Some(item)).then_some(self.source_playback.clock.origin);
         self.stop_source();
         let mut time = start.unwrap_or(self.session.state.source_playhead);
         // forward from the end (or before a looped range) starts over; backward runs from where it is
@@ -119,9 +120,10 @@ impl FilmcraftApp {
     /// playback began.
     pub fn stop_source_to(&mut self, back: bool) {
         let origin = self.source_playback.clock.origin;
-        let was_playing = self.source_playback.clock.playing;
+        // the origin is a tick of the item playback began on, not of one opened since
+        let back = back && self.source_playback.clock.playing && self.source_playback.item == self.session.state.source_item;
         self.stop_source();
-        if back && was_playing {
+        if back {
             let _ = self.session.execute("source.setPlayhead", json!({"time": origin.0}));
             self.source_playback.shown = self.session.state.source_playhead;
         }
