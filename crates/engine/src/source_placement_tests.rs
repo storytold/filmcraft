@@ -190,11 +190,13 @@ fn place_source_in_between_frames_is_reported_in_ticks() {
     for sin in [fd * 25 + fd * 3 / 4, end, fd * 10 + fd / 4] {
         let e = s.execute("timeline.place", json!({"item":sub,"track":"V1","time":0,"sourceIn":sin})).unwrap_err().to_string();
         assert!(e.contains(&format!("`sourceIn` {sin} ticks is outside the clip, which takes {first} to {end} ticks")), "{e}");
+        // the clip has a start timecode: the hint names its first frame there, in ticks too
+        assert!(e.contains("it starts at 14:30:42:11") && e.contains("sourceTimecode"), "{e}");
     }
     let tiny = json!({"item":item.0,"start":fd * 10 + fd / 4,"end":fd * 10 + fd * 3 / 4});
     let tiny = s.execute("clip.makeSubclip", tiny).unwrap()["item"].as_u64().unwrap();
     let e = s.execute("timeline.place", json!({"item":tiny,"track":"V1","time":0,"sourceIn":{"frame":10}})).unwrap_err().to_string();
-    assert!(e.contains("ticks is outside the clip, which takes") && !e.contains("frames"), "{e}");
+    assert!(e.contains("ticks is outside the clip, which takes") && !e.contains("frame") && !e.contains("sourceTimecode"), "{e}");
     s.execute("timeline.place", json!({"item":tiny,"track":"V1","time":0,"sourceIn":fd * 10 + fd / 2,"duration":{"frame":1}})).unwrap();
 }
 

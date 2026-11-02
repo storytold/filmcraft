@@ -1147,22 +1147,20 @@ fn check_place_source_in(s: &Session, item: ItemId, sin: Tick, rate: FrameRate, 
     let first_frame = rate.frame_at(first - Tick(1)).saturating_add(1);
     let last_frame = |e: Tick| rate.frame_at(e - Tick(1));
     let on_frame = rate.tick_of(rate.frame_at(sin)) == sin;
+    // some frame starts in the item: then its first frame is one a `sourceTimecode` can name
+    let has_frame = end.is_none_or(|e| last_frame(e) >= first_frame);
     let at = tc(rate.frame_at(sin), origin);
     let mut msg = match end {
         Some(e) if e <= first => return Err(bad("timeline.place", "`sourceIn` is outside the clip, which has no frames")),
-        Some(e) if on_frame && last_frame(e) >= first_frame => {
+        Some(e) if on_frame && has_frame => {
             format!("`sourceIn` {at} is outside the clip, whose frames run {} to {}", tc(first_frame, origin), tc(last_frame(e), origin))
         }
         None if on_frame => format!("`sourceIn` {at} is outside the clip, whose frames run from {}", tc(first_frame, origin)),
-        Some(e) => {
-            return Err(bad(
-                "timeline.place",
-                format!("`sourceIn` {} ticks is outside the clip, which takes {} to {} ticks, end excluded", sin.0, first.0, e.0),
-            ));
-        }
-        None => return Err(bad("timeline.place", format!("`sourceIn` {} ticks is before the clip's first tick, {}", sin.0, first.0))),
+        Some(e) => format!("`sourceIn` {} ticks is outside the clip, which takes {} to {} ticks, end excluded", sin.0, first.0, e.0),
+        None => format!("`sourceIn` {} ticks is before the clip's first tick, {}", sin.0, first.0),
     };
-    if start != 0 && source_tc.is_none() {
+    // the hint names the clip's first frame, so it goes wherever one starts in the clip, in ticks too
+    if start != 0 && source_tc.is_none() && has_frame {
         msg.push_str(&format!(
             "; this counts from the clip's first frame, so for the timecode on the clip (it starts at {}) pass {{\"sourceTimecode\": \"…\"}}",
             tc(first_frame, start)
