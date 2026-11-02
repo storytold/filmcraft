@@ -231,13 +231,16 @@ fn a_missing_project_gets_no_lock_file_and_keeps_its_error() {
     let gone = dir.join("gone.fcproj").to_str().unwrap().to_string();
     let plain = cli(&["--project", &gone, "inspect", "project"]);
     assert_eq!(plain.status.code(), Some(1));
-    for save in [&["--save"][..], &["--save-as", gone.as_str()]] {
+    let other = dir.join("other.fcproj").to_str().unwrap().to_string();
+    // saving in place, saving elsewhere, or not saving: the error is the one opening gives
+    for save in [&["--save"][..], &["--save-as", gone.as_str()], &["--save-as", other.as_str()], &[]] {
         let args = [&["--project", gone.as_str()][..], save, &["exec", "file.newBin", "name=copy-only"]].concat();
         let o = cli(&args);
         assert_eq!(o.status.code(), Some(1), "{save:?}");
         assert_eq!(String::from_utf8_lossy(&o.stderr), String::from_utf8_lossy(&plain.stderr), "{save:?}");
     }
     assert!(!dir.join(".gone.fcproj.lock").exists());
+    assert!(!dir.join("other.fcproj").exists());
     // --project with --bridge stays a usage error.
     assert_eq!(cli(&["--bridge", "127.0.0.1:1", "--project", &gone, "--save", "exec", "file.newBin", "name=copy-only"]).status.code(), Some(2));
     let _ = std::fs::remove_dir_all(&dir);

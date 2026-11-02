@@ -22,19 +22,9 @@ fn lock_path(project: &Path) -> PathBuf {
     project.with_file_name(format!(".{}.lock", &name[..name.floor_char_boundary(MAX_NAME_BYTES)]))
 }
 
-/// `path` absolute and without `.`, `..` or symlinked folders. For a file that doesn't exist yet,
-/// `canonicalize` fails, so its folder is resolved and its own name kept.
-fn resolved(path: &str) -> Option<PathBuf> {
-    let path = Path::new(path);
-    std::fs::canonicalize(path).ok().or_else(|| {
-        let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        Some(std::fs::canonicalize(dir).ok()?.join(path.file_name()?))
-    })
-}
-
-/// Do two paths name one file, existing or not?
+/// Do two paths name one existing file?
 fn same_file(a: &str, b: &str) -> bool {
-    a == b || matches!((resolved(a), resolved(b)), (Some(a), Some(b)) if a == b)
+    a == b || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
 
 /// The path this run saves over, when that is the file it opens. `--save-as` somewhere else replaces
@@ -43,22 +33,22 @@ fn same_file(a: &str, b: &str) -> bool {
 /// The lock goes by this path as written, not by where a symlink points. A save replaces the link
 /// itself, so resolving it would give the runs before and after that save different locks.
 ///
-/// A missing file is an error here, the same one `Backend::open` would give: if the run went on,
-/// another run could create the project before `Backend::open` reads it, and this one would then
-/// save it with no lock. Anything else that isn't a file gets no lock file beside it, and opening it
-/// reports why.
+/// A missing `--project` is an error here, before anything else, the same one `Backend::open` would
+/// give. If the run went on, another one could create the project before `Backend::open` reads it,
+/// and this run would edit and save it with no lock. Checking first also means the paths compared
+/// below exist, so `canonicalize` tells exactly whether they are one file, however they are spelt.
+/// A project that exists but isn't a file gets no lock file beside it, and opening it reports why.
 fn saved_in_place(a: &Args) -> Result<Option<&Path>, String> {
     // `--bridge` with `--project` is a usage error, which `Backend::open` reports
     let Some(project) = a.opt("--project").filter(|_| a.opt("--bridge").is_none()) else { return Ok(None) };
-    let target = match a.opt("--save-as") {
-        Some(target) if same_file(target, project) => target,
-        None if a.flag("--save") => project,
+    match Path::new(project).metadata() {
+        Ok(meta) if meta.is_file() => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{project}: {e}")),
         _ => return Ok(None),
-    };
-    let path = Path::new(target);
-    match path.metadata() {
-        Ok(meta) if meta.is_file() => Ok(Some(path)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{project}: {e}")),
+    }
+    match a.opt("--save-as") {
+        Some(target) if same_file(target, project) => Ok(Some(Path::new(target))),
+        None if a.flag("--save") => Ok(Some(Path::new(project))),
         _ => Ok(None),
     }
 }
@@ -77,7 +67,7 @@ fn lock(project: &Path, waiting: impl FnOnce()) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// Take the project's lock if this run saves over the file it opens, or exit if that file is
+/// Take the project's lock if this run saves over the file it opens, or exit if `--project` is
 /// missing. Call it before opening the project and keep the result until the save is done. Blocks
 /// while another run holds the lock, which is fine here: nothing else is running yet. A lock that
 /// can't be had (a read-only folder, a file system without locks) is a warning and not an error, so
@@ -104,33 +94,36 @@ mod tests {
     }
 
     /// The moment between this check and `Backend::open` can't be hit on demand, so this pins the
-    /// decision that closes it: a save in place never goes on to open a project that wasn't there.
+    /// decision that closes it: a run never goes on to open a project that wasn't there, however
+    /// its paths are spelt and whatever it saves.
     #[test]
-    fn a_missing_project_stops_a_save_in_place_before_anything_opens_it() {
+    fn a_missing_project_stops_the_run_before_anything_opens_it() {
         let name = format!("fc-cli-gone-{}.fcproj", std::process::id());
         let gone = std::env::temp_dir().join(&name);
         let gone = gone.to_str().unwrap();
-        // the same file spelt another way: `canonicalize` fails on both, since it doesn't exist
         let alias = std::env::temp_dir().join(".").join(&name);
         let alias = alias.to_str().unwrap();
         let dotted = format!("./{name}");
+        // in a folder that doesn't exist either, so no part of either spelling can be resolved
+        let new_dir = std::env::temp_dir().join(format!("fc-cli-new-dir-{}", std::process::id()));
+        let in_new_dir = new_dir.join("p.fcproj");
+        let in_new_dir = in_new_dir.to_str().unwrap();
+        let in_new_dir_alias = new_dir.join(".").join("p.fcproj");
+        let in_new_dir_alias = in_new_dir_alias.to_str().unwrap();
         for list in [
             &["--project", gone, "--save", "exec"][..],
             &["--project", gone, "--save-as", gone, "exec"],
             &["--project", gone, "--save-as", alias, "exec"],
             &["--project", &name, "--save-as", &dotted, "exec"],
+            &["--project", in_new_dir, "--save-as", in_new_dir_alias, "exec"],
+            &["--project", gone, "--save-as", "other.fcproj", "exec"],
+            &["--project", gone, "exec"],
         ] {
             let error = saved_in_place(&args(list)).unwrap_err();
             assert!(error.starts_with(list[1]), "{list:?}: {error}");
         }
-        // These save nothing over it, or are a usage error: they leave it to `Backend::open`.
-        for list in [
-            &["--project", gone, "exec"][..],
-            &["--project", gone, "--save-as", "other.fcproj", "exec"],
-            &["--bridge", "127.0.0.1:1", "--project", gone, "--save", "exec"],
-        ] {
-            assert_eq!(saved_in_place(&args(list)), Ok(None), "{list:?}");
-        }
+        // --project with --bridge is a usage error, which `Backend::open` reports
+        assert_eq!(saved_in_place(&args(&["--bridge", "127.0.0.1:1", "--project", gone, "--save", "exec"])), Ok(None));
     }
 
     #[test]
