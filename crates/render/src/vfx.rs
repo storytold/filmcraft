@@ -13,6 +13,7 @@
 
 mod blur;
 pub(crate) use blur::bokeh;
+pub use blur::{KERNEL_REACH, bokeh_kernel};
 mod color;
 pub(crate) use color::cdl;
 mod distort;

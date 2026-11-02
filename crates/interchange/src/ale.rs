@@ -45,7 +45,13 @@ impl AleDoc {
     }
     /// The heading's frame rate (`FPS`).
     pub fn rate(&self) -> Option<FrameRate> {
-        self.heading("FPS").and_then(|f| f.trim().parse::<f64>().ok()).map(FrameRate::from_f64)
+        let f = self.heading("FPS").and_then(|f| f.trim().parse::<f64>().ok())?;
+        // Reject NaN, infinite, non-positive and absurdly large rates (`from_f64` saturates or yields 0/1 for them).
+        if !f.is_finite() || f <= 0.0 || f > 100_000.0 {
+            return None;
+        }
+        let r = FrameRate::from_f64(f);
+        (r.num > 0 && r.den > 0).then_some(r)
     }
 }
 
@@ -202,6 +208,14 @@ mod tests {
     use filmcraft_media::{AudioStreamInfo, MediaInfo, MediaKind, VideoStreamInfo};
     use filmcraft_project::{ItemKind, Label, MediaClip};
     use filmcraft_time::TimeRange;
+
+    #[test]
+    fn non_positive_or_non_finite_fps_is_rejected() {
+        for fps in ["0", "-24", "nan", "inf", "1e300", "0.0001"] {
+            let doc = parse(&format!("Heading\nFPS\t{fps}\n\nColumn\nName\tStart\tEnd\n\nData\nA\t01:00:00:00\t01:00:10:00\n")).unwrap();
+            assert!(doc.rate().is_none(), "FPS {fps} accepted as {:?}", doc.rate());
+        }
+    }
 
     fn media(p: &mut Project, name: &str, rate: FrameRate, seconds: i64, tc: Option<i64>, audio: u32) -> ItemId {
         let info = MediaInfo {
