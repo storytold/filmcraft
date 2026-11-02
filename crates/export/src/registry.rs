@@ -16,8 +16,10 @@ pub struct EncodedPacket {
     pub composition_offset: i32,
 }
 
-/// Input picture for encoders: straight sRGB RGBA8 (encoders convert to their own YUV), or for
-/// HDR exports the encoded R'G'B' (PQ/HLG, BT.2020; 3 floats per pixel, 0..1) in `hdr`.
+/// Input picture for encoders: straight sRGB RGBA8 (encoders convert to their own YUV), or the
+/// encoded R'G'B' (3 floats per pixel, 0..1) in `hdr`: PQ/HLG BT.2020 for HDR exports, the sRGB curve
+/// and BT.709 for SDR exports to an encoder that codes more than 8 bits. `rgba` is then empty, or
+/// with alpha the whole RGBA8 picture, for its alpha.
 pub struct EncoderFrame<'a> {
     pub width: u32,
     pub height: u32,

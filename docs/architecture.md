@@ -597,6 +597,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   frame header, `colr`, and for PQ `mdcv` (BT.2020 / D65, 1000 / 0.0001 cd/m²) and `clli`
   (MaxCLL/MaxFALL 0 = unknown, they are not measured) plus the matching H.264 SEI. `sdr: true`
   exports the tone-mapped SDR picture instead; render previews always do.
+- **SDR export depth.** Encoders that code more than 8 bits (ProRes, APV, DNxHR HQX, on their own or
+  in MXF) get the composited picture as sRGB-encoded floats, so a 10-bit source keeps its codes in
+  the file. All other encoders get RGBA8. ProRes 4444 with alpha keeps an 8-bit alpha.
 - **Monitors / display colour management.** The monitors are SDR (sRGB-encoded RGBA8 textures):
   HDR sequences are shown tone mapped. macOS EDR (extended-range `CAMetalLayer` output) is not
   wired up: there is no `platform` crate yet and eframe/wgpu do not expose an EDR surface, so HDR
