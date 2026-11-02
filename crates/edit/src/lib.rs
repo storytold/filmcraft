@@ -650,8 +650,8 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
     let (_, fragment_roots) =
         if insert_mode { (insert(&mut work, placed, ctx)?, HashMap::new()) } else { overwrite_with_fragment_roots(&mut work, placed, ctx)? };
     let copied_fragments = copied_fragments(&work, &copies, &fragment_roots)?;
-    relink_broken_pairs(&mut work, &planned_links);
-    unlink_lone_fragments(&mut work, &copied_fragments);
+    relink_broken_groups(&mut work, &planned_links);
+    unlink_lone_fragments(&mut work, &copied_fragments, &fragment_roots);
     let carried = carried_copy_transitions(seq, &work, &copies, &fragment_roots, ctx);
     place_carried_transitions(&mut work, carried)?;
     for &(source, dest, delta, id) in &copies {
@@ -770,11 +770,11 @@ fn copied_fragments(work: &Sequence, copies: &[CopyRequest], fragment_roots: &Ha
     Ok(out)
 }
 
-/// A complete planned pair keeps its link when both members survive. If one member was
-/// overwritten, only a later singleton copy of that same source at that exact landing can
-/// replace it. Two broken complete pairs are never joined just because their survivors share
-/// the same source link and time.
-fn relink_broken_pairs(work: &mut Sequence, planned_links: &HashMap<u64, Vec<CopyRequest>>) {
+/// A planned group keeps its link while its members survive. When one member was overwritten,
+/// only a later singleton copy of that same source at that exact landing can take its place.
+/// Two broken groups are never joined just because their survivors share the same source link
+/// and time: a replacement claimed by more than one group stays where it is.
+fn relink_broken_groups(work: &mut Sequence, planned_links: &HashMap<u64, Vec<CopyRequest>>) {
     let mut singleton_replacements: HashMap<(ClipId, TrackId, Tick), Vec<(ClipId, u64)>> = HashMap::new();
     for (&provisional, members) in planned_links {
         if let [only] = members.as_slice() {
@@ -784,42 +784,41 @@ fn relink_broken_pairs(work: &mut Sequence, planned_links: &HashMap<u64, Vec<Cop
             }
         }
     }
-    let mut proposals: HashMap<ClipId, Vec<(ClipId, u64)>> = HashMap::new();
+    let mut proposals: HashMap<ClipId, Vec<u64>> = HashMap::new();
     for (&provisional, members) in planned_links {
-        let [first, second] = members.as_slice() else { continue };
-        let (survivor, missing) = match (work.find_item(first.3).is_some(), work.find_item(second.3).is_some()) {
-            (true, false) => (first, second),
-            (false, true) => (second, first),
-            _ => continue,
-        };
-        if let Some(candidates) = singleton_replacements.get(&(missing.0, missing.1, missing.2))
-            && let [(replacement, _)] = candidates.as_slice()
-        {
-            proposals.entry(*replacement).or_default().push((survivor.3, provisional));
+        if members.len() < 2 || !members.iter().any(|m| work.find_item(m.3).is_some()) {
+            continue;
+        }
+        for missing in members.iter().filter(|m| work.find_item(m.3).is_none()) {
+            if let Some(candidates) = singleton_replacements.get(&(missing.0, missing.1, missing.2))
+                && let [(replacement, _)] = candidates.as_slice()
+            {
+                proposals.entry(*replacement).or_default().push(provisional);
+            }
         }
     }
     for (replacement, claims) in proposals {
-        let [(survivor, provisional)] = claims.as_slice() else { continue };
-        if let Some((_, it)) = work.find_item_mut(*survivor) {
-            it.link = Some(*provisional);
-        }
+        let [provisional] = claims.as_slice() else { continue };
         if let Some((_, it)) = work.find_item_mut(replacement) {
             it.link = Some(*provisional);
         }
     }
 }
 
-/// A lone surviving fragment cannot claim a link to an overwritten partner.
-fn unlink_lone_fragments(work: &mut Sequence, copied_fragments: &[ClipId]) {
-    let mut link_counts: HashMap<u64, usize> = HashMap::new();
+/// A copy whose partners did not survive keeps no link. The link is counted per copied
+/// identity, not per fragment: an overwrite that splits one copy twice gives both right-hand
+/// fragments the same split link, and two fragments of one copy are not partners.
+fn unlink_lone_fragments(work: &mut Sequence, copied_fragments: &[ClipId], fragment_roots: &HashMap<ClipId, ClipId>) {
+    let root_of = |id: ClipId| fragment_roots.get(&id).copied().unwrap_or(id);
+    let mut holders: HashMap<u64, HashSet<ClipId>> = HashMap::new();
     for &id in copied_fragments {
         if let Some(link) = work.find_item(id).and_then(|(_, it)| it.link) {
-            *link_counts.entry(link).or_default() += 1;
+            holders.entry(link).or_default().insert(root_of(id));
         }
     }
     for &id in copied_fragments {
         if let Some((_, it)) = work.find_item_mut(id)
-            && it.link.is_some_and(|link| link_counts.get(&link).copied().unwrap_or(0) < 2)
+            && it.link.is_some_and(|link| holders.get(&link).is_none_or(|roots| roots.len() < 2))
         {
             it.link = None;
         }

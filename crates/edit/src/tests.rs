@@ -112,6 +112,34 @@ fn move_rejects_repeated_clip_ids_without_mutation() {
     }
 }
 
+/// A video copied without its sound is not linked; overwriting its interior twice in the same
+/// plan splits it into fragments that share a split link, and those fragments are pieces of one
+/// copy, not partners of each other.
+#[test]
+fn interior_overwrites_do_not_link_the_fragments_of_an_unpaired_copy() {
+    let mut fx = Fx::new();
+    let (v1, v2, a1) = (fx.v(0), fx.v(1), fx.a(0));
+    let video = fx.put(v1, 0, 10, 0);
+    let sound = fx.put(a1, 0, 10, 0);
+    fx.seq.find_item_mut(video).unwrap().1.link = Some(7);
+    fx.seq.find_item_mut(sound).unwrap().1.link = Some(7);
+    let filler_a = fx.put(v2, 100, 2, 0);
+    let filler_b = fx.put(v2, 200, 2, 0);
+    let mut n = fx.next;
+    let copied = copy_items(&mut fx.seq, &[(video, v1, f(20)), (filler_a, v1, f(26)), (filler_b, v1, f(22))], false, &mut Fx::ctx(&mut n)).unwrap();
+    let track = fx.seq.track(v1).unwrap();
+    // the fillers landed at 22 and 26; the video copy survives as the three pieces between them
+    let fragments: Vec<_> = track.items.iter().filter(|it| [f(20), f(24), f(28)].contains(&it.start)).collect();
+    assert_eq!(fragments.iter().map(|it| (it.start, it.end())).collect::<Vec<_>>(), vec![(f(20), f(22)), (f(24), f(26)), (f(28), f(30))]);
+    assert!(
+        fragments.iter().all(|it| it.link.is_none()),
+        "fragments of one unpaired copy are not linked: {:?}",
+        fragments.iter().map(|it| it.link).collect::<Vec<_>>()
+    );
+    assert!(fragments.iter().all(|it| copied.contains(&it.id)), "every surviving fragment is returned");
+    fx.seq.check().unwrap();
+}
+
 #[test]
 fn repeated_copies_are_independent_and_each_keeps_its_fade() {
     let mut fx = Fx::new();

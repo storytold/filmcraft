@@ -960,3 +960,46 @@ fn copy_paste_drops_transition_to_uncopied_neighbour() {
     assert!(!t.transitions.iter().any(|x| x.from == Some(pasted.id)), "the cut to the neighbour left behind is not pasted: {:?}", t.transitions);
     assert!(t.transitions.len() >= count, "the original transitions stay");
 }
+
+/// A picture linked to two sounds, copied twice to one landing with Linked Selection on: the
+/// partners are planned once and the second picture copy overwrites the first. The surviving
+/// picture and both sound copies are one group, and a linked move of the picture takes them along.
+#[test]
+fn repeated_linked_copies_of_a_three_member_group_stay_one_group() {
+    let mut s = demo();
+    let (_, video, _, sound) = pair_in_an_empty_sequence(&mut s, 0.0);
+    let seq_id = s.state.active_sequence.unwrap();
+    let mut p = (*s.project).clone();
+    let second_id = ClipId(p.next_id);
+    p.next_id += 1;
+    let mut second = sound.clone();
+    second.id = second_id;
+    p.sequence_mut(seq_id).unwrap().audio_tracks[1].items.push(second);
+    s.project = std::sync::Arc::new(p);
+    let landing = s.active_sequence().unwrap().duration() + s.sequence_rate().tick_of(48);
+    s.execute(
+        "timeline.move",
+        json!({"moves": [
+            {"clip": video.id.0, "track": "V2", "time": landing.0},
+            {"clip": video.id.0, "track": "V2", "time": landing.0}
+        ], "linked": true, "copy": true}),
+    )
+    .unwrap();
+    let q = s.active_sequence().unwrap();
+    let picture = q.video_tracks[1].items.iter().find(|it| it.start == landing).expect("the copied picture").clone();
+    let sounds: Vec<TrackItem> = q.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.start == landing).cloned().collect();
+    assert_eq!(sounds.len(), 2, "each sound partner was copied once");
+    assert!(picture.link.is_some(), "the surviving picture copy keeps a link");
+    assert!(
+        sounds.iter().all(|a| a.link == picture.link),
+        "picture and both sounds form one group: {:?} vs {:?}",
+        picture.link,
+        sounds.iter().map(|a| a.link).collect::<Vec<_>>()
+    );
+    q.check().unwrap();
+    let delta = s.sequence_rate().tick_of(24);
+    s.execute("timeline.move", json!({"moves": [{"clip": picture.id.0, "track": "V2", "time": (landing + delta).0}], "linked": true})).unwrap();
+    for a in &sounds {
+        assert_eq!(state(&s, a.id).1, landing + delta, "a linked move of the picture takes both sounds along");
+    }
+}
