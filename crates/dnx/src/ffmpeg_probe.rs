@@ -12,7 +12,20 @@ use crate::header::{self, EOF_SIGNATURE, FieldCode, FrameHeader, SCAN_INDEX_OFFS
 use crate::tables::{ZIGZAG, cid_info, vlc};
 use crate::{ChromaFormat, ColorVolume};
 
-fn stream_cid(cid: u32, w: u32, h: u32, depth: u8, q: u32, pos: usize, amp: u32, neg: bool, blk: usize) -> Vec<u8> {
+struct ProbeStream {
+    cid: u32,
+    width: u32,
+    height: u32,
+    depth: u8,
+    quantizer: u32,
+    coefficient_position: usize,
+    amplitude: u32,
+    negative: bool,
+    block: usize,
+}
+
+fn stream_cid(input: ProbeStream) -> Vec<u8> {
+    let ProbeStream { cid, width: w, height: h, depth, quantizer: q, coefficient_position: pos, amplitude: amp, negative: neg, block: blk } = input;
     let info = cid_info(cid).unwrap();
     let v = vlc(info.vlc);
     let p_bits = if depth == 8 { 4 } else { 6 };
@@ -115,7 +128,17 @@ fn probe_weights() {
     for blk in [0usize, 2] {
         let mut grid = [[0f64; 8]; 8];
         for pos in 1..64 {
-            let s = stream_cid(cid, w, h, depth, q, pos, amp, false, blk);
+            let s = stream_cid(ProbeStream {
+                cid,
+                width: w,
+                height: h,
+                depth,
+                quantizer: q,
+                coefficient_position: pos,
+                amplitude: amp,
+                negative: false,
+                block: blk,
+            });
             let path = dir.join("explore.dnxhd");
             std::fs::write(&path, &s).unwrap();
             let out = std::process::Command::new(&ff)
@@ -212,7 +235,8 @@ fn probe_reconstruction() {
     for q in [1u32, 2, 3, 4, 8, 16] {
         let mut xs = vec![];
         for amp in 1..=40u32 {
-            let s = stream_cid(cid, w, h, depth, q, 1, amp, false, 0);
+            let s =
+                stream_cid(ProbeStream { cid, width: w, height: h, depth, quantizer: q, coefficient_position: 1, amplitude: amp, negative: false, block: 0 });
             let path = dir.join("explore.dnxhd");
             std::fs::write(&path, &s).unwrap();
             let out = std::process::Command::new(&ff)

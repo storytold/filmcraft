@@ -1,7 +1,11 @@
 //! Native macOS menu bar (muda), generated from the command registry — like Premiere, menus live in
 //! the system menu bar. Items send command ids to the app's command inbox.
 
-use std::sync::mpsc::{Receiver, channel};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::mpsc::{Receiver, channel},
+};
 
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::menus::{MENUS, MenuItem as Item, NATIVE_APP_MENU, menu_items};
@@ -31,7 +35,11 @@ fn quit_item(app: &FilmcraftApp) -> (&'static str, Option<Accelerator>) {
 /// Updates native item labels, key equivalents and enablement when the menu tree changes.
 pub type MenuUpdater = Box<dyn FnMut(&[Item])>;
 
-pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, MenuUpdater) {
+/// Swap only Edit while a native color window owns keyboard focus. Native predefined
+/// actions go to AppKit's first responder, rather than FilmCraft's timeline inbox.
+pub type NativeTextMenu = Rc<dyn Fn(bool) -> Result<(), String>>;
+
+pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, MenuUpdater, NativeTextMenu) {
     let items = menu_items(app);
     // each native item with the menu entry it currently shows, so updates touch only what changed
     let mut native: Vec<(Item, MenuItem)> = Vec::new();
@@ -80,6 +88,7 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
         &quit,
     ]);
     let _ = bar.append(&app_menu);
+    let mut edit_menu = None;
     for top in MENUS {
         let sub = Submenu::new(app.ui.language.tr(top), true);
         titles.push((top.into(), sub.clone()));
@@ -106,8 +115,42 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
             }
             let _ = parent.append(&mi);
         }
+        if top == "Edit" {
+            edit_menu = Some(sub.clone());
+        }
         let _ = bar.append(&sub);
     }
+    let native_edit = Submenu::new(app.ui.language.tr("Edit"), true);
+    let text_items = [
+        ("Undo", PredefinedMenuItem::undo(Some(app.ui.language.tr("Undo")))),
+        ("Redo", PredefinedMenuItem::redo(Some(app.ui.language.tr("Redo")))),
+        ("Cut", PredefinedMenuItem::cut(Some(app.ui.language.tr("Cut")))),
+        ("Copy", PredefinedMenuItem::copy(Some(app.ui.language.tr("Copy")))),
+        ("Paste", PredefinedMenuItem::paste(Some(app.ui.language.tr("Paste")))),
+        ("Delete", PredefinedMenuItem::delete(Some(app.ui.language.tr("Delete")))),
+        ("Select All", PredefinedMenuItem::select_all(Some(app.ui.language.tr("Select All")))),
+    ];
+    for (_, item) in &text_items {
+        let _ = native_edit.append(item);
+    }
+    let menu_bar = bar.clone();
+    let color_edit = native_edit.clone();
+    let native_shown = Cell::new(false);
+    let text_menu: NativeTextMenu = Rc::new(move |use_native| {
+        if use_native == native_shown.get() {
+            return Ok(());
+        }
+        let regular = edit_menu.as_ref().ok_or("FilmCraft Edit menu is unavailable")?;
+        let index = MENUS.iter().position(|top| *top == "Edit").ok_or("FilmCraft Edit menu is unavailable")? + 1;
+        let (old, new) = if use_native { (regular, &color_edit) } else { (&color_edit, regular) };
+        menu_bar.insert(new, index).map_err(|e| e.to_string())?;
+        if let Err(error) = menu_bar.remove(old) {
+            let _ = menu_bar.remove(new);
+            return Err(error.to_string());
+        }
+        native_shown.set(use_native);
+        Ok(())
+    });
     bar.init_for_nsapp();
     if let Some(help) = bar.items().last().and_then(|i| i.as_submenu().cloned()) {
         help.set_as_help_menu_for_nsapp();
@@ -145,8 +188,18 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
             filmcraft_ui_egui::i18n::Language::Id
         } else if checked("app.language.italian") {
             filmcraft_ui_egui::i18n::Language::It
+        } else if checked("app.language.bosnian") {
+            filmcraft_ui_egui::i18n::Language::Bs
         } else if checked("app.language.korean") {
             filmcraft_ui_egui::i18n::Language::Ko
+        } else if checked("app.language.czech") {
+            filmcraft_ui_egui::i18n::Language::Cs
+        } else if checked("app.language.polish") {
+            filmcraft_ui_egui::i18n::Language::Pl
+        } else if checked("app.language.swedish") {
+            filmcraft_ui_egui::i18n::Language::Sv
+        } else if checked("app.language.turkish") {
+            filmcraft_ui_egui::i18n::Language::Tr
         } else {
             filmcraft_ui_egui::i18n::Language::En
         };
@@ -155,6 +208,10 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
             for (title, submenu) in &titles {
                 submenu.set_text(language.tr(title));
             }
+        }
+        native_edit.set_text(language.tr("Edit"));
+        for (label, item) in &text_items {
+            item.set_text(language.tr(label));
         }
         for (label, item) in &predefined {
             item.set_text(language.tr(label));
@@ -175,7 +232,7 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Men
             *shown = it.clone();
         }
     });
-    (rx, update)
+    (rx, update, text_menu)
 }
 
 #[cfg(test)]

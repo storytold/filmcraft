@@ -44,6 +44,7 @@ fn query(id: &'static str, label: &'static str, params: &'static str, run: Run) 
 }
 
 const G: &[&str] = &["Graphics and Titles"];
+const MAX_THUMBNAIL_DIMENSION: u32 = 1920;
 
 fn has_graphic(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
@@ -149,8 +150,7 @@ fn entry_json(e: &LibraryEntry) -> Value {
 /// Render a template's thumbnail (static: rolls are shown at rest) as straight sRGB RGBA8,
 /// `w` pixels wide with the template's aspect ratio. Returns (width, height, pixels).
 pub fn thumbnail(t: &GraphicsTemplate, w: u32) -> (u32, u32, Vec<u8>) {
-    let w = w.clamp(16, 1920);
-    let h = ((w as f64 * t.canvas[1] as f64 / t.canvas[0].max(1) as f64).round() as u32).max(1);
+    let (w, h) = thumbnail_dimensions(t.canvas, w);
     register_fonts(t);
     let mut meta = t.graphic.clone();
     meta.roll.mode = RollMode::Off;
@@ -171,9 +171,23 @@ pub fn thumbnail(t: &GraphicsTemplate, w: u32) -> (u32, u32, Vec<u8>) {
     // a moment into the clip, so intro animations have settled a little
     let at = Tick((t.duration.0 / 2).min(filmcraft_time::TICKS_PER_SECOND));
     let mut img = filmcraft_render::image::Image::new(w as usize, h as usize);
-    let k = w as f64 / t.canvas[0].max(1) as f64;
+    // fit both sides: a capped height leaves `w / canvas width` too large for a tall canvas
+    let k = (w as f64 / t.canvas[0].max(1) as f64).min(h as f64 / t.canvas[1].max(1) as f64);
     filmcraft_render::graphic_clip::render_graphic(&it, at, (t.canvas[0], t.canvas[1]), &Affine::scale(k, k), &mut img);
     (w, h, img.to_rgba8())
+}
+
+/// Fit a requested thumbnail width within a bounded rectangle without trusting the template's
+/// aspect ratio to derive an unbounded second dimension.
+fn thumbnail_dimensions(canvas: [u32; 2], requested_width: u32) -> (u32, u32) {
+    let mut w = requested_width.clamp(16, MAX_THUMBNAIL_DIMENSION);
+    let aspect = canvas[0].max(1) as f64 / canvas[1].max(1) as f64;
+    let mut h = (w as f64 / aspect).round().clamp(1.0, u32::MAX as f64) as u32;
+    if h > MAX_THUMBNAIL_DIMENSION {
+        h = MAX_THUMBNAIL_DIMENSION;
+        w = (h as f64 * aspect).round().clamp(1.0, MAX_THUMBNAIL_DIMENSION as f64) as u32;
+    }
+    (w, h)
 }
 
 /// Cached thumbnails by template id + content + width (the UI asks every frame).
@@ -749,6 +763,7 @@ fn char_style_p(v: &Value) -> Result<CharStyle> {
             "bold" | "fauxBold" | "faux_bold" => c.faux_bold = x.as_bool(),
             "italic" | "fauxItalic" | "faux_italic" => c.faux_italic = x.as_bool(),
             "underline" => c.underline = x.as_bool(),
+            "strikethrough" | "strike" => c.strikethrough = x.as_bool(),
             "tracking" => c.tracking = x.as_f64().map(|v| v as f32),
             "baselineShift" | "baseline_shift" => c.baseline_shift = x.as_f64().map(|v| v as f32),
             "caps" => {
@@ -895,7 +910,8 @@ fn upgrade_caption(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let col = |c: [u8; 4]| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0];
         set(&mut layer, "font", ParamValue::Text(st.font.clone()));
-        set(&mut layer, "font_style", ParamValue::Text("SemiBold".into()));
+        let font_style = if st.font_style.trim().is_empty() { "SemiBold" } else { st.font_style.trim() };
+        set(&mut layer, "font_style", ParamValue::Text(font_style.into()));
         set(&mut layer, "align", ParamValue::Choice(st.align as u32));
         set(&mut layer, "fill_color", ParamValue::Color(col(st.color)));
         set(&mut layer, "leading", ParamValue::Float(line_h - size * 1.21));
@@ -1052,7 +1068,8 @@ pub fn fonts_used(s: &Session) -> Vec<(String, String, usize)> {
     for q in s.project.sequences() {
         if let ItemKind::Sequence(sq) = &q.kind {
             for t in &sq.caption_tracks {
-                add(t.style.font.clone(), "SemiBold".into());
+                let st = if t.style.font_style.trim().is_empty() { "SemiBold" } else { t.style.font_style.trim() };
+                add(t.style.font.clone(), st.into());
             }
         }
     }
@@ -1108,8 +1125,12 @@ fn replace_fonts(s: &mut Session, p: &Value) -> Result<Value> {
         for id in ids {
             if let Some(sq) = pr.sequence_mut(id) {
                 for t in &mut sq.caption_tracks {
-                    if t.style.font.eq_ignore_ascii_case(&from) && from_style.is_none() {
+                    let st = if t.style.font_style.trim().is_empty() { "SemiBold" } else { t.style.font_style.trim() };
+                    if matches(&t.style.font, st) {
                         t.style.font = to.clone();
+                        if let Some(ts) = &to_style {
+                            t.style.font_style = ts.clone();
+                        }
                         n += 1;
                     }
                 }
@@ -1222,7 +1243,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "graphics.setCharStyle",
             "Character Style",
             &[],
-            r##"{"clip":id?,"layer":n|name?,"start":char=0,"end":char=len,"style":{"font":str,"fontStyle":str,"size":px,"color":"#rrggbb","bold":bool,"italic":bool,"underline":bool,"tracking":n,"baselineShift":px,"caps":"normal|all caps|small caps"},"clear":bool? (remove styles from the range),"merge":bool?,"begin":bool? (start a new undo gesture)}"##,
+            r##"{"clip":id?,"layer":n|name?,"start":char=0,"end":char=len,"style":{"font":str,"fontStyle":str,"size":px,"color":"#rrggbb","bold":bool,"italic":bool,"underline":bool,"strikethrough":bool,"tracking":n,"baselineShift":px,"caps":"normal|all caps|small caps"},"clear":bool? (remove styles from the range),"merge":bool?,"begin":bool? (start a new undo gesture)}"##,
             has_graphic,
             set_char_style,
         ),
@@ -1248,5 +1269,4 @@ pub fn commands() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
-#[path = "graphic_templates_tests.rs"]
 mod tests;

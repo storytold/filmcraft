@@ -13,7 +13,18 @@ fn ms(v: i64) -> Tick {
 }
 
 fn marker(id: u64, at: Tick, name: &str, kind: MarkerKind) -> Marker {
-    Marker { id: MarkerId(id), start: at, duration: Tick::ZERO, name: name.into(), comment: String::new(), kind, color: Label::Iris }
+    Marker {
+        id: MarkerId(id),
+        start: at,
+        duration: Tick::ZERO,
+        name: name.into(),
+        comment: String::new(),
+        kind,
+        color: Label::Iris,
+        url: String::new(),
+        author: String::new(),
+        custom_color: None,
+    }
 }
 
 /// The matte sequence (1 s of picture, a tone) with these markers.
