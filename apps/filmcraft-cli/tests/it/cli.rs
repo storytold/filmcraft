@@ -107,11 +107,22 @@ fn lock_test_project(tag: &str) -> (std::path::PathBuf, String) {
     (dir, proj)
 }
 
-/// The project's lock, held by this process.
-fn hold_lock(dir: &std::path::Path) -> std::fs::File {
-    let lock = std::fs::File::options().create(true).truncate(false).read(true).write(true).open(dir.join(".p.fcproj.lock")).unwrap();
+/// The lock of the project file `name`, held by this process.
+fn hold_lock(dir: &std::path::Path, name: &str) -> std::fs::File {
+    let lock = std::fs::File::options().create(true).truncate(false).read(true).write(true).open(dir.join(format!(".{name}.lock"))).unwrap();
     lock.lock().unwrap();
     lock
+}
+
+/// Start a run that has to wait for a lock this process holds; returns once it says it is waiting.
+fn start_waiting_run(args: &[&str]) -> std::process::Child {
+    use std::io::BufRead;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli")).args(args).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stderr.take().unwrap()).read_line(&mut line).unwrap();
+    assert!(line.contains("waiting for another run saving"), "{args:?}: {line}");
+    assert!(child.try_wait().unwrap().is_none(), "{args:?} did not wait");
+    child
 }
 
 #[test]
@@ -146,26 +157,14 @@ fn parallel_saves_keep_every_edit() {
 
 #[test]
 fn a_save_in_place_waits_for_the_lock_then_edits_the_latest_project() {
-    use std::io::BufRead;
     let (dir, proj) = lock_test_project("wait");
     for save in [&["--save"][..], &["--save-as", proj.as_str()]] {
-        let held = hold_lock(&dir);
+        let held = hold_lock(&dir, "p.fcproj");
         let before = std::fs::read(&proj).unwrap();
         let name = format!("name=waited-{}", save.len());
-        let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
-            .args(["--project", &proj])
-            .args(save)
-            .args(["exec", "file.newBin", &name])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
-        let mut line = String::new();
-        stderr.read_line(&mut line).unwrap();
-        assert!(line.contains("waiting for another run saving"), "{save:?}: {line}");
+        let args = [&["--project", proj.as_str()][..], save, &["exec", "file.newBin", &name]].concat();
+        let mut child = start_waiting_run(&args);
         assert_eq!(std::fs::read(&proj).unwrap(), before, "{save:?} wrote while another run held the lock");
-        assert!(child.try_wait().unwrap().is_none(), "{save:?} did not wait");
         // an edit made meanwhile by the holder must survive: the waiter reads only after the lock is free
         json_out(&cli(&["--project", &proj, "--save-as", &format!("{proj}.tmp"), "exec", "file.newBin", &format!("name=held-{}", save.len())]));
         std::fs::rename(format!("{proj}.tmp"), &proj).unwrap();
@@ -179,11 +178,28 @@ fn a_save_in_place_waits_for_the_lock_then_edits_the_latest_project() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A save through a symlink replaces the link. The runs before and after that must share one lock,
+/// or a run still waiting on the old one could overwrite a later run's save.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_project_keeps_its_lock_after_a_save() {
+    let (dir, proj) = lock_test_project("symlink");
+    let link = dir.join("link.fcproj");
+    std::os::unix::fs::symlink(&proj, &link).unwrap();
+    for name in ["name=first", "name=second"] {
+        let held = hold_lock(&dir, "link.fcproj");
+        let mut child = start_waiting_run(&["--project", link.to_str().unwrap(), "--save", "exec", "file.newBin", name]);
+        drop(held);
+        assert!(child.wait().unwrap().success(), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn runs_that_do_not_save_in_place_ignore_the_lock() {
     let (dir, proj) = lock_test_project("ignore");
     let other = dir.join("other.fcproj").to_str().unwrap().to_string();
-    let _held = hold_lock(&dir);
+    let _held = hold_lock(&dir, "p.fcproj");
     let cases: [&[&str]; 3] = [
         &["--project", &proj, "inspect", "project"],
         &["--project", &proj, "exec", "file.newBin", "name=copy-only"],

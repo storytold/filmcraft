@@ -22,21 +22,24 @@ fn lock_path(project: &Path) -> PathBuf {
     project.with_file_name(format!(".{}.lock", &name[..name.floor_char_boundary(MAX_NAME_BYTES)]))
 }
 
-/// `path` with symlinks resolved, so two names for one file share a lock; as given if that fails.
-fn real_path(path: &str) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+/// Do two paths name one existing file?
+fn same_file(a: &str, b: &str) -> bool {
+    a == b || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
 
-/// The project file this run will read and then write back, if any. `--save-as` somewhere else
-/// replaces that file whatever it held, so there is no edit of its to lose. A project that isn't a
-/// file gets no lock file beside it: opening it fails with its own error.
-fn saved_in_place(a: &Args) -> Option<PathBuf> {
-    let project = real_path(a.opt("--project")?);
-    let in_place = match a.opt("--save-as") {
-        Some(target) => real_path(target) == project,
-        None => a.flag("--save"),
+/// The path this run saves over, when that is the file it opens. `--save-as` somewhere else replaces
+/// that file whatever it held, so there is no edit of its to lose. A project that isn't a file gets
+/// no lock file beside it: opening it fails with its own error.
+///
+/// The lock goes by this path as written, not by where a symlink points. A save replaces the link
+/// itself, so resolving it would give the runs before and after that save different locks.
+fn saved_in_place(a: &Args) -> Option<&Path> {
+    let project = a.opt("--project")?;
+    let target = match a.opt("--save-as") {
+        Some(target) => same_file(target, project).then_some(target)?,
+        None => a.flag("--save").then_some(project)?,
     };
-    (in_place && project.is_file()).then_some(project)
+    Some(Path::new(target)).filter(|target| target.is_file())
 }
 
 /// Lock `project`, calling `waiting` first if another run holds the lock.
@@ -59,9 +62,9 @@ fn lock(project: &Path, waiting: impl FnOnce()) -> std::io::Result<File> {
 /// file system without locks) is a warning and not an error, so that saving works where it did.
 pub fn for_save(a: &Args) -> Option<File> {
     let project = saved_in_place(a)?;
-    let shown = a.opt("--project").unwrap_or_default();
+    let shown = project.display();
     let waiting = || crate::diag(format_args!("filmcraft-cli: waiting for another run saving {shown}"));
-    match lock(&project, waiting) {
+    match lock(project, waiting) {
         Ok(file) => Some(file),
         Err(e) => {
             crate::diag(format_args!("filmcraft-cli: warning: can't lock {shown} ({e}); another run saving it now could overwrite these edits"));
