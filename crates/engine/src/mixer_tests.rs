@@ -648,3 +648,20 @@ fn set_value_merges_a_drag_into_one_undo_step() {
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(mix(&s), -1.0);
 }
+
+#[test]
+fn a_merged_mix_drag_stays_in_its_own_sequence() {
+    let mut s = demo();
+    let first = s.state.active_sequence.unwrap();
+    let other = s.project.sequences().map(|i| i.id).find(|&id| id != first).unwrap();
+    let mix = |s: &Session, id: ItemId| s.project.sequence(id).unwrap().master_volume_db;
+    let set = |s: &mut Session, v: f64| {
+        s.execute("mixer.setValue", json!({"strip": "Mix", "lane": "volume", "value": v, "merge": true})).unwrap();
+    };
+    set(&mut s, -3.0);
+    s.execute("sequence.open", json!({"item": other.0})).unwrap();
+    set(&mut s, -9.0);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(mix(&s, other), 0.0);
+    assert_eq!(mix(&s, first), -3.0, "undo in one sequence leaves the other's Mix alone");
+}

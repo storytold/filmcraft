@@ -1278,12 +1278,14 @@ pub fn commands() -> Vec<CommandSpec> {
                     touch(s, id, &lane, v, t)?;
                     return release(s, id, &lane, t);
                 }
-                // `merge`: a drag of the value (same strip and lane, no other edit between) is one
-                // undo step; `begin` starts a new one
+                // `merge`: a drag of the value (same sequence, strip and lane, no other edit
+                // between) is one undo step; `begin` starts a new one. The Mix strip has the same
+                // id in every sequence, so the key names the sequence too.
                 if bool_p(p, "begin").unwrap_or(false) {
                     s.history.merge_key = None;
                 }
-                let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("mixerValue:{}:{lane}", id.0));
+                let seq = s.state.active_sequence.map_or(0, |q| q.0);
+                let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("mixerValue:{seq}:{}:{lane}", id.0));
                 set_value_merged(s, id, &lane, v, t, merge.as_deref())?;
                 Ok(json!({"value": v}))
             },
