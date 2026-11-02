@@ -194,7 +194,7 @@ pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
     let mut out = Vec::new();
     let mut add = |section, name: &str, value: String, editable| out.push(Field { section, name: name.to_string(), value, editable });
     add("Clip", "Name", it.name.clone(), true);
-    add("Clip", "Label", it.label.name().to_string(), true);
+    add("Clip", "Label", it.label_value(), true);
     add("Clip", "Media Type", it.type_label().to_string(), false);
     let col = |c: &str| filmcraft_project::find::column_text(p, it, c);
     add("Clip", "Frame Rate", col("Frame Rate"), false);
@@ -300,7 +300,7 @@ fn metadata_set(s: &mut Session, p: &Value) -> Result<Value> {
         if k.trim().is_empty() {
             return Err(bad("metadata.set", "empty field name"));
         }
-        if k.eq_ignore_ascii_case("label") && Label::from_name(v).is_none() {
+        if k.eq_ignore_ascii_case("label") && Label::from_color_name(v).is_none() && filmcraft_project::HexColor::parse(v).is_none() {
             return Err(bad("metadata.set", format!("unknown label `{v}`")));
         }
         if k.eq_ignore_ascii_case("name") && v.trim().is_empty() {
@@ -314,7 +314,13 @@ fn metadata_set(s: &mut Session, p: &Value) -> Result<Value> {
         let it = s.project.item(id).ok_or_else(|| bad("metadata.set", "no such item"))?;
         changes.iter().all(|(k, v)| match k.to_ascii_lowercase().as_str() {
             "name" => it.name == *v,
-            "label" => Label::from_name(v) == Some(it.label),
+            "label" => {
+                if let Some(color) = filmcraft_project::HexColor::parse(v) {
+                    it.custom_label_color == Some(color)
+                } else {
+                    it.custom_label_color.is_none() && Label::from_color_name(v) == Some(it.label)
+                }
+            }
             _ => it.metadata.get(k).map(String::as_str).unwrap_or("") == v.as_str(),
         })
     };
@@ -324,7 +330,12 @@ fn metadata_set(s: &mut Session, p: &Value) -> Result<Value> {
             for (k, v) in &changes {
                 match k.to_ascii_lowercase().as_str() {
                     "name" => it.name = v.trim().to_string(),
-                    "label" => it.label = Label::from_name(v).unwrap_or(it.label),
+                    "label" => {
+                        if let Some(label) = Label::from_color_name(v) {
+                            it.label = label;
+                        }
+                        it.custom_label_color = filmcraft_project::HexColor::parse(v);
+                    }
                     _ if v.is_empty() => {
                         it.metadata.remove(k);
                     }
@@ -337,7 +348,7 @@ fn metadata_set(s: &mut Session, p: &Value) -> Result<Value> {
         })?;
     }
     let it = s.project.item(id).ok_or_else(|| bad("metadata.set", "no such item"))?;
-    Ok(json!({"item": id.0, "name": it.name, "label": it.label.name(), "metadata": it.metadata, "changed": !unchanged}))
+    Ok(json!({"item": id.0, "name": it.name, "label": it.label_value(), "metadata": it.metadata, "changed": !unchanged}))
 }
 
 // ------------------------------------------------------------------------------------ project notes

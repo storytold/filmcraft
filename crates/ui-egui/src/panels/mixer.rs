@@ -100,6 +100,7 @@ pub fn poll_meters(app: &mut FilmcraftApp, ui: &egui::Ui) -> HashMap<u64, Vec<[f
     // without an audio device, the loudness feed is what mixes the programme (and posts meters)
     super::meters::feed_loudness(app);
     let mut fresh: Vec<(u64, Vec<f32>)> = app.session.previews.live.take_meters().into_iter().map(|(k, v)| (k.0, v)).collect();
+    filmcraft_engine::voiceover::post_input_meter(&mut app.session);
     let input = app.session.previews.live.take_input_meter();
     if !input.is_empty() {
         fresh.push((INPUT_METER, input));
@@ -447,7 +448,7 @@ fn mixer_slots(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: Trac
                 ui.set_min_width(180.0);
                 match fx {
                     Some(e) => {
-                        if crate::panels::audio_fx_editor::has_editor(&e.effect) {
+                        if crate::panels::audio_fx_editor::can_edit_insert(&e.effect) {
                             let r0 = ui.button(tl!("Edit…"));
                             app.auto.add(&format!("{ap}.fx.{k}.edit"), r0.rect, "Edit…");
                             if r0.clicked() {
@@ -510,7 +511,7 @@ fn mixer_slots(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: Trac
             });
             if resp.double_clicked()
                 && let Some(e) = fx
-                && crate::panels::audio_fx_editor::has_editor(&e.effect)
+                && crate::panels::audio_fx_editor::can_edit_insert(&e.effect)
             {
                 open_editor = Some(crate::panels::audio_fx_editor::FxTarget::Insert { strip: id.0, slot: k });
             }

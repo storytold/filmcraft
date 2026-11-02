@@ -65,6 +65,23 @@ fn export_without_wait_says_where_to_poll() {
     assert!(r.get("poll").is_none() && r["result"].is_object(), "{r}");
 }
 
+/// An export reads its own copy of each file, not the source the monitors read: the two would
+/// otherwise take turns on one decoder, seeking it between the export's frame and the playhead's
+/// (93 % of a 4K60 playback's frames dropped while an export of the same file ran).
+#[test]
+fn an_export_does_not_read_the_monitors_source() {
+    let movie = crate::media_test_util::tmp_dir("export-own-source").join("a.mp4");
+    crate::media_test_util::make_movie(&movie, filmcraft_media::DemoScene::Dunes, 64, 36, 12);
+    let (mut s, items, seq) = crate::media_test_util::session_with(&[&movie]);
+    s.media.clear();
+    let dir = Scratch::new("own-source");
+    let out = dir.path("a.mp4");
+    let r = s.execute("file.exportMedia", json!({"sequence": seq.0, "path": out, "format": "h264", "wait": true})).unwrap();
+    assert!(r["result"].is_object(), "{r}");
+    assert!(std::fs::metadata(&out).is_ok_and(|m| m.len() > 0));
+    assert!(s.media.cached(items[0]).is_none(), "the export opened the monitors' source");
+}
+
 /// A scratch directory under the workspace `target/`, removed when dropped.
 struct Scratch(PathBuf);
 
@@ -90,6 +107,111 @@ fn demo() -> Session {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s
+}
+
+#[test]
+fn single_frame_in_out_warning_follows_the_selected_range() {
+    let mut s = demo();
+    for rate in [filmcraft_time::FrameRate::FPS_25, filmcraft_time::FrameRate::FPS_23_976] {
+        let seq = s.state.active_sequence.unwrap();
+        std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().settings.frame_rate = rate;
+        s.execute("markers.markIn", json!({"frame": 12})).unwrap();
+        s.execute("markers.markOut", json!({"frame": 12})).unwrap();
+        std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().work_area =
+            Some(filmcraft_time::TimeRange::new(rate.tick_of(12), rate.frame_duration()));
+        for p in [json!({}), json!({"range":null}), json!({"range":"inOut"}), json!({"range":{"mode":"Sequence In/Out"}})] {
+            let v = s.execute("export.resolve", p.clone()).unwrap();
+            assert_eq!(v["frames"], 1, "{p}: {v}");
+            assert_eq!(v["warnings"].as_array().unwrap().len(), 1, "{p}: {v}");
+            assert!(v["warnings"][0].as_str().unwrap().contains("range: entire"));
+        }
+        let custom = json!({"range":"custom", "startFrame":12, "endFrame":13});
+        for p in [
+            json!({"range":"entire"}),
+            json!({"range":"workArea"}),
+            custom,
+            json!({"startFrame":12, "endFrame":13}),
+            json!({"range":{"startFrame":12, "endFrame":13}}),
+        ] {
+            let v = s.execute("export.resolve", p.clone()).unwrap();
+            assert_eq!(v["warnings"], json!([]), "{p}: {v}");
+        }
+        // Rate conversion does not change the length of the marked sequence range.
+        let v = s.execute("export.resolve", json!({"fps":60})).unwrap();
+        assert_eq!(v["warnings"].as_array().unwrap().len(), 1);
+        s.execute("markers.markOut", json!({"frame":13})).unwrap();
+        let v = s.execute("export.resolve", json!({})).unwrap();
+        assert_eq!(v["frames"], 2);
+        assert_eq!(v["warnings"], json!([]));
+    }
+    // A one-frame sequence without marks is intentional and must stay quiet.
+    let seq = s.state.active_sequence.unwrap();
+    let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+    q.mark_in = None;
+    q.mark_out = None;
+    q.video_tracks.clear();
+    q.audio_tracks.clear();
+    let v = s.execute("export.resolve", json!({})).unwrap();
+    assert_eq!(v["frames"], 1);
+    assert_eq!(v["warnings"], json!([]));
+}
+
+#[test]
+fn single_frame_in_out_queue_add_retains_warnings_and_ranges() {
+    let mut s = demo();
+    let dir = Scratch::new("queue-range-warning");
+    s.execute("markers.markIn", json!({"frame":12})).unwrap();
+    s.execute("markers.markOut", json!({"frame":12})).unwrap();
+    let expected = s.execute("export.resolve", json!({})).unwrap()["warnings"].clone();
+    let v = s.execute("export.queue.add", json!({"path":dir.path("default.wav"),"format":"wav"})).unwrap();
+    assert_eq!(v["warnings"], expected);
+    assert_eq!(v["added"].as_array().unwrap().len(), 1);
+    assert_eq!(v["items"].as_array().unwrap().len(), 1);
+    assert_eq!(v["items"][0]["id"], v["added"][0]);
+    assert_eq!(v["items"][0]["status"], "ready");
+    assert_eq!(v["items"][0]["range"], Value::Null, "default range is still resolved from the snapshot's marks");
+    s.execute("export.queue.clear", json!({"all":true})).unwrap();
+
+    // Each marked range contributes its advisory; later explicit ranges must not overwrite it.
+    let ranges = json!(["inOut", {"mode":"inOut"}, {"startFrame":12,"endFrame":13}, "entire"]);
+    let v = s.execute("export.queue.add", json!({"path":dir.path("ranges.wav"),"format":"wav","ranges":ranges})).unwrap();
+    assert_eq!(v["warnings"], json!([expected[0], expected[0]]));
+    assert_eq!(v["added"].as_array().unwrap().len(), 4);
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 4);
+    for (i, range) in ranges.as_array().unwrap().iter().enumerate() {
+        let resolved = s.execute("export.resolve", json!({"range":range})).unwrap();
+        assert_eq!(items[i]["id"], v["added"][i]);
+        assert_eq!(items[i]["range"]["start"], resolved["range"]["start"]);
+        assert_eq!(items[i]["range"]["duration"], resolved["range"]["duration"]);
+    }
+    let quiet = s.execute("export.queue.add", json!({"path":dir.path("custom.wav"),"format":"wav","startFrame":12,"endFrame":13})).unwrap();
+    assert_eq!(quiet["warnings"], json!([]), "warnings describe this addition, not previously queued items");
+}
+
+#[test]
+fn single_frame_in_out_exports_warn_without_changing_the_output() {
+    let mut s = demo();
+    let dir = Scratch::new("single-frame-warning");
+    s.execute("markers.markIn", json!({"frame":12})).unwrap();
+    s.execute("markers.markOut", json!({"frame":12})).unwrap();
+    for wait in [true, false] {
+        let path = dir.path(&format!("marked-{wait}.wav"));
+        let v = s.execute("file.exportMedia", json!({"path":path,"format":"wav","wait":wait})).unwrap();
+        assert_eq!(v["warnings"].as_array().unwrap().len(), 1);
+        if !wait {
+            let job = s.jobs.iter().find(|j| Some(j.id) == v["job"].as_u64()).unwrap();
+            let start = std::time::Instant::now();
+            while !job.progress.finished.load(std::sync::atomic::Ordering::Relaxed) {
+                assert!(start.elapsed() < std::time::Duration::from_secs(30));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let explicit = dir.path(&format!("explicit-{wait}.wav"));
+        let v = s.execute("file.exportMedia", json!({"path":explicit,"format":"wav","wait":true,"startFrame":12,"endFrame":13})).unwrap();
+        assert_eq!(v["warnings"], json!([]));
+        assert_eq!(std::fs::read(path).unwrap(), std::fs::read(explicit).unwrap());
+    }
 }
 
 #[test]
@@ -637,6 +759,33 @@ fn hardware_encoding_is_off_unless_asked_for() {
     assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "auto"}})).unwrap(), Auto);
     let old: filmcraft_export::ExportSettings = serde_json::from_value(json!({"format": "h264"})).unwrap();
     assert_eq!(old.hardware_encoding, Off);
+}
+
+/// A `bitrateKbps` in `settings` is the bitrate, as the flat `bitrateKbps` is, also over a preset
+/// whose bitrate adapts to the frame size (every Match Source preset).
+#[test]
+fn settings_bitrate_replaces_a_presets_adaptive_bitrate() {
+    use filmcraft_export::ExportSettings;
+    use filmcraft_export::presets::DEFAULT_PRESET;
+    use filmcraft_time::FrameRate;
+    let s = demo();
+    let settings = |p: &Value| crate::export_tools::settings_from_params(&s, p, "file.exportMedia").map(|(_, st)| st).unwrap();
+    let target = |st: &ExportSettings| st.resolve(720, 480, FrameRate::FPS_29_97, 48_000).target_kbps;
+    // the preset alone: 720 x 480 x 29.97 fps x 0.2 bits per pixel
+    assert_eq!(target(&settings(&json!({"path": "x.mp4", "preset": DEFAULT_PRESET}))), 2072);
+    for p in [
+        json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "settings": {"bitrateKbps": 5000}}),
+        json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "bitrateKbps": 5000}),
+        json!({"path": "x.mp4", "settings": {"bitrateKbps": 5000}}),
+        json!({"path": "x.mp4", "bitrateKbps": 5000}),
+    ] {
+        let st = settings(&p);
+        assert_eq!(st.adaptive_bitrate, None, "{p}");
+        assert_eq!(target(&st), 5000, "{p}");
+    }
+    // an adaptive bitrate given with it still wins
+    let p = json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "settings": {"bitrateKbps": 5000, "adaptiveBitrate": 0.1}});
+    assert_eq!(target(&settings(&p)), 1036);
 }
 
 #[test]

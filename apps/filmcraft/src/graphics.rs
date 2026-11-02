@@ -444,9 +444,8 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
         // includes GL. Creating that backend can crash inside AMD's atio6axx.dll before adapter
         // selection or any Rust error handling runs, so the window never appears. Choosing an
         // adapter afterwards is too late: only leaving GL out of the instance avoids it. Keep
-        // Vulkan and DX12 both: forcing DX12 alone sends shaders through FXC (which rejects
-        // fx.wgsl, silently falling back to the CPU) and leaves machines without DX12 with no
-        // backend at all.
+        // Vulkan and DX12 both: forcing DX12 alone leaves machines without DX12 with no backend
+        // at all.
         Mode::Default if windows => {
             create.instance_descriptor.backends = backend_override.unwrap_or(Backends::PRIMARY);
             // wgpu's own choice of adapter, except for a GPU that Windows lists through two
@@ -458,7 +457,7 @@ fn apply_for(options: &mut NativeOptions, mode: Mode, backend_override: Option<B
                 Some(Arc::new(move |adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>| filmcraft_gpu::adapter::pick(adapters, surface, power)));
         }
         Mode::Default => {}
-        // Without Vulkan, whose driver is what crashes; GPU effects may fall back to the CPU.
+        // Without Vulkan, whose driver is what crashes.
         Mode::Dx12 => create.instance_descriptor.backends = Backends::DX12,
         Mode::Software => {
             create.instance_descriptor.backends = software_backends(windows);

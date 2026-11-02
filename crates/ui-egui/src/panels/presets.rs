@@ -38,7 +38,7 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
         app.auto.add(&format!("effects.preset.{}", p.name), r, &p.name);
         let tip = crate::i18n::t(if p.description.is_empty() { &p.name } else { &p.description }).to_string();
         let resp = resp.on_hover_text(tip);
-        if resp.drag_started() {
+        if resp.drag_started_by(egui::PointerButton::Primary) {
             crate::panels::start_drag_effect(ui, &format!("preset:{}", p.name));
         }
         if resp.double_clicked() {
