@@ -32,6 +32,7 @@ macro_rules! out {
 
 mod args;
 mod probe;
+mod project_lock;
 
 use args::{Args, parse_value};
 use filmcraft_automation::BridgeClient;
@@ -104,7 +105,8 @@ SUBCOMMANDS
 OPTIONS
   --project <p.fcproj>          open this project first (headless)
   --demo                        open the built-in demo project (headless)
-  --save                        save the project back to --project when done
+  --save                        save the project back to --project when done; runs saving one
+                                project take turns, so each edits what the last one saved
   --save-as <p.fcproj>          save the project to this path when done
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
   --data-dir <dir>              FilmCraft data directory for user export presets (headless;
@@ -387,6 +389,7 @@ async fn cli_commands(a: &Args, cmd: &str) {
 async fn cli_exec(a: &Args) {
     let id = a.pos(1).unwrap_or_else(|| usage("exec <id> [key=value ...]"));
     let params = a.params_from(2).unwrap_or_else(|e| usage(e));
+    let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     match b.exec(id, params).await {
         Ok(v) => print(a, &v),
@@ -402,6 +405,7 @@ async fn cli_run(a: &Args) {
     } else {
         read_text(script).await.unwrap_or_else(|e| fail(format!("{script}: {e}")))
     };
+    let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     let mut failed = 0;
     for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#')) {
@@ -442,6 +446,7 @@ async fn cli_import(a: &Args) {
     if paths.is_empty() {
         usage("import <file>...");
     }
+    let _lock = project_lock::for_save(a);
     let mut b = Backend::open(a);
     match b.exec("file.import", json!({"paths": paths})).await {
         Ok(v) => print(a, &v),
