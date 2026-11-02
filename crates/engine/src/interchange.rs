@@ -51,6 +51,9 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
         Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Some(std::collections::HashSet::new()),
         _ => None,
     };
+    // Two passes: every numbered name is checked for an identical file before any file is
+    // created, so a free earlier slot does not win over a match at a later one (one loop that
+    // creates at the first free name would write a duplicate there).
     for number in 1..=1_000 {
         let name = candidate_name(number);
         if occupied.as_ref().is_some_and(|names| !names.contains(&name.to_ascii_lowercase())) {

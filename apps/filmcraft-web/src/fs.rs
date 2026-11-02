@@ -394,7 +394,14 @@ impl Services for WebServices {
     }
 
     fn list_dir_bounded(&self, dir: &str, max_entries: usize, max_bytes: usize) -> Option<io::Result<Vec<String>>> {
-        let prefix = if dir.ends_with('/') { dir.to_string() } else { format!("{dir}/") };
+        // the table's root is listed for "." or "" (a path with no folder), as read_dir lists it
+        let prefix = if dir.is_empty() || dir == "." {
+            String::new()
+        } else if dir.ends_with('/') {
+            dir.to_string()
+        } else {
+            format!("{dir}/")
+        };
         Some(FS.with(|fs| {
             let fs = fs.borrow();
             let mut names = Vec::new();
