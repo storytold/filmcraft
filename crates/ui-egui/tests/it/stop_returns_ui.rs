@@ -21,6 +21,9 @@ fn harness(returns: bool) -> H {
     session.execute("prefs.set", json!({"key": "playback.stopReturnsToStart", "value": returns})).unwrap();
     let mut h = Harness::builder().with_step_dt(0.25).with_size(egui::vec2(1280.0, 800.0)).build_eframe(move |_cc| FilmcraftApp::new(session));
     h.step();
+    // opening the clip focused the Source monitor; a command without a `monitor` acts on the
+    // focused one, and the tests mean the Program monitor by it
+    h.state_mut().ui.focused = filmcraft_ui_egui::dock::PanelKind::Program;
     h
 }
 
@@ -107,7 +110,7 @@ fn a_speed_change_keeps_the_start_position() {
         h.step();
     }
     assert!(h.state().session.playhead() > start);
-    invoke(&mut h, "playback.toggleOther", json!({"monitor": "program"}));
+    invoke(&mut h, "playback.toggleOther", json!({}));
     h.step();
     assert_eq!(h.state().session.playhead(), start);
 }
@@ -232,7 +235,7 @@ fn the_alternate_key_plays_around_the_edit_in_trim_mode() {
     h.step();
     assert!(!h.state().playback.playing, "no ordinary Program playback starts");
     assert!(h.state().session.trim_play.around.is_some(), "it loops around the edit");
-    invoke(&mut h, "playback.toggleOther", json!({}));
+    invoke(&mut h, "playback.toggleOther", json!({"monitor": "program"}));
     assert!(h.state().session.trim_play.around.is_none(), "and a second press ends it");
 }
 
