@@ -1,0 +1,97 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebCodecs source-read regression</title>
+<!--
+  Serve this file beside the built web app and open it in a WebCodecs-capable browser.
+  Generate the test fixture locally (do not commit media):
+  ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30 -t 12 -an -c:v libx264 \
+    -preset ultrafast -g 30 -b:v 12M -minrate 12M -maxrate 12M -bufsize 12M \
+    -x264-params nal-hrd=cbr -pix_fmt yuv420p -movflags +faststart read-test.mp4
+  Optional query parameters: ?app=index.html&media=read-test.mp4
+  Uses only the upstream File import API; no embedding-host API is required.
+-->
+<button id="run">Run source-read regression</button>
+<pre id="result" role="status">Ready</pre>
+<iframe id="app" title="Isolated FilmCraft test" style="width:100%;height:700px;border:0"></iframe>
+<script type="module">
+const params = new URLSearchParams(location.search);
+const frame = document.querySelector('#app');
+frame.src = (params.get('app') || 'index.html') + '?empty&norecover';
+const result = document.querySelector('#result');
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function until(predicate, message, timeout = 30000) {
+  const deadline = Date.now() + timeout;
+  while (!await predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await wait(50);
+  }
+}
+document.querySelector('#run').onclick = async () => {
+  document.querySelector('#run').disabled = true;
+  const report = {ok: false};
+  let restoreDecoder;
+  try {
+    result.textContent = 'Loading…';
+    await until(() => frame.contentWindow.filmcraftLoad?.readyMs, 'App did not load');
+    const win = frame.contentWindow, api = win.filmcraft;
+    if (!win.VideoDecoder) throw new Error('WebCodecs is required');
+    await api.execute('file.newProject', {name: 'WebCodecs read error'});
+    await api.request('ui.set', {timeline: {thumbnails: 'off'}});
+    const response = await fetch(params.get('media') || 'read-test.mp4');
+    if (!response.ok) throw new Error('Fixture fetch failed');
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength < 16 * 1024 * 1024) throw new Error('Generate the documented 12-second CBR fixture');
+    let rejected = 0, decodeCalls = 0, decoderFault = false;
+    const originalDecode = win.VideoDecoder.prototype.decode;
+    win.VideoDecoder.prototype.decode = function (...args) {
+      decodeCalls++;
+      if (decoderFault) throw new win.DOMException('Injected decoder error', 'EncodingError');
+      return originalDecode.apply(this, args);
+    };
+    restoreDecoder = () => {win.VideoDecoder.prototype.decode = originalDecode;};
+    // Fail one region, while other parts of the same File remain readable.
+    const file = new win.File([bytes], 'read-test.mp4', {type: 'video/mp4'});
+    const slice = file.slice.bind(file);
+    file.slice = (start, end, type) => {
+      const blob = slice(start, end, type);
+      if (start < 10 * 1024 * 1024 && end > 8 * 1024 * 1024) {
+        blob.arrayBuffer = async () => {rejected++; throw new Error('Injected source read error');};
+      }
+      return blob;
+    };
+    const imported = await api.importFiles([file]);
+    if (!imported.items?.length) throw new Error('Fixture import failed: ' + JSON.stringify(imported));
+    const sequence = await api.execute('file.newSequence', {fromItem: imported.items[0], name: 'Read error'});
+    await api.execute('sequence.open', {item: sequence.sequence});
+    await until(() => api.info().webcodecsStats.framesDecoded > 0, 'No initial WebCodecs frame');
+    await until(() => api.info().fetchesInFlight === 0, 'Initial reads did not finish');
+    const baseline = api.info().webcodecsStats;
+    result.textContent = 'Injecting a media read error…';
+    await api.execute('playhead.set', {seconds: 6});
+    await until(() => rejected > 0, 'Fault region was not read');
+    // Give the frame server time to observe the rejected asynchronous read.
+    await wait(1500);
+    report.rejectedReads = rejected;
+    report.afterReadError = api.info().webcodecsStats;
+    if (report.afterReadError.fallbacks !== baseline.fallbacks) throw new Error('Source read error disabled WebCodecs');
+    const beforeRecovery = api.info().webcodecsStats.framesDecoded;
+    const callsBeforeRecovery = decodeCalls;
+    await api.execute('playhead.set', {seconds: 10});
+    await until(() => decodeCalls > callsBeforeRecovery && api.info().webcodecsStats.framesDecoded > beforeRecovery,
+      'A readable region did not decode through WebCodecs after the read error');
+    report.afterRecovery = api.info().webcodecsStats;
+    if (report.afterRecovery.fallbacks !== baseline.fallbacks) throw new Error('Recovery used the software fallback');
+    // A genuine decoder exception must still take the established fallback path.
+    decoderFault = true;
+    await api.execute('playhead.set', {seconds: 2});
+    await until(() => api.info().webcodecsStats.fallbacks > baseline.fallbacks, 'Decoder error did not trigger fallback');
+    report.afterDecoderError = api.info().webcodecsStats;
+    report.ok = true;
+  } catch (error) {
+    report.error = String(error.stack || error);
+  } finally {
+    restoreDecoder?.();
+    result.textContent = JSON.stringify(report, null, 2);
+  }
+};
+</script>

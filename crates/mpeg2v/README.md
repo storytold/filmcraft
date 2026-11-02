@@ -38,6 +38,9 @@ parameters, so a random-access point without its own sequence header still decod
 
 - Main Profile at Low/Main/High-1440/High Level, 4:2:2 Profile (IMX / D-10, XDCAM HD422),
   Simple Profile, MPEG-1 (including D pictures). 4:4:4 is refused (no profile in use for it).
+- Pictures above 2^25 luma samples (8192 x 4096; 8K UHD at 7680 x 4320 fits, and the largest MPEG-2 level,
+  High, is 1920 x 1152) are refused as `Unsupported`: the 14-bit header fields allow 16383 x 16383, which
+  would ask for gigabytes per frame from hostile input.
 - Frame pictures with frame and field motion compensation, dual prime, frame and field DCT;
   field pictures with field, 16x8 and dual-prime motion compensation, the second field of a
   P frame predicted from the first; open and closed GOPs; B pictures without a forward
@@ -77,7 +80,7 @@ are compared within a tolerance: **per frame max |Δ| ≤ 4 and PSNR ≥ 58 dB, 
 samples differing**. Frame count, display order, picture types, interlacing and field order are
 exact (ffprobe).
 
-`tests/oracle.rs` (FFmpeg-encoded elementary streams):
+`tests/it/oracle.rs` (FFmpeg-encoded elementary streams):
 
 | Fixture | Content | Max Δ | Differing | PSNR |
 |---|---|---|---|---|
@@ -110,7 +113,7 @@ FFmpeg's integer IDCT saturates differently from the exact one.
 
 ## Performance
 
-`cargo test --release -p filmcraft-mpeg2v --test perf -- --ignored --nocapture` decodes the
+`cargo test --release -p filmcraft-mpeg2v --test it perf:: -- --ignored --nocapture` decodes the
 1080i fixture (1920×1080 4:2:0, 25 Mb/s, IBBP, field MC/DCT; FFmpeg-encoded) on an M4 Pro
 (14 cores) that was heavily loaded by other jobs (load average ≈ 190), best of five runs:
 **271 fps on one thread, 274 fps with slice rows on rayon** (runs under heavier momentary load
@@ -126,5 +129,5 @@ fell to 77–150 fps). These are lower bounds.
   rounding, field addressing, edge clamping.
 - `src/tests.rs`: a hand-built intra picture decodes to its DC; truncation at every byte and
   3000 random mutations never panic.
-- `src/synth_tests.rs`, `tests/oracle.rs`: see above (single-threaded decode identical to the
+- `src/synth_tests.rs`, `tests/it/oracle.rs`: see above (single-threaded decode identical to the
   threaded one).

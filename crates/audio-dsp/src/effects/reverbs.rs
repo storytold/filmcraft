@@ -96,6 +96,8 @@ pub struct ConvolutionReverb {
     pre: DelayLine,
     dry_delay: Vec<DelayLine>,
     key: (usize, f32, f32, f32),
+    /// Impulse, size or damping changed since the last rebuild; rebuilt at the next `process`.
+    dirty: bool,
     mix: Smoothed,
     gain: Smoothed,
     width: Smoothed,
@@ -138,6 +140,7 @@ impl ConvolutionReverb {
             pre: DelayLine::new((0.5 * sample_rate) as usize + 2),
             dry_delay: vec![DelayLine::new(PART + 2); channels.max(1)],
             key: (usize::MAX, 0.0, 0.0, 0.0),
+            dirty: false,
             mix: Smoothed::with_ms(0.0, sample_rate, 20.0),
             gain: Smoothed::with_ms(1.0, sample_rate, 20.0),
             width: Smoothed::with_ms(1.0, sample_rate, 20.0),
@@ -205,7 +208,11 @@ impl ConvolutionReverb {
     }
 
     fn apply_params(&mut self, snap: bool) {
-        self.rebuild();
+        if snap {
+            self.rebuild();
+        } else {
+            self.dirty = true;
+        }
         self.mix.set(self.pv.v("mix") / 100.0);
         self.gain.set(db_to_gain(self.pv.v("gain")));
         self.width.set(self.pv.v("width") / 100.0);
@@ -295,6 +302,10 @@ impl AudioEffect for ConvolutionReverb {
         let nch = channels.len().min(self.dry_delay.len());
         if nch == 0 {
             return;
+        }
+        if self.dirty {
+            self.dirty = false;
+            self.rebuild();
         }
         for i in 0..n {
             let (mix, gain, width, pd) = (self.mix.tick(), self.gain.tick(), self.width.tick(), self.predelay.tick());
@@ -469,6 +480,55 @@ impl AudioEffect for SurroundReverb {
                 }
             }
             start += len;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::Rng;
+
+    #[test]
+    fn set_param_defers_the_impulse_rebuild_to_process() {
+        let mut fx = ConvolutionReverb::new(48_000.0, 2);
+        let key = fx.key;
+        fx.set_param("damping_hf", 8000.0);
+        fx.set_param("room_size", 60.0);
+        assert_eq!(fx.key, key, "set_param rebuilt the impulse");
+        fx.process(&mut [&mut [0.0; 16][..], &mut [0.0; 16][..]]);
+        assert_eq!(fx.key, (key.0, 60.0, key.2, 8000.0));
+        assert!(!fx.dirty);
+    }
+
+    #[test]
+    fn deferred_rebuild_output_is_identical() {
+        let changes: &[&[(&str, f32)]] = &[
+            &[("room_size", 70.0)],
+            &[],
+            &[("damping_lf", 200.0), ("damping_hf", 6000.0)],
+            &[("impulse", 2.0), ("mix", 80.0)],
+            &[("room_size", 30.0), ("room_size", 90.0)],
+            &[("impulse", 4.0), ("damping_hf", 20_000.0), ("damping_lf", 10.0)],
+        ];
+        let mut eager = ConvolutionReverb::new(48_000.0, 2);
+        let mut deferred = ConvolutionReverb::new(48_000.0, 2);
+        let mut rng = Rng::new(5);
+        for (block, set) in changes.iter().cycle().take(24).enumerate() {
+            for &(id, v) in *set {
+                eager.set_param(id, v);
+                eager.rebuild();
+                deferred.set_param(id, v);
+            }
+            let n = 300 + 37 * block;
+            let l: Vec<f32> = (0..n).map(|_| rng.uniform()).collect();
+            let r: Vec<f32> = (0..n).map(|_| rng.uniform()).collect();
+            let (mut l1, mut r1, mut l2, mut r2) = (l.clone(), r.clone(), l, r);
+            eager.process(&mut [&mut l1, &mut r1]);
+            deferred.process(&mut [&mut l2, &mut r2]);
+            for (a, b) in l1.iter().chain(&r1).zip(l2.iter().chain(&r2)) {
+                assert_eq!(a.to_bits(), b.to_bits(), "block {block}");
+            }
         }
     }
 }

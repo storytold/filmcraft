@@ -737,8 +737,16 @@ fn pan51(buf: &Bus, layout: Layout, tr: &Track, id: TrackId, ovs: &HashMap<(Trac
     out
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_strip(plan: &Plan, si: usize, st: &mut StripState, mut buf: Bus, x0: i64, skip: usize, sr: u32, ovs: &HashMap<(TrackId, String), Override>) -> StripOut {
+/// Where in time a strip is run: first sample, samples to skip, sample rate and live overrides.
+struct StripRun<'a> {
+    x0: i64,
+    skip: usize,
+    sr: u32,
+    ovs: &'a HashMap<(TrackId, String), Override>,
+}
+
+fn run_strip(plan: &Plan, si: usize, st: &mut StripState, mut buf: Bus, run: StripRun<'_>) -> StripOut {
+    let StripRun { x0, skip, sr, ovs } = run;
     let s = &plan.strips[si];
     let tr: &Track = &s.track;
     let id = tr.id;
@@ -894,13 +902,13 @@ pub(crate) fn mix_graph_at(
                 return None;
             }
             let input = if has_clips {
-                let mut v = track_input_at(project, &s.track, x0, total, sr, sources, &ovs, depth).channels;
+                let mut v = track_input_at(project, &s.track, crate::audio::Window { start: x0, frames: total, sr }, sources, &ovs, depth).channels;
                 v.resize(s.width, vec![0.0; total]);
                 v
             } else {
                 silent(s.width, total)
             };
-            Some(run_strip(&plan, si, ss, input, x0, skip, sr, &ovs))
+            Some(run_strip(&plan, si, ss, input, StripRun { x0, skip, sr, ovs: &ovs }))
         })
         .collect();
     let deliver = |o: StripOut, si: usize, bus: &mut Vec<Option<Bus>>, meters: &mut Vec<(TrackId, Vec<f32>)>| {
@@ -931,7 +939,7 @@ pub(crate) fn mix_graph_at(
             continue;
         }
         let input = bus[si].take().unwrap_or_else(|| silent(s.width, total));
-        let o = run_strip(&plan, si, ss, input, x0, skip, sr, &ovs);
+        let o = run_strip(&plan, si, ss, input, StripRun { x0, skip, sr, ovs: &ovs });
         if let Some(fin) = deliver(o, si, &mut bus, &mut meters) {
             out = fin;
         }

@@ -457,6 +457,28 @@ fn whole(n: usize) -> Vec<Segment> {
     vec![Segment { start: 0, len: n, dependent: false }]
 }
 
+/// Tiny parsed-picture fixture for missing-reference storage regressions in the decoder.
+pub(crate) fn missing_reference_picture(poc: u32, deltas: &[i32]) -> Vec<u8> {
+    let mut stream = Vec::new();
+    stream.extend(vps());
+    stream.extend(sps(true));
+    stream.extend(pps(0, &None, false));
+    let picture = PicDesc {
+        nal_type: 1,
+        poc,
+        intra: deltas.is_empty(),
+        cu: if deltas.is_empty() { Cu::Pcm } else { Cu::Skip },
+        pps_id: 0,
+        st: deltas.iter().map(|&d| (d, true)).collect(),
+        lt: vec![],
+        num_ref: deltas.len() as u32,
+        list_entry: None,
+        segments: whole(WC * HC),
+    };
+    encode_picture(&picture, &None, &content(0), &mut stream, &mut None);
+    stream
+}
+
 /// Encode the test sequence; returns the stream and the exact expected pictures (when the PCM samples
 /// are not filtered).
 fn sequence(tiles: &Tiles, pcm_lf_disabled: bool, segments: Vec<Segment>) -> (Vec<u8>, Vec<Planes>) {

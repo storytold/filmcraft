@@ -18,9 +18,12 @@ struct Draft {
     folder: String,
     import: bool,
     replace: Option<String>,
+    /// Why the last OK failed, shown in the dialog (it only reached the status bar, so a failed
+    /// export looked like nothing happening, #2211).
+    error: Option<String>,
 }
 fn draft_id() -> egui::Id {
-    egui::Id::new("frame-export-draft")
+    egui::Id::unique("frame-export-draft")
 }
 fn clean(name: &str) -> String {
     name.trim().chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect()
@@ -41,16 +44,24 @@ pub fn open(app: &mut FilmcraftApp, ctx: &egui::Context, params: &Value) -> Resu
     } else if app.playback.playing {
         app.stop();
     }
-    let folder = ctx.data(|m| m.get_temp::<String>(egui::Id::new("frame-export-folder"))).unwrap_or_else(|| {
+    let folder = ctx.data(|m| m.get_temp::<String>(egui::Id::unique("frame-export-folder"))).unwrap_or_else(|| {
         if cfg!(target_arch = "wasm32") {
             return "/exports".into();
         }
-        app.session.path.as_deref().and_then(|p| std::path::Path::new(p).parent()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into())
+        // beside the project; for a project never saved, the home folder (not the working
+        // directory, which for an app started from a menu or an AppImage may be `/`, #2211)
+        app.session
+            .path
+            .as_deref()
+            .and_then(|p| std::path::Path::new(p).parent())
+            .map(|p| p.to_string_lossy().into_owned())
+            .or_else(|| app.session.services.home_dir())
+            .unwrap_or_else(|| ".".into())
     });
     let name = if target.source { std::path::Path::new(&target.name).file_stem().and_then(|s| s.to_str()).unwrap_or(&target.name) } else { &target.name };
     let name = clean(name);
     ctx.data_mut(|m| {
-        m.insert_temp(draft_id(), Some(Draft { target, timecode, name, format: StillFormat::Png, depth: 8, folder, import: false, replace: None }))
+        m.insert_temp(draft_id(), Some(Draft { target, timecode, name, format: StillFormat::Png, depth: 8, folder, import: false, replace: None, error: None }))
     });
     ctx.request_repaint();
     Ok(json!({"dialog":"exportFrame"}))
@@ -65,11 +76,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems = Vec::new();
     let mut popup_rects = Vec::new();
     let frame = egui::Frame::new().fill(app.tokens.panel_bg).inner_margin(0).corner_radius(6);
-    let position_id = egui::Id::new("frame-export-position");
+    let position_id = egui::Id::unique("frame-export-position");
     let position = ctx.data(|m| m.get_temp::<egui::Pos2>(position_id));
     let mut movement = egui::Vec2::ZERO;
     // Only the custom white header moves the window; form controls keep their own gestures.
-    let window_id = egui::Id::new("frame-export-window");
+    let window_id = egui::Id::unique("frame-export-window");
     let mut window = egui::Window::new("Export Frame")
         .id(window_id)
         .title_bar(false)
@@ -95,24 +106,24 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         );
         let x = egui::Rect::from_center_size(bar.right_center() - egui::vec2(16.0, 0.0), egui::vec2(24.0, 24.0));
         let header = egui::Rect::from_min_max(bar.min, egui::pos2(x.left(), bar.bottom()));
-        let drag = ui.interact(header, egui::Id::new("export-frame-header"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
+        let drag = ui.interact(header, egui::Id::unique("export-frame-header"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
         if drag.dragged() {
             movement = drag.drag_delta();
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         }
         elems.push(("exportFrame.header".into(), header, "Move Export Frame".into()));
-        let response = ui.interact(x, egui::Id::new("export-frame-close"), egui::Sense::click()).on_hover_text("Close");
+        let response = ui.interact(x, egui::Id::unique("export-frame-close"), egui::Sense::click()).on_hover_text("Close");
         icons::paint(ui.painter(), x.shrink(7.0), Icon::Close, egui::Color32::from_gray(90));
         elems.push(("exportFrame.close".to_string(), x, "Close".to_string()));
         close = response.clicked();
         egui::Frame::NONE.inner_margin(14).show(ui, |ui| {
             egui::Grid::new("frame-export-settings").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
                 ui.label("Name:");
-                let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(300.0));
+                let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(300.0)), "Name");
                 elems.push(("exportFrame.name".into(), r.rect, d.name.clone()));
                 ui.end_row();
                 ui.label("Format:");
-                let combo = egui::ComboBox::from_id_salt("frame-export-format").width(292.0).selected_text(d.format.label()).show_ui(ui, |ui| {
+                let combo = craft_ui::ComboBox::from_id_salt("frame-export-format").width(292.0).selected_text(d.format.label()).show_ui(ui, |ui| {
                     for format in StillFormat::ALL {
                         let r = ui.selectable_value(&mut d.format, format, format.label());
                         elems.push((format!("exportFrame.format.{}", format.extension()), r.rect, format.label().into()));
@@ -128,7 +139,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     d.depth = 8;
                 }
                 ui.label("Depth:");
-                let combo = egui::ComboBox::from_id_salt("frame-export-depth").width(292.0).selected_text(format!("{} Bit", d.depth)).show_ui(ui, |ui| {
+                let combo = craft_ui::ComboBox::from_id_salt("frame-export-depth").width(292.0).selected_text(format!("{} Bit", d.depth)).show_ui(ui, |ui| {
                     for bits in [8, 16] {
                         let r = ui.add_enabled(bits == 8 || d.format.supports_16(), egui::Button::selectable(d.depth == bits, format!("{bits} Bit")));
                         if r.clicked() {
@@ -144,7 +155,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 elems.push(("exportFrame.depth".into(), combo.response.rect, format!("{} Bit", d.depth)));
                 ui.end_row();
                 ui.label("Path:");
-                let r = ui.add(egui::TextEdit::singleline(&mut d.folder).desired_width(300.0));
+                let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut d.folder).desired_width(300.0)), "Path");
                 elems.push(("exportFrame.path".into(), r.rect, d.folder.clone()));
                 ui.end_row();
             });
@@ -159,6 +170,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 });
             });
             ui.add_space(12.0);
+            if let Some(e) = &d.error {
+                let r = ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), e);
+                elems.push(("exportFrame.error".into(), r.rect, e.clone()));
+            }
             if let Some(path) = d.replace.clone() {
                 ui.label(format!("This file already exists: {path}"));
                 ui.horizontal(|ui| {
@@ -224,6 +239,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         });
     }
     if (apply || replace) && !close {
+        d.error = None;
         let mut stem = clean(&d.name);
         let lower = stem.to_ascii_lowercase();
         for suffix in [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"] {
@@ -242,6 +258,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
             Err(e) => {
                 app.ui.status = format!("Cannot check export destination: {e}");
+                d.error = Some(app.ui.status.clone());
                 false
             }
         };
@@ -255,10 +272,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             match app.session.execute("file.exportFrame", params) {
                 Ok(result) => {
                     app.ui.status = format!("Exported frame to {}", result["path"].as_str().unwrap_or_default());
-                    ctx.data_mut(|m| m.insert_temp(egui::Id::new("frame-export-folder"), d.folder.clone()));
+                    ctx.data_mut(|m| m.insert_temp(egui::Id::unique("frame-export-folder"), d.folder.clone()));
                     close = true;
                 }
-                Err(e) => app.ui.status = e.to_string(),
+                Err(e) => {
+                    app.ui.status = e.to_string();
+                    d.error = Some(e.to_string());
+                }
             }
         }
     }

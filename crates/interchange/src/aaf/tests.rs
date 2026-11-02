@@ -36,7 +36,7 @@ fn project() -> (Project, ItemId) {
     let a = p.add_item(
         "a.mov",
         filmcraft_project::Label::Iris,
-        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
             media: filmcraft_project::MediaRef::File { path: "/m/a.mov".into() },
             info,
             interpret: Default::default(),
@@ -46,7 +46,7 @@ fn project() -> (Project, ItemId) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let r = FrameRate::FPS_24;
@@ -125,148 +125,203 @@ fn written_files_have_the_required_structure() {
     let (p, s) = project();
     for small in [false, true] {
         let (bytes, _) = export(&p, s, &AafOptions { small_sectors: small, ..Default::default() }).unwrap();
-        // compound file level
-        let cf = filmcraft_cfb::CompoundFile::open(&bytes).unwrap();
-        assert_eq!(cf.version, if small { 3 } else { 4 });
-        assert_eq!(cf.root().clsid, ids::ROOT);
-        assert!(cf.read_path("referenced properties").is_ok());
-        let h = cf.find("Header-2").unwrap();
-        assert_eq!(cf.entries[h].clsid, cls::HEADER);
-        assert!(cf.read_path("Header-2/properties").unwrap().starts_with(&[0x4C, 0x20]));
-
-        // object level
-        let root = store::read(&bytes).unwrap();
-        assert!(root.strong(pid::ROOT_META_DICTIONARY).is_some());
-        let header = root.strong(pid::ROOT_HEADER).unwrap();
-        for req in [pid::BYTE_ORDER, pid::LAST_MODIFIED, pid::CONTENT, pid::DICTIONARY, pid::VERSION, pid::IDENTIFICATION_LIST, pid::OBJECT_MODEL_VERSION] {
-            assert!(header.get(req).is_some(), "Header property {req:#06x}");
-        }
-        assert_eq!(header.auid(pid::OPERATIONAL_PATTERN), Some(def::OP_EDIT_PROTOCOL));
-        let ident = &header.objs(pid::IDENTIFICATION_LIST)[0];
-        for req in [pid::COMPANY_NAME, pid::PRODUCT_NAME, pid::PRODUCT_VERSION_STRING, pid::PRODUCT_ID, pid::DATE, pid::GENERATION_AUID] {
-            assert!(ident.get(req).is_some(), "Identification property {req:#06x}");
-        }
-        let dict = header.strong(pid::DICTIONARY).unwrap();
-        let ddefs = keys(dict, pid::DATA_DEFINITIONS);
-        let opdefs = keys(dict, pid::OPERATION_DEFINITIONS);
-        let idefs = keys(dict, pid::INTERPOLATION_DEFINITIONS);
-        let cdefs = keys(dict, pid::CONTAINER_DEFINITIONS);
-        let pdefs = keys(dict, pid::PARAMETER_DEFINITIONS);
-        let content = header.strong(pid::CONTENT).unwrap();
-        let mobs = content.objs(pid::MOBS);
-        let mob_ids: Vec<[u8; 32]> = mobs.iter().map(|m| m.mob_id(pid::MOB_ID).unwrap()).collect();
-        assert_eq!(mob_ids.iter().collect::<HashSet<_>>().len(), mob_ids.len(), "unique mob ids");
-        assert!(matches!(content.get(pid::MOBS), Some(Value::StrongSet(_, k)) if *k == pid::MOB_ID));
-        let comps: Vec<&Obj> = mobs.iter().filter(|m| m.class == cls::COMPOSITION_MOB).collect();
-        assert_eq!(comps.len(), 1);
-        assert_eq!(comps[0].auid(pid::USAGE_CODE), Some(def::USAGE_TOP_LEVEL));
-        assert_eq!(mobs.iter().filter(|m| m.class == cls::MASTER_MOB).count(), 1);
-        assert_eq!(mobs.iter().filter(|m| m.class == cls::SOURCE_MOB).count(), 3, "picture file, sound file, tape");
-        for m in mobs {
-            for req in [pid::MOB_ID, pid::MOB_NAME, pid::SLOTS, pid::MOB_LAST_MODIFIED, pid::MOB_CREATION_TIME] {
-                assert!(m.get(req).is_some(), "Mob property {req:#06x}");
-            }
-            if m.class == cls::SOURCE_MOB {
-                let d = m.strong(pid::ESSENCE_DESCRIPTION).expect("SourceMob::EssenceDescription");
-                if d.class != cls::TAPE_DESCRIPTOR {
-                    for req in [pid::SAMPLE_RATE, pid::FILE_LENGTH, pid::CONTAINER_FORMAT] {
-                        assert!(d.get(req).is_some(), "FileDescriptor property {req:#06x}");
-                    }
-                    assert!(cdefs.contains(d.weak_key(pid::CONTAINER_FORMAT).unwrap()));
-                    let url = d.objs(pid::LOCATOR)[0].string(pid::URL_STRING).unwrap();
-                    assert_eq!(url, "file:///m/a.mov");
-                }
-                if d.class == cls::PCM_DESCRIPTOR {
-                    assert_eq!(d.u32(pid::CHANNELS), Some(2));
-                    assert_eq!(d.u32(pid::QUANTIZATION_BITS), Some(24));
-                    assert_eq!(d.u16(pid::BLOCK_ALIGN), Some(6));
-                }
-            }
-            for slot in m.objs(pid::SLOTS) {
-                assert!(slot.get(pid::SLOT_ID).is_some() && slot.get(pid::SEGMENT).is_some());
-                if slot.class == cls::TIMELINE_MOB_SLOT {
-                    assert!(slot.rational(pid::EDIT_RATE).is_some_and(|r| r.0 > 0 && r.1 > 0));
-                    assert!(slot.get(pid::ORIGIN).is_some());
-                }
-            }
-            let mut all = Vec::new();
-            walk(m, &mut all);
-            for o in all {
-                let is_component = [cls::FILLER, cls::SOURCE_CLIP, cls::SEQUENCE, cls::TRANSITION, cls::OPERATION_GROUP, cls::TIMECODE, cls::COMMENT_MARKER]
-                    .contains(&o.class);
-                if is_component {
-                    let dd = o.weak_key(pid::DATA_DEFINITION).expect("Component::DataDefinition");
-                    assert!(ddefs.contains(dd), "data definition in the dictionary");
-                    let event_seq = o.class == cls::SEQUENCE && dd == ddef::DESCRIPTIVE_METADATA;
-                    assert!(event_seq || o.get(pid::LENGTH).is_some(), "Component::Length");
-                }
-                if o.class == cls::SOURCE_CLIP {
-                    let id = o.mob_id(pid::SOURCE_ID).unwrap();
-                    let slot = o.u32(pid::SOURCE_MOB_SLOT_ID).unwrap();
-                    assert!(o.get(pid::START_TIME).is_some());
-                    if id != [0; 32] {
-                        let t = mobs.iter().find(|m| m.mob_id(pid::MOB_ID) == Some(id)).expect("source clip target in the file");
-                        assert!(t.objs(pid::SLOTS).iter().any(|s| s.u32(pid::SLOT_ID) == Some(slot)), "target slot exists");
-                    }
-                }
-                if o.class == cls::OPERATION_GROUP {
-                    assert!(opdefs.contains(o.weak_key(pid::OPERATION).unwrap()));
-                    for prm in o.objs(pid::PARAMETERS) {
-                        assert!(pdefs.contains(prm.auid(pid::PARAMETER_DEFINITION).unwrap().as_slice()));
-                        if prm.class == cls::VARYING_VALUE {
-                            assert!(idefs.contains(prm.weak_key(pid::INTERPOLATION).unwrap()));
-                            assert!(!prm.objs(pid::POINT_LIST).is_empty());
-                        }
-                    }
-                }
-                if o.class == cls::SEQUENCE && o.get(pid::LENGTH).is_some() {
-                    let cs = o.objs(pid::COMPONENTS);
-                    let mut sum = 0i64;
-                    for (i, c) in cs.iter().enumerate() {
-                        let l = c.i64(pid::LENGTH).unwrap();
-                        if c.class == cls::TRANSITION {
-                            // Edit Protocol: a transition sits between two segments at least as long
-                            assert!(i > 0 && i + 1 < cs.len(), "transition at a sequence end");
-                            assert!(cs[i - 1].class != cls::TRANSITION && cs[i + 1].class != cls::TRANSITION);
-                            assert!(cs[i - 1].i64(pid::LENGTH).unwrap() >= l && cs[i + 1].i64(pid::LENGTH).unwrap() >= l);
-                            let cut = c.i64(pid::CUT_POINT).unwrap();
-                            assert!((0..=l).contains(&cut));
-                            assert!(c.strong(pid::OPERATION_GROUP).is_some());
-                            sum -= l;
-                        } else {
-                            sum += l;
-                        }
-                    }
-                    assert_eq!(sum, o.i64(pid::LENGTH).unwrap(), "sequence length = segments − transitions");
-                }
-            }
-        }
-        // the composition: timecode + V1 + A1 slots, the video dissolve and the gain
-        let comp = comps[0];
-        let slots = comp.objs(pid::SLOTS);
-        let tc = slots[0].strong(pid::SEGMENT).unwrap();
-        assert_eq!(tc.class, cls::TIMECODE);
-        assert_eq!(tc.u16(pid::TC_FPS), Some(24));
-        let v1 = slots[1].strong(pid::SEGMENT).unwrap().objs(pid::COMPONENTS);
-        assert_eq!(v1.iter().map(|c| c.class).collect::<Vec<_>>(), vec![cls::SOURCE_CLIP, cls::TRANSITION, cls::SOURCE_CLIP]);
-        assert_eq!(v1[0].i64(pid::LENGTH), Some(54), "outgoing clip extends to the transition end");
-        assert_eq!(v1[2].i64(pid::LENGTH), Some(54), "incoming clip starts at the transition start");
-        assert_eq!(v1[2].i64(pid::START_TIME), Some(194));
-        assert_eq!(v1[1].i64(pid::CUT_POINT), Some(6));
-        assert_eq!(v1[1].strong(pid::OPERATION_GROUP).unwrap().weak_key(pid::OPERATION), Some(&def::VIDEO_DISSOLVE[..]));
-        let a1 = slots[2].strong(pid::SEGMENT).unwrap().objs(pid::COMPONENTS);
-        assert_eq!(slots[2].rational(pid::EDIT_RATE), Some((48_000, 1)));
-        assert_eq!(a1[2].class, cls::OPERATION_GROUP);
-        assert_eq!(a1[2].weak_key(pid::OPERATION), Some(&def::MONO_AUDIO_GAIN[..]));
-        let amp = a1[2].objs(pid::PARAMETERS)[0].data(pid::CONSTANT_VALUE).unwrap();
-        let (n, d) = store::rational_of(&amp[17..]).unwrap();
-        assert!((n as f64 / d as f64 - 10f64.powf(-3.0 / 20.0)).abs() < 1e-4);
-        assert_eq!(a1[1].strong(pid::OPERATION_GROUP).unwrap().weak_key(pid::OPERATION), Some(&def::MONO_AUDIO_DISSOLVE[..]));
-        // weak reference paths are registered
-        let rp = cf.read_path("referenced properties").unwrap();
-        let pids: Vec<u16> = rp[7..].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-        assert!(pids.windows(3).any(|w| w == path::DATA_DEFS));
+        assert_written_file(&bytes, small);
     }
+}
+
+fn assert_written_file(bytes: &[u8], small: bool) {
+    assert_compound_file(bytes, small);
+    let root = store::read(bytes).unwrap();
+    assert!(root.strong(pid::ROOT_META_DICTIONARY).is_some());
+    let header = root.strong(pid::ROOT_HEADER).unwrap();
+    let content = assert_header(header);
+    let dict = header.strong(pid::DICTIONARY).unwrap();
+    let definitions = Definitions {
+        data: keys(dict, pid::DATA_DEFINITIONS),
+        operations: keys(dict, pid::OPERATION_DEFINITIONS),
+        interpolation: keys(dict, pid::INTERPOLATION_DEFINITIONS),
+        containers: keys(dict, pid::CONTAINER_DEFINITIONS),
+        parameters: keys(dict, pid::PARAMETER_DEFINITIONS),
+    };
+    let mobs = content.objs(pid::MOBS);
+    let comp = assert_mob_set(content, mobs);
+    for mob in mobs {
+        assert_mob(mob, mobs, &definitions);
+    }
+    assert_composition(comp);
+}
+
+fn assert_compound_file(bytes: &[u8], small: bool) {
+    let cf = filmcraft_cfb::CompoundFile::open(bytes).unwrap();
+    assert_eq!(cf.version, if small { 3 } else { 4 });
+    assert_eq!(cf.root().clsid, ids::ROOT);
+    let references = cf.read_path("referenced properties").unwrap();
+    let pids: Vec<u16> = references[7..].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    assert!(pids.windows(3).any(|w| w == path::DATA_DEFS));
+    let header = cf.find("Header-2").unwrap();
+    assert_eq!(cf.entries[header].clsid, cls::HEADER);
+    assert!(cf.read_path("Header-2/properties").unwrap().starts_with(&[0x4C, 0x20]));
+}
+
+fn assert_header(header: &Obj) -> &Obj {
+    for req in [pid::BYTE_ORDER, pid::LAST_MODIFIED, pid::CONTENT, pid::DICTIONARY, pid::VERSION, pid::IDENTIFICATION_LIST, pid::OBJECT_MODEL_VERSION] {
+        assert!(header.get(req).is_some(), "Header property {req:#06x}");
+    }
+    assert_eq!(header.auid(pid::OPERATIONAL_PATTERN), Some(def::OP_EDIT_PROTOCOL));
+    let ident = &header.objs(pid::IDENTIFICATION_LIST)[0];
+    for req in [pid::COMPANY_NAME, pid::PRODUCT_NAME, pid::PRODUCT_VERSION_STRING, pid::PRODUCT_ID, pid::DATE, pid::GENERATION_AUID] {
+        assert!(ident.get(req).is_some(), "Identification property {req:#06x}");
+    }
+    header.strong(pid::CONTENT).unwrap()
+}
+
+struct Definitions {
+    data: HashSet<Vec<u8>>,
+    operations: HashSet<Vec<u8>>,
+    interpolation: HashSet<Vec<u8>>,
+    containers: HashSet<Vec<u8>>,
+    parameters: HashSet<Vec<u8>>,
+}
+
+fn assert_mob_set<'a>(content: &Obj, mobs: &'a [Obj]) -> &'a Obj {
+    let mob_ids: Vec<[u8; 32]> = mobs.iter().map(|m| m.mob_id(pid::MOB_ID).unwrap()).collect();
+    assert_eq!(mob_ids.iter().collect::<HashSet<_>>().len(), mob_ids.len(), "unique mob ids");
+    assert!(matches!(content.get(pid::MOBS), Some(Value::StrongSet(_, k)) if *k == pid::MOB_ID));
+    let compositions: Vec<&Obj> = mobs.iter().filter(|m| m.class == cls::COMPOSITION_MOB).collect();
+    assert_eq!(compositions.len(), 1);
+    assert_eq!(compositions[0].auid(pid::USAGE_CODE), Some(def::USAGE_TOP_LEVEL));
+    assert_eq!(mobs.iter().filter(|m| m.class == cls::MASTER_MOB).count(), 1);
+    assert_eq!(mobs.iter().filter(|m| m.class == cls::SOURCE_MOB).count(), 3, "picture file, sound file, tape");
+    compositions[0]
+}
+
+fn assert_mob(mob: &Obj, mobs: &[Obj], definitions: &Definitions) {
+    for req in [pid::MOB_ID, pid::MOB_NAME, pid::SLOTS, pid::MOB_LAST_MODIFIED, pid::MOB_CREATION_TIME] {
+        assert!(mob.get(req).is_some(), "Mob property {req:#06x}");
+    }
+    assert_source_descriptor(mob, &definitions.containers);
+    for slot in mob.objs(pid::SLOTS) {
+        assert!(slot.get(pid::SLOT_ID).is_some() && slot.get(pid::SEGMENT).is_some());
+        if slot.class == cls::TIMELINE_MOB_SLOT {
+            assert!(slot.rational(pid::EDIT_RATE).is_some_and(|r| r.0 > 0 && r.1 > 0));
+            assert!(slot.get(pid::ORIGIN).is_some());
+        }
+    }
+    let mut all = Vec::new();
+    walk(mob, &mut all);
+    for component in all {
+        assert_component(component, mobs, definitions);
+    }
+}
+
+fn assert_source_descriptor(mob: &Obj, containers: &HashSet<Vec<u8>>) {
+    if mob.class != cls::SOURCE_MOB {
+        return;
+    }
+    let descriptor = mob.strong(pid::ESSENCE_DESCRIPTION).expect("SourceMob::EssenceDescription");
+    if descriptor.class != cls::TAPE_DESCRIPTOR {
+        for req in [pid::SAMPLE_RATE, pid::FILE_LENGTH, pid::CONTAINER_FORMAT] {
+            assert!(descriptor.get(req).is_some(), "FileDescriptor property {req:#06x}");
+        }
+        assert!(containers.contains(descriptor.weak_key(pid::CONTAINER_FORMAT).unwrap()));
+        let url = descriptor.objs(pid::LOCATOR)[0].string(pid::URL_STRING).unwrap();
+        assert_eq!(url, "file:///m/a.mov");
+    }
+    if descriptor.class == cls::PCM_DESCRIPTOR {
+        assert_eq!(descriptor.u32(pid::CHANNELS), Some(2));
+        assert_eq!(descriptor.u32(pid::QUANTIZATION_BITS), Some(24));
+        assert_eq!(descriptor.u16(pid::BLOCK_ALIGN), Some(6));
+    }
+}
+
+fn assert_component(o: &Obj, mobs: &[Obj], definitions: &Definitions) {
+    if is_component(o) {
+        let dd = o.weak_key(pid::DATA_DEFINITION).expect("Component::DataDefinition");
+        assert!(definitions.data.contains(dd), "data definition in the dictionary");
+        let event_seq = o.class == cls::SEQUENCE && dd == ddef::DESCRIPTIVE_METADATA;
+        assert!(event_seq || o.get(pid::LENGTH).is_some(), "Component::Length");
+    }
+    if o.class == cls::SOURCE_CLIP {
+        assert_source_clip(o, mobs);
+    } else if o.class == cls::OPERATION_GROUP {
+        assert_operation_group(o, definitions);
+    } else if o.class == cls::SEQUENCE && o.get(pid::LENGTH).is_some() {
+        assert_sequence_length(o);
+    }
+}
+
+fn is_component(o: &Obj) -> bool {
+    [cls::FILLER, cls::SOURCE_CLIP, cls::SEQUENCE, cls::TRANSITION, cls::OPERATION_GROUP, cls::TIMECODE, cls::COMMENT_MARKER].contains(&o.class)
+}
+
+fn assert_source_clip(clip: &Obj, mobs: &[Obj]) {
+    let id = clip.mob_id(pid::SOURCE_ID).unwrap();
+    let slot = clip.u32(pid::SOURCE_MOB_SLOT_ID).unwrap();
+    assert!(clip.get(pid::START_TIME).is_some());
+    if id != [0; 32] {
+        let target = mobs.iter().find(|m| m.mob_id(pid::MOB_ID) == Some(id)).expect("source clip target in the file");
+        assert!(target.objs(pid::SLOTS).iter().any(|s| s.u32(pid::SLOT_ID) == Some(slot)), "target slot exists");
+    }
+}
+
+fn assert_operation_group(group: &Obj, definitions: &Definitions) {
+    assert!(definitions.operations.contains(group.weak_key(pid::OPERATION).unwrap()));
+    for parameter in group.objs(pid::PARAMETERS) {
+        assert!(definitions.parameters.contains(parameter.auid(pid::PARAMETER_DEFINITION).unwrap().as_slice()));
+        if parameter.class == cls::VARYING_VALUE {
+            assert!(definitions.interpolation.contains(parameter.weak_key(pid::INTERPOLATION).unwrap()));
+            assert!(!parameter.objs(pid::POINT_LIST).is_empty());
+        }
+    }
+}
+
+fn assert_sequence_length(sequence: &Obj) {
+    let components = sequence.objs(pid::COMPONENTS);
+    let sum = components
+        .iter()
+        .enumerate()
+        .map(|(i, component)| {
+            let len = component.i64(pid::LENGTH).unwrap();
+            if component.class == cls::TRANSITION {
+                assert!(i > 0 && i + 1 < components.len(), "transition at a sequence end");
+                assert!(components[i - 1].class != cls::TRANSITION && components[i + 1].class != cls::TRANSITION);
+                assert!(components[i - 1].i64(pid::LENGTH).unwrap() >= len && components[i + 1].i64(pid::LENGTH).unwrap() >= len);
+                let cut = component.i64(pid::CUT_POINT).unwrap();
+                assert!((0..=len).contains(&cut));
+                assert!(component.strong(pid::OPERATION_GROUP).is_some());
+                -len
+            } else {
+                len
+            }
+        })
+        .sum::<i64>();
+    assert_eq!(sum, sequence.i64(pid::LENGTH).unwrap(), "sequence length = segments − transitions");
+}
+
+fn assert_composition(comp: &Obj) {
+    let slots = comp.objs(pid::SLOTS);
+    let tc = slots[0].strong(pid::SEGMENT).unwrap();
+    assert_eq!(tc.class, cls::TIMECODE);
+    assert_eq!(tc.u16(pid::TC_FPS), Some(24));
+    let video = slots[1].strong(pid::SEGMENT).unwrap().objs(pid::COMPONENTS);
+    assert_eq!(video.iter().map(|c| c.class).collect::<Vec<_>>(), vec![cls::SOURCE_CLIP, cls::TRANSITION, cls::SOURCE_CLIP]);
+    assert_eq!(video[0].i64(pid::LENGTH), Some(54), "outgoing clip extends to the transition end");
+    assert_eq!(video[2].i64(pid::LENGTH), Some(54), "incoming clip starts at the transition start");
+    assert_eq!(video[2].i64(pid::START_TIME), Some(194));
+    assert_eq!(video[1].i64(pid::CUT_POINT), Some(6));
+    assert_eq!(video[1].strong(pid::OPERATION_GROUP).unwrap().weak_key(pid::OPERATION), Some(&def::VIDEO_DISSOLVE[..]));
+    assert_audio_composition_slot(&slots[2]);
+}
+
+fn assert_audio_composition_slot(slot: &Obj) {
+    let audio = slot.strong(pid::SEGMENT).unwrap().objs(pid::COMPONENTS);
+    assert_eq!(slot.rational(pid::EDIT_RATE), Some((48_000, 1)));
+    assert_eq!(audio[2].class, cls::OPERATION_GROUP);
+    assert_eq!(audio[2].weak_key(pid::OPERATION), Some(&def::MONO_AUDIO_GAIN[..]));
+    let amplitude = audio[2].objs(pid::PARAMETERS)[0].data(pid::CONSTANT_VALUE).unwrap();
+    let (numerator, denominator) = store::rational_of(&amplitude[17..]).unwrap();
+    assert!((numerator as f64 / denominator as f64 - 10f64.powf(-3.0 / 20.0)).abs() < 1e-4);
+    assert_eq!(audio[1].strong(pid::OPERATION_GROUP).unwrap().weak_key(pid::OPERATION), Some(&def::MONO_AUDIO_DISSOLVE[..]));
 }
 
 #[test]

@@ -4,6 +4,7 @@
 //! `notifications/cancelled`, deleting the partial output. The session lock is only held for
 //! short polls, so other requests are answered while the export runs.
 
+use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -118,10 +119,10 @@ impl FilmcraftMcp {
 /// never touched, even when they were saved during the export.
 pub fn remove_partial(path: &str, since: SystemTime) {
     let p = Path::new(path);
-    let (Some(dir), Some(stem), Some(file)) = (p.parent(), p.file_stem().and_then(|s| s.to_str()), p.file_name().and_then(|s| s.to_str())) else {
+    let (Some(dir), Some(stem), Some(file)) = (p.parent(), p.file_stem().and_then(OsStr::to_str), p.file_name().and_then(OsStr::to_str)) else {
         return;
     };
-    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default();
+    let ext = p.extension().and_then(OsStr::to_str).unwrap_or_default();
     let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     // file times are coarser than the clock

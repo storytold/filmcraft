@@ -56,6 +56,9 @@ encoder's reconstruction** — covering I/P mixes, odd sizes and length-prefixed
 the `hvcC` parameter sets. Display order is checked with ffprobe.
 
 `bit_exact_vs_recon` passes on five cases x six frames (luma and chroma).
+`decoded_psnr_against_source` adds a decode-against-source floor over one second of pictures
+(>= 28 dB luma, >= 35 dB chroma per picture): it needs no reconstruction capture, so an
+encoder that drifts while staying self-consistent still fails it.
 
 ## Limitations / not yet implemented (follow-ups)
 
