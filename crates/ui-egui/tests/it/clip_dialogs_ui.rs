@@ -143,6 +143,31 @@ fn paste_attributes_dialog() {
     assert_eq!(d.v1(2).effect("motion").unwrap().param("rotation").unwrap().value.as_f64(), Some(0.0));
 }
 
+/// #3789: the dialog says that ticked attributes are removed; an effect on the selected clip is
+/// offered ticked, unticking it keeps it, and OK with the defaults removes it.
+#[test]
+fn remove_attributes_dialog_removes_the_clips_effect() {
+    let mut d = Driver::new();
+    let a = d.v1(0);
+    d.exec("effects.apply", json!({"clips": [a.id.0], "effect": "focus_blur"}));
+    d.exec("timeline.select", json!({"clips": [a.id.0]}));
+    // unticked: the effect stays
+    d.menu("edit.removeAttributes");
+    d.click("removeAttributes.effect.focus_blur");
+    d.click("removeAttributes.ok");
+    assert!(d.v1(0).effect("focus_blur").is_some(), "an unticked effect is kept");
+    // the defaults: removed
+    assert_eq!(d.menu("edit.removeAttributes")["dialog"], "removeAttributes");
+    let hint = d.ok("ui.elements", json!({"prefix": "removeAttributes.hint"}));
+    assert_eq!(hint[0]["label"], "Ticked attributes are removed from the selected clips.");
+    assert!(d.has("removeAttributes.effect.focus_blur"));
+    let params = d.app().ui.clip_dialog.as_ref().unwrap().params.clone();
+    assert_eq!(params["effects"], json!(["focus_blur"]), "the effect is offered ticked: {params}");
+    d.click("removeAttributes.ok");
+    assert!(d.app().ui.clip_dialog.is_none(), "closed on OK");
+    assert!(d.v1(0).effect("focus_blur").is_none(), "the effect is removed");
+}
+
 #[test]
 fn make_subclip_frame_hold_and_audio_channel_dialogs() {
     let mut d = Driver::new();
