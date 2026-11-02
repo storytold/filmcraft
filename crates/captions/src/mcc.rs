@@ -23,9 +23,9 @@
 //!   carries a CDP with 20 cc_data triplets; empty frames are omitted. Each CDP contains field 1 CEA-608
 //!   pop-on data (the same schedule as [SCC](crate::scc)), a null field-2 pair, CEA-708
 //!   service 1 data and padding. The CEA-708 captions emulate pop-on with two windows: each
-//!   caption is defined (hidden) and loaded into one window while the other shows, then a
-//!   DisplayWindows / HideWindows pair switches them on the caption's first frame; HideWindows
-//!   clears it at its end.
+//!   caption is defined (hidden), cleared and loaded into one window from its top left
+//!   (SetPenLocation 0, 0) while the other shows, then a DisplayWindows / HideWindows pair
+//!   switches them on the caption's first frame; HideWindows clears it at its end.
 //! - **Reading:** every CDP's `cc_data`; channel 1 CEA-608 field-1 data is decoded with the SCC
 //!   decoder when present, otherwise CEA-708 service 1 (windows, text, CR, clear / display /
 //!   hide / toggle / delete windows, DefineWindow visibility); a cue starts whenever the visible
@@ -245,6 +245,9 @@ fn load_atoms(win: u8, rows: &[String]) -> Vec<Vec<u8>> {
         // anchored at its bottom centre, rows / columns, window style 1, pen style 1
         vec![0x98 + win, 0x18, 0x80 | 90, 50, 7 << 4 | rc, cols, 1 << 3 | 1],
         vec![0x88, 1 << win], // ClearWindows
+        // SetPenLocation row 0, column 0. The window held the caption before last, and decoders
+        // differ on whether ClearWindows or redefining a window moves the pen back
+        vec![0x92, 0, 0],
     ];
     for (i, r) in rows.iter().enumerate() {
         if i > 0 {
@@ -800,5 +803,87 @@ mod tests {
         // Define window 0 with one row and one column, then try to overflow both.
         decoder.service_data(&[0x98, 0, 0, 0, 0, 0, 0, b'A', b'B', 0x0d, b'C']);
         assert_eq!(decoder.win[0].rows, ["A"]);
+    }
+
+    /// Start every CEA-708 caption at the top left of its window, also for a decoder that moves
+    /// the pen only on SetPenLocation, carriage return and text. CCExtractor keeps the pen through
+    /// ClearWindows and a redefined window, so without SetPenLocation the third caption below
+    /// started at the end of the first one, past the edge of its smaller window.
+    #[test]
+    fn each_708_caption_starts_at_its_window_top_left() {
+        let doc = Document {
+            cues: vec![
+                cue(60, 120, "Por que você não admite que\nminha mão robótica te assusta?"),
+                cue(150, 200, "Você partiu meu coração!"),
+                cue(230, 250, "Eu sei."),
+                cue(260, 300, "Você me esqueceu na Terra."),
+            ],
+            ..Default::default()
+        };
+        // Service 1 bytes in order, out of the scheduled DTVCC packets.
+        let mut packets: Vec<Vec<u8>> = Vec::new();
+        for (start, a, b) in schedule_708(&doc).into_values().flatten() {
+            if start {
+                packets.push(Vec::new());
+            }
+            packets.last_mut().unwrap().extend([a, b]);
+        }
+        let mut s = Vec::new();
+        for p in &packets {
+            let mut body = &p[1..];
+            while let [h, rest @ ..] = body {
+                let n = (h & 0x1f) as usize;
+                if h >> 5 == 1 {
+                    s.extend_from_slice(&rest[..n]);
+                }
+                body = &rest[n..];
+            }
+        }
+        // Pen (row, column) and size (rows, columns) per window; where each caption's text starts.
+        let (mut pen, mut size, mut cur) = ([(0usize, 0usize); 8], [(0usize, 0usize); 8], 0usize);
+        let (mut starts, mut cleared, mut i) = (Vec::new(), false, 0);
+        while let Some(&c) = s.get(i) {
+            let mut text = false;
+            i += match c {
+                0x80..=0x87 => {
+                    cur = (c - 0x80) as usize;
+                    1
+                }
+                0x88..=0x8c => {
+                    cleared |= c == 0x88;
+                    2
+                }
+                0x92 => {
+                    pen[cur] = (s[i + 1] as usize, s[i + 2] as usize);
+                    3
+                }
+                0x98..=0x9f => {
+                    cur = (c - 0x98) as usize;
+                    size[cur] = ((s[i + 4] & 0x0f) as usize + 1, (s[i + 5] & 0x3f) as usize + 1);
+                    7
+                }
+                0x0d => {
+                    pen[cur] = (pen[cur].0 + 1, 0);
+                    1
+                }
+                0x10 => {
+                    text = true;
+                    2
+                }
+                0x20..=0x7f | 0xa0..=0xff => {
+                    text = true;
+                    1
+                }
+                _ => 1,
+            };
+            if text {
+                if std::mem::take(&mut cleared) {
+                    starts.push((cur, pen[cur]));
+                }
+                assert!(pen[cur].0 < size[cur].0 && pen[cur].1 < size[cur].1, "window {cur} {:?}: text at {:?}", size[cur], pen[cur]);
+                pen[cur].1 += 1;
+            }
+        }
+        assert_eq!(starts, [(0, (0, 0)), (1, (0, 0)), (0, (0, 0)), (1, (0, 0))]);
     }
 }
