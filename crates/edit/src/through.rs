@@ -143,26 +143,28 @@ pub fn join_through_edits(seq: &mut Sequence, only: &[ClipId]) -> usize {
 
 /// Join the through edits on unlocked tracks whose (left, right) pieces `wanted` accepts.
 pub fn join_through_edits_where(seq: &mut Sequence, wanted: impl Fn(ClipId, ClipId) -> bool) -> usize {
-    let none = HashSet::new();
     let mut n = 0;
     // Audio first: the remaining links are the ones a video join must preserve.
     for tr in seq.audio_tracks.iter_mut().filter(|track| !track.locked) {
-        n += join_track_through_edits(tr, &wanted, &none);
+        n += join_track_through_edits(tr, &wanted, &|_, _| false);
     }
-    let audio_links = seq.audio_tracks.iter().flat_map(|track| track.items.iter().filter_map(|item| item.link)).collect();
-    let blocked = blocked_video_right_ids(seq, &audio_links);
+    let audio_links: HashSet<u64> = seq.audio_tracks.iter().flat_map(|track| track.items.iter().filter_map(|item| item.link)).collect();
+    // Judged on the pieces as they are when the cut is reached, not on a list made before the
+    // track's earlier joins: once a left piece has absorbed an unlinked neighbour, the next cut
+    // is between two pieces that may share their link, and keeping it would take a second pass.
+    let protected = |left: &TrackItem, right: &TrackItem| left.link != right.link && right.link.is_some_and(|link| audio_links.contains(&link));
     for tr in seq.video_tracks.iter_mut().filter(|track| !track.locked) {
-        n += join_track_through_edits(tr, &wanted, &blocked);
+        n += join_track_through_edits(tr, &wanted, &protected);
     }
     n
 }
 
-fn join_track_through_edits(tr: &mut Track, wanted: &impl Fn(ClipId, ClipId) -> bool, blocked: &HashSet<ClipId>) -> usize {
+fn join_track_through_edits(tr: &mut Track, wanted: &impl Fn(ClipId, ClipId) -> bool, protected: &impl Fn(&TrackItem, &TrackItem) -> bool) -> usize {
     let mut n = 0;
     let mut i = 0;
     while i + 1 < tr.items.len() {
         let (a, b) = (&tr.items[i], &tr.items[i + 1]);
-        if !(wanted(a.id, b.id) && is_through_edit(a, b) && !blocked.contains(&b.id)) {
+        if !(wanted(a.id, b.id) && is_through_edit(a, b) && !protected(a, b)) {
             i += 1;
             continue;
         }
@@ -495,6 +497,22 @@ mod tests {
         assert_eq!(join_through_edits(&mut q, &[ClipId(20)]), 1);
         assert_eq!(q.video_tracks[0].items[0].link, Some(100));
         assert_eq!(q.video_tracks[0].items[1].link, Some(200));
+    }
+
+    /// Join All over three continuous video pieces whose middle one lost its link: the first join
+    /// leaves two pieces sharing the link the audio still holds, and that cut joins in the same
+    /// pass rather than waiting for another Join All.
+    #[test]
+    fn join_all_heals_a_chain_around_an_unlinked_middle_piece() {
+        let mut q = seq_with(vec![item(10, 0, 30, 0), item(11, 30, 30, 30), item(12, 60, 30, 60)]);
+        q.video_tracks[0].items[0].link = Some(7);
+        q.video_tracks[0].items[2].link = Some(7);
+        q.audio_tracks[0].items = vec![item(20, 0, 90, 0)];
+        q.audio_tracks[0].items[0].link = Some(7);
+        assert_eq!(join_through_edits(&mut q, &[]), 2, "both video cuts join in one pass");
+        assert_eq!(q.video_tracks[0].items.len(), 1);
+        assert_eq!((q.video_tracks[0].items[0].duration, q.video_tracks[0].items[0].link), (Tick(90), Some(7)));
+        assert_eq!(q.audio_tracks[0].items.len(), 1, "the audio keeps its one clip");
     }
 
     #[test]

@@ -381,14 +381,15 @@ fn go_to_gap(s: &mut Session, p: &Value, next: bool, in_track: bool) -> Result<V
 
 // ---------- through edits ----------
 
-/// Join Through Edits is enabled when the sequence has a through edit on an unlocked track: with
-/// none anywhere the Timeline's clip menu greys it out instead of failing when chosen. (A
-/// selection without one, or a named `cut` that is not one, still answers with its reason.)
+/// Join Through Edits is enabled when the sequence has a through edit that Join All could join:
+/// on an unlocked track, and for a video cut, one whose right-hand link no surviving audio piece
+/// would be left holding. With none the Timeline's clip menu greys it out instead of failing when
+/// chosen. (A selection without one, or a named `cut` that is not one, still answers with its
+/// reason.)
 fn has_through_edits(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     let q = s.active_sequence().ok_or("no sequence is open")?;
-    let any = edit::through::through_edits(q).iter().any(|e| q.track(e.track).is_some_and(|t| !t.locked));
-    if any { Ok(()) } else { Err("there are no through edits to join".into()) }
+    if edit::through::joinable_through_edits(q).is_empty() { Err("there are no through edits to join".into()) } else { Ok(()) }
 }
 
 fn join_through_edits(s: &mut Session, p: &Value) -> Result<Value> {
