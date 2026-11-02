@@ -379,6 +379,39 @@ fn prores_alpha_comes_from_the_frame_header() {
     }
 }
 
+/// [`prores_mov`] with its sample entry retyped `icod`: an Apple Intermediate Codec MOV as far as
+/// the demuxer can tell (there is no AIC encoder to make a real one).
+fn aic_mov() -> Arc<[u8]> {
+    let mut b = prores_mov(filmcraft_prores::Profile::Hq, b"apch", filmcraft_prores::ChromaFormat::Yuv422, false).to_vec();
+    // stsd (ISO/IEC 14496-12 §8.5.2): type, version/flags, entry_count, then the first entry's size and type
+    let k = b.windows(4).position(|x| x == b"stsd").expect("stsd") + 16;
+    assert_eq!(&b[k..k + 4], b"apch");
+    b[k..k + 4].copy_from_slice(b"icod");
+    b.into()
+}
+
+/// #3646: Apple Intermediate Codec has no published specification and no decoder here. Probe names
+/// it, and so do the errors a frame request and both decoder constructors return, instead of
+/// "no decoder for unknown video".
+#[test]
+fn apple_intermediate_codec_is_named_though_nothing_decodes_it() {
+    let s = Mp4Source::open("aic.mov", aic_mov()).expect("open");
+    assert_eq!(s.info().video.as_ref().map(|v| v.codec.as_str()), Some("Apple Intermediate Codec"));
+    let why = "no decoder for Apple Intermediate Codec video";
+    match s.video_frame(FrameRequest::full(Tick::ZERO)) {
+        Err(MediaError::Unsupported(e)) => assert_eq!(e, why),
+        other => panic!("expected the no-decoder error, got {:?}", other.map(|_| ())),
+    }
+    let entry = &s.file.tracks[s.vtrack.expect("video track")].entries[0];
+    for r in [crate::make_video_decoder(entry), crate::software_video_decoder(entry)] {
+        match r {
+            Err(CodecError::Unsupported(e)) => assert_eq!(e, why),
+            Err(e) => panic!("expected the no-decoder error, got {e}"),
+            Ok(_) => panic!("a decoder accepted Apple Intermediate Codec"),
+        }
+    }
+}
+
 #[test]
 fn rtmd_fields_parse_and_reject_damaged_metadata() {
     let rate = FrameRate::FPS_59_94;
