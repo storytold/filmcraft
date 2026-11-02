@@ -21,6 +21,7 @@ filmcraft-tts = { workspace = true }
 filmcraft-edit = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-text = { workspace = true }
+filmcraft-captions = { workspace = true }
 filmcraft-audio-dsp = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-export = { workspace = true }
@@ -46,7 +47,7 @@ rustix = { version = "1", default-features = false, features = ["std", "time"] }
 cpu-time = "1"
 
 [dev-dependencies]
-pollster = "0.4"
+pollster = "1"
 filmcraft-codecs = { workspace = true }
 # the bench registers OS hardware decoders as the desktop app does (dev-dependency only: ui-egui
 # itself stays OS-independent and web-portable)
@@ -62,3 +63,6 @@ tempfile = "3"
 [build-dependencies]
 serde_json = { workspace = true }
 toml = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft-update = { workspace = true }

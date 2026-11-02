@@ -2,6 +2,8 @@
 //! frame, so agents can click/drag by id (`ui.click {id:"timeline.track.V1.lock"}`) and
 //! `ui.inspect` can report the full on-screen widget tree.
 
+use std::collections::HashMap;
+
 use egui::Rect;
 use serde::Serialize;
 
@@ -17,8 +19,14 @@ pub struct Element {
     pub enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focusable: Option<bool>,
+    /// The floating window (`n` in `panel.float.<n>`) when the element is drawn in that window's
+    /// own OS window; `rect` is then in that window's coordinates, not the main window's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<usize>,
     #[serde(skip)]
     pub(crate) response_id: Option<egui::Id>,
+    #[serde(skip)]
+    pub(crate) viewport: egui::ViewportId,
 }
 
 #[derive(Default)]
@@ -26,10 +34,19 @@ pub struct Registry {
     pub elements: Vec<Element>,
     /// Last frame's elements (for lookups from control handlers between frames).
     pub previous: Vec<Element>,
+    /// The viewport `add` registers into: a native floating window's while its panel draws.
+    pub(crate) viewport: egui::ViewportId,
+    /// The floating window index drawn in each native viewport.
+    pub(crate) windows: HashMap<egui::ViewportId, usize>,
 }
 
 impl Registry {
     pub fn add(&mut self, id: &str, rect: Rect, label: &str) {
+        self.add_in(self.viewport, id, rect, label);
+    }
+    /// Register an element drawn in `viewport`.
+    pub(crate) fn add_in(&mut self, viewport: egui::ViewportId, id: &str, rect: Rect, label: &str) {
+        let window = if viewport == egui::ViewportId::ROOT { None } else { self.windows.get(&viewport).copied() };
         self.elements.push(Element {
             id: id.to_string(),
             label: label.to_string(),
@@ -37,7 +54,9 @@ impl Registry {
             widget_id: None,
             enabled: None,
             focusable: None,
+            window,
             response_id: None,
+            viewport,
         });
     }
     /// Observe the widget without changing its accessibility role or input behavior.
@@ -45,7 +64,7 @@ impl Registry {
         // The automation label is also the name a screen reader and kittest use. Keep an
         // existing visible label/placeholder; this only fills a missing name.
         crate::widgets::accessible_name(response.clone(), label);
-        self.add(id, response.rect, label);
+        self.add_in(response.ctx.viewport_id(), id, response.rect, label);
         if let Some(element) = self.elements.last_mut() {
             element.widget_id = Some(format!("{:016x}", response.id.value()));
             element.enabled = Some(response.enabled());

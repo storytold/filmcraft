@@ -214,7 +214,7 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
     let mut draft: Option<String> = ui.data(|d| d.get_temp(draft_id));
     ui.horizontal(|ui| {
         let w = ui.available_width() - 56.0;
-        let cb = egui::ComboBox::from_id_salt("es-preset").selected_text(&current).width(w).show_ui(ui, |ui| {
+        let cb = craft_ui::ComboBox::from_id_salt("es-preset").selected_text(&current).width(w).show_ui(ui, |ui| {
             for p in &mine {
                 if ui.selectable_label(p.name == st.preset, &p.name).clicked() {
                     picked = Some(p.name.clone());
@@ -563,13 +563,14 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
 fn combo(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, names: &[&str], current: &str, active: bool) {
     let mut picked = None;
     ui.add_enabled_ui(active, |ui| {
-        let cb = egui::ComboBox::from_id_salt(("es-combo", key)).selected_text(crate::i18n::t(current)).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
-            for n in names {
-                if ui.selectable_label(*n == current, crate::i18n::t(n)).clicked() {
-                    picked = Some(n.to_string());
+        let cb =
+            craft_ui::ComboBox::from_id_salt(("es-combo", key)).selected_text(crate::i18n::t(current)).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
+                for n in names {
+                    if ui.selectable_label(*n == current, crate::i18n::t(n)).clicked() {
+                        picked = Some(n.to_string());
+                    }
                 }
-            }
-        });
+            });
         cx.auto.add(&format!("essentialSound.{key}"), cb.response.rect, key);
     });
     if let Some(n) = picked {
