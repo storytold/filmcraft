@@ -9,7 +9,7 @@ gamut mapping, and LUT files.
 | `lib.rs` | `Matrix`/`Transfer`/`Primaries`/`Range`/`ColorInfo` (stream metadata), Y'CbCr↔R'G'B', sRGB, PQ (ST 2084), HLG (ARIB STD-B67), HSL, hex colours |
 | `log` | camera log curves (encode/decode), their signal domains |
 | `spaces` | gamuts and 3×3 matrices (SMPTE RP 177), `ColorSpace` (Interpret Footage choices), `WorkingSpace`, `ColorPipeline` |
-| `transform` | `InputTransform` (source → working), `OutputTransform` (working → monitor / export), BT.2446 A (HLG → SDR), BT.2390 (PQ → SDR), gamut compression |
+| `transform` | `InputTransform` (source → working), `OutputTransform` (working → monitor / export), HLG → SDR (OOTF at the SDR system gamma, or BT.2446 A), BT.2390 (PQ → SDR), gamut compression |
 | `lut` | `.cube` (1D, 3D, shaper + 3D) and `.3dl` parse/write, tetrahedral interpolation |
 
 ## Working units
@@ -73,22 +73,31 @@ the result against the published BT.709 RGB→XYZ and BT.2087 BT.709→BT.2020 m
 
 ## Tone mapping (HDR/log → SDR)
 
-**HLG → SDR** uses [ITU-R BT.2446-1 (03/2021), §4.1 Method A, tables 2–3](https://www.itu.int/pub/R-REP-BT.2446-1-2021).
-After the HLG OOTF, BT.2020 working light (203 cd/m² = 1) is normalized to the method's 1000-nit
-HDR peak. Method A maps to a 100-nit SDR peak, with its gamma-2.4 perceptual luma knee and chroma
-correction (including the red-dependent luma adjustment). Its output is decoded back to relative
-SDR linear light, then mapped from BT.2020 to the working/monitor gamut; monitors encode it as
-sRGB. The method must run **before** the gamut matrix because its luma/chroma coefficients are
-BT.2020. Negative and above-peak input components are bounded to its normalized domain, NaN
-contributes black, and reconstructed SDR super-whites survive until display encoding.
+**HLG → SDR** has two conversions (Sequence ▸ Sequence Settings / Color Management ▸
+*HLG to SDR*), shared by Source, HLG media in an SDR sequence with **Auto Tone Map Media**
+on (the default), HLG sequence monitors and SDR exports:
 
-Source, HLG media in an SDR sequence with **Auto Tone Map Media** on (the default), HLG sequence
-monitors and SDR exports use this same conversion. HLG 50 % maps to ≈ 0.128 SDR linear (39 % sRGB),
-and 75 % to ≈ 0.406 (67 % sRGB), instead of the former brighter BT.2390 mapping. Existing projects
-using automatic HLG → SDR conversion get the new appearance without a schema migration. Auto
-Tone Map Off, HDR working values/reference white and HDR export are unchanged. This is HLG
-base-layer processing, not Dolby Vision dynamic-metadata rendering; monitors are still SDR, and
-their appearance is not guaranteed to match QuickTime's HDR/EDR playback.
+- **HLG OOTF** (the default) re-runs the BT.2100 OOTF at the SDR display's system gamma:
+  the inverse OETF decodes to scene light, then each channel scales by `Ys^(γ−1)` on BT.2020
+  luminance, before the gamut matrix and with no second tone map. γ is the extended
+  system-gamma formula `1.2 · 1.111^log2(Lw/1000)` (the form libplacebo and libjxl implement)
+  at `Lw` = 100 cd/m², ≈ 0.846. HLG 100 % lands on SDR white and 75 % at ≈ 0.33 linear —
+  within two 8-bit sRGB codes of AVFoundation's own SDR conversion on the grey ramp, which
+  is what iPhone footage should look like. On an HLG working sequence the SDR output
+  transform applies the two OOTFs composed (undo γ = 1.2, apply γ ≈ 0.846) as one ratio on
+  display luma, so monitoring matches putting the media straight into an SDR sequence.
+- **BT.2446-1 A** is the broadcast convention: the 1000-nit reference OOTF (γ = 1.2),
+  then [ITU-R BT.2446-1 (03/2021), §4.1 Method A, tables 2–3](https://www.itu.int/pub/R-REP-BT.2446-1-2021),
+  1000 → 100 cd/m² with its gamma-2.4 perceptual luma knee and chroma correction (including
+  the red-dependent luma adjustment). It runs **before** the gamut matrix because its
+  luma/chroma coefficients are BT.2020; its output decodes to relative SDR linear light
+  (50 % → ≈ 0.128, 75 % → ≈ 0.406). Negative and above-peak input components are bounded
+  to its normalized domain, NaN contributes black, and reconstructed SDR super-whites
+  survive until display encoding.
+
+Auto Tone Map Off, HDR working values/reference white and HDR export are unchanged. This is
+HLG base-layer processing, not Dolby Vision dynamic-metadata rendering; monitors are still
+SDR, and their appearance is not guaranteed to match QuickTime's HDR/EDR playback.
 
 **PQ → SDR** retains the **ITU-R BT.2390 EETF**:
 
@@ -157,9 +166,11 @@ the full signal range in both file ranges), published reference points (S-Log3 9
 128/433/602, LogC3 18 % → 0.391, LogC4 18 % → 0.2784, Canon Log 2/3 18 % → 39.2 %/34.3 % IRE, Apple
 Log 18 % → 0.488, D-Log 0 → 0.0929), PQ/HLG reference white, EETF continuity/monotonicity and peak,
 hue preservation, gamut compression, BT.709/BT.2087 matrices, LUT interpolation and file round
-trips. Method A has independent f64 reference values for neutral/coloured pixels, black/peak,
-hostile values, ramp monotonicity and sub-code knee steps; direct HLG → SDR agrees with HLG →
-HDR working → SDR monitoring. `filmcraft-gpu` compares limited/full-range HLG CPU/GPU outputs
-within two 8-bit codes, including prepared uploads. `filmcraft-export --test hlg_sdr` checks
+trips. The HLG OOTF path is checked against AVFoundation's measured grey ramp and real-world
+patches; Method A has independent f64 reference values for neutral/coloured pixels, black/peak,
+hostile values, ramp monotonicity and sub-code knee steps; either conversion of direct HLG →
+SDR agrees with HLG → HDR working → SDR monitoring. `filmcraft-gpu` compares limited/full-range
+HLG CPU/GPU outputs within two 8-bit codes for both HLG → SDR methods, including prepared
+uploads. `filmcraft-export --test hlg_sdr` checks
 procedural 10-bit patches through Source, Program, layer plans, PNG (pixel-exact) and H.264 /
 ProRes SDR exports (patch interiors within three codes; BT.709 signalling; ffmpeg decode).

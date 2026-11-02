@@ -555,8 +555,9 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
 
 ```text
 frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage override, else VUI/colr/MKV Colour
-  ─► decode table (sRGB/BT.709, PQ, HLG scene light, camera log) ─► HLG OOTF
-  ─► BT.2446 A (HLG into SDR, Auto Tone Map Media) ─► 3×3 to working gamut
+  ─► decode table (sRGB/BT.709, PQ, HLG scene light, camera log) ─► HLG OOTF (γ = 1.2 into HDR,
+     or the SDR display's ≈ 0.846 straight to SDR light — the `hlgSdr` choice)
+  ─► BT.2446 A (HLG into SDR, Auto Tone Map Media, broadcast choice) ─► 3×3 to working gamut
   ─► BT.2390 (PQ into SDR, Auto Tone Map Media) ─► gamut mapping
   ─► effects + compositing in working linear (1.0 = reference white = SDR white = 203 cd/m²)
   ─► monitors: working → SDR BT.709 (tone map from HDR, gamut map from BT.2020)
@@ -575,11 +576,15 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
   HLG OOTF, tone-map method, gamut matrix and desaturation. BT.2446 A runs in BT.2020 before the
   matrix; BT.2390 retains its post-matrix stage. Log and HDR/wide-gamut sequences are converted
   on the CPU and drawn as pre-rendered images.
-- **HLG → SDR.** BT.2446-1 Method A (§4.1, 1000 → 100 cd/m²) with its chroma correction is
-  shared by Source, automatic HLG input into an SDR sequence, HLG sequence monitoring and SDR
-  export. SDR output is relative linear BT.709 before sRGB display encoding. The HDR working
-  scale remains 203 cd/m² = 1, and HDR export bypasses SDR conversion. Existing automatic HLG
-  conversions adopt the corrected appearance; there is no project schema or command change.
+- **HLG → SDR.** Sequence colour settings pick the conversion (`hlgSdr`): the default
+  re-runs the BT.2100 OOTF at the SDR display's system gamma (≈ 0.846 at 100 cd/m², matching
+  phones and Apple's own conversion, no second tone map); `bt2446` keeps the 1000-nit OOTF
+  plus BT.2446-1 Method A (the broadcast convention). Either way the same conversion is
+  shared by Source, automatic HLG input into an SDR sequence, HLG sequence monitoring
+  (the output transform composes the two OOTFs into one luma ratio) and SDR export.
+  SDR output is relative linear BT.709 before sRGB display encoding. The HDR working
+  scale remains 203 cd/m² = 1, and HDR export bypasses SDR conversion. Projects without
+  the setting default to the OOTF conversion.
 - **Outputs.** `RenderOptions::working_output` returns working-space pixels (HDR exports,
   scopes); otherwise the top-level render is converted for an SDR monitor. The other colour
   effects work on display-encoded values clamped to 0..1 (they clip HDR highlights above

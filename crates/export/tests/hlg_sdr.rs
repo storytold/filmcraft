@@ -93,9 +93,10 @@ fn source_program_layer_plan_and_sdr_exports_agree() {
     let source = render_item(&p, item, Tick::ZERO, 1.0, &map).unwrap().over_black_rgba8();
     let program = render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map).over_black_rgba8();
     assert_eq!(source, program, "Source and Program: one SDR transform");
-    // HLG 50% / 75% map to ~39% / 67% sRGB (BT.2446 A), rather than ~54% / 90%.
-    assert!(source[(16 * W as usize + 80) * 4].abs_diff(100) <= 1);
-    assert!(source[(16 * W as usize + 112) * 4].abs_diff(171) <= 1);
+    // HLG 50% / 75% map to ~38% / 60% sRGB (the OOTF default, matching Apple's own
+    // conversion), rather than the brighter ~54% / 90% of the old 1000-nit mapping.
+    assert!(source[(16 * W as usize + 80) * 4].abs_diff(98) <= 1);
+    assert!(source[(16 * W as usize + 112) * 4].abs_diff(154) <= 1);
     let plan = filmcraft_render::plan::plan_frame(&p, seq, Tick::ZERO, RenderOptions::default(), &map);
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("HLG keeps the GPU layer path") };
     assert!(layers[0].input.is_some());
@@ -169,4 +170,11 @@ fn source_program_layer_plan_and_sdr_exports_agree() {
             }
         }
     }
+
+    // The broadcast choice (Sequence ▸ Color Settings ▸ HLG to SDR = BT.2446 A) keeps the
+    // Method A conversion on the same path: 50% / 75% land at ~39% / 67% sRGB.
+    p.sequence_mut(seq).unwrap().settings.color = ColorPipeline { hlg_sdr: filmcraft_color::HlgSdr::Bt2446, ..ColorPipeline::REC709 };
+    let broadcast = render_sequence(&p, seq, Tick::ZERO, RenderOptions::default(), &map).over_black_rgba8();
+    assert!(broadcast[(16 * W as usize + 80) * 4].abs_diff(100) <= 1);
+    assert!(broadcast[(16 * W as usize + 112) * 4].abs_diff(171) <= 1);
 }

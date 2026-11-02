@@ -32,7 +32,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "sequence.colorSettings",
             "Color Management…",
             &["Sequence"],
-            r#"{"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?}"#,
+            r#"{"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"hlgSdr":"ootf"|"bt2446"?}"#,
             has_seq,
             color_settings,
         ),
@@ -245,8 +245,15 @@ fn color_settings(s: &mut Session, p: &Value) -> Result<Value> {
         None => None,
     };
     let (wide, tone) = (bool_p(p, "wideGamut"), bool_p(p, "autoToneMap"));
+    let hlg_sdr = match str_p(p, "hlgSdr") {
+        Some(h) => Some(filmcraft_color::HlgSdr::parse(h).ok_or_else(|| bad("sequence.colorSettings", format!("unknown HLG conversion `{h}`")))?),
+        None => None,
+    };
     let cur = s.project.sequence(id).map(|q| q.settings.color).unwrap_or_default();
-    let changed = ws.is_some_and(|w| w != cur.working) || wide.is_some_and(|v| v != cur.wide_gamut) || tone.is_some_and(|v| v != cur.auto_tone_map);
+    let changed = ws.is_some_and(|w| w != cur.working)
+        || wide.is_some_and(|v| v != cur.wide_gamut)
+        || tone.is_some_and(|v| v != cur.auto_tone_map)
+        || hlg_sdr.is_some_and(|h| h != cur.hlg_sdr);
     if changed {
         s.edit("Sequence Color Settings", |pr, _| {
             let q = pr.sequence_mut(id).ok_or_else(|| bad("sequence.colorSettings", "no sequence"))?;
@@ -260,12 +267,15 @@ fn color_settings(s: &mut Session, p: &Value) -> Result<Value> {
             if let Some(v) = tone {
                 c.auto_tone_map = v;
             }
+            if let Some(h) = hlg_sdr {
+                c.hlg_sdr = h;
+            }
             q.settings.working_space = c.working.label().into();
             Ok(())
         })?;
     }
     let c = s.project.sequence(id).map(|q| q.settings.color).unwrap_or_default();
-    Ok(json!({"workingSpace": c.working.id(), "label": c.working.label(), "wideGamut": c.wide_gamut, "autoToneMap": c.auto_tone_map}))
+    Ok(json!({"workingSpace": c.working.id(), "label": c.working.label(), "wideGamut": c.wide_gamut, "autoToneMap": c.auto_tone_map, "hlgSdr": c.hlg_sdr.id()}))
 }
 
 fn has_footage(s: &Session) -> std::result::Result<(), String> {

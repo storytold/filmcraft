@@ -22,6 +22,7 @@ struct U {
     q3: vec4<f32>,   // gamut matrix row 1, tone-mapping source peak cd/m²
     q4: vec4<f32>,   // gamut matrix row 2, tone-mapping target peak cd/m²
     q5: vec4<f32>,   // desaturation luma weights, desaturation on
+    q6: vec4<f32>,   // HLG OOTF exponent (system gamma − 1), unused
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -153,10 +154,12 @@ fn managed(rgb: vec3<f32>) -> vec3<f32> {
     if curve == 0u { c = srgb_to_linear(v); }
     if curve == 2u { c = vec3(pq1(v.r), pq1(v.g), pq1(v.b)) * (10000.0 / white); }
     if curve == 3u { c = hlg_inv(v); }
+    // HLG OOTF (BT.2100): exponent γ−1 is 0.2 for the 1000-nit reference display,
+    // ≈ −0.154 when the OOTF itself lands on the 100-nit SDR display (HlgSdr::Ootf).
     if u.q0.z > 0.0 {
         let ys = max(dot(u.q1.xyz, c), 0.0);
         var g = 0.0;
-        if ys > 0.0 { g = u.q0.z * pow(ys, 0.2); }
+        if ys > 0.0 { g = u.q0.z * pow(ys, u.q6.x); }
         c = c * g;
     }
     if u.q2.w > 1.5 { c = bt2446a(c); }

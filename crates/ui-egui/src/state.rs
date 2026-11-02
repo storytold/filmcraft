@@ -823,7 +823,36 @@ pub enum ColorDialog {
     /// `clip.interpretFootage`: the media items and the chosen colour space id ("auto" = metadata).
     Interpret { items: Vec<u64>, color_space: String },
     /// `sequence.colorSettings`.
-    Sequence { working_space: String, wide_gamut: bool, auto_tone_map: bool },
+    Sequence {
+        working_space: String,
+        wide_gamut: bool,
+        auto_tone_map: bool,
+        #[serde(default = "default_hlg_sdr")]
+        hlg_sdr: String,
+    },
+}
+
+/// The Edit Marker dialog (#2416): the marker it edits and its fields as typed. `duration` is a
+/// timecode, `color` a label name, `kind` a `markers.edit` kind. `sequence` and `generation` (the
+/// session's `document_epoch`) tie it to where it was opened: in another project, or the same
+/// file opened again, the same marker id is another marker. `duration0` is the duration as the dialog opened, so OK leaves a duration it
+/// cannot show exactly (part of a frame) alone unless it was edited.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarkerDraft {
+    pub sequence: u64,
+    pub generation: u64,
+    pub duration0: String,
+    pub marker: u64,
+    pub name: String,
+    pub comment: String,
+    pub duration: String,
+    pub color: String,
+    pub kind: String,
+}
+
+fn default_hlg_sdr() -> String {
+    filmcraft_color::HlgSdr::Ootf.id().into()
 }
 
 /// The Audio Gain dialog (Clip ▸ Audio Gain…, G).
@@ -899,6 +928,8 @@ pub struct SequenceSettingsDraft {
     pub working_space: String,
     pub wide_gamut: bool,
     pub auto_tone_map: bool,
+    /// A [`filmcraft_color::HlgSdr`] id.
+    pub hlg_sdr: String,
 }
 
 impl Default for SequenceSettingsDraft {
@@ -921,6 +952,7 @@ impl Default for SequenceSettingsDraft {
             working_space: "rec709".into(),
             wide_gamut: false,
             auto_tone_map: true,
+            hlg_sdr: "ootf".into(),
         }
     }
 }

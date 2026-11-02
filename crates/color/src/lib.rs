@@ -19,7 +19,7 @@ pub mod transform;
 pub use grade::GradeSpace;
 pub use log::LogCurve;
 pub use lut::{Lut, Lut1d, Lut3d, LutFormat};
-pub use spaces::{ColorPipeline, ColorSpace, Curve, Gamut, WorkingSpace};
+pub use spaces::{ColorPipeline, ColorSpace, Curve, Gamut, HlgSdr, WorkingSpace};
 pub use transform::{DecodeTable, GpuCurve, GpuInputParams, GpuToneMap, InputTransform, OutputTransform, REFERENCE_WHITE_NITS, ToneMap};
 
 /// YUV ↔ RGB matrix coefficients.
