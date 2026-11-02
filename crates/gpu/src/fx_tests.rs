@@ -435,7 +435,7 @@ fn gpu_neutral_three_way_leaves_negative_and_hdr_values() {
     let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
     op.apply(&mut cpu);
     assert_eq!(cpu.px, px, "the CPU leaves a neutral corrector's input untouched");
-    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
     let (worst, flips) = compare(&px, &gpu);
     assert!(worst <= EXACT && flips == 0.0, "the GPU changed a neutral corrector's input: {worst:.2e}, {flips:.4} of the values");
 }
