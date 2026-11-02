@@ -897,3 +897,30 @@ fn a_dropped_project_file_opens_and_asks_about_unsaved_changes() {
     d.click("openProject.dontSave");
     assert!(d.path().is_some_and(|p| p.ends_with("B.FCPROJ")));
 }
+
+/// #3817: a duration typed in Speed/Duration with several clips selected gives every clip that
+/// duration, not just the first; one undo restores all of them.
+#[test]
+fn duration_text_applies_to_every_selected_clip() {
+    let mut d = Driver::new();
+    let clips = [d.v1(0), d.v1(1), d.v1(2)];
+    assert_ne!(clips[0].duration, clips[1].duration, "the demo clips must differ in length for this test");
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    let ids: Vec<u64> = clips.iter().map(|c| c.id.0).collect();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    d.exec("timeline.select", json!({"clips": ids}));
+    d.menu("clip.speedDuration");
+    d.click("speedDuration.duration");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "00:00:00:10"}));
+    d.frames(3);
+    d.click("speedDuration.ok");
+    assert!(d.app().ui.clip_dialog.is_none(), "the dialog closed");
+    for i in 0..3 {
+        assert_eq!(d.v1(i).duration, rate.tick_of(10), "clip {i} has the typed duration");
+    }
+    d.exec("edit.undo", json!({}));
+    for (i, c) in clips.iter().enumerate() {
+        assert_eq!(d.v1(i).duration, c.duration, "one undo restores clip {i}");
+    }
+}

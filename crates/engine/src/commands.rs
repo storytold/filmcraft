@@ -2326,7 +2326,7 @@ fn build() -> Vec<CommandSpec> {
             "Speed/Duration…",
             ["Clip"],
             Some("Cmd+R"),
-            r#"{"clips":[id]?,"speed":percent=100,"reverse":bool,"ripple":bool,"maintainPitch":bool? (Maintain Audio Pitch; unchanged when left out),"interpolation":"frameSampling|frameBlending|opticalFlow"?}"#,
+            r#"{"clips":[id]?,"speed":percent=100,"duration":ticks|{"frame"|"seconds"|"timecode"}? (each clip gets this duration; `speed` is then ignored),"reverse":bool,"ripple":bool,"maintainPitch":bool? (Maintain Audio Pitch; unchanged when left out),"interpolation":"frameSampling|frameBlending|opticalFlow"?}"#,
             has_selection,
             |s, p| {
                 let speed = f64_p(p, "speed").unwrap_or(100.0) / 100.0;
@@ -2337,6 +2337,11 @@ fn build() -> Vec<CommandSpec> {
                     Some(m) => Some(filmcraft_project::TimeInterpolation::from_name(m).ok_or_else(|| bad("clip.speedDuration", "unknown interpolation"))?),
                     None => None,
                 };
+                let drop_frame = s.active_sequence().is_some_and(|q| q.settings.drop_frame);
+                let duration = tick_or_time_p(p, "duration", s.sequence_rate(), drop_frame, "clip.speedDuration")?;
+                if duration.is_some_and(|d| d <= Tick::ZERO) {
+                    return Err(bad("clip.speedDuration", "duration must be positive"));
+                }
                 let sel = with_links(s, &clips_p(s, p));
                 s.edit_sequence("Speed/Duration", |q, ctx, _| {
                     // a clip and its linked partners on other tracks change as one edit, so a ripple
@@ -2361,6 +2366,11 @@ fn build() -> Vec<CommandSpec> {
                         if unlocked.is_empty() {
                             return Err(edit::EditError::Locked.into());
                         }
+                        // with a duration, the speed that gives the group's first clip that duration
+                        let speed = match (duration, unlocked.first().and_then(|c| q.find_item(*c))) {
+                            (Some(d), Some((_, it))) => (it.source_out() - it.source_in).0 as f64 / d.0 as f64,
+                            _ => speed,
+                        };
                         edit::set_speed_group(q, &unlocked, speed, reverse, ripple, ctx)?;
                     }
                     for c in &sel {

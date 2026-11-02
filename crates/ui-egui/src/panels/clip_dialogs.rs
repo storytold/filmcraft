@@ -639,11 +639,15 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 let before = if refresh_duration { p["duration"].clone() } else { d.info["durationText"].clone() };
                 text(ui, &mut elems, pre, p, "duration", tl!("Duration:"), 120.0);
                 let frames = filmcraft_time::parse_timecode(p["duration"].as_str().unwrap_or_default(), rate, false, 0);
-                let speed =
-                    frames.ok().filter(|f| *f > 0).map(|f| rate.tick_of(f)).filter(|ticks| ticks.0 > 0).map(|ticks| dur as f64 * was * 100.0 / ticks.0 as f64);
+                let typed = frames.ok().filter(|f| *f > 0).map(|f| rate.tick_of(f)).filter(|ticks| ticks.0 > 0);
+                let speed = typed.map(|ticks| dur as f64 * was * 100.0 / ticks.0 as f64);
                 valid = speed.is_some_and(|speed| speed.is_finite() && (0.01..=100_000.0).contains(&speed));
                 if valid && before != p["duration"] {
                     p["speed"] = json!(speed);
+                    // sent on OK, so every selected clip gets this duration instead of the first clip's speed
+                    d.info["typedDuration"] = json!(typed.map(|t| t.0));
+                } else if refresh_duration {
+                    d.info["typedDuration"] = Value::Null;
                 }
                 d.info["durationSpeed"] = p["speed"].clone();
                 d.info["durationText"] = p["duration"].clone();
@@ -839,7 +843,10 @@ fn finish(d: &ClipDialogDraft) -> Value {
     match d.command.as_str() {
         "clip.speedDuration" => {
             if let Some(m) = p.as_object_mut() {
-                m.remove("duration");
+                match d.info["typedDuration"].as_i64() {
+                    Some(ticks) => m.insert("duration".into(), json!(ticks)),
+                    None => m.remove("duration"),
+                };
                 // Maintain Audio Pitch is sent only when the checkbox changed: left out, every
                 // selected clip keeps its own setting
                 if m.get("maintainPitch") == d.info.get("maintainPitch") {

@@ -196,3 +196,17 @@ fn maintain_audio_pitch_leaves_a_locked_linked_sound_alone() {
     assert!(flag(&s, picture), "the picture's own setting changes");
     assert!(!flag(&s, sound), "the locked sound keeps its setting");
 }
+
+/// A duration reaches each selected picture and its sound, which end together.
+#[test]
+fn a_duration_applies_to_every_picture_and_its_sound() {
+    let mut s = Session::default();
+    let [(picture1, sound1), (picture2, sound2), _] = three_clips(&mut s);
+    let target = s.sequence_rate().tick_of(24);
+    s.execute("clip.speedDuration", json!({"clips": [picture1.0, picture2.0], "duration": target.0, "ripple": true})).unwrap();
+    s.active_sequence().unwrap().check().unwrap();
+    for c in [picture1, sound1, picture2, sound2] {
+        let (start, end) = range(&s, c);
+        assert_eq!(end - start, target, "clip {} has the duration", c.0);
+    }
+}
