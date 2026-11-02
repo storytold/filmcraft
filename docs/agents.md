@@ -145,6 +145,10 @@ progress and stop it:
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
+- An image sequence (PNG, TIFF, DPX, ... stills) never writes the path it is given: `a.png` becomes
+  `a000.png`, `a001.png` and so on. `file.exportMedia`, `export.quick` and the job's `result` then
+  name the first still as `path`, the name `file.import` takes for the sequence, and the two commands
+  add `lastPath`, the last still. `filmcraft-cli export` prints both.
 - `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
   strings, empty when none). If the default or explicitly selected In/Out range covers one
   sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
