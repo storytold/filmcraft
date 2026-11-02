@@ -262,7 +262,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         if !self.b.skip {
             let eob = self.coeffs(plane, start_x, start_y, tx_sz);
             if eob > 0 {
-                self.reconstruct(plane, start_x, start_y, tx_sz);
+                self.reconstruct(plane, start_x, start_y, tx_sz, eob == 1);
             }
         }
         for i in 0..step_y {

@@ -130,9 +130,9 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // ---- presses (the left button only: a middle or right drag leaves the layers alone)
     press(app, ui, &resp, graphics_tool, pic, tool, &views, sel_clip, &sel_layers, &editing, edit_view, drag_id, &mut drag, &mut actions);
     // ---- drag feedback / commit
-    drag_step(app, ui, &painter, &resp, hover, pic, frame, tool, &views, drag, drag_id, &mut actions);
+    drag_step(app, ui, &painter, &resp, hover, pic, frame, tool, &views, sel_clip, &sel_layers, drag, drag_id, &mut actions);
     // ---- clicks
-    click(app, ui, &resp, graphics_tool, drag, pic, frame, tool, &views, &editing, edit_view, &mut actions);
+    click(app, ui, &resp, graphics_tool, drag, pic, frame, tool, &views, sel_clip, &sel_layers, &editing, edit_view, &mut actions);
     // ---- pen path in progress
     pen_path(app, ui, &painter, pic, frame, tool, hover, accent, &mut actions);
     // ---- run accepted actions before drawing the caret
@@ -308,8 +308,12 @@ fn press(
                         if editing.is_some() {
                             end_edit(app, ui);
                         }
+                        // a layer already selected drags every selected layer along (#2186); Shift
+                        // adds the pressed one to the selection first, as Shift-click does
                         if !(Some(v.clip) == sel_clip && sel_layers.contains(&v.layer)) {
-                            actions.push(("graphics.selectLayer".into(), json!({"clip": v.clip.0, "layers": [v.layer]})));
+                            let mut layers = if shift && Some(v.clip) == sel_clip { sel_layers.to_vec() } else { Vec::new() };
+                            layers.push(v.layer);
+                            actions.push(("graphics.selectLayer".into(), json!({"clip": v.clip.0, "layers": layers})));
                         }
                         *drag = Some(DragState { kind: DragKind::Move, clip: v.clip, layer: v.layer, start: p });
                     }
@@ -330,6 +334,17 @@ fn press(
     }
 }
 
+/// The layers a move takes along: every selected layer when the pressed one is selected.
+fn move_group<'a>(views: &'a [LayerView], pressed: Option<&'a LayerView>, d: DragState, sel_clip: Option<ClipId>, sel_layers: &[usize]) -> Vec<&'a LayerView> {
+    match pressed {
+        Some(_) if Some(d.clip) == sel_clip && sel_layers.contains(&d.layer) => {
+            views.iter().filter(|x| x.clip == d.clip && sel_layers.contains(&x.layer)).collect()
+        }
+        Some(v) => vec![v],
+        None => Vec::new(),
+    }
+}
+
 /// Draw the in-flight drag (a ghost box, the moved outline, snap lines) and, when the button
 /// comes up, commit it as actions.
 #[allow(clippy::too_many_arguments)]
@@ -343,6 +358,8 @@ fn drag_step(
     frame: (u32, u32),
     tool: Tool,
     views: &[LayerView],
+    sel_clip: Option<ClipId>,
+    sel_layers: &[usize],
     drag: Option<DragState>,
     drag_id: egui::Id,
     actions: &mut Vec<(String, Value)>,
@@ -352,18 +369,22 @@ fn drag_step(
     if let Some(d) = drag {
         let cur = resp.interact_pointer_pos().or(hover).unwrap_or(d.start);
         let v = views.iter().find(|v| v.clip == d.clip && v.layer == d.layer);
-        // Snap in Program Monitor (hold ⌘/Ctrl to move freely)
-        let snap_off = match (d.kind, v) {
-            (DragKind::Move, Some(v)) if !ui.input(|i| i.modifiers.command) => {
-                crate::panels::monitor_view::snap_move(app, pic, frame, Rect::from_points(&v.quad()), cur - d.start)
+        let group = move_group(views, v, d, sel_clip, sel_layers);
+        // Snap in Program Monitor (hold ⌘/Ctrl to move freely); a group snaps by its outline
+        let snap_off = match (d.kind, group.first()) {
+            (DragKind::Move, Some(_)) if !ui.input(|i| i.modifiers.command) => {
+                let bounds = group.iter().map(|x| Rect::from_points(&x.quad())).reduce(|a, b| a.union(b)).unwrap_or(Rect::NOTHING);
+                crate::panels::monitor_view::snap_move(app, pic, frame, bounds, cur - d.start)
             }
             _ => (cur - d.start, Vec::new()),
         };
         match d.kind {
             DragKind::Move => {
-                if let Some(v) = v {
-                    let off = snap_off.0;
-                    painter.add(egui::Shape::closed_line(v.quad().iter().map(|q| *q + off).collect(), Stroke::new(1.0, Color32::WHITE)));
+                let off = snap_off.0;
+                for x in &group {
+                    painter.add(egui::Shape::closed_line(x.quad().iter().map(|q| *q + off).collect(), Stroke::new(1.0, Color32::WHITE)));
+                }
+                if !group.is_empty() {
                     crate::panels::monitor_view::draw_snap_lines(painter, pic, &snap_off.1);
                 }
             }
@@ -429,11 +450,17 @@ fn drag_step(
                         let lin = Affine { e: 0.0, f: 0.0, ..v.canvas_to_screen };
                         let off = snap_off.0;
                         let delta = lin.inverse().map(|i| i.apply(Vec2::new(off.x as f64, off.y as f64))).unwrap_or_default();
-                        let p0 = v.spec.transform.position;
-                        actions.push((
-                            "graphics.set".into(),
-                            json!({"clip": v.clip.0, "layer": v.layer, "props": {"position": [p0.x + delta.x, p0.y + delta.y]}}),
-                        ));
+                        if group.len() > 1 {
+                            // all the layers of one graphic share its canvas: one delta moves them all
+                            let layers: Vec<usize> = group.iter().map(|x| x.layer).collect();
+                            actions.push(("graphics.moveLayers".into(), json!({"clip": v.clip.0, "layers": layers, "delta": [delta.x, delta.y]})));
+                        } else {
+                            let p0 = v.spec.transform.position;
+                            actions.push((
+                                "graphics.set".into(),
+                                json!({"clip": v.clip.0, "layer": v.layer, "props": {"position": [p0.x + delta.x, p0.y + delta.y]}}),
+                            ));
+                        }
                     }
                 }
                 DragKind::Handle(n) if moved => {
@@ -497,6 +524,8 @@ fn click(
     frame: (u32, u32),
     tool: Tool,
     views: &[LayerView],
+    sel_clip: Option<ClipId>,
+    sel_layers: &[usize],
     editing: &Option<GfxEdit>,
     edit_view: Option<&LayerView>,
     actions: &mut Vec<(String, Value)>,
@@ -548,7 +577,19 @@ fn click(
                     if app.ui.gfx_edit.is_some() {
                         end_edit(app, ui);
                     }
-                    actions.push(("graphics.selectLayer".into(), json!({"clip": v.clip.0, "layers": [v.layer]})));
+                    // Shift-click adds or removes a layer of the selected graphic, Cmd/Ctrl-click
+                    // removes it (#2186); a plain click selects only it
+                    let (shift, command) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
+                    let layers = if (shift || command) && Some(v.clip) == sel_clip {
+                        let mut l: Vec<usize> = sel_layers.iter().copied().filter(|x| *x != v.layer).collect();
+                        if shift && !sel_layers.contains(&v.layer) {
+                            l.push(v.layer);
+                        }
+                        l
+                    } else {
+                        vec![v.layer]
+                    };
+                    actions.push(("graphics.selectLayer".into(), json!({"clip": v.clip.0, "layers": layers})));
                 } else {
                     deselect_on_monitor(app, ui);
                 }

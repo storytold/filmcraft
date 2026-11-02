@@ -58,6 +58,9 @@ pub struct MkvSource {
     /// Video codec as an ISO-BMFF sample entry (for the decoder factories).
     ventry: Option<SampleEntry>,
     video: GopCache,
+    /// Look frames up by the start of their frame: the video track's timestamp unit is half a frame
+    /// or longer and its samples sit on the nominal frame grid ([`crate::gop::snap_coarse_units`]).
+    snap: bool,
     /// The alpha layer of a VP8 / VP9 track with `AlphaMode` 1 (WebM transparency, #402).
     alpha: Option<Arc<crate::webm_alpha::AlphaLayer>>,
     /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
@@ -153,7 +156,9 @@ fn audio_info(t: &filmcraft_matroska::Track) -> Option<AudioStreamInfo> {
         channels = h.channels as u32;
     }
     let (rate, channels) = filmcraft_media::bounded_audio_dimensions(rate, channels).ok()?;
-    Some(AudioStreamInfo { sample_rate: rate, channels, codec: codec_label(&t.codec), bits_per_sample: a.bit_depth.map(|b| b as u32) })
+    // an audio codec without a decoder plays silent: say so in the media info, as MPEG / MXF do (#1422)
+    let codec = if audio_decodable(&t.codec) { codec_label(&t.codec) } else { format!("{} (unsupported)", codec_label(&t.codec)) };
+    Some(AudioStreamInfo { sample_rate: rate, channels, codec, bits_per_sample: a.bit_depth.map(|b| b as u32) })
 }
 
 /// The track timestamp that media time zero stands for (#715): the earliest start among the
@@ -221,10 +226,11 @@ fn to_tick(t: &filmcraft_matroska::Track, pts: i64) -> Tick {
 
 /// A time as the track timestamp to look a frame up by: rounded to the nearest tick, as muxers
 /// round frame times to `TimestampScale` (usually 1 ms). Flooring skipped every frame whose
-/// timestamp was rounded up (every third frame at 30 fps).
-fn from_tick(t: &filmcraft_matroska::Track, time: Tick) -> i64 {
+/// timestamp was rounded up (every third frame at 30 fps). See [`crate::gop::lookup_time`] for
+/// `snap`, timestamp units as long as a frame.
+fn from_tick(t: &filmcraft_matroska::Track, rate: FrameRate, time: Tick, snap: bool) -> i64 {
     let (n, d) = tb(t);
-    time.to_rational_round(n, d)
+    crate::gop::lookup_time(time, n, d, rate, snap)
 }
 
 /// VP9 configuration from the Matroska `CodecPrivate` feature list (ID / length / value triples:
@@ -334,7 +340,21 @@ fn codec_label(c: &Codec) -> String {
         Codec::Mp2 | Codec::Mp1 => "MPEG Audio".into(),
         Codec::Other(id) if id == "V_MPEG2" => "MPEG-2 Video".into(),
         Codec::Other(id) if id == "V_MPEG1" => "MPEG-1 Video".into(),
+        Codec::Other(id) if id.starts_with("A_DTS") => "DTS".into(),
+        Codec::Other(id) if id == "A_TRUEHD" => "Dolby TrueHD".into(),
         other => other.name().to_string(),
+    }
+}
+
+/// Whether the audio of codec `c` decodes: PCM directly, the rest through
+/// [`MkvSource::audio_decoder`] (keep the two in step).
+fn audio_decodable(c: &Codec) -> bool {
+    match c {
+        Codec::Pcm { .. } | Codec::Aac { .. } | Codec::Opus { .. } | Codec::Mp3 | Codec::Mp2 | Codec::Mp1 | Codec::Ac3 | Codec::Eac3 | Codec::Flac { .. } => {
+            true
+        }
+        Codec::Vorbis { headers } => headers.len() == 3,
+        _ => false,
     }
 }
 
@@ -460,7 +480,12 @@ impl MkvSource {
                 && t.samples.iter().any(|s| s.addition.is_some())
         });
         let alpha = alpha.map(|t| Arc::new(crate::webm_alpha::AlphaLayer::new(bytes.clone(), t.samples.iter().map(|s| (s.pts, s.addition)))));
-        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), alpha, audios })
+        let snap = vtrack.zip(info.video.as_ref()).is_some_and(|(i, v)| {
+            let t = &file.tracks[i];
+            let (n, d) = tb(t);
+            crate::gop::snap_coarse_units(t.samples.iter().map(|s| s.pts), n, d, v.frame_rate)
+        });
+        Ok(Self { info, bytes, file, vtrack, ventry, video: GopCache::new(explicit_color).with_rotation(rotation), snap, alpha, audios })
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -498,7 +523,7 @@ impl MkvSource {
                 extra.extend_from_slice(&headers[2]);
                 PacketDecoder::new(CODEC_TYPE_VORBIS, rate, Some(extra))
             }
-            other => Err(CodecError::Unsupported(format!("{} audio", codec_label(other)))),
+            other => Err(CodecError::Unsupported(format!("{} audio (FilmCraft has no decoder for it)", codec_label(other)))),
         }
     }
 
@@ -616,8 +641,9 @@ impl MediaSource for MkvSource {
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>, MediaError> {
         let ti = self.vtrack.ok_or(MediaError::NoStream("video"))?;
         let t = req.time.max(Tick::ZERO);
-        let target = from_tick(&self.file.tracks[ti], t);
-        let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], t - m));
+        let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
+        let target = from_tick(&self.file.tracks[ti], rate, t, self.snap);
+        let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], rate, t - m, self.snap));
         Ok(self.video.frame_late(&MkvVideo { src: self, track: ti }, target, late)?)
     }
 

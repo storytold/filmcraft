@@ -522,6 +522,43 @@ impl CeltDecoder {
         let ml = self.mem_len();
         let ds = self.downsample;
         let out_off = DECODE_BUFFER_SIZE - n;
+        if ds == 1 && cc == 2 {
+            // Both channels in one loop: two independent IIR chains overlap their latency.
+            let (m0, m1) = self.decode_mem.split_at(ml);
+            let left = &m0[out_off..out_off + n];
+            let right = &m1[out_off..out_off + n];
+            let [mut s0, mut s1] = self.preemph_mem;
+            for ((o, &v0), &v1) in pcm[..2 * n].as_chunks_mut::<2>().0.iter_mut().zip(left).zip(right) {
+                let t0 = v0 + 1e-30 + s0;
+                let t1 = v1 + 1e-30 + s1;
+                s0 = PREEMPH * t0;
+                s1 = PREEMPH * t1;
+                if accum {
+                    o[0] += t0 * (1.0 / 32768.0);
+                    o[1] += t1 * (1.0 / 32768.0);
+                } else {
+                    o[0] = t0 * (1.0 / 32768.0);
+                    o[1] = t1 * (1.0 / 32768.0);
+                }
+            }
+            self.preemph_mem = [s0, s1];
+            return;
+        }
+        if ds == 1 && cc == 1 {
+            let mem = &self.decode_mem[out_off..out_off + n];
+            let mut state = self.preemph_mem[0];
+            for (o, &v) in pcm[..n].iter_mut().zip(mem) {
+                let t = v + 1e-30 + state;
+                state = PREEMPH * t;
+                if accum {
+                    *o += t * (1.0 / 32768.0);
+                } else {
+                    *o = t * (1.0 / 32768.0);
+                }
+            }
+            self.preemph_mem[0] = state;
+            return;
+        }
         let mut scratch = std::mem::take(&mut self.pcm_scratch);
         for ch in 0..cc {
             let mem = &self.decode_mem[ch * ml + out_off..ch * ml + out_off + n];
