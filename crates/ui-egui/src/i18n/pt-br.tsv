@@ -3672,3 +3672,70 @@
 	Previous	Anterior
 	Next	Próximo
 	Enter a valid HH:MM:SS:FF timecode	Digite um timecode válido HH:MM:SS:FF
+# Strings added on main since this catalog was written (translated 2026-10-31).
+	0 fastest, 8 smallest	0 mais rápido, 8 menor
+	1/2	1/2
+	A file dialog is already open	Já existe uma caixa de diálogo de arquivo aberta
+	An earlier start failed with the default graphics. Updating the graphics driver usually fixes this.	Uma inicialização anterior falhou com os gráficos padrão. Atualizar o driver de vídeo costuma resolver isso.
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	A saída de áudio falhou: reproduzindo sem som (verifique Configurações ▸ Hardware de áudio)
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	A saída de áudio não está respondendo: reproduzindo sem som (verifique Configurações ▸ Hardware de áudio)
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	O AV1 exige um codificador de hardware; nenhum foi encontrado nesta máquina, e o FilmCraft ainda não tem codificador AV1 por software.
+	Change Sequence Settings	Alterar configurações da sequência
+	Change the sequence to match the clip's settings?	Alterar a sequência para corresponder às configurações do clipe?
+	Check for Updates…	Verificar atualizações…
+	Checking for updates…	Verificando atualizações…
+	Clear History	Limpar histórico
+	Clip Mismatch Warning	Aviso de incompatibilidade do clipe
+	Clip: {settings}	Clipe: {settings}
+	Compression	Compactação
+	Compression Level	Nível de compactação
+	Could not check for updates:\n{error}	Não foi possível verificar atualizações:\n{error}
+	Couldn't open your web browser	Não foi possível abrir seu navegador
+	Delete Redoable Actions	Excluir ações refazíveis
+	Delete the dimmed actions after the current state? They cannot be redone.	Excluir as ações esmaecidas após o estado atual? Elas não poderão ser refeitas.
+	Delete this preset	Excluir esta predefinição
+	DirectX 12 only	Somente DirectX 12
+	Dock Panel	Ancorar painel
+	Docking Action	Ação de ancoragem
+	Drag inward to round the corners	Arraste para dentro para arredondar os cantos
+	Duration: {tc}	Duração: {tc}
+	End: {tc}	Fim: {tc}
+	Export the labels to a preset file…	Exportar os rótulos para um arquivo de predefinição…
+	FilmCraft Updates	Atualizações do FilmCraft
+	FilmCraft {version} is currently the newest version available.	O FilmCraft {version} é atualmente a versão mais recente disponível.
+	FLAC	FLAC
+	FLAC (lossless)	FLAC (sem perdas)
+	FLAC 48 kHz 24-bit	FLAC 48 kHz 24 bits
+	FLAC, stereo 48 kHz 24-bit, lossless	FLAC, estéreo 48 kHz 24 bits, sem perdas
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	O H.265 (HEVC) exige um codificador de hardware (NVENC em GPUs NVIDIA, VideoToolbox no macOS); nenhum foi encontrado nesta máquina, e o FilmCraft ainda não tem codificador H.265 por software. Escolha H.264 ou ProRes.
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Decodificação por hardware: Automático usa o decodificador de vídeo do sistema (VideoToolbox no macOS, Media Foundation no Windows, VA-API para H.264 e HEVC no Linux) nos fluxos compatíveis e o decodificador próprio do FilmCraft para todo o resto ou se o hardware falhar. A mídia já aberta mantém seu decodificador até ser reaberta.
+	Hide FilmCraft	Ocultar FilmCraft
+	Hide Others	Ocultar outros
+	Import a preset file…	Importar um arquivo de predefinição…
+	Keep Existing Settings	Manter configurações existentes
+	Label Color Presets	Predefinições de cor de rótulo
+	Looks for a newer FilmCraft release and offers to update.	Procura uma versão mais recente do FilmCraft e oferece a atualização.
+	More transport controls	Mais controles de transporte
+	Open this address in your browser yourself:	Abra este endereço no seu navegador:
+	Opens in your web browser: {url}	Abre no seu navegador: {url}
+	Resize floating panel	Redimensionar painel flutuante
+	Revert to the preset's colors and names	Reverter para as cores e os nomes da predefinição
+	Safe graphics mode: {mode}	Modo de gráficos seguro: {mode}
+	Saves this session's log and shows it in your file manager.	Salva o log desta sessão e o mostra no gerenciador de arquivos.
+	Sequence: {settings}	Sequência: {settings}
+	Set Work Area Bar In Point	Definir ponto de entrada da barra de área de trabalho
+	Set Work Area Bar Out Point	Definir ponto de saída da barra de área de trabalho
+	Show the presets folder	Mostrar a pasta de predefinições
+	Shows a report on this computer.	Mostra um relatório deste computador.
+	Shows the version, community links and credits in a FilmCraft window.	Mostra a versão, os links da comunidade e os créditos em uma janela do FilmCraft.
+	software rendering	renderização por software
+	Start: {tc}	Início: {tc}
+	The default graphics are used from the next start.	Os gráficos padrão serão usados na próxima inicialização.
+	This clip does not match the sequence settings.	Este clipe não corresponde às configurações da sequência.
+	Transparency Grid	Grade de transparência
+	Undock Panel	Desancorar painel
+	Use Default Graphics	Usar gráficos padrão
+	Work Area Bar	Barra de área de trabalho
+	ZIP (1 scan line)	ZIP (1 linha de varredura)
+	ZIP (16 scan lines)	ZIP (16 linhas de varredura)
+	{name} (Modified)	{name} (modificado)
