@@ -157,6 +157,10 @@ impl Codec {
     }
 }
 
+/// Above this, a granule position is not a plausible sample count (2^62 samples at 48 kHz is
+/// millions of years); such pages are treated as if their granule were unknown.
+const MAX_GRANULE: i64 = 1 << 62;
+
 /// A packet: its byte ranges (a packet may span pages) and the granule position of the page it
 /// completes on when it is that page's last completed packet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -310,9 +314,14 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
             }
         }
         if granule != -1 {
-            st.last_granule = Some(granule);
-            if let Some(last) = completed.last_mut() {
-                last.granule = Some(granule);
+            if !(0..=MAX_GRANULE).contains(&granule) {
+                // an implausible granule (damaged or hostile file): treat it as unknown
+                warnings.push(format!("implausible granule position {granule} on page at byte {pos}; treated as unknown"));
+            } else {
+                st.last_granule = Some(granule);
+                if let Some(last) = completed.last_mut() {
+                    last.granule = Some(granule);
+                }
             }
         }
         for pk in completed {
@@ -435,14 +444,14 @@ impl OpusTiming {
                 // trailing packets without a granule (truncated file): continue from the cursor
                 let mut c = cursor.unwrap_or(0);
                 for k in i..n {
-                    c += durations[k] as i64;
+                    c = c.saturating_add(durations[k] as i64);
                     ends[k] = Some(c);
                 }
                 break;
             }
             let Some(g) = stream.packets[j].granule else { break };
-            let sum: i64 = durations[i..=j].iter().map(|&d| d as i64).sum();
-            let forward = cursor.map(|c| c + sum);
+            let sum: i64 = durations[i..=j].iter().fold(0i64, |acc, &d| acc.saturating_add(d as i64));
+            let forward = cursor.map(|c| c.saturating_add(sum));
             let end = match forward {
                 // end trimming on the last page (RFC 7845 §4.5): keep the forward positions
                 Some(f) if stream.packets[j].eos && g < f => {
@@ -456,17 +465,17 @@ impl OpusTiming {
             let mut e = end;
             for k in (i..=j).rev() {
                 ends[k] = Some(e);
-                e -= durations[k] as i64;
+                e = e.saturating_sub(durations[k] as i64);
             }
             cursor = Some(end);
             i = j + 1;
         }
-        let raw_starts: Vec<i64> = ends.iter().zip(&durations).map(|(e, &d)| e.unwrap_or(0) - d as i64).collect();
+        let raw_starts: Vec<i64> = ends.iter().zip(&durations).map(|(e, &d)| e.unwrap_or(0).saturating_sub(d as i64)).collect();
         let base = raw_starts.first().copied().unwrap_or(0).max(0);
-        let shift = base + pre_skip as i64;
-        let starts: Vec<i64> = raw_starts.iter().map(|s| s - shift).collect();
+        let shift = base.saturating_add(pre_skip as i64);
+        let starts: Vec<i64> = raw_starts.iter().map(|s| s.saturating_sub(shift)).collect();
         let end_all = trimmed_end.or(cursor).unwrap_or(0);
-        let total = (end_all - shift).max(0);
+        let total = end_all.saturating_sub(shift).max(0);
         OpusTiming { pre_skip, starts, durations, total }
     }
 }
