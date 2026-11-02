@@ -2640,7 +2640,7 @@ fn build() -> Vec<CommandSpec> {
             "Sequence Settings…",
             ["Sequence"],
             None,
-            r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?,"dropFrame":bool?,"maxRenderQuality":bool?,"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"scaleMotion":bool=false}"#,
+            r#"{"width":u32?,"height":u32?,"fps":f64?,"name":str?,"sampleRate":u32?,"mix":"Stereo|Mono|5.1|Adaptive"?,"dropFrame":bool?,"maxRenderQuality":bool?,"workingSpace":"rec709"|"rec2100-pq"|"rec2100-hlg"?,"wideGamut":bool?,"autoToneMap":bool?,"hlgSdr":"ootf"|"bt2446"?,"scaleMotion":bool=false}"#,
             has_seq,
             |s, p| {
                 const CMD: &str = "sequence.settings";
@@ -2661,6 +2661,10 @@ fn build() -> Vec<CommandSpec> {
                 };
                 let working = match str_p(p, "workingSpace") {
                     Some(w) => Some(filmcraft_color::WorkingSpace::parse(w).ok_or_else(|| bad(CMD, format!("unknown working space `{w}`")))?),
+                    None => None,
+                };
+                let hlg_sdr = match str_p(p, "hlgSdr") {
+                    Some(h) => Some(filmcraft_color::HlgSdr::parse(h).ok_or_else(|| bad(CMD, format!("unknown HLG conversion `{h}`")))?),
                     None => None,
                 };
                 let drop_frame = bool_p(p, "dropFrame");
@@ -2706,6 +2710,9 @@ fn build() -> Vec<CommandSpec> {
                     }
                     if let Some(v) = bool_p(&p, "autoToneMap") {
                         c.auto_tone_map = v;
+                    }
+                    if let Some(h) = hlg_sdr {
+                        c.hlg_sdr = h;
                     }
                     q.settings.working_space = q.settings.color.working.label().into();
                     q.settings.validate().map_err(|e| bad(CMD, e))?;

@@ -5,7 +5,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (HLG → SDR conversion uses BT.2446 A; no readiness estimate changed) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-25 · **Change:** minor (HLG → SDR conversion matches phones; no readiness estimate changed) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -110,11 +110,13 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 ## Progress log
 
-- **2026-10-25 (HLG → SDR):** iPhone HLG base-layer media uses BT.2446-1 Method A (1000 → 100 nits,
-  with perceptual chroma correction before the gamut matrix) for Source, automatic SDR-sequence
-  input, HLG sequence monitors and SDR export. CPU/GPU math, independent reference values and
-  procedural patch export regression coverage; existing automatic HLG conversions adopt the
-  new appearance. PQ conversion and HDR export are unchanged. SDR monitors still do not render
+- **2026-10-25 (HLG → SDR):** iPhone HLG base-layer media converts the way phones and Apple's
+  own apps render it: the BT.2100 OOTF at the SDR display's system gamma (≈ 0.846), within two
+  sRGB codes of AVFoundation's output on the grey ramp. Sequence colour settings can instead
+  pick BT.2446-1 Method A (1000 → 100 nits, the broadcast convention). One conversion covers
+  Source, automatic SDR-sequence input, HLG sequence monitors and SDR export, on CPU and GPU,
+  with measured-value and procedural patch regression coverage; existing projects get the new
+  appearance. PQ conversion and HDR export are unchanged. SDR monitors still do not render
   Dolby Vision dynamic metadata or HDR/EDR; no parity/readiness percentage changed (#3305).
 
 - **2026-10-22:** ProRes 4444 / XQ alpha slices include the final singleton run code required by RDD 36:2022. Six HD fixtures rejected by native macOS decoding now pass; syntax regression tests cover final runs and slice widths ([details](crates/prores/README.md#alpha-bitstream-conformance), EffectCraft #293).

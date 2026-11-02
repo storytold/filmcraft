@@ -91,6 +91,7 @@ pub fn open(app: &mut FilmcraftApp) {
         working_space: st.color.working.id().into(),
         wide_gamut: st.color.wide_gamut,
         auto_tone_map: st.color.auto_tone_map,
+        hlg_sdr: st.color.hlg_sdr.id().into(),
     };
     app.dialog = Some(crate::Dialog::SequenceSettings);
 }
@@ -117,6 +118,7 @@ pub fn open_new(app: &mut FilmcraftApp) {
         working_space: st.color.working.id().into(),
         wide_gamut: st.color.wide_gamut,
         auto_tone_map: st.color.auto_tone_map,
+        hlg_sdr: st.color.hlg_sdr.id().into(),
         name: format!("Sequence {n:02}"),
     };
     app.dialog = Some(crate::Dialog::SequenceSettings);
@@ -249,6 +251,9 @@ fn changes(d: &SequenceSettingsDraft, cur: &SequenceSettings, cur_name: &str) ->
     }
     if d.auto_tone_map != cur.color.auto_tone_map {
         p.insert("autoToneMap".into(), json!(d.auto_tone_map));
+    }
+    if d.hlg_sdr != cur.color.hlg_sdr.id() {
+        p.insert("hlgSdr".into(), json!(d.hlg_sdr));
     }
     p
 }
@@ -447,6 +452,16 @@ fn color(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, elems: &mut Elems) {
     elems.push(("sequenceSettings.wideGamut".into(), r.rect, d.wide_gamut.to_string()));
     let r = ui.checkbox(&mut d.auto_tone_map, tl!("Auto Tone Map Media (HDR and log into SDR)"));
     elems.push(("sequenceSettings.autoToneMap".into(), r.rect, d.auto_tone_map.to_string()));
+    row(ui, label_w, "HLG to SDR:", true, |ui| {
+        let shown = filmcraft_color::HlgSdr::parse(&d.hlg_sdr).map_or(d.hlg_sdr.clone(), |h| t(h.label()).to_string());
+        let resp = craft_ui::ComboBox::from_id_salt("seq-settings-hlg-sdr").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
+            for h in filmcraft_color::HlgSdr::ALL {
+                let o = ui.selectable_value(&mut d.hlg_sdr, h.id().to_string(), t(h.label()));
+                elems.push((format!("sequenceSettings.hlgSdr.option.{}", h.id()), o.rect, h.label().to_string()));
+            }
+        });
+        elems.push(("sequenceSettings.hlgSdr".into(), resp.response.rect, shown));
+    });
 }
 
 fn vr(ui: &mut egui::Ui, elems: &mut Elems) {

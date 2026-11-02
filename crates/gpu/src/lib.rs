@@ -627,15 +627,15 @@ impl GpuCompositor {
         let footprint = (1.0 / sx.min(sy).max(1e-6)) as f32;
         let taps = if footprint > 1.25 { footprint.ceil().min(4.0) } else { 1.0 };
         let _ = Matrix::Bt709;
-        // colour management (q0..q5), stage by stage as `InputTransform::apply`
-        let q = src.input.map_or([0.0; 24], |p| {
+        // colour management (q0..q6), stage by stage as `InputTransform::apply`
+        let q = src.input.map_or([0.0; 28], |p| {
             let curve = match p.curve {
                 filmcraft_color::GpuCurve::Sdr => 0.0,
                 filmcraft_color::GpuCurve::Linear => 1.0,
                 filmcraft_color::GpuCurve::Pq => 2.0,
                 filmcraft_color::GpuCurve::Hlg => 3.0,
             };
-            let (hl, hk) = p.hlg.unwrap_or(([0.0; 3], 0.0));
+            let (hl, hk, he) = p.hlg.unwrap_or(([0.0; 3], 0.0, 0.0));
             let mx = p.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
             let (method, sp, dp) = match p.tone {
                 None => (0.0, 0.0, 0.0),
@@ -652,6 +652,7 @@ impl GpuCompositor {
                 mx[1][0], mx[1][1], mx[1][2], sp,
                 mx[2][0], mx[2][1], mx[2][2], dp,
                 dl[0], dl[1], dl[2], on(p.desaturate.is_some()),
+                he, 0.0, 0.0, 0.0,
             ];
             q
         });
@@ -1215,8 +1216,8 @@ struct SrcInfo {
     input: Option<filmcraft_color::GpuInputParams>,
 }
 
-/// Floats in a layer's uniform block (`U` in `composite.wgsl`: 13 vec4).
-const UNIFORM_FLOATS: usize = 52;
+/// Floats in a layer's uniform block (`U` in `composite.wgsl`: 14 vec4).
+const UNIFORM_FLOATS: usize = 56;
 
 /// Poll a future once: wgpu's native error scopes resolve immediately. `None` if it is still
 /// pending (then the caller assumes the worst).

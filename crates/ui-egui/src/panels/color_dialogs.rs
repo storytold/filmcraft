@@ -35,7 +35,12 @@ pub fn open_interpret(app: &mut FilmcraftApp, params: &Value) {
 
 pub fn open_sequence(app: &mut FilmcraftApp) {
     let c = app.session.active_sequence().map(|q| q.settings.color).unwrap_or(filmcraft_color::ColorPipeline::REC709);
-    app.ui.color_dialog = Some(ColorDialog::Sequence { working_space: c.working.id().into(), wide_gamut: c.wide_gamut, auto_tone_map: c.auto_tone_map });
+    app.ui.color_dialog = Some(ColorDialog::Sequence {
+        working_space: c.working.id().into(),
+        wide_gamut: c.wide_gamut,
+        auto_tone_map: c.auto_tone_map,
+        hlg_sdr: c.hlg_sdr.id().into(),
+    });
 }
 
 fn radio(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str, selected: bool, label: &str) -> bool {
@@ -100,7 +105,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     close = ok || cancel;
                 });
         }
-        ColorDialog::Sequence { working_space, wide_gamut, auto_tone_map } => {
+        ColorDialog::Sequence { working_space, wide_gamut, auto_tone_map, hlg_sdr } => {
             egui::Window::new(tl!("Sequence Color Management"))
                 .id(egui::Id::unique("Sequence Color Management"))
                 .open(&mut open)
@@ -119,10 +124,19 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     app.auto.add("colorDialog.wideGamut", r.rect, "Wide gamut");
                     let r = ui.checkbox(auto_tone_map, tl!("Auto tone map media (HDR and log into SDR)"));
                     app.auto.add("colorDialog.autoToneMap", r.rect, "Auto tone map");
+                    ui.add_space(4.0);
+                    ui.label(tl!("HLG to SDR conversion:"));
+                    for h in filmcraft_color::HlgSdr::ALL {
+                        if radio(app, ui, &format!("colorDialog.hlgSdr.{}", h.id()), hlg_sdr == h.id(), h.label()) {
+                            *hlg_sdr = h.id().into();
+                        }
+                    }
                     let (ok, cancel) = buttons(app, ui);
                     if ok {
-                        apply =
-                            Some(("sequence.colorSettings", json!({"workingSpace": working_space, "wideGamut": *wide_gamut, "autoToneMap": *auto_tone_map})));
+                        apply = Some((
+                            "sequence.colorSettings",
+                            json!({"workingSpace": working_space, "wideGamut": *wide_gamut, "autoToneMap": *auto_tone_map, "hlgSdr": hlg_sdr}),
+                        ));
                     }
                     close = ok || cancel;
                 });
