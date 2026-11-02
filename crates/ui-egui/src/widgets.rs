@@ -390,11 +390,13 @@ pub fn letter_toggle_clipped(ui: &mut Ui, rect: Rect, clip: Rect, letter: &str, 
     resp
 }
 
-/// A flat icon toggle inside a rect.
+/// A flat icon toggle inside a rect: a rounded grey background behind the icon while it is on.
 pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
     let resp = ui.interact(rect, id, Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 2.0, t.hover);
+    if on {
+        ui.painter().rect_filled(rect, t.radius_sm, t.toggle_on);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, t.radius_sm, t.hover);
     }
     let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
     icons::paint(ui.painter(), rect.shrink(rect.width() * 0.16), icon, col);
@@ -809,5 +811,50 @@ mod tests {
         frame(vec![press(to, false)]);
         let end = frame(Vec::new());
         assert!((end.center() - (start.center() + egui::vec2(-200.0, -150.0))).length() < 2.0, "moved with the drag: {start:?} -> {end:?}");
+    }
+
+    /// The fills of the rectangles an icon toggle paints, on or off, with the pointer over it or not.
+    fn fills(on: bool, hovered: bool, t: &Tokens) -> Vec<Color32> {
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(22.0, 22.0));
+        let frame = || {
+            let mut input = egui::RawInput::default();
+            if hovered {
+                input.events.push(egui::Event::PointerMoved(rect.center()));
+            }
+            let mut out = ctx.run_ui(input, |ui| {
+                icon_toggle(ui, rect, Icon::Lock, on, t, egui::Id::unique("toggle"), None);
+            });
+            out.textures_delta.clear();
+            out
+        };
+        // a widget is hovered from the frame after it was first drawn
+        frame();
+        frame()
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) => Some(r.fill),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_icon_toggle_that_is_on_has_a_background_and_one_that_is_off_has_none() {
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            let t = Tokens::for_kind(kind);
+            assert!(fills(true, false, &t).contains(&t.toggle_on), "{kind:?}");
+            assert!(!fills(false, false, &t).contains(&t.toggle_on), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn hovering_an_icon_toggle_shows_only_when_it_is_off() {
+        for kind in [ThemeKind::Dark, ThemeKind::Medium, ThemeKind::Light] {
+            let t = Tokens::for_kind(kind);
+            assert!(fills(false, true, &t).contains(&t.hover), "{kind:?}");
+            assert_eq!(fills(true, true, &t), fills(true, false, &t), "{kind:?}: a second layer would lower the icon's contrast");
+        }
     }
 }
