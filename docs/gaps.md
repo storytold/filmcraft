@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-30 · **Change:** minor (G14 catalog counts refreshed; G13 GIF binary transparency retained) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-11-02 · **Change:** minor (G13 chapter markers in MP4 / MOV / M4A export, and their limits) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -243,6 +243,15 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   explicit 128/255 alpha threshold; decoded synthetic animation tests cover moving transparent
   regions and clearing prior frames. Partial transparency remains a GIF limitation. See the
   [export README](../crates/export/README.md). No readiness estimate changes.
+- **Chapter markers** (#2747): MP4, MOV and M4A exports carry the sequence's chapter markers in the
+  export range (Metadata ▸ Include Chapter Markers, on by default), as a QuickTime chapter track
+  (Apple's QuickTime File Format Specification, "Chapter lists" / "Text media") and a Nero
+  `udta/chpl` list (no official specification; the publicly documented layout). Limits: at most 255
+  chapters per file and 255 bytes per title (longer titles are cut at a character boundary); markers
+  outside the export range are dropped; no chapter URLs or images; when the first chapter starts
+  after the range start, ffprobe ends the last chapter early by that gap (starts are exact and
+  AVFoundation reports the right end); fragmented MP4 gets `chpl` only. Matroska / WebM chapters
+  wait for MKV export. Details: the craft-media README (`craft_media::isobmff`, Limitations).
 - **Estimate:** 60–110 h. Doc: [file-format-parity.md](file-format-parity.md).
 
 ## G14. Localization: 3 of the 12 key languages missing (Hindi, Arabic, Vietnamese)
@@ -344,6 +353,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-02 | minor | G13: chapter markers in MP4 / MOV / M4A export (#2747) and their limits |
 | 2026-10-30 | minor | G14: three key languages have no catalog (Hindi, Arabic, Vietnamese); Korean, Italian, German and Russian are near-complete; Ukrainian is menus only; G13 GIF transparency retained |
 | 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461) |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |
