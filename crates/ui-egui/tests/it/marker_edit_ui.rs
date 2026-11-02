@@ -109,6 +109,22 @@ fn add_marker_on_a_marker_opens_its_dialog() {
     }
 }
 
+/// Two markers already stacked on one frame: Add Marker opens the one drawn on top, the later one.
+#[test]
+fn add_marker_on_stacked_markers_opens_the_top_one() {
+    let mut d = Driver::demo();
+    let first = d.setup();
+    let at = d.marker(first).start;
+    let top = d.exec("markers.add", json!({"time": at.0, "name": "Top"}))["marker"].as_u64().unwrap();
+    d.frames(2);
+    let before = sequence_markers(&d);
+    d.harness.state_mut().session.set_playhead(at);
+    d.ok("ui.key", json!({"key": "M"}));
+    d.frames(2);
+    assert_eq!(d.harness.state().ui.marker_properties.as_ref().map(|m| m.marker), Some(top), "the marker drawn on top");
+    assert_eq!(sequence_markers(&d), before, "no third marker");
+}
+
 /// Off a marker Add Marker adds one, and a time given to it always adds, even on a marker.
 #[test]
 fn add_marker_off_a_marker_or_with_a_time_adds_one() {
