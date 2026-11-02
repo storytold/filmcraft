@@ -11,6 +11,18 @@ impl FilmcraftApp {
         self.ui.dark = k != ThemeKind::Light;
     }
 
+    /// Reinstall the theme fonts for the current interface language. The Korean interface puts the
+    /// Korean face before Chinese; every other language keeps Chinese first. The system Japanese
+    /// face, when the build has no craft Japanese font, has to be added again after the reinstall.
+    pub(crate) fn install_fonts_for_language(&mut self, ctx: &egui::Context) {
+        theme::install_for(ctx, &self.tokens, self.ui.language);
+        if self.ui.language == i18n::Language::Ja {
+            i18n::install_japanese_font(ctx);
+        }
+        self.fonts_language = Some(self.ui.language);
+        ctx.request_repaint();
+    }
+
     /// The system appearance: the host's reading, else what the windowing toolkit reports.
     pub fn system_theme(&self, ctx: &egui::Context) -> Option<egui::Theme> {
         self.hooks.system_theme.as_ref().and_then(|read| read(ctx)).or_else(|| ctx.system_theme())
@@ -105,6 +117,9 @@ impl FilmcraftApp {
             }
             i18n::set_current(self.ui.language);
             ctx.set_language(Some(self.ui.language.bcp47().to_owned()));
+            if self.fonts_language != Some(self.ui.language) {
+                self.install_fonts_for_language(ctx);
+            }
         }
         self.frames.set_cache_budget(p.memory.frame_cache_mb as usize * (1 << 20));
         self.ui.play_after_render = p.timeline.play_after_rendering;

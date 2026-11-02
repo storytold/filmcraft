@@ -92,18 +92,31 @@ pub(crate) fn available() -> bool {
     craft_fonts().next().is_some() || system_font().is_some()
 }
 
-/// Append Chinese faces after the Latin UI fonts and the Japanese fallbacks. This keeps the
-/// interface's Latin typography and Japanese glyph forms, and covers the simplified and
-/// traditional hanzi in media and track names that Japanese fonts lack.
-pub(crate) fn install(fonts: &mut FontDefinitions) {
-    install_chinese(fonts);
-    if let Some(font) = korean_font() {
-        fonts.font_data.insert(KOREAN_FACE.into(), font);
-        for stack in fonts.families.values_mut() {
-            stack.push(KOREAN_FACE.into());
-        }
+/// Korean and Chinese faces. Japanese craft faces are already in the stack (and do not cover
+/// Hangul), so kana and kanji keep Japanese forms.
+///
+/// `korean_first` is the Korean interface: there Hangul must come from the Korean face because the
+/// pan-CJK Chinese face also covers it. In every other interface language Chinese stays ahead so
+/// shared Hanzi in labels and media names keep their Chinese glyph forms; the Korean face is last
+/// and only supplies Hangul.
+pub(crate) fn install(fonts: &mut FontDefinitions, korean_first: bool) {
+    if korean_first {
+        install_korean(fonts);
+        install_chinese(fonts);
+    } else {
+        install_chinese(fonts);
+        install_korean(fonts);
     }
     install_thai(fonts);
+}
+
+/// Append the selected Korean face to every family. Does nothing when no Korean face is installed.
+fn install_korean(fonts: &mut FontDefinitions) {
+    let Some(font) = korean_font() else { return };
+    fonts.font_data.insert(KOREAN_FACE.into(), font);
+    for stack in fonts.families.values_mut() {
+        stack.push(KOREAN_FACE.into());
+    }
 }
 
 /// Thai letters are in no other UI font, so the faces go last; craft-fonts first, else one
@@ -173,7 +186,7 @@ mod font_blob_tests {
             return;
         }
         let mut fonts = FontDefinitions::default();
-        install(&mut fonts);
+        install(&mut fonts, false);
         for (family, stack) in &fonts.families {
             let thai = stack.iter().filter(|n| n.starts_with("craft:Noto Sans Thai") || n.as_str() == THAI_FACE).count();
             assert_eq!(thai, 1, "{family:?}: {stack:?}");
