@@ -744,7 +744,11 @@ fn codec_label(c: &CodecConfig) -> String {
         CodecConfig::Dnx { .. } => "Avid DNxHD".into(),
         // name the sample entry, so probe says what the stream is rather than just "unknown"
         CodecConfig::Unknown { fourcc, .. } if fourcc.0 == *b"apac" => "Apple Positional Audio (apac)".into(),
-        CodecConfig::Unknown { fourcc, .. } => format!("unknown ({})", String::from_utf8_lossy(&fourcc.0).trim_end()),
+        // a fourcc is any four bytes (`ms\0\x11` is a real one): keep control bytes out of the label
+        CodecConfig::Unknown { fourcc, .. } => {
+            let name: String = fourcc.0.iter().map(|&c| if c.is_ascii_graphic() || c == b' ' { char::from(c) } else { '?' }).collect();
+            format!("unknown ({})", name.trim_end())
+        }
         other => other.name().to_string(),
     }
 }
@@ -970,7 +974,7 @@ mod multi_audio_tests {
         use filmcraft_isobmff::{CodecConfig, FourCc};
         let rate = 48_000u32;
         let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
-        for fourcc in [*b"apac", *b"zzzz"] {
+        for fourcc in [*b"apac", *b"zzzz", *b"ms\0\x11"] {
             // AudioSampleEntry body: reserved, data reference 1, version fields, 4 ch, 16-bit, 48 kHz
             let mut raw = vec![0u8; 6];
             raw.extend_from_slice(&1u16.to_be_bytes());
@@ -992,11 +996,11 @@ mod multi_audio_tests {
         let source = super::Mp4Source::open("iphone.mov", bytes.into()).unwrap();
         let streams = &source.info().audio_streams;
         let got: Vec<(&str, bool)> = streams.iter().map(|a| (a.codec.as_str(), a.can_decode())).collect();
-        assert_eq!(got, vec![("Apple Positional Audio (apac)", false), ("unknown (zzzz)", false), ("PCM 16-bit", true)]);
+        assert_eq!(got, vec![("Apple Positional Audio (apac)", false), ("unknown (zzzz)", false), ("unknown (ms??)", false), ("PCM 16-bit", true)]);
         assert_eq!(streams[0].channels, 4);
         // the undecodable stream reads as silence (no error), the PCM one as its tone
         assert!(source.audio(0, 100, 48_000).map_or(true, |b| b.channels.iter().flatten().all(|v| *v == 0.0)));
-        assert!((source.audio_stream(2, 0, 100, 48_000).unwrap().channels[0][50] - 0.25).abs() < 0.001);
+        assert!((source.audio_stream(3, 0, 100, 48_000).unwrap().channels[0][50] - 0.25).abs() < 0.001);
     }
 }
 
