@@ -17,6 +17,10 @@ pub mod graphic;
 pub mod graphic_design;
 pub mod gtemplate;
 pub mod keyframe;
+mod marker_color;
+pub use marker_color::HexColor;
+mod marker_url;
+pub use marker_url::marker_web_url;
 pub mod mask;
 pub mod mixer;
 pub mod multicam;
@@ -82,6 +86,11 @@ id_type!(MarkerId);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
+    /// Custom marker/clip swatches saved only with this project (schema v16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_colors: Vec<HexColor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_color_names: BTreeMap<HexColor, String>,
     pub settings: ProjectSettings,
     pub root: Bin,
     pub items: BTreeMap<ItemId, ProjectItem>,
@@ -128,6 +137,8 @@ impl Project {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.into(),
+            custom_colors: Vec::new(),
+            custom_color_names: BTreeMap::new(),
             settings: ProjectSettings::default(),
             root: Bin { id: BinId(0), name: name.into(), children: Vec::new() },
             items: BTreeMap::new(),
@@ -217,7 +228,10 @@ impl Project {
     pub fn add_item(&mut self, name: &str, label: Label, kind: ItemKind, bin: Option<BinId>) -> ItemId {
         let id = ItemId(self.alloc_id());
         let created = id.0;
-        self.items.insert(id, ProjectItem { id, name: name.into(), label, kind, metadata: BTreeMap::new(), created, split: SplitMarks::default() });
+        self.items.insert(
+            id,
+            ProjectItem { id, name: name.into(), label, custom_label_color: None, kind, metadata: BTreeMap::new(), created, split: SplitMarks::default() },
+        );
         if let Some(b) = bin.and_then(|b| self.root.find_bin_mut(b)) {
             b.children.push(BinEntry::Item(id));
         } else {
@@ -454,6 +468,7 @@ impl Project {
         let id = ClipId(self.alloc_id());
         let dur = seq_rate.snap_nearest(source.duration).max(seq_rate.frame_duration());
         Some(TrackItem {
+            custom_label_color: self.item(item).and_then(|i| i.custom_label_color),
             id,
             item,
             name,
