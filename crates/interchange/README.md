@@ -149,7 +149,9 @@ Original resource and angle IDs are retained in source-item metadata as
 `fcpxml.mediaID` and `fcpxml.angleID.<index>`. Connected audio keeps its own duration,
 including a master mix longer than its parent video cut.
 
-Missing, duplicate and unknown angle IDs produce report warnings. Layered video
+Missing, duplicate and unknown angle IDs produce report warnings. An `mc-clip` with
+an invalid, missing or nonpositive duration is warned and skipped. Its connected
+clips keep their own valid timing, including a continuous master mix. Layered video
 within one angle is reported and skipped rather than collapsed into the wrong
 camera. Resource recursion is bounded. This adds import support; it does not add
 multicam FCPXML export or flatten imported multicam edits.

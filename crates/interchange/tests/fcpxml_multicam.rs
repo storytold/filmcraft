@@ -121,36 +121,59 @@ fn multicam_separate_audio_selection_and_audio_only_angles() {
     assert_eq!(cameras[1].audio_tracks.len(), 1);
 }
 
+fn assert_damaged_multicam(xml: &str, expected: &[(i64, i64, u32)], warning: &str) {
+    let result = std::panic::catch_unwind(|| import(xml.as_bytes(), Format::Fcpxml, None));
+    let (imported, report) = result.expect("damaged input must not panic").expect("unaffected edits and master audio must still import");
+    assert!(report.entries.iter().any(|e| e.message.contains(warning)), "expected actionable warning {warning}: {report:?}");
+    let main = imported.project.sequence(imported.sequences[0]).unwrap();
+    let mut actual: Vec<_> = main
+        .video_tracks
+        .iter()
+        .flat_map(|t| &t.items)
+        .map(|clip| {
+            let selection = clip.multicam.expect("a surviving cut must retain its explicit camera selection");
+            assert!(selection.enabled);
+            (clip.start, clip.duration, clip.source_in, selection.angle)
+        })
+        .collect();
+    actual.sort_by_key(|clip| clip.0);
+    let expected: Vec<_> = expected.iter().map(|&(start, duration, angle)| (seconds(start), seconds(duration), seconds(start), angle)).collect();
+    assert_eq!(actual, expected, "invalid clips must leave gaps, not move or remap surviving edits");
+    let audio: Vec<_> = main.audio_tracks.iter().flat_map(|t| &t.items).collect();
+    assert_eq!(audio.len(), 1, "the connected master must not be lost or duplicated");
+    assert_eq!((audio[0].start, audio[0].duration, audio[0].source_in), (Tick::ZERO, seconds(10), Tick::ZERO));
+    assert!(audio[0].multicam.is_none(), "the master mix must remain independent of angle selection");
+    assert_eq!(imported.project.item(audio[0].item).unwrap().name, "Master Mix");
+}
+
 #[test]
-fn multicam_missing_references_and_malformed_times_report_and_preserve_unaffected_edits() {
-    let valid_without_first = vec![(3, 2, 1), (5, 1, 1), (6, 2, 3), (8, 2, 2)];
-    for (xml, expected, warning) in [
-        (fixture().replace("ref=\"mc\"", "ref=\"absent\""), vec![], "media absent was not found"),
-        (fixture().replace("angleID=\"angle3\" srcEnable", "srcEnable"), vec![(0, 3, 0), (3, 2, 1), (5, 1, 1), (8, 2, 2)], "unknown video angleID (missing)"),
-        (fixture().replace("duration=\"3s\"", "duration=\"1/0s\""), valid_without_first.clone(), "invalid or missing duration"),
-        (fixture().replace("duration=\"3s\"", "duration=\"170141183460469231731687303715884105727/1s\""), valid_without_first, "invalid or missing duration"),
-    ] {
-        let result = std::panic::catch_unwind(|| import(xml.as_bytes(), Format::Fcpxml, None));
-        let (imported, report) = result.expect("damaged input must not panic").expect("unaffected edits and master audio must still import");
-        assert!(report.entries.iter().any(|e| e.message.contains(warning)), "expected actionable warning {warning}: {report:?}");
-        let main = imported.project.sequence(imported.sequences[0]).unwrap();
-        let mut actual: Vec<_> = main
-            .video_tracks
-            .iter()
-            .flat_map(|t| &t.items)
-            .map(|clip| {
-                let selection = clip.multicam.expect("a surviving cut must retain its explicit camera selection");
-                assert!(selection.enabled);
-                (clip.start, clip.duration, clip.source_in, selection.angle)
-            })
-            .collect();
-        actual.sort_by_key(|clip| clip.0);
-        let expected: Vec<_> = expected.into_iter().map(|(start, duration, angle)| (seconds(start), seconds(duration), seconds(start), angle)).collect();
-        assert_eq!(actual, expected, "invalid clips must leave gaps, not move or remap surviving edits");
-        let audio: Vec<_> = main.audio_tracks.iter().flat_map(|t| &t.items).collect();
-        assert_eq!(audio.len(), 1, "the connected master must not be lost or duplicated");
-        assert_eq!((audio[0].start, audio[0].duration, audio[0].source_in), (Tick::ZERO, seconds(10), Tick::ZERO));
-        assert!(audio[0].multicam.is_none(), "the master mix must remain independent of angle selection");
-        assert_eq!(imported.project.item(audio[0].item).unwrap().name, "Master Mix");
-    }
+fn multicam_missing_resource_reports_and_preserves_master() {
+    assert_damaged_multicam(&fixture().replace("ref=\"mc\"", "ref=\"absent\""), &[], "media absent was not found");
+}
+
+#[test]
+fn multicam_missing_angle_reports_and_preserves_unaffected_edits() {
+    assert_damaged_multicam(
+        &fixture().replace("angleID=\"angle3\" srcEnable", "srcEnable"),
+        &[(0, 3, 0), (3, 2, 1), (5, 1, 1), (8, 2, 2)],
+        "unknown video angleID (missing)",
+    );
+}
+
+#[test]
+fn multicam_invalid_duration_reports_and_preserves_unaffected_edits() {
+    assert_damaged_multicam(
+        &fixture().replace("duration=\"3s\"", "duration=\"1/0s\""),
+        &[(3, 2, 1), (5, 1, 1), (6, 2, 3), (8, 2, 2)],
+        "invalid or missing duration",
+    );
+}
+
+#[test]
+fn multicam_overflow_duration_reports_and_preserves_unaffected_edits() {
+    assert_damaged_multicam(
+        &fixture().replace("duration=\"3s\"", "duration=\"170141183460469231731687303715884105727/1s\""),
+        &[(3, 2, 1), (5, 1, 1), (6, 2, 3), (8, 2, 2)],
+        "invalid or missing duration",
+    );
 }
