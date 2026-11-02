@@ -86,6 +86,25 @@ fn paint_badges(app: &mut FilmcraftApp, ui: &egui::Ui, b: &Badge, at: egui::Pos2
     }
 }
 
+/// The part of a List-view name column `name_r` the item's name may use, and whether its badges
+/// get the rest. The badges (6 px after the name, then the offline icon's 18 px and the proxy chip's
+/// 16 px, as [`paint_badges`] draws them) keep their room at the column's end and a long name is cut
+/// short before them, so the name never hides an Unreadable badge and its reason. Only a column too
+/// narrow for the badges leaves them out.
+fn name_room(b: &Badge, name_r: Rect) -> (Rect, bool) {
+    let mut w = 6.0;
+    if b.offline {
+        w += 18.0;
+    }
+    if b.proxy {
+        w += 16.0;
+    }
+    // the name starts 2 px into the column
+    let fits = (b.offline || b.proxy) && name_r.width() >= w + 2.0;
+    let text_r = if fits { Rect::from_min_max(name_r.min, pos2(name_r.max.x - w, name_r.max.y)) } else { name_r };
+    (text_r, fits)
+}
+
 /// Register the offline badge drawn at `rect`. An Unreadable badge shows on hover why the file
 /// cannot be read, such as "no decoder for Apple Intermediate Codec video" (#3646).
 fn offline_badge(app: &mut FilmcraftApp, ui: &egui::Ui, rect: Rect, pre: &str, id: ItemId, badge: &Badge) {
@@ -836,15 +855,16 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         let name_r = Rect::from_min_max(pos2(icon_x + 18.0, r.min.y + 2.0), pos2(x + name_w - 4.0, r.max.y - 2.0));
         let badge = media_badge(app, &it);
         if !rename_field(app, ui, name_r, Some(id.0), None, &v.prefix) {
-            let nr = ui.painter().with_clip_rect(name_r).text(
+            let (text_r, badges) = name_room(&badge, name_r);
+            let nr = ui.painter().with_clip_rect(text_r).text(
                 pos2(name_r.min.x + 2.0, r.center().y),
                 Align2::LEFT_CENTER,
                 &it.name,
                 Tokens::ui(lc.font),
                 if badge.offline { OFFLINE } else { t.text },
             );
-            if nr.max.x + 40.0 < name_r.max.x {
-                paint_badges(app, ui, &badge, pos2(nr.max.x + 6.0, r.center().y), &v.prefix, id);
+            if badges {
+                paint_badges(app, ui, &badge, pos2(nr.max.x.min(text_r.max.x) + 6.0, r.center().y), &v.prefix, id);
             }
         }
         x += name_w;

@@ -532,11 +532,13 @@ fn aic_movie(path: &Path) {
 }
 
 /// #3646: a movie in a codec FilmCraft cannot decode (Apple Intermediate Codec) imports under the
-/// codec's name, and its Unreadable badge says why on hover, in Icon view and in List view.
+/// codec's name, and its Unreadable badge says why on hover, in Icon view and in List view, where a
+/// name longer than the Name column is cut short to keep the badge in view.
 #[test]
 fn unreadable_badge_says_why_on_hover() {
     let root = tmp_dir("aic");
-    let file = root.join("Holiday.mov");
+    // wider than the List view's Name column
+    let file = root.join("Holiday on the coast with the whole family, summer 2010.mov");
     aic_movie(&file);
     let mut s = Session::default();
     let r = s.execute("file.import", json!({"paths": [file.to_string_lossy()]})).unwrap();
