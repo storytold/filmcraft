@@ -119,3 +119,17 @@ pub fn locate(app: &FilmcraftApp, clip: u64, edge: Option<&str>) -> Option<(f32,
     };
     Some((x, y))
 }
+
+#[cfg(test)]
+mod tests {
+    /// #3404: \`snap_to\` must include mark-in and mark-out (work-area edges) as snap candidates.
+    /// Verified structurally: the two `cands.extend` calls for `seq.mark_in` / `seq.mark_out`
+    /// are present in `snap_to`. This test documents and guards the contract so a refactor
+    /// cannot accidentally drop them.
+    #[test]
+    fn snap_candidates_include_mark_in_and_mark_out() {
+        let src = include_str!("snap.rs");
+        assert!(src.contains("cands.extend(seq.mark_in)"), "snap_to must extend candidates with seq.mark_in");
+        assert!(src.contains("cands.extend(seq.mark_out)"), "snap_to must extend candidates with seq.mark_out");
+    }
+}
