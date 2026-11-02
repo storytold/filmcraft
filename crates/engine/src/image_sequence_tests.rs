@@ -95,6 +95,7 @@ fn check_image_sequence_with_missing_frames(prefix: &str) {
     assert_eq!(r["imageSequences"][0]["missing"], json!([3]));
     let m = s.project.item(id).unwrap().as_media().unwrap().clone();
     assert_eq!(m.info.kind, MediaKind::ImageSequence);
+    assert!(matches!(&m.media, filmcraft_project::MediaRef::File { path } if path == &paths[0]), "stored path spelling is preserved");
     assert_eq!(m.info.frame_rate(), FrameRate::FPS_25, "Indeterminate Media Timebase");
     assert_eq!(m.info.duration, FrameRate::FPS_25.tick_of(6));
     assert_eq!((m.info.video.as_ref().unwrap().width, m.info.video.as_ref().unwrap().height), (32, 18));
@@ -237,4 +238,17 @@ fn image_sequence_survives_save_and_reopen() {
     let _ = v.media.source_for(&v.project, id, &*v.services);
     assert!(v.media.offline_status(id).is_some(), "missing first frame: offline");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn image_sequence_disk_spelling_does_not_resolve_final_symlinks() {
+    use crate::{FsServices, Services};
+    let dir = tmp_dir("imgseq-symlink-spelling");
+    let paths = write_frames(&dir, "actual_", &[1, 2], "png");
+    let alias = dir.join("alias_0001.png");
+    std::os::unix::fs::symlink(&paths[0], &alias).unwrap();
+    assert_eq!(FsServices.disk_file_name(alias.to_str().unwrap()), None);
+    assert_eq!(FsServices.disk_file_name(&paths[0]).as_deref(), Some("actual_0001.png"));
+    let _ = std::fs::remove_dir_all(dir);
 }

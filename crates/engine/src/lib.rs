@@ -135,6 +135,12 @@ pub trait Services: Send + Sync {
     fn list_dir(&self, _dir: &str) -> Option<std::io::Result<Vec<String>>> {
         None
     }
+    /// The filesystem's spelling of an existing regular file name (e.g. HFS+ Unicode
+    /// decomposition). None when unavailable; hosts must not resolve a final symlink here.
+    /// Used only to match image-sequence siblings, never to rewrite a stored media path.
+    fn disk_file_name(&self, _path: &str) -> Option<String> {
+        None
+    }
     /// A loader the media pool keeps for reading files later (image sequence frames on demand).
     /// `None`: the frames are read when the sequence is opened.
     fn file_loader(&self) -> Option<filmcraft_media::sequence::FrameLoader> {
@@ -195,6 +201,12 @@ impl Services for FsServices {
     fn list_dir(&self, dir: &str) -> Option<std::io::Result<Vec<String>>> {
         let dir = if dir.is_empty() { "." } else { dir };
         Some(std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect()))
+    }
+    fn disk_file_name(&self, path: &str) -> Option<String> {
+        if std::fs::symlink_metadata(path).ok()?.file_type().is_symlink() {
+            return None;
+        }
+        std::fs::canonicalize(path).ok()?.file_name()?.to_str().map(str::to_string)
     }
     fn file_loader(&self) -> Option<filmcraft_media::sequence::FrameLoader> {
         Some(std::sync::Arc::new(|p: &str| std::fs::read(p)))

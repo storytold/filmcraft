@@ -240,11 +240,45 @@ fn rgba_input_refuses_what_does_not_fit() {
     let _ = calm("flush", || rgb.flush());
 }
 
+fn isolated_hardware_test_passed(result: &std::process::Output) -> bool {
+    result.status.success() && String::from_utf8_lossy(&result.stdout).lines().any(|line| line.starts_with("test result: ok. 1 passed; 0 failed;"))
+}
+
+/// An unmatched exact filter exits successfully but executes no test. Never accept that as
+/// validation of the hardware cancellation path if its module or test name changes.
+#[test]
+fn isolated_hardware_runner_rejects_an_unmatched_filter() {
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "__filmcraft_intentionally_nonexistent_hardware_test__", "--test-threads=1", "--nocapture"])
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "libtest's zero-test result must exercise the false-success case");
+    assert!(String::from_utf8_lossy(&result.stdout).contains("0 passed; 0 failed;"));
+    assert!(!isolated_hardware_test_passed(&result), "a successful zero-test child must be rejected");
+}
+
 /// An export at another frame rate than the sequence's (frames are repeated or dropped on the way) and
 /// a cancelled export followed by a complete one in the same process: the hardware path must give the
 /// asked-for frame count, release its sessions and start clean again.
 #[test]
 fn rate_conversion_and_cancel_then_export_again() {
+    // This test asserts that a process-wide decline counter is unchanged. Other tests
+    // intentionally decline encoders, so run this one alone without weakening the assertion.
+    const ISOLATED: &str = "FILMCRAFT_HW_CANCEL_TEST_ISOLATED";
+    if std::env::var_os(ISOLATED).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "hardware_encode::rate_conversion_and_cancel_then_export_again", "--test-threads=1", "--nocapture"])
+            .env(ISOLATED, "1")
+            .output()
+            .unwrap();
+        assert!(
+            isolated_hardware_test_passed(&result),
+            "isolated hardware cancellation test must run and pass exactly one test: {}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
     filmcraft_platform::register();
     let probe = ExportSettings { include_audio: false, ..hardware_settings() };
     if hardware(&probe, W, H).is_none() {
