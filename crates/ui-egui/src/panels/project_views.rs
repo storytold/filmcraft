@@ -1033,15 +1033,17 @@ fn card(
         }
     }
     let badge = media_badge(app, &it);
+    // Status overlays stay inside the thumbnail: on a card the Zoom has made shorter than
+    // they are, they would otherwise hang into the footer and the selection-order badge there.
     if badge.offline {
-        let band = Rect::from_min_max(pos2(th.min.x, th.max.y - 20.0), th.max);
+        let band = Rect::from_min_max(pos2(th.min.x, (th.max.y - 20.0).max(th.min.y)), th.max);
         ui.painter().rect_filled(band, 0.0, Color32::from_rgba_unmultiplied(0x5c, 0x10, 0x16, 230));
         icons::paint(ui.painter(), Rect::from_center_size(pos2(band.min.x + 12.0, band.center().y), vec2(13.0, 13.0)), Icon::Offline, Color32::WHITE);
         ui.painter().text(pos2(band.min.x + 24.0, band.center().y), Align2::LEFT_CENTER, badge.offline_text, Tokens::ui(10.5), Color32::WHITE);
         app.auto.add(&format!("{pre}.item.{}.offline", id.0), band, badge.offline_text);
     }
     if badge.proxy {
-        let pr = Rect::from_min_size(pos2(th.max.x - 22.0, th.min.y + 4.0), vec2(18.0, 14.0));
+        let pr = Rect::from_min_size(pos2(th.max.x - 22.0, th.min.y + 4.0), vec2(18.0, 14.0)).intersect(th.shrink2(vec2(0.0, 1.0)));
         ui.painter().rect_filled(pr, 2.0, if badge.proxy_on { t.accent } else { Color32::from_gray(70) });
         ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), Color32::WHITE);
         app.auto.add(&format!("{pre}.item.{}.proxy", id.0), pr, "Proxy attached");
@@ -1282,7 +1284,9 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
                 && s == c.item
                 && let Some(n) = stack_n.get(&s)
             {
-                let at = order_badge.filter(|b| b.min.y < r.min.y + r.width() * 9.0 / 16.0).map_or(r.min + vec2(4.0, 4.0), |b| pos2(b.max.x + 2.0, b.min.y));
+                // beside the order badge wherever it sits (on the thumbnail, or in the footer of a
+                // card too small for one there), so the two never cover each other
+                let at = order_badge.map_or(r.min + vec2(4.0, 4.0), |b| pos2(b.max.x + 2.0, b.min.y));
                 let br = Rect::from_min_size(at, vec2(26.0, 16.0));
                 ui.painter().rect_filled(br, 3.0, t.accent);
                 ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("×{n}"), Tokens::ui(10.0), Color32::WHITE);

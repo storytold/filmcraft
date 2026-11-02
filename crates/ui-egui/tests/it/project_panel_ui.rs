@@ -1418,7 +1418,9 @@ fn selection_badges_fit_double_digits_and_expose_accessible_order() {
         let mut d = Driver::with(Session::default());
         d.exec("file.import", json!({"paths": paths}));
         d.app().session.prefs.project_panel.freeform.card_size = 80.0;
-        d.exec("project.view.set", json!({"view": view, "iconSize": 80, "fontSize": "extraLarge"}));
+        // Freeform's Zoom scales the canvas (#3774): 110 is 1:1, so its cards are their 80 pt size
+        let icon_size = if view == "freeform" { 110 } else { 80 };
+        d.exec("project.view.set", json!({"view": view, "iconSize": icon_size, "fontSize": "extraLarge"}));
         d.ok("ui.set", json!({"focused": "Project"}));
         d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
         d.harness.set_size(egui::vec2(1100.0, 800.0));
