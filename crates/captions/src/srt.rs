@@ -35,6 +35,7 @@ fn is_index(line: &str) -> bool {
 }
 
 pub fn parse(text: &str) -> Result<Document> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let lines: Vec<&str> = text.lines().collect();
     let mut doc = Document::default();
     let mut i = 0;
@@ -117,6 +118,16 @@ mod tests {
         let d = parse(src).unwrap();
         let got: Vec<(i64, i64, &str)> = d.cues.iter().map(|c| (c.start.0 / TICKS_PER_MS, c.end.0 / TICKS_PER_MS, c.text.as_str())).collect();
         assert_eq!(got, vec![(1500, 2250, "A"), (3000, 4000, "B"), (5000, 6000, "42")]);
+    }
+
+    #[test]
+    fn ignores_byte_order_mark() {
+        let d = parse("\u{feff}00:00:01,000 --> 00:00:02,000\nHi\n").unwrap();
+        assert_eq!(d.cues.len(), 1);
+        assert_eq!(d.cues[0].start, ms(1000));
+        assert_eq!(d.cues[0].text, "Hi");
+        let d = parse("\u{feff}00:00:01,000 --> 00:00:02,000\nHi\n\n2\n00:00:03,000 --> 00:00:04,000\nBye\n").unwrap();
+        assert_eq!(d.cues.len(), 2);
     }
 
     #[test]
