@@ -5,8 +5,6 @@
 //! (every table is a complete prefix code — Kraft sum exactly 1 — covering every index once; see
 //! `tests::codebooks_are_complete_prefix_codes`).
 
-#![allow(clippy::unreadable_literal)]
-
 pub(crate) static SCALEFACTOR: [(u32, u8); 121] = [
     (0x3ffe8, 18),
     (0x3ffe6, 18),

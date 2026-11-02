@@ -66,7 +66,7 @@ fn audio_clips_from_one_container_mix_distinct_streams() {
     let id = p.add_item(
         "two.mov",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::File { path: "two.mov".into() },
             info: info.clone(),
             interpret: Default::default(),
@@ -76,7 +76,7 @@ fn audio_clips_from_one_container_mix_distinct_streams() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let mut map = SourceMap::default();
@@ -666,7 +666,7 @@ fn nested_tone(inner_rate: u32) -> (Project, ItemId, SourceMap, Arc<Tone>) {
     let media = p.add_item(
         "tone",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::File { path: "/tone.wav".into() },
             info: info.clone(),
             interpret: Default::default(),
@@ -676,7 +676,7 @@ fn nested_tone(inner_rate: u32) -> (Project, ItemId, SourceMap, Arc<Tone>) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let tone = Arc::new(Tone { info, hz: 500.0 });
