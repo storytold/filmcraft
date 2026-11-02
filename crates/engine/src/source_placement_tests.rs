@@ -178,6 +178,26 @@ fn place_source_in_error_names_the_frames_it_accepts() {
     }
 }
 
+/// A `sourceIn` between frame starts (only ticks or seconds give one), or one on a clip that no
+/// frame starts in, is reported in ticks: as a frame it would read as frame 25 of a clip whose
+/// frames run to 25, or as a clip with no frames that still takes some ticks.
+#[test]
+fn place_source_in_between_frames_is_reported_in_ticks() {
+    let (mut s, item) = timecoded_session();
+    let fd = s.project.item(item).unwrap().frame_rate().frame_duration().0;
+    let (first, end) = (fd * 10 + fd / 2, fd * 25 + fd / 2);
+    let sub = s.execute("clip.makeSubclip", json!({"item":item.0,"start":first,"end":end})).unwrap()["item"].as_u64().unwrap();
+    for sin in [fd * 25 + fd * 3 / 4, end, fd * 10 + fd / 4] {
+        let e = s.execute("timeline.place", json!({"item":sub,"track":"V1","time":0,"sourceIn":sin})).unwrap_err().to_string();
+        assert!(e.contains(&format!("`sourceIn` {sin} ticks is outside the clip, which takes {first} to {end} ticks")), "{e}");
+    }
+    let tiny = json!({"item":item.0,"start":fd * 10 + fd / 4,"end":fd * 10 + fd * 3 / 4});
+    let tiny = s.execute("clip.makeSubclip", tiny).unwrap()["item"].as_u64().unwrap();
+    let e = s.execute("timeline.place", json!({"item":tiny,"track":"V1","time":0,"sourceIn":{"frame":10}})).unwrap_err().to_string();
+    assert!(e.contains("ticks is outside the clip, which takes") && !e.contains("frames"), "{e}");
+    s.execute("timeline.place", json!({"item":tiny,"track":"V1","time":0,"sourceIn":fd * 10 + fd / 2,"duration":{"frame":1}})).unwrap();
+}
+
 /// An item with no frames (an empty sequence) takes no `sourceIn`: frame 0 is already its end.
 #[test]
 fn place_source_in_on_an_item_with_no_frames_is_refused() {

@@ -1125,6 +1125,12 @@ fn place_source_in_p(s: &Session, p: &Value, item: ItemId, rate: FrameRate, drop
 /// or at or after its end, is refused (stills and graphics have no end; an item with no frames
 /// takes none). `source_tc`: it was a `sourceTimecode` (drop-frame or not), so the error speaks in
 /// the clip's timecode.
+///
+/// The check is on ticks, and the item's bounds need not be on frame boundaries, so the error
+/// lists frames only where frames decide it exactly: a `sourceIn` that starts a frame (as every
+/// frame and timecode input does) on an item some frame starts in. Then it is accepted exactly when
+/// its frame is in the list. Anything else is said in ticks, so the message never names a refused
+/// position as a frame it also lists as accepted.
 fn check_place_source_in(s: &Session, item: ItemId, sin: Tick, rate: FrameRate, source_tc: Option<bool>) -> Result<()> {
     let first = crate::media_start(&s.project, item);
     let end = crate::media_duration(&s.project, &s.media, item);
@@ -1136,15 +1142,26 @@ fn check_place_source_in(s: &Session, item: ItemId, sin: Tick, rate: FrameRate, 
     let df = source_tc.unwrap_or(false);
     let tc = |frame: i64, origin: i64| filmcraft_time::format_timecode_frames(frame.saturating_add(origin), rate, df);
     let origin = if source_tc.is_some() { start } else { 0 };
-    // The frames the check accepts, as their bounds need not be on frame boundaries: the first
-    // frame that starts at or after `first`, and the frame holding the last tick before `end`.
+    // the frames whose start the check accepts: the first that starts at or after `first`, and
+    // the one holding the last tick before `end`
     let first_frame = rate.frame_at(first - Tick(1)).saturating_add(1);
-    let frames = match end.map(|e| rate.frame_at(e - Tick(1))) {
-        Some(last) if last >= first_frame => format!("whose frames run {} to {}", tc(first_frame, origin), tc(last, origin)),
-        Some(_) => "which has no frames".to_string(),
-        None => format!("whose frames run from {}", tc(first_frame, origin)),
+    let last_frame = |e: Tick| rate.frame_at(e - Tick(1));
+    let on_frame = rate.tick_of(rate.frame_at(sin)) == sin;
+    let at = tc(rate.frame_at(sin), origin);
+    let mut msg = match end {
+        Some(e) if e <= first => return Err(bad("timeline.place", "`sourceIn` is outside the clip, which has no frames")),
+        Some(e) if on_frame && last_frame(e) >= first_frame => {
+            format!("`sourceIn` {at} is outside the clip, whose frames run {} to {}", tc(first_frame, origin), tc(last_frame(e), origin))
+        }
+        None if on_frame => format!("`sourceIn` {at} is outside the clip, whose frames run from {}", tc(first_frame, origin)),
+        Some(e) => {
+            return Err(bad(
+                "timeline.place",
+                format!("`sourceIn` {} ticks is outside the clip, which takes {} to {} ticks, end excluded", sin.0, first.0, e.0),
+            ));
+        }
+        None => return Err(bad("timeline.place", format!("`sourceIn` {} ticks is before the clip's first tick, {}", sin.0, first.0))),
     };
-    let mut msg = format!("`sourceIn` {} is outside the clip, {frames}", tc(rate.frame_at(sin), origin));
     if start != 0 && source_tc.is_none() {
         msg.push_str(&format!(
             "; this counts from the clip's first frame, so for the timecode on the clip (it starts at {}) pass {{\"sourceTimecode\": \"…\"}}",
