@@ -249,7 +249,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     let it = it.clone();
     let Some(e) = it.effects.get(sel.effect) else { return };
     let Some(m) = e.masks.get(sel.mask) else { return };
-    let mt = it.source_time_at(ph);
+    let mt = it.effect_time_at(ph);
     let Some(to_screen) = clip_to_screen(app, &it, mt, pic, frame) else { return };
     let Some(to_clip) = to_screen.inverse() else { return };
     let lin_inv = Affine { e: 0.0, f: 0.0, ..to_clip };
@@ -790,7 +790,7 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
         app.ui.mask_pen = None;
         return;
     };
-    let mt = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
+    let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let Some(to_screen) = clip_to_screen(app, &it, mt, pic, frame) else { return };
     let Some(to_clip) = to_screen.inverse() else { return };
     let col = Color32::from_rgb(0x5a, 0xb4, 0xff);

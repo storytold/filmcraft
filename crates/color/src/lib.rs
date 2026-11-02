@@ -250,8 +250,14 @@ pub fn linear_to_srgb_u8(v: f32) -> u8 {
 /// per-pixel loops.
 #[inline]
 pub fn linear_to_srgb_u8_in(table: &[u8; 4096], v: f32) -> u8 {
-    let i = (v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize;
-    table[i.min(4095)]
+    table[linear_to_srgb_index(v) as usize & 4095]
+}
+
+/// The [`linear_to_srgb_u8_table`] entry for `v` (0 for NaN). Free of branches and table reads,
+/// so a loop computing it for a run of values vectorises.
+#[inline]
+pub fn linear_to_srgb_index(v: f32) -> u16 {
+    (v.clamp(0.0, 1.0) * 4095.0 + 0.5) as i32 as u16
 }
 
 /// Rec.709 luma of a linear or encoded RGB triple.
@@ -351,6 +357,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_srgb_index_is_the_table_position_clamped_and_rounded() {
+        let old = |v: f32| ((v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize).min(4095);
+        let mut v = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.0, 2.0, -1.0, 1e-30];
+        v.extend((0..=8190).map(|k| k as f32 * 0.5 / 4095.0).flat_map(|b| [b, f32::from_bits(b.to_bits() + 1), f32::from_bits(b.to_bits().saturating_sub(1))]));
+        for v in v {
+            assert_eq!(linear_to_srgb_index(v) as usize, old(v), "{v:e}");
+        }
+    }
     #[test]
     fn limited_range_levels() {
         assert_eq!(normalize_y(16, 8, Range::Limited), 0.0);

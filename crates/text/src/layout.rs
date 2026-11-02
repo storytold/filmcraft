@@ -1,9 +1,10 @@
 //! Paragraph layout: font fallback, bidi (UAX #9), shaping (OpenType via harfrust: kerning,
 //! ligatures, mark positioning, complex scripts), line breaking (UAX #14), alignment, leading,
-//! tracking, baseline shift, all caps / small caps, underline. Results are cached.
+//! tracking, baseline shift, all caps / small caps, underline, strikethrough. Results are cached.
 //!
 //! **Per-character styles** ([`layout_rich`]): [`StyleRun`]s give byte ranges their own
-//! [`TextStyle`] (font, size, tracking, baseline shift, faux bold / italic, caps, underline).
+//! [`TextStyle`] (font, size, tracking, baseline shift, faux bold / italic, caps, underline,
+//! strikethrough).
 //! Runs split shaping items, lines grow to fit the largest run, and every [`Glyph`] carries the
 //! index of the style it was set in (`run`: 0 = the base style, `i + 1` = `runs[i]`), so renderers
 //! can colour runs.
@@ -60,6 +61,7 @@ pub struct TextStyle {
     pub faux_italic: bool,
     pub caps: Caps,
     pub underline: bool,
+    pub strikethrough: bool,
 }
 
 impl Default for TextStyle {
@@ -76,6 +78,7 @@ impl Default for TextStyle {
             faux_italic: false,
             caps: Caps::Normal,
             underline: false,
+            strikethrough: false,
         }
     }
 }
@@ -109,7 +112,7 @@ impl Hash for TextStyle {
         hf(h, self.size);
         hf(h, self.tracking);
         hf(h, self.baseline_shift);
-        (self.kerning, self.ligatures, self.faux_bold, self.faux_italic, self.caps, self.underline).hash(h);
+        (self.kerning, self.ligatures, self.faux_bold, self.faux_italic, self.caps, self.underline, self.strikethrough).hash(h);
     }
 }
 
@@ -208,9 +211,9 @@ pub struct Line {
 pub struct Layout {
     pub glyphs: Vec<Glyph>,
     pub lines: Vec<Line>,
-    /// Underline rectangles `[x0, y0, x1, y1]`.
+    /// Decoration rectangles `[x0, y0, x1, y1]`: per line its underlines, then its strikethroughs.
     pub underlines: Vec<[f32; 4]>,
-    /// Style index of each underline (parallel to `underlines`; see [`Glyph::run`]).
+    /// Style index of each decoration (parallel to `underlines`; see [`Glyph::run`]).
     pub underline_runs: Vec<u16>,
     /// Logical bounds `[x0, y0, x1, y1]` (line boxes; area text spans the box width).
     pub bounds: [f32; 4],
@@ -370,10 +373,15 @@ struct ParaLine {
     carets: Vec<(usize, f32)>,
     content: f32,
     left_trim: f32,
+    /// Width of the trailing whitespace that counts into the alignment width: a hard line end (the last line of a
+    /// paragraph) keeps its spaces, a soft-wrapped line lets them hang.
+    trail: f32,
     ascent: f32,
     descent: f32,
     /// Underlined segments `(x0, x1, style)` in line coordinates (rich layouts only).
     underlines: Vec<(f32, f32, u16)>,
+    /// Struck-through segments, like `underlines`.
+    strikes: Vec<(f32, f32, u16)>,
 }
 
 /// One character of a paragraph with the properties that decide which shaping run it joins.
@@ -417,9 +425,11 @@ fn paragraph(text: &str, base: usize, sty: &Styles, para: &ParagraphStyle) -> Ve
             carets: vec![(base, 0.0)],
             content: 0.0,
             left_trim: 0.0,
+            trail: 0.0,
             ascent: pm.ascent,
             descent: pm.descent,
             underlines: Vec::new(),
+            strikes: Vec::new(),
         }];
     }
     let default_level = para.rtl.map(|r| if r { Level::rtl() } else { Level::ltr() });
@@ -618,28 +628,29 @@ impl Para<'_> {
         carets
     }
 
-    /// Underlined segments of rich layouts: clusters set in an underlined style, merged.
-    fn underline_segments(&self, ce: usize, extents: &Extents, cluster_starts: &[usize]) -> Vec<(f32, f32, u16)> {
-        let mut underlines: Vec<(f32, f32, u16)> = Vec::new();
+    /// Decorated segments of rich layouts: clusters set in a style for which `on` holds
+    /// (underlined, struck-through), merged.
+    fn decoration_segments(&self, ce: usize, extents: &Extents, cluster_starts: &[usize], on: fn(&TextStyle) -> bool) -> Vec<(f32, f32, u16)> {
+        let mut merged: Vec<(f32, f32, u16)> = Vec::new();
         if !self.sty.rich() {
-            return underlines;
+            return merged;
         }
         let mut segs: Vec<(f32, f32, u16)> = cluster_starts
             .iter()
             .filter(|&&cs| cs < ce)
             .filter_map(|&cs| {
                 let si = self.sty.at(self.base + cs);
-                self.sty.list[si].underline.then(|| (extents[&cs].0, extents[&cs].1, si as u16))
+                on(self.sty.list[si]).then(|| (extents[&cs].0, extents[&cs].1, si as u16))
             })
             .collect();
         segs.sort_by(|a, b| a.0.total_cmp(&b.0));
         for sg in segs {
-            match underlines.last_mut() {
+            match merged.last_mut() {
                 Some(l) if l.2 == sg.2 && (sg.0 - l.1).abs() < 0.01 => l.1 = l.1.max(sg.1),
-                _ => underlines.push(sg),
+                _ => merged.push(sg),
             }
         }
-        underlines
+        merged
     }
 
     /// Caret position at the end of line `r`: past its last character's cluster.
@@ -684,7 +695,8 @@ impl Para<'_> {
         let mut cluster_starts: Vec<usize> = extents.keys().copied().collect();
         cluster_starts.sort_unstable();
         let mut carets = self.caret_stops(&r, &extents, &cluster_starts);
-        let underlines = self.underline_segments(ce, &extents, &cluster_starts);
+        let underlines = self.decoration_segments(ce, &extents, &cluster_starts, |s| s.underline);
+        let strikes = self.decoration_segments(ce, &extents, &cluster_starts, |s| s.strikethrough);
         let end_x = self.end_caret_x(&r, &extents, &cluster_starts, pen);
         carets.push((self.base + r.end, end_x));
         carets.sort_by_key(|c| c.0);
@@ -698,9 +710,11 @@ impl Para<'_> {
             carets,
             content: content_w,
             left_trim: if base_rtl { tw } else { 0.0 },
+            trail: if li + 1 == nlines { tw } else { 0.0 },
             ascent,
             descent,
             underlines,
+            strikes,
         }
     }
 }
@@ -745,14 +759,19 @@ pub fn layout_rich_uncached(text: &str, style: &TextStyle, runs: &[StyleRun], pa
             }
         }
         prev_desc = pl.descent;
+        // spaces at a hard line end count into the width the line is aligned by; in a right-to-left paragraph they
+        // sit left of the content, so the block starts at the aligned position instead of the content; left and
+        // justified lines keep the content at the edge
+        let aw = pl.content + pl.trail;
+        let hang = if matches!(para.align, Align::Center | Align::Right) { pl.trail } else { 0.0 };
         let shift = match (para.width, para.align) {
             (None, Align::Left | Align::Justify) => 0.0,
-            (None, Align::Center) => -pl.content / 2.0,
-            (None, Align::Right) => -pl.content,
+            (None, Align::Center) => -aw / 2.0,
+            (None, Align::Right) => -aw,
             (Some(_), Align::Left | Align::Justify) => 0.0,
-            (Some(w), Align::Center) => (w - pl.content) / 2.0,
-            (Some(w), Align::Right) => w - pl.content,
-        } - pl.left_trim;
+            (Some(w), Align::Center) => (w - aw) / 2.0,
+            (Some(w), Align::Right) => w - aw,
+        } - if pl.left_trim > 0.0 { pl.left_trim - hang } else { 0.0 };
         let g0 = lay.glyphs.len();
         lay.glyphs.extend(pl.glyphs.into_iter().map(|mut g| {
             g.x += shift;
@@ -768,10 +787,24 @@ pub fn layout_rich_uncached(text: &str, style: &TextStyle, runs: &[StyleRun], pa
                 lay.underlines.push([x0 + shift, y, x1 + shift, y + um.underline_thickness]);
                 lay.underline_runs.push(*si);
             }
-        } else if style.underline && pl.content > 0.0 {
-            let y = baseline - style.baseline_shift + pm.underline_pos;
-            lay.underlines.push([x, y, x + pl.content, y + pm.underline_thickness]);
-            lay.underline_runs.push(0);
+            for (x0, x1, si) in &pl.strikes {
+                let st = sty.list[*si as usize];
+                let sm = fonts::face(sty.prim[*si as usize].face).metrics(st.size);
+                let y = baseline - st.baseline_shift + sm.strikethrough_pos;
+                lay.underlines.push([x0 + shift, y, x1 + shift, y + sm.strikethrough_thickness]);
+                lay.underline_runs.push(*si);
+            }
+        } else if pl.content > 0.0 {
+            if style.underline {
+                let y = baseline - style.baseline_shift + pm.underline_pos;
+                lay.underlines.push([x, y, x + pl.content, y + pm.underline_thickness]);
+                lay.underline_runs.push(0);
+            }
+            if style.strikethrough {
+                let y = baseline - style.baseline_shift + pm.strikethrough_pos;
+                lay.underlines.push([x, y, x + pl.content, y + pm.strikethrough_thickness]);
+                lay.underline_runs.push(0);
+            }
         }
         lay.lines.push(Line {
             range: pl.range,
@@ -850,7 +883,8 @@ fn layout_vertical(text: &str, sty: &Styles, para: &ParagraphStyle, col_w: f32, 
                 }
                 g
             }));
-            // Underline runs down the column, to the right of the cell (the "below" side of vertical-rl).
+            // Underline runs down the column, to the right of the cell (the "below" side of vertical-rl);
+            // strikethrough runs down the middle of the cell.
             let y_top = baseline - pl.ascent;
             if rich {
                 for (_x0, x1, si) in &pl.underlines {
@@ -860,10 +894,25 @@ fn layout_vertical(text: &str, sty: &Styles, para: &ParagraphStyle, col_w: f32, 
                     lay.underlines.push([x, y_top, x + um.underline_thickness, y_top + row]);
                     lay.underline_runs.push(*si);
                 }
-            } else if style.underline && pl.content > 0.0 {
-                let x = shift + pl.left_trim + pl.content + pm.underline_pos;
-                lay.underlines.push([x, y_top, x + pm.underline_thickness, y_top + row]);
-                lay.underline_runs.push(0);
+                for (x0, x1, si) in &pl.strikes {
+                    let st = sty.list[*si as usize];
+                    let t = fonts::face(sty.prim[*si as usize].face).metrics(st.size).strikethrough_thickness;
+                    let x = (x0 + x1 - t) / 2.0 + shift - st.baseline_shift;
+                    lay.underlines.push([x, y_top, x + t, y_top + row]);
+                    lay.underline_runs.push(*si);
+                }
+            } else if pl.content > 0.0 {
+                if style.underline {
+                    let x = shift + pl.left_trim + pl.content + pm.underline_pos;
+                    lay.underlines.push([x, y_top, x + pm.underline_thickness, y_top + row]);
+                    lay.underline_runs.push(0);
+                }
+                if style.strikethrough {
+                    let t = pm.strikethrough_thickness;
+                    let x = shift + pl.left_trim + (pl.content - t) / 2.0;
+                    lay.underlines.push([x, y_top, x + t, y_top + row]);
+                    lay.underline_runs.push(0);
+                }
             }
             lay.lines.push(Line {
                 range: pl.range,
@@ -932,3 +981,81 @@ pub fn measure(text: &str, style: &TextStyle) -> f32 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod trailing_space_tests {
+    use super::*;
+
+    fn lines(text: &str, width: Option<f32>) -> Vec<Line> {
+        let st = TextStyle { size: 40.0, ..Default::default() };
+        let para = ParagraphStyle { align: Align::Center, width, ..Default::default() };
+        layout_uncached(text, &st, &para).lines
+    }
+
+    #[test]
+    fn trailing_spaces_at_a_hard_line_end_shift_a_centred_line() {
+        let plain = lines("ab\ncd", None);
+        let spaced = lines("ab   \ncd", None);
+        let space_w = lines("a b", None)[0].width - lines("ab", None)[0].width;
+        assert!(space_w > 0.0);
+        // the content moves left by half of the three spaces' width; the width of the content itself is unchanged
+        let dx = plain[0].x - spaced[0].x;
+        assert!((dx - 1.5 * space_w).abs() < 0.01, "dx {dx}, space {space_w}");
+        assert_eq!(plain[0].width, spaced[0].width);
+        assert_eq!(plain[1].x, spaced[1].x);
+    }
+
+    #[test]
+    fn soft_wrapped_lines_still_let_their_trailing_space_hang() {
+        let wrapped = lines("ab cd", Some(lines("ab", None)[0].width + 4.0));
+        let alone = lines("ab", Some(lines("ab", None)[0].width + 4.0));
+        assert_eq!(wrapped.len(), 2);
+        assert_eq!(wrapped[0].x, alone[0].x);
+    }
+
+    fn aligned(text: &str, align: Align, width: Option<f32>) -> Vec<Line> {
+        let st = TextStyle { size: 40.0, ..Default::default() };
+        let para = ParagraphStyle { align, width, ..Default::default() };
+        layout_uncached(text, &st, &para).lines
+    }
+
+    fn space_width() -> f32 {
+        lines("a b", None)[0].width - lines("ab", None)[0].width
+    }
+
+    #[test]
+    fn rtl_left_and_justified_lines_keep_their_content_at_the_edge() {
+        for align in [Align::Left, Align::Justify] {
+            for width in [None, Some(400.0)] {
+                let plain = aligned("\u{5d0}\u{5d1}", align, width);
+                let spaced = aligned("\u{5d0}\u{5d1}   ", align, width);
+                assert_eq!(plain[0].x, spaced[0].x, "{align:?} {width:?}");
+                assert_eq!(plain[0].width, spaced[0].width, "{align:?} {width:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn trailing_spaces_shift_a_right_aligned_last_line_by_their_full_width() {
+        let plain = aligned("ab\ncd", Align::Right, Some(400.0));
+        let spaced = aligned("ab\ncd   ", Align::Right, Some(400.0));
+        assert_eq!(plain[0].x, spaced[0].x);
+        let dx = plain[1].x - spaced[1].x;
+        assert!((dx - 3.0 * space_width()).abs() < 0.01, "dx {dx}");
+    }
+
+    #[test]
+    fn empty_and_spaces_only_paragraphs_lay_out_sanely() {
+        for align in [Align::Left, Align::Center, Align::Right, Align::Justify] {
+            for width in [None, Some(400.0)] {
+                for text in ["", "   ", "ab\n", "ab\n   "] {
+                    for l in aligned(text, align, width) {
+                        assert!(l.x.is_finite() && l.width.is_finite() && l.width >= 0.0, "{text:?} {align:?}");
+                    }
+                }
+            }
+        }
+        let empty = aligned("", Align::Center, Some(400.0));
+        assert!(empty.iter().all(|l| l.width == 0.0));
+    }
+}

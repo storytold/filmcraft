@@ -67,8 +67,6 @@ pub struct ExportUi {
     /// `entire` | `inOut` | `workArea` | `custom`. Follows the sequence's In/Out points (Source
     /// In/Out when either is set) until picked, see [`sync_sequence`].
     pub range: String,
-    /// The sequence and whether it had an In and an Out point when `range` was last defaulted.
-    pub range_marks: Option<(u64, bool, bool)>,
     /// The "export the entire sequence?" warning, open for an Export or Send to Queue click.
     pub confirm_entire: Option<PendingExport>,
     /// Its "Don't show this again" checkbox.
@@ -85,6 +83,10 @@ pub struct ExportUi {
     pub quick_open: bool,
     pub quick_path: String,
     pub quick_preset: String,
+    /// The sequence and its In/Out marks the Range was last chosen for: when either changes, the
+    /// Range follows them again (Source In/Out with marks set, else Entire Source; #2749). Part of
+    /// the state, so a `ui.set` of other export fields keeps it (and a chosen Range stays).
+    pub range_for: Option<(u64, Option<i64>, Option<i64>)>,
 }
 
 impl Default for ExportUi {
@@ -96,7 +98,6 @@ impl Default for ExportUi {
             file_name: String::new(),
             location: String::new(),
             range: "entire".into(),
-            range_marks: None,
             confirm_entire: None,
             confirm_dont_show: false,
             custom_start: 0.0,
@@ -107,6 +108,7 @@ impl Default for ExportUi {
             quick_open: false,
             quick_path: String::new(),
             quick_preset: String::new(),
+            range_for: None,
         }
     }
 }
@@ -193,18 +195,26 @@ fn sync_sequence(app: &mut FilmcraftApp) {
     if app.ui.export.location.is_empty() {
         app.ui.export.location = filmcraft_engine::export_tools::default_export_dir(&app.session).to_string_lossy().to_string();
     }
-    // Range defaults to Source In/Out when the sequence has In/Out points; a range picked by hand
-    // stays until the sequence changes or its marks are added or cleared
-    // (In and Out tracked apart, so adding the second mark or clearing one of two counts too)
-    let (has_in, has_out) = app.session.active_sequence().map(|q| (q.mark_in.is_some(), q.mark_out.is_some())).unwrap_or_default();
-    let marks = (seq.0, has_in, has_out);
-    if app.ui.export.range_marks != Some(marks) {
-        let ex = &mut app.ui.export;
-        if ex.range_marks.is_none_or(|(s, _, _)| s != seq.0) || matches!(ex.range.as_str(), "entire" | "inOut") {
-            ex.range = if has_in || has_out { "inOut" } else { "entire" }.into();
-        }
-        ex.range_marks = Some(marks);
+    // As Premiere does: a sequence with In/Out marks exports that range unless another is chosen.
+    // Only when the sequence or its marks change, so a Range picked by hand (or `ui.set`) stays.
+    let marks = app.session.project.sequence(seq).map(|q| (q.mark_in.map(|t| t.0), q.mark_out.map(|t| t.0))).unwrap_or_default();
+    let now = Some((seq.0, marks.0, marks.1));
+    if app.ui.export.range_for != now {
+        app.ui.export.range_for = now;
+        app.ui.export.range = if marks.0.is_some() || marks.1.is_some() { "inOut" } else { "entire" }.into();
     }
+}
+
+pub(super) fn active_export_job(app: &FilmcraftApp) -> Option<filmcraft_engine::Job> {
+    app.session
+        .jobs
+        .iter()
+        .find(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed) && (j.label.starts_with("Export") || j.label.starts_with("Quick Export")))
+        .cloned()
+}
+
+pub(super) fn is_export_busy(app: &FilmcraftApp) -> bool {
+    active_export_job(app).is_some() || app.session.export_queue.is_active()
 }
 
 /// Whether the active sequence has an In or Out point.
@@ -312,7 +322,7 @@ fn entire_source_warning(app: &mut FilmcraftApp, ctx: &egui::Context) {
 /// answer never exports another sequence.
 fn drop_stale_warning(app: &mut FilmcraftApp) {
     let active = app.session.state.active_sequence.map(|s| s.0);
-    if app.ui.export.confirm_entire.is_some() && app.ui.export.range_marks.map(|(s, _, _)| s) != active {
+    if app.ui.export.confirm_entire.is_some() && app.ui.export.range_for.map(|(s, _, _)| s) != active {
         app.ui.export.confirm_entire = None;
         app.ui.export.confirm_dont_show = false;
     }

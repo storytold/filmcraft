@@ -23,10 +23,8 @@ Exactly three colours:
 
 ## Provenance
 
-The owner drew it in ArtCraft as a 2880 px engraving-style image. The original is kept in craftrules
-at `craftrules/assets/app-icons/filmcraft/source.png` (not in this repo). It was vectorised with
-craftrules `assets/logo-options/_tools/vectorize_tile.py`, which keys the drawing to the three-colour
-palette and traces the ink with potrace. Licence: [LICENSE.txt](LICENSE.txt) (MIT OR Apache-2.0).
+The owner drew it in ArtCraft as a 2880 px engraving-style image, vectorised with potrace, which keys
+the drawing to the three-colour palette and traces the ink. Licence: [LICENSE.txt](LICENSE.txt) (MIT OR Apache-2.0).
 
 ## Files
 
@@ -55,6 +53,5 @@ The web app's `apps/filmcraft-web/web/favicon.png` (128 px) comes from the same 
 ## Regenerate
 
 `packaging/icons.sh` (needs `resvg`; `iconutil` on macOS for the `.icns`; the `.ico` is packed by
-`cargo xtask ico`). To change the artwork, replace `filmcraft.svg` and `filmcraft-small.svg` with new
-exports from craftrules, then run the script. Every derived file needs its `.attribution` sidecar
+`cargo xtask ico`). To change the artwork, replace `filmcraft.svg` and `filmcraft-small.svg`, then run the script. Every derived file needs its `.attribution` sidecar
 and a row in `ATTRIBUTION.md`.
