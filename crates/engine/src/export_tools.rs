@@ -425,7 +425,8 @@ pub fn file_safe(n: &str) -> String {
     if s.is_empty() || matches!(s.as_str(), "." | "..") { "Export".into() } else { s }
 }
 
-/// `e` is `ext` (the extension an export format writes) or the alias people also use for it.
+/// `e` is `ext` (the extension an export format writes) or the alias people also use for it. An
+/// alias counts only as `e`: `ext` comes from the format, which never writes one.
 pub fn extension_matches(ext: &str, e: &str) -> bool {
     ext.eq_ignore_ascii_case(e) || matches!((ext, e.to_ascii_lowercase().as_str()), ("tif", "tiff") | ("jpg", "jpeg") | ("aif", "aiff") | ("m4a", "aac"))
 }
