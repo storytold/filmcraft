@@ -117,9 +117,10 @@ fn partial_output(start: &Value) -> String {
     start.get("basePath").or_else(|| start.get("path")).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
-/// Delete what an interrupted export wrote, and nothing else: the output file itself, the numbered
-/// stills of an image sequence (`<stem><3+ digits>.<same extension>`, only when the output is a
-/// PNG/TIFF/BMP/JPEG/Targa/DPX sequence) and the caption sidecar
+/// Delete what an interrupted export wrote, and nothing else: the output file itself (a movie or
+/// an audio file; an image sequence numbers every still, so a file under its base name is not
+/// its own), the numbered stills of an image sequence (`<stem><3+ digits>.<same extension>`, only
+/// when the output is a PNG/TIFF/BMP/JPEG/Targa/DPX/EXR sequence) and the caption sidecar
 /// (`<stem>.srt` / `<stem>.vtt`), each only if it was written since `since`. Other files that
 /// merely share the name's stem (`<stem>.aep`, `<stem>2.psd`, `<stem>1.mp4` beside a movie, …) are
 /// never touched, even when they were saved during the export.
@@ -145,7 +146,7 @@ pub fn remove_partial(path: &str, since: SystemTime) {
 /// Whether `name` is a file an export to `file` (`stem` + `.ext`) writes.
 fn is_export_output(name: &str, file: &str, stem: &str, ext: &str) -> bool {
     if name == file {
-        return true;
+        return !is_sequence_extension(ext);
     }
     let Some(rest) = name.strip_prefix(stem) else { return false };
     if let Some(sidecar) = rest.strip_prefix('.') {
@@ -161,9 +162,11 @@ fn is_export_output(name: &str, file: &str, stem: &str, ext: &str) -> bool {
 }
 
 /// Whether an export to a file with extension `ext` writes an image sequence (one still per frame).
+/// `.jpeg` is one too: a JPEG sequence keeps that extension, though `jpeg` as a format name is
+/// Motion-JPEG (a `.mov`).
 fn is_sequence_extension(ext: &str) -> bool {
     use filmcraft_engine::export::Format;
-    Format::from_name(ext).is_some_and(Format::is_image_sequence)
+    ext.eq_ignore_ascii_case("jpeg") || Format::from_name(ext).is_some_and(Format::is_image_sequence)
 }
 
 #[cfg(test)]
@@ -176,9 +179,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let started = SystemTime::now();
-        let ours = ["trailer.png", "trailer000.png", "trailer123.png", "trailer.srt", "trailer.vtt"];
-        // same stem, written during the export, but not the export's
-        let theirs = ["trailer.aep", "trailer2.psd", "trailer.docx", "trailer000.jpg", "trailers.png", "trailer.png.bak", "other.png"];
+        let ours = ["trailer000.png", "trailer123.png", "trailer.srt", "trailer.vtt"];
+        // same stem, written during the export, but not the export's (a PNG sequence never writes
+        // its unnumbered base name)
+        let theirs = ["trailer.png", "trailer.aep", "trailer2.psd", "trailer.docx", "trailer000.jpg", "trailers.png", "trailer.png.bak", "other.png"];
         for f in ours.iter().chain(theirs.iter()) {
             std::fs::write(dir.join(f), b"x").unwrap();
         }
@@ -221,7 +225,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let started = SystemTime::now();
         // frames are numbered with at least three digits (`shot000.tiff`); `shot2.tiff` is not one
-        let ours = ["shot.tiff", "shot000.tiff", "shot1234.tiff"];
+        let ours = ["shot000.tiff", "shot1234.tiff"];
         let theirs = ["shot2.tiff", "shot12.tiff"];
         for f in ours.iter().chain(theirs.iter()) {
             std::fs::write(dir.join(f), b"x").unwrap();
@@ -234,6 +238,33 @@ mod tests {
             assert!(dir.join(f).exists(), "{f} must not be removed");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Which files an export to a name writes: a movie its own name, an image sequence only its
+    /// numbered stills (never its unnumbered base name), whatever the still extension.
+    #[test]
+    fn export_outputs_by_name() {
+        // (file in the folder, the export's name, written by that export, why)
+        let rows = [
+            ("a.png", "a.png", false, "a PNG sequence's base name"),
+            ("a.jpeg", "a.jpeg", false, "a JPEG sequence's base name"),
+            ("a000.png", "a.png", true, "a PNG still"),
+            ("a000.jpg", "a.jpg", true, "a JPEG still (.jpg)"),
+            ("a000.jpeg", "a.jpeg", true, "a JPEG still (.jpeg)"),
+            ("a000.tif", "a.tif", true, "a TIFF still"),
+            ("a0001.exr", "a.exr", true, "an EXR still"),
+            ("a.srt", "a.png", true, "a sequence's caption sidecar"),
+            ("a.mp4", "a.mp4", true, "a movie"),
+            ("a001.mp4", "a.mp4", false, "a numbered file beside a movie"),
+            ("a000.jpg", "a.png", false, "a still of another format"),
+            ("notes.txt", "a.png", false, "an unrelated file"),
+        ];
+        for (name, file, written, why) in rows {
+            let p = Path::new(file);
+            let stem = p.file_stem().and_then(OsStr::to_str).unwrap_or_default();
+            let ext = p.extension().and_then(OsStr::to_str).unwrap_or_default();
+            assert_eq!(is_export_output(name, file, stem, ext), written, "{why}: {name} for an export to {file}");
+        }
     }
 
     /// A cancelled image sequence: the stills and the caption sidecar go by the name the stills are
