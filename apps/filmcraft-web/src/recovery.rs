@@ -28,10 +28,18 @@ enum Outcome {
     Clean { ok: bool },
 }
 
-#[derive(Default)]
 pub struct Autosave {
     policy: Policy,
     outcomes: Rc<RefCell<Vec<Outcome>>>,
+    /// Monotonic host clock. Web `logic` may run for hidden tabs; egui's input time is stale there.
+    clock: web_time::Instant,
+}
+
+impl Default for Autosave {
+    /// Default policy with a monotonic host clock, so hidden-tab logic never uses a stale egui input time.
+    fn default() -> Self {
+        Self { policy: Policy::default(), outcomes: Rc::default(), clock: web_time::Instant::now() }
+    }
 }
 
 impl Autosave {
@@ -40,7 +48,7 @@ impl Autosave {
         if !opfs::available() {
             return;
         }
-        let now = ctx.input(|i| i.time);
+        let now = self.clock.elapsed().as_secs_f64();
         for o in self.outcomes.borrow_mut().drain(..) {
             match o {
                 Outcome::Snapshot { revision, ok } => self.policy.written(revision, ok, now),
@@ -64,7 +72,9 @@ impl Autosave {
                         }
                     })
                 };
-                let meta = json!({"dirty": true, "name": s.project.name, "revision": s.revision, "time": js_sys::Date::now()});
+                // No wall-clock timestamp: recovery policy scheduling uses the monotonic clock
+                // above, and the snapshot schema needs no display time.
+                let meta = json!({"dirty": true, "name": s.project.name, "revision": s.revision});
                 let d1 = done(self.outcomes.clone(), failed.clone(), left.clone(), ctx.clone());
                 let d2 = done(self.outcomes.clone(), failed, left, ctx.clone());
                 opfs::write_then(SNAPSHOT.into(), filmcraft_format::encode(&s.project, false), Some(d1));

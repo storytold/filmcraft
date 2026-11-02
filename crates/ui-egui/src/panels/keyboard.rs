@@ -18,6 +18,7 @@
 //! | `timeline.nextScreen` / `timeline.prevScreen` | Show Next / Previous Screen | PageDown / PageUp (Timeline) |
 //! | `projectPanel.*` | Project panel: List / Icon / Toggle View, Hover Scrub, thumbnail size, Move / Extend Selection | (Project) |
 //! | `textPanel.*` | Text panel transcript: word / line / segment navigation and selection, Delete, Ripple Delete, Show Program Transcript | (Text) |
+//! | `mixer.showHideTracks` / `mixer.meterInputOnly` | Audio Track Mixer: Show/Hide Tracks / Meter Input(s) Only | Cmd+Alt+T / Ctrl+Shift+I (Audio Track Mixer) |
 //! | `graphics.beginTextEditing` | Begin Text Editing for a Graphic Layer | Cmd+Alt+' |
 //! | `help.filmcraftHelp` | Help (Premiere Help…) | F1 |
 //! | `app.quit` | Quit | Cmd+Q |
@@ -127,6 +128,8 @@ pub const COMMANDS: &[UiCommand] = &[
     uic!("textPanel.delete", "Delete", [], None),
     uic!("textPanel.rippleDelete", "Ripple Delete", [], None),
     uic!("textPanel.showProgramTranscript", "Show Program Transcript", [], None),
+    uic!("mixer.showHideTracks", "Show/Hide Tracks…", [], None),
+    uic!("mixer.meterInputOnly", "Meter Input(s) Only", [], None),
     uic!("graphics.beginTextEditing", "Begin Text Editing for a Graphic Layer", [], Some("Cmd+Alt+'")),
     uic!("help.filmcraftHelp", "FilmCraft Help…", ["Help"], Some("F1")),
     uic!("app.quit", "Quit FilmCraft", [], Some("Cmd+Q")),
@@ -208,6 +211,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             tv.target_scroll = (tv.target_scroll + d).max(0.0);
             Ok(json!({"scroll": tv.target_scroll}))
         }
+        "mixer.showHideTracks" => Ok(crate::panels::mixer::open_show_hide_tracks(app, ctx)),
+        "mixer.meterInputOnly" => crate::panels::mixer::set_meter_input_only(app, params),
         "graphics.beginTextEditing" => begin_text_editing(app),
         "help.filmcraftHelp" => {
             crate::links::open(app, ctx, HELP_URL);
@@ -233,10 +238,12 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
 // ------------------------------------------------------------------ frames and panels
 
 /// Maximize `p`, or restore the layout when a panel is maximized (also the panel menu's Maximize /
-/// Restore Frame). A maximized panel that has since been closed counts as restored.
+/// Restore Frame). Only a docked panel maximizes; a maximized panel that has since been closed or
+/// floated counts as restored.
 pub(crate) fn toggle_maximize(app: &mut FilmcraftApp, p: PanelKind) -> Value {
-    let current = app.ui.keys.maximized.filter(|q| app.ui.dock.contains(*q) || app.ui.floating.iter().any(|g| g.panels.contains(q)));
-    app.ui.keys.maximized = if current.is_some() { None } else { Some(p) };
+    use crate::dock::LayoutExt as _;
+    let current = app.ui.keys.maximized.filter(|q| app.ui.dock.is_docked(*q));
+    app.ui.keys.maximized = if current.is_some() || !app.ui.dock.is_docked(p) { None } else { Some(p) };
     if let Some(p) = app.ui.keys.maximized {
         let _ = app.apply_dock(craft_ui::docking::Action::Activate { panel: p });
         app.ui.focused = p;
@@ -244,22 +251,27 @@ pub(crate) fn toggle_maximize(app: &mut FilmcraftApp, p: PanelKind) -> Value {
     json!({"maximized": app.ui.keys.maximized.map(|p| p.title())})
 }
 
-/// The visible panel under the pointer (from last frame's automation rects).
+/// The visible panel under the pointer (from last frame's automation rects). Each native
+/// floating window has its own coordinates, so only rects of the window holding the pointer
+/// count.
 fn panel_under_pointer(app: &FilmcraftApp, ctx: &egui::Context) -> Option<PanelKind> {
-    let pos = ctx.input(|i| i.pointer.latest_pos())?;
-    app.auto.query("panel.").into_iter().rev().find_map(|e| {
+    let panels = app.auto.query("panel.");
+    let pointer = |viewport| ctx.input_for(viewport, |i| i.pointer.latest_pos()).map(|pos| (viewport, pos));
+    let (viewport, pos) =
+        pointer(egui::ViewportId::ROOT).or_else(|| panels.iter().map(|e| e.viewport).filter(|v| *v != egui::ViewportId::ROOT).find_map(pointer))?;
+    panels.into_iter().rev().filter(|e| e.viewport == viewport).find_map(|e| {
         let r = egui::Rect::from_min_size(egui::pos2(e.rect[0], e.rect[1]), egui::vec2(e.rect[2], e.rect[3]));
         r.contains(pos).then(|| PanelKind::from_name(&e.id["panel.".len()..])).flatten()
     })
 }
 
-/// Visible panels in layout order (the active tab of each frame).
+/// Visible panels in layout order (the active tab of each frame), without the narrow Tools and
+/// Audio Meters strips, which panel cycling skips.
 fn visible_panels(app: &FilmcraftApp) -> Vec<PanelKind> {
-    let mut all = Vec::new();
-    app.ui.dock.panels(&mut all);
-    let mut visible: Vec<_> = all.into_iter().filter(|p| app.ui.dock.is_visible(*p) && !p.compact()).collect();
-    visible.extend(app.ui.floating.iter().filter_map(|group| group.panels.get(group.active).copied()).filter(|panel| !panel.compact()));
-    visible
+    use crate::dock::LayoutExt as _;
+    let mut v = app.ui.dock.visible_panels();
+    v.retain(|p| !matches!(p, PanelKind::Tools | PanelKind::AudioMeters));
+    v
 }
 
 fn cycle_panel(app: &mut FilmcraftApp, next: bool) -> Value {
@@ -278,7 +290,7 @@ fn focus_find_box(app: &mut FilmcraftApp, ctx: &egui::Context) -> Value {
     let p = app.ui.focused;
     let rect =
         app.auto.find(&format!("panel.{}", p.id())).map(|e| egui::Rect::from_min_size(egui::pos2(e.rect[0], e.rect[1]), egui::vec2(e.rect[2], e.rect[3])));
-    ctx.data_mut(|d| d.insert_temp(egui::Id::new(FOCUS_SEARCH), rect.unwrap_or(egui::Rect::EVERYTHING)));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(FOCUS_SEARCH), rect.unwrap_or(egui::Rect::EVERYTHING)));
     json!({"panel": p.title()})
 }
 
@@ -287,7 +299,7 @@ pub const FOCUS_SEARCH: &str = "fc-focus-search";
 
 /// Called by search fields: take focus when Select Find Box targets the panel they sit in.
 pub fn take_search_focus(ui: &egui::Ui, field: egui::Rect, resp: &egui::Response) {
-    let id = egui::Id::new(FOCUS_SEARCH);
+    let id = egui::Id::unique(FOCUS_SEARCH);
     let Some(panel) = ui.ctx().data(|d| d.get_temp::<egui::Rect>(id)) else { return };
     if panel.contains(field.center()) {
         resp.request_focus();
@@ -355,7 +367,8 @@ fn begin_text_editing(app: &mut FilmcraftApp) -> Result<Value, String> {
     let len = pick["text"].as_str().map_or(0, str::len);
     app.session.execute("graphics.selectLayer", json!({"clip": clip, "layers": [layer]})).map_err(|e| e.to_string())?;
     // like Premiere, the whole text is selected so typing replaces it
-    app.ui.gfx_edit = Some(crate::state::GfxEdit { clip, layer, caret: len, anchor: 0 });
+    app.restart_ime_target();
+    app.ui.gfx_edit = Some(crate::state::GfxEdit { clip, layer, caret: len, anchor: 0, ..Default::default() });
     app.show_panel(PanelKind::Program);
     Ok(json!({"clip": clip, "layer": layer}))
 }

@@ -34,7 +34,7 @@ and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
 
 | Codec | Premiere macOS | **Ours macOS** | Premiere Windows | **Ours Windows** | **Ours Linux** |
 |---|---|---|---|---|---|
-| H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames) | Intel QSV, NVENC, AMD | **NVENC only** (opt-in) | **NVENC only** |
+| H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames; takes the RGBA pictures and converts them itself) | Intel QSV, NVENC, AMD | **NVENC only** (opt-in) | **NVENC only** |
 | H.264 10-bit / 4:2:2 | yes (Apple silicon) | no | Intel | no | no |
 | HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC only** | no |
 | HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`) | no |
@@ -50,7 +50,7 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 | Feature | Premiere (Mercury Playback Engine: Metal, CUDA, OpenCL) | Ours (wgpu: Metal, D3D12, Vulkan) | % |
 |---|---|---|---|
 | Compositing, blend modes, transforms | GPU | **GPU** (#32), CPU compositor is the oracle | 90% |
-| Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **34 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs, sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Lumetri basic / creative / vignette | ~40% |
+| Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **35 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs (Bokeh Blur included), sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Lumetri basic / creative / vignette | ~40% |
 | Lumetri curves, wheels, HSL secondary | GPU | CPU | 0% |
 | Keys (Ultra Key), masks, distortions, transitions | GPU | CPU (masks have WGSL parity tests, not in the live path) | 10% |
 | Export rendering on the GPU | yes | **yes** (#421; Export ▸ GPU Rendering, Auto): 2.4× (1080p) to 3.2× (4K) faster on effects-heavy timelines | 80% |
@@ -74,7 +74,7 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 ## Summary
 
 **Hardware dimension: ~45%, 120–200 h.** Ahead of Premiere: hardware decode on Linux (VA-API,
-NVDEC) and FreeBSD builds. Behind, by user impact: zero-copy upload; GPU effects beyond 34
+NVDEC) and FreeBSD builds. Behind, by user impact: zero-copy upload; GPU effects beyond 35
 (Lumetri curves / wheels / HSL, keys, masks, transitions); Quick Sync and AMD encoders on Windows;
 VideoToolbox Main 10 HDR encode; 10-bit / 4:2:2 decode off macOS; HDR display; external video
 I/O and control surfaces (need hardware we don't own). Calibration: one decode backend ~3–5 h,

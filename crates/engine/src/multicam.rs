@@ -45,7 +45,6 @@ use crate::{EngineError, MediaPool, Result, Session};
 type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
-#[allow(clippy::too_many_arguments)]
 fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], params: &'static str, enabled: Enabled, run: Run, journal: bool) -> CommandSpec {
     CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal }
 }
@@ -243,17 +242,19 @@ fn can_synchronize(s: &Session) -> std::result::Result<(), String> {
     if sel.len() < 2 { Err("select at least two clips to synchronize".into()) } else { Ok(()) }
 }
 fn has_items(s: &Session) -> std::result::Result<(), String> {
-    if s.state.project_selection.iter().any(|i| sync::project_clip(&s.project, *i).is_some()) {
+    if selected_items(s).iter().any(|i| sync::project_clip(&s.project, *i).is_some()) {
         Ok(())
     } else {
-        Err("select clips in the Project panel".into())
+        Err("select clips in the Project panel or the Timeline".into())
     }
 }
+/// Two clips or more: Merge Clips then opens its dialog, which says what is wrong with a
+/// selection it can't merge (two video clips, no audio clip) instead of a greyed-out menu item.
 fn has_two_items(s: &Session) -> std::result::Result<(), String> {
-    if s.state.project_selection.iter().filter(|i| sync::project_clip(&s.project, **i).is_some()).count() >= 2 {
+    if selected_items(s).iter().filter(|i| sync::project_clip(&s.project, **i).is_some()).count() >= 2 {
         Ok(())
     } else {
-        Err("select a video clip and audio clips in the Project panel".into())
+        Err("select a video clip and audio clips in the Project panel or the Timeline".into())
     }
 }
 
@@ -262,8 +263,28 @@ fn has_two_items(s: &Session) -> std::result::Result<(), String> {
 fn items_p(s: &Session, p: &Value) -> Vec<ItemId> {
     match p.get("items").and_then(Value::as_array) {
         Some(a) => a.iter().filter_map(|v| v.as_u64().map(ItemId)).collect(),
-        None => s.state.project_selection.clone(),
+        None => selected_items(s),
     }
+}
+
+/// The items Merge Clips and Create Multi-Camera Source Sequence work on without `items`: the
+/// clips selected in the Project panel, or, with none there, the media of the clips selected in
+/// the Timeline (with their linked partners), once each in selection order (#1362).
+pub fn selected_items(s: &Session) -> Vec<ItemId> {
+    if s.state.project_selection.iter().any(|i| sync::project_clip(&s.project, *i).is_some()) {
+        return s.state.project_selection.clone();
+    }
+    let Some(q) = s.active_sequence() else { return Vec::new() };
+    let mut out = Vec::new();
+    for c in with_links(s, &s.state.selection) {
+        if let Some((_, it)) = q.find_item(c)
+            && sync::project_clip(&s.project, it.item).is_some()
+            && !out.contains(&it.item)
+        {
+            out.push(it.item);
+        }
+    }
+    out
 }
 
 fn method_p(p: &Value, cmd: &str) -> Result<Method> {
@@ -476,7 +497,7 @@ fn sync_items(s: &Session, items: &[ItemId], cmd: &str) -> Result<Vec<SyncClip>>
 
 fn settings_for(s: &Session, item: ItemId) -> SequenceSettings {
     let media = match s.project.item(item).map(|i| &i.kind) {
-        Some(ItemKind::Media(m)) => Some(m),
+        Some(ItemKind::Media(m)) => Some(m.as_ref()),
         Some(ItemKind::Subclip { parent, .. }) => s.project.item(*parent).and_then(|i| i.as_media()),
         _ => None,
     };
