@@ -93,8 +93,8 @@ impl Driver {
         v.as_array().unwrap().iter().filter_map(|e| e["id"].as_str().map(str::to_string)).collect()
     }
 
-    /// Press on `id`, move `dy` pixels over several frames (calling `between` before each move),
-    /// release.
+    /// Press on `id`, move `dy` pixels over several frames (calling `between` before each move and
+    /// once more, with `steps`, before the release), release.
     fn drag_frames(&mut self, id: &str, dy: f32, steps: usize, between: impl FnMut(&mut Self, usize)) {
         self.drag_frames_by(id, egui::vec2(0.0, dy), steps, between);
     }
@@ -114,6 +114,7 @@ impl Driver {
             push(self, egui::Event::PointerMoved(p));
             self.frames(1);
         }
+        between(self, steps);
         push(self, egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
         self.frames(2);
     }
@@ -552,6 +553,7 @@ fn timeline_mix_level_sets_the_master() {
 /// automation when the pass ends and returns from where it was let go.
 #[test]
 fn timeline_mix_drag_during_playback_is_one_gesture() {
+    use filmcraft_project::mixer::{LANE_VOLUME, MASTER_STRIP};
     let mut d = Driver::demo();
     let mix = |d: &mut Driver| d.harness.state().session.active_sequence().unwrap().master_volume_db;
     d.frames(2);
@@ -569,13 +571,25 @@ fn timeline_mix_drag_during_playback_is_one_gesture() {
     d.exec("mixer.setStrip", json!({"strip": "Mix", "mode": "Touch"}));
     d.exec("playhead.set", json!({"seconds": 1.0}));
     d.exec("mixer.recordStart", json!({}));
+    // the last call moves the playhead after the last drag update, before the release
+    let (mut held, mut last_move, mut released) = (None, 0, 0);
     d.drag_frames_by("timeline.mix.volume", egui::vec2(-60.0, 0.0), 6, |d, i| {
+        last_move = released;
         d.exec("playhead.set", json!({"seconds": 1.0 + 0.1 * i as f64}));
+        let s = &d.harness.state().session;
+        released = s.playhead().0;
+        held = s.previews.live.get(MASTER_STRIP, LANE_VOLUME).map(|o| o.value);
     });
+    let held = held.expect("the drag holds the Mix fader");
+    assert!(held < -0.5, "{held}");
+    assert!(released > last_move, "the playhead moved between the last drag update and the release");
     assert!(d.strip("Mix")["lanes"].as_object().is_none_or(|m| m.is_empty()), "nothing written until the pass ends");
     d.exec("playhead.set", json!({"seconds": 3.0}));
     let r = d.exec("mixer.recordStop", json!({}));
     assert_eq!(r["lanes"], 1, "{r}");
     let kfs = d.strip("Mix")["lanes"]["volume"].as_array().unwrap().clone();
     assert!(kfs.len() >= 3, "{kfs:?}");
+    // the return starts where the control was let go: the release time holds the released value
+    let at = kfs.iter().find(|k| k[0].as_i64() == Some(released)).unwrap_or_else(|| panic!("no keyframe at the release: {kfs:?}"));
+    assert!((at[1].as_f64().unwrap() - held).abs() < 1e-6, "{at:?} vs {held}");
 }
