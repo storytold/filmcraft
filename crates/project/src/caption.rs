@@ -93,6 +93,10 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Corner radius of the background box, in pixels at 1080 lines
+    /// (0 = square; clamped to half the box height at render time).
+    #[serde(default)]
+    pub box_corner_radius: f32,
     /// Font style within the family (`Regular`, `Medium`, `SemiBold`, `Bold Italic`…), resolved
     /// like graphic text: the nearest weight when the family has no face of that name.
     pub font_style: String,
@@ -112,6 +116,7 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            box_corner_radius: 0.0,
             font_style: "SemiBold".into(),
         }
     }
