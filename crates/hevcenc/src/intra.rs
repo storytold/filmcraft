@@ -17,6 +17,7 @@ pub struct PreparedRefs {
 /// Build substituted (and, for luma, filtered) refs from reconstructed neighbours (§8.4.4.2.2/2.3). `top`/`left` hold
 /// the `2*size` samples above/left of the TB with per-sample availability; `corner`/`avail_corner` is `p[-1][-1]`.
 /// `mode` gates the filter, `strong_smoothing` is the SPS flag, `is_luma` selects the luma-only filtering path.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_refs(
     size: usize,
     top: &[u8],
@@ -99,6 +100,7 @@ pub fn prepare_refs(
 }
 
 /// Luma entry point: `size` 4/8/16/32; `mode` selects the §8.4.4.2.3 gate and `strong_smoothing` is our SPS flag (1).
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_luma_refs(
     size: usize,
     top: &[u8],

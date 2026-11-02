@@ -193,3 +193,59 @@ fn bit_exact_vs_recon() {
         verify_bit_exact(name, &run, w, h, n);
     }
 }
+
+/// PSNR in dB between two 8-bit planes of the same length (infinite when identical).
+fn plane_psnr(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len(), "plane lengths differ");
+    let sse: u64 = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| {
+            let d = i64::from(*x) - i64::from(*y);
+            (d * d) as u64
+        })
+        .sum();
+    if sse == 0 {
+        return f64::INFINITY;
+    }
+    10.0 * (255.0 * 255.0 * a.len() as f64 / sse as f64).log10()
+}
+
+/// Decode-against-source PSNR floor over one second of pictures.
+///
+/// `bit_exact_vs_recon` proves the reconstruction the encoder predicts from matches the decoder
+/// picture for picture; this compares the decoded pictures against the *source* instead, so an
+/// encoder that drifts while staying self-consistent (or that quietly drops a reference) fails
+/// here without needing `set_recon_capture`. The floor is loose on purpose: it is a drift
+/// detector, not a quality target -- 8-bit 4:2:0 at these QPs loses chroma detail by design.
+#[test]
+fn decoded_psnr_against_source() {
+    let _ff = filmcraft_testkit::require_ffmpeg!();
+    let _probe = filmcraft_testkit::require_ffprobe!();
+    // One second at the 30 fps the cases use: long enough for inter-picture drift to accumulate.
+    const N: usize = 30;
+    for (name, w, h, preset, rate) in cases() {
+        let frames: Vec<Yuv> = (0..N).map(|t| synth(w, h, t)).collect();
+        let run = encode(cfg(w, h, preset, rate), &frames);
+        let dir = filmcraft_testkit::fixtures_dir(&format!("hevcenc/psnr_{name}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("psnr_{name}.h265"));
+        std::fs::write(&path, &run.stream).unwrap();
+        let (err, dec) = ffmpeg_decode(&path);
+        assert!(err.trim().is_empty(), "{name}: ffmpeg reported errors: {err}");
+        let (fsz, csz) = (w * h, w * h / 4);
+        let stride = fsz + 2 * csz;
+        assert_eq!(dec.len(), N * stride, "{name}: decoded frame count");
+        let (mut luma, mut cb, mut cr) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        for (i, src) in frames.iter().enumerate() {
+            let d = &dec[i * stride..(i + 1) * stride];
+            luma = luma.min(plane_psnr(&d[..fsz], &src.y));
+            cb = cb.min(plane_psnr(&d[fsz..fsz + csz], &src.u));
+            cr = cr.min(plane_psnr(&d[fsz + csz..], &src.v));
+        }
+        eprintln!("{name}: min PSNR over {N} pictures: luma {luma:.2} dB, Cb {cb:.2} dB, Cr {cr:.2} dB");
+        assert!(luma > 28.0, "{name}: luma drift: {luma:.2} dB");
+        assert!(cb > 35.0, "{name}: Cb drift: {cb:.2} dB");
+        assert!(cr > 35.0, "{name}: Cr drift: {cr:.2} dB");
+    }
+}

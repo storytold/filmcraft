@@ -138,6 +138,7 @@ fn copy_plane(dst: &mut Plane, src: &[u8], stride: usize, pw: usize, ph: usize) 
 /// Load a strided 4:2:0 input picture into `into`, replicating its right/bottom edge over any coded-size overhang
 /// (`into` may equal the coded size or a larger CTU-rounded frame). Short planes or strides fail with `BadFrame`.
 /// Padding for sub-pel filtering is left to [`Plane::extend_edges`], which callers run before motion compensation.
+#[allow(clippy::too_many_arguments)]
 pub fn import_yuv(y: &[u8], u: &[u8], v: &[u8], y_stride: usize, uv_stride: usize, coded_w: usize, coded_h: usize, into: &mut Frame) -> Result<(), Error> {
     if coded_w == 0 || coded_h == 0 || !coded_w.is_multiple_of(2) || !coded_h.is_multiple_of(2) {
         return Err(Error::BadFrame);

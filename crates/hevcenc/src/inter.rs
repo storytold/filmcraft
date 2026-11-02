@@ -39,6 +39,7 @@ fn clip_round(v: i32) -> u8 {
 /// Separable luma prediction into dense `out` (row stride `w`); caller guarantees the full 8-tap window
 /// `[xi-3, xi+w+3] x [yi-3, yi+h+3]` lies inside the padded buffer and `out.len() >= w*h`, so plain indexing
 /// below cannot go out of bounds (bounds are validated once in `mc_luma` / `search`, keeping the hot loop fast).
+#[allow(clippy::too_many_arguments)]
 fn luma_pred_into(data: &[u8], stride: usize, pad: usize, xi: i64, yi: i64, fx: usize, fy: usize, w: usize, h: usize, out: &mut [u8]) {
     let pad_i = pad as i64;
     if fx == 0 && fy == 0 {
@@ -115,6 +116,7 @@ fn luma_pred_into(data: &[u8], stride: usize, pad: usize, xi: i64, yi: i64, fx: 
 
 /// Separable chroma prediction; same contract as `luma_pred_into` but with the 4-tap `CHROMA_FILTER` rows and
 /// the smaller `(-1..+2)` window `[xi-1, xi+w+1] x [yi-1, yi+h+1]`.
+#[allow(clippy::too_many_arguments)]
 fn chroma_pred_into(data: &[u8], stride: usize, pad: usize, xi: i64, yi: i64, fx: usize, fy: usize, w: usize, h: usize, out: &mut [u8]) {
     let pad_i = pad as i64;
     if fx == 0 && fy == 0 {
@@ -238,6 +240,7 @@ pub fn mc_luma(ref_plane: &Plane, x: usize, y: usize, mv: Mv, w: usize, h: usize
 /// `SubWidthC = SubHeightC = 2`, so `mvC == mv` numerically but in eighth-chroma-sample units; the integer
 /// part is `mvC >> 3` chroma samples and the fraction `mvC & 7` selects the `CHROMA_FILTER` row. Callers pass
 /// the already-halved chroma origin (luma/2); padding needs 1 sample left/top and 2/1 right/bottom.
+#[allow(clippy::too_many_arguments)]
 pub fn mc_chroma(ref_plane: &Plane, x: usize, y: usize, mv: Mv, w: usize, h: usize, out_u: &mut [u8], out_v: &mut [u8]) -> Result<(), Error> {
     if w == 0 || h == 0 || w > 64 || h > 64 {
         return Err(Error::InvalidConfig(format!("inter chroma block {w}x{h} outside 1..=64")));
@@ -359,6 +362,7 @@ fn mv_bias(mv: Mv, pred: Mv) -> u32 {
 /// positions whose padding window fits), then half-pel and quarter-pel 8-point diamond refinement use SATD.
 /// Every cost adds `mv_bias`; anything invalid (empty/oversize block, short `orig`, bad geometry) falls back
 /// to the clamped predictor. Deterministic: no threads inside (the slice module parallelises across CTUs).
+#[allow(clippy::too_many_arguments)]
 pub fn search(ref_plane: &Plane, orig: &[u8], orig_stride: usize, x: usize, y: usize, w: usize, h: usize, predictor: Mv, range: u32) -> Mv {
     let pred_c = clamp_mv(predictor);
     if w == 0 || h == 0 || w > 64 || h > 64 {

@@ -363,6 +363,7 @@ impl Grid {
         let i = self.at_px(x as usize, y as usize)?;
         if *self.coded.get(i)? && *self.intra.get(i)? { *self.mode.get(i)? } else { None }
     }
+    #[allow(clippy::too_many_arguments)]
     fn fill_cu(&mut self, x0: usize, y0: usize, n: usize, mv: Option<(Mv, i32)>, intra: bool, skip: bool, depth: u8, mode: Option<u8>) {
         let (x1, y1) = (x0.saturating_add(n), y0.saturating_add(n));
         for y in (y0..y1.min(self.h4.saturating_mul(4))).step_by(4) {
@@ -770,6 +771,8 @@ fn write_last_pos<S: BinSink>(sink: &mut S, states: &mut CtxStates, log2: u32, c
 }
 
 /// Full `residual_coding` coefficient writer for one TB (SIG/GT1/GT2/remaining + signs, REVERSE scan order).
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::cognitive_complexity)]
 fn write_coeffs<S: BinSink>(sink: &mut S, states: &mut CtxStates, levels: &[i32], log2: u32, c: usize, intra_mode: u32, is_intra: bool) -> Result<(), Error> {
     let n = 1usize.checked_shl(log2).unwrap_or(4);
     if levels.len() < n.saturating_mul(n) {
@@ -992,6 +995,7 @@ fn trial_tb(orig: &[u8], pred: &[u8], n: usize, dst: bool, qp: u8, dz: Deadzone)
 }
 
 /// Reconstruct one TB from `levels` into `recon` at `(x0,y0)` (luma coords for c 0, chroma coords else).
+#[allow(clippy::too_many_arguments)]
 fn recon_tb(recon: &mut Frame, x0: usize, y0: usize, n: usize, c: usize, levels: &[i32], qp: u8, dst: bool) -> Result<(), Error> {
     if levels.iter().all(|v| *v == 0) {
         return Ok(());
@@ -1123,6 +1127,7 @@ fn speed_shortlist(mpm0: u8) -> [u8; 8] {
 }
 
 /// Choose the luma intra mode: SATD shortlist then SSD + estimator-bit RD over the best 3.
+#[allow(clippy::too_many_arguments)]
 fn choose_luma_mode(
     src: &Frame,
     recon: &Frame,
@@ -1168,6 +1173,7 @@ fn choose_luma_mode(
 }
 
 /// Write one intra CU (2Nx2N, single PU, root-only transform tree).
+#[allow(clippy::too_many_arguments)]
 fn code_intra_cu(
     src: &Frame,
     recon: &mut Frame,
@@ -1317,6 +1323,8 @@ fn trial_merge_residual(
 }
 
 /// Write one inter CU (2Nx2N, ref idx 0) and reconstruct it. Returns `(dist, has_cbf)`.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::cognitive_complexity)]
 fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &RefPic, x0: usize, y0: usize, log2: u32, qp_y: u8) -> Result<(u64, bool), Error> {
     if !(3..=5).contains(&log2) {
         return Err(Error::InvalidConfig(format!("inter CU log2 {log2} outside 3..=5")));
@@ -1621,6 +1629,7 @@ fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &Ref
 }
 
 /// Stage luma + chroma predictions into recon (residuals are added by later `recon_tb` calls).
+#[allow(clippy::too_many_arguments)]
 fn stage_pred(recon: &mut Frame, x0: usize, y0: usize, n: usize, cn: usize, pred: &[u8], cu: &[u8], cv: &[u8]) -> Result<(), Error> {
     for y in 0..n {
         for x in 0..n {
@@ -1637,6 +1646,7 @@ fn stage_pred(recon: &mut Frame, x0: usize, y0: usize, n: usize, cn: usize, pred
 }
 
 /// Emit a skip CU (same merge index, zero residual): flags, recon = pred, grid/maps, SSD cost.
+#[allow(clippy::too_many_arguments)]
 fn emit_skip(
     src: &Frame,
     recon: &mut Frame,
@@ -1730,6 +1740,7 @@ fn mark_maps_intra(ctx: &mut PicCtx, x0: usize, y0: usize, n: usize, cbf: bool, 
 
 /// Code one CU at `(x0,y0)` `log2`/`depth`: split decision by SATD + split-bit, then intra/inter RD.
 /// 64x64 CUs always split (no 64-leaf coding in phase 1); leaves are 8..32.
+#[allow(clippy::too_many_arguments)]
 fn code_cu(
     src: &Frame,
     recon: &mut Frame,
@@ -1849,6 +1860,7 @@ fn write_slice_header(w: &mut BitWriter, is_idr: bool, poc: u32, log2_max_poc_ls
 }
 
 /// Code one picture into a complete slice NAL (header included, framing excluded).
+#[allow(clippy::too_many_arguments)]
 pub fn code_picture(
     src: &Frame,
     recon: &mut Frame,
