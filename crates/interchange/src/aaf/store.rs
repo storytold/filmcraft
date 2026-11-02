@@ -174,6 +174,8 @@ fn prop_name(pid: u16) -> &'static str {
         0x0002 => "Header",
         0x0003 => "ClassDefinitions",
         0x0004 => "TypeDefinitions",
+        0x0009 => "Properties",
+        0x001C => "MemberTypes",
         0x3B03 => "Content",
         0x3B04 => "Dictionary",
         0x3B06 => "IdentificationList",
