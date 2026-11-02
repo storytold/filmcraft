@@ -90,29 +90,30 @@ fn header_buttons_are_large_and_fit_the_smallest_track_height() {
 /// on leaves its background as it is, as the track header toggles do.
 #[test]
 fn hovering_a_timeline_toggle_that_is_on_paints_one_background() {
-    fn fills(shape: &egui::Shape, rect: egui::Rect, out: &mut usize) {
+    fn fills(shape: &egui::Shape, rect: egui::Rect, out: &mut Vec<egui::Color32>) {
         match shape {
-            egui::Shape::Rect(r) if r.rect == rect && r.fill.a() > 0 => *out += 1,
+            egui::Shape::Rect(r) if r.rect == rect && r.fill.a() > 0 => out.push(r.fill),
             egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| fills(shape, rect, out)),
             _ => {}
         }
     }
     let mut d = Driver::demo();
     let rect = d.rect("timeline.toggle.linked");
-    let count = |d: &Driver| {
-        let mut n = 0;
-        d.harness.output().shapes.iter().for_each(|c| fills(&c.shape, rect, &mut n));
-        n
+    let (on, hover) = (d.harness.state().tokens.toggle_on, d.harness.state().tokens.hover);
+    let painted = |d: &Driver| {
+        let mut out = Vec::new();
+        d.harness.output().shapes.iter().for_each(|c| fills(&c.shape, rect, &mut out));
+        out
     };
     d.frames(2);
-    assert_eq!(count(&d), 1, "Linked Selection is on and paints its background");
+    assert_eq!(painted(&d), [on], "Linked Selection is on and paints its background");
     d.ok("ui.move", json!({"id": "timeline.toggle.linked"}));
     d.frames(2);
-    assert_eq!(count(&d), 1, "the hover adds no second layer");
+    assert_eq!(painted(&d), [on], "the hover adds no second layer");
     d.ok("engine.execute", json!({"command": "sequence.linkedSelection", "params": {}}));
     d.frames(2);
-    assert_eq!(count(&d), 1, "off, the hover paints its own background");
+    assert_eq!(painted(&d), [hover], "off, the hover paints its own background");
     d.ok("ui.move", json!({"x": 2.0, "y": 2.0}));
     d.frames(2);
-    assert_eq!(count(&d), 0, "off and not hovered, nothing is painted");
+    assert!(painted(&d).is_empty(), "off and not hovered, nothing is painted");
 }
