@@ -29,6 +29,7 @@
 use filmcraft_edit as edit;
 use filmcraft_project::{AudioChannels, ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, SplitMarks, TrackId, TrackItem, TrackKind};
 use filmcraft_time::{Tick, TimeRange};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::commands::{
@@ -1047,6 +1048,27 @@ pub const DEFAULT_MIN_STRIP_FRAMES: usize = 23;
 /// Maximum frames analyzed in a single silence pass (1 hour at 60 fps).
 const MAX_ANALYSIS_FRAMES: usize = 3600 * 60;
 
+/// User preferences for Remove Silence (Sequence ▸ Remove Silence and Clip ▸ Remove Silence).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SilencePrefs {
+    pub threshold: f32,
+    pub pre_head: usize,
+    pub post_tail: usize,
+    pub min_strip: usize,
+}
+
+impl Default for SilencePrefs {
+    fn default() -> Self {
+        Self {
+            threshold: DEFAULT_THRESHOLD_DB,
+            pre_head: DEFAULT_PRE_HEAD_FRAMES,
+            post_tail: DEFAULT_POST_TAIL_FRAMES,
+            min_strip: DEFAULT_MIN_STRIP_FRAMES,
+        }
+    }
+}
+
 /// Detect silence ranges across the sequence or a bounded sub-range / subset of clips.
 pub fn detect_silence_ranges(
     s: &Session,
@@ -1208,10 +1230,24 @@ pub fn detect_silence_ranges(
 pub fn remove_silence(s: &mut Session, p: &Value) -> Result<Value> {
     let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let clips: Vec<ClipId> = p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
-    let threshold_db = f64_p(p, "threshold").map(|v| v as f32).unwrap_or(DEFAULT_THRESHOLD_DB).clamp(-120.0, 0.0);
-    let pre_head = (u64_p(p, "preHead").unwrap_or(DEFAULT_PRE_HEAD_FRAMES as u64) as usize).clamp(0, 120);
-    let post_tail = (u64_p(p, "postTail").unwrap_or(DEFAULT_POST_TAIL_FRAMES as u64) as usize).clamp(0, 120);
-    let min_strip = (u64_p(p, "minStrip").unwrap_or(DEFAULT_MIN_STRIP_FRAMES as u64) as usize).clamp(1, 300);
+    let threshold_db = f64_p(p, "threshold").map(|v| v as f32).unwrap_or(s.prefs.silence.threshold).clamp(-120.0, 0.0);
+    let pre_head = (u64_p(p, "preHead").unwrap_or(s.prefs.silence.pre_head as u64) as usize).clamp(0, 120);
+    let post_tail = (u64_p(p, "postTail").unwrap_or(s.prefs.silence.post_tail as u64) as usize).clamp(0, 120);
+    let min_strip = (u64_p(p, "minStrip").unwrap_or(s.prefs.silence.min_strip as u64) as usize).clamp(1, 300);
+
+    // Persist last-used silence parameters so the user doesn't have to reconfigure them each time
+    if (s.prefs.silence.threshold - threshold_db).abs() > 0.001
+        || s.prefs.silence.pre_head != pre_head
+        || s.prefs.silence.post_tail != post_tail
+        || s.prefs.silence.min_strip != min_strip
+    {
+        let mut next = s.prefs.clone();
+        next.silence.threshold = threshold_db;
+        next.silence.pre_head = pre_head;
+        next.silence.post_tail = post_tail;
+        next.silence.min_strip = min_strip;
+        let _ = s.set_prefs(next);
+    }
 
     let ranges = detect_silence_ranges(s, id, None, if clips.is_empty() { None } else { Some(&clips) }, threshold_db, pre_head, post_tail, min_strip)?;
 

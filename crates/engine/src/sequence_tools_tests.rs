@@ -720,3 +720,29 @@ fn remove_silence_hostile_parameters_do_not_panic() {
     let r2 = s2.execute("clip.removeSilence", clip_hostile);
     assert!(r2.is_ok());
 }
+
+#[test]
+fn remove_silence_persists_preferences() {
+    let mut s = demo();
+    assert_eq!(s.prefs.silence.threshold, crate::sequence_tools::DEFAULT_THRESHOLD_DB);
+    assert_eq!(s.prefs.silence.pre_head, crate::sequence_tools::DEFAULT_PRE_HEAD_FRAMES);
+
+    // Run removeSilence with custom parameters
+    s.execute("sequence.removeSilence", json!({
+        "threshold": -24.5,
+        "preHead": 5,
+        "postTail": 7,
+        "minStrip": 15,
+    })).unwrap();
+
+    // Verify preferences were updated
+    assert_eq!(s.prefs.silence.threshold, -24.5);
+    assert_eq!(s.prefs.silence.pre_head, 5);
+    assert_eq!(s.prefs.silence.post_tail, 7);
+    assert_eq!(s.prefs.silence.min_strip, 15);
+
+    // Verify preferences survive serialization / reload
+    let json_val = serde_json::to_value(&s.prefs).unwrap();
+    let reloaded: crate::autosave::Preferences = serde_json::from_value(json_val).unwrap();
+    assert_eq!(reloaded.silence, s.prefs.silence);
+}

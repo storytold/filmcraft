@@ -3127,10 +3127,10 @@ fn update_silence_preview(app: &mut FilmcraftApp, ctx: &egui::Context, _layout: 
     }
 
     let p = &d.params;
-    let threshold = p.get("threshold").and_then(Value::as_f64).map(|v| v as f32).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_THRESHOLD_DB);
-    let pre_head = p.get("preHead").and_then(Value::as_i64).map(|v| v as usize).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_PRE_HEAD_FRAMES);
-    let post_tail = p.get("postTail").and_then(Value::as_i64).map(|v| v as usize).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_POST_TAIL_FRAMES);
-    let min_strip = p.get("minStrip").and_then(Value::as_i64).map(|v| v as usize).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_MIN_STRIP_FRAMES);
+    let threshold = p.get("threshold").and_then(Value::as_f64).map(|v| v as f32).unwrap_or(app.session.prefs.silence.threshold);
+    let pre_head = p.get("preHead").and_then(Value::as_i64).map(|v| v as usize).unwrap_or(app.session.prefs.silence.pre_head);
+    let post_tail = p.get("postTail").and_then(Value::as_i64).map(|v| v as usize).unwrap_or(app.session.prefs.silence.post_tail);
+    let min_strip = p.get("minStrip").and_then(Value::as_i64).map(|v| v as usize).unwrap_or(app.session.prefs.silence.min_strip);
     let is_clip = d.command.starts_with("clip.");
     let scope = p.get("previewScope").and_then(Value::as_str).unwrap_or(if is_clip { "all" } else { "visible" });
     let is_all = scope == "all";

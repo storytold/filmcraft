@@ -231,10 +231,10 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
         }
         "sequence.removeSilence" => (
             json!({
-                "threshold": filmcraft_engine::sequence_tools::DEFAULT_THRESHOLD_DB,
-                "preHead": filmcraft_engine::sequence_tools::DEFAULT_PRE_HEAD_FRAMES,
-                "postTail": filmcraft_engine::sequence_tools::DEFAULT_POST_TAIL_FRAMES,
-                "minStrip": filmcraft_engine::sequence_tools::DEFAULT_MIN_STRIP_FRAMES,
+                "threshold": s.prefs.silence.threshold,
+                "preHead": s.prefs.silence.pre_head,
+                "postTail": s.prefs.silence.post_tail,
+                "minStrip": s.prefs.silence.min_strip,
                 "previewScope": "visible"
             }),
             Value::Null,
@@ -243,10 +243,10 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             let c: Vec<u64> = s.state.selection.iter().map(|id| id.0).collect();
             (
                 json!({
-                    "threshold": filmcraft_engine::sequence_tools::DEFAULT_THRESHOLD_DB,
-                    "preHead": filmcraft_engine::sequence_tools::DEFAULT_PRE_HEAD_FRAMES,
-                    "postTail": filmcraft_engine::sequence_tools::DEFAULT_POST_TAIL_FRAMES,
-                    "minStrip": filmcraft_engine::sequence_tools::DEFAULT_MIN_STRIP_FRAMES,
+                    "threshold": s.prefs.silence.threshold,
+                    "preHead": s.prefs.silence.pre_head,
+                    "postTail": s.prefs.silence.post_tail,
+                    "minStrip": s.prefs.silence.min_strip,
                     "clips": c,
                     "previewScope": "all"
                 }),
@@ -569,7 +569,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui.spacing_mut().slider_width = 170.0;
 
                     ui.label(tl!("Threshold:"));
-                    let mut v = p.get("threshold").and_then(Value::as_f64).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_THRESHOLD_DB as f64);
+                    let mut v = p.get("threshold").and_then(Value::as_f64).unwrap_or(app.session.prefs.silence.threshold as f64);
                     let r = ui.add(egui::Slider::new(&mut v, -80.0..=0.0).suffix(" dB"));
                     push(&mut elems, format!("{pre}.threshold"), &r, "Threshold");
                     if r.changed() {
@@ -578,7 +578,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui.end_row();
 
                     ui.label(tl!("Pre head:"));
-                    let mut v = p.get("preHead").and_then(Value::as_i64).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_PRE_HEAD_FRAMES as i64);
+                    let mut v = p.get("preHead").and_then(Value::as_i64).unwrap_or(app.session.prefs.silence.pre_head as i64);
                     let r = ui.add(egui::Slider::new(&mut v, 0..=120).suffix(" frames"));
                     push(&mut elems, format!("{pre}.preHead"), &r, "Pre head");
                     if r.changed() {
@@ -587,7 +587,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui.end_row();
 
                     ui.label(tl!("Post tail:"));
-                    let mut v = p.get("postTail").and_then(Value::as_i64).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_POST_TAIL_FRAMES as i64);
+                    let mut v = p.get("postTail").and_then(Value::as_i64).unwrap_or(app.session.prefs.silence.post_tail as i64);
                     let r = ui.add(egui::Slider::new(&mut v, 0..=120).suffix(" frames"));
                     push(&mut elems, format!("{pre}.postTail"), &r, "Post tail");
                     if r.changed() {
@@ -596,7 +596,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui.end_row();
 
                     ui.label(tl!("Minimum to strip:"));
-                    let mut v = p.get("minStrip").and_then(Value::as_i64).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_MIN_STRIP_FRAMES as i64);
+                    let mut v = p.get("minStrip").and_then(Value::as_i64).unwrap_or(app.session.prefs.silence.min_strip as i64);
                     let r = ui.add(egui::Slider::new(&mut v, 1..=300).suffix(" frames"));
                     push(&mut elems, format!("{pre}.minStrip"), &r, "Minimum to strip");
                     if r.changed() {
