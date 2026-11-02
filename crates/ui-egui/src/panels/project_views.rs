@@ -859,15 +859,18 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         let badge = media_badge(app, &it);
         if !rename_field(app, ui, name_r, Some(id.0), None, &v.prefix) {
             let (text_r, badges) = name_room(&badge, name_r);
-            let nr = ui.painter().with_clip_rect(text_r).text(
-                pos2(name_r.min.x + 2.0, r.center().y),
-                Align2::LEFT_CENTER,
-                &it.name,
-                Tokens::ui(lc.font),
-                if badge.offline { OFFLINE } else { t.text },
-            );
+            // a name cut short ends in "…" and shows in full on hover, as on the cards
+            let color = if badge.offline { OFFLINE } else { t.text };
+            let g = elided_name(ui, &it.name, Tokens::ui(lc.font), color, text_r.max.x - name_r.min.x - 2.0);
+            let elided = g.elided;
+            let at = pos2(name_r.min.x + 2.0, r.center().y - g.size().y / 2.0);
+            let end = at.x + g.size().x;
+            ui.painter().with_clip_rect(text_r).galley(at, g, color);
+            if elided && ui.rect_contains_pointer(text_r) {
+                resp.clone().on_hover_text(&it.name);
+            }
             if badges {
-                paint_badges(app, ui, &badge, pos2(nr.max.x.min(text_r.max.x) + 6.0, r.center().y), &v.prefix, id);
+                paint_badges(app, ui, &badge, pos2(end.min(text_r.max.x) + 6.0, r.center().y), &v.prefix, id);
             }
         }
         x += name_w;
@@ -1020,7 +1023,7 @@ fn card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, id: ItemId, pre: &st
     Some(resp)
 }
 
-/// A one-line tile name cut to `max_width` with a trailing "…"; `elided` says whether it was cut,
+/// A one-line item name cut to `max_width` with a trailing "…"; `elided` says whether it was cut,
 /// so the caller can show the full name on hover.
 fn elided_name(ui: &egui::Ui, name: &str, font: egui::FontId, color: Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::single_section(name.to_owned(), egui::TextFormat::simple(font, color));

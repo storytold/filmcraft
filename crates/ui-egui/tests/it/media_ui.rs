@@ -533,7 +533,8 @@ fn aic_movie(path: &Path) {
 
 /// #3646: a movie in a codec FilmCraft cannot decode (Apple Intermediate Codec) imports under the
 /// codec's name, and its Unreadable badge says why on hover, in Icon view and in List view, where a
-/// name longer than the Name column is cut short to keep the badge in view.
+/// name longer than the Name column is cut short with "…" to keep the badge in view and shows
+/// in full on hover.
 #[test]
 fn unreadable_badge_says_why_on_hover() {
     let root = tmp_dir("aic");
@@ -576,6 +577,24 @@ fn unreadable_badge_says_why_on_hover() {
         }
         assert!(shown(&d) > before, "{view} view: hovering the Unreadable badge shows why");
         d.snapshot(&format!("media-unreadable-{view}"));
+        if view == "list" {
+            // the cut name ends just before the badge, and shows in full on hover
+            let e = d.ok("ui.elements", json!({"prefix": badge}));
+            let r = &e.as_array().unwrap().iter().find(|e| e["id"] == badge.as_str()).expect("the badge")["rect"];
+            let (x, y) = (r[0].as_f64().unwrap() - 30.0, r[1].as_f64().unwrap() + r[3].as_f64().unwrap() / 2.0);
+            let name = file.file_name().unwrap().to_string_lossy().into_owned();
+            let full = |d: &Driver| d.harness.query_all_by_label(&name).count();
+            let before = full(&d);
+            d.ok("ui.move", json!({"x": x, "y": y}));
+            for _ in 0..60 {
+                if full(&d) > before {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                d.frames(1);
+            }
+            assert!(full(&d) > before, "hovering a List-view name cut short shows it in full");
+        }
         // off the badge before the next view draws its own
         d.ok("ui.move", json!({"id": "panel.Project", "fx": 0.5, "fy": 0.95}));
         d.frames(3);
