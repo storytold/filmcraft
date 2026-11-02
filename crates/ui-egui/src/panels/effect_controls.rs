@@ -682,7 +682,6 @@ pub(crate) fn param_row(
         }
     }
     let value = param.value_at(row_mt);
-    let value = param.value_at(mt);
     let mut vui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(Rect::from_min_max(pos2(vx, r.min.y + 1.0), pos2(r.max.x - 26.0, r.max.y - 1.0)))
@@ -1349,6 +1348,17 @@ fn graph_components(v: &ParamValue) -> Vec<f64> {
     }
 }
 
+/// The parameter time a value/velocity graph samples at x-fraction `f` of the clip: the keys' own
+/// coordinate — clip-relative timeline time for Time Remapping's speed (its keys know nothing of
+/// where the clip sits on the timeline), media time for every other parameter.
+fn graph_sample_time(it: &TrackItem, timeline_keys: bool, f: f64, dur: f64, speed: f64) -> Tick {
+    if timeline_keys {
+        Tick((f * dur) as i64)
+    } else {
+        it.source_in + Tick((f * dur * speed) as i64)
+    }
+}
+
 /// Value and velocity graphs of an animated scalar or point parameter, drawn across the keyframe
 /// lane. A point draws an X and a Y curve, and its velocity graph is the speed along its path.
 /// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
@@ -1373,9 +1383,7 @@ pub(crate) fn graph_rows(
     let speed = it.speed.abs().max(1e-6);
     let dur = it.duration.0.max(1) as f64;
     let timeline_keys = it.effects.get(idx).is_some_and(|e| filmcraft_project::TrackItem::timeline_keyframed(&e.effect, pd.id));
-    let to_media = |f: f64| {
-        if timeline_keys { it.start + Tick((f * dur) as i64) } else { it.source_in + Tick((f * dur * speed) as i64) }
-    };
+    let to_media = |f: f64| graph_sample_time(it, timeline_keys, f, dur, speed);
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
     let n = (lane.width() / 2.0).max(8.0) as usize;
@@ -1430,7 +1438,7 @@ pub(crate) fn graph_rows(
         p.add(egui::Shape::line(line, Stroke::new(1.5, curve_color(c))));
     }
     // velocity (units per second, derivative of the sampled value; a point's speed along its path)
-    let secs = (dur * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
+    let secs = (if timeline_keys { dur } else { dur * speed } / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
     let vel: Vec<f64> = vals
         .windows(2)
         .map(|w| {
@@ -2063,5 +2071,33 @@ mod frame_hold_tests {
             assert!(moving != held, "{panel:?}: with Hold Filters on it shows the held frame's values");
             assert!(observe(app(Some(false)), panel) == moving, "{panel:?}: with Hold Filters off it shows the values it shows without the hold");
         }
+    }
+}
+
+#[cfg(test)]
+mod graph_time_tests {
+    use super::*;
+
+    /// The graph samples a Time Remapping curve at clip-relative timeline time: a clip that sits
+    /// away from the timeline start must not have its samples shifted by that position, while
+    /// media-keyed parameters keep sampling the media at the clip's source offset.
+    #[test]
+    fn the_remap_graph_samples_the_clips_own_time_and_media_graphs_sample_media() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = s.active_sequence().unwrap().video_tracks[0].items.last().unwrap().id;
+        let track = s.active_sequence().unwrap().find_item(clip).map(|(t, _)| t).unwrap();
+        s.execute("timeline.move", json!({"moves": [{"clip": clip.0, "track": track.0, "time": 10 * filmcraft_time::TICKS_PER_SECOND}]})).unwrap();
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(clip).unwrap();
+        assert!(it.start > Tick::ZERO, "the clip sits away from the timeline start");
+        let dur = it.duration.0.max(1) as f64;
+        // halfway across the graph is the clip's halfway time, not the timeline's
+        let t = graph_sample_time(it, true, 0.5, dur, 1.0);
+        assert_eq!(t, Tick((dur * 0.5) as i64));
+        assert_ne!(t, it.start + Tick((dur * 0.5) as i64), "not the clip's timeline position");
+        // media-keyed parameters keep sampling the media, at the clip's source offset
+        let m = graph_sample_time(it, false, 0.5, dur, 2.0);
+        assert_eq!(m, it.source_in + Tick((dur * 2.0 * 0.5) as i64));
     }
 }

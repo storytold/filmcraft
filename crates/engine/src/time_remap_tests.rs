@@ -119,3 +119,82 @@ fn a_static_remap_speed_stays_inert_until_keyed() {
     assert_eq!(it.duration.0, dur * 2, "the same media at half rate takes twice the time");
     assert_eq!(it.source_out().0 - it.source_in.0, dur, "the same media as before");
 }
+
+#[test]
+fn editing_a_remap_keyframe_retakes_the_clips_length() {
+    // the graph's value drag goes through effects.setKeyframe: revaluing the speed key to 300 %
+    // shortens the clip to where its media ends, like a speed value change does
+    let mut s = selected_clip();
+    let (clip, it) = clip_of(&s);
+    let (start, dur) = (it.start.0, it.duration.0);
+    set_speed_key(&mut s, clip, start, 100.0);
+    s.execute("effects.setKeyframe", json!({"clip": clip, "effect": "time_remap", "param": "speed", "mediaTime": 0, "value": 300.0})).unwrap();
+    let (_, it) = clip_of(&s);
+    assert_eq!(it.duration.0, (dur as f64 / 3.0).round() as i64, "300 % takes a third of the timeline");
+    assert_eq!(it.source_out().0 - it.source_in.0, dur, "the same media as before");
+}
+
+#[test]
+fn moving_a_remap_keyframe_retakes_the_clips_length() {
+    // moving the ramp's end key to the middle steepens the curve over the same length: the fit
+    // shortens the clip so its media still ends at the clip's end
+    let mut s = selected_clip();
+    let (clip, it) = clip_of(&s);
+    let (start, dur) = (it.start.0, it.duration.0);
+    set_speed_key(&mut s, clip, start, 100.0);
+    set_speed_key(&mut s, clip, start + dur, 200.0);
+    s.execute("effects.moveKeyframe", json!({"clip": clip, "effect": "time_remap", "param": "speed", "mediaTime": dur, "to": dur / 2})).unwrap();
+    let (_, it) = clip_of(&s);
+    // the 100->200 ramp now takes half the clip: X consumes dur of media where 2X - dur/4 = dur
+    assert!((it.duration.0 as f64 - dur as f64 * 0.625).abs() <= 1.0, "the fit found the ramp's crossing: {}", it.duration.0);
+    assert!((it.source_out().0 - it.source_in.0 - dur).abs() <= 2, "the same media as before");
+}
+
+#[test]
+fn deleting_a_remap_keyframe_retakes_the_clips_length() {
+    // deleting the 200 % key leaves the flat 100 % curve: the media takes the original length again
+    let mut s = selected_clip();
+    let (clip, it) = clip_of(&s);
+    let (start, dur) = (it.start.0, it.duration.0);
+    set_speed_key(&mut s, clip, start, 100.0);
+    set_speed_key(&mut s, clip, start + dur, 200.0);
+    let (_, it) = clip_of(&s);
+    assert!(it.duration.0 < dur, "the ramp had shortened the clip: {}", it.duration.0);
+    s.execute("effects.deleteKeyframe", json!({"clip": clip, "effect": "time_remap", "param": "speed", "mediaTime": dur})).unwrap();
+    let (_, it) = clip_of(&s);
+    assert_eq!(it.source_out().0 - it.source_in.0, it.duration.0, "the flat curve ends where its media ends");
+    assert!((it.duration.0 - dur).abs() <= 2, "back to the original length: {}", it.duration.0);
+}
+
+#[test]
+fn holding_a_remap_keyframe_retakes_the_clips_length() {
+    // holding the 100 % key stretches its rate across the ramp's segment: the clip grows back to
+    // its media's length at 100 %
+    let mut s = selected_clip();
+    let (clip, it) = clip_of(&s);
+    let (start, dur) = (it.start.0, it.duration.0);
+    set_speed_key(&mut s, clip, start, 100.0);
+    set_speed_key(&mut s, clip, start + dur, 200.0);
+    let (_, it) = clip_of(&s);
+    assert!(it.duration.0 < dur, "the ramp had shortened the clip: {}", it.duration.0);
+    s.execute("effects.setInterpolation", json!({"clip": clip, "effect": "time_remap", "param": "speed", "mediaTime": 0, "interpolation": "hold"})).unwrap();
+    let (_, it) = clip_of(&s);
+    assert!((it.duration.0 - dur).abs() <= 1, "the held 100 % consumes its media 1:1 again: {}", it.duration.0);
+    assert_eq!(it.source_out().0 - it.source_in.0, it.duration.0, "the same media as before, at the held rate");
+}
+
+#[test]
+fn toggling_the_remap_stopwatch_on_retakes_the_clips_length() {
+    // a static 50 % is stored but inert; switching animation on makes it the curve, and the fit
+    // grows the clip to where its media ends at the halved rate instead of leaving the old length
+    let mut s = selected_clip();
+    let (clip, it) = clip_of(&s);
+    let dur = it.duration.0;
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "time_remap", "param": "speed", "value": 50.0})).unwrap();
+    s.execute("effects.toggleAnimation", json!({"clip": clip, "effect": "time_remap", "param": "speed"})).unwrap();
+    let (_, it) = clip_of(&s);
+    let p = it.effect("time_remap").unwrap().param("speed").unwrap();
+    assert!(p.is_animated(), "the stopwatch keyed the curve");
+    assert_eq!(it.duration.0, dur * 2, "the same media at half rate takes twice the time");
+    assert_eq!(it.source_out().0 - it.source_in.0, dur, "the same media as before");
+}

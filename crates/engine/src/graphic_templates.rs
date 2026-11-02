@@ -648,7 +648,9 @@ fn set_responsive_time(s: &mut Session, p: &Value) -> Result<Value> {
     let m = edit_meta(s, clip, "Responsive Design - Time", |m, it| {
         if !m.has_responsive_time() {
             m.design_in = it.source_in;
-            m.design_duration = Tick((it.duration.0 as f64 * it.speed.abs()).round() as i64);
+            // the media the clip shows, Time Remapping included (a plain multiple of the speed
+            // when the clip has no animated curve)
+            m.design_duration = it.source_out() - it.source_in;
         }
         if let Some(x) = intro {
             m.intro = x.max(Tick::ZERO);

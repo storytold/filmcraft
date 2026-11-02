@@ -295,7 +295,23 @@ impl TrackItem {
         };
         let rate = |t: f64| (p.f64_at(Tick(t.round() as i64)) / 100.0).abs();
         // Trapezoidal over the pieces the keyframe times cut [from, to] into: exact for the
-        // linear and hold segments, close for the eased ones (subdivided to stay so).
+        // linear and hold segments, close for the eased ones (subdivided to stay so). `value_at`
+        // answers the next key's value on the tick that ends a Hold segment, but the held rate
+        // carries through that boundary and the integral must too, so such a piece's right
+        // endpoint is sampled one tick inside it (a 10 s hold at 100 % integrates to 10 s, not
+        // 10.625 s: the next key's 200 % must not fold into the hold's last slice).
+        let hold_ends_at = |b: f64| {
+            let i = p.keyframes.partition_point(|k| (k.time.0 as f64) < b);
+            i > 0
+                && i < p.keyframes.len()
+                && p.keyframes[i].time.0 as f64 == b
+                && (p.keyframes[i - 1].interp == crate::Interpolation::Hold || !p.keyframes[i - 1].value.interpolates())
+        };
+        let piece = |pa: f64, pb: f64| {
+            let held_end = hold_ends_at(pb);
+            let r = |x: f64| if held_end && x > pa && x >= pb - 0.5 { rate(pb - 1.0) } else { rate(x) };
+            trapezoid(&r, pa, pb)
+        };
         let (a, b) = (from.0 as f64, to.0 as f64);
         let mut acc = 0.0;
         let mut t = a;
@@ -307,10 +323,10 @@ impl TrackItem {
             if kt >= b {
                 break;
             }
-            acc += trapezoid(&rate, t, kt);
+            acc += piece(t, kt);
             t = kt;
         }
-        acc += trapezoid(&rate, t, b);
+        acc += piece(t, b);
         Tick(acc.round() as i64)
     }
     pub fn effect(&self, id: &str) -> Option<&EffectInstance> {

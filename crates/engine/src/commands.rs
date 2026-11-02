@@ -3642,12 +3642,7 @@ fn build() -> Vec<CommandSpec> {
                     let mt = keyframe_store_time(it, &eff, &pid, at, ph);
                     // a Time Remapping speed change retakes the clip's length below, so record the
                     // media the clip consumed before the change (before the parameter is written)
-                    let remap_edit = pid == "speed"
-                        && match &eff {
-                            Value::String(sid) => sid == "time_remap",
-                            Value::Number(n) => it.effects.get(n.as_u64().unwrap_or(u64::MAX) as usize).is_some_and(|e| e.effect == "time_remap"),
-                            _ => false,
-                        };
+                    let remap_edit = p.get("mask").is_none_or(Value::is_null) && targets_remap_speed(it, &eff, &pid);
                     let old_span = if remap_edit { it.source_out() - it.source_in } else { Tick::ZERO };
                     let e = match &eff {
                         Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
@@ -3732,9 +3727,14 @@ fn build() -> Vec<CommandSpec> {
             let pid = str_p(p, "param").ok_or_else(|| bad("effects.toggleAnimation", "need `param`"))?.to_string();
             let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
             let ph = s.playhead();
-            s.edit_sequence("Toggle Animation", |q, _, _| {
+            s.edit_sequence("Toggle Animation", |q, ctx, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
                 let mt = keyframe_store_time(it, &eff, &pid, None, ph);
+                // toggling the stopwatch swaps the curve for a static value or back, which changes
+                // the playback rate: record the media consumed before the toggle, so the length is
+                // retaken below like any Time Remapping speed change
+                let remap_edit = p.get("mask").is_none_or(Value::is_null) && targets_remap_speed(it, &eff, &pid);
+                let old_span = if remap_edit { it.source_out() - it.source_in } else { Tick::ZERO };
                 let e = match &eff {
                     Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
                     Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -3750,6 +3750,12 @@ fn build() -> Vec<CommandSpec> {
                     e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
                 }
                 crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("effects.toggleAnimation", "no such param"))?.toggle_animation(mt);
+                // the toggled curve (or the static value taking over) plays the same media over a
+                // different length: retake it, as effects.setParam does for its speed changes. A
+                // static speed does not drive playback, so switching the curve off changes nothing
+                if remap_edit {
+                    edit::fit_remap_duration(q, c, old_span, ctx)?;
+                }
                 Ok(())
             })?;
             Ok(Value::Null)
@@ -4101,6 +4107,9 @@ fn reset_params(e: &mut filmcraft_project::EffectInstance, only: Option<&str>, f
 /// The time a keyframe created at `t` (an explicit `time`, else the playhead pinned to the clip)
 /// is stored at: media time for every effect but Time Remapping's speed, whose curve anchors to
 /// the clip's timeline time ([`filmcraft_project::TrackItem::timeline_keyframed`]).
+/// Where a keyframe command stores its time for the targeted parameter: the playhead pinned to
+/// the clip (or the explicit `time`), in the parameter's own coordinate — clip-relative timeline
+/// time for Time Remapping's speed, media time for everything else.
 fn keyframe_store_time(it: &filmcraft_project::TrackItem, eff: &Value, pid: &str, at: Option<Tick>, ph: Tick) -> Tick {
     let t = at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
     let eff_id = match eff {
@@ -4122,6 +4131,17 @@ pub(crate) fn interpolation_p(p: &Value) -> filmcraft_project::Interpolation {
         "easeout" => filmcraft_project::Interpolation::EaseOut,
         _ => filmcraft_project::Interpolation::Linear,
     }
+}
+
+/// Whether the command targets Time Remapping's speed (the clip's playback curve) on the effect
+/// itself — not on one of its masks, which has nothing to do with playback.
+fn targets_remap_speed(it: &filmcraft_project::TrackItem, eff: &Value, pid: &str) -> bool {
+    pid == "speed"
+        && match eff {
+            Value::String(sid) => sid == "time_remap",
+            Value::Number(n) => it.effects.get(n.as_u64().unwrap_or(u64::MAX) as usize).is_some_and(|e| e.effect == "time_remap"),
+            _ => false,
+        }
 }
 
 /// `effects.addKeyframe` / `deleteKeyframe` / `moveKeyframe` / `setKeyframe` / `setKeyframeInterpolation`.
@@ -4150,10 +4170,15 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     if bool_p(p, "begin").unwrap_or(false) {
         s.history.merge_key = None;
     }
-    s.edit_sequence_as(label, merge.as_deref(), |q, _, _| {
+    s.edit_sequence_as(label, merge.as_deref(), |q, ctx, _| {
         let mut reply = Value::Null;
         let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
         let mt_now = keyframe_store_time(it, &eff, &pid, at, playhead);
+        // moving, revaluing, deleting or re-interpolating a Time Remapping key changes the
+        // playback curve: record the media the clip consumed before the edit, so the length is
+        // retaken below exactly as a speed value change retakes it in effects.setParam
+        let remap_edit = p.get("mask").is_none_or(Value::is_null) && targets_remap_speed(it, &eff, &pid);
+        let old_span = if remap_edit { it.source_out() - it.source_in } else { Tick::ZERO };
         let e = match &eff {
             Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
             Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
@@ -4206,6 +4231,11 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                 let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
                 k.interp = interp;
             }
+        }
+        // the edited curve consumes the same media over a different length: retake it, so the
+        // clip ends where its media ends instead of holding a still frame past it
+        if remap_edit {
+            edit::fit_remap_duration(q, c, old_span, ctx)?;
         }
         Ok(reply)
     })

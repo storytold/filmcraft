@@ -3,7 +3,7 @@
 //! a 2 s pause after "show.", fillers "Um," and "uh", phrase "you know.").
 
 use super::*;
-use filmcraft_project::{Label, Project, SequenceSettings, TrackItem};
+use filmcraft_project::{Interpolation, Label, ParamValue, Project, SequenceSettings, TrackItem, Word, find_effect};
 use filmcraft_time::FrameRate;
 
 const R: FrameRate = FrameRate { num: 25, den: 1 };
@@ -296,4 +296,33 @@ fn captions_never_overlap_with_dense_words() {
     let rules = CaptionRules { gap_frames: 1, ..Default::default() };
     let b = caption_blocks(&words, &rules, R);
     check_blocks(&b, &rules);
+}
+
+#[test]
+fn words_follow_a_remap_ramp_through_the_inverse_curve() {
+    // 100 % held for the first 5 s, 200 % after: media 6..7 s plays at 5.5..6 s on the timeline.
+    // The In point's rate (100 %) must not stand in for the whole clip and report the word at 6 s
+    let mut p = Project::new("t");
+    let id = p.new_sequence("s", SequenceSettings { frame_rate: R, ..Default::default() }, 1, 2, None);
+    let mut seq = p.sequence(id).unwrap().clone();
+    let mut it = clip(1, 0.0, 10.0, 0.0);
+    let mut e = find_effect("time_remap").unwrap().instance();
+    let prm = e.param_mut("speed").unwrap();
+    prm.put_keyframe(s(0.0), ParamValue::Float(100.0));
+    prm.put_keyframe(s(5.0), ParamValue::Float(200.0));
+    prm.keyframes[0].interp = Interpolation::Hold;
+    it.effects.push(e);
+    seq.audio_tracks[0].items.push(it);
+    let tr = Transcript {
+        language: "en".into(),
+        source: "manual".into(),
+        speakers: vec![],
+        words: vec![Word::new("early", s(2.0), s(3.0)), Word::new("late", s(6.0), s(7.0))],
+    };
+    let mut transcripts = Transcripts::new();
+    transcripts.insert(MEDIA, std::sync::Arc::new(tr));
+    let words = sequence_words(&seq, &transcripts);
+    assert_eq!(words.len(), 2, "both words are audible in the clip");
+    assert_eq!((words[0].start, words[0].end), (s(2.0), s(3.0)), "the held half maps 1:1");
+    assert_eq!((words[1].start, words[1].end), (s(5.5), s(6.0)), "the 200 % half plays its media at twice the pace");
 }

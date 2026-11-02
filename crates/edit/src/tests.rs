@@ -1752,3 +1752,145 @@ fn sliding_a_remapped_clip_moves_its_curve_but_shifts_the_neighbours() {
         assert_eq!(nxt.source_time_at(f(30 + u)), next.source_time_at(f(30 + u)), "frame {u} of the next clip diverges");
     }
 }
+
+#[test]
+fn a_hold_key_integrates_at_its_held_rate() {
+    // 10 frames held at 100 % (Hold interpolation), then 200 %: the hold consumes exactly its 10
+    // frames of media — the trapezoid must not fold the next key's rate into the hold's right
+    // endpoint, which made it consume 10.625 frames and jump the source at the boundary
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    put_remapped(&mut fx, v1, 0, 30, 100, 1.0, false, &[(0, 100.0), (10, 200.0)]);
+    {
+        let p = fx.seq.track_mut(v1).unwrap().items[0].effect_mut("time_remap").unwrap().param_mut("speed").unwrap();
+        p.keyframes[0].interp = filmcraft_project::Interpolation::Hold;
+    }
+    let orig = fx.seq.track(v1).unwrap().items[0].clone();
+    assert_eq!(orig.media_span(Tick::ZERO, f(10)), f(10), "the hold consumes exactly its 10 frames");
+    assert_eq!(orig.media_span(Tick::ZERO, f(20)), f(30), "…and the 200 % tail at twice the rate");
+    assert_eq!(orig.source_time_at(f(9)), f(100) + f(9), "the held segment maps 1:1 up to its end");
+    assert_eq!(orig.source_time_at(f(10)), f(100) + f(10), "the boundary tick does not jump ahead");
+    // a cut on the hold's boundary is source-continuous: the right piece resumes where the hold ended
+    let mut n = fx.next;
+    let new = razor(&mut fx.seq, &[], f(10), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 1);
+    let items = fx.seq.track(v1).unwrap().items.clone();
+    assert_eq!(items[1].source_in, orig.source_in + f(10), "no source jump at the cut");
+    assert_track_shows_like(&fx, &orig, 0, 30);
+}
+
+#[test]
+fn an_out_trim_clamps_at_the_integrated_source_end() {
+    // 4 frames keyed at 200 % eat 8 of the 10 frames of source: one timeline frame of growth
+    // remains, not two (the constant-speed limit allowed 2 and then consumed 12 frames of source)
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 4, 0, 1.0, false, &[(0, 200.0)]);
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) };
+    let d = clamp_trim(&fx.seq, it.id, Edge::Out, TrimMode::Ripple, f(10), &ctx).unwrap();
+    assert_eq!(d, f(1), "2 frames of unplayed media = 1 timeline frame at 200 %");
+    let mut n = fx.next;
+    trim(&mut fx.seq, it.id, Edge::Out, TrimMode::Ripple, d, &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    let it2 = fx.seq.track(v1).unwrap().items.iter().find(|i| i.id == it.id).unwrap();
+    assert_eq!(it2.duration, f(5));
+    assert_eq!(it2.source_out(), f(10), "the trim ends at the media's last frame");
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) };
+    assert_eq!(clamp_trim(&fx.seq, it.id, Edge::Out, TrimMode::Ripple, f(10), &ctx).unwrap(), Tick::ZERO, "the source is exhausted");
+}
+
+#[test]
+fn an_in_trim_clamps_at_the_integrated_source_start() {
+    // 4 frames keyed at 200 % from source frame 2: the In edge may pull in the 2 frames of media
+    // before it, one timeline frame — the constant-speed limit allowed two and ran past frame 0
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 10, 4, 2, 1.0, false, &[(0, 200.0)]);
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) };
+    let d = clamp_trim(&fx.seq, it.id, Edge::In, TrimMode::Ripple, f(-10), &ctx).unwrap();
+    assert_eq!(d, f(-1), "2 frames of media before the In point = 1 timeline frame at 200 %");
+    let mut n = fx.next;
+    trim(&mut fx.seq, it.id, Edge::In, TrimMode::Ripple, d, &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    let it2 = fx.seq.track(v1).unwrap().items.iter().find(|i| i.id == it.id).unwrap();
+    assert_eq!(it2.source_in, f(0), "the In edge reaches the media's first frame");
+    assert_eq!(it2.duration, f(5));
+}
+
+#[test]
+fn a_reverse_trims_edges_clamp_at_the_integrated_source_ends() {
+    // reversed and keyed at 200 %, the window [0, 8) plays downward from frame 7: the Out edge
+    // has no media below the source In to pull in, the In edge pulls in the 2 frames above the
+    // source Out as one timeline frame
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 4, 0, 1.0, true, &[(0, 200.0)]);
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) };
+    let out = clamp_trim(&fx.seq, it.id, Edge::Out, TrimMode::Ripple, f(10), &ctx).unwrap();
+    assert_eq!(out, Tick::ZERO, "no media below the source In");
+    let d = clamp_trim(&fx.seq, it.id, Edge::In, TrimMode::Ripple, f(-10), &ctx).unwrap();
+    assert_eq!(d, f(-1), "2 frames of media above the source Out = 1 timeline frame at 200 %");
+    let mut n = fx.next;
+    trim(&mut fx.seq, it.id, Edge::In, TrimMode::Ripple, d, &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    let it2 = fx.seq.track(v1).unwrap().items.iter().find(|i| i.id == it.id).unwrap();
+    assert_eq!(it2.duration, f(5));
+    assert_eq!(it2.source_out(), f(10), "the window now covers the whole media");
+}
+
+#[test]
+fn a_reverse_out_trim_clamps_at_the_integrated_source_start() {
+    // reversed and keyed at 200 % from source frame 2, the window [2, 10) plays downward: the Out
+    // edge pulls in the 2 frames below the source In as one timeline frame, not four
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 4, 2, 1.0, true, &[(0, 200.0)]);
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) };
+    let d = clamp_trim(&fx.seq, it.id, Edge::Out, TrimMode::Ripple, f(10), &ctx).unwrap();
+    assert_eq!(d, f(1), "2 frames of media below the source In = 1 timeline frame at 200 %");
+    let mut n = fx.next;
+    trim(&mut fx.seq, it.id, Edge::Out, TrimMode::Ripple, d, &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    let it2 = fx.seq.track(v1).unwrap().items.iter().find(|i| i.id == it.id).unwrap();
+    assert_eq!(it2.source_in, f(0), "the window now covers the whole media");
+    assert_eq!(it2.source_out(), f(10));
+    assert_eq!(it2.duration, f(5));
+}
+
+#[test]
+fn a_roll_clamps_at_the_integrated_source_end() {
+    // left: 4 frames keyed at 200 % with 2 frames of source left (1 timeline frame); right:
+    // keyed at 50 % with frames of head to spare. The roll stops at the tighter, integrated limit
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let l = put_remapped(&mut fx, v1, 0, 4, 0, 1.0, false, &[(0, 200.0)]);
+    let r = put_remapped(&mut fx, v1, 4, 20, 200, 1.0, false, &[(0, 50.0)]);
+    let mut n = fx.next;
+    let d = roll(&mut fx.seq, l.id, r.id, f(10), &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    assert_eq!(d, f(1), "the left clip's 2 remaining frames of media = 1 timeline frame");
+    let items = fx.seq.track(v1).unwrap().items.clone();
+    assert_eq!(items[0].source_out(), f(10), "the left clip ends at its media's last frame");
+    let mut n = fx.next;
+    let d2 = roll(&mut fx.seq, l.id, r.id, f(10), &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    assert_eq!(d2, Tick::ZERO, "the source is exhausted");
+    let _ = r;
+}
+
+#[test]
+fn a_slide_clamps_the_neighbour_at_its_integrated_source_end() {
+    // prev: 4 frames keyed at 200 % with 2 frames of source left; sliding the middle clip right
+    // grows the prev clip's Out edge by one timeline frame, not two
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let prev = put_remapped(&mut fx, v1, 0, 4, 0, 1.0, false, &[(0, 200.0)]);
+    let mid = put_remapped(&mut fx, v1, 4, 4, 500, 1.0, false, &[]);
+    put_remapped(&mut fx, v1, 8, 4, 900, 1.0, false, &[]);
+    let mut n = fx.next;
+    let d = slide(&mut fx.seq, mid.id, f(10), &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    assert_eq!(d, f(1), "the prev clip's 2 remaining frames of media = 1 timeline frame");
+    let items = fx.seq.track(v1).unwrap().items.clone();
+    assert_eq!(items[0].id, prev.id);
+    assert_eq!(items[0].source_out(), f(10), "the prev clip ends at its media's last frame");
+    assert_eq!(items[1].start, f(5), "the slid clip follows the cut");
+}

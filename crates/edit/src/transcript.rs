@@ -71,12 +71,20 @@ pub fn sequence_words(seq: &Sequence, transcripts: &Transcripts) -> Vec<SeqWord>
             }
             let Some(tr) = transcripts.get(&it.item) else { continue };
             mine.push(it.range());
-            // word times are media times; the clip's playback maps them to sequence time. A Time
-            // Remapping curve makes that mapping non-linear — the rate at the clip's In point
-            // stands for the whole clip, and the media end is the curve's far end
-            let speed = it.remap_speed_at(Tick::ZERO).max(1e-6);
+            // word times are media times; the clip's playback maps them to sequence time. That is
+            // the playback mapping itself (`timeline_time_of_media` integrates the Time Remapping
+            // curve and bisects its inverse), so a word lands where its media actually plays
+            // instead of being stretched by the In point's rate across the whole clip
             let media_end = it.source_out();
-            let to_tl = |m: Tick| it.start + ticks((m - it.source_in).0 as f64 / speed);
+            let to_tl = |m: Tick| match it.timeline_time_of_media(m) {
+                // the playback mapping itself: the curve's inverse, so a word lands where its
+                // media actually plays instead of being stretched by the In point's rate
+                Some(t) => t,
+                // media before the shown range or past its far end (a word straddling either
+                // edge of the clip) maps on plainly, as before: the mid check below still drops
+                // a word that mostly lies outside the clip
+                None => it.start + ticks((m - it.source_in).0 as f64 / it.remap_speed_at(Tick::ZERO).max(1e-6)),
+            };
             for wi in tr.words_in(TimeRange::from_bounds(it.source_in, media_end.max(it.source_in))) {
                 let w = &tr.words[wi];
                 let (a, b) = (to_tl(w.start), to_tl(w.end.max(w.start)));

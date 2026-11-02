@@ -246,9 +246,10 @@ fn params_mut(e: &mut EffectInstance) -> Vec<&mut Param> {
     v
 }
 
-/// Media length of a track item.
+/// Media length of a track item: what its playback consumes, Time Remapping included (a plain
+/// multiple of the speed when the clip has no animated curve).
 fn media_len(it: &TrackItem) -> Tick {
-    Tick((it.duration.0 as f64 * it.speed.abs()).round() as i64)
+    it.source_out() - it.source_in
 }
 
 /// Build a preset from effects of a clip. `mt` = the clip's media time at the playhead.

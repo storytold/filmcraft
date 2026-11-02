@@ -732,6 +732,35 @@ fn neighbours(track: &Track, id: ClipId) -> (Tick, Tick) {
     (prev_end, next_start)
 }
 
+/// The largest timeline growth `x ≥ 0` whose media consumption stays within `avail` media ticks,
+/// where `span` maps a candidate growth to the media ticks it consumes (the Time Remapping
+/// curve's integral over the ticks it adds). The inverse of what `move_edge` and the roll/slide
+/// edge updates consume, so a clamped trim cannot run past the source under a varying curve
+/// either; one constant rate gives the old `avail / rate`, floored.
+fn span_limit(avail: Tick, span: impl Fn(Tick) -> Tick) -> Tick {
+    if avail <= Tick::ZERO {
+        return Tick::ZERO;
+    }
+    if avail == Tick::MAX {
+        // media with no set time has no handle to run past (#3367): unbounded, as before
+        return Tick::MAX;
+    }
+    // Rates under 0.01 % consume so slowly that the growth can exceed `avail` ten-thousandfold;
+    // the headroom keeps the upper bound safely past the crossing. A 0 % stretch never crosses:
+    // the search then settles on the cap, as unbounded as such a hold is.
+    let (mut lo, mut hi) = (0i64, avail.0.saturating_mul(10_001).saturating_add(64));
+    while lo < hi {
+        // biased up, and free of overflow even at the saturated cap
+        let mid = lo + (hi - lo) / 2 + 1;
+        if span(Tick(mid)) <= avail {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    Tick(lo)
+}
+
 /// Compute the clamped delta a trim may apply (for UI feedback while dragging).
 pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, ctx: &EditCtx) -> Result<Tick> {
     let tid = unlocked_track(seq, clip)?;
@@ -739,18 +768,22 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
     let tr = seq.track(tid).ok_or(EditError::NoTrack(tid))?;
     let (prev_end, next_start) = neighbours(tr, clip);
     let media = media_len(ctx, it);
-    let speed = it.speed.abs().max(1e-9);
     let mut d = delta;
     match edge {
         Edge::In => {
             // extending left (d<0) needs media before source_in; shortening needs min duration
-            // a reversed clip plays source_out down to source_in, so its In edge consumes media after source_out
-            let handle = match (it.reverse, media) {
-                (true, Some(m)) => (m - it.source_out()).max(Tick::ZERO),
+            // a reversed clip plays source_out down to source_in, so its In edge consumes media after source_out.
+            // either way the limit is the growth whose integrated span fits the handle, the same
+            // mapping the edge update consumes (an animated curve eats media at its own rate)
+            let max_ext = match (it.reverse, media) {
+                (true, Some(m)) => {
+                    let dur = it.duration;
+                    span_limit((m - it.source_out()).max(Tick::ZERO), |x| it.media_span(dur, dur + x))
+                }
                 (true, None) => Tick::MAX,
-                (false, _) => head(ctx, it),
+                (false, None) => Tick::MAX,
+                (false, Some(_)) => span_limit(head(ctx, it), |x| it.media_span(Tick(-x.0), Tick::ZERO)),
             };
-            let max_ext = if handle == Tick::MAX { Tick::MAX } else { Tick((handle.0 as f64 / speed).floor() as i64) };
             let lo = if mode == TrimMode::Regular { (-(it.start - prev_end)).max(-max_ext) } else { -max_ext };
             let hi = it.duration - ctx.min_duration;
             // a frame hold needs no source head, but a Regular trim still stops at the previous clip
@@ -764,12 +797,13 @@ pub fn clamp_trim(seq: &Sequence, clip: ClipId, edge: Edge, mode: TrimMode, delt
         Edge::Out => {
             let lo = -(it.duration - ctx.min_duration);
             let mut hi = if mode == TrimMode::Regular { next_start - it.end() } else { Tick::MAX };
+            let dur = it.duration;
             if it.reverse && it.frame_hold.is_none() {
-                // a reversed clip's Out edge consumes media before source_in
-                hi = hi.min(Tick((head(ctx, it).0 as f64 / speed).floor() as i64));
+                // a reversed clip's Out edge consumes media before source_in: the curve's span over the new tail
+                hi = hi.min(span_limit(head(ctx, it), |x| it.media_span(dur, dur + x)));
             } else if let Some(m) = media {
-                let remain = Tick(((m - it.source_out()).0 as f64 / speed).floor() as i64);
-                hi = hi.min(remain);
+                // the forward Out edge consumes the media above the source Out, at the curve's own rate
+                hi = hi.min(span_limit((m - it.source_out()).max(Tick::ZERO), |x| it.media_span(dur, dur + x)));
             }
             d = d.clamp(lo, hi.max(lo));
         }
@@ -1001,18 +1035,27 @@ pub fn roll(seq: &mut Sequence, left: ClipId, right: ClipId, delta: Tick, ctx: &
     for x in seq.all_tracks().flat_map(|t| &t.transitions).filter(|x| x.from == Some(left) && x.to == Some(right)) {
         d = d.max((l.start - x.start).min(Tick::ZERO)).min((r.end() - x.end()).max(Tick::ZERO));
     }
-    // a reversed clip consumes media from the opposite end, so its media limit is the other one
+    // a reversed clip consumes media from the opposite end, so its media limit is the other one;
+    // each side allows the growth whose integrated span fits its handle, as the updates consume it
     if l.reverse {
-        d = d.min(Tick((head(ctx, l).0 as f64 / l.speed.abs()).floor() as i64));
+        let dur = l.duration;
+        d = d.min(span_limit(head(ctx, l), |x| l.media_span(dur, dur + x)));
     } else if let Some(m) = media_len(ctx, l) {
-        d = d.min(Tick(((m - l.source_out()).0 as f64 / l.speed.abs()).floor() as i64));
+        let dur = l.duration;
+        // a clip whose Out already runs past its media (the file shrank under it) refuses the
+        // roll, as before: the negative remainder pulls the ask across zero, where the caller's
+        // consistency check zeroes the edit instead of moving the cut the wrong way
+        let remain = m - l.source_out();
+        let limit = if remain < Tick::ZERO { remain } else { span_limit(remain, |x| l.media_span(dur, dur + x)) };
+        d = d.min(limit);
     }
     if r.reverse {
         if let Some(m) = media_len(ctx, r) {
-            d = d.max(-Tick(((m - r.source_out()).0 as f64 / r.speed.abs()).floor() as i64));
+            let dur = r.duration;
+            d = d.max(-span_limit((m - r.source_out()).max(Tick::ZERO), |x| r.media_span(dur, dur + x)));
         }
     } else {
-        d = d.max(-Tick((head(ctx, r).0 as f64 / r.speed.abs()).floor() as i64));
+        d = d.max(-span_limit(head(ctx, r), |x| r.media_span(Tick(-x.0), Tick::ZERO)));
     }
     if d == Tick::ZERO {
         return Ok(d);
@@ -1080,24 +1123,30 @@ pub fn slide(seq: &mut Sequence, clip: ClipId, delta: Tick, ctx: &mut EditCtx) -
     let mut d = delta;
     if let Some(p) = &prev {
         d = d.max(-(p.duration - ctx.min_duration));
+        let dur = p.duration;
         if p.reverse {
             // a reversed neighbour grows by pulling earlier media in front of its source In
-            d = d.min(Tick((head(ctx, p).0 as f64 / p.speed.abs()).floor() as i64));
+            d = d.min(span_limit(head(ctx, p), |x| p.media_span(dur, dur + x)));
         } else if let Some(m) = media_len(ctx, p) {
-            d = d.min(Tick(((m - p.source_out()).0 as f64 / p.speed.abs()).floor() as i64));
+            // a negative remainder (the neighbour's Out runs past its media) refuses the slide,
+            // as before, by pulling the ask across zero for the caller to refuse
+            let remain = m - p.source_out();
+            let limit = if remain < Tick::ZERO { remain } else { span_limit(remain, |x| p.media_span(dur, dur + x)) };
+            d = d.min(limit);
         }
     } else {
         d = d.max(-(it.start - neighbours(tr, clip).0));
     }
     if let Some(n) = &next {
         d = d.min(n.duration - ctx.min_duration);
+        let dur = n.duration;
         if n.reverse {
             // a reversed neighbour grows leftwards by pulling later media behind its source Out
             if let Some(m) = media_len(ctx, n) {
-                d = d.max(-Tick(((m - n.source_out()).0 as f64 / n.speed.abs()).floor() as i64));
+                d = d.max(-span_limit((m - n.source_out()).max(Tick::ZERO), |x| n.media_span(dur, dur + x)));
             }
         } else {
-            d = d.max(-Tick((head(ctx, n).0 as f64 / n.speed.abs()).floor() as i64));
+            d = d.max(-span_limit(head(ctx, n), |x| n.media_span(Tick(-x.0), Tick::ZERO)));
         }
     } else {
         d = d.min(neighbours(tr, clip).1 - it.end());
