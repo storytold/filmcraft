@@ -513,6 +513,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(json!({"layout": app.ui.dock, "focused": app.ui.focused, "maximized": app.ui.keys.maximized, "hitRects": hits}))
         }
         "ui.monitors" => {
+            app.monitors.refresh(ctx.input(|i| i.time), app.hooks.display_list.as_deref());
             let displays: Vec<Value> =
                 app.monitors.displays().iter().map(|d| json!({"name": d.name, "rect": [d.x, d.y, d.width, d.height], "dpiScale": d.dpi_scale})).collect();
             ok(json!({"displays": displays, "monitors": app.monitors.points(ctx.pixels_per_point())}))

@@ -365,7 +365,8 @@ fn the_hosts_display_list_is_sanitized_before_the_dock_sees_it() {
     assert_eq!(reply["displays"].as_array().map(Vec::len), Some(4), "{reply}");
     let names: Vec<&str> = reply["monitors"].as_array().expect("monitors").iter().filter_map(|m| m["name"].as_str()).collect();
     assert_eq!(names, ["D0", "D-1920"], "{reply}");
-    // A floating panel still opens with the list in place.
-    d.float("Timeline", [900.0, 120.0, 680.0, 420.0]);
-    assert!(d.element("panel.Timeline")["window"].is_u64());
+    // A window floated onto a listed display stores that display (so removing the list from the dock fails this).
+    d.float("Timeline", [-1500.0, 100.0, 680.0, 420.0]);
+    let inspect = d.ok("ui.inspect", json!({}));
+    assert_eq!(inspect["ui"]["dock"]["floating"][0]["monitor"]["name"], json!("D-1920"), "{}", inspect["ui"]["dock"]["floating"]);
 }
