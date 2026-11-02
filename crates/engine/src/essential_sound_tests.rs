@@ -348,6 +348,32 @@ fn ducking_generates_volume_keyframes_under_dialogue() {
     assert!(s.execute("essentialSound.generateDucking", json!({"clips": [c[0].0]})).is_err(), "dialogue does not duck");
 }
 
+#[test]
+fn ducking_says_how_many_volume_keyframes_it_replaced() {
+    // #4026: a fade written on the music before ducking is replaced; the result says so
+    let dlg = speech(10.0, 0.4, |t| (2.0..4.0).contains(&t));
+    let (mut s, c) = session_with(&[(dlg, 0.0), (tone(10.0, 220.0, 0.2), 0.0)]);
+    s.execute("essentialSound.setType", json!({"clips": [c[0].0], "type": "dialogue"})).unwrap();
+    s.execute("essentialSound.setType", json!({"clips": [c[1].0], "type": "music"})).unwrap();
+    s.execute("essentialSound.set", json!({"clips": [c[1].0], "values": {"ducking.enabled": true}})).unwrap();
+    let r = s.execute("essentialSound.generateDucking", json!({"clips": [c[1].0]})).unwrap();
+    assert_eq!(r["clips"][0]["replacedKeyframes"], 0, "no keyframes before: {r}");
+    // a fade-out at 8 to 9 s, then ducking again
+    s.execute("edit.undo", json!({})).unwrap();
+    for (t, v) in [(8.0, 0.0), (9.0, -60.0)] {
+        let t = Tick::from_seconds_f64(t).0;
+        s.execute("effects.setParam", json!({"clip": c[1].0, "effect": "volume", "param": "level", "value": v, "keyframe": true, "time": t})).unwrap();
+    }
+    assert_eq!(item(&s, c[1]).effect("volume").unwrap().param("level").unwrap().keyframes.len(), 2);
+    let r = s.execute("essentialSound.generateDucking", json!({"clips": [c[1].0]})).unwrap();
+    assert_eq!(r["clips"][0]["replacedKeyframes"], 2, "{r}");
+    let n = r["clips"][0]["keyframes"].as_array().unwrap().len();
+    assert_eq!(item(&s, c[1]).effect("volume").unwrap().param("level").unwrap().keyframes.len(), n, "the fade is gone");
+    // regenerating replaces the ducking keyframes themselves
+    let r = s.execute("essentialSound.generateDucking", json!({"clips": [c[1].0]})).unwrap();
+    assert_eq!(r["clips"][0]["replacedKeyframes"], n, "{r}");
+}
+
 /// Run `sig` through one Dialogue repair setting and return (input, output) over 1…len−0.5 s.
 fn repair(sig: Vec<f32>, values: Value) -> (Vec<f32>, Vec<f32>) {
     let (mut s, c) = session_with(&[(sig.clone(), 0.0)]);

@@ -420,6 +420,9 @@ fn generate_ducking(s: &mut Session, p: &Value) -> Result<Value> {
             "triggers": triggers.iter().map(|t| t.id.0).collect::<Vec<_>>(),
             "regions": abs.iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>(),
             "keyframes": ticks.iter().map(|(t, v)| json!({"time": t.0, "seconds": t.seconds(), "levelDb": v})).collect::<Vec<_>>(),
+            // the edit clears the level's keyframes first (as Premiere does): say how many went, so a
+            // script can tell a fade it wrote before ducking is gone (#4026)
+            "replacedKeyframes": lvl.map_or(0, |p| p.keyframes.len()),
         }));
         plans.push((it.id, ticks, base));
     }

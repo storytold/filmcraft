@@ -512,7 +512,7 @@ essentialSound.generateDucking   trigger clips' summed level (10 ms hops) → ac
 - **Ducking.** Sensitivity 0…10 maps to a threshold −20 − 4·s dBFS on the summed trigger signal (50 ms
   window); regions shorter than 100 ms are dropped and pauses under 250 ms bridged; each region gets a
   fade-down before it and a fade-up after it (`audio_dsp::ducking::duck_keyframes`), written as Volume
-  level keyframes that replace earlier ones.
+  level keyframes that replace earlier ones (the result's `replacedKeyframes` says how many per clip).
 - **Presets** (our own names and values) per type; user presets are saved in preferences
   (`essentialSound.userPresets`). Music remixing to a duration is Clip ▸ Remix (§5.1.3).
 - **Enhance Speech** is a DSP chain (high-pass, de-mud, presence and air EQ, expander, compressor), not a
