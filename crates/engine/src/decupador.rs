@@ -269,7 +269,7 @@ fn apply_plan(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = json!({"OTIO_SCHEMA": "SerializableCollection.1", "name": plan.slug.clone().unwrap_or_else(|| "Decupador".into()), "children": timelines, "metadata": {}});
     let fake = root.join(format!("{}.otio", plan.slug.as_deref().unwrap_or("decupador"))).to_string_lossy().to_string();
     let bytes = serde_json::to_vec(&doc).map_err(|e| EngineError::Other(e.to_string()))?;
-    let mut r = crate::interchange::import(s, &fake, &bytes, Format::Otio)?;
+    let mut r = crate::interchange::import(s, &fake, &bytes, Format::Otio, None)?;
     r["cuts"] = json!(summary);
     r["missingFiles"] = json!(missing);
     Ok(r)
@@ -394,7 +394,7 @@ fn mark(s: &mut Session, p: &Value) -> Result<Value> {
         let removed = before - q.markers.len();
         for c in &cs {
             let (name, comment, color) = marker_of(c);
-            q.markers.push(Marker { id: MarkerId(ctx.alloc()), start: c.start, duration: (c.end - c.start).max(Tick::ZERO), name, comment, kind: MarkerKind::Comment, color });
+            q.markers.push(Marker { id: MarkerId(ctx.alloc()), url: String::new(), author: String::new(), custom_color: None, start: c.start, duration: (c.end - c.start).max(Tick::ZERO), name, comment, kind: MarkerKind::Comment, color });
         }
         q.markers.sort_by_key(|m| m.start);
         Ok(removed)
@@ -1235,7 +1235,7 @@ fn align_script(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit_sequence("Align Script", |q, ctx, _| {
         q.markers.retain(|m| !m.name.starts_with(SCRIPT_PREFIX));
         for (start, end, name, comment, color) in markers {
-            q.markers.push(Marker { id: MarkerId(ctx.alloc()), start, duration: (end - start).max(Tick::ZERO), name, comment, kind: MarkerKind::Comment, color });
+            q.markers.push(Marker { id: MarkerId(ctx.alloc()), url: String::new(), author: String::new(), custom_color: None, start, duration: (end - start).max(Tick::ZERO), name, comment, kind: MarkerKind::Comment, color });
         }
         q.markers.sort_by_key(|m| m.start);
         Ok(())

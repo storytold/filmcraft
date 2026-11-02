@@ -51,13 +51,13 @@ impl ScrubAudio {
 impl FilmcraftApp {
     /// Once a frame: play a grain when the playhead moved under a held mouse button.
     pub(crate) fn scrub_audio(&mut self, ctx: &egui::Context) {
-        let (now, down) = ctx.input(|i| (i.time, i.pointer.any_down()));
+        let (now, down) = (self.now(), ctx.input(|i| i.pointer.any_down()));
         if self.scrub_tick(now, down) {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(LINGER_S));
         }
     }
 
-    /// [`FilmcraftApp::scrub_audio`] with the clock and the button state given. Returns whether
+    /// `FilmcraftApp::scrub_audio` with the clock and the button state given. Returns whether
     /// the scrub stream is still open.
     pub fn scrub_tick(&mut self, now: f64, down: bool) -> bool {
         let ph = self.session.playhead();

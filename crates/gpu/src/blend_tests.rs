@@ -11,7 +11,7 @@ use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::plan::execute_cpu;
 
 pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
+    let instance = crate::adapter::native_instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }
@@ -151,7 +151,8 @@ fn gpu_blend_modes_match_cpu() {
         1.0,
         24,
         filmcraft_time::FrameRate::FPS_24,
-    );
+    )
+    .unwrap();
     let demo = Arc::new(VideoFrame::rgba8(320, 180, pixels));
     let base = ramp_layer(200, 180, 3);
     let top = ramp_layer(160, 120, 0);

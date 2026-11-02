@@ -62,6 +62,7 @@ impl Lut3d {
 
     /// Sample a colour transform on a `size³` grid over 0..1.
     pub fn from_fn(size: usize, f: impl Fn([f32; 3]) -> [f32; 3]) -> Self {
+        let size = size.max(2);
         let n = (size - 1) as f32;
         let mut data = Vec::with_capacity(size * size * size);
         for b in 0..size {
@@ -205,6 +206,7 @@ impl Lut {
     }
 
     pub fn parse_cube(text: &str) -> Result<Lut, String> {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let mut size1 = 0usize;
         let mut size3 = 0usize;
         let mut title = String::new();
@@ -226,7 +228,14 @@ impl Lut {
                     return Err(err("keyword after table data"));
                 }
                 match key {
-                    "TITLE" => title = line[5..].trim().trim_matches('"').to_string(),
+                    "TITLE" => {
+                        // a '#' inside a quoted title is part of the title, not a comment
+                        let rest = raw.trim_start()[5..].trim_start();
+                        title = match rest.strip_prefix('"').and_then(|q| q.split_once('"')) {
+                            Some((t, _)) => t.to_string(),
+                            None => line[5..].trim().trim_matches('"').to_string(),
+                        };
+                    }
                     "LUT_1D_SIZE" => {
                         size1 = it.next().and_then(|v| v.parse().ok()).ok_or_else(|| err("bad LUT_1D_SIZE"))?;
                         if !(2..=65536).contains(&size1) {
@@ -308,7 +317,11 @@ impl Lut {
         if let Some(sh) = &self.shaper {
             let _ = writeln!(s, "LUT_1D_SIZE {}", sh.size());
             if both {
-                if sh.domain_min != [0.0; 3] || sh.domain_max != [1.0; 3] {
+                let uniform = sh.domain_min.iter().all(|v| *v == sh.domain_min[0]) && sh.domain_max.iter().all(|v| *v == sh.domain_max[0]);
+                if !uniform {
+                    // with both tables, DOMAIN_MIN/DOMAIN_MAX belong to the shaper
+                    write_domain(&mut s, sh.domain_min, sh.domain_max);
+                } else if sh.domain_min != [0.0; 3] || sh.domain_max != [1.0; 3] {
                     let _ = writeln!(s, "LUT_1D_INPUT_RANGE {} {}", sh.domain_min[0], sh.domain_max[0]);
                 }
             } else {
@@ -368,6 +381,9 @@ impl Lut {
         }
         let mesh = mesh.ok_or("empty .3dl")?;
         let n = mesh.len();
+        if !(2..=256).contains(&n) {
+            return Err(format!("input mesh must have 2–256 values, found {n}"));
+        }
         if rows.len() != n * n * n {
             return Err(format!("expected {}³ = {} rows, found {}", n, n * n * n, rows.len()));
         }
@@ -515,6 +531,16 @@ mod tests {
     }
 
     #[test]
+    fn zero_size_lut_construction_does_not_panic() {
+        let from_fn = std::panic::catch_unwind(|| Lut3d::from_fn(0, |c| c));
+        let identity = std::panic::catch_unwind(|| Lut3d::identity(0));
+        assert!(from_fn.is_ok());
+        assert!(identity.is_ok());
+        assert_eq!(from_fn.unwrap().size, 2);
+        assert_eq!(identity.unwrap().size, 2);
+    }
+
+    #[test]
     fn tetrahedral_matches_brute_force() {
         let mut s = 12345u64;
         let mut rnd = || {
@@ -550,6 +576,15 @@ mod tests {
             let (a, t, want) = (w.apply(c), w.apply_trilinear(c), w.at(r, g, b));
             assert!((0..3).all(|k| (a[k] - want[k]).abs() < 1e-6 && (t[k] - want[k]).abs() < 1e-6));
         }
+    }
+
+    #[test]
+    fn cube_title_with_hash_roundtrips() {
+        let mut c = Lut3d::identity(2);
+        c.title = "Look #2".into();
+        assert_eq!(Lut3d::parse_cube(&c.to_cube()).unwrap().title, "Look #2");
+        let text = c.to_cube().replace("TITLE \"Look #2\"", "TITLE \"Look\" # note");
+        assert_eq!(Lut::parse_cube(&text).unwrap().title, "Look");
     }
 
     #[test]
@@ -637,5 +672,34 @@ mod tests {
         assert!(Lut::parse(&swap.to_cube(), None).is_ok());
         assert!(Lut::parse(&text, None).is_ok());
         assert_eq!(LutFormat::from_path("a/b/Look.CUBE"), Some(LutFormat::Cube));
+    }
+
+    #[test]
+    fn huge_3dl_mesh_is_rejected() {
+        let text = (0..1u32 << 22).map(|i| i.to_string()).collect::<Vec<_>>().join(" ") + "\n";
+        let r = std::panic::catch_unwind(|| Lut::parse_3dl(&text).map(|l| l.apply([0.5; 3])));
+        assert!(matches!(r, Ok(Err(_))), "huge mesh must be rejected without panicking");
+        let mesh257 = (0..257).map(|i| i.to_string()).collect::<Vec<_>>().join(" ") + "\n";
+        assert!(Lut::parse_3dl(&mesh257).is_err());
+    }
+
+    #[test]
+    fn cube_shaper_per_channel_domain_round_trips() {
+        let mut text = String::from("LUT_1D_SIZE 2\nLUT_3D_SIZE 2\nDOMAIN_MAX 1 2 3\n");
+        for _ in 0..10 {
+            text.push_str("0 0 0\n");
+        }
+        let a = Lut::parse_cube(&text).unwrap();
+        assert_eq!(a.shaper.as_ref().unwrap().domain_max, [1.0, 2.0, 3.0]);
+        let b = Lut::parse_cube(&a.to_cube()).unwrap();
+        assert_eq!(b.shaper.unwrap().domain_max, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn parse_cube_strips_utf8_bom() {
+        let rows = "0 0 0\n".repeat(8);
+        let a = Lut::parse_cube(&format!("\u{feff}TITLE \"x\"\nLUT_3D_SIZE 2\n{rows}")).unwrap();
+        assert_eq!(a.title, "x");
+        assert!(Lut::parse_cube(&format!("\u{feff}# c\nLUT_3D_SIZE 2\n{rows}")).is_ok());
     }
 }

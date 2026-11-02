@@ -7,7 +7,7 @@ const BT2020: (f32, f32) = (0.2627, 0.0593);
 
 fn convert(rgb: &[f32], w: usize, h: usize) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
-    rgbf_to_yuv420_10(rgb, w, h, BT2020.0, BT2020.1, &mut y, &mut u, &mut v).unwrap();
+    rgbf_to_yuv420_10(rgb, w, h, Matrix::new(BT2020.0, BT2020.1), &mut y, &mut u, &mut v).unwrap();
     (y, u, v)
 }
 
@@ -87,7 +87,7 @@ fn a_ramp_has_every_code_a_10_bit_picture_can_have() {
 #[test]
 fn hostile_input_is_an_error_not_a_panic() {
     let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
-    let mut run = |rgb: &[f32], w: usize, h: usize| rgbf_to_yuv420_10(rgb, w, h, 0.2627, 0.0593, &mut y, &mut u, &mut v);
+    let mut run = |rgb: &[f32], w: usize, h: usize| rgbf_to_yuv420_10(rgb, w, h, Matrix::new(0.2627, 0.0593), &mut y, &mut u, &mut v);
     assert!(run(&[], 0, 0).is_err());
     assert!(run(&[0.0; 3], 0, 1).is_err());
     assert!(run(&[0.0; 3], 1, 0).is_err());
@@ -198,4 +198,18 @@ fn the_software_h264_sei_is_the_static_metadata_laid_out_as_messages() {
     want.extend(fall.to_be_bytes());
     want.push(0x80);
     assert_eq!(sei, want);
+}
+
+/// #2142: SDR gets its `colr` box as well (nclc in MOV, nclx in MP4), and no HDR metadata.
+#[test]
+fn sdr_gets_a_colr_box_and_no_hdr_metadata() {
+    let mut e = filmcraft_isobmff::SampleEntry::prores(filmcraft_isobmff::FourCc(*b"apch"), 64, 64);
+    ColorSignal::default().apply_to(&mut e, true);
+    let v = e.video.as_ref().unwrap();
+    assert_eq!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 }));
+    assert!(v.mastering_display.is_none() && v.content_light.is_none());
+    let mut e = filmcraft_isobmff::SampleEntry::hevc(Default::default(), 64, 64);
+    ColorSignal::default().apply_to(&mut e, false);
+    let v = e.video.as_ref().unwrap();
+    assert_eq!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false }));
 }
