@@ -160,6 +160,29 @@ fn moving_a_linked_video_clip_up_a_track_leaves_its_audio_on_its_track() {
     assert_eq!(d.span(audio_clip).0, audio_start0, "and the linked audio's too");
 }
 
+/// Up a track and along in time at once: the video changes track and time, its audio keeps its
+/// track and moves by the same time, so the pair stays in sync.
+#[test]
+fn moving_a_linked_video_clip_up_and_along_moves_its_audio_in_time_only() {
+    let mut d = Driver::demo();
+    d.exec("sequence.addTracks", json!({"video": 2, "audio": 2}));
+    d.frames(4);
+    let city = d.v1_clip(CITY);
+    let (video0, partner0) = tracks_of(&d, city);
+    let (audio_track0, audio_clip) = partner0.expect("the clip has linked audio");
+    let (start0, audio_start0) = (d.span(city).0, d.span(audio_clip).0);
+    let (x0, x1, y) = d.edges(city);
+    let from = pos2((x0 + x1) / 2.0, y + 10.0);
+    d.drag(from, pos2(from.x + 40.0, from.y - 34.0), 12);
+    let (video1, partner1) = tracks_of(&d, city);
+    assert_ne!(video1, video0, "the video clip changed track");
+    let moved = d.span(city).0 - start0;
+    assert!(moved > 0, "and moved later in time");
+    let (audio_track1, audio_clip1) = partner1.expect("still linked");
+    assert_eq!((audio_track1, audio_clip1), (audio_track0, audio_clip), "its audio stays on its own track");
+    assert_eq!(d.span(audio_clip).0 - audio_start0, moved, "and moves by the same time");
+}
+
 #[test]
 fn moving_a_linked_audio_clip_down_a_track_leaves_its_video_on_its_track() {
     let mut d = Driver::demo();
