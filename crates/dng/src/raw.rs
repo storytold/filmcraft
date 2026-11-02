@@ -1,14 +1,14 @@
 //! The raw image data of a DNG: finding the main raw IFD, and reading its strips or tiles
 //! (uncompressed or lossless JPEG) into one array of 16-bit samples.
 
-#[cfg(feature = "threads")]
-use rayon::prelude::*;
-
 use crate::tiff::{Ifd, Tiff, tags};
 use crate::{Error, Result, ljpeg};
 
 /// Largest raw image decoded, in samples (width × height × samples per pixel).
 pub const MAX_SAMPLES: usize = 1 << 27;
+/// Decoded tiles are padded to tile boundaries, so their aggregate can exceed the useful image.
+/// Keep that temporary work within the same bound as a complete decoded raw frame.
+const MAX_DECODED_TILE_SAMPLES: usize = MAX_SAMPLES;
 
 /// Photometric interpretations of DNG raw data.
 pub const PHOTOMETRIC_CFA: u64 = 32803;
@@ -145,6 +145,7 @@ fn chunks<'a>(t: &Tiff<'a>, ifd: &Ifd, l: &RawLayout) -> Result<Vec<Chunk<'a>>> 
         return Err(Error::Malformed("fewer strips or tiles than the image needs"));
     }
     let mut out = Vec::with_capacity(n);
+    let mut ranges = Vec::with_capacity(n);
     for i in 0..n {
         let (x, y) = ((i % across) * tw, (i / across) * th);
         let start = usize::try_from(offs[i]).map_err(|_| Error::Truncated)?;
@@ -154,6 +155,14 @@ fn chunks<'a>(t: &Tiff<'a>, ifd: &Ifd, l: &RawLayout) -> Result<Vec<Chunk<'a>>> 
         // strips end at the image; tiles are coded whole
         let h = if ifd.get(tags::TILE_OFFSETS).is_some() { th } else { th.min(l.height - y) };
         out.push(Chunk { x, y, w: tw, h, bytes });
+        if len != 0 {
+            ranges.push((start, end));
+        }
+    }
+    // chunks that share bytes would decode the same data again and again
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|w| w[1].0 < w[0].1) {
+        return Err(Error::Malformed("strips or tiles overlap"));
     }
     Ok(out)
 }
@@ -200,6 +209,8 @@ fn decode_chunk(c: &Chunk, l: &RawLayout, big_endian: bool) -> Result<Vec<u16>> 
         _ => {
             // the JPEG's samples fill the chunk in raster order (its own width × components may
             // differ from the chunk's, e.g. two components of half the width)
+            // slack for a JPEG coded larger than its chunk (e.g. a last strip at full RowsPerStrip);
+            // the samples past `need` are dropped below
             let d = ljpeg::decode(c.bytes, need.saturating_add(65_536 * 4))?;
             if d.samples.len() < need {
                 return Err(Error::Malformed("lossless JPEG smaller than its tile or strip"));
@@ -222,26 +233,26 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
     let chunks = chunks(t, ifd, &l)?;
     // every sample takes at least one bit of file (a Huffman code is at least one bit long)
     let coded: usize = chunks.iter().map(|c| c.bytes.len()).fold(0usize, usize::saturating_add);
-    if total / 8 > coded {
+    if total.div_ceil(8) > coded {
         return Err(Error::Truncated);
     }
+    let mut decoded_samples = 0usize;
     for c in &chunks {
         let n = c.w.checked_mul(c.h).and_then(|v| v.checked_mul(spp)).ok_or(Error::TooLarge)?;
-        if n > MAX_SAMPLES {
+        decoded_samples = decoded_samples.checked_add(n).ok_or(Error::TooLarge)?;
+        if n > MAX_SAMPLES || decoded_samples > MAX_DECODED_TILE_SAMPLES {
             return Err(Error::TooLarge);
         }
-        if n / 8 > c.bytes.len() {
+        if n.div_ceil(8) > c.bytes.len() {
             return Err(Error::Truncated);
         }
     }
-    #[cfg(feature = "threads")]
-    let decoded: Vec<Result<Vec<u16>>> = chunks.par_iter().map(|c| decode_chunk(c, &l, t.big_endian)).collect();
-    #[cfg(not(feature = "threads"))]
-    let decoded: Vec<Result<Vec<u16>>> = chunks.iter().map(|c| decode_chunk(c, &l, t.big_endian)).collect();
     let mut data = vec![0u16; total];
     let row_len = l.width * spp;
-    for (c, d) in chunks.iter().zip(decoded) {
-        let d = d?;
+    for c in &chunks {
+        // Copy each padded tile immediately. Retaining every decoded tile until assembly lets
+        // repeated ranges multiply memory beyond the final raw frame's bounded allocation.
+        let d = decode_chunk(c, &l, t.big_endian)?;
         let cw = c.w.min(l.width - c.x);
         let ch = c.h.min(l.height - c.y);
         for r in 0..ch {
