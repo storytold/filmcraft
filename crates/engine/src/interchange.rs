@@ -81,9 +81,11 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, bin: Op
         }
         _ => filmcraft_interchange::import_with(bytes, format, &opts).map_err(|e| EngineError::Other(format!("{path}: {e}")))?,
     };
+    // Refuse what project load refuses (`Sequence::check_bounds`: settings, marks, clip and caption
+    // times), so a saved import always opens again (#2786).
     for item in fragment.project.items.values() {
         if let ItemKind::Sequence(sequence) = &item.kind {
-            sequence.settings.validate().map_err(|e| EngineError::Other(format!("{path}: invalid imported sequence settings: {e}")))?;
+            sequence.check_bounds().map_err(|e| EngineError::Other(format!("{path}: invalid imported sequence `{}`: {e}", item.name)))?;
         }
     }
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
