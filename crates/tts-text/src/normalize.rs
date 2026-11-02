@@ -654,7 +654,29 @@ fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     if !grouped && digits.len() == 4 && (1100..=2099).contains(&value) && year_is_standalone(rest, used) {
         return Some((year_words(value, lang), used));
     }
+    // A decade such as "1990s" reads as a plural year: "nineteen nineties".
+    if !grouped
+        && digits.len() == 4
+        && (1100..=2099).contains(&value)
+        && value.is_multiple_of(10)
+        && matches!(peek(rest, used), Some('s'))
+        && !peek(rest, used + 1).is_some_and(char::is_alphanumeric)
+    {
+        let mut words = year_words(value, lang);
+        if let Some(Token::Word(last)) = words.last_mut() {
+            *last = pluralize_decade(last);
+        }
+        return Some((words, used + 1));
+    }
     Some((english_cardinal(value).into_iter().map(Token::Word).collect(), used))
+}
+
+/// Plural of the last word of a round year: ninety → nineties, hundred → hundreds.
+fn pluralize_decade(word: &str) -> String {
+    match word.strip_suffix('y') {
+        Some(stem) => format!("{stem}ies"),
+        None => format!("{word}s"),
+    }
 }
 
 fn has_leading_zero_str(digits: &str) -> bool {
