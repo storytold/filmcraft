@@ -10,15 +10,18 @@ impl FilmcraftApp {
             self.ui.status = format!("{} ({why})", tl!("GPU acceleration is unavailable; preview renders on the CPU"));
             return;
         }
-        // wgpu's default reaction to a validation error or lost device is to panic, which closed
-        // the app (or left the monitors blank) on GPUs the compositor doesn't suit. Log instead and
-        // fall back to the CPU compositor.
+        // Error and loss callbacks feed one CPU-fallback flag.
         let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = broken.clone();
         rs.device.on_uncaptured_error(std::sync::Arc::new(move |e: eframe::wgpu::Error| {
             log::error!("GPU error, switching to the CPU compositor: {e}");
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
         }));
+        let flag = broken.clone();
+        rs.device.set_device_lost_callback(move |reason, message| {
+            log::error!("GPU device lost ({reason:?}), switching to the CPU compositor: {message}");
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
         let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filmcraft_gpu::GpuCompositor::new(&rs.device, &rs.queue)));
         match made {
             Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
@@ -29,8 +32,15 @@ impl FilmcraftApp {
         }
     }
 
+    /// Whether the GPU compositor is running (not disabled by a GPU error or the CPU override).
+    pub fn gpu_compositor_active(&self) -> bool {
+        self.gpu.is_some()
+    }
+
     /// Drop the GPU compositor after a GPU error; the monitors composite on the CPU from then on.
     fn disable_gpu(&mut self, why: &str) {
+        // Decoders stop handing out GPU pictures after preview retires the compositor.
+        filmcraft_codecs::hw::set_gpu_frames(false);
         log::error!("GPU compositor disabled: {why}");
         if let Some(g) = self.gpu.take()
             && let Some(id) = g.texture
@@ -57,13 +67,18 @@ impl FilmcraftApp {
             return None;
         }
         let t0 = web_time::Instant::now();
-        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
-            (view.clone(), size)
-        }));
-        let Ok((view, size)) = ran else {
-            self.disable_gpu("compositor panicked");
-            return None;
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared))));
+        let (view, size) = match ran {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                self.disable_gpu(&error);
+                self.frames.reject_plan(key, error);
+                return None;
+            }
+            Err(_) => {
+                self.disable_gpu("compositor panicked");
+                return None;
+            }
         };
         let g = self.gpu.as_mut()?;
         g.last_ms = t0.elapsed().as_secs_f32() * 1000.0;

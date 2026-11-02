@@ -94,7 +94,6 @@ pub(crate) fn hash3(x: usize, y: usize, z: u64) -> f32 {
     (h >> 40) as f32 / (1u64 << 24) as f32
 }
 
-/// Apply one effect. Unknown/unimplemented ids are a no-op (they still round-trip in the project).
 /// Largest Median radius in source pixels (the parameter's range).
 const MEDIAN_MAX_RADIUS: f32 = 100.0;
 
@@ -112,17 +111,18 @@ fn median_radius(radius: f32, px_scale: f32, longest_side: usize) -> isize {
     r.round().clamp(0.0, cap) as isize
 }
 
-pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+/// Apply one effect. Unknown/unimplemented ids are a no-op (they still round-trip in the project).
+pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> crate::Result<()> {
     if !e.enabled || img.w == 0 || img.h == 0 {
-        return;
+        return Ok(());
     }
-    if crate::vfx::apply(img, e, cx) {
-        return;
+    if crate::vfx::apply(img, e, cx)? {
+        return Ok(());
     }
     // effects with a GPU implementation: evaluated parameters + CPU reference (`gpufx`)
     if let Some(op) = crate::gpufx::FxOp::eval(e, cx, img.w, img.h).filter(|op| e.effect != "lumetri" || op.gpu_ok()) {
         op.apply(img);
-        return;
+        return Ok(());
     }
     match e.effect.as_str() {
         "lumetri" => lumetri(img, e, cx),
@@ -504,6 +504,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Fill an opaque generated colour over the image at `op` opacity (Generate category).
@@ -984,7 +985,7 @@ mod tests {
                     *v = (*v + soft_max * 0.3).min(*soft_max);
                 }
             }
-            apply(&mut img, &e, &cx());
+            apply(&mut img, &e, &cx()).unwrap();
             assert!(img.px.iter().all(|v| v.is_finite()), "{}", def.id);
         }
     }
@@ -1016,7 +1017,7 @@ mod tests {
             e.params.get_mut("threshold").unwrap().value = ParamValue::Float(80.0);
             e.params.get_mut("cutoff").unwrap().value = ParamValue::Float(60.0);
             e.params.get_mut("invert").unwrap().value = ParamValue::Bool(invert);
-            apply(&mut img, &e, &cx());
+            apply(&mut img, &e, &cx()).unwrap();
             img.get(0, 0)[3]
         };
         assert!(alpha_at(0.75, true).abs() < 1e-4, "75 % is 25 % from white: keyed out, got {}", alpha_at(0.75, true));
@@ -1045,7 +1046,7 @@ mod tests {
                     e.params.remove("invert");
                 }
             }
-            apply(&mut img, &e, &cx());
+            apply(&mut img, &e, &cx()).unwrap();
             (img.get(0, 0)[3], img.get(1, 0)[3])
         };
         assert_eq!(run(Some(false)), (1.0, 0.0), "default keys out the dark grey");
@@ -1063,7 +1064,7 @@ mod tests {
             for (k, v) in set {
                 e.params.get_mut(*k).unwrap().value = ParamValue::Float(*v);
             }
-            apply(&mut img, &e, &cx());
+            apply(&mut img, &e, &cx()).unwrap();
             let p = img.get(0, 0);
             [p[0], p[1], p[2]]
         };
@@ -1098,7 +1099,7 @@ mod tests {
             for (k, v) in set {
                 e.params.get_mut(*k).unwrap().value = ParamValue::Float(*v);
             }
-            apply(&mut img, &e, &cx());
+            apply(&mut img, &e, &cx()).unwrap();
             let p = img.get(0, 0);
             [p[0], p[1], p[2]]
         };
@@ -1117,11 +1118,11 @@ mod tests {
     fn flip_and_crop() {
         let mut img = Image::new(4, 1);
         img.px[0..4].copy_from_slice(&[1.0, 0.0, 0.0, 1.0]);
-        apply(&mut img, &find_effect("horizontal_flip").unwrap().instance(), &cx());
+        apply(&mut img, &find_effect("horizontal_flip").unwrap().instance(), &cx()).unwrap();
         assert_eq!(img.get(3, 0), [1.0, 0.0, 0.0, 1.0]);
         let mut e = find_effect("crop").unwrap().instance();
         e.params.get_mut("right").unwrap().value = ParamValue::Float(50.0);
-        apply(&mut img, &e, &cx());
+        apply(&mut img, &e, &cx()).unwrap();
         assert_eq!(img.get(3, 0)[3], 0.0);
     }
 
@@ -1129,7 +1130,7 @@ mod tests {
     fn identity_lumetri_is_identity() {
         let mut img = Image::filled(8, 8, [0.18, 0.3, 0.05, 1.0]);
         let before = img.clone();
-        apply(&mut img, &find_effect("lumetri").unwrap().instance(), &cx());
+        apply(&mut img, &find_effect("lumetri").unwrap().instance(), &cx()).unwrap();
         for (a, b) in img.px.iter().zip(&before.px) {
             assert!((a - b).abs() < 2e-3, "{a} {b}");
         }
@@ -1147,7 +1148,7 @@ mod tests {
         let lit = dec([0.12, 0.09, 0.055]);
         let mut img = Image::new(1, 1);
         img.px[0..4].copy_from_slice(&[lit[0], lit[1], lit[2], 1.0]);
-        apply(&mut img, &e, &cx());
+        apply(&mut img, &e, &cx()).unwrap();
         let out = img.get(0, 0);
         // the lift as it always was: the encoded pixel scaled by new luma / luma, nothing added
         let v = enc(lit);
@@ -1178,7 +1179,7 @@ mod tests {
         img.px[0..4].copy_from_slice(&[-0.001, 0.0006, 0.0018, 1.0]);
         img.px[4..8].copy_from_slice(&[0.0, 0.0, 0.0, 1.0]);
         img.px[8..12].copy_from_slice(&[0.001, 0.001, 0.001, 1.0]);
-        apply(&mut img, &e, &cx());
+        apply(&mut img, &e, &cx()).unwrap();
         let (bleed, black, near) = (img.get(0, 0), img.get(1, 0), img.get(2, 0));
         // it used to come out at about (0, 5, 44) of 255; now near (0, 10, 20): a lifted near-black
         assert!(bleed[2] - bleed[0].max(bleed[1]) < 0.01, "blue speck: {bleed:?}");
@@ -1194,7 +1195,7 @@ mod tests {
         e.params.get_mut("luma_vs_sat").unwrap().value = filmcraft_project::ParamValue::Curve(vec![[0.5, 0.5], [0.9, 0.0]]);
         let dark_red = [0.02, 0.0005, 0.0005, 1.0];
         let mut img = Image::filled(1, 1, dark_red);
-        apply(&mut img, &e, &cx());
+        apply(&mut img, &e, &cx()).unwrap();
         let s = |p: &[f32]| {
             let c = [p[0], p[1], p[2]].map(linear_to_srgb);
             rgb_to_hsl(c[0], c[1], c[2])[1]

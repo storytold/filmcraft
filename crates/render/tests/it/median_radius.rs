@@ -39,7 +39,7 @@ fn apply_radius(radius: f64) -> Image {
     let mut img = green_stripe();
     let mut e = find_effect("median").expect("median effect").instance();
     e.params.get_mut("radius").expect("radius").value = ParamValue::Float(radius);
-    apply(&mut img, &e, &cx());
+    apply(&mut img, &e, &cx()).unwrap();
     img
 }
 

@@ -18,38 +18,40 @@ use super::{Affine, FxCtx, FxEnv, Image, Vec2, affine_warp, bv, chv, fv, luma, o
 use crate::track::{Gray, Prepared, track_step};
 
 /// Posterize Time: the clip shows a new frame only at the effect's frame rate.
-pub fn posterize_time(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let Some(env) = cx.env else { return };
+pub fn posterize_time(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> crate::Result<()> {
+    let Some(env) = cx.env else { return Ok(()) };
     let rate = fv(e, "rate", cx).max(0.01) as f64;
     let t = cx.seconds;
     let q = (t * rate + 1e-6).floor() / rate;
     let dt = q - t;
     if dt.abs() < 1e-6 {
-        return;
+        return Ok(());
     }
-    if let Some(f) = env.frame(dt, e) {
+    if let Some(f) = env.frame(dt, e)? {
         *img = f;
     }
+    Ok(())
 }
 
 /// Echo: composites copies of the clip from earlier (negative Echo Time) or later frames.
-pub fn echo(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let Some(env) = cx.env else { return };
+pub fn echo(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> crate::Result<()> {
+    let Some(env) = cx.env else { return Ok(()) };
     let dt = fv(e, "time", cx) as f64;
     let n = fv(e, "count", cx).clamp(0.0, 30.0) as usize;
     if n == 0 || dt.abs() < 1e-6 {
-        return;
+        return Ok(());
     }
     let start = fv(e, "start", cx).clamp(0.0, 1.0);
     let decay = fv(e, "decay", cx).max(0.0);
     let op = chv(e, "operator");
     let mut layers: Vec<(Image, f32)> = vec![(img.clone(), start)];
     for k in 1..=n {
-        if let Some(f) = env.frame(dt * k as f64, e) {
+        if let Some(f) = env.frame(dt * k as f64, e)? {
             layers.push((f, start * decay.powi(k as i32)));
         }
     }
     *img = combine_echoes(&layers, op);
+    Ok(())
 }
 
 /// Combine echo layers (index 0 = the current frame) with an Echo Operator.
@@ -148,7 +150,7 @@ fn centroid_cache() -> &'static CentroidCache {
 
 /// Auto Reframe: keeps the subject (a saliency centroid averaged over a time window set by the
 /// Motion Preset) in frame while zooming the clip to fill the sequence (or a chosen aspect).
-pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
+pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> crate::Result<()> {
     let (lw, lh) = (img.w as f64, img.h as f64);
     // the frame the layer must fill, in layer pixels (Motion at its defaults places the layer
     // centred in the sequence 1:1)
@@ -159,7 +161,7 @@ pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let k = lw / src_w.max(1) as f64;
             (sw as f64 * k, sh as f64 * k)
         }
-        (0, None) => return,
+        (0, None) => return Ok(()),
         (a, _) => {
             let r = [16.0 / 9.0, 9.0 / 16.0, 1.0, 4.0 / 5.0, 16.0 / 9.0][a.min(4) as usize];
             if lw / lh > r { (lh * r, lh) } else { (lw, lw / r) }
@@ -181,8 +183,9 @@ pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                 if t >= -1e-9 && t <= env.clip_seconds() + 1e-9 {
                     let id = (t * fps).round() as i64;
                     let cached = centroid_cache().lock().ok().and_then(|c| c.get(&(key, id)).copied());
-                    let c = cached.or_else(|| {
-                        let f = env.source_frame(id as f64 / fps - cx.seconds, (160.0 / env.source_size().0.max(1) as f32).min(1.0))?;
+                    let c = if let Some(c) = cached {
+                        Some(c)
+                    } else if let Some(f) = env.source_frame(id as f64 / fps - cx.seconds, (160.0 / env.source_size().0.max(1) as f32).min(1.0))? {
                         let c = saliency_centroid(&f);
                         if let Ok(mut m) = centroid_cache().lock() {
                             if m.len() > 100_000 {
@@ -191,7 +194,9 @@ pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                             m.insert((key, id), c);
                         }
                         Some(c)
-                    });
+                    } else {
+                        None
+                    };
                     if let Some((u, v)) = c {
                         let wgt = 1.0 - (k / (half + step)).abs();
                         acc = (acc.0 + u as f64 * wgt, acc.1 + v as f64 * wgt, acc.2 + wgt);
@@ -212,9 +217,10 @@ pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     // output(p) = input(subject + (p − centre) / z)
     let m = Affine::translate(lw / 2.0, lh / 2.0).then_apply(&Affine::scale(z, z)).then_apply(&Affine::translate(-sx, -sy));
     if (z - 1.0).abs() < 1e-9 && (sx - lw / 2.0).abs() < 1e-6 && (sy - lh / 2.0).abs() < 1e-6 {
-        return;
+        return Ok(());
     }
     affine_warp(img, &m);
+    Ok(())
 }
 
 // ------------------------------------------------------------------ Warp Stabilizer
@@ -245,20 +251,17 @@ pub fn clear_stabilizer_cache() {
 /// over from the block before) at a time, whatever the clip's length.
 pub(super) const ANALYSIS_BLOCK: usize = 64;
 
-/// The step between each pair of consecutive frames of `n`, and the size of the frames. `decode`
-/// makes frame `k` (`None` when it can't be read: its steps are the identity), `size` is a frame's
-/// (width, height), `step` the motion from one frame to the next given the size of the first frame
-/// that could be read. Frames are made `block` at a time, in parallel, and dropped once the steps
-/// they take part in are known; only the last frame of a block stays for the next one. `None` when
-/// cancelled or when no frame could be read.
+/// Consecutive steps for `n` frames + first readable dimensions; `None` on cancellation or no readable frame.
+/// `decode(k)`: `None` -> identity steps, `Err` -> stop analysis; `size(frame)` -> (width, height); `step(a, b, first_size)` -> pair motion.
+/// Decode `block` frames in parallel; release completed pairs, carry only the last frame into the next block.
 pub(super) fn chunked_steps<T: Send + Sync>(
     n: usize,
     block: usize,
-    decode: impl Fn(usize) -> Option<T> + Sync,
+    decode: impl Fn(usize) -> crate::Result<Option<T>> + Sync,
     size: impl Fn(&T) -> (usize, usize) + Sync,
     step: impl Fn(&T, &T, (usize, usize)) -> Affine + Sync,
     cancelled: impl Fn() -> bool + Sync,
-) -> Option<(Vec<Affine>, (usize, usize))> {
+) -> crate::Result<Option<(Vec<Affine>, (usize, usize))>> {
     let block = block.max(1);
     let mut steps = Vec::with_capacity(n.saturating_sub(1));
     let mut dims = None;
@@ -266,12 +269,12 @@ pub(super) fn chunked_steps<T: Send + Sync>(
     let mut next = 0;
     while next < n {
         if cancelled() {
-            return None;
+            return Ok(None);
         }
         let end = (next + block).min(n);
-        let fresh: Vec<Option<T>> = (next..end).into_par_iter().map(|k| if cancelled() { None } else { decode(k) }).collect();
+        let fresh: Vec<Option<T>> = (next..end).into_par_iter().map(|k| if cancelled() { Ok(None) } else { decode(k) }).collect::<crate::Result<_>>()?;
         if cancelled() {
-            return None;
+            return Ok(None);
         }
         let mut frames: Vec<Option<T>> = Vec::with_capacity(fresh.len() + 1);
         frames.extend(carried.take());
@@ -290,14 +293,14 @@ pub(super) fn chunked_steps<T: Send + Sync>(
         carried = frames.pop();
         next = end;
     }
-    Some((steps, dims?))
+    Ok(dims.map(|dims| (steps, dims)))
 }
 
 /// Analyse (or fetch the cached analysis of) the clip `env` describes.
-pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<Arc<StabilizerPath>> {
+pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> crate::Result<Option<Arc<StabilizerPath>>> {
     let key = env.clip_key() ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1);
     if let Some(p) = path_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
-        return Some(p);
+        return Ok(Some(p));
     }
     let fps = env.frame_rate().max(1.0);
     let n = ((env.clip_seconds() * fps).round() as usize).clamp(1, 20_000);
@@ -306,10 +309,10 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
     let scale = (target_w / src_w).min(1.0);
     // A few frames at a time: holding the pyramid of every frame of a long clip (a 10-minute clip
     // at 30 fps is 18,000 of them) took tens of gigabytes and ended the process (#1381).
-    let (steps, (w, h)) = chunked_steps(
+    let Some((steps, (w, h))) = chunked_steps(
         n,
         ANALYSIS_BLOCK,
-        |k| env.source_frame(k as f64 / fps - now, scale).map(|f| Prepared::new(gray_of(&f))),
+        |k| env.source_frame(k as f64 / fps - now, scale).map(|f| f.map(|f| Prepared::new(gray_of(&f)))),
         |p: &Prepared| (p.base().w, p.base().h),
         |a: &Prepared, b: &Prepared, (w, h)| {
             let m = 8.0;
@@ -317,7 +320,10 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
             track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY)
         },
         filmcraft_media::cancel::cancelled,
-    )?;
+    )?
+    else {
+        return Ok(None);
+    };
     let path = Arc::new(StabilizerPath { w, h, steps, fps });
     if let Ok(mut c) = path_cache().lock() {
         if c.len() > 64 {
@@ -325,7 +331,7 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
         }
         c.insert(key, path.clone());
     }
-    Some(path)
+    Ok(Some(path))
 }
 
 /// Similarity parameters (tx, ty, angle, log-scale) of an affine.
@@ -480,10 +486,10 @@ pub(crate) fn cover_scale(corr: &Affine, w: f64, h: f64, max: f64) -> f64 {
 }
 
 /// Warp Stabilizer: see the module docs.
-pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let Some(env) = cx.env else { return };
+pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> crate::Result<()> {
+    let Some(env) = cx.env else { return Ok(()) };
     let method = if chv(e, "method") == 0 { TrackMethod::Position } else { TrackMethod::PositionScaleRotation };
-    let Some(path) = stabilizer_path(env, cx.seconds, method, bv(e, "detailed")) else { return };
+    let Some(path) = stabilizer_path(env, cx.seconds, method, bv(e, "detailed"))? else { return Ok(()) };
     let n = path.steps.len() + 1;
     let k = ((cx.seconds * path.fps).round().max(0.0) as usize).min(n - 1);
     let smooth = fv(e, "smoothness", cx) as f64 / 100.0 * path.fps;
@@ -535,4 +541,5 @@ pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         _ => {}
     }
+    Ok(())
 }

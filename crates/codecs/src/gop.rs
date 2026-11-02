@@ -12,7 +12,7 @@ use std::time::Duration;
 use web_time::Instant;
 
 use filmcraft_color::ColorInfo;
-use filmcraft_frame::{Region, VideoFrame};
+use filmcraft_frame::{MemoryAccount, MemoryLease, Region, VideoFrame};
 
 use crate::CodecError;
 use crate::video::VideoDecoder;
@@ -181,6 +181,19 @@ fn decode_start(s: &dyn VideoSamples, i: usize) -> usize {
     key
 }
 
+struct CachedFrame {
+    frame: Arc<VideoFrame>,
+    charge: MemoryLease,
+}
+
+impl CachedFrame {
+    fn recycle(self) {
+        let Self { frame, charge } = self;
+        drop(charge);
+        filmcraft_frame::pool::recycle(frame);
+    }
+}
+
 struct State {
     decoder: Option<Box<dyn VideoDecoder>>,
     /// The decoder only produces intra pictures: frames decode independently and in parallel.
@@ -193,10 +206,10 @@ struct State {
     /// Highest pts the running decoder has output since it started (pictures leave in pts order).
     out_max: i64,
     /// Decoded frames by presentation pts (bounded).
-    frames: BTreeMap<i64, Arc<VideoFrame>>,
+    frames: BTreeMap<i64, CachedFrame>,
     /// The cached frames that were decoded in draft mode: served to draft requests only.
     drafts: std::collections::BTreeSet<i64>,
-    bytes: usize,
+    bytes: MemoryAccount,
     /// When a frame was last asked of this cache.
     last_used: Instant,
     /// Presentation pts of the frame the last request wanted: eviction keeps a window around it
@@ -223,25 +236,25 @@ impl State {
     }
 
     /// Evict frames, earliest first, while `more` says so.
-    fn release_frames(&mut self, pool: &Pool, more: impl Fn() -> bool) {
+    fn release_frames(&mut self, more: impl Fn() -> bool) {
         while more() {
             let Some((pts, f)) = self.frames.pop_first() else { break };
             self.drafts.remove(&pts);
-            self.bytes = self.bytes.saturating_sub(f.byte_size());
-            pool.bytes.fetch_sub(f.byte_size(), Ordering::Relaxed);
             EVICTED.fetch_add(1, Ordering::Relaxed);
-            filmcraft_frame::pool::recycle(f);
+            f.recycle();
         }
     }
 
     /// The cached frame at `pts`, unless it is a draft frame and the request wants the exact one.
     fn cached(&self, pts: i64, draft_ok: bool) -> Option<&Arc<VideoFrame>> {
-        self.frames.get(&pts).filter(|_| draft_ok || !self.drafts.contains(&pts))
+        self.frames.get(&pts).filter(|_| draft_ok || !self.drafts.contains(&pts)).map(|f| &f.frame)
     }
 
     /// The nearest usable frame at or before `pts` (robust to decoder pts quirks).
     fn at_or_before(&self, pts: i64, draft_ok: bool) -> Option<Arc<VideoFrame>> {
-        self.cached(pts, draft_ok).or_else(|| self.frames.range(..=pts).rev().find(|(p, _)| draft_ok || !self.drafts.contains(p)).map(|(_, f)| f)).cloned()
+        self.cached(pts, draft_ok)
+            .or_else(|| self.frames.range(..=pts).rev().find(|(p, _)| draft_ok || !self.drafts.contains(p)).map(|(_, f)| &f.frame))
+            .cloned()
     }
 }
 
@@ -317,7 +330,7 @@ struct Pool {
     /// Decoders the caches idle for [`Self::recent`] but not [`Self::idle`] may keep.
     hard_decoders: usize,
     /// Bytes of the frames the caches hold.
-    bytes: AtomicUsize,
+    bytes: MemoryAccount,
     budget: usize,
 }
 
@@ -331,7 +344,6 @@ impl Drop for Shared {
     fn drop(&mut self) {
         let st = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
         drop(st.release_decoder(&self.pool));
-        self.pool.bytes.fetch_sub(st.bytes, Ordering::Relaxed);
     }
 }
 
@@ -353,7 +365,7 @@ impl Pool {
             idle,
             recent: idle,
             hard_decoders: max_decoders,
-            bytes: AtomicUsize::new(0),
+            bytes: MemoryAccount::default(),
             budget,
         }
     }
@@ -445,7 +457,7 @@ impl Pool {
         for c in &all {
             // try-locked: a cache another thread holds is decoding, so it is in use
             if let Some(mut st) = try_state(c) {
-                st.release_frames(self, || true);
+                st.release_frames(|| true);
                 released.extend(st.release_decoder(self));
             }
         }
@@ -456,7 +468,7 @@ impl Pool {
     /// budget. Caches in use keep theirs (each within its own budget): a frame evicted before it is shown costs a
     /// re-decode from the keyframe.
     fn trim_frames(&self, me: &Shared) {
-        let over = || self.bytes.load(Ordering::Relaxed) > self.budget;
+        let over = || self.bytes.bytes() > self.budget;
         if !over() {
             return;
         }
@@ -465,7 +477,7 @@ impl Pool {
                 break;
             }
             if let Some(mut st) = try_state(&c) {
-                st.release_frames(self, over);
+                st.release_frames(over);
             }
         }
     }
@@ -489,7 +501,7 @@ pub fn live_decoders() -> usize {
 
 /// Bytes of decoded frames the caches hold right now, process-wide (`perf.stats`).
 pub fn cached_bytes() -> usize {
-    Pool::global().bytes.load(Ordering::Relaxed)
+    Pool::global().bytes.bytes()
 }
 
 /// Decoder + decoded-frame cache for one video track.
@@ -585,7 +597,7 @@ impl GopCache {
                 out_max: i64::MIN,
                 frames: BTreeMap::new(),
                 drafts: Default::default(),
-                bytes: 0,
+                bytes: MemoryAccount::default(),
                 last_used: Instant::now(),
                 pin: i64::MIN,
                 background: false,
@@ -612,20 +624,21 @@ impl GopCache {
 
     /// Colour signalled by the container wins over the bitstream's (YUV frames only); the
     /// container's clean aperture and then its display rotation are applied.
-    fn finish(&self, mut f: VideoFrame) -> VideoFrame {
+    fn finish(&self, mut f: VideoFrame) -> crate::Result<VideoFrame> {
         if let Some(c) = self.explicit_color
             && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
         {
             f.color = c;
         }
         if let Some(r) = self.crop {
-            f = f.cropped(r);
+            f = f.cropped(r).map_err(crate::CodecError::FrameAccess)?;
         }
-        if self.rotation != 0 { f.rotated(self.rotation) } else { f }
+        if self.rotation != 0 { f.rotated(self.rotation).map_err(crate::CodecError::FrameAccess) } else { Ok(f) }
     }
 
-    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
-        self.store_finished(st, pts, self.finish(f), draft);
+    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) -> crate::Result<()> {
+        self.store_finished(st, pts, self.finish(f)?, draft);
+        Ok(())
     }
 
     /// The small-frame reserve may use the configured cache budget, but may never enlarge it.
@@ -644,17 +657,17 @@ impl GopCache {
             st.drafts.remove(&pts);
         }
         let budget = self.cache_budget(f.byte_size());
-        let before = st.bytes;
-        st.bytes += f.byte_size();
-        if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
-            st.bytes -= old.byte_size();
-            filmcraft_frame::pool::recycle(old);
+        let pool = &self.shared.pool;
+        let mut charge = f.memory_charge(&st.bytes);
+        charge.extend(f.memory_charge(&pool.bytes));
+        if let Some(old) = st.frames.insert(pts, CachedFrame { frame: Arc::new(f), charge }) {
+            old.recycle();
         }
         // Evict frames far from the request (pin), not the newest decode. A frame-threaded
         // decoder can emit a burst past the playhead; pivoting on those pts used to drop the
         // wanted picture and walk the GOP again.
         let pivot = if st.pin != i64::MIN { st.pin } else { pts };
-        while st.bytes > budget && st.frames.len() > 2 {
+        while st.bytes.bytes() > budget && st.frames.len() > 2 {
             let (Some(&first), Some(&last)) = (st.frames.keys().next(), st.frames.keys().next_back()) else { break };
             let mut victim = if pivot - first > last - pivot { first } else { last };
             if victim == pivot || victim == pts {
@@ -665,28 +678,26 @@ impl GopCache {
             }
             if let Some(v) = st.frames.remove(&victim) {
                 st.drafts.remove(&victim);
-                st.bytes -= v.byte_size();
                 EVICTED.fetch_add(1, Ordering::Relaxed);
                 // its planes serve the next decoded pictures instead of going back to the allocator
-                filmcraft_frame::pool::recycle(v);
+                v.recycle();
             }
-        }
-        let pool = &self.shared.pool;
-        if st.bytes >= before {
-            pool.bytes.fetch_add(st.bytes - before, Ordering::Relaxed);
-        } else {
-            pool.bytes.fetch_sub(before - st.bytes, Ordering::Relaxed);
         }
         pool.trim_frames(&self.shared);
     }
 
     /// Store decoder output (in presentation order) and advance `out_max`.
-    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) {
+    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) -> crate::Result<()> {
         count_frames(&out);
         for d in out {
+            if let Err(error) = self.store(st, d.pts, d.frame, d.draft) {
+                // Output was consumed; retry must replay from a sync sample, not skip the failed picture.
+                st.next = usize::MAX;
+                return Err(error);
+            }
             st.out_max = st.out_max.max(d.pts);
-            self.store(st, d.pts, d.frame, d.draft);
         }
+        Ok(())
     }
 
     /// The frame presented at `target` (track units, clamped to the stream).
@@ -836,15 +847,15 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            self.store_output(st, out);
+            self.store_output(st, out)?;
             if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
         if st.cached(want_pts, draft).is_none() {
-            let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            self.store_output(st, out);
+            let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).transpose();
             st.next = usize::MAX;
+            self.store_output(st, out?.unwrap_or_default())?;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
         st.at_or_before(want_pts, draft).ok_or_else(|| CodecError::Decode("frame not produced".into()))
@@ -862,7 +873,7 @@ impl GopCache {
             .max_by_key(|p| p.pts)
             .map(|p| p.frame)
             .ok_or_else(|| CodecError::Decode("frame not produced".into()))?;
-        Ok(Arc::new(self.finish(f)))
+        Ok(Arc::new(self.finish(f)?))
     }
 
     /// Decode with `d` (positioned at `next`) until the picture with `want_pts` (sample `i`) comes out.
@@ -907,9 +918,10 @@ impl GopCache {
         }
         if !found {
             let pics = timed(|| d.flush());
+            *next = usize::MAX;
+            let pics = pics?;
             count_frames(&pics);
             out.extend(pics);
-            *next = usize::MAX;
         }
         Ok(out)
     }
@@ -929,9 +941,9 @@ impl GopCache {
             timed(|| dec.decode(&data, want_pts))
         });
         // crop and rotate before taking the lock: that work runs on rayon (see `isolated`)
-        let res = res.map(|out| {
+        let res = res.and_then(|out| {
             count_frames(&out);
-            out.into_iter().map(|d| (d.pts, self.finish(d.frame), d.draft)).collect::<Vec<_>>()
+            out.into_iter().map(|d| self.finish(d.frame).map(|frame| (d.pts, frame, d.draft))).collect::<crate::Result<Vec<_>>>()
         });
         let mut st = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         if st.spare.len() < 16 {

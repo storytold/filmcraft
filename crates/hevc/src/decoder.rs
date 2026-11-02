@@ -323,7 +323,7 @@ impl Decoder {
         if first {
             self.submit_pending();
         }
-        if hdr.is_rasl() && (self.skip_rasl || self.first_picture) {
+        if hdr.skips_rasl(self.first_picture, self.skip_rasl) {
             if first {
                 self.stat(|s| s.skipped_rasl += 1);
             }
@@ -403,7 +403,7 @@ impl Decoder {
         self.dpb.max_dec_pic_buffering = sps.max_dec_pic_buffering as usize;
         self.dpb.max_num_reorder = sps.max_num_reorder as usize;
         self.dpb.max_latency = if sps.max_latency_increase_plus1 != 0 { sps.max_num_reorder + sps.max_latency_increase_plus1 - 1 } else { 0 };
-        let irap_no_rasl = hdr.is_irap() && (hdr.is_idr() || hdr.is_bla() || self.first_picture || self.after_eos);
+        let irap_no_rasl = hdr.no_rasl_output(self.first_picture, self.after_eos);
         if hdr.is_irap() {
             self.skip_rasl = irap_no_rasl;
             self.stat(|s| {
@@ -447,7 +447,7 @@ impl Decoder {
         let id = self.next_id;
         self.next_id += 1;
         let frame = Arc::new(Frame::new(id, poc, w, h, sps.log2_ctb, sps.bit_depth_luma, sps.bit_depth_chroma));
-        let output = sh.pic_output && !(hdr.is_rasl() && self.skip_rasl);
+        let output = sh.pic_output && !hdr.skips_rasl(self.first_picture, self.skip_rasl);
         // Draft mode: a sub-layer non-reference picture of the highest sub-layer is never used
         // for prediction, so its in-loop filters can be left out without changing anything else.
         let draft = self.draft && hdr.is_sub_layer_non_ref() && hdr.temporal_id as u32 >= sps.max_sub_layers_minus1;

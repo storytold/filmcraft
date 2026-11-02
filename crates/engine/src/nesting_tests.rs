@@ -114,7 +114,7 @@ fn joining_transition(s: &Session) -> (filmcraft_project::Transition, ClipId, Cl
 fn frame_at(s: &Session, t: Tick) -> filmcraft_render::Image {
     let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
     let opts = filmcraft_render::RenderOptions { scale: 0.25, ..Default::default() };
-    filmcraft_render::render_sequence(&s.project, s.state.active_sequence.unwrap(), t, opts, &provider)
+    filmcraft_render::render_sequence(&s.project, s.state.active_sequence.unwrap(), t, opts, &provider).unwrap()
 }
 
 #[test]

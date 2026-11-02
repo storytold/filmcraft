@@ -89,7 +89,7 @@ fn decode(entry: &SampleEntry, packets: &[EncodedPacket]) -> Vec<(i64, Vec<u8>)>
         take(dec.decode(&p.data, dts + i64::from(p.composition_offset)).expect("decode"), &mut out);
         dts += i64::from(p.duration);
     }
-    take(dec.flush(), &mut out);
+    take(dec.flush().unwrap(), &mut out);
     out.sort_by_key(|(pts, _)| *pts);
     out
 }
@@ -119,7 +119,7 @@ fn decode_planes(entry: &SampleEntry, packets: &[EncodedPacket]) -> Vec<[Vec<u8>
     for (i, p) in packets.iter().enumerate() {
         take(dec.decode(&p.data, i as i64).expect("decode"), &mut out);
     }
-    take(dec.flush(), &mut out);
+    take(dec.flush().expect("flush"), &mut out);
     out.sort_by_key(|(pts, _)| *pts);
     out.into_iter().map(|(_, planes)| planes).collect()
 }
@@ -429,7 +429,7 @@ fn inspect(path: &str) -> (usize, usize, usize) {
         let data = file.read_sample(bytes.as_slice(), vt, i).unwrap();
         pictures += dec.decode(&data, s.pts).expect("decode").len();
     }
-    pictures += dec.flush().len();
+    pictures += dec.flush().unwrap().len();
     (track.samples.len(), pictures, track.samples.iter().filter(|s| s.is_sync).count())
 }
 
@@ -606,7 +606,7 @@ fn pictures_keep_their_exact_size() {
         for (i, p) in packets.iter().enumerate() {
             pictures.extend(dec.decode(&p.data, i as i64).expect("decode"));
         }
-        pictures.extend(dec.flush());
+        pictures.extend(dec.flush().unwrap());
         assert_eq!(pictures.len(), 6, "{w}x{h}");
         assert!(
             pictures.iter().all(|f| (f.frame.width, f.frame.height) == (w, h)),
@@ -840,7 +840,7 @@ fn hevc_pictures_keep_their_exact_size() {
         for (i, p) in packets.iter().enumerate() {
             pictures.extend(dec.decode(&p.data, i as i64).expect("decode"));
         }
-        pictures.extend(dec.flush());
+        pictures.extend(dec.flush().unwrap());
         assert_eq!(pictures.len(), 6, "{w}x{h}");
         assert!(
             pictures.iter().all(|f| (f.frame.width, f.frame.height) == (w, h)),
