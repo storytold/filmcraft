@@ -80,18 +80,76 @@ pub fn hot_number(ui: &mut Ui, label: &str, id: egui::Id, value: f64, options: H
     let editing_id = id.with("editing");
     let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
     if let Some(buf) = editing.as_mut() {
-        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf);
+        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf, false);
+    }
+    hot_number_display(ui, id, value, options)
+}
+
+/// As [`hot_number`], but the text editor accepts only digits and one decimal point while typing.
+pub fn hot_number_numeric(ui: &mut Ui, label: &str, id: egui::Id, value: f64, options: HotNumberOptions<'_>) -> (Response, Option<f64>) {
+    let editing_id = id.with("editing");
+    let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
+    if let Some(buf) = editing.as_mut() {
+        return hot_number_editor(ui, label, id, value, options.range, options.suffix, buf, true);
     }
     hot_number_display(ui, id, value, options)
 }
 
 /// The single-line text editor shown after a click on a hot number.
-fn hot_number_editor(ui: &mut Ui, label: &str, id: egui::Id, value: f64, range: (f64, f64), suffix: &str, buf: &mut String) -> (Response, Option<f64>) {
+#[allow(clippy::too_many_arguments)]
+fn hot_number_editor(
+    ui: &mut Ui,
+    label: &str,
+    id: egui::Id,
+    value: f64,
+    range: (f64, f64),
+    suffix: &str,
+    buf: &mut String,
+    numeric_only: bool,
+) -> (Response, Option<f64>) {
     let editing_id = id.with("editing");
     let edit_id = id.with("edit");
     let select_all_id = id.with("select-all");
     arrows_start_from_the_end(ui, edit_id, buf);
     let r = accessible_name(ui.add(egui::TextEdit::singleline(buf).id(edit_id).desired_width(56.0).font(Tokens::ui(12.0))), label);
+    if numeric_only {
+        // A decimal comma is a decimal point in many locales: normalise it instead of eating it
+        // ("1,5" must never become "15"). A leading minus survives for signed ranges. Then only
+        // digits and one decimal point remain, and the cursor moves back over whatever was
+        // removed so typing in the middle of a number cannot make it jump to the end.
+        let before: String = buf.chars().map(|c| if c == ',' { '.' } else { c }).collect();
+        let cursor = egui::text_edit::TextEditState::load(ui.ctx(), edit_id)
+            .and_then(|st| st.cursor.char_range().map(|r| usize::from(r.primary.index)))
+            .unwrap_or(0);
+        let mut decimal_seen = false;
+        let mut kept = String::with_capacity(before.len());
+        let mut kept_before_cursor = 0usize;
+        for (i, ch) in before.chars().enumerate() {
+            let ok = if ch.is_ascii_digit() {
+                true
+            } else if ch == '.' && !decimal_seen {
+                decimal_seen = true;
+                true
+            } else if ch == '-' && range.0 < 0.0 && kept.is_empty() {
+                true
+            } else {
+                false
+            };
+            if ok {
+                if i < cursor {
+                    kept_before_cursor += 1;
+                }
+                kept.push(ch);
+            }
+        }
+        if kept != *buf {
+            *buf = kept;
+            if let Some(mut st) = egui::text_edit::TextEditState::load(ui.ctx(), edit_id) {
+                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(kept_before_cursor))));
+                st.store(ui.ctx(), edit_id);
+            }
+        }
+    }
     let mut out = None;
     if r.lost_focus() {
         // the field's own unit can be typed anywhere; calc ignores the common ones
@@ -392,12 +450,42 @@ pub fn letter_toggle_clipped(ui: &mut Ui, rect: Rect, clip: Rect, letter: &str, 
 
 /// A flat icon toggle inside a rect.
 pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
-    let resp = ui.interact(rect, id, Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 2.0, t.hover);
+    icon_toggle_clipped(ui, rect, ui.clip_rect(), icon, on, t, id, on_color)
+}
+
+/// [`icon_toggle`] shown only where `rect` meets `clip`, such as a Timeline track header scrolled
+/// partly out of its half: the button keeps its size and is cut off at the edge (the painter
+/// clips, the layout rectangle is never shortened) and takes clicks only where it shows.
+#[allow(clippy::too_many_arguments)]
+pub fn icon_toggle_clipped(
+    ui: &mut Ui,
+    rect: Rect,
+    clip: Rect,
+    icon: Icon,
+    on: bool,
+    t: &Tokens,
+    id: egui::Id,
+    on_color: Option<Color32>,
+) -> Response {
+    // a degenerate (clipped-away) rect paints nothing and can never blow the icon up: a
+    // negative width would make the shrink below grow the icon instead
+    let rect = if rect.is_positive() { rect } else { Rect::NOTHING };
+    let visible = rect.intersect(clip);
+    let resp = ui.interact(if visible.is_positive() { visible } else { Rect::NOTHING }, id, Sense::click());
+    if rect.is_positive() && visible.is_positive() {
+        let p = ui.painter().with_clip_rect(visible.intersect(ui.clip_rect()));
+        if resp.hovered() {
+            p.rect_filled(rect, 2.0, t.hover);
+        }
+        let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
+        // shrink by a fraction of the SMALLER side: a control clipped to a sliver used to
+        // get a negative-sized inner rect here and blow the icon up over the neighbouring
+        // section
+        let inner = rect.shrink(0.16 * rect.width().min(rect.height()));
+        if inner.is_positive() {
+            icons::paint(&p, inner, icon, col);
+        }
     }
-    let col = if on { on_color.unwrap_or(t.icon) } else { t.text_faint };
-    icons::paint(ui.painter(), rect.shrink(rect.width() * 0.16), icon, col);
     resp
 }
 
