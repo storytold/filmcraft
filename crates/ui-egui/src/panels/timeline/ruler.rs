@@ -4,6 +4,7 @@ use super::{
     format_time, icons, json, marker_range_rect, marker_rect, pos2, vec2, work_area_rect,
 };
 use crate::panels::timeline_hit::marker_end_rect;
+use crate::widgets::DragCheckbox as _;
 
 /// The Ruler's two strides, in frames: `(tick, label)`.
 ///
@@ -212,7 +213,7 @@ fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, lay
 /// The Timeline Display Settings popup from the ruler toolbar: thumbnails, waveforms, edit
 /// markers and the track-height presets.
 fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
-    let c = ui.checkbox(&mut app.ui.timeline.show_thumbnails, tl!("Show Video Thumbnails"));
+    let c = ui.checkbox_drag(&mut app.ui.timeline.show_thumbnails, tl!("Show Video Thumbnails"));
     app.auto.add("timeline.settings.showThumbnails", c.rect, "Show Video Thumbnails");
     let on = app.ui.timeline.show_thumbnails;
     ui.indent("timeline.settings.thumbnails", |ui| {
@@ -226,20 +227,20 @@ fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             }
         }
     });
-    ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
-    let c = ui.checkbox(&mut app.ui.timeline.show_video_names, tl!("Show Video Names"));
+    ui.checkbox_drag(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
+    let c = ui.checkbox_drag(&mut app.ui.timeline.show_video_names, tl!("Show Video Names"));
     app.auto.add("timeline.settings.showVideoNames", c.rect, "Show Video Names");
-    let c = ui.checkbox(&mut app.ui.timeline.show_audio_names, tl!("Show Audio Names"));
+    let c = ui.checkbox_drag(&mut app.ui.timeline.show_audio_names, tl!("Show Audio Names"));
     app.auto.add("timeline.settings.showAudioNames", c.rect, "Show Audio Names");
     ui.separator();
     let mut te = app.session.state.show_through_edits;
-    let c = ui.checkbox(&mut te, tl!("Show Through Edits"));
+    let c = ui.checkbox_drag(&mut te, tl!("Show Through Edits"));
     app.auto.add("timeline.settings.showThroughEdits", c.rect, "Show Through Edits");
     if c.changed() {
         let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));
     }
     let mut df = app.session.state.show_duplicate_frame_markers;
-    let c = ui.checkbox(&mut df, tl!("Show Duplicate Frame Markers"));
+    let c = ui.checkbox_drag(&mut df, tl!("Show Duplicate Frame Markers"));
     app.auto.add("timeline.settings.showDuplicateFrameMarkers", c.rect, "Show Duplicate Frame Markers");
     if c.changed() {
         let _ = app.session.execute("sequence.showDuplicateFrameMarkers", json!({"on": df}));
