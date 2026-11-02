@@ -436,6 +436,8 @@ pub struct MxfWriter<W: Write + Seek> {
     // OP1a
     pending: VecDeque<(Vec<u8>, FrameInfo)>,
     sound_buf: Vec<Vec<u8>>,
+    /// Read cursor into each `sound_buf` track: bytes before it are already written.
+    sound_rd: Vec<usize>,
     // OP-Atom
     clip_len: u64,
     clip_kl: u64,
@@ -447,14 +449,19 @@ fn ber4(n: usize) -> [u8; 4] {
     [0x83, b[1], b[2], b[3]]
 }
 
-fn klv(out: &mut Vec<u8>, key: &[u8; 16], v: &[u8]) {
+/// Key and BER length of a KLV triplet whose value is `len` bytes long.
+fn klv_header(out: &mut Vec<u8>, key: &[u8; 16], len: usize) {
     out.extend_from_slice(key);
-    if v.len() < 1 << 24 {
-        out.extend_from_slice(&ber4(v.len()));
+    if len < 1 << 24 {
+        out.extend_from_slice(&ber4(len));
     } else {
         out.push(0x88);
-        out.extend_from_slice(&(v.len() as u64).to_be_bytes());
+        out.extend_from_slice(&(len as u64).to_be_bytes());
     }
+}
+
+fn klv(out: &mut Vec<u8>, key: &[u8; 16], v: &[u8]) {
+    klv_header(out, key, v.len());
     out.extend_from_slice(v);
 }
 
@@ -592,6 +599,7 @@ impl<W: Write + Seek> MxfWriter<W> {
             entries: Vec::new(),
             pending: VecDeque::new(),
             sound_buf: vec![Vec::new(); nsound],
+            sound_rd: vec![0; nsound],
             clip_len: 0,
             clip_kl: 0,
             samples: 0,
@@ -773,31 +781,53 @@ impl<W: Write + Seek> MxfWriter<W> {
                 return Ok(());
             }
             let need: Vec<usize> = (0..self.cfg.sound.len()).map(|k| self.unit_samples(k, i) as usize * self.cfg.sound[k].block_align() as usize).collect();
-            let enough = need.iter().zip(&self.sound_buf).all(|(n, b)| b.len() >= *n);
+            let enough = need.iter().zip(self.sound_buf.iter().zip(&self.sound_rd)).all(|(n, (b, rd))| b.len() - rd >= *n);
             if !enough && !flush {
                 return Ok(());
             }
-            if !has_pic && self.sound_buf.iter().all(Vec::is_empty) {
+            if !has_pic && self.sound_buf.iter().zip(&self.sound_rd).all(|(b, rd)| b.len() == *rd) {
                 return Ok(());
             }
             let pic = if has_pic { self.pending.pop_front() } else { None };
+            // The picture is written straight from its buffer; `head` is its key and length,
+            // `cp` the sound KLVs behind it.
+            let mut head = Vec::new();
             let mut cp = Vec::new();
             let mut slices = Vec::new();
-            if let Some((data, _)) = &pic {
-                klv(&mut cp, &self.tracks[0].element_key, data);
+            let pic_len = pic.as_ref().map_or(0, |(data, _)| data.len());
+            if pic.is_some() {
+                klv_header(&mut head, &self.tracks[0].element_key, pic_len);
             }
+            let sound_start = head.len() + pic_len;
             let first_sound = has_pic as usize;
             for (k, n) in need.iter().enumerate() {
-                let take = (*n).min(self.sound_buf[k].len());
-                let mut chunk: Vec<u8> = self.sound_buf[k].drain(..take).collect();
-                chunk.resize(*n, 0);
+                let buf = &self.sound_buf[k];
+                let rd = self.sound_rd[k];
+                let take = (*n).min(buf.len() - rd);
                 if k > 0 || has_pic {
-                    slices.push(cp.len() as u32);
+                    slices.push((sound_start + cp.len()) as u32);
                 }
-                klv(&mut cp, &self.tracks[first_sound + k].element_key, &chunk);
+                klv_header(&mut cp, &self.tracks[first_sound + k].element_key, *n);
+                cp.extend_from_slice(&buf[rd..rd + take]);
+                cp.resize(cp.len() + (*n - take), 0);
+                self.sound_rd[k] = rd + take;
+                // Drop the consumed prefix once it is at least half of the buffer: amortised
+                // linear, where draining every edit unit from the front is quadratic.
+                let (buf, rd) = (&mut self.sound_buf[k], &mut self.sound_rd[k]);
+                if *rd == buf.len() {
+                    buf.clear();
+                    *rd = 0;
+                } else if *rd >= 4096 && *rd * 2 >= buf.len() {
+                    buf.drain(..*rd);
+                    *rd = 0;
+                }
             }
-            let info = pic.map(|p| p.1).unwrap_or_else(FrameInfo::intra);
+            let info = pic.as_ref().map(|p| p.1).unwrap_or_else(FrameInfo::intra);
             self.entries.push(Entry { offset: self.pos - self.essence_start, slices, info });
+            self.put(&head)?;
+            if let Some((data, _)) = &pic {
+                self.put(data)?;
+            }
             self.put(&cp)?;
         }
     }

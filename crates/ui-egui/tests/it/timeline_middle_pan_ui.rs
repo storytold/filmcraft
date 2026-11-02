@@ -119,6 +119,8 @@ impl Driver {
     }
 }
 
+/// Sideways, a middle-button drag that starts on a clip scrolls the Timeline and leaves the clip
+/// and the selection as they were.
 #[test]
 fn a_middle_button_drag_on_a_clip_pans_and_leaves_the_clip_alone() {
     let mut d = Driver::demo();
@@ -131,6 +133,7 @@ fn a_middle_button_drag_on_a_clip_pans_and_leaves_the_clip_alone() {
     assert_eq!(d.start_of(clip), start, "the clip stays where it was");
 }
 
+/// The middle button pans with any tool: with the Razor it scrolls and cuts nothing.
 #[test]
 fn a_middle_button_drag_pans_whatever_the_tool() {
     let mut d = Driver::demo();
@@ -142,4 +145,22 @@ fn a_middle_button_drag_pans_whatever_the_tool() {
     let scroll = d.app().ui.timeline.target_scroll;
     assert!((scroll - 8.0).abs() < 1e-6, "the Razor tool pans with the middle button too: {scroll}");
     assert_eq!(d.clips(), before, "the middle button cuts nothing");
+}
+
+/// Up and down, a middle-button drag moves the half it began in: over the audio tracks the audio
+/// tracks (which used to stay put), over the video tracks the video tracks.
+#[test]
+fn a_middle_button_drag_moves_the_audio_tracks_over_the_audio_tracks() {
+    let mut d = Driver::demo();
+    d.setup();
+    // tall audio tracks, so there is somewhere to scroll them
+    d.app().ui.timeline.audio_track_h = 160.0;
+    d.frames(4);
+    let tracks = d.rect("timeline.tracks");
+    let from = egui::pos2(tracks.center().x, tracks.min.y + tracks.height() * 0.75);
+    let (v0, a0) = (d.app().ui.timeline.v_scroll, d.app().ui.timeline.a_scroll);
+    d.middle_drag(from, from - egui::vec2(0.0, 60.0));
+    let (v1, a1) = (d.app().ui.timeline.v_scroll, d.app().ui.timeline.a_scroll);
+    assert!(a1 > a0 + 20.0, "dragging up over the audio tracks scrolls them: {a0} -> {a1}");
+    assert_eq!(v1, v0, "the video tracks stay where they were");
 }

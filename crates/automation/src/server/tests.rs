@@ -277,23 +277,41 @@ async fn export_progress_and_cancel() {
         }
     }
     c.send(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":4}}"#).await;
-    let t0 = std::time::Instant::now();
-    while dir.join("b.mp4").exists() || t0.elapsed() < std::time::Duration::from_millis(500) {
+    // The export stops at its next frame, which a slow machine (software rendering in a CI
+    // container) can be well into: wait until the job has finished, not for a fixed time.
+    let (t0, mut id) = (std::time::Instant::now(), 100u64);
+    let last = loop {
+        id += 1;
+        c.send(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"jobs.list"}}}).to_string()).await;
+        let m = loop {
+            let m = c.next().await;
+            assert_ne!(m["id"], 4, "no response for a cancelled request: {m}");
+            if m["id"] == id {
+                break m;
+            }
+        };
+        let jobs: Value = serde_json::from_str(m["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        let last = jobs.as_array().and_then(|a| a.last()).cloned().unwrap_or_default();
+        if last["finished"] == true {
+            break last;
+        }
+        assert!(t0.elapsed().as_secs() < 30, "the cancelled export is still running: {jobs}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert_eq!(last["result"]["error"], "cancelled", "{last}");
+    while dir.join("b.mp4").exists() {
         assert!(t0.elapsed().as_secs() < 30, "partial file still there");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    c.send(r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"jobs.list"}}}"#).await;
-    let m = loop {
+    // and still no response for the cancelled request
+    c.send(r#"{"jsonrpc":"2.0","id":5,"method":"ping"}"#).await;
+    loop {
         let m = c.next().await;
         assert_ne!(m["id"], 4, "no response for a cancelled request: {m}");
         if m["id"] == 5 {
-            break m;
+            break;
         }
-    };
-    let jobs: Value = serde_json::from_str(m["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    let last = jobs.as_array().and_then(|a| a.last()).cloned().unwrap_or_default();
-    assert_eq!(last["result"]["error"], "cancelled", "{jobs}");
-    assert!(!dir.join("b.mp4").exists());
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -382,4 +400,60 @@ async fn doc_inspect_handles_an_active_sequence_id_above_i64_max() {
     let v = m.document().await.unwrap();
     assert_eq!(v["project"]["activeSequence"].as_u64(), Some(HUGE), "{v}");
     assert_eq!(v["sequence"]["id"].as_u64(), Some(HUGE), "an id above i64::MAX must still be inspected, not dropped to a null sequence: {v}");
+}
+
+/// Bridge `render_frame` with `seconds` moves the app's single playhead, screenshots the single
+/// Program monitor and moves the playhead back. Parallel calls (the tool is annotated read-only and
+/// idempotent, so clients send them that way) interleaved those steps and got each other's frames
+/// (#3837). Each call has to return the frame at its own time.
+#[tokio::test]
+async fn parallel_bridge_render_frames_each_return_their_own_frame() {
+    use base64::Engine as _;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let playhead = Arc::new(std::sync::atomic::AtomicI64::new(200));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let app_playhead = playhead.clone();
+    tokio::spawn(async move {
+        while let Ok((s, _)) = listener.accept().await {
+            let playhead = app_playhead.clone();
+            tokio::spawn(async move {
+                let (r, mut w) = s.into_split();
+                let mut lines = tokio::io::BufReader::new(r).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    let params = &req["params"]["params"];
+                    let result = match (req["method"].as_str().unwrap_or_default(), req["params"]["command"].as_str().unwrap_or_default()) {
+                        (_, "sequence.inspect") => json!({"playhead": playhead.load(std::sync::atomic::Ordering::SeqCst)}),
+                        (_, "playhead.set") => {
+                            let t = params["seconds"].as_f64().map(|x| x as i64).or_else(|| params["time"].as_i64()).unwrap_or(0);
+                            playhead.store(t, std::sync::atomic::Ordering::SeqCst);
+                            Value::Null
+                        }
+                        ("ui.screenshot", _) => {
+                            // the monitor shows whatever the playhead is at when the screenshot is taken
+                            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                            let shade = playhead.load(std::sync::atomic::Ordering::SeqCst) as u8;
+                            let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([shade, 0, 0, 255]));
+                            img.save(req["params"]["path"].as_str().unwrap()).unwrap();
+                            Value::Null
+                        }
+                        _ => Value::Null,
+                    };
+                    let line = format!("{}\n", json!({"id": req["id"], "ok": true, "result": result}));
+                    w.write_all(line.as_bytes()).await.unwrap();
+                }
+            });
+        }
+    });
+    let m = FilmcraftMcp::bridge(&addr).unwrap();
+    let call = |seconds: f64| m.render_frame(Parameters(RenderParams { seconds: Some(seconds), max_side: Some(640) }));
+    let results = tokio::join!(call(5.0), call(20.0), call(35.0), call(50.0));
+    for (res, want) in [(results.0, 5u8), (results.1, 20), (results.2, 35), (results.3, 50)] {
+        let v = serde_json::to_value(res.unwrap()).unwrap();
+        let png = base64::engine::general_purpose::STANDARD.decode(v["content"][0]["data"].as_str().unwrap()).unwrap();
+        let px = image::load_from_memory(&png).unwrap().to_rgba8().get_pixel(0, 0).0;
+        assert_eq!(px[0], want, "frame at {want} s came from another call's playhead");
+    }
+    assert_eq!(playhead.load(std::sync::atomic::Ordering::SeqCst), 200, "the playhead must end where it started");
 }

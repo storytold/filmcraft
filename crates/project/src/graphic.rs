@@ -170,6 +170,7 @@ pub(crate) fn layer_defs() -> Vec<EffectDef> {
                 bo("faux_italic", "Faux Italic", false, X),
                 chc("caps", "Capitalisation", CAPS_OPTS, 0, X),
                 bo("underline", "Underline", false, X),
+                bo("strikethrough", "Strikethrough", false, X),
                 fl("box_width", "Text Box Width", 0.0, (0.0, 100_000.0), (0.0, 3840.0), "", X),
                 fl("box_height", "Text Box Height", 0.0, (0.0, 100_000.0), (0.0, 2160.0), "", X),
                 bo("vertical", "Vertical Text", false, X),
@@ -251,6 +252,7 @@ pub struct TextProps {
     /// 0 normal, 1 all caps, 2 small caps.
     pub caps: u32,
     pub underline: bool,
+    pub strikethrough: bool,
     /// Paragraph-text box width (0 = point text).
     pub box_width: f32,
     /// Paragraph-text box height: lines that do not fit are not shown (0 = as tall as the text).
@@ -346,6 +348,7 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
                 faux_italic: bb(e, "faux_italic", t),
                 caps: ch(e, "caps", t),
                 underline: bb(e, "underline", t),
+                strikethrough: bb(e, "strikethrough", t),
                 box_width: ff(e, "box_width", t).max(0.0),
                 box_height: ff(e, "box_height", t).max(0.0),
                 vertical: bb(e, "vertical", t),

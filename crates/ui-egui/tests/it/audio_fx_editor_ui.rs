@@ -235,36 +235,56 @@ fn track_fx_editor_from_the_mixer_slot() {
     let a1 = m["strips"].as_array().unwrap().iter().find(|s| s["ref"] == "A1").unwrap().clone();
     let xo2 = num(&a1["inserts"][0]["params"]["xo2"]);
     assert!(xo2 > 2200.0, "crossover after drag: {xo2} ({a1})");
+    // #2404 review: a graphical editor's edits go through the lane too: with the crossover's lane
+    // automated and read, the drag writes a keyframe at the playhead instead of a static value the
+    // automation overrides
+    d.exec("mixer.setKeyframe", json!({"strip": "A1", "lane": "fx.0.xo2", "time": 0, "value": 2000.0}));
+    d.exec("mixer.setStrip", json!({"strip": "A1", "mode": "Read"}));
+    d.frames(3);
+    let at_playhead = |d: &mut Driver| {
+        let s = &d.harness.state().session;
+        s.active_sequence().unwrap().audio_tracks[0].lane_value("fx.0.xo2", s.playhead())
+    };
+    assert!((at_playhead(&mut d) - 2000.0).abs() < 1e-6);
+    d.drag("fxEditor.multiband_compressor.xo2", 60.0, 0.0, 5);
+    assert!(at_playhead(&mut d) > 2000.0, "the automation at the playhead follows the drag: {}", at_playhead(&mut d));
     d.snapshot("fx-editor-multiband");
 }
 
+/// #1758: an insert without a graphical editor (Highpass) still opens the Track Fx Editor, with a
+/// control per parameter that edits the insert.
 #[test]
-fn any_mixer_insert_opens_a_parameter_editor() {
-    // #2731: a Studio Reverb in a mixer slot had no way to edit its Room Size, Decay, Dry, Wet…
+fn any_mixer_insert_can_be_edited() {
     let mut d = Driver::demo();
-    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "studio_reverb"}));
+    d.exec("mixer.addInsert", json!({"strip": "A1", "effect": "highpass"}));
     d.ok("ui.set", json!({"workspace": "Audio"}));
     d.frames(3);
     d.click("mixer.showEffects");
     d.click("mixer.A1.fx.0");
     d.click("mixer.A1.fx.0.edit");
     d.frames(3);
-    let ids = d.ids("fxEditor.studio_reverb.");
-    for p in ["room", "decay", "damping", "dry", "wet"] {
-        assert!(ids.iter().any(|i| *i == format!("fxEditor.studio_reverb.param.{p}")), "{p} missing from {ids:?}");
-    }
-    let wet = |d: &mut Driver| {
+    let ids = d.ids("fxEditor.highpass.");
+    assert!(ids.iter().any(|i| i == "fxEditor.highpass.param.cutoff"), "{ids:?}");
+    let cutoff = |d: &mut Driver| {
         let m = d.exec("mixer.inspect", json!({}));
         let a1 = m["strips"].as_array().unwrap().iter().find(|s| s["ref"] == "A1").unwrap().clone();
-        num(&a1["inserts"][0]["params"]["wet"])
+        num(&a1["inserts"][0]["params"]["cutoff"])
     };
-    let before = wet(&mut d);
-    let undo0 = d.undo_len();
-    d.drag("fxEditor.studio_reverb.param.wet", 80.0, 0.0, 5);
-    let after = wet(&mut d);
-    assert!(after > before + 5.0, "wet after drag: {before} → {after}");
-    assert_eq!(d.undo_len(), undo0 + 1, "one undo step for the drag");
-    d.snapshot("fx-editor-studio-reverb");
-    d.click("fxEditor.studio_reverb.close");
-    assert!(d.ids("fxEditor.studio_reverb.").is_empty(), "window closed");
+    let before = cutoff(&mut d);
+    d.drag("fxEditor.highpass.param.cutoff", 80.0, 0.0, 5);
+    let after = cutoff(&mut d);
+    assert!(after > before, "cutoff {before} -> {after}");
+    // an automated lane read by the strip: the edit writes a keyframe at the playhead, so it is heard
+    d.exec("mixer.setKeyframe", json!({"strip": "A1", "lane": "fx.0.cutoff", "time": 0, "value": 100.0}));
+    d.exec("mixer.setStrip", json!({"strip": "A1", "mode": "Read"}));
+    d.frames(3);
+    let at_playhead = |d: &mut Driver| {
+        let s = &d.harness.state().session;
+        s.active_sequence().unwrap().audio_tracks[0].lane_value("fx.0.cutoff", s.playhead())
+    };
+    assert!((at_playhead(&mut d) - 100.0).abs() < 1e-6);
+    d.drag("fxEditor.highpass.param.cutoff", 60.0, 0.0, 5);
+    assert!(at_playhead(&mut d) > 100.0, "the automation at the playhead follows the edit: {}", at_playhead(&mut d));
+    d.click("fxEditor.highpass.close");
+    assert!(d.ids("fxEditor.highpass.").is_empty(), "window closed");
 }

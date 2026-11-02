@@ -3,14 +3,18 @@
 use serde_json::{Value, json};
 
 use filmcraft_interchange::{ExportOptions, Format, ImportOptions};
-use filmcraft_project::{ItemId, ItemKind, MediaRef};
+use filmcraft_project::{BinId, ItemId, ItemKind, MediaRef};
 
 use crate::{EngineError, Result, Session};
+
+/// File extensions of the interchange documents `file.import` reads (lower case). The Media
+/// Browser lists the same set.
+pub const EXTENSIONS: [&str; 7] = ["edl", "xml", "fcpxml", "otio", "aaf", "omf", "omfi"];
 
 /// The interchange format of a file, if it is one (by content, with the extension as a hint).
 pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
     let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi")) {
+    if !ext.as_deref().is_some_and(|e| EXTENSIONS.contains(&e)) {
         return None;
     }
     filmcraft_interchange::detect(bytes, ext.as_deref())
@@ -47,8 +51,10 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
 }
 
 /// Import a document: merge its bins, media and sequences into the project (one undo step), then
-/// link each media file that exists on disk. Returns the new sequences.
-pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Result<Value> {
+/// link each media file that exists on disk. Returns the new sequences. The document's items go
+/// into `bin` (the Project panel's current bin, as for media files); the root when it is `None`
+/// or no longer exists.
+pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, bin: Option<BinId>) -> Result<Value> {
     let p = std::path::Path::new(path);
     let opts = ImportOptions {
         base_dir: p.parent().map(|d| d.to_string_lossy().to_string()),
@@ -83,7 +89,7 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
     let before: std::collections::HashSet<ItemId> = s.project.items.keys().copied().collect();
     let name = opts.name.clone().unwrap_or_else(|| format.name().to_string());
     let seqs = s.edit(&format!("Import {name}"), |proj, _| {
-        let seqs = filmcraft_interchange::merge_into(proj, fragment, None);
+        let seqs = filmcraft_interchange::merge_into(proj, fragment, bin);
         // A document that sets only some Motion parameters leaves the others at their "auto"
         // (NaN) defaults. Resolve them as placing a clip does, for every format. A media file's
         // picture size is only what the document says so far (an EDL says nothing: the importer
