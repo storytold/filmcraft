@@ -267,11 +267,15 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     Ok(json!({"rippleSequenceMarkers": s.state.ripple_sequence_markers}))
                 }),
                 spec("markers.lock", "Lock Markers", &["Markers"], None, r#"{"on":bool?}"#, has_seq, |s, p| {
-                    let on = bool_p(p, "on").unwrap_or(!s.active_sequence().is_some_and(|q| q.markers_locked));
-                    s.edit_sequence(if on { "Lock Markers" } else { "Unlock Markers" }, |q, _, _| {
-                        q.markers_locked = on;
-                        Ok(())
-                    })?;
+                    let locked = s.active_sequence().is_some_and(|q| q.markers_locked);
+                    let on = bool_p(p, "on").unwrap_or(!locked);
+                    // asking for the state it already has changes nothing, so it adds no undo step
+                    if on != locked {
+                        s.edit_sequence(if on { "Lock Markers" } else { "Unlock Markers" }, |q, _, _| {
+                            q.markers_locked = on;
+                            Ok(())
+                        })?;
+                    }
                     Ok(json!({"lockMarkers": on}))
                 }),
                 spec(
