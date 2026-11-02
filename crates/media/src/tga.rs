@@ -94,6 +94,24 @@ fn metadata_offset(body: &[u8], offset: usize, first_pixel: usize) -> Option<usi
     (offset >= first_pixel && offset < body.len()).then_some(offset)
 }
 
+/// The start of every developer-directory payload with a nonzero length, from the directory at
+/// `directory` in `body` (none when that offset holds no readable directory).
+fn developer_payload_starts(body: &[u8], directory: usize) -> Vec<usize> {
+    let Some(count) = body.get(directory..directory.saturating_add(2)).and_then(|v| v.first_chunk::<2>()).map(|v| usize::from(u16::from_le_bytes(*v))) else {
+        return Vec::new();
+    };
+    let Some(fields) = body.get(directory.saturating_add(2)..) else { return Vec::new() };
+    fields
+        .chunks(10)
+        .take(count)
+        .filter_map(|field| {
+            let start = field.get(2..6).and_then(|v| v.first_chunk::<4>()).map(|v| u32::from_le_bytes(*v) as usize)?;
+            let length = field.get(6..10).and_then(|v| v.first_chunk::<4>()).map(|v| u32::from_le_bytes(*v))?;
+            (length != 0).then_some(start)
+        })
+        .collect()
+}
+
 fn image_data_end(name: &str, bytes: &[u8], first_pixel: usize) -> Result<usize> {
     if !bytes.ends_with(FOOTER) {
         return Ok(bytes.len());
@@ -122,8 +140,14 @@ fn image_data_end(name: &str, bytes: &[u8], first_pixel: usize) -> Result<usize>
         // table offsets. Tables may precede the record.
         let declared = body.get(offset..offset.saturating_add(2)).and_then(|v| v.first_chunk::<2>()).map_or(0, |v| usize::from(u16::from_le_bytes(*v)));
         let mut record_end = offset.saturating_add(declared.min(495));
-        if directory > offset {
-            record_end = record_end.min(directory);
+        // The developer directory and its payloads may sit anywhere after the pixels, a payload
+        // before its directory included; whichever starts first after the extension ends it.
+        // A directory offset of zero means there is none: the header is not read as one.
+        let payloads = metadata_offset(body, directory, first_pixel).map(|d| developer_payload_starts(body, d)).unwrap_or_default();
+        for next in std::iter::once(directory).chain(payloads) {
+            if next > offset {
+                record_end = record_end.min(next);
+            }
         }
         if let Some(area) = body.get(offset..record_end.min(body.len())) {
             for field in [482, 486, 490] {
@@ -377,6 +401,62 @@ mod tests {
             let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
             assert_eq!(frame.to_rgba8(), pixels);
         }
+    }
+
+    #[test]
+    fn short_extension_followed_by_a_developer_payload_keeps_the_pixels() {
+        // a 482-byte extension whose size field still says 495, then a developer payload whose
+        // first bytes land where a full extension keeps its colour-correction offset, then the
+        // directory that points back at that payload
+        let mut file = header(2, 1, 1, 24, 0x20);
+        file.extend_from_slice(&[10, 20, 30]);
+        let extension = file.len() as u32;
+        let mut area = vec![0; 482];
+        area[..2].copy_from_slice(&495u16.to_le_bytes());
+        file.extend_from_slice(&area);
+        let payload = file.len() as u32;
+        file.extend_from_slice(&18u32.to_le_bytes());
+        file.extend_from_slice(&[0; 14]);
+        let directory = file.len() as u32;
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&0u16.to_le_bytes());
+        file.extend_from_slice(&payload.to_le_bytes());
+        file.extend_from_slice(&18u32.to_le_bytes());
+        file.extend_from_slice(&extension.to_le_bytes());
+        file.extend_from_slice(&directory.to_le_bytes());
+        file.extend_from_slice(FOOTER);
+        let source = crate::open_bytes("short-extension-payload.tga", file.into(), &[]).expect("the image decodes");
+        let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).expect("one frame");
+        assert_eq!((frame.width, frame.height), (1, 1));
+        assert_eq!(frame.to_rgba8(), vec![30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn a_footer_without_a_directory_does_not_read_the_header_as_one() {
+        // no developer directory (offset 0). Read as one, the header's three-byte image ID
+        // length is an entry count, and the third "entry" is the first words of a colour
+        // correction table that sits right after a short pixel area; the extension points at
+        // that table, so the image is incomplete and must stay so.
+        let mut file = header(2, 2, 1, 24, 0x20);
+        file[0] = 3;
+        file.extend_from_slice(&[7, 8, 9]);
+        file.extend_from_slice(&[0, 0, 255]);
+        let table = file.len() as u32;
+        let mut words = vec![0; 2048];
+        words[..4].copy_from_slice(&2074u32.to_le_bytes());
+        words[4..8].copy_from_slice(&1u32.to_le_bytes());
+        file.extend_from_slice(&words);
+        let extension = file.len() as u32;
+        let mut area = vec![0; 495];
+        area[..2].copy_from_slice(&495u16.to_le_bytes());
+        area[482..486].copy_from_slice(&table.to_le_bytes());
+        file.extend_from_slice(&area);
+        file.extend_from_slice(&extension.to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(FOOTER);
+        let decoded =
+            crate::open_bytes("no-directory.tga", file.into(), &[]).and_then(|s| s.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)));
+        assert!(decoded.is_err(), "the second pixel is missing");
     }
 
     #[test]
