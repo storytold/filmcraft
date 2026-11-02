@@ -71,6 +71,8 @@ impl FilmcraftApp {
         panels::file_dialogs::show_overwrite(self, &ctx);
         updates_ui::show(self, &ctx);
         if !self.ui.show_status_bar {
+            // no bar to draw the job in, but the progress window still shows
+            self.job_window(ui.ctx());
             return;
         }
         // Status / hint bar
@@ -114,6 +116,7 @@ impl FilmcraftApp {
         let mut row = ui.new_child(egui::UiBuilder::new().max_rect(text).id_salt("status-text").layout(egui::Layout::left_to_right(egui::Align::Center)));
         let shown = row.add(egui::Label::new(egui::RichText::new(&hint).font(Tokens::ui(11.0)).color(t.text_dim)).selectable(true).truncate());
         self.auto.add("status.text", shown.rect, &hint);
+        self.job_window(ui.ctx());
     }
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview
@@ -148,6 +151,68 @@ impl FilmcraftApp {
         self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned()
     }
 
+    /// The unfinished jobs the progress window can show: exports and preview renders, not narration,
+    /// tracking or proxy jobs.
+    fn windowed_jobs(&self) -> impl Iterator<Item = &filmcraft_engine::Job> {
+        use std::sync::atomic::Ordering;
+        self.session
+            .jobs
+            .iter()
+            .rev()
+            .filter(|j| !j.progress.finished.load(Ordering::Relaxed) && (self.session.export_offline.contains_key(&j.id) || j.label.starts_with("Rendering")))
+    }
+
+    /// A window with the running job's progress while Preferences ▸ General ▸ "Show a progress window
+    /// while exporting or rendering" is on (#1192): what it is doing, a bar with the percentage, how
+    /// much of the work is done, the time left, and Cancel. Closing it hides it for that job only.
+    /// Automation ids `progress.window`, `.bar`, `.cancel`.
+    fn job_window(&mut self, ctx: &egui::Context) {
+        use std::sync::atomic::Ordering;
+        let live: Vec<u64> = self.windowed_jobs().map(|j| j.id).collect();
+        self.ui.progress_window_hidden.retain(|id| live.contains(id));
+        // the newest job whose window is wanted: one closed window leaves an older job's open
+        let (always, asked) = (self.session.prefs.general.show_progress_window, self.ui.progress_window_asked);
+        let Some(job) = self.windowed_jobs().find(|j| !self.ui.progress_window_hidden.contains(&j.id) && (always || asked == Some(j.id))).cloned() else {
+            return;
+        };
+        let (done, total) = (job.progress.done.load(Ordering::Relaxed), job.progress.total.load(Ordering::Relaxed));
+        let f = job.progress.fraction().clamp(0.0, 1.0);
+        let left = job.progress.eta().map(panels::left_text).unwrap_or_default();
+        let verb = crate::i18n::t(&job.label).to_string();
+        let mut open = true;
+        let mut cancel = false;
+        let window = egui::Window::new(tl!("Progress"))
+            .id(egui::Id::unique("job-progress-window"))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(crate::widgets::dialog_center(ctx))
+            .show(ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label(format!("{verb}…"));
+                let bar = ui.add(egui::ProgressBar::new(f).text(format!("{:.0}%{left}", f * 100.0)));
+                self.auto.add("progress.window.bar", bar.rect, &format!("{:.0}%", f * 100.0));
+                if total > 0 {
+                    ui.label(egui::RichText::new(format!("{done} / {total}")).weak());
+                }
+                let button = ui.button(tl!("Cancel"));
+                self.auto.add("progress.window.cancel", button.rect, "Cancel");
+                cancel = button.clicked();
+            });
+        if let Some(window) = window {
+            self.auto.add("progress.window", window.response.rect, &verb);
+        }
+        if cancel {
+            job.progress.cancel.store(true, Ordering::Relaxed);
+            self.watched_render = None;
+        }
+        if !open || cancel {
+            self.ui.progress_window_hidden.push(job.id);
+            self.ui.progress_window_asked = None;
+        }
+    }
+
     /// Right side of the status bar: the running job (export / render previews) with a progress
     /// bar and a cancel button. Returns where it starts, if a job is running.
     fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) -> Option<f32> {
@@ -175,10 +240,37 @@ impl FilmcraftApp {
                 panels::JobText { job: job.id, at: now, text, label, width }
             }
         };
-        let start = bar.min.x - 8.0 - shown.width;
+        let mut start = bar.min.x - 8.0 - shown.width;
         widgets::paint_tabular(p, egui::pos2(start, sb.center().y), widgets::tabular_text(p, &shown.text, &font, t.text_dim).0, t.text_dim);
         let left = shown.label.clone();
         self.job_text = Some(shown);
+        // the bar shows the newest job of any kind; the button is for the newest that has a window
+        let windowed = self.windowed_jobs().next().map(|j| j.id);
+        if let Some(windowed) = windowed {
+            // the progress window, one click away whatever the preference says (#1192): two overlapping
+            // frames, left of the percentage
+            let window = egui::Rect::from_center_size(egui::pos2(start - 14.0, sb.center().y), egui::vec2(16.0, 16.0));
+            start = window.min.x;
+            let wresp = ui.interact(window, egui::Id::unique(("job-window", windowed)), egui::Sense::click());
+            let wc = if wresp.hovered() || self.ui.progress_window_asked == Some(windowed) { t.hot_text } else { t.text_dim };
+            p.rect_stroke(
+                egui::Rect::from_min_size(window.min + egui::vec2(1.0, 4.0), egui::vec2(10.0, 8.0)),
+                1.0,
+                egui::Stroke::new(1.2, wc),
+                egui::StrokeKind::Inside,
+            );
+            p.rect_stroke(
+                egui::Rect::from_min_size(window.min + egui::vec2(5.0, 1.0), egui::vec2(10.0, 8.0)),
+                1.0,
+                egui::Stroke::new(1.2, wc),
+                egui::StrokeKind::Inside,
+            );
+            self.auto.add("status.job.window", window, "Show progress window");
+            if wresp.on_hover_text(tl!("Show a progress window while exporting or rendering")).clicked() {
+                self.ui.progress_window_asked = Some(windowed);
+                self.ui.progress_window_hidden.retain(|id| *id != windowed);
+            }
+        }
         let resp = ui.interact(cancel, egui::Id::unique(("job-cancel", job.id)), egui::Sense::click());
         let c = if resp.hovered() { t.hot_text } else { t.text_dim };
         let k = 3.5;
