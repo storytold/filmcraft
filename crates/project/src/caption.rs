@@ -93,6 +93,10 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Corner radius of the background box, in pixels at 1080 lines
+    /// (0 = square; clamped to half the box height at render time).
+    #[serde(default)]
+    pub box_corner_radius: f32,
     /// Font style within the family (`Regular`, `Medium`, `SemiBold`, `Bold Italic`…), resolved
     /// like graphic text: the nearest weight when the family has no face of that name.
     pub font_style: String,
@@ -112,6 +116,7 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            box_corner_radius: 0.0,
             font_style: "SemiBold".into(),
         }
     }
@@ -351,6 +356,22 @@ mod tests {
         assert!(t.check().is_ok());
         assert_eq!(CaptionFormat::from_name("cea608"), Some(CaptionFormat::Cea608));
         assert_eq!(CaptionFormat::from_name("CEA-708"), Some(CaptionFormat::Cea708));
+    }
+
+    #[test]
+    fn font_style_defaults_to_semibold() {
+        assert_eq!(CaptionStyle::default().font_style, "SemiBold");
+    }
+
+    #[test]
+    fn font_style_valid_values_round_trip() {
+        for style in &["Regular", "Bold", "Italic", "BoldItalic", "SemiBold"] {
+            let mut st = CaptionStyle::default();
+            st.font_style = style.to_string();
+            let json = serde_json::to_string(&st).unwrap();
+            let rt: CaptionStyle = serde_json::from_str(&json).unwrap();
+            assert_eq!(rt.font_style, *style);
+        }
     }
 
     #[test]
