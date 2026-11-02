@@ -133,7 +133,15 @@ fn cases() -> Vec<Case> {
         for (b, &bps) in BPS.iter().enumerate() {
             let block = BLOCKS[(k + 2 * b) % BLOCKS.len()];
             let samples = 2 * usize::from(block) + 37 + (k * 101 + b * 13) % 700;
-            v.push(Case { kind, bps, channels: 1 + ((k + b) % 4) as u8, block, level: ((k * 5 + b * 3) % 9) as u8, samples, chunk: 1 + (k * 977 + b * 311) % 5000 });
+            v.push(Case {
+                kind,
+                bps,
+                channels: 1 + ((k + b) % 4) as u8,
+                block,
+                level: ((k * 5 + b * 3) % 9) as u8,
+                samples,
+                chunk: 1 + (k * 977 + b * 311) % 5000,
+            });
         }
     }
     // all levels on stereo music at 16 and 24 bits, and the 4096 blocks real files use
