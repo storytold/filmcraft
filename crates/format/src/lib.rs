@@ -136,7 +136,12 @@ struct EnvelopeIn {
 
 impl EnvelopeIn {
     fn loaded(self, schema_version: u32) -> Loaded {
-        let view = self.view.and_then(|v| serde_json::from_value(v).ok());
+        // everything a file carries is hostile until checked(): sanitise the slider settings
+        // here as well, so every consumer of a decoded view sees sane values
+        let view = self.view.and_then(|v| serde_json::from_value(v).ok()).map(|mut v: filmcraft_project::ProjectView| {
+            v.timeline_ui = v.timeline_ui.checked();
+            v
+        });
         Loaded { project: self.project, schema_version, generator: self.generator, view }
     }
 }
@@ -511,7 +516,7 @@ mod tests {
     /// read, opens all the same.
     #[test]
     fn the_view_is_kept_beside_the_project_and_never_stops_a_file_from_opening() {
-        use filmcraft_project::{ItemId, SequenceSettings, SequenceView};
+        use filmcraft_project::{ItemId, SequenceSettings, SequenceView, TimelineUiSettings};
         let mut p = Project::new("Tabs");
         let seq = p.new_sequence("Sequence 01", SequenceSettings::default(), 1, 1, None);
         let view = ProjectView {
@@ -519,6 +524,20 @@ mod tests {
             active_sequence: Some(seq),
             sequences: [(seq, SequenceView { pps: 80.0, scroll: 1.5, v_scroll: 0.0, a_scroll: 4.0, video_track_h: 60.0, audio_track_h: 56.0 })].into(),
             playheads: [(seq, filmcraft_time::Tick(3 * filmcraft_time::TICKS_PER_SECOND))].into(),
+            timeline_ui: TimelineUiSettings {
+                smooth_animations: true,
+                playhead_side_seconds: 17.5,
+                playhead_side_custom: true,
+                shift_drag_speed: 2.5,
+                shift_drag_custom: true,
+                playhead_centering: true,
+                max_zoom_seconds: 0.25,
+                max_zoom_custom: true,
+                playhead_side_last_custom: 20.5,
+                shift_drag_last_custom: 42.5,
+                max_zoom_last_custom: 0.25,
+                ..TimelineUiSettings::default()
+            },
         };
         for pretty in [true, false] {
             let l = decode(&encode_with_view(&p, Some(&view), pretty)).unwrap();
