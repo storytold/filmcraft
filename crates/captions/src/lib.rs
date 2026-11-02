@@ -226,11 +226,15 @@ pub struct WriteOptions {
     /// The sequence frame rate: TTML (IMSC1) writes exact frame times at it; EBU STL picks
     /// `STL25.01` or `STL30.01` from it (None = 25 fps). Other formats ignore it.
     pub rate: Option<FrameRate>,
+    /// MCC: a packet on every frame from the start to this time (the end of the sequence), with
+    /// no caption data where there is none, as SDI and frame-wrapped MXF carry one per frame.
+    /// None (the default) writes only the frames that carry caption data.
+    pub every_frame_until: Option<Tick>,
 }
 
 impl Default for WriteOptions {
     fn default() -> Self {
-        Self { drop_frame: true, rate: None }
+        Self { drop_frame: true, rate: None, every_frame_until: None }
     }
 }
 
@@ -240,7 +244,14 @@ pub fn write(doc: &Document, format: Format, opts: WriteOptions) -> Vec<u8> {
         Format::Srt => srt::write(doc).into_bytes(),
         Format::WebVtt => vtt::write(doc).into_bytes(),
         Format::Scc => scc::write(doc, opts.drop_frame).into_bytes(),
-        Format::Mcc => mcc::write(doc, opts.drop_frame).into_bytes(),
+        Format::Mcc => {
+            // the frames that start before the end, so a last partial frame gets its packet too
+            let frames = opts.every_frame_until.map_or(0, |end| {
+                let f = mcc::RATE.frame_at(end);
+                if mcc::RATE.tick_of(f) < end { f.saturating_add(1) } else { f }
+            });
+            mcc::write_padded(doc, opts.drop_frame, true, true, frames).into_bytes()
+        }
         Format::Stl => stl::write(doc, opts.rate),
         Format::Ttml => ttml::write(doc, ttml::Flavor::Imsc1, opts.rate, "en").into_bytes(),
         Format::Dfxp => ttml::write(doc, ttml::Flavor::Dfxp, opts.rate, "en").into_bytes(),

@@ -264,7 +264,15 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let track = seq.caption_track(tid).ok_or_else(|| bad("captions.export", "no such caption track"))?;
     let doc: Document = filmcraft_captions::document_from_track(track, Tick::ZERO);
     let df = bool_p(p, "dropFrame").unwrap_or(true);
-    let bytes = filmcraft_captions::write(&doc, format, WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate) });
+    let every_frame_until = bool_p(p, "everyFrame").unwrap_or(false).then(|| seq.duration());
+    if format == Format::Mcc
+        && let Some(end) = every_frame_until
+        && end > filmcraft_captions::mcc::RATE.tick_of(filmcraft_captions::mcc::MAX_PADDED_FRAMES)
+    {
+        return Err(bad("captions.export", "`everyFrame` covers at most 24 hours, and the sequence is longer"));
+    }
+    let opts = WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate), every_frame_until };
+    let bytes = filmcraft_captions::write(&doc, format, opts);
     let n = doc.cues.len();
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
     Ok(json!({"path": path, "format": format.name(), "captions": n, "bytes": bytes.len()}))
@@ -607,7 +615,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Captions…",
             &["File", "Export"],
             None,
-            r#"{"path":str,"format":"srt|vtt|scc|mcc|stl|ttml|dfxp"? (default: from the extension),"track":id|"C1"?,"dropFrame":bool=true}"#,
+            r#"{"path":str,"format":"srt|vtt|scc|mcc|stl|ttml|dfxp"? (default: from the extension),"track":id|"C1"?,"dropFrame":bool=true,"everyFrame":bool=false (MCC: a packet on every frame to the sequence end)}"#,
             has_caption_track,
             export,
         ),
