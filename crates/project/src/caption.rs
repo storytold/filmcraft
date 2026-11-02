@@ -93,6 +93,9 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Font style within the family (`Regular`, `Medium`, `SemiBold`, `Bold Italic`…), resolved
+    /// like graphic text: the nearest weight when the family has no face of that name.
+    pub font_style: String,
 }
 
 impl Default for CaptionStyle {
@@ -109,6 +112,7 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            font_style: "SemiBold".into(),
         }
     }
 }
@@ -302,6 +306,15 @@ pub fn plain_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn styles_saved_without_a_font_style_load_semibold() {
+        let old = r#"{"font":"Inter","size":54.0,"color":[255,255,255,255],"background":true,"background_color":[0,0,0,191],
+            "align":"Center","anchor":"Bottom","margin":0.08,"line_spacing":1.25,"outline":0.0,"outline_color":[0,0,0,255]}"#;
+        let st: CaptionStyle = serde_json::from_str(old).unwrap();
+        assert_eq!(st, CaptionStyle::default());
+        assert_eq!(st.font_style, "SemiBold");
+    }
 
     #[test]
     fn plain() {

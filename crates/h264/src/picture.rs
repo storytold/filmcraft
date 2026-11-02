@@ -302,7 +302,10 @@ fn copy_line<const N: usize>(line: &[u8], x0: i32, out: &mut [u8], w: usize) {
 }
 
 /// Copy `out.len()` samples of `line` starting at x0, replicating edge samples outside the line.
-#[inline(always)]
+/// Kept out of line so the fixed-size path of `copy_line` stays an inline move rather than being
+/// merged with this variable-length copy into a libc memcpy call.
+#[cold]
+#[inline(never)]
 fn copy_clamped(line: &[u8], x0: i32, out: &mut [u8]) {
     let w = out.len();
     if x0 >= 0 && x0 as usize + w <= line.len() {

@@ -109,7 +109,7 @@ fn extra_connections_are_refused() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx, _rx) = channel::<ControlRequest>();
-    std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), TOKEN.into()));
+    std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), TOKEN.into(), Arc::new(AtomicBool::new(true))));
     // Idle connections are accepted in order and held open.
     let held: Vec<TcpStream> = (0..16).map(|_| TcpStream::connect(addr).unwrap()).collect();
     let mut extra = TcpStream::connect(addr).unwrap();
@@ -132,7 +132,7 @@ fn timed_out_connection_releases_slot(partial: &[u8]) {
         let (stream, _) = listener.accept().unwrap();
         {
             let _slot = Slot(counted);
-            serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_millis(100)).unwrap();
+            serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_millis(100), Arc::new(AtomicBool::new(true))).unwrap();
         }
         done.send(()).unwrap();
     });
@@ -182,7 +182,7 @@ fn idle_timeout_does_not_cancel_a_pending_ui_reply() {
     let (tx, rx) = channel::<ControlRequest>();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_millis(100)).unwrap();
+        serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_millis(100), Arc::new(AtomicBool::new(true))).unwrap();
     });
     let mut client = TcpStream::connect(addr).unwrap();
     client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -212,7 +212,7 @@ fn active_connection_can_be_reused() {
     let (tx, rx) = channel::<ControlRequest>();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_secs(5)).unwrap();
+        serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_secs(5), Arc::new(AtomicBool::new(true))).unwrap();
     });
     let mut client = TcpStream::connect(addr).unwrap();
     client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -235,10 +235,71 @@ fn missing_or_invalid_token_leaves_the_listener_closed() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
-        let rx = start_with_token(port, egui::Context::default(), token);
+        let (rx, _ready, why) = start_with_token(port, egui::Context::default(), token);
         assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+        // The reason is returned for the status bar (#3436) as well as logged.
+        let Some(w) = &why else { panic!("a bad token must report why") };
+        assert!(matches!(w, DisabledWhy::Token));
+        assert!(w.reason().contains("FILMCRAFT_CONTROL_TOKEN"), "{}", w.reason());
         let _still_available = TcpListener::bind(("127.0.0.1", port)).unwrap();
     }
+}
+
+#[test]
+fn a_refused_bind_is_reported_and_leaves_the_listener_closed() {
+    // The port is held: the server cannot start, and the reason comes back for the log.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (rx, _ready, why) = start_with_token(port, egui::Context::default(), Some(TOKEN.into()));
+    assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+    let Some(w) = &why else { panic!("a refused bind must report why") };
+    assert!(matches!(w, DisabledWhy::Bind { .. }));
+    let reason = w.reason();
+    assert!(reason.contains("could not bind") && reason.contains(&port.to_string()), "{reason}");
+}
+
+#[test]
+fn a_started_server_returns_no_notice() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let (_rx, _ready, why) = start_with_token(port, egui::Context::default(), Some(TOKEN.into()));
+    assert!(why.is_none());
+}
+
+#[test]
+fn requests_before_ready_are_rejected_not_queued() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let (rx, ready, why) = start_with_token(port, egui::Context::default(), Some(TOKEN.into()));
+    assert!(why.is_none());
+    let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // The app is still starting: the request is answered without reaching the UI queue, so a
+    // client retry cannot apply the same mutation twice (#3436).
+    writeln!(c, "{}", json!({"id": 1, "token": TOKEN, "method": "ui.inspect"})).unwrap();
+    let mut line = String::new();
+    BufReader::new(&mut c).read_line(&mut line).unwrap();
+    assert!(line.contains("still starting"), "{line}");
+    assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)), "{line}");
+    // Once the app is ready the same connection is served normally.
+    ready.store(true, Ordering::Relaxed);
+    writeln!(c, "{}", json!({"id": 2, "token": TOKEN, "method": "ui.inspect"})).unwrap();
+    let request = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(request.method, "ui.inspect");
+    request.reply.send(json!({"ok": true})).unwrap();
+    let mut line = String::new();
+    BufReader::new(&mut c).read_line(&mut line).unwrap();
+    assert!(line.contains("\"id\":2"), "{line}");
+}
+
+#[test]
+fn disable_reasons_name_their_cause() {
+    assert!(DisabledWhy::Token.reason().contains("FILMCRAFT_CONTROL_TOKEN"));
+    let bind = DisabledWhy::Bind { port: 9876, error: "address in use".into() };
+    let reason = bind.reason();
+    assert!(reason.contains("9876") && reason.contains("address in use"), "{reason}");
 }
 
 #[test]
@@ -274,7 +335,7 @@ fn tcp_authentication_happens_before_enqueueing() {
     let (tx, rx) = channel::<ControlRequest>();
     let server = std::thread::spawn(move || {
         let (s, _) = listener.accept().unwrap();
-        serve(s, &tx, &egui::Context::default(), TOKEN);
+        serve(s, &tx, &egui::Context::default(), TOKEN, Arc::new(AtomicBool::new(true)));
     });
     let mut c = TcpStream::connect(addr).unwrap();
     c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -294,7 +355,7 @@ fn authenticated_tcp_request_reaches_the_ui_queue() {
     let (tx, rx) = channel::<ControlRequest>();
     let server = std::thread::spawn(move || {
         let (s, _) = listener.accept().unwrap();
-        serve(s, &tx, &egui::Context::default(), TOKEN);
+        serve(s, &tx, &egui::Context::default(), TOKEN, Arc::new(AtomicBool::new(true)));
     });
     let params = json!({"command": "file.saveAs", "params": {"path": "/owner/project.fcproj"}});
     let mut c = TcpStream::connect(addr).unwrap();

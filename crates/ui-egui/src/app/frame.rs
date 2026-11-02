@@ -1,4 +1,4 @@
-use super::{FilmcraftApp, Tick, Tokens, crash, header, i18n, panels, state, updates_ui};
+use super::{FilmcraftApp, Tick, Tokens, crash, header, i18n, panels, state, updates_ui, widgets};
 
 impl FilmcraftApp {
     // ---------------------------------------------------------------- frame
@@ -13,10 +13,10 @@ impl FilmcraftApp {
             match r {
                 Ok(r) => {
                     if let Some(n) = r["refreshed"].as_array().map(Vec::len).filter(|n| *n > 0) {
-                        self.toast = Some((format!("Refreshed {n} media item(s) changed on disk"), now));
+                        self.status(format!("Refreshed {n} media item(s) changed on disk"));
                     }
                 }
-                Err(e) => self.toast = Some((e.to_string(), now)),
+                Err(e) => self.status(e.to_string()),
             }
         }
         let media = &self.session.prefs.media;
@@ -25,7 +25,7 @@ impl FilmcraftApp {
         let focused = self.native_window_focused.unwrap_or(false);
         let was_focused: bool = ctx.data(|d| d.get_temp(focus_key)).unwrap_or(focused);
         ctx.data_mut(|d| d.insert_temp(focus_key, focused));
-        if !on || filmcraft_engine::media_watch::media_files(&self.session.project, &self.session.media).is_empty() {
+        if !on || !filmcraft_engine::media_watch::has_media_files(&self.session.project) {
             return;
         }
         let last: f64 = ctx.data(|d| d.get_temp(last_key)).unwrap_or(f64::NEG_INFINITY);
@@ -68,6 +68,7 @@ impl FilmcraftApp {
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;
         panels::dialogs::show(self, &ctx);
+        panels::file_dialogs::show_overwrite(self, &ctx);
         updates_ui::show(self, &ctx);
         if !self.ui.show_status_bar {
             return;
@@ -85,13 +86,34 @@ impl FilmcraftApp {
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
             }
         }
+        // The control server's startup notice (#3436): a session that asked for `--control` must
+        // be able to see that it is not serving, whenever it looks. Any real status replaces it;
+        // it comes back once that clears. Each cause translates as a whole sentence, so the
+        // status bar reads in the interface language throughout.
+        if self.ui.status.is_empty()
+            && let Some(notice) = &self.control_notice
+        {
+            match notice {
+                crate::ControlNotice::Token => {
+                    self.ui.status =
+                        tl!("The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)")
+                            .into()
+                }
+            }
+        }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };
-        ui.painter().text(egui::pos2(sb.min.x + 10.0, sb.center().y), egui::Align2::LEFT_CENTER, hint, Tokens::ui(11.0), t.text_dim);
+        // the bar goes under the text and the job's controls, so they get their own clicks
         let resp = ui.interact(sb, egui::Id::unique("status-bar"), egui::Sense::click());
         if resp.clicked() {
             self.ui.status.clear();
         }
-        self.job_status(ui, sb, &t);
+        let right = self.job_status(ui, sb, &t).unwrap_or(sb.max.x);
+        // A label, not painted text, so a path or an error can be selected and copied (#2295);
+        // too long a message ends in "…" before the job's progress and shows in full on hover.
+        let text = egui::Rect::from_min_max(egui::pos2(sb.min.x + 10.0, sb.min.y), egui::pos2((right - 10.0).max(sb.min.x + 10.0), sb.max.y));
+        let mut row = ui.new_child(egui::UiBuilder::new().max_rect(text).id_salt("status-text").layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let shown = row.add(egui::Label::new(egui::RichText::new(&hint).font(Tokens::ui(11.0)).color(t.text_dim)).selectable(true).truncate());
+        self.auto.add("status.text", shown.rect, &hint);
     }
 
     /// The running job (export / render previews), if any; plays the rendered range when a preview
@@ -127,36 +149,48 @@ impl FilmcraftApp {
     }
 
     /// Right side of the status bar: the running job (export / render previews) with a progress
-    /// bar and a cancel button.
-    fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) {
+    /// bar and a cancel button. Returns where it starts, if a job is running.
+    fn job_status(&mut self, ui: &mut egui::Ui, sb: egui::Rect, t: &Tokens) -> Option<f32> {
         use std::sync::atomic::Ordering;
-        let Some(job) = self.running_job() else { return };
+        let job = self.running_job()?;
         let f = job.progress.fraction().clamp(0.0, 1.0);
-        let left = job.progress.eta().map(panels::left_text).unwrap_or_default();
+        // asked every frame though shown once a second: each call is also a reading of the job's speed
+        let eta = job.progress.eta();
         let cancel = egui::Rect::from_center_size(egui::pos2(sb.max.x - 14.0, sb.center().y), egui::vec2(14.0, 14.0));
         let bar = egui::Rect::from_min_size(egui::pos2(cancel.min.x - 128.0, sb.center().y - 3.0), egui::vec2(120.0, 6.0));
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
-        let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
-        p.text(
-            egui::pos2(bar.min.x - 8.0, sb.center().y),
-            egui::Align2::RIGHT_CENTER,
-            format!("{verb}… {:.0}%{left}", f * 100.0),
-            Tokens::ui(11.0),
-            t.text_dim,
-        );
+        let (now, font) = (self.now(), Tokens::ui(11.0));
+        let shown = match self.job_text.take().filter(|s| s.job == job.id) {
+            Some(s) if (s.at..s.at + panels::JobText::EVERY).contains(&now) => s,
+            old => {
+                let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+                let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
+                let text = format!("{verb}… {label}");
+                // room from the start for 100 % and the longest time shown (99:59:59), so no estimate
+                // moves the start of the text
+                let room = format!("{verb}… 100%{}", panels::left_text(std::time::Duration::from_secs(100 * 3600 - 1)));
+                let width = [&text, &room].map(|s| widgets::tabular_text(p, s, &font, t.text_dim).1).into_iter().fold(old.map_or(0.0, |o| o.width), f32::max);
+                panels::JobText { job: job.id, at: now, text, label, width }
+            }
+        };
+        let start = bar.min.x - 8.0 - shown.width;
+        widgets::paint_tabular(p, egui::pos2(start, sb.center().y), widgets::tabular_text(p, &shown.text, &font, t.text_dim).0, t.text_dim);
+        let left = shown.label.clone();
+        self.job_text = Some(shown);
         let resp = ui.interact(cancel, egui::Id::unique(("job-cancel", job.id)), egui::Sense::click());
         let c = if resp.hovered() { t.hot_text } else { t.text_dim };
         let k = 3.5;
         p.line_segment([cancel.center() - egui::vec2(k, k), cancel.center() + egui::vec2(k, k)], egui::Stroke::new(1.4, c));
         p.line_segment([cancel.center() + egui::vec2(-k, k), cancel.center() + egui::vec2(k, -k)], egui::Stroke::new(1.4, c));
         self.auto.add("status.job.cancel", cancel, &format!("Cancel {}", job.label));
-        self.auto.add("status.job.progress", bar, &format!("{:.0}%{left}", f * 100.0));
+        self.auto.add("status.job.progress", bar, &left);
         if resp.on_hover_text(tl!("Cancel")).clicked() {
             job.progress.cancel.store(true, Ordering::Relaxed);
             self.watched_render = None;
         }
+        Some(start)
     }
 
     /// Contextual hint for the status bar (Premiere shows tool/gesture hints here).
@@ -220,5 +254,52 @@ impl FilmcraftApp {
         if close {
             self.ui_error = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod job_status_tests {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// The status bar's export text changed on every frame, and right-aligned against the bar, so
+    /// "Exporting… 46%" jumped sideways whenever the time left gained or lost a digit or its hour.
+    #[test]
+    fn the_job_text_changes_once_a_second_and_where_it_starts_stays_put() {
+        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let job = filmcraft_engine::Job { id: 7, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+        let progress = job.progress.clone();
+        progress.total.store(1_000_000, Ordering::Relaxed);
+        progress.done.store(460_000, Ordering::Relaxed);
+        app.session.jobs.push(job);
+        let (ctx, t) = (egui::Context::default(), Tokens::for_kind(crate::theme::ThemeKind::Dark));
+        let sb = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 24.0));
+        let draw = |app: &mut FilmcraftApp, now: f64| {
+            app.set_now_for_test(now);
+            let mut start = None;
+            ctx.run_ui(egui::RawInput::default(), |ui| start = app.job_status(ui, sb, &t)).textures_delta.clear();
+            (start, app.job_text.as_ref().map(|s| s.label.clone()))
+        };
+        // before any estimate
+        let (first, label) = draw(&mut app, 8.0);
+        assert_eq!(label.as_deref(), Some("46%"));
+        // 100 units a second (readings from the near future, which the real clock reading every frame
+        // does not disturb): 5395 s left, over an hour
+        let t0 = web_time::Instant::now() + Duration::from_secs(60);
+        for i in 0..=50u64 {
+            progress.done.store(460_000 + i * 10, Ordering::Relaxed);
+            progress.eta_at(t0 + Duration::from_millis(i * 100));
+        }
+        let (start, label) = draw(&mut app, 10.0);
+        assert_eq!(label.as_deref(), Some("46% · 1:29:55 left"));
+        assert_eq!(start, first, "the first estimate, over an hour, starts where the text without one did");
+        // a smaller total: under an hour, but not shown before a second has passed
+        progress.total.store(600_000, Ordering::Relaxed);
+        assert_eq!(draw(&mut app, 10.5), (start, label));
+        let (later, label) = draw(&mut app, 11.0);
+        assert_eq!(label.as_deref(), Some("77% · 23:15 left"));
+        assert_eq!(later, start, "the shorter text starts where the longer one did");
     }
 }

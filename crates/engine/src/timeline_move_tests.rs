@@ -209,7 +209,10 @@ fn reject_duplicate_new_track_move(s: &mut Session, clip: ClipId, insert: bool, 
         "timeline.move",
         json!({"moves": [{"clip": clip.0, "track": tracks[0], "time": at}, {"clip": clip.0, "track": tracks[1], "time": at}], "insert": insert, "linked": linked}),
     );
-    assert!(matches!(result, Err(EngineError::Edit(filmcraft_edit::EditError::Other(_)))), "duplicate move entries must be rejected: {result:?}");
+    assert!(
+        matches!(result, Err(EngineError::Edit(filmcraft_edit::EditError::Other(_)) | EngineError::BadParams { .. })),
+        "duplicate move entries must be rejected: {result:?}"
+    );
     assert_eq!(s.project, before, "the project and its id allocator stay unchanged");
     assert_eq!(s.state.selection, selection);
     assert_eq!(serde_json::to_value(&s.state).unwrap(), editor_state);
@@ -725,4 +728,62 @@ fn new_track_moves_respect_the_track_limit() {
     assert!(s.execute("timeline.move", json!({"moves":[{"clip":v.id.0,"track":"new","time":v.start.0}],"linked":false})).is_err());
     assert_eq!(*s.project, *before);
     assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+}
+
+/// #3450: Copy + Paste keeps the transitions that sit only on the copied clips (a fade at a
+/// copied clip's edge), moved by the paste offset onto the pasted copies with new ids; the
+/// originals keep theirs.
+#[test]
+fn copy_paste_keeps_clip_transitions() {
+    let mut s = demo();
+    let (v1, v, a1, a) = pair_in_an_empty_sequence(&mut s, 0.0);
+    s.execute("effects.apply", json!({"effect": "cross_dissolve", "clip": v.id.0, "edge": "out", "frames": 10})).unwrap();
+    s.execute("effects.apply", json!({"effect": "constant_power", "clip": a.id.0, "edge": "out", "frames": 10})).unwrap();
+    let before = s.active_sequence().unwrap().clone();
+    let originals: Vec<_> = [v1, a1].iter().map(|t| before.track(*t).unwrap().transitions.clone()).collect();
+    assert!(originals.iter().all(|t| t.len() == 1));
+    s.execute("timeline.select", json!({"clips": [v.id.0]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    let at = v.end() + before.settings.frame_rate.tick_of(48);
+    s.set_playhead(at);
+    s.execute("edit.paste", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    q.check().unwrap();
+    for (track, orig) in [v1, a1].into_iter().zip(&originals) {
+        let t = q.track(track).unwrap();
+        let pasted = t.items.iter().find(|i| i.start == at).unwrap();
+        let orig = &orig[0];
+        assert!(t.transitions.contains(orig), "the original keeps its transition");
+        let copies: Vec<_> = t.transitions.iter().filter(|x| x.from == Some(pasted.id) || x.to == Some(pasted.id)).collect();
+        assert_eq!(copies.len(), 1, "pasted clip keeps its crossfade: {:?}", t.transitions);
+        let c = copies[0];
+        assert_ne!(c.id, orig.id);
+        assert_eq!((c.from, c.to), (Some(pasted.id), None));
+        assert_eq!((&c.effect, c.duration, c.align, c.reverse), (&orig.effect, orig.duration, orig.align, orig.reverse));
+        assert_eq!(c.start, orig.start + at);
+    }
+}
+
+/// A transition between a copied clip and a neighbour left behind is not pasted.
+#[test]
+fn copy_paste_drops_transition_to_uncopied_neighbour() {
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let t = &q.video_tracks[0];
+    let first = t.items.iter().enumerate().find(|(i, c)| t.items.get(i + 1).is_some_and(|n| n.start == c.end())).map(|(_, c)| c.clone()).unwrap();
+    let end = q.duration();
+    s.execute("effects.apply", json!({"effect": "cross_dissolve", "clip": first.id.0, "edge": "out", "frames": 10})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert!(q.video_tracks[0].transitions.iter().any(|x| x.from == Some(first.id) && x.to.is_some()));
+    let count = q.video_tracks[0].transitions.len();
+    s.execute("timeline.select", json!({"clips": [first.id.0]})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    s.set_playhead(end);
+    s.execute("edit.paste", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    q.check().unwrap();
+    let t = &q.video_tracks[0];
+    let pasted = t.items.iter().find(|i| i.start == end).unwrap();
+    assert!(!t.transitions.iter().any(|x| x.from == Some(pasted.id)), "the cut to the neighbour left behind is not pasted: {:?}", t.transitions);
+    assert!(t.transitions.len() >= count, "the original transitions stay");
 }

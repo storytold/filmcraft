@@ -1,11 +1,18 @@
 use super::{Align2, Arc, Color32, FilmcraftApp, ItemId, Rect, Tick, Tokens, TrackItem, pos2, vec2};
 
+/// The height of a clip's waveform for a clip body `body_height` tall: the lower part of a tall clip,
+/// under the name strip; the whole clip on a compact track (under 50 points), where a share of it
+/// would be too small to read and the name is drawn over the waveform.
+pub(super) fn waveform_zone_height(body_height: f32) -> f32 {
+    if body_height < 50.0 { (body_height - 2.0).max(8.0) } else { (body_height * 0.42).max(8.0) }
+}
+
 pub(super) fn draw_waveform(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, col: Color32) {
     let Some(peaks) = request_peaks(app, it.item, it.audio_stream) else { return };
     let pkey = (it.item, it.audio_stream);
     let spp = 256.0;
     let sr = 48_000.0;
-    let zone_h = (body.height() * 0.42).max(8.0);
+    let zone_h = waveform_zone_height(body.height());
     let area = Rect::from_min_max(pos2(body.min.x + 1.0, body.max.y - zone_h - 1.0), pos2(body.max.x - 1.0, body.max.y - 1.0));
     let clip = p.clip_rect().intersect(area);
     if clip.width() <= 0.0 {

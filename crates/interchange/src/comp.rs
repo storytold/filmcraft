@@ -653,6 +653,9 @@ fn marker_out(m: &Marker) -> CMarker {
 
 fn marker_in(b: &mut Builder, m: &CMarker) -> Marker {
     Marker {
+        url: String::new(),
+        author: String::new(),
+        custom_color: None,
         id: MarkerId(b.alloc()),
         start: m.start,
         duration: m.duration,
