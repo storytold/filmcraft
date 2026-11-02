@@ -348,6 +348,7 @@
 	Show Active Caption Tracks Only	Nur aktive Untertitelspuren anzeigen
 	Show All Caption Tracks	Alle Untertitelspuren anzeigen
 	Show All Marker Colors	Alle Markerfarben anzeigen
+	Show Duplicate Frame Markers	Markierungen für doppelte Frames anzeigen
 	Show Guides	Hilfslinien anzeigen
 	Show Rulers	Lineale anzeigen
 	Show Through Edits	Durchgehende Schnitte anzeigen
@@ -1025,7 +1026,6 @@
 	Eyedropper (pick a color from the Program monitor)	Pipette (Farbe aus dem Programmmonitor aufnehmen)
 	Eyedropper: no picture to sample	Pipette: kein Bild zum Aufnehmen
 	Add/Remove Keyframe	Keyframe hinzufügen/entfernen
-	Temporal Interpolation	Zeitliche Interpolation
 	Linear	Linear
 	Bezier	Bézier
 	Auto Bezier	Automatische Bézier
@@ -1074,6 +1074,7 @@
 	All Caps	Großbuchstaben
 	Small Caps	Kapitälchen
 	Underline	Unterstrichen
+	Strikethrough	Durchgestrichen
 	OpenType	OpenType
 	Kerning	Unterschneidung
 	Ligatures	Ligaturen
@@ -1214,7 +1215,7 @@
 	New Bin	Neue Ablage
 	Find	Suchen
 	Automate to Sequence	Automatisch in Sequenz einfügen
-	Select items to clear	Wähle die zu löschenden Elemente aus
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Wähle einen Clip (oder einen verknüpften Clip) in der Timeline oder ein Element im Projektfenster aus, um es umzubenennen
 	User Order	Benutzerdefinierte Reihenfolge
 	Descending	Absteigend
 	Refresh Project	Projekt aktualisieren
@@ -3469,8 +3470,8 @@
 	Commits	Commits
 	% of all commits	% aller Commits
 	Lines +/−	Zeilen +/−
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	Audioausgabe fehlgeschlagen: Wiedergabe ohne Ton (prüfe Voreinstellungen ▸ Audiohardware)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	Audioausgabe reagiert nicht: Wiedergabe ohne Ton (prüfe Voreinstellungen ▸ Audiohardware)
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	Audioausgabe fehlgeschlagen: Wiedergabe ohne Ton (prüfe Voreinstellungen > Audiohardware)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	Audioausgabe reagiert nicht: Wiedergabe ohne Ton (prüfe Voreinstellungen > Audiohardware)
 	Clip Speed / Duration	Clipgeschwindigkeit/-dauer
 	Speed:	Geschwindigkeit:
 	Reverse Speed	Rückwärts abspielen
@@ -3613,3 +3614,72 @@
 	Shows the version, community links and credits in a FilmCraft window.	Zeigt Version, Community-Links und Credits in einem FilmCraft-Fenster.
 	Couldn't open your web browser	Dein Webbrowser konnte nicht geöffnet werden
 	Open this address in your browser yourself:	Öffne diese Adresse selbst in deinem Browser:
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Der Kontrollserver ist deaktiviert: FILMCRAFT_CONTROL_TOKEN muss 64 zufällige Hexzeichen enthalten (siehe docs/control-protocol.md)
+
+# Control server: the bind-failure notice (port collisions; #3318 may show it too).
+	Temporal Interpolation	Zeitliche Interpolation
+	Select items to clear	Wähle die zu löschenden Elemente aus
+	A range marker needs a positive duration	Ein Bereichsmarker benötigt eine positive Dauer
+	Add Custom Color	Benutzerdefinierte Farbe hinzufügen
+	Add and apply	Hinzufügen und anwenden
+	Add color	Farbe hinzufügen
+	Add custom color	Benutzerdefinierte Farbe hinzufügen
+	Add custom color…	Benutzerdefinierte Farbe hinzufügen…
+	Author	Autor
+	Chapter	Kapitel
+	Choose Color…	Farbe auswählen…
+	Choose color with system picker	Farbe mit der Systemauswahl wählen
+	Color picker	Farbauswahl
+	Color selected markers	Farbe ausgewählter Marker ändern
+	Custom Color…	Benutzerdefinierte Farbe…
+	Delete Marker	Marker löschen
+	Delete selected markers	Ausgewählte Marker löschen
+	Edit Custom Color	Benutzerdefinierte Farbe bearbeiten
+	Edit Marker	Marker bearbeiten
+	Edit Marker…	Marker bearbeiten…
+	Edit color	Farbe bearbeiten
+	Editing or removing a swatch leaves assigned colors unchanged.	Das Bearbeiten oder Entfernen eines Farbfelds ändert bereits zugewiesene Farben nicht.
+	Enter six hex digits, for example FF80C0.	Sechs Hexadezimalziffern eingeben, zum Beispiel FF80C0.
+	Hex	Hex
+	Hex color	Hexadezimale Farbe
+	Manage Colors	Farben verwalten
+	Manage Colors…	Farben verwalten…
+	Marker owner is unavailable	Das zugehörige Markerobjekt ist nicht verfügbar
+	No markers	Keine Marker
+	No matching markers	Keine passenden Marker
+	No saved colors	Keine gespeicherten Farben
+	No sequence open	Keine Sequenz geöffnet
+	No source clip open	Kein Quellclip geöffnet
+	Notes	Notizen
+	Project Colors	Projektfarben
+	Range marker	Bereichsmarker
+	Remove saved color	Gespeicherte Farbe entfernen
+	Save color	Farbe speichern
+	Search markers	Marker suchen
+	Search name, notes, author	Name, Notizen oder Autor suchen
+	Select all	Alle auswählen
+	Select all visible markers	Alle sichtbaren Marker auswählen
+	Sequence: {name}	Sequenz: {name}
+	Source: {name}	Quelle: {name}
+	Source: {name} (shared source markers)	Quelle: {name} (gemeinsame Quellmarker)
+	System color picker unavailable: {error}	Systemfarbauswahl nicht verfügbar: {error}
+	Time is outside the supported range	Die Zeit liegt außerhalb des unterstützten Bereichs
+	{count} selected	{count} ausgewählt
+	Remove Custom Color	Benutzerdefinierte Farbe entfernen
+	Edit Markers	Marker bearbeiten
+	Delete Markers	Marker löschen
+	Marker changed or was removed. Reopen it to continue.	Die Markierung wurde geändert oder entfernt. Öffne sie erneut, um fortzufahren.
+	Comment Marker	Kommentarmarkierung
+	Chapter Marker	Kapitelmarkierung
+	Segmentation Marker	Segmentierungsmarkierung
+	Web Link	Weblink
+	Flash Cue Point	Flash-Cue-Punkt
+	URL	URL
+	Open Link	Link öffnen
+	Opens this address in your web browser	Öffnet diese Adresse im Webbrowser
+	Enter a valid HTTP or HTTPS URL without credentials	Eine gültige HTTP- oder HTTPS-URL ohne Zugangsdaten eingeben
+	Previous	Zurück
+	Next	Weiter
+	Enter a valid HH:MM:SS:FF timecode	Gültigen Timecode als HH:MM:SS:FF eingeben

@@ -3,7 +3,10 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::{
+    Arc,
+    mpsc::{Sender, channel},
+};
 
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
@@ -140,6 +143,46 @@ fn ctrl_v_pastes_an_image_above_the_footage() {
     assert_eq!(d.clips(), before);
 }
 
+/// A paste delivered by `Event::PasteImage` carries the image bytes: paste uses that payload even
+/// with no clipboard-media hook (the web host installs none) and without re-reading the OS.
+#[test]
+fn paste_image_event_imports_its_own_payload_without_a_clipboard_hook() {
+    let mut d = Driver::demo("paste-image-event");
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    assert!(d.app().hooks.clipboard_media.is_none());
+    let before = d.clips();
+    let image = egui::ColorImage::filled([8, 6], egui::Color32::from_rgb(10, 20, 30));
+    d.harness.input_mut().events.extend([egui::Event::ModifiersChanged(egui::Modifiers::COMMAND), egui::Event::PasteImage(Arc::new(image))]);
+    d.frames(1);
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    d.frames(2);
+    let new: Vec<_> = d.clips().into_iter().filter(|c| !before.contains(c)).collect();
+    assert_eq!(new.iter().map(|c| c.3.as_str()).collect::<Vec<_>>(), ["Pasted Image 1.png"]);
+    assert!(d.dir.join("Pasted Image 1.png").is_file(), "the event payload was written, not an empty clipboard");
+}
+
+/// The saved PNG stores straight alpha. `Color32` is premultiplied internally, so a
+/// semi-transparent clipboard pixel must keep its colour through the paste.
+#[test]
+fn paste_image_event_writes_straight_alpha_rgba() {
+    let mut d = Driver::demo("paste-image-alpha");
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    let before = d.clips();
+    // Four half-transparent red pixels; premultiplied storage would be (128, 0, 0, 128).
+    let rgba = [255, 0, 0, 128, 255, 0, 0, 128, 255, 0, 0, 128, 255, 0, 0, 128];
+    let image = egui::ColorImage::from_rgba_unmultiplied([2, 2], &rgba);
+    d.harness.input_mut().events.extend([egui::Event::ModifiersChanged(egui::Modifiers::COMMAND), egui::Event::PasteImage(Arc::new(image))]);
+    d.frames(1);
+    d.harness.input_mut().events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    d.frames(2);
+    let new: Vec<_> = d.clips().into_iter().filter(|c| !before.contains(c)).collect();
+    assert_eq!(new.iter().map(|c| c.3.as_str()).collect::<Vec<_>>(), ["Pasted Image 1.png"]);
+    let png = std::fs::read(d.dir.join("Pasted Image 1.png")).expect("the pasted PNG");
+    let decoded = image::load_from_memory(&png).expect("decode the pasted PNG").to_rgba8();
+    assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 128], "straight alpha, not the premultiplied colour");
+    assert_eq!(decoded.get_pixel(1, 1).0, [255, 0, 0, 128]);
+}
+
 /// Files copied in the file manager paste the same way, even when the clipboard also holds text
 /// (Ctrl+V then arrives as a paste event); Ctrl+Shift+V inserts them on the targeted track.
 #[test]
@@ -226,6 +269,60 @@ fn ctrl_v_pastes_a_cut_clip_even_when_old_files_linger_on_the_clipboard() {
     d.ctrl_v_with_text();
     assert!(named(&mut d) >= 1, "the cut clip is pasted");
     assert!(!d.clips().iter().any(|c| c.3.contains("stale")), "lingering OS files are not pasted");
+}
+
+/// Lift and Extract put the range on the clipboard like Cut, so Ctrl+V pastes it rather than files
+/// left on the OS clipboard (#3019).
+#[test]
+fn ctrl_v_pastes_a_lifted_or_extracted_range_even_when_old_files_linger_on_the_clipboard() {
+    for cmd in ["sequence.lift", "sequence.extract"] {
+        let mut d = Driver::demo("lift-linger");
+        d.ok("ui.set", json!({"focused": "Timeline"}));
+        let png = d.dir.join("stale.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 0, 200, 255])).save(&png).unwrap();
+        let path = png.to_string_lossy().into_owned();
+        d.app().hooks.clipboard_media = Some(Box::new(move || Some(ClipboardMedia::Files(vec![path.clone()]))));
+        let first = d.clips().into_iter().find(|c| c.0 == 'V' && c.1 == 0).unwrap();
+        d.ok("engine.execute", json!({"command": "markers.markIn", "params": {"frame": 6}}));
+        d.ok("engine.execute", json!({"command": "markers.markOut", "params": {"frame": 17}}));
+        d.ok("ui.menu.invoke", json!({"id": cmd}));
+        d.ok("engine.execute", json!({"command": "playhead.end", "params": {}}));
+        let named = |d: &mut Driver| d.clips().iter().filter(|c| c.0 == 'V' && c.3 == first.3).count();
+        let before = named(&mut d);
+        d.ctrl_v_with_text();
+        assert_eq!(named(&mut d), before + 1, "{cmd}: the range is pasted");
+        assert!(!d.clips().iter().any(|c| c.3.contains("stale")), "{cmd}: lingering OS files are not pasted");
+    }
+}
+
+/// A Lift or Extract over a range with no clips on the targeted tracks leaves both clipboards
+/// alone: an image copied afterwards in another app is not taken for stale, and Ctrl+V pastes it
+/// rather than the clip copied before (#3019).
+#[test]
+fn lift_or_extract_over_no_clips_keeps_a_newer_os_image_pasteable() {
+    for cmd in ["sequence.lift", "sequence.extract"] {
+        let mut d = Driver::demo("lift-empty");
+        d.ok("ui.set", json!({"focused": "Timeline"}));
+        let first = d.clips().into_iter().find(|c| c.0 == 'V' && c.1 == 0).unwrap();
+        d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [first.2]}}));
+        d.ok("ui.menu.invoke", json!({"id": "edit.copy"}));
+        d.clipboard(Some(red_image));
+        let tracks: Vec<u64> = d.app().session.active_sequence().unwrap().all_tracks().map(|t| t.id.0).collect();
+        let target = |d: &mut Driver, on: bool| {
+            for t in &tracks {
+                d.ok("engine.execute", json!({"command": "timeline.setTargeting", "params": {"track": t, "targeted": on}}));
+            }
+        };
+        target(&mut d, false);
+        d.ok("engine.execute", json!({"command": "markers.markIn", "params": {"frame": 6}}));
+        d.ok("engine.execute", json!({"command": "markers.markOut", "params": {"frame": 17}}));
+        d.ok("ui.menu.invoke", json!({"id": cmd}));
+        target(&mut d, true);
+        let before = d.clips();
+        d.ctrl_v_without_text(egui::Modifiers::COMMAND);
+        let new: Vec<_> = d.clips().into_iter().filter(|c| !before.contains(c)).map(|c| c.3).collect();
+        assert_eq!(new, ["Pasted Image 1.png"], "{cmd}");
+    }
 }
 
 /// Copy from the keyboard (Ctrl+C as `Event::Copy`) also snapshots lingering OS media, so Ctrl+V

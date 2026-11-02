@@ -68,8 +68,15 @@ thread_local! {
     static TRANSFERS: RefCell<Transfers> = RefCell::new(Transfers::default());
 }
 
+thread_local! {
+    /// Monotonic browser clock. `Date::now()` is wall time and can move backwards across NTP or
+    /// suspend/resume; codec idle/staleness accounting must not.
+    static CLOCK: web_time::Instant = web_time::Instant::now();
+}
+
+/// Milliseconds from a monotonic browser clock; codec idle and staleness accounting must never use wall time.
 fn now_ms() -> f64 {
-    js_sys::Date::now()
+    CLOCK.with(|clock| clock.elapsed().as_secs_f64() * 1000.0)
 }
 
 fn get(o: &JsValue, k: &str) -> JsValue {
@@ -441,6 +448,8 @@ pub struct WcSource {
 enum Drive {
     /// Work is under way (or bytes are loading): retry later.
     Waiting,
+    /// Missing source bytes cannot be repaired by switching decoders.
+    ReadError(std::io::Error),
     /// The decoder failed: use our own.
     Failed,
 }
@@ -505,7 +514,7 @@ impl WcSource {
                     Ok(()) => {}
                     // the bytes are being fetched (pending is marked): feed on the next try
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Drive::Waiting,
-                    Err(_) => return Drive::Failed,
+                    Err(e) => return Drive::ReadError(e),
                 }
                 let Some(chunk_ctor) = ctor("EncodedVideoChunk") else { return Drive::Failed };
                 let init = obj(&[
@@ -597,6 +606,7 @@ impl MediaSource for WcSource {
             return Ok(f.clone());
         }
         match self.drive(i, want) {
+            Drive::ReadError(e) => Err(MediaError::Io(format!("{}: {e}", self.info.name))),
             Drive::Waiting => {
                 self.collect(&mut c, want);
                 if let Some(f) = c.frames.get(&want) {

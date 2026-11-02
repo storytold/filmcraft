@@ -308,8 +308,12 @@ fn phone_vfr_clip_extract_gain_title_to_h264_mp4() {
     let r = m.run("file.exportMedia", json!({"path": out, "format": "h264", "range": "entire", "wait": true}));
     assert_eq!(r["result"]["frames"], 89, "{r}");
 
+    verify_phone_export(&ffmpeg, &ffprobe, &src, &out);
+}
+
+fn verify_phone_export(ffmpeg: &Path, ffprobe: &Path, src: &str, out: &str) {
     // container and streams
-    let j = probe(&ffprobe, &out);
+    let j = probe(ffprobe, out);
     let (v, a) = (streams(&j, "video"), streams(&j, "audio"));
     assert_eq!((v.len(), a.len()), (1, 1), "{j}");
     assert_eq!((v[0]["codec_name"].as_str(), v[0]["width"].as_u64(), v[0]["height"].as_u64()), (Some("h264"), Some(320), Some(240)));
@@ -322,8 +326,8 @@ fn phone_vfr_clip_extract_gain_title_to_h264_mp4() {
 
     // picture: frame k of the export is frame k (before the cut) or k + 31 (after) of the source
     // as an editor plays it (CFR 30, a dropped frame holding the previous one)
-    let src_frames = frames(&ffmpeg, &src, Some("fps=30"), "gray");
-    let got = frames(&ffmpeg, &out, None, "gray");
+    let src_frames = frames(ffmpeg, src, Some("fps=30"), "gray");
+    let got = frames(ffmpeg, out, None, "gray");
     assert!(src_frames.len() >= 120, "{} source frames", src_frames.len());
     assert_eq!(got.len(), 89);
     for k in [20, 32, 40, 44, 45, 50, 70, 88] {
@@ -359,11 +363,11 @@ fn phone_vfr_clip_extract_gain_title_to_h264_mp4() {
     }
 
     // sound: beeps where the flashes are (A/V sync across the extract), 6 dB down
-    let src_pcm = pcm(&ffmpeg, &src, 0);
-    let got_pcm = pcm(&ffmpeg, &out, 0);
+    let src_pcm = pcm(ffmpeg, src, 0);
+    let got_pcm = pcm(ffmpeg, out, 0);
     let beeps = onsets(&got_pcm);
     assert_eq!(beeps.len(), 2, "beeps at {beeps:?}");
-    for (beep, flash) in beeps.iter().zip([30.0 / 30.0, 59.0 / 30.0]) {
+    for (beep, flash) in beeps.iter().zip([1.0, 59.0 / 30.0]) {
         assert!((beep - flash).abs() <= 1.0 / 30.0, "beep at {beep:.3} s, flash at {flash:.3} s");
     }
     let change = db(rms(&got_pcm, 1.01, 1.09) / rms(&src_pcm, 1.01, 1.09));
