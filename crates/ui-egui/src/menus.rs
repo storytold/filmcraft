@@ -230,7 +230,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     // can neither see nor close a dialog, so the engine command runs with what was given, and
     // Sequence Settings… answers the settings it would have shown.
     let menu = !app.engine_call;
-    if !menu && id == "sequence.settings" && params.as_object().is_none_or(|m| m.is_empty()) {
+    if !menu && id == "sequence.settings" && (params.is_null() || params.as_object().is_some_and(|m| m.is_empty())) {
         filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
         let seq = app.session.execute("sequence.inspect", json!({})).map_err(|e| e.to_string())?;
         return Ok(json!({"settings": seq["settings"]}));
@@ -306,7 +306,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             let source = targets_source(app, &params);
             params.as_object_mut().ok_or("command parameters must be an object")?.insert("target".into(), json!(if source { "source" } else { "program" }));
         }
-        if params.get("path").is_none() {
+        if menu && params.get("path").is_none() {
             return crate::panels::frame_export::open(app, ctx, &params);
         }
     }
@@ -347,7 +347,10 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if let Some(r) = crate::panels::voiceover::route(app, ctx, id, &params) {
         return r;
     }
-    if let Some(r) = crate::panels::clip_dialogs::route(app, id, &params) {
+    // Close Project's and Quit's Save Project prompts are confirmations: `engine.execute` still gets them
+    if (menu || matches!(id, "file.closeProject" | "file.closeAllProjects" | "app.quit"))
+        && let Some(r) = crate::panels::clip_dialogs::route(app, id, &params)
+    {
         return r;
     }
     if let Some(r) = crate::panels::misc::route_history(app, ctx, id, &params) {
@@ -528,18 +531,18 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
             return Ok(Value::Null);
         }
         // File ▸ Export ▸ AAF… / OMF… open their settings dialogs; with a path they export directly.
-        "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {
+        "file.exportAaf" | "file.exportOmf" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::interchange_export::open(app, ctx, id);
         }
         // File ▸ Export ▸ Captions… (and the Text panel's Export captions…) opens the caption export
         // settings (#3365); with a path it exports directly.
-        "captions.export" if params.get("path").is_none() => {
+        "captions.export" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::caption_export::open(app, ctx, &params);
         }
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
-        "file.exportMedia" if params.get("path").is_none() => {
+        "file.exportMedia" if menu && params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             app.ui.mode = Mode::Export;
             return Ok(json!({"mode": "export"}));
@@ -662,15 +665,16 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         return Ok(Value::Null);
     }
     // File dialogs for commands that need a path.
-    if (id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
-        || (id == "file.importImageSequence" && params.get("path").is_none())
-        || (id == "file.saveAs" && params.get("path").is_none())
-        || (id == "file.saveCopy" && params.get("path").is_none())
-        || (id == "file.open" && params.get("path").is_none())
-        || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
-        || (id == "captions.import" && params.get("path").is_none())
-        || (id == "graphics.newFromFile" && params.get("path").is_none())
-        || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none())
+    if menu
+        && ((id == "file.import" && params.get("paths").is_none() && params.get("path").is_none())
+            || (id == "file.importImageSequence" && params.get("path").is_none())
+            || (id == "file.saveAs" && params.get("path").is_none())
+            || (id == "file.saveCopy" && params.get("path").is_none())
+            || (id == "file.open" && params.get("path").is_none())
+            || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
+            || (id == "captions.import" && params.get("path").is_none())
+            || (id == "graphics.newFromFile" && params.get("path").is_none())
+            || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none()))
     {
         return app.file_dialog(id, &params);
     }

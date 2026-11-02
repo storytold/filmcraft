@@ -620,6 +620,9 @@ fn engine_execute_never_opens_a_parameter_dialog() {
     let r = d.exec("sequence.settings", json!({}));
     assert!(r["settings"]["width"].is_u64() && r["settings"]["frame_rate"].is_object(), "the settings, not a dialog: {r}");
     assert!(d.inspect()["dialog"].is_null(), "no dialog opened");
+    // malformed parameters are the engine's to refuse, not a request for the settings
+    let v = d.call("engine.execute", json!({"command": "sequence.settings", "params": []}));
+    assert_eq!(v["ok"], json!(false), "{v}");
     // a command that needs a parameter fails as the engine command, instead of asking in a dialog
     let v = d.call("engine.execute", json!({"command": "clip.audioGain", "params": {}}));
     assert_eq!(v["ok"], json!(false), "{v}");
@@ -668,6 +671,19 @@ fn engine_execute_leaves_the_ui_alone_for_every_dialog_command() {
         "media.createProxies",
         "media.linkMedia",
         "media.makeOffline",
+        "file.newOfflineFile",
+        "clip.speedDuration",
+        "clip.rename",
+        "clip.nest",
+        "file.exportFrame",
+        "file.exportAaf",
+        "file.exportOmf",
+        "captions.export",
+        "file.exportMedia",
+        "file.open",
+        "file.import",
+        "file.saveAs",
+        "captions.import",
     ];
     let snapshot = |d: &mut Driver| {
         let mut v = d.inspect();
