@@ -4,8 +4,8 @@ use super::menus::{CLIP_MENU, EditPointTarget, edit_point_menu, gap_menu, marker
 use super::snap::{snap, snap_playhead};
 use super::{
     Align2, ClipId, Color32, CursorIcon, Drag, EdgeKind, FilmcraftApp, Grab, HashMap, Hit, MarkerId, MarqueeAnchor, Pos2, Pressed, Rect, Sense, Sequence,
-    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer, pos2,
-    selection_trim_kind, vec2,
+    Stroke, StrokeKind, Tick, Tokens, Tool, TrackId, TrackItem, TrackKind, Value, edge_geometry, grab_at, hit, json, marker_at, marker_under_pointer,
+    paint_tool_pointer, pos2, razor_line_tracks, selection_trim_kind, tool_draws_pointer, vec2,
 };
 
 pub(super) fn preview_drag(
@@ -305,20 +305,27 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         && area.contains(p)
     {
         let g = grab_at(seq, layout, p, tool, mods, roll_ripple);
-        let blocked = tool == Tool::Selection
-            && match g.hit() {
-                Hit::Clip { clip, .. } => {
-                    let clips = if app.session.state.selection.contains(&clip) {
-                        app.session.state.selection.clone()
-                    } else if mods.alt {
-                        vec![clip]
-                    } else {
-                        filmcraft_engine::commands::with_links(&app.session, &[clip])
-                    };
-                    move_is_locked(seq, &clips, 0)
-                }
-                _ => false,
-            };
+        let blocked = match g {
+            // a trim changes its own clips, not the selection: the check `drag_is_locked` makes
+            Grab::Edge { kind: EdgeKind::Roll { left, right }, .. } => {
+                move_is_locked(seq, &filmcraft_engine::commands::with_links(&app.session, &[left, right]), 0)
+            }
+            Grab::Edge { clip, .. } => move_is_locked(seq, &filmcraft_engine::commands::with_links(&app.session, &[clip]), 0),
+            Grab::Other(Hit::Clip { clip, .. }) if tool == Tool::Selection => {
+                let clips = if app.session.state.selection.contains(&clip) {
+                    app.session.state.selection.clone()
+                } else if mods.alt {
+                    vec![clip]
+                } else {
+                    filmcraft_engine::commands::with_links(&app.session, &[clip])
+                };
+                move_is_locked(seq, &clips, 0)
+            }
+            Grab::Other(Hit::Clip { clip, .. }) if matches!(tool, Tool::Slip | Tool::Slide) => {
+                move_is_locked(seq, &filmcraft_engine::commands::with_links(&app.session, &[clip]), 0)
+            }
+            _ => false,
+        };
         let cur = if blocked {
             CursorIcon::NotAllowed
         } else {
@@ -338,18 +345,36 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
             }
         };
         ctx.set_cursor_icon(cur);
+        // the editing tools show their own icon as the pointer wherever they act in the tracks (the
+        // system pointer is hidden); a blocked edit, a volume line, the ruler and the work area bar
+        // keep the system one, and so does empty space for every tool but Hand and Zoom
+        let draws = match g {
+            Grab::Volume { .. } | Grab::Other(Hit::Ruler | Hit::WorkArea { .. }) => false,
+            Grab::Other(Hit::None) => matches!(tool, Tool::Hand | Tool::Zoom),
+            _ => true,
+        };
+        if !blocked && tool_draws_pointer(tool) && draws {
+            ctx.set_cursor_icon(CursorIcon::None);
+            paint_tool_pointer(&ctx, tool, p);
+        }
         // the edge a press here would grab, and the trim it starts (#259)
         if let Grab::Edge { track, clip, edge, kind } = g {
             crate::panels::trim_monitor::paint_hover_bracket(ui.painter(), seq, layout, track, clip, edge, kind);
         }
-        // razor preview line
+        // razor preview line: where a click cuts, through the clip and the clips linked to it
+        // (every track with Shift), as the click does
         if tool == Tool::Razor
-            && let Grab::Other(Hit::Clip { track, .. }) = g
-            && let Some(row) = layout.rows.iter().find(|r| r.track == track)
+            && let Grab::Other(Hit::Clip { clip, .. }) = g
         {
             let t = snap(app, seq, layout, rate.snap_nearest(layout.tick_at(p.x)), &[]);
             let x = layout.x_of(t);
-            ui.painter().line_segment([pos2(x, row.rect.min.y), pos2(x, row.rect.max.y)], Stroke::new(1.0, Color32::WHITE));
+            let tracks = razor_line_tracks(app, clip, mods.shift);
+            let painter = ui.painter().with_clip_rect(Rect::from_min_max(pos2(layout.content.min.x, layout.content.min.y), layout.content.max));
+            for row in layout.rows.iter().filter(|r| tracks.contains(&r.track)) {
+                let seg = [pos2(x, row.rect.min.y), pos2(x, row.rect.max.y)];
+                painter.line_segment(seg, Stroke::new(3.0, Color32::from_black_alpha(110)));
+                painter.line_segment(seg, Stroke::new(1.0, Color32::WHITE));
+            }
         }
     }
 }
@@ -788,11 +813,13 @@ fn drag_update(app: &mut FilmcraftApp, ui: &mut egui::Ui, resp: &egui::Response,
             !blocked
         });
         // the trim cursor stays for the whole drag of an edge: the hover feedback above stops once
-        // a drag is in progress (#1780)
-        if matches!(
-            app.tl.drag,
-            Some(Drag::Trim { .. } | Drag::Roll { .. } | Drag::Stretch { .. } | Drag::Remix { .. } | Drag::Transition { edge: Some(_), .. })
-        ) {
+        // a drag is in progress (#1780); a tool that draws its own pointer keeps that one
+        if !tool_draws_pointer(app.ui.tool)
+            && matches!(
+                app.tl.drag,
+                Some(Drag::Trim { .. } | Drag::Roll { .. } | Drag::Stretch { .. } | Drag::Remix { .. } | Drag::Transition { edge: Some(_), .. })
+            )
+        {
             ctx.set_cursor_icon(CursorIcon::ResizeColumn);
         }
         // auto-scroll when dragging near the edges
@@ -1407,6 +1434,22 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
 
     drop_targets(app, ui, seq, layout);
 
+    // the tool's own pointer stays on through the drag it started (a trim, slip, slide, stretch,
+    // remix or pan); a pointer the drag set itself (NotAllowed for a blocked edit, Copy for an
+    // Option-drag) stays
+    if let Some(d) = &app.tl.drag
+        && let Some(p) = pos
+        && tool_draws_pointer(tool)
+        && match d {
+            Drag::Pan { .. } => tool == Tool::Hand,
+            Drag::Scrub { .. } | Drag::WorkArea { .. } | Drag::Volume(_) | Drag::Marquee { .. } | Drag::Divider | Drag::ZoomBar { .. } => false,
+            _ => true,
+        }
+        && ctx.output(|o| o.cursor_icon) == CursorIcon::Default
+    {
+        ctx.set_cursor_icon(CursorIcon::None);
+        paint_tool_pointer(&ctx, tool, p);
+    }
     app.auto.add("timeline.tracks", layout.content, "tracks");
 }
 
