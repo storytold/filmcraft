@@ -93,10 +93,10 @@ pub fn build_hpel(f: &Plane, reuse: Option<[Plane; 3]>) -> [Plane; 3] {
     });
     let rows = f.data.len() / f.stride;
     let band = 16usize;
-    let work = |b: usize, hrows: &mut [u8], vrows: &mut [u8], crows: &mut [u8]| {
+    let work = |b: usize, hrows: &mut [u8], vrows: &mut [u8], crows: &mut [u8], scratch: &mut HpelScratch| {
         let r0 = b * band;
         let r1 = (r0 + band).min(rows);
-        hpel_rows(f, r0, r1, hrows, vrows, crows);
+        hpel_rows(f, r0, r1, hrows, vrows, crows, scratch);
     };
     let chunk = band * f.stride;
     #[cfg(feature = "threads")]
@@ -107,25 +107,34 @@ pub fn build_hpel(f: &Plane, reuse: Option<[Plane; 3]>) -> [Plane; 3] {
             .zip(vp.data.par_chunks_mut(chunk))
             .zip(cp.data.par_chunks_mut(chunk))
             .enumerate()
-            .for_each(|(b, ((h, v), c))| work(b, h, v, c));
+            .for_each_init(HpelScratch::default, |s, (b, ((h, v), c))| work(b, h, v, c, s));
     }
     #[cfg(not(feature = "threads"))]
     {
+        let mut s = HpelScratch::default();
         for (b, ((h, v), c)) in hp.data.chunks_mut(chunk).zip(vp.data.chunks_mut(chunk)).zip(cp.data.chunks_mut(chunk)).enumerate() {
-            work(b, h, v, c);
+            work(b, h, v, c, &mut s);
         }
     }
     [hp, vp, cp]
 }
 
-fn hpel_rows(f: &Plane, r0: usize, r1: usize, hout: &mut [u8], vout: &mut [u8], cout: &mut [u8]) {
+/// Per-worker buffers for `hpel_rows`, reused across bands.
+#[derive(Default)]
+struct HpelScratch {
+    hs: Vec<i16>,
+    ext: Vec<u8>,
+}
+
+fn hpel_rows(f: &Plane, r0: usize, r1: usize, hout: &mut [u8], vout: &mut [u8], cout: &mut [u8], scratch: &mut HpelScratch) {
     let stride = f.stride;
     let rows = f.data.len() / stride;
     let clampr = |r: isize| r.clamp(0, rows as isize - 1) as usize;
     // Horizontal intermediate (unclipped, unshifted) for rows r0-2 .. r1+3.
     let nrows = r1 - r0 + 5;
-    let mut hs = vec![0i16; nrows * stride];
-    let mut ext = vec![0u8; stride + 5];
+    scratch.hs.resize(nrows * stride, 0);
+    scratch.ext.resize(stride + 5, 0);
+    let (hs, ext) = (&mut scratch.hs[..], &mut scratch.ext[..]);
     for k in 0..nrows {
         let r = clampr(r0 as isize - 2 + k as isize);
         let row = &f.data[r * stride..r * stride + stride];
@@ -207,8 +216,32 @@ impl RefPic {
         }
     }
 
+    /// Luma prediction of a w x h block at (x, y) displaced by `mv`, as (samples, stride). Full- and half-sample
+    /// positions are read straight from their plane; other positions are interpolated into `buf` (stride 16).
+    #[inline]
+    pub fn luma_ref<'s>(&'s self, x: usize, y: usize, mv: Mv, w: usize, h: usize, buf: &'s mut [u8]) -> (&'s [u8], usize) {
+        let [(pa, dxa, dya), (pb, dxb, dyb)] = QPEL_SRC[((mv.y & 3) * 4 + (mv.x & 3)) as usize];
+        if pa == pb && dxa == dxb && dya == dyb {
+            let a = self.plane(pa);
+            let i = a.idx(x as isize + (mv.x as isize >> 2) + dxa as isize, y as isize + (mv.y as isize >> 2) + dya as isize);
+            (&a.data[i..], a.stride)
+        } else {
+            self.mc_luma(McBlock { x, y, w, h }, mv, buf, 16);
+            (buf, 16)
+        }
+    }
+
     /// Luma prediction of a w x h block at picture position (x, y) displaced by `mv` (quarter samples).
     pub fn mc_luma(&self, blk: McBlock, mv: Mv, out: &mut [u8], ostride: usize) {
+        match blk.w {
+            16 => self.mc_luma_w(McBlock { w: 16, ..blk }, mv, out, ostride),
+            8 => self.mc_luma_w(McBlock { w: 8, ..blk }, mv, out, ostride),
+            _ => self.mc_luma_w(blk, mv, out, ostride),
+        }
+    }
+
+    #[inline(always)]
+    fn mc_luma_w(&self, blk: McBlock, mv: Mv, out: &mut [u8], ostride: usize) {
         let McBlock { x, y, w, h } = blk;
         let xi = x as isize + (mv.x as isize >> 2);
         let yi = y as isize + (mv.y as isize >> 2);
@@ -237,6 +270,15 @@ impl RefPic {
 
     /// Chroma prediction (both planes) of a w x h chroma block at chroma position (x, y); mv in luma quarter units.
     pub fn mc_chroma(&self, blk: McBlock, mv: Mv, out: (&mut [u8], &mut [u8]), ostride: usize) {
+        match blk.w {
+            8 => self.mc_chroma_w(McBlock { w: 8, ..blk }, mv, out, ostride),
+            4 => self.mc_chroma_w(McBlock { w: 4, ..blk }, mv, out, ostride),
+            _ => self.mc_chroma_w(blk, mv, out, ostride),
+        }
+    }
+
+    #[inline(always)]
+    fn mc_chroma_w(&self, blk: McBlock, mv: Mv, out: (&mut [u8], &mut [u8]), ostride: usize) {
         let McBlock { x, y, w, h } = blk;
         let (out_u, out_v) = out;
         let xi = x as isize + (mv.x as isize >> 3);

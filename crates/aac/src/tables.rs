@@ -99,12 +99,22 @@ pub fn tns_max_order(short: bool) -> usize {
     if short { 7 } else { 12 }
 }
 
-/// `x^(4/3)` for the integer quantised magnitudes 0..=8191.
-pub fn pow43(q: u32) -> f32 {
+/// The `x^(4/3)` table for the integer quantised magnitudes 0..=8191.
+pub fn pow43_table() -> &'static [f32; 8192] {
     use std::sync::OnceLock;
-    static TABLE: OnceLock<Vec<f32>> = OnceLock::new();
-    let t = TABLE.get_or_init(|| (0..8192u32).map(|i| (i as f64).powf(4.0 / 3.0) as f32).collect());
-    match t.get(q as usize) {
+    static TABLE: OnceLock<Box<[f32; 8192]>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut t = Box::new([0f32; 8192]);
+        for (i, v) in t.iter_mut().enumerate() {
+            *v = (i as f64).powf(4.0 / 3.0) as f32;
+        }
+        t
+    })
+}
+
+/// `x^(4/3)` for an integer quantised magnitude (table lookup up to 8191).
+pub fn pow43(q: u32) -> f32 {
+    match pow43_table().get(q as usize) {
         Some(v) => *v,
         None => (q as f64).powf(4.0 / 3.0) as f32,
     }
@@ -113,6 +123,16 @@ pub fn pow43(q: u32) -> f32 {
 /// `2^(0.25 * (sf - 100))`, the dequantisation gain of scalefactor `sf`.
 #[inline]
 pub fn sf_gain(sf: i32) -> f32 {
+    use std::sync::OnceLock;
+    static TABLE: OnceLock<[f32; 256]> = OnceLock::new();
+    let t = TABLE.get_or_init(|| std::array::from_fn(|i| sf_gain_exact(i as i32)));
+    match usize::try_from(sf).ok().and_then(|i| t.get(i)) {
+        Some(g) => *g,
+        None => sf_gain_exact(sf),
+    }
+}
+
+fn sf_gain_exact(sf: i32) -> f32 {
     (0.25 * (sf as f64 - 100.0)).exp2() as f32
 }
 

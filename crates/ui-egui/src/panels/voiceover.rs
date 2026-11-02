@@ -199,6 +199,13 @@ fn open_settings(app: &mut FilmcraftApp, ctx: &egui::Context) {
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     settings_dialog(app, ctx);
     let Some(rec) = app.session.voiceover.rec.clone() else { return };
+    let input_error = app.session.voiceover.input.as_ref().and_then(|input| input.error());
+    if input_error.is_some() {
+        // The engine's stop command discards the failed take and reports the device error. Stop
+        // playback too, so the overlay cannot keep claiming that voice-over is recording.
+        app.stop();
+        return;
+    }
     if !app.playback.playing {
         return;
     }

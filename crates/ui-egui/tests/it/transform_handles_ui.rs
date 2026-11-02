@@ -478,3 +478,62 @@ fn rotating_from_beside_an_edge() {
     let r = d.num(clip, "motion", "rotation");
     assert!(r > 5.0, "up from beside the left edge turns clockwise: {r}");
 }
+
+/// Corner Pin gets a handle on each corner while it is the selected effect, on the corners of the
+/// picture; dragging one moves only that corner, and dragging inside the outline moves all four,
+/// each drag in one undo step (#776).
+#[test]
+fn corner_pin_handles_move_its_corners() {
+    let mut d = Driver::demo();
+    let (clip, _) = d.first_clip();
+    // half size, so every corner is on the monitor
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": 50.0}));
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "corner_pin"}));
+    d.frames(2);
+    d.click("effectControls.effect.motion");
+    let box_corners: Vec<(f64, f64)> = (0..4).map(|n| d.center(&format!("program.transform.handle.{n}"))).collect();
+    assert!(d.find("program.cornerPin.handle.0").is_none(), "no corner handles while Motion is selected");
+    d.exec("effects.select", json!({"clip": clip, "effect": "corner_pin"}));
+    d.frames(2);
+    assert!(d.find("program.transform.box").is_none(), "Corner Pin has no transform box");
+    for (n, c) in box_corners.iter().enumerate() {
+        let at = d.center(&format!("program.cornerPin.handle.{n}"));
+        assert!(near(at, *c), "corner {n} starts on the picture's corner: {at:?} vs {c:?}");
+    }
+    d.shot("corner-pin-selected");
+
+    let others: Vec<(f64, f64)> = ["upper_right", "lower_right", "lower_left"].iter().map(|p| d.point(clip, "corner_pin", p)).collect();
+    let undo = d.undo_len();
+    let at = d.center("program.cornerPin.handle.0");
+    d.drag("program.cornerPin.handle.0", 40.0, 20.0);
+    assert!(near(d.center("program.cornerPin.handle.0"), (at.0 + 40.0, at.1 + 20.0)), "the handle follows the pointer");
+    let ul = d.point(clip, "corner_pin", "upper_left");
+    assert!(ul.0 > 1.0 && ul.1 > 1.0, "the upper-left corner moves in: {ul:?}");
+    let now: Vec<(f64, f64)> = ["upper_right", "lower_right", "lower_left"].iter().map(|p| d.point(clip, "corner_pin", p)).collect();
+    // (auto points are NaN, which never equal themselves: compare their bits)
+    let bits = |v: &[(f64, f64)]| v.iter().map(|(x, y)| (x.to_bits(), y.to_bits())).collect::<Vec<_>>();
+    assert_eq!(bits(&now), bits(&others), "the other corners stay put");
+    assert_eq!(d.undo_len(), undo + 1, "one undo step per drag");
+    d.shot("corner-pin-dragged");
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    assert!(near(d.center("program.cornerPin.handle.0"), at), "undo puts the corner back");
+
+    // a drag inside the outline (away from the handles) moves every corner by the same amount
+    let before: Vec<(f64, f64)> = (0..4).map(|n| d.center(&format!("program.cornerPin.handle.{n}"))).collect();
+    let undo = d.undo_len();
+    let b = d.rect("program.cornerPin.box");
+    d.drag_from((b[0] + b[2] * 0.4, b[1] + b[3] * 0.4), 30.0, -15.0);
+    for (n, c) in before.iter().enumerate() {
+        let now = d.center(&format!("program.cornerPin.handle.{n}"));
+        assert!(near(now, (c.0 + 30.0, c.1 - 15.0)), "corner {n} moves with the drag: {c:?} → {now:?}");
+    }
+    assert_eq!(d.undo_len(), undo + 1, "the four corners move in one undo step");
+    d.shot("corner-pin-moved");
+    // a drag beside the outline (outside the picture) moves nothing
+    let pins: Vec<(f64, f64)> = ["upper_left", "upper_right", "lower_right", "lower_left"].iter().map(|p| d.point(clip, "corner_pin", p)).collect();
+    let b = d.rect("program.cornerPin.box");
+    d.drag_from((b[0] - 40.0, b[1] + b[3] / 2.0), 20.0, 0.0);
+    let after: Vec<(f64, f64)> = ["upper_left", "upper_right", "lower_right", "lower_left"].iter().map(|p| d.point(clip, "corner_pin", p)).collect();
+    assert_eq!(after, pins);
+}

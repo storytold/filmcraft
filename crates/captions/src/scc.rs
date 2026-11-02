@@ -35,7 +35,11 @@ pub fn parse_timecode(s: &str) -> Option<i64> {
     let parts: Vec<&str> = s.split([':', ';', '.', ',']).collect();
     let [h, m, sec, f] = parts.as_slice() else { return None };
     let n = |p: &str| if (1..=3).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()) { p.parse::<i64>().ok() } else { None };
-    Some(fields_to_frames(n(h)?, n(m)?, n(sec)?, n(f)?, RATE, df))
+    let (h, m, sec, f) = (n(h)?, n(m)?, n(sec)?, n(f)?);
+    if m >= 60 || sec >= 60 || f >= 30 {
+        return None;
+    }
+    Some(fields_to_frames(h, m, sec, f, RATE, df))
 }
 
 pub fn format_timecode(frame: i64, drop_frame: bool) -> String {
@@ -501,6 +505,13 @@ mod tests {
         assert_eq!(parse_timecode("00:+1:00:00"), None);
         assert_eq!(parse_timecode("00:00:00:"), None);
         assert_eq!(parse_timecode("00:00:01:00"), Some(30));
+    }
+
+    #[test]
+    fn timecode_rejects_out_of_range_fields() {
+        assert_eq!(parse_timecode("00:60:00:00"), None);
+        assert_eq!(parse_timecode("00:00:60:00"), None);
+        assert_eq!(parse_timecode("00:00:00:30"), None);
     }
 
     #[test]

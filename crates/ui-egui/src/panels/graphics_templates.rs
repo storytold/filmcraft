@@ -196,16 +196,16 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         install = r.clicked();
     });
     b.add_space(6.0);
-    let q = st.query.to_lowercase();
+    let q = st.query.trim();
     let shown: Vec<&LibraryEntry> = lib
         .iter()
         .filter(|e| {
             let tt = &e.template;
             (st.category.is_empty() || tt.category == st.category)
-                && (crate::i18n::matches_query(&tt.name, &q)
-                    || crate::i18n::matches_query(&tt.category, &q)
-                    || crate::i18n::matches_query(&tt.description, &q)
-                    || tt.tags.iter().any(|x| crate::i18n::matches_query(x, &q)))
+                && (crate::i18n::matches_query(&tt.name, q)
+                    || crate::i18n::matches_query(&tt.category, q)
+                    || crate::i18n::matches_query(&tt.description, q)
+                    || tt.tags.iter().any(|x| crate::i18n::matches_query(x, q)))
         })
         .collect();
     let selected = st.selected.clone();
@@ -253,7 +253,7 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                         elems.push((format!("gfxTemplates.item.{}", e.template.id), r, e.template.name.clone()));
                         let resp = resp.on_hover_text(crate::i18n::t(&e.template.description));
-                        if resp.drag_started() {
+                        if resp.drag_started_by(egui::PointerButton::Primary) {
                             crate::panels::start_drag_template(ui, &e.template.id, &e.template.name);
                         }
                         if resp.double_clicked() {
@@ -436,7 +436,7 @@ pub fn template_controls(
                 let r = craft_ui::ComboBox::from_id_salt(("gfx-tpl-font", clip.0, c.id.as_str())).selected_text(&fam).width(170.0).height(360.0).show_ui(
                     &mut vui,
                     |ui| {
-                        for (f, _) in filmcraft_text::families() {
+                        for (f, _) in filmcraft_text::picker_families() {
                             if ui.selectable_label(f == fam, &f).clicked() {
                                 set(json!(f), actions);
                             }
@@ -769,7 +769,7 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 elems.push(("replaceFonts.from".into(), r.response.rect, "Replace".into()));
                 ui.label(tl!("with:"));
                 let r = craft_ui::ComboBox::from_id_salt("gfx-rf-to").selected_text(&d.to).width(160.0).height(360.0).show_ui(ui, |ui| {
-                    for (f, _) in filmcraft_text::families() {
+                    for (f, _) in filmcraft_text::picker_families() {
                         ui.selectable_value(&mut d.to, f.clone(), &f);
                     }
                 });
