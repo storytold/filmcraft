@@ -2,10 +2,10 @@
 # (filmcraft-<version>-linux-<arch>.flatpak). Build it with packaging/linux/flatpak-bundle.sh.
 #
 # It repackages the release's own Linux tarball (filmcraft-<version>-linux-<arch>.tar.gz,
-# built on Ubuntu 22.04 by package.sh) instead of compiling Rust inside flatpak-builder: no
+# built on Ubuntu 24.04 by package.sh) instead of compiling Rust inside flatpak-builder: no
 # network and no vendored crate sources during the build, a few seconds instead of 20+ minutes,
 # and byte-for-byte the same binaries as the AppImage/deb/rpm. The script unpacks the tarball
-# into `stage/` next to a copy of this file. The binaries need glibc >= 2.35 and load X11,
+# into `stage/` next to a copy of this file. The binaries need glibc >= 2.39 and load X11,
 # Wayland, xkbcommon, ALSA and Vulkan at runtime; the freedesktop runtime has all of them (its
 # ALSA routes through PulseAudio/PipeWire), and the GPU driver comes from its
 # org.freedesktop.Platform.GL extension.

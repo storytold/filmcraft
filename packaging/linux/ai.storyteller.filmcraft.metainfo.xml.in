@@ -17,9 +17,10 @@
   </description>
   <launchable type="desktop-id">ai.storyteller.filmcraft.desktop</launchable>
   <icon type="stock">ai.storyteller.filmcraft</icon>
-  <!-- Only url types known to appstream 0.15 (Ubuntu 22.04, where CI validates): no vcs-browser. -->
+  <!-- All url types known to appstream 1.0 (Ubuntu 24.04, where CI validates), including vcs-browser. -->
   <url type="homepage">https://getartcraft.com/apps/filmcraft</url>
   <url type="bugtracker">https://github.com/storytold/filmcraft/issues</url>
+  <url type="vcs-browser">https://github.com/storytold/filmcraft</url>
   <url type="help">https://github.com/storytold/filmcraft</url>
   <url type="contact">https://discord.gg/artcraft</url>
   <categories>

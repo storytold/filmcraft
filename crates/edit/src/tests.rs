@@ -1391,3 +1391,506 @@ fn trim_caption_shorter_than_min_duration_does_not_cross_bounds() {
         assert!(c.duration >= Tick(1000), "{edge:?}: caption shrank: {:?}", c.duration);
     }
 }
+
+// ---------- time remapping ----------
+
+use filmcraft_project::{ParamValue, find_effect};
+
+/// A clip with an animated Time Remapping speed curve (percent keyframes at clip-relative
+/// timeline time), placed with `overwrite`.
+fn put_remapped(fx: &mut Fx, track: TrackId, start: i64, dur: i64, src_in: i64, speed: f64, reverse: bool, keys: &[(i64, f64)]) -> TrackItem {
+    let mut it = fx.item(start, dur, src_in);
+    it.speed = speed;
+    it.reverse = reverse;
+    let mut e = find_effect("time_remap").unwrap().instance();
+    let p = e.param_mut("speed").unwrap();
+    for (t, v) in keys {
+        p.put_keyframe(f(*t), ParamValue::Float(*v));
+    }
+    it.effects.push(e);
+    let mut n = fx.next;
+    overwrite(&mut fx.seq, vec![(track, it)], &mut Fx::ctx(&mut n)).unwrap();
+    fx.next = n;
+    fx.seq.track(track).unwrap().items.last().unwrap().clone()
+}
+
+/// Every frame the two pieces cover shows the media the intact clip showed there.
+fn assert_track_shows_like(fx: &Fx, orig: &TrackItem, from: i64, to: i64) {
+    for k in from..to {
+        let t = f(k);
+        let it = fx.seq.track(fx.v(0)).unwrap().items.iter().find(|i| i.start <= t && t < i.end()).unwrap();
+        assert_eq!(it.source_time_at(t), orig.source_time_at(t), "frame {k} diverges after the split");
+    }
+}
+
+#[test]
+fn razor_keeps_a_reversed_clip_continuous_despite_rounding() {
+    // 10 frames at 150% cut at frame 3: the old total-span-minus-cut advance (15-5=10) disagreed
+    // with the right piece's real media span (7*1.5=10.5) by half a frame
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let orig = put_remapped(&mut fx, v1, 10, 10, 200, 1.5, true, &[]);
+    let mut n = fx.next;
+    let new = razor(&mut fx.seq, &[], f(13), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 1);
+    let items = &fx.seq.track(v1).unwrap().items;
+    let (left, right) = (&items[0], &items[1]);
+    assert_eq!(right.source_in, orig.source_in);
+    // the left piece starts exactly where the right piece's media ends (the review's fix)
+    assert_eq!(left.source_in, orig.source_in + right.media_span(Tick::ZERO, right.duration));
+    assert_track_shows_like(&fx, &orig, 10, 20);
+}
+
+#[test]
+fn razor_keeps_a_time_remap_curve_across_the_cut() {
+    // 100% up to the middle key, ramping to 200% over 10 frames: both pieces reproduce the
+    // intact clip's mapping
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let orig = put_remapped(&mut fx, v1, 10, 20, 200, 1.0, false, &[(0, 100.0), (10, 200.0)]);
+    // the curve bends the mapping onto fractional frames: 6.25 frames of media in the first 5
+    assert_eq!(orig.source_time_at(f(15)), f(200) + Tick(25 * f(1).0 / 4));
+    assert_eq!(orig.source_time_at(f(20)), f(215)); // 15 frames of media in the first 10
+    assert_eq!(orig.source_time_at(f(25)), f(225)); // + 5 frames at 200%
+    let mut n = fx.next;
+    let new = razor(&mut fx.seq, &[], f(15), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 1);
+    let right = &fx.seq.track(v1).unwrap().items[1];
+    // the right piece's curve shifted with its timeline restart
+    let p = right.effect("time_remap").unwrap().param("speed").unwrap();
+    assert_eq!(p.keyframes.iter().map(|k| k.time.0).collect::<Vec<_>>(), vec![-5 * f(1).0, 5 * f(1).0]);
+    assert_track_shows_like(&fx, &orig, 10, 30);
+}
+
+#[test]
+fn razor_keeps_a_reversed_time_remap_curve_continuous() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let orig = put_remapped(&mut fx, v1, 10, 20, 200, 1.0, true, &[(0, 100.0), (10, 300.0)]);
+    let mut n = fx.next;
+    let new = razor(&mut fx.seq, &[], f(18), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 1);
+    assert_track_shows_like(&fx, &orig, 10, 30);
+}
+
+#[test]
+fn time_remap_speed_drives_the_media_mapping() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[(0, 50.0), (5, 50.0), (15, 150.0)]);
+    // 50% for 5 frames, ramp to 150% over 10, 150% after: the mapping integrates the curve
+    assert_eq!(it.source_time_at(f(0)), f(100));
+    assert_eq!(it.source_time_at(f(5)), f(100) + Tick(5 * f(1).0 / 2)); // 2.5 frames of media
+    assert_eq!(it.source_out() - it.source_in, f(20)); // 2.5 + ramp avg 1.0 * 10 + 5 * 1.5
+    // a clip without an animated remap keeps the constant-speed mapping
+    let plain = fx.item(0, 20, 100);
+    assert_eq!(plain.source_time_at(f(5)), f(105));
+}
+
+/// `fit_remap_duration` after changing the speed of the remapped clip `it` to `new_keys`, the way
+/// `effects.setParam` drives it: the media span is taken on the old curve, then the curve changes.
+fn fit_after_speed_change(fx: &mut Fx, it: &TrackItem, new_keys: &[(i64, f64)], track: TrackId) -> TrackItem {
+    let old_span = it.source_out() - it.source_in;
+    let mut n = fx.next;
+    let ctx = Fx::ctx(&mut n);
+    let idx = fx.seq.track(track).unwrap().items.iter().position(|i| i.id == it.id).unwrap();
+    {
+        let p = fx
+            .seq
+            .track_mut(track)
+            .unwrap()
+            .items[idx]
+            .effect_mut("time_remap")
+            .unwrap()
+            .param_mut("speed")
+            .unwrap();
+        p.keyframes.clear();
+        for (t, v) in new_keys {
+            p.put_keyframe(f(*t), ParamValue::Float(*v));
+        }
+    }
+    fit_remap_duration(&mut fx.seq, it.id, old_span, &ctx).unwrap();
+    fx.seq.track(track).unwrap().items[idx].clone()
+}
+
+#[test]
+fn a_faster_constant_remap_speed_halves_the_clip_so_its_media_fits() {
+    // 20 frames keyed at 100%: rekeyed to 200%, the media fits in half the timeline and the clip
+    // ends where its media ends, instead of holding a still frame past it
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[(0, 100.0)]);
+    let out = fit_after_speed_change(&mut fx, &it, &[(0, 200.0)], v1);
+    assert_eq!(out.duration, f(10));
+    assert_eq!(out.source_out() - out.source_in, f(20), "the same 20 frames of media, in half the time");
+    // and the clip shows its media end at its own end: no frozen frame past it
+    assert_eq!(out.source_time_at(out.end() - Tick(1)), f(120) - Tick(2), "the media's last frame");
+}
+
+#[test]
+fn a_slower_constant_remap_speed_grows_the_clip_to_fit_its_media() {
+    // 20 frames keyed at 100%: rekeyed to 50%, showing the same media takes twice the timeline
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[(0, 100.0)]);
+    let out = fit_after_speed_change(&mut fx, &it, &[(0, 50.0)], v1);
+    assert_eq!(out.duration, f(40));
+    assert_eq!(out.source_out() - out.source_in, f(20));
+}
+
+#[test]
+fn a_varying_curve_is_fitted_by_its_integrated_consumption() {
+    // 20 frames keyed 100% then 200% at the middle consume 35 frames of media (15 under the ramp,
+    // 20 at 200%). Rekeying the tail to 300%: the same media takes 17.5 frames — 27.5 of it by
+    // frame 15 under the ramps, the last 7.5 at 300%
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[(0, 100.0), (10, 200.0)]);
+    let out = fit_after_speed_change(&mut fx, &it, &[(0, 100.0), (10, 200.0), (15, 300.0)], v1);
+    assert_eq!(out.duration, f(15) + Tick(5 * f(1).0 / 2));
+    assert_eq!(out.source_out() - out.source_in, f(35), "the same 35 frames of media");
+}
+
+#[test]
+fn a_varying_curve_fit_shows_no_more_media_than_the_clip_has() {
+    // 20 frames keyed 100% but only 15 frames of media (a pre-fix project's frozen tail): rekeyed
+    // to 150% then 300%, the fit ends the clip where the media runs out, at frame 10
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[(0, 100.0)]);
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(115)), ..Fx::ctx(&mut n) };
+    let old_span = it.source_out() - it.source_in;
+    {
+        let p = fx.seq.track_mut(v1).unwrap().items[0].effect_mut("time_remap").unwrap().param_mut("speed").unwrap();
+        p.keyframes.clear();
+        p.put_keyframe(f(0), ParamValue::Float(150.0));
+        p.put_keyframe(f(10), ParamValue::Float(300.0));
+    }
+    fit_remap_duration(&mut fx.seq, it.id, old_span, &ctx).unwrap();
+    let out = fx.seq.track(v1).unwrap().items[0].clone();
+    // the crossing sits inside the 150%→300% ramp: 10·(√3−1) ≈ 7.32 frames of timeline
+    assert!(out.duration > f(7) && out.duration < f(8), "{:?}", out.duration);
+    let consumed = out.source_out() - out.source_in;
+    assert!((consumed - f(15)).abs() <= Tick(2), "the clip ends where its 15 frames of media end, got {consumed:?}");
+}
+
+#[test]
+fn a_varying_slower_curve_grows_the_clip_to_show_the_media_that_was_left() {
+    // 20 frames keyed 100% (20 of media): rekeyed to 50% then 100% at the middle, the same media
+    // takes 7.5 frames under the 50→100 ramp in the first 10, then the remaining 12.5 at 100%
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[(0, 100.0)]);
+    let out = fit_after_speed_change(&mut fx, &it, &[(0, 50.0), (10, 100.0)], v1);
+    assert_eq!(out.duration, f(10) + Tick(25 * f(1).0 / 2));
+    assert_eq!(out.source_out() - out.source_in, f(20));
+}
+
+#[test]
+fn a_tail_held_at_zero_consumes_no_more_so_the_clip_stays() {
+    // 20 frames keyed 100%: rekeyed to 100% then a 0% hold from frame 15, the curve never consumes
+    // the 20 frames of media again — the hold is deliberate, so the length stays
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[(0, 100.0)]);
+    let out = fit_after_speed_change(&mut fx, &it, &[(0, 100.0), (15, 0.0)], v1);
+    assert_eq!(out.duration, f(20));
+}
+
+#[test]
+fn a_remap_speed_change_takes_no_more_media_than_the_clip_has() {
+    // a pre-fix project's broken state: 200% keyed over an untrimmed 20-frame clip (40 frames of
+    // media consumed, the tail frozen). Rekeying to 300% must fit what the clip HAS (30), not the
+    // span it claimed to consume
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 0, 1.0, false, &[(0, 200.0)]);
+    assert_eq!(it.source_out() - it.source_in, f(40));
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(30)), ..Fx::ctx(&mut n) };
+    let old_span = it.source_out() - it.source_in;
+    {
+        let p = fx.seq.track_mut(v1).unwrap().items[0].effect_mut("time_remap").unwrap().param_mut("speed").unwrap();
+        p.keyframes.clear();
+        p.put_keyframe(f(0), ParamValue::Float(300.0));
+    }
+    fit_remap_duration(&mut fx.seq, it.id, old_span, &ctx).unwrap();
+    let out = fx.seq.track(v1).unwrap().items[0].clone();
+    assert_eq!(out.duration, f(10), "30 frames of media at 300% take 10 frames of timeline");
+    assert_eq!(out.source_out() - out.source_in, f(30));
+}
+
+#[test]
+fn a_slower_remap_speed_never_grows_into_the_next_clip() {
+    // 20 frames keyed at 100% followed by another clip at frame 20: rekeyed to 50% the fit wants
+    // 40 frames, but the neighbour holds it at 20 (no overlap, as with a regular trim)
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[(0, 100.0)]);
+    let mut n = fx.next;
+    let next = fx.item(20, 10, 500);
+    overwrite(&mut fx.seq, vec![(v1, next)], &mut Fx::ctx(&mut n)).unwrap();
+    let out = fit_after_speed_change(&mut fx, &it, &[(0, 50.0)], v1);
+    assert_eq!(out.duration, f(20));
+}
+
+#[test]
+fn a_static_remap_speed_and_a_frame_hold_change_nothing() {
+    // a static speed does not drive playback, and a held frame has no media to fit
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[]);
+    let out = fit_after_speed_change(&mut fx, &it, &[], v1);
+    assert_eq!(out.duration, f(20));
+    let held = put_remapped(&mut fx, v1, 30, 20, 100, 1.0, false, &[(0, 100.0)]);
+    let mut n = fx.next;
+    fx.seq.track_mut(v1).unwrap().items[1].frame_hold = Some(f(105));
+    fit_remap_duration(&mut fx.seq, held.id, held.source_out() - held.source_in, &Fx::ctx(&mut n)).unwrap();
+    let held = fx.seq.track(v1).unwrap().items[1].clone();
+    assert_eq!(held.duration, f(20));
+}
+
+#[test]
+fn a_remapped_in_edge_trim_skips_the_media_the_curve_consumes() {
+    // 100% up to frame 10, ramping to 200%: cutting 5 frames off the head skips the 6.25 frames of
+    // media the curve consumes there — not 5 — and the curve moves with the content, so every
+    // remaining frame shows the media the intact clip showed there
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let orig = put_remapped(&mut fx, v1, 0, 20, 100, 1.0, false, &[(0, 100.0), (10, 200.0)]);
+    let mut n = fx.next;
+    let d = trim(&mut fx.seq, orig.id, Edge::In, TrimMode::Regular, f(5), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, f(5));
+    let out = fx.seq.track(v1).unwrap().items[0].clone();
+    assert_eq!((out.start, out.duration), (f(5), f(15)));
+    assert_eq!(out.source_in, f(100) + Tick(25 * f(1).0 / 4), "the curve's span over [0, 5], not 5 frames");
+    let p = out.effect("time_remap").unwrap().param("speed").unwrap();
+    assert_eq!(p.keyframes.iter().map(|k| k.time.0).collect::<Vec<_>>(), vec![-5 * f(1).0, 5 * f(1).0], "the curve shifted with the content");
+    assert_track_shows_like(&fx, &orig, 5, 20);
+}
+
+#[test]
+fn an_in_edge_trim_shifts_a_reversed_remapped_clips_curve_with_its_content() {
+    // a reversed clip's In edge trims the media end: its media anchor (source In) stays, the curve
+    // follows the content, and the head cut keeps every remaining frame's media
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let orig = put_remapped(&mut fx, v1, 10, 20, 200, 1.0, true, &[(0, 100.0), (10, 300.0)]);
+    let mut n = fx.next;
+    trim(&mut fx.seq, orig.id, Edge::In, TrimMode::Regular, f(5), &mut Fx::ctx(&mut n)).unwrap();
+    let out = fx.seq.track(v1).unwrap().items[0].clone();
+    assert_eq!((out.start, out.duration), (f(15), f(15)));
+    assert_eq!(out.source_in, f(200), "the media anchor stays");
+    let p = out.effect("time_remap").unwrap().param("speed").unwrap();
+    assert_eq!(p.keyframes.iter().map(|k| k.time.0).collect::<Vec<_>>(), vec![-5 * f(1).0, 5 * f(1).0]);
+    assert_track_shows_like(&fx, &orig, 15, 30);
+}
+
+#[test]
+fn a_reversed_remapped_out_edge_pulls_in_media_by_the_curves_tail() {
+    // extending a reversed clip's tail consumes media before its source In: under a curve that is
+    // the span the new tail ticks play (300% past frame 10, so 15 frames of media for 5), and the
+    // first frame stays where it was
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let orig = put_remapped(&mut fx, v1, 10, 20, 200, 1.0, true, &[(0, 100.0), (10, 300.0)]);
+    let mut n = fx.next;
+    trim(&mut fx.seq, orig.id, Edge::Out, TrimMode::Ripple, f(5), &mut Fx::ctx(&mut n)).unwrap();
+    let out = fx.seq.track(v1).unwrap().items[0].clone();
+    assert_eq!(out.duration, f(25));
+    assert_eq!(out.source_in, f(200) - f(15), "5 tail frames at 300% consume 15 frames of media");
+    assert_eq!(out.source_time_at(f(10)), orig.source_time_at(f(10)), "the first frame stays");
+    assert_track_shows_like(&fx, &orig, 10, 35);
+}
+
+#[test]
+fn rolling_a_cut_keeps_a_remapped_clips_media_continuous() {
+    // rolling the cut 10 frames into the right clip: its head skips the 15 frames of media the
+    // curve consumes there (not 10) and its curve shifts with the content, so both sides of the
+    // cut show what they showed before
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let left = fx.put(v1, 0, 10, 0);
+    let right_orig = put_remapped(&mut fx, v1, 10, 20, 200, 1.0, false, &[(0, 100.0), (10, 200.0)]);
+    let mut n = fx.next;
+    let d = roll(&mut fx.seq, left, right_orig.id, f(10), &mut Fx::ctx(&mut n)).unwrap();
+    assert_eq!(d, f(10));
+    let items = fx.seq.track(v1).unwrap().items.clone();
+    let (left, right) = (&items[0], &items[1]);
+    assert_eq!((left.duration, left.source_in), (f(20), f(0)), "the plain left clip just grows");
+    assert_eq!(right.start, f(20));
+    assert_eq!(right.source_in, f(200) + Tick(15 * f(1).0), "the curve's span over [0, 10], not 10 frames");
+    let p = right.effect("time_remap").unwrap().param("speed").unwrap();
+    assert_eq!(p.keyframes.iter().map(|k| k.time.0).collect::<Vec<_>>(), vec![-10 * f(1).0, 0]);
+    assert_track_shows_like(&fx, &right_orig, 20, 30);
+}
+
+#[test]
+fn sliding_a_remapped_clip_moves_its_curve_but_shifts_the_neighbours() {
+    // sliding the middle clip right: the plain one grows, the remapped one after it loses head
+    // media by the curve's span and its curve shifts with the content, while the slid clip's own
+    // curve keeps its clip-relative place
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    fx.put(v1, 0, 10, 0);
+    let mid = put_remapped(&mut fx, v1, 10, 10, 300, 1.0, false, &[(0, 150.0)]);
+    let next = put_remapped(&mut fx, v1, 20, 20, 400, 1.0, false, &[(0, 100.0), (10, 200.0)]);
+    let mut n = fx.next;
+    slide(&mut fx.seq, mid.id, f(10), &mut Fx::ctx(&mut n)).unwrap();
+    let items = fx.seq.track(v1).unwrap().items.clone();
+    let (prev, mid, nxt) = (&items[0], &items[1], &items[2]);
+    assert_eq!(prev.duration, f(20), "the plain neighbour grows");
+    assert_eq!((mid.start, mid.duration), (f(20), f(10)));
+    let mp = mid.effect("time_remap").unwrap().param("speed").unwrap();
+    assert_eq!(mp.keyframes.iter().map(|k| k.time.0).collect::<Vec<_>>(), vec![0], "a slide moves the clip, not its curve");
+    assert_eq!(nxt.source_in, f(400) + Tick(15 * f(1).0), "the next clip's head skips the curve's span");
+    let np = nxt.effect("time_remap").unwrap().param("speed").unwrap();
+    assert_eq!(np.keyframes.iter().map(|k| k.time.0).collect::<Vec<_>>(), vec![-10 * f(1).0, 0]);
+    // every frame of the shrunken next clip shows the media it showed before the slide
+    for u in 0..10 {
+        assert_eq!(nxt.source_time_at(f(30 + u)), next.source_time_at(f(30 + u)), "frame {u} of the next clip diverges");
+    }
+}
+
+#[test]
+fn a_hold_key_integrates_at_its_held_rate() {
+    // 10 frames held at 100 % (Hold interpolation), then 200 %: the hold consumes exactly its 10
+    // frames of media — the trapezoid must not fold the next key's rate into the hold's right
+    // endpoint, which made it consume 10.625 frames and jump the source at the boundary
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    put_remapped(&mut fx, v1, 0, 30, 100, 1.0, false, &[(0, 100.0), (10, 200.0)]);
+    {
+        let p = fx.seq.track_mut(v1).unwrap().items[0].effect_mut("time_remap").unwrap().param_mut("speed").unwrap();
+        p.keyframes[0].interp = filmcraft_project::Interpolation::Hold;
+    }
+    let orig = fx.seq.track(v1).unwrap().items[0].clone();
+    assert_eq!(orig.media_span(Tick::ZERO, f(10)), f(10), "the hold consumes exactly its 10 frames");
+    assert_eq!(orig.media_span(Tick::ZERO, f(20)), f(30), "…and the 200 % tail at twice the rate");
+    assert_eq!(orig.source_time_at(f(9)), f(100) + f(9), "the held segment maps 1:1 up to its end");
+    assert_eq!(orig.source_time_at(f(10)), f(100) + f(10), "the boundary tick does not jump ahead");
+    // a cut on the hold's boundary is source-continuous: the right piece resumes where the hold ended
+    let mut n = fx.next;
+    let new = razor(&mut fx.seq, &[], f(10), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 1);
+    let items = fx.seq.track(v1).unwrap().items.clone();
+    assert_eq!(items[1].source_in, orig.source_in + f(10), "no source jump at the cut");
+    assert_track_shows_like(&fx, &orig, 0, 30);
+}
+
+#[test]
+fn an_out_trim_clamps_at_the_integrated_source_end() {
+    // 4 frames keyed at 200 % eat 8 of the 10 frames of source: one timeline frame of growth
+    // remains, not two (the constant-speed limit allowed 2 and then consumed 12 frames of source)
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 4, 0, 1.0, false, &[(0, 200.0)]);
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) };
+    let d = clamp_trim(&fx.seq, it.id, Edge::Out, TrimMode::Ripple, f(10), &ctx).unwrap();
+    assert_eq!(d, f(1), "2 frames of unplayed media = 1 timeline frame at 200 %");
+    let mut n = fx.next;
+    trim(&mut fx.seq, it.id, Edge::Out, TrimMode::Ripple, d, &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    let it2 = fx.seq.track(v1).unwrap().items.iter().find(|i| i.id == it.id).unwrap();
+    assert_eq!(it2.duration, f(5));
+    assert_eq!(it2.source_out(), f(10), "the trim ends at the media's last frame");
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) };
+    assert_eq!(clamp_trim(&fx.seq, it.id, Edge::Out, TrimMode::Ripple, f(10), &ctx).unwrap(), Tick::ZERO, "the source is exhausted");
+}
+
+#[test]
+fn an_in_trim_clamps_at_the_integrated_source_start() {
+    // 4 frames keyed at 200 % from source frame 2: the In edge may pull in the 2 frames of media
+    // before it, one timeline frame — the constant-speed limit allowed two and ran past frame 0
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 10, 4, 2, 1.0, false, &[(0, 200.0)]);
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) };
+    let d = clamp_trim(&fx.seq, it.id, Edge::In, TrimMode::Ripple, f(-10), &ctx).unwrap();
+    assert_eq!(d, f(-1), "2 frames of media before the In point = 1 timeline frame at 200 %");
+    let mut n = fx.next;
+    trim(&mut fx.seq, it.id, Edge::In, TrimMode::Ripple, d, &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    let it2 = fx.seq.track(v1).unwrap().items.iter().find(|i| i.id == it.id).unwrap();
+    assert_eq!(it2.source_in, f(0), "the In edge reaches the media's first frame");
+    assert_eq!(it2.duration, f(5));
+}
+
+#[test]
+fn a_reverse_trims_edges_clamp_at_the_integrated_source_ends() {
+    // reversed and keyed at 200 %, the window [0, 8) plays downward from frame 7: the Out edge
+    // has no media below the source In to pull in, the In edge pulls in the 2 frames above the
+    // source Out as one timeline frame
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 4, 0, 1.0, true, &[(0, 200.0)]);
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) };
+    let out = clamp_trim(&fx.seq, it.id, Edge::Out, TrimMode::Ripple, f(10), &ctx).unwrap();
+    assert_eq!(out, Tick::ZERO, "no media below the source In");
+    let d = clamp_trim(&fx.seq, it.id, Edge::In, TrimMode::Ripple, f(-10), &ctx).unwrap();
+    assert_eq!(d, f(-1), "2 frames of media above the source Out = 1 timeline frame at 200 %");
+    let mut n = fx.next;
+    trim(&mut fx.seq, it.id, Edge::In, TrimMode::Ripple, d, &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    let it2 = fx.seq.track(v1).unwrap().items.iter().find(|i| i.id == it.id).unwrap();
+    assert_eq!(it2.duration, f(5));
+    assert_eq!(it2.source_out(), f(10), "the window now covers the whole media");
+}
+
+#[test]
+fn a_reverse_out_trim_clamps_at_the_integrated_source_start() {
+    // reversed and keyed at 200 % from source frame 2, the window [2, 10) plays downward: the Out
+    // edge pulls in the 2 frames below the source In as one timeline frame, not four
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let it = put_remapped(&mut fx, v1, 0, 4, 2, 1.0, true, &[(0, 200.0)]);
+    let mut n = fx.next;
+    let ctx = EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) };
+    let d = clamp_trim(&fx.seq, it.id, Edge::Out, TrimMode::Ripple, f(10), &ctx).unwrap();
+    assert_eq!(d, f(1), "2 frames of media below the source In = 1 timeline frame at 200 %");
+    let mut n = fx.next;
+    trim(&mut fx.seq, it.id, Edge::Out, TrimMode::Ripple, d, &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    let it2 = fx.seq.track(v1).unwrap().items.iter().find(|i| i.id == it.id).unwrap();
+    assert_eq!(it2.source_in, f(0), "the window now covers the whole media");
+    assert_eq!(it2.source_out(), f(10));
+    assert_eq!(it2.duration, f(5));
+}
+
+#[test]
+fn a_roll_clamps_at_the_integrated_source_end() {
+    // left: 4 frames keyed at 200 % with 2 frames of source left (1 timeline frame); right:
+    // keyed at 50 % with frames of head to spare. The roll stops at the tighter, integrated limit
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let l = put_remapped(&mut fx, v1, 0, 4, 0, 1.0, false, &[(0, 200.0)]);
+    let r = put_remapped(&mut fx, v1, 4, 20, 200, 1.0, false, &[(0, 50.0)]);
+    let mut n = fx.next;
+    let d = roll(&mut fx.seq, l.id, r.id, f(10), &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    assert_eq!(d, f(1), "the left clip's 2 remaining frames of media = 1 timeline frame");
+    let items = fx.seq.track(v1).unwrap().items.clone();
+    assert_eq!(items[0].source_out(), f(10), "the left clip ends at its media's last frame");
+    let mut n = fx.next;
+    let d2 = roll(&mut fx.seq, l.id, r.id, f(10), &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    assert_eq!(d2, Tick::ZERO, "the source is exhausted");
+    let _ = r;
+}
+
+#[test]
+fn a_slide_clamps_the_neighbour_at_its_integrated_source_end() {
+    // prev: 4 frames keyed at 200 % with 2 frames of source left; sliding the middle clip right
+    // grows the prev clip's Out edge by one timeline frame, not two
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let prev = put_remapped(&mut fx, v1, 0, 4, 0, 1.0, false, &[(0, 200.0)]);
+    let mid = put_remapped(&mut fx, v1, 4, 4, 500, 1.0, false, &[]);
+    put_remapped(&mut fx, v1, 8, 4, 900, 1.0, false, &[]);
+    let mut n = fx.next;
+    let d = slide(&mut fx.seq, mid.id, f(10), &mut EditCtx { media_duration: &|_| Some(f(10)), ..Fx::ctx(&mut n) }).unwrap();
+    assert_eq!(d, f(1), "the prev clip's 2 remaining frames of media = 1 timeline frame");
+    let items = fx.seq.track(v1).unwrap().items.clone();
+    assert_eq!(items[0].id, prev.id);
+    assert_eq!(items[0].source_out(), f(10), "the prev clip ends at its media's last frame");
+    assert_eq!(items[1].start, f(5), "the slid clip follows the cut");
+}

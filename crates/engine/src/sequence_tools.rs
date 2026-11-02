@@ -316,20 +316,7 @@ pub fn select_under_playhead(s: &mut Session) {
 
 /// Timeline time at which `it` shows media time `src` (None when it doesn't).
 pub fn timeline_time_of(it: &TrackItem, src: Tick) -> Option<Tick> {
-    if let Some(h) = it.frame_hold {
-        return (h == src).then_some(it.start);
-    }
-    let speed = it.speed.abs();
-    if speed <= 0.0 {
-        return None;
-    }
-    let total = it.source_out() - it.source_in;
-    let rel_src = if it.reverse { it.source_in + total - Tick(1) - src } else { src - it.source_in };
-    if rel_src < Tick::ZERO || rel_src >= total {
-        return None;
-    }
-    let t = it.start + Tick((rel_src.0 as f64 / speed).floor() as i64);
-    (t < it.end()).then_some(t)
+    it.timeline_time_of_media(src)
 }
 
 /// Sequence ▸ Reverse Match Frame: find the Source monitor frame in the active sequence (targeted

@@ -29,7 +29,7 @@ description: |-
 overrides:
   deb:
     depends:
-      - libc6 (>= 2.35)
+      - libc6 (>= 2.39)
       - libgcc-s1
       - libxkbcommon0
       - libvulkan1 | libegl1
@@ -45,9 +45,9 @@ overrides:
       - xdg-desktop-portal
   rpm:
     depends:
-      # the same floor as the deb: built on glibc 2.35, so RHEL 9 (2.34) must refuse the install
+      # the same floor as the deb: built on glibc 2.39, so RHEL 9 (2.34) must refuse the install
       # instead of installing binaries that can't start (#93)
-      - glibc >= 2.35
+      - glibc >= 2.39
       - libxkbcommon
       - (vulkan-loader or libglvnd-egl)
       - alsa-lib

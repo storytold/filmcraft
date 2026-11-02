@@ -41,6 +41,13 @@ fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
     it.start + Tick((offset.0 as f64 / it.speed.abs().max(1e-6)).round() as i64)
 }
 
+/// Timeline time at which a keyframe of `effect`.`param` stored at `stored` sits in the sequence:
+/// Time Remapping's speed anchors its keyframes to the clip's timeline time (media time is what
+/// remapping defines), every other effect stores media time and maps through the clip.
+fn keyframe_timeline_time(it: &TrackItem, effect: &str, param: &str, stored: Tick) -> Tick {
+    if filmcraft_project::TrackItem::timeline_keyframed(effect, param) { it.start + stored } else { timeline_time_of(it, stored) }
+}
+
 // The press frame can include movement before the button went down. Start from the press
 // origin so that only gesture motion enters the preview, including same-frame movement.
 fn graph_drag_offset(ui: &egui::Ui, response: &egui::Response, previous: egui::Vec2) -> egui::Vec2 {
@@ -251,7 +258,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.auto.add("effectControls.graphicTimeHint", ir, hint);
             }
             let mt_now = it.effect_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
-            // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
+            let pt_now = ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)) - it.start;
             let mut order: Vec<usize> = (0..it.effects.len()).collect();
             order.sort_by_key(|i| !it.effects[*i].def().is_some_and(|d| d.intrinsic));
             let mut after_fixed = false;
@@ -340,7 +347,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     custom_setup_row(app, bui, body, &lane, clip, idx, &e.effect);
                 }
                 for pd in &def.params {
-                    param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, it, &mut keys);
+                    param_row(app, bui, body, clip, idx, e, None, pd, mt_now, &mut actions, &lane, &lx, it, &mut keys, pt_now);
                     if app.ui.expanded_fx.contains(&graph_key(clip, idx, pd.id))
                         && let Some(param) = e.params.get(pd.id)
                         && param.is_animated()
@@ -512,12 +519,17 @@ fn keyframe_nav(
     auto: &str,
     tip: &str,
     actions: &mut Vec<(String, Value)>,
+    pt: Tick,
+    timeline_keys: bool,
 ) -> bool {
     let t = app.tokens;
+    // the time the navigator searches and compares at: stored coordinates differ per effect kind
+    let now = if timeline_keys { pt } else { mt };
     if let Some(param) = param.filter(|p| p.is_animated()) {
-        for (d, target, name, tip) in
-            [(-1.0, param.prev_keyframe(mt), "prevKeyframe", "Go to previous keyframe"), (1.0, param.next_keyframe(mt), "nextKeyframe", "Go to next keyframe")]
-        {
+        for (d, target, name, tip) in [
+            (-1.0, param.prev_keyframe(now), "prevKeyframe", "Go to previous keyframe"),
+            (1.0, param.next_keyframe(now), "nextKeyframe", "Go to next keyframe"),
+        ] {
             // the arrows almost the row's height to click, as Premiere's
             let r = Rect::from_center_size(at + vec2(d * NAV_STEP, 0.0), vec2(14.0, 20.0));
             let resp = ui.interact(r, id.with(name), Sense::click()).on_hover_text(crate::i18n::t(tip));
@@ -528,13 +540,14 @@ fn keyframe_nav(
             if resp.clicked()
                 && let Some(k) = target
             {
-                actions.push(("playhead.set".into(), json!({"time": timeline_time_of(it, k).0})));
+                let tl = if timeline_keys { it.start + k } else { timeline_time_of(it, k) };
+                actions.push(("playhead.set".into(), json!({"time": tl.0})));
             }
         }
     }
     let r = Rect::from_center_size(at, vec2(15.0, 15.0));
     let resp = ui.interact(r.expand(1.5), id.with("key"), Sense::click()).on_hover_text(crate::i18n::t(tip));
-    if param.is_some_and(|p| p.keyframes.iter().any(|k| k.time == mt)) {
+    if param.is_some_and(|p| p.keyframes.iter().any(|k| k.time == now)) {
         icons::paint(ui.painter(), r, Icon::Keyframe, t.hot_text);
     } else {
         let s = 4.7;
@@ -562,6 +575,7 @@ fn properties_nav(
     actions: &mut Vec<(String, Value)>,
 ) {
     let prm = it.effect(effect).and_then(|e| e.param(param));
+    // the Properties panel hosts no Time Remapping row, so media time is right for every row here
     let tip = match prm {
         Some(p) if p.keyframes.iter().any(|k| k.time == mt) => "Remove keyframe",
         Some(p) if p.is_animated() => "Add keyframe",
@@ -569,7 +583,7 @@ fn properties_nav(
     };
     let at = pos2(row.max.x - PROPS_NAV_X, row.center().y);
     let id = egui::Id::unique(("props-nav", effect, param, clip.0));
-    if keyframe_nav(app, ui, at, prm, mt, it, id, &format!("properties.{effect}.{param}"), tip, actions) {
+    if keyframe_nav(app, ui, at, prm, mt, it, id, &format!("properties.{effect}.{param}"), tip, actions, mt, false) {
         if it.effect(effect).is_none() {
             actions.push(("effects.apply".into(), json!({"clips": [clip.0], "effect": effect})));
         }
@@ -593,9 +607,14 @@ pub(crate) fn param_row(
     lx: &dyn Fn(Tick) -> f32,
     it: &TrackItem,
     keys: &mut Interaction,
+    pt: Tick,
 ) {
     let _ = lx;
     let t = app.tokens;
+    // Time Remapping's speed keys and evaluates on the clip's timeline time; everything else on
+    // media time
+    let timeline_keys = filmcraft_project::TrackItem::timeline_keyframed(&e.effect, pd.id);
+    let row_mt = if timeline_keys { pt } else { mt };
     let param = match mask {
         Some(k) => e.masks.get(k).and_then(|m| m.param(pd.id)),
         None => e.params.get(pd.id),
@@ -662,7 +681,7 @@ pub(crate) fn param_row(
             actions.push(("effects.resetParam".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id})));
         }
     }
-    let value = param.value_at(mt);
+    let value = param.value_at(row_mt);
     let mut vui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(Rect::from_min_max(pos2(vx, r.min.y + 1.0), pos2(r.max.x - 26.0, r.max.y - 1.0)))
@@ -678,7 +697,20 @@ pub(crate) fn param_row(
     if pd.animatable && param.is_animated() {
         let at = pos2(r.max.x - 42.0, r.center().y);
         let auto = format!("effectControls.{}.{}", e.effect, pkey);
-        if keyframe_nav(app, ui, at, Some(param), mt, it, egui::Id::unique(("knav", clip.0, idx, pkey)), &auto, "Add/Remove Keyframe", actions) {
+        if keyframe_nav(
+            app,
+            ui,
+            at,
+            Some(param),
+            mt,
+            it,
+            egui::Id::unique(("knav", clip.0, idx, pkey)),
+            &auto,
+            "Add/Remove Keyframe",
+            actions,
+            pt,
+            timeline_keys,
+        ) {
             actions.push(("effects.addKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id}))));
         }
     }
@@ -698,7 +730,7 @@ pub(crate) fn param_row(
         let y = r.center().y;
         let dur = it.duration.0.max(1) as f64;
         for k in &param.keyframes {
-            let tl = timeline_time_of(it, k.time);
+            let tl = keyframe_timeline_time(it, &e.effect, pd.id, k.time);
             let f = ((tl - it.start).0 as f64 / dur) as f32;
             if !(-0.01..=1.01).contains(&f) {
                 continue;
@@ -1316,6 +1348,17 @@ fn graph_components(v: &ParamValue) -> Vec<f64> {
     }
 }
 
+/// The parameter time a value/velocity graph samples at x-fraction `f` of the clip: the keys' own
+/// coordinate — clip-relative timeline time for Time Remapping's speed (its keys know nothing of
+/// where the clip sits on the timeline), media time for every other parameter.
+fn graph_sample_time(it: &TrackItem, timeline_keys: bool, f: f64, dur: f64, speed: f64) -> Tick {
+    if timeline_keys {
+        Tick((f * dur) as i64)
+    } else {
+        it.source_in + Tick((f * dur * speed) as i64)
+    }
+}
+
 /// Value and velocity graphs of an animated scalar or point parameter, drawn across the keyframe
 /// lane. A point draws an X and a Y curve, and its velocity graph is the speed along its path.
 /// Keyframes drag vertically (value); Bezier influence handles drag horizontally.
@@ -1339,7 +1382,8 @@ pub(crate) fn graph_rows(
     row_line(ui, velr, lane, &t);
     let speed = it.speed.abs().max(1e-6);
     let dur = it.duration.0.max(1) as f64;
-    let to_media = |f: f64| it.source_in + Tick((f * dur * speed) as i64);
+    let timeline_keys = it.effects.get(idx).is_some_and(|e| filmcraft_project::TrackItem::timeline_keyframed(&e.effect, pd.id));
+    let to_media = |f: f64| graph_sample_time(it, timeline_keys, f, dur, speed);
     let x_of = |f: f32| lane.min.x + f * lane.width();
     // samples: one row of curve values per sample (a point's NaN "auto" coordinate is skipped)
     let n = (lane.width() / 2.0).max(8.0) as usize;
@@ -1394,7 +1438,7 @@ pub(crate) fn graph_rows(
         p.add(egui::Shape::line(line, Stroke::new(1.5, curve_color(c))));
     }
     // velocity (units per second, derivative of the sampled value; a point's speed along its path)
-    let secs = (dur * speed / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
+    let secs = (if timeline_keys { dur } else { dur * speed } / filmcraft_time::TICKS_PER_SECOND as f64 / n as f64).max(1e-9);
     let vel: Vec<f64> = vals
         .windows(2)
         .map(|w| {
@@ -1441,7 +1485,10 @@ fn draw_graph_keyframes(
     let t = app.tokens;
     let speed = it.speed.abs().max(1e-6);
     let dur = it.duration.0.max(1) as f64;
-    let to_f = |m: Tick| ((m - it.source_in).0 as f64 / speed / dur) as f32;
+    let timeline_keys = it.effects.get(idx).is_some_and(|e| filmcraft_project::TrackItem::timeline_keyframed(&e.effect, pd.id));
+    let to_f = |m: Tick| {
+        if timeline_keys { (m.0 as f64 / dur) as f32 } else { ((m - it.source_in).0 as f64 / speed / dur) as f32 }
+    };
     let x_of = |f: f32| lane.min.x + f * lane.width();
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
     let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
@@ -2024,5 +2071,33 @@ mod frame_hold_tests {
             assert!(moving != held, "{panel:?}: with Hold Filters on it shows the held frame's values");
             assert!(observe(app(Some(false)), panel) == moving, "{panel:?}: with Hold Filters off it shows the values it shows without the hold");
         }
+    }
+}
+
+#[cfg(test)]
+mod graph_time_tests {
+    use super::*;
+
+    /// The graph samples a Time Remapping curve at clip-relative timeline time: a clip that sits
+    /// away from the timeline start must not have its samples shifted by that position, while
+    /// media-keyed parameters keep sampling the media at the clip's source offset.
+    #[test]
+    fn the_remap_graph_samples_the_clips_own_time_and_media_graphs_sample_media() {
+        let mut s = filmcraft_engine::Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let clip = s.active_sequence().unwrap().video_tracks[0].items.last().unwrap().id;
+        let track = s.active_sequence().unwrap().find_item(clip).map(|(t, _)| t).unwrap();
+        s.execute("timeline.move", json!({"moves": [{"clip": clip.0, "track": track.0, "time": 10 * filmcraft_time::TICKS_PER_SECOND}]})).unwrap();
+        let q = s.active_sequence().unwrap();
+        let (_, it) = q.find_item(clip).unwrap();
+        assert!(it.start > Tick::ZERO, "the clip sits away from the timeline start");
+        let dur = it.duration.0.max(1) as f64;
+        // halfway across the graph is the clip's halfway time, not the timeline's
+        let t = graph_sample_time(it, true, 0.5, dur, 1.0);
+        assert_eq!(t, Tick((dur * 0.5) as i64));
+        assert_ne!(t, it.start + Tick((dur * 0.5) as i64), "not the clip's timeline position");
+        // media-keyed parameters keep sampling the media, at the clip's source offset
+        let m = graph_sample_time(it, false, 0.5, dur, 2.0);
+        assert_eq!(m, it.source_in + Tick((dur * 2.0 * 0.5) as i64));
     }
 }

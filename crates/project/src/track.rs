@@ -2,7 +2,7 @@ use super::HexColor;
 use super::label::Label;
 use super::sequence::bounded_time_range;
 use super::{
-    ClipId, Deserialize, EffectInstance, EssentialSound, GraphicMeta, ItemId, MarkerId, MixerStrip, MulticamSel, ParamValue, Serialize, Tick, TimeRange,
+    ClipId, Deserialize, EffectInstance, EssentialSound, GraphicMeta, ItemId, MarkerId, MixerStrip, MulticamSel, Param, ParamValue, Serialize, Tick, TimeRange,
     TrackId, TransitionId, graphic, mask,
 };
 
@@ -205,16 +205,129 @@ impl TrackItem {
     /// Media time at timeline time `t` ignoring any frame hold.
     pub fn moving_source_time_at(&self, t: Tick) -> Tick {
         let rel = t - self.start;
-        let scaled = Tick((rel.0 as f64 * self.speed.abs()).round() as i64);
-        if self.reverse {
-            self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64) - scaled - Tick(1)
-        } else {
-            self.source_in + scaled
-        }
+        let scaled = self.media_span(Tick::ZERO, rel);
+        if self.reverse { self.source_in + self.media_span(Tick::ZERO, self.duration) - scaled - Tick(1) } else { self.source_in + scaled }
     }
     /// Media time consumed by the item (the source out point).
     pub fn source_out(&self) -> Tick {
-        self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)
+        self.source_in + self.media_span(Tick::ZERO, self.duration)
+    }
+
+    /// The clip's Time Remapping speed curve (percent), when the clip carries an animated one.
+    pub fn time_remap_speed(&self) -> Option<&Param> {
+        let p = self.effect("time_remap")?.param("speed")?;
+        p.is_animated().then_some(p)
+    }
+
+    /// Whether this effect parameter's keyframes are stored in clip-relative *timeline* time
+    /// instead of media time: Time Remapping's speed. Media time is what remapping defines, so
+    /// keying the curve on it would be circular (every other effect keys on media time, which
+    /// keeps its animation glued to the content across trims and splits).
+    pub fn timeline_keyframed(effect: &str, param: &str) -> bool {
+        effect == "time_remap" && param == "speed"
+    }
+
+    /// Effective playback rate (media ticks per timeline tick) at clip-relative timeline time
+    /// `rel`: the Time Remapping speed curve when animated, else the constant clip speed.
+    pub fn remap_speed_at(&self, rel: Tick) -> f64 {
+        match self.time_remap_speed() {
+            Some(p) => (p.f64_at(rel) / 100.0).abs(),
+            None => self.speed.abs(),
+        }
+    }
+
+    /// The first timeline time at which the clip shows media time `src` (None when it never does):
+    /// the inverse of [`TrackItem::source_time_at`]. A speed curve is monotonic through the clip,
+    /// so its timeline time is bisected out of the mapping.
+    pub fn timeline_time_of_media(&self, src: Tick) -> Option<Tick> {
+        if self.frame_hold.is_some() {
+            return (self.source_time_at(self.start) == src).then_some(self.start);
+        }
+        if self.time_remap_speed().is_none() {
+            let k = self.speed.abs();
+            if !(k.is_finite() && k > 0.0) {
+                return None;
+            }
+            let total = self.media_span(Tick::ZERO, self.duration);
+            let rel_src = if self.reverse { self.source_in + total - Tick(1) - src } else { src - self.source_in };
+            if rel_src < Tick::ZERO || rel_src >= total {
+                return None;
+            }
+            let t = self.start + Tick((rel_src.0 as f64 / k).floor() as i64);
+            return (t < self.end()).then_some(t);
+        }
+        // the shown media time moves monotonically through the clip, so the timeline time for
+        // `src` is found by bisecting the mapping
+        let (a, b) = (self.source_time_at(self.start), self.source_time_at((self.end() - Tick(1)).max(self.start)));
+        let (lo_mt, hi_mt) = (a.min(b), a.max(b));
+        if src < lo_mt || src > hi_mt {
+            return None;
+        }
+        let (mut lo, mut hi) = (0i64, self.duration.0.max(1));
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let m = self.moving_source_time_at(self.start + Tick(mid));
+            let hit = if self.reverse { m <= src } else { m >= src };
+            if hit {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let t = self.start + Tick(lo.min(self.duration.0 - 1));
+        (t < self.end()).then_some(t)
+    }
+
+    /// Media ticks consumed while playing from clip-relative timeline time `from` to `to`:
+    /// ∫ rate du under the Time Remapping curve (`Keyframe::time` of the `time_remap` effect is
+    /// clip-relative timeline time), signed like `to - from` and rounded once. Without an
+    /// animated curve this is `(to - from) * |speed|` rounded, exactly as before remapping.
+    pub fn media_span(&self, from: Tick, to: Tick) -> Tick {
+        if to == from {
+            return Tick(0);
+        }
+        if to < from {
+            return -self.media_span(to, from);
+        }
+        let Some(p) = self.time_remap_speed() else {
+            // Tick arithmetic saturates, and so must the span: hostile times (i64::MIN/MAX) reach it
+            return Tick((Tick(to.0.saturating_sub(from.0)).0 as f64 * self.speed.abs()).round() as i64);
+        };
+        let rate = |t: f64| (p.f64_at(Tick(t.round() as i64)) / 100.0).abs();
+        // Trapezoidal over the pieces the keyframe times cut [from, to] into: exact for the
+        // linear and hold segments, close for the eased ones (subdivided to stay so). `value_at`
+        // answers the next key's value on the tick that ends a Hold segment, but the held rate
+        // carries through that boundary and the integral must too, so such a piece's right
+        // endpoint is sampled one tick inside it (a 10 s hold at 100 % integrates to 10 s, not
+        // 10.625 s: the next key's 200 % must not fold into the hold's last slice).
+        let hold_ends_at = |b: f64| {
+            let i = p.keyframes.partition_point(|k| (k.time.0 as f64) < b);
+            i > 0
+                && i < p.keyframes.len()
+                && p.keyframes[i].time.0 as f64 == b
+                && (p.keyframes[i - 1].interp == crate::Interpolation::Hold || !p.keyframes[i - 1].value.interpolates())
+        };
+        let piece = |pa: f64, pb: f64| {
+            let held_end = hold_ends_at(pb);
+            let r = |x: f64| if held_end && x > pa && x >= pb - 0.5 { rate(pb - 1.0) } else { rate(x) };
+            trapezoid(&r, pa, pb)
+        };
+        let (a, b) = (from.0 as f64, to.0 as f64);
+        let mut acc = 0.0;
+        let mut t = a;
+        for kf in &p.keyframes {
+            let kt = kf.time.0 as f64;
+            if kt <= t {
+                continue;
+            }
+            if kt >= b {
+                break;
+            }
+            acc += piece(t, kt);
+            t = kt;
+        }
+        acc += piece(t, b);
+        Tick(acc.round() as i64)
     }
     pub fn effect(&self, id: &str) -> Option<&EffectInstance> {
         self.effects.iter().find(|e| e.effect == id)
@@ -242,6 +355,21 @@ impl TrackItem {
                     || e.def().is_some_and(|d| d.params.iter().any(|p| e.params.get(p.id).is_some_and(|v| !param_eq_default(&v.value, &p.default)))))
         })
     }
+}
+
+/// Integral of `rate` over `[a, b]` by the trapezoidal rule, split into up to 8 slices so eased
+/// segments (non-linear speed ramps) integrate closely; exact on linear and hold segments.
+fn trapezoid(rate: &impl Fn(f64) -> f64, a: f64, b: f64) -> f64 {
+    if b <= a {
+        return 0.0;
+    }
+    const SLICES: f64 = 8.0;
+    let step = (b - a) / SLICES;
+    let mut acc = (rate(a) + rate(b)) / 2.0;
+    for i in 1..SLICES as i64 {
+        acc += rate(a + i as f64 * step);
+    }
+    acc * step
 }
 
 fn param_eq_default(v: &ParamValue, d: &ParamValue) -> bool {

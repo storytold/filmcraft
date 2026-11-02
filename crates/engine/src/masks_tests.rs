@@ -483,6 +483,9 @@ fn replacing_the_project_drops_pending_tracking_jobs() {
     }
     let project = serde_json::to_string(&*s.project).unwrap().to_lowercase();
     assert!(!project.contains("mask"), "stale mask data in new project");
+    let jobs = s.execute("jobs.list", json!({})).unwrap();
+    let j = jobs.as_array().unwrap().iter().find(|j| j["id"] == job).unwrap().clone();
+    assert!(j["cancelled"] == true || j["finished"] == true, "{j}");
     // the discarded job was told to stop (the worker may not have noticed yet on a slow machine,
     // so its `finished` flag is not waited for)
     let j = s.jobs.iter().find(|j| json!(j.id) == job).expect("the tracking job is listed");
