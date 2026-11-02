@@ -584,7 +584,8 @@ fn is_xml_space(c: char) -> bool {
 }
 
 fn clean(s: &str) -> String {
-    s.lines().map(|l| l.trim_matches(is_xml_space)).collect::<Vec<_>>().join("\n").trim_matches(is_xml_space).to_string()
+    // `split` (not `lines`) keeps the empty edge lines produced by a leading or trailing `<br/>`.
+    s.split('\n').map(|l| l.trim_matches(is_xml_space)).collect::<Vec<_>>().join("\n")
 }
 
 pub fn parse(text: &str) -> Result<Document> {
@@ -696,7 +697,7 @@ fn walk(n: roxmltree::Node, parent: Scope, tm: &Timing, styles: &HashMap<String,
                             o.s.push_str(&format!("</{t}>"));
                         }
                         let text = clean(&o.s);
-                        if e > b && !text.is_empty() {
+                        if e > b && !text.trim_matches(is_xml_space).is_empty() {
                             doc.cues.push(Cue { start: b, end: e, text, speaker: cue_speaker, id, ..Default::default() });
                         }
                     }
@@ -710,7 +711,7 @@ fn walk(n: roxmltree::Node, parent: Scope, tm: &Timing, styles: &HashMap<String,
                                 let mut o = Out { s: String::new(), pending: false };
                                 collect(sp, styles, style_of(sp, styles, f), &mut o);
                                 let text = clean(&o.s);
-                                if se > sb && !text.is_empty() {
+                                if se > sb && !text.trim_matches(is_xml_space).is_empty() {
                                     doc.cues.push(Cue {
                                         start: sb,
                                         end: se,
@@ -746,6 +747,18 @@ mod tests {
         let xml = "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"1s\" end=\"2s\">\u{a0}x<br/>y\u{a0}</p></div></body></tt>";
         let doc = parse(xml).unwrap();
         assert_eq!(doc.cues[0].text, "\u{a0}x\ny\u{a0}");
+    }
+
+    #[test]
+    fn edge_line_breaks_survive_round_trip() {
+        for (body, want) in [("<br/>text", "\ntext"), ("text<br/>", "text\n"), (" <br/> text <br/> ", "\ntext\n")] {
+            let xml = format!("<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"1s\" end=\"2s\">{body}</p></div></body></tt>");
+            let doc = parse(&xml).unwrap();
+            assert_eq!(doc.cues[0].text, want);
+            let out = write(&doc, Flavor::Dfxp, None, "en");
+            let again = parse(&out).unwrap();
+            assert_eq!(again.cues[0].text, want);
+        }
     }
 
     #[test]
