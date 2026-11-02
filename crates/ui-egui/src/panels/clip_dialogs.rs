@@ -28,6 +28,8 @@
 //! - Clip Speed / Duration `speedDuration.*`: `speed`, `duration`, `reverse`, `ripple`,
 //!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`;
+//! - New Project / Demo Project with unsaved changes (see [`ask_before_replace`])
+//!   `newProject.*` / `openDemoProject.*`: `save`, `dontSave`, `cancel`;
 //! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
 //!   `quit.save`, `quit.dontSave`, `quit.cancel`.
 
@@ -65,6 +67,8 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "file.closeProject" => (tl!("Save Project"), "closeProject"),
         "app.quit" => (tl!("Save Project"), "quit"),
         "file.open" => (tl!("Save Project"), "openProject"),
+        "file.newProject" => (tl!("Save Project"), "newProject"),
+        "file.openDemoProject" => (tl!("Save Project"), "openDemoProject"),
         _ => return None,
     })
 }
@@ -120,6 +124,12 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     if !empty {
         return None;
     }
+    // New Project and the Demo Project replace the project: from a menu, shortcut or button they
+    // ask before replacing unsaved changes, as Open does (#3621); a script passing params (a `name`,
+    // or `discard: true`) runs them directly
+    if matches!(id, "file.newProject" | "file.openDemoProject") {
+        return ask_before_replace(app, id, params);
+    }
     // One project is open at a time, so Close All Projects is Close Project: it asks the same "save
     // changes?" question first instead of refusing because there are unsaved changes
     if id == "file.closeAllProjects" {
@@ -156,6 +166,25 @@ pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Valu
     }
     app.ui.clip_dialog = Some(ClipDialogDraft { command: "file.open".into(), params: json!({"path": path}), info: Value::Null, error: String::new() });
     Some(Ok(json!({"dialog": "openProject"})))
+}
+
+/// New Project or the Demo Project (`command`, run with `params`) from the UI with unsaved changes,
+/// including a never-saved project: Save / Don't Save / Cancel is asked first, as for Open, and the
+/// project is replaced once the answer lets it (#3621). None when there is nothing unsaved, so the
+/// caller replaces it now.
+pub fn ask_before_replace(app: &mut FilmcraftApp, command: &str, params: &Value) -> Option<Result<Value, String>> {
+    if !app.session.is_dirty() {
+        return None;
+    }
+    let (_, prefix) = meta(command)?;
+    app.ui.clip_dialog = Some(ClipDialogDraft { command: command.into(), params: params.clone(), info: Value::Null, error: String::new() });
+    Some(Ok(json!({"dialog": prefix})))
+}
+
+/// Whether `command`'s dialog is the Save / Don't Save / Cancel prompt asked before the project is
+/// closed or replaced.
+fn asks_to_save(command: &str) -> bool {
+    matches!(command, "file.closeProject" | "app.quit" | "file.open" | "file.newProject" | "file.openDemoProject")
 }
 
 /// A request to close the window (Quit, the title bar's close button, the OS): with unsaved
@@ -634,7 +663,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 }
             }
-            "file.closeProject" | "app.quit" | "file.open" => {
+            c if asks_to_save(c) => {
                 ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -681,10 +710,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if crate::widgets::escape_closes(ctx) {
         action = Some("cancel");
     }
-    if action.is_none()
-        && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.pointer.any_down())
-        && !matches!(d.command.as_str(), "file.closeProject" | "app.quit" | "file.open")
-    {
+    if action.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Enter) && !i.pointer.any_down()) && !asks_to_save(&d.command) {
         action = Some("ok");
     }
     if action.is_some() {
@@ -736,7 +762,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 // a newer prompt (Quit asked while Close Project's dialog was open) is the one to
                 // finish or to show again
-                let newer = matches!(app.ui.clip_dialog.as_ref().map(|c| c.command.as_str()), Some("app.quit" | "file.closeProject" | "file.open"));
+                let newer = app.ui.clip_dialog.as_ref().is_some_and(|c| asks_to_save(&c.command));
                 let prompt = if newer { app.ui.clip_dialog.take().unwrap_or(prompt) } else { prompt };
                 let Some(path) = paths.into_iter().next() else {
                     // cancelled: the prompt again, unless another dialog is open now
@@ -791,6 +817,19 @@ fn leave(app: &mut FilmcraftApp, ctx: &egui::Context, prompt: &ClipDialogDraft) 
         && let Err(e) = app.session.execute("file.open", json!({"path": path}))
     {
         app.ui.status = e.to_string();
+    }
+    // New Project and the Demo Project: Don't Save discards the changes as Close Project does, so
+    // the replacement never meets them; then the new project replaces the closed one
+    if matches!(command, "file.newProject" | "file.openDemoProject") {
+        if app.session.is_dirty()
+            && let Err(e) = app.session.execute("file.closeProject", json!({"force": true}))
+        {
+            app.ui.status = e.to_string();
+            return;
+        }
+        if let Err(e) = app.session.execute(command, prompt.params.clone()) {
+            app.ui.status = e.to_string();
+        }
     }
 }
 
