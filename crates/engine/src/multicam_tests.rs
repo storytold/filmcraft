@@ -963,3 +963,57 @@ fn audio_sync_against_a_long_stereo_clip() {
     let dt = (a[1].anchor - a[0].anchor).0 as f64 / TICKS_PER_SECOND as f64;
     assert!((dt + 100.0).abs() < 0.05, "{dt}");
 }
+
+/// Seeded white noise in [-0.3, 0.3] (xorshift32).
+fn noise(n: usize, mut seed: u32) -> Vec<f32> {
+    (0..n)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * 0.3
+        })
+        .collect()
+}
+
+/// #4055: Synchronize by audio leaves a clip whose match is not reliable where it is and lists it;
+/// `moveUnreliable` still moves it.
+#[test]
+fn synchronize_by_audio_leaves_clips_without_a_reliable_match() {
+    let dir = tmp_dir("sync-unreliable");
+    let rec = noise(480_000, 7);
+    let files = [("rec.wav", rec.clone()), ("cam.wav", rec[73_234..313_234].to_vec()), ("music.wav", noise(240_000, 99).iter().map(|x| x * 0.5).collect())];
+    let paths: Vec<PathBuf> = files
+        .iter()
+        .map(|(f, x)| {
+            let p = dir.join(f);
+            std::fs::write(&p, crate::voiceover::write_wav_f32(x, 48_000)).unwrap();
+            p
+        })
+        .collect();
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "Sync", "fps": 25, "video": 1, "audio": 3})).unwrap();
+    let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+    let items = import(&mut s, &refs);
+    let rate = FrameRate::FPS_25;
+    let mut clips = Vec::new();
+    for (k, (it, sec)) in items.iter().zip([0i64, 2, 3]).enumerate() {
+        let r = s.execute("timeline.place", json!({"item": it.0, "track": format!("A{}", k + 1), "time": sec * TICKS_PER_SECOND})).unwrap();
+        clips.push(r["clips"][0].as_u64().unwrap());
+    }
+    let r = s.execute("clip.synchronize", json!({"method": "audio", "clips": clips, "reference": clips[0]})).unwrap();
+    assert_eq!(r["clips"][1]["audio"]["reliable"], true, "{r}");
+    assert_eq!(r["clips"][2]["audio"]["reliable"], false, "{r}");
+    assert_eq!(r["moved"], 1, "{r}");
+    assert_eq!(r["unsynchronized"], json!([clips[2]]), "{r}");
+    let q = s.active_sequence().unwrap().clone();
+    let (rec_c, cam, music) = (find_clip(&q, items[0], false), find_clip(&q, items[1], false), find_clip(&q, items[2], false));
+    assert_eq!(rec_c.start, Tick::ZERO, "the reference stays put");
+    let d = (event_time(cam, 73_234, 100_000) - event_time(rec_c, 0, 100_000)).abs();
+    assert!(d <= SAMPLE, "camera sync error {} samples", d.0 as f64 / SAMPLE.0 as f64);
+    assert_eq!(music.start, rate.tick_of(75), "the clip without a reliable match stays at 3 s");
+    s.execute("edit.undo", json!({})).unwrap();
+    let r = s.execute("clip.synchronize", json!({"method": "audio", "clips": clips, "reference": clips[0], "moveUnreliable": true})).unwrap();
+    assert_eq!(r["moved"], 2, "{r}");
+    assert_eq!(r["unsynchronized"], json!([]), "{r}");
+}
