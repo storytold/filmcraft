@@ -1240,7 +1240,7 @@ mod tests {
         let item = project.add_item(
             "missing.mov",
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::File { path: "missing.mov".into() },
                 info: info.clone(),
                 interpret: Default::default(),
@@ -1250,7 +1250,7 @@ mod tests {
                 offline: true,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         let mut sources = filmcraft_render::SourceMap::default();
