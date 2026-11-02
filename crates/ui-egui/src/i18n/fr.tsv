@@ -3725,3 +3725,41 @@
 	Options:	Options :
 	Invalid duration: {error}	Durée non valide : {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
+
+	Hide Slider	Masquer le curseur
+	Unhide Slider	Afficher le curseur
+	Maximum Zoom Level	Niveau de zoom maximal
+	Alternate Drag Speed (Shift + Left Click)	Vitesse de déplacement alternative (Maj + clic gauche)
+	Playhead Centering Range (Triple Click)	Plage de centrage de la tête de lecture (triple clic)
+	Alternate Drag Speed	Vitesse de déplacement alternative
+	Value:	Valeur :
+	Closest	Le plus proche
+	Very Slow	Très lente
+	Far	Loin
+	3s	3 s
+	5s	5 s
+	10s	10 s
+	30s	30 s
+	Position Indicator Color:	Couleur de l'indicateur de position :
+	Video Indicator Color:	Couleur de l'indicateur vidéo :
+	Audio Indicator Color:	Couleur de l'indicateur audio :
+	Offline Indicator Color:	Couleur de l'indicateur de média hors ligne :
+	Timeline Slider Settings	Réglages du curseur de la chronologie
+	Track Slider Settings	Réglages du curseur de pistes
+	Unhide Timeline Slider	Afficher le curseur de la chronologie
+	Unhide Track Slider	Afficher le curseur de pistes
+	Inverted Controls	Commandes inversées
+	Slider Minimap	Minicarte du curseur
+	Show Whole Timeline	Afficher toute la chronologie
+	Prioritise Audio	Prioriser l'audio
+	Position Indicator	Indicateur de position
+	Fill Clips	Remplir les clips
+	Decouple Edges	Découpler les extrémités
+	Alternate Slider Position	Position alternative du curseur
+	Playhead Centering	Centrage de la tête de lecture
+	Smooth Animations	Animations fluides
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	Vous pouvez le restaurer à tout moment en faisant un clic droit sur la chronologie et en sélectionnant "{row}" en bas de la liste.
+	Maximum zoom level in seconds	Niveau de zoom maximal en secondes
+	Alternate drag speed multiplier	Multiplicateur de la vitesse de déplacement alternative
+	Playhead centering range in seconds	Plage de centrage de la tête de lecture en secondes
+	Alternate drag speed for the track sliders	Vitesse de déplacement alternative des curseurs de pistes

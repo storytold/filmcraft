@@ -3672,3 +3672,40 @@
 	Previous	Anterior
 	Next	Próximo
 	Enter a valid HH:MM:SS:FF timecode	Digite um timecode válido HH:MM:SS:FF
+	Hide Slider	Ocultar controle deslizante
+	Unhide Slider	Mostrar controle deslizante
+	Maximum Zoom Level	Nível máximo de zoom
+	Alternate Drag Speed (Shift + Left Click)	Velocidade de arrasto alternativa (Shift + clique esquerdo)
+	Playhead Centering Range (Triple Click)	Intervalo de centralização do cursor (clique triplo)
+	Alternate Drag Speed	Velocidade de arrasto alternativa
+	Value:	Valor:
+	Closest	Mais próximo
+	Very Slow	Muito lenta
+	Far	Longe
+	3s	3 s
+	5s	5 s
+	10s	10 s
+	30s	30 s
+	Position Indicator Color:	Cor do indicador de posição:
+	Video Indicator Color:	Cor do indicador de vídeo:
+	Audio Indicator Color:	Cor do indicador de áudio:
+	Offline Indicator Color:	Cor do indicador de mídia offline:
+	Timeline Slider Settings	Configurações do controle deslizante da linha do tempo
+	Track Slider Settings	Configurações do controle deslizante de faixas
+	Unhide Timeline Slider	Mostrar controle deslizante da linha do tempo
+	Unhide Track Slider	Mostrar controle deslizante de faixas
+	Inverted Controls	Controles invertidos
+	Slider Minimap	Minimapa do controle deslizante
+	Show Whole Timeline	Mostrar toda a linha do tempo
+	Prioritise Audio	Priorizar áudio
+	Position Indicator	Indicador de posição
+	Fill Clips	Preencher clipes
+	Decouple Edges	Desacoplar extremidades
+	Alternate Slider Position	Posição alternativa do controle deslizante
+	Playhead Centering	Centralização do cursor
+	Smooth Animations	Animações suaves
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	Você pode trazê-lo de volta a qualquer momento clicando com o botão direito na linha do tempo e selecionando "{row}" na parte inferior da lista.
+	Maximum zoom level in seconds	Nível máximo de zoom em segundos
+	Alternate drag speed multiplier	Multiplicador da velocidade de arrasto alternativa
+	Playhead centering range in seconds	Intervalo de centralização do cursor em segundos
+	Alternate drag speed for the track sliders	Velocidade de arrasto alternativa dos controles deslizantes de faixas
