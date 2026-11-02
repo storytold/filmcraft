@@ -109,32 +109,41 @@ pub fn path_to_file_url(path: &str, localhost: bool) -> String {
 
 fn join(base: &str, rel: &str) -> String {
     let sep = if base.contains('\\') && !base.contains('/') { '\\' } else { '/' };
-    let absolute = is_absolute(base);
-    let mut parts: Vec<&str> = base.split(['/', '\\']).collect();
+    // The root of an absolute path (`/` splits to "", `C:`) has no parent.
+    let root = usize::from(is_absolute(base));
+    // The base's own `.` and `..` (`std::path::absolute` keeps `..` on POSIX) are resolved first,
+    // so the reference's `..` start from where the base really is and never climb above the root.
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in base.split(['/', '\\']) {
+        match seg {
+            "." => {}
+            ".." => up(&mut parts, root),
+            s => parts.push(s),
+        }
+    }
     if parts.last() == Some(&"") && parts.len() > 1 {
         parts.pop();
     }
     for seg in rel.split(['/', '\\']) {
         match seg {
             "" | "." => {}
-            // A `..` takes off the last folder. One after another `..` (which an absolute base
-            // can end in, as `std::path::absolute` keeps it) or past the start of a relative base
-            // is kept; only the root of an absolute path (`/`, `C:`) has no parent (#3998).
-            ".." => match parts.last().copied() {
-                None | Some("..") => parts.push(".."),
-                Some(".") => {
-                    parts.pop();
-                    parts.push("..");
-                }
-                Some(_) if absolute && parts.len() == 1 => {}
-                Some(_) => {
-                    parts.pop();
-                }
-            },
+            ".." => up(&mut parts, root),
             s => parts.push(s),
         }
     }
     parts.join(&sep.to_string())
+}
+
+/// One `..`: it takes off the last folder, is kept past the start of a relative path, and is
+/// dropped at the root of an absolute one (#3998).
+fn up(parts: &mut Vec<&str>, root: usize) {
+    match parts.last().copied() {
+        None | Some("..") => parts.push(".."),
+        Some(_) if parts.len() <= root => {}
+        Some(_) => {
+            parts.pop();
+        }
+    }
 }
 
 /// Resolve a media URL from a document (FCPXML `src`, FCP7 `pathurl`, OTIO `target_url`): like
@@ -767,8 +776,11 @@ mod tests {
         assert_eq!(resolve_path(r"..\media\a.mov", Some(r"proj\edit")), r"proj\media\a.mov");
         assert_eq!(resolve_path("../../a.mov", Some("/proj")), "/a.mov");
         assert_eq!(resolve_path(r"..\..\a.mov", Some(r"C:\proj")), r"C:\a.mov");
-        // an absolute base can still end in `..` (`std::path::absolute` keeps it on POSIX)
-        assert_eq!(resolve_path("../media/b.mov", Some("/work/edit/..")), "/work/edit/../../media/b.mov");
+        // a base can end in `..` (`std::path::absolute` keeps it on POSIX): it counts from where
+        // the base really is, and nothing climbs above an absolute root
+        assert_eq!(resolve_path("../media/b.mov", Some("/work/edit/..")), "/media/b.mov");
+        assert_eq!(resolve_path("../media/b.mov", Some("/work/..")), "/media/b.mov");
+        assert_eq!(resolve_path("../a.mov", Some("edit/sub/../..")), "../a.mov");
         // #2195: relative URLs are percent-decoded, plain names are not
         assert_eq!(resolve_url("media/Clip%20A.mov", Some("/proj")), "/proj/media/Clip A.mov");
         assert_eq!(resolve_url("file:///m/Clip%20A.mov", Some("/proj")), "/m/Clip A.mov");
