@@ -381,12 +381,25 @@ impl Track {
     pub fn check_bounds(&self) -> Result<(), String> {
         for item in &self.items {
             if !bounded_time_range(item.start, item.duration) {
-                return Err(format!("{}: item {:?} is outside supported time bounds", self.name, item.id));
+                return Err(format!(
+                    "{}: item {:?} `{}` at {:.3}s for {:.3}s is outside supported time bounds",
+                    self.name,
+                    item.id,
+                    item.name,
+                    item.start.seconds(),
+                    item.duration.seconds()
+                ));
             }
         }
         for transition in &self.transitions {
             if !bounded_time_range(transition.start, transition.duration) {
-                return Err(format!("{}: transition {:?} is outside supported time bounds", self.name, transition.id));
+                return Err(format!(
+                    "{}: transition {:?} at {:.3}s for {:.3}s is outside supported time bounds",
+                    self.name,
+                    transition.id,
+                    transition.start.seconds(),
+                    transition.duration.seconds()
+                ));
             }
         }
         Ok(())

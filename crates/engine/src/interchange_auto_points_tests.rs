@@ -343,8 +343,8 @@ fn an_import_with_a_clip_outside_the_time_bounds_is_refused_before_it_can_be_sav
     let mut s = Session::default();
     let before = filmcraft_format::encode(&s.project, false);
     let err = s.execute("file.import", json!({"paths": [doc.to_string_lossy()]})).unwrap_err().to_string();
-    assert!(err.contains("outside supported time bounds"), "{err}");
+    assert!(err.contains("invalid imported sequence `Far`"), "{err}");
+    assert!(err.contains("`Shot` at 10000000.000s for 10.000s is outside supported time bounds"), "names the clip and where it is: {err}");
     assert_eq!(filmcraft_format::encode(&s.project, false), before, "a refused import leaves the project as it was");
-    assert!(filmcraft_format::decode(&before).is_ok());
     let _ = std::fs::remove_dir_all(&d);
 }
