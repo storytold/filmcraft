@@ -462,3 +462,26 @@ M2   A              072.0                00:00:00:10\n\
         }
     }
 }
+
+#[test]
+fn negative_dissolve_duration_is_clamped() {
+    let edl = "TITLE: Neg
+FCM: NON-DROP FRAME
+
+001  HARB01   V     C        00:00:00:00 00:00:04:00 01:00:00:00 01:00:04:00
+002  HARB01   V     C        00:00:04:00 00:00:04:00 01:00:04:00 01:00:04:00
+002  BL       V     D    -30 00:00:00:00 00:00:01:00 01:00:04:00 01:00:05:00
+";
+    let opts = ImportOptions { edl_frame_rate: Some(FrameRate::FPS_25), ..Default::default() };
+    let (imp, rep) = import_with(edl.as_bytes(), Format::Edl, &opts).unwrap();
+    let s = imp.project.sequence(only_seq(&imp)).unwrap();
+    for t in s.video_tracks.iter().chain(s.audio_tracks.iter()) {
+        for tr in &t.transitions {
+            assert!(tr.duration >= Tick::ZERO, "negative transition {:?}", tr.duration);
+        }
+        for it in &t.items {
+            assert!(it.duration >= Tick::ZERO, "negative item {:?}", it.duration);
+        }
+    }
+    assert!(rep.has_warnings(), "{rep}");
+}
