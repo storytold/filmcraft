@@ -425,18 +425,17 @@ pub fn file_safe(n: &str) -> String {
     if s.is_empty() || matches!(s.as_str(), "." | "..") { "Export".into() } else { s }
 }
 
+/// `e` is `ext` (the extension an export format writes) or the alias people also use for it. An
+/// alias counts only as `e`: `ext` comes from the format, which never writes one.
+pub fn extension_matches(ext: &str, e: &str) -> bool {
+    ext.eq_ignore_ascii_case(e) || matches!((ext, e.to_ascii_lowercase().as_str()), ("tif", "tiff") | ("jpg", "jpeg") | ("aif", "aiff") | ("m4a", "aac"))
+}
+
 /// `path` with the settings' extension (added when missing; image sequences keep theirs).
 fn with_extension(path: &str, settings: &ExportSettings) -> String {
     let ext = settings.extension();
     match Path::new(path).extension().and_then(|e| e.to_str()) {
-        Some(e)
-            if e.eq_ignore_ascii_case(ext)
-                || (settings.format == Format::TiffSequence && e.eq_ignore_ascii_case("tiff"))
-                || (settings.format == Format::JpegSequence && e.eq_ignore_ascii_case("jpeg"))
-                || (settings.format == Format::Aac && e.eq_ignore_ascii_case("aac")) =>
-        {
-            path.to_string()
-        }
+        Some(e) if extension_matches(ext, e) => path.to_string(),
         Some(_) if settings.is_image_sequence() || matches!(settings.format, Format::Aiff) => format!("{}.{ext}", path.rsplit_once('.').map_or(path, |x| x.0)),
         _ => format!("{path}.{ext}"),
     }
