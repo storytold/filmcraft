@@ -64,6 +64,10 @@ pub const MAX_FRAME_PIXELS: u64 = 268_435_456;
 pub fn validate_frame_size(width: u32, height: u32) -> std::result::Result<(), String> {
     if width == 0 || height == 0 || width > MAX_FRAME_SIDE || height > MAX_FRAME_SIDE || u64::from(width) * u64::from(height) > MAX_FRAME_PIXELS {
         return Err(format!("frame size must be positive, at most {MAX_FRAME_SIDE} pixels per side and {MAX_FRAME_PIXELS} pixels total"));
+    }
+    Ok(())
+}
+
 /// Up to 384 kHz audio (surpassing professional 192 kHz formats).
 pub const MAX_AUDIO_SAMPLE_RATE: u32 = 384_000;
 /// Up to 64 discrete channels (exceeding standard 32-channel immersive layouts).
