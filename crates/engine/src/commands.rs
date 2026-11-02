@@ -1100,6 +1100,56 @@ pub(crate) fn ensure_audio_tracks(p: &mut Project, seq_id: ItemId, first: usize,
     Ok(p.sequence(seq_id).map(|q| q.audio_tracks.iter().map(|t| t.id).collect()).unwrap_or_default())
 }
 
+/// The timecode of a media item's first frame (a subclip's: its parent media's), in frames at the
+/// item's rate; 0 when the file carries none.
+fn media_start_frames(s: &Session, item: ItemId) -> i64 {
+    s.project.resolve_media(item).and_then(|(_, m, _)| m.info.start_timecode).unwrap_or(0)
+}
+
+/// `timeline.place`'s `sourceIn`, in media ticks: ticks or a time object, as [`tick_or_time_p`]
+/// reads it (its `timecode` counts from the clip's first frame, like the Source monitor's time),
+/// or `{"sourceTimecode": "…"}`, the timecode on the clip, read against the media's start
+/// timecode (`;` before the frames marks drop-frame). With `sourceTimecode`, also whether it was
+/// drop-frame.
+fn place_source_in_p(s: &Session, p: &Value, item: ItemId, rate: FrameRate, drop_frame: bool) -> Result<(Option<Tick>, Option<bool>)> {
+    let Some(tc) = p.get("sourceIn").and_then(|v| v.get("sourceTimecode")) else {
+        return Ok((tick_or_time_p(p, "sourceIn", rate, drop_frame, "timeline.place")?, None));
+    };
+    let tc = tc.as_str().ok_or_else(|| bad("timeline.place", "`sourceIn.sourceTimecode` must be a timecode like \"01:00:02:00\""))?;
+    let df = tc.contains(';');
+    let frame = parse_timecode(tc, rate, df, 0).map_err(|e| bad("timeline.place", format!("`sourceIn.sourceTimecode`: {e}")))?;
+    Ok((Some(rate.tick_of(frame.saturating_sub(media_start_frames(s, item)))), Some(df)))
+}
+
+/// A `sourceIn` given to `timeline.place` must be a frame of the item: one before its first frame,
+/// or at or after its end, is refused (stills and graphics have no end). `source_tc`: it was a
+/// `sourceTimecode` (drop-frame or not), so the error speaks in the clip's timecode.
+fn check_place_source_in(s: &Session, item: ItemId, sin: Tick, rate: FrameRate, source_tc: Option<bool>) -> Result<()> {
+    let first = crate::media_start(&s.project, item);
+    let end = crate::media_duration(&s.project, &s.media, item);
+    // an item with no frames (`end` at `first`) still takes its first frame
+    let past_end = end.is_some_and(|e| sin > first && sin >= e);
+    if sin >= first && !past_end {
+        return Ok(());
+    }
+    let start = media_start_frames(s, item);
+    let df = source_tc.unwrap_or(false);
+    let tc = |t: Tick, origin: i64| filmcraft_time::format_timecode_frames(rate.frame_at(t).saturating_add(origin), rate, df);
+    let origin = if source_tc.is_some() { start } else { 0 };
+    let frames = match end.filter(|e| *e > first) {
+        Some(e) => format!("{} to {}", tc(first, origin), tc(e - rate.frame_duration(), origin)),
+        None => format!("from {}", tc(first, origin)),
+    };
+    let mut msg = format!("`sourceIn` {} is outside the clip, whose frames run {frames}", tc(sin, origin));
+    if start != 0 && source_tc.is_none() {
+        msg.push_str(&format!(
+            "; this counts from the clip's first frame, so for the timecode on the clip (it starts at {}) pass {{\"sourceTimecode\": \"…\"}}",
+            tc(first, start)
+        ));
+    }
+    Err(bad("timeline.place", msg))
+}
+
 /// `timeline.place` for one item (`item`).
 fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
     let item = item_p(p, "item").ok_or_else(|| bad("timeline.place", "need `item`"))?;
@@ -1116,7 +1166,11 @@ fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
         Some(t) if t < Tick::ZERO => Err(bad("timeline.place", format!("`{key}` must not be negative"))),
         t => Ok(t),
     };
-    let sin_param = not_negative(tick_or_time_p(p, "sourceIn", src_rate, src_df, "timeline.place")?, "sourceIn")?;
+    let (sin_param, source_tc) = place_source_in_p(s, p, item, src_rate, src_df)?;
+    if let Some(sin) = sin_param {
+        check_place_source_in(s, item, sin, src_rate, source_tc)?;
+    }
+    let sin_param = not_negative(sin_param, "sourceIn")?;
     let dur_param = not_negative(tick_or_time_p(p, "duration", seq_rate, seq_df, "timeline.place")?, "duration")?;
     let stream_flag = |key: &str| match p.get(key) {
         None => Ok(true),
@@ -3138,7 +3192,7 @@ fn build() -> Vec<CommandSpec> {
             "Place Clip",
             [],
             None,
-            r#"{"item":id|"items":[id] (back to back, one undo step),"track":"V1"|id|"A1" (sound only)|"new" (a video track after the last)?,"audioTrack":"A1"|id|"new"?,"time":ticks|"frame":i64|"seconds":f64,"insert":bool,"sourceIn":ticks|{"frame"|"seconds"|"timecode"}?,"duration":ticks|{"frame"|"seconds"|"timecode"}?,"video":bool=true,"audio":bool=true,"matchSequence":bool=false (an empty sequence first takes the clip's frame size and rate)}"#,
+            r#"{"item":id|"items":[id] (back to back, one undo step),"track":"V1"|id|"A1" (sound only)|"new" (a video track after the last)?,"audioTrack":"A1"|id|"new"?,"time":ticks|"frame":i64|"seconds":f64,"insert":bool,"sourceIn":ticks|{"frame"|"seconds"|"timecode" (from the clip's first frame)|"sourceTimecode" (the timecode on the clip)}? (a frame of the clip),"duration":ticks|{"frame"|"seconds"|"timecode"}?,"video":bool=true,"audio":bool=true,"matchSequence":bool=false (an empty sequence first takes the clip's frame size and rate)}"#,
             has_seq,
             |s, p| {
                 let first = item_p(p, "item").or_else(|| p.get("items").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_u64).map(ItemId));
