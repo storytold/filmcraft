@@ -518,7 +518,8 @@ fn edl_media_relinked_with_align_timecode_lands_where_import_puts_it() {
 
     let mut s = import(&root.join("Edit"));
     let (item, _) = first_clip(&s);
-    assert!(s.project.item(item).unwrap().as_media().unwrap().offline, "setup: the media is not next to the EDL");
+    let m = s.execute("media.findMissing", json!({})).unwrap();
+    assert_eq!(m["missing"][0]["item"], json!(item.0), "setup: the media is not next to the EDL: {m}");
     // The EDL gives neither a duration nor a picture size, so those checks are off.
     let r = s
         .execute(
