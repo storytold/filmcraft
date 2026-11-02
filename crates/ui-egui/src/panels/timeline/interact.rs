@@ -305,8 +305,13 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         && area.contains(p)
     {
         let g = grab_at(seq, layout, p, tool, mods, roll_ripple);
-        let blocked = match g.hit() {
-            Hit::Clip { clip, .. } if tool == Tool::Selection => {
+        let blocked = match g {
+            // a trim changes its own clips, not the selection: the check `drag_is_locked` makes
+            Grab::Edge { kind: EdgeKind::Roll { left, right }, .. } => {
+                move_is_locked(seq, &filmcraft_engine::commands::with_links(&app.session, &[left, right]), 0)
+            }
+            Grab::Edge { clip, .. } => move_is_locked(seq, &filmcraft_engine::commands::with_links(&app.session, &[clip]), 0),
+            Grab::Other(Hit::Clip { clip, .. }) if tool == Tool::Selection => {
                 let clips = if app.session.state.selection.contains(&clip) {
                     app.session.state.selection.clone()
                 } else if mods.alt {
@@ -316,7 +321,7 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
                 };
                 move_is_locked(seq, &clips, 0)
             }
-            Hit::Clip { clip, .. } if matches!(tool, Tool::Slip | Tool::Slide) => {
+            Grab::Other(Hit::Clip { clip, .. }) if matches!(tool, Tool::Slip | Tool::Slide) => {
                 move_is_locked(seq, &filmcraft_engine::commands::with_links(&app.session, &[clip]), 0)
             }
             _ => false,
