@@ -905,13 +905,32 @@ fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
 /// extra frame on every ffmpeg / x264 MP4 with B-frames) and shorter by a leading empty edit (the last
 /// frame of a delayed video track was never shown). Fragmented files, and edit lists that add up to
 /// nothing or to more than a [`Tick`] holds, keep the media duration.
+///
+/// Edit durations are whole movie-timescale units (milliseconds in ffmpeg / x264 files and our own
+/// exports), so 320 frames at 24 fps (13.3333 s) are written as 13 333 and would read as 319 frames.
+/// When the last edit plays the media to its end (within one unit), that edit lasts exactly until
+/// the last picture's presentation ends (its `pts` plus duration: with B-frames that is past
+/// `mdhd`, which ends on the decode timeline).
 fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
     let media = Tick::from_rational(t.duration as i64, 1, t.timescale as i64);
     if file.fragmented || t.edits.is_empty() || file.timescale == 0 {
         return media;
     }
+    let tps = filmcraft_time::TICKS_PER_SECOND as u128;
+    let movie = file.timescale as u128;
     let edits = t.edits.iter().fold(0u128, |a, e| a.saturating_add(e.segment_duration as u128));
-    let ticks = edits.saturating_mul(filmcraft_time::TICKS_PER_SECOND as u128) / file.timescale as u128;
+    let mut ticks = edits.saturating_mul(tps) / movie;
+    if let Some(last) = t.edits.last().filter(|e| e.media_rate == 0x1_0000 && e.media_time >= 0 && t.timescale > 0)
+        && let Some(end) = t.samples.iter().map(|s| i128::from(s.pts) + i128::from(s.duration)).max()
+        && let Ok(rest) = u128::try_from(end - i128::from(last.media_time))
+    {
+        let exact = rest.saturating_mul(tps) / t.timescale as u128;
+        let rounded = (last.segment_duration as u128).saturating_mul(tps) / movie;
+        if exact.abs_diff(rounded) <= tps.div_ceil(movie) {
+            let before = edits.saturating_sub(last.segment_duration as u128).saturating_mul(tps) / movie;
+            ticks = before.saturating_add(exact);
+        }
+    }
     match i64::try_from(ticks) {
         Ok(t) if t > 0 => Tick(t),
         _ => media,

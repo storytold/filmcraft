@@ -27,13 +27,19 @@ fn rotated_mov(matrix: [i32; 9]) -> Arc<[u8]> {
 
 /// A four-frame 25 fps ProRes MOV (64×32) whose video track carries `edits`.
 fn mov_with_edits(edits: Vec<filmcraft_isobmff::Edit>) -> Arc<[u8]> {
+    mov_at(25, 4, edits)
+}
+
+/// An `n`-frame ProRes MOV (64×32) at `fps` (track timescale `fps`, one tick per frame) whose
+/// video track carries `edits`.
+fn mov_at(fps: u32, n: usize, edits: Vec<filmcraft_isobmff::Edit>) -> Arc<[u8]> {
     let fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
     let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
     let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
-    let mut cfg = TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 25);
+    let mut cfg = TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), fps);
     cfg.edits = edits;
     let t = mux.add_track(cfg).expect("track");
-    for _ in 0..4 {
+    for _ in 0..n {
         mux.write_sample(t, WriteSample { data: &data, duration: 1, composition_offset: 0, is_sync: true }).expect("sample");
     }
     mux.finish().expect("finish").into_inner().into()
@@ -61,6 +67,40 @@ fn duration_follows_the_edit_list() {
     assert_eq!(frames(&Mp4Source::open("huge.mov", mov_with_edits(huge)).expect("open")), 4);
     let zero = vec![Edit { segment_duration: 0, media_time: 0, media_rate: 0x10000 }];
     assert_eq!(frames(&Mp4Source::open("zero.mov", mov_with_edits(zero)).expect("open")), 4);
+}
+
+/// Edit durations are whole milliseconds (the movie timescale ffmpeg, x264 and our own exports
+/// write), so a clip whose length is not a whole number of milliseconds lost its last frame: 320
+/// frames at 24 fps (13.3333 s, written as 13 333) imported as 319.
+#[test]
+fn an_edit_rounded_to_the_movie_timescale_keeps_the_last_frame() {
+    use filmcraft_isobmff::Edit;
+    let frames = |s: &Mp4Source| s.info().duration.to_rational_floor(1, 24);
+    let open = |n: usize, edits: Vec<Edit>| Mp4Source::open("rounded.mov", mov_at(24, n, edits)).expect("open");
+    // the whole media: 5 frames = 208.33 ms, written as 208
+    let whole = vec![Edit { segment_duration: 208, media_time: 0, media_rate: 0x10000 }];
+    let s = open(5, whole);
+    assert_eq!(frames(&s), 5);
+    assert_eq!(s.info().duration, Tick::from_rational(5, 1, 24), "exactly the media's length");
+    assert!(s.video_frame(FrameRequest::full(Tick::from_rational(4, 1, 24))).is_ok());
+    // skip the first frame (B-frame delay style): 4 frames = 166.67 ms, written as 166 (or 167)
+    for ms in [166, 167] {
+        let skip = vec![Edit { segment_duration: ms, media_time: 1, media_rate: 0x10000 }];
+        assert_eq!(frames(&open(5, skip)), 4, "{ms} ms");
+    }
+    // 320 frames, skipping one: the case from the VA-API long-GOP export
+    let long = vec![Edit { segment_duration: 13_291, media_time: 1, media_rate: 0x10000 }];
+    assert_eq!(frames(&open(320, long)), 319);
+    let long = vec![Edit { segment_duration: 13_333, media_time: 0, media_rate: 0x10000 }];
+    assert_eq!(frames(&open(320, long)), 320);
+    // an edit that ends a frame or more before the media does still trims it
+    let trimmed = vec![Edit { segment_duration: 125, media_time: 0, media_rate: 0x10000 }];
+    assert_eq!(frames(&open(5, trimmed)), 3);
+    // a dwell (rate 0) or a media_time past the end keeps the edit's own length
+    let dwell = vec![Edit { segment_duration: 208, media_time: 0, media_rate: 0 }];
+    assert_eq!(frames(&open(5, dwell)), 4);
+    let past = vec![Edit { segment_duration: 208, media_time: 99, media_rate: 0x10000 }];
+    assert_eq!(frames(&open(5, past)), 4);
 }
 
 /// #714: a video track without an edit list whose pictures carry a composition delay (B-frame
