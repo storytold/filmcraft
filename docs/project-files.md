@@ -319,6 +319,10 @@ have no identity, so relinking them skips the fingerprint check.
 - `mediaStart` (false): the start timecode;
 - `metadata` (true): frame size, frame rate and audio channels.
 
+A file of another frame size (the original of a proxy) links with `metadata` off or `force`. Motion's
+Anchor Point then keeps its spot in the picture, scaled by the new size over the old one, keyframes
+too. Position (sequence pixels) and Scale (relative to the source) stay as they are.
+
 `force: true` links regardless. **Relink others automatically** works out the folder remap from the
 file just linked, by dropping the common trailing path components (`/Volumes/A/shoot/a.mov` →
 `/Users/me/shoot/a.mov` gives `/Volumes/A` → `/Users/me`). It applies the remap to the other missing
