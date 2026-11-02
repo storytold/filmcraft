@@ -211,3 +211,88 @@ fn an_option_drag_up_a_track_copies_the_clip_and_leaves_the_original_pair_alone(
     assert_eq!(seq.find_item(ClipId(audio_clip)).unwrap().1.link, link0, "with its link");
     assert!(seq.video_tracks[1].items.iter().any(|i| i.name == CITY), "the copy is on the track above");
 }
+
+/// An Option-drag to another track and along in time keeps the partner on its own track: a copy
+/// that overlaps the original would overwrite it, so it is not made, and one clear of it is.
+#[test]
+fn an_option_drag_across_tracks_and_time_copies_the_partner_only_clear_of_the_original() {
+    let mut d = Driver::demo();
+    d.exec("sequence.addTracks", json!({"video": 2, "audio": 2}));
+    d.frames(4);
+    let city = d.v1_clip(CITY);
+    let (_, partner0) = tracks_of(&d, city);
+    let (audio_track0, audio_clip) = partner0.expect("the clip has linked audio");
+    d.exec("timeline.select", json!({"clips": [city], "linked": true}));
+    let audio_span0 = d.span(audio_clip);
+    let on_audio_track = |d: &Driver| {
+        let seq = d.app().session.active_sequence().unwrap();
+        seq.audio_tracks.iter().find(|t| t.id.0 == audio_track0).unwrap().items.iter().map(|i| i.start.0).collect::<Vec<_>>()
+    };
+    let items0 = on_audio_track(&d);
+    let (x0, x1, y) = d.edges(city);
+    let from = pos2((x0 + x1) / 2.0, y + 10.0);
+    d.drag_with(from, pos2(from.x + (x1 - x0) / 4.0, from.y - 34.0), 12, egui::Modifiers::ALT);
+    assert_eq!(d.span(audio_clip), audio_span0, "the original audio clip is not overwritten");
+    assert_eq!(on_audio_track(&d), items0, "and no copy of it was made");
+    let seq = d.app().session.active_sequence().unwrap();
+    assert!(seq.video_tracks[1].items.iter().any(|i| i.name == CITY), "the video clip was copied");
+    d.exec("edit.undo", json!({}));
+    d.frames(2);
+    d.exec("timeline.select", json!({"clips": [city], "linked": true}));
+    d.drag_with(from, pos2(from.x + (x1 - x0) + 20.0, from.y - 34.0), 12, egui::Modifiers::ALT);
+    let seq = d.app().session.active_sequence().unwrap();
+    let copy = seq.video_tracks[1].items.iter().find(|i| i.name == CITY).expect("the video clip was copied").start.0;
+    assert!(copy >= audio_span0.1, "the copy is clear of the original");
+    assert!(on_audio_track(&d).contains(&copy), "and its partner was copied with it");
+    assert_eq!(d.span(audio_clip), audio_span0, "the original audio clip is whole");
+}
+
+/// An Option-drag along in time on the same tracks copies the whole pair, overlapping or not.
+#[test]
+fn an_option_drag_in_time_copies_the_partner_too() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let (_, partner0) = tracks_of(&d, city);
+    let (audio_track0, audio_clip) = partner0.expect("the clip has linked audio");
+    d.exec("timeline.select", json!({"clips": [city], "linked": true}));
+    let audio_start = d.span(audio_clip).0;
+    let (x0, x1, y) = d.edges(city);
+    let from = pos2((x0 + x1) / 2.0, y + 10.0);
+    d.drag_with(from, pos2(from.x + (x1 - x0) / 4.0, from.y), 12, egui::Modifiers::ALT);
+    let seq = d.app().session.active_sequence().unwrap();
+    let copies = seq
+        .audio_tracks
+        .iter()
+        .find(|t| t.id.0 == audio_track0)
+        .unwrap()
+        .items
+        .iter()
+        .filter(|i| i.start.0 > audio_start && i.start.0 < d.span(city).1 + 1)
+        .count();
+    assert_eq!(copies, 1, "the audio was copied along with the video");
+}
+
+/// A Cmd+Option drag to another track inserts the copy: the gap it opens leaves room on the
+/// partner's own track, so the copy keeps its audio, and the original pair stays in sync.
+#[test]
+fn an_insert_copy_up_a_track_keeps_its_partner() {
+    let mut d = Driver::demo();
+    d.exec("sequence.addTracks", json!({"video": 2, "audio": 2}));
+    d.frames(4);
+    let city = d.v1_clip(CITY);
+    let (_, partner0) = tracks_of(&d, city);
+    let (audio_track0, audio_clip) = partner0.expect("the clip has linked audio");
+    d.exec("timeline.select", json!({"clips": [city], "linked": true}));
+    let (video_start0, audio_start0) = (d.span(city).0, d.span(audio_clip).0);
+    let (x0, x1, y) = d.edges(city);
+    let from = pos2((x0 + x1) / 2.0, y + 10.0);
+    d.drag_with(from, pos2(from.x, from.y - 34.0), 12, egui::Modifiers::ALT | egui::Modifiers::COMMAND);
+    let seq = d.app().session.active_sequence().unwrap();
+    let copy = seq.video_tracks[1].items.iter().find(|i| i.name == CITY).expect("the video clip was copied");
+    assert!(copy.link.is_some(), "the copy is linked");
+    let audio = seq.audio_tracks.iter().find(|t| t.id.0 == audio_track0).unwrap();
+    let partner = audio.items.iter().find(|i| i.link == copy.link).expect("the copy kept its audio");
+    assert_ne!(partner.id.0, audio_clip);
+    assert_eq!(partner.start, copy.start, "in sync with it");
+    assert_eq!(d.span(city).0 - video_start0, d.span(audio_clip).0 - audio_start0, "the original pair stays in sync");
+}

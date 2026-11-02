@@ -176,6 +176,12 @@ fn move_is_locked(seq: &Sequence, clips: &[ClipId], grabbed: Option<TrackId>, de
 }
 
 /// Whether tracks `a` and `b` are both video or both audio.
+/// A copy of `it` moved by `offset` in time overlaps `it` itself.
+fn copy_lands_on(it: &TrackItem, offset: Tick) -> bool {
+    let start = (it.start + offset).max(Tick::ZERO);
+    start < it.end() && it.start < start + it.duration
+}
+
 fn same_kind(seq: &Sequence, a: TrackId, b: TrackId) -> bool {
     let video = |t: TrackId| seq.video_tracks.iter().any(|x| x.id == t);
     video(a) == video(b)
@@ -845,7 +851,14 @@ fn commit_drag(app: &mut FilmcraftApp, ctx: &egui::Context, resp: &egui::Respons
                         .iter()
                         .filter(|c| seen.insert(**c))
                         // a partner that stays put would be copied onto itself, overwriting the original
-                        .filter(|c| !(copying && new_track.is_none() && offset == Tick::ZERO && seq.find_item(**c).is_some_and(|(tid, _)| !same_kind(seq, start_track, tid))))
+                        // (an insert opens a gap for the copy instead, so it keeps its partner)
+                        .filter(|c| {
+                            !(copying
+                                && !mods.command
+                                && track_delta != 0
+                                && new_track.is_none()
+                                && seq.find_item(**c).is_some_and(|(tid, it)| !same_kind(seq, start_track, tid) && copy_lands_on(it, offset)))
+                        })
                         .filter_map(|c| seq.find_item(*c).map(|(tid, it)| json!({"clip": c.0, "track": to(tid), "time": (it.start + offset).max(Tick::ZERO).0})))
                         .collect();
                     // Option held while dropping copies (Premiere: Option-drag duplicates)
