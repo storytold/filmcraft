@@ -175,13 +175,13 @@ fn move_is_locked(seq: &Sequence, clips: &[ClipId], grabbed: Option<TrackId>, de
     })
 }
 
-/// Whether tracks `a` and `b` are both video or both audio.
 /// A copy of `it` moved by `offset` in time overlaps `it` itself.
 fn copy_lands_on(it: &TrackItem, offset: Tick) -> bool {
     let start = (it.start + offset).max(Tick::ZERO);
     start < it.end() && it.start < start + it.duration
 }
 
+/// Whether tracks `a` and `b` are both video or both audio.
 fn same_kind(seq: &Sequence, a: TrackId, b: TrackId) -> bool {
     let video = |t: TrackId| seq.video_tracks.iter().any(|x| x.id == t);
     video(a) == video(b)
