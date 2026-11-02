@@ -156,8 +156,12 @@ pub struct Stream {
 impl Stream {
     /// Stream index of a `movi` chunk id (`00dc`, `01wb`…): its first two characters.
     fn number(id: &[u8; 4]) -> Option<usize> {
-        let d = |b: u8| (b as char).to_digit(16).map(|v| v as usize);
-        Some(d(id[0])? * 16 + d(id[1])?)
+        // ffmpeg-style writers number streams in decimal ("10dc" = 10), Video for Windows in hex
+        // ("0adc" = 10): a hex letter means hex, two decimal digits mean decimal
+        let [a, b, ..] = *id;
+        let radix = if [a, b].iter().any(|c| matches!(c, b'a'..=b'f' | b'A'..=b'F')) { 16 } else { 10 };
+        let d = |c: u8| (c as char).to_digit(radix).map(|v| v as usize);
+        Some(d(a)? * radix as usize + d(b)?)
     }
 }
 

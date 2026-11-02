@@ -120,6 +120,8 @@ impl FilmcraftApp {
             stale_clipboard_media: None,
             gpu: None,
             watched_render: None,
+            job_text: None,
+            steady_texts: Default::default(),
             applied_prefs: None,
             applied_ui_scale: None,
             workspace_restored: false,
@@ -293,7 +295,12 @@ impl FilmcraftApp {
                     let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Timeline });
                 }
                 filmcraft_engine::Event::OpenSource(_) => {
-                    let _ = self.apply_dock(craft_ui::docking::Action::Activate { panel: PanelKind::Source });
+                    // a closed Source panel reopens, and another panel's maximize would hide it
+                    if self.ui.keys.maximized.is_some_and(|p| p != PanelKind::Source) {
+                        self.ui.keys.maximized = None;
+                    }
+                    // the clip just opened there is what Space and J/K/L act on next (#3669)
+                    self.show_panel(PanelKind::Source);
                 }
                 filmcraft_engine::Event::RevealInProject(item) => self.reveal_in_project(item),
                 filmcraft_engine::Event::Toast { message, .. } => self.status(message),

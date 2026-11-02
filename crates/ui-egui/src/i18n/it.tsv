@@ -3642,3 +3642,62 @@
 
 # Sequence: the Delete Work Area Render Files confirmation.
 	Delete preview files that overlap the work area?	Eliminare i file di anteprima sovrapposti all’area di lavoro?
+	Temporal Interpolation	Interpolazione temporale
+	Select items to clear	Seleziona gli elementi da cancellare
+	Opens in your web browser: {url}	Si apre nel browser web: {url}
+	A range marker needs a positive duration	Un marcatore di intervallo richiede una durata positiva
+	Add Custom Color	Aggiungi colore personalizzato
+	Add and apply	Aggiungi e applica
+	Add color	Aggiungi colore
+	Add custom color	Aggiungi colore personalizzato
+	Add custom color…	Aggiungi colore personalizzato…
+	Author	Autore
+	Chapter	Capitolo
+	Choose Color…	Scegli colore…
+	Choose color with system picker	Scegli il colore con il selettore di sistema
+	Color picker	Selettore colore
+	Color selected markers	Colora i marcatori selezionati
+	Custom Color…	Colore personalizzato…
+	Delete Marker	Elimina marcatore
+	Delete selected markers	Elimina i marcatori selezionati
+	Edit Custom Color	Modifica colore personalizzato
+	Edit Marker	Modifica marcatore
+	Edit color	Modifica colore
+	Editing or removing a swatch leaves assigned colors unchanged.	La modifica o la rimozione di un campione non cambia i colori già assegnati.
+	Enter six hex digits, for example FF80C0.	Inserisci sei cifre esadecimali, ad esempio FF80C0.
+	Hex	Esadecimale
+	Hex color	Colore esadecimale
+	Manage Colors	Gestisci colori
+	Manage Colors…	Gestisci colori…
+	Marker owner is unavailable	La sorgente del marcatore non è disponibile
+	No markers	Nessun marcatore
+	No matching markers	Nessun marcatore corrispondente
+	No saved colors	Nessun colore salvato
+	No sequence open	Nessuna sequenza aperta
+	No source clip open	Nessuna clip sorgente aperta
+	Notes	Note
+	Project Colors	Colori del progetto
+	Range marker	Marcatore di intervallo
+	Remove saved color	Rimuovi colore salvato
+	Save color	Salva colore
+	Search markers	Cerca marcatori
+	Search name, notes, author	Cerca nome, note, autore
+	Select all	Seleziona tutto
+	Select all visible markers	Seleziona tutti i marcatori visibili
+	Sequence: {name}	Sequenza: {name}
+	Source: {name}	Sorgente: {name}
+	Source: {name} (shared source markers)	Sorgente: {name} (marcatori sorgente condivisi)
+	System color picker unavailable: {error}	Selettore colore di sistema non disponibile: {error}
+	Time is outside the supported range	Il tempo è fuori dall’intervallo supportato
+	{count} selected	{count} selezionati
+	Remove Custom Color	Rimuovi colore personalizzato
+	Edit Markers	Modifica marcatori
+	Delete Markers	Elimina marcatori
+	Marker changed or was removed. Reopen it to continue.	Il marcatore è stato modificato o rimosso. Riaprilo per continuare.
+	URL	URL
+	Open Link	Apri link
+	Opens this address in your web browser	Apre questo indirizzo nel browser web
+	Enter a valid HTTP or HTTPS URL without credentials	Inserisci un URL HTTP o HTTPS valido senza credenziali
+	Previous	Precedente
+	Next	Successivo
+	Enter a valid HH:MM:SS:FF timecode	Inserisci un timecode valido HH:MM:SS:FF

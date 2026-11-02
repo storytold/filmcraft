@@ -501,7 +501,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Err(e) => err(e.to_string()),
                 };
             }
-            match crate::menus::invoke(app, ctx, id, params) {
+            let invoke = if req.method == "engine.execute" { crate::menus::invoke_command } else { crate::menus::invoke };
+            match invoke(app, ctx, id, params) {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
             }
@@ -510,7 +511,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             Ok(v) => ok(v),
             Err(e) => err(e),
         },
-        "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items(app)).unwrap_or_default()),
+        "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items_with_focus(app, ctx)).unwrap_or_default()),
         "ui.inspect" => ok(inspect(app, ctx)),
         "ui.docking" => {
             let hits = craft_ui::docking::DockArea::<PanelKind>::hit_rects(ctx, crate::dock_ui::area_id());

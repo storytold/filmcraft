@@ -507,3 +507,24 @@ fn work_area_delete_dialog_cancel_and_ok() {
     assert!(!d.has("sequence.deleteWorkAreaRenderFiles.ok"));
     let _ = std::fs::remove_dir_all(d.app().session.previews.dir().unwrap());
 }
+
+#[test]
+fn saving_the_project_says_where_in_the_status_bar() {
+    let dir = std::env::temp_dir().join(format!("fc-ui-saved-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut d = Driver::new();
+    let status = |d: &mut Driver| d.app().ui.status.clone();
+    let first = dir.join("first.fcproj").to_string_lossy().to_string();
+    d.ok("ui.menu.invoke", json!({"id": "file.saveAs", "params": {"path": first}}));
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    d.app().ui.status.clear();
+    d.menu("file.save");
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    d.app().ui.status.clear();
+    d.menu("file.saveAll");
+    assert_eq!(status(&mut d), format!("Project saved to {first}"));
+    let copy = dir.join("copy.fcproj").to_string_lossy().to_string();
+    d.ok("ui.menu.invoke", json!({"id": "file.saveCopy", "params": {"path": copy}}));
+    assert_eq!(status(&mut d), format!("Copy of the project saved to {copy}"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

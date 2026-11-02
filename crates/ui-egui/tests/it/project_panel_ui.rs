@@ -955,6 +955,11 @@ fn media_browser_navigation_import_and_columns() {
     d.key("Shift+O");
     assert!(d.app().session.state.source_item.is_some());
     assert_eq!(d.app().session.project.items.len(), 2);
+    // opening a clip in Source shows Source, so the Media Browser is no longer maximized (#3669)
+    assert_ne!(d.app().ui.keys.maximized, Some(filmcraft_ui_egui::dock::PanelKind::MediaBrowser));
+    d.ok("ui.set", json!({"focused": "MediaBrowser"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(2);
     // Edit Columns…
     d.click("panel.menu.MediaBrowser");
     d.click("mediaBrowser.menu.editColumns");
@@ -1598,4 +1603,113 @@ fn a_dragged_media_browser_thumbnail_size_is_written_to_preferences() {
     assert_eq!(saved_prefs(&path).media_browser.thumbnail_size, s1, "preferences.json");
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #3774: the footer's Zoom sizes List view's thumbnails and scales the Freeform canvas, not
+/// only Icon view's cards. A List without thumbnails has nothing for it to size, so its rows stay.
+#[test]
+fn zoom_sizes_list_thumbnails_and_the_freeform_canvas() {
+    let mut d = project_driver();
+    let items: Vec<u64> = footage_in(&mut d, "list").iter().map(|(i, _)| *i).collect();
+    let row = |d: &mut Driver| {
+        d.frames(3);
+        d.rect(&format!("project.item.{}", items[0]))[3]
+    };
+    // List without thumbnails: the rows do not change
+    let plain = row(&mut d);
+    d.exec("project.view.set", json!({"iconSize": 300.0}));
+    assert_eq!(row(&mut d), plain, "no thumbnails, nothing to size");
+    // List with thumbnails: the row follows the thumbnail size
+    d.exec("project.view.set", json!({"thumbnails": true, "iconSize": 110.0}));
+    let small = row(&mut d);
+    d.exec("project.view.set", json!({"iconSize": 300.0}));
+    let big = row(&mut d);
+    assert!(small > plain && (big - 120.0).abs() < 1.0, "rows {plain} / {small} / {big}");
+    // the bigger thumbnail does not cover the name or the next column: the Name column widens
+    let name = d.rect("project.list.header.Name");
+    let next = d.rect("project.list.header.Frame Rate");
+    let thumb_w = (big - 6.0) * 16.0 / 9.0;
+    assert!(name[2] >= thumb_w + 120.0 && next[0] >= name[0] + name[2] - 1.0, "Name {name:?}, Frame Rate {next:?}");
+    let saved = d.app().session.prefs.project_panel.view.columns.first().map(|c| c.width);
+    assert!(saved.is_some_and(|w| w < name[2]), "the saved width is unchanged: {saved:?}");
+
+    // Freeform: twice the size draws every card twice as big and twice as far from the origin
+    d.exec("project.view.set", json!({"iconSize": 110.0}));
+    d.exec("project.freeform.move", json!({"items": [items[0]], "x": 40, "y": 40}));
+    d.exec("project.freeform.move", json!({"items": [items[1]], "x": 240, "y": 40}));
+    d.exec("project.view.set", json!({"view": "freeform"}));
+    let card = |d: &mut Driver, i: u64| {
+        d.frames(3);
+        let (r, c) = (d.rect(&format!("project.item.{i}")), d.rect("project.freeform"));
+        (r[0] - c[0], r[2])
+    };
+    let ((x0, w0), (x1, _)) = (card(&mut d, items[0]), card(&mut d, items[1]));
+    d.exec("project.view.set", json!({"iconSize": 220.0}));
+    let ((x0z, w0z), (x1z, _)) = (card(&mut d, items[0]), card(&mut d, items[1]));
+    assert!((w0z - 2.0 * w0).abs() < 1.0, "card width {w0} → {w0z}");
+    assert!(((x1z - x0z) - 2.0 * (x1 - x0)).abs() < 1.0, "spacing {} → {}", x1 - x0, x1z - x0z);
+    // a drag at that zoom moves the card by its on-canvas distance: 100 points on screen are 50
+    let r = d.rect(&format!("project.item.{}", items[0]));
+    let from = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": from.0 + 100.0, "y": from.1}, "steps": 16}));
+    d.frames(4);
+    let pos = d.app().session.project.item(ItemId(items[0])).unwrap().metadata.get(FREEFORM_POS).cloned().expect("card placed");
+    let (x, y, _) = filmcraft_engine::project_panel::parse_pos(&pos).unwrap();
+    assert!((x - 90.0).abs() < 3.0 && (y - 40.0).abs() < 3.0, "moved to {x},{y}");
+}
+
+/// #3774 review: zoomed in, the Freeform commands get the width the cards are drawn at, so
+/// Align to Grid keeps the cards in the rows shown instead of an 800-point layout's.
+#[test]
+fn a_zoomed_freeform_canvas_aligns_the_cards_it_shows() {
+    let mut d = project_driver();
+    let (bin, items) = d.footage();
+    d.exec("project.view.set", json!({"view": "freeform", "iconSize": 396.0}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    d.wait_for(&format!("project.item.{}", items[0]));
+    d.frames(3);
+    let canvas = d.rect("project.freeform");
+    let z = 396.0 / 110.0;
+    // where each card is drawn, on the unscaled canvas
+    let shown: Vec<(f32, f32)> = items
+        .iter()
+        .map(|i| {
+            let r = d.rect(&format!("project.item.{i}"));
+            ((r[0] - canvas[0]) / z, (r[1] - canvas[1]) / z)
+        })
+        .collect();
+    assert!(shown.iter().any(|s| s.1 > shown[0].1 + 1.0), "the zoomed canvas wraps the cards into rows: {shown:?}");
+    // the canvas menu, on empty canvas to the right of the cards
+    let panel = d.rect("panel.Project");
+    d.ok("ui.click", json!({"x": panel[0] + panel[2] - 30.0, "y": canvas[1] + 20.0, "button": "right"}));
+    d.frames(2);
+    d.click("project.canvasMenu.alignToGrid");
+    d.frames(2);
+    for (i, (sx, sy)) in items.iter().zip(&shown) {
+        let pos = d.app().session.project.item(ItemId(*i)).unwrap().metadata.get(FREEFORM_POS).cloned().expect("aligned");
+        let (x, y, _) = filmcraft_engine::project_panel::parse_pos(&pos).unwrap();
+        assert!((x - sx).abs() <= 20.0 && (y - sy).abs() <= 20.0, "item {i}: aligned to {x},{y}, shown at {sx},{sy}");
+    }
+}
+
+/// #3774 review: a card's menu acts on the selected cards of its own bin. A selection that also
+/// holds an item of another bin stacks only this bin's cards (laid out at this canvas's width).
+#[test]
+fn a_card_menu_stacks_only_the_selected_cards_of_its_bin() {
+    let mut d = project_driver();
+    let (bin, items) = d.footage();
+    let project = d.app().session.project.clone();
+    let other =
+        project.items.values().map(|i| i.id).find(|i| project.root.parent_of(*i).map(|b| b.0) != Some(bin)).map(|i| i.0).expect("an item outside Footage");
+    d.exec("project.view.set", json!({"view": "freeform"}));
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.openBin", "params": {"bin": bin, "how": "inPlace"}}));
+    let card = format!("project.item.{}", items[0]);
+    d.wait_for(&card);
+    d.exec("project.select", json!({"items": [other, items[0], items[1]]}));
+    d.ok("ui.click", json!({"id": card, "button": "right"}));
+    d.frames(2);
+    d.click("project.cardMenu.stack");
+    let stack = |d: &mut Driver, i: u64| d.app().session.project.item(ItemId(i)).unwrap().metadata.get(FREEFORM_STACK).cloned();
+    assert!(stack(&mut d, items[0]).is_some() && stack(&mut d, items[1]).is_some(), "this bin's cards are stacked");
+    assert_eq!(stack(&mut d, other), None, "the other bin's item is left alone");
 }

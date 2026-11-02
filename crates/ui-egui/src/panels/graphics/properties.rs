@@ -1,5 +1,5 @@
 use super::*;
-use filmcraft_project::graphic_design::char_style_at;
+use filmcraft_project::graphic_design::{CharStyle, char_style_at, range_styles};
 
 // ---------------------------------------------------------------------------------------------
 // Properties / Essential Graphics
@@ -89,16 +89,47 @@ impl Ctx<'_> {
         };
         own.unwrap_or(layer)
     }
-    /// Whether the Style row's button for the boolean property `id` (bold, italic, underline) is on.
-    fn flag(&self, id: &str) -> bool {
-        self.value(id).as_bool().unwrap_or(false)
+    /// The character overrides of each character of the Type-tool selection (empty without one).
+    fn selected(&self) -> Vec<CharStyle> {
+        let (Some((a, b)), Some(x)) = (self.range, self.e.layer.as_ref()) else { return Vec::new() };
+        range_styles(&x.runs, graphic::text_chars(self.e, self.mt), a, b)
     }
-    /// The caps the All Caps / Small Caps buttons show: 0 none, 1 all caps, 2 small caps.
+    /// Whether the Style row's button for the boolean property `id` (bold, italic, underline,
+    /// strikethrough) is on. With a Type-tool selection it is on only when every selected
+    /// character has the style (its own override, else the layer's value), so a click on a mixed
+    /// selection styles all of it instead of unstyling the characters that had it.
+    fn flag(&self, id: &str) -> bool {
+        let chars = self.selected();
+        if chars.is_empty() {
+            return self.value(id).as_bool().unwrap_or(false);
+        }
+        let layer = pv(self.e, id, self.mt).as_bool().unwrap_or(false);
+        chars.iter().all(|c| {
+            match id {
+                "faux_bold" => c.faux_bold,
+                "faux_italic" => c.faux_italic,
+                "underline" => c.underline,
+                "strikethrough" => c.strikethrough,
+                _ => None,
+            }
+            .unwrap_or(layer)
+        })
+    }
+    /// The caps the All Caps / Small Caps buttons show: 0 none, 1 all caps, 2 small caps. With a
+    /// Type-tool selection the mode all selected characters share, 0 when they mix modes.
     fn caps(&self) -> u32 {
-        match self.value("caps") {
+        let choice = |v: ParamValue| match v {
             ParamValue::Choice(c) => c,
             _ => 0,
+        };
+        let chars = self.selected();
+        if chars.is_empty() {
+            return choice(self.value("caps"));
         }
+        let layer = choice(pv(self.e, "caps", self.mt));
+        let mut caps = chars.iter().map(|c| c.caps.unwrap_or(layer));
+        let first = caps.next().unwrap_or(layer);
+        if caps.all(|c| c == first) { first } else { 0 }
     }
     fn set(&mut self, id: &str, v: Value) {
         if let (Some((a, b)), Some(k)) = (self.range, char_style_key(id)) {
@@ -673,15 +704,14 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.number(ui, tl!("Text Box Width"), NumberField { id: "box_width", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
             cx.number(ui, tl!("Text Box Height"), NumberField { id: "box_height", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
             let (_, mut vui) = cx.row(ui, tl!("Style"));
-            let flag = |id: &str| cx.flag(id);
             let caps = cx.caps();
             for (id, label, tip, on, font) in [
-                ("faux_bold", "T", tl!("Faux Bold"), flag("faux_bold"), Tokens::semibold(14.0)),
-                ("faux_italic", "T", tl!("Faux Italic"), flag("faux_italic"), egui::FontId::new(14.0, egui::FontFamily::Proportional)),
+                ("faux_bold", "T", tl!("Faux Bold"), cx.flag("faux_bold"), Tokens::semibold(14.0)),
+                ("faux_italic", "T", tl!("Faux Italic"), cx.flag("faux_italic"), egui::FontId::new(14.0, egui::FontFamily::Proportional)),
                 ("all_caps", "TT", tl!("All Caps"), caps == 1, Tokens::ui(12.0)),
                 ("small_caps", "Tt", tl!("Small Caps"), caps == 2, Tokens::ui(12.0)),
-                ("underline", "U", tl!("Underline"), flag("underline"), Tokens::ui(13.0)),
-                ("strikethrough", "S", tl!("Strikethrough"), flag("strikethrough"), Tokens::ui(13.0)),
+                ("underline", "U", tl!("Underline"), cx.flag("underline"), Tokens::ui(13.0)),
+                ("strikethrough", "S", tl!("Strikethrough"), cx.flag("strikethrough"), Tokens::ui(13.0)),
             ] {
                 let r = letter_button(&mut vui, label, tip, on, &t, font);
                 letter_button_mark(&vui, id, &r, on, &t);

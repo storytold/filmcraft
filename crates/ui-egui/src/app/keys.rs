@@ -124,7 +124,8 @@ impl FilmcraftApp {
             if divider_focused && matches!(k, egui::Key::ArrowLeft | egui::Key::ArrowRight | egui::Key::ArrowUp | egui::Key::ArrowDown) {
                 continue;
             }
-            if i.consume_key(*m, *k) {
+            let fires = if repeats_when_held(id) { i.consume_key(*m, *k) } else { consume_fresh_press(i, *m, *k) };
+            if fires {
                 fire.push(id.clone());
             }
         }
@@ -195,6 +196,27 @@ fn clipboard_events_as_keys(events: &mut Vec<egui::Event>, modifiers: egui::Modi
         })
         .collect();
     events.extend(keys.into_iter().map(|key| Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }));
+}
+
+/// Whether holding a shortcut's key repeats the command. Transport commands start, stop or
+/// toggle playback, so the OS key repeats of a held Space would flip Play/Stop many times a
+/// second; they run once per press. Stepping, nudging and the rest keep repeating.
+fn repeats_when_held(id: &str) -> bool {
+    !(id.starts_with("playback.") || id.starts_with("source.playback."))
+}
+
+/// Like `InputState::consume_key`, but only a fresh press fires. Key repeats of the chord are
+/// consumed too, so they can't reach a less specific binding (Shift+Space → Space).
+fn consume_fresh_press(i: &mut egui::InputState, modifiers: egui::Modifiers, key: egui::Key) -> bool {
+    let mut fresh = false;
+    i.events.retain(|e| match e {
+        egui::Event::Key { key: k, modifiers: m, pressed: true, repeat, .. } if *k == key && m.matches_logically(modifiers) => {
+            fresh |= !repeat;
+            false
+        }
+        _ => true,
+    });
+    fresh
 }
 
 /// Whether a shortcut chord must be left alone because a text field is focused.
@@ -323,5 +345,45 @@ mod text_focus_shortcut_tests {
         for key in [Key::A, Key::R, Key::J, Key::Z, Key::C, Key::T] {
             assert!(lets_text_field_keep(Modifiers::NONE, true), "{key:?} is a Telex key the tools stole");
         }
+    }
+}
+
+#[cfg(test)]
+mod key_repeat_tests {
+    use egui::{Event, Key, Modifiers};
+
+    fn space(repeat: bool, modifiers: Modifiers) -> Event {
+        Event::Key { key: Key::Space, physical_key: Some(Key::Space), pressed: true, repeat, modifiers }
+    }
+
+    fn fired(events: Vec<Event>) -> Vec<String> {
+        let mut app = super::FilmcraftApp::new(filmcraft_engine::Session::default());
+        app.bindings = super::menus::bindings(&app);
+        app.ui.focused = crate::dock::PanelKind::Timeline;
+        let mut input = egui::InputState::default();
+        input.events = events;
+        app.match_shortcuts(&mut input, false, false, false)
+    }
+
+    /// Holding Space sends one press and then OS key repeats: Play/Stop runs once, not once per
+    /// repeat, or playback flickers between playing and paused.
+    #[test]
+    fn held_space_toggles_playback_once() {
+        assert_eq!(fired(vec![space(false, Modifiers::NONE), space(true, Modifiers::NONE), space(true, Modifiers::NONE)]), ["playback.toggle"]);
+        assert!(fired(vec![space(true, Modifiers::NONE), space(true, Modifiers::NONE)]).is_empty(), "repeats alone start nothing");
+    }
+
+    /// A repeat of Shift+Space is swallowed, not handed down to the plain Space binding.
+    #[test]
+    fn held_shift_space_does_not_fall_through_to_play_stop() {
+        assert!(fired(vec![space(true, Modifiers::SHIFT)]).is_empty());
+    }
+
+    /// Frame stepping is meant to be held: its repeats keep firing.
+    #[test]
+    fn held_arrow_keeps_stepping() {
+        let right = |repeat| Event::Key { key: Key::ArrowRight, physical_key: Some(Key::ArrowRight), pressed: true, repeat, modifiers: Modifiers::NONE };
+        assert_eq!(fired(vec![right(false), right(true)]).len(), 1, "one pass consumes every press of the chord");
+        assert_eq!(fired(vec![right(true)]), ["playhead.stepForward"]);
     }
 }
