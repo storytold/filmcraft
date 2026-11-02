@@ -575,16 +575,20 @@ pub fn scrollbars(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, area: Rec
 
 /// Where a scroll bar's thumb sits: (thumb start along the track, thumb length, points of picture
 /// per point of thumb travel). `offset` is how far the picture is scrolled from its start edge,
-/// `range` the most it can be.
+/// `range` the most it can be. Non-finite or non-positive sizes (a degenerate layout) give a
+/// thumb filling the track that does not scroll, never a panic in `clamp`.
 fn thumb_geometry(track_start: f32, track_len: f32, viewport: f32, content: f32, offset: f32) -> (f32, f32, f32) {
-    if content <= 0.0 || track_len <= 0.0 {
-        return (track_start, track_len.max(0.0), 0.0);
+    let track_start = if track_start.is_finite() { track_start } else { 0.0 };
+    if !(content > 0.0 && content.is_finite() && track_len > 0.0 && track_len.is_finite() && viewport.is_finite()) {
+        let len = if track_len.is_finite() { track_len.max(0.0) } else { 0.0 };
+        return (track_start, len, 0.0);
     }
-    let len = (viewport / content * track_len).clamp(MIN_THUMB.min(track_len), track_len);
+    let ratio = (viewport / content).clamp(0.0, 1.0);
+    let len = (ratio * track_len).clamp(MIN_THUMB.min(track_len), track_len);
     let travel = track_len - len;
     let range = (content - viewport).max(0.0);
-    let start = track_start + if range > 0.0 { (offset / range).clamp(0.0, 1.0) * travel } else { 0.0 };
-    (start, len, if travel > 0.5 { range / travel } else { 0.0 })
+    let frac = if range > 0.0 && offset.is_finite() { (offset / range).clamp(0.0, 1.0) } else { 0.0 };
+    (track_start + frac * travel, len, if travel > 0.5 { range / travel } else { 0.0 })
 }
 
 fn scrollbar(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, track: Rect, axis: usize, area: Rect, pic: Rect) {
@@ -1255,6 +1259,44 @@ mod tests {
         // a degenerate frame or area does not panic
         let _ = scroll_layout(Rect::NOTHING, 0.0, 0.0, &v, 0.0, true);
         assert_eq!(thumb_geometry(0.0, 100.0, 50.0, 0.0, 0.0), (0.0, 100.0, 0.0));
+    }
+
+    #[test]
+    fn scroll_bar_thumbs_survive_hostile_sizes() {
+        // a NaN or infinite track, viewport, picture or offset (a degenerate layout, a hostile
+        // `ui.set`) gives a finite thumb inside the track, never a panic in `clamp`
+        let bad = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -5.0];
+        for x in bad {
+            for (len, viewport, content, offset) in [(x, 100.0, 400.0, 0.0), (100.0, x, 400.0, 0.0), (100.0, 100.0, x, 0.0), (100.0, 100.0, 400.0, x)] {
+                let (start, l, per) = thumb_geometry(0.0, len, viewport, content, offset);
+                assert!(start.is_finite() && l.is_finite() && per.is_finite(), "{len} {viewport} {content} {offset}: {start} {l} {per}");
+                if len.is_finite() && len > 0.0 {
+                    assert!(l >= 0.0 && start >= 0.0 && start + l <= len + 1e-3, "{len} {viewport} {content} {offset}: {start} {l}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_scroll_bars_do_not_change_the_magnification() {
+        // the bars' strips come out of the area, but a magnified picture keeps its size: zoom is
+        // never derived from the area the bars leave, so they cannot feed back into it
+        let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0));
+        for z in [0.21, 0.5, 1.0, 4.0, 16.0] {
+            let v = MonitorView { zoom: Some(z), ..MonitorView::default() };
+            let (a, h, vb) = scroll_layout(area, 1920.0, 1080.0, &v, 2.0, true);
+            assert!(h || vb || z < 0.5, "{z}");
+            let with_bars = picture_rect(a, 1920.0, 1080.0, &v, 2.0);
+            let without = picture_rect(area, 1920.0, 1080.0, &v, 2.0);
+            assert!((with_bars.size() - without.size()).length() < 1e-3, "{z}: {with_bars:?} vs {without:?}");
+            assert!((with_bars.width() * 2.0 / 1920.0 - z).abs() < 1e-4, "{z}");
+            // and the layout is a pure function of the area and zoom: laying out again gives the
+            // same bars (no flicker from one frame's bars to the next)
+            assert_eq!(scroll_layout(area, 1920.0, 1080.0, &v, 2.0, true), (a, h, vb));
+        }
+        // Fit has no bars, so the fitted picture uses the whole area
+        let fit = MonitorView::default();
+        assert_eq!(scroll_layout(area, 1920.0, 1080.0, &fit, 2.0, true), (area, false, false));
     }
 
     #[test]
