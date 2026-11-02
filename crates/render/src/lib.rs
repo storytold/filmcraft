@@ -473,6 +473,15 @@ pub fn motion_matrix(seq: &Sequence, item: &TrackItem, src: (u32, u32), src_par:
         let fit = (sw * q / (src.0.max(1) as f64 * p)).min(sh / src.1.max(1) as f64);
         scale = scale * fit;
     }
+    if vfx::reframes_to_sequence(item) {
+        // Auto Reframe on the sequence's aspect: the picture covers the frame at least, as Fill
+        // Frame makes it, and the effect picks the part that shows
+        let cover = Vec2::new(sw * q / (src.0.max(1) as f64 * p), sh / src.1.max(1) as f64);
+        let k = (cover.x / scale.x.abs()).max(cover.y / scale.y.abs());
+        if k.is_finite() && k > 1.0 {
+            scale = scale * k;
+        }
+    }
     // source px → (× p) display units → Scale, Rotation → (÷ q) sequence px. Without rotation the
     // two stretches merge into one horizontal factor, exactly 1 when the ratios are the same.
     if rot == 0.0 {

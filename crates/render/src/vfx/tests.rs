@@ -1339,6 +1339,38 @@ mod pipeline {
         let e = render_sequence(&p2, seq2, r.tick_of(30), RenderOptions::default(), &map2);
         assert!(e.px.iter().all(|v| v.is_finite()));
     }
+
+    #[test]
+    fn auto_reframe_on_the_sequence_fills_a_frame_of_another_aspect() {
+        // A 16:9 clip in a 9:16 sequence, Auto Reframe on the sequence's aspect (its default). At
+        // Motion's defaults the clip stayed a band (rows 14 to 49), the zoom kept inside its own
+        // picture; after Fill Frame the zoom applied twice.
+        let r = FrameRate::FPS_24;
+        let frame = |scale_to_frame: bool, scale: f64, aspect: u32| {
+            let mut p = Project::new("reframe");
+            let mut map = SourceMap::default();
+            let clip = add(&mut p, &mut map, GeneratorSource::new(Generator::Demo(DemoScene::OceanSunset), 64, 36, r, Tick(10 * TICKS_PER_SECOND)));
+            let seq = p.new_sequence("s", SequenceSettings { width: 36, height: 64, frame_rate: r, ..Default::default() }, 1, 0, None);
+            let mut ar = inst("auto_reframe");
+            set(&mut ar, "aspect", ParamValue::Choice(aspect));
+            place(&mut p, seq, 0, clip, vec![ar]);
+            let ti = &mut p.sequence_mut(seq).unwrap().video_tracks[0].items[0];
+            ti.scale_to_frame = scale_to_frame;
+            ti.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(scale);
+            render_sequence(&p, seq, r.tick_of(12), RenderOptions::default(), &map)
+        };
+        let plain = frame(false, 100.0, 0);
+        for y in [2, 61] {
+            assert!((0..36).all(|x| plain.get(x, y)[3] > 0.99), "row {y} is not covered");
+        }
+        // Scale to Frame Size, Fill Frame (64 / 36 = 177.8 %) and Fill Frame with the 9:16 aspect
+        // chosen by hand show the same window
+        let fill = 64.0 / 36.0 * 100.0;
+        for (s2f, scale, aspect) in [(true, 100.0, 0), (false, fill, 0), (false, fill, 1)] {
+            let d = max_diff(&frame(s2f, scale, aspect), &plain);
+            assert!(d < 1e-3, "scale to frame {s2f}, scale {scale}, aspect {aspect}: {d}");
+        }
+    }
 }
 
 #[test]
