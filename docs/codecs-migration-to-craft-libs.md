@@ -5,7 +5,7 @@
 > **Author:** `el-j`  
 
 ## Overview
-Pure-Rust media codecs originally hosted in FilmCraft (`filmcraft-h264enc`, `filmcraft-prores`, `filmcraft-aac`) are now centralized inside `craft-libs` as the canonical One True Source for all ArtCraft applications.
+Pure-Rust media codecs originally hosted in FilmCraft (`filmcraft-h264enc`, `filmcraft-prores`, `filmcraft-aac`) are undergoing centralization inside `craft-libs` ([storytold/craft-libs#504](https://github.com/storytold/craft-libs/pull/504)) as the canonical One True Source for all ArtCraft applications.
 
 ### Canonical Locations in `craft-libs`
 - `crates/h264enc` (`craft-h264enc`): H.264 High/Main/Baseline video encoder
@@ -13,4 +13,4 @@ Pure-Rust media codecs originally hosted in FilmCraft (`filmcraft-h264enc`, `fil
 - `crates/aac` (`craft-aac`): AAC-LC CBR/VBR audio encoder & decoder
 - `crates/codecs` (`craft-codecs`): Umbrella crate re-exporting all video and audio encoders
 
-This centralization enables `filmcraft`, `effectcraft`, and `encodercraft` to share identical, SIMD-accelerated, zero-panic codec implementations without cross-application dependencies.
+Once FilmCraft adopts these upstream `craft-libs` crates, `filmcraft`, `effectcraft`, and `encodercraft` will share identical, SIMD-accelerated, zero-panic codec implementations without cross-application dependencies. Local crates within FilmCraft will be deprecated or re-export the `craft-*` implementations.
