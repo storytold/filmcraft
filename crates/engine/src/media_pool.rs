@@ -638,8 +638,11 @@ fn cached_slate_frame_with_admission_hook(
     make: impl FnOnce() -> filmcraft_media::Result<VideoFrame>,
     after_miss: impl FnOnce(),
 ) -> filmcraft_media::Result<VideoFrame> {
-    // Keep cache lookup and flight enrollment under one lock. Otherwise a caller can miss
-    // the cache, pause, and start a second render after the first uncached flight ends.
+    // Cache lookup and flight enrollment happen under one lock, so a request that misses the
+    // cache joins the flight for its key while any caller still holds that flight (the map keeps
+    // a Weak): running, or finished and not yet admitted to the cache. Once every holder has
+    // dropped it, a later request that misses renders the slate once more; each request's
+    // closure runs at most once, so that costs one render per such request and nothing else.
     let flight = {
         let mut flights = cache.flights.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(frame) = cache.frames.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
