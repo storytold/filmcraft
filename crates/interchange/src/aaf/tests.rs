@@ -129,6 +129,45 @@ fn written_files_have_the_required_structure() {
     }
 }
 
+/// The top-level composition is tagged `Usage_TopLevel`, which the SMPTE Labels register gives as
+/// urn:smpte:ul:060e2b34.04010101.0d010102.01010700, stored as the AUID
+/// {0d010102-0101-0700-060e-2b3404010101}. Readers that look for it (LibAAF) find no sequence
+/// without it.
+#[test]
+fn the_top_level_composition_has_the_registered_usage_code() {
+    let (p, s) = project();
+    let (bytes, _) = export(&p, s, &AafOptions::default()).unwrap();
+    let root = store::read(&bytes).unwrap();
+    let content = root.strong(pid::ROOT_HEADER).unwrap().strong(pid::CONTENT).unwrap();
+    let comp = content.objs(pid::MOBS).iter().find(|m| m.class == cls::COMPOSITION_MOB).unwrap();
+    let usage = [0x02, 0x01, 0x01, 0x0D, 0x01, 0x01, 0x00, 0x07, 0x06, 0x0E, 0x2B, 0x34, 0x04, 0x01, 0x01, 0x01];
+    assert_eq!(comp.data(pid::USAGE_CODE), Some(&usage[..]));
+}
+
+/// Files from FilmCraft 0.16 and earlier tag the top-level composition with the unregistered label
+/// 060e2b34.04010105.0d011201.02030000. They still import: the composition no other one uses is
+/// the edit.
+#[test]
+fn files_with_the_old_usage_code_still_import() {
+    let (p, s) = project();
+    let (bytes, _) = export(&p, s, &AafOptions::default()).unwrap();
+    let mut root = store::read(&bytes).unwrap();
+    let old = ids::ul([0x06, 0x0E, 0x2B, 0x34, 0x04, 0x01, 0x01, 0x05, 0x0D, 0x01, 0x12, 0x01, 0x02, 0x03, 0x00, 0x00]);
+    let content = strong_mut(strong_mut(&mut root, pid::ROOT_HEADER), pid::CONTENT);
+    for mob in objs_mut(content, pid::MOBS).iter_mut().filter(|m| m.class == cls::COMPOSITION_MOB) {
+        mob.set(pid::USAGE_CODE, Value::Data(old.to_vec()));
+    }
+    let old_file = store::write(&root, filmcraft_cfb::Version::V4).unwrap();
+    let (got, _, report) = import(&old_file, &ImportOptions::default()).unwrap();
+    assert!(!report.has_warnings(), "{report}");
+    let (want, _, _) = import(&bytes, &ImportOptions::default()).unwrap();
+    let clips = |imp: &Imported| {
+        let q = imp.project.sequence(imp.sequences[0]).unwrap();
+        q.video_tracks.iter().chain(&q.audio_tracks).map(|t| t.items.iter().map(|c| (c.start, c.duration, c.source_in)).collect::<Vec<_>>()).collect::<Vec<_>>()
+    };
+    assert_eq!((got.sequences.len(), clips(&got)), (1, clips(&want)));
+}
+
 fn assert_written_file(bytes: &[u8], small: bool) {
     assert_compound_file(bytes, small);
     let root = store::read(bytes).unwrap();
