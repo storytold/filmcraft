@@ -103,7 +103,7 @@ fn clicking_another_panel_ends_text_editing() {
     let clip = d.exec("graphics.newText", json!({"text": "Title", "time": at}))["clip"].as_u64().unwrap();
     d.ok("ui.panel.show", json!({"panel": "Properties"}));
     let edit = |d: &mut Driver| {
-        d.app().ui.gfx_edit = Some(GfxEdit { clip, layer: 0, caret: 0, anchor: 0 });
+        d.app().ui.gfx_edit = Some(GfxEdit { clip, layer: 0, caret: 0, anchor: 0, ..Default::default() });
         d.app().ui.focused = filmcraft_ui_egui::dock::PanelKind::Program;
         d.frames(3);
     };

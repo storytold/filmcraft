@@ -12,7 +12,7 @@ fn add_gen(p: &mut Project, g: GeneratorSource) -> ItemId {
     p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -22,7 +22,7 @@ fn add_gen(p: &mut Project, g: GeneratorSource) -> ItemId {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     )
 }

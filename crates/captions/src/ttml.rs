@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 
-use crate::{Cue, Document, Error, Result, TICKS_PER_MS};
+use crate::{Cue, Document, Error, Result};
 
 /// Which TTML flavour to write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,8 +116,7 @@ fn esc(s: &str) -> String {
 }
 
 fn clock(t: Tick) -> String {
-    let ms = (t.0.max(0) + TICKS_PER_MS / 2) / TICKS_PER_MS;
-    format!("{:02}:{:02}:{:02}.{:03}", ms / 3_600_000, (ms / 60_000) % 60, (ms / 1000) % 60, ms % 1000)
+    crate::format_clock(t, '.')
 }
 
 /// Time expression for `t`: frames at `rate` when it is on a frame boundary, else clock time.

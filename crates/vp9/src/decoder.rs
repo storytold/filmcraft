@@ -8,7 +8,7 @@ use crate::frame::{BAND_PAD, Band, Frame, FrameInfo, MiGrid, MiInfo, Pools};
 use crate::header::{FrameHeader, HeaderState, KEY_FRAME, RefInfo, parse_compressed, parse_uncompressed, split_superframe};
 use crate::loopfilter::{LfFrame, PlaneView, filter_superblock};
 use crate::probs::{Counts, adapt_coef_probs, adapt_noncoef_probs};
-use crate::tables::*;
+use crate::tables::{AC_QLOOKUP, DC_QLOOKUP, SEG_LVL_ALT_Q, SWITCHABLE, TX_MODE_SELECT};
 use crate::tile::{FrameShared, RefUse, Strip, TileDecoder};
 use crate::{ColorInfo, Picture, Plane};
 use std::collections::VecDeque;
@@ -829,7 +829,7 @@ impl Wave {
         let Some(row) = self.rows.get(r) else { return };
         let mut bottom = lock(&row.bottom);
         for (p, dst) in bottom.iter_mut().enumerate() {
-            copy_column(&self.frame, p, c, self.sb_cols, &band.planes[p], self.frame.band_h[p], dst, 0);
+            copy_column(&self.frame, Column { p, c, sb_cols: self.sb_cols }, (&band.planes[p], self.frame.band_h[p]), (dst, 0));
         }
     }
 
@@ -848,7 +848,7 @@ impl Wave {
                 }
                 let bottom = lock(&above.bottom);
                 for (p, src) in bottom.iter().enumerate() {
-                    copy_column(f, p, c, sb_cols, src, 0, &mut band.planes[p], 0);
+                    copy_column(f, Column { p, c, sb_cols }, (src, 0), (&mut band.planes[p], 0));
                 }
             }
             let [a, b, d] = &mut band.planes;
@@ -900,10 +900,18 @@ impl Drop for Wave {
     }
 }
 
+/// Superblock column `c` of plane `p` in a frame `sb_cols` superblocks wide.
+#[derive(Clone, Copy)]
+struct Column {
+    p: usize,
+    c: usize,
+    sb_cols: usize,
+}
+
 /// Copy `BAND_PAD` rows of superblock column `c` of plane `p` (the last column takes the rest of
-/// the stride) from row `src_row` of `src` to row `dst_row` of `dst`, both `strides[p]` wide.
-#[allow(clippy::too_many_arguments)]
-fn copy_column(f: &Frame, p: usize, c: usize, sb_cols: usize, src: &[u16], src_row: usize, dst: &mut [u16], dst_row: usize) {
+/// the stride) from row `src_row` of `src` to row `dst_row` of `dst` (each given as `(buffer, row)`), both `strides[p]` wide.
+fn copy_column(f: &Frame, col: Column, (src, src_row): (&[u16], usize), (dst, dst_row): (&mut [u16], usize)) {
+    let Column { p, c, sb_cols } = col;
     let fs = f.strides[p];
     let cw = fs / sb_cols.max(1);
     let x0 = c * cw;

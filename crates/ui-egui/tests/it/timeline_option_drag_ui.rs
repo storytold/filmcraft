@@ -135,3 +135,40 @@ fn option_drag_preserves_an_already_selected_linked_group() {
         assert_eq!(*d.harness.state().session.project, *before, "one undo removes the group copy");
     }
 }
+
+#[test]
+fn dragging_after_frame_hold_with_repeated_clip_arguments_edits_once() {
+    for copy in [false, true] {
+        let mut d = Driver::demo();
+        let original = d.harness.state().session.active_sequence().unwrap().video_tracks[1].items[0].clone();
+        d.exec("clip.frameHold", json!({"clips": [original.id.0, original.id.0], "time": original.start.0}));
+        let before = d.harness.state().session.project.clone();
+        let undo = d.harness.state().session.history.undo.len();
+        let n = clip_count(&mut d);
+        let r = d.rect(&format!("timeline.clip.{}", original.id.0));
+        let (x, y) = (r[0] + 10.0, r[1] + r[3] / 2.0);
+        d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 240.0, "y": y}, "steps": 12, "modifiers": {"alt": copy}}));
+        d.frames(3);
+        let s = &d.harness.state().session;
+        let q = s.active_sequence().unwrap();
+        if copy {
+            assert_eq!(s.state.selection.len(), 1, "one selected clip produces one copy");
+            let copied = s.state.selection[0];
+            assert_ne!(copied, original.id);
+            assert!(q.find_item(copied).unwrap().1.start > original.start);
+            assert_eq!(q.find_item(original.id).unwrap().1.start, original.start);
+        } else {
+            assert!(q.find_item(original.id).unwrap().1.start > original.start, "a repeated selection must still drag");
+        }
+        let ids: Vec<_> = q.all_tracks().flat_map(|t| t.items.iter().map(|i| i.id)).collect();
+        assert_eq!(ids.len(), n + usize::from(copy));
+        assert_eq!(ids.iter().copied().collect::<std::collections::HashSet<_>>().len(), ids.len());
+        q.check().unwrap();
+        assert_eq!(s.history.undo.len(), undo + 1);
+        let after = s.project.clone();
+        d.exec("edit.undo", json!({}));
+        assert_eq!(d.harness.state().session.project, before);
+        d.exec("edit.redo", json!({}));
+        assert_eq!(d.harness.state().session.project, after);
+    }
+}

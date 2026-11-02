@@ -38,7 +38,7 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
         app.auto.add(&format!("effects.preset.{}", p.name), r, &p.name);
         let tip = crate::i18n::t(if p.description.is_empty() { &p.name } else { &p.description }).to_string();
         let resp = resp.on_hover_text(tip);
-        if resp.drag_started() {
+        if resp.drag_started_by(egui::PointerButton::Primary) {
             crate::panels::start_drag_effect(ui, &format!("preset:{}", p.name));
         }
         if resp.double_clicked() {
@@ -103,12 +103,12 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut close = false;
     let mut apply = false;
-    egui::Window::new(tl!("Save Preset")).id(egui::Id::new("Save Preset")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(
+    egui::Window::new(tl!("Save Preset")).id(egui::Id::unique("Save Preset")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(
         ctx,
         |ui| {
             ui.horizontal(|ui| {
                 ui.label(tl!("Name:"));
-                let r = ui.text_edit_singleline(&mut d.name);
+                let r = crate::widgets::accessible_name(ui.text_edit_singleline(&mut d.name), tl!("Name"));
                 app.auto.add("savePreset.name", r.rect, "Name");
             });
             ui.add_space(4.0);
@@ -127,7 +127,7 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.add_space(4.0);
             ui.label(tl!("Description:"));
-            let r = ui.text_edit_multiline(&mut d.description);
+            let r = crate::widgets::accessible_name(ui.text_edit_multiline(&mut d.description), tl!("Description"));
             app.auto.add("savePreset.description", r.rect, "Description");
             ui.add_space(6.0);
             ui.horizontal(|ui| {

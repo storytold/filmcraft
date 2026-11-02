@@ -43,7 +43,7 @@ fn make_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64) {
         identity: None,
     };
     let mut p = Project::new("fixture");
-    let item = p.add_item("scene", Label::Iris, ItemKind::Media(clip), None);
+    let item = p.add_item("scene", Label::Iris, ItemKind::Media(Box::new(clip)), None);
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 0, None);
     let mut v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, dur), rate).unwrap();
     for e in &mut v.effects {
@@ -189,7 +189,7 @@ fn source_transport_steps_every_frame_at_a_fractional_tick_rate() {
     let item = Arc::make_mut(&mut session.project).add_item(
         "31 fps source",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(generator),
             info: src.info().clone(),
             interpret: Default::default(),
@@ -199,7 +199,7 @@ fn source_transport_steps_every_frame_at_a_fractional_tick_rate() {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     session.execute("source.open", json!({"item": item.0})).unwrap();
@@ -232,7 +232,7 @@ fn source_menu_steps_use_ordinals_for_explicit_targets_and_focus() {
         let item = Arc::make_mut(&mut session.project).add_item(
             "31 fps menu source",
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::Generator(generator),
                 info: src.info().clone(),
                 interpret: Default::default(),
@@ -242,7 +242,7 @@ fn source_menu_steps_use_ordinals_for_explicit_targets_and_focus() {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         session.execute("source.open", json!({"item": item.0})).unwrap();
@@ -308,7 +308,7 @@ fn zero_tick_frame_duration_source() -> (Driver, Tick) {
     let item = Arc::make_mut(&mut session.project).add_item(
         "Source with less than one tick per frame",
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(generator),
             info: src.info().clone(),
             interpret: Default::default(),
@@ -318,7 +318,7 @@ fn zero_tick_frame_duration_source() -> (Driver, Tick) {
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     assert_eq!(filmcraft_engine::clip_ops::source_view(&session, item).unwrap().rate, rate);
@@ -362,7 +362,7 @@ fn link_media_large_lists_and_long_paths_keep_actions_on_screen() {
             let mut media = template.clone();
             media.media = MediaRef::File { path: format!("/missing/{}/clip-{n}.mov", "long-project-directory/".repeat(20)) };
             media.offline = true;
-            let id = p.add_item(&format!("Missing clip {n}"), Label::Iris, ItemKind::Media(media), None);
+            let id = p.add_item(&format!("Missing clip {n}"), Label::Iris, ItemKind::Media(Box::new(media)), None);
             s.offline.missing.push(id);
         }
         s.project = Arc::new(p);

@@ -78,6 +78,15 @@ struct R<'a> {
     open: Vec<MobId>,
 }
 
+struct NestClip<'a> {
+    mob_id: MobId,
+    slot_id: u32,
+    rate: (i64, i64),
+    kind: CKind,
+    name: String,
+    mob: &'a Obj,
+}
+
 /// Compositions nested deeper than this are read as gaps.
 const MAX_NESTING: usize = 16;
 
@@ -366,7 +375,7 @@ impl R<'_> {
             return CItem::Filler(len);
         }
         if let Some(mob) = self.mobs.get(&id).copied().filter(|m| m.class == cls::COMPOSITION_MOB) {
-            return self.nest_clip(c, mob, id, slot, rate, kind, name);
+            return self.nest_clip(c, NestClip { mob, mob_id: id, slot_id: slot, rate, kind, name });
         }
         match self.resolve(id, slot, start, kind, master_key, 0) {
             Some((source, t)) => CItem::Clip(CClip { len, source, start: t, gain: None, name }),
@@ -376,7 +385,8 @@ impl R<'_> {
 
     /// A source clip that points at a composition: a nested sequence (Premiere Pro writes its
     /// nested sequences this way). The composition is read once, however many clips use it.
-    fn nest_clip(&mut self, c: &Obj, mob: &Obj, id: MobId, slot_id: u32, rate: (i64, i64), kind: CKind, name: String) -> CItem {
+    fn nest_clip(&mut self, c: &Obj, clip: NestClip<'_>) -> CItem {
+        let NestClip { mob, mob_id: id, slot_id, rate, kind, name } = clip;
         let len = units_to_ticks(len_of(c), rate.0, rate.1);
         let index = match self.nests.get(&id) {
             Some(&i) => i,
