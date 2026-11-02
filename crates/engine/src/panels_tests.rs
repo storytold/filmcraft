@@ -142,7 +142,7 @@ fn events_report_background_jobs() {
     s.poll_persistence();
     assert_eq!(s.log.entries.iter().filter(|e| e.message.starts_with("Started:")).count(), 3);
     *a.result.lock().unwrap() =
-        Some(Ok(filmcraft_export::Report { path: "a.mp4".into(), frames: 1, seconds: 0.1, bytes: 1, render_fps: 10.0, extra_files: Vec::new() }));
+        Some(Ok(filmcraft_export::Report { path: "a.mp4".into(), frames: 1, seconds: 0.1, bytes: 1, render_fps: 10.0, ..Default::default() }));
     *b.result.lock().unwrap() = Some(Err("disk full".into()));
     c.progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     *c.result.lock().unwrap() = Some(Err("cancelled".into()));

@@ -516,6 +516,10 @@ async fn cli_export(a: &Args) {
             for warning in v.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
                 diag(format_args!("filmcraft-cli: warning: {warning} (CLI: --range entire)"));
             }
+            // from the export itself: hardware encoding asked for, but the software encoder ran
+            for warning in v["result"].get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                diag(format_args!("filmcraft-cli: warning: {warning}"));
+            }
             check_offline(a, &offline_media(&v), &format!("export: {written}"));
             diag(format_args!("exported {written} in {:.1}s", t0.elapsed().as_secs_f64()));
         }
