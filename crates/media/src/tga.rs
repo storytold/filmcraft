@@ -116,9 +116,16 @@ fn image_data_end(name: &str, bytes: &[u8], first_pixel: usize) -> Result<usize>
         // whose missing pixels are supplied by metadata.
         end = end.min(offset);
         // TGA 2.0 extension fields at byte offsets 482, 486 and 490 point to the colour
-        // correction, postage-stamp and scan-line tables. Checked reads ignore fields
-        // absent from a physically short extension; tables may precede the record.
-        if let Some(area) = body.get(offset..) {
+        // correction, postage-stamp and scan-line tables. The record's first two bytes give
+        // its size (495 in TGA 2.0); a shorter record has no such fields, and a record never
+        // reaches into a developer directory that follows it, so those bytes are not read as
+        // table offsets. Tables may precede the record.
+        let declared = body.get(offset..offset.saturating_add(2)).and_then(|v| v.first_chunk::<2>()).map_or(0, |v| usize::from(u16::from_le_bytes(*v)));
+        let mut record_end = offset.saturating_add(declared.min(495));
+        if directory > offset {
+            record_end = record_end.min(directory);
+        }
+        if let Some(area) = body.get(offset..record_end.min(body.len())) {
             for field in [482, 486, 490] {
                 if let Some(value) = area.get(field..field + 4).and_then(|v| v.first_chunk::<4>())
                     && let Some(table) = metadata_offset(body, u32::from_le_bytes(*value) as usize, first_pixel)
@@ -370,6 +377,32 @@ mod tests {
             let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).unwrap();
             assert_eq!(frame.to_rgba8(), pixels);
         }
+    }
+
+    #[test]
+    fn short_extension_followed_by_a_developer_directory_keeps_the_pixels() {
+        // a complete 1x1 image, a 482-byte extension (its size says so) and right after it a
+        // developer directory whose entry's length lands where a full extension keeps its
+        // scan-line table offset; reading it as one would move the image end into the header
+        let mut file = header(2, 1, 1, 24, 0x20);
+        file.extend_from_slice(&[10, 20, 30]);
+        let extension = file.len() as u32;
+        let mut area = vec![0; 482];
+        area[..2].copy_from_slice(&482u16.to_le_bytes());
+        file.extend_from_slice(&area);
+        let directory = file.len() as u32;
+        let payload = directory + 2 + 10;
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&0u16.to_le_bytes());
+        file.extend_from_slice(&payload.to_le_bytes());
+        file.extend_from_slice(&18u32.to_le_bytes());
+        file.extend_from_slice(&[0; 18]);
+        file.extend_from_slice(&extension.to_le_bytes());
+        file.extend_from_slice(&directory.to_le_bytes());
+        file.extend_from_slice(FOOTER);
+        let source = crate::open_bytes("short-extension.tga", file.into(), &[]).expect("the image decodes");
+        let frame = source.video_frame(crate::FrameRequest::full(filmcraft_time::Tick::ZERO)).expect("one frame");
+        assert_eq!((frame.width, frame.height), (1, 1));
     }
 
     #[test]
