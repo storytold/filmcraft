@@ -3616,7 +3616,7 @@
 	Pre head:	Margen inicial:
 	Post tail:	Margen final:
 	Minimum to strip:	Silencio mínimo a eliminar:
-	Cross fade audio	Fundido encadenado de audio
+	No silence found matching the criteria	No se encontró ningún silencio que coincida con los criterios
 	Preview:	Vista previa:
 	Visible area	Área visible
 	Entire clip	Todo el clip

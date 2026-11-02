@@ -676,8 +676,47 @@ fn move_to_new_track_adds_it_in_one_undo_step() {
 fn remove_silence_runs_and_is_undoable() {
     let mut s = demo();
     let before = s.active_sequence().unwrap().clone();
-    let r = s.execute("sequence.removeSilence", json!({"threshold": -10.0, "minStrip": 5, "preHead": 0, "postTail": 0})).unwrap();
-    assert!(r.get("removed").is_some());
+    let r = s.execute("sequence.removeSilence", json!({"threshold": 0.0, "minStrip": 1, "preHead": 0, "postTail": 0})).unwrap();
+    let removed = r["removed"].as_u64().unwrap();
+    assert!(removed > 0, "expected at least one silence removed");
+    let after = s.active_sequence().unwrap().clone();
+    assert!(after.duration() < before.duration(), "duration must shrink after ripple delete");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*s.active_sequence().unwrap(), before, "single undo must restore sequence");
+}
+
+#[test]
+fn clip_remove_silence_runs_and_is_undoable() {
+    let mut s = demo();
+    let before = s.active_sequence().unwrap().clone();
+    let first_clip = before.all_tracks().flat_map(|t| &t.items).next().unwrap().id.0;
+    s.execute("timeline.select", json!({"clips": [first_clip]})).unwrap();
+    let r = s.execute("clip.removeSilence", json!({"threshold": 0.0, "minStrip": 1, "preHead": 0, "postTail": 0, "clips": [first_clip]})).unwrap();
+    let removed = r["removed"].as_u64().unwrap();
+    assert!(removed > 0, "expected at least one silence removed from clip");
+    let after = s.active_sequence().unwrap().clone();
+    assert!(after.duration() < before.duration());
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(*s.active_sequence().unwrap(), before);
+}
+
+#[test]
+fn remove_silence_hostile_parameters_do_not_panic() {
+    let mut s1 = demo();
+    let hostile = json!({
+        "threshold": 1e20,
+        "preHead": 18446744073709551615u64,
+        "postTail": 18446744073709551615u64,
+        "minStrip": 18446744073709551615u64,
+    });
+    let r1 = s1.execute("sequence.removeSilence", hostile.clone());
+    assert!(r1.is_ok());
+
+    let mut s2 = demo();
+    let first_clip = s2.active_sequence().unwrap().all_tracks().flat_map(|t| &t.items).next().unwrap().id.0;
+    s2.execute("timeline.select", json!({"clips": [first_clip]})).unwrap();
+    let mut clip_hostile = hostile;
+    clip_hostile["clips"] = json!([first_clip]);
+    let r2 = s2.execute("clip.removeSilence", clip_hostile);
+    assert!(r2.is_ok());
 }

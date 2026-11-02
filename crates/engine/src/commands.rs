@@ -1987,11 +1987,11 @@ fn build() -> Vec<CommandSpec> {
             "Remove Silence…",
             ["Clip", "Audio Options"],
             None,
-            r#"{"threshold":f?,"preHead":n?,"postTail":n?,"minStrip":n?,"crossfade":bool?,"clips":[id]?}"#,
+            r#"{"threshold":f?,"preHead":n?,"postTail":n?,"minStrip":n?,"clips":[id]?}"#,
             has_selection,
             |s, p| {
                 let mut p = p.clone();
-                if p.get("clips").is_none() {
+                if p.get("clips").is_none() || p["clips"].as_array().is_some_and(|a| a.is_empty()) {
                     let sel: Vec<u64> = s.state.selection.iter().map(|c| c.0).collect();
                     p["clips"] = serde_json::json!(sel);
                 }

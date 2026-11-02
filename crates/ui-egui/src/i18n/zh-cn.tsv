@@ -3591,7 +3591,7 @@
 	Pre head:	前置缓冲：
 	Post tail:	后置缓冲：
 	Minimum to strip:	最小消除长度：
-	Cross fade audio	音频交叉淡化
+	No silence found matching the criteria	未找到符合条件的静音
 	Preview:	预览：
 	Visible area	可见区域
 	Entire clip	整个剪辑

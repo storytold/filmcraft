@@ -2024,7 +2024,12 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
     ],
     &[("Label", "edit.label")],
     &[("Add Marker", "markers.add")],
-    &[("Speed/Duration…", "clip.speedDuration"), ("Scene Edit Detection…", "clip.sceneEditDetection")],
+    &[
+        ("Speed/Duration…", "clip.speedDuration"),
+        ("Scene Edit Detection…", "clip.sceneEditDetection"),
+        ("Audio Gain…", "clip.audioGain"),
+        ("Remove Silence…", "clip.removeSilence"),
+    ],
     &[
         ("Frame Hold Options…", "clip.frameHoldOptions"),
         ("Add Frame Hold", "clip.frameHold"),
@@ -3122,15 +3127,27 @@ fn update_silence_preview(app: &mut FilmcraftApp, ctx: &egui::Context, _layout: 
     }
 
     let p = &d.params;
-    let threshold = p.get("threshold").and_then(Value::as_f64).unwrap_or(-30.6) as f32;
-    let pre_head = p.get("preHead").and_then(Value::as_i64).unwrap_or(10) as usize;
-    let post_tail = p.get("postTail").and_then(Value::as_i64).unwrap_or(12) as usize;
-    let min_strip = p.get("minStrip").and_then(Value::as_i64).unwrap_or(23) as usize;
+    let threshold = p.get("threshold").and_then(Value::as_f64).map(|v| v as f32).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_THRESHOLD_DB);
+    let pre_head = p.get("preHead").and_then(Value::as_i64).map(|v| v as usize).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_PRE_HEAD_FRAMES);
+    let post_tail = p.get("postTail").and_then(Value::as_i64).map(|v| v as usize).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_POST_TAIL_FRAMES);
+    let min_strip = p.get("minStrip").and_then(Value::as_i64).map(|v| v as usize).unwrap_or(filmcraft_engine::sequence_tools::DEFAULT_MIN_STRIP_FRAMES);
     let is_clip = d.command.starts_with("clip.");
     let scope = p.get("previewScope").and_then(Value::as_str).unwrap_or(if is_clip { "all" } else { "visible" });
     let is_all = scope == "all";
 
-    let bounds = if is_all { None } else { Some(TimeRange::from_bounds(visible.0, visible.1)) };
+    // Cap preview analysis window to at most 5 minutes around visible area to ensure fluid UI interaction
+    const MAX_PREVIEW_SPAN: Tick = Tick(5 * 60 * filmcraft_time::TICKS_PER_SECOND);
+    let bounds = if is_all {
+        let seq_dur = app.session.active_sequence().map(|q| q.duration()).unwrap_or(Tick::ZERO);
+        if seq_dur > MAX_PREVIEW_SPAN {
+            let start = Tick(visible.0.0.saturating_sub(60 * filmcraft_time::TICKS_PER_SECOND).max(0));
+            Some(TimeRange::from_bounds(start, start + MAX_PREVIEW_SPAN))
+        } else {
+            None
+        }
+    } else {
+        Some(TimeRange::from_bounds(visible.0, visible.1))
+    };
 
     let clips: Vec<ClipId> = p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
 

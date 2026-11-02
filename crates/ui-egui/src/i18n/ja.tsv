@@ -3615,7 +3615,7 @@
 	Pre head:	先頭マージン:
 	Post tail:	末尾マージン:
 	Minimum to strip:	削除する最小無音長:
-	Cross fade audio	オーディオのクロスフェード
+	No silence found matching the criteria	条件に一致する無音は見つかりませんでした
 	Preview:	プレビュー:
 	Visible area	表示領域
 	Entire clip	クリップ全体

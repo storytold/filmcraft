@@ -82,7 +82,7 @@ fn groups() -> Vec<(&'static str, Vec<CommandSpec>)> {
                     "Remove Silence…",
                     &["Sequence"],
                     None,
-                    r#"{"threshold":f?,"preHead":n?,"postTail":n?,"minStrip":n?,"crossfade":bool?}"#,
+                    r#"{"threshold":f?,"preHead":n?,"postTail":n?,"minStrip":n?}"#,
                     has_seq,
                     remove_silence,
                 ),
@@ -1036,6 +1036,17 @@ fn filter_colors(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"hidden": s.state.hidden_marker_colors.iter().map(|c| c.name()).collect::<Vec<_>>()}))
 }
 
+/// Default quietness threshold in dBFS.
+pub const DEFAULT_THRESHOLD_DB: f32 = -30.6;
+/// Default pre-head padding in frames.
+pub const DEFAULT_PRE_HEAD_FRAMES: usize = 10;
+/// Default post-tail padding in frames.
+pub const DEFAULT_POST_TAIL_FRAMES: usize = 12;
+/// Default minimum duration of silence to strip in frames.
+pub const DEFAULT_MIN_STRIP_FRAMES: usize = 23;
+/// Maximum frames analyzed in a single silence pass (1 hour at 60 fps).
+const MAX_ANALYSIS_FRAMES: usize = 3600 * 60;
+
 /// Detect silence ranges across the sequence or a bounded sub-range / subset of clips.
 pub fn detect_silence_ranges(
     s: &Session,
@@ -1047,6 +1058,11 @@ pub fn detect_silence_ranges(
     post_tail: usize,
     min_strip: usize,
 ) -> Result<Vec<TimeRange>> {
+    let threshold_db = threshold_db.clamp(-120.0, 0.0);
+    let pre_head = pre_head.clamp(0, 120);
+    let post_tail = post_tail.clamp(0, 120);
+    let min_strip = min_strip.clamp(1, 300);
+
     let q = s.project.sequence(id).ok_or(EngineError::NoSequence)?;
     let fd = q.settings.frame_rate.frame_duration();
     let seq_a = q.mark_in.unwrap_or(Tick::ZERO);
@@ -1087,7 +1103,7 @@ pub fn detect_silence_ranges(
     let sr = q.settings.sample_rate;
     let f_start = fps.frame_at(a);
     let f_end = fps.frame_at(b);
-    let total_frames = (f_end - f_start).max(0) as usize;
+    let total_frames = (f_end.saturating_sub(f_start)).clamp(0, MAX_ANALYSIS_FRAMES as i64) as usize;
     if total_frames == 0 {
         return Ok(Vec::new());
     }
@@ -1130,7 +1146,9 @@ pub fn detect_silence_ranges(
             }
             let mean_sq = sum_sq / (m * ch) as f32;
             let db = 10.0 * (mean_sq + 1e-12).log10();
-            silent[chunk_idx + f] = db < threshold_db;
+            if let Some(slot) = silent.get_mut(chunk_idx + f) {
+                *slot = db < threshold_db;
+            }
         }
     }
 
@@ -1145,11 +1163,15 @@ pub fn detect_silence_ranges(
             keep[i] = true;
             let pre_start = i.saturating_sub(pre_head);
             for j in pre_start..i {
-                keep[j] = true;
+                if let Some(slot) = keep.get_mut(j) {
+                    *slot = true;
+                }
             }
-            let post_end = (i + post_tail).min(total_frames.saturating_sub(1));
-            for j in i + 1..=post_end {
-                keep[j] = true;
+            let post_end = i.saturating_add(post_tail).min(total_frames.saturating_sub(1));
+            for j in (i + 1)..=post_end {
+                if let Some(slot) = keep.get_mut(j) {
+                    *slot = true;
+                }
             }
         }
     }
@@ -1186,11 +1208,10 @@ pub fn detect_silence_ranges(
 pub fn remove_silence(s: &mut Session, p: &Value) -> Result<Value> {
     let id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let clips: Vec<ClipId> = p.get("clips").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_u64().map(ClipId)).collect()).unwrap_or_default();
-    let threshold_db = f64_p(p, "threshold").unwrap_or(-30.6) as f32;
-    let pre_head = u64_p(p, "preHead").unwrap_or(10) as usize;
-    let post_tail = u64_p(p, "postTail").unwrap_or(12) as usize;
-    let min_strip = u64_p(p, "minStrip").unwrap_or(23) as usize;
-    let crossfade = bool_p(p, "crossfade").unwrap_or(true);
+    let threshold_db = f64_p(p, "threshold").map(|v| v as f32).unwrap_or(DEFAULT_THRESHOLD_DB).clamp(-120.0, 0.0);
+    let pre_head = (u64_p(p, "preHead").unwrap_or(DEFAULT_PRE_HEAD_FRAMES as u64) as usize).clamp(0, 120);
+    let post_tail = (u64_p(p, "postTail").unwrap_or(DEFAULT_POST_TAIL_FRAMES as u64) as usize).clamp(0, 120);
+    let min_strip = (u64_p(p, "minStrip").unwrap_or(DEFAULT_MIN_STRIP_FRAMES as u64) as usize).clamp(1, 300);
 
     let ranges = detect_silence_ranges(s, id, None, if clips.is_empty() { None } else { Some(&clips) }, threshold_db, pre_head, post_tail, min_strip)?;
 
@@ -1201,10 +1222,6 @@ pub fn remove_silence(s: &mut Session, p: &Value) -> Result<Value> {
 
     let n = ranges.len();
     let total = s.edit_sequence("Remove Silence", |seq, ctx, _| Ok(filmcraft_edit::transcript::ripple_delete_ranges(seq, ranges, ctx)))?;
-
-    if crossfade {
-        let _ = crate::trim::apply_default_transitions(s);
-    }
 
     s.toast(format!("Removed {n} silences ({:.1}s)", total.0 as f64 / filmcraft_time::TICKS_PER_SECOND as f64));
     Ok(json!({

@@ -58,6 +58,7 @@ fn menus_and_shortcuts_follow_premiere() {
     assert_eq!(pos("file.saveAll"), pos("file.saveCopy") + 2, "Save a Copy, Save as Template (M3.11), Save All");
     assert_eq!(menu_of("clip.timeInterpolation.opticalFlow"), ["Clip", "Video Options", "Time Interpolation"]);
     assert_eq!(menu_of("clip.audioGain"), ["Clip", "Audio Options"]);
+    assert_eq!(menu_of("clip.removeSilence"), ["Clip", "Audio Options"]);
     assert_eq!(menu_of("clip.replaceFromSourceMatchFrame"), ["Clip", "Replace With Clip"]);
     // Video Options in Premiere's order
     let vo: Vec<&str> = crate::commands::command_specs().iter().filter(|c| c.menu.get(1) == Some(&"Video Options")).map(|c| c.label).collect();
