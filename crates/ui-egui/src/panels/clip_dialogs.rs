@@ -327,7 +327,8 @@ fn check(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &s
     }
 }
 
-fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, width: f32) {
+/// A labelled text field for `p[key]`; returns whether it was typed in this frame.
+fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, width: f32) -> bool {
     ui.horizontal(|ui| {
         ui.label(label);
         let mut v = p.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
@@ -336,7 +337,9 @@ fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &st
         if r.changed() {
             p[key] = json!(v);
         }
-    });
+        r.changed()
+    })
+    .inner
 }
 
 struct NumberOptions {
@@ -637,12 +640,13 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     p["duration"] = json!(filmcraft_time::format_timecode_frames(rate.frame_at(ticks).max(1), rate, false));
                 }
                 let before = if refresh_duration { p["duration"].clone() } else { d.info["durationText"].clone() };
-                text(ui, &mut elems, pre, p, "duration", tl!("Duration:"), 120.0);
+                let typed_now = text(ui, &mut elems, pre, p, "duration", tl!("Duration:"), 120.0);
                 let frames = filmcraft_time::parse_timecode(p["duration"].as_str().unwrap_or_default(), rate, false, 0);
                 let typed = frames.ok().filter(|f| *f > 0).map(|f| rate.tick_of(f)).filter(|ticks| ticks.0 > 0);
                 let speed = typed.map(|ticks| dur as f64 * was * 100.0 / ticks.0 as f64);
                 valid = speed.is_some_and(|speed| speed.is_finite() && (0.01..=100_000.0).contains(&speed));
-                if valid && before != p["duration"] {
+                // typed, even the value already shown: with several clips selected it still sets them all
+                if valid && (typed_now || before != p["duration"]) {
                     p["speed"] = json!(speed);
                     // sent on OK, so every selected clip gets this duration instead of the first clip's speed
                     d.info["typedDuration"] = json!(typed.map(|t| t.0));
