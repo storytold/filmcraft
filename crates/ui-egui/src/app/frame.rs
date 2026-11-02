@@ -60,6 +60,14 @@ impl FilmcraftApp {
         }
         let status_h = if self.ui.show_status_bar { 20.0 } else { 0.0 };
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
+        // however the project came (File ▸ Open, Open Recent, New, the recovery prompt): Import
+        // (Home) would hide it until the header's Edit is chosen
+        if self.mode_document_epoch != self.session.document_epoch {
+            self.mode_document_epoch = self.session.document_epoch;
+            if self.ui.mode == state::Mode::Import {
+                self.ui.mode = state::Mode::Edit;
+            }
+        }
         match self.ui.mode {
             state::Mode::Edit => self.dock_area(ui, body),
             state::Mode::Import => panels::import_mode::show(self, ui, body),

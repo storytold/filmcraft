@@ -240,14 +240,14 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // voice-over recording reads the microphone through cpal
         session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
         let (project, media) = args::project_and_media(&files);
-        // Settings ▸ General ▸ At Startup ▸ Show Home (the default): no project opens, the window
-        // starts on Home (the Import screen, with the recent projects). The demo opens only for
-        // `--demo` or a first run with no preferences yet (#2421).
-        let home = project.is_none()
-            && !startup_flag
-            && media.is_empty()
-            && session.prefs.general.at_startup == "showHome"
-            && session.prefs_path.as_deref().is_some_and(|p| p.exists());
+        let home = args::starts_on_home(&files, startup_flag, &session.prefs.general.at_startup, session.prefs_path.as_deref());
+        // The file is what makes the next launch a later run, whether or not a setting changes (#2421)
+        if let Some(path) = session.prefs_path.as_deref()
+            && !path.exists()
+            && let Err(e) = session.prefs.save(path)
+        {
+            log::warn!("could not write {}: {e}", path.display());
+        }
         if let Some(p) = project {
             if let Err(e) = session.execute("file.open", json!({"path": p})) {
                 log::error!("{e}");
@@ -273,17 +273,21 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         if !media.is_empty() {
             let _ = session.execute("file.import", json!({"paths": media}));
         }
+        let mut recovered = false;
         if recover == Some(true) && !session.recovery_candidates().is_empty() {
             let id = session.recovery_candidates()[0].id.clone();
             match session.execute("file.recover", json!({"id": id})) {
-                Ok(r) => log::info!("recovered {r}"),
+                Ok(r) => {
+                    recovered = true;
+                    log::info!("recovered {r}");
+                }
                 Err(e) => log::error!("recovery failed: {e}"),
             }
         }
         let mut app = FilmcraftApp::new(session);
         app.set_startup_update_check(true);
-        // Home only when nothing opened a project after all (`--recover` may have)
-        if home && app.session.path.is_none() {
+        // Home only when `--recover` did not bring a project back, saved to a file or not
+        if home && !recovered {
             app.ui.mode = filmcraft_ui_egui::state::Mode::Import;
         }
         app.graphics_notice = notice;
