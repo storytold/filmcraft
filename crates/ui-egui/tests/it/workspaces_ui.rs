@@ -277,6 +277,26 @@ fn the_layout_in_use_at_close_comes_back_without_saving() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
+/// A window closed before its first frame has not brought the workspace back yet: what the last
+/// launch remembered stays, not the default workspace's layout.
+#[test]
+fn closing_before_the_first_frame_keeps_the_remembered_layout() {
+    let data = data_dir("remember-early");
+    let mut d = Driver::launch(&data);
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.ok("ui.panel.close", json!({"panel": "LumetriScopes"}));
+    d.app().remember_layout();
+    drop(d);
+    let before = saved_file(&data);
+    assert_eq!(before["last"]["name"], "Color");
+
+    let mut session = Session::default();
+    session.prefs_path = Some(data.join("preferences.json"));
+    FilmcraftApp::new(session).remember_layout();
+    assert_eq!(saved_file(&data), before);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
 /// A layout saved on purpose is never beaten by an older remembered one: Save Changes to this
 /// Workspace, Reset to Saved Layout and deleting a built-in's changes drop the remembered layout
 /// (so a session that ends without `on_exit` still reopens the saved layout), and a rename keeps

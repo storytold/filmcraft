@@ -9,6 +9,10 @@ impl FilmcraftApp {
     /// changes made without Save Changes to this Workspace survive a restart (#2421). Called when
     /// the app closes; a layout that does not validate, or is already remembered, writes nothing.
     pub fn remember_layout(&mut self) {
+        // closed before the first frame brought the workspace back: `ui` still holds the defaults
+        if !self.workspace_restored {
+            return;
+        }
         let Ok(last) = dock::SavedWorkspace::new(&self.ui.workspace, &self.ui.dock) else { return };
         if self.workspaces.last.as_ref() == Some(&last) && self.workspaces.current == self.ui.workspace {
             return;
