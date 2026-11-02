@@ -65,7 +65,7 @@ let au: Vec<u8> = file.read_unit(&bytes, v, 0)?;      // the first access unit
   33-bit unwrap; truncation every 37 bytes and 400 random mutations never panic.
 - `src/es.rs`, `src/pes.rs`: frame sizes (MPEG audio layers I-III, MPEG-2 LSF, AC-3 at all
   rates), MPEG-2 and MPEG-1 PES headers.
-- `crates/codecs/tests/mpeg_oracle.rs`: FFmpeg-written TS / M2TS / VOB / MPEG-1 system files —
+- `crates/codecs/tests/it/mpeg_oracle.rs`: FFmpeg-written TS / M2TS / VOB / MPEG-1 system files —
   frame counts and every frame's PTS equal ffprobe's, decoded media against FFmpeg (see
   `filmcraft-codecs`).
 

@@ -359,10 +359,12 @@ struct R<'a> {
     cf: CompoundFile<'a>,
     paths: Vec<Vec<u16>>,
     objects: usize,
+    materialized_stream_bytes: usize,
 }
 
 const MAX_DEPTH: usize = 200;
 const MAX_OBJECTS: usize = 2_000_000;
+const MAX_MATERIALIZED_STREAM_BYTES: usize = 256 << 20;
 
 /// Parse the object tree of an AAF compound file (the root object).
 pub(crate) fn read(bytes: &[u8]) -> Result<Obj, String> {
@@ -385,7 +387,7 @@ pub(crate) fn read(bytes: &[u8]) -> Result<Obj, String> {
             }
         }
     }
-    let mut r = R { cf, paths, objects: 0 };
+    let mut r = R { cf, paths, objects: 0, materialized_stream_bytes: 0 };
     r.obj(0, 0)
 }
 
@@ -401,9 +403,15 @@ impl R<'_> {
         self.cf.child(parent, name).ok_or_else(|| bad(format!("missing storage or stream \"{name}\"")))
     }
 
-    fn stream(&self, parent: usize, name: &str) -> Result<Vec<u8>, String> {
+    fn stream(&mut self, parent: usize, name: &str) -> Result<Vec<u8>, String> {
         let id = self.child(parent, name)?;
-        self.cf.read(id).map_err(|e| e.to_string())
+        let data = self.cf.read(id).map_err(|e| e.to_string())?;
+        self.materialized_stream_bytes = self
+            .materialized_stream_bytes
+            .checked_add(data.len())
+            .filter(|&n| n <= MAX_MATERIALIZED_STREAM_BYTES)
+            .ok_or_else(|| bad("AAF materialized stream data exceeds the memory limit"))?;
+        Ok(data)
     }
 
     fn obj(&mut self, entry: usize, depth: usize) -> Result<Obj, String> {
@@ -435,6 +443,9 @@ impl R<'_> {
             let (Some(pid), Some(sf), Some(len)) = (rd_u16(&props, 4 + i * 6), rd_u16(&props, 6 + i * 6), rd_u16(&props, 8 + i * 6)) else {
                 return Err(bad("truncated property index"));
             };
+            if o.props.iter().any(|(previous, _)| *previous == pid) {
+                return Err(bad("duplicate property id"));
+            }
             let v = props.get(at..at + len as usize).ok_or_else(|| bad("truncated property value"))?;
             at += len as usize;
             let value = match sf {

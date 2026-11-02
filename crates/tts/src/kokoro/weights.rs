@@ -12,6 +12,7 @@ use std::io::Read;
 use std::path::Path;
 
 use candle_core::{DType, Device, Tensor};
+use sha2::{Digest, Sha256};
 
 use crate::TtsError;
 
@@ -83,6 +84,7 @@ const PARTS: [&str; 5] = ["bert", "bert_encoder", "predictor", "text_encoder", "
 
 impl Weights {
     pub(crate) fn load(path: &Path) -> Result<Weights, TtsError> {
+        verify_checkpoint(path)?;
         let mut raw: HashMap<String, Tensor> = HashMap::new();
         for part in PARTS {
             let tensors = candle_core::pickle::read_all_with_key(path, Some(part)).map_err(|e| err(format!("{}: {e}", path.display())))?;
@@ -124,6 +126,34 @@ impl Weights {
         }
         Ok(t)
     }
+}
+
+/// Candle's pickle reader is used only for the fixed, catalogued checkpoint.
+/// Verify its immutable size and digest before any pickle object is expanded.
+fn verify_checkpoint(path: &Path) -> Result<(), TtsError> {
+    let file = crate::catalog::FILES
+        .iter()
+        .find(|file| file.name == "kokoro-v1_0.pth")
+        .ok_or_else(|| err("Kokoro checkpoint is missing from the package catalogue"))?;
+    let metadata = std::fs::metadata(path).map_err(|e| err(format!("{}: {e}", path.display())))?;
+    if metadata.len() != file.size {
+        return Err(err(format!("{}: checkpoint size does not match the official package", path.display())));
+    }
+    let mut reader = std::fs::File::open(path).map_err(|e| err(format!("{}: {e}", path.display())))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| err(format!("{}: {e}", path.display())))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != file.sha256 {
+        return Err(err(format!("{}: checkpoint digest does not match the official package", path.display())));
+    }
+    Ok(())
 }
 
 /// Number of style vectors in a voice pack (one per input length 1..=510).
