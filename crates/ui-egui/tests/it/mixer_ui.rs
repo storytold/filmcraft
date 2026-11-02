@@ -95,7 +95,12 @@ impl Driver {
 
     /// Press on `id`, move `dy` pixels over several frames (calling `between` before each move),
     /// release.
-    fn drag_frames(&mut self, id: &str, dy: f32, steps: usize, mut between: impl FnMut(&mut Self, usize)) {
+    fn drag_frames(&mut self, id: &str, dy: f32, steps: usize, between: impl FnMut(&mut Self, usize)) {
+        self.drag_frames_by(id, egui::vec2(0.0, dy), steps, between);
+    }
+
+    /// [`drag_frames`](Self::drag_frames) moving by `delta` in both directions.
+    fn drag_frames_by(&mut self, id: &str, delta: egui::Vec2, steps: usize, mut between: impl FnMut(&mut Self, usize)) {
         let r = self.element(id).unwrap_or_else(|| panic!("no element {id}"));
         let mut p = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
         let push = |d: &mut Self, e: egui::Event| d.harness.input_mut().events.push(e);
@@ -105,12 +110,16 @@ impl Driver {
         self.frames(1);
         for i in 0..steps {
             between(self, i);
-            p.y += dy / steps as f32;
+            p += delta / steps as f32;
             push(self, egui::Event::PointerMoved(p));
             self.frames(1);
         }
         push(self, egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
         self.frames(2);
+    }
+
+    fn undo_len(&mut self) -> usize {
+        self.exec("history.list", json!({}))["undo"].as_array().unwrap().len()
     }
 
     fn strip(&mut self, r: &str) -> Value {
@@ -536,4 +545,37 @@ fn timeline_mix_level_sets_the_master() {
     d.exec("mixer.setKeyframe", json!({"strip": "Mix", "time": 0, "value": -12.0}));
     d.exec("playhead.set", json!({"time": 0}));
     assert_eq!(label(&mut d), "-12.0");
+}
+
+/// During playback (an automation pass) a drag of the Timeline's Mix level is one held gesture:
+/// with nothing to record it changes the level once, as one undo step; in Touch it is written as
+/// automation when the pass ends and returns from where it was let go.
+#[test]
+fn timeline_mix_drag_during_playback_is_one_gesture() {
+    let mut d = Driver::demo();
+    let mix = |d: &mut Driver| d.harness.state().session.active_sequence().unwrap().master_volume_db;
+    d.frames(2);
+    // Read, no automation: a plain control
+    d.exec("mixer.recordStart", json!({}));
+    let before = d.undo_len();
+    d.drag_frames_by("timeline.mix.volume", egui::vec2(-60.0, 0.0), 6, |_, _| {});
+    assert_eq!(d.undo_len(), before + 1, "one undo step for the drag");
+    let down = mix(&mut d);
+    assert!(down < -0.5, "the drag lowered the Mix fader: {down}");
+    d.exec("mixer.recordStop", json!({}));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(mix(&mut d), 0.0);
+    // Touch: held while the playhead moves, written when the pass ends
+    d.exec("mixer.setStrip", json!({"strip": "Mix", "mode": "Touch"}));
+    d.exec("playhead.set", json!({"seconds": 1.0}));
+    d.exec("mixer.recordStart", json!({}));
+    d.drag_frames_by("timeline.mix.volume", egui::vec2(-60.0, 0.0), 6, |d, i| {
+        d.exec("playhead.set", json!({"seconds": 1.0 + 0.1 * i as f64}));
+    });
+    assert!(d.strip("Mix")["lanes"].as_object().is_none_or(|m| m.is_empty()), "nothing written until the pass ends");
+    d.exec("playhead.set", json!({"seconds": 3.0}));
+    let r = d.exec("mixer.recordStop", json!({}));
+    assert_eq!(r["lanes"], 1, "{r}");
+    let kfs = d.strip("Mix")["lanes"]["volume"].as_array().unwrap().clone();
+    assert!(kfs.len() >= 3, "{kfs:?}");
 }

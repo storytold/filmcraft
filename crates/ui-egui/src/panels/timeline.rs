@@ -409,13 +409,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let master = Rect::from_min_max(pos2(rect.min.x, tracks_area.max.y - MASTER_H), pos2(content.max.x, tracks_area.max.y));
     painter.rect_filled(master, 0.0, t.tl_header_bg);
     painter.text(pos2(rect.min.x + 44.0, master.center().y), Align2::LEFT_CENTER, tl!("Mix"), Tokens::ui(11.5), t.text);
-    mix_volume(
-        app,
-        ui,
-        &ctx,
-        seq,
-        Rect::from_min_max(pos2(rect.min.x + header_w - 72.0, master.min.y + 6.0), pos2(rect.min.x + header_w - 8.0, master.max.y - 6.0)),
-    );
+    mix_volume(app, ui, seq, Rect::from_min_max(pos2(rect.min.x + header_w - 72.0, master.min.y + 6.0), pos2(rect.min.x + header_w - 8.0, master.max.y - 6.0)));
 
     // ---- caption tracks
     if cap_n > 0 {
@@ -803,7 +797,7 @@ fn paint_track_edits(
 /// control held in the Audio Track Mixer), as hot text to drag or type, as on an audio track.
 /// Changes go through `mixer.setValue`, so automation is written where the Mix fader has it; the
 /// changes of one press are one undo step, a typed value its own.
-fn mix_volume(app: &mut FilmcraftApp, ui: &mut egui::Ui, ctx: &egui::Context, seq: &Sequence, r: Rect) {
+fn mix_volume(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, r: Rect) {
     use filmcraft_project::mixer::{FADER_MAX_DB, FADER_MIN_DB, LANE_VOLUME, MASTER_STRIP};
     let now = app.session.playhead();
     let db = app.session.previews.live.get(MASTER_STRIP, LANE_VOLUME).map(|o| o.value).unwrap_or_else(|| seq.master_strip().lane_value(LANE_VOLUME, now));
@@ -816,17 +810,16 @@ fn mix_volume(app: &mut FilmcraftApp, ui: &mut egui::Ui, ctx: &egui::Context, se
         crate::widgets::HotNumberOptions::new(0.1, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &app.tokens),
     );
     app.auto.add("timeline.mix.volume", resp.rect, &format!("{db:.1}"));
-    let Some(v) = nv else { return };
-    // the press that began a step is remembered by its start time (see effect_controls::run)
-    let (down, press) = ctx.input(|i| (i.pointer.any_down(), i.pointer.press_start_time()));
-    let key = egui::Id::unique("timeline-mix-drag-step");
-    let begun = ctx.data(|d| d.get_temp::<Option<f64>>(key)).flatten();
-    let p = json!({"strip": "Mix", "lane": LANE_VOLUME, "value": v, "merge": down, "begin": !down || begun != press});
-    if let Err(e) = app.session.execute("mixer.setValue", p) {
+    // as the Audio Track Mixer's fader: a drag holds the control and lets go when it ends (one
+    // undo step, or one gesture of an automation pass); a typed value is set at once
+    let (cmd, p) = match nv {
+        Some(v) if resp.dragged() => ("mixer.touch", json!({"strip": "Mix", "lane": LANE_VOLUME, "value": v, "time": now.0})),
+        Some(v) => ("mixer.setValue", json!({"strip": "Mix", "lane": LANE_VOLUME, "value": v})),
+        None if resp.drag_stopped() => ("mixer.release", json!({"strip": "Mix", "lane": LANE_VOLUME, "time": now.0})),
+        None => return,
+    };
+    if let Err(e) = app.session.execute(cmd, p) {
         app.ui.status = e.to_string();
-    }
-    if down {
-        ctx.data_mut(|d| d.insert_temp(key, press));
     }
 }
 
