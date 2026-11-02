@@ -620,3 +620,31 @@ fn audio_transition_schema_lists_edge_params_and_reverse() {
         assert!(params.contains(key), "schema `{params}` is missing {key}");
     }
 }
+
+/// #3765: `mixer.setValue` with `merge` makes a drag of a value field one undo step; `begin`
+/// starts a new one, and without `merge` every change is its own step, as before.
+#[test]
+fn set_value_merges_a_drag_into_one_undo_step() {
+    let mut s = demo();
+    let mix = |s: &Session| s.active_sequence().unwrap().master_volume_db;
+    let set = |s: &mut Session, v: f64, begin: bool| {
+        s.execute("mixer.setValue", json!({"strip": "Mix", "lane": "volume", "value": v, "merge": true, "begin": begin})).unwrap();
+    };
+    set(&mut s, -1.0, true);
+    set(&mut s, -2.0, false);
+    set(&mut s, -3.0, false);
+    assert_eq!(mix(&s), -3.0);
+    // a second drag is its own step
+    set(&mut s, -4.0, true);
+    set(&mut s, -5.0, false);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(mix(&s), -3.0, "the second drag undone in one step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(mix(&s), 0.0, "the first drag undone in one step");
+    // without merge, each change is a step
+    for v in [-1.0, -2.0] {
+        s.execute("mixer.setValue", json!({"strip": "Mix", "lane": "volume", "value": v})).unwrap();
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(mix(&s), -1.0);
+}

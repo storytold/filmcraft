@@ -572,9 +572,15 @@ fn value_p(p: &Value, lane: &str, cmd: &str) -> Result<f64> {
 /// Set a control outside a recording pass: the static value, or a keyframe at `t` when the lane
 /// is automated and the strip reads automation.
 pub fn set_value(s: &mut Session, strip: TrackId, lane: &str, v: f64, t: Tick) -> Result<()> {
+    set_value_merged(s, strip, lane, v, t, None)
+}
+
+/// [`set_value`] sharing one undo step with the previous edit of the same `merge` key (a drag of
+/// a value field is one undoable change).
+fn set_value_merged(s: &mut Session, strip: TrackId, lane: &str, v: f64, t: Tick, merge: Option<&str>) -> Result<()> {
     let lane = lane.to_string();
     let hold = lane_info(&lane).is_some_and(|i| i.hold);
-    s.edit_sequence("Track Mixer Adjust", move |q, _, _| {
+    s.edit_sequence_as("Track Mixer Adjust", merge, move |q, _, _| {
         q.with_strip_mut(strip, |tr| {
             let animated = tr.lane(&lane).is_some_and(Param::is_animated) && tr.mixer.mode.reads();
             if animated {
@@ -1261,7 +1267,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Set Mixer Control",
             menu: &[],
             shortcut: None,
-            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":"volume|pan|mute|send.<i>.level|fx.<slot>.<param>","value":f64,"time":ticks?}"#,
+            params: r#"{"strip":"A1"|"S1"|"Mix"|id,"lane":"volume|pan|mute|send.<i>.level|fx.<slot>.<param>","value":f64,"time":ticks?,"merge":bool?,"begin":bool?}"#,
             enabled: has_seq,
             run: |s, p| {
                 let id = strip_p(s, p, "mixer.setValue")?;
@@ -1272,7 +1278,13 @@ pub fn commands() -> Vec<CommandSpec> {
                     touch(s, id, &lane, v, t)?;
                     return release(s, id, &lane, t);
                 }
-                set_value(s, id, &lane, v, t)?;
+                // `merge`: a drag of the value (same strip and lane, no other edit between) is one
+                // undo step; `begin` starts a new one
+                if bool_p(p, "begin").unwrap_or(false) {
+                    s.history.merge_key = None;
+                }
+                let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("mixerValue:{}:{lane}", id.0));
+                set_value_merged(s, id, &lane, v, t, merge.as_deref())?;
                 Ok(json!({"value": v}))
             },
             journal: true,

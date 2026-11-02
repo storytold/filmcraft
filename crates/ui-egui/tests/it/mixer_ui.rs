@@ -503,3 +503,37 @@ fn paused_meters_repaint_without_input_and_settle_after_release() {
         d.snapshot(&format!("meters-{workspace}-paused-silent"), None);
     }
 }
+
+/// #3765: the Mix row of the Timeline sets the Mix fader. Its level is hot text: a drag changes
+/// the master in one undo step, a typed value sets it, and it shows the fader at the playhead
+/// (automation included).
+#[test]
+fn timeline_mix_level_sets_the_master() {
+    let mut d = Driver::demo();
+    let mix = |d: &mut Driver| d.harness.state().session.active_sequence().unwrap().master_volume_db;
+    let label = |d: &mut Driver| {
+        d.frames(2);
+        let v = d.ok("ui.elements", json!({"prefix": "timeline.mix.volume"}));
+        v.as_array().unwrap().iter().find(|e| e["id"] == "timeline.mix.volume").expect("the Mix level is a control")["label"].as_str().unwrap().to_string()
+    };
+    assert_eq!(label(&mut d), "0.0");
+    // drag to the right: louder, one undo step
+    d.ok("ui.drag", json!({"from": {"id": "timeline.mix.volume"}, "to": {"id": "timeline.mix.volume", "fx": 3.0}, "steps": 12}));
+    d.frames(3);
+    let up = mix(&mut d);
+    assert!(up > 0.5, "the drag raised the Mix fader: {up}");
+    assert_eq!(label(&mut d), format!("{up:.1}"));
+    d.exec("edit.undo", json!({}));
+    assert_eq!(mix(&mut d), 0.0, "the drag is one undo step");
+    // type a value
+    d.ok("ui.click", json!({"id": "timeline.mix.volume"}));
+    d.frames(3);
+    d.ok("ui.type", json!({"text": "-6"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert_eq!(mix(&mut d), -6.0, "typed");
+    // automation: the row shows the fader at the playhead
+    d.exec("mixer.setKeyframe", json!({"strip": "Mix", "time": 0, "value": -12.0}));
+    d.exec("playhead.set", json!({"time": 0}));
+    assert_eq!(label(&mut d), "-12.0");
+}

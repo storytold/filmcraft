@@ -409,12 +409,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let master = Rect::from_min_max(pos2(rect.min.x, tracks_area.max.y - MASTER_H), pos2(content.max.x, tracks_area.max.y));
     painter.rect_filled(master, 0.0, t.tl_header_bg);
     painter.text(pos2(rect.min.x + 44.0, master.center().y), Align2::LEFT_CENTER, tl!("Mix"), Tokens::ui(11.5), t.text);
-    painter.text(
-        pos2(rect.min.x + header_w - 12.0, master.center().y),
-        Align2::RIGHT_CENTER,
-        format!("{:.1}", seq.master_volume_db),
-        Tokens::ui(11.5),
-        t.hot_text,
+    mix_volume(
+        app,
+        ui,
+        &ctx,
+        seq,
+        Rect::from_min_max(pos2(rect.min.x + header_w - 72.0, master.min.y + 6.0), pos2(rect.min.x + header_w - 8.0, master.max.y - 6.0)),
     );
 
     // ---- caption tracks
@@ -799,6 +799,37 @@ fn paint_track_edits(
 }
 
 /// Shown when no sequence is open: offers the demo project and accepts project or OS-file drops to create a sequence.
+/// The Mix track header's level (#3765): the Mix fader at the playhead (its automation, or a
+/// control held in the Audio Track Mixer), as hot text to drag or type, as on an audio track.
+/// Changes go through `mixer.setValue`, so automation is written where the Mix fader has it; the
+/// changes of one press are one undo step, a typed value its own.
+fn mix_volume(app: &mut FilmcraftApp, ui: &mut egui::Ui, ctx: &egui::Context, seq: &Sequence, r: Rect) {
+    use filmcraft_project::mixer::{FADER_MAX_DB, FADER_MIN_DB, LANE_VOLUME, MASTER_STRIP};
+    let now = app.session.playhead();
+    let db = app.session.previews.live.get(MASTER_STRIP, LANE_VOLUME).map(|o| o.value).unwrap_or_else(|| seq.master_strip().lane_value(LANE_VOLUME, now));
+    let mut vui = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::right_to_left(egui::Align::Center)).id_salt("timeline-mix"));
+    let (resp, nv) = crate::widgets::hot_number(
+        &mut vui,
+        tl!("Mix"),
+        egui::Id::unique("timeline-mix-volume"),
+        db.max(FADER_MIN_DB),
+        crate::widgets::HotNumberOptions::new(0.1, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &app.tokens),
+    );
+    app.auto.add("timeline.mix.volume", resp.rect, &format!("{db:.1}"));
+    let Some(v) = nv else { return };
+    // the press that began a step is remembered by its start time (see effect_controls::run)
+    let (down, press) = ctx.input(|i| (i.pointer.any_down(), i.pointer.press_start_time()));
+    let key = egui::Id::unique("timeline-mix-drag-step");
+    let begun = ctx.data(|d| d.get_temp::<Option<f64>>(key)).flatten();
+    let p = json!({"strip": "Mix", "lane": LANE_VOLUME, "value": v, "merge": down, "begin": !down || begun != press});
+    if let Err(e) = app.session.execute("mixer.setValue", p) {
+        app.ui.status = e.to_string();
+    }
+    if down {
+        ctx.data_mut(|d| d.insert_temp(key, press));
+    }
+}
+
 fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().text(rect.center() - vec2(0.0, 12.0), Align2::CENTER_CENTER, tl!("Drop media here to create sequence."), Tokens::ui(13.0), t.text_dim);
