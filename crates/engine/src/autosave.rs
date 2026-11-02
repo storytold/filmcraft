@@ -20,6 +20,7 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -648,7 +649,7 @@ enum Msg {
     Clean,
     Prefs(AutoSavePrefs),
     AutoSaveNow(Sender<Result<PathBuf, String>>),
-    Flush(Sender<()>),
+    Flush(Sender<Result<Option<u64>, String>>),
     Stop,
 }
 
@@ -676,6 +677,25 @@ pub enum WorkerEvent {
         revision: u64,
     },
     Error(String),
+}
+
+const WORKER_STOPPED: &str =
+    "Auto-save worker stopped; automatic saving and recovery journaling are unavailable. Use File > Save or Save As to save your changes.";
+
+/// Shared by the thread boundary and callers: a stopped worker is one failure, even when
+/// several queued requests or subsequent edits discover the disconnected channel.
+struct WorkerFailure {
+    reported: AtomicBool,
+    events: Sender<WorkerEvent>,
+}
+
+impl WorkerFailure {
+    fn report(&self) {
+        if !self.reported.swap(true, Ordering::AcqRel) {
+            log::error!("{WORKER_STOPPED}");
+            let _ = self.events.send(WorkerEvent::Error(WORKER_STOPPED.into()));
+        }
+    }
 }
 
 /// Last activity, for `file.autoSaveStatus` and the UI.
@@ -707,6 +727,7 @@ pub struct Persistence {
     tx: Sender<Msg>,
     events: Receiver<WorkerEvent>,
     thread: Option<JoinHandle<()>>,
+    failure: Arc<WorkerFailure>,
 }
 
 impl Persistence {
@@ -728,6 +749,7 @@ impl Persistence {
         let candidates = scan_candidates(&cfg.data_dir, Some(&session_dir));
         let (tx, rx) = channel();
         let (etx, events) = channel();
+        let failure = Arc::new(WorkerFailure { reported: AtomicBool::new(false), events: etx.clone() });
         let mut w = Worker {
             data_dir: cfg.data_dir.clone(),
             session_dir: session_dir.clone(),
@@ -744,7 +766,12 @@ impl Persistence {
             meta: JournalMeta { pid, started_unix: started, generator: filmcraft_format::generator(), ..Default::default() },
         };
         w.next_autosave = Instant::now() + w.autosave_interval();
-        let thread = std::thread::Builder::new().name("filmcraft-autosave".into()).spawn(move || w.run(rx))?;
+        let worker_failure = failure.clone();
+        let thread = std::thread::Builder::new().name("filmcraft-autosave".into()).spawn(move || {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w.run(rx))).is_err() {
+                worker_failure.report();
+            }
+        })?;
         Ok(Self {
             data_dir: cfg.data_dir.clone(),
             session_dir,
@@ -756,38 +783,61 @@ impl Persistence {
             tx,
             events,
             thread: Some(thread),
+            failure,
         })
     }
 
     pub(crate) fn send_dirty(&self, project: Arc<Project>, revision: u64, path: Option<String>) {
-        let _ = self.tx.send(Msg::Dirty(Snapshot { project, revision, path }));
+        self.send(Msg::Dirty(Snapshot { project, revision, path }));
     }
 
     pub(crate) fn send_clean(&self) {
-        let _ = self.tx.send(Msg::Clean);
+        self.send(Msg::Clean);
     }
 
     pub fn set_prefs(&self, p: AutoSavePrefs) {
-        let _ = self.tx.send(Msg::Prefs(p));
+        self.send(Msg::Prefs(p));
     }
 
-    /// Write any pending journal now and wait for it.
-    pub fn flush(&self) {
-        let (tx, rx) = channel();
-        if self.tx.send(Msg::Flush(tx)).is_ok() {
-            let _ = rx.recv_timeout(Duration::from_secs(30));
+    fn send(&self, msg: Msg) {
+        if self.tx.send(msg).is_err() {
+            self.failure.report();
         }
+    }
+
+    fn stopped_error(&self) -> String {
+        self.failure.report();
+        WORKER_STOPPED.into()
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        !self.failure.reported.load(Ordering::Acquire) && self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    /// Write any pending journal now and return its confirmed revision (`None` when clean).
+    /// Disabled journaling, failed writes and a stopped/unresponsive worker are errors.
+    pub fn flush(&self) -> Result<Option<u64>, String> {
+        let (tx, rx) = channel();
+        self.tx.send(Msg::Flush(tx)).map_err(|_| self.stopped_error())?;
+        rx.recv_timeout(Duration::from_secs(30)).map_err(|e| match e {
+            RecvTimeoutError::Timeout => "recovery journal flush timed out".to_string(),
+            RecvTimeoutError::Disconnected => {
+                self.failure.report();
+                "auto-save worker stopped before confirming the recovery journal".to_string()
+            }
+        })?
     }
 
     /// Write an auto-save now (if there are unsaved changes) and wait for the result.
     pub fn auto_save_now(&self) -> Result<Option<PathBuf>, String> {
         let (tx, rx) = channel();
-        self.tx.send(Msg::AutoSaveNow(tx)).map_err(|_| "auto-save worker stopped".to_string())?;
+        self.tx.send(Msg::AutoSaveNow(tx)).map_err(|_| self.stopped_error())?;
         match rx.recv_timeout(Duration::from_secs(60)) {
             Ok(Ok(p)) => Ok(Some(p)),
             Ok(Err(e)) if e.is_empty() => Ok(None),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err("auto-save timed out".into()),
+            Err(RecvTimeoutError::Timeout) => Err("auto-save timed out".into()),
+            Err(RecvTimeoutError::Disconnected) => Err(self.stopped_error()),
         }
     }
 
@@ -818,7 +868,9 @@ impl Persistence {
     /// directory — marked as a clean exit — so the changes are offered next time; otherwise the
     /// directory is removed.
     pub fn close(mut self) {
-        self.flush();
+        if let Err(e) = self.flush() {
+            log::warn!("auto-save at shutdown: {e}");
+        }
         self.stop_worker();
         let snap = self.session_dir.join(SNAPSHOT);
         self.lock.take();
@@ -835,15 +887,17 @@ impl Persistence {
     /// Stop the worker and release the lock *without* cleaning up — what a crash leaves behind.
     #[doc(hidden)]
     pub fn simulate_crash(mut self) {
-        self.flush();
+        let _ = self.flush();
         self.stop_worker();
         self.lock.take();
     }
 
     fn stop_worker(&mut self) {
         let _ = self.tx.send(Msg::Stop);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
+        if let Some(t) = self.thread.take()
+            && t.join().is_err()
+        {
+            self.failure.report();
         }
     }
 
@@ -946,17 +1000,21 @@ impl Worker {
                     let _ = reply.send(r);
                 }
                 Some(Msg::Flush(ack)) => {
-                    if self.journal_due().is_some() {
-                        self.write_journal();
-                    }
-                    let _ = ack.send(());
+                    let result = match self.latest.as_ref() {
+                        None => Ok(None),
+                        Some(_) if !self.prefs.recovery_journal => Err("recovery journal is disabled".to_string()),
+                        Some(s) if s.revision == self.journaled => Ok(Some(self.journaled)),
+                        Some(_) => self.write_journal().map(Some),
+                    };
+                    let _ = ack.send(result);
                 }
                 Some(Msg::Stop) => return,
                 None => {}
             }
             let now = Instant::now();
             if self.journal_due().is_some_and(|d| d <= now) {
-                self.write_journal();
+                // The worker reports write failures through its event channel.
+                let _ = self.write_journal();
             }
             if self.prefs.enabled && self.next_autosave <= now {
                 if self.latest.as_ref().is_some_and(|s| s.revision != self.autosaved) {
@@ -972,8 +1030,8 @@ impl Worker {
         let _ = self.events.send(WorkerEvent::Error(e));
     }
 
-    fn write_journal(&mut self) {
-        let Some(s) = &self.latest else { return };
+    fn write_journal(&mut self) -> Result<u64, String> {
+        let Some(s) = &self.latest else { return Err("no unsaved recovery state to write".into()) };
         let t0 = Instant::now();
         let bytes = filmcraft_format::encode(&s.project, false);
         let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -994,12 +1052,15 @@ impl Worker {
                 self.journaled = s.revision;
                 self.first_pending = None;
                 let _ = self.events.send(WorkerEvent::Journaled { revision: s.revision, unix, serialize_ms, write_ms, bytes: bytes.len() });
+                Ok(s.revision)
             }
             Err(e) => {
                 // Try again at the next interval rather than spinning.
                 self.first_pending = Some(Instant::now());
                 self.last_change = Instant::now();
-                self.error(format!("recovery journal: {e}"));
+                let message = format!("recovery journal: {e}");
+                self.error(message.clone());
+                Err(message)
             }
         }
     }
@@ -1054,5 +1115,184 @@ impl Worker {
                 Err(m)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod durability_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_keeps_original_when_worker_has_stopped() {
+        let d = std::env::temp_dir().join(format!("fc-recover-worker-stopped-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let old_dir = recovery_root(&d).join("1-1");
+        fs::create_dir_all(&old_dir).unwrap();
+        let bytes = filmcraft_format::encode(&Project::default(), false);
+        let original = old_dir.join(SNAPSHOT);
+        fs::write(&original, &bytes).unwrap();
+        let mut session = crate::Session::default();
+        session.start_autosave(AutosaveConfig::new(&d)).unwrap();
+        session.persistence.as_mut().unwrap().stop_worker();
+        let result = session.execute("file.recover", json!({"id": "1-1"}));
+        assert!(original.is_file(), "a stopped worker must not consume the original snapshot");
+        assert_eq!(fs::read(&original).unwrap(), bytes);
+        assert_eq!(session.recovery_candidates().len(), 1);
+        assert!(result.unwrap_err().to_string().contains("worker stopped"));
+        session.shutdown();
+        fs::remove_dir_all(&d).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod worker_failure_tests {
+    use super::*;
+    use crate::{Event, Session};
+
+    fn session(tag: &str, offset: fn(i64) -> i32) -> (Session, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("fc-worker-{tag}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut prefs = Preferences::default();
+        prefs.auto_save.recovery_journal = false;
+        prefs.save(&dir.join("preferences.json")).unwrap();
+        let mut s = Session::default();
+        s.execute("file.openDemoProject", json!({})).unwrap();
+        let mut cfg = AutosaveConfig::new(&dir);
+        cfg.local_offset = offset;
+        s.start_autosave(cfg).unwrap();
+        s.execute("sequence.addEdit", json!({"seconds": 0.5})).unwrap();
+        (s, dir)
+    }
+
+    fn failure_toasts(s: &mut Session) -> usize {
+        s.drain_events().into_iter().filter(|e| matches!(e, Event::Toast { error: true, .. })).count()
+    }
+
+    fn verify_report_and_foreground_save(s: &mut Session, dir: &Path) {
+        s.poll_persistence();
+        assert_eq!(s.execute("file.autoSaveStatus", json!({})).unwrap()["running"], false);
+        let message = s.persistence.as_ref().unwrap().status.last_error.as_deref().unwrap();
+        assert!(message.contains("stopped") && message.contains("Save"), "{message}");
+        assert_eq!(failure_toasts(s), 1, "worker failure must be visible exactly once");
+        let log: Vec<_> = s.log.entries.iter().filter(|e| e.source == "autosave").collect();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].count, 1);
+        let before = s.revision;
+        s.execute("sequence.addEdit", json!({"seconds": 1.0})).unwrap();
+        assert!(s.revision > before && s.is_dirty(), "the edit was applied despite autosave failure");
+        s.execute("prefs.set", json!({"key": "autoSave.maxVersions", "value": 7})).unwrap();
+        s.poll_persistence();
+        s.poll_persistence();
+        assert_eq!(failure_toasts(s), 0, "later handoffs must not repeat the failure");
+        let path = dir.join("manual.fcproj");
+        s.execute("file.saveAs", json!({"path": path.to_string_lossy()})).unwrap();
+        assert!(!s.is_dirty());
+        let loaded = filmcraft_format::decode(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(loaded.project, *s.project);
+        s.poll_persistence();
+        assert_eq!(failure_toasts(s), 0);
+    }
+
+    #[test]
+    fn worker_panic_is_contained_and_reported() {
+        fn broken_clock(_: i64) -> i32 {
+            panic!("synthetic worker clock failure")
+        }
+        let (mut s, dir) = session("panic", broken_clock);
+        let error = s.execute("file.autoSaveNow", json!({})).unwrap_err().to_string();
+        let start = Instant::now();
+        while !s.persistence.as_ref().unwrap().thread.as_ref().unwrap().is_finished() {
+            assert!(start.elapsed() < Duration::from_secs(10), "worker did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let joined = s.persistence.as_mut().unwrap().thread.take().unwrap().join();
+        assert!(joined.is_ok(), "panic escaped the autosave worker boundary");
+        assert!(error.contains("stopped") && !error.contains("timed out"), "{error}");
+        verify_report_and_foreground_save(&mut s, &dir);
+        s.shutdown();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn disconnected_handoff(tag: &str) {
+        let (mut s, dir) = session(tag, |_| 0);
+        s.persistence.as_mut().unwrap().stop_worker();
+        match tag {
+            "dirty" => {
+                s.execute("sequence.addEdit", json!({"seconds": 2.0})).unwrap();
+            }
+            "clean" => {
+                s.execute("file.saveAs", json!({"path": dir.join("initial.fcproj").to_string_lossy()})).unwrap();
+            }
+            "prefs" => {
+                s.execute("prefs.set", json!({"key": "autoSave.maxVersions", "value": 3})).unwrap();
+            }
+            "flush" => {
+                assert!(s.persistence.as_ref().unwrap().flush().unwrap_err().contains("worker stopped"));
+            }
+            "request" => {
+                assert!(s.execute("file.autoSaveNow", json!({})).unwrap_err().to_string().contains("stopped"));
+            }
+            _ => panic!("unknown test handoff"),
+        }
+        verify_report_and_foreground_save(&mut s, &dir);
+        s.shutdown();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn worker_disconnect_dirty_reports_once() {
+        disconnected_handoff("dirty");
+    }
+    #[test]
+    fn worker_disconnect_clean_reports_once() {
+        disconnected_handoff("clean");
+    }
+    #[test]
+    fn worker_disconnect_preferences_reports_once() {
+        disconnected_handoff("prefs");
+    }
+    #[test]
+    fn worker_disconnect_flush_reports_once() {
+        disconnected_handoff("flush");
+    }
+    #[test]
+    fn worker_disconnect_flush_reply_reports_once() {
+        let (mut s, dir) = session("flush-reply", |_| 0);
+        s.persistence.as_mut().unwrap().stop_worker();
+        let (tx, rx) = channel();
+        s.persistence.as_mut().unwrap().tx = tx;
+        let worker = std::thread::spawn(move || match rx.recv().unwrap() {
+            Msg::Flush(reply) => drop(reply),
+            _ => panic!("expected a flush request"),
+        });
+        let error = s.persistence.as_ref().unwrap().flush().unwrap_err();
+        worker.join().unwrap();
+        assert!(error.contains("worker stopped"), "{error}");
+        verify_report_and_foreground_save(&mut s, &dir);
+        s.shutdown();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn worker_disconnect_request_reports_once() {
+        disconnected_handoff("request");
+    }
+
+    #[test]
+    fn worker_remains_available_after_an_ordinary_write_error() {
+        let (mut s, dir) = session("write-error", |_| 0);
+        let blocked = dir.join(names::AUTO_SAVE_DIR);
+        fs::write(&blocked, b"occupied directory path").unwrap();
+        assert!(s.execute("file.autoSaveNow", json!({})).is_err());
+        s.poll_persistence();
+        assert_eq!(s.execute("file.autoSaveStatus", json!({})).unwrap()["running"], true);
+        assert!(s.persistence.as_ref().unwrap().status.last_error.as_deref().unwrap().contains("auto-save to"));
+        assert_eq!(failure_toasts(&mut s), 1);
+        fs::remove_file(&blocked).unwrap();
+        let saved = s.execute("file.autoSaveNow", json!({})).unwrap();
+        assert!(Path::new(saved["path"].as_str().unwrap()).is_file());
+        assert!(s.is_dirty(), "auto-save should not mark the foreground project saved");
+        s.shutdown();
+        fs::remove_dir_all(dir).unwrap();
     }
 }

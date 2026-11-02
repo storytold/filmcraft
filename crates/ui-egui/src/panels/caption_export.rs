@@ -85,7 +85,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         app.ui.caption_export_format = Some(ext.to_string());
         let name = app.session.state.active_sequence.and_then(|s| app.session.project.item(s)).map(|i| i.name.clone()).unwrap_or_default();
         let stem = if name.trim().is_empty() { "Captions".to_string() } else { name.replace([' ', '/', '\\', ':'], "_") };
-        let dialog = FileDialog::save_as(d.format.name(), &[ext], &format!("{stem}.{ext}"));
+        let dialog = FileDialog::save_as_named(d.format.name(), &[ext], &format!("{stem}.{ext}"));
         if dialog.available(&app.hooks) {
             let chosen = d.format;
             let mut p = d.params.clone();

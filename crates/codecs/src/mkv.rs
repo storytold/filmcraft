@@ -156,7 +156,9 @@ fn audio_info(t: &filmcraft_matroska::Track) -> Option<AudioStreamInfo> {
         channels = h.channels as u32;
     }
     let (rate, channels) = filmcraft_media::bounded_audio_dimensions(rate, channels).ok()?;
-    Some(AudioStreamInfo { sample_rate: rate, channels, codec: codec_label(&t.codec), bits_per_sample: a.bit_depth.map(|b| b as u32) })
+    // an audio codec without a decoder plays silent: say so in the media info, as MPEG / MXF do (#1422)
+    let codec = if audio_decodable(&t.codec) { codec_label(&t.codec) } else { format!("{} (unsupported)", codec_label(&t.codec)) };
+    Some(AudioStreamInfo { sample_rate: rate, channels, codec, bits_per_sample: a.bit_depth.map(|b| b as u32) })
 }
 
 /// The track timestamp that media time zero stands for (#715): the earliest start among the
@@ -338,7 +340,21 @@ fn codec_label(c: &Codec) -> String {
         Codec::Mp2 | Codec::Mp1 => "MPEG Audio".into(),
         Codec::Other(id) if id == "V_MPEG2" => "MPEG-2 Video".into(),
         Codec::Other(id) if id == "V_MPEG1" => "MPEG-1 Video".into(),
+        Codec::Other(id) if id.starts_with("A_DTS") => "DTS".into(),
+        Codec::Other(id) if id == "A_TRUEHD" => "Dolby TrueHD".into(),
         other => other.name().to_string(),
+    }
+}
+
+/// Whether the audio of codec `c` decodes: PCM directly, the rest through
+/// [`MkvSource::audio_decoder`] (keep the two in step).
+fn audio_decodable(c: &Codec) -> bool {
+    match c {
+        Codec::Pcm { .. } | Codec::Aac { .. } | Codec::Opus { .. } | Codec::Mp3 | Codec::Mp2 | Codec::Mp1 | Codec::Ac3 | Codec::Eac3 | Codec::Flac { .. } => {
+            true
+        }
+        Codec::Vorbis { headers } => headers.len() == 3,
+        _ => false,
     }
 }
 
@@ -507,7 +523,7 @@ impl MkvSource {
                 extra.extend_from_slice(&headers[2]);
                 PacketDecoder::new(CODEC_TYPE_VORBIS, rate, Some(extra))
             }
-            other => Err(CodecError::Unsupported(format!("{} audio", codec_label(other)))),
+            other => Err(CodecError::Unsupported(format!("{} audio (FilmCraft has no decoder for it)", codec_label(other)))),
         }
     }
 

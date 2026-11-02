@@ -453,3 +453,34 @@ fn new_offline_file_keeps_only_the_file_name() {
         assert_eq!(m.media, filmcraft_project::MediaRef::File { path: want.to_string() }, "{given}");
     }
 }
+
+// Offline All must be saved with the project: reopening it should not ask for the files again
+// (Premiere behaves this way). It used to only close the dialog, so every open asked again.
+#[test]
+fn offline_all_is_saved_and_reopening_does_not_ask_again() {
+    let root = tmp_dir("relink-offline-all");
+    let (path, items) = saved_project(&root);
+    std::fs::remove_dir_all(root.join("Media")).unwrap();
+    let mut s = open(&path);
+    assert!(s.offline.prompt, "setup: missing media asks");
+    s.execute("media.offlineAll", json!({})).unwrap();
+    assert!(!s.offline.prompt);
+    assert!(items.iter().all(|i| s.project.item(*i).unwrap().as_media().unwrap().offline));
+    s.execute("file.save", json!({})).unwrap();
+
+    let s = open(&path);
+    assert!(!s.offline.prompt, "reopening after Offline All must not show Link Media again");
+    assert_eq!(s.offline.missing.len(), 2, "File ▸ Link Media… still lists them");
+
+    // media that goes missing later still asks on the next open
+    let mut s = open(&path);
+    s.edit("relink b", |p, _| {
+        let m = p.item_mut(items[1]).unwrap().as_media_mut().unwrap();
+        m.offline = false;
+        Ok(())
+    })
+    .unwrap();
+    s.execute("file.save", json!({})).unwrap();
+    assert!(open(&path).offline.prompt, "newly missing media asks again");
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -328,3 +328,86 @@ fn a_device_that_appears_mid_playback_starts_sounding() {
     assert!(app.playback.audio_clock);
     app.stop();
 }
+
+/// #2633: a press that only moves the playhead has nothing to stop, so it must not close the
+/// audio stream (closing it makes the next scrub grain open the device again).
+#[test]
+fn only_a_running_transport_has_something_to_stop() {
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
+    let mut app = FilmcraftApp::new(session);
+    assert!(!app.transport_running(), "nothing runs in a new project");
+    app.playback.playing = true;
+    assert!(app.transport_running(), "Program playback runs a transport");
+    app.playback.playing = false;
+    app.source_playback.clock.playing = true;
+    assert!(app.transport_running(), "Source playback runs one");
+    app.source_playback.clock.playing = false;
+    app.playback.preroll = Some(0.0);
+    assert!(app.transport_running(), "a preroll runs one");
+    app.playback.preroll = None;
+    assert!(!app.transport_running());
+    app.playback.audio_clock = true;
+    assert!(app.transport_running(), "an output a panicked frame left playing is stopped too");
+    app.playback.audio_clock = false;
+    assert!(!app.transport_running());
+    // A recording pass runs a transport too, and `stop()` ends it.
+    let seq = app.session.state.active_sequence.unwrap();
+    app.session.mixrec.seq = Some(seq);
+    assert!(app.transport_running(), "an automation pass runs one");
+    app.session.mixrec.seq = None;
+    app.session.mcrec.seq = Some(seq);
+    assert!(app.transport_running(), "a multicam pass runs one");
+    app.session.mcrec.seq = None;
+    app.session.voiceover.rec = Some(filmcraft_engine::voiceover::Recording {
+        seq,
+        track: filmcraft_project::TrackId(0),
+        record_start: filmcraft_time::Tick::ZERO,
+        capture_start: filmcraft_time::Tick::ZERO,
+        punch_out: None,
+        format: filmcraft_engine::voiceover::InputFormat { sample_rate: 48_000, channels: 1 },
+        channel: 0,
+    });
+    assert!(app.transport_running(), "a voice-over take runs one");
+    app.session.voiceover.rec = None;
+    assert!(!app.transport_running());
+}
+
+/// A Text to Speech preview plays without `playing`; a seek stops it, while a seek with nothing
+/// sounding leaves the output (and the scrub stream on it) alone.
+#[test]
+fn a_scrub_stops_a_text_to_speech_preview_but_not_an_idle_output() {
+    struct Counting(Arc<AtomicUsize>);
+    impl AudioOut for Counting {
+        fn sample_rate(&self) -> u32 {
+            48000
+        }
+        fn channels(&self) -> usize {
+            2
+        }
+        fn configure(&mut self, _: &filmcraft_engine::settings::AudioHardwarePrefs, _: Option<u32>) {}
+        fn start(&mut self, _: Box<dyn FnMut(&mut [f32], usize) + Send>) -> Result<u32, String> {
+            Ok(48000)
+        }
+        fn stop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+        fn played_frames(&self) -> Option<u64> {
+            None
+        }
+    }
+    let mut session = Session::default();
+    session.execute("file.newSequence", json!({"width":16,"height":16})).unwrap();
+    session.tts_preview = Some(Arc::new(filmcraft_tts::Audio { samples: vec![0.0; 4800], sample_rate: 48_000 }));
+    let mut app = FilmcraftApp::new(session);
+    let stops = Arc::new(AtomicUsize::new(0));
+    app.audio = Some(Box::new(Counting(stops.clone())));
+    app.stop_for_scrub();
+    assert_eq!(stops.load(Ordering::Relaxed), 0, "nothing sounds: the scrub stream is left open");
+    app.play_tts_preview().unwrap();
+    let before = stops.load(Ordering::Relaxed);
+    app.stop_for_scrub();
+    assert_eq!(stops.load(Ordering::Relaxed), before + 1, "the preview ends when the playhead moves");
+    app.stop_for_scrub();
+    assert_eq!(stops.load(Ordering::Relaxed), before + 1, "and a second seek has nothing left to stop");
+}

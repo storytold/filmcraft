@@ -223,12 +223,12 @@ pub enum TemplateError {
     Invalid(String),
 }
 
-/// Lower-case slug of a name (`My Lower Third` → `my-lower-third`).
+/// Lower-case slug of a name (`My Lower Third` → `my-lower-third`), retaining Unicode letters and digits.
 pub fn slug(name: &str) -> String {
     let mut s = String::new();
     for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            s.push(c.to_ascii_lowercase());
+        if c.is_alphanumeric() {
+            s.extend(c.to_lowercase());
         } else if !s.ends_with('-') && !s.is_empty() {
             s.push('-');
         }
@@ -748,6 +748,16 @@ mod tests {
         let mut t = builtin_templates().remove(0);
         t.controls[0].layer = 999;
         assert!(matches!(t.validate(), Err(TemplateError::Invalid(_))));
+    }
+
+    #[test]
+    fn template_slugs_preserve_non_ascii_names() {
+        assert_eq!(slug("片头"), "片头");
+        assert_eq!(slug("片尾"), "片尾");
+        assert_eq!(slug("Écran Été"), "écran-été");
+        assert_eq!(slug("My Lower Third!"), "my-lower-third");
+        assert_eq!(slug(" ../片头\\片尾! "), "片头-片尾");
+        assert_eq!(slug("---"), "template");
     }
 
     #[test]

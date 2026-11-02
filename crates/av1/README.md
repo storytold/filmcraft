@@ -25,7 +25,7 @@ reference) is used only as an external test oracle.
 | Tiles and tile groups (uniform and explicit spacing, tile size bytes) | 5.11 | done (tiles decoded in parallel) |
 | Intra frame mode info: partitions, skip, segment id, CDEF index, delta q / lf, y / uv modes, angle deltas, CfL alphas, palette (colors, cache, color index map), filter intra, tx size (incl. var-tx syntax) | 5.11 | done, bit-exact |
 | Coefficients (all_zero, eob, base / br levels, Golomb, dc sign, tx type sets, scans) | 5.11.39 | done, bit-exact |
-| Dequantisation incl. quantiser matrices | 7.12 | done (qmatrix not yet oracle-tested) |
+| Dequantisation incl. quantiser matrices | 7.12 | done |
 | Inverse transforms: DCT 4–64, ADST 4/8/16, flip ADST, identity 4–32, WHT (lossless), rectangular | 7.13 | done, bit-exact |
 | Intra prediction: DC, V/H + directional with edge filter and upsampling, smooth (3), Paeth, recursive filter intra, CfL, palette | 7.11.2, 7.11.4, 7.11.5 | done, bit-exact |
 | Inter mode info: segment id prediction, skip mode, reference frames (single / compound, uni / bi), modes, DRL, MV coding, inter-intra, motion mode, compound type, interpolation filters | 5.11.18–5.11.32 | done, bit-exact |
@@ -42,6 +42,12 @@ reference) is used only as an external test oracle.
 | Large-scale tile / tile list OBUs | 7.3 | not planned |
 
 ## Accuracy
+
+OBU and tile length regressions (`decoder::tests::hostile_lengths_*`, #2801) use synthetic
+inputs, including truncations and bit flips, without ffmpeg. Oversized LEB128 OBU lengths and
+four-byte tile lengths return `Error::Truncated` instead of wrapping or truncating on 32-bit
+targets. Valid partial tile groups retain their payloads. See
+[32-bit parser tests](../../docs/testing.md#32-bit-parser-regressions).
 
 `tests/it/oracle_intra.rs` encodes all-intra streams with ffmpeg's libsvtav1 (with and without the
 in-loop filters; 64×64 and 128×128 superblocks; intra edge filter on and off) and compares every

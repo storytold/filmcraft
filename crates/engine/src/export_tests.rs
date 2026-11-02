@@ -65,6 +65,23 @@ fn export_without_wait_says_where_to_poll() {
     assert!(r.get("poll").is_none() && r["result"].is_object(), "{r}");
 }
 
+/// An export reads its own copy of each file, not the source the monitors read: the two would
+/// otherwise take turns on one decoder, seeking it between the export's frame and the playhead's
+/// (93 % of a 4K60 playback's frames dropped while an export of the same file ran).
+#[test]
+fn an_export_does_not_read_the_monitors_source() {
+    let movie = crate::media_test_util::tmp_dir("export-own-source").join("a.mp4");
+    crate::media_test_util::make_movie(&movie, filmcraft_media::DemoScene::Dunes, 64, 36, 12);
+    let (mut s, items, seq) = crate::media_test_util::session_with(&[&movie]);
+    s.media.clear();
+    let dir = Scratch::new("own-source");
+    let out = dir.path("a.mp4");
+    let r = s.execute("file.exportMedia", json!({"sequence": seq.0, "path": out, "format": "h264", "wait": true})).unwrap();
+    assert!(r["result"].is_object(), "{r}");
+    assert!(std::fs::metadata(&out).is_ok_and(|m| m.len() > 0));
+    assert!(s.media.cached(items[0]).is_none(), "the export opened the monitors' source");
+}
+
 /// A scratch directory under the workspace `target/`, removed when dropped.
 struct Scratch(PathBuf);
 
@@ -742,6 +759,33 @@ fn hardware_encoding_is_off_unless_asked_for() {
     assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "auto"}})).unwrap(), Auto);
     let old: filmcraft_export::ExportSettings = serde_json::from_value(json!({"format": "h264"})).unwrap();
     assert_eq!(old.hardware_encoding, Off);
+}
+
+/// A `bitrateKbps` in `settings` is the bitrate, as the flat `bitrateKbps` is, also over a preset
+/// whose bitrate adapts to the frame size (every Match Source preset).
+#[test]
+fn settings_bitrate_replaces_a_presets_adaptive_bitrate() {
+    use filmcraft_export::ExportSettings;
+    use filmcraft_export::presets::DEFAULT_PRESET;
+    use filmcraft_time::FrameRate;
+    let s = demo();
+    let settings = |p: &Value| crate::export_tools::settings_from_params(&s, p, "file.exportMedia").map(|(_, st)| st).unwrap();
+    let target = |st: &ExportSettings| st.resolve(720, 480, FrameRate::FPS_29_97, 48_000).target_kbps;
+    // the preset alone: 720 x 480 x 29.97 fps x 0.2 bits per pixel
+    assert_eq!(target(&settings(&json!({"path": "x.mp4", "preset": DEFAULT_PRESET}))), 2072);
+    for p in [
+        json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "settings": {"bitrateKbps": 5000}}),
+        json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "bitrateKbps": 5000}),
+        json!({"path": "x.mp4", "settings": {"bitrateKbps": 5000}}),
+        json!({"path": "x.mp4", "bitrateKbps": 5000}),
+    ] {
+        let st = settings(&p);
+        assert_eq!(st.adaptive_bitrate, None, "{p}");
+        assert_eq!(target(&st), 5000, "{p}");
+    }
+    // an adaptive bitrate given with it still wins
+    let p = json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "settings": {"bitrateKbps": 5000, "adaptiveBitrate": 0.1}});
+    assert_eq!(target(&settings(&p)), 1036);
 }
 
 #[test]

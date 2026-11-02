@@ -750,15 +750,30 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Offline All",
             menu: &[],
             shortcut: None,
-            params: "{}  (leave every missing file offline and close the Link Media dialog)",
+            params: "{}  (mark every missing file offline, saved with the project, and close the Link Media dialog)",
             enabled: always,
-            run: |s, _| {
-                s.offline.prompt = false;
-                Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
-            },
-            journal: false,
+            run: offline_all,
+            journal: true,
         },
     ]
+}
+
+/// `media.offlineAll`: mark every missing item offline on purpose, so the project remembers the
+/// choice and reopening it does not ask again (as in Premiere). Relinking clears the mark.
+fn offline_all(s: &mut Session, _: &Value) -> Result<Value> {
+    let ids: Vec<ItemId> = s.offline.missing.iter().copied().filter(|i| s.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| !m.offline)).collect();
+    if !ids.is_empty() {
+        s.edit("Offline All", |proj, _| {
+            for i in &ids {
+                if let Some(m) = proj.item_mut(*i).and_then(|it| it.as_media_mut()) {
+                    m.offline = true;
+                }
+            }
+            Ok(())
+        })?;
+    }
+    s.offline.prompt = false;
+    Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// After a project opens: find missing files and ask for them.
@@ -770,9 +785,11 @@ pub fn on_open(s: &mut Session) -> usize {
         log::warn!("media paths stored in the project not opened: {}", refused.join(", "));
         s.toast(format!("Not opening {} media file(s) the project names on another computer or device; File > Link Media… reconnects them", refused.len()));
     }
-    s.offline.prompt = !s.offline.missing.is_empty();
-    if !s.offline.missing.is_empty() {
-        s.toast(format!("{} media file(s) are missing; File > Link Media… reconnects them", s.offline.missing.len()));
+    // Items made offline on purpose (Make Offline / Offline All) don't ask again.
+    let missing = list.iter().filter(|m| m.status == "missing").count();
+    s.offline.prompt = missing > 0;
+    if missing > 0 {
+        s.toast(format!("{missing} media file(s) are missing; File > Link Media… reconnects them"));
     }
     list.len()
 }
