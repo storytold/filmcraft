@@ -130,11 +130,12 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
 
 /// The view `(start, end)` inside `0..=total` after a zoom bar's handle is dragged. `start` and
 /// `span` are the view when the handle was pressed and `grow` is how far the handle has moved
-/// since, as a fraction of the thumb's width (positive toward zooming out), so the thumb's edge
-/// follows the pointer. The view ends up centred on the playhead (moved in from the ends as far as
-/// needed): its centre moves onto the playhead as the span changes, all the way once the span has
-/// halved or doubled, so a press never moves the view and the thumb does not jump. Time units are
-/// the caller's (seconds for the Timeline, a fraction of the clip for a monitor).
+/// since, as a fraction of the thumb's width (positive toward zooming out), which sets the new span.
+/// The view ends up centred on the playhead (moved in from the ends as far as needed): its centre
+/// moves onto the playhead as the span changes, all the way once the span has halved or doubled, so
+/// a press never moves the view and the thumb does not jump. With the playhead far from the view's
+/// centre, the handle's edge therefore moves further than the pointer. Time units are the caller's
+/// (seconds for the Timeline, a fraction of the clip for a monitor).
 pub fn zoom_by_drag(start: f64, span: f64, grow: f64, playhead: f64, total: f64, min_span: f64) -> (f64, f64) {
     let total = if total.is_finite() { total.max(0.0) } else { 0.0 };
     let min_span = if min_span.is_finite() { min_span.clamp(0.0, total) } else { total };
