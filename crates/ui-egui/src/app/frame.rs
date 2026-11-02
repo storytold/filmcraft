@@ -170,12 +170,11 @@ impl FilmcraftApp {
         use std::sync::atomic::Ordering;
         let live: Vec<u64> = self.windowed_jobs().map(|j| j.id).collect();
         self.ui.progress_window_hidden.retain(|id| live.contains(id));
-        let Some(job) = self.windowed_jobs().next().cloned() else { return };
-        if !(self.session.prefs.general.show_progress_window || self.ui.progress_window_asked == Some(job.id))
-            || self.ui.progress_window_hidden.contains(&job.id)
-        {
+        // the newest job whose window is wanted: one closed window leaves an older job's open
+        let (always, asked) = (self.session.prefs.general.show_progress_window, self.ui.progress_window_asked);
+        let Some(job) = self.windowed_jobs().find(|j| !self.ui.progress_window_hidden.contains(&j.id) && (always || asked == Some(j.id))).cloned() else {
             return;
-        }
+        };
         let (done, total) = (job.progress.done.load(Ordering::Relaxed), job.progress.total.load(Ordering::Relaxed));
         let f = job.progress.fraction().clamp(0.0, 1.0);
         let left = job.progress.eta().map(panels::left_text).unwrap_or_default();
@@ -245,13 +244,15 @@ impl FilmcraftApp {
         widgets::paint_tabular(p, egui::pos2(start, sb.center().y), widgets::tabular_text(p, &shown.text, &font, t.text_dim).0, t.text_dim);
         let left = shown.label.clone();
         self.job_text = Some(shown);
-        if self.windowed_jobs().any(|j| j.id == job.id) {
+        // the bar shows the newest job of any kind; the button is for the newest that has a window
+        let windowed = self.windowed_jobs().next().map(|j| j.id);
+        if let Some(windowed) = windowed {
             // the progress window, one click away whatever the preference says (#1192): two overlapping
             // frames, left of the percentage
             let window = egui::Rect::from_center_size(egui::pos2(start - 14.0, sb.center().y), egui::vec2(16.0, 16.0));
             start = window.min.x;
-            let wresp = ui.interact(window, egui::Id::unique(("job-window", job.id)), egui::Sense::click());
-            let wc = if wresp.hovered() || self.ui.progress_window_asked == Some(job.id) { t.hot_text } else { t.text_dim };
+            let wresp = ui.interact(window, egui::Id::unique(("job-window", windowed)), egui::Sense::click());
+            let wc = if wresp.hovered() || self.ui.progress_window_asked == Some(windowed) { t.hot_text } else { t.text_dim };
             p.rect_stroke(
                 egui::Rect::from_min_size(window.min + egui::vec2(1.0, 4.0), egui::vec2(10.0, 8.0)),
                 1.0,
@@ -266,8 +267,8 @@ impl FilmcraftApp {
             );
             self.auto.add("status.job.window", window, "Show progress window");
             if wresp.on_hover_text(tl!("Show a progress window while exporting or rendering")).clicked() {
-                self.ui.progress_window_asked = Some(job.id);
-                self.ui.progress_window_hidden.retain(|id| *id != job.id);
+                self.ui.progress_window_asked = Some(windowed);
+                self.ui.progress_window_hidden.retain(|id| *id != windowed);
             }
         }
         let resp = ui.interact(cancel, egui::Id::unique(("job-cancel", job.id)), egui::Sense::click());

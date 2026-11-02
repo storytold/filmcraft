@@ -770,3 +770,42 @@ fn each_closed_progress_window_stays_closed() {
     d.frames(4);
     assert!(!d.has("progress.window"), "the first job's window was closed");
 }
+
+/// Closing the window of the newer of two exports closes that one only: the older one's window
+/// takes its place (#1192).
+#[test]
+fn closing_a_newer_jobs_progress_window_leaves_the_older_jobs_window() {
+    use filmcraft_engine::Job;
+    let mut d = Driver::new("progress-window-older");
+    d.app().session.prefs.general.show_progress_window = true;
+    for id in [930, 931] {
+        d.app().session.jobs.push(Job { id, label: format!("Export {id}.mp4"), progress: Default::default(), result: Default::default() });
+        d.app().session.export_offline.insert(id, Default::default());
+    }
+    d.frames(4);
+    let label = d.ok("ui.elements", json!({"prefix": "progress.window"}));
+    assert!(label.to_string().contains("Export 931.mp4"), "the newest job's window: {label}");
+    d.click("progress.window.cancel");
+    d.frames(3);
+    let label = d.ok("ui.elements", json!({"prefix": "progress.window"}));
+    assert!(label.to_string().contains("Export 930.mp4"), "the older job keeps its window: {label}");
+}
+
+/// With the preference off, a voice download started after an export leaves the export's window
+/// one click away in the status bar (#1192).
+#[test]
+fn the_status_bar_offers_the_export_window_under_a_later_job() {
+    use filmcraft_engine::Job;
+    let mut d = Driver::new("progress-window-offer-under");
+    let job = |id, label: &str| Job { id, label: label.into(), progress: Default::default(), result: Default::default() };
+    d.app().session.jobs.push(job(940, "Export clip.mp4"));
+    d.app().session.export_offline.insert(940, Default::default());
+    d.app().session.jobs.push(job(941, "Downloading voice"));
+    d.frames(4);
+    assert!(d.has("status.job.window"), "the status bar offers it");
+    assert!(!d.has("progress.window"));
+    d.click("status.job.window");
+    d.frames(2);
+    let label = d.ok("ui.elements", json!({"prefix": "progress.window"}));
+    assert!(label.to_string().contains("Export clip.mp4"), "one click opens the export's window: {label}");
+}
