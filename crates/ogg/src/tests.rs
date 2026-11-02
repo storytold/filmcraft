@@ -11,6 +11,36 @@ fn recovery_scan_stops_when_its_shared_budget_is_spent() {
     assert_eq!(find_capture(&source, 0, source.len() as u64, &mut budget).unwrap(), Some(4));
 }
 
+/// A source that counts the bytes read from it.
+struct Counting<'a> {
+    data: &'a [u8],
+    read: std::cell::Cell<u64>,
+}
+
+impl ByteSource for Counting<'_> {
+    fn len(&self) -> u64 {
+        self.data.len() as u64
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.read.set(self.read.get() + buf.len() as u64);
+        self.data.read_at(offset, buf)
+    }
+}
+
+/// The most one candidate reads: header, segment table, then the page (header and table again, 255 segments of 255).
+const MAX_CANDIDATE_READS: usize = 27 + 255 + (27 + 255 + 255 * 255);
+
+#[test]
+fn dense_fake_pages_with_bad_crcs_are_charged_to_the_recovery_budget() {
+    // "OggS\0" repeated: every 5th byte is a plausible page header that fails its CRC
+    let data: Vec<u8> = b"OggS\0".iter().copied().cycle().take(25_000).collect();
+    let src = Counting { data: &data, read: std::cell::Cell::new(0) };
+    assert!(open(&src).is_err(), "no valid page in the file");
+    let read = src.read.get();
+    // the shared budget bounds every byte of recovery work, including the pages read to test a candidate
+    assert!(read <= (64u64 << 20) + MAX_CANDIDATE_READS as u64, "read {read} bytes of a {} byte file", data.len());
+}
+
 /// Write one page holding `segments` (lacing already computed by `lace`).
 fn page(out: &mut Vec<u8>, flags: u8, granule: i64, serial: u32, seq: u32, lacing: &[u8], body: &[u8]) {
     let start = out.len();

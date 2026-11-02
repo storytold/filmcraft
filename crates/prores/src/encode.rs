@@ -49,6 +49,8 @@ impl EncoderConfig {
 #[derive(Debug, Clone)]
 pub struct Encoder {
     cfg: EncoderConfig,
+    /// The previous frame's uniform quantiser: where the next frame's search starts.
+    last_q: u8,
 }
 
 /// Quantiser search range (RDD 36 allows 1..=224).
@@ -57,11 +59,11 @@ const Q_MAX: u8 = 224;
 
 impl Encoder {
     pub fn new(profile: Profile, width: u32, height: u32) -> Encoder {
-        Encoder { cfg: EncoderConfig::new(profile, width, height) }
+        Encoder::with_config(EncoderConfig::new(profile, width, height))
     }
 
     pub fn with_config(cfg: EncoderConfig) -> Encoder {
-        Encoder { cfg }
+        Encoder { cfg, last_q: Q_MIN }
     }
 
     pub fn config(&self) -> &EncoderConfig {
@@ -134,7 +136,8 @@ impl Encoder {
         };
         let threads = cfg.threads;
         let prepared: Vec<SliceData> = par_map(threads, &jobs, |&(x, row, sw)| prepare_slice(&src, x, row, sw));
-        let qs = choose_quantisers(&prepared, &src, mb_width * mb_height, threads);
+        let (qs, qg) = choose_quantisers(&prepared, &src, mb_width * mb_height, threads, self.last_q);
+        self.last_q = qg;
         let items: Vec<(&SliceData, u8)> = prepared.iter().zip(qs).collect();
         let slices: Vec<Vec<u8>> = par_map(threads, &items, |&(sd, q)| write_slice(sd, q));
 
@@ -345,58 +348,115 @@ fn slice_bits(sd: &SliceData, q: u8) -> u64 {
     lv.iter().map(|l| component_bits(l)).sum()
 }
 
+/// Per-slice coded bits at the quantisers tried so far, so no quantiser is measured twice.
+struct Probes<'a> {
+    slices: &'a [SliceData],
+    threads: bool,
+    tried: Vec<(u8, Vec<u64>, u64)>,
+}
+
+impl Probes<'_> {
+    /// The frame's coded bits at `q` (the sum over slices).
+    fn total(&mut self, q: u8) -> u64 {
+        if let Some((_, _, t)) = self.tried.iter().find(|(tq, _, _)| *tq == q) {
+            return *t;
+        }
+        let v = par_map(self.threads, self.slices, |sd| slice_bits(sd, q));
+        let t = v.iter().sum();
+        self.tried.push((q, v, t));
+        t
+    }
+
+    /// The per-slice bits at `q`, measuring them if `q` was not tried yet.
+    fn take(&mut self, q: u8) -> Vec<u64> {
+        match self.tried.iter().position(|(tq, _, _)| *tq == q) {
+            Some(i) => self.tried.swap_remove(i).1,
+            None => par_map(self.threads, self.slices, |sd| slice_bits(sd, q)),
+        }
+    }
+}
+
+/// The smallest quantiser in `Q_MIN..=Q_MAX` whose frame fits `budget` (`Q_MAX` when none does),
+/// assuming bits fall as the quantiser grows. The search starts at `hint` (the previous frame's
+/// quantiser) and widens its steps away from it until the answer is bracketed, then bisects: the
+/// frames of a shot need the same quantiser or a neighbour, which takes two measurements instead of
+/// the eight of a bisection over the whole range.
+fn smallest_fitting(total: &mut impl FnMut(u8) -> u64, hint: u8, budget: u64) -> u8 {
+    let h = hint.clamp(Q_MIN, Q_MAX);
+    // `lo` does not fit, `hi` does: the answer is in `lo + 1..=hi`.
+    let (mut lo, mut hi) = if total(h) <= budget {
+        let (mut hi, mut step) = (h, 1u8);
+        loop {
+            if hi == Q_MIN {
+                return Q_MIN;
+            }
+            let q = hi.saturating_sub(step).max(Q_MIN);
+            if total(q) > budget {
+                break (q, hi);
+            }
+            hi = q;
+            step = step.saturating_mul(2);
+        }
+    } else {
+        let (mut lo, mut step) = (h, 1u8);
+        loop {
+            if lo == Q_MAX {
+                return Q_MAX;
+            }
+            let q = lo.saturating_add(step).min(Q_MAX);
+            if total(q) <= budget {
+                break (lo, q);
+            }
+            lo = q;
+            step = step.saturating_mul(2);
+        }
+    };
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if total(mid) <= budget {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
 /// Frame-level rate control: the smallest uniform quantiser whose frame fits the budget, then
 /// one step finer on as many slices as the remaining budget allows. Uniform quantisation
-/// approximately minimises frame MSE for a given size.
-fn choose_quantisers(slices: &[SliceData], src: &Source, total_mbs: usize, threads: bool) -> Vec<u8> {
+/// approximately minimises frame MSE for a given size. Returns the slices' quantisers and the
+/// uniform one (the next frame's `hint`).
+fn choose_quantisers(slices: &[SliceData], src: &Source, total_mbs: usize, threads: bool, hint: u8) -> (Vec<u8>, u8) {
     let n = slices.len();
     let hsize = slices.first().map_or(6, SliceData::header_size);
     let fixed = 8 * (8 + 20 + 8 + n * (2 + hsize)) as u64;
     let budget = (src.bits_per_mb as u64 * total_mbs as u64).saturating_sub(fixed);
-    let bits_at = |q: u8| -> Vec<u64> { par_map(threads, slices, |sd| slice_bits(sd, q)) };
-    let sum = |v: &[u64]| v.iter().sum::<u64>();
-
-    let mut best = bits_at(Q_MIN);
-    let mut qg = Q_MIN;
-    if sum(&best) > budget {
-        let (mut lo, mut hi) = (Q_MIN + 1, Q_MAX);
-        let mut hi_bits = None;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let v = bits_at(mid);
-            if sum(&v) <= budget {
-                hi = mid;
-                hi_bits = Some(v);
-            } else {
-                lo = mid + 1;
-            }
-        }
-        qg = lo;
-        best = hi_bits.unwrap_or_else(|| bits_at(qg));
-    }
+    let mut probes = Probes { slices, threads, tried: Vec::new() };
+    let qg = smallest_fitting(&mut |q| probes.total(q), hint, budget);
     let mut qs = vec![qg; n];
-    let mut cur = best;
-    let total = sum(&cur);
+    let mut cur = probes.take(qg);
+    let total = cur.iter().sum::<u64>();
     if qg > Q_MIN && total < budget {
-        let finer = bits_at(qg - 1);
+        // usually measured already: the search's last quantiser that did not fit
+        let finer = probes.take(qg - 1);
         let mut left = budget - total;
-        for i in 0..n {
-            let d = finer[i].saturating_sub(cur[i]);
-            if d <= left && finer[i] <= slices[i].limit_bits() {
+        for (((sd, f), c), q) in slices.iter().zip(&finer).zip(cur.iter_mut()).zip(qs.iter_mut()) {
+            let d = f.saturating_sub(*c);
+            if d <= left && *f <= sd.limit_bits() {
                 left -= d;
-                qs[i] = qg - 1;
-                cur[i] = finer[i];
+                *q = qg - 1;
+                *c = *f;
             }
         }
     }
     // Keep every slice within its 16-bit size fields.
-    for i in 0..n {
-        while cur[i] > slices[i].limit_bits() && qs[i] < Q_MAX {
-            qs[i] += 1;
-            cur[i] = slice_bits(&slices[i], qs[i]);
+    for ((sd, q), c) in slices.iter().zip(qs.iter_mut()).zip(cur.iter_mut()) {
+        while *c > sd.limit_bits() && *q < Q_MAX {
+            *q += 1;
+            *c = slice_bits(sd, *q);
         }
     }
-    qs
+    (qs, qg)
 }
 
 fn write_slice(sd: &SliceData, q: u8) -> Vec<u8> {
@@ -491,6 +551,108 @@ pub(crate) fn encode_alpha(w: &mut Writer, vals: &[u32], bits: u32) {
             w.put(run as u32, 11);
         }
         idx += run;
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    /// `take` gives a quantiser's measured per-slice bits whether or not `total` tried it: an
+    /// empty list would skip the slices' 16-bit size checks in `choose_quantisers`.
+    #[test]
+    fn take_measures_an_untried_quantiser() {
+        let block = |v: f32| std::array::from_fn::<f32, 64, _>(|i| v * (64 - i) as f32);
+        let slices: Vec<SliceData> =
+            (1..=3).map(|k| SliceData { comps: [vec![block(40.0 * k as f32); 4], vec![block(10.0); 2], vec![block(5.0); 2]], alpha: None }).collect();
+        let want = |q| slices.iter().map(|sd| slice_bits(sd, q)).collect::<Vec<_>>();
+        assert!(want(4).iter().all(|&b| b > 0));
+        let mut probes = Probes { slices: &slices, threads: false, tried: Vec::new() };
+        assert_eq!(probes.take(4), want(4), "untried");
+        probes.total(6);
+        assert_eq!(probes.take(6), want(6), "tried");
+        assert!(probes.tried.is_empty());
+    }
+
+    /// Frame bits falling with the quantiser (steeply at first, then flat), as real content does.
+    fn bits(q: u8) -> u64 {
+        4_000_000 / (q as u64 + 3) + 1_000
+    }
+
+    #[test]
+    fn hinted_search_finds_the_smallest_fitting_quantiser() {
+        for budget in (0..1_200_000).step_by(997).chain([0, 1_000, 2_000, bits(Q_MIN), bits(Q_MAX), u64::MAX]) {
+            // the reference: a scan from the finest quantiser
+            let want = (Q_MIN..=Q_MAX).find(|&q| bits(q) <= budget).unwrap_or(Q_MAX);
+            for hint in [0, Q_MIN, 2, 7, 64, 128, 223, Q_MAX, 255] {
+                let mut calls = 0;
+                let got = smallest_fitting(
+                    &mut |q| {
+                        assert!((Q_MIN..=Q_MAX).contains(&q), "measured an invalid quantiser {q}");
+                        calls += 1;
+                        bits(q)
+                    },
+                    hint,
+                    budget,
+                );
+                assert_eq!(got, want, "budget {budget}, hint {hint}");
+                assert!(calls <= 16, "budget {budget}, hint {hint}: {calls} measurements");
+            }
+        }
+    }
+
+    /// The common case (the previous frame's quantiser, or a neighbour) takes two measurements.
+    #[test]
+    fn a_good_hint_takes_two_measurements() {
+        for want in [Q_MIN + 1, 9, 40, 150, Q_MAX] {
+            let budget = bits(want);
+            for hint in [want - 1, want] {
+                let mut calls = 0;
+                let got = smallest_fitting(
+                    &mut |q| {
+                        calls += 1;
+                        bits(q)
+                    },
+                    hint,
+                    budget,
+                );
+                assert_eq!((got, calls), (want, 2), "hint {hint}");
+            }
+        }
+    }
+
+    /// Two frames, the second encoded after very different content: the encoder's memory of the
+    /// previous quantiser changes the work, not the stream.
+    #[test]
+    fn previous_frames_do_not_change_the_stream() {
+        let (w, h) = (256, 64);
+        let frame = |seed: u32, detail: u32| {
+            let mut f = Frame::new(w, h, ChromaFormat::Yuv422, 10, false);
+            let mut s = seed;
+            let cw = f.chroma_width() as usize;
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    s ^= s << 13;
+                    s ^= s >> 17;
+                    s ^= s << 5;
+                    f.y[y * w as usize + x] = (400 + (x * 3 + y) as u32 % 200 + s % detail) as u16;
+                }
+                for x in 0..cw {
+                    f.cb[y * cw + x] = (500 + (x + y) as u32 % 40) as u16;
+                    f.cr[y * cw + x] = (520 + (x * 5) as u32 % 30) as u16;
+                }
+            }
+            f
+        };
+        let (busy, plain) = (frame(7, 400), frame(9, 2));
+        for profile in [Profile::Proxy, Profile::Standard, Profile::Hq] {
+            let alone = |f: &Frame| Encoder::new(profile, w, h).encode(f).unwrap();
+            let mut enc = Encoder::new(profile, w, h);
+            enc.encode(&plain).unwrap();
+            assert!(enc.encode(&busy).unwrap() == alone(&busy), "{profile:?}: busy after plain");
+            assert!(enc.encode(&plain).unwrap() == alone(&plain), "{profile:?}: plain after busy");
+            assert!(enc.encode(&plain).unwrap() == alone(&plain), "{profile:?}: plain after plain");
+        }
     }
 }
 

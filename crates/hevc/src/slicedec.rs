@@ -198,16 +198,57 @@ impl<S: Sample> PicState<S> {
             return false;
         }
         let s = self.log2_ctb;
+        if (xn >> s) == (xc >> s) && (yn >> s) == (yc >> s) {
+            return zorder(xn, yn) <= zorder(xc, yc);
+        }
         let ctb_n = (yn >> s) as usize * self.wctb + (xn >> s) as usize;
         let ctb_c = (yc >> s) as usize * self.wctb + (xc >> s) as usize;
-        if ctb_n != ctb_c {
-            let tsn = self.layout.rs_to_ts[ctb_n];
-            let tsc = self.layout.rs_to_ts[ctb_c];
-            tsn < tsc && self.ctb_addr[ctb_n] == addr && self.layout.tile_id[tsn as usize] == self.layout.tile_id[tsc as usize]
-        } else {
-            let m = (1 << s) - 1;
-            morton(((xn & m) >> 2) as u32, ((yn & m) >> 2) as u32) <= morton(((xc & m) >> 2) as u32, ((yc & m) >> 2) as u32)
+        self.ctb_avail(ctb_n, ctb_c, addr)
+    }
+
+    /// Availability of CTB `ctb_n` for a block in another CTB `ctb_c` (raster addresses).
+    #[inline]
+    fn ctb_avail(&self, ctb_n: usize, ctb_c: usize, addr: u32) -> bool {
+        let tsn = self.layout.rs_to_ts[ctb_n];
+        let tsc = self.layout.rs_to_ts[ctb_c];
+        tsn < tsc && self.ctb_addr[ctb_n] == addr && self.layout.tile_id[tsn as usize] == self.layout.tile_id[tsc as usize]
+    }
+
+    /// `zavail` of the `len` 4x4 units starting at luma location (xn, yn) and going down (`down`)
+    /// or right in steps of 4 samples, as a mask (bit i = unit i, len <= 32). Inside one CTB
+    /// z-order grows along both directions, so the available units of a CTB form a prefix.
+    pub fn zavail_run(&self, (xc, yc): (i32, i32), (xn, yn): (i32, i32), down: bool, len: u32, addr: u32) -> u32 {
+        if xn < 0 || yn < 0 || xn >= self.width as i32 || yn >= self.height as i32 {
+            return 0;
         }
+        let s = self.log2_ctb;
+        let (start, lim) = if down { (yn, self.height as i32) } else { (xn, self.width as i32) };
+        let len = len.min(((lim - start + 3) >> 2) as u32);
+        let ctb_c = (yc >> s) as usize * self.wctb + (xc >> s) as usize;
+        let zc = zorder(xc, yc);
+        let mut mask = 0u32;
+        let mut i = 0;
+        while i < len {
+            let p = start + 4 * i as i32;
+            let end = (((((p >> s) + 1) << s) - start) >> 2).min(len as i32) as u32;
+            let (x, y) = if down { (xn, p) } else { (p, yn) };
+            let ctb_n = (y >> s) as usize * self.wctb + (x >> s) as usize;
+            if ctb_n == ctb_c {
+                while i < end {
+                    let q = start + 4 * i as i32;
+                    let z = if down { zorder(xn, q) } else { zorder(q, yn) };
+                    if z > zc {
+                        break;
+                    }
+                    mask |= 1 << i;
+                    i += 1;
+                }
+            } else if self.ctb_avail(ctb_n, ctb_c, addr) {
+                mask |= (u32::MAX >> (32 - end)) & !((1u32 << i) - 1);
+            }
+            i = end;
+        }
+        mask
     }
 
     #[inline]
@@ -216,15 +257,42 @@ impl<S: Sample> PicState<S> {
     }
 }
 
-#[inline]
-fn morton(x: u32, y: u32) -> u32 {
-    let mut r = 0;
-    for i in 0..5 {
-        r |= ((x >> i) & 1) << (2 * i);
-        r |= ((y >> i) & 1) << (2 * i + 1);
-    }
-    r
+/// Z-scan order of the 4x4 block containing luma location (x, y) inside its CTB. Bits above the
+/// CTB size are equal for two locations in the same CTB, so they do not change comparisons.
+#[inline(always)]
+fn zorder(x: i32, y: i32) -> u8 {
+    ZORDER[((y as usize >> 2) & 15) << 4 | ((x as usize >> 2) & 15)]
 }
+
+/// Calls `f(a, b)` for each run of set bits of `m`, with the run as sample range [a, b) given
+/// `unit` samples per bit.
+#[inline]
+fn for_runs(mut m: u32, unit: usize, mut f: impl FnMut(usize, usize)) {
+    while m != 0 {
+        let a = m.trailing_zeros();
+        let len = (m >> a).trailing_ones();
+        f(a as usize * unit, (a + len) as usize * unit);
+        m &= !((u32::MAX >> (32 - len)) << a);
+    }
+}
+
+/// Morton index of 4x4 block (x, y) of a 64x64 CTB at `[y * 16 + x]`.
+static ZORDER: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut i = 0;
+    while i < 256 {
+        let (x, y) = (i & 15, i >> 4);
+        let mut r = 0;
+        let mut b = 0;
+        while b < 4 {
+            r |= ((x >> b) & 1) << (2 * b) | ((y >> b) & 1) << (2 * b + 1);
+            b += 1;
+        }
+        t[i] = r as u8;
+        i += 1;
+    }
+    t
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PartMode {

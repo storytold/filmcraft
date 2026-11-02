@@ -22,8 +22,8 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use serde_json::{Value, json};
 
 use crate::common::{
-    Builder, MediaSpec, base_item, empty_sequence, file_name, generator_of, item_media, path_to_file_url, rate_from_f64, relative_path, resolve_path,
-    settings_for, transition_effect, transition_name,
+    Builder, MAX_RATE, MediaSpec, base_item, empty_sequence, file_name, generator_of, item_media, path_to_file_url, rate_from_f64, relative_path, relative_url,
+    resolve_path, resolve_url, settings_for, transition_effect, transition_name,
 };
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
 
@@ -50,6 +50,15 @@ fn read_rt(v: &Value) -> Option<Tick> {
         return Some(Tick::from_rational(value as i64, r.den, r.num));
     }
     Some(Tick((value * TICKS_PER_SECOND as f64 * r.den as f64 / r.num as f64).round() as i64))
+}
+
+/// Whether any `rate` in the document is beyond what [`rate_from_f64`] accepts.
+fn has_absurd_rate(v: &Value) -> bool {
+    match v {
+        Value::Object(m) => m.iter().any(|(k, x)| if k == "rate" { x.as_f64().is_some_and(|r| r > MAX_RATE as f64) } else { has_absurd_rate(x) }),
+        Value::Array(a) => a.iter().any(has_absurd_rate),
+        _ => false,
+    }
 }
 
 fn read_rate(v: &Value) -> Option<FrameRate> {
@@ -248,7 +257,7 @@ impl Exp<'_, '_> {
             }),
             MediaRef::File { path } => {
                 let url = match &self.opts.relative_to {
-                    Some(base) => relative_path(path, base).unwrap_or_else(|| abs_url(path)),
+                    Some(base) => relative_path(path, base).map(|r| relative_url(&r)).unwrap_or_else(|| abs_url(path)),
                     None => abs_url(path),
                 };
                 json!({"OTIO_SCHEMA": "ExternalReference.1", "name": name, "target_url": url, "available_range": avail, "available_image_bounds": null, "metadata": meta})
@@ -401,6 +410,11 @@ pub(crate) fn import(text: &str, opts: &ImportOptions, report: &mut Report) -> R
     collect_timelines(&v, &mut timelines);
     if timelines.is_empty() {
         return Err(Error::parse(Format::Otio, format!("no Timeline in a {} document", schema(&v))));
+    }
+    if has_absurd_rate(&v) {
+        report.warn(format!(
+            "an OTIO rate above {MAX_RATE} per second is not a frame rate; the default 24 fps was used (this includes audio sample rates above it, such as DSD)"
+        ));
     }
     let mut imp = Imp { b: Builder::new(&name_of(&v)), opts, report, links: HashMap::new(), groups: HashMap::new() };
     if imp.b.p.name.is_empty() {
@@ -715,7 +729,7 @@ impl Imp<'_, '_> {
         let id = match schema_name(r) {
             "ExternalReference" | "ImageSequenceReference" => {
                 let url = r.get("target_url").and_then(Value::as_str).or_else(|| r.get("target_url_base").and_then(Value::as_str)).unwrap_or("");
-                let path = resolve_path(url, self.opts.base_dir.as_deref());
+                let path = resolve_url(url, self.opts.base_dir.as_deref());
                 let display = if name.is_empty() { file_name(&path).to_string() } else { name.clone() };
                 let key = format!("file:{path}");
                 let existed = self.b.find_media(&key);

@@ -202,6 +202,88 @@ fn hostile_lane_numbers_do_not_create_sparse_tracks() {
     assert!(rep.has_warnings());
 }
 
+/// Final Cut writes slideshow stills directly as video elements, including zero-duration assets.
+#[test]
+fn standalone_video_stills_keep_timing_paths_and_transitions() {
+    let xml = r#"<fcpxml version="1.11"><resources>
+      <format id="f" frameDuration="1/30s" width="1920" height="1080"/>
+      <asset id="a" name="Slide A" start="0s" duration="0s" hasVideo="1" format="f">
+        <media-rep kind="original-media" src="file:///Missing/slide%20A.jpg"/>
+      </asset>
+      <asset id="b" name="Slide B" start="0s" duration="0s" hasVideo="1" format="f">
+        <media-rep kind="original-media" src="slide-b.jpg"/>
+      </asset>
+    </resources><project name="Slideshow"><sequence format="f" tcStart="0s"><spine>
+      <video ref="a" name="First slide" offset="0s" start="3600s" duration="10s">
+        <marker start="3601s" duration="1/30s" value="Slide marker"/>
+      </video>
+      <transition name="Cross Dissolve" offset="19/2s" duration="1s"/>
+      <video ref="b" name="Second slide" offset="10s" start="3600s" duration="10s"/>
+    </spine></sequence></project></fcpxml>"#;
+    let (imp, report) = import(xml.as_bytes(), Format::Fcpxml, Some("/Slides")).unwrap();
+    assert!(!report.has_warnings(), "{report}");
+    let p = &imp.project;
+    let seq = p.sequence(only_seq(&imp)).unwrap();
+    let rate = FrameRate::FPS_30;
+    let clips = &seq.video_tracks[0].items;
+    assert_eq!(clips.len(), 2);
+    for (i, clip) in clips.iter().enumerate() {
+        assert_eq!((clip.start, clip.duration, clip.source_in), (rate.tick_of(i as i64 * 300), rate.tick_of(300), rate.tick_of(108_000)));
+        assert!(clip.link.is_none());
+        assert!(matches!(p.item(clip.item).unwrap().kind, ItemKind::Media(_)));
+    }
+    assert_eq!(media_key(p, clips[0].item), "/Missing/slide A.jpg");
+    assert_eq!(media_key(p, clips[1].item), "/Slides/slide-b.jpg");
+    assert!(seq.audio_tracks.iter().all(|t| t.items.is_empty()));
+    let transition = &seq.video_tracks[0].transitions[0];
+    assert_eq!((transition.from, transition.to), (Some(clips[0].id), Some(clips[1].id)));
+    assert_eq!((transition.start, transition.duration), (rate.tick_of(285), rate.tick_of(30)));
+    assert_eq!((seq.markers[0].name.as_str(), seq.markers[0].start), ("Slide marker", rate.tick_of(30)));
+}
+
+/// A video element selects only picture from an AV asset, including on connected lanes.
+#[test]
+fn standalone_video_uses_only_video_and_preserves_connected_placement() {
+    let xml = doc().replace("<asset-clip ref=\"r2\"", "<video ref=\"r2\"");
+    // The first r2 occurrence has children; the connected r2 occurrence does too.
+    let xml = xml.replacen("</asset-clip>\n            <transition", "</video>\n            <transition", 1).replacen(
+        "</asset-clip>\n            </asset-clip>",
+        "</video>\n            </asset-clip>",
+        1,
+    );
+    let (imp, report) = import(xml.as_bytes(), Format::Fcpxml, Some("/proj")).unwrap();
+    assert!(!report.has_warnings(), "{report}");
+    let seq = imp.project.sequence(only_seq(&imp)).unwrap();
+    let main = &seq.video_tracks[0].items[0];
+    let connected = &seq.video_tracks[1].items[0];
+    assert_eq!(main.item, connected.item);
+    assert_eq!(connected.start, FrameRate::FPS_23_976.tick_of(72));
+    assert!(main.link.is_none() && connected.link.is_none());
+    assert!(seq.audio_tracks.iter().flat_map(|t| &t.items).all(|i| i.item != main.item));
+    assert_eq!(main.effect("motion").unwrap().param("scale").unwrap().value, ParamValue::Float(150.0));
+    assert_eq!(connected.effect("opacity").unwrap().param("opacity").unwrap().keyframes.len(), 2);
+}
+
+/// Unsupported generators, unresolved references and alternate sources keep an actionable warning.
+#[test]
+fn standalone_video_invalid_sources_are_reported_without_panicking() {
+    for attrs in ["", "ref=\"missing\"", "ref=\"effect\"", "ref=\"audio\"", "ref=\"picture\" srcID=\"2\""] {
+        let xml = format!(
+            r#"<fcpxml version="1.11"><resources>
+          <effect id="effect" name="Generator" uid="example.generator"/>
+          <asset id="audio" name="Audio" hasAudio="1" src="audio.wav"/>
+          <asset id="picture" name="Picture" hasVideo="1" src="picture.jpg"/>
+        </resources><project name="Unsupported"><sequence><spine>
+          <video {attrs} name="Unsupported source" duration="1s"/>
+        </spine></sequence></project></fcpxml>"#
+        );
+        let (imp, report) = std::panic::catch_unwind(|| import(xml.as_bytes(), Format::Fcpxml, None)).expect("bad video sources must not panic").unwrap();
+        let seq = imp.project.sequence(only_seq(&imp)).unwrap();
+        assert!(seq.all_tracks().all(|t| t.items.is_empty()));
+        assert!(report.entries.iter().any(|e| e.message.contains("Unsupported source") && e.message.contains("skipped")), "{report}");
+    }
+}
+
 fn project() -> (Project, filmcraft_project::ItemId) {
     let r = FrameRate::FPS_29_97;
     let mut p = Project::new("Lib");
@@ -383,4 +465,14 @@ proptest! {
         prop_assert_eq!(structure(&imp.project, si, TrackKind::Audio), structure(&p, s, TrackKind::Audio), "{}", text);
         prop_assert_eq!(links(&imp.project, si), links(&p, s));
     }
+}
+
+/// #2195: a relative `src` is a URL like an absolute one: `boats%20b.mov` is the file `boats b.mov`.
+#[test]
+fn relative_media_urls_are_percent_decoded() {
+    let d = doc().replace(r#"src="boats.mov""#, r#"src="media/boats%20b.mov""#);
+    let (imp, _) = import(d.as_bytes(), Format::Fcpxml, Some("/proj")).unwrap();
+    let p = &imp.project;
+    let boats = &p.sequence(only_seq(&imp)).unwrap().video_tracks[0].items[1];
+    assert_eq!(media_key(p, boats.item), "/proj/media/boats b.mov");
 }

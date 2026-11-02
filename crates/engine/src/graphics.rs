@@ -249,24 +249,37 @@ fn param_entry<'a>(e: &'a mut EffectInstance, id: &str) -> Option<&'a mut Param>
 
 /// Set properties `props` on layer `e` (keyframe-aware at media time `mt`). Changing the text
 /// keeps per-character styles on their characters.
-fn apply_props(e: &mut EffectInstance, props: &serde_json::Map<String, Value>, mt: Tick) -> Result<()> {
+///
+/// With `keyframe`, each property gets a keyframe at `mt` (it becomes animated, the same as
+/// `effects.setParam` with `keyframe: true`) instead of changing its static value when it is not
+/// animated yet; the result lists each such property's keyframe count (#1877).
+fn apply_props(e: &mut EffectInstance, props: &serde_json::Map<String, Value>, mt: Tick, keyframe: bool) -> Result<Vec<(String, usize)>> {
+    let mut counts = Vec::new();
     for (k, v) in props {
         if k == "enabled" {
             e.enabled = v.as_bool().unwrap_or(true);
             continue;
         }
         let id = param_id(k);
+        if keyframe && filmcraft_project::find_effect(&e.effect).and_then(|d| d.param(id)).is_some_and(|d| !d.animatable) {
+            return Err(bad("graphics.set", format!("`{k}` cannot be animated")));
+        }
         let prm = param_entry(e, id).ok_or_else(|| bad("graphics.set", format!("no property `{k}`")))?;
         let pv = to_param(&prm.value, id, v).ok_or_else(|| bad("graphics.set", format!("`{k}`: value has the wrong type")))?;
         let old = prm.value_at(mt);
-        prm.set_at(mt, pv.clone());
+        if keyframe {
+            prm.put_keyframe(mt, pv.clone());
+            counts.push((k.clone(), prm.keyframes.len()));
+        } else {
+            prm.set_at(mt, pv.clone());
+        }
         if let (ParamValue::Text(a), ParamValue::Text(b), "text") = (&old, &pv, id)
             && let Some(x) = e.layer.as_mut()
         {
             x.runs = filmcraft_project::graphic_design::adjust_runs(a, b, &x.runs);
         }
     }
-    Ok(())
+    Ok(counts)
 }
 
 /// Set properties `props` on a layer (keyframe-aware at time `tl`). Changing the text keeps
@@ -281,14 +294,32 @@ pub(crate) fn set_props(
     label: &str,
     merge: Option<&str>,
 ) -> Result<()> {
+    set_props_keyed(s, clip, eidx, props, tl, label, merge, false).map(|_| ())
+}
+
+/// [`set_props`] that can put a keyframe on each property (`keyframe`); returns the keyframe count
+/// of each property it did that for.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_props_keyed(
+    s: &mut Session,
+    clip: ClipId,
+    eidx: usize,
+    props: &serde_json::Map<String, Value>,
+    tl: Tick,
+    label: &str,
+    merge: Option<&str>,
+    keyframe: bool,
+) -> Result<Vec<(String, usize)>> {
     let props = props.clone();
+    let mut counts = Vec::new();
     s.edit_sequence_as(label, merge, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
         let e = it.effects.get_mut(eidx).ok_or_else(|| bad("graphics.set", "no such layer"))?;
-        apply_props(e, &props, mt)?;
+        counts = apply_props(e, &props, mt, keyframe)?;
         Ok(())
-    })
+    })?;
+    Ok(counts)
 }
 
 /// Turn a text layer into point text (no box; the lines the box wrapped become real lines) or
@@ -359,7 +390,7 @@ fn set_text_type(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit_sequence("Text Layer Type", |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let e = it.effects.get_mut(ei).ok_or_else(|| bad(ID, "no such layer"))?;
-        apply_props(e, &props, mt)?;
+        apply_props(e, &props, mt, false)?;
         if let Some(a) = param_entry(e, "anchor") {
             a.map_values(|v| match v.as_vec2() {
                 Some(a) => ParamValue::Vec2(Vec2::new(a.x + shift.0 as f64, a.y + shift.1 as f64)),
@@ -478,14 +509,31 @@ pub(crate) fn move_layers(s: &mut Session, clip: ClipId, moves: Vec<(usize, Vec2
     s.edit_sequence(label, |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
+        // how far each moving layer goes, by uid, before anything changes
+        let deltas: Vec<(u64, f64, f64)> = moves
+            .iter()
+            .filter_map(|(ei, pos)| {
+                let e = it.effects.get(*ei)?;
+                let uid = e.layer.as_ref().map(|x| x.uid).filter(|&u| u != 0)?;
+                let old = e.params.get("position")?.value_at(mt).as_vec2()?;
+                Some((uid, pos.x - old.x, pos.y - old.y))
+            })
+            .collect();
         for (ei, pos) in &moves {
             let Some(e) = it.effects.get_mut(*ei) else { continue };
             let Some(prm) = e.params.get_mut("position") else { continue };
             let old = prm.value_at(mt).as_vec2().unwrap_or(*pos);
             prm.set_at(mt, ParamValue::Vec2(*pos));
-            // a pinned layer keeps following its target from its new place
+            // a pinned layer keeps following its target from its new place: its offsets change
+            // by how much further it moved than its target (when both move, by
+            // the same delta (a drag) nothing changes; by different ones (Align, Distribute),
+            // the difference)
             if let Some(pin) = e.layer.as_mut().and_then(|x| x.pin.as_mut()) {
-                let (dx, dy) = (pos.x - old.x, pos.y - old.y);
+                let (tx, ty) = match pin.to {
+                    filmcraft_project::graphic_design::PinTarget::Layer(u) => deltas.iter().find(|d| d.0 == u).map_or((0.0, 0.0), |d| (d.1, d.2)),
+                    filmcraft_project::graphic_design::PinTarget::Frame => (0.0, 0.0),
+                };
+                let (dx, dy) = (pos.x - old.x - tx, pos.y - old.y - ty);
                 pin.offsets[0] += dx;
                 pin.offsets[2] += dx;
                 pin.offsets[1] += dy;
@@ -1064,7 +1112,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Set Graphic Properties",
             &[],
             None,
-            r##"{"clip":id?,"layer":n|name?,"props":{"font":"Inter","font_style":"Bold","size":120,"align":"center","tracking":50,"leading":0,"fill_color":"#ffcc00","stroke":true,"stroke_width":6,"background":true,"shadow":true,"position":[x,y],"scale":100,"rotation":0,"opacity":100,…},"time":ticks?,"merge":bool?,"begin":bool?}"##,
+            r##"{"clip":id?,"layer":n|name?,"props":{"font":"Inter","font_style":"Bold","size":120,"align":"center","tracking":50,"leading":0,"fill_color":"#ffcc00","stroke":true,"stroke_width":6,"background":true,"shadow":true,"position":[x,y],"scale":100,"rotation":0,"opacity":100,…},"time":ticks? (timeline time, default the playhead: a property that is already animated gets or changes a keyframe there, any other changes its fixed value),"keyframe":bool? (true: every property in `props` gets a keyframe at `time` and becomes animated; the result lists each one's keyframe count),"merge":bool?,"begin":bool?}"##,
             has_graphic,
             |s, p| {
                 let clip = target_clip(s, p).ok_or_else(|| bad("graphics.set", "no graphic clip"))?;
@@ -1076,8 +1124,14 @@ pub fn commands() -> Vec<CommandSpec> {
                 if bool_p(p, "begin").unwrap_or(false) {
                     s.history.merge_key = None;
                 }
-                set_props(s, clip, ei, &props, tl, "Change Graphic Property", merge.as_deref())?;
-                Ok(Value::Null)
+                let keyframe = bool_p(p, "keyframe").unwrap_or(false);
+                let counts = set_props_keyed(s, clip, ei, &props, tl, "Change Graphic Property", merge.as_deref(), keyframe)?;
+                // unchanged for a call without `keyframe`: nothing to report
+                if keyframe {
+                    Ok(json!({"keyframes": counts.into_iter().map(|(k, n)| (k, json!(n))).collect::<serde_json::Map<_, _>>()}))
+                } else {
+                    Ok(Value::Null)
+                }
             },
         ),
         spec(
@@ -1088,6 +1142,29 @@ pub fn commands() -> Vec<CommandSpec> {
             r#"{"clip":id?,"layer":n|name?,"type":"point|paragraph" (point: no box, handles scale the text; paragraph: the text wraps in a box that handles resize)}"#,
             has_graphic,
             set_text_type,
+        ),
+        spec(
+            "graphics.moveLayers",
+            "Move Graphic Layers",
+            &[],
+            None,
+            r#"{"clip":id?,"layers":[n]? (default: the selected layers),"delta":[dx,dy] (graphic pixels)}"#,
+            has_graphic,
+            |s, p| {
+                // #2186: several selected layers dragged together on the Program monitor move as one
+                // undo step, each keeping its place relative to the others (pinned layers keep
+                // following their targets from the new place, as with Align)
+                let clip = target_clip(s, p).ok_or_else(|| bad("graphics.moveLayers", "no graphic clip"))?;
+                let mut layers = layers_p(s, clip, p)?;
+                layers.sort_unstable();
+                layers.dedup();
+                let d =
+                    vec2_p(p, "delta").filter(|d| d.x.is_finite() && d.y.is_finite()).ok_or_else(|| bad("graphics.moveLayers", "need `delta`: [dx, dy]"))?;
+                let (boxes, _) = layer_boxes(s, clip, &layers)?;
+                let moves = boxes.into_iter().map(|(ei, own, _)| (ei, Vec2::new(own.x + d.x, own.y + d.y))).collect();
+                move_layers(s, clip, moves, "Move Graphic Layers")?;
+                Ok(json!({"clip": clip.0, "layers": layers}))
+            },
         ),
         spec("graphics.selectLayer", "Select Graphic Layer", &[], None, r#"{"clip":id?,"layers":[n]}"#, has_graphic, |s, p| {
             let clip = target_clip(s, p).ok_or_else(|| bad("graphics.selectLayer", "no graphic clip"))?;

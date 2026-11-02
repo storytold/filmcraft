@@ -466,7 +466,7 @@ fn events_and_progress_panels() {
     d.ok("ui.menu.invoke", json!({"id": "window.panel.Events"}));
     d.frames(2);
     // a failed command shows up as an error row
-    let r = d.call("engine.execute", json!({"command": "clip.rename", "params": {}}));
+    let r = d.call("engine.execute", json!({"command": "presets.rename", "params": {}}));
     assert_eq!(r["ok"], json!(false));
     d.frames(2);
     let rows = d.ids("events.row.");
@@ -823,6 +823,19 @@ fn effects_are_indented_under_their_folders() {
     ] {
         let (a, b) = (text_x(&mut d, outer), text_x(&mut d, inner));
         assert!(b >= a + 12.0, "`{inner}` ({b}) is not indented under `{outer}` ({a})");
+    }
+}
+
+#[test]
+fn effects_search_matches_turkish_casing() {
+    let mut d = Driver::demo();
+    d.exec("prefs.set", json!({"key": "general.interfaceLanguage", "value": "tr"}));
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+    for query in ["IŞIK", "ışık", "Işık"] {
+        d.ok("ui.set", json!({"effectsSearch": query}));
+        d.frames(2);
+        assert!(d.has("effects.item.light_leaks"), "query `{query}` through Effects search caller must find `light_leaks`");
     }
 }
 

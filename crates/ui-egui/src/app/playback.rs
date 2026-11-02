@@ -91,11 +91,29 @@ impl FilmcraftApp {
         });
         a.start(fill)?;
         self.playback.audio_clock = false;
+        self.playback.tts_preview = true;
         Ok(seconds)
+    }
+
+    /// Whether [`FilmcraftApp::stop`] has a transport to stop: Program or Source playback, a
+    /// preroll, or a recording that runs one. A press that only moves the playhead uses this so it
+    /// does not close an audio stream that is already open (#2633): dropping the output stream
+    /// makes the next scrub grain open the device again, and on WASAPI that open is slow.
+    pub fn transport_running(&self) -> bool {
+        self.playback.playing
+            // A panel that panicked clears `playing` but leaves the output playing, and the clock
+            // stays on: the press still has that stream to stop.
+            || self.playback.audio_clock
+            || self.source_playback.clock.playing
+            || self.playback.preroll.is_some()
+            || self.session.mixrec.active()
+            || self.session.mcrec.active()
+            || self.session.voiceover.recording()
     }
 
     pub fn stop(&mut self) {
         self.playback.playing = false;
+        self.playback.tts_preview = false;
         self.playback.stop_at = None;
         self.playback.rest_at = None;
         self.playback.preroll = None;
@@ -115,6 +133,16 @@ impl FilmcraftApp {
         }
         panels::multicam::on_stop(self);
         panels::voiceover::on_stop(self);
+    }
+
+    /// [`stop`](Self::stop) for a press or drag that moves the playhead (a scrub bar, a ruler).
+    /// With nothing playing or recording there is nothing to stop, and stopping the output would
+    /// close the scrub stream (see `scrub.rs`) that the drag keeps open, once per move. A take
+    /// that records while stopped and a Text to Speech preview still end here, as they do in `stop`.
+    pub(crate) fn stop_for_scrub(&mut self) {
+        if self.transport_running() || self.playback.tts_preview {
+            self.stop();
+        }
     }
 
     pub(super) fn start_audio(&mut self, now: f64) {

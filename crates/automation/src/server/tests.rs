@@ -277,23 +277,41 @@ async fn export_progress_and_cancel() {
         }
     }
     c.send(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":4}}"#).await;
-    let t0 = std::time::Instant::now();
-    while dir.join("b.mp4").exists() || t0.elapsed() < std::time::Duration::from_millis(500) {
+    // The export stops at its next frame, which a slow machine (software rendering in a CI
+    // container) can be well into: wait until the job has finished, not for a fixed time.
+    let (t0, mut id) = (std::time::Instant::now(), 100u64);
+    let last = loop {
+        id += 1;
+        c.send(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"jobs.list"}}}).to_string()).await;
+        let m = loop {
+            let m = c.next().await;
+            assert_ne!(m["id"], 4, "no response for a cancelled request: {m}");
+            if m["id"] == id {
+                break m;
+            }
+        };
+        let jobs: Value = serde_json::from_str(m["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        let last = jobs.as_array().and_then(|a| a.last()).cloned().unwrap_or_default();
+        if last["finished"] == true {
+            break last;
+        }
+        assert!(t0.elapsed().as_secs() < 30, "the cancelled export is still running: {jobs}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert_eq!(last["result"]["error"], "cancelled", "{last}");
+    while dir.join("b.mp4").exists() {
         assert!(t0.elapsed().as_secs() < 30, "partial file still there");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    c.send(r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"command_run","arguments":{"id":"jobs.list"}}}"#).await;
-    let m = loop {
+    // and still no response for the cancelled request
+    c.send(r#"{"jsonrpc":"2.0","id":5,"method":"ping"}"#).await;
+    loop {
         let m = c.next().await;
         assert_ne!(m["id"], 4, "no response for a cancelled request: {m}");
         if m["id"] == 5 {
-            break m;
+            break;
         }
-    };
-    let jobs: Value = serde_json::from_str(m["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    let last = jobs.as_array().and_then(|a| a.last()).cloned().unwrap_or_default();
-    assert_eq!(last["result"]["error"], "cancelled", "{jobs}");
-    assert!(!dir.join("b.mp4").exists());
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

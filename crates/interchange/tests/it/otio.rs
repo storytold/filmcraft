@@ -360,3 +360,16 @@ proptest! {
         prop_assert_eq!(links(&imp.project, si), links(&p, s));
     }
 }
+
+/// #2195: a relative `target_url` is a URL: `Clip%20A.mov` is the file `Clip A.mov`.
+#[test]
+fn relative_target_urls_are_percent_decoded() {
+    let doc = r#"{"OTIO_SCHEMA": "Timeline.1", "name": "T", "tracks": {"OTIO_SCHEMA": "Stack.1", "children": [
+        {"OTIO_SCHEMA": "Track.1", "kind": "Video", "children": [
+            {"OTIO_SCHEMA": "Clip.2", "name": "a", "source_range": {"OTIO_SCHEMA": "TimeRange.1", "start_time": {"OTIO_SCHEMA": "RationalTime.1", "rate": 25, "value": 0}, "duration": {"OTIO_SCHEMA": "RationalTime.1", "rate": 25, "value": 50}},
+             "media_references": {"DEFAULT_MEDIA": {"OTIO_SCHEMA": "ExternalReference.1", "target_url": "media/Clip%20A.mov"}}, "active_media_reference_key": "DEFAULT_MEDIA"}]}]}}"#;
+    let (imp, _) = import(doc.as_bytes(), Format::Otio, Some("/proj")).unwrap();
+    let p = &imp.project;
+    let clip = &p.sequence(imp.sequences[0]).unwrap().video_tracks[0].items[0];
+    assert_eq!(media_key(p, clip.item), "/proj/media/Clip A.mov");
+}

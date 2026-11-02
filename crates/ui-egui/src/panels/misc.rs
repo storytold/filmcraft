@@ -1,7 +1,7 @@
 //! Smaller panels: History, Markers, Info (the Media Browser is `panels::media_browser`).
 
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
-use filmcraft_time::{TimeDisplay, format_time};
+use filmcraft_time::{TimeDisplay, format_time, parse_timecode};
 
 use crate::FilmcraftApp;
 use crate::theme::Tokens;
@@ -147,6 +147,164 @@ pub(crate) fn marker_label_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, marke
     app.auto.add_response(&format!("{prefix}.label"), &menu.response, label);
 }
 
+/// The marker types of the Edit Marker dialog's Options: kind, `markers.edit` name, label.
+const MARKER_KINDS: [(filmcraft_project::MarkerKind, &str, &str); 5] = {
+    use filmcraft_project::MarkerKind::*;
+    [
+        (Comment, "comment", "Comment Marker"),
+        (Chapter, "chapter", "Chapter Marker"),
+        (Segmentation, "segmentation", "Segmentation Marker"),
+        (WebLink, "webLink", "Web Link"),
+        (FlashCue, "flashCue", "Flash Cue Point"),
+    ]
+};
+
+/// Opens the Edit Marker dialog on a marker of the active sequence (#2416).
+pub(crate) fn open_marker_dialog(app: &mut FilmcraftApp, marker: &filmcraft_project::Marker) {
+    let (Some(seq), Some(sequence)) = (app.session.active_sequence(), app.session.state.active_sequence) else { return };
+    let duration = format_time(marker.duration, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000);
+    let kind = MARKER_KINDS.iter().find(|k| k.0 == marker.kind).map_or("comment", |k| k.1);
+    app.ui.marker_dialog = Some(crate::state::MarkerDraft {
+        sequence: sequence.0,
+        generation: app.session.document_epoch,
+        duration0: duration.clone(),
+        marker: marker.id.0,
+        name: marker.name.clone(),
+        comment: marker.comment.clone(),
+        duration,
+        color: marker.color.name().into(),
+        kind: kind.into(),
+    });
+}
+
+/// "Edit Marker…" in a marker's right-click menu (automation id `<prefix>.edit`).
+pub(crate) fn marker_edit_item(app: &mut FilmcraftApp, ui: &mut egui::Ui, marker: &filmcraft_project::Marker, prefix: &str) {
+    let label = tl!("Edit Marker…");
+    let r = ui.button(label);
+    app.auto.add_response(&format!("{prefix}.edit"), &r, label);
+    if r.clicked() {
+        open_marker_dialog(app, marker);
+        ui.close();
+    }
+}
+
+/// Edit Marker (Premiere's Marker dialog): Name, Duration, Comments, Marker Color and Options; OK is
+/// one `markers.edit`, so one undo step. Cancel or Escape leave the marker as it was.
+///
+/// Automation ids: `markerDialog.name`, `markerDialog.duration`, `markerDialog.comment`,
+/// `markerDialog.color.<label>`, `markerDialog.kind.<kind>`, `markerDialog.ok`, `markerDialog.cancel`.
+pub(crate) fn marker_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    let Some(mut d) = app.ui.marker_dialog.clone() else { return };
+    // another project or sequence: the marker id may name another marker there
+    let same_place = app.session.state.active_sequence.map(|s| s.0) == Some(d.sequence) && app.session.document_epoch == d.generation;
+    let Some(seq) = app.session.active_sequence().filter(|_| same_place) else {
+        app.ui.marker_dialog = None;
+        return;
+    };
+    let (rate, drop_frame) = (seq.settings.frame_rate, seq.settings.drop_frame);
+    // the marker may be gone (undo, Clear Markers) while the dialog is open
+    let Some(start) = seq.markers.iter().find(|m| m.id.0 == d.marker).map(|m| m.start) else {
+        app.ui.marker_dialog = None;
+        return;
+    };
+    let accent = app.tokens.accent;
+    let mut keep = true;
+    let mut ok = false;
+    let mut elems: Vec<(String, Rect, String)> = Vec::new();
+    egui::Window::new(tl!("Marker"))
+        .id(egui::Id::unique("Edit Marker"))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(crate::widgets::dialog_center(ctx))
+        .show(ctx, |ui| {
+            egui::Grid::new("marker-dialog").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                ui.label(tl!("Name:"));
+                let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(260.0));
+                elems.push(("markerDialog.name".into(), r.rect, d.name.clone()));
+                ui.end_row();
+                ui.label(tl!("In:"));
+                ui.label(egui::RichText::new(format_time(start, rate, drop_frame, TimeDisplay::Timecode, 48000)).font(Tokens::mono(12.0)));
+                ui.end_row();
+                ui.label(tl!("Duration:"));
+                let r = ui.add(egui::TextEdit::singleline(&mut d.duration).font(Tokens::mono(12.0)).desired_width(120.0));
+                elems.push(("markerDialog.duration".into(), r.rect, d.duration.clone()));
+                ui.end_row();
+                ui.label(tl!("Comments:"));
+                let r = ui.add(egui::TextEdit::multiline(&mut d.comment).desired_width(260.0).desired_rows(4));
+                elems.push(("markerDialog.comment".into(), r.rect, d.comment.clone()));
+                ui.end_row();
+                ui.label(tl!("Marker Color:"));
+                ui.horizontal(|ui| {
+                    for l in MARKER_FILTER {
+                        let c = l.marker_rgb();
+                        let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                        let col = Color32::from_rgb(c[0], c[1], c[2]);
+                        ui.painter().rect_filled(r.shrink(3.0), 3.0, col);
+                        if d.color == l.name() {
+                            ui.painter().rect_stroke(r, 3.0, egui::Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Inside);
+                        }
+                        elems.push((format!("markerDialog.color.{}", l.name()), r, l.name().into()));
+                        if resp.on_hover_text(crate::i18n::t(l.name())).clicked() {
+                            d.color = l.name().into();
+                        }
+                    }
+                });
+                ui.end_row();
+                ui.label(tl!("Options:"));
+                ui.vertical(|ui| {
+                    for (_, id, label) in MARKER_KINDS {
+                        let label = crate::i18n::t(label);
+                        let r = ui.radio(d.kind == id, label);
+                        elems.push((format!("markerDialog.kind.{id}"), r.rect, label.to_string()));
+                        if r.clicked() {
+                            d.kind = id.into();
+                        }
+                    }
+                });
+                ui.end_row();
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let c = ui.button(tl!("Cancel"));
+                elems.push(("markerDialog.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    keep = false;
+                }
+                let o = ui.add(egui::Button::new(egui::RichText::new(tl!("OK")).color(Color32::WHITE)).fill(accent));
+                elems.push(("markerDialog.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    ok = true;
+                }
+            });
+        });
+    for (id, r, l) in elems {
+        app.auto.add(&id, r, &l);
+    }
+    if crate::widgets::escape_closes(ctx) {
+        keep = false;
+    }
+    if ok {
+        let mut p = serde_json::json!({"target": "program", "marker": d.marker, "name": d.name, "comment": d.comment, "color": d.color, "kind": d.kind});
+        // the duration only when it was edited: the field shows whole frames, and a marker's
+        // duration need not be (#2470 review)
+        let duration = if d.duration.trim() == d.duration0.trim() { Ok(None) } else { parse_timecode(&d.duration, rate, drop_frame, 0).map(Some) };
+        match duration {
+            Ok(frames) => {
+                if let Some(f) = frames {
+                    p["durationFrames"] = serde_json::json!(f);
+                }
+                match app.session.execute("markers.edit", p) {
+                    Ok(_) => keep = false,
+                    Err(e) => app.ui.status = e.to_string(),
+                }
+            }
+            Err(e) => app.ui.status = tlf!("Invalid duration: {error}", error = e),
+        }
+    }
+    app.ui.marker_dialog = keep.then_some(d);
+}
+
 /// Markers panel: a colour filter row (click a chip to show/hide that colour; automation ids
 /// `markers.filter.<label>`), then the sequence markers (`markers.row.<id>`; click = go to it).
 pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
@@ -206,7 +364,13 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if resp.clicked() {
                 go = Some(m.start);
             }
-            resp.context_menu(|ui| marker_label_menu(app, ui, m, "markers.menu"));
+            if resp.double_clicked() {
+                open_marker_dialog(app, m);
+            }
+            resp.context_menu(|ui| {
+                marker_edit_item(app, ui, m, "markers.menu");
+                marker_label_menu(app, ui, m, "markers.menu");
+            });
         }
         if seq.markers.is_empty() {
             ui.label(egui::RichText::new(tl!("No markers. Press M to add one.")).color(t.text_faint));
