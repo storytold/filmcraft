@@ -187,7 +187,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Automate to Sequence…",
             &["Clip"],
             None,
-            r#"{"items":[id]?,"ordering":"sort|selection","placement":"sequentially|unnumberedMarkers","method":"insert|overwrite","overlapFrames":n=30,"stillFrames":n?,"videoTransition":bool=true,"audioTransition":bool=true,"ignoreAudio":bool=false,"ignoreVideo":bool=false}"#,
+            r#"{"items":[id]?,"ordering":"sort|selection"?,"placement":"sequentially|unnumberedMarkers"?,"method":"insert|overwrite"?,"overlapFrames":n=30,"stillFrames":n?,"videoTransition":bool=true,"audioTransition":bool=true,"ignoreAudio":bool=false,"ignoreVideo":bool=false}"#,
             can_automate,
             automate_to_sequence,
         ),

@@ -345,7 +345,8 @@ fn the_factory_rejects_mismatched_pictures_and_clamps_hostile_floats() {
     }
     packets += ten.flush().unwrap().len();
     assert_eq!(packets, 4);
-    // the sample entry of the HDR encoder carries colr + mdcv + clli, the SDR one nothing HDR
+    // the sample entry of the HDR encoder carries colr + mdcv + clli, the SDR one nothing HDR:
+    // a BT.709 limited-range colr (every SDR export is tagged since #2142) and no mdcv / clli
     let e = ten.sample_entry();
     let v = e.video.as_ref().unwrap();
     assert!(v.color.is_some() && v.mastering_display.is_some() && v.content_light == Some((0, 0)));

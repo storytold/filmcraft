@@ -1129,23 +1129,23 @@ impl GpuCompositor {
         self.queue.submit([enc.finish()]);
         self.source_draws += 1;
         let slice = buf.slice(..);
-        let mapping = ReadbackMapping(&buf);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        if wait_mapped(&self.device).is_err() {
+        if wait_mapped(&self.device, &rx).is_none() {
             return Ok(None);
         }
-        rx.recv().map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
-        let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
+        let Ok(data) = slice.get_mapped_range() else { return Ok(None) };
         let mut out = Vec::with_capacity((w * h * 4) as usize);
+        let mut line = Vec::with_capacity((w * 16) as usize);
         for y in 0..h {
-            let r = data.get((y * row) as usize..(y * row + w * 16) as usize).ok_or("GPU readback row missing")?;
-            out.extend(r.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)));
+            let Some(r) = data.get((y * row) as usize..(y * row + w * 16) as usize) else { return Ok(None) };
+            copy_mapped(r, &mut line);
+            out.extend(line.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)));
         }
         drop(data);
-        drop(mapping);
+        buf.unmap();
         Ok(Some((w, h, out)))
     }
 
@@ -1188,37 +1188,51 @@ impl GpuCompositor {
 
     /// Wait for the staging buffer filled by [`copy_accumulator`](Self::copy_accumulator) and
     /// convert its half floats to f32.
-    fn map_accumulator(&self, (w, h, row): (u32, u32, u32)) -> Option<(u32, u32, Vec<f32>)> {
+    fn map_accumulator(&mut self, dimensions: (u32, u32, u32)) -> Option<(u32, u32, Vec<f32>)> {
+        self.map_accumulator_with_wait(dimensions, wait_mapped)
+    }
+
+    /// Keep the wait injectable so failure cleanup can be checked without stalling a driver.
+    fn map_accumulator_with_wait(
+        &mut self,
+        (w, h, row): (u32, u32, u32),
+        wait: impl FnOnce(&wgpu::Device, &std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>) -> Option<()>,
+    ) -> Option<(u32, u32, Vec<f32>)> {
         if w == 0 || h == 0 {
             return None;
         }
         let t = std::time::Instant::now();
-        let (buf, _) = self.accum_readback_buf.as_ref()?;
+        // Own each attempt; cache only successful reads. Failed maps may already be unmapped: retire storage instead of unmapping twice.
+        let (buf, capacity) = self.accum_readback_buf.take()?;
         let slice = buf.slice(..);
-        let mapping = ReadbackMapping(buf);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device).ok()?;
-        rx.recv().ok()?.ok()?;
+        wait(&self.device, &rx)?;
         export_renderer::timing::add_map_wait(t.elapsed());
         let t = std::time::Instant::now();
         let (width, row) = (w as usize, row as usize);
         let mut out = filmcraft_frame::pool::take_f32_overwritten(width.checked_mul(h as usize)?.checked_mul(4)?);
         let data = slice.get_mapped_range().ok()?;
+        let mut line = Vec::with_capacity(width * 8);
         // every row must be there: the pooled output holds stale values until written
         let converted = out.chunks_exact_mut(width * 4).enumerate().all(|(y, dst)| {
             let Some(src) = data.get(y * row..y * row + width * 8) else { return false };
-            for (d, s) in dst.iter_mut().zip(src.as_chunks::<2>().0) {
+            copy_mapped(src, &mut line);
+            for (d, s) in dst.iter_mut().zip(line.as_chunks::<2>().0) {
                 *d = f16_to_f32_fast(u16::from_le_bytes(*s));
             }
             true
         });
         drop(data);
-        drop(mapping);
+        if !converted {
+            return None;
+        }
+        buf.unmap();
+        self.accum_readback_buf = Some((buf, capacity));
         export_renderer::timing::add_convert(t.elapsed());
-        converted.then_some((w, h, out))
+        Some((w, h, out))
     }
 
     /// Read the output back as RGBA8 (tests / screenshots / thumbnails).
@@ -1239,30 +1253,19 @@ impl GpuCompositor {
         );
         self.queue.submit([enc.finish()]);
         let slice = buf.slice(..);
-        let mapping = ReadbackMapping(&buf);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        wait_mapped(&self.device).ok()?;
-        rx.recv().ok()?.ok()?;
+        wait_mapped(&self.device, &rx)?;
         let data = slice.get_mapped_range().ok()?;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..*h {
             out.extend_from_slice(&data[(y * row) as usize..(y * row + w * 4) as usize]);
         }
         drop(data);
-        drop(mapping);
+        buf.unmap();
         Some((*w, *h, out))
-    }
-}
-
-// Cancel pending or release completed mappings on every exit; mapped views must drop first.
-struct ReadbackMapping<'a>(&'a wgpu::Buffer);
-
-impl Drop for ReadbackMapping<'_> {
-    fn drop(&mut self) {
-        self.0.unmap();
     }
 }
 
@@ -1271,15 +1274,24 @@ thread_local! {
     static FAIL_NEXT_MAP_WAIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Bound readback after failed hardware encode; radv may never finish an indefinite wait (#1058).
-fn wait_mapped(device: &wgpu::Device) -> Result<(), String> {
+/// Per-stage readback bound; eight seconds exceeds a healthy poll or callback wait.
+const MAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Bound both poll and callback; wgpu can report a timed-out fence as a successful poll (#1058).
+/// Late or rejected callbacks decline GPU readback so the CPU renderer can take the frame.
+fn wait_mapped<T>(device: &wgpu::Device, rx: &std::sync::mpsc::Receiver<Result<(), T>>) -> Option<()> {
     #[cfg(test)]
     if FAIL_NEXT_MAP_WAIT.with(|fail| fail.replace(false)) {
-        return Err("injected map wait failure".into());
+        return None;
     }
-    // Eight seconds exceeds a healthy map; timeout lets the existing CPU fallback take the frame.
-    const MAP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
-    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }).map(|_| ()).map_err(|e| e.to_string())
+    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(MAP_TIMEOUT) }).ok()?;
+    rx.recv_timeout(MAP_TIMEOUT).ok()?.ok()
+}
+
+/// Bulk-copy mapped rows into ordinary memory before scalar conversion; staging memory may be uncached.
+pub(crate) fn copy_mapped(src: &[u8], line: &mut Vec<u8>) {
+    line.clear();
+    line.extend_from_slice(src);
 }
 
 /// Shader source: kind (0 RGBA8 sRGB, 1 linear premultiplied RGBA, 2 planar YUV, 3 biplanar YUV), scales, dimensions, color.

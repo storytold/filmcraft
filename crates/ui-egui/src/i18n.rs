@@ -47,8 +47,17 @@ pub enum Language {
     Fr,
     Id,
     It,
+    /// Bosnian, Latin script (Ijekavian); `bs-Cyrl` locales use it too.
+    Bs,
     /// Korean; Hangul needs an installed system font ([`korean_font_available`]).
     Ko,
+    /// Czech; Latin with háčky and čárky, covered by the bundled fonts.
+    Cs,
+    /// Polish.
+    Pl,
+    /// Swedish.
+    Sv,
+    Tr,
 }
 
 static JAPANESE: OnceLock<Catalog> = OnceLock::new();
@@ -60,11 +69,34 @@ static GERMAN: OnceLock<Catalog> = OnceLock::new();
 static RUSSIAN: OnceLock<Catalog> = OnceLock::new();
 static FRENCH: OnceLock<Catalog> = OnceLock::new();
 static KOREAN: OnceLock<Catalog> = OnceLock::new();
+static POLISH: OnceLock<Catalog> = OnceLock::new();
 static INDONESIAN: OnceLock<Catalog> = OnceLock::new();
 static ITALIAN: OnceLock<Catalog> = OnceLock::new();
+static BOSNIAN: OnceLock<Catalog> = OnceLock::new();
+static CZECH: OnceLock<Catalog> = OnceLock::new();
+static SWEDISH: OnceLock<Catalog> = OnceLock::new();
+static TURKISH: OnceLock<Catalog> = OnceLock::new();
 
 impl Language {
-    pub const ALL: [Self; 12] = [Self::En, Self::Ja, Self::Es, Self::PtBr, Self::Uk, Self::ZhCn, Self::De, Self::Ru, Self::Fr, Self::Id, Self::Ko, Self::It];
+    pub const ALL: [Self; 17] = [
+        Self::En,
+        Self::Ja,
+        Self::Es,
+        Self::PtBr,
+        Self::Uk,
+        Self::ZhCn,
+        Self::De,
+        Self::Ru,
+        Self::Fr,
+        Self::Id,
+        Self::Ko,
+        Self::It,
+        Self::Cs,
+        Self::Pl,
+        Self::Sv,
+        Self::Tr,
+        Self::Bs,
+    ];
 
     /// BCP 47 tag for AccessKit and the web IME's hidden input. Keep the persisted spelling
     /// (`pt-br`, `zh-cn`) out of the protocol-facing value.
@@ -81,7 +113,12 @@ impl Language {
             Self::Fr => "fr",
             Self::Id => "id",
             Self::It => "it",
+            Self::Bs => "bs",
             Self::Ko => "ko",
+            Self::Cs => "cs",
+            Self::Pl => "pl",
+            Self::Sv => "sv",
+            Self::Tr => "tr",
         }
     }
 
@@ -98,7 +135,12 @@ impl Language {
             Self::Fr => "Français",
             Self::Id => "Bahasa Indonesia",
             Self::It => "Italiano",
+            Self::Bs => "Bosanski",
             Self::Ko => "한국어",
+            Self::Cs => "Čeština",
+            Self::Pl => "Polski",
+            Self::Sv => "Svenska",
+            Self::Tr => "Türkçe",
         }
     }
 
@@ -115,7 +157,12 @@ impl Language {
             "fr" => Some(Self::Fr),
             "id" => Some(Self::Id),
             "it" => Some(Self::It),
+            "bs" => Some(Self::Bs),
             "ko" => Some(Self::Ko),
+            "cs" => Some(Self::Cs),
+            "pl" => Some(Self::Pl),
+            "sv" => Some(Self::Sv),
+            "tr" => Some(Self::Tr),
             _ => None,
         }
     }
@@ -126,11 +173,11 @@ impl Language {
     /// any German (`de-AT`, `de_CH.UTF-8`…) gets the German one and any French (`fr-CA`, `fr_BE.UTF-8`…)
     /// the French one; any Indonesian (`id-ID`, `id_ID.UTF-8`, and the legacy `in-ID` that older Java
     /// and Android runtimes report) the Indonesian one; any Italian (`it-IT`, `it-CH`, `it_IT.UTF-8`…)
-    /// the Italian one. Chinese gets the Simplified catalog
+    /// the Italian one; any Bosnian (`bs-BA`, `bs_BA.UTF-8`, `bs-Latn-BA`…) the Bosnian one; any Swedish (`sv-SE`, `sv-FI`, `sv_SE.UTF-8`…) the Swedish one; any Turkish (`tr`, `tr-TR`, `tr_TR.UTF-8`…) the Turkish one. Chinese gets the Simplified catalog
     /// only for Simplified locales (`zh`, `zh-CN`, `zh-SG`, `zh-Hans…`); Traditional ones (`zh-TW`,
     /// `zh-HK`, `zh-MO`, `zh-Hant…`) are skipped.
     pub fn from_locales(tags: &[String]) -> Self {
-        const PRIMARY: [(&str, Language); 12] = [
+        const PRIMARY: [(&str, Language); 17] = [
             ("en", Language::En),
             ("ja", Language::Ja),
             ("es", Language::Es),
@@ -142,7 +189,12 @@ impl Language {
             ("id", Language::Id),
             ("in", Language::Id),
             ("it", Language::It),
+            ("bs", Language::Bs),
             ("ko", Language::Ko),
+            ("cs", Language::Cs),
+            ("pl", Language::Pl),
+            ("sv", Language::Sv),
+            ("tr", Language::Tr),
         ];
         tags.iter()
             .find_map(|tag| {
@@ -174,7 +226,12 @@ impl Language {
             Self::Fr => "fr",
             Self::Id => "id",
             Self::It => "it",
+            Self::Bs => "bs",
             Self::Ko => "ko",
+            Self::Cs => "cs",
+            Self::Pl => "pl",
+            Self::Sv => "sv",
+            Self::Tr => "tr",
         }
     }
 
@@ -192,7 +249,12 @@ impl Language {
             Self::Fr => Some(FRENCH.get_or_init(|| Catalog::parse(include_str!("i18n/fr.tsv")))),
             Self::Id => Some(INDONESIAN.get_or_init(|| Catalog::parse(include_str!("i18n/id.tsv")))),
             Self::It => Some(ITALIAN.get_or_init(|| Catalog::parse(include_str!("i18n/it.tsv")))),
+            Self::Bs => Some(BOSNIAN.get_or_init(|| Catalog::parse(include_str!("i18n/bs.tsv")))),
             Self::Ko => Some(KOREAN.get_or_init(|| Catalog::parse(include_str!("i18n/ko.tsv")))),
+            Self::Cs => Some(CZECH.get_or_init(|| Catalog::parse(include_str!("i18n/cs.tsv")))),
+            Self::Pl => Some(POLISH.get_or_init(|| Catalog::parse(include_str!("i18n/pl.tsv")))),
+            Self::Sv => Some(SWEDISH.get_or_init(|| Catalog::parse(include_str!("i18n/sv.tsv")))),
+            Self::Tr => Some(TURKISH.get_or_init(|| Catalog::parse(include_str!("i18n/tr.tsv")))),
         }
     }
 
@@ -204,6 +266,43 @@ impl Language {
     /// Does this language's catalog translate `text`? (English never does: it is the source.)
     pub fn has(self, text: &str) -> bool {
         self.catalog().and_then(|c| c.plain(text)).is_some()
+    }
+
+    /// Uppercase `text`, using Turkish-aware rules (`i` → `İ`, `ı` → `I`) when the language is
+    /// Turkish.
+    pub fn to_uppercase(self, text: &str) -> String {
+        if self == Self::Tr {
+            let mapped: String = text
+                .chars()
+                .map(|c| match c {
+                    'i' => 'İ',
+                    'ı' => 'I',
+                    other => other,
+                })
+                .collect();
+            mapped.to_uppercase()
+        } else {
+            text.to_uppercase()
+        }
+    }
+
+    /// Lowercase `text`, using Turkish-aware rules (`İ` → `i`, `I` → `ı`) when the language is
+    /// Turkish. Decomposed `I` followed by `\u{0307}` is normalized to `i`.
+    pub fn to_lowercase(self, text: &str) -> String {
+        if self == Self::Tr {
+            let normalized = text.replace("I\u{0307}", "i");
+            let mapped: String = normalized
+                .chars()
+                .map(|c| match c {
+                    'İ' => 'i',
+                    'I' => 'ı',
+                    other => other,
+                })
+                .collect();
+            mapped.to_lowercase()
+        } else {
+            text.to_lowercase()
+        }
     }
 }
 
@@ -229,9 +328,43 @@ pub fn t(text: &str) -> &str {
     current().tr(text)
 }
 
-/// Match a lowercased search query against both the source and the displayed label.
+/// Uppercase `text` in the current interface language (with Turkish-aware casing when the
+/// language is Turkish).
+pub fn to_uppercase(text: &str) -> String {
+    current().to_uppercase(text)
+}
+
+/// Lowercase `text` in the current interface language (with Turkish-aware casing when the
+/// language is Turkish).
+pub fn to_lowercase(text: &str) -> String {
+    current().to_lowercase(text)
+}
+
+fn fold_query(s: &str) -> String {
+    s.replace('İ', "i").replace('\u{0307}', "").to_lowercase()
+}
+
+fn fold_turkish(s: &str) -> String {
+    let normalized = s.replace("I\u{0307}", "i");
+    let mapped: String = normalized
+        .chars()
+        .map(|c| match c {
+            'İ' => 'i',
+            'I' => 'ı',
+            other => other,
+        })
+        .collect();
+    mapped.replace('\u{0307}', "").to_lowercase()
+}
+
+/// Match a search query against both the source and the displayed label.
 pub fn matches_query(text: &str, query: &str) -> bool {
-    text.to_lowercase().contains(query) || t(text).to_lowercase().contains(query)
+    let q = fold_query(query);
+    if fold_query(text).contains(&q) || fold_query(t(text)).contains(&q) {
+        return true;
+    }
+    let q_tr = fold_turkish(query);
+    fold_turkish(t(text)).contains(&q_tr) || fold_turkish(text).contains(&q_tr)
 }
 
 /// Like [`t`], for an English string that needs a disambiguating `context` (a catalog row whose

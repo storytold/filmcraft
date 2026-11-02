@@ -51,7 +51,7 @@ fn parse_tc(s: &str) -> Option<Tc> {
     if parts.len() != 4 || parts.iter().any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
         return None;
     }
-    let n: Vec<i64> = parts.iter().map(|p| p.parse().unwrap_or(0)).collect();
+    let n: Vec<i64> = parts.iter().map(|p| p.parse().ok()).collect::<Option<_>>()?;
     Some(Tc { h: n[0], m: n[1], s: n[2], f: n[3], df: s.contains(';') || s.contains(',') })
 }
 
@@ -153,6 +153,7 @@ struct Parsed {
 fn parse(text: &str, report: &mut Report) -> Parsed {
     let mut p = Parsed { title: None, events: Vec::new(), any_df: false, max_ff: 0 };
     let mut df = false;
+    let mut skip_metadata = false;
     for raw in text.lines() {
         let l = raw.trim();
         if l.is_empty() {
@@ -166,6 +167,9 @@ fn parse(text: &str, report: &mut Report) -> Parsed {
         if upper.starts_with("FCM:") {
             df = upper.contains("DROP") && !upper.contains("NON");
             p.any_df |= df;
+            continue;
+        }
+        if skip_metadata && (l.starts_with('*') || upper.starts_with("M2") || upper.starts_with("AUD")) {
             continue;
         }
         if let Some(c) = l.strip_prefix('*') {
@@ -210,7 +214,14 @@ fn parse(text: &str, report: &mut Report) -> Parsed {
             continue;
         }
         if upper.starts_with("AUD") {
-            let extra: Vec<Ch> = l.split_whitespace().skip(1).filter_map(|t| t.parse::<usize>().ok()).map(Ch::A).collect();
+            let mut extra: Vec<Ch> = Vec::new();
+            for n in l.split_whitespace().skip(1).filter_map(|t| t.parse::<usize>().ok()) {
+                if (1..=99).contains(&n) {
+                    extra.push(Ch::A(n));
+                } else {
+                    report.warn(format!("EDL AUD channel {n} is outside 1..99; ignored"));
+                }
+            }
             if let Some(line) = p.events.last_mut().and_then(|e| e.lines.last_mut()) {
                 line.chans.extend(extra);
             }
@@ -225,15 +236,20 @@ fn parse(text: &str, report: &mut Report) -> Parsed {
                 p.max_ff = p.max_ff.max(tc.f);
                 p.any_df |= tc.df;
             }
-            if let Some(e) = p.events.last_mut().filter(|e| e.lines.last().is_some_and(|last| last.num == line.num)) {
+            if let Some(e) = p.events.last_mut().filter(|e| !skip_metadata && e.lines.last().is_some_and(|last| last.num == line.num)) {
                 e.lines.push(line);
             } else {
                 p.events.push(Event { lines: vec![line], df, ..Default::default() });
             }
+            skip_metadata = false;
             continue;
         }
         if upper.starts_with(">>>") || upper.starts_with("REM") {
             continue;
+        }
+        if l.split_whitespace().next().is_some_and(|token| token.bytes().all(|b| b.is_ascii_digit())) {
+            // Comments and auxiliary lines after a rejected event do not belong to the previous one.
+            skip_metadata = true;
         }
         report.warn(format!("unrecognised EDL line ignored: {}", l.chars().take(60).collect::<String>()));
     }
@@ -452,9 +468,29 @@ fn source_tc_warning(p: &Parsed) -> bool {
     p.events.iter().flat_map(|e| &e.lines).any(|l| l.reel != "BL" && l.tcs[0].h > 0)
 }
 
+/// Slowest and fastest clip speed an `M2` line may give (as a multiple of normal speed). The slowest
+/// is the smallest value that still survives the 4-decimal rounding of the imported speed.
+const MIN_M2_SPEED: f64 = 0.0001;
+const MAX_M2_SPEED: f64 = 1000.0;
+
 fn import_event(ctx: &mut Ctx, ev: &Event, report: &mut Report) {
     let df = ev.df;
-    let m2_for = |reel: &str| ev.m2.iter().find(|(r, _)| r == reel).map(|(_, f)| *f);
+    // An `M2` speed that is not finite, rounds to zero or is absurdly large would freeze the clip or
+    // blow up its source range: warn and keep the clip at normal speed.
+    let base = ctx.rate.timecode_base() as f64;
+    let m2: Vec<(&String, f64)> = ev
+        .m2
+        .iter()
+        .filter(|(reel, fps)| {
+            let ok = *fps == 0.0 || (fps.is_finite() && (MIN_M2_SPEED..=MAX_M2_SPEED).contains(&(fps.abs() / base)));
+            if !ok {
+                report.warn(format!("EDL motion line for reel {reel} has an unusable speed ({fps}); the clip keeps normal speed"));
+            }
+            ok
+        })
+        .map(|(r, f)| (r, *f))
+        .collect();
+    let m2_for = |reel: &str| m2.iter().find(|(r, _)| r.as_str() == reel).map(|(_, f)| *f);
     match ev.lines.as_slice() {
         [l1, l2] if matches!(l2.trans, Trans::Dissolve | Trans::Wipe(_)) => {
             let t0 = ctx.rec(l2.tcs[2], df);
@@ -1102,6 +1138,66 @@ mod tests {
         assert_eq!(parse_channels("AA/V"), Some(vec![Ch::A(1), Ch::A(2), Ch::V]));
         assert_eq!(parse_channels("A4"), Some(vec![Ch::A(4)]));
         assert_eq!(parse_channels("X"), None);
+    }
+
+    #[test]
+    fn hostile_m2_speeds_keep_normal_speed() {
+        for v in ["nan", "inf", "-inf", "0.00001", "1e300"] {
+            let edl = format!("TITLE: t\nFCM: NON-DROP FRAME\n001  AX  V  C  01:00:00:00 01:00:02:00 01:00:00:00 01:00:02:00\nM2   AX   {v}   01:00:00:00\n");
+            let (imp, report) = crate::import(edl.as_bytes(), Format::Edl, None).unwrap();
+            let dbg = format!("{imp:?}");
+            assert!(dbg.contains("speed: 1.0,"), "{v}: {dbg}");
+            assert!(dbg.contains("reverse: false"), "{v}: {dbg}");
+            assert!(report.warnings().count() > 0, "{v}: expected a warning");
+        }
+    }
+
+    #[test]
+    fn aud_line_out_of_range_channel_is_ignored() {
+        for n in ["0", "100", "3000000"] {
+            let edl = format!("TITLE: t\n001  AX       V     C        00:00:00:00 00:00:01:00 01:00:00:00 01:00:01:00\nAUD {n}\n");
+            let (imp, report) = crate::import_with(edl.as_bytes(), crate::Format::Edl, &ImportOptions::default()).unwrap();
+            let seq = imp.sequences.first().and_then(|id| imp.project.sequence(*id)).unwrap();
+            assert!(seq.audio_tracks.len() <= 99, "AUD {n}: {} audio tracks", seq.audio_tracks.len());
+            assert!(report.mentions("AUD"), "AUD {n} should be reported");
+        }
+    }
+
+    #[test]
+    fn timecode_rejects_fields_too_large_for_i64() {
+        for tc in ["9223372036854775808:00:00:00", "00:9223372036854775808:00:00", "00:00:9223372036854775808:00", "00:00:00:9223372036854775808"] {
+            assert!(parse_tc(tc).is_none(), "accepted {tc}");
+        }
+        assert_eq!(parse_tc("01:02:03:04"), Some(Tc { h: 1, m: 2, s: 3, f: 4, df: false }));
+    }
+
+    #[test]
+    fn rejected_event_metadata_does_not_change_previous_event() {
+        let text = "TITLE: Rejected event\n\
+001 A V C 00:00:00:00 00:00:01:00 01:00:00:00 01:00:01:00\n\
+* FROM CLIP NAME: First\n\
+* SOURCE FILE: first.mov\n\
+002 B V C 9223372036854775808:00:00:00 00:00:01:00 01:00:01:00 01:00:02:00\n\
+* FROM CLIP NAME: Rejected\n\
+* SOURCE FILE: rejected.mov\n\
+* LOC: 01:00:01:00 RED Rejected marker\n\
+M2 B 12.0 00:00:00:00\n\
+AUD 2\n\
+003 C V C 00:00:00:00 00:00:01:00 01:00:02:00 01:00:03:00\n\
+* FROM CLIP NAME: Third\n";
+        for number in ["001", "003"] {
+            let text = text.replace("003 C", &format!("{number} C"));
+            let mut report = Report::default();
+            let parsed = parse(&text, &mut report);
+            assert_eq!(parsed.events.len(), 2);
+            let first = &parsed.events[0];
+            assert_eq!(first.from_clip.as_deref(), Some("First"));
+            assert_eq!(first.files, ["first.mov"]);
+            assert!(first.locs.is_empty());
+            assert!(first.m2.is_empty());
+            assert_eq!(first.lines[0].chans, [Ch::V]);
+            assert_eq!(parsed.events[1].from_clip.as_deref(), Some("Third"));
+        }
     }
 
     #[test]

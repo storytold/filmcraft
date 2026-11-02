@@ -289,6 +289,53 @@ fn speed_duration_from_the_clip_menu_opens_the_dialog() {
     assert_eq!(got.time_interpolation, filmcraft_project::TimeInterpolation::FrameBlending);
 }
 
+/// The Properties panel's speed footer opens Clip ▸ Speed/Duration… on click instead of doing
+/// nothing; Cancel leaves the clip alone.
+#[test]
+fn the_properties_speed_button_opens_the_speed_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.frames(3);
+    assert!(d.has("properties.speed"), "the speed button is laid out");
+    // the demo project's panel is short: the footer sits below the fold (#1322)
+    d.ok("ui.scroll", json!({"id": "panel.Properties", "dy": -2000.0}));
+    d.frames(3);
+    d.click("properties.speed");
+    let dlg = d.app().ui.clip_dialog.clone().expect("the dialog opened");
+    assert_eq!(dlg.command, "clip.speedDuration");
+    assert_eq!(dlg.params["speed"], json!(100.0), "starts at the clip's speed");
+    d.click("speedDuration.cancel");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert_eq!(d.v1(0).speed, 1.0, "Cancel leaves the clip alone");
+}
+
+#[test]
+fn speed_duration_reopens_with_the_clips_reverse_state() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.exec("clip.speedDuration", json!({"speed": 200, "reverse": true}));
+    assert!(d.v1(0).reverse);
+
+    d.menu("clip.speedDuration");
+    let draft = d.app().ui.clip_dialog.as_ref().expect("the dialog opened");
+    assert_eq!(draft.params["reverse"], true, "uses the stored direction, not the positive speed magnitude");
+    assert_eq!(draft.params["speed"], 200.0);
+    d.click("speedDuration.cancel");
+    assert!(d.v1(0).reverse, "Cancel retains reverse playback");
+
+    d.menu("clip.speedDuration");
+    d.click("speedDuration.ok");
+    assert!(d.v1(0).reverse, "accepting unchanged settings retains reverse playback");
+    assert_eq!(d.v1(0).speed, 2.0);
+    d.menu("clip.speedDuration");
+    d.click("speedDuration.reverse");
+    d.click("speedDuration.ok");
+    assert!(!d.v1(0).reverse, "the checkbox can explicitly restore forward playback");
+}
+
 /// #786: the clip's right-click Label menu lists the labels by the user's names (with their
 /// colours, as Edit ▸ Label does) and each choice labels the clip.
 #[test]
@@ -441,6 +488,67 @@ fn escape_mid_drag_reverts_the_field_and_keeps_the_dialog() {
 }
 
 #[test]
+fn enter_confirms_and_submits_clip_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+    d.click("speedDuration.speed");
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "A", "ctrl": true}));
+    d.ok("ui.type", json!({"text": "200"}));
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "Enter closes the dialog and commits OK");
+    assert_eq!(d.v1(0).speed, 2.0, "the speed change was applied");
+}
+
+#[test]
+fn enter_on_focused_cancel_cancels_clip_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+    d.click("speedDuration.speed");
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "A", "ctrl": true}));
+    d.ok("ui.type", json!({"text": "200"}));
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["speed"], json!(200.0));
+    d.ok("ui.focus", json!({"id": "speedDuration.cancel"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "Enter on focused Cancel closes the dialog");
+    assert_eq!(d.v1(0).speed, 1.0, "Cancel leaves speed unchanged");
+}
+
+#[test]
+fn shortcuts_suppressed_while_clip_dialog_open() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.app().ui.clip_dialog.is_some(), "speedDuration dialog is open");
+
+    // Timeline shortcut: Backspace (edit.clear) must not reach the timeline while the dialog is open
+    d.ok("ui.key", json!({"key": "Backspace"}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_some(), "clip dialog remains open");
+    let seq = d.app().session.active_sequence().unwrap();
+    assert!(!seq.video_tracks[0].items.is_empty(), "selected clip is not deleted by Backspace shortcut");
+    assert_eq!(seq.video_tracks[0].items[0].id, c.id, "clip remains on timeline");
+
+    // Global shortcut: Space (playback.toggle) must not start playback while the dialog is open
+    assert!(!d.app().playback.playing, "playback is stopped initially");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(!d.app().playback.playing, "Space key does not trigger playback while clip dialog is open");
+    assert!(d.app().ui.clip_dialog.is_some(), "clip dialog remains open");
+}
+
+#[test]
 fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
     for audio in [false, true] {
         let mut d = Driver::new();
@@ -464,5 +572,169 @@ fn clip_context_menu_adds_a_marker_at_the_playhead_with_one_undo() {
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*before).unwrap());
         d.exec("edit.redo", json!({}));
         assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*after).unwrap());
+    }
+}
+
+/// #1885: Project panel ▸ right-click one of several selected clips ▸ Proxy ▸ Create Proxies…
+/// makes proxies for all of them, as in Premiere; a clip right-clicked outside the selection gets
+/// one for itself only.
+#[test]
+fn create_proxies_from_the_item_menu_takes_the_whole_selection() {
+    let mut d = Driver::new();
+    let wav: std::sync::Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&[0.0; 9_600], 48_000).into();
+    let mut items = Vec::new();
+    for name in ["/takes/a.wav", "/takes/b.wav", "/takes/c.wav"] {
+        items.push(filmcraft_engine::commands::import_bytes(&mut d.app().session, name, wav.clone(), None).unwrap().0);
+    }
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.exec("project.view.set", json!({"view": "list"}));
+    d.exec("project.select", json!({"items": [items[0], items[1]]}));
+    d.frames(4);
+    let create_from = |d: &mut Driver, item: u64| -> Vec<u64> {
+        d.ok("ui.click", json!({"id": format!("project.item.{item}"), "button": "right"}));
+        d.frames(3);
+        d.click("project.itemMenu.proxy");
+        d.click("project.itemMenu.proxy.create");
+        let draft = d.app().ui.create_proxies.take().map(|p| p.items);
+        draft.unwrap_or_else(|| panic!("Create Proxies… did not open its dialog"))
+    };
+    // right-click the second of the two selected clips: both get a proxy
+    assert_eq!(create_from(&mut d, items[1]), vec![items[0], items[1]]);
+    assert_eq!(d.app().session.state.project_selection.iter().map(|i| i.0).collect::<Vec<_>>(), vec![items[0], items[1]], "the selection stays");
+    // right-click a clip that is not selected: only that one
+    assert_eq!(create_from(&mut d, items[2]), vec![items[2]]);
+}
+
+/// File ▸ Close All Projects with unsaved changes refused ("save it first, or pass force"); like
+/// Close Project, it asks Save / Don't Save / Cancel, and closes right away when nothing is unsaved.
+#[test]
+fn close_all_projects_asks_to_save() {
+    let mut d = Driver::new();
+    d.edit();
+    assert_eq!(d.menu("file.closeAllProjects")["dialog"], "closeProject");
+    assert!(d.has("closeProject.save") && d.has("closeProject.dontSave") && d.has("closeProject.cancel"));
+    d.click("closeProject.cancel");
+    assert!(!d.app().session.project.items.is_empty() && d.app().session.is_dirty(), "Cancel keeps the project");
+    d.menu("file.closeAllProjects");
+    d.click("closeProject.dontSave");
+    assert!(d.app().session.project.items.is_empty(), "closed without saving");
+    assert!(d.app().ui.clip_dialog.is_none());
+    // nothing unsaved: no question
+    d.exec("file.openDemoProject", json!({}));
+    let path = std::env::temp_dir().join(format!("fc-close-all-{}.fcproj", std::process::id()));
+    d.exec("file.saveAs", json!({"path": path.to_string_lossy()}));
+    assert!(!d.app().session.is_dirty());
+    d.menu("file.closeAllProjects");
+    let _ = std::fs::remove_file(&path);
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(d.app().session.project.items.is_empty(), "closed at once");
+}
+/// Clip ▸ Rename… asked for nothing and failed with "need `name`": it opens a Rename dialog with
+/// the selected clip's name (its linked partner is renamed with it), or the selected Project item's
+/// when the Project panel has focus, and says what to select when nothing is.
+#[test]
+fn clip_rename_menu_opens_a_rename_dialog() {
+    let mut d = Driver::new();
+    let (picture, sound) = {
+        let q = d.app().session.active_sequence().unwrap();
+        let v = q.video_tracks[0].items[0].clone();
+        let a = q.audio_tracks.iter().flat_map(|t| &t.items).find(|a| a.link.is_some() && a.link == v.link).unwrap().clone();
+        (v, a)
+    };
+    let name = |d: &mut Driver, c: filmcraft_engine::project::ClipId| d.app().session.active_sequence().unwrap().find_item(c).unwrap().1.name.clone();
+    // nothing selected: an explanation, no dialog
+    d.exec("edit.deselectAll", json!({}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    assert!(d.call("ui.menu.invoke", json!({"id": "clip.rename"}))["ok"] != json!(true));
+    assert!(d.app().ui.clip_dialog.is_none());
+    // a linked clip: both halves, with the current name filled in
+    d.exec("timeline.select", json!({"clips": [picture.id.0]}));
+    let undo = d.app().session.history.undo.len();
+    d.menu("clip.rename");
+    assert!(d.has("rename.name") && d.has("rename.ok"));
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["name"], json!(picture.name));
+    d.ok("ui.set", json!({"clipDialog": {"name": "Opening shot"}}));
+    d.click("rename.ok");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert_eq!(name(&mut d, picture.id), "Opening shot");
+    assert_eq!(name(&mut d, sound.id), "Opening shot", "the linked sound is renamed with its picture");
+    assert_eq!(d.app().session.history.undo.len(), undo + 1, "one undo step");
+    // the Project panel: its selected item
+    let item = d.app().session.project.items.values().find(|i| i.as_media().is_some()).map(|i| i.id).unwrap();
+    d.exec("project.select", json!({"items": [item.0]}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.menu("clip.rename");
+    d.ok("ui.set", json!({"clipDialog": {"name": "Renamed media"}}));
+    d.click("rename.ok");
+    assert_eq!(d.app().session.project.item(item).unwrap().name, "Renamed media");
+}
+
+/// #2191: Duration is editable, updates Speed, and applies through the undoable command.
+#[test]
+fn duration_text_edits_speed_and_rejects_invalid_input() {
+    let mut d = Driver::new();
+    let original = d.v1(0);
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    let target = rate.tick_of(rate.frame_at(original.duration) / 2);
+    d.exec("timeline.select", json!({"clips": [original.id.0]}));
+    d.menu("clip.speedDuration");
+    assert!(d.has("speedDuration.duration"), "Duration must be an editable automation field");
+    /// Replace the duration through keyboard input and settle the dialog's draft state.
+    fn type_duration(d: &mut Driver, text: &str) {
+        d.click("speedDuration.duration");
+        d.ok("ui.key", json!({"key": "Cmd+A"}));
+        d.ok("ui.type", json!({"text": text}));
+        d.frames(3);
+    }
+    for invalid in ["abc", "00:00:00:00", "-100"] {
+        type_duration(&mut d, invalid);
+        d.click("speedDuration.ok");
+        assert!(d.app().ui.clip_dialog.is_some(), "invalid duration must not apply");
+        assert_eq!(d.v1(0).duration, original.duration);
+    }
+    type_duration(&mut d, &filmcraft_time::format_timecode_frames(rate.frame_at(target), rate, false));
+    let speed = d.app().ui.clip_dialog.as_ref().unwrap().params["speed"].as_f64().unwrap();
+    assert!((speed - original.duration.0 as f64 * 100.0 / target.0 as f64).abs() < 1e-8);
+    assert_eq!(d.v1(0).duration, original.duration, "typing only edits the draft");
+
+    d.click("speedDuration.ok");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!((d.v1(0).duration.0 - target.0).abs() <= 1);
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.v1(0).duration, original.duration);
+    d.exec("edit.redo", json!({}));
+    assert!((d.v1(0).duration.0 - target.0).abs() <= 1);
+
+    d.menu("clip.speedDuration");
+    type_duration(&mut d, "00:00:01:00");
+    d.click("speedDuration.cancel");
+    assert!((d.v1(0).duration.0 - target.0).abs() <= 1, "Cancel leaves the clip unchanged");
+    d.menu("clip.speedDuration");
+    d.app().ui.clip_dialog.as_mut().unwrap().params["duration"] = json!("00:00:01:00");
+    d.frames(3);
+    d.click("speedDuration.ok");
+    assert!((d.v1(0).duration.0 - rate.tick_of(filmcraft_time::parse_timecode("00:00:01:00", rate, false, 0).unwrap()).0).abs() <= 1);
+}
+
+/// Speed edits retain the command's one-frame minimum without changing the requested speed.
+#[test]
+fn speed_edits_preserve_one_frame_minimum() {
+    let mut d = Driver::new();
+    let original = d.v1(0);
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    d.exec("timeline.trim", json!({"clip": original.id.0, "edge": "out", "deltaFrames": 1 - rate.frame_at(original.duration)}));
+    assert_eq!(d.v1(0).duration, rate.tick_of(1));
+    d.exec("timeline.select", json!({"clips": [original.id.0]}));
+    for percent in [200.0, 100_000.0] {
+        d.menu("clip.speedDuration");
+        d.app().ui.clip_dialog.as_mut().unwrap().params["speed"] = json!(percent);
+        d.frames(3);
+        assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["duration"], json!("00:00:00:01"));
+        d.click("speedDuration.ok");
+        assert!(d.app().ui.clip_dialog.is_none(), "a valid speed edit must apply");
+        assert_eq!(d.v1(0).speed, percent / 100.0);
+        assert_eq!(d.v1(0).duration, rate.tick_of(1));
+        d.exec("edit.undo", json!({}));
+        assert_eq!(d.v1(0).speed, 1.0);
     }
 }
