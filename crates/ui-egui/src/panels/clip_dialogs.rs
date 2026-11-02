@@ -370,7 +370,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let can_save = app.session.path.is_some() || crate::native_dialogs::FileDialog::SaveProject { name: String::new() }.available(&app.hooks);
     // the title is translated; the window keeps one id whatever the interface language
     let id = egui::Id::unique(("clip-dialog", pre));
-    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).centered(ctx).show(ctx, |ui| {
+    // Tooltip order: a modal dialog sits above every menu and popup (the zoom-bar settings
+    // popup is a Foreground layer and used to cover the Save / Don't Save / Cancel question)
+    egui::Window::new(title).id(id).collapsible(false).resizable(false).default_width(360.0).order(egui::Order::Tooltip).centered(ctx).show(ctx, |ui| {
         let p = &mut d.params;
         let mut valid = true;
         match d.command.as_str() {

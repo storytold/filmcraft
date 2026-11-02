@@ -3690,3 +3690,40 @@
 	Previous	이전
 	Next	다음
 	Enter a valid HH:MM:SS:FF timecode	올바른 HH:MM:SS:FF 타임코드를 입력하세요
+	Hide Slider	슬라이더 숨기기
+	Unhide Slider	슬라이더 표시
+	Maximum Zoom Level	최대 확대/축소 수준
+	Alternate Drag Speed (Shift + Left Click)	드래그 속도 변경 (Shift + 왼쪽 클릭)
+	Playhead Centering Range (Triple Click)	재생 헤드 가운데 정렬 범위 (트리플 클릭)
+	Alternate Drag Speed	드래그 속도 변경
+	Value:	값:
+	Closest	가장 가깝게
+	Very Slow	매우 느리게
+	Far	멀리
+	3s	3초
+	5s	5초
+	10s	10초
+	30s	30초
+	Position Indicator Color:	위치 표시기 색상:
+	Video Indicator Color:	비디오 표시기 색상:
+	Audio Indicator Color:	오디오 표시기 색상:
+	Offline Indicator Color:	오프라인 표시기 색상:
+	Timeline Slider Settings	타임라인 슬라이더 설정
+	Track Slider Settings	트랙 슬라이더 설정
+	Unhide Timeline Slider	타임라인 슬라이더 표시
+	Unhide Track Slider	트랙 슬라이더 표시
+	Inverted Controls	컨트롤 반전
+	Slider Minimap	슬라이더 미니맵
+	Show Whole Timeline	전체 타임라인 보기
+	Prioritise Audio	오디오 우선
+	Position Indicator	위치 표시기
+	Fill Clips	클립 채우기
+	Decouple Edges	양끝 분리
+	Alternate Slider Position	슬라이더 위치 변경
+	Playhead Centering	재생 헤드 가운데 정렬
+	Smooth Animations	부드러운 애니메이션
+	You can bring it back anytime by right clicking the timeline and selecting "{row}" at the bottom of the list.	언제든지 타임라인을 마우스 오른쪽 버튼으로 클릭하고 목록 아래쪽의 "{row}"을 선택하면 다시 표시할 수 있습니다.
+	Maximum zoom level in seconds	최대 확대/축소 수준(초)
+	Alternate drag speed multiplier	드래그 속도 변경 배율
+	Playhead centering range in seconds	재생 헤드 가운데 정렬 범위(초)
+	Alternate drag speed for the track sliders	트랙 슬라이더의 드래그 속도 변경

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use craft_ui::docking::{
     Action, Divider, DockArea, DockCommand, DockContent, DockEvent, DockStyle, FloatSpace, Hit, Layout, ResizeEdge, WindowKind, Workspace,
 };
-use egui::{Rect, Sense, Stroke, StrokeKind, vec2};
+use egui::{Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::{Value, json};
 
 use crate::dock::{self, LayoutExt as _, PanelKind, SeqAction, SeqTabs};
@@ -493,8 +493,22 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         // The body fills its frame; allocating it lets a floated panel take its full size.
         ui.allocate_rect(ui.max_rect(), Sense::hover());
         // Painted after the body so child backgrounds cannot hide the focus outline (#1075).
+        // Alternate Slider Position puts the zoom bar against the top edge of the Timeline body,
+        // where this line would lie right on top of it: there the line stays off the body and the
+        // whole window edge carries the 1px line instead (Timeline only) -- the native window's
+        // edge when the panel has its own window, else the group window with its tab strip.
         if self.app.ui.focused == *panel {
-            ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+            let alternate_top = *panel == PanelKind::Timeline && self.app.session.state.timeline_ui.alternate_slider_position;
+            if alternate_top {
+                let window = if viewport != egui::ViewportId::ROOT {
+                    ui.ctx().content_rect()
+                } else {
+                    Rect::from_min_max(pos2(frame.min.x, frame.min.y - t.tab_h), frame.max)
+                };
+                ui.ctx().layer_painter(ui.layer_id()).rect_stroke(window, 0.0, Stroke::new(2.0, Color32::from_rgb(0x74, 0xb0, 0xff)), StrokeKind::Inside);
+            } else {
+                ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.focus), StrokeKind::Inside);
+            }
         }
     }
 
