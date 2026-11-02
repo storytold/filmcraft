@@ -168,6 +168,38 @@ fn remove_attributes_dialog_removes_the_clips_effect() {
     assert!(d.v1(0).effect("focus_blur").is_none(), "the effect is removed");
 }
 
+/// The effects Essential Sound adds are not offered: Remove Attributes keeps them, so a ticked box
+/// for one would promise a removal that does not happen. The same effect added by hand is offered.
+#[test]
+fn remove_attributes_dialog_leaves_out_essential_sound_effects() {
+    let mut d = Driver::new();
+    let a1 = |d: &mut Driver| d.app().session.active_sequence().unwrap().audio_tracks[0].items[0].clone();
+    let clip = a1(&mut d).id;
+    d.exec("essentialSound.setType", json!({"clips": [clip.0], "type": "dialogue"}));
+    d.exec("essentialSound.set", json!({"clips": [clip.0], "values": {"repair.noise.on": true, "clarity.eq.on": true}}));
+    let essential: Vec<String> = a1(&mut d).effects.iter().filter(|e| e.essential).map(|e| e.effect.clone()).collect();
+    assert!(!essential.is_empty(), "Dialogue adds its effects");
+    d.exec("timeline.select", json!({"clips": [clip.0]}));
+    d.menu("edit.removeAttributes");
+    let offered = d.app().ui.clip_dialog.as_ref().unwrap().params["effects"].clone();
+    assert_eq!(offered, json!([]), "Essential Sound's effects are not offered: {offered}");
+    for id in &essential {
+        assert!(!d.has(&format!("removeAttributes.effect.{id}")), "{id}");
+    }
+    d.click("removeAttributes.ok");
+    assert_eq!(a1(&mut d).effects.iter().filter(|e| e.essential).count(), essential.len(), "OK keeps them");
+    // the same effect added from the Effects panel is offered and removed
+    let manual = essential[0].clone();
+    d.exec("effects.apply", json!({"clips": [clip.0], "effect": manual}));
+    d.exec("timeline.select", json!({"clips": [clip.0]}));
+    d.menu("edit.removeAttributes");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["effects"], json!([manual]));
+    d.click("removeAttributes.ok");
+    let left = a1(&mut d);
+    assert_eq!(left.effects.iter().filter(|e| e.effect == manual).count(), 1, "the Essential Sound one stays");
+    assert!(left.effects.iter().filter(|e| e.effect == manual).all(|e| e.essential));
+}
+
 #[test]
 fn make_subclip_frame_hold_and_audio_channel_dialogs() {
     let mut d = Driver::new();

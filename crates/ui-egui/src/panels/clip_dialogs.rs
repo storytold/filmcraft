@@ -177,10 +177,11 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
     let s = &app.session;
     match id {
         "edit.pasteAttributes" | "edit.removeAttributes" => {
-            // effects offered: the copied clips' (Paste) or the selected clips' (Remove) standard effects
+            // effects offered: the copied clips' (Paste) or the selected clips' (Remove) effects that
+            // the command copies or removes (not Essential Sound's, which a ticked box would not remove)
             let mut names: Vec<(String, String)> = Vec::new();
             let mut add = |e: &filmcraft_project::EffectInstance| {
-                if let Some(d) = e.def().filter(|d| !d.intrinsic && !filmcraft_project::graphic::is_layer_id(d.id))
+                if let Some(d) = e.def().filter(|_| filmcraft_engine::clip_ops::is_attribute_effect(e))
                     && !names.iter().any(|n| n.0 == d.id)
                 {
                     names.push((d.id.to_string(), d.name.to_string()));
