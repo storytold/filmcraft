@@ -1002,4 +1002,10 @@ fn locked_markers_keep_their_times() {
     s.execute("edit.undo", json!({})).unwrap();
     s.execute("edit.undo", json!({})).unwrap();
     assert!(s.active_sequence().unwrap().markers_locked, "undo locks them again");
+    assert_eq!(s.execute("sequence.inspect", json!({})).unwrap()["markersLocked"], json!(true), "Inspect Sequence reports the lock");
+    // locking a locked sequence changes nothing and leaves the undo history alone
+    let undo = |s: &mut Session| s.execute("history.list", json!({})).unwrap()["undo"].as_array().map_or(0, Vec::len);
+    let before = undo(&mut s);
+    assert_eq!(s.execute("markers.lock", json!({"on": true})).unwrap()["lockMarkers"], json!(true));
+    assert_eq!(undo(&mut s), before, "no undo step for a lock it already has");
 }
