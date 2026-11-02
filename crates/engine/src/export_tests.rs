@@ -655,7 +655,12 @@ fn queue_orders_cancels_and_retries() {
 #[test]
 fn project_changes_isolate_media_pools() {
     let mut s = demo();
-    for (command, params) in [("file.newProject", json!({"name": "Fresh"})), ("file.closeAllProjects", json!({})), ("file.openDemoProject", json!({}))] {
+    for (command, params) in [
+        ("file.newProject", json!({"name": "Fresh"})),
+        ("file.closeProject", json!({"force": true})),
+        ("file.closeAllProjects", json!({})),
+        ("file.openDemoProject", json!({})),
+    ] {
         let previous = s.media.clone();
         let stored = "old/clip.wav";
         let document = std::env::temp_dir().join("old-project").join("cut.fcproj");
@@ -706,10 +711,11 @@ fn queued_export_keeps_its_media_pool_after_a_project_switch() {
     let original_media = s.media.clone();
     let added = s.execute("export.queue.add", export(&queued)).unwrap();
     let id = added["added"][0].as_u64().unwrap();
-    assert!(std::sync::Arc::ptr_eq(&s.export_queue.items[0].media, &original_media));
+    let captured = |s: &Session| s.export_queue.items[0].media.clone().expect("a queued item keeps its pool");
+    assert!(std::sync::Arc::ptr_eq(&captured(&s), &original_media));
     s.execute("file.open", json!({"path": new_project.to_string_lossy()})).unwrap();
     assert!(!std::sync::Arc::ptr_eq(&s.media, &original_media));
-    assert!(std::sync::Arc::ptr_eq(&s.export_queue.items[0].media, &original_media));
+    assert!(std::sync::Arc::ptr_eq(&captured(&s), &original_media));
     s.execute("file.exportMedia", {
         let mut request = export(&new_control);
         request["wait"] = json!(true);
@@ -720,6 +726,10 @@ fn queued_export_keeps_its_media_pool_after_a_project_switch() {
     s.execute("export.queue.start", json!({"wait": true})).unwrap();
     assert_eq!(queue(&mut s).iter().find(|item| item["id"] == id).unwrap()["status"], "done");
     assert_eq!(std::fs::read(queued).unwrap(), std::fs::read(old_control).unwrap(), "the queued export must use the old project's media file");
+    // finished, the item lets the old project's pool go: the queue's history holds no readers
+    assert!(s.export_queue.items[0].media.is_none(), "a finished item keeps no pool");
+    drop(s);
+    assert_eq!(std::sync::Arc::strong_count(&original_media), 1, "nothing else holds the old pool");
 }
 
 #[test]

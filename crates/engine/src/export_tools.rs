@@ -643,11 +643,14 @@ pub struct QueueItem {
     /// The background job while encoding / after it ran.
     pub job: Option<u64>,
     pub error: Option<String>,
-    /// The project and media pool as they were when the item was queued.
+    /// The project as it was when the item was queued.
     #[serde(skip)]
     pub project: Arc<Project>,
+    /// The media pool as it was when the item was queued, released once the item has finished
+    /// so a queue of past exports does not keep an earlier project's readers open; a retry
+    /// reads through the session's pool.
     #[serde(skip)]
-    pub media: Arc<crate::MediaPool>,
+    pub media: Option<Arc<crate::MediaPool>>,
 }
 
 /// The export queue (session state).
@@ -730,6 +733,7 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
                     it.error = Some(e);
                 }
             }
+            it.media = None;
             finished_any = true;
         }
         if s.export_queue.items.iter().any(|i| i.status == QueueStatus::Encoding) || !s.export_queue.running {
@@ -746,7 +750,8 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
         };
         let it = s.export_queue.items[i].clone();
         let label = format!("Queue: {} → {}", it.sequence_name, file_name(&it.settings.path));
-        match spawn_export_with_media(s, it.media.clone(), it.project.clone(), it.sequence, it.settings.clone(), label, wait) {
+        let media = it.media.clone().unwrap_or_else(|| s.media.clone());
+        match spawn_export_with_media(s, media, it.project.clone(), it.sequence, it.settings.clone(), label, wait) {
             Ok(job) => {
                 let x = &mut s.export_queue.items[i];
                 x.status = QueueStatus::Encoding;
@@ -826,7 +831,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             job: None,
             error: None,
             project: project.clone(),
-            media: s.media.clone(),
+            media: Some(s.media.clone()),
         });
         ids.push(id);
     }
@@ -870,7 +875,10 @@ fn cancel_item(s: &mut Session, i: usize) {
             }
             // settled to Cancelled by `pump_queue` when the job stops
         }
-        QueueStatus::Ready => it.status = QueueStatus::Cancelled,
+        QueueStatus::Ready => {
+            it.status = QueueStatus::Cancelled;
+            it.media = None;
+        }
         _ => {}
     }
 }
