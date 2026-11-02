@@ -103,6 +103,21 @@ fn an_edit_rounded_to_the_movie_timescale_keeps_the_last_frame() {
     assert_eq!(s.info().duration, Tick::from_rational(4, 1, 24));
     let whole = vec![Edit { segment_duration: 5, media_time: 0, media_rate: 0x10000 }];
     assert_eq!(frames(&Mp4Source::open("whole24.mov", mov_at(24, 24, 5, whole)).expect("open")), 5);
+    // the same at 23 / 23, where the two lengths in Ticks are floored and come out less than a
+    // movie unit apart: the comparison is exact, in the timescales themselves
+    let one_short = vec![Edit { segment_duration: 4, media_time: 0, media_rate: 0x10000 }];
+    let s = Mp4Source::open("one_short23.mov", mov_at(23, 23, 5, one_short)).expect("open");
+    assert_eq!(s.info().duration, Tick::from_rational(4, 1, 23));
+    // a movie unit (1/24 s) longer than a picture (1/30 s): 4/24 s is exactly five of six pictures,
+    // less than a movie unit short of the media but a whole picture short, so a real trim
+    let five = vec![Edit { segment_duration: 4, media_time: 0, media_rate: 0x10000 }];
+    let s = Mp4Source::open("coarse.mov", mov_at(30, 24, 6, five)).expect("open");
+    assert_eq!(s.info().duration, Tick::from_rational(5, 1, 30));
+    // a coarse unit still rounds: six pictures (6/30 s = 4.8/24) written rounded up as 5 are less
+    // than a unit and less than a picture over the media, so all six play
+    let six = vec![Edit { segment_duration: 5, media_time: 0, media_rate: 0x10000 }];
+    let s = Mp4Source::open("coarse6.mov", mov_at(30, 24, 6, six)).expect("open");
+    assert_eq!(s.info().duration, Tick::from_rational(6, 1, 30));
     // a dwell (rate 0) or a media_time past the end keeps the edit's own length
     let dwell = vec![Edit { segment_duration: 208, media_time: 0, media_rate: 0 }];
     assert_eq!(frames(&open(5, dwell)), 4);

@@ -908,10 +908,11 @@ fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
 ///
 /// Edit durations are whole movie-timescale units (milliseconds in ffmpeg / x264 files and our own
 /// exports), so 320 frames at 24 fps (13.3333 s) are written as 13 333 and would read as 319 frames.
-/// When the last edit plays the media to its end (less than one unit off: rounding is always less,
-/// so exactly one unit is a real trim), that edit lasts exactly until
-/// the last picture's presentation ends (its `pts` plus duration: with B-frames that is past
-/// `mdhd`, which ends on the decode timeline).
+/// When the last edit plays the media to its end, that edit lasts exactly until the last picture's
+/// presentation ends (its `pts` plus duration: with B-frames that is past `mdhd`, which ends on the
+/// decode timeline). "To its end" means off by less than rounding can be: less than one movie unit
+/// (so exactly one unit is a real trim) and less than the last picture (a trim cuts whole pictures,
+/// which can be shorter than a coarse movie unit). Both are compared exactly, in the two timescales.
 fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
     let media = Tick::from_rational(t.duration as i64, 1, t.timescale as i64);
     if file.fragmented || t.edits.is_empty() || file.timescale == 0 {
@@ -922,12 +923,14 @@ fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
     let edits = t.edits.iter().fold(0u128, |a, e| a.saturating_add(e.segment_duration as u128));
     let mut ticks = edits.saturating_mul(tps) / movie;
     if let Some(last) = t.edits.last().filter(|e| e.media_rate == 0x1_0000 && e.media_time >= 0 && t.timescale > 0)
-        && let Some(end) = t.samples.iter().map(|s| i128::from(s.pts) + i128::from(s.duration)).max()
+        && let Some((end, picture)) = t.samples.iter().map(|s| (i128::from(s.pts) + i128::from(s.duration), u128::from(s.duration))).max()
         && let Ok(rest) = u128::try_from(end - i128::from(last.media_time))
     {
-        let exact = rest.saturating_mul(tps) / t.timescale as u128;
-        let rounded = (last.segment_duration as u128).saturating_mul(tps) / movie;
-        if exact.abs_diff(rounded) < tps.div_ceil(movie) {
+        let track = t.timescale as u128;
+        // the media's rest and the edit, both in 1 / (movie × track) units
+        let off = rest.saturating_mul(movie).abs_diff((last.segment_duration as u128).saturating_mul(track));
+        if off < track && off < picture.saturating_mul(movie) {
+            let exact = rest.saturating_mul(tps) / track;
             let before = edits.saturating_sub(last.segment_duration as u128).saturating_mul(tps) / movie;
             ticks = before.saturating_add(exact);
         }
