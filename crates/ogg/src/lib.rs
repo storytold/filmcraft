@@ -225,7 +225,12 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
                     pos = p;
                     continue;
                 }
-                None => break,
+                None => {
+                    if recovery_budget == 0 {
+                        warnings.push(format!("gave up resynchronising after byte {pos}"));
+                    }
+                    break;
+                }
             }
         }
         let nseg = hdr[26] as usize;
@@ -339,9 +344,13 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
 
 fn find_capture(src: &(impl ByteSource + ?Sized), from: u64, len: u64, budget: &mut usize) -> Result<Option<u64>> {
     let mut at = from;
+    // the next page is usually close: start with a small window and grow it, so one resync reads (and
+    // is charged) about the distance to the next capture pattern instead of a fixed 1 MiB
+    let mut window = 4096usize;
+    let mut buf = Vec::new();
     while at + 4 <= len && *budget > 0 {
-        let n = ((len - at) as usize).min(1 << 20).min(*budget);
-        let mut buf = vec![0u8; n];
+        let n = ((len - at) as usize).min(window).min(*budget);
+        buf.resize(n, 0);
         src.read_at(at, &mut buf)?;
         *budget = budget.saturating_sub(n);
         if let Some(i) = buf.windows(4).position(|w| w == b"OggS") {
@@ -351,6 +360,7 @@ fn find_capture(src: &(impl ByteSource + ?Sized), from: u64, len: u64, budget: &
             break;
         }
         at += (n - 3) as u64;
+        window = (window * 2).min(1 << 20);
     }
     Ok(None)
 }
