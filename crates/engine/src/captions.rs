@@ -595,6 +595,27 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("captions.previous", "Go to Previous Caption Segment", &["Sequence", "Captions"], Some("Cmd+Alt+Up"), "{}", has_captions, |s, _| step(s, false)),
         spec("captions.showAll", "Show All Caption Tracks", &["Sequence", "Captions"], None, "{}", has_caption_track, |s, _| show_all(s, true)),
         spec("captions.hideAll", "Hide All Caption Tracks", &["Sequence", "Captions"], None, "{}", has_caption_track, |s, _| show_all(s, false)),
+        spec("captions.copyStyle", "Copy Caption Style", &["Sequence", "Captions"], None, r#"{"track":id|"C1"?}"#, has_caption_track, |s, p| {
+            let tid = track_param(s, p).ok_or_else(|| bad("captions.copyStyle", "no such caption track"))?;
+            let style = s
+                .active_sequence()
+                .and_then(|q| q.caption_track(tid))
+                .map(|t| t.style.clone())
+                .ok_or_else(|| bad("captions.copyStyle", "no such caption track"))?;
+            s.state.caption_style_clipboard = Some(style);
+            Ok(Value::Null)
+        }),
+        spec("captions.pasteStyle", "Paste Caption Style", &["Sequence", "Captions"], None, r#"{"track":id|"C1"?}"#, has_caption_track, |s, p| {
+            let tid = track_param(s, p).ok_or_else(|| bad("captions.pasteStyle", "no such caption track"))?;
+            let style = s.state.caption_style_clipboard.clone().ok_or_else(|| bad("captions.pasteStyle", "no style has been copied yet"))?;
+            s.edit("Paste Caption Style", |pr, st| {
+                let seq = st.active_sequence.ok_or(EngineError::NoSequence)?;
+                let t = pr.sequence_mut(seq).and_then(|q| q.caption_track_mut(tid)).ok_or(EngineError::NoSequence)?;
+                t.style = style.clone();
+                Ok(())
+            })?;
+            Ok(Value::Null)
+        }),
         spec("captions.import", "Import Captions…", &[], None, r#"{"path":str,"name":str?}"#, always, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("captions.import", "need `path`"))?.to_string();
             let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;

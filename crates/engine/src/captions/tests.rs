@@ -385,3 +385,28 @@ fn set_style_font_style() {
     s.execute("captions.setStyle", json!({"reset": true})).unwrap();
     assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style.font_style, "SemiBold");
 }
+
+#[test]
+fn copy_style_and_paste_style_commands_registered() {
+    let c = crate::commands::find("captions.copyStyle").unwrap_or_else(|| panic!("captions.copyStyle missing from registry"));
+    assert!(!c.label.is_empty() && !c.params.is_empty());
+    let c = crate::commands::find("captions.pasteStyle").unwrap_or_else(|| panic!("captions.pasteStyle missing from registry"));
+    assert!(!c.label.is_empty() && !c.params.is_empty());
+}
+
+#[test]
+fn copy_style_and_paste_style_roundtrip() {
+    let mut s = demo();
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    s.execute("captions.setStyle", json!({"track": "C1", "size": 72.0})).unwrap();
+    s.execute("captions.copyStyle", json!({"track": "C1"})).unwrap();
+    s.execute("captions.pasteStyle", json!({"track": "C2"})).unwrap();
+    let tracks = s.execute("captions.list", json!({})).unwrap();
+    let size = tracks["tracks"][1]["style"]["size"].as_f64().unwrap();
+    assert_eq!(size, 72.0, "pasteStyle applied C1's size to C2");
+    s.execute("edit.undo", json!({})).unwrap();
+    let tracks = s.execute("captions.list", json!({})).unwrap();
+    let size_after_undo = tracks["tracks"][1]["style"]["size"].as_f64().unwrap();
+    assert_ne!(size_after_undo, 72.0, "undo reverted C2's style");
+}
