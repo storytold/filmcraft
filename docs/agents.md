@@ -83,7 +83,7 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 | `project_inspect` | both | bins and items with ids, types, durations; active sequence |
 | `sequence_inspect` | both | the active sequence: tracks, clips (`start` / `end` and `sourceIn` / `sourceOut` in ticks, frames, `speed`, `reverse`: the clip plays its `sourceIn` to `sourceOut` stretch backward, `gainDb`), effects, transitions, markers (name and `comment`), playhead, selection |
 | `media_import` | both | import files by absolute path (`paths`, an array; optional `bin`, `image_sequence`) |
-| `render_frame` | both | PNG of the program frame at `seconds` (headless renders; bridge screenshots the Program monitor). Read-only: the playhead and selection are left as they were |
+| `render_frame` | both | PNG of the program frame at `seconds` (headless renders; bridge screenshots the Program monitor). Read-only: the playhead and selection are left as they were. Parallel bridge calls take turns, so each returns its own frame |
 | `ui_inspect` | bridge | UI state: tool, workspace, panels, zoom, playback, fps |
 | `ui_elements` | bridge | on-screen interactive elements with id, label and rect (`prefix` filter) |
 | `ui_click` | bridge | click by `id` or `x`,`y`; `button`, `count`, `modifiers` |
@@ -131,9 +131,10 @@ progress and stop it:
   item carry `offlineMedia`: the offline items the export drew the placeholder for (see §2b), `[]`
   when none. The export itself still succeeds; deciding what to do about it is up to the caller.
 - Every job in `jobs.list`, and every encoding item of `export.queue.list`, carries `etaSeconds`: the
-  time left at the job's speed over the last 15 seconds, `null` until a second of progress has been
-  measured (a loudness pass, a seek) and once it is done. The app shows it as `37% · 2:05 left` in the
-  status bar, the Export queue and the Progress panel.
+  time left at the job's speed over the last 15 seconds, measured between the batches of frames it
+  finishes and counting down in between, `null` until a second of progress has been measured (a
+  loudness pass, a seek) and once it is done. The app shows it as `37% · 2:05 left` in the status
+  bar, the Export queue and the Progress panel, each refreshed once a second.
 - With `"_meta": {"progressToken": T}` on the `tools/call`, the server sends
   `notifications/progress` `{progressToken: T, progress: <frames done>, total: <frames>, message:
   <job status>}` at most every 100 ms while frames advance. Without a token it sends none.
