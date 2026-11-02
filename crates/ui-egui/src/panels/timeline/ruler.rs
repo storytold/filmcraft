@@ -62,8 +62,8 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
         if toggle && on {
             p.rect_filled(r, t.radius_sm, t.toggle_on);
         }
-        if resp.hovered() {
-            p.rect_filled(r, t.radius_sm, if toggle && on { t.toggle_on } else { t.hover });
+        if resp.hovered() && !(toggle && on) {
+            p.rect_filled(r, t.radius_sm, t.hover);
         }
         icons::paint(&p, r.shrink(5.0), icon, if toggle && on { t.text } else { t.text_dim });
         if resp.clicked() {

@@ -16,6 +16,9 @@ struct PatchButton<'a> {
     tokens: &'a Tokens,
 }
 
+/// The side of a track header's icon button.
+const HEADER_ICON: f32 = 22.0;
+
 fn patch_button(ui: &mut egui::Ui, button: PatchButton<'_>) -> egui::Response {
     let PatchButton { rect: r, clip, label, active: on, show_inactive: show_off, id, tokens: t } = button;
     let resp = ui.interact(r.intersect(clip), id, Sense::click());
@@ -120,7 +123,7 @@ pub(super) fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequ
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "sourcePatch": !patched})));
         }
         // 2. track lock
-        let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(22.0, 22.0));
+        let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(HEADER_ICON, HEADER_ICON));
         let lock_r = small(49.0, hrect.center().y);
         let lresp = crate::widgets::icon_toggle(
             ui,
@@ -227,7 +230,7 @@ fn header_line_buttons(
     vo_action: &mut Option<crate::panels::voiceover::Action>,
 ) {
     let upper_y = hrect.min.y + (16.0f32).min(hrect.height() / 2.0);
-    let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(22.0, 22.0));
+    let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(HEADER_ICON, HEADER_ICON));
     let mut x = 102.0;
     let sr = small(x, upper_y);
     let sresp =

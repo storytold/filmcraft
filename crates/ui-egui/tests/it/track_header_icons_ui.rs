@@ -85,3 +85,34 @@ fn header_buttons_are_large_and_fit_the_smallest_track_height() {
         }
     }
 }
+
+/// A translucent fill painted twice would read lighter than one: hovering a toolbar toggle that is
+/// on leaves its background as it is, as the track header toggles do.
+#[test]
+fn hovering_a_timeline_toggle_that_is_on_paints_one_background() {
+    fn fills(shape: &egui::Shape, rect: egui::Rect, out: &mut usize) {
+        match shape {
+            egui::Shape::Rect(r) if r.rect == rect && r.fill.a() > 0 => *out += 1,
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| fills(shape, rect, out)),
+            _ => {}
+        }
+    }
+    let mut d = Driver::demo();
+    let rect = d.rect("timeline.toggle.linked");
+    let count = |d: &Driver| {
+        let mut n = 0;
+        d.harness.output().shapes.iter().for_each(|c| fills(&c.shape, rect, &mut n));
+        n
+    };
+    d.frames(2);
+    assert_eq!(count(&d), 1, "Linked Selection is on and paints its background");
+    d.ok("ui.move", json!({"id": "timeline.toggle.linked"}));
+    d.frames(2);
+    assert_eq!(count(&d), 1, "the hover adds no second layer");
+    d.ok("engine.execute", json!({"command": "sequence.linkedSelection", "params": {}}));
+    d.frames(2);
+    assert_eq!(count(&d), 1, "off, the hover paints its own background");
+    d.ok("ui.move", json!({"x": 2.0, "y": 2.0}));
+    d.frames(2);
+    assert_eq!(count(&d), 0, "off and not hovered, nothing is painted");
+}
