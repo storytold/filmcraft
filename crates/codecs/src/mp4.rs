@@ -48,7 +48,7 @@ fn nominal_rate(timescale: u32, samples: &[Sample]) -> Option<FrameRate> {
     let mut durs: Vec<u32> = samples.iter().map(|s| s.duration).filter(|&d| d > 0).collect();
     durs.sort_unstable();
     let &median = durs.get(durs.len() / 2)?;
-    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) * 4 <= median).map(|&d| f64::from(d)).collect();
+    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) <= median / 4).map(|&d| f64::from(d)).collect();
     let mean = near.iter().sum::<f64>() / near.len().max(1) as f64;
     if mean <= 0.0 {
         return None;
@@ -1128,5 +1128,34 @@ mod corrupt_audio_tests {
         assert!(crossing.channels[0][..124].iter().any(|v| v.abs() > 0.001));
         assert!(isolated.channels[0].iter().all(|&v| v == 0.0));
         assert_eq!(&crossing.channels[0][124..], &isolated.channels[0]);
+    }
+}
+
+#[cfg(test)]
+mod nominal_rate_tests {
+    use filmcraft_isobmff::Sample;
+    use filmcraft_time::FrameRate;
+
+    fn samples(durations: &[u32]) -> Vec<Sample> {
+        durations.iter().map(|&duration| Sample { duration, ..Sample::default() }).collect()
+    }
+
+    /// `d.abs_diff(median) * 4` overflowed a u32 for a duration near 2^30 beside a tiny one: it
+    /// panicked in a debug build and wrapped in a release build.
+    #[test]
+    fn a_hostile_stts_duration_does_not_overflow_the_rate_estimate() {
+        // the outlier is left out of the mean: the rate is the other two durations'
+        assert_eq!(super::nominal_rate(90_000, &samples(&[1, 1, u32::MAX])), Some(FrameRate::from_f64_within(90_000.0, super::STANDARD_RATE_TOLERANCE).sane()));
+        assert_eq!(
+            super::nominal_rate(90_000, &samples(&[1, u32::MAX, u32::MAX])),
+            Some(FrameRate::from_f64_within(90_000.0 / f64::from(u32::MAX), super::STANDARD_RATE_TOLERANCE).sane())
+        );
+        // the tiny duration is outside the near-median window (wrapped, it joined the mean and the
+        // rate came out half as fast again)
+        let huge = FrameRate::from_f64_within(4_000_000_000.0 / f64::from(0x4000_0001u32), super::STANDARD_RATE_TOLERANCE).sane();
+        assert_eq!(super::nominal_rate(4_000_000_000, &samples(&[1, 0x4000_0001, 0x4000_0001])), Some(huge));
+        // the near-median window is unchanged for ordinary stamps
+        let rate = super::nominal_rate(90_000, &samples(&[2970, 2970, 3060, 2970, 2970, 3060]));
+        assert_eq!(rate, Some(FrameRate::FPS_30));
     }
 }
