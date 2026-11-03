@@ -32,6 +32,7 @@ pub fn media_info(name: &str, video: bool, audio: bool, rate: FrameRate, secs: i
             .collect(),
         container: "mp4".into(),
         start_timecode: None,
+        drop_frame_timecode: false,
         file_size: None,
     }
 }

@@ -140,6 +140,7 @@ impl WavSource {
             }],
             container: if time_reference.is_some() { "Broadcast WAV".into() } else { "WAV".into() },
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(len),
         };
         // start timecode: frames at the media's frame rate (the default rate for audio-only media)

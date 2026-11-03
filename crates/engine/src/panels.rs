@@ -175,8 +175,8 @@ pub fn metadata_target(s: &Session, p: &Value) -> Option<ItemId> {
     s.state.project_selection.first().copied().or_else(|| s.state.selection.first().and_then(|c| clip_item(*c)))
 }
 
-fn tc(t: Tick, rate: filmcraft_time::FrameRate) -> String {
-    format_time(t, rate, false, TimeDisplay::Timecode, 48000)
+fn tc(t: Tick, rate: filmcraft_time::FrameRate, drop_frame: bool) -> String {
+    format_time(t, rate, drop_frame, TimeDisplay::Timecode, 48000)
 }
 
 /// Every Metadata panel row of an item (Clip section, then File section).
@@ -205,18 +205,20 @@ pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
         _ => (Tick::ZERO, it.duration()),
     };
     let first = start + offset;
-    add("Clip", "Media Start", tc(first, rate), false);
+    // in the file's own count: drop-frame when it is
+    let df = media.is_some_and(|m| m.info.drop_frame_timecode);
+    add("Clip", "Media Start", tc(first, rate, df), false);
     let last = if dur > Tick::ZERO { first + dur - rate.frame_duration() } else { first };
-    add("Clip", "Media End", tc(last, rate), false);
-    add("Clip", "Media Duration", tc(dur, rate), false);
+    add("Clip", "Media End", tc(last, rate, df), false);
+    add("Clip", "Media Duration", tc(dur, rate, df), false);
     let marks = match &it.kind {
         ItemKind::Media(m) => (m.mark_in, m.mark_out),
         ItemKind::Sequence(q) => (q.mark_in, q.mark_out),
         _ => (None, None),
     };
     if let (Some(i), Some(o)) = marks {
-        add("Clip", "In Point", tc(start + i, rate), false);
-        add("Clip", "Out Point", tc(start + o - rate.frame_duration(), rate), false);
+        add("Clip", "In Point", tc(start + i, rate, df), false);
+        add("Clip", "Out Point", tc(start + o - rate.frame_duration(), rate, df), false);
     }
     if let Some(v) = media.and_then(|m| m.info.video.as_ref()) {
         add("Clip", "Video Info", format!("{} x {} ({:.4})", v.width, v.height, v.par.0 as f64 / v.par.1.max(1) as f64), false);

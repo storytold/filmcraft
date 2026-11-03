@@ -163,6 +163,7 @@ impl ImageSequenceSource {
             audio_streams: Vec::new(),
             container: "Image Sequence".into(),
             start_timecode,
+            drop_frame_timecode: false,
             file_size: None,
         };
         let cache = FrameCache::new(256 << 20);

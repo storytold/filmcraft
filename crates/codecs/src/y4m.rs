@@ -201,6 +201,7 @@ impl Y4mSource {
             audio_streams: Vec::new(),
             container: "Y4M".into(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(len),
         };
         Ok(Self { info, reader, frames, frame_bytes, layout, rate })

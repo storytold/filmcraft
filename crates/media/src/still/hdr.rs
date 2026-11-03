@@ -55,6 +55,7 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
         audio_streams: Vec::new(),
         container: "Image".into(),
         start_timecode: None,
+        drop_frame_timecode: false,
         file_size: Some(bytes.len() as u64),
     };
     Ok(StillSource { info, frame: Arc::new(frame) })

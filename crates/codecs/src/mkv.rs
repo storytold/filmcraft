@@ -452,6 +452,7 @@ impl MkvSource {
             audio_streams,
             container: if file.is_webm() { "WebM".into() } else { "Matroska".into() },
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(bytes.0.len()),
         };
         // `info.audio_streams[k]` was made from `atracks[k]`, so the two stay index-aligned

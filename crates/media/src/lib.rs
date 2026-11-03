@@ -160,6 +160,10 @@ pub struct MediaInfo {
     pub container: String,
     /// Timecode of the first frame (in frames at `video.frame_rate`), if the file carries one.
     pub start_timecode: Option<i64>,
+    /// The file counts its timecode drop-frame (SMPTE ST 12-1, 29.97 and 59.94 only), so it is
+    /// shown with `;` and skips frame labels. `start_timecode` is the true frame count either way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub drop_frame_timecode: bool,
     pub file_size: Option<u64>,
 }
 

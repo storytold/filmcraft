@@ -121,8 +121,8 @@ pub fn export_items(p: &Project, items: &[ItemId]) -> AleDoc {
         let mut row = vec![
             clean(&it.name),
             tracks,
-            format_timecode_frames(a, rate, false),
-            format_timecode_frames(b.max(a + 1), rate, false),
+            format_timecode_frames(a, rate, m.info.drop_frame_timecode),
+            format_timecode_frames(b.max(a + 1), rate, m.info.drop_frame_timecode),
             meta("Tape Name"),
             clean(&path),
         ];
@@ -240,6 +240,7 @@ mod tests {
                 .collect(),
             container: "mp4".into(),
             start_timecode: tc,
+            drop_frame_timecode: false,
             file_size: None,
         };
         let clip = MediaClip {

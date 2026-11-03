@@ -607,3 +607,90 @@ fn deleting_media_used_on_the_timeline_makes_it_offline() {
     assert_eq!(r["offline"], 0);
     assert!(s.project.item(ItemId(unused)).is_none());
 }
+
+/// A 6-frame 29.97 MXF OP1a (ProRes) movie of a demo scene whose timecode starts at frame `start`,
+/// counted drop-frame or not: made by our own encoders.
+fn make_ntsc_mxf(path: &std::path::Path, start: i64, drop_frame: bool) {
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_media::{Generator, MediaSource};
+    use filmcraft_project::{Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+    use filmcraft_time::{FrameRate, TimeRange};
+    let rate = FrameRate::FPS_29_97;
+    let dur = rate.tick_of(6);
+    let demo = Generator::Demo(DemoScene::Aurora);
+    let src = GeneratorSource::new(demo.clone(), 160, 90, rate, dur);
+    let clip = MediaClip {
+        media: MediaRef::Generator(demo),
+        info: src.info().clone(),
+        interpret: Default::default(),
+        mark_in: None,
+        mark_out: None,
+        markers: vec![],
+        offline: false,
+        proxy: None,
+        identity: None,
+    };
+    let mut p = Project::new("fixture");
+    let item = p.add_item("scene", Label::Iris, ItemKind::Media(Box::new(clip)), None);
+    let settings = SequenceSettings { width: 160, height: 90, frame_rate: rate, drop_frame, ..Default::default() };
+    let seq = p.new_sequence("s", settings, 1, 0, None);
+    let v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, dur), rate).unwrap();
+    let q = p.sequence_mut(seq).unwrap();
+    q.start_timecode = start;
+    q.video_tracks[0].items.push(v);
+    let settings = filmcraft_export::ExportSettings {
+        format: filmcraft_export::Format::MxfOp1a,
+        mxf_video_codec: filmcraft_export::MxfVideoCodec::ProRes,
+        path: path.to_string_lossy().into_owned(),
+        include_audio: false,
+        ..Default::default()
+    };
+    let shared: filmcraft_media::SharedSource = std::sync::Arc::new(src);
+    let provider = move |id: ItemId| (id == item).then(|| shared.clone());
+    filmcraft_export::export(&std::sync::Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();
+}
+
+/// A drop-frame source shows its timecode drop-frame, 01;00;00;00, in the file's
+/// properties, the Metadata panel, the Project panel and an ALE, not as the non-drop count of the
+/// same frame (00:59:56:12). A non-drop source is unchanged. ffmpeg's MOV `tmcd` and MPEG-2 GOP
+/// timecodes are checked too when ffmpeg is installed.
+#[test]
+fn drop_frame_sources_show_their_timecode_drop_frame() {
+    let dir = tmp_dir("df-timecode");
+    let mut files = Vec::new();
+    for (name, start, df, want) in [("df.mxf", 107_892, true, "01;00;00;00"), ("ndf.mxf", 108_000, false, "01:00:00:00")] {
+        make_ntsc_mxf(&dir.join(name), start, df);
+        files.push((dir.join(name), want));
+    }
+    if let Some(ff) = filmcraft_testkit::oracle::ffmpeg_or_skip("drop-frame timecode") {
+        for name in ["df.mov", "df.m2v"] {
+            let path = dir.join(name);
+            let ok = std::process::Command::new(&ff)
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30000/1001:duration=0.2"])
+                .args(["-c:v", if name.ends_with("mov") { "libx264" } else { "mpeg2video" }, "-pix_fmt", "yuv420p", "-timecode", "01:00:00;00"])
+                .arg(&path)
+                .status()
+                .is_ok_and(|s| s.success());
+            if ok {
+                files.push((path, "01;00;00;00"));
+            }
+        }
+    }
+    for (path, want) in files {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let f = Session::default().execute("file.mediaPropertiesFile", json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(f["startTimecode"], want, "{name}: {f}");
+        let (mut s, items, _) = session_with(&[path.as_path()]);
+        let start = s.project.item(items[0]).unwrap().as_media().unwrap().info.start_timecode;
+        assert_eq!(start, Some(if want.contains(';') { 107_892 } else { 108_000 }), "{name}: the frame count");
+        let fields = s.execute("metadata.get", json!({"item": items[0].0})).unwrap();
+        let media_start = fields["fields"].as_array().unwrap().iter().find(|f| f["name"] == "Media Start").unwrap()["value"].clone();
+        assert_eq!(media_start, want, "{name}: Metadata panel");
+        assert_eq!(crate::project_panel::cell(&s.project, s.project.item(items[0]).unwrap(), "Media Start").0, want, "{name}: Project panel");
+        let ale = dir.join(format!("{name}.ale"));
+        s.execute("file.exportAle", json!({"path": ale.to_string_lossy(), "items": [items[0].0]})).unwrap();
+        let doc = filmcraft_interchange::ale::parse(&std::fs::read_to_string(&ale).unwrap()).unwrap();
+        assert_eq!(doc.rows[0][2], want, "{name}: ALE Start");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

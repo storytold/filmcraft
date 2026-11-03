@@ -845,8 +845,8 @@ pub fn info_json(name: &str, path: Option<&str>, info: &filmcraft_media::MediaIn
         "type": format!("{:?}", info.kind),
         "container": info.container,
         "fileSize": info.file_size,
-        "duration": {"ticks": info.duration.0, "seconds": secs, "timecode": filmcraft_time::format_timecode_frames(rate.frame_at(info.duration), rate, false)},
-        "startTimecode": info.start_timecode.map(|f| filmcraft_time::format_timecode_frames(f, rate, false)),
+        "duration": {"ticks": info.duration.0, "seconds": secs, "timecode": filmcraft_time::format_timecode_frames(rate.frame_at(info.duration), rate, info.drop_frame_timecode)},
+        "startTimecode": info.start_timecode.map(|f| filmcraft_time::format_timecode_frames(f, rate, info.drop_frame_timecode)),
         "dataRateKbps": info.file_size.filter(|_| secs > 0.0).map(|b| (b as f64 * 8.0 / secs / 1000.0).round()),
     });
     if let Some(vs) = &info.video {

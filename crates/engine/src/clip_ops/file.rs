@@ -179,6 +179,7 @@ pub(super) fn offline_file(s: &mut Session, p: &Value) -> Result<Value> {
             .collect(),
         container: String::new(),
         start_timecode: start_tc,
+        drop_frame_timecode: false,
         file_size: None,
     };
     let mut meta = BTreeMap::new();

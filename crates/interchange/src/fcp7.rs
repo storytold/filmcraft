@@ -1175,7 +1175,7 @@ impl Exp<'_, '_> {
         write_rate(&mut self.w, frate);
         self.w.text("duration", frames_round(frate, m.info.duration));
         let tc = m.info.start_timecode.unwrap_or(0);
-        self.write_timecode(tc, frate, false);
+        self.write_timecode(tc, frate, m.info.drop_frame_timecode && frate.supports_drop_frame());
         self.w.open("media", &[]);
         if let Some(v) = &m.info.video {
             self.w.open("video", &[]);

@@ -298,6 +298,7 @@ pub(crate) fn media_info(name: &str, spec: &MediaSpec) -> MediaInfo {
             .collect(),
         container: String::new(),
         start_timecode: spec.start_tc,
+        drop_frame_timecode: false,
         file_size: None,
     }
 }
@@ -814,6 +815,7 @@ mod tests {
             audio_streams: vec![],
             container: "mp4".into(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: None,
         };
         let media_id = p.add_item(
