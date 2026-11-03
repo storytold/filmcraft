@@ -842,6 +842,31 @@ fn export_button_locks_and_cancels_during_active_export() {
     assert_eq!(d.app().session.jobs.len(), jobs_before, "cancelling the active export does not dispatch another job");
 }
 
+/// An unusable file name stops a new export, but never the cancelling of one that is running.
+#[test]
+fn a_running_export_can_be_cancelled_while_the_file_name_is_unusable() {
+    let mut d = Driver::new("cancel_with_unusable_name");
+    d.ok("ui.set", json!({"mode": "export"}));
+    let loc = d.dir.to_string_lossy().to_string();
+    d.ok("ui.set", json!({"export": {"preset": "Waveform Audio 48 kHz 24-bit", "location": loc, "fileName": "movie?draft", "range": "custom", "customStart": 0.0, "customEnd": 20.0}}));
+    d.frames(2);
+    assert!(d.has("export.fileName.error"), "the name is unusable");
+    let prog = std::sync::Arc::new(filmcraft_export::Progress::default());
+    let res = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let job = filmcraft_engine::Job { id: 998, label: "Export other.wav".into(), progress: prog.clone(), result: res.clone() };
+    d.app().session.jobs.push(job);
+    d.frames(2);
+    let rows = d.ok("ui.elements", json!({"prefix": "export.button"}));
+    let button = rows.as_array().unwrap().iter().find(|e| e["id"] == "export.button").unwrap();
+    assert_eq!(button["enabled"], true, "Cancel stays available");
+
+    let jobs_before = d.app().session.jobs.len();
+    d.click("export.button");
+    d.frames(2);
+    assert!(prog.cancel.load(std::sync::atomic::Ordering::Relaxed), "the running export was cancelled");
+    assert_eq!(d.app().session.jobs.len(), jobs_before, "cancelling does not dispatch another job");
+}
+
 /// #2749: with In/Out marks on the sequence, Export starts on Source In/Out (as Premiere does);
 /// without, on Entire Source. A Range chosen afterwards stays until the marks change.
 #[test]
