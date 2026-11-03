@@ -3596,3 +3596,130 @@
 	Couldn't open your web browser	Не удалось открыть браузер
 	Open this address in your browser yourself:	Этот адрес нужно открыть в браузере вручную:
 	Reset Interface Zoom	Сбросить масштаб интерфейса
+	A range marker needs a positive duration	Длительность маркера диапазона должна быть положительной
+	Add Custom Color	Добавить свой цвет
+	Add and apply	Добавить и применить
+	Add color	Добавить цвет
+	Add custom color	Добавить свой цвет
+	Add custom color…	Добавить свой цвет…
+	Author	Автор
+	Chapter	Глава
+	Choose Color…	Выбрать цвет…
+	Choose color with system picker	Выбрать цвет в системном окне
+	Color picker	Выбор цвета
+	Color selected markers	Изменить цвет выбранных маркеров
+	Custom Color…	Свой цвет…
+	Delete Marker	Удалить маркер
+	Delete selected markers	Удалить выбранные маркеры
+	Edit Custom Color	Изменить свой цвет
+	Edit Marker	Изменить маркер
+	Edit Marker…	Изменить маркер…
+	Edit color	Изменить цвет
+	Editing or removing a swatch leaves assigned colors unchanged.	Изменение или удаление образца не меняет назначенные цвета.
+	Enter six hex digits, for example FF80C0.	Введите шесть шестнадцатеричных цифр, например FF80C0.
+	Hex	HEX
+	Hex color	Цвет в формате HEX
+	Manage Colors	Управление цветами
+	Manage Colors…	Управление цветами…
+	Marker owner is unavailable	Объект, которому принадлежит маркер, недоступен
+	No markers	Нет маркеров
+	No matching markers	Нет подходящих маркеров
+	No saved colors	Нет сохранённых цветов
+	No sequence open	Нет открытой секвенции
+	No source clip open	Нет открытого исходного клипа
+	Notes	Примечания
+	Project Colors	Цвета проекта
+	Range marker	Маркер диапазона
+	Remove saved color	Удалить сохранённый цвет
+	Save color	Сохранить цвет
+	Search markers	Поиск маркеров
+	Search name, notes, author	Поиск по имени, примечаниям и автору
+	Select all	Выбрать всё
+	Select all visible markers	Выбрать все видимые маркеры
+	Sequence: {name}	Секвенция: {name}
+	Source: {name}	Источник: {name}
+	Source: {name} (shared source markers)	Источник: {name} (общие исходные маркеры)
+	System color picker unavailable: {error}	Системное окно выбора цвета недоступно: {error}
+	Time is outside the supported range	Время за пределами допустимого диапазона
+	{count} selected	Выбрано: {count}
+	Remove Custom Color	Удалить свой цвет
+	Edit Markers	Изменить маркеры
+	Delete Markers	Удалить маркеры
+	Marker changed or was removed. Reopen it to continue.	Маркер изменён или удалён. Откройте его заново, чтобы продолжить.
+	Comment Marker	Маркер комментария
+	Chapter Marker	Маркер главы
+	Segmentation Marker	Маркер сегментации
+	Web Link	Веб-ссылка
+	Flash Cue Point	Точка сигнала Flash
+	URL	URL
+	Open Link	Открыть ссылку
+	Opens this address in your web browser	Открывает этот адрес в веб-браузере
+	Enter a valid HTTP or HTTPS URL without credentials	Введите допустимый URL HTTP или HTTPS без учётных данных
+	Previous	Предыдущий
+	Next	Следующий
+	Enter a valid HH:MM:SS:FF timecode	Введите допустимый тайм-код ЧЧ:ММ:СС:КК (HH:MM:SS:FF)
+
+# The strings the missing-translations report listed for ru (#1674).
+	1 frame ({seconds} s)	1 кадр ({seconds} с)
+	1/2	1/2
+	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	Для AV1 требуется аппаратный кодировщик; на этом компьютере он не найден, а программного кодировщика AV1 в FilmCraft пока нет.
+	Add Track	Добавить дорожку
+	Audio Names	Имена аудио
+	Audio output failed: playing without sound (check Settings > Audio Hardware)	Ошибка аудиовыхода: воспроизведение без звука (проверьте Настройки > Аудиооборудование)
+	Audio output is not responding: playing without sound (check Settings > Audio Hardware)	Аудиовыход не отвечает: воспроизведение без звука (проверьте Настройки > Аудиооборудование)
+	Caption Export Settings	Параметры экспорта субтитров
+	Center at Cut	Центрировать по разрезу
+	Change Sequence Settings	Изменить параметры последовательности
+	Change the sequence to match the clip's settings?	Изменить параметры последовательности в соответствии с параметрами клипа?
+	Check for Updates…	Проверить обновления…
+	Checking for updates…	Проверка обновлений…
+	Clear History	Очистить историю
+	Clip Mismatch Warning	Предупреждение о несоответствии клипа
+	Clip: {settings}	Клип: {settings}
+	Could not check for updates:\n{error}	Не удалось проверить обновления:\n{error}
+	Custom Start	Настраиваемое начало
+	Delete Redoable Actions	Удалить действия, доступные для возврата
+	Delete Track	Удалить дорожку
+	Delete the dimmed actions after the current state? They cannot be redone.	Удалить затемнённые действия после текущего состояния? Их нельзя будет вернуть.
+	Duration (frames):	Длительность (в кадрах):
+	Duration: {tc}	Длительность: {tc}
+	End at Cut	Конец по разрезу
+	End: {tc}	Конец: {tc}
+	Enter a positive duration within the supported speed range.	Введите положительную длительность в поддерживаемом диапазоне скоростей.
+	Exported {path} as {format}, from its file extension	Экспортировано {path} как {format}, по расширению файла
+	FilmCraft Updates	Обновления FilmCraft
+	FilmCraft {version} is currently the newest version available.	FilmCraft {version} — самая новая доступная версия.
+	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	Для H.265 (HEVC) требуется аппаратный кодировщик (NVENC на GPU NVIDIA, VideoToolbox на macOS); на этом компьютере он не найден, а программного кодировщика H.265 в FilmCraft пока нет. Вместо него выберите H.264 или ProRes.
+	In:	Вход:
+	Invalid duration: {error}	Недопустимая длительность: {error}
+	Keep Existing Settings	Сохранить существующие параметры
+	Looks for a newer FilmCraft release and offers to update.	Ищет более новый выпуск FilmCraft и предлагает обновиться.
+	Marker Color:	Цвет маркера:
+	No matching text.	Совпадений с текстом нет.
+	No text graphics in this sequence. Add text with the Type tool.	В этой последовательности нет текстовой графики. Добавьте текст инструментом «Текст».
+	Open a sequence to search its graphics	Откройте последовательность, чтобы искать её графику
+	Options:	Параметры:
+	Replace	Заменить
+	Replace File	Заменить файл
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	Адаптивный дизайн — время переназначает ключевые кадры слоёв графики; эффекты клипа, такие как «Прозрачность» и «Движение», сохраняют время мультимедиа
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	Выберите клип (или связанный клип) на таймлайне или один элемент в панели проекта, чтобы переименовать
+	Sequence: {settings}	Последовательность: {settings}
+	Set Work Area Bar In Point	Установить начало рабочей области
+	Set Work Area Bar Out Point	Установить конец рабочей области
+	Set as Default Transition	Сделать переходом по умолчанию
+	Show Audio Names	Показывать имена аудио
+	Show Video Names	Показывать имена видео
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	Вход/выход источника занимает всего 1 кадр. Чтобы экспортировать всю последовательность, выберите «Весь источник».
+	Start at Cut	Начало по разрезу
+	Start: {tc}	Старт: {tc}
+	Strikethrough	Зачёркивание
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Сервер управления отключён: FILMCRAFT_CONTROL_TOKEN должен содержать 64 случайных шестнадцатеричных символа (см. docs/control-protocol.md)
+	This clip does not match the sequence settings.	Клип не соответствует параметрам последовательности.
+	Track Color	Цвет дорожки
+	Transparency Grid	Сетка прозрачности
+	Video Names	Имена видео
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	Если включено, прозрачность GIF работает как вкл/выкл: альфа ниже 128 — прозрачно; 128 и выше — непрозрачно.
+	Work Area Bar	Полоса рабочей области
+	{frames} frames ({seconds} s)	{frames} кадров ({seconds} с)
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	«{name}» уже существует, поэтому ничего не было экспортировано. Чтобы заменить его, выберите этот файл в диалоге сохранения.
+	“{file}” already exists in “{folder}”. Do you want to replace it?	«{file}» уже существует в «{folder}». Заменить его?

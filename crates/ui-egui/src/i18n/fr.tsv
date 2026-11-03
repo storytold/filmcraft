@@ -3592,6 +3592,74 @@
 	Open a sequence to search its graphics	Ouvrez une séquence pour rechercher dans ses graphiques
 	No text graphics in this sequence. Add text with the Type tool.	Aucun graphique avec du texte dans cette séquence. Ajoutez du texte avec l'outil Texte.
 	No matching text.	Aucun texte ne correspond.
+
+# Marker editing and shared custom colors
+	A range marker needs a positive duration	Un marqueur de plage doit avoir une durée positive
+	Add Custom Color	Ajouter une couleur personnalisée
+	Add and apply	Ajouter et appliquer
+	Add color	Ajouter la couleur
+	Add custom color	Ajouter une couleur personnalisée
+	Add custom color…	Ajouter une couleur personnalisée…
+	Author	Auteur
+	Chapter	Chapitre
+	Choose Color…	Choisir une couleur…
+	Choose color with system picker	Choisir une couleur avec le sélecteur système
+	Color picker	Sélecteur de couleur
+	Color selected markers	Changer la couleur des marqueurs sélectionnés
+	Custom Color…	Couleur personnalisée…
+	Delete Marker	Supprimer le marqueur
+	Delete selected markers	Supprimer les marqueurs sélectionnés
+	Edit Custom Color	Modifier la couleur personnalisée
+	Edit Marker	Modifier le marqueur
+	Edit Marker…	Modifier le marqueur…
+	Edit color	Modifier la couleur
+	Editing or removing a swatch leaves assigned colors unchanged.	Modifier ou supprimer un échantillon ne change pas les couleurs déjà attribuées.
+	Enter six hex digits, for example FF80C0.	Saisissez six chiffres hexadécimaux, par exemple FF80C0.
+	Hex	Hex
+	Hex color	Couleur hexadécimale
+	Manage Colors	Gérer les couleurs
+	Manage Colors…	Gérer les couleurs…
+	Marker owner is unavailable	L’élément auquel appartient le marqueur est indisponible
+	No markers	Aucun marqueur
+	No matching markers	Aucun marqueur correspondant
+	No saved colors	Aucune couleur enregistrée
+	No sequence open	Aucune séquence ouverte
+	No source clip open	Aucun clip source ouvert
+	Notes	Notes
+	Project Colors	Couleurs du projet
+	Range marker	Marqueur de plage
+	Remove saved color	Supprimer la couleur enregistrée
+	Save color	Enregistrer la couleur
+	Search markers	Rechercher des marqueurs
+	Search name, notes, author	Rechercher nom, notes ou auteur
+	Select all	Tout sélectionner
+	Select all visible markers	Sélectionner tous les marqueurs visibles
+	Sequence: {name}	Séquence : {name}
+	Source: {name}	Source : {name}
+	Source: {name} (shared source markers)	Source : {name} (marqueurs source partagés)
+	System color picker unavailable: {error}	Sélecteur de couleur système indisponible : {error}
+	Time is outside the supported range	Le temps est en dehors de la plage prise en charge
+	{count} selected	{count} sélectionnés
+	Remove Custom Color	Supprimer la couleur personnalisée
+	Edit Markers	Modifier les marqueurs
+	Delete Markers	Supprimer les marqueurs
+	Marker changed or was removed. Reopen it to continue.	Le marqueur a été modifié ou supprimé. Rouvrez-le pour continuer.
+
+# Marker editing controls
+	Comment Marker	Marqueur de commentaire
+	Chapter Marker	Marqueur de chapitre
+	Segmentation Marker	Marqueur de segmentation
+	Web Link	Lien web
+	Flash Cue Point	Point de repère Flash
+
+# Web Link marker editing.
+	URL	URL
+	Open Link	Ouvrir le lien
+	Opens this address in your web browser	Ouvre cette adresse dans votre navigateur web
+	Enter a valid HTTP or HTTPS URL without credentials	Saisissez une URL HTTP ou HTTPS valide sans identifiants
+	Previous	Précédent
+	Next	Suivant
+	Enter a valid HH:MM:SS:FF timecode	Saisissez un timecode valide HH:MM:SS:FF
 	Hide FilmCraft	Masquer FilmCraft
 	Hide Others	Masquer les autres
 	More transport controls	Autres commandes de lecture
@@ -3652,14 +3720,8 @@
 	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Le serveur de contrôle est désactivé : FILMCRAFT_CONTROL_TOKEN doit contenir 64 caractères hexadécimaux aléatoires (voir docs/control-protocol.md)
 
 # Markers: the Edit Marker dialog (#2416).
-	Edit Marker…	Modifier le marqueur…
 	In:	Entrée :
 	Marker Color:	Couleur du marqueur :
 	Options:	Options :
-	Comment Marker	Marqueur de commentaire
-	Chapter Marker	Marqueur de chapitre
-	Segmentation Marker	Marqueur de segmentation
-	Web Link	Lien web
-	Flash Cue Point	Point de repère Flash
 	Invalid duration: {error}	Durée non valide : {error}
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
