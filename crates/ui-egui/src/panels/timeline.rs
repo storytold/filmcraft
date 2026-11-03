@@ -927,6 +927,7 @@ mod trim_preview_tests {
             audio_streams: Vec::new(),
             container: "mkv".into(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: None,
         };
         let src = TwoStreams(info);

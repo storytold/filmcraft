@@ -119,6 +119,7 @@ impl GeneratorSource {
             audio_streams: audio.into_iter().collect(),
             container: if matches!(generator, Generator::Demo(_)) { "Synthetic MPEG-4".into() } else { "Synthetic".into() },
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: None,
         };
         Self { generator, info, cache: FrameCache::new(256 << 20) }

@@ -219,8 +219,10 @@ pub(super) fn modify_timecode(s: &mut Session, p: &Value) -> Result<Value> {
     let m = s.project.item(item).and_then(|i| i.as_media()).ok_or_else(|| bad("clip.modifyTimecode", "not a media clip"))?;
     let rate = m.frame_rate();
     let reset = bool_p(p, "reset").unwrap_or(false);
+    // in the media's own count, as the Metadata panel and the dialog show it
+    let drop_frame = m.info.drop_frame_timecode;
     let frame = if let Some(tc) = str_p(p, "timecode") {
-        Some(parse_timecode(tc, rate, false, 0).map_err(|e| bad("clip.modifyTimecode", format!("timecode: {e:?}")))?)
+        Some(parse_timecode(tc, rate, drop_frame, 0).map_err(|e| bad("clip.modifyTimecode", format!("timecode: {e:?}")))?)
     } else {
         p.get("frame").and_then(Value::as_i64)
     };
