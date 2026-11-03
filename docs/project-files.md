@@ -336,8 +336,9 @@ Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`, `linkMedia.link`,
 `linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
 Make Offline: `makeOffline.keep|delete|ok|cancel`. In the Project panel, offline items get a
-broken-link badge (`project.item.<id>.offline` in Icon view), and items with a proxy get a **P**
-badge (`project.item.<id>.proxy`).
+broken-link badge (`project.item.<id>.offline` in Icon and List view), and items with a proxy get
+a **P** badge (`project.item.<id>.proxy`). Hovering an Unreadable badge shows why the file cannot
+be read, such as "no decoder for Apple Intermediate Codec video".
 
 ### Proxies
 
