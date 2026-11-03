@@ -270,6 +270,13 @@ impl Default for Decoder {
     }
 }
 
+/// Most pictures one `decode` chunk may show (a temporal unit shows one per spatial layer).
+const MAX_SHOWN_PER_CHUNK: usize = 256;
+
+fn shown_within_limit(n: usize) -> bool {
+    n <= MAX_SHOWN_PER_CHUNK
+}
+
 impl Decoder {
     /// A decoder using all available cores (with the `threads` feature).
     pub fn new() -> Decoder {
@@ -384,7 +391,13 @@ impl Decoder {
     fn parse(&mut self, data: &[u8]) -> Result<()> {
         // (output, temporal unit, spatial_id)
         let mut out: Vec<(Output, usize, u32)> = Vec::new();
-        let r = self.parse_obus(data, &mut out);
+        let mut r = self.parse_obus(data, &mut out);
+        // Each show_existing_frame costs a few bytes but a full picture copy once it is taken: one
+        // chunk may not ask for more displays than any real temporal unit holds.
+        if r.is_ok() && !shown_within_limit(out.len()) {
+            out.clear();
+            r = Err(Error::Invalid("too many pictures shown by one chunk"));
+        }
         // Output policy (7.18.1 note): with scalability, show one frame per temporal unit, the
         // highest spatial layer present.
         let scalable = self.seq.as_ref().is_some_and(|s| s.op_idc != 0);
@@ -1171,5 +1184,16 @@ mod tests {
         assert!(!frame_size_allowed(4096, 8705)); // one row over MaxVSize
         assert!(!frame_size_allowed(16385, 1)); // one column over MaxHSize
         assert!(!frame_size_allowed(65536, 65536));
+    }
+}
+
+#[cfg(test)]
+mod shown_limit_tests {
+    use super::*;
+
+    #[test]
+    fn a_chunk_may_show_a_bounded_number_of_pictures() {
+        assert!(shown_within_limit(0) && shown_within_limit(MAX_SHOWN_PER_CHUNK));
+        assert!(!shown_within_limit(MAX_SHOWN_PER_CHUNK + 1));
     }
 }
