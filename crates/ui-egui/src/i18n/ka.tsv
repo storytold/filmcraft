@@ -3619,7 +3619,6 @@
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265-ს (HEVC) აპარატული კოდერი სჭირდება (NVENC NVIDIA-ს GPU-ებზე, VideoToolbox macOS-ზე); ამ კომპიუტერზე ვერცერთი მოიძებნა, FilmCraft-ს კი პროგრამული H.265 კოდერი ჯერ არ აქვს. სანაცვლოდ აირჩიეთ H.264 ან ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1-ს აპარატული კოდერი სჭირდება; ამ კომპიუტერზე ვერცერთი მოიძებნა, FilmCraft-ს კი პროგრამული AV1 კოდერი ჯერ არ აქვს.
 	Check for Updates…	განახლებების შემოწმება…
-	FilmCraft {version} is currently the newest version available.	FilmCraft {version} ამჟამად უახლესი ხელმისაწვდომი ვერსიაა.
 	Looks for a newer FilmCraft release and offers to update.	ეძებს FilmCraft-ის უფრო ახალ გამოშვებას და განახლებას გთავაზობთ.
 
 # Control server: the status-bar notice when --control cannot serve.
@@ -3714,7 +3713,6 @@
 	Show Audio Names	აუდიოს სახელების ჩვენება
 	Video Names	ვიდეოს სახელები
 	Audio Names	აუდიოს სახელები
-	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	აპარატული დეკოდირება: „ავტომატური“ რეჟიმი იყენებს სისტემის ვიდეოდეკოდერს (VideoToolbox macOS-ზე, Media Foundation Windows-ზე, VA-API H.264-ისა და HEVC-ისთვის Linux-ზე) მის მიერ მხარდაჭერილი ნაკადებისთვის, ხოლო FilmCraft-ის საკუთარ დეკოდერს — დანარჩენი ყველაფრისთვის ან აპარატურის შეფერხებისას. უკვე გახსნილი მედია ინარჩუნებს თავის დეკოდერს, სანამ ხელახლა არ გაიხსნება.
 	Clip Mismatch Warning	კლიპის შეუსაბამობის გაფრთხილება
 	This clip does not match the sequence settings.	ეს კლიპი სეკვენციის პარამეტრებს არ შეესაბამება.
 	Clip: {settings}	კლიპი: {settings}
@@ -3722,11 +3720,33 @@
 	Change the sequence to match the clip's settings?	შეიცვალოს სეკვენცია კლიპის პარამეტრების შესაბამისად?
 	Change Sequence Settings	სეკვენციის პარამეტრების შეცვლა
 	Keep Existing Settings	არსებული პარამეტრების შენარჩუნება
-	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	აუდიოს გამოტანა ვერ მოხერხდა: დაკვრა ხმის გარეშე (შეამოწმეთ პარამეტრები ▸ აუდიოაპარატურა)
-	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	აუდიოს გამოტანა არ პასუხობს: დაკვრა ხმის გარეშე (შეამოწმეთ პარამეტრები ▸ აუდიოაპარატურა)
-	FilmCraft Updates	FilmCraft-ის განახლებები
-	1/2	1/2
 	Add Track	ტრეკის დამატება
 	Delete Track	ტრეკის წაშლა
 	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	„ადაპტიური დიზაინი – დრო“ გრაფიკის შრეების საკვანძო კადრებს დროში გადაანაწილებს; კლიპის ეფექტები, როგორიცაა გაუმჭვირვალობა და მოძრაობა, მედიის დროს ინარჩუნებს
 	Set as Default Transition	ნაგულისხმევ გადასვლად დაყენება
+	FilmCraft Updates	FilmCraft-ის განახლებები
+	1/2	1/2
+# Saves, short-form social presets and the Three-Way Color Corrector (strings no catalog has yet).
+	Project saved to {path}	პროექტი შენახულია: {path}
+	Copy of the project saved to {path}	პროექტის ასლი შენახულია: {path}
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS	H.264 9:16 ვერტიკალური, მასშტაბირებული შევსებით, VBR, 1 გავლა, 8 Mbps, ხმამაღლობა ნორმალიზებულია −14 LUFS-მდე
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS	H.264 9:16 ვერტიკალური, მასშტაბირებული შევსებით, VBR, 1 გავლა, 10 Mbps, ხმამაღლობა ნორმალიზებულია −14 LUFS-მდე
+	H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS	H.264 9:16 ვერტიკალური, მასშტაბირებული შევსებით, VBR, 1 გავლა, 12 Mbps, ხმამაღლობა ნორმალიზებულია −14 LUFS-მდე
+	Instagram Reels 1080×1920	Instagram Reels 1080×1920
+	TikTok 1080×1920	TikTok 1080×1920
+	YouTube Shorts 1080×1920	YouTube Shorts 1080×1920
+	Three-Way Color Corrector	ფერის სამმხრივი კორექტორი
+	Tonal Range	ტონალური დიაპაზონი
+	Shadow Balance	ჩრდილების ბალანსი
+	Shadow Hue	ჩრდილების ფერის ტონი
+	Shadow Level	ჩრდილების დონე
+	Shadow Softness	ჩრდილების სირბილე
+	Shadow Threshold	ჩრდილების ზღვარი
+	Midtone Balance	შუალედური ტონების ბალანსი
+	Midtone Hue	შუალედური ტონების ფერის ტონი
+	Midtone Level	შუალედური ტონების დონე
+	Highlight Balance	ღია ტონების ბალანსი
+	Highlight Hue	ღია ტონების ფერის ტონი
+	Highlight Level	ღია ტონების დონე
+	Highlight Softness	ღია ტონების სირბილე
+	Key Out Brights	ღია ტონების ამოკვეთა
