@@ -393,18 +393,22 @@ fn every_interchange_document_the_importer_reads_is_listed() {
 fn import_takes_the_tape_name_from_the_timecode_track() {
     let Some(ff) = filmcraft_testkit::oracle::ffmpeg_or_skip("reel import") else { return };
     let dir = crate::media_test_util::tmp_dir("reel-import");
+    if !filmcraft_testkit::oracle::ffmpeg_has_encoder(&ff, "prores_ks") {
+        filmcraft_testkit::oracle::skip("reel import", "ffmpeg has no prores_ks");
+        return;
+    }
     let make = |name: &str, reel: &[&str]| {
         let path = dir.join(name);
-        std::process::Command::new(&ff)
+        let status = std::process::Command::new(&ff)
             .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25:duration=0.2"])
             .args(["-c:v", "prores_ks", "-timecode", "14:30:42:00"])
             .args(reel)
             .arg(&path)
-            .status()
-            .is_ok_and(|s| s.success())
-            .then_some(path)
+            .status();
+        assert!(status.as_ref().is_ok_and(|s| s.success()), "ffmpeg could not make {name}: {status:?}");
+        path
     };
-    let (Some(a), Some(b)) = (make("a.mov", &["-metadata:s:v:0", "reel_name=A001"]), make("b.mov", &[])) else { return };
+    let (a, b) = (make("a.mov", &["-metadata:s:v:0", "reel_name=A001"]), make("b.mov", &[]));
     let mut s = Session::default();
     let r = s.execute("file.import", json!({"paths": [a.to_string_lossy(), b.to_string_lossy()]})).unwrap();
     let tape = |s: &Session, k: usize| {
