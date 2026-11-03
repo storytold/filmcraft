@@ -660,7 +660,11 @@ impl GopCache {
             if victim == pivot || victim == pts {
                 victim = if victim == first { last } else { first };
                 if victim == pivot || victim == pts {
-                    break;
+                    // both ends are the request and the new decode: an interior frame goes,
+                    // or a reordered batch would stay cached far above the budget
+                    let interior = st.frames.keys().copied().filter(|&k| k != pivot && k != pts).max_by_key(|&k| k.abs_diff(pivot));
+                    let Some(k) = interior else { break };
+                    victim = k;
                 }
             }
             if let Some(v) = st.frames.remove(&victim) {

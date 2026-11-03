@@ -853,3 +853,21 @@ fn release_idle_empties_idle_caches_and_leaves_one_in_use_alone() {
     assert_eq!(pool.bytes.load(Ordering::Relaxed), 0);
     assert_eq!(pool.decoders.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn eviction_reaches_interior_frames_when_both_ends_are_protected() {
+    // 1×1 RGBA pictures (4 bytes): the budget is the 64-frame playback reserve
+    let mut c = GopCache::new(None);
+    c.budget = 0;
+    let budget = c.cache_budget(4);
+    let mut st = c.shared.state.lock().unwrap();
+    st.pin = 0;
+    let pic = || VideoFrame::rgba8(1, 1, vec![0; 4]);
+    c.store_finished(&mut st, 0, pic(), false);
+    // each new decode is the newest frame and the request is the oldest: both ends protected
+    for k in 1..500 {
+        c.store_finished(&mut st, k * 1000, pic(), false);
+    }
+    assert!(st.bytes <= budget, "{} bytes cached over a {budget}-byte budget", st.bytes);
+    assert!(st.frames.contains_key(&0) && st.frames.contains_key(&499_000));
+}
