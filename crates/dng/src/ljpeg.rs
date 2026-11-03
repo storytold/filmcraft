@@ -313,6 +313,11 @@ pub fn decode(data: &[u8], max_samples: usize) -> Result<Decoded> {
                 for c in &comps {
                     hufs.push(tables.get(c.table).and_then(Option::as_ref).ok_or(Error::Malformed("lossless JPEG: missing Huffman table"))?);
                 }
+                // every sample costs at least one bit of entropy-coded data (a Huffman code is at
+                // least one bit long), so a frame bigger than the data cannot be real
+                if n.div_ceil(8) > data.len().saturating_sub(pos + len) {
+                    return Err(Error::Truncated);
+                }
                 let params = ScanParams { width, height, precision, predictor, pt, restart: restart_interval };
                 let samples = scan(data, pos + len, &hufs, &params)?;
                 return Ok(Decoded { width, height, components: comps.len(), precision, predictor, samples });

@@ -16,6 +16,7 @@ use crate::transform::LevelScale;
 use crate::{ColorInfo, Picture};
 use filmcraft_bitstream::{BitReader, annexb_nals, length_prefixed_nals, unescape_rbsp};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The decoder supports at most 16 reference pictures, so constructing more
@@ -78,6 +79,8 @@ struct Shared {
     stats: Mutex<DecodeStats>,
     /// Recycled picture buffers.
     pool: Mutex<Vec<PicState>>,
+    /// Set by [`Decoder::reset`]: jobs still running stop at the next macroblock row.
+    cancel: Arc<AtomicBool>,
 }
 
 /// H.264 decoder.
@@ -181,6 +184,26 @@ impl Decoder {
 
     pub fn draft(&self) -> bool {
         self.draft
+    }
+
+    /// Forget the stream (parameter sets, `avcC` configuration, reference pictures and pending
+    /// output) as if the decoder were new, e.g. to seek. Unlike making a new decoder, this keeps the
+    /// worker threads, the draft setting and the recycled picture buffers, and the pictures still
+    /// being decoded stop at their next macroblock row instead of running to the end.
+    pub fn reset(&mut self) {
+        self.shared.cancel.store(true, Ordering::Relaxed);
+        let pool = self.shared.pool.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default();
+        self.shared = Arc::new(Shared { pool: Mutex::new(pool), ..Shared::default() });
+        self.spss.fill(None);
+        self.ppss.fill(None);
+        self.nal_length_size = None;
+        self.dpb = Dpb::new();
+        self.poc_state = PocState::default();
+        self.prev_ref_frame_num = 0;
+        self.pending = None;
+        self.active_sps = None;
+        self.ls_cache.clear();
+        self.out_queue.clear();
     }
 
     /// Configure from an `avcC` (AVCDecoderConfigurationRecord) box payload.
@@ -333,13 +356,16 @@ impl Decoder {
         let (sh, _, _) = SliceHeader::parse(&rbsp, hdr, |id| {
             let pps = ppss[id as usize].as_ref().ok_or_else(|| Error::MissingParameterSet(format!("PPS {id}")))?;
             let sps = spss[pps.sps_id as usize].as_ref().ok_or_else(|| Error::MissingParameterSet(format!("SPS {}", pps.sps_id)))?;
+            // Before the header fields that depend on the SPS: they are validated for the streams
+            // we decode (a 10-bit slice may have a QP below 0), so a stream we cannot decode must
+            // fail as unsupported here, not as invalid there (#626).
+            sps.check_supported()?;
             found = Some((pps.clone(), sps.clone()));
             Ok((&**pps, &**sps))
         })?;
         let Some((pps, sps)) = found else {
             return Err(Error::MissingParameterSet("PPS".into()));
         };
-        sps.check_supported()?;
         if pps.num_slice_groups > 1 {
             return unsupported("slice groups (FMO)");
         }
@@ -522,12 +548,20 @@ fn run_job(frame: FrameRef, slices: Vec<SliceJob>, shared: &Shared, draft: bool)
         _ => PicState::new(frame.clone()),
     };
     pic.skip_deblock = draft;
+    pic.cancel = Some(shared.cancel.clone());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut first_err = None;
         for s in &slices {
+            if pic.cancelled() {
+                break;
+            }
             if let Err(e) = decode_slice(s, &mut pic) {
                 first_err.get_or_insert(e);
             }
+        }
+        if pic.cancelled() {
+            // Nothing will show this picture: publish the remaining rows as they are.
+            pic.skip_deblock = true;
         }
         pic.flush_rows(true);
         first_err

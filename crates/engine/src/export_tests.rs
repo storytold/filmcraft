@@ -65,6 +65,23 @@ fn export_without_wait_says_where_to_poll() {
     assert!(r.get("poll").is_none() && r["result"].is_object(), "{r}");
 }
 
+/// An export reads its own copy of each file, not the source the monitors read: the two would
+/// otherwise take turns on one decoder, seeking it between the export's frame and the playhead's
+/// (93 % of a 4K60 playback's frames dropped while an export of the same file ran).
+#[test]
+fn an_export_does_not_read_the_monitors_source() {
+    let movie = crate::media_test_util::tmp_dir("export-own-source").join("a.mp4");
+    crate::media_test_util::make_movie(&movie, filmcraft_media::DemoScene::Dunes, 64, 36, 12);
+    let (mut s, items, seq) = crate::media_test_util::session_with(&[&movie]);
+    s.media.clear();
+    let dir = Scratch::new("own-source");
+    let out = dir.path("a.mp4");
+    let r = s.execute("file.exportMedia", json!({"sequence": seq.0, "path": out, "format": "h264", "wait": true})).unwrap();
+    assert!(r["result"].is_object(), "{r}");
+    assert!(std::fs::metadata(&out).is_ok_and(|m| m.len() > 0));
+    assert!(s.media.cached(items[0]).is_none(), "the export opened the monitors' source");
+}
+
 /// A scratch directory under the workspace `target/`, removed when dropped.
 struct Scratch(PathBuf);
 
@@ -258,6 +275,37 @@ fn files_in(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
     v.sort();
     v
+}
+
+/// An image sequence writes numbered stills, never the path it is given: `file.exportMedia`, its
+/// job's result and `export.quick` name the first still as `path`, and the last as `lastPath`, and
+/// both exist (#4009). A single file keeps its path and has no `lastPath`.
+#[test]
+fn an_image_sequence_reports_the_stills_it_wrote() {
+    let mut s = demo();
+    let dir = Scratch::new("sequence-path");
+    let asked = dir.0.join("a.png");
+    let p = json!({"path": asked.to_string_lossy(), "format": "png", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "scale": 0.125, "wait": true});
+    let frames = s.execute("export.resolve", p.clone()).unwrap()["frames"].as_u64().unwrap();
+    let v = s.execute("file.exportMedia", p).unwrap();
+    let (first, last) = (v["path"].as_str().unwrap(), v["lastPath"].as_str().unwrap());
+    assert!(first.ends_with("a000.png") && last.ends_with(&format!("a{:03}.png", frames - 1)), "{v}");
+    assert!(Path::new(first).exists() && Path::new(last).exists() && !asked.exists(), "{v}");
+    assert_eq!(v["result"]["path"], v["path"], "{v}");
+    assert_eq!(v["basePath"], json!(asked.to_string_lossy()), "the name the stills are numbered from: {v}");
+    assert_eq!(files_in(&dir.0).len() as u64, frames);
+
+    let quick = dir.0.join("q.png");
+    let p = json!({"preset": "PNG Sequence", "path": quick.to_string_lossy(), "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "wait": true});
+    let v = s.execute("export.quick", p).unwrap();
+    assert!(v["path"].as_str().is_some_and(|f| f.ends_with("q000.png") && Path::new(f).exists()), "{v}");
+    assert!(v["lastPath"].as_str().is_some_and(|f| Path::new(f).exists()), "{v}");
+
+    let wav = dir.0.join("b.wav");
+    let p = json!({"path": wav.to_string_lossy(), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "wait": true});
+    let v = s.execute("file.exportMedia", p).unwrap();
+    assert_eq!(v["path"], json!(wav.to_string_lossy()), "{v}");
+    assert!(v.get("lastPath").is_none() && v.get("basePath").is_none() && wav.exists(), "{v}");
 }
 
 /// Every built-in preset: 1.0 to 1.08 s of the demo sequence (three frames at 23.976) exported
@@ -742,6 +790,33 @@ fn hardware_encoding_is_off_unless_asked_for() {
     assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "auto"}})).unwrap(), Auto);
     let old: filmcraft_export::ExportSettings = serde_json::from_value(json!({"format": "h264"})).unwrap();
     assert_eq!(old.hardware_encoding, Off);
+}
+
+/// A `bitrateKbps` in `settings` is the bitrate, as the flat `bitrateKbps` is, also over a preset
+/// whose bitrate adapts to the frame size (every Match Source preset).
+#[test]
+fn settings_bitrate_replaces_a_presets_adaptive_bitrate() {
+    use filmcraft_export::ExportSettings;
+    use filmcraft_export::presets::DEFAULT_PRESET;
+    use filmcraft_time::FrameRate;
+    let s = demo();
+    let settings = |p: &Value| crate::export_tools::settings_from_params(&s, p, "file.exportMedia").map(|(_, st)| st).unwrap();
+    let target = |st: &ExportSettings| st.resolve(720, 480, FrameRate::FPS_29_97, 48_000).target_kbps;
+    // the preset alone: 720 x 480 x 29.97 fps x 0.2 bits per pixel
+    assert_eq!(target(&settings(&json!({"path": "x.mp4", "preset": DEFAULT_PRESET}))), 2072);
+    for p in [
+        json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "settings": {"bitrateKbps": 5000}}),
+        json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "bitrateKbps": 5000}),
+        json!({"path": "x.mp4", "settings": {"bitrateKbps": 5000}}),
+        json!({"path": "x.mp4", "bitrateKbps": 5000}),
+    ] {
+        let st = settings(&p);
+        assert_eq!(st.adaptive_bitrate, None, "{p}");
+        assert_eq!(target(&st), 5000, "{p}");
+    }
+    // an adaptive bitrate given with it still wins
+    let p = json!({"path": "x.mp4", "preset": DEFAULT_PRESET, "settings": {"bitrateKbps": 5000, "adaptiveBitrate": 0.1}});
+    assert_eq!(target(&settings(&p)), 1036);
 }
 
 #[test]

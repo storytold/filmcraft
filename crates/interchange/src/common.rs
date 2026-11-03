@@ -37,7 +37,8 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' && i + 2 < b.len() {
-            let h = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok());
+            let h =
+                std::str::from_utf8(&b[i + 1..i + 3]).ok().filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit())).and_then(|h| u8::from_str_radix(h, 16).ok());
             if let Some(v) = h {
                 out.push(v);
                 i += 3;
@@ -107,24 +108,81 @@ pub fn path_to_file_url(path: &str, localhost: bool) -> String {
     }
 }
 
+/// Join `rel`, a relative media reference, to `base`, the folder of the document that names it.
+/// Lexical, like `craft-docpath`, and with the same roots: none (a relative folder), `/`, a drive
+/// (`C:\`, or `C:` alone for a drive-relative folder), a share (`\\host\share`, `//host/share`) or a
+/// `\\?\` prefix with its drive or `UNC\host\share`. Below the root, empty names (repeated
+/// separators) and `.` are dropped, and a `..` takes off the last name: at the root of an absolute
+/// folder it is dropped, and past the start of a relative one it is kept. The folder's own `.` and
+/// `..` go through the same rule, so a reference starts from where the folder really is. The result
+/// keeps the folder's separator: `\` when it has only those, else `/` (#3998).
 fn join(base: &str, rel: &str) -> String {
     let sep = if base.contains('\\') && !base.contains('/') { '\\' } else { '/' };
-    let mut parts: Vec<&str> = base.split(['/', '\\']).collect();
-    if parts.last() == Some(&"") && parts.len() > 1 {
-        parts.pop();
-    }
-    for seg in rel.split(['/', '\\']) {
-        match seg {
+    let (root, absolute, rest) = split_root(base);
+    let mut names: Vec<&str> = Vec::new();
+    for name in rest.split(['/', '\\']).chain(rel.split(['/', '\\'])) {
+        match name {
             "" | "." => {}
-            ".." => {
-                if parts.len() > 1 {
-                    parts.pop();
+            ".." => match names.last() {
+                Some(&last) if last != ".." => {
+                    names.pop();
                 }
-            }
-            s => parts.push(s),
+                _ if absolute => {}
+                _ => names.push(".."),
+            },
+            n => names.push(n),
         }
     }
-    parts.join(&sep.to_string())
+    let body = names.join(&sep.to_string());
+    if absolute {
+        format!("{root}{sep}{body}")
+    } else if root.is_empty() && body.is_empty() {
+        ".".to_string()
+    } else {
+        format!("{root}{body}")
+    }
+}
+
+/// The root `p` starts with, as written (without its last separator), whether it makes `p`
+/// absolute, and the rest of `p`.
+fn split_root(p: &str) -> (&str, bool, &str) {
+    let is_sep = |c: char| c == '/' || c == '\\';
+    let seps: Vec<usize> = p.char_indices().filter(|&(_, c)| is_sep(c)).map(|(i, _)| i).collect();
+    if seps.starts_with(&[0, 1]) {
+        // `\\host\share` and `\\?\C:` take two names after the leading separators,
+        // `\\?\UNC\host\share` four. A name runs to the next separator, or to the end.
+        let names: Vec<&str> = p.get(2..).unwrap_or_default().split(is_sep).collect();
+        let count = match (names.first().copied(), names.get(1)) {
+            (Some("?" | "."), Some(u)) if u.eq_ignore_ascii_case("UNC") => 4,
+            _ => 2,
+        };
+        let end = seps.iter().copied().filter(|&i| i >= 2).nth(count - 1).unwrap_or(p.len());
+        let (root, rest) = p.split_at(end);
+        return (root, true, rest);
+    }
+    if seps.first() == Some(&0) {
+        return ("", true, p);
+    }
+    let b = p.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        let (root, rest) = p.split_at(2);
+        return (root, seps.first() == Some(&2), rest);
+    }
+    ("", false, p)
+}
+
+/// Resolve a media URL from a document (FCPXML `src`, FCP7 `pathurl`, OTIO `target_url`): like
+/// [`resolve_path`], with a relative URL percent-decoded as a `file://` URL is (`Clip%20A.mov` is
+/// `Clip A.mov`, #2195). Plain file names (EDL, AAF) go through [`resolve_path`] untouched.
+pub fn resolve_url(reference: &str, base_dir: Option<&str>) -> String {
+    let r = reference.trim();
+    let is_file_url = r.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("file:"));
+    if is_file_url || is_absolute(r) { resolve_path(r, base_dir) } else { resolve_path(&percent_decode(r), base_dir) }
+}
+
+/// A relative path written as a URL (the inverse of [`resolve_url`]'s decoding).
+pub(crate) fn relative_url(path: &str) -> String {
+    percent_encode_path(path)
 }
 
 /// Resolve a media reference from a document: file URLs become paths, relative paths are joined to
@@ -191,7 +249,8 @@ pub(crate) fn kind_from_ext(path: &str) -> MediaKind {
 /// Frame count nearest to `t` at `rate`.
 pub(crate) fn frames_round(rate: FrameRate, t: Tick) -> i64 {
     let f = rate.frame_at(t);
-    if rate.tick_of(f + 1) - t < t - rate.tick_of(f) { f + 1 } else { f }
+    let next = f.saturating_add(1);
+    if rate.tick_of(next) - t < t - rate.tick_of(f) { next } else { f }
 }
 
 /// Whether `t` is exactly on a frame boundary of `rate`.
@@ -204,15 +263,25 @@ pub(crate) fn timebase(rate: FrameRate) -> (i64, bool) {
     (rate.timecode_base(), rate.is_ntsc())
 }
 
-/// Rate from FCP7-style `(timebase, ntsc)`.
+/// Highest rate (per second) an importer accepts. OTIO audio uses sample rates (192000 and more) as
+/// time bases, so this is far above any video rate and still far below where frame arithmetic
+/// overflows: a rate near `i64::MAX` made `frame_at` clamp to `i64::MAX`, and the `+ 1` after it overflowed.
+pub(crate) const MAX_RATE: i64 = 1_000_000;
+
+/// Whether `rate` is positive and at most [`MAX_RATE`] per second.
+pub(crate) fn plausible_rate(rate: FrameRate) -> bool {
+    rate.num > 0 && rate.den > 0 && i128::from(rate.num) <= i128::from(rate.den) * i128::from(MAX_RATE)
+}
+
+/// Rate from FCP7-style `(timebase, ntsc)`; the timebase is limited to `1..=MAX_RATE`.
 pub(crate) fn rate_from_timebase(timebase: i64, ntsc: bool) -> FrameRate {
-    let tb = timebase.max(1);
+    let tb = timebase.clamp(1, MAX_RATE);
     if ntsc { FrameRate::new(tb * 1000, 1001) } else { FrameRate::new(tb, 1) }
 }
 
 /// Snap a floating rate (OTIO) to an exact rate.
 pub(crate) fn rate_from_f64(r: f64) -> FrameRate {
-    if r <= 0.0 || !r.is_finite() {
+    if r <= 0.0 || !r.is_finite() || r > MAX_RATE as f64 {
         return FrameRate::FPS_24;
     }
     for c in FrameRate::COMMON {
@@ -266,6 +335,7 @@ pub(crate) fn media_info(name: &str, spec: &MediaSpec) -> MediaInfo {
             has_alpha: false,
             bitrate: None,
             hdr: None,
+            color_assumed: None,
         }),
         audio_streams: spec
             .audio
@@ -294,31 +364,27 @@ pub(crate) fn media_clip(media: MediaRef, info: MediaInfo) -> MediaClip {
 
 /// The file path behind an item (following subclips), if it is file media.
 pub(crate) fn item_path(p: &Project, id: ItemId) -> Option<&str> {
-    match &p.item(id)?.kind {
-        ItemKind::Media(m) => match &m.media {
-            MediaRef::File { path } => Some(path),
-            MediaRef::Generator(_) => None,
-        },
-        ItemKind::Subclip { parent, .. } => item_path(p, *parent),
-        _ => None,
+    match &item_media(p, id)?.media {
+        MediaRef::File { path } => Some(path),
+        MediaRef::Generator(_) => None,
     }
 }
 
 /// The media clip behind an item (following subclips).
 pub(crate) fn item_media(p: &Project, id: ItemId) -> Option<&MediaClip> {
-    match &p.item(id)?.kind {
-        ItemKind::Media(m) => Some(m),
-        ItemKind::Subclip { parent, .. } => item_media(p, *parent),
-        _ => None,
-    }
+    p.resolve_media(id).map(|(_, m, _)| m)
 }
 
 /// The underlying item for exports (subclip → parent media).
 pub(crate) fn base_item(p: &Project, id: ItemId) -> ItemId {
-    match p.item(id).map(|i| &i.kind) {
-        Some(ItemKind::Subclip { parent, .. }) => base_item(p, *parent),
-        _ => id,
+    let mut cur = id;
+    for _ in 0..16 {
+        match p.item(cur).map(|i| &i.kind) {
+            Some(ItemKind::Subclip { parent, .. }) => cur = *parent,
+            _ => return cur,
+        }
     }
+    cur
 }
 
 /// How an export report names a clip whose source is a graphic (title) or an adjustment layer,
@@ -443,6 +509,7 @@ impl Builder {
     pub fn clip(&mut self, item: ItemId, kind: TrackKind, name: &str, start: Tick, duration: Tick, source_in: Tick) -> TrackItem {
         let label = self.p.item(item).map(|i| i.label).unwrap_or(Label::Iris);
         TrackItem {
+            custom_label_color: self.p.item(item).and_then(|i| i.custom_label_color),
             id: ClipId(self.p.alloc_id()),
             item,
             name: name.to_string(),
@@ -549,9 +616,15 @@ pub(crate) fn settings_for(rate: FrameRate, width: u32, height: u32, drop_frame:
 }
 
 /// Source time advanced by a timeline duration at `speed` (exact for integral speeds).
+///
+/// This is the one place the importers multiply a `Tick` by a number from a file: `Tick` has no
+/// `Mul`, and its `Add`/`Sub` saturate, so every other sum of durations already clamps. It saturates
+/// at the `i64` bounds like those operators do (not at `Tick::MAX`, which the editing code uses as
+/// its "no next item" sentinel).
 pub(crate) fn scaled(d: Tick, speed: f64) -> Tick {
     let s = speed.abs();
-    if s == s.round() && s < 1e6 { Tick(d.0 * s as i64) } else { Tick((d.0 as f64 * s).round() as i64) }
+    // saturating: a duration read from a file times a speed from the same file can exceed an i64 of ticks
+    if s == s.round() && s < 1e6 { Tick(d.0.saturating_mul(s as i64)) } else { Tick((d.0 as f64 * s).round() as i64) }
 }
 
 /// Timeline duration of a source duration at `speed`.
@@ -691,6 +764,15 @@ pub(crate) fn sanitize_reel(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filmcraft_time::TimeRange;
+
+    #[test]
+    fn percent_decode_requires_hex_digits() {
+        assert_eq!(file_url_to_path("file:///a/100%+5x.mov"), "/a/100%+5x.mov");
+        assert_eq!(file_url_to_path("file:///a/100%-1x.mov"), "/a/100%-1x.mov");
+        assert_eq!(file_url_to_path("file:///a/100%g0x.mov"), "/a/100%g0x.mov");
+        assert_eq!(file_url_to_path("file:///a/b%20c.mov"), "/a/b c.mov");
+    }
 
     #[test]
     fn urls() {
@@ -720,9 +802,62 @@ mod tests {
         assert_eq!(resolve_path("media/a.mov", Some("/proj")), "/proj/media/a.mov");
         assert_eq!(resolve_path("../a.mov", Some("/proj/x/")), "/proj/a.mov");
         assert_eq!(resolve_path("/abs/a.mov", Some("/proj")), "/abs/a.mov");
+        // #2195: relative URLs are percent-decoded, plain names are not
+        assert_eq!(resolve_url("media/Clip%20A.mov", Some("/proj")), "/proj/media/Clip A.mov");
+        assert_eq!(resolve_url("file:///m/Clip%20A.mov", Some("/proj")), "/m/Clip A.mov");
+        assert_eq!(resolve_path("Clip%20A.mov", Some("/proj")), "/proj/Clip%20A.mov");
+        assert_eq!(resolve_url(&relative_url("a b/100%.mov"), Some("/p")), "/p/a b/100%.mov");
         assert_eq!(relative_path("/proj/media/a.mov", "/proj").as_deref(), Some("media/a.mov"));
         assert_eq!(relative_path("/proj/a.mov", "/proj/edl").as_deref(), Some("../a.mov"));
         assert_eq!(file_stem("/x/y/Clip 01.final.mov"), "Clip 01.final");
+    }
+
+    /// `join` over the path forms a document folder can take. Each row is (folder, reference,
+    /// expected, the rule it shows).
+    #[test]
+    fn relative_references_join_their_folder() {
+        const ROWS: &[(&str, &str, &str, &str)] = &[
+            // POSIX, absolute
+            ("/proj", "media/a.mov", "/proj/media/a.mov", "names are appended to the folder"),
+            ("/proj/x/", "../a.mov", "/proj/a.mov", "a trailing separator ends the folder; `..` takes off its last name"),
+            ("/proj//x", "../a.mov", "/proj/a.mov", "repeated separators are one: `..` takes off `x`, not an empty name"),
+            ("/proj/./x", "./a.mov", "/proj/x/a.mov", "`.` is dropped in the folder and in the reference"),
+            ("/", "a.mov", "/a.mov", "the root alone"),
+            ("/proj", "../../a.mov", "/a.mov", "`..` at an absolute root is dropped"),
+            ("/work/edit/..", "../media/b.mov", "/media/b.mov", "the folder's own `..` (std::path::absolute keeps it) is resolved first"),
+            ("/work/..", "../media/b.mov", "/media/b.mov", "so the reference never climbs above the root"),
+            // POSIX, relative
+            ("edit", "../media/a.mov", "media/a.mov", "`..` takes off a relative folder's first name too"),
+            ("a/edit", "../../a.mov", "a.mov", "and every name after it"),
+            ("edit", "../../a.mov", "../a.mov", "past the start of a relative folder `..` is kept"),
+            ("..", "../a.mov", "../../a.mov", "after a `..`, another `..` is kept"),
+            ("../", "clip.mov", "../clip.mov", "a `../` folder"),
+            (".", "../a.mov", "../a.mov", "a `.` folder is the current one"),
+            ("./", "clip.mov", "clip.mov", "and so is `./`: it is not the root"),
+            ("edit//sub", "../a.mov", "edit/a.mov", "repeated separators in a relative folder are one too"),
+            ("edit/sub/../..", "../a.mov", "../a.mov", "a relative folder's own `..` is resolved first"),
+            ("edit", "..", ".", "a reference that comes back to the start is the current folder"),
+            // Windows drives, either separator
+            (r"C:\proj", r"media\a.mov", r"C:\proj\media\a.mov", "a drive folder keeps its `\\`"),
+            (r"C:\proj", r"..\..\a.mov", r"C:\a.mov", "`..` stops at the drive's root"),
+            (r"C:\proj\..\..", "a.mov", r"C:\a.mov", "and so does the folder's own `..`"),
+            (r"C:\", "a.mov", r"C:\a.mov", "the drive's root alone"),
+            ("C:/proj/edit", "../media/a.mov", "C:/proj/media/a.mov", "a drive written with `/` keeps it"),
+            (r"C:edit\sub", r"..\a.mov", r"C:edit\a.mov", "a drive-relative folder keeps its drive and is relative below it"),
+            // shares and `\\?\` prefixes
+            (r"\\srv\share\..\edit", "a.mov", r"\\srv\share\edit\a.mov", "the share is part of the root: `..` can't take it off"),
+            (r"\\srv\share", r"..\a.mov", r"\\srv\share\a.mov", "`..` stops at the share"),
+            (r"\\srv\share\d", r"..\x\a.mov", r"\\srv\share\x\a.mov", "below the share, `..` takes off names"),
+            ("//srv/share/edit", "../../a.mov", "//srv/share/a.mov", "a share written with `/`"),
+            (r"\\?\C:\proj", r"..\..\a.mov", r"\\?\C:\a.mov", r"a `\\?\` drive's root is the drive"),
+            (r"\\?\UNC\srv\share\d", r"..\..\a.mov", r"\\?\UNC\srv\share\a.mov", r"a `\\?\UNC` root runs to the share"),
+            // separator styles
+            (r"proj\edit", r"..\media\a.mov", r"proj\media\a.mov", "a relative folder written with `\\` keeps it"),
+            ("/proj", r"media\a.mov", "/proj/media/a.mov", "either separator in the reference; the folder's style wins"),
+        ];
+        for &(folder, reference, expected, rule) in ROWS {
+            assert_eq!(resolve_path(reference, Some(folder)), expected, "{rule}: {folder:?} + {reference:?}");
+        }
     }
 
     #[test]
@@ -734,6 +869,19 @@ mod tests {
         assert_eq!(rate_from_f64(24000.0 / 1001.0), FrameRate::FPS_23_976);
         assert_eq!(rate_from_f64(23.976), FrameRate::FPS_23_976);
         assert_eq!(rate_from_f64(48000.0), FrameRate::new(48000, 1));
+        assert_eq!(rate_from_f64(192_000.0), FrameRate::new(192_000, 1));
+        // absurd rates from a hostile file: bounded instead of overflowing frame arithmetic later
+        for ntsc in [false, true] {
+            let r = rate_from_timebase(i64::MAX, ntsc);
+            assert!(plausible_rate(r), "{r}");
+            assert_eq!(rate_from_timebase(-5, ntsc), rate_from_timebase(1, ntsc));
+        }
+        for r in [1e300, 9.3e18, 2_000_000.0, f64::INFINITY, f64::NAN, -1.0] {
+            assert_eq!(rate_from_f64(r), FrameRate::FPS_24, "{r}");
+        }
+        assert!(!plausible_rate(FrameRate::new(i64::MAX, 1)));
+        assert!(!plausible_rate(FrameRate { num: 0, den: 1 }));
+        assert!(plausible_rate(FrameRate::FPS_23_976));
         assert_eq!(frames_round(FrameRate::FPS_24, FrameRate::FPS_24.tick_of(5) + Tick(10)), 5);
     }
 
@@ -745,5 +893,95 @@ mod tests {
         assert_eq!(seq.video_tracks.len(), MAX_IMPORTED_TRACKS);
         assert!(!b.ensure_tracks(&mut seq, TrackKind::Video, MAX_IMPORTED_TRACKS + 1));
         assert_eq!(seq.video_tracks.len(), MAX_IMPORTED_TRACKS);
+    }
+
+    /// A huge duration at an integral speed saturates instead of overflowing (an EDL with a record-out
+    /// timecode of 2147483647 hours and an `M2 ... 72.0` speed change panicked here).
+    #[test]
+    fn scaled_saturates() {
+        assert_eq!(scaled(Tick(i64::MAX / 2), 3.0), Tick(i64::MAX));
+        assert_eq!(scaled(Tick(i64::MIN / 2), 3.0), Tick(i64::MIN));
+        assert_eq!(scaled(Tick(1000), 3.0), Tick(3000));
+        assert_eq!(scaled(Tick(1000), 0.5), Tick(500));
+    }
+
+    #[test]
+    fn subclip_cycle_resolution_is_bounded() {
+        let mut p = Project::new("Cycle Test");
+        let info = MediaInfo {
+            name: "clip.mp4".into(),
+            kind: MediaKind::Movie,
+            duration: Tick(100_000),
+            video: None,
+            audio_streams: vec![],
+            container: "mp4".into(),
+            start_timecode: None,
+            file_size: None,
+        };
+        let media_id = p.add_item(
+            "Clip",
+            Label::Iris,
+            ItemKind::Media(Box::new(MediaClip {
+                media: MediaRef::File { path: "/path/to/clip.mp4".into() },
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            })),
+            None,
+        );
+
+        // Normal subclip and chained subclip
+        let sub1 = p.add_item(
+            "Sub 1",
+            Label::Iris,
+            ItemKind::Subclip { parent: media_id, range: TimeRange::new(Tick::ZERO, Tick(10_000)), restrict_trims: false },
+            None,
+        );
+        let sub2 =
+            p.add_item("Sub 2", Label::Iris, ItemKind::Subclip { parent: sub1, range: TimeRange::new(Tick(1_000), Tick(5_000)), restrict_trims: false }, None);
+
+        assert_eq!(base_item(&p, media_id), media_id);
+        assert_eq!(base_item(&p, sub1), media_id);
+        assert_eq!(base_item(&p, sub2), media_id);
+        assert_eq!(item_path(&p, sub2), Some("/path/to/clip.mp4"));
+        assert!(item_media(&p, sub2).is_some());
+
+        // Self-referencing subclip (direct cycle)
+        let self_cycle =
+            p.add_item("Self Cycle", Label::Iris, ItemKind::Subclip { parent: ItemId(9999), range: TimeRange::default(), restrict_trims: false }, None);
+        p.item_mut(self_cycle).unwrap().kind = ItemKind::Subclip { parent: self_cycle, range: TimeRange::default(), restrict_trims: false };
+
+        // Mutual cycle (A -> B -> A)
+        let cycle_a = p.add_item("Cycle A", Label::Iris, ItemKind::Subclip { parent: ItemId(9999), range: TimeRange::default(), restrict_trims: false }, None);
+        let cycle_b = p.add_item("Cycle B", Label::Iris, ItemKind::Subclip { parent: cycle_a, range: TimeRange::default(), restrict_trims: false }, None);
+        p.item_mut(cycle_a).unwrap().kind = ItemKind::Subclip { parent: cycle_b, range: TimeRange::default(), restrict_trims: false };
+
+        // Verify calls that previously caused infinite recursion now safely terminate
+        assert_eq!(base_item(&p, self_cycle), self_cycle);
+        assert_eq!(item_media(&p, self_cycle), None);
+        assert_eq!(item_path(&p, self_cycle), None);
+
+        let base_a = base_item(&p, cycle_a);
+        assert!(base_a == cycle_a || base_a == cycle_b);
+        assert_eq!(item_media(&p, cycle_a), None);
+        assert_eq!(item_path(&p, cycle_a), None);
+        assert_eq!(item_media(&p, cycle_b), None);
+        assert_eq!(item_path(&p, cycle_b), None);
+
+        // Missing item parent
+        let missing_parent = p.add_item(
+            "Missing Parent",
+            Label::Iris,
+            ItemKind::Subclip { parent: ItemId(123456789), range: TimeRange::default(), restrict_trims: false },
+            None,
+        );
+        assert_eq!(base_item(&p, missing_parent), ItemId(123456789));
+        assert_eq!(item_media(&p, missing_parent), None);
+        assert_eq!(item_path(&p, missing_parent), None);
     }
 }

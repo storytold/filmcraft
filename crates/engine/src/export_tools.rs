@@ -218,6 +218,11 @@ fn apply_nested_settings(settings: &mut ExportSettings, params: &Value, cmd: &st
     let mut value = serde_json::to_value(&*settings).map_err(|error| EngineError::Other(error.to_string()))?;
     merge(&mut value, patch);
     *settings = serde_json::from_value(value).map_err(|error| bad(cmd, format!("settings: {error}")))?;
+    // A bitrate given in `settings` is the bitrate, as the flat `bitrateKbps` is: an adaptive
+    // bitrate from the preset would otherwise replace it (`ExportSettings::resolve`).
+    if patch.get("bitrateKbps").is_some() && patch.get("adaptiveBitrate").is_none() {
+        settings.adaptive_bitrate = None;
+    }
     // serde ignores unknown keys; detect misspelled or misplaced settings before returning.
     let known = serde_json::to_value(&*settings).map_err(|error| EngineError::Other(error.to_string()))?;
     if let Some(path) = unknown_key(&known, patch, "") {
@@ -507,8 +512,9 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     write_sidecar(s, &project, seq, &settings)?;
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
-    // Export always renders full-resolution media, whatever the proxy toggle says.
-    let provider = s.media.full_res_provider(project.clone(), s.services.clone()).recording();
+    // Export always renders full-resolution media, whatever the proxy toggle says, from its own
+    // copies of the files so the monitors keep their decoders.
+    let provider = s.media.full_res_provider(project.clone(), s.services.clone()).own_sources().recording();
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let offline = s.export_offline.entry(id).or_default().clone();
     if cfg!(target_arch = "wasm32") && !wait && filmcraft_export::stepped(format) {
@@ -560,6 +566,34 @@ fn file_name(path: &str) -> String {
     Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string())
 }
 
+/// For an image sequence, the first and last numbered stills it writes: it never writes
+/// `settings.path` itself. They are counted the way `export.resolve` counts `frames` (#4009).
+fn sequence_files(project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<(String, String)> {
+    if !settings.is_image_sequence() {
+        return None;
+    }
+    let q = project.sequence(seq)?;
+    let range = filmcraft_export::export_range(project, seq, settings).ok()?;
+    let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
+    let (f0, f1) = filmcraft_export::frame_span(r.rate, range);
+    let count = u64::try_from(f1.saturating_sub(f0)).ok().filter(|n| *n > 0)?;
+    Some((filmcraft_export::image_sequence_path(&settings.path, 0, count), filmcraft_export::image_sequence_path(&settings.path, count - 1, count)))
+}
+
+/// An export's `path` in a command result: the file written, for an image sequence its first
+/// still, with `lastPath` beside it and `basePath`, the name the stills are numbered from (what
+/// cleaning up after a cancelled export goes by).
+fn output_json(out: &mut Value, path: &str, files: Option<(String, String)>) {
+    match files {
+        Some((first, last)) => {
+            out["path"] = json!(first);
+            out["lastPath"] = json!(last);
+            out["basePath"] = json!(path);
+        }
+        None => out["path"] = json!(path),
+    }
+}
+
 /// `file.exportMedia`: export the active (or `sequence`) sequence now.
 pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.exportMedia";
@@ -574,8 +608,10 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     settings.path = output_path(s, p, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
+    let files = sequence_files(&project, seq, &settings);
     let id = spawn_export(s, project, seq, settings, format!("Export {}", file_name(&path)), wait)?;
-    let mut out = json!({"job": id, "path": path, "warnings": warnings});
+    let mut out = json!({"job": id, "warnings": warnings});
+    output_json(&mut out, &path, files);
     if let Some(pr) = preset {
         out["preset"] = json!(pr.name);
     }
@@ -948,10 +984,13 @@ fn quick(s: &mut Session, p: &Value) -> Result<Value> {
     settings.path = output_path(s, &q, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
+    let files = sequence_files(&project, seq, &settings);
     let id = spawn_export(s, project, seq, settings, format!("Quick Export {}", file_name(&path)), wait)?;
     let used = preset.map(|x| x.name).unwrap_or(name);
     s.export_queue.quick_preset = Some(used.clone());
-    Ok(json!({"job": id, "path": path, "preset": used, "warnings": warnings}))
+    let mut out = json!({"job": id, "preset": used, "warnings": warnings});
+    output_json(&mut out, &path, files);
+    Ok(out)
 }
 
 fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
