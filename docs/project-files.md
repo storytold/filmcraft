@@ -362,8 +362,8 @@ in `jobs.list`. `Session::poll_persistence`, which the app calls every frame, at
 proxies.
 
 A proxy can be traced to its source without the project. When the source has a start timecode,
-the proxy has a timecode track that starts at the same timecode, with the clip's Tape Name as its
-reel. Mono, stereo and 5.1 sources keep their channels; other channel counts become stereo. Ingest
+the proxy has a timecode track that starts at the same timecode (drop-frame when the source's
+is), with the clip's Tape Name as its reel. Mono, stereo and 5.1 sources keep their channels; other channel counts become stereo. Ingest
 transcodes and Project Manager transcodes do the same.
 
 With proxies enabled, monitors, thumbnails and playback read the proxy. The proxy source reports

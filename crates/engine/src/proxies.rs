@@ -129,6 +129,8 @@ fn transcode_with_file(
         st.par = clip.pixel_aspect();
     }
     st.frame_rate = rate;
+    // counted as the source counts its timecode (the export keeps drop-frame only where the rate has it)
+    st.drop_frame = info.drop_frame_timecode;
     st.sample_rate = info.audio().map_or(48_000, |a| a.sample_rate.max(8000));
     // the channels the export can write as they are: mono, stereo and 5.1
     let channels = match info.audio().map_or(2, |a| a.channels) {

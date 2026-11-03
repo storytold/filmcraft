@@ -478,7 +478,8 @@ struct ProxyCase {
 /// A proxy can be traced to its source on its own, as an editor expects of one: it keeps the
 /// source's start timecode in a timecode track, with the item's Tape Name as the reel, and mono
 /// and 5.1 sound keep their channels instead of becoming stereo. Footage interpreted at another
-/// rate keeps its start time, counted at the new rate.
+/// rate keeps its start time, counted at the new rate, and a drop-frame source's track is
+/// drop-frame.
 #[test]
 fn proxies_keep_the_source_timecode_reel_and_channels() {
     use filmcraft_time::FrameRate;
@@ -516,6 +517,17 @@ fn proxies_keep_the_source_timecode_reel_and_channels() {
             interpret: Some(FrameRate::FPS_25),
             presets: &["prores_proxy_quarter"],
             want: (90_000, false),
+        },
+        // 01;00;00;00 drop-frame
+        ProxyCase {
+            name: "29.97 DF",
+            rate: FrameRate::FPS_29_97,
+            drop_frame: true,
+            start: 107_892,
+            channels: 1,
+            interpret: None,
+            presets: &["prores_proxy_quarter"],
+            want: (107_892, true),
         },
     ];
     for c in cases {
