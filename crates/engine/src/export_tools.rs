@@ -787,7 +787,14 @@ fn queue_item_p(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
 
 pub(crate) const RENAMED_WARNING: &str = "another queued export writes to this file; numbered to keep both";
 
-/// `path` with the first `_N` (from 2) that no path in `taken` has.
+/// How a queued output is compared: case-insensitively, as on Windows and macOS (elsewhere this only
+/// numbers a few more names).
+fn queue_path_key(path: &str) -> String {
+    path.to_lowercase()
+}
+
+/// `path` with the first `_N` (from 2) that no queued item writes (`taken`, as [`queue_path_key`]s)
+/// and no file has: a generated name must not replace a file nobody named.
 fn free_queue_path(path: &str, taken: &[String]) -> String {
     let (stem, ext) = match path.rsplit_once('.') {
         Some((a, e)) if !e.contains(['/', '\\']) => (a, Some(e)),
@@ -798,7 +805,8 @@ fn free_queue_path(path: &str, taken: &[String]) -> String {
             Some(e) => format!("{stem}_{n}.{e}"),
             None => format!("{stem}_{n}"),
         })
-        .find(|c| !taken.contains(c))
+        .take(100_000)
+        .find(|c| !taken.contains(&queue_path_key(c)) && !Path::new(c).exists())
         .unwrap_or_else(|| path.to_string())
 }
 
@@ -844,16 +852,21 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             items.push((seq, st));
         }
     }
-    // a queued item that has not finished yet keeps its file: a new item with the same output gets
-    // the next free `_N` instead of overwriting it when it encodes (#4175)
-    let mut taken: Vec<String> =
-        s.export_queue.items.iter().filter(|i| matches!(i.status, QueueStatus::Ready | QueueStatus::Encoding)).map(|i| i.settings.path.clone()).collect();
+    // a queue item that will write or has written its file keeps it: a new item with the same output
+    // gets the next free `_N` instead of overwriting it (#4175). Cancelled and failed items let go.
+    let mut taken: Vec<String> = s
+        .export_queue
+        .items
+        .iter()
+        .filter(|i| matches!(i.status, QueueStatus::Ready | QueueStatus::Encoding | QueueStatus::Done))
+        .map(|i| queue_path_key(&i.settings.path))
+        .collect();
     for (seq, mut st) in items {
-        if taken.contains(&st.path) {
+        if taken.contains(&queue_path_key(&st.path)) {
             st.path = free_queue_path(&st.path, &taken);
             warnings.push(RENAMED_WARNING);
         }
-        taken.push(st.path.clone());
+        taken.push(queue_path_key(&st.path));
         s.export_queue.next_id += 1;
         let id = s.export_queue.next_id;
         let name = s.project.item(seq).map(|i| i.name.clone()).unwrap_or_default();

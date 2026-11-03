@@ -189,8 +189,9 @@ fn single_frame_in_out_queue_add_retains_warnings_and_ranges() {
     assert_eq!(quiet["warnings"], json!([]), "warnings describe this addition, not previously queued items");
 }
 
-/// Two queued exports to one file would overwrite each other: a later one is numbered, while the
-/// earlier one has not finished. A cancelled or finished item no longer holds its name.
+/// Two queued exports to one file would overwrite each other: a later one is numbered while the
+/// earlier one is ready, encoding or done (in any letter case), and a generated name skips a file
+/// that exists. A cancelled item no longer holds its name.
 #[test]
 fn queue_add_numbers_an_output_another_queued_item_writes() {
     let mut s = demo();
@@ -220,6 +221,29 @@ fn queue_add_numbers_an_output_another_queued_item_writes() {
         assert!(Path::new(&dir.path(f)).exists(), "{f}");
     }
     assert_eq!(queue(&mut s).iter().filter(|i| i["status"] == "done").count(), 3);
+    // a finished item still holds its file, in any letter case
+    let after = add(&mut s, 4.0);
+    assert_eq!(after["warnings"], json!([crate::export_tools::RENAMED_WARNING]));
+    let upper = s
+        .execute("export.queue.add", json!({"path": dir.path("CLIP.WAV"), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.25}))
+        .unwrap();
+    assert_eq!(upper["warnings"], json!([crate::export_tools::RENAMED_WARNING]));
+    let n = queue(&mut s).len();
+    assert_eq!(paths(&mut s)[n - 2..], [dir.path("clip_4.wav"), dir.path("CLIP_5.WAV")]);
+    s.execute("export.queue.clear", json!({"all": true})).unwrap();
+    // a generated name skips a file that is there
+    std::fs::write(dir.path("take_2.wav"), b"keep").unwrap();
+    for start in [0.0, 1.0] {
+        s.execute(
+            "export.queue.add",
+            json!({"path": dir.path("take.wav"), "format": "wav", "range": "custom", "startSeconds": start, "endSeconds": start + 0.25}),
+        )
+        .unwrap();
+    }
+    assert_eq!(paths(&mut s), [dir.path("take.wav"), dir.path("take_3.wav")]);
+    s.execute("export.queue.start", json!({"wait": true})).unwrap();
+    assert_eq!(std::fs::read(dir.path("take_2.wav")).unwrap(), b"keep");
+    s.execute("export.queue.clear", json!({"all": true})).unwrap();
     // several ranges in one add keep their own numbering
     let many = s
         .execute(
@@ -228,7 +252,7 @@ fn queue_add_numbers_an_output_another_queued_item_writes() {
         )
         .unwrap();
     assert_eq!(many["warnings"], json!([]));
-    assert_eq!(paths(&mut s)[4..], [dir.path("set.wav"), dir.path("set_2.wav")]);
+    assert_eq!(paths(&mut s), [dir.path("set.wav"), dir.path("set_2.wav")]);
 }
 
 #[test]
