@@ -85,7 +85,9 @@ fn parse_channels(s: &str) -> Option<Vec<Ch>> {
             "V" => out.push(Ch::V),
             "A" | "A1" => out.push(Ch::A(1)),
             "AA" => out.extend([Ch::A(1), Ch::A(2)]),
-            p if p.starts_with('A') && p[1..].parse::<usize>().is_ok_and(|n| (1..=99).contains(&n)) => out.push(Ch::A(p[1..].parse().ok()?)),
+            p if p.starts_with('A') && p[1..].bytes().all(|b| b.is_ascii_digit()) && p[1..].parse::<usize>().is_ok_and(|n| (1..=99).contains(&n)) => {
+                out.push(Ch::A(p[1..].parse().ok()?))
+            }
             _ => return None,
         }
     }
@@ -1155,6 +1157,7 @@ mod tests {
         assert_eq!(parse_channels("AA/V"), Some(vec![Ch::A(1), Ch::A(2), Ch::V]));
         assert_eq!(parse_channels("A4"), Some(vec![Ch::A(4)]));
         assert_eq!(parse_channels("X"), None);
+        assert_eq!(parse_channels("A+4"), None);
     }
 
     #[test]
