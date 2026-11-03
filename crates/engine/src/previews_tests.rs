@@ -362,6 +362,16 @@ fn float_wav_round_trip() {
 }
 
 #[test]
+fn wav_header_matches_the_whole_file_writer_and_refuses_what_does_not_fit() {
+    let x = vec![0.5f32; 200];
+    let whole = crate::previews::write_wav_f32(&x, 44_100);
+    assert_eq!(&crate::previews::wav_header_f32(100, 44_100).unwrap()[..], &whole[..44]);
+    // 2^29 frames of 8 bytes is 4 GiB: the format's 32-bit sizes cannot hold it
+    assert!(crate::previews::wav_header_f32(1 << 29, 48_000).is_none());
+    assert!(crate::previews::wav_header_f32(u64::MAX, 48_000).is_none());
+}
+
+#[test]
 fn bar_state_serializes_lowercase() {
     assert_eq!(serde_json::to_value(BarState::Green).unwrap(), json!("green"));
 }
