@@ -106,6 +106,14 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
+    /// [`Services::write_file`] with the contents written by `fill` as they are made, for files
+    /// too large to build in memory first. The default collects them and calls `write_file`
+    /// (hosts without a filesystem keep the file in memory anyway); `fill` failing writes nothing.
+    fn write_file_with(&self, path: &str, fill: &mut dyn FnMut(&mut dyn std::io::Write) -> std::io::Result<()>) -> std::io::Result<()> {
+        let mut data = Vec::new();
+        fill(&mut data)?;
+        self.write_file(path, &data)
+    }
     /// Publish a complete new file only when the final path is unoccupied. Publication must
     /// reject a concurrent collision; a prior existence check alone is insufficient.
     /// Return `ErrorKind::AlreadyExists` for an occupied final path so the importer can retry
@@ -170,6 +178,14 @@ impl Services for FsServices {
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
         filmcraft_format::atomic_write(std::path::Path::new(path), data)
+    }
+    fn write_file_with(&self, path: &str, fill: &mut dyn FnMut(&mut dyn std::io::Write) -> std::io::Result<()>) -> std::io::Result<()> {
+        // Streamed into the same atomic temp file, so a failure leaves the old file in place.
+        filmcraft_format::atomic_write_with(std::path::Path::new(path), |file| {
+            let mut out = std::io::BufWriter::new(file);
+            fill(&mut out)?;
+            std::io::Write::flush(&mut out)
+        })
     }
     fn write_file_new(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         let path = std::path::Path::new(path);

@@ -267,15 +267,46 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let every_frame_until = bool_p(p, "everyFrame").unwrap_or(false).then(|| seq.duration());
     if format == Format::Mcc
         && let Some(end) = every_frame_until
-        && end > filmcraft_captions::mcc::RATE.tick_of(filmcraft_captions::mcc::MAX_PADDED_FRAMES)
     {
-        return Err(bad("captions.export", "`everyFrame` covers at most 24 hours, and the sequence is longer"));
+        // MCC is written at 29.97 fps: one packet per video frame needs 29.97 fps video
+        let (mcc_rate, rate) = (filmcraft_captions::mcc::RATE, seq.settings.frame_rate);
+        if rate != mcc_rate {
+            return Err(bad("captions.export", format!("`everyFrame` needs a {mcc_rate} sequence, as MCC is written at {mcc_rate}, and this one is {rate}")));
+        }
+        if end > mcc_rate.tick_of(filmcraft_captions::mcc::MAX_PADDED_FRAMES) {
+            return Err(bad("captions.export", "`everyFrame` covers at most 24 hours, and the sequence is longer"));
+        }
     }
     let opts = WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate), every_frame_until };
-    let bytes = filmcraft_captions::write(&doc, format, opts);
     let n = doc.cues.len();
-    s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
-    Ok(json!({"path": path, "format": format.name(), "captions": n, "bytes": bytes.len()}))
+    // streamed: a padded MCC of a long sequence is too big to build in memory first
+    let mut bytes = 0u64;
+    s.services
+        .write_file_with(&path, &mut |out: &mut dyn std::io::Write| -> std::io::Result<()> {
+            let mut out = Counted { inner: out, bytes: 0 };
+            filmcraft_captions::write_to(&mut out, &doc, format, opts)?;
+            bytes = out.bytes;
+            Ok(())
+        })
+        .map_err(|e| EngineError::Other(e.to_string()))?;
+    Ok(json!({"path": path, "format": format.name(), "captions": n, "bytes": bytes}))
+}
+
+/// A writer that counts the bytes it passes on.
+struct Counted<'a> {
+    inner: &'a mut dyn std::io::Write,
+    bytes: u64,
+}
+
+impl std::io::Write for Counted<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.bytes = self.bytes.saturating_add(n as u64);
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn delta_p(s: &Session, p: &Value) -> Option<Tick> {
@@ -615,7 +646,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Captions…",
             &["File", "Export"],
             None,
-            r#"{"path":str,"format":"srt|vtt|scc|mcc|stl|ttml|dfxp"? (default: from the extension),"track":id|"C1"?,"dropFrame":bool=true,"everyFrame":bool=false (MCC: a packet on every frame to the sequence end)}"#,
+            r#"{"path":str,"format":"srt|vtt|scc|mcc|stl|ttml|dfxp"? (default: from the extension),"track":id|"C1"?,"dropFrame":bool=true,"everyFrame":bool=false (MCC, 29.97 fps sequences: a packet on every frame to the sequence end)}"#,
             has_caption_track,
             export,
         ),

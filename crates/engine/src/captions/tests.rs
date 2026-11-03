@@ -394,6 +394,7 @@ fn caption_export_writes_an_mcc_packet_on_every_frame_on_request() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("cc.mcc").to_string_lossy().to_string();
     let mut s = demo();
+    s.execute("sequence.settings", json!({"fps": 29.97})).unwrap();
     s.execute("captions.add", json!({"text": "First", "seconds": 1.0, "durationSeconds": 1.0})).unwrap();
     s.execute("captions.add", json!({"text": "Last", "seconds": 3.0, "durationSeconds": 1.0})).unwrap();
     let data_lines = |s: &mut Session, p: serde_json::Value| {
@@ -412,5 +413,27 @@ fn caption_export_writes_an_mcc_packet_on_every_frame_on_request() {
     let err = s.execute("captions.export", json!({"path": path, "everyFrame": true})).unwrap_err();
     assert!(err.to_string().contains("24 hours"), "{err}");
     assert!(s.execute("captions.export", json!({"path": path})).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// MCC is written at 29.97 fps, so `everyFrame` matches the video frames only in a 29.97 fps
+/// sequence and is refused at any other rate. A sparse MCC exports at every rate.
+#[test]
+fn caption_export_every_frame_needs_a_29_97_fps_sequence() {
+    let dir = std::env::temp_dir().join(format!("fc-cap-mcc-rate-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cc.mcc").to_string_lossy().to_string();
+    let mut s = demo();
+    s.execute("captions.add", json!({"text": "First", "seconds": 1.0, "durationSeconds": 1.0})).unwrap();
+    // (sequence fps, everyFrame allowed)
+    for (fps, allowed) in [(23.976, false), (24.0, false), (25.0, false), (29.97, true), (30.0, false), (50.0, false), (59.94, false)] {
+        s.execute("sequence.settings", json!({"fps": fps})).unwrap();
+        let r = s.execute("captions.export", json!({"path": path, "everyFrame": true}));
+        assert_eq!(r.is_ok(), allowed, "{fps} fps: {r:?}");
+        if let Err(e) = r {
+            assert!(e.to_string().contains("needs a 29.97 fps sequence"), "{fps} fps: {e}");
+        }
+        assert!(s.execute("captions.export", json!({"path": path})).is_ok(), "{fps} fps, sparse");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

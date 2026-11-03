@@ -561,30 +561,40 @@ pub fn write_with(doc: &Document, drop_frame: bool, cea608: bool, cea708: bool) 
 /// video frame. Frames with caption data after `pad_frames` are written as usual. At most
 /// [`MAX_PADDED_FRAMES`] are filled.
 pub fn write_padded(doc: &Document, drop_frame: bool, cea608: bool, cea708: bool, pad_frames: i64) -> String {
+    let mut out = Vec::new();
+    // writing into a Vec cannot fail, and the text is ASCII
+    let _ = write_padded_to(&mut out, doc, drop_frame, cea608, cea708, pad_frames);
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+/// [`write_padded`] into `out` line by line, so a long padded export is never held in memory.
+pub fn write_padded_to(out: &mut dyn std::io::Write, doc: &Document, drop_frame: bool, cea608: bool, cea708: bool, pad_frames: i64) -> std::io::Result<()> {
     let pad = pad_frames.clamp(0, MAX_PADDED_FRAMES);
     let f1 = if cea608 { scc::schedule(doc) } else { BTreeMap::new() };
     let dtv = if cea708 { schedule_708(doc) } else { BTreeMap::new() };
-    let mut out = String::from("File Format=MacCaption_MCC V1.0\n\n");
-    out.push_str("///////////////////////////////////////////////////////////////////////////////////\n");
-    out.push_str("// Closed captions written by FilmCraft: SMPTE ST 334-2 caption distribution packets\n");
-    out.push_str(if pad > 0 {
-        "// carrying CEA-608 field 1 and CEA-708 service 1 data; a packet on every frame.\n"
+    out.write_all(b"File Format=MacCaption_MCC V1.0\n\n")?;
+    out.write_all(b"///////////////////////////////////////////////////////////////////////////////////\n")?;
+    out.write_all(b"// Closed captions written by FilmCraft: SMPTE ST 334-2 caption distribution packets\n")?;
+    let frames: &[u8] = if pad > 0 {
+        b"// carrying CEA-608 field 1 and CEA-708 service 1 data; a packet on every frame.\n"
     } else {
-        "// carrying CEA-608 field 1 and CEA-708 service 1 data; empty frames omitted.\n"
-    });
-    out.push_str("///////////////////////////////////////////////////////////////////////////////////\n\n");
+        b"// carrying CEA-608 field 1 and CEA-708 service 1 data; empty frames omitted.\n"
+    };
+    out.write_all(frames)?;
+    out.write_all(b"///////////////////////////////////////////////////////////////////////////////////\n\n")?;
     let n = doc.cues.len() as u64;
     let h = doc.cues.iter().fold(0xcbf2_9ce4_8422_2325u64 ^ n, |h, c| (h ^ c.start.0 as u64 ^ (c.end.0 as u64).rotate_left(17)).wrapping_mul(0x100_0000_01b3));
-    out.push_str(&format!(
-        "UUID={:08X}-{:04X}-4{:03X}-8{:03X}-{:012X}\n",
+    writeln!(
+        out,
+        "UUID={:08X}-{:04X}-4{:03X}-8{:03X}-{:012X}",
         h >> 32,
         (h >> 16) & 0xffff,
         h & 0xfff,
         (h >> 20) & 0xfff,
         h.rotate_left(29) & 0xffff_ffff_ffff
-    ));
-    out.push_str("Creation Program=FilmCraft\n");
-    out.push_str(&format!("Time Code Rate={}\n\n", if drop_frame { "30DF" } else { "30" }));
+    )?;
+    out.write_all(b"Creation Program=FilmCraft\n")?;
+    writeln!(out, "Time Code Rate={}\n", if drop_frame { "30DF" } else { "30" })?;
     // Merge the sparse schedules without walking (or allocating for) input-derived time gaps.
     // Erase/hide commands are scheduled data too, so omitting padding preserves cue end times.
     // Padding walks only the frames before `pad`, which the caller chose and is capped.
@@ -602,10 +612,10 @@ pub fn write_padded(doc: &Document, drop_frame: bool, cea608: bool, cea708: bool
         };
         let (_, hh, mm, ss, ff) = frames_to_fields(f, RATE, drop_frame);
         let sep = if drop_frame { ';' } else { ':' };
-        out.push_str(&format!("{hh:02}:{mm:02}:{ss:02}{sep}{ff:02}\t{}\n", compress(&build_cdp(seq, &data))));
+        writeln!(out, "{hh:02}:{mm:02}:{ss:02}{sep}{ff:02}\t{}", compress(&build_cdp(seq, &data)))?;
         seq = seq.wrapping_add(1);
     }
-    out
+    Ok(())
 }
 
 fn tc_rate(v: &str) -> Option<(FrameRate, bool)> {

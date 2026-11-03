@@ -40,7 +40,8 @@ untouched and the status line says so; choosing `keep.vtt` itself in the save pa
 before replacing it, replaces it. Given a `path` (agents, the CLI), `captions.export` takes the
 format from `format` or from the file extension. An MCC has a packet only on the frames with caption data;
 `"everyFrame": true` writes one on every frame to the end of the sequence, as SDI and
-frame-wrapped MXF (SMPTE 436M) carry them.
+frame-wrapped MXF (SMPTE 436M) carry them. MCC is written at 29.97 fps, so this needs a 29.97 fps
+sequence.
 
 Details of each format and the SCC encoder are in [`crates/captions/README.md`](../crates/captions/README.md).
 

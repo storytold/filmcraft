@@ -75,8 +75,9 @@ cues or their duration (#2811). Empty-frame insertion is an optional MCC export 
 For consumers that need a packet on every video frame (SDI, frame-wrapped MXF with a SMPTE 436M
 track), `WriteOptions::every_frame_until` (`captions.export {"everyFrame": true}`) also writes one
 on every frame without caption data, from the start to the end of the sequence: CEA-608 null pairs
-and CEA-708 padding (#4024). It is off by default, so export size keeps following the caption data,
-and covers at most 24 hours (`mcc::MAX_PADDED_FRAMES`).
+and CEA-708 padding (#4024). The packets are 29.97 fps, so `captions.export` allows it only in a
+29.97 fps sequence. It is off by default, so export size keeps following the caption data, covers
+at most 24 hours (`mcc::MAX_PADDED_FRAMES`), and is streamed to the file (`write_to`).
 
 Regression tests cover sparse output, both caption streams individually and together, drop-frame
 and non-drop timecodes, exact cue round trips, and timestamps near the tick storage limit.
