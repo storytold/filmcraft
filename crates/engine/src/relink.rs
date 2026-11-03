@@ -339,8 +339,9 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
             if let Some(info) = &p.cand.info {
                 let new_tc = info.start_timecode;
                 if align_timecode && let (Some(a), Some(b)) = (old_tc, new_tc) {
-                    // what was at old timecode a + t sits at new media time t + (a - b)
-                    shift = rate.tick_of(b - a);
+                    // what was at old timecode a + t sits at new media time t + (a - b), each
+                    // timecode in its own file's frames (an EDL item's are at the list's rate)
+                    shift = info.frame_rate().tick_of(b) - rate.tick_of(a);
                 }
                 m.info = info.clone();
             }
