@@ -1040,6 +1040,10 @@ impl FxEnv for ClipEnv {
     fn clip_key(&self) -> u64 {
         self.key
     }
+    /// The picture is the media: two envs with one key but different pictures are two projects.
+    fn source_key(&self) -> u64 {
+        self.pic as usize as u64
+    }
 }
 
 fn texture(x: f64, y: f64) -> [f32; 3] {
@@ -1292,6 +1296,20 @@ fn the_active_picture_is_inside_bars_on_both_sides_only() {
     // black on one side only (a night sky) and a black clip have no bars
     assert_eq!(active(0xBA57, dark_top), [0.0, 0.0, 1.0, 1.0]);
     assert_eq!(active(0xBA58, black), [0.0, 0.0, 1.0, 1.0]);
+}
+
+#[test]
+fn clips_with_one_key_but_other_media_get_their_own_active_picture() {
+    // two projects can give their clips the same ids and timing, so the same clip key
+    fn scope(_x: f64, y: f64, _t: f64) -> [f32; 3] {
+        if (12.0..78.0).contains(&y) { [0.3; 3] } else { [0.0; 3] }
+    }
+    fn full(_x: f64, _y: f64, _t: f64) -> [f32; 3] {
+        [0.3; 3]
+    }
+    let active = |pic| temporal::active_picture(&ClipEnv { w: 160, h: 90, fps: 24.0, secs: 1.0, now: 0.0, key: 0xBA59, seq: (90, 160), pic }, 0.0);
+    assert_eq!(active(scope), [0.0, 13.0 / 90.0, 1.0, 1.0 - 13.0 / 90.0]);
+    assert_eq!(active(full), [0.0, 0.0, 1.0, 1.0]);
 }
 
 // ------------------------------------------------------------------ through the compositor

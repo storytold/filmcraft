@@ -146,6 +146,13 @@ fn centroid_cache() -> &'static CentroidCache {
     C.get_or_init(Default::default)
 }
 
+/// The key of a clip's analyses in the process-wide caches: its place and range ([`FxEnv::clip_key`],
+/// project-local) and the media it shows ([`FxEnv::source_key`]), so two projects whose clips share
+/// ids and timing don't get each other's results.
+fn analysis_key(env: &dyn FxEnv) -> u64 {
+    (env.clip_key() ^ env.source_key()).wrapping_mul(0x0100_0000_01b3)
+}
+
 type ActiveCache = Mutex<HashMap<u64, [f64; 4]>>;
 fn active_cache() -> &'static ActiveCache {
     static C: OnceLock<ActiveCache> = OnceLock::new();
@@ -163,7 +170,7 @@ const WHOLE_FRAME: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
 /// of about the same size, that stay black (below 24 / 255 in sRGB, as video black and its noise
 /// are) in every one of a few frames sampled over the clip. A dark sky on one side is not a bar.
 pub(super) fn active_picture(env: &dyn FxEnv, now: f64) -> [f64; 4] {
-    let key = env.clip_key();
+    let key = analysis_key(env);
     if let Some(a) = active_cache().lock().ok().and_then(|c| c.get(&key).copied()) {
         return a;
     }
@@ -251,7 +258,7 @@ pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let (half, step) = [(1.0, 0.25), (0.5, 0.125), (0.15, 0.05)][chv(e, "preset").min(2) as usize];
     let subject = match cx.env {
         Some(env) => {
-            let key = env.clip_key();
+            let key = analysis_key(env);
             let fps = env.frame_rate().max(1.0);
             let mut acc = (0.0f64, 0.0f64, 0.0f64);
             let mut k = -half;
