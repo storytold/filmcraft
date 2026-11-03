@@ -50,13 +50,14 @@ pub fn visible_layers(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Vec<L
 }
 
 /// Screen → graphic-canvas mapping for new layers: the selected graphic clip under the playhead
-/// (its Motion applies), else the sequence frame.
+/// (its Motion applies) on a track that is not locked (#4162), else the sequence frame.
 pub(super) fn canvas_target(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> (Option<ClipId>, Affine) {
     let screen = frame_to_screen(pic, frame);
     let t = app.session.playhead();
     if let Some((c, it)) = selected_graphic(app)
         && it.range().contains(t)
         && let Some(seq) = app.session.active_sequence()
+        && seq.find_item(c).is_some_and(|(track, _)| seq.track(track).is_some_and(|tr| !tr.locked))
         && let Some(ItemKind::Graphic { width, height, .. }) = app.session.project.item(it.item).map(|p| &p.kind)
     {
         let m = screen.then_apply(&filmcraft_render::motion_matrix(seq, &it, (*width, *height), None, it.source_time_at(t)));

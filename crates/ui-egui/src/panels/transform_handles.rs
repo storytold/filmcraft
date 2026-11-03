@@ -527,7 +527,7 @@ fn clip_under(app: &FilmcraftApp, pic: Rect, frame: (u32, u32), p: Pos2) -> Opti
 /// The selected effect's box (or Corner Pin's corners) on the Program monitor picture `pic`, and
 /// double-clicking a clip's picture to select its Motion.
 pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32, u32)) {
-    if app.ui.tool != Tool::Selection || app.ui.mask_pen.is_some() {
+    if app.ui.tool != Tool::Selection || crate::panels::masks::pen_drawing(app) {
         return;
     }
     let mut actions: Vec<(String, Value)> = Vec::new();

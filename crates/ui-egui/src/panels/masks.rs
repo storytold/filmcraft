@@ -783,6 +783,14 @@ pub(crate) fn pen_take_back(app: &mut FilmcraftApp, ctx: &egui::Context, text_fo
     }
 }
 
+/// Whether the pen is drawing a mask on the Program monitor: a draft whose clip is on a track that
+/// is not locked (#4162). A locked one leaves the monitor's clicks to the other tools.
+pub(crate) fn pen_drawing(app: &FilmcraftApp) -> bool {
+    let Some(draft) = app.ui.mask_pen.as_ref() else { return false };
+    let Some(seq) = app.session.active_sequence() else { return false };
+    seq.find_item(ClipId(draft.clip)).is_some_and(|(t, _)| seq.track(t).is_some_and(|t| !t.locked))
+}
+
 fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32, u32)) {
     let Some(draft) = app.ui.mask_pen.clone() else { return };
     let ph = app.session.playhead();
@@ -792,7 +800,11 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
         app.ui.mask_pen = None;
         return;
     };
+    // a clip on a locked track takes no points; the draft waits, and Escape still drops it
     if locked {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            app.ui.mask_pen = None;
+        }
         return;
     }
     let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));

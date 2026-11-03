@@ -263,6 +263,27 @@ fn point_text_handles_scale_it_about_its_anchor() {
     assert_eq!(num(&d.layer(clip)["scale"]), s);
 }
 
+/// The Type tool does not add a layer to a selected graphic on a locked track: the text goes into
+/// a new graphic instead (#4162).
+#[test]
+fn the_type_tool_leaves_a_locked_graphic_alone() {
+    let mut d = Driver::new();
+    let (clip, _) = d.point_text();
+    let track = d.harness.state().session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().0;
+    d.exec("timeline.setTrack", json!({"track": track.0, "locked": true}));
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.3, "y": pic[1] + pic[3] * 0.2}));
+    d.ok("ui.type", json!({"text": "Other"}));
+    d.ok("ui.key", json!({"key": "Escape"}));
+    let locked = d.exec("graphics.list", json!({"clip": clip}));
+    assert_eq!(locked["layers"].as_array().map(Vec::len), Some(1), "the locked graphic keeps its one layer");
+    let list = d.exec("graphics.list", json!({}));
+    assert_ne!(list["clip"], json!(clip), "a new graphic takes the text");
+    assert_eq!(list["layers"][0]["text"], "Other");
+}
+
 /// A layer on a locked track shows on the Program monitor but has no box to take hold of (#4162).
 #[test]
 fn a_locked_tracks_layer_stays_put_on_the_monitor() {
