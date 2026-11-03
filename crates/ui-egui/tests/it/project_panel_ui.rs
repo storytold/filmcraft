@@ -1348,6 +1348,71 @@ fn imported_bulk_selections_keep_their_recorded_order_on_drop() {
 }
 
 #[test]
+fn selected_long_names_show_one_combined_order_tooltip() {
+    for view in ["list", "icon", "freeform"] {
+        let (mut d, _files, selected) = imported_drag_driver(view);
+        let id = selected[0];
+        let name = "A very long imported clip name that cannot fit in this Project view and must be shortened.wav";
+        std::sync::Arc::make_mut(&mut d.app().session.project).item_mut(id).unwrap().name = name.into();
+        d.exec("project.select", json!({"items": [id.0]}));
+        d.frames(3);
+        let hover_name = |d: &mut Driver| {
+            d.ok("ui.move", json!({"id": format!("project.item.{}.name", id.0)}));
+            d.frames(2);
+            let now = d.harness.ctx.input(|i| i.time);
+            d.harness.input_mut().time = Some(now + 1.0);
+            d.frames(2);
+        };
+        let before = d.harness.query_all_by_label(name).count();
+        hover_name(&mut d);
+        let combined = format!("{name}\nSelection order: 1 of 1");
+        assert!(d.harness.query_all_by_label(&combined).count() > 0, "{view}: full name and selection order remain available");
+        d.snapshot(&format!("project-selected-name-tooltip-{view}"), None);
+        assert_eq!(d.harness.query_all_by_label(name).count(), before, "{view}: the selection tooltip already includes the full filename");
+
+        d.ok("ui.move", json!({"x": 1500.0, "y": 100.0}));
+        d.exec("project.select", json!({"items": []}));
+        d.frames(3);
+        let before = d.harness.query_all_by_label(name).count();
+        hover_name(&mut d);
+        assert!(d.harness.query_all_by_label(name).count() > before, "{view}: an unselected shortened name keeps its tooltip");
+    }
+}
+
+#[test]
+fn selection_badge_click_preserves_selection_without_starting_rename() {
+    for size in [48, 80, 200] {
+        let (mut d, _files, selected) = imported_drag_driver("icon");
+        let id = selected[0];
+        d.exec("project.view.set", json!({"view": "icon", "iconSize": size}));
+        d.exec("project.select", json!({"items": [id.0]}));
+        d.frames(3);
+        let before = d.app().session.project.clone();
+        let advance = |d: &mut Driver| {
+            let now = d.harness.ctx.input(|i| i.time);
+            d.harness.input_mut().time = Some(now + 1.0);
+            d.frames(2);
+        };
+        advance(&mut d);
+        d.click(&format!("project.item.{}.selectionOrder", id.0));
+        advance(&mut d);
+        d.snapshot(&format!("project-badge-plain-click-{size}"), None);
+        assert!(d.app().ui.project_panel.rename.is_none(), "size {size}: a selection badge is not a filename");
+        assert_eq!(d.app().session.state.project_selection, [id]);
+        assert_eq!(d.app().session.project, before);
+
+        d.click(&format!("project.item.{}.name", id.0));
+        advance(&mut d);
+        assert_eq!(d.app().ui.project_panel.rename.as_ref().and_then(|rename| rename.item), Some(id.0), "size {size}: a name click still starts rename");
+        assert!(d.has("project.rename"), "size {size}: the filename editor is shown");
+        d.key("Escape");
+        assert!(d.app().ui.project_panel.rename.is_none(), "size {size}: Escape closes rename");
+        assert!(!d.has("project.rename"), "size {size}: the filename editor is gone");
+        assert_eq!(d.app().session.project, before);
+    }
+}
+
+#[test]
 fn selection_badges_renumber_on_deselect_and_append_on_reselect() {
     for view in ["list", "icon", "freeform"] {
         let (mut d, _files, selected) = imported_drag_driver(view);

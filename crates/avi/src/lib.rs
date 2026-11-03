@@ -231,12 +231,15 @@ fn header_at<S: ByteSource + ?Sized>(src: &S, at: u64) -> Result<([u8; 4], u64, 
 }
 
 /// Iterate the chunks of `[from, to)`: (id, size, data offset). Stops at the first unreadable
-/// header; every step moves forward, so it ends.
+/// header; every step moves forward, so it ends. A child's size is clamped to its parent's end,
+/// so lists never reach past their container: overlapping `movi` or `rec ` lists would otherwise
+/// each scan (and record) the same physical chunks again.
 fn children<S: ByteSource + ?Sized>(src: &S, from: u64, to: u64) -> Vec<([u8; 4], u64, u64)> {
     let mut out = Vec::new();
     let mut at = from;
     while at.checked_add(8).is_some_and(|e| e <= to) {
         let Ok((id, size, data)) = header_at(src, at) else { break };
+        let size = size.min(to.saturating_sub(data));
         out.push((id, size, data));
         // chunks are padded to an even size
         let Some(next) = data.checked_add(size).and_then(|e| e.checked_add(size & 1)) else { break };

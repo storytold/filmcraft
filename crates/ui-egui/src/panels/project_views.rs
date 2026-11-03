@@ -37,13 +37,18 @@ pub fn item_icon(k: &ItemKind) -> Icon {
 pub struct Badge {
     pub offline: bool,
     pub offline_text: &'static str,
+    /// Why an Unreadable item cannot be read: the error the media pool recorded, shown on hover.
+    pub offline_reason: Option<String>,
     pub proxy: bool,
     /// Proxies are enabled (the badge is lit).
     pub proxy_on: bool,
 }
 
+/// An item's badges in the Project panel, read from its media (a subclip reads its parent's):
+/// offline, with the word the badge shows and, for an Unreadable file, the error the media pool
+/// recorded; then whether a proxy is attached and whether proxies are on.
 pub fn media_badge(app: &FilmcraftApp, it: &filmcraft_project::ProjectItem) -> Badge {
-    let mut b = Badge { offline: false, offline_text: "", proxy: false, proxy_on: false };
+    let mut b = Badge { offline: false, offline_text: "", offline_reason: None, proxy: false, proxy_on: false };
     let target = match &it.kind {
         ItemKind::Subclip { parent, .. } => app.session.project.item(*parent),
         _ => Some(it),
@@ -56,23 +61,60 @@ pub fn media_badge(app: &FilmcraftApp, it: &filmcraft_project::ProjectItem) -> B
         (b.offline, b.offline_text) = (true, tl!("Media missing"));
     } else if let Some(st) = app.session.media.offline_status(id) {
         b.offline = true;
-        b.offline_text = if st.reason == filmcraft_render::offline::OfflineReason::Unreadable { tl!("Unreadable") } else { tl!("Media missing") };
+        if st.reason == filmcraft_render::offline::OfflineReason::Unreadable {
+            b.offline_text = tl!("Unreadable");
+            b.offline_reason = Some(st.error).filter(|e| !e.is_empty());
+        } else {
+            b.offline_text = tl!("Media missing");
+        }
     }
     b.proxy = m.proxy.is_some();
     b.proxy_on = app.session.media.use_proxies();
     b
 }
 
-fn paint_badges(ui: &egui::Ui, b: &Badge, at: egui::Pos2, t: &Tokens) {
+/// Paint the List view's offline icon and proxy chip from `at`, and register the offline badge.
+fn paint_badges(app: &mut FilmcraftApp, ui: &egui::Ui, b: &Badge, at: egui::Pos2, pre: &str, id: ItemId) {
+    let t = app.tokens;
     let mut x = at.x;
     if b.offline {
-        icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 7.0, at.y), vec2(13.0, 13.0)), Icon::Offline, OFFLINE);
+        let r = Rect::from_center_size(pos2(x + 7.0, at.y), vec2(13.0, 13.0));
+        icons::paint(ui.painter(), r, Icon::Offline, OFFLINE);
+        offline_badge(app, ui, r, pre, id, b);
         x += 18.0;
     }
     if b.proxy {
         let pr = Rect::from_min_size(pos2(x, at.y - 7.0), vec2(16.0, 14.0));
         ui.painter().rect_filled(pr, 2.0, if b.proxy_on { t.accent } else { Color32::from_gray(70) });
         ui.painter().text(pr.center(), Align2::CENTER_CENTER, "P", Tokens::ui(10.0), Color32::WHITE);
+    }
+}
+
+/// The part of a List-view name column `name_r` the item's name may use, and whether its badges
+/// get the rest. The badges (6 px after the name, then the offline icon's 18 px and the proxy chip's
+/// 16 px, as [`paint_badges`] draws them) keep their room at the column's end and a long name is cut
+/// short before them, so the name never hides an Unreadable badge and its reason. Only a column too
+/// narrow for the badges leaves them out.
+fn name_room(b: &Badge, name_r: Rect) -> (Rect, bool) {
+    let mut w = 6.0;
+    if b.offline {
+        w += 18.0;
+    }
+    if b.proxy {
+        w += 16.0;
+    }
+    // the name starts 2 px into the column
+    let fits = (b.offline || b.proxy) && name_r.width() >= w + 2.0;
+    let text_r = if fits { Rect::from_min_max(name_r.min, pos2(name_r.max.x - w, name_r.max.y)) } else { name_r };
+    (text_r, fits)
+}
+
+/// Register the offline badge drawn at `rect`. An Unreadable badge shows on hover why the file
+/// cannot be read, such as "no decoder for Apple Intermediate Codec video" (#3646).
+fn offline_badge(app: &mut FilmcraftApp, ui: &egui::Ui, rect: Rect, pre: &str, id: ItemId, badge: &Badge) {
+    app.auto.add(&format!("{pre}.item.{}.offline", id.0), rect, badge.offline_text);
+    if let Some(why) = &badge.offline_reason {
+        ui.interact(rect, egui::Id::unique((pre, "offline", id.0)), Sense::hover()).on_hover_text(why);
     }
 }
 
@@ -899,15 +941,19 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
         app.auto.add(&format!("{}.item.{}.name", v.prefix, id.0), name_r.intersect(ui.clip_rect()), &it.name);
         let badge = media_badge(app, &it);
         if !rename_field(app, ui, name_r, Some(id.0), None, &v.prefix) {
-            let nr = ui.painter().with_clip_rect(name_r).text(
-                pos2(name_r.min.x + 2.0, r.center().y),
-                Align2::LEFT_CENTER,
-                &it.name,
-                Tokens::ui(lc.font),
-                if badge.offline { OFFLINE } else { t.text },
-            );
-            if nr.max.x + 40.0 < name_r.max.x {
-                paint_badges(ui, &badge, pos2(nr.max.x + 6.0, r.center().y), &t);
+            let (text_r, badges) = name_room(&badge, name_r);
+            // a name cut short ends in "…" and shows in full on hover, as on the cards
+            let color = if badge.offline { OFFLINE } else { t.text };
+            let g = elided_name(ui, &it.name, Tokens::ui(lc.font), color, text_r.max.x - name_r.min.x - 2.0);
+            let elided = g.elided;
+            let at = pos2(name_r.min.x + 2.0, r.center().y - g.size().y / 2.0);
+            let end = at.x + g.size().x;
+            ui.painter().with_clip_rect(text_r).galley(at, g, color);
+            if elided && !lc.order.0.contains_key(&id) && ui.rect_contains_pointer(text_r) {
+                resp.clone().on_hover_text(&it.name);
+            }
+            if badges {
+                paint_badges(app, ui, &badge, pos2(end.min(text_r.max.x) + 6.0, r.center().y), &v.prefix, id);
             }
         }
         x += name_w;
@@ -983,7 +1029,7 @@ fn card(
     sense: Sense,
     footer_scale: f32,
     order: &SelectionOrder,
-) -> Option<(egui::Response, Option<Rect>)> {
+) -> Option<(egui::Response, Option<Rect>, Rect)> {
     let t = app.tokens;
     let it = app.session.project.item(id).cloned()?;
     let mut resp = ui.interact(r.expand(2.0), egui::Id::unique((pre, "card", id.0)), sense);
@@ -1042,7 +1088,7 @@ fn card(
         let in_band = ui.painter().with_clip_rect(band);
         icons::paint(&in_band, Rect::from_center_size(pos2(band.min.x + 12.0, band.center().y), vec2(13.0, 13.0)), Icon::Offline, Color32::WHITE);
         in_band.text(pos2(band.min.x + 24.0, band.center().y), Align2::LEFT_CENTER, badge.offline_text, Tokens::ui(10.5), Color32::WHITE);
-        app.auto.add(&format!("{pre}.item.{}.offline", id.0), band, badge.offline_text);
+        offline_badge(app, ui, band, pre, id, &badge);
     }
     if badge.proxy {
         let pr = Rect::from_min_size(pos2(th.max.x - 22.0, th.min.y + 4.0), vec2(18.0, 14.0)).intersect(th.shrink2(vec2(0.0, 1.0)));
@@ -1088,17 +1134,17 @@ fn card(
         let g = elided_name(ui, &it.name, Tokens::ui(f - 0.5), if badge.offline { OFFLINE } else { t.text }, (nr.width() - 12.0).max(0.0));
         let elided = g.elided;
         ui.painter().with_clip_rect(nr.intersect(ui.clip_rect())).galley(pos2(nr.min.x + 12.0, ty - g.size().y / 2.0), g, t.text);
-        if elided {
+        if elided && !order.0.contains_key(&id) {
             resp = resp.on_hover_text(&it.name);
         }
     }
     app.auto.add(&format!("{pre}.item.{}.name", id.0), nr.intersect(ui.clip_rect()), &it.name);
     app.auto.add(&format!("{pre}.item.{}", id.0), r, &it.name);
     order.annotate(ui, &resp, id, &it.name, selected);
-    Some((resp, order_badge))
+    Some((resp, order_badge, nr))
 }
 
-/// A one-line tile name cut to `max_width` with a trailing "…"; `elided` says whether it was cut,
+/// A one-line item name cut to `max_width` with a trailing "…"; `elided` says whether it was cut,
 /// so the caller can show the full name on hover.
 fn elided_name(ui: &egui::Ui, name: &str, font: egui::FontId, color: Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::single_section(name.to_owned(), egui::TextFormat::simple(font, color));
@@ -1189,9 +1235,8 @@ pub fn icon_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
                 let id = ids[i - bins.len()];
                 let Some(kind) = app.session.project.item(id).map(|x| x.kind.clone()) else { continue };
                 let was_selected = app.session.state.project_selection.contains(&id);
-                if let Some((resp, _)) = card(app, ui, r, id, &v.prefix, true, true, Sense::click_and_drag(), 1.0, &order) {
+                if let Some((resp, _, name_r)) = card(app, ui, r, id, &v.prefix, true, true, Sense::click_and_drag(), 1.0, &order) {
                     note_hit(ui, v, id, r);
-                    let name_r = Rect::from_min_max(pos2(r.min.x, r.min.y + th_h), r.max);
                     slow_click_rename(app, ui, &resp, name_r, id, was_selected);
                     item_interactions(
                         app,
@@ -1281,7 +1326,7 @@ pub fn freeform_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &
             let off = if moving(&c) { dragging.map(|d| d.1).unwrap_or_default() } else { egui::Vec2::ZERO };
             let r = Rect::from_min_size(canvas.min + vec2(c.x, c.y) * z + off, vec2(c.size * z, c.size * z * 9.0 / 16.0 + 20.0));
             let Some(kind) = app.session.project.item(ItemId(c.item)).map(|x| x.kind.clone()) else { continue };
-            let Some((resp, order_badge)) =
+            let Some((resp, order_badge, _)) =
                 card(app, ui, r, ItemId(c.item), &v.prefix, opts.show_names, opts.show_durations, Sense::click_and_drag(), z, &selection_order)
             else {
                 continue;
