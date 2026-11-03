@@ -473,15 +473,6 @@ pub fn motion_matrix(seq: &Sequence, item: &TrackItem, src: (u32, u32), src_par:
         let fit = (sw * q / (src.0.max(1) as f64 * p)).min(sh / src.1.max(1) as f64);
         scale = scale * fit;
     }
-    if vfx::reframes_to_sequence(item) {
-        // Auto Reframe on the sequence's aspect: the picture covers the frame at least, as Fill
-        // Frame makes it, and the effect picks the part that shows
-        let cover = Vec2::new(sw * q / (src.0.max(1) as f64 * p), sh / src.1.max(1) as f64);
-        let k = (cover.x / scale.x.abs()).max(cover.y / scale.y.abs());
-        if k.is_finite() && k > 1.0 {
-            scale = scale * k;
-        }
-    }
     // source px → (× p) display units → Scale, Rotation → (÷ q) sequence px. Without rotation the
     // two stretches merge into one horizontal factor, exactly 1 when the ratios are the same.
     if rot == 0.0 {
@@ -494,6 +485,38 @@ pub fn motion_matrix(seq: &Sequence, item: &TrackItem, src: (u32, u32), src_par:
         rot,
         anchor,
     ))
+}
+
+/// The placement of a clip whose Auto Reframe follows the sequence's aspect
+/// ([`vfx::reframes_to_sequence`]), for rendering with effects: `motion` ([`motion_matrix`]) scaled
+/// up about the source point at the frame's centre, just enough for the picture to cover the whole
+/// frame and never below Motion's own scale. Every frame corner is mapped back into the source, so
+/// Rotation, Position, a non-uniform Scale and pixel aspects are all counted. The effect then picks
+/// the window that shows. Other clips, and a frame centre off the picture, keep `motion`.
+pub(crate) fn reframe_cover(seq: &Sequence, item: &TrackItem, src: (u32, u32), motion: Affine) -> Affine {
+    if !vfx::reframes_to_sequence(item) {
+        return motion;
+    }
+    let Some(inv) = motion.inverse() else { return motion };
+    let (sw, sh) = (seq.settings.width as f64, seq.settings.height as f64);
+    let (w, h) = (src.0 as f64, src.1 as f64);
+    let c = inv.apply(Vec2::new(sw / 2.0, sh / 2.0));
+    if !(c.x > 0.0 && c.x < w && c.y > 0.0 && c.y < h) {
+        return motion;
+    }
+    // scaled by k about c, a corner mapped back to q lands at c + (q − c) / k: inside the source
+    // when k is at least the share of the room on that side it needs
+    let mut k: f64 = 1.0;
+    for corner in [Vec2::new(0.0, 0.0), Vec2::new(sw, 0.0), Vec2::new(0.0, sh), Vec2::new(sw, sh)] {
+        let q = inv.apply(corner);
+        let kx = if q.x > c.x { (q.x - c.x) / (w - c.x) } else { (c.x - q.x) / c.x };
+        let ky = if q.y > c.y { (q.y - c.y) / (h - c.y) } else { (c.y - q.y) / c.y };
+        k = k.max(kx).max(ky);
+    }
+    if !k.is_finite() || k <= 1.0 {
+        return motion;
+    }
+    motion.then_apply(&Affine::translate(c.x, c.y).then_apply(&Affine::scale(k, k)).then_apply(&Affine::translate(-c.x, -c.y)))
 }
 
 /// Render one track item's layer at timeline time `t` into a canvas-sized image.
@@ -545,6 +568,7 @@ pub(crate) fn item_layer_ex(
     let mt = item.effect_time_at(t);
     let src_size = source_size(project, item.item)?;
     let motion = motion_matrix(seq, item, src_size, source_par(project, item.item), mt);
+    let motion = if opts.effects { reframe_cover(seq, item, src_size, motion) } else { motion };
     // How many output pixels one source pixel covers → request a reduced frame when possible.
     let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
     let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
