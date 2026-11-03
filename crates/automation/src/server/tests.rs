@@ -485,6 +485,20 @@ async fn unread_parse_errors_stall_the_input() {
             assert!(got.is_some(), "replies stopped after {n} of {LINES}");
         }
     };
-    let (written, ()) = tokio::join!(write, drain);
+    let both = tokio::time::timeout(std::time::Duration::from_secs(120), async { tokio::join!(write, drain) });
+    let (written, ()) = both.await.expect("the drain stalled: input stopped being read");
     written.expect("the pending write completes once the output is read");
+}
+
+/// When the output fails, the reader stops: the server ends instead of waiting on an input whose replies cannot be delivered.
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_output_stops_the_reader() {
+    use tokio::io::AsyncWriteExt;
+    let (mut tx, server_in) = tokio::io::duplex(4096);
+    let (server_out, rx) = tokio::io::duplex(4096);
+    drop(rx);
+    let server = tokio::spawn(FilmcraftMcp::headless(Session::default()).serve_io(server_in, server_out));
+    tx.write_all(b"x\n").await.unwrap(); // `tx` stays open: only a failed output can end the server
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(30), server).await;
+    assert!(ended.is_ok(), "the server kept reading after its output failed");
 }

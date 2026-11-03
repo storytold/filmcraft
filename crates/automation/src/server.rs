@@ -229,7 +229,12 @@ impl FilmcraftMcp {
         let (err_tx, mut err_rx) = tokio::sync::mpsc::channel::<String>(MAX_QUEUED_PARSE_ERRORS);
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(input).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            // `err_tx.closed()`: the writer is gone (output failed), so stop forwarding requests whose replies cannot be delivered.
+            loop {
+                let line = tokio::select! {
+                    l = lines.next_line() => match l { Ok(Some(l)) => l, _ => break },
+                    () = err_tx.closed() => break,
+                };
                 if line.trim().is_empty() {
                     continue;
                 }
