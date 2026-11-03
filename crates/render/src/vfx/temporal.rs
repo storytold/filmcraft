@@ -226,10 +226,13 @@ pub fn auto_reframe(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     // the aspect of the window, in layer pixels
     let r = match (chv(e, "aspect"), cx.env) {
         (0, Some(env)) => {
-            // the frame's: the layer-to-output matrix carries pixel aspects and a non-uniform Scale
+            // the frame's, as the layer sees it: the box around the frame mapped back into the
+            // layer, so pixel aspects, a non-uniform Scale and Rotation count (a quarter turn swaps
+            // the sides)
+            let Some(i) = env.layer_to_output().inverse() else { return };
             let (sw, sh) = env.sequence_size();
-            let m = env.layer_to_output();
-            sw as f64 * m.c.hypot(m.d) / (sh as f64 * m.a.hypot(m.b))
+            let (sw, sh) = (sw as f64, sh as f64);
+            ((i.a * sw).abs() + (i.c * sh).abs()) / ((i.b * sw).abs() + (i.d * sh).abs())
         }
         (0, None) => return,
         (a, _) => [16.0 / 9.0, 9.0 / 16.0, 1.0, 4.0 / 5.0, 16.0 / 9.0][a.min(4) as usize],
