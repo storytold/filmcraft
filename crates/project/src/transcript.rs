@@ -62,6 +62,9 @@ pub struct Speaker {
     pub name: String,
 }
 
+/// Longest speaker name [`Transcript::speaker_name`] hands out, in bytes.
+pub const MAX_SPEAKER_NAME_BYTES: usize = 256;
+
 /// Distinct speakers one transcript can label; [`Transcript::normalize`] drops larger indices.
 pub const MAX_SPEAKERS: u32 = 1024;
 
@@ -81,9 +84,18 @@ pub struct Transcript {
 impl Transcript {
     /// The speaker name of `word` (`"Speaker 2"` when the label list is short; `None` when the word
     /// has no speaker).
+    ///
+    /// The name is cut to [`MAX_SPEAKER_NAME_BYTES`]: every word of a derived transcript carries a
+    /// copy, so one huge stored name must not be copied into thousands of words.
     pub fn speaker_name(&self, word: &Word) -> Option<String> {
         let i = word.speaker? as usize;
-        Some(self.speakers.get(i).map(|s| s.name.clone()).unwrap_or_else(|| format!("Speaker {}", i + 1)))
+        Some(match self.speakers.get(i) {
+            Some(s) => {
+                let end = (0..=MAX_SPEAKER_NAME_BYTES.min(s.name.len())).rev().find(|&e| s.name.is_char_boundary(e)).unwrap_or(0);
+                s.name[..end].to_string()
+            }
+            None => format!("Speaker {}", i + 1),
+        })
     }
 
     /// The text of all words joined by spaces.
@@ -171,6 +183,18 @@ mod tests {
         assert_eq!(t.speakers.len(), 2);
         assert_eq!(t.speaker_name(&t.words[1]).as_deref(), Some("Speaker 2"));
         t.check().unwrap();
+    }
+
+    #[test]
+    fn a_huge_speaker_name_is_cut_at_a_character_boundary() {
+        let name = "é".repeat(MAX_SPEAKER_NAME_BYTES); // two bytes each: the cut lands on a boundary
+        let mut t = Transcript { words: vec![w("a", 0, 10)], speakers: vec![Speaker { name: name.clone() }], ..Default::default() };
+        t.words[0].speaker = Some(0);
+        let got = t.speaker_name(&t.words[0]).unwrap();
+        assert_eq!(got.len(), MAX_SPEAKER_NAME_BYTES);
+        assert!(name.starts_with(&got));
+        t.speakers[0].name = "Ann".into();
+        assert_eq!(t.speaker_name(&t.words[0]).as_deref(), Some("Ann"));
     }
 
     #[test]
