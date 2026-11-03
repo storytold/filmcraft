@@ -411,3 +411,20 @@ fn caption_track_language_survives_import_and_ttml_export() {
     assert_eq!(langs, ["pt-BR", "es-419", "pt-BR"], "new tracks go on top: {list}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `captions.export` lists the characters an SCC or MCC file cannot carry (#4023).
+#[test]
+fn caption_export_warns_about_characters_608_and_708_cannot_carry() {
+    let dir = std::env::temp_dir().join(format!("fc-cap-charset-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = demo();
+    s.execute("captions.newTrack", json!({"format": "CEA-608", "language": "pt-BR"})).unwrap();
+    s.execute("captions.add", json!({"text": "Espere… isso é “demais” — não?", "seconds": 0.0, "durationSeconds": 2.0})).unwrap();
+    let export = |s: &mut Session, ext: &str| s.execute("captions.export", json!({"path": dir.join(format!("cc.{ext}")).to_string_lossy()})).unwrap();
+    let ellipsis = "CEA-608 has no \"…\" (U+2026): dropped once, first in the caption at 00:00:00;00";
+    assert_eq!(export(&mut s, "scc")["warnings"], json!([ellipsis]));
+    let em_dash = "CEA-708 has no \"—\" (U+2014): written as \"?\" once, first in the caption at 00:00:00;00";
+    assert_eq!(export(&mut s, "mcc")["warnings"], json!([ellipsis, em_dash]));
+    assert_eq!(export(&mut s, "srt")["warnings"], json!([]));
+    let _ = std::fs::remove_dir_all(&dir);
+}

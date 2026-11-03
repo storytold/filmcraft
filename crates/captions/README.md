@@ -61,7 +61,9 @@ frames before the caption, so back-to-back captions load while the previous one 
 Erase Displayed Memory clears the caption at its out point unless the next caption replaces it.
 Text is wrapped at 32 columns, bottom-aligned (last row 15) and centred. Characters come from the
 608 basic, special and extended sets (extended characters are preceded by a basic fallback
-character, as the standard requires); others are dropped. If there is no room to load a caption
+character, as the standard requires); a few have a close stand-in (’ as ', – as -) and others are
+dropped. `charset_warnings` names each dropped or replaced character, and `captions.export`
+returns them as `warnings`. If there is no room to load a caption
 before its in point (for example a caption at 00:00:00:00), it appears as soon as it is loaded.
 
 ### MCC writer
@@ -69,6 +71,8 @@ before its in point (for example a caption at 00:00:00:00), it appears as soon a
 The writer merges the scheduled CEA-608 and CEA-708 frames in timestamp order. Frames without
 caption data are omitted, including during a displayed caption; its explicit erase/hide command
 still lands at its out point. CDP sequence counters advance per emitted packet, wrapping at 16 bits.
+CEA-708 text uses the G0 and G1 (Latin-1) sets and part of G2 (… ‘ ’ “ ” • ™ and a few more);
+other characters are sent as `?`, and `charset_warnings` names them.
 Export work and output size therefore follow the scheduled caption data, not the time between
 cues or their duration (#2811). Empty-frame insertion is an optional MCC export behavior; see
 [EZTitles' MCC export documentation, "Write empty frames"](https://eztitles.com/Webhelp/EZTitles/export_subtitles_cc_mcc.htm).
