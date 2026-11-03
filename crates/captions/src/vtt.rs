@@ -57,12 +57,10 @@ fn unescape_text(text: &str) -> String {
 
 pub fn parse(text: &str) -> Result<Document> {
     let mut doc = Document::default();
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.lines().peekable();
     // signature + header text
-    let has_sig = lines.peek().is_some_and(|l| {
-        let l = l.trim_start_matches('\u{feff}');
-        l == "WEBVTT" || l.starts_with("WEBVTT ") || l.starts_with("WEBVTT\t")
-    });
+    let has_sig = lines.peek().is_some_and(|&l| l == "WEBVTT" || l.starts_with("WEBVTT ") || l.starts_with("WEBVTT\t"));
     if has_sig {
         for l in lines.by_ref() {
             if l.trim().is_empty() {
@@ -163,6 +161,13 @@ mod tests {
     use filmcraft_time::Tick;
 
     const SAMPLE: &str = "WEBVTT - with header\nKind: captions\n\nSTYLE\n::cue { color: yellow }\n\nNOTE a comment\nspanning lines\n\nintro\n00:01.000 --> 00:00:03.500 line:90% align:start\n<v.loud Ann Smith>Hello there\nsecond line\n\n00:00:04.000 --> 00:00:05.000\n<i>plain</i> &amp; tags\n";
+
+    #[test]
+    fn bom_without_signature_is_ignored() {
+        let d = parse("\u{feff}00:00:01.000 --> 00:00:02.000\nHi\n\n00:00:03.000 --> 00:00:04.000\nYo\n").unwrap();
+        assert_eq!(d.cues.len(), 2);
+        assert_eq!(d.cues[0].text, "Hi");
+    }
 
     #[test]
     fn style_region_identifier_cue_is_kept() {

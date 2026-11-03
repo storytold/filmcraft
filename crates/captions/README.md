@@ -16,7 +16,7 @@ and writes caption files, converts them to and from caption tracks, and draws ca
 | Scenarist SCC `.scc` | yes | yes | CEA-608 at 29.97 fps, drop-frame or not. Reads pop-on, roll-up and paint-on (channel 1); writes pop-on. |
 | MacCaption MCC `.mcc` | yes | yes | One SMPTE ST 334-2 caption distribution packet (CDP) per frame carrying caption data, omitting empty frames, in MacCaption's hex text with letter abbreviations. Writes 29.97 fps (`30DF` / `30`) with CEA-608 field 1 (the SCC schedule) **and** CEA-708 service 1 (two-window pop-on emulation). Reads CEA-608 field 1 when present, else CEA-708 service 1; time code rates 30DF, 30, 60DF, 60, 25, 24, 50. |
 | EBU STL `.stl` | yes | yes | EBU Tech 3264-E: GSI block + 128-byte TTI blocks, `STL25.01` (25 fps) or `STL30.01` (read/written as 29.97 fps, non-drop labels), ISO/IEC 6937 Latin text (accents as diacritic + letter), italics / underline codes as `<i>` / `<u>`, extension blocks for long subtitles, start-of-programme (TCP) subtracted. |
-| TTML `.ttml` (IMSC1) | yes | yes | Writes the IMSC1 Text profile (TTML2 namespaces): `<p>` per cue, `<br/>`, styled `<span>`s for `<i>` / `<b>` / `<u>`, `ttm:agent` speakers, exact frame times (`123f`) at the sequence rate. Reads any TTML (TTML1, TTML2, the 2006 `ttaf1` drafts): clock / frame / offset / tick times, `dur`, nested time containers (`body` / `div` begins offset and ends clip their contents; `seq` containers are read as `par` with a warning), timed spans, referenced styles. |
+| TTML `.ttml` (IMSC1) | yes | yes | Writes the IMSC1 Text profile (TTML2 namespaces) with the track's language as `xml:lang` (read back on import): `<p>` per cue, `<br/>`, styled `<span>`s for `<i>` / `<b>` / `<u>`, `ttm:agent` speakers, exact frame times (`123f`) at the sequence rate. Reads any TTML (TTML1, TTML2, the 2006 `ttaf1` drafts): clock / frame / offset / tick times, `dur`, nested time containers (`body` / `div` begins offset and ends clip their contents; `seq` containers are read as `par` with a warning), timed spans, referenced styles. |
 | DFXP `.dfxp` | yes | yes | TTML1 with the DFXP presentation profile; clock times in milliseconds (frame-exact after `snap_to_frames`). |
 
 All cue times are exact `Tick`s. Milliseconds convert exactly (1 ms = 254 016 000 ticks); SCC
@@ -61,7 +61,9 @@ frames before the caption, so back-to-back captions load while the previous one 
 Erase Displayed Memory clears the caption at its out point unless the next caption replaces it.
 Text is wrapped at 32 columns, bottom-aligned (last row 15) and centred. Characters come from the
 608 basic, special and extended sets (extended characters are preceded by a basic fallback
-character, as the standard requires); others are dropped. If there is no room to load a caption
+character, as the standard requires); a few have a close stand-in (’ as ', – as -) and others are
+dropped. `charset_warnings` names each dropped or replaced character, and `captions.export`
+returns them as `warnings`. If there is no room to load a caption
 before its in point (for example a caption at 00:00:00:00), it appears as soon as it is loaded.
 
 ### MCC writer
@@ -69,6 +71,8 @@ before its in point (for example a caption at 00:00:00:00), it appears as soon a
 The writer merges the scheduled CEA-608 and CEA-708 frames in timestamp order. Frames without
 caption data are omitted, including during a displayed caption; its explicit erase/hide command
 still lands at its out point. CDP sequence counters advance per emitted packet, wrapping at 16 bits.
+CEA-708 text uses the G0 and G1 (Latin-1) sets and part of G2 (… ‘ ’ “ ” • ™ and a few more);
+other characters are sent as `?`, and `charset_warnings` names them.
 Export work and output size therefore follow the scheduled caption data, not the time between
 cues or their duration (#2811). Empty-frame insertion is an optional MCC export behavior; see
 [EZTitles' MCC export documentation, "Write empty frames"](https://eztitles.com/Webhelp/EZTitles/export_subtitles_cc_mcc.htm).
