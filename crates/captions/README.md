@@ -74,7 +74,8 @@ caption data are omitted, including during a displayed caption; its explicit era
 still lands at its out point. CDP sequence counters advance per emitted packet, wrapping at 16 bits.
 CEA-708 text uses the G0 and G1 (Latin-1) sets and part of G2 (… ‘ ’ “ ” • ™ and a few more);
 other characters are sent as `?`, and `charset_warnings` names them. The CEA-708 window holds 12
-rows, so a caption of 13 to 15 rows loses its last ones there, and `charset_warnings` names it too.
+rows and the writer loads only those (`mcc::window_rows`), so a longer caption loses its last rows
+there, and `charset_warnings` names it too.
 Export work and output size therefore follow the scheduled caption data, not the time between
 cues or their duration (#2811). Empty-frame insertion is an optional MCC export behavior; see
 [EZTitles' MCC export documentation, "Write empty frames"](https://eztitles.com/Webhelp/EZTitles/export_subtitles_cc_mcc.htm).

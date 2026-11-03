@@ -311,6 +311,18 @@ impl Dtv {
     }
 }
 
+/// The rows of the CEA-708 window a caption is loaded into.
+pub const WINDOW_ROWS: usize = 12;
+
+/// The rows the CEA-708 writer loads for caption `text`: the CEA-608 rows (plain text in 32-column
+/// rows), as many as the window holds. The rest is left out: past a window's last row, decoders
+/// differ (one scrolls the first rows away, another runs the text into the last row).
+pub fn window_rows(text: &str) -> Vec<String> {
+    let mut rows = scc::caption_rows(text);
+    rows.truncate(WINDOW_ROWS);
+    rows
+}
+
 /// Schedule CEA-708 service 1 pop-on captions (see the module docs).
 fn schedule_708(doc: &Document) -> BTreeMap<i64, Vec<(bool, u8, u8)>> {
     let mut d = Dtv { frames: BTreeMap::new() };
@@ -322,7 +334,7 @@ fn schedule_708(doc: &Document) -> BTreeMap<i64, Vec<(bool, u8, u8)>> {
         let win = (i % 2) as u8;
         let s = scc::frame_of(c.start).max(cursor);
         let e = scc::frame_of(c.end);
-        let rows = scc::wrap_rows(&filmcraft_project::plain_text(&c.text));
+        let rows = window_rows(&c.text);
         let load = packets(&load_atoms(win, &rows), &mut seq);
         let mut f = (s - load.len() as i64).max(cursor);
         let mut last = f;
