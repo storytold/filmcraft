@@ -135,7 +135,8 @@ fn transcode_with_file(
     let has_v = info.video.is_some();
     let has_a = info.has_audio();
     let seq = p.new_sequence("transcode", st, usize::from(has_v), usize::from(has_a), None);
-    let range = range.unwrap_or(TimeRange { start: Tick::ZERO, duration: info.duration });
+    // the opened source's length, not the project's stored one: a project can claim any duration
+    let range = range.unwrap_or(TimeRange { start: Tick::ZERO, duration: src.info().duration });
     let mut placed = Vec::new();
     if has_v && let Some(ti) = p.make_track_item(item, TrackKind::Video, Tick::ZERO, range, rate) {
         placed.push((TrackKind::Video, ti));

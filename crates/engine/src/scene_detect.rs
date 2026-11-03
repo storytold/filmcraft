@@ -24,6 +24,9 @@ use serde_json::{Value, json};
 use crate::commands::{CommandSpec, bad, bool_p, clips_p, f64_p, has_seq, u64_p};
 use crate::{EngineError, Result, Session};
 
+/// Frames one clip is analysed for at most (24 h at 60 fps).
+const MAX_ANALYSED_FRAMES: i64 = 24 * 3600 * 60;
+
 /// Longest side of the frames analysed (speed; the measures don't need detail).
 const ANALYSIS_WIDTH: f64 = 256.0;
 
@@ -124,7 +127,9 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         let Some(media_item) = media_root(&s.project, it.item) else { continue };
         let Some(src) = s.source(it.item) else { continue };
         let Some(v) = src.info().video.clone() else { continue };
-        let n = (it.duration.0 / fd.0.max(1)).max(1);
+        // The schedule is built here, before the job can be cancelled; a project can store any
+        // clip duration, so it is capped (a day at 60 fps) rather than trusted.
+        let n = (it.duration.0 / fd.0.max(1)).clamp(1, MAX_ANALYSED_FRAMES);
         let frames: Vec<(Tick, Tick)> = (0..n)
             .map(|j| {
                 let t = it.start + Tick(fd.0 * j);
