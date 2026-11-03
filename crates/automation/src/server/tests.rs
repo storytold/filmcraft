@@ -466,12 +466,25 @@ async fn unread_parse_errors_stall_the_input() {
     let (mut tx, server_in) = tokio::io::duplex(4096);
     let (server_out, rx) = tokio::io::duplex(4096);
     tokio::spawn(FilmcraftMcp::headless(Session::default()).serve_io(server_in, server_out));
-    // Each 2-byte line answers with a ~100-byte error: 4 MB of input would queue ~200 MB of replies.
-    let junk = "x\n".repeat(1 << 21);
-    let flood = tokio::time::timeout(std::time::Duration::from_secs(5), tx.write_all(junk.as_bytes())).await;
-    assert!(flood.is_err(), "the server kept reading input while its output was not read");
-    // reading the output lets it carry on
-    let mut lines = tokio::io::BufReader::new(rx).lines();
-    let first: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-    assert_eq!(first["error"]["code"], -32700, "{first}");
+    // Each 2-byte line answers with a ~100-byte error: far more than the pipes, the read buffer and the queue hold.
+    const LINES: usize = 1 << 16;
+    let junk = "x\n".repeat(LINES);
+    // The write stays in this task and is polled alongside the reads; a spawned task would drop `tx` on
+    // completion and end the server while replies are still queued.
+    let mut write = std::pin::pin!(tx.write_all(junk.as_bytes()));
+    // With the output unread the server stops reading, so the write stays pending.
+    let early = tokio::time::timeout(std::time::Duration::from_millis(500), &mut write).await;
+    assert!(early.is_err(), "the server kept reading input while its output was not read: {early:?}");
+    // Reading the output lets the input drain, and the pending write completes.
+    let drain = async {
+        let mut lines = tokio::io::BufReader::new(rx).lines();
+        let first: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(first["error"]["code"], -32700, "{first}");
+        for n in 1..LINES {
+            let got = lines.next_line().await.unwrap();
+            assert!(got.is_some(), "replies stopped after {n} of {LINES}");
+        }
+    };
+    let (written, ()) = tokio::join!(write, drain);
+    written.expect("the pending write completes once the output is read");
 }
