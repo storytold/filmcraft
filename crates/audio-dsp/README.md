@@ -130,11 +130,14 @@ sub-sample estimate, and two trust figures (`confidence` = peak / RMS of the cor
   long recordings, so the transform stays ≤ 4 M points), GCC-PHAT-β (`R = A·B*/|A·B*|^0.75`,
   40 Hz – 0.4·rate band) with both signals packed into one complex FFT.
 - Refine: the same correlation at the full rate on the loudest common window (≤ 2¹⁷ samples), ±2
-  coarse steps around the coarse peak, parabolic interpolation.
+  coarse steps around the coarse peak, parabolic interpolation. The highest peak there, of either
+  sign, sets the lag and `inverted`.
 - Tested within one sample on speech-like multi-microphone signals (gains −20…+10 dB, SNR down to
   3 dB, coloured microphones, fractional delays: worst 0.4 samples integer / 0.11 samples
   sub-sample), a 0 dB SNR room with a strong echo, inverted polarity, unrelated signals
   (unreliable) and `max_lag`. Two 10-minute recordings: 2.4 s (release, one core).
+- A band-limited, echoey scratch track against the clean recording keeps its polarity, either way
+  round, and lands within 4 samples (its filters delay it by about 3).
 
 ## Known limits
 

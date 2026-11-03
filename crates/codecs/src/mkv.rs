@@ -300,9 +300,9 @@ fn hdr_metadata(c: &filmcraft_matroska::Color) -> Option<filmcraft_color::HdrMet
 
 /// Colour of a video track: the `Colour` element wins; what it leaves unspecified, or all of it
 /// when there is none, comes from the stream's own description (the SPS VUI in an `avcC` /
-/// `hvcC`, the sequence header in an `av1C`); the rest defaults by frame size. The flag says
-/// whether `Colour` signals anything that overrides the decoder.
-fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<ColorCodes>) -> (ColorInfo, bool) {
+/// `hvcC`, the sequence header in an `av1C`); the rest defaults by frame size, as the second value
+/// says. The flag says whether `Colour` signals anything that overrides the decoder.
+fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<ColorCodes>) -> (ColorInfo, filmcraft_color::ColorAssumed, bool) {
     // H.273 code points; `Range`: 1 broadcast (limited), 2 full, 0 / 3 not signalled here
     let code = |c: Option<u64>| c.unwrap_or(2);
     let container = v.color.as_ref().map(|col| {
@@ -315,7 +315,7 @@ fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<Co
     });
     let explicit = container.is_some_and(|c| Matrix::from_code(c.matrix).is_some() || Transfer::from_code(c.transfer).is_some() || c.full_range == Some(true));
     let sources: Vec<ColorCodes> = [container, stream].into_iter().flatten().collect();
-    (crate::stream_color::resolve(w, h, &sources), explicit)
+    (crate::stream_color::resolve(w, h, &sources), crate::stream_color::assumed(&sources), explicit)
 }
 
 fn codec_label(c: &Codec) -> String {
@@ -423,7 +423,7 @@ impl MkvSource {
                 }
             };
             ventry = sample_entry(&t.codec, &t.codec_private, t.video.as_ref(), w as u16, h as u16);
-            let (color, explicit) = color_of(&v, w, h, ventry.as_ref().and_then(|e| crate::stream_color::from_codec_config(&e.codec)));
+            let (color, assumed, explicit) = color_of(&v, w, h, ventry.as_ref().and_then(|e| crate::stream_color::from_codec_config(&e.codec)));
             if explicit {
                 explicit_color = Some(color);
             }
@@ -441,6 +441,7 @@ impl MkvSource {
                 has_alpha: v.alpha_mode != 0,
                 bitrate,
                 hdr: v.color.as_ref().and_then(hdr_metadata),
+                color_assumed: Some(assumed),
             }
         });
         let audio_streams: Vec<AudioStreamInfo> = atracks.iter().filter_map(|&i| file.tracks.get(i)).filter_map(audio_info).collect();

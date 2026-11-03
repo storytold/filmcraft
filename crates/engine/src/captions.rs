@@ -110,8 +110,9 @@ pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
 }
 
 /// Import a caption file as a new caption track in the active sequence (a new sequence is made
-/// when none is open), snapped to the sequence's frames. One undo step.
-pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, name: Option<&str>) -> Result<Value> {
+/// when none is open), snapped to the sequence's frames. The track's language is `language`, else
+/// the file's (TTML `xml:lang`), else `en`. One undo step.
+pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, name: Option<&str>, language: Option<&str>) -> Result<Value> {
     let mut doc = filmcraft_captions::parse(bytes, format).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let stem = std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Captions".into());
     let track_name = name.map(str::to_string).unwrap_or_else(|| stem.clone());
@@ -128,7 +129,7 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, name: O
     doc.snap_to_frames(rate);
     let n = doc.cues.len();
     let warnings = doc.warnings.clone();
-    let tid = s.edit(&format!("Import Captions {stem}"), |p, st| {
+    let (tid, language) = s.edit(&format!("Import Captions {stem}"), |p, st| {
         let tid = TrackId(p.alloc_id());
         let mut next = p.next_id;
         let mut alloc = || {
@@ -137,6 +138,10 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, name: O
             v
         };
         let mut track = filmcraft_captions::track_from_document(&doc, tid, &track_name, format.track_format(), &mut alloc);
+        if let Some(language) = language {
+            track.language = language.to_string();
+        }
+        let language = track.language.clone();
         if format == Format::Scc {
             track.style.background_color = [0, 0, 0, 255];
         }
@@ -145,9 +150,9 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format, name: O
         q.caption_tracks.insert(0, track);
         q.check().map_err(EngineError::Other)?;
         st.caption_selection.clear();
-        Ok(tid)
+        Ok((tid, language))
     })?;
-    Ok(json!({"format": format.name(), "sequence": seq_id.0, "track": tid.0, "captions": n, "warnings": warnings}))
+    Ok(json!({"format": format.name(), "sequence": seq_id.0, "track": tid.0, "language": language, "captions": n, "warnings": warnings}))
 }
 
 /// Delete captions (Clear / Ripple Delete with captions selected).
@@ -264,10 +269,12 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let track = seq.caption_track(tid).ok_or_else(|| bad("captions.export", "no such caption track"))?;
     let doc: Document = filmcraft_captions::document_from_track(track, Tick::ZERO);
     let df = bool_p(p, "dropFrame").unwrap_or(true);
-    let bytes = filmcraft_captions::write(&doc, format, WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate) });
+    let opts = WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate) };
+    let bytes = filmcraft_captions::write(&doc, format, opts);
+    let warnings = filmcraft_captions::charset_warnings(&doc, format, opts);
     let n = doc.cues.len();
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
-    Ok(json!({"path": path, "format": format.name(), "captions": n, "bytes": bytes.len()}))
+    Ok(json!({"path": path, "format": format.name(), "captions": n, "bytes": bytes.len(), "warnings": warnings}))
 }
 
 fn delta_p(s: &Session, p: &Value) -> Option<Tick> {
@@ -595,12 +602,12 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("captions.previous", "Go to Previous Caption Segment", &["Sequence", "Captions"], Some("Cmd+Alt+Up"), "{}", has_captions, |s, _| step(s, false)),
         spec("captions.showAll", "Show All Caption Tracks", &["Sequence", "Captions"], None, "{}", has_caption_track, |s, _| show_all(s, true)),
         spec("captions.hideAll", "Hide All Caption Tracks", &["Sequence", "Captions"], None, "{}", has_caption_track, |s, _| show_all(s, false)),
-        spec("captions.import", "Import Captions…", &[], None, r#"{"path":str,"name":str?}"#, always, |s, p| {
+        spec("captions.import", "Import Captions…", &[], None, r#"{"path":str,"name":str?,"language":str?}"#, always, |s, p| {
             let path = str_p(p, "path").ok_or_else(|| bad("captions.import", "need `path`"))?.to_string();
             let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
             let ext = std::path::Path::new(&path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
             let format = filmcraft_captions::detect(&bytes, ext.as_deref()).ok_or_else(|| EngineError::Other(format!("{path}: not a caption file")))?;
-            import(s, &path, &bytes, format, str_p(p, "name"))
+            import(s, &path, &bytes, format, str_p(p, "name"), str_p(p, "language"))
         }),
         spec(
             "captions.export",
