@@ -13,7 +13,7 @@ mod common;
 
 use common::*;
 use filmcraft_codecs::VideoDecoder;
-use filmcraft_platform::vaapi::va::displays_opened;
+use filmcraft_platform::vaapi::va::{display_limit, displays_opened, probe};
 
 fn hardware(s: &Stream) -> Option<Box<dyn VideoDecoder>> {
     match filmcraft_platform::vaapi_factory(&s.entry) {
@@ -66,7 +66,8 @@ fn decoders_reuse_displays() {
             j.join().unwrap();
         }
     }
-    // six decoders at once: at most the limit of the driver (one, or Mesa's four), and rounds after
-    // the first reuse them; that the limit is one elsewhere is a unit test of `display_limit`
-    assert!((opened..=4).contains(&displays_opened()), "decoders at once opened {} displays", displays_opened());
+    // six decoders at once: at most the limit of this driver (one, or Mesa's four), and rounds after
+    // the first reuse them
+    let limit = display_limit(probe().as_ref().unwrap());
+    assert!((opened..=limit).contains(&displays_opened()), "decoders at once opened {} displays, limit {limit}", displays_opened());
 }

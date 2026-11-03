@@ -158,7 +158,7 @@ pub fn displays_opened() -> usize {
 
 /// How many displays are kept for a driver. Only Mesa's is known to gain from more and to open them
 /// cheaply; NVIDIA's pays for each one (see [`POOL`]), and Intel's has not been measured.
-pub(crate) fn display_limit(vendor: &str) -> usize {
+pub fn display_limit(vendor: &str) -> usize {
     if vendor.contains("Mesa") { 4 } else { 1 }
 }
 
