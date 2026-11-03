@@ -294,7 +294,10 @@ impl MediaSource for OfflineSource {
         Ok(Arc::new(VideoFrame::rgba8(w, h, px).with_pts(req.time)))
     }
     fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer> {
-        Ok(AudioBuffer::silence(sample_rate, self.info.audio().map_or(2, |a| a.channels as usize), frames))
+        // the shape comes from the project's stored metadata (the media is not there to check)
+        let channels = self.info.audio().map_or(2, |a| a.channels as usize);
+        validate_audio_buffer_shape(channels, frames)?;
+        Ok(AudioBuffer::silence(sample_rate, channels, frames))
     }
 }
 
@@ -309,6 +312,23 @@ mod importable_tests {
             assert!(is_importable(Path::new(name)), "{name}");
         }
         assert!(!is_importable(Path::new("notes.txt")));
+    }
+
+    #[test]
+    fn offline_media_does_not_allocate_from_stored_metadata() {
+        let info = MediaInfo {
+            name: "gone.wav".into(),
+            kind: MediaKind::AudioOnly,
+            duration: Tick(0),
+            video: None,
+            audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: 60_000, codec: "pcm".into(), bits_per_sample: None }],
+            container: String::new(),
+            start_timecode: None,
+            file_size: None,
+        };
+        let src = OfflineSource { info };
+        // a 100-day transcription request at the stored channel count
+        assert!(src.audio(0, 48_000 * 86_400 * 100, 48_000).is_err());
     }
 
     #[test]
