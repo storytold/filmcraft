@@ -211,7 +211,7 @@ impl MediaSource for OggSource {
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {
         let (head, timing, state) = match &self.kind {
-            Kind::Pcm { rate, samples } => return Ok(read_resampled(samples, *rate, start, frames, sample_rate)),
+            Kind::Pcm { rate, samples } => return read_resampled(samples, *rate, start, frames, sample_rate),
             Kind::Opus { head, timing, state } => (head, timing, state),
         };
         let ch = head.channels.max(1);
@@ -219,6 +219,9 @@ impl MediaSource for OggSource {
         let exact = sample_rate == OPUS_RATE;
         let s0 = if exact { start } else { (start as f64 * ratio).floor() as i64 };
         let need = if exact { frames as i64 } else { (frames as f64 * ratio).ceil() as i64 + 2 };
+        // OpusHead may declare up to 255 channels; the shared limit also bounds both buffers
+        filmcraft_media::validate_audio_buffer_shape(ch, need.max(0) as usize)?;
+        filmcraft_media::validate_audio_buffer_shape(ch, frames)?;
         let mut src: Vec<Vec<f32>> = vec![vec![0.0; need.max(0) as usize]; ch];
         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
         let n = timing.starts.len();

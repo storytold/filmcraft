@@ -283,7 +283,7 @@ fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn Sour
 fn nested_mix(project: &Project, nested: &Sequence, win: Window, sources: &dyn SourceProvider, w: usize, depth: u32) -> AudioBuffer {
     let Window { start: m0, frames: len, sr } = win;
     // a damaged project can claim any rate: keep the buffer below sized by a real one
-    let own = nested.settings.sample_rate.clamp(1_000, 768_000);
+    let own = bounded_sample_rate(nested.settings.sample_rate);
     let sr = sr.max(1);
     // the nested sequence's samples that cover [m0, m0 + len) at `sr`
     let at = |i: i64| i as f64 * own as f64 / sr as f64;
@@ -370,6 +370,16 @@ pub fn clip_is_mono(item: &TrackItem, sources: &dyn SourceProvider) -> Option<bo
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
 /// (2: stereo, mono sources on both sides, 5.1 sources folded down; 6: 5.1), with silence outside
 /// the clip.
+/// A sequence's sample rate as the mixer runs it: a damaged project can claim any rate, and the
+/// request sizing in [`nested_mix`] and the mixing in `mixer::mix_graph_at` must agree.
+pub(crate) fn bounded_sample_rate(rate: u32) -> u32 {
+    rate.clamp(1_000, 768_000)
+}
+
+/// Fastest varispeed a clip is read at (Premiere's 10 000 %): a project can store any number, and
+/// the speed multiplies the source window a playback block requests.
+const MAX_CLIP_SPEED: f64 = 100.0;
+
 fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0.0f32; len]; w];
     let item_s0 = item.start.to_units_floor(sr as i64);
@@ -381,7 +391,7 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     }
     let n = (a1 - a0) as usize;
     let off = (a0 - x0) as usize;
-    let speed = item.speed.abs().max(1e-6);
+    let speed = item.speed.abs().clamp(1e-6, MAX_CLIP_SPEED);
     let src_start_ticks = item.source_time_at(Tick::from_units(a0, sr as i64));
     let remixed = crate::remix::read(item, &|m0, len| src(m0, len), a0 - item_s0, n, sr);
     let buf = if remixed.is_some() {
