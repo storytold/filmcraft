@@ -662,8 +662,10 @@ impl GopCache {
                 if victim == pivot || victim == pts {
                     // both ends are the request and the new decode: an interior frame goes,
                     // or a reordered batch would stay cached far above the budget
-                    let interior = st.frames.keys().copied().filter(|&k| k != pivot && k != pts).max_by_key(|&k| k.abs_diff(pivot));
-                    let Some(k) = interior else { break };
+                    // (the ends are `pivot` and `pts`, so the interior frame farthest from `pivot` is the one next to the other end)
+                    let mut interior = st.frames.range((std::ops::Bound::Excluded(first), std::ops::Bound::Excluded(last)));
+                    let k = if pivot == first { interior.next_back() } else { interior.next() };
+                    let Some((&k, _)) = k else { break };
                     victim = k;
                 }
             }
