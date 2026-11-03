@@ -79,6 +79,14 @@ impl Driver {
     fn undo_len(&self) -> usize {
         self.harness.state().session.history.undo.len()
     }
+    fn input(&mut self, events: impl IntoIterator<Item = egui::Event>) {
+        self.harness.input_mut().events.extend(events);
+        self.frames(1);
+    }
+    fn moves_cursor_to(&self, to: egui::Pos2) -> bool {
+        let cmd = egui::ViewportCommand::CursorPosition(to);
+        self.harness.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(&cmd))
+    }
 }
 
 #[test]
@@ -118,6 +126,31 @@ fn arrow_keys_move_the_caret_instead_of_committing() {
     d.ok("ui.key", json!({"key": "Enter"}));
     assert_eq!(d.rotation(clip), 12.9, "12.5 with its last digit replaced");
     assert_eq!(d.playhead(), playhead);
+}
+
+/// The cursor stops at the screen edge, the mouse does not: a dragged hot number follows the raw
+/// motion with the cursor hidden and held where the press began, where it shows again on release (#4177).
+#[test]
+fn a_dragged_hot_number_keeps_changing_past_the_screen_edge() {
+    let mut d = Driver::demo();
+    let clip = d.text_layer();
+    d.exec("graphics.set", json!({"clip": clip, "layer": 0, "props": {"rotation": 0.0}}));
+    d.frames(2);
+    let r = d.harness.state().auto.find("graphics.prop.rotation").expect("rotation field").rect;
+    let at = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    d.input([egui::Event::PointerMoved(at), button(true)]);
+    // past egui's drag threshold, then the pointer stays put as if held at the edge
+    d.input([egui::Event::PointerMoved(at + egui::vec2(10.0, 0.0))]);
+    for _ in 0..4 {
+        d.input([egui::Event::MouseMoved(egui::vec2(100.0, 0.0))]);
+        assert_eq!(d.harness.output().platform_output.cursor_icon, egui::CursorIcon::None, "the cursor is hidden while dragging");
+        assert!(d.moves_cursor_to(at), "the cursor is held where the press began");
+    }
+    d.input([egui::Event::PointerMoved(at), button(false)]);
+    assert!(d.moves_cursor_to(at), "the cursor shows again where the press began");
+    // 0.5° per point: 10 points of pointer travel alone would give 5°
+    assert!(d.rotation(clip) >= 200.0, "the raw motion past the edge counts: {}", d.rotation(clip));
 }
 
 /// Control input reaches a window in the background: egui sees it focused only on the frames that

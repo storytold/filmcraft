@@ -182,12 +182,15 @@ fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberO
     }
     let mut out = None;
     if resp.dragged() {
-        let dx = resp.drag_delta().x as f64;
+        let dx = f64::from(locked_drag_dx(ui, &resp));
         let mult = hot_number_drag_multiplier(ui);
         let nv = (value + dx * speed * mult).clamp(range.0, range.1);
         if (nv - value).abs() > f64::EPSILON {
             out = Some(nv);
         }
+    }
+    if resp.drag_stopped() {
+        release_cursor_lock(ui, resp.id);
     }
     if resp.clicked() {
         ui.data_mut(|d| {
@@ -210,6 +213,38 @@ fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
             1.0
         }
     })
+}
+
+/// How far a drag on `resp` moved this frame, in points. As in Premiere, the cursor is hidden and
+/// held where the press began, and the drag follows the raw mouse motion, which the screen edge
+/// does not stop (#4177). Without raw motion (the web) it is the pointer's own delta.
+fn locked_drag_dx(ui: &Ui, resp: &Response) -> f32 {
+    let lock_id = resp.id.with("cursor-lock");
+    if resp.drag_started() {
+        ui.data_mut(|d| d.remove_temp::<egui::Pos2>(lock_id));
+    }
+    let (motion, press_origin, pointer) = ui.input(|i| (i.pointer.motion(), i.pointer.press_origin(), i.pointer.latest_pos()));
+    let Some(motion) = motion else { return resp.drag_delta().x };
+    let origin = match ui.data(|d| d.get_temp::<egui::Pos2>(lock_id)) {
+        Some(origin) => origin,
+        None => {
+            let Some(origin) = press_origin else { return resp.drag_delta().x };
+            ui.data_mut(|d| d.insert_temp(lock_id, origin));
+            origin
+        }
+    };
+    ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+    if pointer != Some(origin) {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorPosition(origin));
+    }
+    motion.x / ui.ctx().pixels_per_point()
+}
+
+/// Ends [`locked_drag_dx`]'s lock: the cursor shows again where the press began.
+fn release_cursor_lock(ui: &Ui, id: egui::Id) {
+    if let Some(origin) = ui.data_mut(|d| d.remove_temp::<egui::Pos2>(id.with("cursor-lock"))) {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorPosition(origin));
+    }
 }
 
 /// A large blue timecode readout (monitors/timeline) that moves its playhead: drag horizontally to
