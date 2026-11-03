@@ -38,6 +38,10 @@ use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Resul
 // Shared vocabulary
 // ---------------------------------------------------------------------------------------------
 
+/// Most members of a link group written into each clip's `<link>` list (a group is a clip's own
+/// video and a few audio channels, so real ones are far smaller).
+const MAX_LINK_MEMBERS: usize = 64;
+
 struct ClipRemap {
     speed: f64,
     reverse: bool,
@@ -907,6 +911,11 @@ impl Exp<'_, '_> {
                     link_members.entry(l).or_default().push(c.id);
                 }
             }
+        }
+        // Each clip lists every member of its group, so a group of n clips writes n * n links.
+        if let Some(n) = link_members.values().map(Vec::len).filter(|&n| n > MAX_LINK_MEMBERS).max() {
+            self.report.warn(format!("a link group of {n} clips was exported with its first {MAX_LINK_MEMBERS} members"));
+            link_members.values_mut().for_each(|m| m.truncate(MAX_LINK_MEMBERS));
         }
         if seq.all_tracks().any(|t| t.items.iter().any(|i| i.group.is_some())) {
             self.report.info("clip groups have no FCP7 XML equivalent and were not exported");

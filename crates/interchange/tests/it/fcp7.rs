@@ -721,3 +721,17 @@ fn absurd_start_timecode_is_bounded() {
     }
     assert!(report.mentions("out-of-range start timecode"), "{report}");
 }
+
+#[test]
+fn a_huge_link_group_does_not_write_quadratic_links() {
+    let r = FrameRate::FPS_29_97;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/a.mov", true, true, r);
+    let s = sequence(&mut p, "Main", r, true);
+    let ids: Vec<_> = (0..300).map(|i| clip(&mut p, s, TrackKind::Audio, 0, a, 0..10, i * 10)).collect();
+    link(&mut p, s, &ids);
+    let (_, text, rep) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
+    // 300 clips x 64 members, not 300 x 300
+    assert_eq!(text.matches("<linkclipref>").count(), 300 * 64);
+    assert!(rep.has_warnings(), "{rep}");
+}
