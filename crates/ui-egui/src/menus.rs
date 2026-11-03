@@ -221,8 +221,9 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }
-    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch Warning asks first
-    if matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
+    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch
+    // Warning asks first, from a menu (`engine.execute` keeps the sequence settings, #1540)
+    if !app.engine_call && matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
         return Ok(json!({"dialog": "clipMismatch"}));
     }
     // From a menu, a shortcut or `ui.menu.invoke`, a command without parameters opens the dialog

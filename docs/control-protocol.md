@@ -214,9 +214,11 @@ Media…, Make Offline…, Create Proxies…, Project Manager… and the other d
 `engine.execute` never does (#1540): an agent can neither see nor close a dialog. The engine command runs with the parameters given (so `sequence.addTracks {}`
 adds its default one video track, `clip.audioGain {}` answers "need `db`"), and
 `sequence.settings {}` answers `{"settings"}`, the active sequence's settings as `sequence.inspect`
-reports them, instead of showing them. The same goes for the export settings dialogs and file pickers
-of commands sent without a `path` (they answer the engine error). Confirmations (`file.revert`,
-`file.recover`, Close Project and Quit with unsaved changes) still ask.
+reports them, instead of showing them. The same goes for the Clip Mismatch Warning (the clip goes into
+the sequence as it is), and for the export settings dialogs and file pickers of commands sent without a
+`path`: the engine command runs as given, which is an error for most of them, while `file.save` saves a
+project that already has a path to that path. Confirmations (`file.revert`, `file.recover`, Close
+Project and Quit with unsaved changes) still ask.
 
 ## Panel docking commands
 
