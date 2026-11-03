@@ -108,24 +108,67 @@ pub fn path_to_file_url(path: &str, localhost: bool) -> String {
     }
 }
 
+/// Join `rel`, a relative media reference, to `base`, the folder of the document that names it.
+/// Lexical, like `craft-docpath`, and with the same roots: none (a relative folder), `/`, a drive
+/// (`C:\`, or `C:` alone for a drive-relative folder), a share (`\\host\share`, `//host/share`) or a
+/// `\\?\` prefix with its drive or `UNC\host\share`. Below the root, empty names (repeated
+/// separators) and `.` are dropped, and a `..` takes off the last name: at the root of an absolute
+/// folder it is dropped, and past the start of a relative one it is kept. The folder's own `.` and
+/// `..` go through the same rule, so a reference starts from where the folder really is. The result
+/// keeps the folder's separator: `\` when it has only those, else `/` (#3998).
 fn join(base: &str, rel: &str) -> String {
     let sep = if base.contains('\\') && !base.contains('/') { '\\' } else { '/' };
-    let mut parts: Vec<&str> = base.split(['/', '\\']).collect();
-    if parts.last() == Some(&"") && parts.len() > 1 {
-        parts.pop();
-    }
-    for seg in rel.split(['/', '\\']) {
-        match seg {
+    let (root, absolute, rest) = split_root(base);
+    let mut names: Vec<&str> = Vec::new();
+    for name in rest.split(['/', '\\']).chain(rel.split(['/', '\\'])) {
+        match name {
             "" | "." => {}
-            ".." => {
-                if parts.len() > 1 {
-                    parts.pop();
+            ".." => match names.last() {
+                Some(&last) if last != ".." => {
+                    names.pop();
                 }
-            }
-            s => parts.push(s),
+                _ if absolute => {}
+                _ => names.push(".."),
+            },
+            n => names.push(n),
         }
     }
-    parts.join(&sep.to_string())
+    let body = names.join(&sep.to_string());
+    if absolute {
+        format!("{root}{sep}{body}")
+    } else if root.is_empty() && body.is_empty() {
+        ".".to_string()
+    } else {
+        format!("{root}{body}")
+    }
+}
+
+/// The root `p` starts with, as written (without its last separator), whether it makes `p`
+/// absolute, and the rest of `p`.
+fn split_root(p: &str) -> (&str, bool, &str) {
+    let is_sep = |c: char| c == '/' || c == '\\';
+    let seps: Vec<usize> = p.char_indices().filter(|&(_, c)| is_sep(c)).map(|(i, _)| i).collect();
+    if seps.starts_with(&[0, 1]) {
+        // `\\host\share` and `\\?\C:` take two names after the leading separators,
+        // `\\?\UNC\host\share` four. A name runs to the next separator, or to the end.
+        let names: Vec<&str> = p.get(2..).unwrap_or_default().split(is_sep).collect();
+        let count = match (names.first().copied(), names.get(1)) {
+            (Some("?" | "."), Some(u)) if u.eq_ignore_ascii_case("UNC") => 4,
+            _ => 2,
+        };
+        let end = seps.iter().copied().filter(|&i| i >= 2).nth(count - 1).unwrap_or(p.len());
+        let (root, rest) = p.split_at(end);
+        return (root, true, rest);
+    }
+    if seps.first() == Some(&0) {
+        return ("", true, p);
+    }
+    let b = p.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        let (root, rest) = p.split_at(2);
+        return (root, seps.first() == Some(&2), rest);
+    }
+    ("", false, p)
 }
 
 /// Resolve a media URL from a document (FCPXML `src`, FCP7 `pathurl`, OTIO `target_url`): like
@@ -766,6 +809,54 @@ mod tests {
         assert_eq!(relative_path("/proj/media/a.mov", "/proj").as_deref(), Some("media/a.mov"));
         assert_eq!(relative_path("/proj/a.mov", "/proj/edl").as_deref(), Some("../a.mov"));
         assert_eq!(file_stem("/x/y/Clip 01.final.mov"), "Clip 01.final");
+    }
+
+    /// `join` over the path forms a document folder can take. Each row is (folder, reference,
+    /// expected, the rule it shows).
+    #[test]
+    fn relative_references_join_their_folder() {
+        const ROWS: &[(&str, &str, &str, &str)] = &[
+            // POSIX, absolute
+            ("/proj", "media/a.mov", "/proj/media/a.mov", "names are appended to the folder"),
+            ("/proj/x/", "../a.mov", "/proj/a.mov", "a trailing separator ends the folder; `..` takes off its last name"),
+            ("/proj//x", "../a.mov", "/proj/a.mov", "repeated separators are one: `..` takes off `x`, not an empty name"),
+            ("/proj/./x", "./a.mov", "/proj/x/a.mov", "`.` is dropped in the folder and in the reference"),
+            ("/", "a.mov", "/a.mov", "the root alone"),
+            ("/proj", "../../a.mov", "/a.mov", "`..` at an absolute root is dropped"),
+            ("/work/edit/..", "../media/b.mov", "/media/b.mov", "the folder's own `..` (std::path::absolute keeps it) is resolved first"),
+            ("/work/..", "../media/b.mov", "/media/b.mov", "so the reference never climbs above the root"),
+            // POSIX, relative
+            ("edit", "../media/a.mov", "media/a.mov", "`..` takes off a relative folder's first name too"),
+            ("a/edit", "../../a.mov", "a.mov", "and every name after it"),
+            ("edit", "../../a.mov", "../a.mov", "past the start of a relative folder `..` is kept"),
+            ("..", "../a.mov", "../../a.mov", "after a `..`, another `..` is kept"),
+            ("../", "clip.mov", "../clip.mov", "a `../` folder"),
+            (".", "../a.mov", "../a.mov", "a `.` folder is the current one"),
+            ("./", "clip.mov", "clip.mov", "and so is `./`: it is not the root"),
+            ("edit//sub", "../a.mov", "edit/a.mov", "repeated separators in a relative folder are one too"),
+            ("edit/sub/../..", "../a.mov", "../a.mov", "a relative folder's own `..` is resolved first"),
+            ("edit", "..", ".", "a reference that comes back to the start is the current folder"),
+            // Windows drives, either separator
+            (r"C:\proj", r"media\a.mov", r"C:\proj\media\a.mov", "a drive folder keeps its `\\`"),
+            (r"C:\proj", r"..\..\a.mov", r"C:\a.mov", "`..` stops at the drive's root"),
+            (r"C:\proj\..\..", "a.mov", r"C:\a.mov", "and so does the folder's own `..`"),
+            (r"C:\", "a.mov", r"C:\a.mov", "the drive's root alone"),
+            ("C:/proj/edit", "../media/a.mov", "C:/proj/media/a.mov", "a drive written with `/` keeps it"),
+            (r"C:edit\sub", r"..\a.mov", r"C:edit\a.mov", "a drive-relative folder keeps its drive and is relative below it"),
+            // shares and `\\?\` prefixes
+            (r"\\srv\share\..\edit", "a.mov", r"\\srv\share\edit\a.mov", "the share is part of the root: `..` can't take it off"),
+            (r"\\srv\share", r"..\a.mov", r"\\srv\share\a.mov", "`..` stops at the share"),
+            (r"\\srv\share\d", r"..\x\a.mov", r"\\srv\share\x\a.mov", "below the share, `..` takes off names"),
+            ("//srv/share/edit", "../../a.mov", "//srv/share/a.mov", "a share written with `/`"),
+            (r"\\?\C:\proj", r"..\..\a.mov", r"\\?\C:\a.mov", r"a `\\?\` drive's root is the drive"),
+            (r"\\?\UNC\srv\share\d", r"..\..\a.mov", r"\\?\UNC\srv\share\a.mov", r"a `\\?\UNC` root runs to the share"),
+            // separator styles
+            (r"proj\edit", r"..\media\a.mov", r"proj\media\a.mov", "a relative folder written with `\\` keeps it"),
+            ("/proj", r"media\a.mov", "/proj/media/a.mov", "either separator in the reference; the folder's style wins"),
+        ];
+        for &(folder, reference, expected, rule) in ROWS {
+            assert_eq!(resolve_path(reference, Some(folder)), expected, "{rule}: {folder:?} + {reference:?}");
+        }
     }
 
     #[test]
