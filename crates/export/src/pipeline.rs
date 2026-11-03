@@ -182,6 +182,12 @@ impl Pipeline {
     /// With at most one active batch and no more tasks than the initial renderer capacity,
     /// every stolen frame can acquire a renderer without waiting for an ancestor to return it.
     /// Keep the immutable capacity even after a failed renderer retires the pool.
+    /// Whether [`Pipeline::frame`] returns the RGBA8 picture next to the floats: an SDR float frame
+    /// with alpha keeps it for the alpha channel (HDR frames carry none).
+    pub(crate) fn keeps_rgba_with_floats(&self) -> bool {
+        self.float_frames && !self.hdr_out && self.alpha
+    }
+
     pub(crate) fn render_batch_limit(&self, requested: i64) -> i64 {
         let requested = requested.max(1);
         self.renderer.as_ref().map_or(requested, |pool| requested.min(i64::try_from(pool.capacity).unwrap_or(i64::MAX)))
