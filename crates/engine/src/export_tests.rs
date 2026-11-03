@@ -943,10 +943,11 @@ fn ranges_resolve_and_sidecar_captions_are_written() {
     let out = dir.path("cap.wav");
     s.execute("file.exportMedia", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": out, "captionSidecar": "srt", "wait": true})).unwrap();
     let srt = std::fs::read_to_string(dir.path("cap.srt")).unwrap();
-    // Timed from In at 1 s (the caption starts on frame 35), clipped to the export duration.
+    // Timed from In at 1 s (the caption starts on frame 36, the frame nearest 1.5 s), clipped to the
+    // export duration.
     let resolved = s.execute("export.resolve", json!({"preset": "Waveform Audio 48 kHz 16-bit"})).unwrap();
     let duration = filmcraft_time::Tick(resolved["range"]["duration"].as_i64().unwrap());
-    let timing = format!("00:00:00,460 --> {}", filmcraft_captions::format_clock(duration, ','));
+    let timing = format!("00:00:00,502 --> {}", filmcraft_captions::format_clock(duration, ','));
     assert!(srt.contains("Hello sidecar") && srt.contains(&timing), "{srt}");
     s.execute("file.exportMedia", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": out, "captionSidecar": "vtt", "wait": true})).unwrap();
     assert!(std::fs::read_to_string(dir.path("cap.vtt")).unwrap().starts_with("WEBVTT"));

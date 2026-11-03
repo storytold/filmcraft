@@ -159,6 +159,34 @@ fn caption_list_track_filter_never_falls_back_to_every_track() {
     }
 }
 
+/// `captions.add` puts a caption on the frame grid as `timeline.place` does: its start and its end
+/// each snap to the nearest frame. At 29.97 fps, 1 s falls three hundredths of a frame before
+/// frame 30; rounding the start down put a caption asked for at 1 s on frame 29, a frame before a
+/// clip placed at 1 s and inside the caption that ends at 1 s, so adding it failed.
+#[test]
+fn caption_add_snaps_its_start_to_the_nearest_frame() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "29.97", "fps": 29.97, "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    assert_eq!(rate, filmcraft_time::FrameRate::FPS_29_97);
+    let item = s.project.items.values().find(|i| i.as_media().is_some_and(|m| m.info.has_video())).unwrap().id;
+    s.execute("timeline.place", json!({"item": item.0, "track": "V1", "seconds": 1.0, "duration": {"seconds": 1.0}})).unwrap();
+    let clip_start = s.active_sequence().unwrap().video_tracks[0].items[0].start;
+    assert_eq!(clip_start, rate.tick_of(30));
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    let add = |s: &mut Session, text: &str, at: f64, seconds: f64| {
+        s.execute("captions.add", json!({"track": "C1", "text": text, "seconds": at, "durationSeconds": seconds}))
+    };
+    add(&mut s, "A", 0.0, 1.0).unwrap();
+    add(&mut s, "B", 1.0, 1.0).expect("B starts where A ends");
+    add(&mut s, "C", 3.0, 0.8).unwrap();
+    let spans: Vec<(String, Tick, Tick)> = s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| (c.text.clone(), c.start, c.end())).collect();
+    let want = |text: &str, start: i64, end: i64| (text.to_string(), rate.tick_of(start), rate.tick_of(end));
+    // 3.8 s is frame 113.886, so C ends at the start of frame 114, 24 frames after it starts
+    assert_eq!(spans, vec![want("A", 0, 30), want("B", 30, 60), want("C", 90, 114)]);
+    assert_eq!(spans[1].1, clip_start, "a caption asked for at a clip's time starts with the clip");
+}
+
 fn caption_spans(s: &Session) -> Vec<(f64, f64, String)> {
     let secs = |t: Tick| (t.seconds() * 10.0).round() / 10.0; // the demo sequence snaps to 23.976 fps frames
     s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| (secs(c.start), secs(c.end()), c.text.clone())).collect()
