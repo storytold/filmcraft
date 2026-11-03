@@ -167,8 +167,11 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
         monitor_view::compare_bar(app, ui, bar, rate, drop_frame);
     }
     if mv.safe_margins {
-        for (f, c) in [(0.9, Color32::from_white_alpha(120)), (0.8, Color32::from_white_alpha(90))] {
-            let r = Rect::from_center_size(pic.center(), pic.size() * f);
+        // Project Settings ▸ General ▸ Action and Title Safe Areas
+        let st = &app.session.project.settings;
+        let boxes = [(st.action_safe_box(), Color32::from_white_alpha(120)), (st.title_safe_box(), Color32::from_white_alpha(90))];
+        for ((w, h), c) in boxes {
+            let r = Rect::from_center_size(pic.center(), vec2(pic.width() * w as f32, pic.height() * h as f32));
             ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, c), StrokeKind::Middle);
         }
         let c = pic.center();

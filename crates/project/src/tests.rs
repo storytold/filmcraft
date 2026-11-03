@@ -394,3 +394,20 @@ fn source_par_follows_interpret_footage_subclips_and_sequences() {
     assert_eq!(p.conformed_source_size(adj, (4, 3)), Some((1440.0, 1080.0)));
     assert_eq!(p.source_par(ItemId(987_654_321)), None);
 }
+
+/// The safe-area boxes are what the margins leave of each axis: Project Settings' defaults leave
+/// 0.8 (title) and 0.9 (action), and a project file's numbers outside the dialog's 0–50 % range
+/// are held to it.
+#[test]
+fn safe_area_boxes_take_each_margin_from_its_axis() {
+    let mut st = ProjectSettings::default();
+    assert_eq!((st.title_safe_box(), st.action_safe_box()), ((0.8, 0.8), (0.9, 0.9)));
+    st.title_safe = (30.0, 10.0);
+    st.action_safe = (6.0, 4.0);
+    assert_eq!(st.title_safe_box(), (1.0 - 0.3, 1.0 - 0.1));
+    assert_eq!(st.action_safe_box(), (1.0 - 0.06, 1.0 - 0.04));
+    st.title_safe = (f64::NAN, 80.0);
+    st.action_safe = (-5.0, f64::INFINITY);
+    assert_eq!(st.title_safe_box(), (1.0, 0.5));
+    assert_eq!(st.action_safe_box(), (1.0, 1.0));
+}
