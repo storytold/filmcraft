@@ -104,7 +104,7 @@ impl Lut {
     /// The symbol of the codeword at the reader position; `Eof` if the codeword is cut off.
     #[inline]
     fn decode(&self, br: &mut BitReader) -> Result<u32> {
-        let bits = peek32(br);
+        let bits = br.peek(32);
         let mut e = self.t[(bits >> (32 - L1)) as usize];
         if e & SUB != 0 {
             let w = e & 31;
@@ -116,17 +116,6 @@ impl Lut {
         }
         br.skip(len as usize).map_err(|_| Error::Eof)?;
         Ok(e & 0xFF_FFFF)
-    }
-}
-
-/// The next 32 bits (zero padded past the end), from one 8-byte load when possible.
-#[inline]
-fn peek32(br: &BitReader) -> u32 {
-    let pos = br.position();
-    let byte = pos >> 3;
-    match br.data().get(byte..byte.saturating_add(8)).and_then(|b| <[u8; 8]>::try_from(b).ok()) {
-        Some(b) => ((u64::from_be_bytes(b) << (pos & 7)) >> 32) as u32,
-        None => br.peek(32),
     }
 }
 

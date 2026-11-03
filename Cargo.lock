@@ -1061,17 +1061,17 @@ dependencies = [
 [[package]]
 name = "craft-docpath"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4#32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4"
 
 [[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4#32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4"
 
 [[package]]
 name = "craft-i18n"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4#32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4"
 dependencies = [
  "fixed_decimal",
  "icu_decimal",
@@ -1094,7 +1094,7 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4#32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1102,7 +1102,7 @@ dependencies = [
 [[package]]
 name = "craft-ui"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4#32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4"
 dependencies = [
  "craft-fonts-build",
  "craft-i18n",
@@ -1123,7 +1123,7 @@ dependencies = [
 [[package]]
 name = "craft-update"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c5a1cbfb5f9049f9270955caffb5bee5997aebf7#c5a1cbfb5f9049f9270955caffb5bee5997aebf7"
+source = "git+https://github.com/storytold/craft-libs?rev=32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4#32b2fd8adf4bcf1bdf3e4f6728af6f3230c03ee4"
 dependencies = [
  "chrono",
  "dunce",
