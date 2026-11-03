@@ -273,17 +273,17 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         if !media.is_empty() {
             let _ = session.execute("file.import", json!({"paths": media}));
         }
-        let mut recovered = false;
+        let before_recovery = session.document_epoch;
         if recover == Some(true) && !session.recovery_candidates().is_empty() {
             let id = session.recovery_candidates()[0].id.clone();
             match session.execute("file.recover", json!({"id": id})) {
-                Ok(r) => {
-                    recovered = true;
-                    log::info!("recovered {r}");
-                }
+                Ok(r) => log::info!("recovered {r}"),
                 Err(e) => log::error!("recovery failed: {e}"),
             }
         }
+        // a project the recovery installed, also when it then failed to confirm its new copy or
+        // to remove the old one
+        let recovered = session.document_epoch != before_recovery;
         let mut app = FilmcraftApp::new(session);
         app.set_startup_update_check(true);
         // Home only when `--recover` did not bring a project back, saved to a file or not
