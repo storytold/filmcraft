@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 
+use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{By, Queryable};
 use filmcraft_engine::Session;
 use filmcraft_engine::project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
 use filmcraft_media::generators::GeneratorSource;
@@ -678,6 +679,35 @@ fn unreadable_badge_says_why_in_a_search_bin_too() {
             d.frames(1);
         }
         assert!(shown(&d) > before, "{row} row: hovering the Unreadable badge shows why");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A screen reader learns why an item is unreadable without hovering it: in Icon view and in List
+/// view the Unreadable badge is a node named by its word, with the reason as its description, and
+/// while egui's screen-reader option is on, the badge takes focus.
+#[test]
+fn unreadable_badge_reason_reaches_screen_readers() {
+    let root = tmp_dir("aic-screen-reader");
+    let (s, item) = aic_session(&root, "Coast.mov");
+    let mut d = Driver::new(s);
+    d.harness.ctx.options_mut(|o| o.screen_reader = true);
+    d.ok("ui.panel.show", json!({"panel": "Project"}));
+    d.ok("ui.set", json!({"focused": "Project"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    let why = "no decoder for Apple Intermediate Codec video";
+    let badge = format!("project.item.{item}.offline");
+    let node = || By::new().role(Role::Label).label("Unreadable").predicate(move |n| n.description().as_deref() == Some(why));
+    for view in ["icon", "list"] {
+        d.exec("project.view.set", json!({"view": view}));
+        element_centres(&mut d, &badge, 1);
+        // the pointer away from the badge, so no tooltip is involved
+        d.ok("ui.move", json!({"id": "panel.Project", "fx": 0.5, "fy": 0.95}));
+        d.frames(3);
+        assert_eq!(d.harness.query_all(node()).count(), 1, "{view} view: the badge's node, described by the reason");
+        d.harness.query_all(node()).next().expect("the badge's node").focus();
+        d.frames(3);
+        assert!(d.harness.query_all(node()).any(|n| n.is_focused()), "{view} view: a screen reader can move focus to the badge");
     }
     let _ = std::fs::remove_dir_all(&root);
 }
