@@ -152,6 +152,81 @@ fn razor_keeps_content_continuous() {
     assert_eq!(fx.spans(v1), vec![(10, 40), (50, 60)]);
 }
 
+/// A cut through one half of a linked pair leaves the new piece unlinked: its partner was not cut
+/// with it, so a link of its own would have no other member. The left piece stays linked to the
+/// partner. Cutting both halves still links the two right-hand pieces to each other.
+#[test]
+fn cuts_through_one_half_of_a_linked_pair_leave_the_new_piece_unlinked() {
+    let pair = |fx: &mut Fx| {
+        let (v1, a1) = (fx.v(0), fx.a(0));
+        let (v, a) = (fx.put(v1, 0, 60, 0), fx.put(a1, 0, 60, 0));
+        for c in [v, a] {
+            fx.seq.find_item_mut(c).unwrap().1.link = Some(8);
+        }
+        (v1, a1, v, a)
+    };
+    let link = |fx: &Fx, c: ClipId| fx.seq.find_item(c).unwrap().1.link;
+    let links_on = |fx: &Fx, t: TrackId| fx.seq.track(t).unwrap().items.iter().map(|i| i.link).collect::<Vec<_>>();
+
+    // Add Edit on the picture's track only
+    let mut fx = Fx::new();
+    let (v1, a1, v, a) = pair(&mut fx);
+    let mut n = fx.next + 1; // fx.next is the last id handed out
+    let new = razor(&mut fx.seq, &[v1], f(15), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 1);
+    assert_eq!(link(&fx, new[0]), None, "razor: the new piece has no partner");
+    assert_eq!((link(&fx, v), link(&fx, a)), (Some(8), Some(8)), "razor: the left piece keeps the sound");
+    assert_eq!(links_on(&fx, a1), vec![Some(8)]);
+
+    // the sound clip alone (Linked Selection off)
+    let mut fx = Fx::new();
+    let (_, _, v, a) = pair(&mut fx);
+    let mut n = fx.next + 1; // fx.next is the last id handed out
+    let new = razor_items(&mut fx.seq, &[a], f(40), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 1);
+    assert_eq!(link(&fx, new[0]), None, "razor_items: the new piece has no partner");
+    assert_eq!((link(&fx, v), link(&fx, a)), (Some(8), Some(8)));
+
+    // edits over the picture only: the piece after the range is unlinked
+    for how in ["overwrite", "lift", "extract", "insert"] {
+        let mut fx = Fx::new();
+        let (v1, a1, _, _) = pair(&mut fx);
+        fx.seq.track_mut(a1).unwrap().sync_lock = false;
+        let it = fx.item(20, 10, 0);
+        let mut n = fx.next + 1; // fx.next is the last id handed out
+        let range = TimeRange::new(f(20), f(10));
+        let want = match how {
+            "overwrite" => {
+                overwrite(&mut fx.seq, vec![(v1, it)], &mut Fx::ctx(&mut n)).unwrap();
+                vec![Some(8), None, None]
+            }
+            "lift" => {
+                lift(&mut fx.seq, &[v1], range, &mut Fx::ctx(&mut n));
+                vec![Some(8), None]
+            }
+            "extract" => {
+                extract(&mut fx.seq, &[v1], range, &mut Fx::ctx(&mut n));
+                vec![Some(8), None]
+            }
+            _ => {
+                insert(&mut fx.seq, vec![(v1, it)], &mut Fx::ctx(&mut n)).unwrap();
+                vec![Some(8), None, None]
+            }
+        };
+        assert_eq!(links_on(&fx, v1), want, "{how}");
+        assert_eq!(links_on(&fx, a1), vec![Some(8)], "{how}: the sound is not cut");
+    }
+
+    // both halves cut: the right-hand pieces are a pair of their own
+    let mut fx = Fx::new();
+    pair(&mut fx);
+    let mut n = fx.next + 1; // fx.next is the last id handed out
+    let new = razor(&mut fx.seq, &[], f(30), &mut Fx::ctx(&mut n));
+    assert_eq!(new.len(), 2);
+    let (l0, l1) = (link(&fx, new[0]), link(&fx, new[1]));
+    assert!(l0.is_some() && l0 == l1 && l0 != Some(8), "the right-hand pieces share a new link: {l0:?} {l1:?}");
+}
+
 #[test]
 fn extract_and_lift() {
     let mut fx = Fx::new();
