@@ -74,8 +74,8 @@ use crate::mxf_out::{MxfMux, MxfSetup};
 use crate::pipeline::Pipeline;
 use crate::settings::{AudioCodec, BitrateMode};
 use crate::{
-    AudioEncoder, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, PrepareAhead, Progress, Report, Result, Stage,
-    VideoEncoder, audio_factories, export_range, frame_span, note_stage, timed, video_factories,
+    AudioEncoder, ColorSignal, EncodedPacket, EncoderFactory, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, PrepareAhead, Progress, Report,
+    Result, Stage, VideoEncoder, audio_factories, export_range, frame_span, note_stage, timed, video_factories,
 };
 
 /// Output frames per interleaved group: the video packets of these frames, then the audio up to
@@ -211,12 +211,28 @@ pub(crate) fn hdr_output(working_hdr: bool, sdr: bool, format: Format, hdr_avail
 }
 
 fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
-    video_factories()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .find_map(|fac| fac(settings.video_format(), w, h, rate, settings))
-        .ok_or_else(|| ExportError::Unsupported(format!("{} encoder not available yet", settings.video_format().label())))?
+    pick_encoder(&video_factories().read().unwrap_or_else(|e| e.into_inner()).clone(), settings.video_format(), w, h, rate, settings)
+}
+
+/// Pick the encoder for an export: the first registered factory that takes it.
+///
+/// A factory answers in one of three ways: it takes the export (`Some(Ok(..))`), it is not its
+/// job (`None`), or it is its job and it failed (`Some(Err(..))`). **A failure must not stop the
+/// walk.** For H.264 the software encoder is the documented fallback ("Hardware encoding: Auto …
+/// otherwise the software encoder"), and for H.265 there is no software encoder at all, so the
+/// next factory may be the only one that can take the export. When no factory takes it, the
+/// first failure is what the user is told — the same message as before.
+fn pick_encoder(factories: &[EncoderFactory], format: Format, w: u32, h: u32, rate: FrameRate, settings: &ExportSettings) -> Result<Box<dyn VideoEncoder>> {
+    let mut first_failure: Option<ExportError> = None;
+    for fac in factories {
+        match fac(format, w, h, rate, settings) {
+            Some(Ok(enc)) => return Ok(enc),
+            Some(Err(e)) if first_failure.is_none() => first_failure = Some(e),
+            Some(Err(_)) => {}
+            None => {}
+        }
+    }
+    Err(first_failure.unwrap_or_else(|| ExportError::Unsupported(format!("{} encoder not available yet", format.label()))))
 }
 
 impl Exporter {
@@ -505,12 +521,10 @@ impl Exporter {
         let (bytes, extra_files) = match self.mxf.take() {
             Some(m) => m.finish(&self.settings)?,
             None => {
-                let w = self
-                    .mux
-                    .take()
-                    .ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?
-                    .finish()
-                    .map_err(|e| ExportError::Io(e.to_string()))?;
+                let mux = self.mux.take().ok_or_else(|| ExportError::Encode("internal: the container writer was not created".into()))?;
+                // Upload services and progressive players need the MP4 metadata before media.
+                // The muxer relocates data in bounded chunks and adjusts every sample offset.
+                let w = if self.brand == Brand::Mp4 { mux.finish_faststart() } else { mux.finish() }.map_err(|e| ExportError::Io(e.to_string()))?;
                 (w.finish(&self.settings)?, Vec::new())
             }
         };
@@ -663,6 +677,78 @@ mod tests {
     use super::*;
 
     const MIB: u64 = 1 << 20;
+
+    /// A factory that answers as it is told, so the walk can be exercised without a driver.
+    fn factory(answer: fn(Format, u32, u32, FrameRate, &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>>) -> EncoderFactory {
+        answer
+    }
+
+    fn never(_: Format, _: u32, _: u32, _: FrameRate, _: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+        None
+    }
+
+    fn fails(_: Format, _: u32, _: u32, _: FrameRate, _: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+        Some(Err(ExportError::Unsupported("the driver said no".into())))
+    }
+
+    fn fails_other(_: Format, _: u32, _: u32, _: FrameRate, _: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+        Some(Err(ExportError::Unsupported("the other driver said no".into())))
+    }
+
+    fn takes(_: Format, _: u32, _: u32, _: FrameRate, _: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+        Some(Ok(Box::new(Dummy)))
+    }
+
+    /// An encoder that writes nothing; the walk only needs something that can be handed back.
+    struct Dummy;
+
+    impl VideoEncoder for Dummy {
+        fn sample_entry(&self) -> SampleEntry {
+            SampleEntry::avc(filmcraft_isobmff::AvcConfig::default(), 0, 0)
+        }
+        fn timescale(&self) -> u32 {
+            1
+        }
+        fn encode(&mut self, _frame: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+            Ok(Vec::new())
+        }
+        fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// The error of a walk that took no encoder. `Box<dyn VideoEncoder>` is not `Debug`, so this
+    /// is not `expect_err`.
+    fn error_of(r: Result<Box<dyn VideoEncoder>>) -> ExportError {
+        match r {
+            Ok(_) => panic!("the walk took an encoder"),
+            Err(e) => e,
+        }
+    }
+
+    /// A factory that *fails* must not stop the walk: the next factory may be the one that can
+    /// take the export. For H.264 that is FilmCraft's own encoder, and for H.265 it is a second
+    /// hardware encoder, because there is no software H.265 encoder at all.
+    #[test]
+    fn a_failing_factory_does_not_stop_the_walk() {
+        let s = ExportSettings { format: Format::Hevc, ..Default::default() };
+        // the failing factory is asked first, the one that takes it second
+        let taken = pick_encoder(&[factory(fails), factory(takes)], Format::Hevc, 64, 64, FrameRate::FPS_24, &s);
+        assert!(taken.is_ok(), "the second factory takes it");
+    }
+
+    /// Nothing took the export: the first failure is what the user is told, and a factory that
+    /// merely declined is not a failure.
+    #[test]
+    fn the_first_failure_is_reported_when_nothing_takes_the_export() {
+        let s = ExportSettings { format: Format::Hevc, ..Default::default() };
+        let e = error_of(pick_encoder(&[factory(fails), factory(fails_other)], Format::Hevc, 64, 64, FrameRate::FPS_24, &s));
+        assert!(e.to_string().contains("the driver said no"), "{e}");
+        assert!(!e.to_string().contains("the other driver said no"), "the first failure is the one reported: {e}");
+        // a factory that declined is not a failure: the message is the "not available" one
+        let e = error_of(pick_encoder(&[factory(never), factory(never)], Format::Hevc, 64, 64, FrameRate::FPS_24, &s));
+        assert!(e.to_string().contains("encoder not available yet"), "{e}");
+    }
 
     #[test]
     fn frame_bytes_by_format() {

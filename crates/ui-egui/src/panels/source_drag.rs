@@ -76,7 +76,7 @@ pub fn controls(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect) {
         if response.dragged() {
             ui.ctx().set_cursor_icon(drag_cursor);
         }
-        if response.drag_started() {
+        if response.drag_started_by(egui::PointerButton::Primary) {
             begin(app, ui, video, audio);
         }
     }

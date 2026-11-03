@@ -19,7 +19,9 @@
 //!    and averaged; dynamic time warping through the negated matrix gives each token's start frame
 //!    (20 ms resolution). Tokens are grouped into words at spaces, punctuation joins its word.
 //!
-//! 6. Word bounds are tightened past silent frames ([`crate::vad`]), so pauses stay pauses.
+//! 6. Word bounds are tightened against the audio ([`crate::vad`]): a pause inside a word's span
+//!    ends the word (the alignment puts a start after a pause late, so the span holds the pause
+//!    and the next word's beginning), then silence at the edges is trimmed. Pauses stay pauses.
 //!
 //! Optional speaker labelling runs afterwards ([`crate::diarize`]).
 

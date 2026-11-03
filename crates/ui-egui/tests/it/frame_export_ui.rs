@@ -293,3 +293,28 @@ fn clicking_outside_dismisses_without_export_and_dropdowns_stay_open() {
     step(&mut h);
     assert!(!has(&h, "exportFrame.name"), "clicking the background monitor must cancel the draft");
 }
+
+/// #2211: a failed export says why in the dialog, which stays open (it only reached the status
+/// bar, so OK looked like it did nothing); a new project defaults to the home folder, not `.`.
+#[test]
+fn a_failed_export_shows_its_error_in_the_dialog() {
+    let mut h = harness();
+    // a "folder" that is a file: the still can't be written there
+    let blocker = std::env::temp_dir().join(format!("fc-frame-blocker-{}", std::process::id()));
+    std::fs::write(&blocker, b"not a folder").unwrap();
+    let out = blocker.join("sub");
+    h.state_mut().hooks.pick_folder = Some(Box::new(move || Some(out.to_string_lossy().into_owned())));
+    let ctx = h.ctx.clone();
+    menus::invoke(h.state_mut(), &ctx, "file.exportFrame", json!({"monitor":"program"})).unwrap();
+    step(&mut h);
+    assert!(!has(&h, "exportFrame.error"));
+    let folder = h.state().auto.elements.iter().find(|e| e.id == "exportFrame.path").map(|e| e.label.clone()).unwrap();
+    // a new project's stills go to the home folder (`.` only without one)
+    assert_eq!(folder, h.state().session.services.home_dir().unwrap_or_else(|| ".".to_owned()));
+    click(&mut h, "exportFrame.browse");
+    click(&mut h, "exportFrame.export");
+    assert!(has(&h, "exportFrame.name"), "the dialog stays open");
+    assert!(has(&h, "exportFrame.error"), "the dialog says why; status: {}", h.state().ui.status);
+    drop(h);
+    std::fs::remove_file(blocker).unwrap();
+}
