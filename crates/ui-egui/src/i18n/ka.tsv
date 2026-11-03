@@ -404,6 +404,7 @@
 	After {name}	{name}-ის შემდეგ
 	Before First Track	პირველ ტრეკამდე
 	Delete Tracks	ტრეკების წაშლა
+	Delete Clips	კლიპების წაშლა
 	Video Tracks	ვიდეო ტრეკები
 	Audio Tracks	აუდიო ტრეკები
 	Delete Video Tracks	ვიდეო ტრეკების წაშლა
@@ -1041,6 +1042,7 @@
 	All Caps	მთავრული
 	Small Caps	პატარა მთავრული
 	Underline	ხაზგასმული
+	Strikethrough	გადახაზული
 	OpenType	OpenType
 	Kerning	კერნინგი
 	Ligatures	ლიგატურები
@@ -3621,3 +3623,112 @@
 	Could not check for updates:\n{error}	განახლებების შემოწმება ვერ მოხერხდა:\n{error}
 	FilmCraft {version} is currently the newest version available.	FilmCraft {version} ამჟამად უახლესი ხელმისაწვდომი ვერსიაა.
 	Looks for a newer FilmCraft release and offers to update.	ეძებს FilmCraft-ის უფრო ახალ გამოშვებას და განახლებას გთავაზობთ.
+
+# Control server: the status-bar notice when --control cannot serve.
+	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	მართვის სერვერი გამორთულია: FILMCRAFT_CONTROL_TOKEN უნდა შეიცავდეს 64 შემთხვევით თექვსმეტობით სიმბოლოს (იხ. docs/control-protocol.md)
+
+# Export: range sizes, destination checks and the GIF alpha hint.
+	{frames} frames ({seconds} s)	კადრი: {frames} ({seconds} წმ)
+	1 frame ({seconds} s)	1 კადრი ({seconds} წმ)
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	წყაროს შესვლა/გამოსვლა მხოლოდ 1 კადრს მოიცავს. მთელი სეკვენციის ექსპორტისთვის აირჩიეთ „მთელი წყარო“.
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} უკვე არსებობს, ამიტომ ექსპორტი არ შესრულდა. მის ჩასანაცვლებლად აირჩიეთ ის შენახვის დიალოგში.
+	Exported {path} as {format}, from its file extension	ექსპორტირებულია: {path}, ფორმატით {format} (ფაილის გაფართოების მიხედვით)
+	Caption Export Settings	სუბტიტრების ექსპორტის პარამეტრები
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	ჩართვისას GIF-ის გამჭვირვალობა ორმნიშვნელიანია: 128-ზე ნაკლები ალფა გამჭვირვალეა, 128 და მეტი — გაუმჭვირვალე.
+# Markers panel, marker properties, custom label colors and the color picker.
+	Edit Marker…	მარკერის რედაქტირება…
+	Comment Marker	კომენტარის მარკერი
+	Chapter Marker	თავის მარკერი
+	Segmentation Marker	სეგმენტაციის მარკერი
+	Web Link	ვებბმული
+	Flash Cue Point	Flash-სიგნალის წერტილი
+	A range marker needs a positive duration	დიაპაზონის მარკერს დადებითი ხანგრძლივობა სჭირდება
+	Add Custom Color	მორგებული ფერის დამატება
+	Add and apply	დამატება და გამოყენება
+	Add color	ფერის დამატება
+	Add custom color	მორგებული ფერის დამატება
+	Add custom color…	მორგებული ფერის დამატება…
+	Author	ავტორი
+	Chapter	თავი
+	Choose Color…	ფერის არჩევა…
+	Choose color with system picker	ფერის არჩევა სისტემის ამრჩევით
+	Color picker	ფერის ამრჩევი
+	Color selected markers	მონიშნული მარკერების ფერის შეცვლა
+	Custom Color…	მორგებული ფერი…
+	Delete Marker	მარკერის წაშლა
+	Delete selected markers	მონიშნული მარკერების წაშლა
+	Edit Custom Color	მორგებული ფერის რედაქტირება
+	Edit Marker	მარკერის რედაქტირება
+	Edit color	ფერის რედაქტირება
+	Editing or removing a swatch leaves assigned colors unchanged.	ნიმუშის რედაქტირება ან წაშლა უკვე მინიჭებულ ფერებს არ ცვლის.
+	Enter six hex digits, for example FF80C0.	შეიყვანეთ ექვსი თექვსმეტობითი ციფრი, მაგალითად FF80C0.
+	Hex	Hex
+	Hex color	ფერის Hex-კოდი
+	Manage Colors	ფერების მართვა
+	Manage Colors…	ფერების მართვა…
+	Marker owner is unavailable	მარკერის კუთვნილი ელემენტი მიუწვდომელია
+	No markers	მარკერები არ არის
+	No matching markers	შესაბამისი მარკერები არ არის
+	No saved colors	შენახული ფერები არ არის
+	No sequence open	სეკვენცია გახსნილი არ არის
+	No source clip open	წყაროს კლიპი გახსნილი არ არის
+	Notes	შენიშვნები
+	Project Colors	პროექტის ფერები
+	Range marker	დიაპაზონის მარკერი
+	Remove saved color	შენახული ფერის წაშლა
+	Save color	ფერის შენახვა
+	Search markers	მარკერების ძიება
+	Search name, notes, author	ძიება სახელში, შენიშვნებსა და ავტორში
+	Select all	ყველაფრის მონიშვნა
+	Select all visible markers	ყველა ხილული მარკერის მონიშვნა
+	Sequence: {name}	სეკვენცია: {name}
+	Source: {name}	წყარო: {name}
+	Source: {name} (shared source markers)	წყარო: {name} (წყაროს საერთო მარკერები)
+	System color picker unavailable: {error}	სისტემის ფერის ამრჩევი მიუწვდომელია: {error}
+	Time is outside the supported range	დრო მხარდაჭერილ დიაპაზონს სცდება
+	{count} selected	მონიშნულია: {count}
+	Remove Custom Color	მორგებული ფერის წაშლა
+	Edit Markers	მარკერების რედაქტირება
+	Delete Markers	მარკერების წაშლა
+	Marker changed or was removed. Reopen it to continue.	მარკერი შეიცვალა ან წაიშალა. გასაგრძელებლად ხელახლა გახსენით.
+	URL	URL
+	Open Link	ბმულის გახსნა
+	Opens this address in your web browser	ხსნის ამ მისამართს თქვენს ვებბრაუზერში
+	Enter a valid HTTP or HTTPS URL without credentials	შეიყვანეთ სწორი HTTP ან HTTPS URL, ავტორიზაციის მონაცემების გარეშე
+	Previous	წინა
+	Next	შემდეგი
+	Enter a valid HH:MM:SS:FF timecode	შეიყვანეთ სწორი დროის კოდი (HH:MM:SS:FF)
+	Marker Color:	მარკერის ფერი:
+# Rename, transitions, replace on export, speed/duration, timeline names, sequence mismatch, misc.
+	Select one clip (or a linked clip) in the Timeline, or one item in the Project panel, to rename	სახელის შესაცვლელად მონიშნეთ ერთი კლიპი (ან დაკავშირებული კლიპი) ტაიმლაინზე ან ერთი ელემენტი პროექტის პანელში
+	Center at Cut	ჭრილზე ცენტრში
+	Start at Cut	ჭრილიდან დაწყება
+	End at Cut	ჭრილზე დასრულება
+	Custom Start	მორგებული დასაწყისი
+	Replace File	ფაილის ჩანაცვლება
+	“{file}” already exists in “{folder}”. Do you want to replace it?	„{file}“ უკვე არსებობს საქაღალდეში „{folder}“. ჩავანაცვლოთ?
+	Replace	ჩანაცვლება
+	In:	შესვლა:
+	Options:	პარამეტრები:
+	Invalid duration: {error}	არასწორი ხანგრძლივობა: {error}
+	Enter a positive duration within the supported speed range.	შეიყვანეთ დადებითი ხანგრძლივობა სიჩქარის მხარდაჭერილ დიაპაზონში.
+	Show Video Names	ვიდეოს სახელების ჩვენება
+	Show Audio Names	აუდიოს სახელების ჩვენება
+	Video Names	ვიდეოს სახელები
+	Audio Names	აუდიოს სახელები
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	აპარატული დეკოდირება: „ავტომატური“ რეჟიმი იყენებს სისტემის ვიდეოდეკოდერს (VideoToolbox macOS-ზე, Media Foundation Windows-ზე, VA-API H.264-ისა და HEVC-ისთვის Linux-ზე) მის მიერ მხარდაჭერილი ნაკადებისთვის, ხოლო FilmCraft-ის საკუთარ დეკოდერს — დანარჩენი ყველაფრისთვის ან აპარატურის შეფერხებისას. უკვე გახსნილი მედია ინარჩუნებს თავის დეკოდერს, სანამ ხელახლა არ გაიხსნება.
+	Clip Mismatch Warning	კლიპის შეუსაბამობის გაფრთხილება
+	This clip does not match the sequence settings.	ეს კლიპი სეკვენციის პარამეტრებს არ შეესაბამება.
+	Clip: {settings}	კლიპი: {settings}
+	Sequence: {settings}	სეკვენცია: {settings}
+	Change the sequence to match the clip's settings?	შეიცვალოს სეკვენცია კლიპის პარამეტრების შესაბამისად?
+	Change Sequence Settings	სეკვენციის პარამეტრების შეცვლა
+	Keep Existing Settings	არსებული პარამეტრების შენარჩუნება
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	აუდიოს გამოტანა ვერ მოხერხდა: დაკვრა ხმის გარეშე (შეამოწმეთ პარამეტრები ▸ აუდიოაპარატურა)
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	აუდიოს გამოტანა არ პასუხობს: დაკვრა ხმის გარეშე (შეამოწმეთ პარამეტრები ▸ აუდიოაპარატურა)
+	FilmCraft Updates	FilmCraft-ის განახლებები
+	1/2	1/2
+	Add Track	ტრეკის დამატება
+	Delete Track	ტრეკის წაშლა
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	„ადაპტიური დიზაინი – დრო“ გრაფიკის შრეების საკვანძო კადრებს დროში გადაანაწილებს; კლიპის ეფექტები, როგორიცაა გაუმჭვირვალობა და მოძრაობა, მედიის დროს ინარჩუნებს
+	Set as Default Transition	ნაგულისხმევ გადასვლად დაყენება
