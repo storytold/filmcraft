@@ -5,6 +5,19 @@ hardware decoders. It provides container openers, GOP-aware video seeking, packe
 and standalone audio imports. See the crate-level API documentation in `src/lib.rs` and
 [`docs/architecture.md`](../../docs/architecture.md) for the source and decoder interfaces.
 
+## Software ProRes output buffers
+
+The ProRes adapter supplies the existing `filmcraft_frame::pool`'s recycled 16-bit planes to
+`decode_frame_into`. Reuse sizes come from the last successful decode, not from an unchecked
+sample header; decode failure and reset discard those hints. The decoder still validates the
+new sample and its aggregate plane-storage limit before resizing the buffers. Pool lookup does
+not allocate on a miss, so a change in frame size does not preallocate the old frame's buffers.
+Frames or planes still held by a cache, viewer or GPU upload stay shared and cannot be recycled.
+
+This reduces fresh plane allocations when suitable recycled buffers are available. It does
+not remove plane initialization, the full-resolution ProRes decode, or GPU uploads. A smaller
+`FrameRequest.scale` is a hint: the MOV source can still return a full-resolution frame.
+
 ## Symphonia audio failure handling (#2798)
 
 Symphonia remains an unmodified MPL-2.0 dependency. Its decoder construction, packet decoding,

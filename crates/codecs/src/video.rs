@@ -761,12 +761,26 @@ pub fn av1_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
 }
 
 /// Our ProRes decoder (every frame is intra; slices decode in parallel).
-pub struct ProResDecoder;
+#[derive(Default)]
+pub struct ProResDecoder {
+    /// Sizes from the last successful decode, never from an unchecked sample header.
+    plane_lengths: [usize; 4],
+}
 
 impl VideoDecoder for ProResDecoder {
     fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
         use std::sync::Arc;
-        let f = filmcraft_prores::decode_frame(sample).map_err(|e| CodecError::Decode(e.to_string()))?;
+        let [y, cb, cr, alpha] = std::mem::take(&mut self.plane_lengths);
+        let mut f = filmcraft_prores::Frame {
+            y: filmcraft_frame::pool::try_take_u16(y).unwrap_or_default(),
+            cb: filmcraft_frame::pool::try_take_u16(cb).unwrap_or_default(),
+            cr: filmcraft_frame::pool::try_take_u16(cr).unwrap_or_default(),
+            alpha: filmcraft_frame::pool::try_take_u16(alpha),
+            ..filmcraft_prores::Frame::new(0, 0, filmcraft_prores::ChromaFormat::Yuv422, 10, false)
+        };
+        filmcraft_prores::decode_frame_into(sample, &filmcraft_prores::DecodeOptions::default(), &mut f)
+            .map_err(|e| CodecError::Decode(e.to_string()))?;
+        self.plane_lengths = [f.y.len(), f.cb.len(), f.cr.len(), f.alpha.as_ref().map_or(0, Vec::len)];
         let chroma = match f.chroma {
             filmcraft_prores::ChromaFormat::Yuv422 => filmcraft_frame::Chroma::C422,
             filmcraft_prores::ChromaFormat::Yuv444 => filmcraft_frame::Chroma::C444,
@@ -796,7 +810,9 @@ impl VideoDecoder for ProResDecoder {
     fn flush(&mut self) -> Vec<DecodedFrame> {
         Vec::new()
     }
-    fn reset(&mut self) {}
+    fn reset(&mut self) {
+        self.plane_lengths = [0; 4];
+    }
     fn name(&self) -> &str {
         "FilmCraft ProRes"
     }
@@ -806,7 +822,7 @@ impl VideoDecoder for ProResDecoder {
 }
 
 pub fn prores_factory(e: &SampleEntry) -> Option<Result<Box<dyn VideoDecoder>>> {
-    matches!(e.codec, CodecConfig::ProRes { .. }).then(|| Ok(Box::new(ProResDecoder) as Box<dyn VideoDecoder>))
+    matches!(e.codec, CodecConfig::ProRes { .. }).then(|| Ok(Box::new(ProResDecoder::default()) as Box<dyn VideoDecoder>))
 }
 
 /// Our APV (Advanced Professional Video, RFC 9924) decoder (every frame is intra; tiles decode in

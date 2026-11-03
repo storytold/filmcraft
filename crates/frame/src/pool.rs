@@ -74,15 +74,16 @@ static F32: Mutex<Vec<Vec<f32>>> = Mutex::new(Vec::new());
 /// Bytes of idle float images kept; a buffer that does not fit is freed.
 const F32_MAX_BYTES: usize = 320 << 20;
 
-fn take<T>(shelf: &Mutex<Shelf<T>>, len: usize) -> Vec<T> {
+fn try_take<T>(shelf: &Mutex<Shelf<T>>, len: usize) -> Option<Vec<T>> {
     let found = shelf.lock().unwrap_or_else(PoisonError::into_inner).take(len);
-    match found {
-        Some(b) => {
-            REUSED.fetch_add(1, Ordering::Relaxed);
-            b
-        }
-        None => Vec::with_capacity(len),
+    if found.is_some() {
+        REUSED.fetch_add(1, Ordering::Relaxed);
     }
+    found
+}
+
+fn take<T>(shelf: &Mutex<Shelf<T>>, len: usize) -> Vec<T> {
+    try_take(shelf, len).unwrap_or_else(|| Vec::with_capacity(len))
 }
 
 fn give<T>(shelf: &Mutex<Shelf<T>>, plane: Arc<Vec<T>>) {
@@ -100,6 +101,12 @@ pub fn take_u8(len: usize) -> Vec<u8> {
 /// [`take_u8`] for 16-bit planes.
 pub fn take_u16(len: usize) -> Vec<u16> {
     take(&U16, len)
+}
+
+/// An idle 16-bit plane with room for `len` samples, or `None` without allocating.
+/// Useful when `len` is a previous frame's size and the next frame has not been validated yet.
+pub fn try_take_u16(len: usize) -> Option<Vec<u16>> {
+    try_take(&U16, len)
 }
 
 /// A buffer of exactly `len` floats whose contents are unspecified (whatever it held last, or zeros
@@ -186,6 +193,20 @@ mod tests {
 
     /// The plane shelves may hold up to this much alongside the float shelf in a test binary.
     const U8_BYTES_UPPER_BOUND: usize = 2 * MAX_BYTES;
+
+    #[test]
+    fn reuse_only_lookup_never_allocates_on_a_miss() {
+        let len = MIN_BYTES / std::mem::size_of::<u16>();
+        let buffer = Vec::<u16>::with_capacity(len);
+        let pointer = buffer.as_ptr();
+        let mut shelf = Shelf::new();
+        shelf.give(buffer, MAX_BYTES);
+        let shelf = Mutex::new(shelf);
+        let recycled = try_take(&shelf, len).unwrap();
+        assert_eq!(recycled.as_ptr(), pointer);
+        assert!(try_take(&shelf, len).is_none(), "an empty shelf must not allocate a replacement");
+        assert!(try_take_u16(usize::MAX).is_none(), "an unavailable size must not attempt an allocation");
+    }
 
     #[test]
     fn shelf_hands_back_a_fitting_buffer_and_stays_within_its_budget() {
