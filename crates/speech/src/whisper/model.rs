@@ -45,8 +45,11 @@ impl Attention {
     fn new(d: usize, heads: usize, vb: VarBuilder) -> Result<Self> {
         // from config.json: zero heads divided by zero in `forward`, and the count sizes every
         // attention-logit tensor (released Whisper models use 6 to 20)
-        if heads == 0 || heads > MAX_HEADS || !d.is_multiple_of(heads) {
-            candle_core::bail!("config.json: {heads} attention heads do not fit d_model {d}");
+        if heads == 0 || heads > MAX_HEADS {
+            candle_core::bail!("config.json: {heads} attention heads is outside 1 to {MAX_HEADS}");
+        }
+        if !d.is_multiple_of(heads) {
+            candle_core::bail!("config.json: d_model {d} is not divisible by {heads} attention heads");
         }
         Ok(Self {
             q: candle_nn::linear(d, d, vb.pp("q_proj"))?,
@@ -291,6 +294,9 @@ mod head_tests {
         for heads in [0, 7, 1 << 20] {
             assert!(Attention::new(384, heads, vb.clone()).is_err(), "{heads} heads");
         }
+        let why = |d: usize, heads: usize| Attention::new(d, heads, vb.clone()).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(why(65, 65).contains("outside"), "{}", why(65, 65));
+        assert!(why(384, 7).contains("not divisible"), "{}", why(384, 7));
         assert!(Attention::new(384, 6, vb).is_ok());
     }
 }
