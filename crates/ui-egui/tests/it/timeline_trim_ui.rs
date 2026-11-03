@@ -952,9 +952,10 @@ fn dragging_an_edge_of_a_selection_trims_every_selected_clip() {
     }
 }
 
-/// #3044: as for a move, a selected clip on a locked track refuses the trim of the selection.
+/// #3044: a selected clip on a locked track stays where it is while the other selected clips trim,
+/// as `timeline.trim` leaves it.
 #[test]
-fn a_selected_clip_on_a_locked_track_prevents_the_trim() {
+fn a_selected_clip_on_a_locked_track_stays_while_the_others_trim() {
     let mut d = Driver::demo();
     let city = d.v1_clip(CITY);
     let seq = d.app().session.active_sequence().expect("sequence");
@@ -963,13 +964,32 @@ fn a_selected_clip_on_a_locked_track_prevents_the_trim() {
     d.exec("timeline.select", json!({"clips": [city, music]}));
     d.exec("timeline.setTrack", json!({"track": track, "locked": true}));
     d.frames(3);
-    let before = d.app().session.project.clone();
-    let undo = d.undo_steps();
+    let (c0, m0, undo) = (d.span(city), d.span(music), d.undo_steps());
     let (_, x1, y) = d.edges(city);
     let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
     d.press_and_move(from, to, 20);
-    assert_eq!(d.cursor(), CursorIcon::NotAllowed);
+    assert_ne!(d.cursor(), CursorIcon::NotAllowed);
     d.release(to);
-    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*before).unwrap());
-    assert_eq!(d.undo_steps(), undo);
+    assert!(d.span(city).1 < c0.1, "the unlocked clip is trimmed");
+    assert_eq!(d.span(music), m0, "the clip on the locked track stays");
+    assert_eq!(d.undo_steps(), undo + 1);
+}
+
+/// #3044: with snapping on, the edge of another selected clip snaps to the playhead when it comes
+/// near it, though the grabbed edge is far from anything.
+#[test]
+fn another_selected_edge_snaps_to_the_playhead() {
+    let mut d = Driver::demo();
+    let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
+    d.exec("timeline.select", json!({"clips": [city, dunes]}));
+    let (c0, d0) = (d.span(city), d.span(dunes));
+    let (tpp, frame) = (d.ticks_per_px(city), d.frame());
+    let playhead = d0.1 - (60.0 * tpp / frame as f64).round() as i64 * frame;
+    d.exec("playhead.set", json!({"time": playhead}));
+    d.exec("sequence.snap", json!({"on": true}));
+    d.frames(3);
+    let (_, x1, y) = d.edges(city);
+    d.drag(pos2(x1 - 3.0, y), pos2(x1 - 3.0 - 58.0, y), 20);
+    assert_eq!(d.span(dunes).1, playhead, "the other selected Out edge snapped to the playhead");
+    assert_eq!(d.span(city).1, c0.1 - (d0.1 - playhead), "the grabbed clip moved by the same amount");
 }
