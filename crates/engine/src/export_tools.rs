@@ -692,17 +692,13 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
     })
 }
 
-/// Whether queue item `it` has an encode job that has not finished yet.
-fn encode_running(s: &Session, it: &QueueItem) -> bool {
-    it.job.and_then(|id| s.jobs.iter().find(|j| j.id == id)).is_some_and(|j| j.result.lock().unwrap_or_else(|e| e.into_inner()).is_none())
-}
-
 /// Advance the queue: settle finished encodes, start the next ready item. `wait` encodes all of
 /// them now (blocking), after the encode already running, if any.
 pub fn pump_queue(s: &mut Session, wait: bool) {
     loop {
-        // settle
+        // settle; `unsettled`: an encode this pass saw still running
         let mut finished_any = false;
+        let mut unsettled = false;
         for i in 0..s.export_queue.items.len() {
             let it = &s.export_queue.items[i];
             if it.status != QueueStatus::Encoding {
@@ -710,7 +706,10 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
             }
             let Some(j) = it.job.and_then(|id| s.jobs.iter().find(|j| j.id == id)) else { continue };
             let res = j.result.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let Some(r) = res else { continue };
+            let Some(r) = res else {
+                unsettled = true;
+                continue;
+            };
             let it = &mut s.export_queue.items[i];
             match r {
                 Ok(_) => it.status = QueueStatus::Done,
@@ -723,8 +722,9 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
             finished_any = true;
         }
         // an encode started earlier without waiting is still running: waiting means seeing it
-        // through, then the rest of the queue (there is no encode thread or sleep on wasm32)
-        if wait && !cfg!(target_arch = "wasm32") && s.export_queue.items.iter().any(|it| it.status == QueueStatus::Encoding && encode_running(s, it)) {
+        // through, then the rest of the queue (there is no encode thread or sleep on wasm32). The
+        // pass's own reading decides, so an encode that ends just after it is settled next time
+        if wait && unsettled && !cfg!(target_arch = "wasm32") {
             std::thread::sleep(std::time::Duration::from_millis(5));
             continue;
         }
