@@ -177,8 +177,9 @@ fn clean_aperture(c: CleanAperture, (w, h): (u32, u32)) -> Option<Region> {
 /// Colour of a video sample entry. The `colr` box (`nclx` / `nclc`) wins; what it leaves
 /// unspecified, or all of it when there is none (ffmpeg writes MP4 without `colr` by default),
 /// comes from the stream's own description: `vpcC` / `apvC`, or the SPS VUI in `avcC` / `hvcC`
-/// and the sequence header in `av1C`. The rest defaults by frame size.
-fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorInfo {
+/// and the sequence header in `av1C`. The rest defaults by frame size, and the second value says
+/// which values did.
+fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> (ColorInfo, filmcraft_color::ColorAssumed) {
     use crate::stream_color::ColorCodes;
     use filmcraft_isobmff::ColorInfo as Colr;
     let colr = match entry.video.as_ref().and_then(|v| v.color.as_ref()) {
@@ -207,7 +208,7 @@ fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorIn
         codec => crate::stream_color::from_codec_config(codec),
     };
     let sources: Vec<ColorCodes> = [colr, stream].into_iter().flatten().collect();
-    crate::stream_color::resolve(w, h, &sources)
+    (crate::stream_color::resolve(w, h, &sources), crate::stream_color::assumed(&sources))
 }
 
 /// First bytes of a Sony `rtmd` sample needed for the start-timecode block (`frames` is last).
@@ -292,7 +293,8 @@ impl Mp4Source {
             let (w, h) = aperture.map_or((w, h), |r| (r.w as u32, r.h as u32));
             // A rate that rounds to zero (one sample per huge duration) can't be divided by.
             let rate = nominal_rate(t.timescale, &t.samples).unwrap_or_default();
-            color = color_from(entry, w, h);
+            let assumed;
+            (color, assumed) = color_from(entry, w, h);
             if entry
                 .video
                 .as_ref()
@@ -313,6 +315,7 @@ impl Mp4Source {
                 has_alpha: matches!(&entry.codec, CodecConfig::Apv(a) if a.chroma_format_idc == 4),
                 bitrate,
                 hdr: entry.video.as_ref().and_then(|v| hdr_metadata(v.mastering_display.as_ref(), v.content_light)),
+                color_assumed: Some(assumed),
             };
             if rotation % 2 == 1 {
                 (info.width, info.height) = (info.height, info.width);

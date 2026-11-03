@@ -254,3 +254,38 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
     assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
 }
+
+/// `media.colorInfo` says which `metadata` values no tag in the file gave. An untagged ffmpeg H.264
+/// file and one tagged BT.709 give the same `metadata`; `assumed` tells them apart.
+#[test]
+fn color_info_says_which_values_no_tag_gave() {
+    let Some(ffmpeg) = filmcraft_testkit::oracle::ffmpeg_or_skip("color_info_assumed") else { return };
+    let dir = filmcraft_testkit::fixtures_dir("engine/color-assumed");
+    let make = |name: &str, filter: &[&str]| {
+        filmcraft_testkit::fixtures::generate(&dir.join(name), |tmp| {
+            std::process::Command::new(&ffmpeg)
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=25:duration=0.2"])
+                .args(filter)
+                .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"])
+                .arg(tmp)
+                .status()
+                .is_ok_and(|s| s.success())
+        })
+    };
+    let Some(untagged) = make("untagged.mp4", &[]) else { return };
+    let Some(tagged) = make("tagged.mp4", &["-vf", "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"]) else { return };
+    let mut s = Session::default();
+    let mut info = |path: &std::path::Path| {
+        let r = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
+        s.execute("media.colorInfo", json!({"item": r["items"][0]})).unwrap()
+    };
+    let (untagged, tagged) = (info(&untagged), info(&tagged));
+    assert_eq!(untagged["metadata"], tagged["metadata"], "the same values for decoding");
+    assert_eq!(untagged["assumed"], json!({"matrix": true, "transfer": true, "primaries": true}), "{untagged}");
+    assert_eq!(tagged["assumed"], json!({"matrix": false, "transfer": false, "primaries": false}), "{tagged}");
+    // generated media doesn't say
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let item = s.active_sequence().unwrap().find_item(clip).unwrap().1.item;
+    assert_eq!(s.execute("media.colorInfo", json!({"item": item.0})).unwrap()["assumed"], serde_json::Value::Null);
+}
