@@ -275,9 +275,9 @@ pub(crate) fn release_cursor_lock(ctx: &egui::Context) {
         return;
     }
     ctx.data_mut(|d| d.remove::<CursorLock>(cursor_lock_id()));
-    if here && down {
-        // egui would keep dragging the field when focus comes back, and a new press could not start
-        // a drag on another one
+    if here && ctx.dragged_id() == Some(lock.owner) {
+        // egui would keep dragging the field when focus comes back, or after a dialog took the
+        // pointer, and a new press could not start a drag on another one
         ctx.stop_dragging();
     }
     ctx.send_viewport_cmd_to(lock.viewport, egui::ViewportCommand::CursorPosition(lock.origin));
@@ -698,6 +698,26 @@ mod tests {
         assert!(held(), "the main window leaves the panel's lock alone");
         ctx.run_ui(egui::RawInput::default(), |ui| release_cursor_lock(ui.ctx())).textures_delta.clear();
         assert!(!held(), "the panel's window is gone: its lock goes too");
+    }
+
+    /// A dialog that takes the pointer mid-drag leaves the button up without a release: letting the
+    /// cursor go then also ends egui's drag of the field, so a later press starts a drag of its own.
+    #[test]
+    fn letting_the_cursor_go_ends_a_drag_the_button_left_without_a_release() {
+        let ctx = egui::Context::default();
+        let owner = egui::Id::unique("hot number");
+        let lock = CursorLock { owner, origin: pos2(10.0, 20.0), viewport: egui::ViewportId::ROOT };
+        ctx.data_mut(|d| d.insert_temp(cursor_lock_id(), lock));
+        let mut dragged = None;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.ctx().set_dragged_id(owner);
+            release_cursor_lock(ui.ctx());
+            dragged = ui.ctx().dragged_id();
+        })
+        .textures_delta
+        .clear();
+        assert!(ctx.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())).is_none(), "the cursor is let go");
+        assert_eq!(dragged, None, "and the field's drag ends with it");
     }
 
     /// Tabular text: every digit takes the same room, so `11:11` and `88:08` are as wide.
