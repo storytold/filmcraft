@@ -691,9 +691,12 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
         c => codec_label(c),
     };
     let (rate, ch) = filmcraft_media::bounded_audio_dimensions(rate, ch).ok()?;
-    // PCM is unpacked in place; everything else needs a packet decoder (an unknown sample entry
+    // PCM is unpacked in place when `decode_pcm` knows its format; everything else needs a packet decoder (an unknown sample entry
     // such as Apple Positional Audio `apac` has none: #2758)
-    let decodable = matches!(entry.codec, CodecConfig::Pcm(_)) || crate::audio::PacketDecoder::for_isobmff(&entry.codec, rate).is_ok();
+    let decodable = match &entry.codec {
+        CodecConfig::Pcm(p) => crate::audio::pcm_decodable(p.bits, p.float),
+        c => crate::audio::PacketDecoder::for_isobmff(c, rate).is_ok(),
+    };
     Some(AudioStreamInfo { sample_rate: rate, channels: ch, codec, bits_per_sample: bits, decodable })
 }
 
@@ -1001,6 +1004,24 @@ mod multi_audio_tests {
         // the undecodable stream reads as silence (no error), the PCM one as its tone
         assert!(source.audio(0, 100, 48_000).map_or(true, |b| b.channels.iter().flatten().all(|v| *v == 0.0)));
         assert!((source.audio_stream(3, 0, 100, 48_000).unwrap().channels[0][50] - 0.25).abs() < 0.001);
+    }
+
+    /// #2758: 64-bit integer PCM has no decoder (`decode_pcm` gives silence), so the track is
+    /// listed as undecodable instead of taking A1; 16-bit PCM next to it still decodes.
+    #[test]
+    fn pcm_in_a_format_we_cannot_decode_is_listed_as_undecodable() {
+        let rate = 48_000u32;
+        let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+        for bits in [64u16, 16] {
+            let entry = SampleEntry::pcm(PcmConfig { bits, float: false, big_endian: false, signed: true, channels: 1, sample_rate: f64::from(rate) });
+            let t = mux.add_track(TrackConfig::new(entry, rate)).unwrap();
+            let data = vec![0x40u8; usize::from(bits / 8) * 480];
+            mux.write_sample(t, WriteSample { data: &data, duration: 480, composition_offset: 0, is_sync: true }).unwrap();
+        }
+        let bytes = mux.finish().unwrap().into_inner();
+        let source = super::Mp4Source::open("pcm64.mov", bytes.into()).unwrap();
+        let got: Vec<bool> = source.info().audio_streams.iter().map(|a| a.can_decode()).collect();
+        assert_eq!(got, vec![false, true]);
     }
 }
 

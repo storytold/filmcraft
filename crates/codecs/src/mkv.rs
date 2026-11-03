@@ -156,7 +156,10 @@ fn audio_info(t: &filmcraft_matroska::Track) -> Option<AudioStreamInfo> {
         channels = h.channels as u32;
     }
     let (rate, channels) = filmcraft_media::bounded_audio_dimensions(rate, channels).ok()?;
-    let decodable = matches!(t.codec, Codec::Pcm { .. }) || audio_decoder(&t.codec, rate).is_ok();
+    let decodable = match t.codec {
+        Codec::Pcm { bits, float, .. } => crate::audio::pcm_decodable(bits, float),
+        _ => audio_decoder(&t.codec, rate).is_ok(),
+    };
     // an audio codec without a decoder plays silent: say so in the media info, as MPEG / MXF do (#1422)
     let codec = if audio_decodable(&t.codec) { codec_label(&t.codec) } else { format!("{} (unsupported)", codec_label(&t.codec)) };
     Some(AudioStreamInfo { sample_rate: rate, channels, codec, bits_per_sample: a.bit_depth.map(|b| b as u32), decodable })
@@ -351,9 +354,8 @@ fn codec_label(c: &Codec) -> String {
 /// [`MkvSource::audio_decoder`] (keep the two in step).
 fn audio_decodable(c: &Codec) -> bool {
     match c {
-        Codec::Pcm { .. } | Codec::Aac { .. } | Codec::Opus { .. } | Codec::Mp3 | Codec::Mp2 | Codec::Mp1 | Codec::Ac3 | Codec::Eac3 | Codec::Flac { .. } => {
-            true
-        }
+        Codec::Pcm { bits, float, .. } => crate::audio::pcm_decodable(*bits, *float),
+        Codec::Aac { .. } | Codec::Opus { .. } | Codec::Mp3 | Codec::Mp2 | Codec::Mp1 | Codec::Ac3 | Codec::Eac3 | Codec::Flac { .. } => true,
         Codec::Vorbis { headers } => headers.len() == 3,
         _ => false,
     }

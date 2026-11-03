@@ -785,6 +785,13 @@ pub fn decode_dvd_lpcm(data: &[u8], channels: usize, bits: u32) -> Vec<Vec<f32>>
     out
 }
 
+/// Whether [`decode_pcm`] decodes `bits`-bit samples: 8/16/24/32-bit integer or 32/64-bit float.
+/// Any other format (64-bit integer, 20-bit, 16-bit float…) reads as silence there, so a
+/// container must list such a track as undecodable rather than place it (#2758).
+pub fn pcm_decodable(bits: u16, float: bool) -> bool {
+    if float { matches!(bits, 32 | 64) } else { matches!(bits, 8 | 16 | 24 | 32) }
+}
+
 /// Decode interleaved PCM bytes into planar f32.
 pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f32>> {
     let ch = cfg.channels.max(1) as usize;
@@ -1449,5 +1456,25 @@ mod decode_pcm_tests {
         let out = decode_pcm(&[0u8; 64], &cfg);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(Vec::is_empty));
+    }
+
+    /// #2758: every format `pcm_decodable` accepts decodes a real sample; 64-bit integer PCM,
+    /// which it rejects, is the silence `decode_pcm` returns for formats it doesn't know.
+    #[test]
+    fn pcm_decodable_matches_what_decode_pcm_decodes() {
+        let pcm = |bits, float| filmcraft_isobmff::PcmConfig { bits, float, big_endian: false, signed: bits > 8, channels: 1, sample_rate: 48_000.0 };
+        let first = |data: &[u8], bits, float| super::decode_pcm(data, &pcm(bits, float)).first().and_then(|c| c.first().copied());
+        for bits in [8u16, 16, 24, 32] {
+            assert!(super::pcm_decodable(bits, false), "{bits}-bit");
+            assert_ne!(first(&vec![0x40; usize::from(bits / 8)], bits, false), Some(0.0), "{bits}-bit");
+        }
+        assert!(super::pcm_decodable(32, true) && super::pcm_decodable(64, true));
+        assert_eq!(first(&0.5f32.to_le_bytes(), 32, true), Some(0.5));
+        assert_eq!(first(&0.5f64.to_le_bytes(), 64, true), Some(0.5));
+        assert!(!super::pcm_decodable(64, false));
+        assert_eq!(first(&[0x40; 8], 64, false), Some(0.0));
+        for (bits, float) in [(0, false), (20, false), (16, true), (8, true)] {
+            assert!(!super::pcm_decodable(bits, float), "{bits}-bit float={float}");
+        }
     }
 }
