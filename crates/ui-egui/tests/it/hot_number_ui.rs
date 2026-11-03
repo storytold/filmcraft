@@ -153,6 +153,29 @@ fn a_dragged_hot_number_keeps_changing_past_the_screen_edge() {
     assert!(d.rotation(clip) >= 200.0, "the raw motion past the edge counts: {}", d.rotation(clip));
 }
 
+/// A touch has no raw mouse motion: once a mouse sent some, a touch drag still follows the finger.
+#[test]
+fn a_touch_drag_follows_the_finger_after_raw_mouse_motion() {
+    let mut d = Driver::demo();
+    let clip = d.text_layer();
+    d.exec("graphics.set", json!({"clip": clip, "layer": 0, "props": {"rotation": 0.0}}));
+    d.input([egui::Event::MouseMoved(egui::vec2(1.0, 0.0))]);
+    let r = d.harness.state().auto.find("graphics.prop.rotation").expect("rotation field").rect;
+    let at = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: None };
+    let button = |pressed, pos| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    d.input([touch(egui::TouchPhase::Start, at), egui::Event::PointerMoved(at), button(true, at)]);
+    let mut to = at;
+    for _ in 0..4 {
+        to += egui::vec2(20.0, 0.0);
+        d.input([touch(egui::TouchPhase::Move, to), egui::Event::PointerMoved(to)]);
+        assert_ne!(d.harness.output().platform_output.cursor_icon, egui::CursorIcon::None, "a touch does not hide the cursor");
+    }
+    d.input([touch(egui::TouchPhase::End, to), button(false, to), egui::Event::PointerGone]);
+    // 0.5° per point over 80 points, less what egui's drag threshold holds back
+    assert!(d.rotation(clip) >= 30.0, "the touch drag moved the value: {}", d.rotation(clip));
+}
+
 /// Control input reaches a window in the background: egui sees it focused only on the frames that
 /// carry the input, and the frames between must not take the field's focus again.
 #[test]

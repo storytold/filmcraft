@@ -217,14 +217,15 @@ fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
 
 /// How far a drag on `resp` moved this frame, in points. As in Premiere, the cursor is hidden and
 /// held where the press began, and the drag follows the raw mouse motion, which the screen edge
-/// does not stop (#4177). Without raw motion (the web) it is the pointer's own delta.
+/// does not stop (#4177). Without raw motion (the web) or for a touch, it is the pointer's own delta.
 fn locked_drag_dx(ui: &Ui, resp: &Response) -> f32 {
     let lock_id = resp.id.with("cursor-lock");
     if resp.drag_started() {
         ui.data_mut(|d| d.remove_temp::<egui::Pos2>(lock_id));
     }
-    let (motion, press_origin, pointer) = ui.input(|i| (i.pointer.motion(), i.pointer.press_origin(), i.pointer.latest_pos()));
-    let Some(motion) = motion else { return resp.drag_delta().x };
+    let (motion, touching, press_origin, pointer) = ui.input(|i| (i.pointer.motion(), i.any_touches(), i.pointer.press_origin(), i.pointer.latest_pos()));
+    // once any raw motion arrived, `motion` stays `Some` on every frame, also for a touch, which has none
+    let Some(motion) = motion.filter(|_| !touching) else { return resp.drag_delta().x };
     let origin = match ui.data(|d| d.get_temp::<egui::Pos2>(lock_id)) {
         Some(origin) => origin,
         None => {
