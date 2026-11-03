@@ -129,6 +129,9 @@ pub struct Document {
     pub blocks: Vec<String>,
     /// Non-fatal problems found while reading (skipped cues…).
     pub warnings: Vec<String>,
+    /// BCP 47 language tag of the text, when known: TTML's `xml:lang` on import, the caption
+    /// track's language on export. TTML and DFXP write it (else `en`).
+    pub language: Option<String>,
 }
 
 impl Document {
@@ -242,8 +245,8 @@ pub fn write(doc: &Document, format: Format, opts: WriteOptions) -> Vec<u8> {
         Format::Scc => scc::write(doc, opts.drop_frame).into_bytes(),
         Format::Mcc => mcc::write(doc, opts.drop_frame).into_bytes(),
         Format::Stl => stl::write(doc, opts.rate),
-        Format::Ttml => ttml::write(doc, ttml::Flavor::Imsc1, opts.rate, "en").into_bytes(),
-        Format::Dfxp => ttml::write(doc, ttml::Flavor::Dfxp, opts.rate, "en").into_bytes(),
+        Format::Ttml => ttml::write(doc, ttml::Flavor::Imsc1, opts.rate, doc.language.as_deref().unwrap_or("")).into_bytes(),
+        Format::Dfxp => ttml::write(doc, ttml::Flavor::Dfxp, opts.rate, doc.language.as_deref().unwrap_or("")).into_bytes(),
     }
 }
 
@@ -366,9 +369,13 @@ pub fn format_clock(t: Tick, sep: char) -> String {
     format!("{h:02}:{m:02}:{s:02}{sep}{f:03}")
 }
 
-/// Build a caption track from a document. Ids are allocated with `alloc`.
+/// Build a caption track from a document, in the document's language when it has one (else
+/// the default, `en`). Ids are allocated with `alloc`.
 pub fn track_from_document(doc: &Document, id: TrackId, name: &str, format: CaptionFormat, alloc: &mut dyn FnMut() -> u64) -> CaptionTrack {
     let mut t = CaptionTrack::new(id, name.to_string(), format);
+    if let Some(language) = &doc.language {
+        t.language = language.clone();
+    }
     t.vtt_blocks = doc.blocks.clone();
     t.captions = doc
         .cues
@@ -407,6 +414,7 @@ pub fn document_from_track(t: &CaptionTrack, offset: Tick) -> Document {
             .collect(),
         blocks: t.vtt_blocks.clone(),
         warnings: Vec::new(),
+        language: Some(t.language.clone()).filter(|l| !l.is_empty()),
     }
 }
 

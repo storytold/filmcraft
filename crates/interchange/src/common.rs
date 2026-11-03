@@ -37,7 +37,8 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' && i + 2 < b.len() {
-            let h = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok());
+            let h =
+                std::str::from_utf8(&b[i + 1..i + 3]).ok().filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit())).and_then(|h| u8::from_str_radix(h, 16).ok());
             if let Some(v) = h {
                 out.push(v);
                 i += 3;
@@ -205,7 +206,8 @@ pub(crate) fn kind_from_ext(path: &str) -> MediaKind {
 /// Frame count nearest to `t` at `rate`.
 pub(crate) fn frames_round(rate: FrameRate, t: Tick) -> i64 {
     let f = rate.frame_at(t);
-    if rate.tick_of(f + 1) - t < t - rate.tick_of(f) { f + 1 } else { f }
+    let next = f.saturating_add(1);
+    if rate.tick_of(next) - t < t - rate.tick_of(f) { next } else { f }
 }
 
 /// Whether `t` is exactly on a frame boundary of `rate`.
@@ -719,6 +721,14 @@ pub(crate) fn sanitize_reel(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use filmcraft_time::TimeRange;
+
+    #[test]
+    fn percent_decode_requires_hex_digits() {
+        assert_eq!(file_url_to_path("file:///a/100%+5x.mov"), "/a/100%+5x.mov");
+        assert_eq!(file_url_to_path("file:///a/100%-1x.mov"), "/a/100%-1x.mov");
+        assert_eq!(file_url_to_path("file:///a/100%g0x.mov"), "/a/100%g0x.mov");
+        assert_eq!(file_url_to_path("file:///a/b%20c.mov"), "/a/b c.mov");
+    }
 
     #[test]
     fn urls() {

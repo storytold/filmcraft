@@ -65,7 +65,7 @@ Details of each format and the SCC encoder are in [`crates/captions/README.md`](
 | `captions.setTrack` | caption track header (eye, lock) | `track`, `name`, `format`, `language`, `enabled`, `locked`, `syncLock` |
 | `captions.setStyle` | Text panel style strip | `track`, `font`, `fontStyle`, `size`, `color`, `background`, `backgroundColor`, `outline`, `outlineColor`, `align`, `anchor`, `margin`, `lineSpacing`, `reset` |
 | `captions.deleteTrack` | | `track` |
-| `captions.import` / `captions.export` | File ▸ Export ▸ Captions… | `path`, `format`, `track`, `dropFrame` |
+| `captions.import` / `captions.export` | File ▸ Export ▸ Captions… | `path`; import: `name`, `language` (default: the file's TTML `xml:lang`, else `en`); export: `format`, `track`, `dropFrame`. TTML and DFXP exports write the track's language as `xml:lang` |
 | `captions.list` | (query) | `track` — tracks, styles and captions with timecodes (a `track` that names no caption track is an error) |
 
 Tracks are addressed by id or `"C1"`, `"C2"`… (top first). Edits are limited by neighbouring

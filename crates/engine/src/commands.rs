@@ -1716,7 +1716,7 @@ fn build() -> Vec<CommandSpec> {
                     },
                     Ok(b) => {
                         if let Some(fmt) = crate::captions::detect(&path, &b) {
-                            match crate::captions::import(s, &path, &b, fmt, None) {
+                            match crate::captions::import(s, &path, &b, fmt, None, None) {
                                 Ok(r) => reports.push(r),
                                 Err(e) => errors.push(format!("{path}: {e}")),
                             }
