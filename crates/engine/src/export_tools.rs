@@ -562,13 +562,9 @@ pub(crate) fn guard_job(
     }
 }
 
-fn file_name(path: &str) -> String {
-    Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string())
-}
-
-/// For an image sequence, the first and last numbered stills it writes: it never writes
-/// `settings.path` itself. They are counted the way `export.resolve` counts `frames` (#4009).
-fn sequence_files(project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<(String, String)> {
+/// How many numbered stills an image-sequence export writes (`None`: not an image sequence, or no
+/// frames).
+fn sequence_count(project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<u64> {
     if !settings.is_image_sequence() {
         return None;
     }
@@ -576,7 +572,17 @@ fn sequence_files(project: &Project, seq: ItemId, settings: &ExportSettings) -> 
     let range = filmcraft_export::export_range(project, seq, settings).ok()?;
     let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
     let (f0, f1) = filmcraft_export::frame_span(r.rate, range);
-    let count = u64::try_from(f1.saturating_sub(f0)).ok().filter(|n| *n > 0)?;
+    u64::try_from(f1.saturating_sub(f0)).ok().filter(|n| *n > 0)
+}
+
+fn file_name(path: &str) -> String {
+    Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string())
+}
+
+/// For an image sequence, the first and last numbered stills it writes: it never writes
+/// `settings.path` itself. They are counted the way `export.resolve` counts `frames` (#4009).
+fn sequence_files(project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<(String, String)> {
+    let count = sequence_count(project, seq, settings)?;
     Some((filmcraft_export::image_sequence_path(&settings.path, 0, count), filmcraft_export::image_sequence_path(&settings.path, count - 1, count)))
 }
 
@@ -824,9 +830,8 @@ fn output_occupied(s: &Session, path: &str, format: filmcraft_export::Format) ->
     })
 }
 
-/// `path` with the first `_N` (from 2) that no queued item writes (`taken`, as [`queue_path_key`]s)
-/// and that is not `occupied`: a generated name must not replace a file nobody named.
-fn free_queue_path(path: &str, taken: &[String], occupied: impl Fn(&str) -> bool) -> String {
+/// `path` with the first `_N` (from 2) that is `free`.
+fn free_queue_path(path: &str, free: impl Fn(&str) -> bool) -> String {
     let (stem, ext) = match path.rsplit_once('.') {
         Some((a, e)) if !e.contains(['/', '\\']) => (a, Some(e)),
         _ => (path, None),
@@ -837,20 +842,97 @@ fn free_queue_path(path: &str, taken: &[String], occupied: impl Fn(&str) -> bool
             None => format!("{stem}_{n}"),
         })
         .take(100_000)
-        .find(|c| !taken.contains(&queue_path_key(c)) && !occupied(c))
+        .find(|c| free(c))
         .unwrap_or_else(|| path.to_string())
 }
 
-/// The outputs queue items hold (as [`queue_path_key`]s), except item `except`: an item that will
-/// write or has written its file keeps it, so another with the same output gets the next free `_N`
-/// instead of overwriting it (#4175). Cancelled and failed items let go.
-fn queue_taken_paths(s: &Session, except: Option<u64>) -> Vec<String> {
-    s.export_queue
-        .items
-        .iter()
-        .filter(|i| Some(i.id) != except && matches!(i.status, QueueStatus::Ready | QueueStatus::Encoding | QueueStatus::Done))
-        .map(|i| queue_path_key(&i.settings.path))
-        .collect()
+/// The numbered stills an image-sequence export writes ([`filmcraft_export::image_sequence_path`]):
+/// `prefix` (the lower-cased path up to the frame number), frame numbers `0..count` padded to
+/// `digits`, then `.ext`.
+#[derive(Debug, Clone, PartialEq)]
+struct Stills {
+    prefix: String,
+    ext: String,
+    digits: u32,
+    count: u64,
+}
+
+impl Stills {
+    fn of(project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<Stills> {
+        let count = sequence_count(project, seq, settings)?;
+        let digits = u32::try_from(count.saturating_sub(1).max(1).to_string().len().max(3)).ok()?;
+        let first = filmcraft_export::image_sequence_path(&settings.path, 0, count).to_lowercase();
+        let (body, ext) = first.rsplit_once('.')?;
+        let prefix = body.get(..body.len().checked_sub(digits as usize)?)?;
+        Some(Stills { prefix: prefix.to_string(), ext: ext.to_string(), digits, count })
+    }
+
+    /// Whether a still of `self` has the name of a still of `other`. With one prefix extending the
+    /// other by digits `s` (`shot` and `shot1`), the shorter one's frame numbers must be `s`
+    /// followed by the longer one's: the smallest, `s × 10^digits`, must be one it writes.
+    fn overlap(&self, other: &Stills) -> bool {
+        if self.ext != other.ext {
+            return false;
+        }
+        let (short, long) = if self.prefix.len() <= other.prefix.len() { (self, other) } else { (other, self) };
+        let Some(s) = long.prefix.strip_prefix(short.prefix.as_str()) else { return false };
+        if !s.bytes().all(|b| b.is_ascii_digit()) || u32::try_from(s.len()).ok().and_then(|n| n.checked_add(long.digits)) != Some(short.digits) {
+            return false;
+        }
+        let lead: u64 = if s.is_empty() {
+            0
+        } else {
+            match s.parse() {
+                Ok(v) => v,
+                Err(_) => return false,
+            }
+        };
+        10u64.checked_pow(long.digits).and_then(|m| lead.checked_mul(m)).is_some_and(|first| first < short.count)
+    }
+}
+
+/// The outputs queue items hold: an item that will write or has written its file keeps it, so
+/// another with the same output gets the next free `_N` instead of overwriting it (#4175).
+/// Cancelled and failed items let go. Image sequences hold the stills they write.
+struct QueueClaims {
+    /// As [`queue_path_key`]s.
+    paths: Vec<String>,
+    stills: Vec<Stills>,
+}
+
+impl QueueClaims {
+    /// What the queue's items hold, except item `except`.
+    fn of(s: &Session, except: Option<u64>) -> QueueClaims {
+        let mut c = QueueClaims { paths: Vec::new(), stills: Vec::new() };
+        for i in
+            s.export_queue.items.iter().filter(|i| Some(i.id) != except && matches!(i.status, QueueStatus::Ready | QueueStatus::Encoding | QueueStatus::Done))
+        {
+            c.add(&i.project, i.sequence, &i.settings);
+        }
+        c
+    }
+
+    fn add(&mut self, project: &Project, seq: ItemId, settings: &ExportSettings) {
+        self.paths.push(queue_path_key(&settings.path));
+        self.stills.extend(Stills::of(project, seq, settings));
+    }
+
+    /// Whether an export of `seq` with `settings` would write what the queue holds.
+    fn holds(&self, project: &Project, seq: ItemId, settings: &ExportSettings) -> bool {
+        self.paths.contains(&queue_path_key(&settings.path)) || Stills::of(project, seq, settings).is_some_and(|x| self.stills.iter().any(|t| t.overlap(&x)))
+    }
+
+    /// `settings.path`, or when the queue or a file holds it, the first free `_N` of it.
+    fn free_path(&self, s: &Session, project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<String> {
+        if !self.holds(project, seq, settings) {
+            return None;
+        }
+        Some(free_queue_path(&settings.path, |c| {
+            let mut t = settings.clone();
+            t.path = c.to_string();
+            !self.holds(project, seq, &t) && !output_occupied(s, c, settings.format)
+        }))
+    }
 }
 
 fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
@@ -895,13 +977,13 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             items.push((seq, st));
         }
     }
-    let mut taken = queue_taken_paths(s, None);
+    let mut claims = QueueClaims::of(s, None);
     for (seq, mut st) in items {
-        if taken.contains(&queue_path_key(&st.path)) {
-            st.path = free_queue_path(&st.path, &taken, |c| output_occupied(s, c, st.format));
+        if let Some(path) = claims.free_path(s, &project, seq, &st) {
+            st.path = path;
             warnings.push(RENAMED_WARNING);
         }
-        taken.push(queue_path_key(&st.path));
+        claims.add(&project, seq, &st);
         s.export_queue.next_id += 1;
         let id = s.export_queue.next_id;
         let name = s.project.item(seq).map(|i| i.name.clone()).unwrap_or_default();
@@ -995,10 +1077,8 @@ fn queue_retry(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "only finished, failed or cancelled exports can be retried"));
     }
     // a cancelled or failed item let go of its file: if another item has it since, number this one
-    let taken = queue_taken_paths(s, Some(it.id));
     let mut warnings = Vec::new();
-    let renamed =
-        taken.contains(&queue_path_key(&it.settings.path)).then(|| free_queue_path(&it.settings.path, &taken, |c| output_occupied(s, c, it.settings.format)));
+    let renamed = QueueClaims::of(s, Some(it.id)).free_path(s, &it.project, it.sequence, &it.settings);
     let Some(it) = s.export_queue.items.get_mut(i) else { return Err(bad(cmd, "no such item")) };
     if let Some(path) = renamed {
         it.settings.path = path;
@@ -1346,5 +1426,39 @@ mod guard_tests {
         assert!(progress.finished.load(Ordering::Relaxed));
         assert!(progress.error.lock().unwrap().is_some());
         assert!(matches!(&*result.lock().unwrap(), Some(Err(_))));
+    }
+}
+
+#[cfg(test)]
+mod stills_tests {
+    use super::Stills;
+
+    fn stills(prefix: &str, count: u64) -> Stills {
+        let digits = count.saturating_sub(1).max(1).to_string().len().max(3) as u32;
+        Stills { prefix: prefix.into(), ext: "png".into(), digits, count }
+    }
+
+    /// Two image sequences share a still exactly when one's names are among the other's.
+    #[test]
+    fn image_sequences_overlap_when_they_write_a_same_named_still() {
+        // still.png, 1001 frames: still0000 … still1000; still0.png, 1 frame: still0000
+        assert!(stills("still", 1001).overlap(&stills("still0", 1)));
+        assert!(stills("still0", 1).overlap(&stills("still", 1001)));
+        // still1.png writes still1000 …: still.png reaches still1000 only from 1001 frames
+        assert!(stills("still", 1001).overlap(&stills("still1", 5)));
+        assert!(!stills("still", 1000).overlap(&stills("still1", 5)));
+        // 3-digit numbers never meet still0's 4-digit ones
+        assert!(!stills("still", 642).overlap(&stills("still0", 1)));
+        // the same prefix and width share frame 0; other widths share nothing
+        assert!(stills("still", 10).overlap(&stills("still", 20)));
+        assert!(!stills("still", 10).overlap(&stills("still", 2000)));
+        // not digits, another extension, another name
+        assert!(!stills("still", 2000).overlap(&stills("stillx", 1)));
+        let mut tif = stills("still0", 1);
+        tif.ext = "tif".into();
+        assert!(!stills("still", 1001).overlap(&tif));
+        assert!(!stills("shot", 1001).overlap(&stills("still0", 1)));
+        // huge counts and prefixes do not overflow
+        assert!(!stills("s", u64::MAX).overlap(&stills("s99999999999999999999999", 1)));
     }
 }

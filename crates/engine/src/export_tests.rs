@@ -322,6 +322,22 @@ fn queue_add_numbering_skips_host_files_and_image_sequence_stills() {
     }
     let paths: Vec<String> = queue(&mut s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
     assert_eq!(paths, [dir.path("shot.png"), dir.path("shot_3.png")]);
+    // still.png over 1001+ frames writes still0000.png, which a 1-frame still0.png writes too
+    s.execute("export.queue.clear", json!({"all": true})).unwrap();
+    let long =
+        s.execute("export.queue.add", json!({"path": dir.path("long.png"), "format": "png", "range": "custom", "startFrame": 0, "endFrame": 1100})).unwrap();
+    assert_eq!(long["warnings"], json!([]));
+    let one =
+        s.execute("export.queue.add", json!({"path": dir.path("long0.png"), "format": "png", "range": "custom", "startFrame": 0, "endFrame": 1})).unwrap();
+    assert_eq!(one["warnings"], json!([crate::export_tools::RENAMED_WARNING]));
+    let three =
+        s.execute("export.queue.add", json!({"path": dir.path("other0.png"), "format": "png", "range": "custom", "startFrame": 0, "endFrame": 1})).unwrap();
+    assert_eq!(three["warnings"], json!([]), "a still no queued sequence writes");
+    let paths: Vec<String> = queue(&mut s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
+    assert_eq!(paths, [dir.path("long.png"), dir.path("long0_2.png"), dir.path("other0.png")]);
+    let frames =
+        s.execute("export.resolve", json!({"path": dir.path("long.png"), "format": "png", "range": "custom", "startFrame": 0, "endFrame": 1100})).unwrap();
+    assert!(frames["frames"].as_u64().unwrap() > 1000, "the long one has 4-digit frame numbers: {}", frames["frames"]);
 }
 
 #[test]
