@@ -250,6 +250,38 @@ fn a_save_through_a_symlink_waits_for_a_save_through_the_real_path() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A link and its file whose names share their first 200 bytes have one lock file between them,
+/// and the run through the link takes it once instead of waiting on itself.
+#[cfg(unix)]
+#[test]
+fn a_link_sharing_a_lock_file_with_its_file_does_not_wait_on_itself() {
+    let (dir, _) = lock_test_project("long-names");
+    let prefix = "p".repeat(200);
+    let real = dir.join(format!("{prefix}-real.fcproj"));
+    json_out(&cli(&["--demo", "--save-as", real.to_str().unwrap(), "exec", "file.newBin", "name=start"]));
+    let link = dir.join(format!("{prefix}-link.fcproj"));
+    std::os::unix::fs::symlink(real.file_name().unwrap(), &link).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_filmcraft-cli"))
+        .args(["--project", link.to_str().unwrap(), "--save", "exec", "file.newBin", "name=long"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the run is waiting on its own lock");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_missing_project_gets_no_lock_file_and_keeps_its_error() {
     let (dir, _) = lock_test_project("missing");
