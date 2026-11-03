@@ -166,7 +166,8 @@ fn with_handles(item: &TrackItem, t0: Tick, t1: Tick) -> TrackItem {
     // forward media time is source_in + (t - start)·speed; reversed it counts down from the out
     // point, so the extra head (forward) or tail (reverse) moves source_in back
     let shift = if item.reverse { tail } else { head };
-    ext.source_in = item.source_in - Tick((shift.0 as f64 * item.speed.abs()).round() as i64);
+    // the speed the clip's audio is read at, so the handles line up with it above the speed cap
+    ext.source_in = item.source_in - Tick((shift.0 as f64 * read_speed(item)).round() as i64);
     ext
 }
 
@@ -380,6 +381,11 @@ pub(crate) fn bounded_sample_rate(rate: u32) -> u32 {
 /// the speed multiplies the source window a playback block requests.
 const MAX_CLIP_SPEED: f64 = 100.0;
 
+/// The speed a clip's audio is read at: its own, held to what [`MAX_CLIP_SPEED`] allows.
+fn read_speed(item: &TrackItem) -> f64 {
+    item.speed.abs().clamp(1e-6, MAX_CLIP_SPEED)
+}
+
 fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0.0f32; len]; w];
     let item_s0 = item.start.to_units_floor(sr as i64);
@@ -391,7 +397,7 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     }
     let n = (a1 - a0) as usize;
     let off = (a0 - x0) as usize;
-    let speed = item.speed.abs().clamp(1e-6, MAX_CLIP_SPEED);
+    let speed = read_speed(item);
     // Block starts follow the speed the span is read at, or consecutive blocks of a clip above the cap would leave gaps.
     let at = Tick::from_units(a0, sr as i64);
     let src_start_ticks = if speed == item.speed.abs() { item.source_time_at(at) } else { TrackItem { speed, ..item.clone() }.source_time_at(at) };
@@ -517,6 +523,18 @@ mod tests {
     fn ramp(m: i64, len: usize) -> Option<AudioBuffer> {
         let ch: Vec<f32> = (0..len as i64).map(|k| (m + k) as f32 / 1e6).collect();
         Some(AudioBuffer { sample_rate: 48_000, channels: vec![ch.clone(), ch] })
+    }
+
+    #[test]
+    fn transition_handles_of_a_clip_above_the_speed_cap_line_up_with_its_audio() {
+        // A 1000x clip is read at 100x: half a second of head handle is 50 s of source, not 500 s.
+        let mut it = item(1000.0);
+        it.start = Tick::from_seconds_f64(2.0);
+        it.source_in = Tick::from_seconds_f64(600.0);
+        let ext = with_handles(&it, Tick::from_seconds_f64(1.5), Tick::from_seconds_f64(3.0));
+        assert_eq!(ext.source_in, Tick::from_seconds_f64(550.0));
+        // read at the capped speed, the extended item is at the original in point where the clip starts
+        assert_eq!(TrackItem { speed: MAX_CLIP_SPEED, ..ext }.source_time_at(it.start), it.source_in);
     }
 
     #[test]
