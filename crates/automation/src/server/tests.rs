@@ -457,3 +457,21 @@ async fn parallel_bridge_render_frames_each_return_their_own_frame() {
     }
     assert_eq!(playhead.load(std::sync::atomic::Ordering::SeqCst), 200, "the playhead must end where it started");
 }
+
+/// A client that floods malformed lines and never reads its output stalls its own input: parse
+/// errors wait for the writer instead of piling up in memory without bound.
+#[tokio::test(flavor = "multi_thread")]
+async fn unread_parse_errors_stall_the_input() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let (mut tx, server_in) = tokio::io::duplex(4096);
+    let (server_out, rx) = tokio::io::duplex(4096);
+    tokio::spawn(FilmcraftMcp::headless(Session::default()).serve_io(server_in, server_out));
+    // Each 2-byte line answers with a ~100-byte error: 4 MB of input would queue ~200 MB of replies.
+    let junk = "x\n".repeat(1 << 21);
+    let flood = tokio::time::timeout(std::time::Duration::from_secs(5), tx.write_all(junk.as_bytes())).await;
+    assert!(flood.is_err(), "the server kept reading input while its output was not read");
+    // reading the output lets it carry on
+    let mut lines = tokio::io::BufReader::new(rx).lines();
+    let first: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(first["error"]["code"], -32700, "{first}");
+}
