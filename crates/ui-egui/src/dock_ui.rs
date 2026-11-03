@@ -520,6 +520,7 @@ impl DockContent<PanelKind> for FilmContent<'_> {
     /// monitor's text editor when it is there.
     fn window_drawn(&mut self, ui: &mut egui::Ui) {
         panels::panel_menu_area(self.app, ui);
+        crate::widgets::release_cursor_lock(ui.ctx());
         self.app.finish_ime_window(ui.ctx());
     }
 

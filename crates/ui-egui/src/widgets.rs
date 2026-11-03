@@ -261,15 +261,21 @@ fn window_focused(i: &egui::InputState) -> bool {
 
 /// Ends [`locked_drag_dx`]'s lock once the button is up, the window loses focus or the drag ends
 /// (Escape): the cursor is let go and shows again where the press began. Losing focus also ends the
-/// drag. Also called on every pass, for a drag whose field went away before the release.
+/// drag. Also called on every pass of every window, for a drag whose field went away before the
+/// release; a window's pass knows only its own drag, so it leaves another window's lock alone
+/// unless that window is gone.
 pub(crate) fn release_cursor_lock(ctx: &egui::Context) {
     let Some(lock) = ctx.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())) else { return };
+    let here = ctx.viewport_id() == lock.viewport;
+    if !here && ctx.input(|i| i.raw.viewports.contains_key(&lock.viewport)) {
+        return;
+    }
     let (focused, down) = ctx.input_for(lock.viewport, |i| (window_focused(i), i.pointer.any_down()));
-    if focused && down && ctx.dragged_id() == Some(lock.owner) {
+    if here && focused && down && ctx.dragged_id() == Some(lock.owner) {
         return;
     }
     ctx.data_mut(|d| d.remove::<CursorLock>(cursor_lock_id()));
-    if down {
+    if here && down {
         // egui would keep dragging the field when focus comes back, and a new press could not start
         // a drag on another one
         ctx.stop_dragging();
@@ -675,6 +681,23 @@ mod tests {
             // (an empty text has no extent)
             .filter(|c| c.is_finite())
             .collect()
+    }
+
+    /// A dragged value's cursor lock held in a floating panel's window is that window's: the main
+    /// window's pass, which knows only its own drag, leaves it, and lets it go once that window is gone.
+    #[test]
+    fn another_windows_cursor_lock_is_left_to_that_window() {
+        let ctx = egui::Context::default();
+        let panel = egui::ViewportId::from_hash_of("floating panel");
+        let lock = CursorLock { owner: egui::Id::unique("hot number"), origin: pos2(10.0, 20.0), viewport: panel };
+        ctx.data_mut(|d| d.insert_temp(cursor_lock_id(), lock));
+        let held = || ctx.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())).is_some();
+        let mut open = egui::RawInput::default();
+        open.viewports.insert(panel, egui::ViewportInfo::default());
+        ctx.run_ui(open, |ui| release_cursor_lock(ui.ctx())).textures_delta.clear();
+        assert!(held(), "the main window leaves the panel's lock alone");
+        ctx.run_ui(egui::RawInput::default(), |ui| release_cursor_lock(ui.ctx())).textures_delta.clear();
+        assert!(!held(), "the panel's window is gone: its lock goes too");
     }
 
     /// Tabular text: every digit takes the same room, so `11:11` and `88:08` are as wide.
