@@ -1663,3 +1663,31 @@ fn own_importer_reads_32_bit_flac_at_full_scale() {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn gif_output_goes_through_the_reserved_handle() {
+    use std::io::{Read, Seek};
+    let (p, seq, m) = matte([1.0, 0.0, 0.0, 1.0], 32, 18, None);
+    let dir = Scratch::new("gif-reserved");
+    let path = dir.path("out.gif");
+    let file = Arc::new(std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).unwrap());
+    // the directory entry is replaced after the reservation
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, b"decoy").unwrap();
+    let settings = ExportSettings {
+        format: Format::Gif,
+        path: path.clone(),
+        include_audio: false,
+        range: Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2))),
+        output_file: Some(file.clone()),
+        ..Default::default()
+    };
+    export(&p, seq, &settings, &m, &Progress::default()).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"decoy", "the replaced entry must not be written");
+    let mut f = file.try_clone().unwrap();
+    f.rewind().unwrap();
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes).unwrap();
+    assert!(bytes.starts_with(b"GIF8"), "the reserved file holds the GIF");
+}

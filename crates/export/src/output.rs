@@ -72,9 +72,18 @@ impl Out {
 /// Write one finished output file (to the sink when there is one); returns its size.
 pub(crate) fn write_output(settings: &ExportSettings, path: &str, data: Vec<u8>) -> Result<u64> {
     let n = data.len() as u64;
-    match &settings.sink {
-        Some(sink) => (sink.0)(path, data),
-        None => std::fs::write(path, &data),
+    match (&settings.sink, &settings.output_file) {
+        (Some(sink), _) => (sink.0)(path, data),
+        // the primary file was reserved and opened by the caller: write through that handle, as
+        // reopening the path would follow whatever replaced the entry in the meantime
+        (None, Some(file)) if path == settings.path => (|| {
+            let mut f = file.try_clone()?;
+            f.set_len(0)?;
+            std::io::Seek::rewind(&mut f)?;
+            f.write_all(&data)?;
+            f.flush()
+        })(),
+        (None, _) => std::fs::write(path, &data),
     }
     .map_err(|e| ExportError::Io(e.to_string()))?;
     Ok(n)
