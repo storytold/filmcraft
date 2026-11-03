@@ -356,13 +356,16 @@ impl Decoder {
         let (sh, _, _) = SliceHeader::parse(&rbsp, hdr, |id| {
             let pps = ppss[id as usize].as_ref().ok_or_else(|| Error::MissingParameterSet(format!("PPS {id}")))?;
             let sps = spss[pps.sps_id as usize].as_ref().ok_or_else(|| Error::MissingParameterSet(format!("SPS {}", pps.sps_id)))?;
+            // Before the header fields that depend on the SPS: they are validated for the streams
+            // we decode (a 10-bit slice may have a QP below 0), so a stream we cannot decode must
+            // fail as unsupported here, not as invalid there (#626).
+            sps.check_supported()?;
             found = Some((pps.clone(), sps.clone()));
             Ok((&**pps, &**sps))
         })?;
         let Some((pps, sps)) = found else {
             return Err(Error::MissingParameterSet("PPS".into()));
         };
-        sps.check_supported()?;
         if pps.num_slice_groups > 1 {
             return unsupported("slice groups (FMO)");
         }

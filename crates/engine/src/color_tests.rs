@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use crate::Session;
+use crate::{Services, Session};
 use filmcraft_color::{Lut, Lut3d};
 use filmcraft_project::{ClipId, ParamValue};
 
@@ -253,6 +253,37 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     let item = it.item;
     let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
     assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
+}
+
+/// Records the files a session writes, and has no others.
+#[derive(Default)]
+struct WrittenFiles(std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>);
+
+impl Services for WrittenFiles {
+    fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        self.0.lock().unwrap().get(path).cloned().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path.to_string()))
+    }
+    fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        self.0.lock().unwrap().insert(path.into(), data.to_vec());
+        Ok(())
+    }
+}
+
+#[test]
+fn preset_thumbnails_are_written_through_the_host_and_no_wider_than_the_presets() {
+    let files = std::sync::Arc::new(WrittenFiles::default());
+    let mut s = Session::new(files.clone());
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    // The PNG goes through `Services`, not straight to the disk.
+    let path = "/virtual/lumetri-grid.png";
+    s.execute("lumetri.presetThumbnails", json!({"folder": "Technical", "width": 64, "path": path})).unwrap();
+    assert!(files.read_file(path).unwrap().starts_with(b"\x89PNG"));
+    assert!(!std::path::Path::new(path).exists());
+    // Asking for more columns than there are presets lays them out in one row.
+    let n = filmcraft_render::lumetri_presets::presets().len();
+    let r = s.execute("lumetri.presetThumbnails", json!({"width": 16, "columns": 32})).unwrap();
+    assert_eq!(r["columns"].as_u64(), Some(n as u64));
+    assert_eq!(r["width"].as_u64(), Some((n * (16 + 4) + 4) as u64));
 }
 
 /// `media.colorInfo` says which `metadata` values no tag in the file gave. An untagged ffmpeg H.264

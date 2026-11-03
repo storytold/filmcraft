@@ -3698,3 +3698,46 @@
 	Previous	上一个
 	Next	下一个
 	Enter a valid HH:MM:SS:FF timecode	请输入有效的 HH:MM:SS:FF 时间码
+
+# The strings the report listed as missing for zh-cn.
+	1 frame ({seconds} s)	1 帧（{seconds} 秒）
+	1/2	1/2
+	Add Track	添加轨道
+	Audio output failed: playing without sound (check Settings ▸ Audio Hardware)	音频输出失败：以无声音方式播放（检查 设置 ▸ 音频硬件）
+	Audio output is not responding: playing without sound (check Settings ▸ Audio Hardware)	音频输出未响应：以无声音方式播放（检查 设置 ▸ 音频硬件）
+	Caption Export Settings	字幕导出设置
+	Check for Updates…	检查更新…
+	Checking for updates…	正在检查更新…
+	Could not check for updates:\n{error}	无法检查更新：\n{error}
+	Dark Theme	深色主题
+	Delete Track	删除轨道
+	Dock Panel	停靠面板
+	Docking Action	停靠操作
+	Duration (frames):	持续时间（帧）：
+	Exported {path} as {format}, from its file extension	已将 {path} 导出为 {format}（依据文件扩展名）
+	Fill Type	填充类型
+	FilmCraft Updates	FilmCraft 更新
+	FilmCraft {version} is currently the newest version available.	FilmCraft {version} 目前已是最新版本。
+	Gradient Angle	渐变角度
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	硬件解码：自动模式对支持的流使用系统视频解码器（macOS 的 VideoToolbox、Windows 的 Media Foundation、Linux 上 H.264 和 HEVC 的 VA-API 或 NVDEC），对其余内容或在硬件故障时使用 FilmCraft 自带的解码器。已打开的媒体在重新打开之前会保留其解码器。
+	Hide FilmCraft	隐藏 FilmCraft
+	Hide Others	隐藏其他
+	Light Theme	浅色主题
+	Linear Gradient	线性渐变
+	Looks for a newer FilmCraft release and offers to update.	查找较新的 FilmCraft 版本并提供更新。
+	Responsive Design – Time remaps the graphic's layer keyframes; clip effects like Opacity and Motion keep media time	自适应设计 – 时间会重新映射图形的图层关键帧；不透明度和运动等剪辑效果保持媒体时间
+	Ripple Trim In	波纹修剪入点
+	Ripple Trim Out	波纹修剪出点
+	Roll Edit	滚动编辑
+	Set Work Area Bar In Point	设置工作区域条入点
+	Set Work Area Bar Out Point	设置工作区域条出点
+	Set as Default Transition	设为默认过渡
+	Settings	设置
+	Solid	纯色
+	Source In/Out is only 1 frame. Choose Entire Source to export the whole sequence.	源入点/出点仅有 1 帧。请选择“整个源”以导出整个序列。
+	Trim In	修剪入点
+	Trim Out	修剪出点
+	Use Effect Shutter Angle	使用效果快门角度
+	When enabled, GIF transparency is on/off: alpha below 128 is transparent; 128 and above is opaque.	启用后，GIF 透明度为开/关模式：alpha 低于 128 为透明；128 及以上为不透明。
+	{frames} frames ({seconds} s)	{frames} 帧（{seconds} 秒）
+	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	{name} 已存在，因此未导出任何内容。要替换它，请在保存对话框中选择它。
