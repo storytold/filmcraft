@@ -3676,6 +3676,14 @@ fn build() -> Vec<CommandSpec> {
                     {
                         e.params.insert(pid.clone(), filmcraft_project::Param::new(d.default.clone()));
                     }
+                    // a choice saved before the parameter took free text (Simple Text's Font, #3841)
+                    // starts over from the definition
+                    if let Some(d) = def
+                        && let Some(prm) = e.params.get_mut(&pid)
+                        && matches!((&prm.value, &d.default), (ParamValue::Choice(_), ParamValue::Text(_)))
+                    {
+                        *prm = filmcraft_project::Param::new(d.default.clone());
+                    }
                     let (keyframes, v) = {
                         let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
                         let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;

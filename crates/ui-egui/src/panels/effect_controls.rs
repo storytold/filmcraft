@@ -812,9 +812,16 @@ fn param_value_widget(
         (ParamKind::Path, _) => {
             crate::panels::masks::path_value(app, vui, clip, idx, mask, actions);
         }
-        // a text layer's Font and Font Style pick from the installed families and styles, as the
-        // Text panel's drop-downs do (#3539)
-        (ParamKind::Text, ParamValue::Text(current)) if e.effect == filmcraft_project::graphic::TEXT_LAYER && matches!(pd.id, "font" | "font_style") => {
+        // a text layer's Font and Font Style, and Simple Text's Font, pick from the installed
+        // families and styles, as the Text panel's drop-downs do (#3539, #3841)
+        (ParamKind::Text, ParamValue::Text(_) | ParamValue::Choice(_))
+            if (e.effect == filmcraft_project::graphic::TEXT_LAYER && matches!(pd.id, "font" | "font_style") && matches!(value, ParamValue::Text(_)))
+                || (e.effect == "simple_text" && pd.id == "font") =>
+        {
+            let current = match value {
+                ParamValue::Text(s) if e.effect != "simple_text" => s.as_str(),
+                v => filmcraft_project::effect::simple_text_font(Some(v)),
+            };
             if !filmcraft_text::fonts::system_scanned() {
                 filmcraft_text::fonts::scan_system();
             }
@@ -826,7 +833,7 @@ fn param_value_widget(
             let combo = if pd.id == "font" {
                 craft_ui::ComboBox::from_id_salt(salt).selected_text(current).width(w).height(400.0).show_ui(vui, |ui| {
                     for (f, _) in &fams {
-                        let r = ui.selectable_label(f == current, f);
+                        let r = ui.selectable_label(f.as_str() == current, f);
                         app.auto.add(&format!("{prefix}.{f}"), r.rect, f);
                         if r.clicked() {
                             set = Some(json!(f));

@@ -59,7 +59,7 @@ pub fn simple_text(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let text = tv(e, "text");
     let pos = pv(e, "position", cx, img);
     let size = (fv(e, "size", cx) * cx.px_scale).max(2.0);
-    let family = ["Inter", "JetBrains Mono"][chv(e, "font").min(1) as usize];
+    let family = filmcraft_project::effect::simple_text_font(e.param("font").map(|p| &p.value));
     let color = cv(e, "color", cx);
     let bg = fv(e, "bg_opacity", cx) / 100.0;
     draw_text(img, &text, TextLook { family, pos, px: size, align: chv(e, "alignment"), color, box_alpha: bg });
