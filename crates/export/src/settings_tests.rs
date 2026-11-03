@@ -1798,3 +1798,16 @@ fn aac_match_source_takes_a_rate_aac_can_store() {
     let explicit = ExportSettings { audio: AudioSettings { sample_rate: Some(192_000), ..Default::default() }, ..settings };
     assert_eq!(explicit.resolve(64, 36, FrameRate::FPS_24, &seq).sample_rate, 192_000);
 }
+
+/// The Export panel's "Match Source (… Hz)" sample-rate entry names the rate an unset rate exports
+/// at, whatever rate is chosen at the moment: 96 kHz for AAC from a 192 kHz sequence, not 192 kHz.
+#[test]
+fn the_match_source_rate_entry_names_the_rate_it_exports_at() {
+    let aac = ExportSettings { format: Format::H264, audio: AudioSettings { sample_rate: Some(44_100), ..Default::default() }, ..Default::default() };
+    assert_eq!(aac.audio_codec(), AudioCodec::Aac);
+    assert_eq!(aac.source_sample_rate(192_000), 96_000);
+    let unset = ExportSettings { audio: AudioSettings { sample_rate: None, ..aac.audio.clone() }, ..aac.clone() };
+    assert_eq!(unset.output_audio(SourceAudio::from(192_000)).0, aac.source_sample_rate(192_000));
+    let wav = ExportSettings { format: Format::Wav, ..aac };
+    assert_eq!(wav.source_sample_rate(192_000), 192_000);
+}

@@ -617,13 +617,20 @@ impl ExportSettings {
     pub fn output_audio(&self, src: SourceAudio) -> (u32, u32) {
         let (rate, channels) = self.audio.resolve(src);
         let from_source = self.audio.match_source || self.audio.sample_rate.is_none();
-        if from_source && self.audio_codec() == AudioCodec::Aac && filmcraft_aac::sample_rate_index(rate).is_none() {
-            // SAMPLE_RATES runs from highest to lowest
-            let aac =
-                filmcraft_aac::SAMPLE_RATES.iter().copied().find(|r| *r <= rate).or_else(|| filmcraft_aac::SAMPLE_RATES.last().copied()).unwrap_or(48_000);
-            return (aac, channels);
+        if from_source {
+            return (self.source_sample_rate(rate), channels);
         }
         (rate, channels)
+    }
+
+    /// The sample rate an export that follows a source at `rate` (Match Source, or no rate set)
+    /// writes: `rate` itself, except that AAC takes the nearest AAC rate below one it can't carry.
+    pub fn source_sample_rate(&self, rate: u32) -> u32 {
+        if self.audio_codec() == AudioCodec::Aac && filmcraft_aac::sample_rate_index(rate).is_none() {
+            // SAMPLE_RATES runs from highest to lowest
+            return filmcraft_aac::SAMPLE_RATES.iter().copied().find(|r| *r <= rate).or_else(|| filmcraft_aac::SAMPLE_RATES.last().copied()).unwrap_or(48_000);
+        }
+        rate
     }
 
     pub fn audio_codec(&self) -> AudioCodec {
