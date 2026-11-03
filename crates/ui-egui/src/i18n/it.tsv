@@ -3695,3 +3695,8 @@
 	Previous	Precedente
 	Next	Successivo
 	Enter a valid HH:MM:SS:FF timecode	Inserisci un timecode valido HH:MM:SS:FF
+# The language-change restart notice (a new interface language takes effect at the next start).
+	Restart	Riavvia
+	Later	Più tardi
+	Restart FilmCraft to use {language}	Riavvia FilmCraft per usare {language}
+	The interface language changes after a restart.	La lingua dell'interfaccia cambia dopo il riavvio.

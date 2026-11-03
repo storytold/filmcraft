@@ -141,6 +141,13 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     // Media kept in OPFS by earlier sessions come back under their paths (recovery).
     let restored = if opfs::available() && !query_flag("fresh") { recovery::restore_media().await } else { 0 };
     let recovered = if query_flag("fresh") || query_flag("norecover") { None } else { recovery::load_snapshot().await };
+    // Preferences persist like the snapshot: the session below starts with the last session's
+    // choices (the interface language a restart was asked for among them).
+    let prefs = if opfs::available() {
+        opfs::read(recovery::PREFS).await.and_then(|b| serde_json::from_slice(&b).ok()).map(filmcraft_engine::autosave::Preferences::from_value)
+    } else {
+        None
+    };
     webcodecs::probe().await;
 
     api::install()?;
@@ -172,6 +179,11 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 });
                 webcodecs::install();
                 let mut session = Session::new(Arc::new(fs::WebServices));
+                if let Some(p) = prefs {
+                    session.prefs = p;
+                    session.prefs.apply_hardware_decoding();
+                    session.media.set_use_proxies(session.prefs.media.enable_proxies);
+                }
                 let mut toast = None;
                 if let Some((name, bytes)) = recovered {
                     let path = format!("/recovered/{name}");
@@ -192,6 +204,36 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
                 // Settings ▸ General ▸ Interface Language ▸ System Language (#218): the browser's languages.
                 app.hooks.system_languages =
                     Some(Box::new(|| web_sys::window().map(|w| w.navigator().languages().iter().filter_map(|v| v.as_string()).collect()).unwrap_or_default()));
+                // The language-change notice's Restart button: a restart is a page reload, made
+                // only after the current state reached OPFS (the autosave policy snapshots at most
+                // every five seconds, so edits younger than that would otherwise be lost).
+                app.hooks.restart = Some(Box::new(|session: &Session| {
+                    let meta = json!({"dirty": session.is_dirty(), "name": session.project.name, "revision": session.revision, "time": js_sys::Date::now()});
+                    let left = std::rc::Rc::new(std::cell::Cell::new(2u8));
+                    let failed = std::rc::Rc::new(std::cell::Cell::new(false));
+                    let done = |left: std::rc::Rc<std::cell::Cell<u8>>, failed: std::rc::Rc<std::cell::Cell<bool>>| -> opfs::Done {
+                        Box::new(move |ok| {
+                            failed.set(failed.get() || !ok);
+                            left.set(left.get().saturating_sub(1));
+                            if left.get() != 0 {
+                                return;
+                            }
+                            if failed.get() {
+                                // the snapshot never landed: cancel the restart so the notice
+                                // reopens and offers it again; the unsaved state is still on screen
+                                post(|app, _| {
+                                    app.app.cancel_restart();
+                                    app.app.status("couldn't write the recovery snapshot; the restart was cancelled");
+                                });
+                            } else if let Some(w) = web_sys::window() {
+                                let _ = w.location().reload();
+                            }
+                        })
+                    };
+                    opfs::write_then(recovery::SNAPSHOT.into(), filmcraft_format::encode(&session.project, false), Some(done(left.clone(), failed.clone())));
+                    opfs::write_then(recovery::META.into(), meta.to_string().into_bytes(), Some(done(left, failed)));
+                    Ok(())
+                }));
                 let (tx, rx) = std::sync::mpsc::channel();
                 api::set_sender(tx);
                 app = app.with_control(rx);

@@ -96,6 +96,14 @@ pub struct HostHooks {
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
     /// (#611). Without it Paste only pastes clips copied in FilmCraft.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
+    /// Relaunch the app: called from `on_exit` after a restart was asked for (the language-change
+    /// notice's Restart button), once auto-save and the recovery journal are flushed. Without it
+    /// Restart only closes the window. The session is passed so the host can persist it first
+    /// (the web writes its OPFS recovery snapshot before reloading).
+    pub restart: Option<Box<dyn FnMut(&Session) -> Result<(), String>>>,
+    /// Show a message outside the window (a native dialog) for what the status line can no longer
+    /// say: a failed relaunch is reported this way, while the window is already going away.
+    pub alert: Option<Box<dyn FnMut(&str)>>,
 }
 
 /// What [`HostHooks::clipboard_media`] found on the system clipboard.
