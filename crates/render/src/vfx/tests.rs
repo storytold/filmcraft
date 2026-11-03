@@ -1440,3 +1440,20 @@ mod stabilizer_corrections_cache {
         }
     }
 }
+
+#[test]
+fn extreme_long_shadow_and_glint_lengths_finish() {
+    let mut img = Image::new(16, 16);
+    img.px[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    // an infinite Long Shadow length used to keep its doubling loop running forever
+    for len in [f64::INFINITY, f64::MAX, 1e30] {
+        for id in ["long_shadow", "glint"] {
+            let mut e = inst(id);
+            setf(&mut e, "length", len);
+            let t = std::time::Instant::now();
+            let o = run(id, &e, &img, &cx());
+            assert!(o.px.iter().all(|v| !v.is_nan()), "{id} at {len}");
+            assert!(t.elapsed().as_secs() < 10, "{id} at {len} took {:?}", t.elapsed());
+        }
+    }
+}

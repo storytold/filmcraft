@@ -146,7 +146,8 @@ fn streak(src: &Image, dir: (f32, f32), len: f32) -> Image {
 pub fn glint(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let hi = highlights(img, fv(e, "threshold", cx) / 100.0, 0.08);
     let rays = [2usize, 4, 6, 8][chv(e, "rays").min(3) as usize];
-    let len = fv(e, "length", cx) * cx.px_scale;
+    // past the picture's extent a longer streak adds nothing but more full-image passes
+    let len = (fv(e, "length", cx) * cx.px_scale).clamp(0.0, (hi.w + hi.h) as f32);
     let rot = fv(e, "rotation", cx).to_radians();
     let inten = fv(e, "intensity", cx) / 100.0 * 3.0;
     let col = lin(cv(e, "color", cx));

@@ -163,7 +163,9 @@ pub fn roughen_edges(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 /// step distance to the shape along the shadow direction is found by doubling (min-plus).
 pub fn long_shadow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let ang = (fv(e, "angle", cx) as f64).to_radians();
-    let len = fv(e, "length", cx) * cx.px_scale;
+    // A shadow longer than the picture's diagonal looks the same as one that long, and an
+    // infinite length kept the doubling loop below from ever ending.
+    let len = (fv(e, "length", cx) * cx.px_scale).min((img.w + img.h) as f32);
     if len < 0.5 {
         return;
     }
