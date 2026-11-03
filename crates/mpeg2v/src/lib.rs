@@ -618,6 +618,9 @@ impl Decoder {
 
     fn finish_picture(&mut self, data: &[u8], pts: i64) {
         let Some(pd) = self.pending.take() else { return };
+        if self.output_overflow {
+            return; // the access unit is already refused: do not allocate or decode more pictures for it
+        }
         if pd.slices.is_empty() {
             self.errors += 1;
             self.last_error = Some("picture has no slices");

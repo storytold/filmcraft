@@ -71,3 +71,37 @@ fn gigantic_sequences_are_refused() {
     assert!(!accepted(16383, 16383, 1));
     assert!(!accepted(8192, 8192, 1));
 }
+
+/// An I picture (picture header, coding extension, one slice with a junk payload).
+fn picture() -> Vec<u8> {
+    let mut h = Bits::default();
+    h.put(0, 10); // temporal_reference
+    h.put(1, 3); // picture_coding_type: I
+    h.put(0xffff, 16); // vbv_delay
+    let mut e = Bits::default();
+    e.put(8, 4); // picture_coding_extension
+    e.put(0xffff, 16); // f_codes
+    e.put(0, 2); // intra_dc_precision
+    e.put(3, 2); // picture_structure: frame
+    e.put(0, 10); // flags up to progressive_frame
+    e.put(1, 1); // progressive_frame
+    e.put(0, 1); // composite_display_flag
+    let mut out = vec![0, 0, 1, 0x00];
+    out.extend(h.bytes);
+    out.extend([0, 0, 1, 0xb5]);
+    out.extend(e.bytes);
+    out.extend([0, 0, 1, 0x01, 0x80, 0x80]);
+    out
+}
+
+#[test]
+fn an_access_unit_of_many_pictures_stops_early() {
+    let mut data = sequence(64, 64, 1);
+    for _ in 0..200 {
+        data.extend(picture());
+    }
+    let mut dec = Decoder::new();
+    assert!(dec.decode(&data, 0).is_err(), "200 pictures in one access unit must be refused");
+    // pictures after the refusal are not decoded: the per-picture slice errors stay near the output cap
+    assert!(dec.errors() <= 32, "{} picture errors", dec.errors());
+}
