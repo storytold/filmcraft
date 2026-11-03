@@ -21,7 +21,13 @@ struct R<'a, 'b> {
     media: HashMap<Uid, Vec<u8>>,
     doc: Document,
     sources: HashMap<(Uid, u32, String), usize>,
+    /// Component visits left for [`R::segment`] over the whole document.
+    budget: usize,
 }
+
+/// Components one document may expand into timeline items; a small file can reference the same
+/// sequence from many places and would otherwise multiply without bound.
+const MAX_COMPONENT_VISITS: usize = 1_000_000;
 
 pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
     let perr = |m: String| Error::Parse { format: "OMF", message: m };
@@ -29,7 +35,8 @@ pub(crate) fn read(bytes: &[u8], report: &mut Report) -> Result<Document> {
     let class_of = |o: u32| c.get(o, "OMFI:OOBJ:ObjClass").and_then(|v| v.get(..4).map(|b| [b[0], b[1], b[2], b[3]]));
     let head = c.objects.keys().copied().find(|&o| class_of(o) == Some(*b"HEAD")).ok_or_else(|| perr("no OMF header object".into()))?;
     let be = c.get(head, "OMFI:HEAD:ByteOrder").is_none_or(|v| v.first() != Some(&0x49));
-    let mut r = R { c: &c, report, be, mobs: HashMap::new(), media: HashMap::new(), doc: Document::default(), sources: HashMap::new() };
+    let mut r =
+        R { c: &c, report, be, mobs: HashMap::new(), media: HashMap::new(), doc: Document::default(), sources: HashMap::new(), budget: MAX_COMPONENT_VISITS };
     let mob_list = r.refs(head, "OMFI:HEAD:Mobs");
     let mob_list = if mob_list.is_empty() {
         c.objects.keys().copied().filter(|&o| matches!(class_of(o).as_ref(), Some(b"CMOB" | b"MMOB" | b"SMOB"))).collect()
@@ -211,9 +218,15 @@ impl R<'_, '_> {
 
     fn segment(&mut self, seg: u32, rate: (i64, i64), depth: usize) -> Vec<CItem> {
         let len = units_to_ticks(self.len(seg), rate.0, rate.1);
-        if depth > 32 {
+        // Depth alone does not bound a graph that references the same component many times at
+        // every level, so each visit also spends from a per-document budget.
+        if depth > 32 || self.budget == 0 {
+            if self.budget == 0 {
+                self.report.warn("OMF composition is too large to import completely (the rest is a gap)");
+            }
             return vec![CItem::Filler(len)];
         }
+        self.budget -= 1;
         match &self.class(seg) {
             b"SEQU" => {
                 let mut out = Vec::new();
@@ -301,12 +314,22 @@ impl R<'_, '_> {
             .find(|&s| self.r#ref(s, "OMFI:MSLT:TrackDesc").and_then(|t| self.u32(t, "OMFI:TRKD:TrackID")) == Some(track))
     }
 
+    /// First source clip under `seg`, depth-first; a sequence referencing itself (directly or
+    /// through a cycle) ends the search rather than the stack.
     fn first_clip(&self, seg: u32) -> Option<u32> {
-        match &self.class(seg) {
-            b"SCLP" => Some(seg),
-            b"SEQU" => self.refs(seg, "OMFI:SEQU:Components").into_iter().find_map(|c| self.first_clip(c)),
-            _ => None,
+        let mut visited = HashSet::new();
+        let mut todo = vec![seg];
+        while let Some(seg) = todo.pop() {
+            if !visited.insert(seg) || visited.len() > 100_000 {
+                continue;
+            }
+            match &self.class(seg) {
+                b"SCLP" => return Some(seg),
+                b"SEQU" => todo.extend(self.refs(seg, "OMFI:SEQU:Components").into_iter().rev()),
+                _ => {}
+            }
         }
+        None
     }
 
     fn resolve(&mut self, id: Uid, track: u32, start: Tick, master: Option<String>, depth: usize) -> Option<(usize, Tick)> {

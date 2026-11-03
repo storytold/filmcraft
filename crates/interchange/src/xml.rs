@@ -164,14 +164,30 @@ pub(crate) fn parse(text: &str) -> Result<roxmltree::Document<'_>, String> {
     // needed by any supported interchange format and can expand entities far
     // beyond the input size, so reject them before handing the document to the
     // parser. External entities remain unresolved because no resolver is set.
-    if let Some(start) = text.find("<!DOCTYPE") {
-        let declaration = &text[start..text[start..].find('>').map_or(text.len(), |end| start + end)];
-        if declaration.contains('[') {
-            return Err("internal DTD subsets are not supported".into());
-        }
+    // Every occurrence is checked (the first may sit in a comment), and quoted
+    // literals are skipped so a `>` inside a system identifier cannot hide the `[`.
+    if text.match_indices("<!DOCTYPE").any(|(start, _)| doctype_has_internal_subset(&text[start..])) {
+        return Err("internal DTD subsets are not supported".into());
     }
     let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
     roxmltree::Document::parse_with_options(text, opts).map_err(|e| e.to_string())
+}
+
+/// Whether the `<!DOCTYPE` declaration at the start of `decl` opens an internal subset (`[`)
+/// before its closing `>`, ignoring both inside quoted literals.
+fn doctype_has_internal_subset(decl: &str) -> bool {
+    let mut quote = None;
+    for c in decl.chars() {
+        match (quote, c) {
+            (Some(q), _) if q == c => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '[') => return true,
+            (None, '>') => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -194,6 +210,18 @@ mod tests {
         assert_eq!(num(100.0), "100");
         assert_eq!(num(-0.0), "0");
         assert_eq!(num(0.1 + 0.2).parse::<f64>().unwrap(), 0.1 + 0.2);
+    }
+
+    #[test]
+    fn internal_dtd_subsets_are_rejected_wherever_they_hide() {
+        assert!(parse("<!DOCTYPE xmeml><xmeml/>").is_ok());
+        assert!(parse("<!DOCTYPE xmeml SYSTEM \"a>b\"><xmeml/>").is_ok());
+        // the first marker sits in a comment; the real declaration follows
+        let hidden = "<!-- <!DOCTYPE x> --><!DOCTYPE xmeml [<!ENTITY a \"aaaa\">]><xmeml>&a;</xmeml>";
+        assert_eq!(parse(hidden).unwrap_err(), "internal DTD subsets are not supported");
+        // a `>` inside the system literal must not end the declaration early
+        let quoted = "<!DOCTYPE xmeml SYSTEM \"a>b\" [<!ENTITY a \"aaaa\">]><xmeml>&a;</xmeml>";
+        assert_eq!(parse(quoted).unwrap_err(), "internal DTD subsets are not supported");
     }
 
     #[test]
