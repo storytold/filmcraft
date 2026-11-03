@@ -902,3 +902,29 @@ fn mp4_colour_comes_from_the_sps_without_colr() {
         assert_eq!(color(&s).primaries, Primaries::Bt601_525);
     }
 }
+
+/// The reel a QuickTime timecode track names is the source's reel, without padding; a file
+/// without one, or with an empty name, has none, and a damaged name is cut short.
+#[test]
+fn mov_timecode_track_names_the_reel() {
+    use filmcraft_isobmff::{AvcConfig, Brand, Mp4Writer, SampleEntry, TimecodeConfig, TrackConfig, WriteSample, WriterOptions};
+    use filmcraft_media::MediaSource;
+    let mov = |name: Option<&str>| -> Arc<[u8]> {
+        let mut w = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+        let entry = SampleEntry::avc(AvcConfig::new(vec![vec![0x67, 0x64, 0, 0x1F]], vec![vec![0x68]], 4), 64, 64);
+        let v = w.add_track(TrackConfig::new(entry, 25)).unwrap();
+        let tc = TimecodeConfig { timescale: 25, frame_duration: 1, frames_per_second: 25, name: name.map(str::to_string), ..Default::default() };
+        w.add_timecode_track(v, tc, 1_306_050).unwrap();
+        for i in 0..5u8 {
+            w.write_sample(v, WriteSample { data: &[0, 0, 0, 1, 0x65, i], duration: 1, composition_offset: 0, is_sync: i == 0 }).unwrap();
+        }
+        w.finish().unwrap().into_inner().into()
+    };
+    for (name, want) in [(Some("A001"), Some("A001")), (Some("  B002\0\0"), Some("B002")), (Some(""), None), (None, None)] {
+        let src = crate::Mp4Source::open("clip.mov", mov(name)).unwrap();
+        assert_eq!(src.info().start_timecode, Some(1_306_050), "{name:?}");
+        assert_eq!(src.reel().as_deref(), want, "{name:?}");
+    }
+    let long = "R".repeat(1000);
+    assert_eq!(crate::Mp4Source::open("clip.mov", mov(Some(&long))).unwrap().reel().map(|r| r.chars().count()), Some(255));
+}

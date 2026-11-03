@@ -952,6 +952,8 @@ fn import_source(
     bin: Option<filmcraft_project::BinId>,
 ) -> Result<ItemId> {
     let mut info = src.info().clone();
+    // the reel the file names (a QuickTime timecode track's source name) is the clip's Tape Name
+    let reel = src.reel();
     // Settings ▸ Labels ▸ Label Defaults
     let label = s.prefs.labels.for_media(info.kind, info.has_video(), info.has_audio());
     // Settings ▸ Media ▸ Indeterminate Media Timebase: the frame rate stills report
@@ -963,7 +965,7 @@ fn import_source(
     let path_s = path.to_string();
     s.media.allow(path);
     let id = s.edit(&format!("Import {name}"), |p, _| {
-        Ok(p.add_item(
+        let id = p.add_item(
             &name,
             label,
             ItemKind::Media(Box::new(MediaClip {
@@ -978,7 +980,11 @@ fn import_source(
                 identity: Some(identity),
             })),
             bin,
-        ))
+        );
+        if let (Some(reel), Some(it)) = (reel, p.item_mut(id)) {
+            it.metadata.insert("Tape Name".into(), reel);
+        }
+        Ok(id)
     })?;
     s.media.insert_file(id, path, src);
     Ok(id)

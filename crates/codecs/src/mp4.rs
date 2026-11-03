@@ -82,6 +82,8 @@ pub struct Mp4Source {
     snap: bool,
     /// The playable audio tracks in file order: `info.audio_streams[k]` describes `audios[k]`.
     audios: Vec<Mp4Audio>,
+    /// The reel named by the `tmcd` track ([`timecode_reel`]).
+    reel: Option<String>,
 }
 
 pub fn sniff(b: &[u8]) -> bool {
@@ -394,7 +396,8 @@ impl Mp4Source {
             let t = &file.tracks[i];
             crate::gop::snap_coarse_units(t.samples.iter().map(|s| s.pts.saturating_add(t.edit_offset)), 1, i64::from(t.timescale), v.frame_rate)
         });
-        Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture), snap, audios })
+        let reel = timecode_reel(&file);
+        Ok(Self { info, bytes, file, vtrack, video: GopCache::new(explicit_color).with_rotation(rotation).with_crop(aperture), snap, audios, reel })
     }
 
     fn read(&self, track: usize, i: usize) -> crate::Result<Vec<u8>> {
@@ -492,6 +495,10 @@ impl VideoSamples for Mp4Video<'_> {
 impl MediaSource for Mp4Source {
     fn info(&self) -> &MediaInfo {
         &self.info
+    }
+
+    fn reel(&self) -> Option<String> {
+        self.reel.clone()
     }
 
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>, MediaError> {
@@ -919,6 +926,21 @@ fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
 }
 
 /// [`filmcraft_media::ReaderOpener`] for MP4/MOV.
+/// Longest reel name kept, in characters (a damaged `name` box can be any size).
+const MAX_REEL_CHARS: usize = 255;
+
+/// The source (reel) name of the first `tmcd` track that has one, without padding: what the
+/// camera, or the tool that wrote the file, called the tape. An empty name is none.
+fn timecode_reel(file: &Mp4File) -> Option<String> {
+    file.tracks.iter().find_map(|t| match t.codec() {
+        Some(CodecConfig::Timecode(tc)) => {
+            let name = tc.name.as_deref()?.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+            (!name.is_empty()).then(|| name.chars().take(MAX_REEL_CHARS).collect())
+        }
+        _ => None,
+    })
+}
+
 pub fn reader_opener(name: &str, head: &[u8], reader: &filmcraft_media::SharedReader) -> Option<Result<SharedSource, MediaError>> {
     if !sniff(head) {
         return None;

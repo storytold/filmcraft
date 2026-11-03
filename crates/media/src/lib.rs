@@ -220,6 +220,11 @@ pub trait MediaSource: Send + Sync {
     fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer> {
         if stream == 0 { self.audio(start, frames, sample_rate) } else { Err(MediaError::NoStream("audio")) }
     }
+    /// The reel (tape) name the file gives its source, if any: the source name of a QuickTime
+    /// timecode track. Import makes it the item's Tape Name.
+    fn reel(&self) -> Option<String> {
+        None
+    }
 }
 
 pub type SharedSource = Arc<dyn MediaSource>;
