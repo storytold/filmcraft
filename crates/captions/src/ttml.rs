@@ -148,10 +148,20 @@ fn inline(text: &str) -> String {
         }
     };
     let mut rest = text;
+    // Once no `>` remains, no later `<` can start a tag either. Remember that instead of searching
+    // the shrinking suffix again after every literal `<`, which made `<<<<…` quadratic.
+    let mut closer_remains = true;
     while !rest.is_empty() {
-        if let Some(after) = rest.strip_prefix('<')
-            && let Some(end) = after.find('>')
-        {
+        let tag_end = match rest.strip_prefix('<') {
+            Some(after) if closer_remains => {
+                let end = after.find('>');
+                closer_remains = end.is_some();
+                end
+            }
+            _ => None,
+        };
+        if let Some(end) = tag_end {
+            let after = &rest[1..];
             let tag = after[..end].trim().to_ascii_lowercase();
             let (closing, name) = match tag.strip_prefix('/') {
                 Some(n) => (true, n.trim().to_string()),
@@ -929,5 +939,17 @@ mod tests {
         let text = format!("{}x{}", "<i>".repeat(1_000), "</i>".repeat(1_000));
         let out = inline(&text);
         assert_eq!(out, "<span tts:fontStyle=\"italic\">x</span>");
+    }
+
+    #[test]
+    fn unclosed_angle_brackets_are_escaped_in_one_pass() {
+        // Every `<` used to search the rest of the text for a `>`, which made this quadratic.
+        let text = "<".repeat(200_000);
+        let started = std::time::Instant::now();
+        let out = inline(&text);
+        assert_eq!(out, "&lt;".repeat(200_000));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+        // A tag before the unclosed tail is still markup; the tail stays literal text.
+        assert_eq!(inline("<i>a</i> 1 < 2"), "<span tts:fontStyle=\"italic\">a</span> 1 &lt; 2");
     }
 }
