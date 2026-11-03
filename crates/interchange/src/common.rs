@@ -205,7 +205,8 @@ pub(crate) fn kind_from_ext(path: &str) -> MediaKind {
 /// Frame count nearest to `t` at `rate`.
 pub(crate) fn frames_round(rate: FrameRate, t: Tick) -> i64 {
     let f = rate.frame_at(t);
-    if rate.tick_of(f + 1) - t < t - rate.tick_of(f) { f + 1 } else { f }
+    let next = f.saturating_add(1);
+    if rate.tick_of(next) - t < t - rate.tick_of(f) { next } else { f }
 }
 
 /// Whether `t` is exactly on a frame boundary of `rate`.
