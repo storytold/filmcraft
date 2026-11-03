@@ -390,3 +390,21 @@ fn default_keymaps_have_no_conflicts_on_any_platform() {
         assert!(mac.iter().any(|b| b.command == cmd && b.keys == keys), "{cmd} {keys} on macOS");
     }
 }
+
+#[test]
+fn a_preset_named_active_does_not_replace_the_active_set() {
+    let dir = temp_dir("active-name");
+    let mut s = Shortcuts::new();
+    s.set_dir(&dir);
+    let active = dir.join("Keyboard Shortcuts").join("active.json");
+    let before = std::fs::read(&active).ok();
+    // a preset file whose own name is "active", imported without activating it
+    let file = dir.join("in.json");
+    s.export(&file).unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    v["name"] = json!("active");
+    std::fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
+    s.import(&file, false).unwrap();
+    assert_eq!(std::fs::read(&active).ok(), before, "the active set file is untouched");
+    let _ = std::fs::remove_dir_all(&dir);
+}

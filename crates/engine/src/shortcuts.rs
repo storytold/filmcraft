@@ -663,7 +663,12 @@ impl Shortcuts {
 
     fn preset_path(&self, name: &str) -> Option<PathBuf> {
         let safe: String = name.chars().map(|c| if c.is_alphanumeric() || " -_().".contains(c) { c } else { '_' }).collect();
-        self.presets_dir().map(|d| d.join(format!("{}.json", safe.trim())))
+        let mut file = format!("{}.json", safe.trim());
+        // a preset called "active" must not replace the active set restored at startup
+        if file.eq_ignore_ascii_case(ACTIVE_FILE) {
+            file = format!("{} (preset).json", safe.trim());
+        }
+        self.presets_dir().map(|d| d.join(file))
     }
 
     /// Use the per-user data directory: loads the active set saved there (if any).
