@@ -281,15 +281,17 @@ fn queue_add_numbering_skips_host_files_and_image_sequence_stills() {
             true
         }
     }
+    // names no file in the working directory has: the native file system is asked too
+    let name = |n: &str| format!("queue-host-{}{n}.wav", std::process::id());
     let files = Arc::new(HostFiles::default());
-    files.0.lock().unwrap().insert("take_2.wav".into());
+    files.0.lock().unwrap().insert(name("_2"));
     let mut s = Session::new(files);
     s.execute("file.newSequence", json!({"name": "Host", "fps": 25, "width": 16, "height": 16, "video": 0, "audio": 1})).unwrap();
     for _ in 0..2 {
-        s.execute("export.queue.add", json!({"path": "take.wav", "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.2})).unwrap();
+        s.execute("export.queue.add", json!({"path": name(""), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.2})).unwrap();
     }
     let paths: Vec<Value> = queue(&mut s).iter().map(|i| i["path"].clone()).collect();
-    assert_eq!(paths, [json!("take.wav"), json!("take_3.wav")], "the host's take_2.wav is kept");
+    assert_eq!(paths, [json!(name("")), json!(name("_3"))], "the host's _2 file is kept");
 
     let mut s = demo();
     let dir = Scratch::new("queue-still-names");
