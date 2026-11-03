@@ -288,10 +288,9 @@ fn execute(
                 prog.done.fetch_add(1, Ordering::Relaxed);
             }
             Some(r) => {
-                let m = proj.item(w.item).and_then(|i| i.as_media()).cloned().ok_or("item vanished")?;
-                let name = proj.item(w.item).map(|i| i.name.clone()).unwrap_or_default();
-                let src = sources.get(&w.item).cloned().ok_or_else(|| format!("{name}: no source"))?;
-                let rep = crate::proxies::transcode(&m, &name, src, Some(r), &w.out, pr, prog)?;
+                let source = proj.item(w.item).filter(|i| i.as_media().is_some()).cloned().ok_or("item vanished")?;
+                let src = sources.get(&w.item).cloned().ok_or_else(|| format!("{}: no source", source.name))?;
+                let rep = crate::proxies::transcode(&source, src, Some(r), &w.out, pr, prog)?;
                 bytes += rep.bytes;
                 // the clip now starts at the range start: shift its uses, take the new file's info
                 proj.shift_media_time(w.item, r.start);

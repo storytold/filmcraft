@@ -357,6 +357,11 @@ Proxies go to `<media folder>/Proxies/<name>_Proxy.<ext>`, or to the chosen fold
 in `jobs.list`. `Session::poll_persistence`, which the app calls every frame, attaches finished
 proxies.
 
+A proxy can be traced to its source without the project. When the source has a start timecode,
+the proxy has a timecode track that starts at the same timecode, with the clip's Tape Name as its
+reel. Mono, stereo and 5.1 sources keep their channels; other channel counts become stereo. Ingest
+transcodes and Project Manager transcodes do the same.
+
 With proxies enabled, monitors, thumbnails and playback read the proxy. The proxy source reports
 the original's size. The compositor derives its pixel scale from the frame it gets, so Motion and
 pixel-size effect parameters (blur radii…) give the same picture at the proxy's resolution. A

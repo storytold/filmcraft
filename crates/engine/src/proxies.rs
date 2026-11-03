@@ -15,9 +15,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use filmcraft_export::{ExportSettings, Format, Progress, Report};
+use filmcraft_export::{AudioSettings, ExportSettings, Format, Progress, Report};
 use filmcraft_media::{MediaKind, SharedSource};
-use filmcraft_project::{IngestAction, ItemId, ItemKind, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+use filmcraft_project::{AudioChannels, IngestAction, ItemId, ItemKind, MediaClip, MediaRef, Project, ProjectItem, SequenceSettings, TrackKind};
 use filmcraft_time::{Tick, TimeRange};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -86,18 +86,21 @@ pub struct PendingJob {
     pub outputs: Arc<Mutex<Vec<(ItemId, String)>>>,
 }
 
-/// Transcode `range` (whole media when None) of one media clip to `out` with `preset`, blocking.
+/// Transcode `range` (whole media when None) of one media item to `out` with `preset`, blocking.
 /// `progress.total` is the caller's; this adds one per frame to `progress.done`.
+///
+/// The output can be traced back to its source on its own: a movie keeps the source's start
+/// timecode (at the first frame it holds) in a timecode track, with the item's Tape Name as the
+/// reel, and mono and 5.1 sources keep their channels (other counts become stereo).
 pub fn transcode(
-    clip: &MediaClip,
-    name: &str,
+    source: &ProjectItem,
     src: SharedSource,
     range: Option<TimeRange>,
     out: &str,
     preset: &Preset,
     progress: &Progress,
 ) -> std::result::Result<Report, String> {
-    transcode_with_file(clip, name, src, range, Dest { path: out, file: None }, preset, progress)
+    transcode_with_file(source, src, range, Dest { path: out, file: None }, preset, progress)
 }
 
 /// Output path, plus the already-open file to write into when the caller holds one.
@@ -107,8 +110,7 @@ struct Dest<'a> {
 }
 
 fn transcode_with_file(
-    clip: &MediaClip,
-    name: &str,
+    source: &ProjectItem,
     src: SharedSource,
     range: Option<TimeRange>,
     dest: Dest<'_>,
@@ -116,6 +118,7 @@ fn transcode_with_file(
     progress: &Progress,
 ) -> std::result::Result<Report, String> {
     let Dest { path: out, file: output_file } = dest;
+    let (clip, name) = (source.as_media().ok_or_else(|| format!("{}: not a media item", source.name))?, source.name.as_str());
     let info = &clip.info;
     let rate = clip.frame_rate();
     let mut st = SequenceSettings::default();
@@ -127,6 +130,15 @@ fn transcode_with_file(
     }
     st.frame_rate = rate;
     st.sample_rate = info.audio().map_or(48_000, |a| a.sample_rate.max(8000));
+    // the channels the export can write as they are: mono, stereo and 5.1
+    let channels = match info.audio().map_or(2, |a| a.channels) {
+        1 => 1,
+        6 => 6,
+        _ => 2,
+    };
+    if channels == 6 {
+        st.audio_master = AudioChannels::Surround51;
+    }
     let mut p = Project::new("transcode");
     let mut c = clip.clone();
     c.offline = false;
@@ -143,10 +155,18 @@ fn transcode_with_file(
     if has_a && let Some(ti) = p.make_track_item(item, TrackKind::Audio, Tick::ZERO, range, rate) {
         placed.push((TrackKind::Audio, ti));
     }
+    // the timecode of the first frame, when the source has one a timecode track can hold
+    let start_tc = info.start_timecode.and_then(|f| f.checked_add(rate.frame_at(range.start))).filter(|f| u32::try_from(*f).is_ok());
     let q = p.sequence_mut(seq).ok_or("no sequence")?;
+    q.start_timecode = start_tc.unwrap_or(0);
     for (k, ti) in placed {
         let t = if k == TrackKind::Video { &mut q.video_tracks[0] } else { &mut q.audio_tracks[0] };
         t.items.push(ti);
+    }
+    if channels == 6
+        && let Some(t) = q.audio_tracks.first_mut()
+    {
+        t.channels = AudioChannels::Surround51;
     }
     let format = if has_v { preset.format } else { Format::Wav };
     let settings = ExportSettings {
@@ -159,6 +179,9 @@ fn transcode_with_file(
             as u32,
         part_of_batch: true,
         prores_profile: preset.prores.to_string(),
+        audio: AudioSettings { channels, ..Default::default() },
+        timecode_track: start_tc.is_some(),
+        reel_name: source.metadata.get("Tape Name").cloned().unwrap_or_default(),
         output_file,
         ..Default::default()
     };
@@ -262,12 +285,13 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
     let mut total = 0;
     for (item, output, pr) in work {
         let (clip, _, name) = media_path(&s.project, item).ok_or_else(|| bad("media.createProxies", format!("item {} is not file media", item.0)))?;
+        let source = s.project.item(item).cloned().ok_or_else(|| bad("media.createProxies", format!("no item {}", item.0)))?;
         let src = s.media.full_res_source(&s.project, item, &*s.services).ok_or_else(|| EngineError::Other(format!("{name}: no source")))?;
         if s.media.offline_status(item).is_some() {
             return Err(EngineError::Other(format!("{name} is offline; link it first")));
         }
         total += frame_count(&clip, None);
-        tasks.push((item, clip, name, src, output, pr));
+        tasks.push((item, source, name, src, output, pr));
     }
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
@@ -293,7 +317,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
         let mut bytes = 0;
         let mut err = None;
         let n = tasks.len();
-        for (k, (item, clip, name, src, mut output, pr)) in tasks.into_iter().enumerate() {
+        for (k, (item, source, name, src, mut output, pr)) in tasks.into_iter().enumerate() {
             if prog.cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 err = Some("cancelled".to_string());
                 break;
@@ -303,7 +327,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
             // its own copy of the file, opened here rather than on the main thread, so the
             // monitors keep their decoder
             let src = pool.own_source(&project, item, &*services).unwrap_or(src);
-            match transcode_with_file(&clip, &name, src, None, Dest { path: &out, file: output.file() }, pr, &prog) {
+            match transcode_with_file(&source, src, None, Dest { path: &out, file: output.file() }, pr, &prog) {
                 Ok(r) => {
                     bytes += r.bytes;
                     output.preserve();

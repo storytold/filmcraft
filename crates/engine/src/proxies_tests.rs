@@ -416,3 +416,87 @@ fn render_previews_ignore_proxies() {
     assert!(q > 30.0, "preview rendered from full-resolution media, not the (different) proxy: {q:.1} dB");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A 12-frame 25 fps MXF OP1a (ProRes) movie of a demo scene, its sound in `channels` channels,
+/// with its timecode starting at frame `start`: a source with a start timecode made by our own
+/// encoders.
+fn make_mxf(path: &std::path::Path, start: i64, channels: u32) {
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_media::{Generator, MediaSource};
+    use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+    use filmcraft_time::{FrameRate, Tick, TimeRange};
+    let rate = FrameRate::FPS_25;
+    let dur = rate.tick_of(12);
+    let demo = Generator::Demo(DemoScene::Aurora);
+    let src = GeneratorSource::new(demo.clone(), W, H, rate, dur);
+    let clip = MediaClip {
+        media: MediaRef::Generator(demo),
+        info: src.info().clone(),
+        interpret: Default::default(),
+        mark_in: None,
+        mark_out: None,
+        markers: vec![],
+        offline: false,
+        proxy: None,
+        identity: None,
+    };
+    let mut p = Project::new("fixture");
+    let item = p.add_item("scene", Label::Iris, ItemKind::Media(Box::new(clip)), None);
+    let seq = p.new_sequence("s", SequenceSettings { width: W, height: H, frame_rate: rate, ..Default::default() }, 1, 1, None);
+    let r = TimeRange::new(Tick::ZERO, dur);
+    let v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, r, rate).unwrap();
+    let a = p.make_track_item(item, TrackKind::Audio, Tick::ZERO, r, rate).unwrap();
+    let q = p.sequence_mut(seq).unwrap();
+    q.start_timecode = start;
+    q.video_tracks[0].items.push(v);
+    q.audio_tracks[0].items.push(a);
+    let settings = filmcraft_export::ExportSettings {
+        format: filmcraft_export::Format::MxfOp1a,
+        mxf_video_codec: filmcraft_export::MxfVideoCodec::ProRes,
+        path: path.to_string_lossy().into_owned(),
+        audio: filmcraft_export::AudioSettings { channels, ..Default::default() },
+        ..Default::default()
+    };
+    let shared: filmcraft_media::SharedSource = std::sync::Arc::new(src);
+    let provider = move |id: filmcraft_project::ItemId| (id == item).then(|| shared.clone());
+    filmcraft_export::export(&std::sync::Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();
+}
+
+/// A proxy can be traced to its source on its own, as an editor expects of one: it keeps the
+/// source's start timecode in a timecode track, with the item's Tape Name as the reel, and mono
+/// and 5.1 sound keep their channels instead of becoming stereo.
+#[test]
+fn proxies_keep_the_source_timecode_reel_and_channels() {
+    let root = tmp_dir("proxy-traceable");
+    // 14:30:42:00 at 25 fps
+    let start = ((14 * 60 + 30) * 60 + 42) * 25;
+    for (channels, presets) in [(1, &["prores_proxy_quarter", "h264_quarter"][..]), (6, &["prores_proxy_quarter"][..])] {
+        let src = root.join(format!("src{channels}.mxf"));
+        make_mxf(&src, start, channels);
+        let (mut s, items, _) = session_with(&[&src]);
+        let info = s.project.item(items[0]).unwrap().as_media().unwrap().info.clone();
+        assert_eq!((info.start_timecode, info.audio().map(|a| a.channels)), (Some(start), Some(channels)), "the source");
+        s.execute("metadata.set", json!({"item": items[0].0, "field": "Tape Name", "value": "A001"})).unwrap();
+        for preset in presets {
+            let r = s.execute("media.createProxies", json!({"items": [items[0].0], "preset": preset, "wait": true})).unwrap();
+            let out = r["outputs"][0]["path"].as_str().unwrap().to_string();
+            let bytes = std::fs::read(&out).unwrap();
+            let reel = filmcraft_isobmff::open(bytes.as_slice()).unwrap().tracks.iter().find_map(|t| match t.codec() {
+                Some(filmcraft_isobmff::CodecConfig::Timecode(tc)) => Some(tc.name.clone()),
+                _ => None,
+            });
+            assert_eq!(reel, Some(Some("A001".to_string())), "{channels} channels, {preset}: a timecode track naming the reel");
+            let proxy = filmcraft_codecs::open_bytes(&out, bytes.into()).unwrap();
+            assert_eq!(proxy.info().start_timecode, Some(start), "{channels} channels, {preset}");
+            assert_eq!(proxy.info().audio().map(|a| a.channels), Some(channels), "{channels} channels, {preset}");
+            if channels == 1 && *preset == "prores_proxy_quarter" {
+                // PCM to PCM: the mono sound comes through as it was, not at another level
+                let source = s.media.full_res_source(&s.project, items[0], &*s.services).unwrap();
+                let (a, b) = (source.audio(0, 9600, 48_000).unwrap(), proxy.audio(0, 9600, 48_000).unwrap());
+                let diff = a.channels[0].iter().zip(&b.channels[0]).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+                assert!(diff <= 1.0 / 32768.0, "mono sound changed by up to {diff}");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
