@@ -175,7 +175,11 @@ fn moving_a_linked_video_clip_up_and_along_moves_its_audio_in_time_only() {
     let from = pos2((x0 + x1) / 2.0, y + 10.0);
     d.drag(from, pos2(from.x + 40.0, from.y - 34.0), 12);
     let (video1, partner1) = tracks_of(&d, city);
-    assert_ne!(video1, video0, "the video clip changed track");
+    let above = {
+        let seq = d.app().session.active_sequence().unwrap();
+        seq.video_tracks.iter().position(|t| t.id.0 == video0).and_then(|i| seq.video_tracks.get(i + 1)).map(|t| t.id.0)
+    };
+    assert_eq!(Some(video1), above, "the video clip went up one track");
     let moved = d.span(city).0 - start0;
     assert!(moved > 0, "and moved later in time");
     let (audio_track1, audio_clip1) = partner1.expect("still linked");
