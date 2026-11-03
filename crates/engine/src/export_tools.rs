@@ -215,6 +215,15 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
 
 fn apply_nested_settings(settings: &mut ExportSettings, params: &Value, cmd: &str) -> Result<()> {
     let Some(patch) = params.get("settings").filter(|value| value.is_object()) else { return Ok(()) };
+    // `chapters` is an alias of `includeChapters` (#2747): merged beside the serialized
+    // `includeChapters` it would be a duplicate field, so give it the canonical name first
+    let mut patch = patch.clone();
+    if let Some(obj) = patch.as_object_mut()
+        && let Some(v) = obj.remove("chapters")
+    {
+        obj.entry("includeChapters").or_insert(v);
+    }
+    let patch = &patch;
     let mut value = serde_json::to_value(&*settings).map_err(|error| EngineError::Other(error.to_string()))?;
     merge(&mut value, patch);
     *settings = serde_json::from_value(value).map_err(|error| bad(cmd, format!("settings: {error}")))?;

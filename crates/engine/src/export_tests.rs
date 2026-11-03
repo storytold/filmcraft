@@ -1132,10 +1132,21 @@ fn chapter_markers_are_exported_through_file_export_media() {
     let want = vec![(250, "Act One".to_string()), (500, "Act Two".to_string())];
     assert_eq!(track, want, "QuickTime chapter track");
     assert_eq!(chpl, want, "Nero chpl");
-    let mut off = base;
+    let mut off = base.clone();
     off["path"] = json!(dir.path("off.mp4"));
     off["chapters"] = json!(false);
     s.execute("file.exportMedia", off).unwrap();
     let (track, chpl) = read(&dir.path("off.mp4"));
     assert!(track.is_empty() && chpl.is_empty());
+    // the `chapters` alias also works inside nested `settings`: it used to sit beside the
+    // serialized `includeChapters` and fail as a duplicate field
+    for key in ["chapters", "includeChapters"] {
+        let mut nested = base.clone();
+        let name = format!("nested-{key}.mp4");
+        nested["path"] = json!(dir.path(&name));
+        nested["settings"] = json!({ key: false });
+        s.execute("file.exportMedia", nested).unwrap_or_else(|e| panic!("settings.{key}: {e}"));
+        let (track, chpl) = read(&dir.path(&name));
+        assert!(track.is_empty() && chpl.is_empty(), "settings.{key}: false");
+    }
 }
