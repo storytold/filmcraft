@@ -55,7 +55,7 @@ Loading a project cannot select or enable an executable.
 
 `Project::project_links` maps stable FilmCraft media item IDs to versioned, application-neutral
 `ProjectLink` descriptors: provider, source project path, provider-owned object ID, display name,
-successful revision, manual refresh generation and baked state. Schema 16 prevents older readers
+successful revision, manual refresh generation and baked state. Schema 18 prevents older readers
 from silently dropping the link. Paths are locators; moving a project requires explicit relinking.
 There is no universal cross-app document UUID in this prototype.
 
