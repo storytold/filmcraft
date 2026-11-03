@@ -90,6 +90,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // A project command may have reordered or deleted layers since the last pass. Follow the
     // edited layer (or end the edit) before anything reads `gfx_edit`.
     reconcile_gfx_edit(app);
+    restart_pen_path_on_a_new_target(app, pic, frame);
     let t = app.tokens;
     let views = visible_layers(app, pic, frame);
     let tool = app.ui.tool;
@@ -616,6 +617,15 @@ fn click(
     }
 }
 
+/// The pen path's points are in the canvas of the graphic it began on, so another target (that
+/// graphic's track locked, another one selected, playback moving past it) starts the path again
+/// (#4162). Runs before this pass's clicks, which place points in the current target.
+fn restart_pen_path_on_a_new_target(app: &mut FilmcraftApp, pic: Rect, frame: (u32, u32)) {
+    if !app.ui.pen_points.is_empty() && canvas_target(app, pic, frame).0.map(|c| c.0) != app.ui.pen_into {
+        app.ui.pen_points.clear();
+    }
+}
+
 /// Draw the pen path being traced, and finish it on Enter (Escape drops it).
 #[allow(clippy::too_many_arguments)]
 fn pen_path(
@@ -629,11 +639,7 @@ fn pen_path(
     accent: Color32,
     actions: &mut Vec<(String, Value)>,
 ) {
-    // ---- pen path in progress; its points are in the canvas of the graphic it began on, so another
-    // target (that graphic's track locked, another one selected) starts the path again (#4162)
-    if tool == Tool::Pen && !app.ui.pen_points.is_empty() && canvas_target(app, pic, frame).0.map(|c| c.0) != app.ui.pen_into {
-        app.ui.pen_points.clear();
-    }
+    // ---- pen path in progress
     if tool == Tool::Pen && !app.ui.pen_points.is_empty() {
         let (_, m) = canvas_target(app, pic, frame);
         let pts: Vec<Pos2> = app.ui.pen_points.iter().map(|q| m.apply(Vec2::new(q[0], q[1]))).map(|v| pos2(v.x as f32, v.y as f32)).collect();

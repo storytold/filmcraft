@@ -281,6 +281,20 @@ fn a_pen_path_starts_again_when_its_graphic_is_locked() {
     d.exec("timeline.setTrack", json!({"track": track.0, "locked": true}));
     d.frames(2);
     assert!(d.harness.state().ui.pen_points.is_empty(), "the path in the locked graphic's canvas is dropped");
+
+    // the target changing on the very pass of a click: the click starts the new path
+    d.exec("timeline.setTrack", json!({"track": track.0, "locked": false}));
+    d.frames(2);
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.2, "y": pic[1] + pic[3] * 0.2}));
+    d.frames(2);
+    assert_eq!(d.harness.state().ui.pen_into, Some(clip));
+    d.harness.state_mut().session.execute("timeline.setTrack", json!({"track": track.0, "locked": true})).unwrap();
+    let at = egui::pos2((pic[0] + pic[2] * 0.4) as f32, (pic[1] + pic[3] * 0.2) as f32);
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    d.harness.input_mut().events.extend([egui::Event::PointerMoved(at), button(true), button(false)]);
+    d.frames(1);
+    assert_eq!(d.harness.state().ui.pen_points.len(), 1, "the click is the first point of a new path");
+    assert_eq!(d.harness.state().ui.pen_into, None, "in the sequence frame");
 }
 
 /// The Type tool does not add a layer to a selected graphic on a locked track: the text goes into
