@@ -622,6 +622,38 @@ fn aac_audio_writes_m4a_and_adts() {
     }
 }
 
+/// An AAC encoder pads its last frame. The audio track's edit list skips the priming and ends at
+/// the last rendered sample, so the padding is not presented and the movie is no longer than the
+/// range: it used to run on to the end of the last encoded frame.
+#[test]
+fn aac_tracks_present_exactly_the_rendered_samples() {
+    let (p, seq, m) = matte([0.0, 0.0, 1.0, 1.0], 64, 36, Some(-6.0));
+    let dir = Scratch::new("aac-edits");
+    // one second at 48 kHz: 48 000 samples and 1000 ticks of the movie timescale
+    let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)));
+    for (format, name) in [(Format::Aac, "a.m4a"), (Format::H264, "a.mp4")] {
+        let path = dir.path(name);
+        let settings = ExportSettings {
+            format,
+            path: path.clone(),
+            range,
+            hardware_encoding: HardwareEncoding::Off,
+            gpu_rendering: GpuRendering::Off,
+            audio: AudioSettings { codec: AudioCodec::Aac, ..Default::default() },
+            ..Default::default()
+        };
+        export(&p, seq, &settings, &m, &Progress::default()).unwrap();
+        let file = filmcraft_isobmff::open(std::fs::read(&path).unwrap()).unwrap();
+        let audio = &file.tracks[file.track_of_kind(filmcraft_isobmff::TrackKind::Audio).unwrap()];
+        assert_eq!(file.timescale, 1000, "{name}");
+        assert_eq!(audio.edits.len(), 1, "{name}: {:?}", audio.edits);
+        assert!(audio.edits[0].media_time > 0, "{name}: the edit skips the priming");
+        assert_eq!(audio.edits[0].segment_duration, 1000, "{name}: {:?}", audio.edits);
+        assert_eq!(audio.tkhd_duration, 1000, "{name}");
+        assert_eq!(file.duration, 1000, "{name}: the movie lasts as long as the range");
+    }
+}
+
 fn write_and_check_m4a_aac(p: &Arc<Project>, seq: ItemId, sources: &SourceMap, path: &str, range: Option<TimeRange>) {
     let settings = ExportSettings { format: Format::Aac, path: path.to_owned(), range, ..Default::default() };
     assert!(!settings.has_video());
