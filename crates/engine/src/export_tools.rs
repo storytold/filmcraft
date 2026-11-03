@@ -785,6 +785,23 @@ fn queue_item_p(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
     s.export_queue.items.iter().position(|i| i.id == id).ok_or_else(|| bad(cmd, format!("no queued export {id}")))
 }
 
+pub(crate) const RENAMED_WARNING: &str = "another queued export writes to this file; numbered to keep both";
+
+/// `path` with the first `_N` (from 2) that no path in `taken` has.
+fn free_queue_path(path: &str, taken: &[String]) -> String {
+    let (stem, ext) = match path.rsplit_once('.') {
+        Some((a, e)) if !e.contains(['/', '\\']) => (a, Some(e)),
+        _ => (path, None),
+    };
+    (2..)
+        .map(|n| match ext {
+            Some(e) => format!("{stem}_{n}.{e}"),
+            None => format!("{stem}_{n}"),
+        })
+        .find(|c| !taken.contains(c))
+        .unwrap_or_else(|| path.to_string())
+}
+
 fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "export.queue.add";
     let (preset, settings) = settings_from_params(s, p, cmd)?;
@@ -827,7 +844,16 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             items.push((seq, st));
         }
     }
-    for (seq, st) in items {
+    // a queued item that has not finished yet keeps its file: a new item with the same output gets
+    // the next free `_N` instead of overwriting it when it encodes (#4175)
+    let mut taken: Vec<String> =
+        s.export_queue.items.iter().filter(|i| matches!(i.status, QueueStatus::Ready | QueueStatus::Encoding)).map(|i| i.settings.path.clone()).collect();
+    for (seq, mut st) in items {
+        if taken.contains(&st.path) {
+            st.path = free_queue_path(&st.path, &taken);
+            warnings.push(RENAMED_WARNING);
+        }
+        taken.push(st.path.clone());
         s.export_queue.next_id += 1;
         let id = s.export_queue.next_id;
         let name = s.project.item(seq).map(|i| i.name.clone()).unwrap_or_default();

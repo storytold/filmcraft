@@ -189,6 +189,48 @@ fn single_frame_in_out_queue_add_retains_warnings_and_ranges() {
     assert_eq!(quiet["warnings"], json!([]), "warnings describe this addition, not previously queued items");
 }
 
+/// Two queued exports to one file would overwrite each other: a later one is numbered, while the
+/// earlier one has not finished. A cancelled or finished item no longer holds its name.
+#[test]
+fn queue_add_numbers_an_output_another_queued_item_writes() {
+    let mut s = demo();
+    let dir = Scratch::new("queue-same-path");
+    let add = |s: &mut Session, start: f64| {
+        s.execute(
+            "export.queue.add",
+            json!({"path": dir.path("clip.wav"), "format": "wav", "range": "custom", "startSeconds": start, "endSeconds": start + 0.25}),
+        )
+        .unwrap()
+    };
+    let paths = |s: &mut Session| -> Vec<String> { queue(s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect() };
+    let first = add(&mut s, 0.0);
+    assert_eq!(first["warnings"], json!([]));
+    let second = add(&mut s, 1.0);
+    assert_eq!(second["warnings"], json!([crate::export_tools::RENAMED_WARNING]));
+    add(&mut s, 2.0);
+    assert_eq!(paths(&mut s), [dir.path("clip.wav"), dir.path("clip_2.wav"), dir.path("clip_3.wav")]);
+    // a cancelled item frees its name
+    s.execute("export.queue.cancel", json!({"id": first["added"][0]})).unwrap();
+    let again = add(&mut s, 3.0);
+    assert_eq!(again["warnings"], json!([]));
+    assert_eq!(paths(&mut s)[3], dir.path("clip.wav"));
+    // the queue writes four separate files
+    s.execute("export.queue.start", json!({"wait": true})).unwrap();
+    for f in ["clip.wav", "clip_2.wav", "clip_3.wav"] {
+        assert!(Path::new(&dir.path(f)).exists(), "{f}");
+    }
+    assert_eq!(queue(&mut s).iter().filter(|i| i["status"] == "done").count(), 3);
+    // several ranges in one add keep their own numbering
+    let many = s
+        .execute(
+            "export.queue.add",
+            json!({"path": dir.path("set.wav"), "format": "wav", "ranges": [{"startSeconds": 0, "endSeconds": 0.25}, {"startSeconds": 1, "endSeconds": 1.25}]}),
+        )
+        .unwrap();
+    assert_eq!(many["warnings"], json!([]));
+    assert_eq!(paths(&mut s)[4..], [dir.path("set.wav"), dir.path("set_2.wav")]);
+}
+
 #[test]
 fn single_frame_in_out_exports_warn_without_changing_the_output() {
     let mut s = demo();
