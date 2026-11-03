@@ -222,7 +222,7 @@ impl R<'_, '_> {
         // every level, so each visit also spends from a per-document budget.
         if depth > 32 || self.budget == 0 {
             if self.budget == 0 {
-                self.report.warn("OMF composition is too large to import completely (the rest is a gap)");
+                self.report.warn("OMF composition is too large to import completely (the remaining components are dropped)");
             }
             return vec![CItem::Filler(len)];
         }
