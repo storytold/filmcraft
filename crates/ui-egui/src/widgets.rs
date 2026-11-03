@@ -216,11 +216,8 @@ fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
 /// How far a drag on `resp` moved this frame, in points. As in Premiere, the cursor is hidden and
 /// held where the press began, and the drag follows the raw mouse motion, which the screen edge
 /// does not stop (#4177). Without raw motion (the web), for a touch or in a window without focus, it
-/// is the pointer's own delta. A drag that lost the window's focus moves nothing until a new press.
+/// is the pointer's own delta.
 fn locked_drag_dx(ui: &Ui, resp: &Response) -> f32 {
-    if ui.data(|d| d.get_temp::<CursorLock>(dropped_drag_id())).is_some_and(|l| l.owner == resp.id) {
-        return 0.0;
-    }
     let (motion, touching, focused, press_origin, pointer) =
         ui.input(|i| (i.pointer.motion(), i.any_touches(), window_focused(i), i.pointer.press_origin(), i.pointer.latest_pos()));
     // once any raw motion arrived, `motion` stays `Some` on every frame, also for a touch, which has none
@@ -256,38 +253,27 @@ fn cursor_lock_id() -> egui::Id {
     egui::Id::unique("hot-number-cursor-lock")
 }
 
-/// The lock of a drag that lost the window's focus: the button may have come up in another window,
-/// so egui can still see it held, with the old press position.
-fn dropped_drag_id() -> egui::Id {
-    egui::Id::unique("hot-number-dropped-drag")
-}
-
 /// Whether the window has keyboard focus. A button let go in another window (after Alt+Tab) never
 /// reaches this one, so its pointer state can still show it held.
 fn window_focused(i: &egui::InputState) -> bool {
     i.viewport().focused.unwrap_or(i.focused)
 }
 
-/// Ends [`locked_drag_dx`]'s lock once the button is up or the window loses focus: the cursor is
-/// let go and shows again where the press began. Also called on every pass, for a drag whose field
-/// went away before the release.
+/// Ends [`locked_drag_dx`]'s lock once the button is up, the window loses focus or the drag ends
+/// (Escape): the cursor is let go and shows again where the press began. Losing focus also ends the
+/// drag. Also called on every pass, for a drag whose field went away before the release.
 pub(crate) fn release_cursor_lock(ctx: &egui::Context) {
-    if let Some(dropped) = ctx.data(|d| d.get_temp::<CursorLock>(dropped_drag_id()))
-        && ctx.input_for(dropped.viewport, |i| !i.pointer.any_down() || i.pointer.any_pressed())
-    {
-        ctx.data_mut(|d| d.remove::<CursorLock>(dropped_drag_id()));
-    }
     let Some(lock) = ctx.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())) else { return };
     let (focused, down) = ctx.input_for(lock.viewport, |i| (window_focused(i), i.pointer.any_down()));
-    if focused && down {
+    if focused && down && ctx.dragged_id() == Some(lock.owner) {
         return;
     }
-    ctx.data_mut(|d| {
-        d.remove::<CursorLock>(cursor_lock_id());
-        if down {
-            d.insert_temp(dropped_drag_id(), lock);
-        }
-    });
+    ctx.data_mut(|d| d.remove::<CursorLock>(cursor_lock_id()));
+    if down {
+        // egui would keep dragging the field when focus comes back, and a new press could not start
+        // a drag on another one
+        ctx.stop_dragging();
+    }
     ctx.send_viewport_cmd_to(lock.viewport, egui::ViewportCommand::CursorPosition(lock.origin));
     ctx.send_viewport_cmd_to(lock.viewport, egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
 }
