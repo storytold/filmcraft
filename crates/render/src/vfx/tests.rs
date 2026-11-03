@@ -1440,3 +1440,56 @@ mod stabilizer_corrections_cache {
         }
     }
 }
+
+/// Hostile project values must finish in bounded time (each case is a few seconds of CPU at worst).
+mod hostile_work {
+    use super::super::temporal::{StabilizerPath, corrections};
+    use super::*;
+    use filmcraft_geom::Affine;
+    use std::time::{Duration, Instant};
+
+    fn finishes_quickly(id: &str, e: &EffectInstance, c: &FxCtx) {
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        let t = Instant::now();
+        let o = run(id, e, &img, c);
+        assert!(t.elapsed() < Duration::from_secs(20), "{id} took {:?}", t.elapsed());
+        assert!(o.px.iter().all(|v| v.is_finite()), "{id}");
+    }
+
+    #[test]
+    fn lightning_with_huge_width_and_branching() {
+        let mut e = inst("lightning");
+        setf(&mut e, "width", 1e9);
+        setf(&mut e, "branching", 1e9);
+        setf(&mut e, "segments", 100.0);
+        setf(&mut e, "detail", 6.0);
+        finishes_quickly("lightning", &e, &cx());
+    }
+
+    #[test]
+    fn write_on_with_a_stationary_brush_and_a_long_history() {
+        let mut e = inst("write_on");
+        setf(&mut e, "spacing", 0.001);
+        setf(&mut e, "size", 4000.0);
+        let c = FxCtx { t: Tick::from_seconds_f64(600.0), seconds: 600.0, ..cx() };
+        finishes_quickly("write_on", &e, &c);
+    }
+
+    #[test]
+    fn simple_text_with_an_enormous_size_is_skipped_not_allocated() {
+        let mut e = inst("simple_text");
+        set(&mut e, "text", ParamValue::Text("Wide text".into()));
+        setf(&mut e, "size", 1e7);
+        let img = solid(64, 48, [0.1, 0.1, 0.1]);
+        assert_eq!(run("simple_text", &e, &img, &cx()), img);
+    }
+
+    #[test]
+    fn stabilizer_smoothing_radius_is_bounded() {
+        let path = StabilizerPath { w: 8, h: 8, steps: vec![Affine::IDENTITY; 3], fps: 24.0 };
+        let t = Instant::now();
+        let c = corrections(&path, 1e12, false, false);
+        assert_eq!(c.len(), 4);
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+}

@@ -4,7 +4,7 @@ use filmcraft_project::EffectInstance;
 use filmcraft_text::{Align, ParagraphStyle, TextStyle, layout, render};
 
 use super::{FxCtx, Image, Vec2, chv, cv, fv, pv, tv};
-use crate::graphics::paint_mask;
+use crate::graphics::{bounded_raster_size, paint_mask};
 
 /// Where and how [`draw_text`] sets its text: font family, anchor, pixel size, alignment code
 /// (0 left, 1 centre, 2 right), colour and opacity of the black box behind it.
@@ -22,7 +22,7 @@ pub(crate) struct TextLook<'a> {
 /// left/centre/right on `pos.x`, over an optional black box.
 pub(crate) fn draw_text(img: &mut Image, text: &str, look: TextLook<'_>) {
     let TextLook { family, pos, px, align, color, box_alpha } = look;
-    if text.is_empty() || !pos.x.is_finite() || !pos.y.is_finite() {
+    if text.is_empty() || !pos.x.is_finite() || !pos.y.is_finite() || !px.is_finite() || px <= 0.0 {
         return;
     }
     let al = match align {
@@ -40,15 +40,15 @@ pub(crate) fn draw_text(img: &mut Image, text: &str, look: TextLook<'_>) {
         let boxp = filmcraft_text::Path::rect(bx + b[0] - pad, by + b[1] - pad, bx + b[2] + pad, by + b[3] + pad);
         if let Some(bb) = boxp.bounds() {
             let (x0, y0) = (bb.0.floor() as i32, bb.1.floor() as i32);
-            let m = filmcraft_text::raster::fill(
-                &boxp,
-                (bb.2.ceil() as i32 - x0).max(1) as usize,
-                (bb.3.ceil() as i32 - y0).max(1) as usize,
-                -x0 as f32,
-                -y0 as f32,
-            );
-            paint_mask(img, &m, x0, y0, [0.0, 0.0, 0.0, 1.0], box_alpha.clamp(0.0, 1.0));
+            // the size comes from the project: an oversized box is skipped, not allocated
+            if let Some((w, h)) = bounded_raster_size(bb.2.ceil() - x0 as f32, bb.3.ceil() - y0 as f32) {
+                let m = filmcraft_text::raster::fill(&boxp, w, h, -x0 as f32, -y0 as f32);
+                paint_mask(img, &m, x0, y0, [0.0, 0.0, 0.0, 1.0], box_alpha.clamp(0.0, 1.0));
+            }
         }
+    }
+    if bounded_raster_size(b[2] - b[0] + px * 0.7, b[3] - b[1] + px * 0.7).is_none() {
+        return;
     }
     let (m, x0, y0) = render::rasterize(&l, &render::at(bx, by.round()));
     paint_mask(img, &m, x0, y0, crate::graphics::premul_linear(color), 1.0);
