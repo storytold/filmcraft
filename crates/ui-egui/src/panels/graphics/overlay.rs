@@ -595,7 +595,10 @@ fn click(
                 }
             }
             Tool::Pen => {
-                let (_, m) = canvas_target(app, pic, frame);
+                let (into, m) = canvas_target(app, pic, frame);
+                if app.ui.pen_points.is_empty() {
+                    app.ui.pen_into = into.map(|c| c.0);
+                }
                 let c = to_canvas(&m, p);
                 let close = app.ui.pen_points.len() >= 3
                     && app.ui.pen_points.first().is_some_and(|f| {
@@ -626,7 +629,11 @@ fn pen_path(
     accent: Color32,
     actions: &mut Vec<(String, Value)>,
 ) {
-    // ---- pen path in progress
+    // ---- pen path in progress; its points are in the canvas of the graphic it began on, so another
+    // target (that graphic's track locked, another one selected) starts the path again (#4162)
+    if tool == Tool::Pen && !app.ui.pen_points.is_empty() && canvas_target(app, pic, frame).0.map(|c| c.0) != app.ui.pen_into {
+        app.ui.pen_points.clear();
+    }
     if tool == Tool::Pen && !app.ui.pen_points.is_empty() {
         let (_, m) = canvas_target(app, pic, frame);
         let pts: Vec<Pos2> = app.ui.pen_points.iter().map(|q| m.apply(Vec2::new(q[0], q[1]))).map(|v| pos2(v.x as f32, v.y as f32)).collect();

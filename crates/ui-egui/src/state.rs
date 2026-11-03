@@ -565,6 +565,9 @@ pub struct UiState {
     /// Pen tool: path points placed so far (sequence pixels).
     #[serde(default)]
     pub pen_points: Vec<[f64; 2]>,
+    /// Pen tool: the graphic clip whose canvas `pen_points` are in (`None`: the sequence frame).
+    #[serde(default)]
+    pub pen_into: Option<u64>,
     /// Link Media dialog (open when Some).
     #[serde(default)]
     pub link_media: Option<LinkMediaDraft>,
@@ -1041,6 +1044,7 @@ impl Default for UiState {
             transition_duration: TransitionDurationDraft::default(),
             gfx_edit: None,
             pen_points: vec![],
+            pen_into: None,
             link_media: None,
             create_proxies: None,
             project_manager: None,

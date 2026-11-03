@@ -263,6 +263,26 @@ fn point_text_handles_scale_it_about_its_anchor() {
     assert_eq!(num(&d.layer(clip)["scale"]), s);
 }
 
+/// A pen path begun in a selected graphic starts again when that graphic's track is locked: its
+/// points are in that graphic's canvas, and the next shape goes into a new graphic (#4162).
+#[test]
+fn a_pen_path_starts_again_when_its_graphic_is_locked() {
+    let mut d = Driver::new();
+    let (clip, _) = d.point_text();
+    d.ok("ui.set", json!({"tool": "Pen"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    for (fx, fy) in [(0.2, 0.2), (0.4, 0.2)] {
+        d.ok("ui.click", json!({"x": pic[0] + pic[2] * fx, "y": pic[1] + pic[3] * fy}));
+        d.frames(2);
+    }
+    assert_eq!(d.harness.state().ui.pen_points.len(), 2, "two points while the graphic is unlocked");
+    let track = d.harness.state().session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().0;
+    d.exec("timeline.setTrack", json!({"track": track.0, "locked": true}));
+    d.frames(2);
+    assert!(d.harness.state().ui.pen_points.is_empty(), "the path in the locked graphic's canvas is dropped");
+}
+
 /// The Type tool does not add a layer to a selected graphic on a locked track: the text goes into
 /// a new graphic instead (#4162).
 #[test]
