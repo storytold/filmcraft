@@ -119,11 +119,9 @@ pub struct Display {
 impl Display {
     pub fn new(gpu: bool) -> Self {
         let gpu = if gpu {
-            // wgpu's environment variables apply (`WGPU_BACKEND`, `WGPU_POWER_PREF`, ...), as for the app's window
+            // wgpu's instance environment variables apply (`WGPU_BACKEND`, ...), as for the app's window
             let instance = eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle().with_env());
-            let power_preference = eframe::wgpu::PowerPreference::from_env().unwrap_or_default();
-            let options = eframe::wgpu::RequestAdapterOptions { power_preference, ..Default::default() };
-            let adapter = pollster::block_on(instance.request_adapter(&options)).ok();
+            let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default())).ok();
             adapter.and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok()).map(|(d, q)| {
                 let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
                 (c, d)
