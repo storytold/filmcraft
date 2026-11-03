@@ -16,6 +16,9 @@ use filmcraft_bitstream::{annexb_nals, length_prefixed_nals, unescape_rbsp};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+/// Completed pictures a failed `decode` call leaves queued for the next call (older ones are dropped).
+const MAX_QUEUED_AFTER_ERROR: usize = 32;
+
 /// A picture whose slices are being collected.
 struct PendingPic {
     frame: FrameRef,
@@ -203,6 +206,11 @@ impl Decoder {
         self.submit_pending();
         if let Some(e) = self.take_error() {
             result = result.and(Err(e));
+        }
+        if result.is_err() {
+            // A caller that keeps feeding data after errors never drains the queue: keep the newest few.
+            let excess = self.out_queue.len().saturating_sub(MAX_QUEUED_AFTER_ERROR);
+            self.out_queue.drain(..excess);
         }
         result?;
         let max_queue = self.max_in_flight * 2;
@@ -621,6 +629,31 @@ fn make_picture(o: &Output<FrameRef>) -> Picture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// A failed decode call does not let completed pictures pile up in the output queue.
+    fn failed_decode_bounds_the_output_queue() {
+        let mut decoder = Decoder::new();
+        let meta = Arc::new(OutputMeta {
+            pts: 0,
+            key: false,
+            crop: (0, 0, 16, 16),
+            full_range: false,
+            colour_primaries: 2,
+            transfer_characteristics: 2,
+            matrix_coefficients: 2,
+            sar: (1, 1),
+            bit_depth: 8,
+            draft: false,
+        });
+        for id in 0..(MAX_QUEUED_AFTER_ERROR as u32 * 4) {
+            let frame = Arc::new(Frame::new(id, id as i32, 16, 16, 4, 8, 8));
+            decoder.out_queue.push_back(Output { frame, poc: id as i32, meta: meta.clone() });
+        }
+        // a VPS NAL (type 32) with a truncated payload fails to parse
+        assert!(decoder.decode(&[0, 0, 1, 0x40, 0x01, 0xFF], 0).is_err());
+        assert_eq!(decoder.out_queue.len(), MAX_QUEUED_AFTER_ERROR);
+    }
 
     fn missing_refs(decoder: &mut Decoder, poc: u32, deltas: &[i32]) -> Vec<FrameRef> {
         let stream = crate::synth_tests::missing_reference_picture(poc, deltas);
