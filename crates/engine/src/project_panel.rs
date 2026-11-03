@@ -1341,6 +1341,8 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
                 state.project_selection.clear();
                 Ok(removed)
             })?;
+            // A cut sequence or source item may still be the active, open or source one.
+            s.fix_state();
             Ok(json!({"items": removed}))
         }),
         c(
@@ -1367,6 +1369,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
                         if let Some(pasted) = project.item_mut(id) {
                             pasted.metadata = item.metadata.clone();
                             pasted.split = item.split;
+                            pasted.custom_label_color = item.custom_label_color;
                         }
                         if let Some(source_graphic) = &entry.source_graphic {
                             project.source_graphics.insert(id, source_graphic.clone());

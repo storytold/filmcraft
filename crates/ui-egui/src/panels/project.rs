@@ -279,12 +279,14 @@ pub fn visible_items(app: &FilmcraftApp, inst: Inst) -> Vec<ItemId> {
 /// search filters the panel, exactly the rows it shows (`project.select {items}`).
 pub fn select_all_command(app: &FilmcraftApp) -> (String, Value, Vec<u64>) {
     let inst = shown_inst(app);
-    let bins = crate::panels::project_views::bins_in_view(app, &view_of(app, inst), &app.ui.project_search.to_ascii_lowercase());
     if !app.ui.project_search.is_empty() {
+        // Only the matching items: bins that merely hold hidden items must not be selected, or
+        // Clear would delete them with everything the search hid.
         let items: Vec<u64> = visible_items(app, inst).into_iter().map(|i| i.0).collect();
-        return ("project.select".into(), json!({"items": items}), bins);
+        return ("project.select".into(), json!({"items": items}), Vec::new());
     }
     let v = view_of(app, inst);
+    let bins = crate::panels::project_views::bins_in_view(app, &v, "");
     let expanded: &[u64] = if v.mode == ViewMode::List { &app.ui.expanded_bins } else { &[] };
     ("project.selectAll".into(), json!({"bin": v.bin.0, "expanded": expanded}), bins)
 }

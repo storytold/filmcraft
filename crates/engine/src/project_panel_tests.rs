@@ -502,3 +502,27 @@ fn select_all_rejects_bad_bins_without_touching_the_selection() {
     let r = s.execute("project.selectAll", json!({"bin": null})).unwrap();
     assert_eq!(r["selected"].as_u64(), Some(s.project.items.len() as u64));
 }
+
+#[test]
+fn project_paste_keeps_a_custom_label_color() {
+    let mut s = demo();
+    let source = media(&s)[0];
+    let color: filmcraft_project::HexColor = serde_json::from_value(json!("#112233")).unwrap();
+    std::sync::Arc::make_mut(&mut s.project).item_mut(source).unwrap().custom_label_color = Some(color);
+    s.state.project_selection = vec![source];
+    s.execute("project.copy", json!({})).unwrap();
+    let pasted = ItemId(s.execute("project.paste", json!({})).unwrap()["items"][0].as_u64().unwrap());
+    assert_eq!(s.project.item(pasted).unwrap().custom_label_color, Some(color));
+}
+
+#[test]
+fn project_cut_of_the_active_sequence_repairs_the_editor_state() {
+    let mut s = demo();
+    let active = s.state.active_sequence.expect("the demo project has an active sequence");
+    s.state.project_selection = vec![active];
+    s.execute("project.cut", json!({})).unwrap();
+    // an unreferenced sequence is removed; no stale reference to it may remain
+    assert!(s.project.item(active).is_none());
+    assert_ne!(s.state.active_sequence, Some(active));
+    assert!(!s.state.open_sequences.contains(&active));
+}

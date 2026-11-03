@@ -795,6 +795,23 @@ fn select_all_takes_only_the_shown_bin() {
     assert_eq!(sorted(&d.app().session.state.project_selection), footage);
 }
 
+/// While a search filters the panel, Select All takes only the matching items. Selecting bins too
+/// would let Clear delete them together with everything the search hid.
+#[test]
+fn select_all_during_a_search_selects_no_bins() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, items) = d.footage();
+    assert!(!items.is_empty());
+    d.app().ui.expanded_bins = vec![bin];
+    d.app().ui.project_search = "zzz-no-such-item".into();
+    d.frames(2);
+    d.key("Cmd+A");
+    assert!(d.app().ui.project_panel.selected_bins.is_empty(), "{:?}", d.app().ui.project_panel.selected_bins);
+    assert!(d.app().ui.project_panel.selected_bin.is_none());
+    assert!(d.app().session.state.project_selection.is_empty());
+}
+
 /// With a sequence open, the native macOS menu has Select All enabled and takes Cmd+A (and
 /// Cmd+Shift+A) before the window sees the key: with the Project panel focused they still act on
 /// its items, not on the Timeline's clips (#1752).
