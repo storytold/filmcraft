@@ -328,7 +328,9 @@ mod importable_tests {
         };
         let src = OfflineSource { info };
         // a 100-day transcription request at the stored channel count
-        assert!(src.audio(0, 48_000 * 86_400 * 100, 48_000).is_err());
+        // computed as u64: the product overflows a 32-bit usize (x86 Windows), where it must still be rejected
+        let frames = usize::try_from(48_000u64 * 86_400 * 100).unwrap_or(usize::MAX);
+        assert!(src.audio(0, frames, 48_000).is_err());
     }
 
     #[test]
