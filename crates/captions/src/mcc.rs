@@ -379,6 +379,13 @@ impl Dec708 {
     }
     fn sync(&mut self, f: i64) {
         let now = self.visible_text();
+        // Check the open cue before the unchanged-text return, so an unchanged oversized cue still stops later packets.
+        if let Some((s, t)) = &self.open
+            && f > *s
+            && t.len() > self.budget
+        {
+            self.truncated = true;
+        }
         if self.open.as_ref().map(|o| o.1.as_str()) == Some(now.as_str()) || (self.open.is_none() && now.is_empty()) {
             return;
         }
