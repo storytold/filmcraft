@@ -63,6 +63,12 @@ pub const PARAM_BLOCK: i64 = 64;
 /// Longest pre-roll for a fresh graph (seconds).
 const MAX_PREROLL_S: f64 = 3.0;
 
+/// Most latency (seconds) the inserts of one graph may add up to, and most samples its route
+/// compensation delays may hold together. Real graphs are milliseconds; a project can chain
+/// thousands of latency-bearing inserts, each with its own delay ring and warm-up window.
+const MAX_GRAPH_LATENCY_S: usize = 10;
+const MAX_COMPENSATION_SAMPLES: usize = 1 << 25;
+
 // ------------------------------------------------------------------------------------- live state
 
 /// A control held (or just released) on the mixer while playing.
@@ -543,7 +549,8 @@ struct GraphState {
     latency: usize,
 }
 
-fn build_state(plan: &Plan, sr: u32) -> GraphState {
+/// The graph's state, or None when its latency or compensation delays are past the limits above.
+fn build_state(plan: &Plan, sr: u32) -> Option<GraphState> {
     let mk = |v: &[Insert], w: usize| -> Vec<Box<dyn AudioEffect>> {
         v.iter().filter_map(|i| filmcraft_audio_dsp::create_effect(i.map.dsp, sr as f32, w)).collect()
     };
@@ -560,17 +567,26 @@ fn build_state(plan: &Plan, sr: u32) -> GraphState {
         .collect();
     let tap_lat = |s: &StripState, tap: Tap| s.in_lat + if tap == Tap::Pre { s.lat_pre } else { s.lat_pre + s.lat_post };
     // strips are in topological order (routes only go forward)
+    let max_latency = (sr as usize).saturating_mul(MAX_GRAPH_LATENCY_S);
     for i in 0..strips.len() {
         let in_lat = plan.routes.iter().filter(|r| r.target == i).map(|r| tap_lat(&strips[r.src], r.tap)).max().unwrap_or(0);
         strips[i].in_lat = in_lat;
+        if in_lat.saturating_add(strips[i].lat_pre).saturating_add(strips[i].lat_post) > max_latency {
+            return None;
+        }
     }
+    let mut compensation = 0usize;
     for r in &plan.routes {
         let d = strips[r.target].in_lat - tap_lat(&strips[r.src], r.tap);
+        compensation = compensation.saturating_add(d.saturating_mul(plan.strips[r.target].width));
+        if compensation > MAX_COMPENSATION_SAMPLES {
+            return None;
+        }
         strips[r.src].delays.push(DelayLine::new(d, plan.strips[r.target].width));
     }
     let m = strips.len() - 1;
     let latency = strips[m].in_lat + strips[m].lat_pre + strips[m].lat_post;
-    GraphState { next_out: 0, strips, latency }
+    Some(GraphState { next_out: 0, strips, latency })
 }
 
 fn cache() -> &'static Mutex<HashMap<u64, Vec<GraphState>>> {
@@ -582,7 +598,7 @@ fn cache() -> &'static Mutex<HashMap<u64, Vec<GraphState>>> {
 /// is read so its output lines up.
 pub fn graph_latency(seq: &Sequence) -> usize {
     let plan = Plan::build(seq, &HashMap::new());
-    build_state(&plan, seq.settings.sample_rate).latency
+    build_state(&plan, seq.settings.sample_rate).map_or(0, |st| st.latency)
 }
 
 // ------------------------------------------------------------------------------------- processing
@@ -873,7 +889,7 @@ pub(crate) fn mix_graph_at(
     let (mut st, skip) = match taken {
         Some(st) => (st, 0usize),
         None => {
-            let st = build_state(&plan, sr);
+            let Some(st) = build_state(&plan, sr) else { return AudioBuffer::silence(sr, 2, frames) };
             let pre = plan.preroll(Tick::from_units(start, sr as i64), sr).max(st.latency);
             (st, pre)
         }
