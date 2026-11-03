@@ -897,6 +897,8 @@ fn menu_commands() -> Vec<CommandSpec> {
             has_seq,
             |s, p| {
                 let path = str_p(p, "path").ok_or_else(|| bad("graphics.newFromFile", "need `path`"))?.to_string();
+                // the placement time is checked before the import: a failed command keeps what it did
+                time_p(s, p, "")?;
                 let r = s.execute("file.import", json!({"paths": [path]}))?;
                 let item = r["items"].as_array().and_then(|a| a.first()).and_then(Value::as_u64).map(ItemId).ok_or_else(|| {
                     bad(

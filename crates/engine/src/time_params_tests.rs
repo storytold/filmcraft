@@ -62,3 +62,32 @@ fn every_time_key_in_the_wrong_form_is_refused() {
     let e = refused(&mut s, "export.resolve", json!({"range": "custom", "startSeconds": "x", "endSeconds": 1}));
     assert!(e.contains("`startSeconds` must be a number") && e.contains("`startTimecode`"), "{e}");
 }
+
+/// The engine doesn't undo what a failed command did before it failed, so a command that edits
+/// before it places reads its time first: a wrong form leaves no caption track, Lumetri effect or
+/// imported file behind.
+#[test]
+fn a_wrong_time_is_refused_before_the_command_edits_anything() {
+    let png = crate::media_test_util::tmp_dir("time-params").join("layer.png");
+    image::RgbaImage::from_pixel(64, 36, image::Rgba([40, 120, 200, 255])).save(&png).unwrap();
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert!(q.caption_tracks.is_empty(), "captions.add makes a track first");
+    let clip = q.video_tracks[0].items.iter().find(|i| !i.effects.iter().any(|e| e.effect == "lumetri")).unwrap().id.0;
+    // (command, parameters with a time in the wrong form, what it made before it read the time)
+    let rows = [
+        ("captions.add", json!({"text": "x", "time": {"seconds": 1}}), "a caption track"),
+        ("lumetri.applyMatch", json!({"clip": clip, "referenceTime": {"seconds": 1}}), "a Lumetri effect"),
+        ("graphics.newFromFile", json!({"path": png.to_string_lossy(), "time": {"seconds": 1}}), "an imported item"),
+    ];
+    let left: Vec<String> = rows
+        .into_iter()
+        .filter_map(|(cmd, p, made)| {
+            let before = s.project.to_json();
+            refused(&mut s, cmd, p);
+            (s.project.to_json() != before).then(|| format!("{cmd} left {made} behind"))
+        })
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
