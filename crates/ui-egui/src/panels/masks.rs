@@ -242,8 +242,9 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     }
     let Some(seq) = app.session.active_sequence() else { return };
     let ph = app.session.playhead();
-    let Some((_, it)) = seq.find_item(sel.clip) else { return };
-    if ph < it.start || ph >= it.end() {
+    let Some((track, it)) = seq.find_item(sel.clip) else { return };
+    // a clip on a locked track keeps its masks as they are (#4162)
+    if seq.track(track).is_some_and(|t| t.locked) || ph < it.start || ph >= it.end() {
         return;
     }
     let it = it.clone();
@@ -786,10 +787,14 @@ fn pen_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, frame: (u32
     let Some(draft) = app.ui.mask_pen.clone() else { return };
     let ph = app.session.playhead();
     let clip = ClipId(draft.clip);
-    let Some(it) = app.session.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, i)| i.clone()) else {
+    let Some((locked, it)) = app.session.active_sequence().and_then(|q| q.find_item(clip).map(|(t, i)| (q.track(t).is_some_and(|t| t.locked), i.clone())))
+    else {
         app.ui.mask_pen = None;
         return;
     };
+    if locked {
+        return;
+    }
     let mt = it.effect_time_at(ph.clamp(it.start, it.end() - Tick(1)));
     let Some(to_screen) = clip_to_screen(app, &it, mt, pic, frame) else { return };
     let Some(to_clip) = to_screen.inverse() else { return };

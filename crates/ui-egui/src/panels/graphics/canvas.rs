@@ -26,7 +26,8 @@ pub fn visible_layers(app: &FilmcraftApp, pic: Rect, frame: (u32, u32)) -> Vec<L
     let screen = frame_to_screen(pic, frame);
     let mut out = Vec::new();
     for tr in seq.video_tracks.iter().rev() {
-        if !tr.enabled {
+        // a locked track's layers show but cannot be clicked or moved (#4162)
+        if !tr.enabled || tr.locked {
             continue;
         }
         let Some(it) = tr.item_at(t) else { continue };

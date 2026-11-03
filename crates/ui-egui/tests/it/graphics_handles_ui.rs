@@ -263,6 +263,22 @@ fn point_text_handles_scale_it_about_its_anchor() {
     assert_eq!(num(&d.layer(clip)["scale"]), s);
 }
 
+/// A layer on a locked track shows on the Program monitor but has no box to take hold of (#4162).
+#[test]
+fn a_locked_tracks_layer_stays_put_on_the_monitor() {
+    let mut d = Driver::new();
+    let (clip, pre) = d.point_text();
+    let body = d.rect(pre.trim_end_matches('.'));
+    let track = d.harness.state().session.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap().0;
+    d.exec("timeline.setTrack", json!({"track": track.0, "locked": true}));
+    d.frames(4);
+    let left = d.ok("ui.elements", json!({"prefix": pre.trim_end_matches('.')}));
+    assert_eq!(left, json!([]), "no box or handles on a locked track");
+    let position = d.layer(clip)["position"].clone();
+    d.drag((body[0] + body[2] / 2.0, body[1] + body[3] / 2.0), (60.0, 40.0));
+    assert_eq!(d.layer(clip)["position"], position, "a drag leaves the layer where it is");
+}
+
 #[test]
 fn the_anchor_point_can_be_dragged_without_moving_the_layer() {
     let mut d = Driver::new();
