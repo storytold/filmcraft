@@ -1116,9 +1116,17 @@ fn place_source_in_p(s: &Session, p: &Value, item: ItemId, rate: FrameRate, drop
         return Ok((tick_or_time_p(p, "sourceIn", rate, drop_frame, "timeline.place")?, None));
     };
     let tc = tc.as_str().ok_or_else(|| bad("timeline.place", "`sourceIn.sourceTimecode` must be a timecode like \"01:00:02:00\""))?;
-    let df = tc.contains(';');
-    let frame = parse_timecode(tc, rate, df, 0).map_err(|e| bad("timeline.place", format!("`sourceIn.sourceTimecode`: {e}")))?;
+    let (frame, df) = media_timecode(tc, rate).map_err(|e| bad("timeline.place", format!("`sourceIn.sourceTimecode`: {e}")))?;
     Ok((Some(rate.tick_of(frame.saturating_sub(media_start_frames(s, item)))), Some(df)))
+}
+
+/// A timecode on a clip's own media (its start, or a frame on it) as a frame count at `rate`, and
+/// whether it is drop-frame: `;` before the frames marks drop-frame, as SMPTE writes it, and the
+/// count is then the one a drop-frame file stores as its start (01:00:00;00 is frame 107892 at
+/// 29.97). Every command that takes a media timecode reads it this way, so they agree.
+pub(crate) fn media_timecode(tc: &str, rate: FrameRate) -> std::result::Result<(i64, bool), filmcraft_time::ParseError> {
+    let df = tc.contains(';');
+    Ok((parse_timecode(tc, rate, df, 0)?, df))
 }
 
 /// A `sourceIn` given to `timeline.place` must be a frame of the item: one before its first frame,

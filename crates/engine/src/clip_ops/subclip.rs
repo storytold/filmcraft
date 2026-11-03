@@ -2,7 +2,7 @@ use super::common::{item_rate, items_p, media_root};
 use super::enabled::{selected_audio_clips, subclip_source};
 use super::{
     AudioChannelMap, AudioChannels, ClipId, EngineError, ItemId, ItemKind, Label, Result, Session, Tick, TimeRange, Value, bad, bool_p, item_p, json,
-    parse_timecode, str_p,
+    media_timecode, str_p,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -220,7 +220,7 @@ pub(super) fn modify_timecode(s: &mut Session, p: &Value) -> Result<Value> {
     let rate = m.frame_rate();
     let reset = bool_p(p, "reset").unwrap_or(false);
     let frame = if let Some(tc) = str_p(p, "timecode") {
-        Some(parse_timecode(tc, rate, false, 0).map_err(|e| bad("clip.modifyTimecode", format!("timecode: {e:?}")))?)
+        Some(media_timecode(tc, rate).map_err(|e| bad("clip.modifyTimecode", format!("timecode: {e:?}")))?.0)
     } else {
         p.get("frame").and_then(Value::as_i64)
     };

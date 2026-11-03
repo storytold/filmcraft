@@ -547,3 +547,37 @@ fn placement_lanes_are_the_tracks_a_placement_fills() {
     assert_eq!(lanes, filled_tracks(&s));
     assert_eq!(lanes, (1, 1));
 }
+
+/// A media timecode is drop-frame when `;` comes before its frames, wherever it is typed: the start
+/// of a new offline file or of Modify ▸ Timecode, a `sourceTimecode`, and Frame Hold Options'
+/// source timecode all count 01:00:00;00 at 29.97 as frame 107892 (what a drop-frame file stores)
+/// and 01:00:00:00 as 108000, so a source timecode 2 s after the start is 60 frames in.
+#[test]
+fn media_timecodes_read_drop_frame_alike_wherever_typed() {
+    // (start timecode, the command that sets it, the timecode 2 s later, the start in frames)
+    for (start, set_by, later, frames) in [
+        ("01:00:00;00", "file.newOfflineFile", "01:00:02;00", 107_892),
+        ("01:00:00;00", "clip.modifyTimecode", "01:00:02;00", 107_892),
+        ("01:00:00:00", "file.newOfflineFile", "01:00:02:00", 108_000),
+        ("01:00:00:00", "clip.modifyTimecode", "01:00:02:00", 108_000),
+    ] {
+        let why = format!("{start} set by {set_by}");
+        let mut s = Session::default();
+        s.execute("file.newSequence", json!({"name":"Drop-frame test","fps":29.97})).unwrap();
+        let mut p = json!({"name":"B001","audio":false,"fps":29.97,"seconds":40});
+        if set_by == "file.newOfflineFile" {
+            p["timecode"] = json!(start);
+        }
+        let item = s.execute("file.newOfflineFile", p).unwrap()["item"].as_u64().unwrap();
+        if set_by == "clip.modifyTimecode" {
+            s.execute("clip.modifyTimecode", json!({"item":item,"timecode":start})).unwrap();
+        }
+        let it = s.project.item(ItemId(item)).unwrap();
+        assert_eq!(it.as_media().unwrap().info.start_timecode, Some(frames), "{why}: start");
+        let two_s = it.frame_rate().tick_of(60);
+        let r = s.execute("timeline.place", json!({"item":item,"track":"V1","time":0,"sourceIn":{"sourceTimecode":later}})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().video_tracks[0].items[0].source_in, two_s, "{why}: sourceTimecode");
+        s.execute("clip.frameHoldOptions", json!({"clips":[r["clips"][0]],"holdOn":"sourceTimecode","timecode":later})).unwrap();
+        assert_eq!(s.active_sequence().unwrap().video_tracks[0].items[0].frame_hold, Some(two_s), "{why}: Frame Hold Options");
+    }
+}
