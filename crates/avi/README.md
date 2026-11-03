@@ -32,7 +32,8 @@ for (i, s) in file.streams.iter().enumerate() {
 | Damage | sizes clamped to the file (a cut-off recording opens with what is there), `rec ` lists nested at most 3 deep, tables bounded by what the file could hold |
 
 `filmcraft-codecs` maps the streams onto decoders (`AviSource`): Motion JPEG, H.264, HEVC and
-uncompressed RGB / YUV video; PCM, MP3, MP2 and AC-3 audio.
+uncompressed RGB / YUV video; PCM, MP3, MP2 and AC-3 audio. Display order is worked out for H.264
+only: HEVC with B-frames plays in the order its chunks are stored.
 
 ## Tests
 
