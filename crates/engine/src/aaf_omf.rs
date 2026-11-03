@@ -74,10 +74,20 @@ fn plan_from(s: &Session, p: &Value, seq: ItemId, cmd: &str, omf: bool) -> Resul
     if !(8_000..=192_000).contains(&sample_rate) {
         return Err(bad(cmd, "sampleRate must be 8000–192000"));
     }
-    let bits = u64_p(p, "bitDepth").unwrap_or(16) as u16;
-    if bits != 16 && bits != 24 {
-        return Err(bad(cmd, "bitDepth must be 16 or 24"));
-    }
+    // A number, or the string the params list it as ("16|24"); anything else is refused rather
+    // than read as 16 (#4019).
+    let bits: u16 = match p.get("bitDepth").filter(|v| !v.is_null()) {
+        None => 16,
+        Some(v) => match v
+            .as_u64()
+            .or_else(|| v.as_f64().filter(|f| f.fract() == 0.0 && *f >= 0.0).map(|f| f as u64))
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+        {
+            Some(16) => 16,
+            Some(24) => 24,
+            _ => return Err(bad(cmd, format!("bitDepth must be 16 or 24, not {v}"))),
+        },
+    };
     let frames = u64_p(p, "handles").unwrap_or(if omf { 30 } else { 0 }) as i64;
     Ok(AudioPlan {
         mode,
