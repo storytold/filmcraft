@@ -221,6 +221,123 @@ fn plan_matches_reference_renderer() {
     }
 }
 
+/// Clips with Rounded Crop and Drop Shadow, as a real project uses them (a portrait photo with
+/// `[rounded_crop, brightness_contrast, transform 75 %, drop_shadow]`, keyframed crop edges,
+/// Motion scale / position and Opacity; a 1080p video with `[rounded_crop, drop_shadow]`), plan
+/// as GPU effect layers (`gpu_chain` takes them) instead of CPU-rendered images, and the plan
+/// reproduces the reference renderer.
+#[test]
+fn rounded_crop_and_drop_shadow_clips_plan_as_gpu_effect_layers() {
+    use crate::gpufx::FxOp;
+    let (mut p, _red, ocean, seq, mut map) = setup();
+    let g = GeneratorSource::new(Generator::Demo(DemoScene::Forest), 600, 800, FrameRate::FPS_24, Tick(10 * TICKS_PER_SECOND));
+    let info = g.info().clone();
+    let photo = p.add_item(
+        "photo",
+        Label::Iris,
+        ItemKind::Media(Box::new(MediaClip {
+            media: MediaRef::Generator(g.generator.clone()),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        })),
+        None,
+    );
+    map.0.insert(photo, Arc::new(g) as SharedSource);
+    let video_clip = place(&mut p, seq, 0, ocean, 0, 48);
+    let photo_clip = place(&mut p, seq, 1, photo, 0, 48);
+    let r = FrameRate::FPS_24;
+    let fx = |id: &str, params: &[(&str, ParamValue)]| {
+        let mut e = filmcraft_project::find_effect(id).expect("effect").instance();
+        for (k, v) in params {
+            e.param_mut(k).expect("param").value = v.clone();
+        }
+        e
+    };
+    let fl = ParamValue::Float;
+    let crop = |keyed: bool| {
+        let mut e = fx(
+            "rounded_crop",
+            &[
+                ("border", fl(39.0)),
+                ("border_color", ParamValue::Color([1.0, 1.0, 1.0, 1.0])),
+                ("radius", fl(30.0)),
+                ("feather", fl(0.0)),
+                ("left", fl(0.7)),
+                ("right", fl(0.7)),
+            ],
+        );
+        if keyed {
+            for (k, v0, v1) in [("left", 0.7, 10.0), ("right", 0.7, 6.0), ("top", 0.0, 8.0), ("bottom", 0.0, 4.0)] {
+                let prm = e.param_mut(k).expect("param");
+                prm.put_keyframe(Tick::ZERO, fl(v0));
+                prm.put_keyframe(r.tick_of(48), fl(v1));
+            }
+        }
+        e
+    };
+    let shadow = |opacity: f64, distance: f64, softness: f64| {
+        fx(
+            "drop_shadow",
+            &[
+                ("color", ParamValue::Color([0.157, 0.118, 0.078, 1.0])),
+                ("opacity", fl(opacity)),
+                ("direction", fl(180.0)),
+                ("distance", fl(distance)),
+                ("softness", fl(softness)),
+            ],
+        )
+    };
+    {
+        let s = p.sequence_mut(seq).unwrap();
+        let (_, it) = s.find_item_mut(video_clip).unwrap();
+        it.effects.extend([crop(false), shadow(55.0, 12.0, 46.0)]);
+        let (_, it) = s.find_item_mut(photo_clip).unwrap();
+        it.effects.extend([
+            crop(true),
+            fx("brightness_contrast", &[("brightness", fl(6.0)), ("contrast", fl(8.0))]),
+            fx("transform", &[("scale_height", fl(75.0))]),
+            shadow(12.0, 29.0, 98.0),
+        ]);
+        let m = it.effect_mut("motion").unwrap();
+        let sc = m.param_mut("scale").unwrap();
+        sc.put_keyframe(Tick::ZERO, fl(80.0));
+        sc.put_keyframe(r.tick_of(48), fl(115.0));
+        let pos = m.param_mut("position").unwrap();
+        pos.put_keyframe(Tick::ZERO, ParamValue::Vec2(filmcraft_geom::Vec2::new(120.0, 80.0)));
+        pos.put_keyframe(r.tick_of(48), ParamValue::Vec2(filmcraft_geom::Vec2::new(200.0, 100.0)));
+        let op = it.effect_mut("opacity").unwrap().param_mut("opacity").unwrap();
+        op.put_keyframe(Tick::ZERO, fl(100.0));
+        op.put_keyframe(r.tick_of(48), fl(60.0));
+    }
+    for f in [0, 7, 30, 47] {
+        for scale in [1.0, 0.5] {
+            let opts = RenderOptions { scale, ..Default::default() };
+            let plan = plan::plan_frame(&p, seq, r.tick_of(f), opts, &map);
+            let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("frame {f}: not planned as layers") };
+            assert_eq!(layers.len(), 2, "frame {f}");
+            let ops = |i: usize| &layers[i].fx.as_ref().unwrap_or_else(|| panic!("frame {f}, layer {i}: rendered on the CPU, not by the GPU effect stage")).ops;
+            assert!(matches!(ops(0).as_slice(), [FxOp::RoundedCrop { .. }, FxOp::DropShadow { .. }]), "video: {:?}", ops(0));
+            assert!(
+                matches!(ops(1).as_slice(), [FxOp::RoundedCrop { .. }, FxOp::BrightnessContrast { .. }, FxOp::Resample(_), FxOp::DropShadow { .. }]),
+                "photo: {:?}",
+                ops(1)
+            );
+            assert!(layers.iter().flat_map(|l| l.fx.iter().flat_map(|x| x.ops.iter())).all(FxOp::gpu_ok));
+            let reference = render_sequence(&p, seq, r.tick_of(f), opts, &map);
+            let got = plan::execute_cpu(&plan);
+            assert_eq!((got.w, got.h), (reference.w, reference.h));
+            let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+            assert!(max < 0.02, "frame {f}, scale {scale}: max diff {max}");
+        }
+    }
+}
+
 #[test]
 fn push_plan_preserves_reference_track_order_and_reverse() {
     let (mut p, red, ocean, seq, map) = setup();

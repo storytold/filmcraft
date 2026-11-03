@@ -432,14 +432,12 @@ fn round_rect_alpha(img: &mut Image, x0: f64, y0: f64, x1: f64, y1: f64, r: f32,
     });
 }
 
-/// Rounded Crop: crop edges with rounded corners, feather and an optional border.
-pub fn rounded_crop(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let (w, h) = (img.w as f32, img.h as f32);
-    let (l, t, r, b) = (fv(e, "left", cx) / 100.0 * w, fv(e, "top", cx) / 100.0 * h, w - fv(e, "right", cx) / 100.0 * w, h - fv(e, "bottom", cx) / 100.0 * h);
-    let rad = (fv(e, "radius", cx) * cx.px_scale).min(((r - l).min(b - t) / 2.0).max(0.0));
-    let fe = fv(e, "feather", cx) * cx.px_scale;
-    let border = fv(e, "border", cx) * cx.px_scale;
-    let bc = lin(cv(e, "border_color", cx));
+/// Rounded Crop: crop edges with rounded corners, feather and an optional border. The rectangle
+/// `l..r` × `t..b`, the corner radius `rad`, the feather `fe` and the border width are in working
+/// pixels and `bc` is the linear border colour, as `gpufx::FxOp::eval` evaluates them (the
+/// `FxOp::RoundedCrop` CPU reference, reproduced by `fx.wgsl` on the GPU).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rounded_crop(img: &mut Image, l: f32, t: f32, r: f32, b: f32, rad: f32, fe: f32, border: f32, bc: [f32; 3]) {
     let wi = img.w;
     img.px.par_chunks_mut(wi * 4).enumerate().for_each(|(y, row)| {
         for x in 0..wi {

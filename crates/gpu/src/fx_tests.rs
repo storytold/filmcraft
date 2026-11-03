@@ -212,6 +212,50 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("crop", vec![("left", fl(12.0)), ("top", fl(5.0)), ("right", fl(20.0)), ("zoom", ParamValue::Bool(true))], false),
         ("crop", vec![("left", fl(70.0)), ("right", fl(70.0)), ("feather", fl(5000.0))], false),
         ("edge_feather", vec![("amount", fl(30.0))], false),
+        ("rounded_crop", vec![], false),
+        (
+            "rounded_crop",
+            vec![("border", fl(39.0)), ("border_color", col(1.0, 1.0, 1.0)), ("radius", fl(30.0)), ("feather", fl(0.0)), ("left", fl(0.7)), ("right", fl(0.7))],
+            false,
+        ),
+        (
+            "rounded_crop",
+            vec![
+                ("left", fl(10.0)),
+                ("top", fl(8.0)),
+                ("right", fl(15.0)),
+                ("bottom", fl(5.0)),
+                ("radius", fl(12.5)),
+                ("feather", fl(6.0)),
+                ("border", fl(4.5)),
+                ("border_color", col(0.2, 0.6, 0.9)),
+            ],
+            false,
+        ),
+        (
+            "rounded_crop",
+            vec![("left", fl(-20.0)), ("right", fl(70.0)), ("top", fl(60.0)), ("bottom", fl(60.0)), ("radius", fl(2000.0)), ("border", fl(3.0))],
+            false,
+        ),
+        ("drop_shadow", vec![], false),
+        (
+            "drop_shadow",
+            vec![("color", col(0.157, 0.118, 0.078)), ("opacity", fl(55.0)), ("direction", fl(180.0)), ("distance", fl(12.0)), ("softness", fl(46.0))],
+            false,
+        ),
+        (
+            "drop_shadow",
+            vec![("color", col(0.157, 0.118, 0.078)), ("opacity", fl(12.0)), ("direction", fl(180.0)), ("distance", fl(29.0)), ("softness", fl(98.0))],
+            false,
+        ),
+        (
+            "drop_shadow",
+            vec![("opacity", fl(40.0)), ("direction", fl(135.0)), ("distance", fl(7.3)), ("softness", fl(5.0)), ("only", ParamValue::Bool(true))],
+            false,
+        ),
+        // a sub-pixel shift without blur, and one off the picture with the largest blur
+        ("drop_shadow", vec![("direction", fl(33.0)), ("distance", fl(3.7)), ("softness", fl(0.0))], false),
+        ("drop_shadow", vec![("distance", fl(4000.0)), ("softness", fl(1000.0)), ("opacity", fl(100.0))], false),
         ("transform", vec![("scale_height", fl(150.0)), ("rotation", fl(30.0)), ("position", pt(30.0, 20.0)), ("opacity", fl(60.0))], false),
         (
             "transform",
@@ -516,6 +560,144 @@ fn gpu_effect_chains_match_cpu() {
     }
 }
 
+/// Rounded Crop with a white border (keyframed edges) and a brown Drop Shadow, the effects of a
+/// real project's photos and videos.
+fn project_crop(keyed: bool) -> EffectInstance {
+    let mut e = effect(
+        "rounded_crop",
+        &[("border", fl(39.0)), ("border_color", col(1.0, 1.0, 1.0)), ("radius", fl(30.0)), ("feather", fl(0.0)), ("left", fl(0.7)), ("right", fl(0.7))],
+    );
+    if keyed {
+        for (k, v0, v1) in [("left", 0.7, 12.0), ("right", 0.7, 9.5), ("top", 0.0, 6.0), ("bottom", 0.0, 3.25)] {
+            let p = e.params.get_mut(k).expect("param");
+            p.put_keyframe(Tick::ZERO, fl(v0));
+            p.put_keyframe(Tick::from_seconds_f64(1.0), fl(v1));
+        }
+    }
+    e
+}
+
+fn project_shadow(keyed: bool) -> EffectInstance {
+    let mut e = effect(
+        "drop_shadow",
+        &[("color", col(0.157, 0.118, 0.078)), ("opacity", fl(55.0)), ("direction", fl(180.0)), ("distance", fl(12.0)), ("softness", fl(46.0))],
+    );
+    if keyed {
+        for (k, v0, v1) in [("opacity", 12.0, 55.0), ("distance", 29.0, 12.0), ("softness", 98.0, 46.0)] {
+            let p = e.params.get_mut(k).expect("param");
+            p.put_keyframe(Tick::ZERO, fl(v0));
+            p.put_keyframe(Tick::from_seconds_f64(1.0), fl(v1));
+        }
+    }
+    e
+}
+
+/// The project's chains (`[rounded_crop, brightness_contrast, transform 75 %, drop_shadow]`,
+/// `[rounded_crop, transform, drop_shadow]`, `[rounded_crop, drop_shadow]`) on non-square working
+/// images with alpha edges, at the working scales a 3024×4032 photo and a 1080p video get in a
+/// 1080p sequence, with keyframes between their keys.
+#[test]
+fn gpu_rounded_crop_and_drop_shadow_chains_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let bc = effect("brightness_contrast", &[("brightness", fl(8.0)), ("contrast", fl(6.0))]);
+    let tr = effect("transform", &[("scale_height", fl(75.0))]);
+    // (Position is in full-resolution clip pixels: off centre, at 55 % / 45 % of the picture)
+    let shifted =
+        |w: u32, h: u32, s: f32| effect("transform", &[("scale_height", fl(75.0)), ("position", pt(w as f64 * 0.55 / s as f64, h as f64 * 0.45 / s as f64))]);
+    // (working size, px_scale): a photo decoded at 1/12 and at 1/3, a video at 1/2 and in full
+    for (w, h, px_scale) in [(252u32, 336u32, 1.0f32 / 12.0), (1008, 1344, 1.0 / 3.0), (960, 540, 0.5), (1920, 1080, 1.0)] {
+        let px = picture(w, h);
+        let frame = VideoFrame::rgba_f32(w, h, px.clone());
+        let chains: [Vec<EffectInstance>; 4] = [
+            vec![project_crop(true), bc.clone(), tr.clone(), project_shadow(true)],
+            vec![project_crop(false), shifted(w, h, px_scale), project_shadow(false)],
+            vec![project_crop(true), project_shadow(false)],
+            vec![project_crop(false), project_shadow(true)],
+        ];
+        for t in [0.0, 0.37, 1.0] {
+            let cx = cx(Tick::from_seconds_f64(t), px_scale);
+            for chain in &chains {
+                let ops: Vec<FxOp> = chain.iter().map(|e| FxOp::eval(e, &cx, w as usize, h as usize).expect("GPU op")).collect();
+                assert!(ops.iter().all(FxOp::gpu_ok), "{ops:?}");
+                let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+                for op in &ops {
+                    op.apply(&mut cpu);
+                }
+                // (the reference is what `effects::apply` renders, op by op)
+                let mut by_effect = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+                for e in chain {
+                    filmcraft_render::effects::apply(&mut by_effect, e, &cx);
+                }
+                assert_eq!(cpu.px, by_effect.px, "the ops are the CPU render");
+                let names: Vec<&str> = chain.iter().map(|e| e.effect.as_str()).collect();
+                let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops }).expect("effect image");
+                let (worst, flips) = compare(&cpu.px, &gpu);
+                eprintln!("{w}x{h} s{px_scale:.3} t{t} {names:?}: max rel diff {worst:.2e}, {:.4}% flipped", flips * 100.0);
+                assert!(worst < EXACT * 2.0 && flips == 0.0, "{w}x{h} t{t} {names:?}: {worst}, {flips}");
+            }
+        }
+    }
+}
+
+/// Layers with those chains in a composited plan (a YUV video decoded at half size, a photo
+/// placed at 75 % and rotated, partial opacity) match the CPU plan executor.
+#[test]
+fn gpu_rounded_crop_and_drop_shadow_layers_match_cpu_plan() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (480usize, 270usize);
+    let ops = |list: &[EffectInstance], lw: u32, lh: u32, px_scale: f32, t: f64| -> Vec<FxOp> {
+        list.iter().filter_map(|e| FxOp::eval(e, &cx(Tick::from_seconds_f64(t), px_scale), lw as usize, lh as usize)).collect()
+    };
+    let video = [project_crop(false), project_shadow(false)];
+    let photo = [
+        project_crop(true),
+        effect("brightness_contrast", &[("brightness", fl(8.0)), ("contrast", fl(6.0))]),
+        effect("transform", &[("scale_height", fl(75.0))]),
+        project_shadow(true),
+    ];
+    let photo_frame = Arc::new(VideoFrame::rgba_f32(150, 200, picture(150, 200)));
+    for t in [0.0, 0.5] {
+        let plan = FramePlan::Layers {
+            width: w,
+            height: h,
+            layers: vec![
+                PlanLayer {
+                    frame: yuv_frame(960, 540),
+                    matrix: Affine::IDENTITY,
+                    opacity: 1.0,
+                    blend: Blend::Normal,
+                    fx: Some(Arc::new(LayerFx { size: (480, 270), decimation: 2, ops: ops(&video, 480, 270, 0.5, t) })),
+                    input: None,
+                },
+                PlanLayer {
+                    frame: photo_frame.clone(),
+                    matrix: Affine::motion(Vec2::new(300.0, 140.0), Vec2::new(0.9, 0.9), 6.0, Vec2::new(75.0, 100.0)),
+                    opacity: 0.85,
+                    blend: Blend::Normal,
+                    fx: Some(Arc::new(LayerFx { size: (150, 200), decimation: 1, ops: ops(&photo, 150, 200, 1.0 / 20.0, t) })),
+                    input: None,
+                },
+            ],
+        };
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let keep = interior(&plan);
+        let (p99, mean, max) = stats8(&cpu, &gpu, &keep);
+        let (ap99, amean, _) = stats8(&cpu, &gpu, &vec![true; keep.len()]);
+        eprintln!("t {t}: interior 8-bit p99 {p99} mean {mean:.3} max {max}; with edges p99 {ap99} mean {amean:.3}");
+        assert!(p99 <= 6 && mean < 1.5, "t {t}: p99 {p99}, mean {mean}");
+    }
+}
+
 /// Keyframed parameters are evaluated at the layer's time on the CPU: the GPU result follows them.
 #[test]
 fn keyframed_effects_follow_time() {
@@ -582,6 +764,14 @@ fn hostile_parameters_are_bounded() {
         effect("lumetri", &[("temperature", fl(f64::INFINITY))]),
         effect("lumetri", &[("contrast", fl(f64::NAN))]),
         effect("lumetri", &[("vignette_amount", fl(f64::NAN))]),
+        effect("rounded_crop", &[("left", fl(f64::NAN))]),
+        effect("rounded_crop", &[("border", fl(f64::INFINITY))]),
+        effect("rounded_crop", &[("feather", fl(f64::NAN))]),
+        effect("rounded_crop", &[("right", fl(1e12))]),
+        effect("drop_shadow", &[("distance", fl(f64::NAN))]),
+        effect("drop_shadow", &[("distance", fl(1e30))]),
+        effect("drop_shadow", &[("opacity", fl(f64::INFINITY))]),
+        effect("drop_shadow", &[("color", ParamValue::Color([f32::NAN, 0.0, 0.0, 1.0]))]),
     ];
     for e in &nan {
         let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w, h);

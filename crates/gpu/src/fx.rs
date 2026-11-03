@@ -3,7 +3,8 @@
 //! A layer with effects is first drawn from its source (YUV planes or RGBA, through the
 //! compositor's own `fs` shader, so decoding is the same as for a plain layer) into a working
 //! texture of the size the CPU decodes it at; each [`FxOp`] then runs as compute passes that
-//! ping-pong between two working textures (three for Unsharp Mask, which keeps the original);
+//! ping-pong between two working textures (three for Unsharp Mask and Drop Shadow, which keep the
+//! original for their last pass);
 //! the last one is drawn into the accumulator with the layer's matrix, opacity and blend mode
 //! like any RGBA layer. Working textures are `Rgba32Float` (the CPU reference's precision) and
 //! pooled per size; layers without effects never touch any of this.
@@ -57,6 +58,9 @@ const OP_BOKEH_BOOST: u32 = 33;
 const OP_BOKEH: u32 = 34;
 const OP_BOKEH_UP: u32 = 35;
 const OP_THREE_WAY: u32 = 36;
+const OP_ROUNDED_CROP: u32 = 37;
+const OP_SHADOW: u32 = 38;
+const OP_SHADOW_OVER: u32 = 39;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -94,10 +98,11 @@ struct Step {
     code: u32,
     i1: [u32; 4],
     p: [f32; 24],
-    /// Unsharp combine: reads the blurred image and the original.
+    /// Unsharp / Drop Shadow combine: reads the processed image and the original (`aux`).
     combine: bool,
-    /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
-    unsharp_blur: bool,
+    /// A pass before a combine (Unsharp Mask's blur, Drop Shadow's shadow and its blur): the
+    /// original stays untouched until the combine.
+    keeps_original: bool,
     /// Bokeh Blur's gather: its kernel (`filmcraft_render::vfx::bokeh_kernel`), read as the aux
     /// texture.
     kernel: Vec<(i32, i32, f32)>,
@@ -108,7 +113,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, kernel: Vec::new() }
+    Step { run: false, code, i1, p: q, combine: false, keeps_original: false, kernel: Vec::new() }
 }
 
 /// Texels a row of a kernel texture holds.
@@ -219,13 +224,37 @@ fn steps(op: &FxOp, w: u32, h: u32) -> Vec<Step> {
             boxes(rx, false, true, &mut out);
             boxes(ry, true, true, &mut out);
             for s in &mut out {
-                s.unsharp_blur = true;
+                s.keeps_original = true;
             }
             let mut s = step(OP_UNSHARP, [0; 4], &[*amount, *threshold]);
             s.combine = true;
             out.push(s);
         }
         FxOp::Crop { x0, x1, y0, y1, feather } => out.push(step(OP_CROP, [0; 4], &[*x0, *x1, *y0, *y1, *feather])),
+        FxOp::RoundedCrop { x0, y0, x1, y1, r, feather, border, border_color: c } => {
+            out.push(step(OP_ROUNDED_CROP, [0; 4], &[*x0, *y0, *x1, *y1, *r, *feather, *border, 0.0, c[0], c[1], c[2]]));
+        }
+        FxOp::DropShadow { shift, color: c, opacity, rx, ry, only } => {
+            // the shadow (moved, painted), its blur (transparent edges), then the picture over it
+            match &shift.inv {
+                Some(m) => out.push(step(
+                    OP_SHADOW,
+                    shift.rect,
+                    &[m.a as f32, m.b as f32, m.c as f32, m.d as f32, m.e as f32, m.f as f32, *opacity, 1.0, c[0], c[1], c[2]],
+                )),
+                None => out.push(step(OP_SHADOW, [0; 4], &[0.0; 8])),
+            }
+            boxes(rx, false, false, &mut out);
+            boxes(ry, true, false, &mut out);
+            if !*only {
+                for s in &mut out {
+                    s.keeps_original = true;
+                }
+                let mut s = step(OP_SHADOW_OVER, [0; 4], &[]);
+                s.combine = true;
+                out.push(s);
+            }
+        }
         FxOp::Resample(r) => {
             let op = if (r.opacity - 1.0).abs() < 1e-6 { 1.0 } else { r.opacity };
             match &r.inv {
@@ -469,14 +498,14 @@ impl FxStage {
         let views: Vec<wgpu::TextureView> = targets.iter().map(|t| t.1.clone()).collect();
         let mut dispatches = Vec::with_capacity(all.len());
         let mut cur = 0usize;
-        // Unsharp: the image its blur started from (kept while its blur passes run)
+        // Unsharp / Drop Shadow: the image its passes started from (kept until the combine)
         let mut orig: Option<usize> = None;
         for s in &all {
             // (an Unsharp without blur passes, radius 0, combines the original with itself)
-            if (s.unsharp_blur || s.combine) && orig.is_none() {
+            if (s.keeps_original || s.combine) && orig.is_none() {
                 orig = Some(cur);
             }
-            let keep = if s.unsharp_blur || s.combine { orig } else { None };
+            let keep = if s.keeps_original || s.combine { orig } else { None };
             let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
             let kernel = (!s.kernel.is_empty()).then(|| kernel_texture(device, queue, &s.kernel));
             let aux = match (s.combine, orig, &kernel) {

@@ -6,7 +6,7 @@
 //! straight colour where artists expect it (contrast, levels, posterize), linear light elsewhere.
 
 use filmcraft_color::{GradeSpace, hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl, srgb_to_linear};
-use filmcraft_geom::{Affine, Vec2};
+use filmcraft_geom::Vec2;
 use filmcraft_project::{EffectInstance, ParamValue};
 use filmcraft_time::Tick;
 use rayon::prelude::*;
@@ -306,31 +306,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                 Some((su + w / 2.0, sv + h / 2.0))
             });
         }
-        "drop_shadow" => {
-            let c = color(e, "color", cx);
-            let op = f(e, "opacity", cx) / 100.0;
-            let dir = (f(e, "direction", cx) as f64).to_radians();
-            let dist = f(e, "distance", cx) as f64 * cx.px_scale as f64;
-            let soft = f(e, "softness", cx) * cx.px_scale * 0.5;
-            let only = b(e, "only");
-            let (dx, dy) = (dir.sin() * dist, -dir.cos() * dist);
-            let lc = dec([c[0], c[1], c[2]]);
-            let mut sh = img.transformed(img.w, img.h, &Affine::translate(dx, dy));
-            sh.px.par_chunks_mut(4).for_each(|p| {
-                let a = p[3] * op;
-                p[0] = lc[0] * a;
-                p[1] = lc[1] * a;
-                p[2] = lc[2] * a;
-                p[3] = a;
-            });
-            if soft > 0.3 {
-                gaussian(&mut sh, soft, soft, false);
-            }
-            if !only {
-                crate::blend::composite(&mut sh, img, 1.0, crate::blend::Blend::Normal);
-            }
-            *img = sh;
-        }
+        // ("drop_shadow" is an `FxOp`, run above: `gpufx::FxOp::DropShadow`)
         "bevel_alpha" => {
             let th = f(e, "thickness", cx) * cx.px_scale;
             let ang = (f(e, "angle", cx) as f64).to_radians();
