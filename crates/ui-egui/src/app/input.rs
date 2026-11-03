@@ -46,6 +46,10 @@ impl FilmcraftApp {
             return;
         }
         let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
+        // A successful file drop on Home should reveal the editor, just like Browse files.
+        if dropped_media_opens_editor(self.ui.mode, &imported) {
+            self.ui.mode = crate::state::Mode::Edit;
+        }
         if let Ok(v) = imported
             && let Some((pos, viewport)) = pointer
             && self.session.prefs.timeline.drop_import_to_timeline
@@ -146,5 +150,40 @@ mod screen_px_tests {
             let p = screen_px_to_ui((10, 20), ppp, egui::pos2(0.0, 0.0));
             assert!(p.x.is_finite() && p.y.is_finite());
         }
+    }
+}
+
+/// Only a successful import of at least one item should leave the Home/Import screen.
+fn dropped_media_opens_editor<E>(mode: crate::state::Mode, imported: &Result<serde_json::Value, E>) -> bool {
+    mode == crate::state::Mode::Import && imported.as_ref().is_ok_and(|v| v["items"].as_array().is_some_and(|items| !items.is_empty()))
+}
+
+#[cfg(test)]
+mod home_file_drop_tests {
+    use super::dropped_media_opens_editor;
+    use crate::state::Mode;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn successful_drop_on_home_opens_editor() {
+        let result: Result<Value, &str> = Ok(json!({"items": [42]}));
+        assert!(dropped_media_opens_editor(Mode::Import, &result));
+    }
+
+    #[test]
+    fn failed_or_empty_drop_stays_on_home() {
+        let failure: Result<Value, &str> = Err("unsupported media");
+        let empty: Result<Value, &str> = Ok(json!({"items": []}));
+        let partial_errors_only: Result<Value, &str> = Ok(json!({"errors": ["unsupported media"]}));
+        for result in [&failure, &empty, &partial_errors_only] {
+            assert!(!dropped_media_opens_editor(Mode::Import, result));
+        }
+    }
+
+    #[test]
+    fn drop_does_not_change_another_mode() {
+        let result: Result<Value, &str> = Ok(json!({"items": [42]}));
+        assert!(!dropped_media_opens_editor(Mode::Edit, &result));
+        assert!(!dropped_media_opens_editor(Mode::Export, &result));
     }
 }
