@@ -242,6 +242,8 @@ fn check_blocks(b: &[CaptionBlock], rules: &CaptionRules) {
         assert!(x.end > x.start, "{x:?}");
         assert_eq!(R.snap(x.start), x.start);
         assert_eq!(R.snap(x.end), x.end);
+        // no word in these tests lasts longer than the maximum, so no caption may either
+        assert!(x.end - x.start <= rules.max_duration, "longer than {:?}: {x:?}", rules.max_duration);
         let lines: Vec<&str> = x.text.lines().collect();
         assert!(lines.len() <= rules.lines, "{x:?}");
         assert!(lines.iter().all(|l| l.chars().count() <= rules.max_chars), "{x:?}");
@@ -296,6 +298,54 @@ fn captions_never_overlap_with_dense_words() {
     let rules = CaptionRules { gap_frames: 1, ..Default::default() };
     let b = caption_blocks(&words, &rules, R);
     check_blocks(&b, &rules);
+}
+
+/// Captions keep to `max_duration` on their frame-snapped times. "one" to "seven" spans 6.999 s as
+/// spoken (0.01 s to 7.009 s) but 7.04 s once its end is rounded up to a frame at 25 fps, so the
+/// caption breaks before "seven". A short caption stretched toward `min_duration` stops at the
+/// maximum too, also when the minimum is the longer of the two.
+#[test]
+fn captions_keep_to_the_maximum_once_snapped_to_frames() {
+    let spoken = [
+        ("one", 0.01, 0.9),
+        ("two", 1.0, 1.9),
+        ("three", 2.0, 2.9),
+        ("four", 3.0, 3.9),
+        ("five", 4.0, 4.9),
+        ("six", 5.0, 5.9),
+        ("seven", 6.0, 7.009),
+        ("eight", 7.1, 7.9),
+    ];
+    let words: Vec<SeqWord> = spoken
+        .iter()
+        .enumerate()
+        .map(|(i, &(text, a, b))| SeqWord {
+            text: text.into(),
+            start: s(a),
+            end: s(b),
+            clip: ClipId(1),
+            item: MEDIA,
+            index: i,
+            track: 0,
+            speaker: None,
+            confidence: 1.0,
+        })
+        .collect();
+    let spans = |rules: &CaptionRules| {
+        let b = caption_blocks(&words, rules, R);
+        check_blocks(&b, rules);
+        b.iter().map(|x| (x.start, x.end, x.text.clone())).collect::<Vec<_>>()
+    };
+    let one_to_six = "one two three four five six".to_string();
+    assert_eq!(spans(&CaptionRules::default()), [(s(0.0), s(5.92), one_to_six), (s(6.0), s(7.92), "seven eight".to_string())]);
+    // a 2.01 s minimum rounds up to 2.04 s; the last caption, with nothing after it, stops at 2 s
+    let even = CaptionRules { min_duration: s(2.01), max_duration: s(2.01), ..Default::default() };
+    assert_eq!(spans(&even).last().map(|x| (x.0, x.1)), Some((s(6.0), s(8.0))));
+    // a minimum longer than the maximum gives way to it
+    let crossed = CaptionRules { min_duration: s(3.0), max_duration: s(2.0), ..Default::default() };
+    let b = spans(&crossed);
+    assert_eq!(b.len(), 4, "{b:?}");
+    assert!(b.iter().all(|x| x.1 - x.0 == s(2.0)), "{b:?}");
 }
 
 /// Higher-track coverage merges into sorted disjoint ranges and answers like the ranges it was
