@@ -300,3 +300,25 @@ fn a_nests_audio_previews_follow_the_sound_of_its_sequence() {
     assert_eq!(audio_hashes(&p, outer), audio, "a video effect inside the nest");
     assert_eq!(audio_hashes(&p, top), deep);
 }
+
+/// Nine levels, each placing the next on twenty tracks: hashing the top walks 20^8 placements unless
+/// the walk is bounded. It must still finish, and give the same hash twice.
+#[test]
+fn hashing_a_fan_out_of_nests_is_bounded_and_stable() {
+    let (mut p, matte, _, _) = setup();
+    let r = FrameRate::FPS_24;
+    let mut below = matte;
+    for level in 0..9 {
+        let s = p.new_sequence(&format!("L{level}"), SequenceSettings { width: 64, height: 64, frame_rate: r, ..Default::default() }, 20, 1, None);
+        for track in 0..20 {
+            let ti = p.make_track_item(below, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(10)), r).unwrap();
+            p.sequence_mut(s).unwrap().video_tracks[track].items.push(ti);
+        }
+        below = s;
+    }
+    let t = std::time::Instant::now();
+    let a = video_segments(&p, below);
+    assert!(t.elapsed() < std::time::Duration::from_secs(20), "{:?}", t.elapsed());
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].hash, video_segments(&p, below)[0].hash);
+}

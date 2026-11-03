@@ -345,6 +345,12 @@ fn hash_source(h: &mut Fnv128, project: &Project, id: ItemId, kind: TrackKind, d
         ItemKind::AdjustmentLayer { .. } => h.json(&("adjustment", &pi.kind)),
         ItemKind::Graphic { .. } => h.json(&("graphic", &pi.kind)),
         ItemKind::Sequence(s) => {
+            // a project may nest one sequence on many tracks at every level: bound the walk
+            let visit = crate::nest_budget::Visit::enter();
+            if visit.exhausted() {
+                h.json(&"many nests");
+                return;
+            }
             h.json(&("sequence", &s.settings));
             if kind == TrackKind::Audio {
                 // the nest's sound is the nested sequence's whole mix (see `audio_segments`)
@@ -462,7 +468,8 @@ fn decode_cost_ms(project: &Project, id: ItemId, depth: u32) -> f64 {
         // vector layers are drawn on the CPU (cached while static)
         ItemKind::Graphic { .. } => 1.5,
         ItemKind::Sequence(s) => {
-            if depth > 8 {
+            let visit = crate::nest_budget::Visit::enter();
+            if depth > 8 || visit.exhausted() {
                 return 0.0;
             }
             // a nested sequence renders its worst segment on the CPU
