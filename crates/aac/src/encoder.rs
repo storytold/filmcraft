@@ -36,6 +36,9 @@ pub enum BitrateMode {
     Vbr(f32),
 }
 
+/// Samples per channel `encode` buffers at once (16 frames).
+const MAX_FEED_SAMPLES: usize = 16 * FRAME_LEN;
+
 /// Encoder settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncoderConfig {
@@ -266,16 +269,21 @@ impl Encoder {
             return Vec::new();
         }
         let n = planar.iter().take(self.cfg.channels).map(|p| p.len()).min().unwrap_or(0);
-        for c in 0..self.cfg.channels {
-            match planar.get(c) {
-                Some(p) => self.hist[c].extend(p[..n].iter().map(|v| if v.is_finite() { v.clamp(-8.0, 8.0) } else { 0.0 })),
-                None => self.hist[c].extend(std::iter::repeat_n(0.0, n)),
-            }
-        }
-        self.total_in += n as u64;
         let mut out = Vec::new();
-        while self.available() >= self.needed_for(self.frames_done) {
-            out.push(self.encode_frame(false));
+        // Fed a window at a time: every encoded frame drains the front of the history, so a whole
+        // large batch buffered at once would be moved again after each frame (quadratic copying).
+        for start in (0..n).step_by(MAX_FEED_SAMPLES) {
+            let end = (start + MAX_FEED_SAMPLES).min(n);
+            for c in 0..self.cfg.channels {
+                match planar.get(c) {
+                    Some(p) => self.hist[c].extend(p[start..end].iter().map(|v| if v.is_finite() { v.clamp(-8.0, 8.0) } else { 0.0 })),
+                    None => self.hist[c].extend(std::iter::repeat_n(0.0, end - start)),
+                }
+            }
+            self.total_in += (end - start) as u64;
+            while self.available() >= self.needed_for(self.frames_done) {
+                out.push(self.encode_frame(false));
+            }
         }
         out
     }
