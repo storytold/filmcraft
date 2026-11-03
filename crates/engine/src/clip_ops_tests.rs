@@ -492,6 +492,11 @@ fn frame_hold_options_add_frame_hold_and_hold_segment() {
     s.execute("clip.frameHoldOptions", json!({"holdOn": "sequenceTime", "time": (c.start + rate.tick_of(5)).0})).unwrap();
     assert_eq!(clip(&s, c.id.0).frame_hold, Some(rate.snap(c.source_in + rate.tick_of(5))));
     assert!(s.execute("clip.frameHoldOptions", json!({"holdOn": "nowhere"})).is_err());
+    // a repeated clip id is held once, and a huge timecode is refused before it is parsed per clip
+    let r = s.execute("clip.frameHoldOptions", json!({"holdOn": "in", "clips": [c.id.0, c.id.0, c.id.0]})).unwrap();
+    assert_eq!(r["clips"].as_array().map(Vec::len), Some(1));
+    let long = format!("00:00:03:{}", "0".repeat(100_000));
+    assert!(s.execute("clip.frameHoldOptions", json!({"holdOn": "sourceTimecode", "timecode": long})).is_err());
     s.execute("clip.frameHoldOptions", json!({"enabled": false})).unwrap();
     assert_eq!(clip(&s, c.id.0).frame_hold, None);
     // Hold Filters: effects animate through a hold unless it is on
