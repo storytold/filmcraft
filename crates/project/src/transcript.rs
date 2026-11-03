@@ -62,6 +62,9 @@ pub struct Speaker {
     pub name: String,
 }
 
+/// Distinct speakers one transcript can label; [`Transcript::normalize`] drops larger indices.
+pub const MAX_SPEAKERS: u32 = 1024;
+
 /// The transcript of one media item.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -114,6 +117,13 @@ impl Transcript {
                 self.words[i - 1].end = s.max(self.words[i - 1].start);
             }
         }
+        // The largest index sizes the label table, so a single hostile word must not make it
+        // allocate billions of labels: indices past the ceiling lose their speaker.
+        for w in &mut self.words {
+            if w.speaker.is_some_and(|s| s >= MAX_SPEAKERS) {
+                w.speaker = None;
+            }
+        }
         let max = self.words.iter().filter_map(|w| w.speaker).max();
         if let Some(m) = max {
             while self.speakers.len() <= m as usize {
@@ -160,6 +170,17 @@ mod tests {
         assert_eq!(t.words[2].end, Tick(35));
         assert_eq!(t.speakers.len(), 2);
         assert_eq!(t.speaker_name(&t.words[1]).as_deref(), Some("Speaker 2"));
+        t.check().unwrap();
+    }
+
+    #[test]
+    fn hostile_speaker_index_does_not_size_the_label_table() {
+        let mut t = Transcript { words: vec![w("a", 0, 10), w("b", 10, 20)], ..Default::default() };
+        t.words[0].speaker = Some(u32::MAX);
+        t.words[1].speaker = Some(MAX_SPEAKERS - 1);
+        t.normalize();
+        assert_eq!(t.words[0].speaker, None);
+        assert_eq!(t.speakers.len(), MAX_SPEAKERS as usize);
         t.check().unwrap();
     }
 
