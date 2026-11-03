@@ -742,6 +742,41 @@ fn jobs_and_queue_items_report_the_time_they_have_left() {
 }
 
 #[test]
+fn a_waiting_queue_start_sees_a_running_encode_through_then_the_rest() {
+    // an item started without waiting is still encoding when `export.queue.start` waits: the call
+    // returns once that encode is done and the rest of the queue is exported (#4143)
+    use crate::export_tools::QueueStatus;
+    let mut s = demo();
+    let dir = Scratch::new("queue-wait");
+    for name in ["running.wav", "next.wav"] {
+        s.execute(
+            "export.queue.add",
+            json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": dir.path(name), "range": "custom", "startSeconds": 0, "endSeconds": 0.25}),
+        )
+        .unwrap();
+    }
+    // the first item's encode runs in the background and ends a little later
+    let job = crate::Job { id: 77, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    let (result, progress) = (job.result.clone(), job.progress.clone());
+    s.jobs.push(job);
+    s.export_queue.items[0].status = QueueStatus::Encoding;
+    s.export_queue.items[0].job = Some(77);
+    s.export_queue.running = true;
+    let ender = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let report = filmcraft_export::Report { path: String::new(), frames: 1, seconds: 0.0, bytes: 0, render_fps: 0.0, extra_files: Vec::new() };
+        *result.lock().unwrap() = Some(Ok(report));
+        progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    s.execute("export.queue.start", json!({"wait": true})).unwrap();
+    let items = queue(&mut s);
+    assert_eq!(items[0]["status"], "done", "{}", items[0]);
+    assert_eq!(items[1]["status"], "done", "the rest of the queue ran: {}", items[1]);
+    assert!(std::fs::metadata(dir.path("next.wav")).map(|m| m.len() > 44).unwrap_or(false));
+    ender.join().unwrap();
+}
+
+#[test]
 fn hardware_encoding_is_off_unless_asked_for() {
     use filmcraft_export::HardwareEncoding::{Auto, Off};
     let s = demo();

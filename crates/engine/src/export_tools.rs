@@ -692,8 +692,13 @@ fn item_json(s: &Session, it: &QueueItem) -> Value {
     })
 }
 
+/// Whether queue item `it` has an encode job that has not finished yet.
+fn encode_running(s: &Session, it: &QueueItem) -> bool {
+    it.job.and_then(|id| s.jobs.iter().find(|j| j.id == id)).is_some_and(|j| j.result.lock().unwrap_or_else(|e| e.into_inner()).is_none())
+}
+
 /// Advance the queue: settle finished encodes, start the next ready item. `wait` encodes all of
-/// them now (blocking).
+/// them now (blocking), after the encode already running, if any.
 pub fn pump_queue(s: &mut Session, wait: bool) {
     loop {
         // settle
@@ -716,6 +721,12 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
                 }
             }
             finished_any = true;
+        }
+        // an encode started earlier without waiting is still running: waiting means seeing it
+        // through, then the rest of the queue (there is no encode thread or sleep on wasm32)
+        if wait && !cfg!(target_arch = "wasm32") && s.export_queue.items.iter().any(|it| it.status == QueueStatus::Encoding && encode_running(s, it)) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            continue;
         }
         if s.export_queue.items.iter().any(|i| i.status == QueueStatus::Encoding) || !s.export_queue.running {
             return;
