@@ -608,7 +608,9 @@ pub fn parse(text: &str) -> Result<Document> {
             styles.insert(id.to_string(), f);
         }
     }
-    let mut doc = Document::default();
+    let mut warnings = Vec::new();
+    let language = language(root, &mut warnings);
+    let mut doc = Document { warnings, language, ..Default::default() };
     let Some(body) = root.children().find(|n| n.is_element() && n.tag_name().name() == "body") else {
         return Ok(doc);
     };
@@ -620,6 +622,23 @@ pub fn parse(text: &str) -> Result<Document> {
     walk(body, Scope { begin: t.begin.unwrap_or(Tick::ZERO), end: t.end }, &tm, &styles, &speakers, Fmt::default(), &mut doc);
     doc.cues.sort_by_key(|c| (c.start, c.end));
     Ok(doc)
+}
+
+/// The longest language tag kept from a file: RFC 5646 §4.4.1 asks every implementation to
+/// take tags of at least 35 characters.
+const MAX_LANGUAGE: usize = 35;
+
+/// The document language: `xml:lang` on `tt`, when it is a language tag (empty means unknown).
+fn language(root: roxmltree::Node, warnings: &mut Vec<String>) -> Option<String> {
+    let lang = root.attribute((roxmltree::NS_XML_URI, "lang"))?.trim();
+    if lang.is_empty() {
+        return None;
+    }
+    if lang.len() > MAX_LANGUAGE || !lang.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        warnings.push("ignored xml:lang: not a language tag".into());
+        return None;
+    }
+    Some(lang.to_string())
 }
 
 /// The active interval of the enclosing time containers (`par`): child times are offsets from
