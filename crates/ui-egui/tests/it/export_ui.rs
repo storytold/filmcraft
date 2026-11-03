@@ -711,4 +711,20 @@ fn range_follows_each_mark_and_a_sequence_switch_drops_the_warning() {
     assert_ne!(d.app().session.state.active_sequence, before);
     assert!(d.app().ui.export.confirm_entire.is_none());
     assert!(d.queue().is_empty());
+    // a project replaced while the warning is up drops it too, even when the active sequence id
+    // is the same in the replacement
+    d.exec("markers.markIn", json!({"seconds": 0.0}));
+    d.exec("markers.markOut", json!({"seconds": 0.2}));
+    d.frames(2);
+    d.ok("ui.set", json!({"export": {"range": "entire"}}));
+    d.frames(2);
+    d.click("export.sendToQueue");
+    assert!(d.app().ui.export.confirm_entire.is_some());
+    let active = d.app().session.state.active_sequence;
+    let epoch = d.app().session.document_epoch;
+    d.app().session.document_epoch = epoch.wrapping_add(1);
+    d.frames(2);
+    assert_eq!(d.app().session.state.active_sequence, active);
+    assert!(d.app().ui.export.confirm_entire.is_none());
+    assert!(d.queue().is_empty());
 }

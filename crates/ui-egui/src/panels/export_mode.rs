@@ -69,6 +69,9 @@ pub struct ExportUi {
     pub range: String,
     /// The "export the entire sequence?" warning, open for an Export or Send to Queue click.
     pub confirm_entire: Option<PendingExport>,
+    /// The session's `document_epoch` the warning was opened under: a project replaced while it
+    /// is up (the replacement can keep the sequence id) drops it, see [`drop_stale_warning`].
+    pub confirm_epoch: Option<u64>,
     /// Its "Don't show this again" checkbox.
     pub confirm_dont_show: bool,
     pub custom_start: f64,
@@ -99,6 +102,7 @@ impl Default for ExportUi {
             location: String::new(),
             range: "entire".into(),
             confirm_entire: None,
+            confirm_epoch: None,
             confirm_dont_show: false,
             custom_start: 0.0,
             custom_end: 10.0,
@@ -248,6 +252,7 @@ fn send_export(app: &mut FilmcraftApp, to: PendingExport) {
 fn request_export(app: &mut FilmcraftApp, to: PendingExport) {
     if app.ui.export.range == "entire" && has_marks(app) && app.session.prefs.general.show_export_range_warning {
         app.ui.export.confirm_entire = Some(to);
+        app.ui.export.confirm_epoch = Some(app.session.document_epoch);
         app.ui.export.confirm_dont_show = false;
     } else {
         send_export(app, to);
@@ -318,11 +323,13 @@ fn entire_source_warning(app: &mut FilmcraftApp, ctx: &egui::Context) {
 }
 
 /// Drop a pending Entire Source warning once the active sequence is no longer the one it was
-/// opened for (a control-channel `sequence.open` can switch it while the warning is up), so the
+/// opened for (a control-channel `sequence.open` can switch it while the warning is up) or the
+/// project has been replaced (`file.open` of another project can reuse the sequence id), so the
 /// answer never exports another sequence.
 fn drop_stale_warning(app: &mut FilmcraftApp) {
     let active = app.session.state.active_sequence.map(|s| s.0);
-    if app.ui.export.confirm_entire.is_some() && app.ui.export.range_for.map(|(s, _, _)| s) != active {
+    let replaced = app.ui.export.confirm_epoch.is_some_and(|e| e != app.session.document_epoch);
+    if app.ui.export.confirm_entire.is_some() && (replaced || app.ui.export.range_for.map(|(s, _, _)| s) != active) {
         app.ui.export.confirm_entire = None;
         app.ui.export.confirm_dont_show = false;
     }
