@@ -721,3 +721,23 @@ fn absurd_start_timecode_is_bounded() {
     }
     assert!(report.mentions("out-of-range start timecode"), "{report}");
 }
+
+#[test]
+fn deeply_nested_sequence_chain_imports_without_unbounded_recursion() {
+    // sequence-0 uses sequence-1, which uses sequence-2, ... : an acyclic chain of 400
+    // definitions, each one level of native recursion in the importer.
+    let n = 400;
+    let mut doc = String::from("<?xml version=\"1.0\"?><!DOCTYPE xmeml><xmeml version=\"4\"><project><name>P</name><children>");
+    for i in 0..n {
+        doc.push_str(&format!(
+            "<sequence id=\"sequence-{i}\"><name>S{i}</name><rate><timebase>24</timebase></rate><duration>24</duration><media><video><track>\
+             <clipitem id=\"clipitem-{i}\"><name>nest</name><start>0</start><end>24</end><in>0</in><out>24</out><sequence id=\"sequence-{}\"/></clipitem>\
+             </track></video></media></sequence>",
+            i + 1
+        ));
+    }
+    doc.push_str("</children></project></xmeml>");
+    let (imp, rep) = filmcraft_interchange::import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert!(rep.mentions("nested too deeply"), "{rep:?}");
+    assert!(imp.project.sequences().count() > filmcraft_interchange::MAX_NESTING_DEPTH);
+}

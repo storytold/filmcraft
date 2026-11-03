@@ -326,6 +326,10 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             return Some(*id);
         }
         let def = if child(n, "media").is_some() { n } else { *self.seq_defs.get(&key)? };
+        if self.in_progress.len() >= crate::MAX_NESTING_DEPTH {
+            self.report.warn("nested sequence is nested too deeply; imported as a gap");
+            return None;
+        }
         if !self.in_progress.insert(key.clone()) {
             self.report.warn("recursive nested sequence ignored");
             return None;

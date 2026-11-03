@@ -222,6 +222,10 @@ pub struct Report {
     pub entries: Vec<ReportEntry>,
 }
 
+/// Sequences nested inside each other that an importer follows before treating the rest as a gap;
+/// every level is a native recursion in the FCP7 and FCPXML readers.
+pub const MAX_NESTING_DEPTH: usize = 64;
+
 /// Distinct messages a report keeps; a document can produce one per element, so beyond this
 /// they collapse into a single counted entry (the lookup in [`Report::push`] stays bounded too).
 pub const MAX_REPORT_ENTRIES: usize = 2000;

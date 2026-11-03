@@ -310,6 +310,12 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         }
         let n = *self.media_nodes.get(id)?;
         let s = child(n, "sequence")?;
+        // The active set is the current nesting chain: a long acyclic chain of compound clips
+        // would otherwise recurse once per resource.
+        if self.media_active.len() >= crate::MAX_NESTING_DEPTH {
+            self.report.warn(format!("FCPXML media resource {id:?} is nested too deeply; imported as a gap"));
+            return None;
+        }
         if !self.media_active.insert(id.into()) {
             self.report.warn(format!("recursive FCPXML media resource {id:?} ignored"));
             return None;
