@@ -37,6 +37,8 @@ struct AudioState {
     packets: HashMap<usize, Arc<Vec<Vec<f32>>>>,
     order: Vec<usize>,
     last_decoded: Option<usize>,
+    /// Bytes of the decoded packets held in `packets`.
+    bytes: usize,
 }
 
 /// One playable audio track with its own decoder state and timing tables.
@@ -470,7 +472,7 @@ impl MkvSource {
                     }
                     _ => 0,
                 };
-                let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None });
+                let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None, bytes: 0 });
                 Some(MkvAudio { track: i, state, starts, preroll })
             })
             .collect();
@@ -575,12 +577,7 @@ impl MkvSource {
             }
         };
         let p = Arc::new(decoded);
-        st.packets.insert(i, p.clone());
-        st.order.push(i);
-        if st.order.len() > 4096 {
-            let old = st.order.remove(0);
-            st.packets.remove(&old);
-        }
+        crate::audio::cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
         Ok(p)
     }
 }
