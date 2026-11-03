@@ -287,3 +287,19 @@ fn clip_rate_follows_the_common_frame_length() {
     assert_eq!(rate_of(&[ms(5_000), ms(5_000)]), FrameRate::FPS_30, "0.2 fps is not a video rate");
     assert_eq!(rate_of(&[]), FrameRate::FPS_30);
 }
+
+#[test]
+fn identical_frames_cut_short_by_the_budget_keep_the_animation() {
+    let same = picture([9, 9, 9], 255);
+    let bytes = gif(&vec![(same, 100); 5]);
+    let decode = |budget: usize| {
+        let mut d = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&bytes[..])).unwrap();
+        d.set_limits(image::Limits::default()).unwrap();
+        AnimatedSource::from_frames("a.gif", Format::Gif, d.into_frames(), bytes.len() as u64, budget)
+    };
+    // a frame is 32 bytes: the third exceeds 70, after two identical frames were merged
+    let cut = decode(70).expect("the truncated animation is kept");
+    assert_eq!(cut.info().duration, ms(200));
+    // within the budget, identical frames are still a still image
+    assert!(decode(usize::MAX).is_none());
+}

@@ -121,17 +121,18 @@ pub fn open(name: &str, bytes: &[u8]) -> Option<Result<AnimatedSource>> {
             d.into_frames()
         }
     };
-    AnimatedSource::from_frames(name, format, frames, bytes.len() as u64).map(Ok)
+    AnimatedSource::from_frames(name, format, frames, bytes.len() as u64, MAX_DECODED_BYTES).map(Ok)
 }
 
 impl AnimatedSource {
     /// Build a clip from decoded full-canvas frames, merging consecutive identical pictures.
-    fn from_frames(name: &str, format: Format, frames: Frames<'_>, file_size: u64) -> Option<Self> {
+    fn from_frames(name: &str, format: Format, frames: Frames<'_>, file_size: u64, max_decoded: usize) -> Option<Self> {
         let mut pictures: Vec<(u32, u32, Vec<u8>)> = Vec::new();
         let mut durations: Vec<Tick> = Vec::new();
         let mut decoded_frames = 0usize;
         let mut decoded = 0usize;
         let mut has_alpha = false;
+        let mut truncated = false;
         for frame in frames.take(MAX_FRAMES) {
             // a damaged frame ends the animation at the frames before it
             let Ok(frame) = frame else { break };
@@ -142,7 +143,8 @@ impl AnimatedSource {
             let rgba = buffer.into_raw();
             // every frame is a full canvas decode, repeated frames included
             decoded = decoded.saturating_add(rgba.len());
-            if decoded > MAX_DECODED_BYTES {
+            if decoded > max_decoded {
+                truncated = true;
                 break;
             }
             if let (Some(last), Some(d)) = (pictures.last(), durations.last_mut())
@@ -156,7 +158,8 @@ impl AnimatedSource {
             pictures.push((w, h, rgba));
             durations.push(ticks);
         }
-        if pictures.len() < 2 && !(format == Format::WebP && decoded_frames >= 2) {
+        // one picture is a still, unless the file holds more frames: merged WebP frames, or an animation cut short by the budget
+        if pictures.len() < 2 && !((format == Format::WebP || truncated) && decoded_frames >= 2) {
             return None;
         }
         let (width, height) = pictures.first().map(|p| (p.0, p.1))?;
