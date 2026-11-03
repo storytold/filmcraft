@@ -23,9 +23,9 @@
 //!   carries a CDP with 20 cc_data triplets; empty frames are omitted. Each CDP contains field 1 CEA-608
 //!   pop-on data (the same schedule as [SCC](crate::scc)), a null field-2 pair, CEA-708
 //!   service 1 data and padding. The CEA-708 captions emulate pop-on with two windows: each
-//!   caption is defined (hidden), cleared and loaded into one window from its top left
-//!   (SetPenLocation 0, 0) while the other shows, then a DisplayWindows / HideWindows pair
-//!   switches them on the caption's first frame; HideWindows clears it at its end.
+//!   caption goes into one window, deleted and defined anew first (hidden, empty, the pen at its
+//!   top left), while the other shows, then a DisplayWindows / HideWindows pair switches them on
+//!   the caption's first frame; HideWindows clears it at its end.
 //! - **Reading:** every CDP's `cc_data`; channel 1 CEA-608 field-1 data is decoded with the SCC
 //!   decoder when present, otherwise CEA-708 service 1 (windows, text, CR, clear / display /
 //!   hide / toggle / delete windows, DefineWindow visibility); a cue starts whenever the visible
@@ -236,18 +236,18 @@ fn char_atom(c: char) -> Vec<u8> {
     }
 }
 
-/// Atoms that define window `win` hidden and load `rows` into it.
+/// Atoms that make window `win` anew, hidden, and load `rows` into it.
 fn load_atoms(win: u8, rows: &[String]) -> Vec<Vec<u8>> {
     let rc = rows.len().clamp(1, 12) as u8 - 1;
     let cols = rows.iter().map(|r| r.chars().count()).max().unwrap_or(1).clamp(1, 42) as u8 - 1;
     let mut v = vec![
+        // DeleteWindows: the window holds the caption before last. Decoders differ on whether
+        // redefining it or ClearWindows moves the pen back (CCExtractor keeps it), but a new
+        // window starts empty with the pen at its top left, for the same bytes as ClearWindows.
+        vec![0x8c, 1 << win],
         // DefineWindow: hidden, row/column lock, relative position 90 % down / 50 % across,
         // anchored at its bottom centre, rows / columns, window style 1, pen style 1
         vec![0x98 + win, 0x18, 0x80 | 90, 50, 7 << 4 | rc, cols, 1 << 3 | 1],
-        vec![0x88, 1 << win], // ClearWindows
-        // SetPenLocation row 0, column 0. The window held the caption before last, and decoders
-        // differ on whether ClearWindows or redefining a window moves the pen back
-        vec![0x92, 0, 0],
     ];
     for (i, r) in rows.iter().enumerate() {
         if i > 0 {
@@ -805,10 +805,10 @@ mod tests {
         assert_eq!(decoder.win[0].rows, ["A"]);
     }
 
-    /// Start every CEA-708 caption at the top left of its window, also for a decoder that moves
-    /// the pen only on SetPenLocation, carriage return and text. CCExtractor keeps the pen through
-    /// ClearWindows and a redefined window, so without SetPenLocation the third caption below
-    /// started at the end of the first one, past the edge of its smaller window.
+    /// Start every CEA-708 caption at the top left of its window, also for a decoder that sets
+    /// the pen only when a window is created and moves it only on SetPenLocation, carriage return
+    /// and text. CCExtractor keeps the pen through ClearWindows and a redefined window, so the
+    /// third caption below once started at the end of the first one, past its smaller window.
     #[test]
     fn each_708_caption_starts_at_its_window_top_left() {
         let doc = Document {
@@ -839,9 +839,10 @@ mod tests {
                 body = &rest[n..];
             }
         }
-        // Pen (row, column) and size (rows, columns) per window; where each caption's text starts.
-        let (mut pen, mut size, mut cur) = ([(0usize, 0usize); 8], [(0usize, 0usize); 8], 0usize);
-        let (mut starts, mut cleared, mut i) = (Vec::new(), false, 0);
+        // Pen (row, column), size (rows, columns) and whether defined, per window; where each
+        // caption's text starts (its first character after a DefineWindow).
+        let (mut pen, mut size, mut defined, mut cur) = ([(0usize, 0usize); 8], [(0usize, 0usize); 8], [false; 8], 0usize);
+        let (mut starts, mut loaded, mut i) = (Vec::new(), false, 0);
         while let Some(&c) = s.get(i) {
             let mut text = false;
             i += match c {
@@ -849,17 +850,22 @@ mod tests {
                     cur = (c - 0x80) as usize;
                     1
                 }
-                0x88..=0x8c => {
-                    cleared |= c == 0x88;
+                0x8c => {
+                    (0..8).filter(|w| s[i + 1] & 1 << w != 0).for_each(|w| defined[w] = false);
                     2
                 }
+                0x88..=0x8b => 2,
                 0x92 => {
                     pen[cur] = (s[i + 1] as usize, s[i + 2] as usize);
                     3
                 }
                 0x98..=0x9f => {
                     cur = (c - 0x98) as usize;
+                    if !std::mem::replace(&mut defined[cur], true) {
+                        pen[cur] = (0, 0);
+                    }
                     size[cur] = ((s[i + 4] & 0x0f) as usize + 1, (s[i + 5] & 0x3f) as usize + 1);
+                    loaded = true;
                     7
                 }
                 0x0d => {
@@ -877,7 +883,7 @@ mod tests {
                 _ => 1,
             };
             if text {
-                if std::mem::take(&mut cleared) {
+                if std::mem::take(&mut loaded) {
                     starts.push((cur, pen[cur]));
                 }
                 assert!(pen[cur].0 < size[cur].0 && pen[cur].1 < size[cur].1, "window {cur} {:?}: text at {:?}", size[cur], pen[cur]);
