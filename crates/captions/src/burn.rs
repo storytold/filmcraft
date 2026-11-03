@@ -415,6 +415,22 @@ mod tests {
     }
 
     #[test]
+    fn outline_work_reduces_radius_for_a_mixed_mask() {
+        // 55,536 covered pixels times the r=64 disc exceeds the work cap, so the radius shrinks
+        // to roughly 39: the hole's center (50 px from its edge) stays clear, its rim does not.
+        let (w, h) = (256, 256);
+        let mut m = vec![1.0f32; w * h];
+        for y in 78..178 {
+            for x in 78..178 {
+                m[y * w + x] = 0.0;
+            }
+        }
+        let out = dilate(&m, w, h, MAX_OUTLINE_RADIUS);
+        assert_eq!(out[128 * w + 128], 0.0);
+        assert!(out[128 * w + 108] > 0.0);
+    }
+
+    #[test]
     fn outline_draws_around_text() {
         let st = CaptionStyle { background: false, outline: 4.0, outline_color: [255, 0, 0, 255], ..Default::default() };
         let o = render_caption(&cap("O"), &st, 1920, 1080).unwrap();
