@@ -325,7 +325,10 @@ file just linked, by dropping the common trailing path components (`/Volumes/A/s
 files and checks each one. It also looks in the new file's folder. Windows and macOS separators both
 work. **Align Timecode** keeps clips on the same timecode when the new file starts at a different
 timecode: the clips' source in-points, keyframes, marks and markers move with it
-(`Project::shift_media_time`). One relink, together with the files it pulls along, is one undo step.
+(`Project::shift_media_time`). Media an EDL names starts at timecode 00:00:00:00 until its file is
+linked, because the list's source times are timecodes; relink it with Align Timecode to land on the
+same frames as importing the EDL next to its media. One relink, together with the files it pulls
+along, is one undo step.
 
 Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`, `linkMedia.alignTimecode`,
@@ -333,8 +336,9 @@ Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.search`, `linkMedia.candidate.<n>`, `linkMedia.preview`, `linkMedia.link`,
 `linkMedia.locate`, `linkMedia.offline`, `linkMedia.offlineAll`, `linkMedia.cancel`.
 Make Offline: `makeOffline.keep|delete|ok|cancel`. In the Project panel, offline items get a
-broken-link badge (`project.item.<id>.offline` in Icon view), and items with a proxy get a **P**
-badge (`project.item.<id>.proxy`).
+broken-link badge (`project.item.<id>.offline` in Icon and List view), and items with a proxy get
+a **P** badge (`project.item.<id>.proxy`). Hovering an Unreadable badge shows why the file cannot
+be read, such as "no decoder for Apple Intermediate Codec video".
 
 ### Proxies
 

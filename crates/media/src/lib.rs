@@ -131,6 +131,11 @@ pub struct VideoStreamInfo {
     /// HDR static metadata (mastering display, content light level) when the file carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hdr: Option<filmcraft_color::HdrMetadata>,
+    /// Which values of `color` are FilmCraft's defaults rather than read from the file. `None`
+    /// where the source doesn't say: stills, generated media, MPEG program and transport streams,
+    /// and media info saved before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_assumed: Option<filmcraft_color::ColorAssumed>,
 }
 
 /// Most audio streams a source reports (the count comes from the file: never trusted).
@@ -160,6 +165,10 @@ pub struct MediaInfo {
     pub container: String,
     /// Timecode of the first frame (in frames at `video.frame_rate`), if the file carries one.
     pub start_timecode: Option<i64>,
+    /// The file counts its timecode drop-frame (SMPTE ST 12-1, 29.97 and 59.94 only), so it is
+    /// shown with `;` and skips frame labels. `start_timecode` is the true frame count either way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub drop_frame_timecode: bool,
     pub file_size: Option<u64>,
 }
 

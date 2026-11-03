@@ -321,6 +321,7 @@ impl MxfSource {
                 has_alpha: p.alpha_depth > 0,
                 bitrate: (secs > 0.0).then(|| (bytes_total as f64 * 8.0 / (t.samples.len().max(1) as f64 / rate.as_f64().max(1e-9))) as u64),
                 hdr: None,
+                color_assumed: Some(filmcraft_color::ColorAssumed::ALL),
             });
         }
         // Audio: all PCM sound tracks of the first track's rate, channels in track order
@@ -371,9 +372,11 @@ impl MxfSource {
             audio_streams: audio.into_iter().collect(),
             container: format!("MXF {}", file.operational_pattern.name()),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(bytes.0.len()),
         };
         info.start_timecode = file.timecode.as_ref().map(|tc| start_frames(tc, info.frame_rate()));
+        info.drop_frame_timecode = file.timecode.as_ref().is_some_and(|tc| tc.drop_frame) && info.frame_rate().supports_drop_frame();
         Ok(Self {
             info,
             bytes,

@@ -180,10 +180,12 @@ impl AnimatedSource {
                 has_alpha,
                 bitrate: None,
                 hdr: None,
+                color_assumed: None,
             }),
             audio_streams: Vec::new(),
             container: format.codec().into(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(file_size),
         };
         let frames = pictures.into_iter().map(|(w, h, rgba)| Arc::new(VideoFrame::rgba8(w, h, rgba))).collect();

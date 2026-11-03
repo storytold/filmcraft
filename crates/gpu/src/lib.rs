@@ -965,12 +965,10 @@ impl GpuCompositor {
     }
 
     /// Export rendering: `plan` composited into the linear float accumulator and read back as
-    /// premultiplied RGBA f32 (the sRGB resolve is skipped). None for a plan the export path does
-    /// not run on the GPU (transitions: the caller renders those on the CPU) or a failed read-back.
+    /// premultiplied RGBA f32 (the sRGB resolve is skipped). Layer plans and transition
+    /// composites (`plan_frame` composites only transitions the GPU draws); None on a failed
+    /// read-back.
     pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<f32>)> {
-        if matches!(plan, FramePlan::Composite { .. }) {
-            return None;
-        }
         let t = std::time::Instant::now();
         self.render_plan(plan, prep, true, false);
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export") });

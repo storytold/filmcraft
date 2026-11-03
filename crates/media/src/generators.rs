@@ -107,6 +107,7 @@ impl GeneratorSource {
             has_alpha: matches!(generator, Generator::TransparentVideo),
             bitrate: None,
             hdr: None,
+            color_assumed: None,
         });
         let audio =
             generator.has_audio().then(|| AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "PCM (synthetic)".into(), bits_per_sample: Some(32) });
@@ -118,6 +119,7 @@ impl GeneratorSource {
             audio_streams: audio.into_iter().collect(),
             container: if matches!(generator, Generator::Demo(_)) { "Synthetic MPEG-4".into() } else { "Synthetic".into() },
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: None,
         };
         Self { generator, info, cache: FrameCache::new(256 << 20) }

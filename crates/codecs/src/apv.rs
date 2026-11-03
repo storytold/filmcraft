@@ -74,6 +74,13 @@ impl ApvSource {
         let fh = filmcraft_apv::probe(&first).map_err(|e| CodecError::Decode(e.to_string()))?;
         let mut color = ColorInfo { matrix: filmcraft_frame::default_matrix(fh.width, fh.height), ..ColorInfo::REC709 };
         let mut explicit_color = None;
+        let codes = fh.color_description_present.then_some(crate::stream_color::ColorCodes {
+            primaries: fh.color.primaries,
+            transfer: fh.color.transfer,
+            matrix: fh.color.matrix,
+            full_range: Some(fh.color.full_range),
+        });
+        let assumed = crate::stream_color::assumed(codes.as_slice());
         if fh.color_description_present {
             if let Some(m) = Matrix::from_code(fh.color.matrix) {
                 color.matrix = m;
@@ -113,10 +120,12 @@ impl ApvSource {
                 has_alpha: fh.chroma == filmcraft_apv::ChromaFormat::Yuv4444,
                 bitrate,
                 hdr: None,
+                color_assumed: Some(assumed),
             }),
             audio_streams: Vec::new(),
             container: "APV".into(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(len),
         };
         Ok(Self { info, bytes: crate::Src(reader), samples, rate, video: GopCache::new(explicit_color) })

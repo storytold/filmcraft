@@ -48,10 +48,12 @@ fn halves(w: u32, h: u32, par: (u32, u32)) -> Halves {
             has_alpha: false,
             bitrate: None,
             hdr: None,
+            color_assumed: None,
         }),
         audio_streams: Vec::new(),
         container: "test".into(),
         start_timecode: None,
+        drop_frame_timecode: false,
         file_size: None,
     };
     Halves { info, frame }

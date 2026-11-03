@@ -721,3 +721,21 @@ fn absurd_start_timecode_is_bounded() {
     }
     assert!(report.mentions("out-of-range start timecode"), "{report}");
 }
+
+/// A file's drop-frame timecode survives an export and an import: `<file><timecode>` says `DF`,
+/// and the imported media counts its start timecode drop-frame again. Non-drop stays non-drop.
+#[test]
+fn file_timecode_keeps_its_drop_frame_format() {
+    for drop_frame in [true, false] {
+        let r = FrameRate::FPS_29_97;
+        let mut p = Project::new("df");
+        let a = media(&mut p, "/m/a.mov", true, false, r);
+        let m = p.item_mut(a).and_then(|i| i.as_media_mut()).unwrap();
+        (m.info.start_timecode, m.info.drop_frame_timecode) = (Some(107_892), drop_frame);
+        let s = sequence(&mut p, "S", r, false);
+        clip(&mut p, s, TrackKind::Video, 0, a, 0..30, 0);
+        let (imp, text, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
+        let m = imp.project.items.values().find_map(|i| i.as_media().filter(|m| matches!(m.media, MediaRef::File { .. }))).unwrap();
+        assert_eq!((m.info.start_timecode, m.info.drop_frame_timecode), (Some(107_892), drop_frame), "{text}");
+    }
+}
