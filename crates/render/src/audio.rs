@@ -392,7 +392,9 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     let n = (a1 - a0) as usize;
     let off = (a0 - x0) as usize;
     let speed = item.speed.abs().clamp(1e-6, MAX_CLIP_SPEED);
-    let src_start_ticks = item.source_time_at(Tick::from_units(a0, sr as i64));
+    // Block starts follow the speed the span is read at, or consecutive blocks of a clip above the cap would leave gaps.
+    let at = Tick::from_units(a0, sr as i64);
+    let src_start_ticks = if speed == item.speed.abs() { item.source_time_at(at) } else { TrackItem { speed, ..item.clone() }.source_time_at(at) };
     let remixed = crate::remix::read(item, &|m0, len| src(m0, len), a0 - item_s0, n, sr);
     let buf = if remixed.is_some() {
         remixed
@@ -497,4 +499,31 @@ pub fn source_pair(item: &TrackItem, available: usize) -> (usize, usize) {
 pub fn peaks(buf: &AudioBuffer, ch: usize, bucket: usize) -> Vec<(f32, f32)> {
     let Some(c) = buf.channels.get(ch) else { return Vec::new() };
     c.chunks(bucket.max(1)).map(|b| b.iter().fold((0f32, 0f32), |(lo, hi), s| (lo.min(*s), hi.max(*s)))).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(speed: f64) -> TrackItem {
+        serde_json::from_value(serde_json::json!({
+            "id": 1, "item": 2, "name": "m", "label": "Violet", "start": 0, "duration": Tick::from_seconds_f64(1.0).0, "source_in": 0,
+            "speed": speed, "enabled": true, "effects": []
+        }))
+        .expect("track item")
+    }
+
+    /// Sample value = media sample index / 1e6, everywhere.
+    fn ramp(m: i64, len: usize) -> Option<AudioBuffer> {
+        let ch: Vec<f32> = (0..len as i64).map(|k| (m + k) as f32 / 1e6).collect();
+        Some(AudioBuffer { sample_rate: 48_000, channels: vec![ch.clone(), ch] })
+    }
+
+    #[test]
+    fn blocks_of_a_clip_above_the_speed_cap_stay_contiguous() {
+        let it = item(1000.0);
+        let whole = raw_channels(&it, &ramp, 0, 200, 48_000, 2);
+        let second = raw_channels(&it, &ramp, 100, 100, 48_000, 2);
+        assert!((second[0][0] - whole[0][100]).abs() < 1e-4, "block 2 starts at {}, the whole read has {} there", second[0][0], whole[0][100]);
+    }
 }
