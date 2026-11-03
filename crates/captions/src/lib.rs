@@ -252,50 +252,100 @@ pub fn write(doc: &Document, format: Format, opts: WriteOptions) -> Vec<u8> {
 
 /// How many characters [`charset_warnings`] names one by one per caption stream; the rest share one warning.
 const LISTED_CHARS: usize = 20;
+/// How many cut captions [`charset_warnings`] names one by one per caption stream; the rest share one warning.
+const LISTED_CUTS: usize = 20;
+/// The rows of 32 columns CEA-608 shows ([`scc::wrap_rows`] keeps at most this many).
+const ROWS_608: usize = 15;
+/// The rows of the CEA-708 window the MCC writer loads a caption into.
+const ROWS_708: usize = 12;
 
-/// What writing `doc` as `format` does to text the caption data cannot carry. SCC and MCC drop
-/// the characters CEA-608 has no code for (…) or send a close one (’ as '), and MCC's CEA-708
-/// service sends `?` for the characters it has no code for. One warning per such character, in
-/// order of first use, with how often and the first caption that has it. Other formats: none.
+/// What writing `doc` as `format` loses of its text, the characters the caption data cannot carry
+/// and the text cut to fit. EBU STL writes `?` for the characters ISO/IEC 6937 has no code for.
+/// SCC and MCC drop the characters CEA-608 has no code for (…) or send a close one (’ as '), and
+/// MCC's CEA-708 service sends `?` for the characters it has no code for. One warning per such
+/// character, in order of first use, with how often and the first caption that has it. CEA-608
+/// shows at most 15 rows of 32 characters and MCC's CEA-708 window 12 rows: one warning per
+/// caption cut to fit, with how many characters it lost (spaces not counted) and where the lost
+/// text starts. Other formats: none.
 pub fn charset_warnings(doc: &Document, format: Format, opts: WriteOptions) -> Vec<String> {
     let mut out = Vec::new();
+    let at_608 = |t: Tick| scc::format_timecode(scc::frame_of(t), opts.drop_frame);
     if matches!(format, Format::Scc | Format::Mcc) {
-        lossy_chars(doc, "CEA-608", cea608::shown_as, opts.drop_frame, &mut out);
+        lossy_chars(doc, "CEA-608", |text| changed_in_rows(text, cea608::shown_as), at_608, &mut out);
+        cut_rows(doc, &format!("CEA-608 shows {ROWS_608} rows of 32 characters"), ROWS_608, at_608, &mut out);
     }
     if format == Format::Mcc {
-        lossy_chars(doc, "CEA-708", |c| Some(mcc::shown_as_708(c)), opts.drop_frame, &mut out);
+        lossy_chars(doc, "CEA-708", |text| changed_in_rows(text, |c| Some(mcc::shown_as_708(c))), at_608, &mut out);
+        cut_rows(doc, &format!("The CEA-708 window holds {ROWS_708} rows of 32 characters"), ROWS_708, at_608, &mut out);
+    }
+    if format == Format::Stl {
+        let unencodable = |text: &str| -> Vec<(char, Option<char>)> { stl::unencodable(text).into_iter().map(|c| (c, Some('?'))).collect() };
+        lossy_chars(doc, "EBU STL (ISO/IEC 6937)", unencodable, |t| stl::timecode(t, opts.rate), &mut out);
     }
     out
 }
 
-/// Warnings for the characters of `doc` that `shown_as` does not give back unchanged.
-fn lossy_chars(doc: &Document, stream: &str, shown_as: impl Fn(char) -> Option<char>, drop_frame: bool, out: &mut Vec<String>) {
-    // (character, what a decoder shows instead, count, frame of the first caption with it)
-    let mut lost: Vec<(char, Option<char>, usize, i64)> = Vec::new();
+/// The characters SCC and MCC encode for caption `text` (plain text in 32-column rows) that
+/// `shown_as` changes, with what a decoder shows instead.
+fn changed_in_rows(text: &str, shown_as: impl Fn(char) -> Option<char>) -> Vec<(char, Option<char>)> {
+    let rows = scc::wrap_rows(&filmcraft_project::plain_text(text));
+    rows.iter().flat_map(|r| r.chars()).map(|c| (c, shown_as(c))).filter(|(c, shown)| *shown != Some(*c)).collect()
+}
+
+/// Warnings for the captions of `doc` that do not fit `rows` rows of 32 columns (`limit` says
+/// so): how many characters each loses, not counting spaces, and the start of the lost text.
+fn cut_rows(doc: &Document, limit: &str, rows: usize, at: impl Fn(Tick) -> String, out: &mut Vec<String>) {
+    let visible = |s: &str| s.chars().filter(|c| !c.is_whitespace()).count();
+    let mut cues: Vec<&Cue> = doc.cues.iter().filter(|c| c.end > c.start).collect();
+    cues.sort_by_key(|c| c.start);
+    // (start of the caption, the text it loses)
+    let mut cut: Vec<(Tick, String)> = Vec::new();
+    for cue in cues {
+        let text = filmcraft_project::plain_text(&cue.text);
+        // the rows keep a prefix of the text: the lost part starts at the first character past them
+        let kept: usize = scc::wrap_rows(&text).iter().take(rows).map(|r| visible(r)).sum();
+        if let Some((i, _)) = text.char_indices().filter(|(_, c)| !c.is_whitespace()).nth(kept) {
+            cut.push((cue.start, text[i..].to_string()));
+        }
+    }
+    for (start, lost) in cut.iter().take(LISTED_CUTS) {
+        // the first characters of the lost text, on one line
+        let lost_text = lost.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut from: String = lost_text.chars().take(24).collect();
+        if from.len() < lost_text.len() {
+            from.push('…');
+        }
+        out.push(format!("{limit}: the caption at {} lost its last {} characters, from \"{from}\"", at(*start), visible(lost)));
+    }
+    if let Some(rest) = cut.get(LISTED_CUTS..).filter(|rest| !rest.is_empty()) {
+        let n = rest.iter().fold(0usize, |n, (_, lost)| n.saturating_add(visible(lost)));
+        out.push(format!("{limit}: {} more captions were cut to fit too, losing {n} characters", rest.len()));
+    }
+}
+
+/// Warnings for the characters of `doc` that the writer changes (`lost_in` gives them for a
+/// caption's text, with what a decoder shows instead), timed by `at`.
+fn lossy_chars(doc: &Document, stream: &str, lost_in: impl Fn(&str) -> Vec<(char, Option<char>)>, at: impl Fn(Tick) -> String, out: &mut Vec<String>) {
+    // (character, what a decoder shows instead, count, start of the first caption with it)
+    let mut lost: Vec<(char, Option<char>, usize, Tick)> = Vec::new();
     let mut index: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
     let mut cues: Vec<&Cue> = doc.cues.iter().filter(|c| c.end > c.start).collect();
     cues.sort_by_key(|c| c.start);
     for cue in cues {
-        // the text the SCC and MCC writers encode: plain text in 32-column rows
-        for c in scc::wrap_rows(&filmcraft_project::plain_text(&cue.text)).iter().flat_map(|r| r.chars()) {
-            let shown = shown_as(c);
-            if shown == Some(c) {
-                continue;
-            }
+        for (c, shown) in lost_in(&cue.text) {
             match index.get(&c).and_then(|&i| lost.get_mut(i)) {
                 Some(entry) => entry.2 = entry.2.saturating_add(1),
                 None => {
                     index.insert(c, lost.len());
-                    lost.push((c, shown, 1, scc::frame_of(cue.start)));
+                    lost.push((c, shown, 1, cue.start));
                 }
             }
         }
     }
     let times = |n: usize| if n == 1 { "once".to_string() } else { format!("{n} times") };
-    for &(c, shown, n, frame) in lost.iter().take(LISTED_CHARS) {
+    for &(c, shown, n, start) in lost.iter().take(LISTED_CHARS) {
         let what = shown.map_or_else(|| "dropped".to_string(), |s| format!("written as \"{s}\""));
-        let at = scc::format_timecode(frame, drop_frame);
-        out.push(format!("{stream} has no \"{c}\" (U+{:04X}): {what} {}, first in the caption at {at}", c as u32, times(n)));
+        out.push(format!("{stream} has no \"{c}\" (U+{:04X}): {what} {}, first in the caption at {}", c as u32, times(n), at(start)));
     }
     if let Some(rest) = lost.get(LISTED_CHARS..).filter(|rest| !rest.is_empty()) {
         let n = rest.iter().fold(0usize, |n, e| n.saturating_add(e.2));
@@ -498,6 +548,78 @@ mod tests {
         let w = charset_warnings(&doc, Format::Scc, WriteOptions::default());
         assert_eq!(w.len(), LISTED_CHARS + 1);
         assert_eq!(w[LISTED_CHARS], "CEA-608 has no code for 380 more characters either: changed or dropped 1140 times");
+    }
+
+    /// EBU STL writes `?` for what ISO/IEC 6937 has no code for, and names it with the time code
+    /// the STL file gives the caption (25 fps, or 29.97 for a 29.97 or 30 fps sequence).
+    #[test]
+    fn charset_warnings_name_what_stl_cannot_carry() {
+        let at = |s: i64| Tick(TICKS_PER_SECOND * s / 5);
+        let cue = |s: i64, text: &str| Cue { start: at(s), end: at(s + 10), text: text.into(), ..Default::default() };
+        let doc = Document { cues: vec![cue(6, "Espere… custa 5 €, não?"), cue(20, "<i>Mais €</i> — Ação ♪")], ..Default::default() };
+        // (sequence rate, time code of the first caption, of the second)
+        for (rate, first, second) in [(None, "00:00:01:05", "00:00:04:00"), (Some(FrameRate::FPS_29_97), "00:00:01:06", "00:00:04:00")] {
+            let opts = WriteOptions { rate, ..Default::default() };
+            let warnings = charset_warnings(&doc, Format::Stl, opts);
+            assert_eq!(
+                warnings,
+                [
+                    format!("EBU STL (ISO/IEC 6937) has no \"…\" (U+2026): written as \"?\" once, first in the caption at {first}"),
+                    format!("EBU STL (ISO/IEC 6937) has no \"€\" (U+20AC): written as \"?\" 2 times, first in the caption at {first}"),
+                    format!("EBU STL (ISO/IEC 6937) has no \"—\" (U+2014): written as \"?\" once, first in the caption at {second}"),
+                ],
+                "{rate:?}"
+            );
+            // what the warnings name is what the file loses
+            let back = stl::parse(&write(&doc, Format::Stl, opts)).unwrap();
+            assert_eq!(back.cues[0].text, "Espere? custa 5 ?, não?");
+        }
+        let clean = Document { cues: vec![cue(0, "Ação “já” ♪ ½ ― Øre")], ..Default::default() };
+        assert!(charset_warnings(&clean, Format::Stl, WriteOptions::default()).is_empty());
+    }
+
+    /// CEA-608 shows 15 rows of 32 characters and the MCC writer's CEA-708 window 12: a longer
+    /// caption loses its last rows, and the warning names the caption and how much it lost.
+    #[test]
+    fn charset_warnings_name_captions_cut_to_fit() {
+        // rows of exactly 32 characters, one per line, numbered so the lost part is visible
+        let row = |k: usize| format!("row{k:02}{}", "x".repeat(27));
+        let doc = |rows: usize, cues: i64| Document {
+            cues: (0..cues)
+                .map(|i| Cue {
+                    start: Tick((2 * i + 1) * TICKS_PER_SECOND),
+                    end: Tick((2 * i + 2) * TICKS_PER_SECOND),
+                    text: (1..=rows).map(row).collect::<Vec<_>>().join("\n"),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let cut = |limit: &str, rows: usize, first_lost: usize| {
+            let lost = 32 * (rows - first_lost + 1);
+            format!("{limit}: the caption at 00:00:01;00 lost its last {lost} characters, from \"row{first_lost:02}{}…\"", "x".repeat(19))
+        };
+        let c608 = |rows| cut("CEA-608 shows 15 rows of 32 characters", rows, 16);
+        let c708 = |rows| cut("The CEA-708 window holds 12 rows of 32 characters", rows, 13);
+        // (rows of text, SCC warnings, MCC warnings)
+        for (rows, scc, mcc) in
+            [(12, vec![], vec![]), (13, vec![], vec![c708(13)]), (15, vec![], vec![c708(15)]), (17, vec![c608(17)], vec![c608(17), c708(17)])]
+        {
+            let doc = doc(rows, 1);
+            assert_eq!(charset_warnings(&doc, Format::Scc, WriteOptions::default()), scc, "{rows} rows, SCC");
+            assert_eq!(charset_warnings(&doc, Format::Mcc, WriteOptions::default()), mcc, "{rows} rows, MCC");
+            for f in [Format::Srt, Format::WebVtt, Format::Stl, Format::Ttml, Format::Dfxp] {
+                assert!(charset_warnings(&doc, f, WriteOptions::default()).is_empty(), "{rows} rows, {f:?}");
+            }
+        }
+        // what the warning names is what the file loses: the SCC ends at row 15
+        let back = scc::parse(&String::from_utf8(write(&doc(17, 1), Format::Scc, WriteOptions::default())).unwrap()).unwrap();
+        assert_eq!(back.cues[0].text.lines().count(), 15);
+        assert!(back.cues[0].text.ends_with(&row(15)), "{}", back.cues[0].text);
+        // many cut captions: a bounded list
+        let w = charset_warnings(&doc(16, 23), Format::Scc, WriteOptions::default());
+        assert_eq!(w.len(), LISTED_CUTS + 1);
+        assert_eq!(w[LISTED_CUTS], "CEA-608 shows 15 rows of 32 characters: 3 more captions were cut to fit too, losing 96 characters");
     }
 
     #[test]

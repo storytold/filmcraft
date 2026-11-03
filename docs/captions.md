@@ -38,8 +38,10 @@ exists, nothing is exported, because the save panel only asked about replacing t
 For example, with WebVTT chosen, typing `keep` when `keep.vtt` already exists leaves `keep.vtt`
 untouched and the status line says so; choosing `keep.vtt` itself in the save panel, which then asks
 before replacing it, replaces it. Given a `path` (agents, the CLI), `captions.export` takes the
-format from `format` or from the file extension. Its result's `warnings` names each character the file
-cannot carry: SCC and MCC drop the ones CEA-608 has no code for (such as …) or send a close one
+format from `format` or from the file extension. Its result's `warnings` names each caption cut to
+fit (CEA-608 shows 15 rows of 32 characters, the CEA-708 window in MCC 12 rows) and each character
+the file cannot carry: EBU STL writes `?` for the ones ISO/IEC 6937 has no code for (such as €),
+SCC and MCC drop the ones CEA-608 has no code for (such as …) or send a close one
 (’ as '), and the CEA-708 service in MCC sends `?` for the ones it has no code for (such as —).
 
 Details of each format and the SCC encoder are in [`crates/captions/README.md`](../crates/captions/README.md).
