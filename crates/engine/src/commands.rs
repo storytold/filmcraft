@@ -3230,7 +3230,8 @@ fn build() -> Vec<CommandSpec> {
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
                 let clips = with_links_p(s, p, c);
-                let short = crate::handles::trim_short(s, &clips, edge, d);
+                // the media each trimmed edge has, to tell after the edit whether it stopped the trim
+                let reach = crate::handles::trim_reach(s, &clips, edge, d);
                 // a ripple trim's step records the ripple id, whichever command runs it
                 let outer = s.command_origin.clone();
                 if mode == TrimMode::Ripple {
@@ -3274,7 +3275,9 @@ fn build() -> Vec<CommandSpec> {
                     Ok(dd)
                 });
                 s.command_origin = outer;
-                Ok(json!({"delta": applied?.0, "short": short}))
+                let applied = applied?;
+                let short: Vec<Value> = reach.iter().filter_map(|r| r.short(s, d, applied)).collect();
+                Ok(json!({"delta": applied.0, "short": short}))
             }
         ),
         // ================= Trim mode =================
@@ -3362,7 +3365,7 @@ fn build() -> Vec<CommandSpec> {
             // `followLinks: false` rolls only this pair; the default clamps linked cuts together.
             let follow = s.state.linked_selection && p.get("followLinks").and_then(Value::as_bool).unwrap_or(true);
             let pairs = s.active_sequence().map(|q| linked_roll_pairs(q, l, r, follow)).unwrap_or_default();
-            let short: Vec<Value> = pairs.iter().filter_map(|&(pl, pr)| crate::handles::cut_short(s, Some(pl), Some(pr), d)).collect();
+            let reach: Vec<crate::handles::Reach> = pairs.iter().filter_map(|&(pl, pr)| crate::handles::Reach::of_cut(s, Some(pl), Some(pr), d)).collect();
             let (x, n, linked) = s.edit_sequence("Rolling Edit", |q, ctx, _| {
                 let pairs = linked_roll_pairs(q, l, r, follow);
                 let linked = pairs.len() > 1;
@@ -3374,6 +3377,7 @@ fn build() -> Vec<CommandSpec> {
                 }
                 Ok((d, pairs.len(), linked))
             })?;
+            let short: Vec<Value> = reach.iter().filter_map(|r| r.short(s, d, x)).collect();
             Ok(json!({"delta": x.0, "pairs": n, "linked": linked, "short": short}))
         }),
         cmd!("timeline.slip", "Slip", [], None, r#"{"clip":id,"delta":ticks|"deltaFrames":i64}"#, has_seq, |s, p| {

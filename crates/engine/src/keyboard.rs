@@ -195,7 +195,7 @@ fn extend_edit(s: &mut Session, next: bool) -> Result<Value> {
     if ops.is_empty() {
         return Err(EngineError::Other("no edit point on the targeted tracks".into()));
     }
-    let short: Vec<Value> = ops.iter().filter_map(|(l, r, d)| crate::handles::cut_short(s, *l, *r, *d)).collect();
+    let reach: Vec<Option<crate::handles::Reach>> = ops.iter().map(|(l, r, d)| crate::handles::Reach::of_cut(s, *l, *r, *d)).collect();
     let label = if next { "Extend Next Edit To Playhead" } else { "Extend Previous Edit To Playhead" };
     let applied = s.edit_sequence(label, |q, ctx, _| {
         let mut applied = Vec::new();
@@ -209,9 +209,9 @@ fn extend_edit(s: &mut Session, next: bool) -> Result<Value> {
         }
         Ok(applied)
     })?;
-    // each edit stops where its media or a clip's length does: count only the edits that moved
-    let edits = applied.iter().filter(|d| **d != Tick::ZERO).count();
-    Ok(json!({"edits": edits, "applied": applied.iter().map(|d| d.0).collect::<Vec<_>>(), "short": short}))
+    // `applied` says how far each edit point moved (0 when its media or a clip's length stopped it)
+    let short: Vec<Value> = ops.iter().zip(&reach).zip(&applied).filter_map(|(((_, _, d), r), a)| r.as_ref()?.short(s, *d, *a)).collect();
+    Ok(json!({"edits": ops.len(), "applied": applied.iter().map(|d| d.0).collect::<Vec<_>>(), "short": short}))
 }
 
 /// Nudge the selection (with linked partners) by `frames` along the timeline (overwrite).
