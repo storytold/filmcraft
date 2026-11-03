@@ -1177,8 +1177,9 @@ fn check_place_source_in(s: &Session, item: ItemId, sin: Tick, rate: FrameRate, 
     Err(bad("timeline.place", msg))
 }
 
-/// `timeline.place` for one item (`item`).
-fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
+/// `timeline.place` for one item (`item`). `check_only`: stop before the first change, having
+/// refused what the parameters alone refuse (see [`timeline_place`]).
+fn place_one(s: &mut Session, p: &Value, check_only: bool) -> Result<Value> {
     let item = item_p(p, "item").ok_or_else(|| bad("timeline.place", "need `item`"))?;
     let pi = s.project.item(item).ok_or_else(|| bad("timeline.place", "no such item"))?;
     // Everything that can be refused from the parameters alone is checked before the first change:
@@ -1215,6 +1216,9 @@ fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
             if !p.get(key).and_then(Value::as_str).is_some_and(|v| v.eq_ignore_ascii_case("new")) {
                 track_p(s, p, key, "timeline.place")?;
             }
+        }
+        if check_only {
+            return Ok(Value::Null);
         }
         return crate::sequence_tools::place_on_new_tracks(s, p);
     }
@@ -1263,6 +1267,9 @@ fn place_one(s: &mut Session, p: &Value) -> Result<Value> {
     let end = rate.snap_nearest(Tick(at.0.saturating_add(dur.0)));
     let at = rate.snap_nearest(at);
     let dur = end - at;
+    if check_only {
+        return Ok(Value::Null);
+    }
     let ids = place_item(
         s,
         ItemPlacement {
@@ -1284,8 +1291,9 @@ const MAX_PLACE_ITEMS: usize = 10_000;
 
 /// `timeline.place` for `items`: the first at the given time, each next one where the previous one
 /// ends, all as one undo step. `track`, `audioTrack`, `insert`, `video` and `audio` apply to every
-/// item; `sourceIn` and `duration` name one item's range, so they need `item`.
-fn place_items(s: &mut Session, p: &Value, items: &Value) -> Result<Value> {
+/// item; `sourceIn` and `duration` name one item's range, so they need `item`. `check_only`: as
+/// for [`place_one`], for every item.
+fn place_items(s: &mut Session, p: &Value, items: &Value, check_only: bool) -> Result<Value> {
     let ids: Vec<ItemId> = items
         .as_array()
         .ok_or_else(|| bad("timeline.place", "`items` must be a list of item ids"))?
@@ -1299,21 +1307,31 @@ fn place_items(s: &mut Session, p: &Value, items: &Value) -> Result<Value> {
         return Err(bad("timeline.place", format!("`items` needs 1 to {MAX_PLACE_ITEMS} item ids")));
     }
     let mut at = sequence_time_p(s, p, "", "timeline.place")?.unwrap_or(s.playhead());
+    // the parameters of one item's placement at `at`
+    let one = |base: &Value, item: ItemId, at: Tick| {
+        let mut one = base.clone();
+        if let Some(o) = one.as_object_mut() {
+            o.remove("items");
+            for k in ["time", "frame", "seconds"] {
+                o.remove(k);
+            }
+            o.insert("item".into(), json!(item.0));
+            o.insert("time".into(), json!(at.0));
+        }
+        one
+    };
+    if check_only {
+        for item in &ids {
+            place_one(s, &one(p, *item, at), true)?;
+        }
+        return Ok(Value::Null);
+    }
     s.edit_group("Place Clips", |s| {
         let mut placed = Vec::new();
         // "new" adds a track for the first item only; the rest follow it on that track
         let mut base = p.clone();
         for item in ids {
-            let mut one = base.clone();
-            if let Some(o) = one.as_object_mut() {
-                o.remove("items");
-                for k in ["time", "frame", "seconds"] {
-                    o.remove(k);
-                }
-                o.insert("item".into(), json!(item.0));
-                o.insert("time".into(), json!(at.0));
-            }
-            let r = place_one(s, &one)?;
+            let r = place_one(s, &one(&base, item, at), false)?;
             let clips: Vec<ClipId> = r["clips"].as_array().map(|a| a.iter().filter_map(|c| c.as_u64().map(ClipId)).collect()).unwrap_or_default();
             if crate::sequence_tools::wants_new_track(&base)
                 && let Some(q) = s.active_sequence()
@@ -1334,6 +1352,17 @@ fn place_items(s: &mut Session, p: &Value, items: &Value) -> Result<Value> {
         }
         Ok(json!({"clips": placed.iter().flat_map(|c| c.as_array().cloned().unwrap_or_default()).collect::<Vec<_>>(), "placed": placed}))
     })
+}
+
+/// `timeline.place` for `item` or `items`. With `matchSequence` the sequence settings change first,
+/// in the same undo group as the placement, and a group that fails is rolled back but still counts
+/// as a change (the revision moves on). So the command runs this with `check_only` first: what the
+/// parameters alone refuse is refused before anything changes.
+fn timeline_place(s: &mut Session, p: &Value, check_only: bool) -> Result<Value> {
+    match p.get("items") {
+        Some(items) => place_items(s, p, items, check_only),
+        None => place_one(s, p, check_only),
+    }
 }
 
 impl Session {
@@ -1671,7 +1700,7 @@ fn build() -> Vec<CommandSpec> {
                     )?;
                     if !rest.is_empty() {
                         let end = s.active_sequence().and_then(|q| ids.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.end())).max()).unwrap_or_default();
-                        place_items(s, &json!({"time": end.0}), &json!(rest.iter().map(|i| i.0).collect::<Vec<_>>()))?;
+                        place_items(s, &json!({"time": end.0}), &json!(rest.iter().map(|i| i.0).collect::<Vec<_>>()), false)?;
                     }
                 }
                 s.events.push(crate::Event::OpenSequence(id));
@@ -3224,10 +3253,11 @@ fn build() -> Vec<CommandSpec> {
             |s, p| {
                 let first = item_p(p, "item").or_else(|| p.get("items").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_u64).map(ItemId));
                 let label = if p.get("items").is_some() { "Place Clips" } else { "Place Clip" };
-                edit_matching_sequence(s, p, first, label, |s| match p.get("items") {
-                    Some(items) => place_items(s, p, items),
-                    None => place_one(s, p),
-                })
+                // refused before `matchSequence` changes the sequence (see `timeline_place`)
+                if bool_p(p, "matchSequence") == Some(true) {
+                    timeline_place(s, p, true)?;
+                }
+                edit_matching_sequence(s, p, first, label, |s| timeline_place(s, p, false))
             }
         ),
         cmd!(

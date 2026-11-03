@@ -581,3 +581,42 @@ fn media_timecodes_read_drop_frame_alike_wherever_typed() {
         assert_eq!(s.active_sequence().unwrap().video_tracks[0].items[0].frame_hold, Some(two_s), "{why}: Frame Hold Options");
     }
 }
+
+/// With `matchSequence` the sequence takes the clip's settings in the same undo step as the
+/// placement. A placement its parameters refuse is refused before that, so the project, its
+/// revision and its history stay as they were (a rolled-back group still moves the revision on).
+#[test]
+fn place_with_match_sequence_refuses_before_changing_the_sequence() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name":"Match test","fps":24})).unwrap();
+    // a 25 fps clip with no sound, 40 s from 14:30:42:00
+    let p = json!({"name":"A001","audio":false,"fps":25,"seconds":40,"timecode":"14:30:42:00"});
+    let item = s.execute("file.newOfflineFile", p).unwrap()["item"].as_u64().unwrap();
+    let (undo, redo) = (s.history.undo.len(), s.history.redo.len());
+    let before = s.project.to_json();
+    let revision = s.revision;
+    for (params, why) in [
+        (json!({"item":item,"sourceIn":{"sourceTimecode":"14:30:41:00"}}), "a source timecode before the clip"),
+        (json!({"item":item,"sourceIn":{"frame":5000}}), "a sourceIn past the clip's end"),
+        (json!({"item":item,"track":"A1"}), "an audio track for a clip with no sound"),
+        (json!({"item":item,"video":"yes"}), "a stream flag that is not a boolean"),
+        (json!({"items":[item],"sourceIn":0}), "sourceIn with items"),
+        (json!({"items":[item, 999_999]}), "an item that does not exist"),
+    ] {
+        let mut p = params;
+        p["matchSequence"] = json!(true);
+        p["time"] = json!(0);
+        if p.get("track").is_none() {
+            p["track"] = json!("V1");
+        }
+        assert!(s.execute("timeline.place", p).is_err(), "{why}");
+        assert_eq!(s.project.to_json(), before, "{why}: project");
+        assert_eq!(s.revision, revision, "{why}: revision");
+        assert_eq!((s.history.undo.len(), s.history.redo.len()), (undo, redo), "{why}: history");
+    }
+    // a placement that is right still takes the clip's rate, in one undo step
+    s.execute("timeline.place", json!({"item":item,"track":"V1","time":0,"matchSequence":true})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().settings.frame_rate, s.project.item(ItemId(item)).unwrap().frame_rate());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.to_json(), before);
+}
