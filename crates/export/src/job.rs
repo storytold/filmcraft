@@ -198,6 +198,21 @@ pub fn stepped(format: Format) -> bool {
     )
 }
 
+/// The sample description of a timecode track at `rate` (QuickTime File Format `tmcd`: flag 1
+/// drop frame, flag 2 wraps at 24 hours), carrying `reel` as its source name. `None` for a rate
+/// it can't describe.
+fn timecode_config(rate: FrameRate, drop_frame: bool, reel: &str) -> Option<filmcraft_isobmff::TimecodeConfig> {
+    let rate = rate.sane();
+    Some(filmcraft_isobmff::TimecodeConfig {
+        flags: u32::from(drop_frame) | 2,
+        timescale: u32::try_from(rate.num).ok().filter(|n| *n > 0)?,
+        frame_duration: u32::try_from(rate.den).ok().filter(|d| *d > 0)?,
+        frames_per_second: u8::try_from(rate.timecode_base()).ok()?,
+        start_frame: None,
+        name: (!reel.is_empty()).then(|| reel.to_string()),
+    })
+}
+
 /// Whether an export is HDR: an HDR working space, SDR not asked for, and a format whose encoder
 /// writes HDR (`hdr_available` says so for H.265, which has no built-in encoder).
 pub(crate) fn hdr_output(working_hdr: bool, sdr: bool, format: Format, hdr_available: impl Fn(Format) -> bool) -> bool {
@@ -409,13 +424,17 @@ impl Exporter {
         Ok(())
     }
 
+    /// Start timecode of the first exported frame, at the output rate, and whether the sequence
+    /// counts it drop-frame.
+    fn start_timecode(&self) -> Result<(i64, bool)> {
+        let q = self.project.sequence(self.seq).ok_or(ExportError::NoSequence)?;
+        let start = self.pipe.rate.frame_at(q.settings.frame_rate.tick_of(q.start_timecode)).saturating_add(self.f0);
+        Ok((start, q.settings.drop_frame))
+    }
+
     /// Create the muxer and its tracks (after the first batch was encoded).
     fn open_mux(&mut self) -> Result<()> {
         if self.settings.format.is_mxf() {
-            let q = self.project.sequence(self.seq).ok_or(ExportError::NoSequence)?;
-            // start timecode of the first exported frame, at the output rate
-            let seq_rate = q.settings.frame_rate;
-            let start = self.pipe.rate.frame_at(seq_rate.tick_of(q.start_timecode)) + self.f0;
             let name = self.project.item(self.seq).map(|i| i.name.clone()).unwrap_or_default();
             self.mxf = Some(MxfMux::new(MxfSetup {
                 settings: &self.settings,
@@ -424,7 +443,7 @@ impl Exporter {
                 height: self.pipe.h,
                 rate: self.pipe.rate,
                 audio: self.audio.as_ref().map(|a| (a.sr, a.channels)),
-                timecode: (start, q.settings.drop_frame),
+                timecode: self.start_timecode()?,
             })?);
             return Ok(());
         }
@@ -435,6 +454,14 @@ impl Exporter {
         let mut vcfg = TrackConfig::new(self.venc.sample_entry(), self.venc.timescale());
         vcfg.media_start = self.venc.media_start();
         self.vt = mux.add_track(vcfg).map_err(|e| ExportError::Io(e.to_string()))?;
+        if self.settings.timecode_track {
+            let (start, drop) = self.start_timecode()?;
+            let rate = self.pipe.rate;
+            let tc = timecode_config(rate, drop && rate.supports_drop_frame(), &self.settings.reel_name)
+                .ok_or_else(|| ExportError::Unsupported(format!("a timecode track can't describe {}/{} fps", rate.num, rate.den)))?;
+            let start = u32::try_from(start).map_err(|_| ExportError::Unsupported(format!("start timecode frame {start} doesn't fit a timecode track")))?;
+            mux.add_timecode_track(self.vt, tc, start).map_err(|e| ExportError::Io(e.to_string()))?;
+        }
         self.at = match (&self.audio, &self.aenc) {
             (None, _) => None,
             (Some(a), Some(enc)) => {

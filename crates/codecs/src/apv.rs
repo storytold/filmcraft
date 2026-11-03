@@ -125,6 +125,7 @@ impl ApvSource {
             audio_streams: Vec::new(),
             container: "APV".into(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(len),
         };
         Ok(Self { info, bytes: crate::Src(reader), samples, rate, video: GopCache::new(explicit_color) })

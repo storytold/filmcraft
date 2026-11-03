@@ -238,10 +238,11 @@ fn rtmd_fields(sample: &[u8], rate: FrameRate) -> Option<(i64, i64, i64, i64, bo
     Some((h, m, s, frames, drop))
 }
 
-/// Start timecode from a Sony `rtmd` track as a frame count at `rate` (issue #460), used when the
-/// file has no `tmcd` track. `None` if there is no `rtmd` track or it has no usable first sample.
+/// Start timecode from a Sony `rtmd` track as a frame count at `rate` (issue #460), and whether it
+/// counts drop-frame, used when the file has no `tmcd` track. `None` if there is no `rtmd` track or
+/// it has no usable first sample.
 /// Only the fixed-size header is read (a damaged `stsz` size can't drive a huge allocation).
-fn rtmd_start_timecode(file: &Mp4File, bytes: &crate::Src, rate: FrameRate) -> Option<i64> {
+fn rtmd_start_timecode(file: &Mp4File, bytes: &crate::Src, rate: FrameRate) -> Option<(i64, bool)> {
     let t = file.tracks.iter().find(|t| t.entries.first().is_some_and(|e| e.format.0 == *b"rtmd"))?;
     let s = t.samples.first()?;
     if s.size < RTMD_HEADER_LEN as u32 {
@@ -250,7 +251,7 @@ fn rtmd_start_timecode(file: &Mp4File, bytes: &crate::Src, rate: FrameRate) -> O
     let mut buf = [0u8; RTMD_HEADER_LEN];
     bytes.read_at(s.offset, &mut buf).ok()?;
     let (h, m, s, f, drop) = rtmd_fields(&buf, rate)?;
-    Some(filmcraft_time::fields_to_frames(h, m, s, f, rate, drop))
+    Some((filmcraft_time::fields_to_frames(h, m, s, f, rate, drop), drop))
 }
 
 impl Mp4Source {
@@ -356,12 +357,15 @@ impl Mp4Source {
             atracks.into_iter().filter_map(|i| Some((i, audio_stream_info(file.tracks.get(i)?, &bytes)?))).unzip();
         let duration = vtrack.or(atracks.first().copied()).and_then(|i| file.tracks.get(i)).map(|t| presentation_duration(&file, t)).unwrap_or_default();
         let start_timecode = file.tracks.iter().find_map(|t| match t.codec() {
-            Some(CodecConfig::Timecode(tc)) => tc.start_frame.map(|f| f as i64),
+            Some(CodecConfig::Timecode(tc)) => tc.start_frame.map(|f| (f as i64, tc.drop_frame())),
             _ => None,
         });
         // Sony XAVC files with no `tmcd` track carry the start timecode in an `rtmd` metadata
         // track; convert its fields to a frame count using the video frame rate.
         let start_timecode = start_timecode.or_else(|| rtmd_start_timecode(&file, &bytes, video.as_ref()?.frame_rate));
+        // drop-frame counting exists only at 29.97 and 59.94
+        let drop_frame_timecode = start_timecode.is_some_and(|(_, d)| d) && video.as_ref().is_some_and(|v| v.frame_rate.supports_drop_frame());
+        let start_timecode = start_timecode.map(|(f, _)| f);
         let info = MediaInfo {
             name: name.to_string(),
             kind: if video.is_some() { MediaKind::Movie } else { MediaKind::AudioOnly },
@@ -370,6 +374,7 @@ impl Mp4Source {
             audio_streams,
             container: if file.is_quicktime { "QuickTime".into() } else { "MPEG-4".into() },
             start_timecode,
+            drop_frame_timecode,
             file_size: Some(bytes.0.len()),
         };
         let mut audios: Vec<Mp4Audio> = atracks

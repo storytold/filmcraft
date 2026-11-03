@@ -885,6 +885,7 @@ impl AudioFileSource {
                 audio_streams: vec![AudioStreamInfo { sample_rate: rate, channels: samples.len() as u32, codec: format!("MP{layer}"), bits_per_sample: None }],
                 container: ext.to_uppercase(),
                 start_timecode: None,
+                drop_frame_timecode: false,
                 file_size: Some(bytes.len() as u64),
             };
             return Ok(Self { info, rate, samples });
@@ -900,6 +901,7 @@ impl AudioFileSource {
                 audio_streams: vec![AudioStreamInfo { sample_rate: rate, channels: samples.len() as u32, codec: "AAC".into(), bits_per_sample: None }],
                 container: "ADTS".into(),
                 start_timecode: None,
+                drop_frame_timecode: false,
                 file_size: Some(bytes.len() as u64),
             };
             return Ok(Self { info, rate, samples });
@@ -948,6 +950,7 @@ impl AudioFileSource {
             }],
             container: ext.to_uppercase(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(bytes.len() as u64),
         };
         Ok(Self { info, rate, samples })

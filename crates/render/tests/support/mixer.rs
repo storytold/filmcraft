@@ -59,6 +59,7 @@ impl Rig {
                 audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: ch as u32, codec: "test".into(), bits_per_sample: Some(32) }],
                 container: "test".into(),
                 start_timecode: None,
+                drop_frame_timecode: false,
                 file_size: None,
             };
             let id = p.add_item(

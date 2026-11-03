@@ -216,6 +216,7 @@ impl MpegSource {
                 audio_streams: Vec::new(),
                 container: file.format.name().to_string(),
                 start_timecode: None,
+                drop_frame_timecode: false,
                 file_size: Some(bytes.0.len()),
             },
             bytes,
@@ -257,6 +258,16 @@ impl MpegSource {
                     src.file = Some(file);
                     src.video = Some(track);
                     src.describe_video(rate_from_pts)?;
+                    // the first random-access picture's GOP time code (MPEG-2 video only)
+                    let gop = src
+                        .video
+                        .as_ref()
+                        .filter(|v| v.kind == VKind::Mpeg2)
+                        .and_then(|v| src.read_unit(v, 0).ok())
+                        .and_then(|au| filmcraft_mpeg2v::scan_access_unit(&au).gop);
+                    if let Some(tc) = gop {
+                        src.set_start_timecode(&tc);
+                    }
                     if let Some(file) = src.file.take() {
                         src.setup_audio(file, origin);
                     }
@@ -322,6 +333,7 @@ impl MpegSource {
                 audio_streams: Vec::new(),
                 container: "MPEG video elementary stream".into(),
                 start_timecode: None,
+                drop_frame_timecode: false,
                 file_size: Some(bytes.0.len()),
             },
             bytes,
@@ -334,12 +346,20 @@ impl MpegSource {
             unsupported_audio: None,
         };
         src.describe_video(None)?;
-        // the first GOP's time code (non-drop-frame count at the nominal rate)
         if let Some(tc) = infos[first_key].gop {
-            let fps = src.info.frame_rate().as_f64().round().max(1.0) as i64;
-            src.info.start_timecode = Some(((tc.hours as i64 * 60 + tc.minutes as i64) * 60 + tc.seconds as i64) * fps + tc.pictures as i64);
+            src.set_start_timecode(&tc);
         }
         Ok(src)
+    }
+
+    /// The start timecode from the first GOP header, counted drop-frame when its drop_frame_flag
+    /// says so (only at the rates that have drop-frame).
+    fn set_start_timecode(&mut self, tc: &filmcraft_mpeg2v::GopHeader) {
+        let rate = self.info.frame_rate();
+        let drop = tc.drop_frame && rate.supports_drop_frame();
+        self.info.start_timecode =
+            Some(filmcraft_time::fields_to_frames(tc.hours.into(), tc.minutes.into(), tc.seconds.into(), tc.pictures.into(), rate, drop));
+        self.info.drop_frame_timecode = drop;
     }
 
     /// The demuxed file (streams and their access-unit tables); `None` for elementary streams.

@@ -32,6 +32,7 @@ fn project() -> (Project, ItemId) {
         audio_streams: vec![filmcraft_media::AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: String::new(), bits_per_sample: Some(24) }],
         container: String::new(),
         start_timecode: Some(86_400),
+        drop_frame_timecode: false,
         file_size: None,
     };
     let a = p.add_item(

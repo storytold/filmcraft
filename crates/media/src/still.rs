@@ -121,6 +121,7 @@ impl StillSource {
             audio_streams: Vec::new(),
             container: "Image".into(),
             start_timecode: None,
+            drop_frame_timecode: false,
             file_size: Some(file_size),
         };
         Self { info, frame: Arc::new(VideoFrame::rgba8(w, h, rgba)) }
