@@ -419,6 +419,10 @@ pub struct EditorState {
     /// places whichever was copied last.
     #[serde(skip)]
     pub caption_clipboard: Vec<(usize, filmcraft_project::Caption)>,
+    /// The `CaptionStyle` most recently copied by `captions.copyStyle`; `None` until the first
+    /// copy. Not persisted.
+    #[serde(skip)]
+    pub caption_style_clipboard: Option<filmcraft_project::CaptionStyle>,
     /// The last Edit ▸ Find… (Find Next continues it).
     #[serde(default)]
     pub find: Option<project_tools::FindState>,
