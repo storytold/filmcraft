@@ -428,12 +428,8 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
         // the parameters' own 0..1000 range, whatever a stored project or template says.
         let d = ff(e, "shadow_distance", t);
         let d = if d.is_finite() { d.clamp(-MAX_SHADOW_PX, MAX_SHADOW_PX) } else { 0.0 };
-        Shadow {
-            color: c,
-            offset: (a.cos() * d, a.sin() * d),
-            size: ff(e, "shadow_size", t).max(0.0).min(MAX_SHADOW_PX),
-            blur: ff(e, "shadow_blur", t).max(0.0).min(MAX_SHADOW_PX),
-        }
+        let extent = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, MAX_SHADOW_PX) };
+        Shadow { color: c, offset: (a.cos() * d, a.sin() * d), size: extent(ff(e, "shadow_size", t)), blur: extent(ff(e, "shadow_blur", t)) }
     });
     let pos = vv(e, "position", t);
     let position = if pos.x.is_nan() || pos.y.is_nan() { Vec2::new(frame.0 as f64 / 2.0, frame.1 as f64 / 2.0) } else { pos };
