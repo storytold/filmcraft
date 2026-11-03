@@ -163,6 +163,12 @@ fn fail(msg: impl std::fmt::Display) -> ! {
     std::process::exit(1)
 }
 
+/// Whether command `id` has a `wait` parameter: it can return while its job still runs in the
+/// background.
+fn takes_wait(id: &str) -> bool {
+    filmcraft_engine::find_command(id).is_some_and(|c| c.params.contains("\"wait\""))
+}
+
 /// Where commands go: an in-process session, or the desktop app's control channel.
 enum Backend {
     Local(Box<Session>),
@@ -194,11 +200,11 @@ impl Backend {
 
     async fn exec(&mut self, id: &str, mut params: Value) -> Result<Value, String> {
         match self {
-            // this process exits after the command, so a background export would never be written:
-            // long commands wait unless the caller says otherwise (#2342)
+            // this process exits after the command, so a background job (an export, mask tracking,
+            // scene detection, proxies, Project Manager, the export queue…) would never finish:
+            // commands that take `wait` wait unless the caller says otherwise (#2342, #3302, #4143)
             Backend::Local(s) => {
-                // mask tracking is applied when its job finishes, which this process never sees (#3302)
-                if (filmcraft_automation::long_job::LONG_COMMANDS.contains(&id) || id == "masks.track")
+                if takes_wait(id)
                     && let Some(p) = params.as_object_mut()
                 {
                     // anything but an explicit `false` (missing, null, a typo'd value) waits
@@ -666,6 +672,28 @@ mod format_tests {
         let expected = cfg!(any(target_os = "macos", target_os = "windows"))
             || (cfg!(target_os = "linux") && matches!(hardware, filmcraft_platform::Availability::Available(_)));
         assert_eq!(filmcraft_platform::registered(), expected, "{hardware:?}");
+    }
+
+    /// #4143: commands that can leave a job running take `wait`, so a one-shot run waits for them.
+    #[test]
+    fn background_job_commands_wait() {
+        let jobs = [
+            "file.exportMedia",
+            "masks.track",
+            "clip.sceneEditDetection",
+            "media.createProxies",
+            "file.projectManager",
+            "sequence.renderInToOut",
+            "export.queue.start",
+            "export.quick",
+            "tts.render",
+        ];
+        for id in jobs {
+            assert!(super::takes_wait(id), "{id}");
+        }
+        for id in ["file.save", "sequence.inspect", "no.such.command"] {
+            assert!(!super::takes_wait(id), "{id}");
+        }
     }
 
     #[test]
