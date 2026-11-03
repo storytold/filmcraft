@@ -390,3 +390,27 @@ fn default_keymaps_have_no_conflicts_on_any_platform() {
         assert!(mac.iter().any(|b| b.command == cmd && b.keys == keys), "{cmd} {keys} on macOS");
     }
 }
+
+#[test]
+fn keyboard_shortcuts_command_in_edit_menu() {
+    // Regression test for #3444: app.keyboardShortcuts must be registered as a
+    // UI command with menu path ["Edit"] so it appears under Edit > Keyboard Shortcuts…
+    let mut s = Session::default();
+    with_ui_commands(&mut s);
+    let cmd = s
+        .shortcuts
+        .commands()
+        .into_iter()
+        .find(|c| c.id == "app.keyboardShortcuts")
+        .expect("app.keyboardShortcuts command not registered via register_external");
+    assert!(
+        cmd.menu.first().map(String::as_str) == Some("Edit"),
+        "app.keyboardShortcuts menu path must start with \"Edit\", got {:?}",
+        cmd.menu
+    );
+    assert!(
+        cmd.label.contains("Keyboard Shortcuts"),
+        "label must mention \"Keyboard Shortcuts\", got {:?}",
+        cmd.label
+    );
+}
