@@ -3,6 +3,7 @@ use super::{
     Align2, Color32, Drag, EDGE_PX, FilmcraftApp, Icon, ItemId, Rect, Sense, Sequence, Stroke, ThumbnailMode, Tick, TimeDisplay, TimeRange, Tokens, Value,
     format_time, icons, json, marker_range_rect, marker_rect, pos2, vec2, work_area_rect,
 };
+use crate::panels::timeline_hit::marker_end_rect;
 
 /// The Ruler's two strides, in frames: `(tick, label)`.
 ///
@@ -73,7 +74,8 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
             };
         }
         if key == "settings" {
-            egui::Popup::menu(&resp).show(|ui| timeline_settings(app, ui));
+            // stays open while options are toggled: only a click outside it (or an action) closes it
+            egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| timeline_settings(app, ui));
         }
         x += 30.0;
     }
@@ -174,21 +176,32 @@ pub(super) fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, se
 /// The ruler's marker row: one pentagon per marker in its colour, its range band behind it and,
 /// on hover, its name.
 fn draw_markers(app: &mut FilmcraftApp, ui: &egui::Ui, clip: &egui::Painter, layout: &Layout, seq: &Sequence) {
-    let marker_y = layout.ruler.min.y + 2.0;
+    let ruler = layout.ruler;
+    let marker_y = ruler.min.y + 2.0;
+    // Point flags stay whole; ranges split the same glyph across their endpoints.
     for m in &seq.markers {
         let x = layout.x_of(m.start);
-        let c = m.color.marker_rgb();
+        let c = m.custom_color.map_or_else(|| app.session.prefs.labels.rgb(m.color), |c| c.0);
         let c = Color32::from_rgb(c[0], c[1], c[2]);
-        let shape =
-            vec![pos2(x - 4.0, marker_y), pos2(x + 4.0, marker_y), pos2(x + 4.0, marker_y + 8.0), pos2(x, marker_y + 12.0), pos2(x - 4.0, marker_y + 8.0)];
+        let glyph = |x| Rect::from_min_size(pos2(x - 4.0, marker_y), vec2(8.0, 12.0));
         if let Some(band) = marker_range_rect(layout, m).filter(|r| r.width() > 0.0) {
             clip.rect_filled(band, 0.0, c.gamma_multiply(0.6));
             app.auto.add(&format!("timeline.markerRange.{}", m.id.0), band, &m.name);
         }
-        clip.add(egui::Shape::convex_polygon(shape, c, Stroke::NONE));
+        let end = marker_end_rect(layout, m);
+        if let Some(end) = end {
+            crate::widgets::marker_glyph(clip, glyph(x), 4.0, crate::widgets::MarkerPart::Left, c);
+            crate::widgets::marker_glyph(clip, glyph(end.center().x), 4.0, crate::widgets::MarkerPart::Right, c);
+            let visible = end.intersect(ruler);
+            if visible.is_positive() {
+                app.auto.add(&format!("timeline.markerEnd.{}", m.id.0), visible, &m.name);
+            }
+        } else {
+            crate::widgets::marker_glyph(clip, glyph(x), 4.0, crate::widgets::MarkerPart::Whole, c);
+        }
         let mr = marker_rect(layout, m.start);
         app.auto.add(&format!("timeline.marker.{}", m.id.0), mr, &m.name);
-        if ui.rect_contains_pointer(mr) && !m.name.is_empty() {
+        if (ui.rect_contains_pointer(mr) || end.is_some_and(|r| ui.rect_contains_pointer(r))) && !m.name.is_empty() {
             egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique(("mk", m.id.0)), egui::PopupAnchor::Pointer).show(|ui| {
                 ui.label(&m.name);
             });
@@ -214,6 +227,10 @@ fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         }
     });
     ui.checkbox(&mut app.ui.timeline.show_waveforms, tl!("Show Audio Waveform"));
+    let c = ui.checkbox(&mut app.ui.timeline.show_video_names, tl!("Show Video Names"));
+    app.auto.add("timeline.settings.showVideoNames", c.rect, "Show Video Names");
+    let c = ui.checkbox(&mut app.ui.timeline.show_audio_names, tl!("Show Audio Names"));
+    app.auto.add("timeline.settings.showAudioNames", c.rect, "Show Audio Names");
     ui.separator();
     let mut te = app.session.state.show_through_edits;
     let c = ui.checkbox(&mut te, tl!("Show Through Edits"));
@@ -231,9 +248,11 @@ fn timeline_settings(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     if ui.button(tl!("Expand All Tracks")).clicked() {
         app.ui.timeline.video_track_h = 64.0;
         app.ui.timeline.audio_track_h = 64.0;
+        ui.close();
     }
     if ui.button(tl!("Minimize All Tracks")).clicked() {
         app.ui.timeline.video_track_h = 26.0;
         app.ui.timeline.audio_track_h = 26.0;
+        ui.close();
     }
 }

@@ -6,6 +6,8 @@ use crate::FilmcraftApp;
 
 #[cfg(not(target_arch = "wasm32"))]
 use craft_update::updater::{Action, Status, Updater};
+#[cfg(not(target_arch = "wasm32"))]
+use craft_update::{CheckResultDialog, CheckResultResponse};
 
 pub(crate) struct Runtime {
     #[cfg(not(target_arch = "wasm32"))]
@@ -19,14 +21,13 @@ pub(crate) struct Runtime {
     #[cfg(not(target_arch = "wasm32"))]
     repaint: Option<egui::Context>,
     pub(crate) manual_window_open: bool,
-    pub(crate) status_message: Option<String>,
 }
 
 impl Default for Runtime {
     fn default() -> Self {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
-            updater: Updater::new(&craft_update::suite::FILMCRAFT, env!("CARGO_PKG_VERSION")),
+            updater: Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")),
             #[cfg(not(target_arch = "wasm32"))]
             startup_check: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -34,7 +35,6 @@ impl Default for Runtime {
             #[cfg(not(target_arch = "wasm32"))]
             repaint: None,
             manual_window_open: false,
-            status_message: None,
         }
     }
 }
@@ -51,6 +51,7 @@ pub(crate) fn check(app: &mut FilmcraftApp) -> Result<Value, String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         app.updates_rt.check_requested = true;
+        app.updates_rt.manual_window_open = true;
         if let Some(ctx) = &app.updates_rt.repaint {
             ctx.request_repaint();
         }
@@ -59,7 +60,6 @@ pub(crate) fn check(app: &mut FilmcraftApp) -> Result<Value, String> {
     #[cfg(target_arch = "wasm32")]
     {
         app.updates_rt.manual_window_open = true;
-        app.updates_rt.status_message = Some("Update check is not supported in the web browser.".into());
         Ok(Value::Null)
     }
 }
@@ -90,18 +90,27 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             Action::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::None => {}
         }
-        // The window answers Help ▸ Check for Updates, so it follows the updater's status.
+        // The dialog answers Help ▸ Check for Updates. A check that finds a release leaves the status
+        // idle and the startup prompt takes over, so the flag ends with the check.
         let rt = &mut app.updates_rt;
-        (rt.manual_window_open, rt.status_message) = match rt.updater.status() {
-            Status::Idle => (false, None),
-            Status::Checking => (true, Some(tl!("Checking for updates…").to_string())),
-            Status::UpToDate => {
-                (true, Some(tl!("FilmCraft {version} is currently the newest version available.").replace("{version}", env!("CARGO_PKG_VERSION"))))
+        if rt.manual_window_open {
+            if matches!(rt.updater.status(), Status::Idle) && !rt.check_requested {
+                rt.manual_window_open = false;
+            } else {
+                let dialog = CheckResultDialog::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION"));
+                match dialog.show(ctx, rt.updater.status()) {
+                    CheckResultResponse::Close => {
+                        rt.manual_window_open = false;
+                        rt.updater.dismiss_status();
+                    }
+                    CheckResultResponse::CheckAgain => rt.check_requested = true,
+                    CheckResultResponse::None => {}
+                }
             }
-            Status::Failed(e) => (true, Some(tl!("Could not check for updates:\n{error}").replace("{error}", e))),
-        };
+        }
     }
 
+    #[cfg(target_arch = "wasm32")]
     if app.updates_rt.manual_window_open {
         let mut open = true;
         egui::Window::new(crate::i18n::t("FilmCraft Updates"))
@@ -111,9 +120,7 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
             .show(ctx, |ui| {
-                if let Some(msg) = &app.updates_rt.status_message {
-                    ui.label(msg);
-                }
+                ui.label(crate::i18n::t("Update check is not supported in the web browser."));
                 ui.add_space(8.0);
                 if ui.button(crate::i18n::t("OK")).clicked() {
                     app.updates_rt.manual_window_open = false;
@@ -122,12 +129,6 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         if !open {
             app.updates_rt.manual_window_open = false;
         }
-    }
-
-    // Closing the window dismisses the outcome it showed.
-    #[cfg(not(target_arch = "wasm32"))]
-    if !app.updates_rt.manual_window_open {
-        app.updates_rt.updater.dismiss_status();
     }
 }
 
