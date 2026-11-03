@@ -104,3 +104,41 @@ fn dialog_body_unwind_does_not_change_context_style() {
     assert_eq!(failure.downcast_ref::<&str>(), Some(&"synthetic dialog failure"));
     assert!(std::sync::Arc::ptr_eq(&original, &ctx.global_style()));
 }
+
+/// CodeRabbit on #444: the actions' fixed fill and stroke hid egui's focused state, and the painted
+/// header title was invisible to screen readers.
+#[test]
+fn dialog_actions_show_keyboard_focus_and_the_header_names_itself() {
+    use filmcraft_ui_egui::{
+        dialog_style,
+        theme::{self, ThemeKind, Tokens},
+    };
+    fn strokes(shape: &egui::Shape, color: egui::Color32) -> bool {
+        match shape {
+            egui::Shape::Rect(r) => r.stroke.color == color && r.stroke.width > 0.0,
+            egui::Shape::Vec(v) => v.iter().any(|s| strokes(s, color)),
+            _ => false,
+        }
+    }
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let t = Tokens::for_kind(ThemeKind::Dark);
+    theme::install(&ctx, &t);
+    let mut cancel = None;
+    let run = |cancel: &mut Option<egui::Id>| {
+        let mut out = ctx.run_ui(egui::RawInput::default(), |root| {
+            dialog_style::header(root, &t, "Recover Unsaved Changes", 360.0);
+            *cancel = Some(root.add(dialog_style::secondary(&t, "Cancel")).id);
+        });
+        out.textures_delta.clear();
+        out
+    };
+    let out = run(&mut cancel);
+    assert!(!out.shapes.iter().any(|s| strokes(&s.shape, t.focus)), "no focus ring before the button has focus");
+    let nodes = out.platform_output.accesskit_update.map(|u| u.nodes).unwrap_or_default();
+    assert!(nodes.iter().any(|(_, n)| n.value() == Some("Recover Unsaved Changes")), "the header title is announced");
+    let id = cancel.unwrap();
+    ctx.memory_mut(|m| m.request_focus(id));
+    let out = run(&mut cancel);
+    assert!(out.shapes.iter().any(|s| strokes(&s.shape, t.focus)), "a focused Cancel paints the focus ring");
+}

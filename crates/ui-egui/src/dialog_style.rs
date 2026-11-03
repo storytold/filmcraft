@@ -12,24 +12,49 @@ pub fn frame(t: &Tokens) -> Frame {
 
 /// Header for blocking Modal containers and custom draggable dialogs such as Export Frame.
 pub fn header(ui: &mut Ui, t: &Tokens, title: &str, width: f32) -> Rect {
-    let (bar, _) = ui.allocate_exact_size(vec2(width, 30.0), egui::Sense::hover());
+    let (bar, r) = ui.allocate_exact_size(vec2(width, 30.0), egui::Sense::hover());
+    // the title is painted, not a Label: name the bar so screen readers announce it
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, title));
     ui.painter().rect_filled(bar, CornerRadius { nw: RADIUS, ne: RADIUS, sw: 0, se: 0 }, t.header_bg);
     ui.painter().text(bar.left_center() + vec2(10.0, 0.0), egui::Align2::LEFT_CENTER, title, Tokens::ui(13.0), t.text_dim);
     bar
 }
 
 /// Primary action using the chosen accent and a contrasting foreground.
-pub fn primary(t: &Tokens, label: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(label.into()).color(t.accent_text())).fill(t.accent).min_size(vec2(88.0, 28.0)).corner_radius(14)
+pub fn primary(t: &Tokens, label: impl Into<String>) -> ActionButton {
+    ActionButton {
+        button: egui::Button::new(RichText::new(label.into()).color(t.accent_text())).fill(t.accent).min_size(vec2(88.0, 28.0)).corner_radius(14),
+        focus: t.focus,
+    }
 }
 
 /// Secondary action using the active field and text roles.
-pub fn secondary(t: &Tokens, label: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(label.into()).color(t.text))
-        .fill(t.field_bg)
-        .stroke(Stroke::new(1.0, t.field_border))
-        .min_size(vec2(88.0, 28.0))
-        .corner_radius(14)
+pub fn secondary(t: &Tokens, label: impl Into<String>) -> ActionButton {
+    ActionButton {
+        button: egui::Button::new(RichText::new(label.into()).color(t.text))
+            .fill(t.field_bg)
+            .stroke(Stroke::new(1.0, t.field_border))
+            .min_size(vec2(88.0, 28.0))
+            .corner_radius(14),
+        focus: t.focus,
+    }
+}
+
+/// A dialog action button. Its fixed fill and stroke replace egui's focused-state styling, so it
+/// paints its own focus ring: keyboard users can see which action Enter or Space will press.
+pub struct ActionButton {
+    button: egui::Button<'static>,
+    focus: egui::Color32,
+}
+
+impl egui::Widget for ActionButton {
+    fn ui(self, ui: &mut Ui) -> egui::Response {
+        let r = ui.add(self.button);
+        if r.has_focus() {
+            ui.painter().rect_stroke(r.rect.expand(2.0), 16.0, Stroke::new(1.5, self.focus), egui::StrokeKind::Outside);
+        }
+        r
+    }
 }
 
 /// Right-aligned actions in an explicit, consistent desktop order: the dismissive action is
