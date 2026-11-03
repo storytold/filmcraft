@@ -1018,11 +1018,17 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
             tracks.push((TrackKind::Audio, a, Ch::A(a + 1)));
         }
     }
-    if seq.video_tracks.len() > 1
-        && opts.edl.video_track.is_some()
-        && seq.video_tracks.iter().enumerate().any(|(i, t)| Some(i) != opts.edl.video_track && !t.items.is_empty())
-    {
-        report.info("EDLs hold one video track; other video tracks were not exported (use export_edl_per_track)");
+    if let Some(v) = opts.edl.video_track {
+        let left_out: Vec<String> =
+            seq.video_tracks.iter().enumerate().filter(|(i, t)| *i != v && !t.items.is_empty()).map(|(i, _)| format!("V{}", i + 1)).collect();
+        if !left_out.is_empty() {
+            let exported = if seq.video_tracks.get(v).is_some_and(|t| !t.items.is_empty()) {
+                format!("only V{} was exported", v + 1)
+            } else {
+                "no video track was exported".into()
+            };
+            report.info(format!("EDLs hold one video track; {exported} (not {})", left_out.join(", ")));
+        }
     }
 
     for (kind, idx, ch) in tracks {

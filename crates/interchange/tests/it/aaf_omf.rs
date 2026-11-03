@@ -384,6 +384,19 @@ fn omf_separate_files_and_breakout() {
     }
 }
 
+/// OMF holds audio only: the report says the video tracks were left out, when there is video.
+#[test]
+fn omf_report_says_when_video_is_left_out() {
+    let (mut p, s) = sample(FrameRate::FPS_25, false);
+    let (_, rep) = omf::export(&p, s, &OmfOptions::default()).unwrap();
+    assert!(rep.mentions("video tracks are not written to OMF"), "{rep}");
+    for t in &mut p.sequence_mut(s).unwrap().video_tracks {
+        t.items.clear();
+    }
+    let (_, rep) = omf::export(&p, s, &OmfOptions::default()).unwrap();
+    assert!(!rep.mentions("video"), "an audio-only sequence: {rep}");
+}
+
 #[test]
 fn empty_and_damaged_documents() {
     let mut p = Project::new("e");

@@ -274,6 +274,20 @@ fn reel_modes_and_per_track() {
     assert!(t.contains("002  INTERVI2 V"), "{t}");
 }
 
+/// The report names the video tracks an EDL leaves out, not a function no command reaches.
+#[test]
+fn report_names_the_video_tracks_an_edl_leaves_out() {
+    let (mut p, s) = demo_project(FrameRate::FPS_24, false);
+    let (_, rep) = export(&p, s, Format::Edl, &ExportOptions::default()).unwrap();
+    assert!(!rep.mentions("EDLs hold one video track"), "only V1 has clips: {rep}");
+    let a = p.items.values().find(|i| i.name == "city.mp4").unwrap().id;
+    clip(&mut p, s, TrackKind::Video, 1, a, 10..30, 0);
+    clip(&mut p, s, TrackKind::Video, 2, a, 40..60, 0);
+    let (_, rep) = export(&p, s, Format::Edl, &ExportOptions::default()).unwrap();
+    assert!(rep.mentions("EDLs hold one video track; only V1 was exported (not V2, V3)"), "{rep}");
+    assert!(!rep.mentions("export_edl_per_track"), "{rep}");
+}
+
 #[test]
 fn drop_frame_roundtrip_59_94() {
     let r = FrameRate::FPS_59_94;
