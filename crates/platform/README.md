@@ -92,8 +92,10 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   timestamp). A seek recreates the parser and keeps the decoder.
 - **Linux: VA-API, H.264 (`avcC`) and HEVC (`hvcC`)**: H.264 8-bit 4:2:0 progressive, Constrained
   Baseline / Main / High; HEVC Main, Main 10 and Main Still Picture, 4:2:0 8- and 10-bit (`vaapi/`), on Intel (iHD, i965), AMD and other Mesa drivers. `libva.so.2` and `libva-drm.so.2`
-  are loaded at run time (`vaapi/va.rs`; no libva headers needed to build), and each decoder opens
-  its own display on the first DRM render node (`/dev/dri/renderD128`…) with a working driver.
+  are loaded at run time (`vaapi/va.rs`; no libva headers needed to build), and decoders make their
+  context and surfaces on a kept display on the first DRM render node (`/dev/dri/renderD128`…) with
+  a working driver: one display, or on Mesa up to four when decoders overlap, because sessions on one
+  Mesa display get less out of the GPU (`docs/performance.md`).
   VA-API decoding is *stateless*: the host parses the stream and keeps the decoded picture buffer,
   and the GPU decodes one picture's slice data at a time into a surface. That host side
   (`vaapi/h264.rs`, `vaapi/hevc.rs`, safe code) is the software decoders' own: their parameter-set
@@ -112,7 +114,13 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
     none (`vaPutImage`). Pictures predicted from them (the leading pictures of an open GOP after a
     seek) are concealment in both decoders and can differ: the hardware also reads motion data the
     stand-ins do not have. Everything from the seek point on is bit-exact.
-  - *Declined up front* (our decoder is used): VP9 and AV1 (not through VA-API yet), H.264 profiles
+  - *AV1* (`vaapi/av1.rs`): Main profile, 4:2:0, 8- and 10-bit. `filmcraft_av1::HostParser` reads
+    the headers with the software decoder's own parser and the host keeps the eight reference slots
+    as surfaces; each tile goes as one parameter + data buffer. Bit-exact with the software decoder
+    (`tests/vaapi_av1.rs`). A frame of another size or bit depth (reference scaling included) and
+    film grain on a repeated frame are mid-stream errors, so `HybridDecoder` continues in software.
+  - *Declined up front* (our decoder is used): VP9 (not through VA-API yet), AV1 profiles other than
+    Main, scalable AV1 (mid-stream), H.264 profiles
     other than Baseline / Main / High, 10-bit H.264, HEVC range extensions and profiles other than
     Main / Main 10 / Main Still Picture, 4:2:2 / 4:4:4, field / MBAFF coding, no libva, no render
     node or driver, a profile or size the driver does not decode. *Mid-stream errors*
@@ -282,7 +290,7 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
   when Settings ▸ Playback ▸ Hardware decoding is Off, for formats it does not take (field-coded
   H.264, bit depths other than 8 / 10, 4:4:4 or monochrome, luma / chroma depth mismatch, larger
   than 8192×8192; on Windows also 4:2:2 and the profiles listed above; on Linux everything but
-  8-bit 4:2:0 progressive H.264 and 4:2:0 HEVC Main / Main 10) and when the OS cannot create a hardware session (VideoToolbox), a
+  8-bit 4:2:0 progressive H.264, 4:2:0 HEVC Main / Main 10 and AV1 Main) and when the OS cannot create a hardware session (VideoToolbox), a
   GPU-backed decoder (Media Foundation) or a VA-API configuration and context (Linux).
 - **Interchangeable:** colour, pixel aspect, pts, presentation order, `is_random_access` and
   `is_disposable` come from the software decoders' own helpers (`filmcraft_codecs::hw`,

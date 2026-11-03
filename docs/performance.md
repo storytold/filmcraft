@@ -669,6 +669,42 @@ hardware path on throughput for H.264 and 10-bit HEVC, at 5–20 % of their CPU 
 (the run above) the hardware path is ahead on both. 10-bit pictures cost more to read back (P010 is
 twice the bytes of NV12 and is shifted down into 16-bit planes).
 
+### Several layers through VA-API on Mesa: one display → up to four
+
+Ryzen 9 9950X3D (32 threads), Radeon RX 9070 XT (two video engines), Mesa 26.2.6, libva 2.24,
+2026-11-03. `bench --section playback --only "stack3 full"` (no window; `bench_playback` does not
+register hardware decoders, so it cannot measure this) with three 4K H.264 layers of 50 Mbit/s,
+keyframe every second, no B-frames, swapped in through `FILMCRAFT_FIXTURES`. Frames shown of 192
+due in a 23.976 fps sequence, alternating runs of the two builds:
+
+| source frame rate | one display (2 runs) | **up to four** (2 runs) | software (1 run) |
+|---|---|---|---|
+| 30 fps | 192, 192 | 192, 192 | 192 |
+| 40 fps | 152, 163 | **192, 192** | 192 |
+| 50 fps | 18, 40 | **164, 192** | 192 |
+
+At 60 fps (60 Mbit/s, four runs each) the demand is above what the engines deliver either way:
+H.264 shows 11-15 → 12-48 of 192 and HEVC 7-10 → 11-14 of 192, with samples decoded up 10 % and 26 %,
+while software shows all 192 at about 11 times the CPU time per frame. One 4K layer is unchanged:
+191-192 shown at 60 fps. Shown frames do not fall in proportion to the shortfall: once
+decoding is behind, nearly every frame arrives late, which is why the table has a cliff.
+
+### AV1 through VA-API
+
+A real 2560x1440 60 fps AV1 screen recording (17 Mbit/s, one tile, two-second GOPs, MKV) on one
+track, in the desktop app on a headless `gamescope` output at 1/2 resolution; no audio device, so
+the wall clock drives playback. Same machine as above, 2026-11-03, 8 s plays, frames shown of about
+470 due:
+
+| build | decode ms/sample | play 1 (2 runs) | play 2 (2 runs) | seek to 2 s |
+|---|---|---|---|---|
+| software | 18-21 | 49, 70 | 0, 0 | 3.4 s |
+| **VA-API** | **4.6-5.7** | **416, 393** | **420, 447** | **0.5 s** |
+
+The software decoder manages about 40 of the 60 fps of this file, and behind real time nearly every
+frame arrives late (the cliff above). A calm 30 s stretch of the same recording (0.65 Mbit/s), which
+software also keeps up with, costs about 7 ms of CPU per shown frame instead of 49.
+
 ## Results (GPU1: blend modes on the GPU compositor, #30, before → after)
 
 Before = this change with the old whole-frame CPU fallback for non-Normal blend modes put back

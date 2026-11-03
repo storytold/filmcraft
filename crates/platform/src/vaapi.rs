@@ -6,10 +6,12 @@
 //! drives libva (loaded at run time; no libva means no hardware decoder, never a failure to start),
 //! and [`VaDecoder`] puts them together as a [`VideoDecoder`]. H.264 8-bit 4:2:0 progressive
 //! (Constrained Baseline / Main / High) and HEVC 4:2:0 (Main, Main 10, Main Still Picture), the
-//! latter through [`hevc`] the same way; everything else stays in software.
+//! latter through [`hevc`] the same way, and AV1 Main (4:2:0, 8- and 10-bit) through [`av1`];
+//! everything else stays in software.
 //!
 //! The FFI is in [`ffi`] (declarations) and `va` (calls); the rest of this module is safe code.
 
+pub mod av1;
 pub mod ffi;
 pub mod h264;
 pub mod hevc;
@@ -23,7 +25,7 @@ mod abi_tests;
 mod tests;
 
 #[cfg(target_os = "linux")]
-pub use linux::VaDecoder;
+pub use linux::{VaAv1Decoder, VaDecoder};
 
 use filmcraft_frame::VideoFrame;
 
@@ -50,6 +52,13 @@ pub trait Accel: Send {
         iq: Option<&ffi::VAIQMatrixBufferHEVC>,
         slices: &[(ffi::VASliceParameterBufferHEVC, Vec<u8>)],
     ) -> std::result::Result<(), String>;
+    /// Decode one AV1 frame (its tiles: parameters and coded data) into surface `target`.
+    fn decode_av1(
+        &mut self,
+        target: usize,
+        pic: &ffi::VADecPictureParameterBufferAV1,
+        tiles: &[(ffi::VASliceParameterBufferAV1, Vec<u8>)],
+    ) -> std::result::Result<(), String>;
     /// The picture in surface `index`, once decoded.
     fn read(&mut self, index: usize) -> std::result::Result<VideoFrame, String>;
     /// Make surface `index` a copy of surface `from`, or mid-gray (every sample half the range)
@@ -61,11 +70,11 @@ pub trait Accel: Send {
 #[cfg(target_os = "linux")]
 mod linux {
     use filmcraft_bitstream::unescape_rbsp;
-    use filmcraft_codecs::hw::{NalCodec, NalStreamInfo};
+    use filmcraft_codecs::hw::{FrameCodec, FrameStreamInfo, NalCodec, NalStreamInfo};
     use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
 
     use super::va::Session;
-    use super::{ffi, h264, hevc};
+    use super::{av1, ffi, h264, hevc};
     use crate::biplanar::Geometry;
 
     /// The VA-API profiles that decode an H.264 stream of `profile_idc`, best fit first (a Main or
@@ -212,6 +221,66 @@ mod linux {
 
         fn is_disposable(&self, sample: &[u8]) -> bool {
             self.info.is_disposable(sample)
+        }
+    }
+
+    /// A VA-API decoder for one AV1 stream.
+    pub struct VaAv1Decoder {
+        front: Box<av1::Front<Session>>,
+        info: FrameStreamInfo,
+        name: String,
+        fed: u64,
+        fail_after: Option<u64>,
+    }
+
+    impl VaAv1Decoder {
+        /// A decoder for the stream `info` describes, or why VA-API does not take it on this system.
+        pub fn new(info: FrameStreamInfo) -> std::result::Result<Self, String> {
+            if info.codec != FrameCodec::Av1 {
+                return Err("not an AV1 stream".into());
+            }
+            let bits = info.bit_depth;
+            if info.profile != 0 || info.mono || info.subsampling != (1, 1) || !matches!(bits, 8 | 10) {
+                return Err(format!("AV1 profile {} at {bits}-bit, subsampling {:?} is not taken", info.profile, info.subsampling));
+            }
+            let color = info.color.ok_or("no AV1 sequence header in the sample entry")?;
+            let geometry = Geometry { crop: (0, 0, info.size.0, info.size.1), bits, color, par: (1, 1) };
+            let session = Session::new(&[ffi::VAProfileAV1Profile0], info.size, av1::SURFACES, geometry)?;
+            let name = format!("VA-API AV1 ({})", session.vendor());
+            let front = Box::new(av1::Front::new(session, info.size, bits, &info.config_obus).map_err(|e| e.to_string())?);
+            Ok(Self { front, info, name, fed: 0, fail_after: None })
+        }
+
+        /// Test hook: fail every decode call after the first `n` (a GPU lost mid-stream).
+        pub fn fail_after(&mut self, n: u64) {
+            self.fail_after = Some(n);
+        }
+    }
+
+    impl VideoDecoder for VaAv1Decoder {
+        fn decode(&mut self, sample: &[u8], pts: i64) -> Result<Vec<DecodedFrame>> {
+            self.fed += 1;
+            if self.fail_after.is_some_and(|n| self.fed > n) {
+                return Err(CodecError::Decode("VA-API decoder failed (test hook)".into()));
+            }
+            self.front.decode(sample, pts)
+        }
+
+        // every picture is returned by the `decode` that completes it
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            Vec::new()
+        }
+
+        fn reset(&mut self) {
+            self.front.reset();
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn is_random_access(&self, sample: &[u8]) -> Option<bool> {
+            Some(self.info.is_random_access(sample))
         }
     }
 }

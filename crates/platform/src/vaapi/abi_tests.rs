@@ -438,3 +438,120 @@ fn hevc_slice_bit_fields_match_the_header() {
     assert_eq!(1u32 << hevc_slice_bits::COLLOCATED_FROM_L0, 0x1000, "LongSliceFlags.collocated_from_l0_flag");
     assert_eq!(1u32 << hevc_slice_bits::SLICE_LOOP_FILTER_ACROSS_SLICES_ENABLED, 0x2000, "LongSliceFlags.slice_loop_filter_across_slices_enabled_flag");
 }
+
+// Generated against `va_dec_av1.h` (libva 2.24), as the rest of this file.
+
+#[test]
+fn vasegmentationstructav1_layout_matches_the_header() {
+    assert_eq!((size_of::<VASegmentationStructAV1>(), align_of::<VASegmentationStructAV1>()), (156, 4), "VASegmentationStructAV1");
+    assert_eq!(offset_of!(VASegmentationStructAV1, segment_info_fields), 0, "VASegmentationStructAV1.segment_info_fields");
+    assert_eq!(offset_of!(VASegmentationStructAV1, feature_data), 4, "VASegmentationStructAV1.feature_data");
+    assert_eq!(offset_of!(VASegmentationStructAV1, feature_mask), 132, "VASegmentationStructAV1.feature_mask");
+    assert_eq!(offset_of!(VASegmentationStructAV1, va_reserved), 140, "VASegmentationStructAV1.va_reserved");
+}
+
+#[test]
+fn vafilmgrainstructav1_layout_matches_the_header() {
+    assert_eq!((size_of::<VAFilmGrainStructAV1>(), align_of::<VAFilmGrainStructAV1>()), (176, 4), "VAFilmGrainStructAV1");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, film_grain_info_fields), 0, "VAFilmGrainStructAV1.film_grain_info_fields");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, grain_seed), 4, "VAFilmGrainStructAV1.grain_seed");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, num_y_points), 6, "VAFilmGrainStructAV1.num_y_points");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, point_y_value), 7, "VAFilmGrainStructAV1.point_y_value");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, point_y_scaling), 21, "VAFilmGrainStructAV1.point_y_scaling");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, num_cb_points), 35, "VAFilmGrainStructAV1.num_cb_points");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, point_cb_value), 36, "VAFilmGrainStructAV1.point_cb_value");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, point_cb_scaling), 46, "VAFilmGrainStructAV1.point_cb_scaling");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, num_cr_points), 56, "VAFilmGrainStructAV1.num_cr_points");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, point_cr_value), 57, "VAFilmGrainStructAV1.point_cr_value");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, point_cr_scaling), 67, "VAFilmGrainStructAV1.point_cr_scaling");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, ar_coeffs_y), 77, "VAFilmGrainStructAV1.ar_coeffs_y");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, ar_coeffs_cb), 101, "VAFilmGrainStructAV1.ar_coeffs_cb");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, ar_coeffs_cr), 126, "VAFilmGrainStructAV1.ar_coeffs_cr");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, cb_mult), 151, "VAFilmGrainStructAV1.cb_mult");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, cb_luma_mult), 152, "VAFilmGrainStructAV1.cb_luma_mult");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, cb_offset), 154, "VAFilmGrainStructAV1.cb_offset");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, cr_mult), 156, "VAFilmGrainStructAV1.cr_mult");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, cr_luma_mult), 157, "VAFilmGrainStructAV1.cr_luma_mult");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, cr_offset), 158, "VAFilmGrainStructAV1.cr_offset");
+    assert_eq!(offset_of!(VAFilmGrainStructAV1, va_reserved), 160, "VAFilmGrainStructAV1.va_reserved");
+}
+
+#[test]
+fn vawarpedmotionparamsav1_layout_matches_the_header() {
+    assert_eq!((size_of::<VAWarpedMotionParamsAV1>(), align_of::<VAWarpedMotionParamsAV1>()), (56, 4), "VAWarpedMotionParamsAV1");
+    assert_eq!(offset_of!(VAWarpedMotionParamsAV1, wmtype), 0, "VAWarpedMotionParamsAV1.wmtype");
+    assert_eq!(offset_of!(VAWarpedMotionParamsAV1, wmmat), 4, "VAWarpedMotionParamsAV1.wmmat");
+    assert_eq!(offset_of!(VAWarpedMotionParamsAV1, invalid), 36, "VAWarpedMotionParamsAV1.invalid");
+    assert_eq!(offset_of!(VAWarpedMotionParamsAV1, va_reserved), 40, "VAWarpedMotionParamsAV1.va_reserved");
+}
+
+#[test]
+fn vadecpictureparameterbufferav1_layout_matches_the_header() {
+    assert_eq!((size_of::<VADecPictureParameterBufferAV1>(), align_of::<VADecPictureParameterBufferAV1>()), (1160, 8), "VADecPictureParameterBufferAV1");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, profile), 0, "VADecPictureParameterBufferAV1.profile");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, order_hint_bits_minus_1), 1, "VADecPictureParameterBufferAV1.order_hint_bits_minus_1");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, bit_depth_idx), 2, "VADecPictureParameterBufferAV1.bit_depth_idx");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, matrix_coefficients), 3, "VADecPictureParameterBufferAV1.matrix_coefficients");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, seq_info_fields), 4, "VADecPictureParameterBufferAV1.seq_info_fields");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, current_frame), 8, "VADecPictureParameterBufferAV1.current_frame");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, current_display_picture), 12, "VADecPictureParameterBufferAV1.current_display_picture");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, anchor_frames_num), 16, "VADecPictureParameterBufferAV1.anchor_frames_num");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, anchor_frames_list), 24, "VADecPictureParameterBufferAV1.anchor_frames_list");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, frame_width_minus1), 32, "VADecPictureParameterBufferAV1.frame_width_minus1");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, frame_height_minus1), 34, "VADecPictureParameterBufferAV1.frame_height_minus1");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, ref_frame_map), 40, "VADecPictureParameterBufferAV1.ref_frame_map");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, ref_frame_idx), 72, "VADecPictureParameterBufferAV1.ref_frame_idx");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, primary_ref_frame), 79, "VADecPictureParameterBufferAV1.primary_ref_frame");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, order_hint), 80, "VADecPictureParameterBufferAV1.order_hint");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, seg_info), 84, "VADecPictureParameterBufferAV1.seg_info");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, film_grain_info), 240, "VADecPictureParameterBufferAV1.film_grain_info");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, tile_cols), 416, "VADecPictureParameterBufferAV1.tile_cols");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, tile_rows), 417, "VADecPictureParameterBufferAV1.tile_rows");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, width_in_sbs_minus_1), 418, "VADecPictureParameterBufferAV1.width_in_sbs_minus_1");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, height_in_sbs_minus_1), 544, "VADecPictureParameterBufferAV1.height_in_sbs_minus_1");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, tile_count_minus_1), 670, "VADecPictureParameterBufferAV1.tile_count_minus_1");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, context_update_tile_id), 672, "VADecPictureParameterBufferAV1.context_update_tile_id");
+}
+
+#[test]
+fn vadecpictureparameterbufferav1_second_half_matches_the_header() {
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, pic_info_fields), 676, "VADecPictureParameterBufferAV1.pic_info_fields");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, superres_scale_denominator), 680, "VADecPictureParameterBufferAV1.superres_scale_denominator");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, interp_filter), 681, "VADecPictureParameterBufferAV1.interp_filter");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, filter_level), 682, "VADecPictureParameterBufferAV1.filter_level");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, filter_level_u), 684, "VADecPictureParameterBufferAV1.filter_level_u");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, filter_level_v), 685, "VADecPictureParameterBufferAV1.filter_level_v");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, loop_filter_info_fields), 686, "VADecPictureParameterBufferAV1.loop_filter_info_fields");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, ref_deltas), 687, "VADecPictureParameterBufferAV1.ref_deltas");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, mode_deltas), 695, "VADecPictureParameterBufferAV1.mode_deltas");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, base_qindex), 697, "VADecPictureParameterBufferAV1.base_qindex");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, y_dc_delta_q), 698, "VADecPictureParameterBufferAV1.y_dc_delta_q");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, u_dc_delta_q), 699, "VADecPictureParameterBufferAV1.u_dc_delta_q");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, u_ac_delta_q), 700, "VADecPictureParameterBufferAV1.u_ac_delta_q");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, v_dc_delta_q), 701, "VADecPictureParameterBufferAV1.v_dc_delta_q");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, v_ac_delta_q), 702, "VADecPictureParameterBufferAV1.v_ac_delta_q");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, qmatrix_fields), 704, "VADecPictureParameterBufferAV1.qmatrix_fields");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, mode_control_fields), 708, "VADecPictureParameterBufferAV1.mode_control_fields");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, cdef_damping_minus_3), 712, "VADecPictureParameterBufferAV1.cdef_damping_minus_3");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, cdef_bits), 713, "VADecPictureParameterBufferAV1.cdef_bits");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, cdef_y_strengths), 714, "VADecPictureParameterBufferAV1.cdef_y_strengths");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, cdef_uv_strengths), 722, "VADecPictureParameterBufferAV1.cdef_uv_strengths");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, loop_restoration_fields), 730, "VADecPictureParameterBufferAV1.loop_restoration_fields");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, wm), 732, "VADecPictureParameterBufferAV1.wm");
+    assert_eq!(offset_of!(VADecPictureParameterBufferAV1, va_reserved), 1124, "VADecPictureParameterBufferAV1.va_reserved");
+}
+
+#[test]
+fn vasliceparameterbufferav1_layout_matches_the_header() {
+    assert_eq!((size_of::<VASliceParameterBufferAV1>(), align_of::<VASliceParameterBufferAV1>()), (40, 4), "VASliceParameterBufferAV1");
+    assert_eq!(offset_of!(VASliceParameterBufferAV1, slice_data_size), 0, "VASliceParameterBufferAV1.slice_data_size");
+    assert_eq!(offset_of!(VASliceParameterBufferAV1, slice_data_offset), 4, "VASliceParameterBufferAV1.slice_data_offset");
+    assert_eq!(offset_of!(VASliceParameterBufferAV1, slice_data_flag), 8, "VASliceParameterBufferAV1.slice_data_flag");
+    assert_eq!(offset_of!(VASliceParameterBufferAV1, tile_row), 12, "VASliceParameterBufferAV1.tile_row");
+    assert_eq!(offset_of!(VASliceParameterBufferAV1, tile_column), 14, "VASliceParameterBufferAV1.tile_column");
+    assert_eq!(offset_of!(VASliceParameterBufferAV1, tg_start), 16, "VASliceParameterBufferAV1.tg_start");
+    assert_eq!(offset_of!(VASliceParameterBufferAV1, tg_end), 18, "VASliceParameterBufferAV1.tg_end");
+    assert_eq!(offset_of!(VASliceParameterBufferAV1, anchor_frame_idx), 20, "VASliceParameterBufferAV1.anchor_frame_idx");
+    assert_eq!(offset_of!(VASliceParameterBufferAV1, tile_idx_in_tile_list), 22, "VASliceParameterBufferAV1.tile_idx_in_tile_list");
+    assert_eq!(offset_of!(VASliceParameterBufferAV1, va_reserved), 24, "VASliceParameterBufferAV1.va_reserved");
+}
