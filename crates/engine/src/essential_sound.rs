@@ -379,6 +379,9 @@ fn trigger_envelope(triggers: &[&TrackItem], a0: i64, a1: i64, sr: u32, sources:
         .collect()
 }
 
+/// Replace the Volume level keyframes of each Music / Ambience clip with ducking keyframes, as one
+/// undo step. Each clip in the result has its `triggers`, the ducked `regions` (seconds), the new
+/// `keyframes` and `replacedKeyframes`, how many level keyframes the edit removed.
 fn generate_ducking(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "essentialSound.generateDucking";
     let clips = targets(s, p);
