@@ -295,5 +295,13 @@ fn caption_export_writes_the_caption_track_chosen_in_the_dialog() {
     d.ok("ui.click", json!({"id": "captionExport.ok"}));
     d.frames(4);
     assert!(read("given.vtt").contains("Second track line"));
+
+    // a track that does not exist shows the first one, and OK exports that one
+    *d.typed.lock().unwrap() = Some("missing".into());
+    d.ok("ui.menu.invoke", json!({"id": "captions.export", "params": {"format": "vtt", "track": "C9"}}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "captionExport.ok"}));
+    d.frames(4);
+    assert!(read("missing.vtt").contains("Hello captions"), "{}", d.status());
     let _ = std::fs::remove_dir_all(dir);
 }

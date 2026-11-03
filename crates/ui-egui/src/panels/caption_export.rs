@@ -65,8 +65,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 app.session.active_sequence().map_or_else(Vec::new, |q| q.caption_tracks.iter().map(|t| (t.id.0, t.name.clone())).collect());
             if tracks.len() > 1 {
                 let params = Value::Object(d.params.clone());
-                let chosen =
-                    filmcraft_engine::captions::track_param(&app.session, &params).map_or(0, |id| tracks.iter().position(|t| t.0 == id.0).unwrap_or(0));
+                let requested = filmcraft_engine::captions::track_param(&app.session, &params);
+                let chosen = requested.map_or(0, |id| tracks.iter().position(|t| t.0 == id.0).unwrap_or(0));
+                // a track that does not exist (`C9`, a deleted id) shows the first one, so OK exports that one
+                if requested.is_none() {
+                    d.params.insert("track".into(), json!(tracks[0].0));
+                }
                 let label = |i: usize| format!("C{} · {}", i + 1, tracks[i].1);
                 let mut pick = chosen;
                 ui.label(tl!("Caption Track"));
