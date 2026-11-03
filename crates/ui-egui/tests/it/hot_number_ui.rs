@@ -83,9 +83,14 @@ impl Driver {
         self.harness.input_mut().events.extend(events);
         self.frames(1);
     }
+    fn sent(&self, cmd: &egui::ViewportCommand) -> bool {
+        self.harness.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(cmd))
+    }
     fn moves_cursor_to(&self, to: egui::Pos2) -> bool {
-        let cmd = egui::ViewportCommand::CursorPosition(to);
-        self.harness.output().viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.commands.contains(&cmd))
+        self.sent(&egui::ViewportCommand::CursorPosition(to))
+    }
+    fn grabs_cursor(&self, grab: egui::CursorGrab) -> bool {
+        self.sent(&egui::ViewportCommand::CursorGrab(grab))
     }
 }
 
@@ -142,15 +147,40 @@ fn a_dragged_hot_number_keeps_changing_past_the_screen_edge() {
     d.input([egui::Event::PointerMoved(at), button(true)]);
     // past egui's drag threshold, then the pointer stays put as if held at the edge
     d.input([egui::Event::PointerMoved(at + egui::vec2(10.0, 0.0))]);
-    for _ in 0..4 {
+    for n in 0..4 {
         d.input([egui::Event::MouseMoved(egui::vec2(100.0, 0.0))]);
         assert_eq!(d.harness.output().platform_output.cursor_icon, egui::CursorIcon::None, "the cursor is hidden while dragging");
         assert!(d.moves_cursor_to(at), "the cursor is held where the press began");
+        // Wayland moves only a locked cursor
+        assert_eq!(d.grabs_cursor(egui::CursorGrab::Locked), n == 0, "the cursor is locked once, as the drag takes it");
     }
     d.input([egui::Event::PointerMoved(at), button(false)]);
     assert!(d.moves_cursor_to(at), "the cursor shows again where the press began");
+    assert!(d.grabs_cursor(egui::CursorGrab::None), "and is let go");
     // 0.5° per point: 10 points of pointer travel alone would give 5°
     assert!(d.rotation(clip) >= 200.0, "the raw motion past the edge counts: {}", d.rotation(clip));
+}
+
+/// A field that goes away during the drag (its panel closed) does not keep the cursor locked: it is
+/// let go when the button comes up.
+#[test]
+fn the_cursor_is_let_go_when_the_dragged_field_goes_away() {
+    let mut d = Driver::demo();
+    d.text_layer();
+    let r = d.harness.state().auto.find("graphics.prop.rotation").expect("rotation field").rect;
+    let at = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    d.input([egui::Event::PointerMoved(at), button(true)]);
+    d.input([egui::Event::PointerMoved(at + egui::vec2(10.0, 0.0))]);
+    d.input([egui::Event::MouseMoved(egui::vec2(100.0, 0.0))]);
+    assert!(d.grabs_cursor(egui::CursorGrab::Locked));
+    d.exec("timeline.select", json!({"clips": []}));
+    d.frames(3);
+    assert!(d.harness.state().auto.find("graphics.prop.rotation").is_none(), "the field is gone");
+    assert!(!d.grabs_cursor(egui::CursorGrab::None), "the cursor stays locked while the button is down");
+    d.input([button(false)]);
+    assert!(d.grabs_cursor(egui::CursorGrab::None), "the cursor is let go");
+    assert!(d.moves_cursor_to(at), "where the press began");
 }
 
 /// A touch has no raw mouse motion: once a mouse sent some, a touch drag still follows the finger.

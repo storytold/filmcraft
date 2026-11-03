@@ -189,9 +189,7 @@ fn hot_number_display(ui: &mut Ui, id: egui::Id, value: f64, options: HotNumberO
             out = Some(nv);
         }
     }
-    if resp.drag_stopped() {
-        release_cursor_lock(ui, resp.id);
-    }
+    release_cursor_lock(ui.ctx());
     if resp.clicked() {
         ui.data_mut(|d| {
             d.insert_temp(id.with("editing"), format!("{value:.decimals$}"));
@@ -219,33 +217,50 @@ fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
 /// held where the press began, and the drag follows the raw mouse motion, which the screen edge
 /// does not stop (#4177). Without raw motion (the web) or for a touch, it is the pointer's own delta.
 fn locked_drag_dx(ui: &Ui, resp: &Response) -> f32 {
-    let lock_id = resp.id.with("cursor-lock");
-    if resp.drag_started() {
-        ui.data_mut(|d| d.remove_temp::<egui::Pos2>(lock_id));
-    }
     let (motion, touching, press_origin, pointer) = ui.input(|i| (i.pointer.motion(), i.any_touches(), i.pointer.press_origin(), i.pointer.latest_pos()));
     // once any raw motion arrived, `motion` stays `Some` on every frame, also for a touch, which has none
     let Some(motion) = motion.filter(|_| !touching) else { return resp.drag_delta().x };
-    let origin = match ui.data(|d| d.get_temp::<egui::Pos2>(lock_id)) {
-        Some(origin) => origin,
+    let lock = match ui.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())).filter(|l| l.owner == resp.id) {
+        Some(lock) => lock,
         None => {
             let Some(origin) = press_origin else { return resp.drag_delta().x };
-            ui.data_mut(|d| d.insert_temp(lock_id, origin));
-            origin
+            let lock = CursorLock { owner: resp.id, origin, viewport: ui.ctx().viewport_id() };
+            ui.data_mut(|d| d.insert_temp(cursor_lock_id(), lock));
+            // Wayland moves only a locked cursor
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+            lock
         }
     };
     ui.ctx().set_cursor_icon(egui::CursorIcon::None);
-    if pointer != Some(origin) {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorPosition(origin));
+    if pointer != Some(lock.origin) {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorPosition(lock.origin));
     }
     motion.x / ui.ctx().pixels_per_point()
 }
 
-/// Ends [`locked_drag_dx`]'s lock: the cursor shows again where the press began.
-fn release_cursor_lock(ui: &Ui, id: egui::Id) {
-    if let Some(origin) = ui.data_mut(|d| d.remove_temp::<egui::Pos2>(id.with("cursor-lock"))) {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::CursorPosition(origin));
+/// The cursor held by [`locked_drag_dx`]: the hot number dragging it, where the press began and
+/// the window it is in.
+#[derive(Clone, Copy)]
+struct CursorLock {
+    owner: egui::Id,
+    origin: egui::Pos2,
+    viewport: egui::ViewportId,
+}
+
+fn cursor_lock_id() -> egui::Id {
+    egui::Id::unique("hot-number-cursor-lock")
+}
+
+/// Ends [`locked_drag_dx`]'s lock once the button is up: the cursor is let go and shows again where
+/// the press began. Also called on every pass, for a drag whose field went away before the release.
+pub(crate) fn release_cursor_lock(ctx: &egui::Context) {
+    let Some(lock) = ctx.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())) else { return };
+    if ctx.input_for(lock.viewport, |i| i.pointer.any_down()) {
+        return;
     }
+    ctx.data_mut(|d| d.remove::<CursorLock>(cursor_lock_id()));
+    ctx.send_viewport_cmd_to(lock.viewport, egui::ViewportCommand::CursorPosition(lock.origin));
+    ctx.send_viewport_cmd_to(lock.viewport, egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
 }
 
 /// A large blue timecode readout (monitors/timeline) that moves its playhead: drag horizontally to
