@@ -96,11 +96,11 @@ pub fn open(name: &str, bytes: &[u8]) -> Option<Result<AnimatedSource>> {
     let format = Format::sniff(bytes)?;
     let frames = match format {
         Format::Apng => {
-            let mut d = PngDecoder::new(Cursor::new(bytes)).ok()?;
+            // `new` reads the metadata (and inflates any ICC profile) under no limits at all
+            let d = PngDecoder::with_limits(Cursor::new(bytes), Limits::default()).ok()?;
             if !d.is_apng().ok()? {
                 return None;
             }
-            d.set_limits(Limits::default()).ok()?;
             d.apng().ok()?.into_frames()
         }
         Format::Gif => {
@@ -140,16 +140,17 @@ impl AnimatedSource {
             let buffer = frame.into_buffer();
             let (w, h) = buffer.dimensions();
             let rgba = buffer.into_raw();
+            // every frame is a full canvas decode, repeated frames included
+            decoded = decoded.saturating_add(rgba.len());
+            if decoded > MAX_DECODED_BYTES {
+                break;
+            }
             if let (Some(last), Some(d)) = (pictures.last(), durations.last_mut())
                 && (last.0, last.1) == (w, h)
                 && last.2 == rgba
             {
                 *d = Tick(d.0.saturating_add(ticks.0));
                 continue;
-            }
-            decoded = decoded.saturating_add(rgba.len());
-            if decoded > MAX_DECODED_BYTES {
-                break;
             }
             has_alpha = has_alpha || rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 255);
             pictures.push((w, h, rgba));
