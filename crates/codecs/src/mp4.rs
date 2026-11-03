@@ -88,10 +88,10 @@ pub fn sniff(b: &[u8]) -> bool {
     b.len() >= 12 && matches!(&b[4..8], b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip")
 }
 
-/// Audio packet start positions in source sample frames at `rate`: the running total of the sample
-/// durations, except that packets which all decode to the same length (AAC, MPEG audio, AC-3,
-/// E-AC-3) run on from one another, resynchronising to the total only across gaps of more than half
-/// a packet.
+/// Audio packet start positions in source sample frames at `rate`, from their presentation
+/// timestamps. Summing durations loses a fragmented track's nonzero `tfdt` origin and any gaps.
+/// Packets which all decode to the same length (AAC, MPEG audio, AC-3, E-AC-3) run on from one
+/// another, resynchronising to the timestamp only across gaps of more than half a packet.
 /// A remux from Matroska (OBS's) carries the millisecond rounding of its timestamps into the
 /// durations: 1008, 1008, 1056… for 1024-sample AAC frames at 48 kHz (see
 /// [`crate::audio::contiguous_starts`]).
@@ -99,14 +99,12 @@ fn audio_starts(file: &Mp4File, bytes: &crate::Src, ti: usize, rate: u32) -> Vec
     use crate::audio::{FixedFrames, PacketTime, contiguous_starts, fixed_packet_samples};
     let Some(t) = file.tracks.get(ti) else { return Vec::new() };
     let ts = i128::from(t.timescale.max(1));
-    let mut total = 0i128;
     let stamps: Vec<i64> = t
         .samples
         .iter()
         .map(|s| {
-            let at = total * i128::from(rate) / ts;
-            total += i128::from(s.duration);
-            i64::try_from(at).unwrap_or(i64::MAX)
+            let at = (i128::from(s.pts) * i128::from(rate)).div_euclid(ts);
+            i64::try_from(at).unwrap_or(if at < 0 { i64::MIN } else { i64::MAX })
         })
         .collect();
     let first = || file.read_sample(bytes, ti, 0).unwrap_or_default();
@@ -354,7 +352,6 @@ impl Mp4Source {
         // that somehow has none is dropped so `audio_streams` and `audios` stay index-aligned
         let (atracks, audio_streams): (Vec<usize>, Vec<AudioStreamInfo>) =
             atracks.into_iter().filter_map(|i| Some((i, audio_stream_info(file.tracks.get(i)?, &bytes)?))).unzip();
-        let duration = vtrack.or(atracks.first().copied()).and_then(|i| file.tracks.get(i)).map(|t| presentation_duration(&file, t)).unwrap_or_default();
         let start_timecode = file.tracks.iter().find_map(|t| match t.codec() {
             Some(CodecConfig::Timecode(tc)) => tc.start_frame.map(|f| f as i64),
             _ => None,
@@ -362,10 +359,10 @@ impl Mp4Source {
         // Sony XAVC files with no `tmcd` track carry the start timecode in an `rtmd` metadata
         // track; convert its fields to a frame count using the video frame rate.
         let start_timecode = start_timecode.or_else(|| rtmd_start_timecode(&file, &bytes, video.as_ref()?.frame_rate));
-        let info = MediaInfo {
+        let mut info = MediaInfo {
             name: name.to_string(),
             kind: if video.is_some() { MediaKind::Movie } else { MediaKind::AudioOnly },
-            duration,
+            duration: Tick::ZERO, // filled after the shared presentation origin is applied
             video,
             audio_streams,
             container: if file.is_quicktime { "QuickTime".into() } else { "MPEG-4".into() },
@@ -391,8 +388,10 @@ impl Mp4Source {
                 Some(Mp4Audio { track: i, state, starts, offset, preroll })
             })
             .collect();
+        rebase_unedited_media(&mut file, vtrack, &mut audios);
+        // Measure the end on the same timeline as frame lookup, before the optional jitter snap.
+        info.duration = vtrack.or(atracks.first().copied()).and_then(|i| file.tracks.get(i)).map(|t| presentation_duration(&file, t)).unwrap_or_default();
         snap_to_frame_grid(&mut file, vtrack);
-        rebase_unedited_video(&mut file, vtrack, &mut audios);
         let snap = vtrack.zip(info.video.as_ref()).is_some_and(|(i, v)| {
             let t = &file.tracks[i];
             crate::gop::snap_coarse_units(t.samples.iter().map(|s| s.pts.saturating_add(t.edit_offset)), 1, i64::from(t.timescale), v.frame_rate)
@@ -837,8 +836,8 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<Result<SharedSource, Media
 /// on the same one: a frame that far off was placed there (variable frame rate), so a file with one
 /// such picture keeps all its times. A picture at most one unit off is left where it is: that can't
 /// be told from the timescale's rounding. Snapping keeps the samples' presentation order. Only the video samples move: the first picture, which the audio and
-/// `rebase_unedited_video` go by, is the grid's origin, and the clip's duration comes from the
-/// track header.
+/// `rebase_unedited_media` go by, is the grid's origin. The clip's duration is measured before
+/// snapping.
 fn snap_to_frame_grid(file: &mut Mp4File, vtrack: Option<usize>) {
     let Some(t) = vtrack.and_then(|i| file.tracks.get_mut(i)) else { return };
     let Some(first) = t.samples.iter().map(|s| s.pts).min() else { return };
@@ -881,28 +880,42 @@ fn snap_to_frame_grid(file: &mut Mp4File, vtrack: Option<usize>) {
 /// Start the file at its first picture when its video track has no edit list (#714). Without an
 /// edit list the media timeline is the presentation, so a B-frame stream's first picture sits at its
 /// composition delay (two frames on an x264 MP4 written without `elst`, and on fragmented MP4s):
-/// media time zero repeated it and the clip, which lasts the media duration, lost its last pictures.
+/// media time zero repeated it and a clip limited to the media duration lost its last pictures.
 /// Every track moves back by the earliest start among them, video and audio alike, so the streams
 /// stay in sync and a delay between them keeps its meaning; a track with an edit list is never
-/// rebased on its own.
-fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut [Mp4Audio]) {
-    let Some(vi) = vtrack else { return };
-    let Some(t) = file.tracks.get(vi).filter(|t| t.edits.is_empty() && t.timescale > 0) else { return };
+/// rebased on its own. An unedited audio-only file starts at its earliest packet origin.
+fn rebase_unedited_media(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut [Mp4Audio]) {
+    let Some(primary) = vtrack.or_else(|| audios.first().map(|a| a.track)) else { return };
+    let Some(t) = file.tracks.get(primary).filter(|t| t.edits.is_empty() && t.timescale > 0) else { return };
+    // An audio-only file has no video clock. Normalize its common packet origin too, but do not
+    // reinterpret an explicit audio edit list or remove the Opus pre-skip at that origin.
+    if vtrack.is_none() && audios.iter().any(|a| file.tracks.get(a.track).is_some_and(|t| !t.edits.is_empty())) {
+        return;
+    }
     let Some(first) = t.samples.iter().map(|s| s.pts).min().map(|p| p.saturating_add(t.edit_offset)).filter(|&p| p > 0) else { return };
     let vts = i64::from(t.timescale);
-    let video_start = Tick::from_rational(first, 1, vts);
+    let primary_start = Tick::from_rational(first, 1, vts);
     let audio_ts = |a: &Mp4Audio| file.tracks.get(a.track).map_or(1, |t| i64::from(t.timescale.max(1)));
-    // an audio track starts at its offset (a negative one only hides priming before zero)
-    let shift = audios.iter().fold(video_start, |m, a| m.min(Tick::from_rational(a.offset.max(0), 1, audio_ts(a))));
+    // The edit/pre-skip offset is relative to the first packet's PTS, not necessarily zero:
+    // fragmented audio carries its own tfdt origin. Negative presentation time hides priming.
+    let shift = audios.iter().fold(primary_start, |m, a| {
+        let first = file.tracks.get(a.track).and_then(|t| t.samples.first()).map_or(0, |s| s.pts);
+        let offset = if vtrack.is_some() { a.offset } else { a.offset.max(0) };
+        m.min(Tick::from_rational(first.saturating_add(offset).max(0), 1, audio_ts(a)))
+    });
     if shift <= Tick::ZERO {
         return;
     }
     for a in audios.iter_mut() {
-        let d = shift.to_rational_round(1, audio_ts(a));
+        let ts = file.tracks.get(a.track).map_or(1, |t| i64::from(t.timescale.max(1)));
+        let d = shift.to_rational_round(1, ts);
         a.offset = a.offset.saturating_sub(d);
+        if let Some(t) = file.tracks.get_mut(a.track) {
+            t.edit_offset = t.edit_offset.saturating_sub(d);
+        }
     }
-    let v = if shift == video_start { first } else { shift.to_rational_round(1, vts) };
-    if let Some(t) = file.tracks.get_mut(vi) {
+    let v = if shift == primary_start { first } else { shift.to_rational_round(1, vts) };
+    if let Some(t) = vtrack.and_then(|vi| file.tracks.get_mut(vi)) {
         t.edit_offset = t.edit_offset.saturating_sub(v);
     }
 }
@@ -911,8 +924,9 @@ fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
 /// §8.6.6, movie timescale), as `tkhd` records it. The media duration (`mdhd`) runs on the decode
 /// timeline: it is longer than the presentation by the B-frame delay an edit skips (`media_time`, one
 /// extra frame on every ffmpeg / x264 MP4 with B-frames) and shorter by a leading empty edit (the last
-/// frame of a delayed video track was never shown). Fragmented files, and edit lists that add up to
-/// nothing or to more than a [`Tick`] holds, keep the media duration.
+/// frame of a delayed video track was never shown). Unedited tracks use their last presentation end
+/// after rebasing, including any relative delay or fragment gaps. Fragmented files with edits,
+/// and edit lists that add up to nothing or to more than a [`Tick`] holds, keep the media duration.
 ///
 /// Edit durations are whole movie-timescale units (milliseconds in ffmpeg / x264 files and our own
 /// exports), so 320 frames at 24 fps (13.3333 s) are written as 13 333 and would read as 319 frames.
@@ -922,6 +936,14 @@ fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
 /// (so exactly one unit is a real trim) and less than the last picture (a trim cuts whole pictures,
 /// which can be shorter than a coarse movie unit). Both are compared exactly, in the two timescales.
 fn presentation_duration(file: &Mp4File, t: &filmcraft_isobmff::Track) -> Tick {
+    if t.edits.is_empty() && t.timescale > 0 {
+        // Unedited media ends at its last presented sample, after the common A/V rebase.
+        // A duration sum omits relative track delays and gaps between fragments, clipping the
+        // tail even when every sample was indexed. i128 keeps hostile PTS + offset sums safe.
+        let end = t.samples.iter().map(|s| i128::from(s.pts) + i128::from(s.duration) + i128::from(t.edit_offset)).max().unwrap_or(0);
+        let ticks = end.max(0) * i128::from(filmcraft_time::TICKS_PER_SECOND) / i128::from(t.timescale);
+        return Tick(i64::try_from(ticks).unwrap_or(i64::MAX));
+    }
     let media = Tick::from_rational(t.duration as i64, 1, t.timescale as i64);
     if file.fragmented || t.edits.is_empty() || file.timescale == 0 {
         return media;
