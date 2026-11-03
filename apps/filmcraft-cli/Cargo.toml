@@ -33,6 +33,8 @@ filmcraft-ogg = { workspace = true }
 filmcraft-automation = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# tells two paths to one lock file apart from two lock files (device and inode, volume and file index)
+same-file = "1.0.6"
 
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }

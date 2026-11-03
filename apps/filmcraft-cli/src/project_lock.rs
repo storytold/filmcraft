@@ -10,6 +10,7 @@
 //! removing it would let one run wait on the old file while another locks a new one.
 
 use crate::args::Args;
+use same_file::Handle;
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
@@ -69,38 +70,26 @@ fn lock_names(project: &Path) -> Vec<PathBuf> {
     names
 }
 
-/// The lock files a save of `project` takes, in [`lock_names`] order, each once. Two names can
-/// share a lock file (the same folder and the same first 200 bytes), and a second lock on a file
-/// this process already holds would wait on itself forever.
-fn lock_files(project: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = Vec::new();
-    for file in lock_names(project).iter().map(|name| lock_path(name)) {
-        if !files.iter().any(|taken| same_lock_file(taken, &file)) {
-            files.push(file);
-        }
+/// Open the lock file `path` and lock it, calling `waiting` first if another run holds it. `None`
+/// when `held` has it already. Two paths can name one lock file: the same folder and the same first
+/// 200 bytes, a link to the folder, a case-insensitive volume, a hard link. A second lock on a file
+/// this process holds would wait on itself forever, so lock files are told apart by what they are
+/// (device and inode, or volume and file index), not by how their paths are spelt.
+fn lock(path: &Path, held: &[Handle], waiting: impl FnOnce()) -> std::io::Result<Option<Handle>> {
+    let file = File::options().create(true).truncate(false).read(true).write(true).open(path)?;
+    let handle = Handle::from_file(file)?;
+    if held.contains(&handle) {
+        return Ok(None);
     }
-    files
-}
-
-/// Are `a` and `b` one lock file? Their folders are compared resolved, so a link to the folder or
-/// a relative spelling still matches.
-fn same_lock_file(a: &Path, b: &Path) -> bool {
-    let folder = |p: &Path| std::fs::canonicalize(p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."))).ok();
-    a == b || (a.file_name() == b.file_name() && folder(a).is_some_and(|f| folder(b) == Some(f)))
-}
-
-/// Lock the lock file `file`, calling `waiting` first if another run holds it.
-fn lock(file: &Path, waiting: impl FnOnce()) -> std::io::Result<File> {
-    let file = File::options().create(true).truncate(false).read(true).write(true).open(file)?;
-    match file.try_lock() {
+    match handle.as_file().try_lock() {
         Ok(()) => {}
         Err(TryLockError::WouldBlock) => {
             waiting();
-            file.lock()?;
+            handle.as_file().lock()?;
         }
         Err(TryLockError::Error(e)) => return Err(e),
     }
-    Ok(file)
+    Ok(Some(handle))
 }
 
 /// Take the project's locks if this run saves over the file it opens, or exit if `--project` is
@@ -108,14 +97,16 @@ fn lock(file: &Path, waiting: impl FnOnce()) -> std::io::Result<File> {
 /// while another run holds a lock, which is fine here: nothing else is running yet. A lock that
 /// can't be had (a read-only folder, a file system without locks) is a warning and not an error, so
 /// that saving works where it did.
-pub fn for_save(a: &Args) -> Vec<File> {
+pub fn for_save(a: &Args) -> Vec<Handle> {
     let Some(project) = saved_in_place(a).unwrap_or_else(|e| crate::fail(e)) else { return Vec::new() };
     let shown = project.display();
     let mut locks = Vec::new();
-    for file in lock_files(project) {
+    for name in lock_names(project) {
+        let file = lock_path(&name);
         let waiting = || crate::diag(format_args!("filmcraft-cli: waiting for another run saving {shown}"));
-        match lock(&file, waiting) {
-            Ok(file) => locks.push(file),
+        match lock(&file, &locks, waiting) {
+            Ok(Some(handle)) => locks.push(handle),
+            Ok(None) => {}
             Err(e) => {
                 crate::diag(format_args!("filmcraft-cli: warning: can't lock {} ({e}); another run saving it now could overwrite these edits", file.display()))
             }
@@ -184,36 +175,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Rows: a name, and the lock files a save through it takes. A link and its file share a lock
-    /// file when they sit in one folder and their names share the first 200 bytes, also when the
-    /// link is reached through a link to that folder; the run must take that lock file once, or it
-    /// waits on itself.
-    #[cfg(unix)]
+    /// Lock files held after locking `paths` in order, or `None` if that takes over ten seconds:
+    /// without the identity check, a second path to one lock file waits on this test forever.
+    fn held_after_locking(paths: Vec<PathBuf>) -> Option<usize> {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for path in &paths {
+                if let Some(handle) = lock(path, &held, || {}).unwrap() {
+                    held.push(handle);
+                }
+            }
+            let _ = done.send(held.len());
+        });
+        result.recv_timeout(std::time::Duration::from_secs(10)).ok()
+    }
+
+    /// Rows: lock-file paths taken in order, and how many lock files that is. Each alias of one
+    /// file, however it is spelt, must count once. Every row has files of its own, so a row that
+    /// waits on itself can't hold up the next.
     #[test]
-    fn each_lock_file_is_taken_once_however_it_is_reached() {
-        use std::os::unix::fs::symlink;
-        let dir = std::env::temp_dir().join(format!("fc-cli-lock-files-{}", std::process::id()));
+    fn a_lock_file_is_taken_once_whatever_path_reaches_it() {
+        let dir = std::env::temp_dir().join(format!("fc-cli-lock-identity-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("sub")).unwrap();
-        let dir = std::fs::canonicalize(&dir).unwrap();
-        let prefix = "p".repeat(MAX_NAME_BYTES);
-        let real = format!("{prefix}-real.fcproj");
-        std::fs::write(dir.join(&real), b"{}").unwrap();
-        let long_link = format!("{prefix}-link.fcproj");
-        symlink(&real, dir.join(&long_link)).unwrap();
-        symlink(&real, dir.join("short.fcproj")).unwrap();
-        let folder = dir.join("sub/folder");
-        symlink(&dir, &folder).unwrap();
-        let shared = dir.join(format!(".{prefix}.lock"));
-        let rows: [(&str, PathBuf, Vec<PathBuf>); 5] = [
-            ("the file", dir.join(&real), vec![shared.clone()]),
-            ("a link with another name", dir.join("short.fcproj"), vec![dir.join(".short.fcproj.lock"), shared.clone()]),
-            ("a link sharing the file's lock file", dir.join(&long_link), vec![shared.clone()]),
-            ("the same link through a linked folder", folder.join(&long_link), vec![folder.join(format!(".{prefix}.lock"))]),
-            ("the short link through a linked folder", folder.join("short.fcproj"), vec![folder.join(".short.fcproj.lock"), shared.clone()]),
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = |name: &str| dir.join(format!(".{name}.lock"));
+        let shared = lock(&"p".repeat(MAX_NAME_BYTES));
+        std::fs::write(lock("hard"), b"").unwrap();
+        std::fs::hard_link(lock("hard"), lock("hard-alias")).unwrap();
+        let mut rows: Vec<(&str, Vec<PathBuf>, usize)> = vec![
+            ("one path twice (a link and its file sharing their first 200 bytes)", vec![shared.clone(), shared], 1),
+            ("a hard link", vec![lock("hard"), lock("hard-alias")], 1),
+            ("two files", vec![lock("one"), lock("two")], 2),
         ];
-        for (what, project, want) in rows {
-            assert_eq!(lock_files(&project), want, "{what}");
+        #[cfg(unix)]
+        {
+            let folder = dir.join("folder");
+            std::os::unix::fs::symlink(&dir, &folder).unwrap();
+            rows.push(("through a link to the folder", vec![lock("linked"), folder.join(".linked.lock")], 1));
+        }
+        // only where the volume ignores case (macOS and Windows by default)
+        std::fs::write(lock("case"), b"").unwrap();
+        if lock("CASE").exists() {
+            rows.push(("another case", vec![lock("case"), lock("CASE")], 1));
+        }
+        for (what, paths, want) in rows {
+            assert_eq!(held_after_locking(paths), Some(want), "{what}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
