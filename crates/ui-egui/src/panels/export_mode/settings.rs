@@ -1,7 +1,7 @@
 use super::{
     AudioCodec, BitrateMode, ExportSettings, ExrCompression, FieldOrder, FileDialog, FilmcraftApp, Format, FrameRate, GpuRendering, H264Profile,
-    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset, is_export_busy,
-    pos2, vec2,
+    HardwareEncoding, Multiplexer, MxfVideoCodec, Placement, PresetManager, Rect, Reg, SampleFormat, Sense, TextOverlay, Tokens, apply_preset,
+    are_settings_locked, pos2, vec2,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -222,7 +222,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     let mut reg = Reg::default();
     let mut open_manager = false;
     let mut chosen_preset: Option<String> = None;
-    let busy = is_export_busy(app);
+    let locked = are_settings_locked(app);
     let (seq_w, seq_h, seq_rate, seq_sr) = app
         .session
         .active_sequence()
@@ -238,7 +238,7 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 10.0))).id_salt("export-settings"));
     let ex = &mut app.ui.export;
     egui::ScrollArea::vertical().id_salt("export-settings-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
-        ui.add_enabled_ui(!busy, |ui| {
+        ui.add_enabled_ui(!locked, |ui| {
             ui.label(egui::RichText::new(tl!("Media File")).strong().size(14.0));
             ui.add_space(6.0);
             row(ui, &t, tl!("File Name"), |ui| {
@@ -397,14 +397,14 @@ pub(super) fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: R
     if open_manager {
         app.ui.export.manager = Some(PresetManager { selected: app.ui.export.preset.clone(), ..Default::default() });
     }
-    if pick_folder && !busy {
+    if pick_folder && !locked {
         app.pick_ui(FileDialog::Folder { at: None }, |app, paths| {
             if let Some(d) = paths.into_iter().next() {
                 app.ui.export.location = d;
             }
         });
     }
-    if pick_overlay && !busy {
+    if pick_overlay && !locked {
         app.pick_ui(FileDialog::open_file(tl!("Image"), &["png", "jpg", "jpeg"]), |app, paths| {
             if let Some(f) = paths.into_iter().next() {
                 app.ui.export.settings.effects.image_overlay.path = f;
