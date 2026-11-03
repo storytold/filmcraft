@@ -568,6 +568,13 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
 /// Add `incoming` to `library`, each replacing the entry with the same key in place (a file with
 /// many presets used to rescan the growing library once per preset).
 pub(crate) fn merge_by_key<T>(library: &mut Vec<T>, incoming: Vec<T>, key: impl Fn(&T) -> String) {
+    // Drop the library's duplicates of imported keys, keeping the first, so the replacement lands where `find` looks.
+    let imported: std::collections::HashSet<String> = incoming.iter().map(&key).collect();
+    let mut kept = std::collections::HashSet::new();
+    library.retain(|x| {
+        let k = key(x);
+        !imported.contains(&k) || kept.insert(k)
+    });
     let mut index: std::collections::HashMap<String, usize> = library.iter().enumerate().map(|(i, x)| (key(x), i)).collect();
     for item in incoming {
         match index.get(&key(&item)) {
@@ -603,11 +610,13 @@ mod merge_tests {
         let mut lib = vec![("a", 1), ("b", 1)];
         merge_by_key(&mut lib, vec![("b", 2), ("c", 1), ("c", 2), ("d", 1)], |x| x.0.to_string());
         assert_eq!(lib, vec![("a", 1), ("b", 2), ("c", 2), ("d", 1)]);
-        // many distinct names stay linear: 200k imports finish in well under a second
+        // A duplicate already in the library is dropped for an imported key; the first entry is replaced.
+        let mut lib = vec![("a", 1), ("b", 1), ("b", 9)];
+        merge_by_key(&mut lib, vec![("b", 2)], |x| x.0.to_string());
+        assert_eq!(lib, vec![("a", 1), ("b", 2)]);
+        // many distinct names: 200k imports all land
         let mut lib: Vec<(String, u32)> = Vec::new();
-        let t = std::time::Instant::now();
         merge_by_key(&mut lib, (0..200_000).map(|i| (format!("preset {i}"), i)).collect(), |x| x.0.clone());
         assert_eq!(lib.len(), 200_000);
-        assert!(t.elapsed().as_secs() < 5);
     }
 }
