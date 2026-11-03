@@ -223,17 +223,21 @@ const G2: &[(u8, char)] = &[
     (0x79, '⅞'),
 ];
 
-/// Service-data atoms (a command with its parameters, or one character) for a character.
-fn char_atom(c: char) -> Vec<u8> {
-    match c {
+/// Service-data atoms (a command with its parameters, or one character) for a character, if
+/// CEA-708 has a code for it.
+fn char_atom(c: char) -> Option<Vec<u8>> {
+    Some(match c {
         '♪' => vec![0x7f],
         ' '..='~' => vec![c as u8],
         '\u{a0}'..='\u{ff}' => vec![c as u32 as u8],
-        _ => match G2.iter().find(|g| g.1 == c) {
-            Some((b, _)) => vec![0x10, *b],
-            None => vec![b'?'],
-        },
-    }
+        _ => vec![0x10, G2.iter().find(|g| g.1 == c)?.0],
+    })
+}
+
+/// What a CEA-708 decoder shows for `c`: `c`, or `?`, which the writer sends for a character
+/// with no code.
+pub fn shown_as_708(c: char) -> char {
+    if char_atom(c).is_some() { c } else { '?' }
 }
 
 /// Atoms that define window `win` hidden and load `rows` into it.
@@ -250,7 +254,7 @@ fn load_atoms(win: u8, rows: &[String]) -> Vec<Vec<u8>> {
         if i > 0 {
             v.push(vec![0x0d]);
         }
-        v.extend(r.chars().map(char_atom));
+        v.extend(r.chars().map(|c| char_atom(c).unwrap_or_else(|| vec![b'?'])));
     }
     v
 }
