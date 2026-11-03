@@ -671,11 +671,11 @@ fn engine_execute_leaves_the_ui_alone_for_every_dialog_command() {
         "media.createProxies",
         "media.linkMedia",
         "media.makeOffline",
+        // (not `file.exportFrame`: without a dialog it exports, to a file in the working directory)
         "file.newOfflineFile",
         "clip.speedDuration",
         "clip.rename",
         "clip.nest",
-        "file.exportFrame",
         "file.exportAaf",
         "file.exportOmf",
         "captions.export",
