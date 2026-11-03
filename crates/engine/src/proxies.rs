@@ -155,8 +155,15 @@ fn transcode_with_file(
     if has_a && let Some(ti) = p.make_track_item(item, TrackKind::Audio, Tick::ZERO, range, rate) {
         placed.push((TrackKind::Audio, ti));
     }
-    // the timecode of the first frame, when the source has one a timecode track can hold
-    let start_tc = info.start_timecode.and_then(|f| f.checked_add(rate.frame_at(range.start))).filter(|f| u32::try_from(*f).is_ok());
+    // the timecode of the first frame, when the source has one a timecode track can hold. The
+    // source counts it at the file's own rate, which Interpret Footage may have changed, so it is
+    // carried over by time before the range start (at the output rate) is added.
+    let file_rate = info.frame_rate();
+    let start_tc = info
+        .start_timecode
+        .map(|f| rate.frame_at(file_rate.tick_of(f)))
+        .and_then(|f| f.checked_add(rate.frame_at(range.start)))
+        .filter(|f| u32::try_from(*f).is_ok());
     let q = p.sequence_mut(seq).ok_or("no sequence")?;
     q.start_timecode = start_tc.unwrap_or(0);
     for (k, ti) in placed {
