@@ -467,6 +467,7 @@ pub fn code_word(p: (u8, u8)) -> u16 {
 
 pub fn write(doc: &Document, drop_frame: bool) -> String {
     let occ = schedule(doc);
+    let origin = frame_of(doc.start_timecode).max(0); // time codes count from the start time code
     let mut out = String::from(HEADER);
     out.push_str("\n\n");
     let mut line: Option<(i64, Vec<String>)> = None;
@@ -475,13 +476,13 @@ pub fn write(doc: &Document, drop_frame: bool) -> String {
         if f != last + 1
             && let Some((start, words)) = line.take()
         {
-            out.push_str(&format!("{}\t{}\n\n", format_timecode(start, drop_frame), words.join(" ")));
+            out.push_str(&format!("{}\t{}\n\n", format_timecode(start.saturating_add(origin), drop_frame), words.join(" ")));
         }
         line.get_or_insert_with(|| (f, Vec::new())).1.push(format!("{:04x}", word(p)));
         last = f;
     }
     if let Some((start, words)) = line {
-        out.push_str(&format!("{}\t{}\n\n", format_timecode(start, drop_frame), words.join(" ")));
+        out.push_str(&format!("{}\t{}\n\n", format_timecode(start.saturating_add(origin), drop_frame), words.join(" ")));
     }
     out
 }
@@ -521,6 +522,28 @@ mod tests {
         assert_eq!(format_timecode(1800, true), "00:01:00;02");
         assert_eq!(format_timecode(1800, false), "00:01:00:00");
         assert_eq!(parse_timecode("00:10:00;00"), Some(17982));
+    }
+
+    /// Time codes count from the document's start time code; the code words do not change.
+    #[test]
+    fn time_codes_count_from_the_start_timecode() {
+        let doc = Document { cues: vec![cue(60, 120, "Hello")], ..Default::default() };
+        let master = Document { start_timecode: RATE.tick_of(107_892), ..doc.clone() };
+        let lines = |text: &str| -> Vec<(i64, String)> {
+            text.lines().filter_map(|l| l.split_once('\t')).map(|(tc, words)| (parse_timecode(tc).unwrap(), words.to_string())).collect()
+        };
+        for drop_frame in [true, false] {
+            let plain = lines(&write(&doc, drop_frame));
+            let shifted: Vec<_> = plain.iter().map(|(f, words)| (f + 107_892, words.clone())).collect();
+            let text = write(&master, drop_frame);
+            assert_eq!(lines(&text), shifted);
+            assert!(text.contains(if drop_frame { "\n01:00:0" } else { "\n00:59:5" }), "{text}");
+            assert_eq!(parse(&text).unwrap().cues[0].start, RATE.tick_of(107_892 + 60));
+        }
+        for t in [Tick(i64::MIN), Tick(-1)] {
+            assert_eq!(write(&Document { start_timecode: t, ..doc.clone() }, true), write(&doc, true), "a negative start counts from zero");
+        }
+        assert!(write(&Document { start_timecode: Tick(i64::MAX), ..doc }, true).contains('\t'));
     }
 
     #[test]

@@ -551,6 +551,7 @@ pub fn write(doc: &Document, drop_frame: bool) -> String {
 pub fn write_with(doc: &Document, drop_frame: bool, cea608: bool, cea708: bool) -> String {
     let f1 = if cea608 { scc::schedule(doc) } else { BTreeMap::new() };
     let dtv = if cea708 { schedule_708(doc) } else { BTreeMap::new() };
+    let origin = scc::frame_of(doc.start_timecode).max(0); // time codes count from the start time code
     let mut out = String::from("File Format=MacCaption_MCC V1.0\n\n");
     out.push_str("///////////////////////////////////////////////////////////////////////////////////\n");
     out.push_str("// Closed captions written by FilmCraft: SMPTE ST 334-2 caption distribution packets\n");
@@ -578,7 +579,7 @@ pub fn write_with(doc: &Document, drop_frame: bool, cea608: bool, cea708: bool) 
             f1: f1.next_if(|(frame, _)| *frame == f).map(|(_, pair)| pair),
             dtvcc: dtv.next_if(|(frame, _)| *frame == f).map(|(_, pairs)| pairs).unwrap_or_default(),
         };
-        let (_, hh, mm, ss, ff) = frames_to_fields(f, RATE, drop_frame);
+        let (_, hh, mm, ss, ff) = frames_to_fields(f.saturating_add(origin), RATE, drop_frame);
         let sep = if drop_frame { ';' } else { ':' };
         out.push_str(&format!("{hh:02}:{mm:02}:{ss:02}{sep}{ff:02}\t{}\n", compress(&build_cdp(seq, &data))));
         seq = seq.wrapping_add(1);
@@ -767,6 +768,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Time codes count from the document's start time code; the packets do not change.
+    #[test]
+    fn time_codes_count_from_the_start_timecode() {
+        let doc = Document { cues: vec![cue(60, 120, "Caption")], ..Default::default() };
+        let master = Document { start_timecode: RATE.tick_of(107_892), ..doc.clone() };
+        let lines = |text: &str| -> Vec<(i64, String)> {
+            text.lines().filter_map(|l| l.split_once('\t')).map(|(tc, data)| (scc::parse_timecode(tc).unwrap(), data.to_string())).collect()
+        };
+        for drop_frame in [true, false] {
+            let plain = lines(&write(&doc, drop_frame));
+            let shifted: Vec<_> = plain.iter().map(|(f, data)| (f + 107_892, data.clone())).collect();
+            let text = write(&master, drop_frame);
+            assert_eq!(lines(&text), shifted);
+            assert_eq!(parse(&text).unwrap().cues[0].start, RATE.tick_of(107_892 + 60));
+        }
+        let negative = Document { start_timecode: filmcraft_time::Tick(-1), ..doc.clone() };
+        assert_eq!(lines(&write(&negative, true)), lines(&write(&doc, true)), "a negative start counts from zero");
+        assert!(write(&Document { start_timecode: filmcraft_time::Tick(i64::MAX), ..doc }, true).contains('\t'));
     }
 
     /// Bound output for distant or long cues near the tick limit without changing their timing.

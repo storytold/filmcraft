@@ -159,6 +159,46 @@ fn caption_list_track_filter_never_falls_back_to_every_track() {
     }
 }
 
+/// SCC and MCC time codes count from the sequence's start time code, as EDL and marker exports do,
+/// so the captions line up with a master that starts at 01:00:00;00.
+#[test]
+fn scc_and_mcc_export_count_from_the_sequence_start_timecode() {
+    let dir = std::env::temp_dir().join(format!("fc-cap-tc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "Master", "fps": 29.97, "video": 1, "audio": 0})).unwrap();
+    s.edit_sequence("Timing", |q, _, _| {
+        q.settings.drop_frame = true;
+        q.start_timecode = 107_892; // 01:00:00;00
+        Ok(())
+    })
+    .unwrap();
+    s.execute("playhead.set", json!({"seconds": 2.0})).unwrap();
+    s.execute("captions.add", json!({"text": "Hello"})).unwrap();
+    let rate = filmcraft_captions::scc::RATE;
+    let start = s.active_sequence().unwrap().caption_tracks[0].captions[0].start;
+    let expected = rate.tick_of(107_892 + rate.frame_at(rate.snap_nearest(start)));
+    for ext in ["scc", "mcc"] {
+        let path = dir.join(format!("master.{ext}")).to_string_lossy().to_string();
+        s.execute("captions.export", json!({"path": path})).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        let first = text.lines().find_map(|l| l.split_once('\t')).map(|(tc, _)| tc.to_string()).unwrap();
+        assert!(first.starts_with("01:00:0"), "{ext}: the first time code is {first}");
+        let back = filmcraft_captions::parse(&bytes, filmcraft_captions::Format::from_name(ext).unwrap()).unwrap();
+        assert_eq!(back.cues[0].start, expected, "{ext}: the caption keeps its place after the start time code");
+    }
+    // An export's sidecar counts from the time code of its first frame, as an MXF export does.
+    let out = dir.join("range.wav").to_string_lossy().to_string();
+    let range = json!({"range": "custom", "startTime": rate.tick_of(30).0, "endTime": rate.tick_of(150).0});
+    let mut params = json!({"format": "wav", "path": out, "captionSidecar": "scc", "wait": true});
+    params.as_object_mut().unwrap().extend(range.as_object().unwrap().clone());
+    s.execute("file.exportMedia", params).unwrap();
+    let back = filmcraft_captions::parse(&std::fs::read(dir.join("range.scc")).unwrap(), filmcraft_captions::Format::Scc).unwrap();
+    assert_eq!(back.cues[0].start, expected, "the sidecar keeps the caption at its time code");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn caption_spans(s: &Session) -> Vec<(f64, f64, String)> {
     let secs = |t: Tick| (t.seconds() * 10.0).round() / 10.0; // the demo sequence snaps to 23.976 fps frames
     s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| (secs(c.start), secs(c.end()), c.text.clone())).collect()

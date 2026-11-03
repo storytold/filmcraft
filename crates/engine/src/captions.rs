@@ -262,7 +262,8 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let tid = track_param(s, p).ok_or_else(|| bad("captions.export", "no caption track"))?;
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let track = seq.caption_track(tid).ok_or_else(|| bad("captions.export", "no such caption track"))?;
-    let doc: Document = filmcraft_captions::document_from_track(track, Tick::ZERO);
+    let mut doc: Document = filmcraft_captions::document_from_track(track, Tick::ZERO);
+    doc.start_timecode = seq.settings.frame_rate.tick_of(seq.start_timecode); // SCC / MCC count from it
     let df = bool_p(p, "dropFrame").unwrap_or(true);
     let bytes = filmcraft_captions::write(&doc, format, WriteOptions { drop_frame: df, rate: Some(seq.settings.frame_rate) });
     let n = doc.cues.len();

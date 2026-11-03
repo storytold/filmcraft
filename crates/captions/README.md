@@ -21,7 +21,9 @@ and writes caption files, converts them to and from caption tracks, and draws ca
 
 All cue times are exact `Tick`s. Milliseconds convert exactly (1 ms = 254 016 000 ticks); SCC
 frames map through `FrameRate::FPS_29_97`. `Document::snap_to_frames` snaps cues to a sequence's
-frame grid (the engine does this on import) and removes overlaps.
+frame grid (the engine does this on import) and removes overlaps. SCC and MCC time codes count from
+`Document::start_timecode` (the engine sets the sequence's start timecode, plus the range start for
+an export's sidecar); readers leave it at zero and keep the file's own time codes.
 
 ### TTML tick timing
 

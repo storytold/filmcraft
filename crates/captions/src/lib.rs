@@ -129,6 +129,9 @@ pub struct Document {
     pub blocks: Vec<String>,
     /// Non-fatal problems found while reading (skipped cues…).
     pub warnings: Vec<String>,
+    /// SCC / MCC: the time code of time zero, as a time from 00:00:00:00 (a sequence's start
+    /// timecode on export). Cue times stay relative to it; readers leave it at zero.
+    pub start_timecode: Tick,
 }
 
 impl Document {
@@ -354,6 +357,7 @@ pub fn document_from_track(t: &CaptionTrack, offset: Tick) -> Document {
             .collect(),
         blocks: t.vtt_blocks.clone(),
         warnings: Vec::new(),
+        start_timecode: Tick::ZERO,
     }
 }
 
