@@ -188,8 +188,10 @@ params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog
 sequence as tone-mapped SDR.
 
 **Chapters** (#2747): `file.exportMedia` writes the sequence's chapter markers (`markers.addChapter`)
-inside the export range into MP4, MOV and M4A files, timed from the range start, as a QuickTime chapter
-track and a Nero `chpl` list (`ffprobe -show_chapters`, QuickTime, VLC). On by default;
+inside the export range into MP4, MOV and M4A files as a QuickTime chapter
+track and a Nero `chpl` list (`ffprobe -show_chapters`, QuickTime, VLC). Video files time chapters from
+the first exported frame (which can sit just before a range start that falls between frames), M4A
+from the range start. On by default;
 `{chapters: false}` (or `settings.includeChapters: false`) leaves them out. Export mode: Metadata ▸
 Include Chapter Markers (`export.metadata.chapters`).
 
