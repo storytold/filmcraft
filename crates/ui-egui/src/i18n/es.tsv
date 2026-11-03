@@ -3665,3 +3665,62 @@
 	Change the sequence to match the clip's settings?	¿Cambiar la secuencia para que coincida con los ajustes del clip?
 	Change Sequence Settings	Cambiar ajustes de secuencia
 	Keep Existing Settings	Mantener los ajustes actuales
+	Temporal Interpolation	Interpolación temporal
+	Select items to clear	Selecciona los elementos que quieres borrar
+	Opens in your web browser: {url}	Se abre en el navegador web: {url}
+	A range marker needs a positive duration	Un marcador de rango necesita una duración positiva
+	Add Custom Color	Añadir color personalizado
+	Add and apply	Añadir y aplicar
+	Add color	Añadir color
+	Add custom color	Añadir color personalizado
+	Add custom color…	Añadir color personalizado…
+	Author	Autor
+	Chapter	Capítulo
+	Choose Color…	Elegir color…
+	Choose color with system picker	Elegir color con el selector del sistema
+	Color picker	Selector de color
+	Color selected markers	Cambiar el color de los marcadores seleccionados
+	Custom Color…	Color personalizado…
+	Delete Marker	Eliminar marcador
+	Delete selected markers	Eliminar los marcadores seleccionados
+	Edit Custom Color	Editar color personalizado
+	Edit Marker	Editar marcador
+	Edit color	Editar color
+	Editing or removing a swatch leaves assigned colors unchanged.	Editar o eliminar una muestra no cambia los colores asignados.
+	Enter six hex digits, for example FF80C0.	Introduce seis dígitos hexadecimales, por ejemplo FF80C0.
+	Hex	Hex
+	Hex color	Color hexadecimal
+	Manage Colors	Gestionar colores
+	Manage Colors…	Gestionar colores…
+	Marker owner is unavailable	El propietario del marcador no está disponible
+	No markers	No hay marcadores
+	No matching markers	No hay marcadores coincidentes
+	No saved colors	No hay colores guardados
+	No sequence open	No hay ninguna secuencia abierta
+	No source clip open	No hay ningún clip de origen abierto
+	Notes	Notas
+	Project Colors	Colores del proyecto
+	Range marker	Marcador de rango
+	Remove saved color	Eliminar color guardado
+	Save color	Guardar color
+	Search markers	Buscar marcadores
+	Search name, notes, author	Buscar nombre, notas o autor
+	Select all	Seleccionar todo
+	Select all visible markers	Seleccionar todos los marcadores visibles
+	Sequence: {name}	Secuencia: {name}
+	Source: {name}	Origen: {name}
+	Source: {name} (shared source markers)	Origen: {name} (marcadores de origen compartidos)
+	System color picker unavailable: {error}	El selector de color del sistema no está disponible: {error}
+	Time is outside the supported range	El tiempo está fuera del rango admitido
+	{count} selected	{count} seleccionados
+	Remove Custom Color	Eliminar color personalizado
+	Edit Markers	Editar marcadores
+	Delete Markers	Eliminar marcadores
+	Marker changed or was removed. Reopen it to continue.	El marcador cambió o se eliminó. Ábrelo de nuevo para continuar.
+	URL	URL
+	Open Link	Abrir enlace
+	Opens this address in your web browser	Abre esta dirección en tu navegador web
+	Enter a valid HTTP or HTTPS URL without credentials	Introduce una URL HTTP o HTTPS válida sin credenciales
+	Previous	Anterior
+	Next	Siguiente
+	Enter a valid HH:MM:SS:FF timecode	Introduce un código de tiempo válido HH:MM:SS:FF

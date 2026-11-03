@@ -401,7 +401,7 @@ fn discard_unused_output(s: &mut Session, path: &str) {
         followed.as_deref() == Some(path)
             || canonical.as_ref().is_some_and(|output| followed.and_then(|p| std::fs::canonicalize(p).ok()).as_ref() == Some(output))
     };
-    let mut projects = std::iter::once(s.project.as_ref()).chain(s.history.undo.iter().chain(&s.history.redo).map(|(_, p)| p.as_ref()));
+    let mut projects = std::iter::once(s.project.as_ref()).chain(s.history.undo.iter().chain(&s.history.redo).map(|(_, p, _)| p.as_ref()));
     if projects.any(|project| {
         project.items.values().any(|item| item.as_media().is_some_and(|m| references(&m.media) || m.proxy.as_ref().is_some_and(&mut references)))
     }) {
