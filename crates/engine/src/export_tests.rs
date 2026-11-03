@@ -215,6 +215,11 @@ fn queue_add_numbers_an_output_another_queued_item_writes() {
     let again = add(&mut s, 3.0);
     assert_eq!(again["warnings"], json!([]));
     assert_eq!(paths(&mut s)[3], dir.path("clip.wav"));
+    // retried, the cancelled item finds its name taken and is numbered
+    let retried = s.execute("export.queue.retry", json!({"id": first["added"][0]})).unwrap();
+    assert_eq!(retried["warnings"], json!([crate::export_tools::RENAMED_WARNING]));
+    assert_eq!(paths(&mut s)[0], dir.path("clip_4.wav"));
+    s.execute("export.queue.cancel", json!({"id": first["added"][0]})).unwrap();
     // the queue writes four separate files
     s.execute("export.queue.start", json!({"wait": true})).unwrap();
     for f in ["clip.wav", "clip_2.wav", "clip_3.wav"] {

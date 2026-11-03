@@ -818,6 +818,18 @@ fn free_queue_path(path: &str, taken: &[String], occupied: impl Fn(&str) -> bool
         .unwrap_or_else(|| path.to_string())
 }
 
+/// The outputs queue items hold (as [`queue_path_key`]s), except item `except`: an item that will
+/// write or has written its file keeps it, so another with the same output gets the next free `_N`
+/// instead of overwriting it (#4175). Cancelled and failed items let go.
+fn queue_taken_paths(s: &Session, except: Option<u64>) -> Vec<String> {
+    s.export_queue
+        .items
+        .iter()
+        .filter(|i| Some(i.id) != except && matches!(i.status, QueueStatus::Ready | QueueStatus::Encoding | QueueStatus::Done))
+        .map(|i| queue_path_key(&i.settings.path))
+        .collect()
+}
+
 fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "export.queue.add";
     let (preset, settings) = settings_from_params(s, p, cmd)?;
@@ -860,15 +872,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
             items.push((seq, st));
         }
     }
-    // a queue item that will write or has written its file keeps it: a new item with the same output
-    // gets the next free `_N` instead of overwriting it (#4175). Cancelled and failed items let go.
-    let mut taken: Vec<String> = s
-        .export_queue
-        .items
-        .iter()
-        .filter(|i| matches!(i.status, QueueStatus::Ready | QueueStatus::Encoding | QueueStatus::Done))
-        .map(|i| queue_path_key(&i.settings.path))
-        .collect();
+    let mut taken = queue_taken_paths(s, None);
     for (seq, mut st) in items {
         if taken.contains(&queue_path_key(&st.path)) {
             st.path = free_queue_path(&st.path, &taken, |c| output_occupied(s, c, st.format));
@@ -963,9 +967,19 @@ fn queue_cancel(s: &mut Session, p: &Value) -> Result<Value> {
 fn queue_retry(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "export.queue.retry";
     let i = queue_item_p(s, p, cmd)?;
-    let it = &mut s.export_queue.items[i];
+    let Some(it) = s.export_queue.items.get(i) else { return Err(bad(cmd, "no such item")) };
     if matches!(it.status, QueueStatus::Encoding | QueueStatus::Ready) {
         return Err(bad(cmd, "only finished, failed or cancelled exports can be retried"));
+    }
+    // a cancelled or failed item let go of its file: if another item has it since, number this one
+    let taken = queue_taken_paths(s, Some(it.id));
+    let mut warnings = Vec::new();
+    let renamed =
+        taken.contains(&queue_path_key(&it.settings.path)).then(|| free_queue_path(&it.settings.path, &taken, |c| output_occupied(s, c, it.settings.format)));
+    let Some(it) = s.export_queue.items.get_mut(i) else { return Err(bad(cmd, "no such item")) };
+    if let Some(path) = renamed {
+        it.settings.path = path;
+        warnings.push(RENAMED_WARNING);
     }
     it.status = QueueStatus::Ready;
     it.error = None;
@@ -974,7 +988,7 @@ fn queue_retry(s: &mut Session, p: &Value) -> Result<Value> {
         s.export_queue.running = true;
         pump_queue(s, bool_p(p, "wait").unwrap_or(false));
     }
-    Ok(json!({"items": queue_list_json(s)}))
+    Ok(json!({"items": queue_list_json(s), "warnings": warnings}))
 }
 
 fn queue_remove(s: &mut Session, p: &Value) -> Result<Value> {
