@@ -412,3 +412,32 @@ fn a_transformed_nest_keeps_captions_at_its_held_source_time() {
     assert!(worst(&with, &without) > 0.1, "held caption must be visible after its outer-time end");
     assert!(worst(&r.planned(outer, t), &without) < 0.001);
 }
+
+/// A sequence that places the next one on four tracks, nine levels deep, is 4^8 leaf renders;
+/// the shared per-frame budget keeps it to a small multiple of the visit limit.
+#[test]
+fn a_fan_out_of_nests_is_bounded_by_the_visit_budget() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut r = Rig::new();
+    let leaf = r.matte(RED, 8, 8);
+    let rate = FrameRate::FPS_24;
+    let settings = SequenceSettings { width: 8, height: 8, frame_rate: rate, ..Default::default() };
+    let mut below = leaf;
+    for level in 0..9 {
+        let s = r.p.new_sequence(&format!("L{level}"), settings.clone(), 4, 1, None);
+        for track in 0..4 {
+            let ti = r.p.make_track_item(below, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(10)), rate).unwrap();
+            r.p.sequence_mut(s).unwrap().video_tracks[track].items.push(ti);
+        }
+        below = s;
+    }
+    let calls = AtomicUsize::new(0);
+    let map = &r.map;
+    let counting = |item: ItemId| {
+        calls.fetch_add(1, Ordering::Relaxed);
+        map.0.get(&item).cloned()
+    };
+    let _ = render_sequence(&r.p, below, Tick::ZERO, RenderOptions::default(), &counting);
+    let n = calls.load(Ordering::Relaxed);
+    assert!(n <= 8 * nest_budget::MAX_NESTED_VISITS as usize, "{n} source lookups");
+}

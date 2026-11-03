@@ -25,6 +25,7 @@ pub mod luts;
 pub mod mask;
 pub mod mixer;
 pub mod multicam;
+mod nest_budget;
 pub mod offline;
 pub mod plan;
 pub mod preview;
@@ -226,7 +227,8 @@ pub(crate) fn render_seq_tracks(project: &Project, seq: &Sequence, t: Tick, opts
 fn seq_canvas(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider, only: Option<usize>) -> Canvas {
     let (w, h) = output_size(seq, opts.scale);
     let mut canvas = Canvas::new(w, h);
-    if opts.depth > MAX_NEST_DEPTH {
+    let visit = nest_budget::Visit::enter();
+    if opts.depth > MAX_NEST_DEPTH || visit.exhausted() {
         return canvas;
     }
     let tc = format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
