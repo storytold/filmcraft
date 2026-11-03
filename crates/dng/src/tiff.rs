@@ -15,6 +15,9 @@ pub const MAX_IFDS: usize = 64;
 pub const MAX_DEPTH: usize = 4;
 /// Invalid SubIFD edges count too: otherwise a file can make failed offset probes quadratic.
 const MAX_IFD_ATTEMPTS: usize = MAX_IFDS * 16;
+/// SubIFD references (zero, repeated and invalid ones included) accepted over the whole walk,
+/// counted before a list is read: many directories can name the same long SubIFD table.
+const MAX_SUB_IFD_REFS: usize = MAX_IFD_ATTEMPTS;
 
 /// TIFF field types (TIFF 6.0 §2, plus type 13 IFD from TIFF Technical Note 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,6 +165,7 @@ impl<'a> Tiff<'a> {
         let mut out: Vec<Ifd> = Vec::new();
         let mut seen = HashSet::new();
         let mut attempts = 0usize;
+        let mut sub_refs = 0usize;
         let mut stack: Vec<(u64, usize)> = vec![(first, 0)];
         while let Some((off, depth)) = stack.pop() {
             let mut next = off;
@@ -184,10 +188,15 @@ impl<'a> Tiff<'a> {
                 };
                 if depth < MAX_DEPTH
                     && let Some(sub) = ifd.get(tags::SUB_IFDS)
-                    && let Ok(offs) = self.uints(sub)
                 {
-                    for o in offs.into_iter().rev() {
-                        stack.push((o, depth + 1));
+                    sub_refs = sub_refs.saturating_add(usize::try_from(sub.count).unwrap_or(usize::MAX));
+                    if sub_refs > MAX_SUB_IFD_REFS {
+                        return Err(Error::Malformed("too many SubIFD references"));
+                    }
+                    if let Ok(offs) = self.uints(sub) {
+                        for o in offs.into_iter().rev().filter(|o| *o != 0 && !seen.contains(o)) {
+                            stack.push((o, depth + 1));
+                        }
                     }
                 }
                 out.push(ifd);
@@ -339,4 +348,50 @@ pub mod tags {
     pub const FRAME_RATE: u16 = 51044;
     /// CinemaDNG: the camera's reel name.
     pub const REEL_NAME: u16 = 51081;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A little-endian TIFF: a chain of `ifds` directories, each with one SubIFDs entry of
+    /// `count` LONGs, all naming the same table (of zeros, or of `target`).
+    fn chain(ifds: usize, count: u32, target: u32) -> Vec<u8> {
+        let mut b = b"II*\0".to_vec();
+        b.extend_from_slice(&8u32.to_le_bytes());
+        let table = 8 + ifds * 18;
+        for i in 0..ifds {
+            let next = if i + 1 < ifds { 8 + (i + 1) * 18 } else { 0 };
+            b.extend_from_slice(&1u16.to_le_bytes());
+            b.extend_from_slice(&tags::SUB_IFDS.to_le_bytes());
+            b.extend_from_slice(&4u16.to_le_bytes());
+            b.extend_from_slice(&count.to_le_bytes());
+            b.extend_from_slice(&(table as u32).to_le_bytes());
+            b.extend_from_slice(&(next as u32).to_le_bytes());
+        }
+        for _ in 0..count.max(2) {
+            b.extend_from_slice(&target.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn shared_sub_ifd_tables_are_budgeted_before_they_are_queued() {
+        // 60 directories each naming one 100 000-entry table: 6 million queued edges before
+        let b = chain(60, 100_000, 0);
+        let (t, first) = Tiff::new(&b).unwrap();
+        assert!(matches!(t.all_ifds(first), Err(Error::Malformed("too many SubIFD references"))));
+    }
+
+    #[test]
+    fn ordinary_sub_ifds_are_still_walked() {
+        // one directory whose SubIFD is the same directory: visited once
+        let b = chain(1, 1, 8);
+        let (t, first) = Tiff::new(&b).unwrap();
+        assert_eq!(t.all_ifds(first).unwrap().len(), 1);
+        // a short chain with a few zero SubIFD offsets
+        let b = chain(3, 4, 0);
+        let (t, first) = Tiff::new(&b).unwrap();
+        assert_eq!(t.all_ifds(first).unwrap().len(), 3);
+    }
 }
