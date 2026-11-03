@@ -912,3 +912,64 @@ fn the_trim_cursor_stays_while_a_transition_end_is_dragged() {
     assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "trim cursor while dragging, 40 px on");
     d.release(to);
 }
+
+/// #3044: dragging the Out edge of one selected clip trims every selected clip by the same amount,
+/// shown on all of them during the drag, in one undo step; Alt-drag still trims only that clip.
+#[test]
+fn dragging_an_edge_of_a_selection_trims_every_selected_clip() {
+    for alt in [false, true] {
+        let mut d = Driver::demo();
+        let (city, dunes) = (d.v1_clip(CITY), d.v1_clip(DUNES));
+        d.exec("timeline.select", json!({"clips": [city, dunes]}));
+        let (c0, d0, undo) = (d.span(city), d.span(dunes), d.undo_steps());
+        let (_, x1, y) = d.edges(city);
+        let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
+        let width = |d: &mut Driver| {
+            let id = format!("timeline.clip.{dunes}");
+            d.ok("ui.elements", json!({"prefix": id}))[0]["rect"][2].as_f64().expect("width")
+        };
+        let w0 = width(&mut d);
+        if !alt {
+            d.press_and_move(from, to, 20);
+            assert!(width(&mut d) < w0 - 30.0, "the other selected clip previews the trim");
+            d.release(to);
+        } else {
+            d.ok("ui.drag", json!({"from": {"x": from.x, "y": y}, "to": {"x": to.x, "y": y}, "steps": 20, "modifiers": {"alt": true}}));
+            d.frames(2);
+        }
+        let (c1, d1) = (d.span(city), d.span(dunes));
+        assert_eq!(c1.0, c0.0, "alt={alt}: trimmed, not moved");
+        assert!(c1.1 < c0.1, "alt={alt}: the grabbed clip was trimmed: {c0:?} -> {c1:?}");
+        if alt {
+            assert_eq!(d1, d0, "Alt-drag trims only the clip under the pointer");
+        } else {
+            assert_eq!(d1, (d0.0, d0.1 - (c0.1 - c1.1)), "the other selected clip is trimmed by the same amount");
+        }
+        assert_eq!(d.undo_steps(), undo + 1, "alt={alt}: one undo step");
+        assert!(d.app().session.state.selection.contains(&ClipId(dunes)), "the selection stays");
+        d.exec("edit.undo", json!({}));
+        assert_eq!((d.span(city), d.span(dunes)), (c0, d0));
+    }
+}
+
+/// #3044: as for a move, a selected clip on a locked track refuses the trim of the selection.
+#[test]
+fn a_selected_clip_on_a_locked_track_prevents_the_trim() {
+    let mut d = Driver::demo();
+    let city = d.v1_clip(CITY);
+    let seq = d.app().session.active_sequence().expect("sequence");
+    let (music, track) =
+        seq.audio_tracks.iter().find_map(|t| t.items.iter().find(|i| i.name.contains("Ambient")).map(|i| (i.id.0, t.id.0))).expect("the demo has music");
+    d.exec("timeline.select", json!({"clips": [city, music]}));
+    d.exec("timeline.setTrack", json!({"track": track, "locked": true}));
+    d.frames(3);
+    let before = d.app().session.project.clone();
+    let undo = d.undo_steps();
+    let (_, x1, y) = d.edges(city);
+    let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
+    d.press_and_move(from, to, 20);
+    assert_eq!(d.cursor(), CursorIcon::NotAllowed);
+    d.release(to);
+    assert_eq!(serde_json::to_value(&*d.app().session.project).unwrap(), serde_json::to_value(&*before).unwrap());
+    assert_eq!(d.undo_steps(), undo);
+}
