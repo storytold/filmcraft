@@ -591,29 +591,33 @@ fn a_selection_trim_stops_at_its_tightest_limit() {
 }
 
 /// #3044: a selected clip whose Out point is already past the end of its media cannot extend with
-/// the others, and would trim the other way: the selection does not move.
+/// the others, and would trim the other way: the selection does not move, whether it is one
+/// frame past (the trim would shorten every clip by that frame) or far past.
 #[test]
 fn a_selection_trim_does_not_move_when_one_clip_cannot_follow() {
-    let (mut s, clips) = selected_pair();
-    let seq = s.state.active_sequence.unwrap();
-    let past = {
-        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
-        let it = &mut q.video_tracks[1].items[0];
-        it.duration = Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
-        it.id
-    };
-    assert_eq!(past, clips[1].0);
-    let before = clips.map(|(v, _)| range_of(&s, v));
-    let d = s.sequence_rate().tick_of(6);
-    let shown = commands::trim_delta_of(
-        &s,
-        &commands::trim_targets(&s, clips[0].0, filmcraft_edit::TrimMode::Regular, true, true),
-        filmcraft_edit::Edge::Out,
-        filmcraft_edit::TrimMode::Regular,
-        d,
-    );
-    assert_eq!(shown.unwrap(), Tick::ZERO);
-    let r = s.execute("timeline.trim", json!({"clip": clips[0].0.0, "edge": "out", "delta": d.0, "selection": true})).unwrap();
-    assert_eq!(r["delta"], json!(0));
-    assert_eq!(clips.map(|(v, _)| range_of(&s, v)), before);
+    for frames_past in [1, 3600 * 25] {
+        let (mut s, clips) = selected_pair();
+        let rate = s.sequence_rate();
+        let far = Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+        let room = commands::trim_delta(&s, clips[1].0, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far).unwrap();
+        let seq = s.state.active_sequence.unwrap();
+        {
+            let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap();
+            let (_, it) = q.find_item_mut(clips[1].0).unwrap();
+            it.duration += room + rate.tick_of(frames_past);
+        }
+        let before = clips.map(|(v, _)| range_of(&s, v));
+        let d = rate.tick_of(6);
+        let shown = commands::trim_delta_of(
+            &s,
+            &commands::trim_targets(&s, clips[0].0, filmcraft_edit::TrimMode::Regular, true, true),
+            filmcraft_edit::Edge::Out,
+            filmcraft_edit::TrimMode::Regular,
+            d,
+        );
+        assert_eq!(shown.unwrap(), Tick::ZERO, "{frames_past} frames past");
+        let r = s.execute("timeline.trim", json!({"clip": clips[0].0.0, "edge": "out", "delta": d.0, "selection": true})).unwrap();
+        assert_eq!(r["delta"], json!(0), "{frames_past} frames past");
+        assert_eq!(clips.map(|(v, _)| range_of(&s, v)), before, "{frames_past} frames past");
+    }
 }

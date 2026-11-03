@@ -794,6 +794,9 @@ fn clamp_trim_linked(q: &filmcraft_project::Sequence, clips: &[ClipId], edge: Ed
     if !any {
         return Err(edit::EditError::Locked.into());
     }
+    if clips.len() > 1 && d != Tick::ZERO && (d < Tick::ZERO) != (delta < Tick::ZERO) {
+        return Ok(Tick::ZERO);
+    }
     for c in clips {
         match edit::clamp_trim(q, *c, edge, mode, d, ctx) {
             Ok(x) if x != d => return Ok(Tick::ZERO),
