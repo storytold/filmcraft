@@ -257,3 +257,105 @@ fn export_and_import_go_through_host_services() {
     assert_eq!(s2.presets.user.len(), 1);
     assert!(s2.execute("presets.import", json!({"path": "/exports/missing.prfpset"})).is_err());
 }
+
+/// #2377 review: a rename that brings back a built-in the preset hid by having its name, and two
+/// presets of one file with the same id, would leave a command applying the wrong preset.
+#[test]
+fn renames_and_imports_keep_one_preset_per_id() {
+    let fs = Arc::new(MemFs::default());
+    let mut s = Session::new(fs.clone());
+    let fade = crate::presets::builtin_presets().into_iter().map(|p| p.name).find(|n| n.contains(' ')).unwrap();
+    let variant = fade.to_uppercase().replace(' ', "-");
+    // a user preset with exactly the built-in's name takes its place; renamed to another spelling
+    // of it, the built-in would come back with the same id
+    let path = "/exports/one.prfpset";
+    s.execute("presets.export", json!({"path": path, "names": [fade]})).unwrap();
+    s.execute("presets.import", json!({"path": path})).unwrap();
+    assert!(s.presets.user.iter().any(|p| p.name == fade));
+    let e = s.execute("presets.rename", json!({"name": fade, "to": variant})).unwrap_err().to_string();
+    assert!(e.contains("shortcut id"), "{e}");
+    s.execute("presets.rename", json!({"name": fade, "to": "Mine"})).unwrap();
+    // one file, two presets with one id: the first is imported, the second skipped
+    let mut file: serde_json::Value = serde_json::from_slice(&fs.read_file(path).unwrap()).unwrap();
+    let mut second = file["presets"][0].clone();
+    file["presets"][0]["name"] = json!("Glow");
+    second["name"] = json!("glow!");
+    file["presets"].as_array_mut().unwrap().push(second);
+    fs.write_file("/exports/two.prfpset", &serde_json::to_vec(&file).unwrap()).unwrap();
+    let r = s.execute("presets.import", json!({"path": "/exports/two.prfpset"})).unwrap();
+    assert_eq!((r["imported"].clone(), r["skipped"].clone()), (json!(["Glow"]), json!(["glow!"])));
+}
+
+/// Every effect preset is a bindable command, `presets.apply.<name>` (#1356): listed in Keyboard
+/// Shortcuts under Presets, assignable a key, applying the preset to the selected clips in
+/// one undo step; a deleted preset takes its command with it.
+#[test]
+fn every_preset_is_a_shortcut_command() {
+    use crate::presets::command_key;
+    assert_eq!(command_key("Blur In (Short)"), "blur-in-short");
+    assert_eq!(command_key("  Glow--Pop!  "), "glow-pop");
+    assert_eq!(command_key("???"), "");
+    let (mut s, clips) = demo();
+    let ids = |s: &mut Session, q: &str| -> Vec<String> {
+        let r = s.execute("shortcuts.list", json!({"query": q})).unwrap();
+        r["commands"].as_array().or_else(|| r.as_array()).unwrap().iter().filter_map(|c| c["id"].as_str().map(str::to_string)).collect()
+    };
+    // the built-in presets are there from the start
+    let builtin = crate::presets::builtin_presets().into_iter().next().unwrap().name;
+    let builtin_id = format!("presets.apply.{}", command_key(&builtin));
+    assert!(ids(&mut s, &builtin).contains(&builtin_id), "{builtin_id}");
+    // a saved preset adds its command
+    s.state.selection = vec![clips[0]];
+    s.execute("effects.apply", json!({"effect": "gaussian_blur"})).unwrap();
+    let bi = item(&s, clips[0]).effects.iter().position(|e| e.effect == "gaussian_blur").unwrap();
+    let revision = s.shortcuts.revision;
+    s.execute("presets.save", json!({"clip": clips[0].0, "name": "Soft Glow!", "effects": [bi]})).unwrap();
+    assert!(ids(&mut s, "Soft Glow").contains(&"presets.apply.soft-glow".to_string()));
+    // the running UI rebuilds its key map from the new commands (#2377 review)
+    assert_ne!(s.shortcuts.revision, revision);
+    let info = s.shortcuts.command("presets.apply.soft-glow").unwrap();
+    assert_eq!((info.label.as_str(), info.category.as_str()), ("Soft Glow!", "Presets"));
+    s.execute("shortcuts.set", json!({"command": "presets.apply.soft-glow", "keys": "Ctrl+Alt+G"})).unwrap();
+    // the command applies the preset to the selected clips, one undo step
+    let target = clips[2];
+    s.state.selection = vec![target];
+    let before = item(&s, target).effects.iter().filter(|e| e.effect == "gaussian_blur").count();
+    let undo = s.history.undo.len();
+    s.execute("presets.apply.soft-glow", json!({})).unwrap();
+    assert_eq!(item(&s, target).effects.iter().filter(|e| e.effect == "gaussian_blur").count(), before + 1);
+    assert_eq!(s.history.undo.len(), undo + 1);
+    // deleting the preset removes the command
+    s.execute("presets.delete", json!({"name": "Soft Glow!"})).unwrap();
+    assert!(!ids(&mut s, "Soft Glow").contains(&"presets.apply.soft-glow".to_string()));
+    assert!(s.execute("presets.apply.soft-glow", json!({})).is_err());
+    // a name without a letter or digit would give no command: refused (#2377 review)
+    let user = s.presets.user.len();
+    let e = s.execute("presets.save", json!({"clip": clips[0].0, "name": "???", "effects": [bi]})).unwrap_err().to_string();
+    assert!(e.contains("letter or a digit"), "{e}");
+    assert_eq!(s.presets.user.len(), user);
+    s.execute("presets.save", json!({"clip": clips[0].0, "name": "Glow 2", "effects": [bi]})).unwrap();
+    assert!(s.execute("presets.rename", json!({"name": "Glow 2", "to": "--"})).is_err());
+    assert!(s.presets.user.iter().any(|x| x.name == "Glow 2"), "the rename changed nothing");
+    // nor a name whose id another preset has: a key bound to it would apply the other (#2377 review)
+    let fade = crate::presets::builtin_presets().into_iter().map(|p| p.name).find(|n| n.contains(' ')).unwrap();
+    let variant = fade.to_uppercase().replace(' ', "-");
+    assert_ne!(variant, fade);
+    let user = s.presets.user.len();
+    let e = s.execute("presets.save", json!({"clip": clips[0].0, "name": variant, "effects": [bi]})).unwrap_err().to_string();
+    assert!(e.contains("shortcut id"), "{e}");
+    assert_eq!(s.presets.user.len(), user);
+    assert!(s.execute("presets.rename", json!({"name": "Glow 2", "to": variant})).unwrap_err().to_string().contains("shortcut id"));
+    // renaming a preset to another spelling of its own name is fine
+    s.execute("presets.rename", json!({"name": "Glow 2", "to": "glow-2"})).unwrap();
+    assert!(s.presets.user.iter().any(|x| x.name == "glow-2"));
+}
+
+#[test]
+fn built_in_presets_have_ids_of_their_own() {
+    let mut keys: Vec<String> = crate::presets::builtin_presets().iter().map(|p| crate::presets::command_key(&p.name)).collect();
+    assert!(keys.iter().all(|k| !k.is_empty()));
+    let n = keys.len();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), n, "two built-in presets share a command id");
+}
