@@ -255,6 +255,49 @@ fn queue_add_numbers_an_output_another_queued_item_writes() {
     assert_eq!(paths(&mut s), [dir.path("set.wav"), dir.path("set_2.wav")]);
 }
 
+/// A generated queue name also skips what the host holds (web files are not on disk) and, for an
+/// image sequence, the numbered stills its name would write.
+#[test]
+fn queue_add_numbering_skips_host_files_and_image_sequence_stills() {
+    use std::collections::BTreeSet;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct HostFiles(Mutex<BTreeSet<String>>);
+    impl crate::Services for HostFiles {
+        fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+            if self.0.lock().unwrap().contains(path) { Ok(b"keep".to_vec()) } else { Err(std::io::ErrorKind::NotFound.into()) }
+        }
+        fn write_file(&self, path: &str, _: &[u8]) -> std::io::Result<()> {
+            self.0.lock().unwrap().insert(path.to_owned());
+            Ok(())
+        }
+        fn export_in_memory(&self) -> bool {
+            true
+        }
+    }
+    let files = Arc::new(HostFiles::default());
+    files.0.lock().unwrap().insert("take_2.wav".into());
+    let mut s = Session::new(files);
+    s.execute("file.newSequence", json!({"name": "Host", "fps": 25, "width": 16, "height": 16, "video": 0, "audio": 1})).unwrap();
+    for _ in 0..2 {
+        s.execute("export.queue.add", json!({"path": "take.wav", "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.2})).unwrap();
+    }
+    let paths: Vec<Value> = queue(&mut s).iter().map(|i| i["path"].clone()).collect();
+    assert_eq!(paths, [json!("take.wav"), json!("take_3.wav")], "the host's take_2.wav is kept");
+
+    let mut s = demo();
+    let dir = Scratch::new("queue-still-names");
+    // `still_2.png` would start with still_2000.png, which is there
+    std::fs::write(dir.path("still_2000.png"), b"keep").unwrap();
+    for _ in 0..2 {
+        s.execute("export.queue.add", json!({"path": dir.path("still.png"), "format": "png", "range": "custom", "startSeconds": 0, "endSeconds": 0.1}))
+            .unwrap();
+    }
+    let paths: Vec<String> = queue(&mut s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
+    assert_eq!(paths, [dir.path("still.png"), dir.path("still_3.png")]);
+}
+
 #[test]
 fn single_frame_in_out_exports_warn_without_changing_the_output() {
     let mut s = demo();

@@ -793,9 +793,17 @@ fn queue_path_key(path: &str) -> String {
     path.to_lowercase()
 }
 
+/// Whether an export to `path` would replace a file: the file itself, or for an image sequence its
+/// first numbered still (at any padding width). Asked of the host too, whose files (web) are not on
+/// the native file system.
+fn output_occupied(s: &Session, path: &str, format: filmcraft_export::Format) -> bool {
+    let there = |f: &str| Path::new(f).exists() || s.services.file_size(f).is_ok();
+    if format.is_image_sequence() { (3..=9).any(|digits| there(&filmcraft_export::image_sequence_path(path, 0, 10u64.pow(digits)))) } else { there(path) }
+}
+
 /// `path` with the first `_N` (from 2) that no queued item writes (`taken`, as [`queue_path_key`]s)
-/// and no file has: a generated name must not replace a file nobody named.
-fn free_queue_path(path: &str, taken: &[String]) -> String {
+/// and that is not `occupied`: a generated name must not replace a file nobody named.
+fn free_queue_path(path: &str, taken: &[String], occupied: impl Fn(&str) -> bool) -> String {
     let (stem, ext) = match path.rsplit_once('.') {
         Some((a, e)) if !e.contains(['/', '\\']) => (a, Some(e)),
         _ => (path, None),
@@ -806,7 +814,7 @@ fn free_queue_path(path: &str, taken: &[String]) -> String {
             None => format!("{stem}_{n}"),
         })
         .take(100_000)
-        .find(|c| !taken.contains(&queue_path_key(c)) && !Path::new(c).exists())
+        .find(|c| !taken.contains(&queue_path_key(c)) && !occupied(c))
         .unwrap_or_else(|| path.to_string())
 }
 
@@ -863,7 +871,7 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
         .collect();
     for (seq, mut st) in items {
         if taken.contains(&queue_path_key(&st.path)) {
-            st.path = free_queue_path(&st.path, &taken);
+            st.path = free_queue_path(&st.path, &taken, |c| output_occupied(s, c, st.format));
             warnings.push(RENAMED_WARNING);
         }
         taken.push(queue_path_key(&st.path));
