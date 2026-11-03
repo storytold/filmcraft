@@ -13,6 +13,7 @@ use serde_json::json;
 
 use crate::Session;
 use crate::media_test_util::{session_with, tmp_dir};
+use crate::scene_detect::{MAX_ANALYSED_FRAMES, MAX_TOTAL_ANALYSED_FRAMES, scheduled_frames};
 
 /// Write a 24 fps ProRes movie of demo scenes played one after the other: `shots` = (scene,
 /// frames). The cuts are at the running sums of the frame counts.
@@ -204,4 +205,19 @@ fn detects_the_cuts_of_an_ffmpeg_concat_and_cuts_linked_audio() {
     for (x, y) in q.video_tracks[0].items.iter().zip(&q.audio_tracks[0].items) {
         assert!(x.link.is_some() && x.link == y.link);
     }
+}
+
+#[test]
+fn the_frame_budget_spans_all_selected_clips() {
+    let fd = Tick(1000);
+    let mut remaining = MAX_TOTAL_ANALYSED_FRAMES;
+    // one clip may use up to a day at 60 fps, but not twice that across clips (or repeats of one clip)
+    let day = Tick(fd.0 * MAX_ANALYSED_FRAMES / 2);
+    assert_eq!(scheduled_frames(day, fd, &mut remaining).unwrap(), MAX_ANALYSED_FRAMES / 2);
+    assert_eq!(scheduled_frames(day, fd, &mut remaining).unwrap(), MAX_ANALYSED_FRAMES / 2);
+    assert!(scheduled_frames(Tick(fd.0), fd, &mut remaining).is_err());
+    // a stored duration beyond the cap cannot ask for more than the cap, and then nothing is left
+    let mut remaining = MAX_TOTAL_ANALYSED_FRAMES;
+    assert_eq!(scheduled_frames(Tick(i64::MAX), fd, &mut remaining).unwrap(), MAX_ANALYSED_FRAMES);
+    assert!(scheduled_frames(Tick(0), fd, &mut remaining).is_err());
 }
