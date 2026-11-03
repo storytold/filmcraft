@@ -108,6 +108,42 @@ fn auto_relink_by_prefix_and_by_folder_search() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+// An EDL line with no `* SOURCE FILE:` names its file by clip name only. Imported away from the
+// file, the clip is missing like any file that isn't found: the folder search and Relink Others
+// find it, and opening the project asks for it. It was made offline, which all three skip.
+#[test]
+fn edl_clips_named_only_by_clip_name_are_missing_not_made_offline() {
+    let root = tmp_dir("relink-edl-reel");
+    let media = root.join("Media");
+    std::fs::create_dir_all(&media).unwrap();
+    make_movie(&media.join("a.mov"), DemoScene::Aurora, W, H, 24);
+    make_movie(&media.join("b.mov"), DemoScene::CityNight, W, H, 24);
+    let edit = root.join("Edit");
+    std::fs::create_dir_all(&edit).unwrap();
+    let edl = "TITLE: CUT\nFCM: NON-DROP FRAME\n\n\
+        001  A        V     C        00:00:00:00 00:00:00:12 01:00:00:00 01:00:00:12\n* FROM CLIP NAME: a.mov\n\n\
+        002  B        V     C        00:00:00:00 00:00:00:12 01:00:00:12 01:00:01:00\n* FROM CLIP NAME: b.mov\n";
+    std::fs::write(edit.join("cut.edl"), edl).unwrap();
+    let mut s = Session::default();
+    s.execute("file.import", json!({"paths": [edit.join("cut.edl").to_string_lossy()]})).unwrap();
+    let m = s.execute("media.findMissing", json!({})).unwrap();
+    let statuses: Vec<&str> = m["missing"].as_array().unwrap().iter().map(|r| r["status"].as_str().unwrap()).collect();
+    assert_eq!(statuses, ["missing", "missing"], "{m}");
+    let path = root.join("p.fcproj").to_string_lossy().into_owned();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    assert!(open(&path).offline.prompt, "opening the project asks for the missing files");
+
+    // The EDL gives neither a duration nor a picture size, so those checks are off.
+    let checks = json!({"duration": false, "metadata": false});
+    let r = s.execute("media.autoRelink", json!({"folder": media.to_string_lossy(), "match": checks})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "{r}");
+    let mut s = open(&path);
+    let (item, name) = (m["missing"][0]["item"].as_u64().unwrap(), m["missing"][0]["fileName"].as_str().unwrap());
+    let r = s.execute("media.relink", json!({"item": item, "path": media.join(name).to_string_lossy(), "match": checks})).unwrap();
+    assert_eq!(r["remaining"], json!([]), "relinking one finds the other in its folder: {r}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn fingerprint_mismatch_is_refused_unless_forced() {
     let root = tmp_dir("relink-mismatch");

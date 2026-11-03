@@ -344,13 +344,12 @@ impl Ctx<'_> {
             return id;
         }
         // Without a file, the clip name (or reel) is the best path guess; relinking resolves it.
+        // Until then it is missing, as a `* SOURCE FILE:` that isn't found is, not made offline:
+        // Link Media's folder search and Relink Others skip made-offline media (#3997).
         let path = resolve_path(&name, self.opts.base_dir.as_deref());
         let id = self.b.file_media(&key, &name, &path, &spec, None);
         if let Some(m) = self.b.p.item_mut(id) {
             m.metadata.insert("Tape Name".into(), reel.to_string());
-            if let Some(mc) = m.as_media_mut() {
-                mc.offline = true;
-            }
         }
         id
     }

@@ -86,10 +86,11 @@ fn assert_drop_frame_video(p: &Project, s: &Sequence, r: FrameRate) {
     assert_eq!((ts[2].from, ts[2].to, ts[2].start, ts[2].duration), (Some(c.id), None, f(r, 390), f(r, 10)));
     assert_eq!(ts[2].align, TransitionAlign::EndAtCut);
 
-    // media without a source file is offline with its reel as tape name
+    // media without a source file has its reel as tape name, and is missing until relinked,
+    // not made offline (#3997)
     let gm = p.item(g.item).unwrap();
     assert_eq!(gm.metadata.get("Tape Name").map(String::as_str), Some("GULLS"));
-    assert!(gm.as_media().unwrap().offline);
+    assert!(!gm.as_media().unwrap().offline);
 }
 
 fn assert_drop_frame_audio_and_markers(s: &Sequence, r: FrameRate) {
