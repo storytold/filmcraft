@@ -926,6 +926,8 @@ impl AudioFileSource {
             if samples.is_empty() {
                 samples = vec![Vec::new(); channels.len()];
             }
+            let add: usize = channels.iter().map(Vec::len).sum();
+            check_decoded_budget(samples.iter().map(Vec::len).sum(), add)?;
             for (out, channel) in samples.iter_mut().zip(channels) {
                 out.extend(channel);
             }
@@ -1001,6 +1003,19 @@ pub(crate) fn cache_packet<P: PacketBytes>(packets: &mut HashMap<usize, Arc<P>>,
 /// Most samples (all channels together) a standalone ADTS file decodes into memory: 4 GiB of f32,
 /// about three hours of 48 kHz stereo. Longer files are refused rather than allocated.
 const MAX_ADTS_SAMPLES: usize = 1 << 30;
+
+/// Most samples (all channels together) a standalone file or an Ogg Vorbis stream keeps decoded in
+/// memory: the same 4 GiB of f32 as [`MAX_ADTS_SAMPLES`]. A file that decodes to more is refused.
+pub(crate) const MAX_DECODED_SAMPLES: usize = MAX_ADTS_SAMPLES;
+
+/// Whether `retained` samples plus `add` more stay within [`MAX_DECODED_SAMPLES`] (compact packets
+/// can decode to blocks far larger than themselves, so a small file could otherwise exhaust memory).
+pub(crate) fn check_decoded_budget(retained: usize, add: usize) -> Result<()> {
+    if retained.saturating_add(add) > MAX_DECODED_SAMPLES {
+        return Err(CodecError::Unsupported("audio too long to decode into memory (over 4 GiB decoded): shorten or transcode it".into()));
+    }
+    Ok(())
+}
 
 /// The length of the ADTS frame starting `b` (ISO/IEC 13818-7 §6.2: 12-bit sync word, layer `00`,
 /// 13-bit `frame_length` including the header), when it starts with a header and fits in `b`.
@@ -1449,6 +1464,13 @@ mod gapless_tests {
     }
 
     /// #1137: the LAME tag's encoder delay (576) plus the decoder delay (529) is cut from the start.
+    #[test]
+    fn decoded_budget_is_enforced_without_allocating() {
+        assert!(check_decoded_budget(0, MAX_DECODED_SAMPLES).is_ok());
+        assert!(check_decoded_budget(MAX_DECODED_SAMPLES, 1).is_err());
+        assert!(check_decoded_budget(usize::MAX, usize::MAX).is_err());
+    }
+
     #[test]
     fn mp3_encoder_delay_is_trimmed() {
         let src = AudioFileSource::decode("tagged.mp3", Arc::from(tagged_mp3())).unwrap();
