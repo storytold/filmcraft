@@ -792,7 +792,6 @@ fn paint_track_edits(
     }
 }
 
-/// Shown when no sequence is open: offers the demo project and accepts project or OS-file drops to create a sequence.
 /// The Mix track header's level (#3765): the Mix fader at the playhead (its automation, or a
 /// control held in the Audio Track Mixer), as hot text to drag or type, as on an audio track.
 /// Changes go through `mixer.setValue`, so automation is written where the Mix fader has it; the
@@ -823,6 +822,7 @@ fn mix_volume(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, r: Rect
     }
 }
 
+/// Shown when no sequence is open: offers the demo project and accepts project or OS-file drops to create a sequence.
 fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().text(rect.center() - vec2(0.0, 12.0), Align2::CENTER_CENTER, tl!("Drop media here to create sequence."), Tokens::ui(13.0), t.text_dim);
