@@ -314,8 +314,9 @@ impl FilmcraftApp {
                 self.play(self.playback.speed);
             } else if self.playback.audio_clock && t < hi + self.refresh_ring_out() {
                 // effect tails ring out past the end (#2731): the sound plays on, the playhead
-                // rests on the last frame
+                // rests on the last frame (the drawn one too, not the smoothed clock before it)
                 self.session.set_playhead(hi - rate.frame_duration());
+                self.playback.smooth_playhead = None;
             } else {
                 self.session.set_playhead(hi - rate.frame_duration());
                 self.stop();

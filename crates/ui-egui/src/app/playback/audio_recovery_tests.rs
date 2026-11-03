@@ -467,9 +467,13 @@ fn track_effect_tails_ring_out_past_the_sequence_end() {
     start(&mut app);
     let ring = app.playback.ring_out;
     assert!(ring > Tick::from_seconds_f64(0.5), "reverb tail {ring:?}");
+    // a normal advance just before the end leaves a smoothed drawn playhead behind it
+    run(&mut app, (end - from).seconds() - 0.1);
+    assert!(app.shown_playhead() < last);
     run(&mut app, (end - from).seconds() + 0.05);
     assert!(app.playback.playing, "the reverb tail is still sounding");
     assert_eq!(app.session.playhead(), last, "the playhead rests on the last frame");
+    assert_eq!(app.shown_playhead(), last, "and the Timeline draws it there, not where it was");
     run(&mut app, (end - from).seconds() + ring.seconds() * 0.9);
     assert!(app.playback.playing);
     run(&mut app, (end - from).seconds() + ring.seconds() + 0.05);
