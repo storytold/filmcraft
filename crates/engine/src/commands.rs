@@ -3662,6 +3662,13 @@ fn build() -> Vec<CommandSpec> {
                                 .ok_or_else(|| bad("effects.setParam", format!("`{pid}` must be one of {opts:?}")))?;
                             json!(i)
                         }
+                        // Simple Text's Font still takes the index it had when it was a choice (#3841)
+                        (Some(filmcraft_project::ParamKind::Text), Value::Number(n))
+                            if e.effect == "simple_text" && pid == "font" && matches!(n.as_u64(), Some(0 | 1)) =>
+                        {
+                            let i = if n.as_u64() == Some(1) { 1 } else { 0 };
+                            json!(filmcraft_project::effect::simple_text_font(Some(&ParamValue::Choice(i))))
+                        }
                         _ => val.clone(),
                     };
                     if keyframe && def.is_some_and(|d| !d.animatable) {

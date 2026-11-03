@@ -172,6 +172,13 @@ fn simple_text_font_takes_any_family_name() {
     }
     s.execute("effects.setParam", json!({"clip": clip, "effect": "simple_text", "param": "font", "value": "Noto Serif"})).unwrap();
     assert_eq!(font(&s), filmcraft_project::ParamValue::Text("Noto Serif".into()));
+
+    // scripts written when Font was a choice still pass its index
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "simple_text", "param": "font", "value": 1})).unwrap();
+    assert_eq!(font(&s), filmcraft_project::ParamValue::Text("JetBrains Mono".into()));
+    s.execute("effects.setParam", json!({"clip": clip, "effect": "simple_text", "param": "font", "value": 0})).unwrap();
+    assert_eq!(font(&s), filmcraft_project::ParamValue::Text("Inter".into()));
+    assert!(s.execute("effects.setParam", json!({"clip": clip, "effect": "simple_text", "param": "font", "value": 2})).is_err());
 }
 
 #[test]
