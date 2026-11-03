@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use filmcraft_audio_dsp::channels::{self as chans, Layout, Mixdown};
 use filmcraft_frame::AudioBuffer;
 use filmcraft_project::{AudioChannels, Project, Sequence, Track, TrackId, TrackItem};
-use filmcraft_time::{Tick, TimeRange};
+use filmcraft_time::{TICKS_PER_SECOND, Tick, TimeRange};
 
 use crate::mixer::Override;
 use crate::{SourceProvider, transitions};
@@ -367,6 +367,24 @@ pub fn clip_is_mono(item: &TrackItem, sources: &dyn SourceProvider) -> Option<bo
     Some(left == right)
 }
 
+/// Longest source read a speed-changed clip makes, in samples: the most one channel of a source
+/// read can hold (`MAX_AUDIO_BUFFER_BYTES`). A project can store any speed; past this the clip
+/// reads silence, as sources refuse longer reads.
+const MAX_READ_SAMPLES: usize = filmcraft_media::MAX_AUDIO_BUFFER_BYTES / std::mem::size_of::<f32>();
+
+/// The source position timeline sample `x` of a speed-changed clip reads at `sr`, as a whole
+/// source sample and the fraction of the way to the next one. A forward clip reads the sample that
+/// starts at its source time; a reversed clip reads the one that ends there, one sample lower. A
+/// frame hold freezes the picture, not the sound: the position ignores it, so a held clip plays its
+/// range at its speed.
+fn source_position(item: &TrackItem, x: i64, sr: u32) -> (i64, f64) {
+    let t = item.moving_source_time_at(Tick::from_units(x, sr as i64));
+    let whole = t.to_units_floor(sr as i64);
+    let tps = TICKS_PER_SECOND as i128;
+    let frac = (t.0 as i128 * sr as i128).rem_euclid(tps) as f64 / tps as f64;
+    (if item.reverse { whole.saturating_sub(1) } else { whole }, frac)
+}
+
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
 /// (2: stereo, mono sources on both sides, 5.1 sources folded down; 6: 5.1), with silence outside
 /// the clip.
@@ -389,16 +407,23 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     } else if (speed - 1.0).abs() < 1e-9 && !item.reverse {
         src(src_start_ticks.to_units_floor(sr as i64), n)
     } else {
-        // varispeed: read a longer span and resample linearly
-        let span = ((n as f64) * speed).ceil() as usize + 2;
-        let s0 = if item.reverse { src_start_ticks.to_units_floor(sr as i64) - span as i64 } else { src_start_ticks.to_units_floor(sr as i64) };
-        src(s0, span).map(|raw| {
+        // varispeed: resample linearly. Each output sample reads the source at its own position,
+        // worked out from its own timeline sample, so the samples do not depend on where a request
+        // starts (as the mixer promises).
+        let (first, last) = (source_position(item, a0, sr), source_position(item, a1 - 1, sr));
+        let (lo, hi) = if item.reverse { (last.0, first.0) } else { (first.0, last.0) };
+        // the read runs from the lowest position to the sample after the highest one
+        let span = usize::try_from(hi.saturating_sub(lo)).unwrap_or(usize::MAX).saturating_add(2).min(MAX_READ_SAMPLES);
+        src(lo, span).map(|raw| {
+            let at: Vec<(usize, f32)> = (a0..a1)
+                .map(|x| {
+                    let (whole, frac) = source_position(item, x, sr);
+                    (usize::try_from(whole.saturating_sub(lo)).unwrap_or(0), frac as f32)
+                })
+                .collect();
             let mut b = AudioBuffer::silence(sr, raw.channel_count(), n);
             for (c, ch) in raw.channels.iter().enumerate() {
-                for i in 0..n {
-                    let pos = if item.reverse { span as f64 - 1.0 - i as f64 * speed } else { i as f64 * speed };
-                    let i0 = pos.floor().max(0.0) as usize;
-                    let fr = (pos - i0 as f64) as f32;
+                for (i, &(i0, fr)) in at.iter().enumerate() {
                     let a = ch.get(i0).copied().unwrap_or(0.0);
                     let bb = ch.get(i0 + 1).copied().unwrap_or(a);
                     b.channels[c][i] = a + (bb - a) * fr;
