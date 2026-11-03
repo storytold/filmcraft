@@ -6,14 +6,29 @@ use crate::es::Splitter;
 use crate::pes::{self, PesHeader};
 use crate::{ByteSource, Codec, Error, File, Format, Result, Stream, StreamId, Unit, Unwrap, read_some};
 
+/// Byte-wise table for the MSB-first CRC-32 (polynomial 0x04C11DB7): entry `i` is the CRC register
+/// after shifting the byte `i` through eight bit steps.
+const CRC_TABLE: [u32; 256] = {
+    let mut t = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = (i as u32) << 24;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
+            bit += 1;
+        }
+        t[i] = crc;
+        i += 1;
+    }
+    t
+};
+
 /// CRC-32 of PSI sections (MSB-first, polynomial 0x04C11DB7, initial value all ones; Annex A).
 pub(crate) fn crc32_mpeg(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &b in data {
-        crc ^= (b as u32) << 24;
-        for _ in 0..8 {
-            crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04C1_1DB7 } else { crc << 1 };
-        }
+        crc = (crc << 8) ^ CRC_TABLE[((crc >> 24) as u8 ^ b) as usize];
     }
     crc
 }
@@ -29,9 +44,19 @@ struct Packet<'a> {
     payload: &'a [u8],
 }
 
-fn packet(p: &[u8]) -> Option<Packet<'_>> {
+/// Why a packet could not be parsed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bad {
+    /// No sync byte (or too short): the packet grid is lost.
+    Sync,
+    /// Sync byte present but the adaptation field overruns the packet: the grid is intact, the
+    /// packet carries nothing usable.
+    Adaptation,
+}
+
+fn packet(p: &[u8]) -> std::result::Result<Packet<'_>, Bad> {
     if p.len() < 188 || p[0] != 0x47 {
-        return None;
+        return Err(Bad::Sync);
     }
     let pusi = p[1] & 0x40 != 0;
     let pid = (((p[1] & 0x1F) as u16) << 8) | p[2] as u16;
@@ -44,7 +69,7 @@ fn packet(p: &[u8]) -> Option<Packet<'_>> {
         let al = p[4] as usize;
         start = 5 + al;
         if start > 188 {
-            return None;
+            return Err(Bad::Adaptation);
         }
         if al > 0 {
             let flags = p[5];
@@ -57,7 +82,7 @@ fn packet(p: &[u8]) -> Option<Packet<'_>> {
         }
     }
     let has_payload = afc & 1 != 0;
-    Some(Packet { pusi, pid, cc, has_payload, discontinuity, pcr, payload: if has_payload { &p[start..188] } else { &[] } })
+    Ok(Packet { pusi, pid, cc, has_payload, discontinuity, pcr, payload: if has_payload { &p[start..188] } else { &[] } })
 }
 
 /// Reassembles a PES header that may span packets; yields each packet's elementary-stream bytes.
@@ -65,29 +90,40 @@ fn packet(p: &[u8]) -> Option<Packet<'_>> {
 pub(crate) struct PesAsm {
     hdr: Vec<u8>,
     waiting: bool,
+    /// The packet that started the current unit was not a PES packet: its continuation packets
+    /// are dropped until the next unit start.
+    dropping: bool,
 }
 
 impl PesAsm {
     /// The PES header completed by this packet (if any) and the packet's ES payload bytes.
     pub fn packet<'a>(&mut self, pusi: bool, payload: &'a [u8]) -> (Option<PesHeader>, &'a [u8]) {
         if pusi {
+            if payload.is_empty() {
+                // an adaptation-field-only packet carries no PES data: it must not cut short
+                // the PES packet in progress
+                return (None, &[]);
+            }
             self.hdr.clear();
             self.waiting = true;
+            self.dropping = false;
+        } else if self.dropping {
+            return (None, &[]);
         } else if !self.waiting {
             return (None, payload);
         }
         let before = self.hdr.len();
         self.hdr.extend_from_slice(payload);
-        if let Some(h) = pes::parse(&self.hdr)
-            && self.hdr.len() >= h.header_len
-        {
+        // `pes::parse` only succeeds once the whole header (`header_len` bytes) is buffered
+        if let Some(h) = pes::parse(&self.hdr) {
             self.waiting = false;
-            let skip = (h.header_len - before).min(payload.len());
+            let skip = h.header_len.saturating_sub(before).min(payload.len());
             return (Some(h), &payload[skip..]);
         }
         if self.hdr.len() > 1024 || (self.hdr.len() >= 6 && !(self.hdr[0] == 0 && self.hdr[1] == 0 && self.hdr[2] == 1)) {
             // not a PES packet after all: drop until the next unit start
             self.waiting = false;
+            self.dropping = true;
             self.hdr.clear();
             return (None, &[]);
         }
@@ -216,6 +252,98 @@ fn first_sync(head: &[u8], packet_size: usize, sync_offset: usize) -> Option<usi
     (0..packet_size.min(head.len())).find(|&s| (0..5).all(|k| head.get(s + sync_offset + k * packet_size) == Some(&0x47)))
 }
 
+/// Find where packets line up again, searching `block` from byte `from`: the first packet start
+/// `i` whose sync byte and the next four packets' sync bytes are all 0x47. Returns `(i, false)`
+/// when found. Returns `(i, true)` when the block ran out first: `i` is where to refill from (a
+/// candidate whose five-packet window does not fit yet, or the last place a whole packet fits).
+/// At the end of the file (`at_end`) a candidate is accepted with as many sync bytes as exist.
+fn resync(block: &[u8], from: usize, packet_size: usize, sync_offset: usize, at_end: bool) -> (usize, bool) {
+    let mut i = from;
+    while i + packet_size <= block.len() {
+        if block.get(i + sync_offset) == Some(&0x47) {
+            let mut aligned = true;
+            let mut complete = true;
+            for k in 1..5 {
+                match block.get(i + sync_offset + k * packet_size) {
+                    Some(&0x47) => {}
+                    Some(_) => {
+                        aligned = false;
+                        break;
+                    }
+                    None => {
+                        complete = false;
+                        break;
+                    }
+                }
+            }
+            if aligned {
+                return (i, !complete && !at_end);
+            }
+        }
+        i += 1;
+    }
+    (i, true)
+}
+
+/// PCR values unwrapped across the 33-bit base wrap, with the range seen.
+#[derive(Default)]
+struct PcrTrack {
+    unwrap: i64,
+    last: Option<i64>,
+    range: Option<(i64, i64)>,
+}
+
+impl PcrTrack {
+    fn update(&mut self, pcr: i64) {
+        // 33-bit base × 300 wraps at 2^33·300
+        let wrap = (1i64 << 33) * 300;
+        let mut v = pcr + self.unwrap;
+        if let Some(l) = self.last
+            && v < l - wrap / 2
+        {
+            self.unwrap += wrap;
+            v += wrap;
+        }
+        self.last = Some(v);
+        self.range = Some(self.range.map_or((v, v), |(a, b)| (a.min(v), b.max(v))));
+    }
+}
+
+/// Register the elementary streams a (CRC-checked) PMT section announces and that are not yet known.
+fn add_pmt_streams(sec: &[u8], packet_size: usize, es: &mut HashMap<u16, EsState>, order: &mut Vec<u16>) {
+    let pinfo = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
+    let prog_desc = sec.get(12..12 + pinfo).unwrap_or(&[]);
+    let hdmv = packet_size == 192 || prog_desc.windows(4).any(|w| w == b"HDMV");
+    let mut i = 12 + pinfo;
+    let end = sec.len() - 4;
+    while i + 5 <= end {
+        let st = sec[i];
+        let pid = (((sec[i + 1] & 0x1F) as u16) << 8) | sec[i + 2] as u16;
+        let ilen = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
+        let desc = sec.get(i + 5..(i + 5 + ilen).min(end)).unwrap_or(&[]);
+        i += 5 + ilen;
+        if es.contains_key(&pid) {
+            continue;
+        }
+        let mut codec = codec_of(st, desc, hdmv);
+        if codec == Codec::Unknown(6) && prog_desc.windows(4).any(|w| w == b"AC-3") {
+            codec = Codec::Ac3;
+        }
+        let stream = Stream {
+            id: StreamId::Pid(pid),
+            stream_type: st,
+            codec: codec.clone(),
+            language: language(desc),
+            units: Vec::new(),
+            lpcm: None,
+            pes_packets: 0,
+            skipped_bytes: 0,
+        };
+        es.insert(pid, EsState { stream, split: Splitter::new(&codec), asm: PesAsm::default(), cc: None });
+        order.push(pid);
+    }
+}
+
 pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_offset: usize) -> Result<File> {
     let len = src.len();
     let mut head = vec![0u8; packet_size * 8];
@@ -230,48 +358,45 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
     let mut order: Vec<u16> = Vec::new();
     let mut pmt_version: Option<u8> = None;
     let mut unwrap = Unwrap::default();
-    let mut pcr_unwrap = 0i64;
-    let mut last_pcr: Option<i64> = None;
-    let mut pcr_range: Option<(i64, i64)> = None;
+    let mut pcr_track = PcrTrack::default();
     let (mut lost_sync, mut cc_errors, mut crc_errors) = (0u64, 0u64, 0u64);
     const BLOCK: usize = 4096;
     let mut block = vec![0u8; BLOCK * packet_size];
+    let mut bad_adaptation = 0u64;
     while off + packet_size as u64 <= len {
         let got = read_some(src, off, &mut block)?;
-        let whole = got / packet_size;
-        if whole == 0 {
+        if got < packet_size {
             break;
         }
-        let mut k = 0;
-        while k < whole {
-            let pos = off + (k * packet_size) as u64;
-            let raw = &block[k * packet_size..(k + 1) * packet_size];
-            let Some(pk) = packet(&raw[sync_offset..]) else {
-                // lost sync: find the next offset where packets line up again
-                lost_sync += 1;
-                let rest = &block[k * packet_size + 1..got];
-                match first_sync(rest, packet_size, sync_offset).or_else(|| rest.iter().position(|&b| b == 0x47).map(|p| p.saturating_sub(sync_offset))) {
-                    Some(s) => {
-                        off = pos + 1 + s as u64;
+        let at_end = off + got as u64 >= len;
+        // `p`: byte index of the next packet in `block`. Packets are parsed in place; a lost
+        // sync is repaired inside the loaded block, and the block is refilled from the file
+        // (at `off + p`) only when it is used up, so the bytes read stay close to the file size.
+        let mut p = 0usize;
+        while p + packet_size <= got {
+            let pos = off + p as u64;
+            let raw = &block[p..p + packet_size];
+            let pk = match packet(&raw[sync_offset..]) {
+                Ok(pk) => pk,
+                Err(Bad::Adaptation) => {
+                    // the packet grid is intact: this packet just has no usable payload
+                    bad_adaptation += 1;
+                    p += packet_size;
+                    continue;
+                }
+                Err(Bad::Sync) => {
+                    lost_sync += 1;
+                    let (next, exhausted) = resync(&block[..got], p + 1, packet_size, sync_offset, at_end);
+                    p = next;
+                    if exhausted {
+                        break;
                     }
-                    None => off = pos + got as u64,
+                    continue;
                 }
-                k = usize::MAX;
-                break;
             };
-            k += 1;
+            p += packet_size;
             if let Some(pcr) = pk.pcr {
-                // 33-bit base × 300 wraps at 2^33·300
-                let wrap = (1i64 << 33) * 300;
-                let mut v = pcr + pcr_unwrap;
-                if let Some(l) = last_pcr
-                    && v < l - wrap / 2
-                {
-                    pcr_unwrap += wrap;
-                    v += wrap;
-                }
-                last_pcr = Some(v);
-                pcr_range = Some(pcr_range.map_or((v, v), |(a, b)| (a.min(v), b.max(v))));
+                pcr_track.update(pcr);
             }
             if pk.pid == 0 {
                 for sec in pat.feed(pk.pusi, pk.payload) {
@@ -308,37 +433,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
                         continue;
                     }
                     pmt_version = Some(version);
-                    let pinfo = (((sec[10] & 0x0F) as usize) << 8) | sec[11] as usize;
-                    let prog_desc = sec.get(12..12 + pinfo).unwrap_or(&[]);
-                    let hdmv = packet_size == 192 || prog_desc.windows(4).any(|w| w == b"HDMV");
-                    let mut i = 12 + pinfo;
-                    let end = sec.len() - 4;
-                    while i + 5 <= end {
-                        let st = sec[i];
-                        let pid = (((sec[i + 1] & 0x1F) as u16) << 8) | sec[i + 2] as u16;
-                        let ilen = (((sec[i + 3] & 0x0F) as usize) << 8) | sec[i + 4] as usize;
-                        let desc = sec.get(i + 5..(i + 5 + ilen).min(end)).unwrap_or(&[]);
-                        i += 5 + ilen;
-                        if es.contains_key(&pid) {
-                            continue;
-                        }
-                        let mut codec = codec_of(st, desc, hdmv);
-                        if codec == Codec::Unknown(6) && prog_desc.windows(4).any(|w| w == b"AC-3") {
-                            codec = Codec::Ac3;
-                        }
-                        let stream = Stream {
-                            id: StreamId::Pid(pid),
-                            stream_type: st,
-                            codec: codec.clone(),
-                            language: language(desc),
-                            units: Vec::new(),
-                            lpcm: None,
-                            pes_packets: 0,
-                            skipped_bytes: 0,
-                        };
-                        es.insert(pid, EsState { stream, split: Splitter::new(&codec), asm: PesAsm::default(), cc: None });
-                        order.push(pid);
-                    }
+                    add_pmt_streams(&sec, packet_size, &mut es, &mut order);
                 }
                 continue;
             }
@@ -362,12 +457,14 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
             }
             e.split.feed(pos, bytes);
         }
-        if k != usize::MAX {
-            off += (whole * packet_size) as u64;
-        }
+        // `p >= 1` here (the loop ran at least once or `resync` moved past the failed packet)
+        off += p.max(1) as u64;
     }
     if lost_sync > 0 {
         warnings.push(format!("lost packet sync {lost_sync} time(s)"));
+    }
+    if bad_adaptation > 0 {
+        warnings.push(format!("{bad_adaptation} packet(s) with an invalid adaptation field"));
     }
     if cc_errors > 0 {
         warnings.push(format!("{cc_errors} continuity counter error(s)"));
@@ -384,9 +481,12 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         e.split.finish();
         e.stream.units = std::mem::take(&mut e.split.units);
         e.stream.skipped_bytes = e.split.skipped;
+        if e.split.truncated {
+            warnings.push(format!("PID {pid}: more than {} access units, the rest are not indexed", crate::es::MAX_UNITS));
+        }
         streams.push(e.stream);
     }
-    Ok(File { format: Format::Ts { packet_size, sync_offset }, streams, program, pcr_range, warnings })
+    Ok(File { format: Format::Ts { packet_size, sync_offset }, streams, program, pcr_range: pcr_track.range, warnings })
 }
 
 /// Collect unit `u` of stream `st`: from the packet at `u.pos`, the PID's elementary-stream bytes.
@@ -406,7 +506,11 @@ pub(crate) fn read<S: ByteSource + ?Sized>(src: &S, packet_size: usize, sync_off
         }
         for k in 0..whole {
             let raw = &block[k * packet_size..(k + 1) * packet_size];
-            let Some(pk) = packet(&raw[sync_offset..]) else { return Ok(()) };
+            let pk = match packet(&raw[sync_offset..]) {
+                Ok(pk) => pk,
+                Err(Bad::Sync) => return Ok(()),
+                Err(Bad::Adaptation) => continue,
+            };
             if pk.pid != pid {
                 continue;
             }

@@ -108,7 +108,8 @@ impl MxfMux {
         let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let seed = format!("{}|{now}", settings.path);
         let ids = PackageIds::from_seed(&seed, &s.name);
-        let bits = if settings.audio.bits >= 24 { 24 } else { 16 };
+        // integers only: `ExportSettings::validate` refuses float PCM in MXF
+        let bits = u32::from(settings.audio.sample_format().bits());
         let mut cfg = WriterConfig::new(if atom { Pattern::OpAtom } else { Pattern::Op1a }, rate, ids.clone());
         cfg.picture = Some(picture(settings, s.width, s.height));
         cfg.modified = Timestamp::from_unix((now / 1_000_000_000) as i64);

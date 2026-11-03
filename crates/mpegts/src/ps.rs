@@ -12,17 +12,33 @@ struct Win<'a, S: ByteSource + ?Sized> {
     src: &'a S,
     buf: Vec<u8>,
     start: u64,
+    /// Bytes zero-filled by window refills (tests count them).
+    #[cfg(test)]
+    zero_filled: usize,
 }
 
 impl<'a, S: ByteSource + ?Sized> Win<'a, S> {
     fn new(src: &'a S) -> Self {
-        Self { src, buf: Vec::new(), start: 0 }
+        Self {
+            src,
+            buf: Vec::new(),
+            start: 0,
+            #[cfg(test)]
+            zero_filled: 0,
+        }
     }
     /// The bytes [pos, pos + n) (fewer at the end of the file).
     fn get(&mut self, pos: u64, n: usize) -> Result<&[u8]> {
         let have = pos >= self.start && pos + n as u64 <= self.start + self.buf.len() as u64;
         if !have {
-            let want = n.max(1 << 20);
+            // never more than the file still holds past `pos`: `read_some` would not fill it, and
+            // zeroing a megabyte for every packet near the end of the file is wasted work
+            let remaining = self.src.len().saturating_sub(pos);
+            let want = (n.max(1 << 20) as u64).min(remaining) as usize;
+            #[cfg(test)]
+            {
+                self.zero_filled += want.saturating_sub(self.buf.len());
+            }
             self.buf.resize(want, 0);
             let got = read_some(self.src, pos, &mut self.buf)?;
             self.buf.truncate(got);
@@ -94,6 +110,9 @@ fn packet_len(b: &[u8]) -> Option<usize> {
                 let stuff = (*b.get(13)? & 7) as usize;
                 Some(14 + stuff)
             } else if b[4] >> 4 == 2 {
+                // MPEG-1 pack header: start code, 5-byte SCR, 3-byte mux rate. A file cut inside
+                // it is not a pack header yet (`scan` reads the SCR from the first 9 bytes).
+                b.get(..12)?;
                 Some(12)
             } else {
                 None
@@ -116,13 +135,13 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
     let mut scr: Option<(i64, i64)> = None;
     let mut resyncs = 0u64;
     while pos + 4 <= len {
-        let head = win.get(pos, 32)?.to_vec();
-        let Some(plen) = packet_len(&head) else {
+        let head = win.get(pos, 32)?;
+        let Some(plen) = packet_len(head) else {
             // resynchronise on the next pack header or PES start code
             resyncs += 1;
             let mut p = pos + 1;
             let found = loop {
-                let w = win.get(p, 1 << 16)?.to_vec();
+                let w = win.get(p, 1 << 16)?;
                 if w.len() < 4 {
                     break None;
                 }
@@ -159,7 +178,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
             scr = Some(scr.map_or((v, v), |(a, b): (i64, i64)| (a.min(v), b.max(v))));
         } else if id == 0xBC {
             // program stream map: elementary stream id → stream_type
-            let body = win.get(pos, plen)?.to_vec();
+            let body = win.get(pos, plen)?;
             if body.len() >= 12 {
                 let info = u16::from_be_bytes([body[8], body[9]]) as usize;
                 let mut i = 10 + info;
@@ -174,11 +193,11 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
                 }
             }
         } else if id == 0xBD || (0xC0..=0xEF).contains(&id) || id == 0xFD {
-            let pkt = win.get(pos, plen)?.to_vec();
+            let pkt = win.get(pos, plen)?;
             if pkt.len() < plen {
                 break; // truncated
             }
-            if let Some(h) = pes::parse(&pkt) {
+            if let Some(h) = pes::parse(pkt) {
                 let payload = &pkt[h.header_len.min(plen)..];
                 let (sub, skip) = if id == 0xBD {
                     match payload.first() {
@@ -239,14 +258,14 @@ pub(crate) fn read<S: ByteSource + ?Sized>(src: &S, st: &Stream, u: &Unit, out: 
     let len = src.len();
     let mut win = Win::new(src);
     while out.len() < need && pos + 4 <= len {
-        let head = win.get(pos, 32)?.to_vec();
-        let Some(plen) = packet_len(&head) else {
+        let head = win.get(pos, 32)?;
+        let Some(plen) = packet_len(head) else {
             // corrupt: stop at what we have
             return Ok(());
         };
         if head[3] == stream_id {
-            let pkt = win.get(pos, plen)?.to_vec();
-            if let Some(h) = pes::parse(&pkt) {
+            let pkt = win.get(pos, plen)?;
+            if let Some(h) = pes::parse(pkt) {
                 let payload = &pkt[h.header_len.min(pkt.len())..];
                 let matches = stream_id != 0xBD || payload.first().copied() == sub_id;
                 if matches {
@@ -265,4 +284,87 @@ pub(crate) fn read<S: ByteSource + ?Sized>(src: &S, st: &Stream, u: &Unit, out: 
         pos += plen as u64;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The window refill before the zero-fill cap: always `max(n, 1 MiB)` bytes, counted when the
+    /// buffer has to grow.
+    struct OldWin<'a> {
+        src: &'a [u8],
+        buf: Vec<u8>,
+        start: u64,
+        zero_filled: usize,
+    }
+
+    impl OldWin<'_> {
+        fn get(&mut self, pos: u64, n: usize) -> Vec<u8> {
+            let have = pos >= self.start && pos + n as u64 <= self.start + self.buf.len() as u64;
+            if !have {
+                let want = n.max(1 << 20);
+                self.zero_filled += want.saturating_sub(self.buf.len());
+                self.buf.resize(want, 0);
+                let got = read_some(self.src, pos, &mut self.buf).unwrap();
+                self.buf.truncate(got);
+                self.start = pos;
+            }
+            let i = (pos - self.start) as usize;
+            let end = (i + n).min(self.buf.len());
+            self.buf[i.min(end)..end].to_vec()
+        }
+    }
+
+    fn data(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 31 + i / 7) as u8).collect()
+    }
+
+    #[test]
+    fn capped_window_returns_what_the_uncapped_window_returned() {
+        for len in [0usize, 1, 31, 32, 33, 1000, (1 << 20) - 1, 1 << 20, (1 << 20) + 5, (3 << 20) + 17] {
+            let d = data(len);
+            let mut new = Win::new(d.as_slice());
+            let mut old = OldWin { src: &d, buf: Vec::new(), start: 0, zero_filled: 0 };
+            let len64 = len as u64;
+            let mut positions = vec![
+                0,
+                1,
+                31,
+                32,
+                1 << 19,
+                1 << 20,
+                (1 << 20) - 1,
+                (1 << 20) + 1,
+                2 << 20,
+                len64.saturating_sub(40),
+                len64.saturating_sub(1),
+                len64,
+                len64 + 1,
+                len64 + 100,
+            ];
+            positions.extend((0..40).map(|k| len64.saturating_sub(100) + k * 3));
+            for &pos in &positions {
+                for n in [0usize, 1, 4, 32, 33, 1000, 65_541, 1 << 20, (1 << 20) + 1, 2 << 20] {
+                    assert_eq!(new.get(pos, n).unwrap(), old.get(pos, n).as_slice(), "len {len} pos {pos} n {n}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn misses_near_the_end_zero_at_most_the_bytes_that_are_left() {
+        let len = (2 << 20) + 1000;
+        let d = data(len);
+        let mut new = Win::new(d.as_slice());
+        let mut old = OldWin { src: &d, buf: Vec::new(), start: 0, zero_filled: 0 };
+        // a PES packet whose length runs past the end of the file, asked for once per packet
+        let first = (2u64 << 20) as usize;
+        for k in 0..500 {
+            let pos = (first + k) as u64;
+            assert_eq!(new.get(pos, 2000).unwrap(), old.get(pos, 2000).as_slice());
+        }
+        assert!(new.zero_filled <= 1000, "zeroed {} bytes, only 1000 are left in the file", new.zero_filled);
+        assert!(old.zero_filled > 499 * ((1 << 20) - 1000), "the reference zeroes about a megabyte per miss: {}", old.zero_filled);
+    }
 }

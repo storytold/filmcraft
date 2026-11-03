@@ -5,12 +5,16 @@
 //! outside the file is an error when it is read, the walk visits at most [`MAX_IFDS`] directories,
 //! never the same one twice (cyclic chains end), and goes at most [`MAX_DEPTH`] SubIFD levels deep.
 
+use std::collections::HashSet;
+
 use crate::{Error, Result};
 
 /// Most IFDs one file may have (main chain and SubIFDs together).
 pub const MAX_IFDS: usize = 64;
 /// Deepest SubIFD nesting followed.
 pub const MAX_DEPTH: usize = 4;
+/// Invalid SubIFD edges count too: otherwise a file can make failed offset probes quadratic.
+const MAX_IFD_ATTEMPTS: usize = MAX_IFDS * 16;
 
 /// TIFF field types (TIFF 6.0 §2, plus type 13 IFD from TIFF Technical Note 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,18 +160,22 @@ impl<'a> Tiff<'a> {
     /// each. Bounded by [`MAX_IFDS`] and [`MAX_DEPTH`]; a directory reached twice ends that branch.
     pub fn all_ifds(&self, first: u64) -> Result<Vec<Ifd>> {
         let mut out: Vec<Ifd> = Vec::new();
-        let mut seen: Vec<u64> = Vec::new();
+        let mut seen = HashSet::new();
+        let mut attempts = 0usize;
         let mut stack: Vec<(u64, usize)> = vec![(first, 0)];
         while let Some((off, depth)) = stack.pop() {
             let mut next = off;
             while next != 0 {
-                if seen.contains(&next) {
+                if !seen.insert(next) {
                     break;
+                }
+                attempts += 1;
+                if attempts > MAX_IFD_ATTEMPTS {
+                    return Err(Error::Malformed("too many IFD offsets"));
                 }
                 if out.len() >= MAX_IFDS {
                     return Err(Error::Malformed("too many IFDs"));
                 }
-                seen.push(next);
                 let (ifd, after) = match self.read_ifd(next, depth) {
                     Ok(x) => x,
                     // a broken directory ends the chain; the first one must be readable

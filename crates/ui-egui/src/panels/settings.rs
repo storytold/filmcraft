@@ -1,4 +1,4 @@
-//! The Settings dialog (app menu ▸ Settings ▸ <category>; Edit ▸ Preferences in the in-window
+//! The Settings dialog (app menu ▸ Settings ▸ `<category>`; Edit ▸ Preferences in the in-window
 //! menu bar; General is Cmd+,). One window titled "Preferences": the category list on the left,
 //! the category's fields on the right, Help / Reset… / Cancel / OK at the bottom. The page layout
 //! comes from the engine's field schema ([`filmcraft_engine::settings::categories`]); edits go to a
@@ -9,7 +9,8 @@
 //! preference key, e.g. `settings.timeline.stillImageDuration`), `settings.<key>.<value>` for the
 //! items of an open dropdown, `settings.<key>.browse` (folder fields), `settings.<key>.hex`
 //! (colour fields), `settings.labels.colors.<label>.name|color`, `settings.mediaCache.clean`,
-//! `settings.help`, `settings.reset`, `settings.cancel`, `settings.ok`.
+//! `settings.page` (the category's page), `settings.help`, `settings.reset`, `settings.cancel`,
+//! `settings.ok`.
 
 use egui::{Align, Align2, Color32, CornerRadius, Frame, Layout, Margin, Rect, RichText, Sense, Stroke, Ui, vec2};
 use filmcraft_engine::settings::{self, DeviceList, Field, Kind, Row};
@@ -302,7 +303,7 @@ fn appearance_modes(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft) 
     let mode = choice_text(get(&d.values, key));
     ui.horizontal(|ui| {
         field_label(ui, "Appearance Mode");
-        if let Some(v) = combo(app, ui, key, &mode, &static_opts(settings::APPEARANCE_MODES), 200.0) {
+        if let Some(v) = combo(app, ui, key, "Appearance Mode", &mode, &static_opts(settings::APPEARANCE_MODES), 200.0) {
             put(&mut d.values, key, json!(v));
         }
     });
@@ -375,7 +376,7 @@ fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: b
         .corner_radius(CornerRadius::same(15))
         .fill(if primary { t.accent } else { Color32::TRANSPARENT })
         .stroke(if primary { Stroke::NONE } else { Stroke::new(1.5, t.text_faint) });
-    let r = ui.add(b);
+    let r = ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand);
     app.auto.add(id, r.rect, label);
     r.clicked()
 }
@@ -400,12 +401,13 @@ fn group(ui: &mut Ui, t: &Tokens, title: &str, add: impl FnOnce(&mut Ui)) {
     ui.add_space(4.0);
 }
 
-/// A right-aligned field label in the fixed label column.
+/// A right-aligned field label in the fixed label column. A label longer than the column (French,
+/// Spanish…) wraps inside it: unwrapped, it ran left out of the page, and the next rows followed.
 fn field_label(ui: &mut Ui, text: &str) {
     let w = LABEL_W.min(ui.available_width() * 0.45);
     ui.allocate_ui_with_layout(vec2(w, 24.0), Layout::right_to_left(Align::Center), |ui| {
         if !text.is_empty() {
-            ui.label(RichText::new(format!("{}:", crate::i18n::t(text))).size(12.5));
+            ui.add(egui::Label::new(RichText::new(format!("{}:", crate::i18n::t(text))).size(12.5)).wrap());
         }
     });
 }
@@ -426,13 +428,17 @@ fn choice_text(v: &Value) -> String {
 }
 
 /// A dropdown of (value, label) options; returns the chosen value.
-fn combo(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, current: &str, opts: &[(String, String)], width: f32) -> Option<String> {
+fn combo(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, label: &str, current: &str, opts: &[(String, String)], width: f32) -> Option<String> {
     let shown = opts.iter().find(|o| o.0 == current).map(|o| o.1.clone()).unwrap_or_else(|| current.to_string());
     let mut chosen = None;
     let mut items: Vec<(String, Rect, String)> = Vec::new();
-    let r = egui::ComboBox::from_id_salt(("settings", key)).selected_text(RichText::new(crate::i18n::t(&shown)).size(12.5)).width(width).height(480.0).show_ui(
-        ui,
-        |ui| {
+    // the current choice is cut to the box's width (the open list shows it whole)
+    let r = craft_ui::ComboBox::from_id_salt(("settings", key))
+        .selected_text(RichText::new(crate::i18n::t(&shown)).size(12.5))
+        .width(width.min(ui.available_width()))
+        .truncate()
+        .height(480.0)
+        .show_ui(ui, |ui| {
             for (v, l) in opts {
                 let r = ui.selectable_label(v == current, crate::i18n::t(l));
                 items.push((format!("settings.{key}.{v}"), r.rect, l.clone()));
@@ -440,9 +446,11 @@ fn combo(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, current: &str, opts: &[
                     chosen = Some(v.clone());
                 }
             }
-        },
-    );
-    app.auto.add(&format!("settings.{key}"), r.response.rect, &shown);
+        });
+    // The accessible name is the field's label, while the automation label stays the selected
+    // value so `ui.elements` reports what the dropdown shows.
+    let response = crate::widgets::accessible_name(r.response, crate::i18n::t(label));
+    app.auto.add(&format!("settings.{key}"), response.rect, &shown);
     for (id, rect, l) in items {
         app.auto.add(&id, rect, &l);
     }
@@ -487,6 +495,8 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
             }
             match f.kind {
                 Kind::Bool => {
+                    // a long label wraps at the page edge
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     let mut b = cur.as_bool().unwrap_or(false);
                     let r = ui.checkbox(&mut b, RichText::new(crate::i18n::t(f.label)).size(12.5));
                     app.auto.add(&format!("settings.{}", f.key), r.rect, f.label);
@@ -515,13 +525,13 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                     if let Some(x) = number(app, ui, f.key, cur.as_f64().unwrap_or(1.0), range, decimals, f.label) {
                         put(&mut d.values, f.key, json!(if u == "frames" { x.round() } else { x }));
                     }
-                    if let Some(v) = combo(app, ui, unit_key, &u, &static_opts(settings::DURATION_UNITS), 90.0) {
+                    if let Some(v) = combo(app, ui, unit_key, f.label, &u, &static_opts(settings::DURATION_UNITS), 90.0) {
                         put(&mut d.values, unit_key, json!(v));
                     }
                 }
                 Kind::Choice(opts) => {
                     field_label(ui, f.label);
-                    if let Some(v) = combo(app, ui, f.key, &choice_text(&cur), &static_opts(opts), 300.0) {
+                    if let Some(v) = combo(app, ui, f.key, f.label, &choice_text(&cur), &static_opts(opts), 300.0) {
                         let x = if cur.is_number() { v.parse::<u64>().map(Value::from).unwrap_or(json!(v)) } else { json!(v) };
                         put(&mut d.values, f.key, x);
                     }
@@ -529,7 +539,7 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                 Kind::Device(list) => {
                     field_label(ui, f.label);
                     let opts = device_opts(app, d, list);
-                    if let Some(v) = combo(app, ui, f.key, &choice_text(&cur), &opts, 300.0) {
+                    if let Some(v) = combo(app, ui, f.key, f.label, &choice_text(&cur), &opts, 300.0) {
                         put(&mut d.values, f.key, json!(v));
                     }
                 }
@@ -542,7 +552,7 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                         let c = settings::parse_hex(&choice_text(get(&d.values, &format!("labels.colors.{}.color", settings::label_id(l))))).unwrap_or(l.rgb());
                         ui.painter().rect_filled(sw, 2.0, Color32::from_rgb(c[0], c[1], c[2]));
                     }
-                    if let Some(v) = combo(app, ui, f.key, &cur_s, &opts, 160.0) {
+                    if let Some(v) = combo(app, ui, f.key, f.label, &cur_s, &opts, 160.0) {
                         put(&mut d.values, f.key, json!(v));
                     }
                 }
@@ -554,13 +564,22 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                         Kind::Font => tl!("Font family"),
                         _ => "",
                     };
-                    let r = ui.add(egui::TextEdit::singleline(&mut s).desired_width(if matches!(f.kind, Kind::Path) { 300.0 } else { 220.0 }).hint_text(hint));
+                    let browse = tl!("Browse…");
+                    let width = if matches!(f.kind, Kind::Path) {
+                        // leave room for Browse… on the page, however long its translation
+                        let text = egui::WidgetText::from(browse).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button);
+                        let button = text.size().x + 2.0 * ui.spacing().button_padding.x + ui.spacing().item_spacing.x;
+                        (ui.available_width() - button).clamp(60.0, 300.0)
+                    } else {
+                        ui.available_width().clamp(60.0, 220.0)
+                    };
+                    let r = crate::widgets::accessible_name(ui.add(egui::TextEdit::singleline(&mut s).desired_width(width).hint_text(hint)), f.label);
                     app.auto.add(&format!("settings.{}", f.key), r.rect, f.label);
                     if r.changed() {
                         put(&mut d.values, f.key, json!(s));
                     }
                     if matches!(f.kind, Kind::Path) {
-                        let b = ui.button(tl!("Browse…"));
+                        let b = ui.button(browse);
                         app.auto.add(&format!("settings.{}.browse", f.key), b.rect, "Browse…");
                         if b.clicked() {
                             let key = f.key;
@@ -592,9 +611,12 @@ fn color_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, key: 
     }
     // While the field has focus it shows what is typed, even when that is not a colour yet (one
     // character into `#2f6bdf`); each valid colour is kept as it comes. Leaving shows the kept one.
-    let draft_id = egui::Id::new(("settings-hex", key));
+    let draft_id = egui::Id::unique(("settings-hex", key));
     let mut text = ui.data(|m| m.get_temp::<String>(draft_id)).unwrap_or_else(|| choice_text(get(&d.values, key)));
-    let t = ui.add(egui::TextEdit::singleline(&mut text).desired_width(70.0).font(egui::TextStyle::Monospace));
+    let t = crate::widgets::accessible_name(
+        ui.add(egui::TextEdit::singleline(&mut text).desired_width(70.0).font(egui::TextStyle::Monospace)),
+        format!("{label} hex"),
+    );
     app.auto.add(&format!("settings.{key}.hex"), t.rect, label);
     if t.has_focus() {
         ui.data_mut(|m| m.insert_temp(draft_id, text.clone()));
@@ -623,7 +645,7 @@ fn label_presets(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft) {
         ui.horizontal(|ui| {
             let opts: Vec<(String, String)> = presets.iter().map(|p| (p.name.clone(), p.name.clone())).collect();
             let shown = if modified { tlf!("{name} (Modified)", name = labels.preset) } else { labels.preset.clone() };
-            if let Some(name) = combo(app, ui, "labels.preset", &shown, &opts, 150.0) {
+            if let Some(name) = combo(app, ui, "labels.preset", "Label Color Presets", &shown, &opts, 150.0) {
                 pick = presets.iter().find(|p| p.name == name).cloned();
             }
             if preset_button(app, ui, "revert", Icon::Reset, tl!("Revert to the preset's colors and names"), modified) {
@@ -714,7 +736,10 @@ fn custom(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, name: &str
                         let id = settings::label_id(*l);
                         let nk = format!("labels.colors.{id}.name");
                         let mut name = choice_text(get(&d.values, &nk));
-                        let r = ui.add_sized(vec2(136.0, 22.0), egui::TextEdit::singleline(&mut name));
+                        let r = crate::widgets::accessible_name(
+                            ui.add_sized(vec2(136.0, 22.0), egui::TextEdit::singleline(&mut name)),
+                            format!("{} name", l.name()),
+                        );
                         app.auto.add(&format!("settings.{nk}"), r.rect, l.name());
                         if r.changed() {
                             put(&mut d.values, &nk, json!(name));
@@ -829,11 +854,11 @@ fn rows(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, list: &[Row]
 /// Draw the dialog; returns whether it stays open.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let Some(mut d) = app.ui.settings.take() else { return false };
-    crate::widgets::revert_drag_on_escape(ctx, egui::Id::new("settings-dialog-before-drag"), &mut d);
+    crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("settings-dialog-before-drag"), &mut d);
     let t = app.tokens;
     let mut close = false;
     let mut apply = false;
-    let resp = egui::Modal::new(egui::Id::new("settings-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
+    let resp = egui::Modal::new(egui::Id::unique("settings-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
         ui.set_width(W);
         // title bar (Premiere keeps "Preferences" as the window title)
         let (bar, _) = ui.allocate_exact_size(vec2(W, 30.0), Sense::hover());
@@ -848,20 +873,22 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             ui.painter().rect(list, 2.0, t.field_bg, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
             for (i, c) in settings::categories().iter().enumerate() {
                 let row = Rect::from_min_size(list.min + vec2(1.0, 1.0 + i as f32 * ROW_H), vec2(LIST_W - 2.0, ROW_H));
-                let r = ui.interact(row, egui::Id::new(("settings-cat", c.id)), Sense::click());
+                let r = ui.interact(row, egui::Id::unique(("settings-cat", c.id)), Sense::click());
                 let sel = d.page == c.id;
                 if sel {
                     ui.painter().rect_filled(row, 0.0, t.row_alt);
                 } else if r.hovered() {
                     ui.painter().rect_filled(row, 0.0, t.hover.gamma_multiply(0.6));
                 }
-                ui.painter().text(
-                    row.left_center() + vec2(8.0, 0.0),
-                    Align2::LEFT_CENTER,
-                    crate::i18n::t(c.title),
-                    Tokens::ui(12.5),
-                    if sel { t.text } else { t.text_dim },
-                );
+                // a name too long for the list ends in "…" and shows whole in a tooltip
+                let title = crate::i18n::t(c.title);
+                let color = if sel { t.text } else { t.text_dim };
+                let mut job = egui::text::LayoutJob::simple_singleline(title.to_string(), Tokens::ui(12.5), color);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(row.width() - 16.0);
+                let galley = ui.painter().layout_job(job);
+                let elided = galley.elided;
+                ui.painter().galley(row.left_center() + vec2(8.0, -galley.size().y / 2.0), galley, color);
+                let r = if elided { r.on_hover_text(title) } else { r };
                 app.auto.add(&format!("settings.category.{}", c.id), row, c.title);
                 if r.clicked() {
                     d.page = c.id.into();
@@ -874,7 +901,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             ui.vertical(|ui| {
                 ui.set_width(W - LIST_W - 60.0);
                 ui.set_height(BODY_H);
-                egui::ScrollArea::vertical().id_salt(("settings-page", cat.id)).auto_shrink([false, false]).max_height(BODY_H).show(ui, |ui| {
+                let page = egui::ScrollArea::vertical().id_salt(("settings-page", cat.id)).auto_shrink([false, false]).max_height(BODY_H).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0;
                     rows(app, ui, &mut d, cat.rows);
                     if !d.message.is_empty() {
@@ -882,6 +909,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                         note(ui, &t, &d.message);
                     }
                 });
+                app.auto.add("settings.page", page.inner_rect, cat.title);
             });
         });
         ui.add_space(14.0);

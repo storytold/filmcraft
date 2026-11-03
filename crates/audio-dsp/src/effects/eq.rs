@@ -12,6 +12,22 @@ const SMOOTH_MS: f32 = 30.0;
 /// Most bands a [`BandBank`] can hold.
 pub(crate) const MAX_BANDS: usize = 40;
 
+#[derive(Clone, Copy)]
+pub(crate) struct BandSettings {
+    enabled: bool,
+    kind: FilterType,
+    frequency_hz: f32,
+    gain_db: f32,
+    q: f32,
+    snap: bool,
+}
+
+impl BandSettings {
+    pub(crate) fn new(enabled: bool, kind: FilterType, frequency_hz: f32, gain_db: f32, q: f32, snap: bool) -> Self {
+        Self { enabled, kind, frequency_hz, gain_db, q, snap }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Band {
     kind: FilterType,
@@ -50,16 +66,17 @@ impl BandBank {
         BandBank { sample_rate: sample_rate as f64, bands: vec![band; nbands], state: vec![vec![Biquad::new(); nbands]; channels.max(1)], counter: 0 }
     }
 
-    pub(crate) fn set_band(&mut self, i: usize, on: bool, kind: FilterType, freq: f32, gain: f32, q: f32, snap: bool) {
+    pub(crate) fn set_band(&mut self, i: usize, settings: BandSettings) {
+        let BandSettings { enabled, kind, frequency_hz, gain_db, q, snap } = settings;
         let b = &mut self.bands[i];
         if b.kind != kind {
             b.kind = kind;
             b.dirty = true;
         }
-        b.freq.set(freq.max(1.0).log2());
-        b.gain.set(gain);
+        b.freq.set(frequency_hz.max(1.0).log2());
+        b.gain.set(gain_db);
         b.q.set(q);
-        b.mix.set(if on { 1.0 } else { 0.0 });
+        b.mix.set(if enabled { 1.0 } else { 0.0 });
         if snap {
             b.freq.snap();
             b.gain.snap();
@@ -119,8 +136,11 @@ impl BandBank {
             // Keep the exact per-sample arithmetic and recursive state; only the settled
             // parameter/smoother bookkeeping is hoisted out of the hot loop.
             let g = out_gain.value() as f64;
+            let bands = &self.bands;
+            // Channels are filtered in pairs so two independent recurrences share one loop.
+            let mut held: Option<(&mut [f32], &mut [Biquad])> = None;
             for (channel, state) in channels.iter_mut().take(nch).zip(&mut self.state) {
-                for (b, st) in self.bands.iter().zip(state.iter_mut()) {
+                for (b, st) in bands.iter().zip(state.iter_mut()) {
                     if b.mix.value() <= 0.0 {
                         st.reset();
                     }
@@ -128,7 +148,7 @@ impl BandBank {
                 // A settled unit transfer with zero state is exactly transparent for finite
                 // f32 input. Do not discard a tail or bypass a non-finite sample. Bounded
                 // coefficients also ensure intermediate f64 products cannot overflow.
-                let transparent = self.bands.iter().zip(state.iter()).all(|(b, st)| {
+                let transparent = bands.iter().zip(state.iter()).all(|(b, st)| {
                     b.mix.value() <= 0.0
                         || (st.is_clear()
                             && b.coeffs.b0 == 1.0
@@ -138,7 +158,7 @@ impl BandBank {
                             && b.coeffs.b2.abs() <= 4.0)
                 });
                 if transparent && channel.iter().take(n).all(|x| x.is_finite()) {
-                    let active = self.bands.iter().any(|b| b.mix.value() > 0.0);
+                    let active = bands.iter().any(|b| b.mix.value() > 0.0);
                     for sample in channel.iter_mut().take(n) {
                         let x = *sample as f64;
                         // An active identity biquad adds +0, which normalizes negative zero.
@@ -146,9 +166,16 @@ impl BandBank {
                     }
                     continue;
                 }
-                for sample in channel.iter_mut().take(n) {
+                let (channel, state) = (&mut channel[..n], state.as_mut_slice());
+                match held.take() {
+                    Some((first, first_state)) => filter_pair(bands, first, first_state, channel, state, g),
+                    None => held = Some((channel, state)),
+                }
+            }
+            if let Some((channel, state)) = held {
+                for sample in channel.iter_mut() {
                     let mut x = *sample as f64;
-                    for (b, st) in self.bands.iter().zip(state.iter_mut()) {
+                    for (b, st) in bands.iter().zip(state.iter_mut()) {
                         let m = b.mix.value() as f64;
                         if m > 0.0 {
                             let y = st.tick(&b.coeffs, x);
@@ -195,6 +222,24 @@ impl BandBank {
                 channels[ch][i] = (x * g as f64) as f32;
             }
         }
+    }
+}
+
+/// The settled band cascade for two channels, with the same per-channel arithmetic as one.
+fn filter_pair(bands: &[Band], l: &mut [f32], l_state: &mut [Biquad], r: &mut [f32], r_state: &mut [Biquad], g: f64) {
+    for (a, b) in l.iter_mut().zip(r.iter_mut()) {
+        let (mut x, mut y) = (*a as f64, *b as f64);
+        for ((band, sl), sr) in bands.iter().zip(l_state.iter_mut()).zip(r_state.iter_mut()) {
+            let m = band.mix.value() as f64;
+            if m > 0.0 {
+                let yl = sl.tick(&band.coeffs, x);
+                x += m * (yl - x);
+                let yr = sr.tick(&band.coeffs, y);
+                y += m * (yr - y);
+            }
+        }
+        *a = (x * g) as f32;
+        *b = (y * g) as f32;
     }
 }
 
@@ -258,12 +303,14 @@ impl ParametricEq {
         for (i, ids) in BAND_IDS.iter().enumerate() {
             self.bank.set_band(
                 i,
-                self.pv.on(ids[0]),
-                FilterType::from_index(self.pv.idx(ids[1])),
-                self.pv.v(ids[2]),
-                self.pv.v(ids[3]),
-                self.pv.v(ids[4]),
-                snap,
+                BandSettings::new(
+                    self.pv.on(ids[0]),
+                    FilterType::from_index(self.pv.idx(ids[1])),
+                    self.pv.v(ids[2]),
+                    self.pv.v(ids[3]),
+                    self.pv.v(ids[4]),
+                    snap,
+                ),
             );
         }
         self.out.set(crate::db_to_gain(self.pv.v("output")));
@@ -324,9 +371,9 @@ impl SimpleEq {
         let sq = std::f32::consts::FRAC_1_SQRT_2;
         let p = &self.pv;
         let (lg, lf, mg, mf, mq, hg, hf) = (p.v("low"), p.v("low_freq"), p.v("mid"), p.v("mid_freq"), p.v("mid_q"), p.v("high"), p.v("high_freq"));
-        self.bank.set_band(0, true, FilterType::LowShelf, lf, lg, sq, snap);
-        self.bank.set_band(1, true, FilterType::Peaking, mf, mg, mq, snap);
-        self.bank.set_band(2, true, FilterType::HighShelf, hf, hg, sq, snap);
+        self.bank.set_band(0, BandSettings::new(true, FilterType::LowShelf, lf, lg, sq, snap));
+        self.bank.set_band(1, BandSettings::new(true, FilterType::Peaking, mf, mg, mq, snap));
+        self.bank.set_band(2, BandSettings::new(true, FilterType::HighShelf, hf, hg, sq, snap));
         self.out.set(crate::db_to_gain(self.pv.v("output")));
         if snap {
             self.out.snap();
@@ -476,7 +523,7 @@ mod throughput_tests {
     #[test]
     fn flat_eq_fast_path_preserves_samples_and_filter_tails() {
         let mut fast = BandBank::new(48000.0, 2, 1);
-        fast.set_band(0, true, FilterType::Peaking, 1000.0, 0.0, 0.7, true);
+        fast.set_band(0, BandSettings::new(true, FilterType::Peaking, 1000.0, 0.0, 0.7, true));
         fast.reset();
         let mut reference = fast.clone();
         let mut gain = Smoothed::new(1.0, 0);
@@ -496,10 +543,10 @@ mod throughput_tests {
         }
         // A newly flat filter must drain its old state, not drop the tail.
         fast.reset();
-        fast.set_band(0, true, FilterType::Peaking, 1000.0, 12.0, 0.7, true);
+        fast.set_band(0, BandSettings::new(true, FilterType::Peaking, 1000.0, 12.0, 0.7, true));
         fast.update_coeffs(true);
         fast.process(&mut [&mut [0.5], &mut [0.5]], &mut gain);
-        fast.set_band(0, true, FilterType::Peaking, 1000.0, 0.0, 0.7, true);
+        fast.set_band(0, BandSettings::new(true, FilterType::Peaking, 1000.0, 0.0, 0.7, true));
         fast.update_coeffs(true);
         reference = fast.clone();
         let mut a = [vec![0.0; 4096], vec![0.0; 4096]];
@@ -523,14 +570,15 @@ mod throughput_tests {
                 let on = block != 180;
                 let db = if block == 270 { 0.0 } else { 9.0 };
                 for bank in [&mut fast, &mut reference] {
-                    bank.set_band(0, on, FilterType::Peaking, 1733.0, db, 0.7, false);
+                    bank.set_band(0, BandSettings::new(on, FilterType::Peaking, 1733.0, db, 0.7, false));
                 }
                 gain.set(if block == 360 { 1.0 } else { 0.8 });
                 ref_gain.set(gain.target());
             }
             let n = [0, 1, 17, 64, 513][block % 5];
             let input: Vec<f32> = (0..n).map(|i| if block > 400 { 0.0 } else { ((i + block * 13) as f32 * 0.17).sin() * 0.3 }).collect();
-            let mut a = [input.clone(), input.clone()];
+            let right: Vec<f32> = input.iter().enumerate().map(|(i, x)| if block > 450 { 0.0 } else { 0.5 * x + (i as f32 * 0.031).cos() * 0.2 }).collect();
+            let mut a = [input, right];
             let mut b = a.clone();
             let [al, ar] = &mut a;
             let [bl, br] = &mut b;
@@ -540,6 +588,44 @@ mod throughput_tests {
                 assert_eq!(a.to_bits(), b.to_bits(), "block {block}");
             }
             assert_eq!(fast.counter, reference.counter);
+        }
+    }
+    #[test]
+    fn settled_eq_pairs_channels_like_original_loop() {
+        let kinds = [FilterType::HighPass, FilterType::LowShelf, FilterType::Peaking, FilterType::Notch, FilterType::HighShelf, FilterType::LowPass];
+        for (flat, nch) in [(false, 1), (false, 2), (false, 3), (false, 5), (true, 3)] {
+            let mut fast = BandBank::new(48000.0, nch, kinds.len());
+            for (i, kind) in kinds.iter().enumerate() {
+                let gain = if flat { 0.0 } else { 3.0 * i as f32 - 7.0 };
+                let kind = if flat { FilterType::Peaking } else { *kind };
+                fast.set_band(i, BandSettings::new(i != 2, kind, 40.0 * 3.1f32.powi(i as i32), gain, 0.5 + 0.4 * i as f32, true));
+            }
+            fast.reset();
+            let mut reference = fast.clone();
+            let mut gain = Smoothed::new(0.9, 0);
+            let mut ref_gain = gain;
+            for block in 0..40 {
+                let n = [512, 1, 17, 0, 64][block % 5];
+                let mut a: Vec<Vec<f32>> = (0..nch)
+                    .map(|ch| {
+                        (0..n)
+                            .map(|i| match (ch, block) {
+                                (1, 10..=12) if flat => f32::NAN,
+                                (2, 20..) => 0.0,
+                                _ => ((i + block * 31) as f32 * (0.05 + 0.07 * ch as f32)).sin() * 0.4,
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let mut b = a.clone();
+                let mut ar: Vec<&mut [f32]> = a.iter_mut().map(|c| c.as_mut_slice()).collect();
+                let mut br: Vec<&mut [f32]> = b.iter_mut().map(|c| c.as_mut_slice()).collect();
+                fast.process(&mut ar, &mut gain);
+                reference.process_reference(&mut br, &mut ref_gain);
+                for (x, y) in a.iter().flatten().zip(b.iter().flatten()) {
+                    assert_eq!(x.to_bits(), y.to_bits(), "nch {nch} flat {flat} block {block}");
+                }
+            }
         }
     }
 }

@@ -276,6 +276,50 @@ fn truncation_and_mutation_never_panic() {
     }
 }
 
+/// Opens `data` and reads every unit; errors are fine, panics are not.
+fn open_and_read_all(data: &[u8]) {
+    let data = data.to_vec();
+    if let Ok(f) = open(&data) {
+        for (s, st) in f.streams.iter().enumerate() {
+            for i in 0..st.units.len() {
+                let _ = f.read_unit(&data, s, i);
+            }
+        }
+    }
+}
+
+#[test]
+fn program_stream_cut_inside_a_pack_header_never_panics() {
+    // MPEG-1 pack header cut after the 4-byte start code + 3 bytes (once panicked in `scan`).
+    open_and_read_all(&[0, 0, 1, 0xBA, 0x21, 0, 0]);
+    for n in 4..=12 {
+        let mpeg1 = [0u8, 0, 1, 0xBA, 0x21, 0, 1, 0, 1, 0x80, 0, 1];
+        open_and_read_all(&mpeg1[..n]);
+    }
+}
+
+#[test]
+fn program_stream_truncation_at_every_length_never_panics() {
+    let frames: Vec<Vec<u8>> = (0..3).map(|k| mpeg2_frame(if k == 0 { 1 } else { 2 }, k as u16, false, 300)).collect();
+    let es: Vec<u8> = frames.concat();
+    for mpeg1 in [false, true] {
+        let mut out = Vec::new();
+        for (k, chunk) in es.chunks(500).enumerate() {
+            if mpeg1 {
+                out.extend([0, 0, 1, 0xBA, 0x21, 0, 1, 0, 1, 0x80, 0, 1]);
+            } else {
+                out.extend([0, 0, 1, 0xBA, 0x44, 0, 4, 0, 4, 1, 1, 0x89, 0xC3, 0xF8]);
+            }
+            out.extend(pes(0xE0, Some(3600 * k as i64), None, chunk, true));
+        }
+        out.extend([0, 0, 1, 0xB9]);
+        assert!(open(&out).is_ok(), "the untruncated stream opens (mpeg1: {mpeg1})");
+        for cut in 0..=out.len() {
+            open_and_read_all(&out[..cut]);
+        }
+    }
+}
+
 #[test]
 fn timestamps_unwrap_across_the_33_bit_wrap() {
     let mut u = Unwrap::default();
@@ -285,4 +329,316 @@ fn timestamps_unwrap_across_the_33_bit_wrap() {
     // a B picture timestamp from just before the wrap
     assert_eq!(u.unwrap(near + 1000), near + 1000);
     assert_eq!(u.unwrap(4200), (1 << 33) + 4200);
+}
+
+/// An Annex B NAL unit: start code, header bytes and `n` bytes of payload (no zero runs).
+fn nal(header: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut v = vec![0, 0, 0, 1];
+    v.extend(header);
+    v.extend(body);
+    v
+}
+
+/// A slice of `n` filler bytes after the first byte of the slice header (0x88: first_mb 0).
+fn slice(header: &[u8], first: u8, n: usize) -> Vec<u8> {
+    let mut body = vec![first];
+    body.extend((0..n).map(|i| 0x40 | (i % 31) as u8));
+    nal(header, &body)
+}
+
+const AUD: [u8; 2] = [0x09, 0xF0];
+
+fn h264_idr(n: usize) -> Vec<u8> {
+    [nal(&AUD, &[]), nal(&[0x67], &[0x42, 0x80, 0x1E]), nal(&[0x68], &[0xCE, 0x38, 0x80]), slice(&[0x65], 0x88, n)].concat()
+}
+
+fn h264_p(n: usize) -> Vec<u8> {
+    [nal(&AUD, &[]), slice(&[0x41], 0x88, n)].concat()
+}
+
+/// A non-reference B picture (nal_ref_idc 0).
+fn h264_b(n: usize) -> Vec<u8> {
+    [nal(&AUD, &[]), slice(&[0x01], 0x88, n)].concat()
+}
+
+/// A non-IDR I picture introduced by SEI with a buffering period message and a recovery point.
+fn h264_recovery_i(n: usize) -> Vec<u8> {
+    let sei = nal(&[0x06], &[0x00, 0x02, 0xAA, 0xBB, 0x06, 0x01, 0x84, 0x80]);
+    [nal(&AUD, &[]), sei, slice(&[0x41], 0x88, n)].concat()
+}
+
+fn h264_units(aus: &[(Option<i64>, Vec<u8>)]) -> (Vec<u8>, File) {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x1B, 0x1011)]);
+    for (pts, au) in aus {
+        mux.pes(0x1011, &pes(0xE0, *pts, None, au, false));
+    }
+    let data = mux.out;
+    let f = open(&data).unwrap();
+    (data, f)
+}
+
+#[test]
+fn h264_recovery_point_is_a_random_access_point() {
+    let aus = [(Some(90_000), h264_idr(300)), (Some(93_600), h264_p(300)), (Some(97_200), h264_recovery_i(300)), (Some(100_800), h264_p(300))];
+    let (data, f) = h264_units(&aus);
+    let s = &f.streams[0];
+    assert_eq!(s.codec, Codec::H264);
+    assert_eq!(s.units.iter().map(|u| u.key).collect::<Vec<_>>(), [true, false, true, false]);
+    for (i, (pts, au)) in aus.iter().enumerate() {
+        assert_eq!(f.read_unit(&data, 0, i).unwrap(), *au, "unit {i}");
+        assert_eq!(s.units[i].pts, *pts);
+    }
+    // a stream cut so that it starts at a recovery point (no IDR at all) has a key unit
+    let (_, f) = h264_units(&[(Some(1000), h264_recovery_i(400)), (Some(4600), h264_p(400)), (Some(8200), h264_p(400))]);
+    assert_eq!(f.streams[0].units.iter().map(|u| u.key).collect::<Vec<_>>(), [true, false, false]);
+    // SEI without a recovery point message is not one
+    let sei = nal(&[0x06], &[0x00, 0x02, 0xAA, 0xBB, 0x80]);
+    let au = [nal(&AUD, &[]), sei, slice(&[0x41], 0x88, 600)].concat();
+    let (_, f) = h264_units(&[(Some(1000), au)]);
+    assert!(!f.streams[0].units[0].key);
+}
+
+#[test]
+fn h264_intra_refresh_recovery_point_is_not_a_random_access_point() {
+    // recovery_frame_cnt 1 (ue(v) "010"): decoding from here shows broken pictures
+    let sei = nal(&[0x06], &[0x00, 0x02, 0xAA, 0xBB, 0x06, 0x01, 0x44, 0x80]);
+    let au = [nal(&AUD, &[]), sei, slice(&[0x41], 0x88, 300)].concat();
+    let (_, f) = h264_units(&[(Some(1000), au), (Some(4600), h264_p(300))]);
+    assert_eq!(f.streams[0].units.iter().map(|u| u.key).collect::<Vec<_>>(), [false, false]);
+}
+
+#[test]
+fn h264_several_access_units_in_one_pes_are_separate_units() {
+    // IDR, then in one PES a non-reference B picture and a reference P picture, only the first
+    // access unit of the PES has a timestamp
+    let (idr, b, p) = (h264_idr(400), h264_b(300), h264_p(250));
+    let (data, f) = h264_units(&[(Some(90_000), idr.clone()), (Some(93_600), [b.clone(), p.clone()].concat()), (Some(100_800), h264_p(100))]);
+    let s = &f.streams[0];
+    assert_eq!(s.units.len(), 4);
+    assert_eq!(s.units.iter().map(|u| u.pts).collect::<Vec<_>>(), [Some(90_000), Some(93_600), None, Some(100_800)]);
+    assert_eq!(s.units.iter().map(|u| u.key).collect::<Vec<_>>(), [true, false, false, false]);
+    assert_eq!(s.units.iter().map(|u| u.disposable).collect::<Vec<_>>(), [false, true, false, false]);
+    assert_eq!(f.read_unit(&data, 0, 0).unwrap(), idr);
+    assert_eq!(f.read_unit(&data, 0, 1).unwrap(), b);
+    assert_eq!(f.read_unit(&data, 0, 2).unwrap(), p);
+}
+
+#[test]
+fn h264_units_without_delimiters_split_at_the_first_slice() {
+    // no AUD or SEI: a slice with first_mb_in_slice 0 starts the next access unit, a further
+    // slice of the same picture (first_mb != 0) does not
+    let two_slices = [slice(&[0x41], 0x88, 300), slice(&[0x41], 0x42, 300)].concat();
+    let idr = slice(&[0x65], 0x88, 200);
+    let (data, f) = h264_units(&[(Some(0), [idr.clone(), two_slices.clone(), two_slices.clone()].concat())]);
+    let s = &f.streams[0];
+    assert_eq!(s.units.len(), 3);
+    assert_eq!(s.units.iter().map(|u| u.key).collect::<Vec<_>>(), [true, false, false]);
+    assert_eq!(f.read_unit(&data, 0, 1).unwrap(), two_slices);
+    assert_eq!(f.read_unit(&data, 0, 0).unwrap(), idr);
+}
+
+#[test]
+fn h264_one_access_unit_per_pes_is_unchanged() {
+    // parameter sets inside the access unit (after the AUD, before the slices) do not split it
+    let aus: Vec<(Option<i64>, Vec<u8>)> =
+        (0..6).map(|k| (Some(90_000 + 3600 * k), if k % 3 == 0 { h264_idr(500) } else { h264_p(150 + 70 * k as usize) })).collect();
+    let (data, f) = h264_units(&aus);
+    let s = &f.streams[0];
+    assert_eq!(s.units.len(), 6);
+    for (i, (pts, au)) in aus.iter().enumerate() {
+        assert_eq!(f.read_unit(&data, 0, i).unwrap(), *au);
+        assert_eq!(s.units[i].pts, *pts);
+        assert_eq!(s.units[i].key, i % 3 == 0);
+        assert!(!s.units[i].disposable);
+    }
+}
+
+#[test]
+fn hevc_several_access_units_in_one_pes_are_separate_units() {
+    let aud = nal(&[0x46, 0x01], &[0x50]);
+    let idr = [aud.clone(), slice(&[0x26, 0x01], 0x80, 300)].concat();
+    // TRAIL_N picture: sub-layer non-reference
+    let trail_n = [aud.clone(), slice(&[0x00, 0x01], 0x80, 300)].concat();
+    let trail_r = [aud, slice(&[0x02, 0x01], 0x80, 200)].concat();
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x24, 0x1011)]);
+    mux.pes(0x1011, &pes(0xE0, Some(90_000), None, &idr, false));
+    mux.pes(0x1011, &pes(0xE0, Some(93_600), None, &[trail_n.clone(), trail_r.clone()].concat(), false));
+    let f = open(&mux.out).unwrap();
+    let s = &f.streams[0];
+    assert_eq!(s.codec, Codec::Hevc);
+    assert_eq!(s.units.iter().map(|u| u.pts).collect::<Vec<_>>(), [Some(90_000), Some(93_600), None]);
+    assert_eq!(s.units.iter().map(|u| u.key).collect::<Vec<_>>(), [true, false, false]);
+    assert_eq!(s.units.iter().map(|u| u.disposable).collect::<Vec<_>>(), [false, true, false]);
+    assert_eq!(f.read_unit(&mux.out, 0, 1).unwrap(), trail_n);
+    assert_eq!(f.read_unit(&mux.out, 0, 2).unwrap(), trail_r);
+}
+
+fn adts_frame(k: u8) -> Vec<u8> {
+    let mut v = vec![0xFF, 0xF1, 0x50, 0x80, 0x0C, 0x9F, 0xFC];
+    v.extend([k; 93]);
+    v
+}
+
+#[test]
+fn non_pes_payload_is_dropped_until_the_next_unit_start() {
+    // a unit start whose payload is not a PES header, then continuation packets that happen to
+    // hold ADTS frames: nothing of it may become a unit
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x0F, 0x1100)]);
+    mux.packet(0x1100, true, &[0x55; 184]);
+    for k in 0..10 {
+        mux.packet(0x1100, false, &adts_frame(k));
+    }
+    let f = open(&mux.out).unwrap();
+    assert_eq!(f.streams.first().map(|s| s.units.len()), Some(0));
+    // a real PES packet afterwards is indexed again
+    let mut mux2 = TsMux::new(false);
+    mux2.psi(&[(0x0F, 0x1100)]);
+    mux2.packet(0x1100, true, &[0x55; 184]);
+    mux2.packet(0x1100, false, &adts_frame(1));
+    mux2.pes(0x1100, &pes(0xC0, Some(9000), None, &adts_frame(2), true));
+    let f = open(&mux2.out).unwrap();
+    let u = &f.streams[0].units;
+    assert_eq!(u.len(), 1);
+    assert_eq!(u[0].pts, Some(9000));
+}
+
+#[test]
+fn adaptation_field_only_unit_start_keeps_the_pes_in_progress() {
+    let mut mux = TsMux::new(false);
+    mux.psi(&[(0x03, 0x1100)]);
+    let data = pes(0xC0, Some(9000), None, &[mp2_frame(0), mp2_frame(1)].concat(), true);
+    mux.packet(0x1100, true, &data[..184]);
+    // PUSI set, adaptation field only (no payload)
+    let cc = mux.cc.get(&0x1100).copied().unwrap_or(0);
+    let mut af = vec![0x47, 0x40 | 0x11, 0x00, 0x20 | cc, 183, 0x00];
+    af.resize(188, 0xFF);
+    mux.out.extend(af);
+    for chunk in data[184..].chunks(184) {
+        mux.packet(0x1100, false, chunk);
+    }
+    let f = open(&mux.out).unwrap();
+    let s = &f.streams[0];
+    assert_eq!(s.units.len(), 2);
+    assert_eq!(s.units[0].pts, Some(9000));
+    assert_eq!(f.read_unit(&mux.out, 0, 1).unwrap(), mp2_frame(1));
+}
+
+#[test]
+fn oversized_unit_is_refused_without_reserving_it() {
+    let f = File {
+        format: Format::Ts { packet_size: 188, sync_offset: 0 },
+        streams: vec![Stream {
+            id: StreamId::Pid(0x100),
+            stream_type: 0x1B,
+            codec: Codec::H264,
+            language: None,
+            units: vec![Unit { pts: None, dts: None, key: true, disposable: false, size: u32::MAX, pos: 0, offset: 0, picture: None }],
+            lpcm: None,
+            pes_packets: 0,
+            skipped_bytes: 0,
+        }],
+        program: None,
+        pcr_range: None,
+        warnings: Vec::new(),
+    };
+    assert!(matches!(f.read_unit(&Vec::<u8>::new(), 0, 0), Err(Error::Invalid(_))));
+}
+
+/// A `ByteSource` that counts the bytes requested through `read_at`.
+struct Counting<'a> {
+    data: &'a [u8],
+    read: std::cell::Cell<u64>,
+}
+
+impl ByteSource for Counting<'_> {
+    fn len(&self) -> u64 {
+        self.data.len() as u64
+    }
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        self.read.set(self.read.get() + buf.len() as u64);
+        self.data.read_at(offset, buf)
+    }
+}
+
+#[test]
+fn bad_adaptation_fields_do_not_amplify_reads() {
+    // aligned packets whose adaptation_field_length (255) overruns the packet: the packet grid is
+    // intact, so this must cost one pass over the file, not one block read per packet
+    let mut data = Vec::new();
+    for _ in 0..3000 {
+        data.extend([0x47, 0x11, 0x00, 0x30]);
+        data.extend(std::iter::repeat_n(0xFF, 184));
+    }
+    let src = Counting { data: &data, read: Default::default() };
+    let f = open(&src).unwrap();
+    assert!(f.warnings.iter().any(|w| w.contains("adaptation field")), "{:?}", f.warnings);
+    assert!(!f.warnings.iter().any(|w| w.contains("lost packet sync")), "{:?}", f.warnings);
+    let read = src.read.get();
+    assert!(read <= 4 * data.len() as u64, "read {read} bytes of a {}-byte file", data.len());
+}
+
+#[test]
+fn garbage_without_sync_does_not_amplify_reads() {
+    // a sync byte every 189 bytes: five-in-a-row never lines up, every 0x47 is a false candidate
+    let mut data = Vec::new();
+    for _ in 0..3000 {
+        data.extend([0x47]);
+        data.extend(std::iter::repeat_n(0x11, 188));
+    }
+    let head: Vec<u8> = (0..188 * 8).map(|i| if i % 188 == 0 { 0x47 } else { 0 }).collect();
+    let mut all = head;
+    all.extend(data);
+    let src = Counting { data: &all, read: Default::default() };
+    let f = open(&src).unwrap();
+    assert!(f.warnings.iter().any(|w| w.contains("lost packet sync")), "{:?}", f.warnings);
+    let read = src.read.get();
+    assert!(read <= 4 * all.len() as u64, "read {read} bytes of a {}-byte file", all.len());
+}
+
+#[test]
+fn transport_stream_resyncs_after_garbage() {
+    const BLOCK_PACKETS: usize = 4096;
+    for m2ts in [false, true] {
+        let ps = if m2ts { 192 } else { 188 };
+        // garbage in front of the stream (shorter than 8 packets) and, at a few places around the
+        // first block boundary, between two frames; lengths that are not a multiple of the packet
+        for (delta, glen) in [(0usize, 100usize), (1, 37), (2, 188), (3, 301), (5, 5), (8, 1000)] {
+            let edge = (BLOCK_PACKETS - delta) * ps;
+            let mut mux = TsMux::new(m2ts);
+            mux.out.extend([0x11, 0x47, 0x22]); // garbage prefix with a lone 0x47
+            mux.psi(&[(0x02, 0x1011)]);
+            let mut expect = Vec::new();
+            let mut placed = false;
+            let mut k = 0usize;
+            while k < 3000 || !placed {
+                if !placed && mux.out.len() >= edge {
+                    // garbage between two PES packets, with lone sync bytes inside
+                    let mut g: Vec<u8> = (0..glen).map(|i| 0x10 + (i % 7) as u8).collect();
+                    if let Some(b) = g.get_mut(3) {
+                        *b = 0x47;
+                    }
+                    mux.out.extend(g);
+                    placed = true;
+                }
+                let f = mpeg2_frame(if k == 0 { 1 } else { 2 }, (k % 1000) as u16, false, 40 + k % 300);
+                mux.pes(0x1011, &pes(0xE0, Some(90_000 + 3600 * k as i64), None, &f, false));
+                expect.push(f);
+                k += 1;
+            }
+            assert!(mux.out.len() > (BLOCK_PACKETS + 4) * ps, "stream must cross a block boundary");
+            let data = mux.out;
+            let f = open(&data).unwrap();
+            assert!(f.warnings.iter().any(|w| w.contains("lost packet sync")), "{:?}", f.warnings);
+            let v = f.find(Kind::Video, |_| true).unwrap();
+            let s = &f.streams[v];
+            assert_eq!(s.units.len(), expect.len(), "m2ts {m2ts} delta {delta} glen {glen}");
+            for (i, fr) in expect.iter().enumerate() {
+                assert_eq!(&f.read_unit(&data, v, i).unwrap(), fr, "unit {i} (m2ts {m2ts} delta {delta} glen {glen})");
+                assert_eq!(s.units[i].pts, Some(90_000 + 3600 * i as i64));
+            }
+        }
+    }
 }

@@ -228,6 +228,7 @@ pub fn thumbnail(preset: &LumetriPreset, w: usize, h: usize) -> Image {
         clip_name: "",
         project: None,
         env: None,
+        frame_rate: 24.0,
         working: filmcraft_color::WorkingSpace::Rec709,
     };
     apply(&mut img, &preset.instance(), &cx);
@@ -247,9 +248,11 @@ pub fn grid(presets: &[LumetriPreset], cols: usize, w: usize, h: usize) -> Image
         let t = thumbnail(p, w, h);
         let (x0, y0) = (GAP + (k % cols) * (w + GAP), GAP + (k / cols) * (h + GAP));
         for y in 0..h {
-            let src = &t.px[y * w * 4..(y + 1) * w * 4];
+            // a buffer that could not be allocated comes back empty: skip it rather than panic
             let d = ((y0 + y) * gw + x0) * 4;
-            out.px[d..d + w * 4].copy_from_slice(src);
+            if let (Some(src), Some(dst)) = (t.px.get(y * w * 4..(y + 1) * w * 4), out.px.get_mut(d..d + w * 4)) {
+                dst.copy_from_slice(src);
+            }
         }
     }
     out

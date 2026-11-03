@@ -3,7 +3,9 @@
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use super::*;
+use super::{
+    Affine, FxCtx, Image, Tick, Vec2, affine_warp, blend_simple, bv, chv, clip_progress, cv, ease, fbm, fv, lin, noise1, offv, over, place, pv, smoothstep,
+};
 use crate::effects::{warp, warp_opt};
 
 /// 3×3 projective matrix, row-major, mapping (x, y, 1).
@@ -233,7 +235,7 @@ pub fn rotate_3d(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 
 /// Transform: affine place, with optional shutter-angle motion blur when the override is on.
 pub fn transform_fx(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let fps = cx.env.map_or(24.0, |env| env.frame_rate()).max(1.0);
+    let fps = cx.frame_rate.max(1.0);
     let angle = fv(e, "shutter_angle", cx);
     let n = if bv(e, "shutter_override") && angle > 0.5 { 7 } else { 1 };
     let span = (angle as f64 / 360.0) / fps;
@@ -247,6 +249,7 @@ pub fn transform_fx(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             clip_name: cx.clip_name,
             project: cx.project,
             env: cx.env,
+            frame_rate: cx.frame_rate,
             working: cx.working,
         };
         let anchor = crate::effects::point(e, "anchor", &cx2, im);

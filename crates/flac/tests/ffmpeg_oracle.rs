@@ -24,7 +24,7 @@ impl Rng {
 /// Test signals at `bps`, full scale: music-like (two sines and noise), a sweep, white noise,
 /// a full-scale square, silence and a lone click.
 fn signal(kind: &str, n: usize, bps: u8, seed: u64) -> Vec<i32> {
-    let max = f64::from((1i32 << (bps - 1)) - 1);
+    let max = ((1i64 << (bps - 1)) - 1) as f64;
     let mut r = Rng(seed | 1);
     (0..n)
         .map(|i| {
@@ -43,7 +43,7 @@ fn signal(kind: &str, n: usize, bps: u8, seed: u64) -> Vec<i32> {
                 "click" => f64::from(u8::from(i == n / 2)),
                 _ => 0.0,
             };
-            ((v * max).round() as i32).clamp(-(max as i32) - 1, max as i32)
+            ((v * max).round() as i64).clamp(-(max as i64) - 1, max as i64) as i32
         })
         .collect()
 }
@@ -93,13 +93,14 @@ fn round_trip(name: &str, planar: &[Vec<i32>], cfg: EncoderConfig, chunk: usize)
     }
 
     // STREAMINFO: total samples, rate, and the MD5 against ffmpeg's hash of the decoded audio. FLAC
-    // hashes samples unscaled; ffmpeg rescales other sizes (20-bit becomes 24-bit), so only 8, 16
-    // and 24 bit compare
+    // hashes samples unscaled; ffmpeg rescales other sizes (20-bit becomes 24-bit), so only 8, 16,
+    // 24 and 32 bit compare
     let si = &file[STREAMINFO_OFFSET as usize..STREAMINFO_OFFSET as usize + 34];
     let pcm = match bps {
         8 => Some("s8"),
         16 => Some("s16le"),
         24 => Some("s24le"),
+        32 => Some("s32le"),
         _ => None,
     };
     if let Some(pcm) = pcm {
@@ -118,7 +119,7 @@ fn round_trip(name: &str, planar: &[Vec<i32>], cfg: EncoderConfig, chunk: usize)
 #[test]
 fn every_signal_round_trips_exactly() {
     for (kind, seed) in [("music", 1), ("sweep", 2), ("noise", 3), ("square", 4), ("silence", 5), ("click", 6)] {
-        for bps in [16u8, 24] {
+        for bps in [16u8, 24, 32] {
             let planar = vec![signal(kind, 20_000, bps, seed), signal(kind, 20_000, bps, seed + 100)];
             if round_trip(&format!("{kind}-{bps}"), &planar, EncoderConfig::new(48_000, 2, bps), 4800).is_none() {
                 return;
@@ -129,11 +130,13 @@ fn every_signal_round_trips_exactly() {
 
 #[test]
 fn channel_layouts_rates_and_sizes() {
-    let cases: [(&str, u8, u8, u32, usize); 6] = [
+    let cases: [(&str, u8, u8, u32, usize); 8] = [
         ("mono-8bit", 1, 8, 8_000, 3_001),
         ("mono-24-44k1", 1, 24, 44_100, 9_999),
         ("stereo-20bit", 2, 20, 96_000, 10_000),
         ("5.1-24", 6, 24, 48_000, 12_345),
+        ("mono-32", 1, 32, 48_000, 7_777),
+        ("5.1-32", 6, 32, 96_000, 12_345),
         ("odd-rate", 2, 16, 37_800, 5_000),
         ("tiny", 2, 16, 48_000, 1),
     ];
@@ -167,7 +170,8 @@ fn levels_and_block_sizes_trade_time_for_size() {
 fn bad_input_is_an_error_not_a_panic() {
     assert!(Encoder::new(EncoderConfig::new(48_000, 0, 16)).is_err());
     assert!(Encoder::new(EncoderConfig::new(48_000, 9, 16)).is_err());
-    assert!(Encoder::new(EncoderConfig::new(48_000, 2, 32)).is_err());
+    assert!(Encoder::new(EncoderConfig::new(48_000, 2, 33)).is_err());
+    assert!(Encoder::new(EncoderConfig::new(48_000, 2, 7)).is_err());
     assert!(Encoder::new(EncoderConfig::new(0, 2, 16)).is_err());
     assert!(Encoder::new(EncoderConfig { block_size: 8, ..EncoderConfig::new(48_000, 2, 16) }).is_err());
     let mut enc = Encoder::new(EncoderConfig::new(48_000, 2, 16)).unwrap();
@@ -178,4 +182,22 @@ fn bad_input_is_an_error_not_a_panic() {
     // nothing encoded: no frames, and a header that still says "unknown"
     assert!(enc.finish().is_empty());
     assert_eq!(&enc.header()[..4], b"fLaC");
+}
+
+/// 32-bit stereo at the extremes of i32: left minus right would need 33 bits, so the encoder must
+/// not code a side channel (it overflowed `i32` and wrote garbage); every level decodes exactly.
+#[test]
+fn full_scale_32_bit_stereo_round_trips() {
+    let n = 9_000;
+    let left: Vec<i32> = (0..n).map(|i| if i % 3 == 0 { i32::MAX } else { i32::MIN }).collect();
+    let right: Vec<i32> = left.iter().map(|&v| if v == i32::MAX { i32::MIN } else { i32::MAX }).collect();
+    let planar = vec![left, right];
+    for level in [0u8, 5, 8] {
+        let cfg = EncoderConfig { level, ..EncoderConfig::new(48_000, 2, 32) };
+        if round_trip(&format!("extremes-32-level{level}"), &planar, cfg, 4096).is_none() {
+            return;
+        }
+    }
+    let mut enc = Encoder::new(EncoderConfig::new(48_000, 2, 32)).unwrap();
+    assert!(enc.encode(&[&[i32::MIN, i32::MAX], &[0, -1]]).is_ok());
 }

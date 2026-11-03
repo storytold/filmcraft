@@ -122,7 +122,7 @@ fn opendml_file_past_1_gb() {
     ];
     let Some(path) = fixture("large_opendml.avi", &args) else { return };
     let file = std::fs::File::open(&path).unwrap();
-    let src = FileSource(file);
+    let src = FileSource(std::sync::Mutex::new(file));
     let f = open(&src).unwrap();
     assert_eq!(f.index, IndexSource::OpenDml);
     assert_eq!(f.streams[0].chunks.len(), packets(&path, 0));
@@ -139,13 +139,54 @@ fn opendml_file_past_1_gb() {
 }
 
 /// A file on disk as a byte source, read where asked.
-struct FileSource(std::fs::File);
+struct FileSource(std::sync::Mutex<std::fs::File>);
 
 impl filmcraft_avi::ByteSource for FileSource {
     fn len(&self) -> u64 {
-        self.0.metadata().map(|m| m.len()).unwrap_or(0)
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).metadata().map(|m| m.len()).unwrap_or(0)
     }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
-        std::os::unix::fs::FileExt::read_exact_at(&self.0, buf, offset)
+        use std::io::{Read, Seek, SeekFrom};
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let mut file = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(buf)
     }
+}
+
+#[test]
+fn file_source_reads_exact_offsets_and_reports_eof() {
+    use filmcraft_avi::ByteSource as _;
+    use std::io::Write as _;
+
+    let path = filmcraft_testkit::fixtures::temp_path(&filmcraft_testkit::fixtures_dir("avi").join("read-at-test.bin"));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+    file.write_all(b"0123456789abcdef").unwrap();
+    drop(file);
+    let source = FileSource(std::sync::Mutex::new(std::fs::File::open(&path).unwrap()));
+    assert_eq!(source.len(), 16);
+    let mut bytes = [0; 4];
+    source.read_at(7, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"789a");
+    source.read_at(1, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"1234");
+    assert_eq!(source.read_at(15, &mut bytes).unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+    assert!(source.read_at(u64::MAX, &mut bytes).is_err());
+    source.read_at(u64::MAX, &mut []).unwrap();
+    std::thread::scope(|scope| {
+        for (offset, expected) in [(0, b"0123"), (8, b"89ab")] {
+            let source = &source;
+            scope.spawn(move || {
+                for _ in 0..64 {
+                    let mut bytes = [0; 4];
+                    source.read_at(offset, &mut bytes).unwrap();
+                    assert_eq!(&bytes, expected);
+                }
+            });
+        }
+    });
+    drop(source);
+    std::fs::remove_file(path).unwrap();
 }

@@ -11,7 +11,7 @@ use crate::effects::{FxCtx, apply};
 const RW: f32 = REFERENCE_WHITE_NITS as f32;
 
 fn cx(working: WorkingSpace) -> FxCtx<'static> {
-    FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None, working }
+    FxCtx { t: Tick::ZERO, px_scale: 1.0, seconds: 0.0, timecode: "", clip_name: "", project: None, env: None, frame_rate: 24.0, working }
 }
 
 fn lumetri(params: &[(&str, ParamValue)]) -> EffectInstance {
