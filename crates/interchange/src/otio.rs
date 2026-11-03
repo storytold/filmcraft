@@ -769,6 +769,7 @@ impl Imp<'_, '_> {
             video: (kind == TrackKind::Video).then(|| (1920, 1080, FrameRate::default())),
             audio: (kind == TrackKind::Audio).then_some((48_000, 2)),
             start_tc: None,
+            drop_frame: false,
             kind: None,
         };
         let id = match schema_name(r) {

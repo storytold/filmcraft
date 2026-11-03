@@ -288,6 +288,7 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             video: dims.map(|(w, h)| (w, h, r)),
             audio: aud,
             start_tc: child(def, "timecode").and_then(|t| child_i64(t, "frame")),
+            drop_frame: child(def, "timecode").and_then(|t| child_text(t, "displayformat")).is_some_and(|d| d.eq_ignore_ascii_case("DF")),
             kind: None,
         };
         if spec.video.is_none() && spec.audio.is_none() {

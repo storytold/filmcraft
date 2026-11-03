@@ -85,14 +85,15 @@ pub fn still(name: &str, bytes: &[u8]) -> Result<StillSource> {
 }
 
 /// The frame rate and start time code (in frames at that rate) of a CinemaDNG sequence whose first
-/// frame is `info`: the FrameRate tag when present (else `default`), the TimeCodes tag when present.
-pub fn sequence_timing(info: &filmcraft_dng::Info, default: FrameRate) -> (FrameRate, Option<i64>) {
+/// frame is `info`: the FrameRate tag when present (else `default`), the TimeCodes tag when present,
+/// and whether that time code counts drop-frame (only at the rates that have it).
+pub fn sequence_timing(info: &filmcraft_dng::Info, default: FrameRate) -> (FrameRate, Option<i64>, bool) {
     let rate = info.frame_rate.map(|(n, d)| FrameRate::new(n, d).sane()).unwrap_or(default);
-    let tc = info.timecode.map(|t| {
-        let drop = t.drop_frame && rate.supports_drop_frame();
-        filmcraft_time::fields_to_frames(i64::from(t.hours), i64::from(t.minutes), i64::from(t.seconds), i64::from(t.frames), rate, drop)
-    });
-    (rate, tc)
+    let drop = info.timecode.is_some_and(|t| t.drop_frame) && rate.supports_drop_frame();
+    let tc = info
+        .timecode
+        .map(|t| filmcraft_time::fields_to_frames(i64::from(t.hours), i64::from(t.minutes), i64::from(t.seconds), i64::from(t.frames), rate, drop));
+    (rate, tc, drop)
 }
 
 #[cfg(test)]
@@ -168,6 +169,24 @@ mod tests {
         assert!(matches!(e, MediaError::Unsupported(ref m) if m.contains("lossy JPEG")), "{e}");
     }
 
+    /// The sequence keeps whether its time code counts drop-frame (the TimeCodes frames byte's 0x40
+    /// flag), so it is shown as the camera wrote it; the flag counts only at 29.97 and 59.94.
+    #[test]
+    fn cinemadng_sequence_keeps_the_drop_frame_flag_of_its_time_code() {
+        // (FrameRate tag, TimeCodes bytes: frames, seconds, minutes, hours in BCD), start, drop-frame
+        let cases = [
+            ((30_000, 1001), [0x40, 0x00, 0x00, 0x01], 107_892, true),
+            ((30_000, 1001), [0x00, 0x00, 0x00, 0x01], 108_000, false),
+            ((25, 1), [0x40, 0x00, 0x00, 0x01], 90_000, false),
+        ];
+        for (rate, tc, start, drop_frame) in cases {
+            let dng = grey_dng(0.5, vec![(tags::FRAME_RATE, Value::SRational(vec![rate])), (tags::TIME_CODES, Value::Byte([&tc[..], &[0u8; 4][..]].concat()))]);
+            let loader: FrameLoader = Arc::new(move |_: &str| Ok(dng.clone()));
+            let s = ImageSequenceSource::new("A_0000.dng", vec![Some("/c/A_0000.dng".into())], FrameRate::FPS_25, loader).unwrap();
+            assert_eq!((s.info().start_timecode, s.info().drop_frame_timecode), (Some(start), drop_frame), "{rate:?} {tc:02x?}");
+        }
+    }
+
     #[test]
     fn cinemadng_sequence_takes_rate_and_time_code_from_the_frames() {
         let tags = || {
@@ -200,13 +219,13 @@ mod tests {
     #[test]
     fn timing_without_cinemadng_tags_is_the_callers() {
         let info = filmcraft_dng::probe(&grey_dng(0.5, vec![])).unwrap();
-        assert_eq!(sequence_timing(&info, FrameRate::FPS_25), (FrameRate::FPS_25, None));
+        assert_eq!(sequence_timing(&info, FrameRate::FPS_25), (FrameRate::FPS_25, None, false));
         // drop frame only where the rate has it
         let mut i = info.clone();
         i.frame_rate = Some((30_000, 1001));
         i.timecode = Some(filmcraft_dng::Timecode { hours: 0, minutes: 1, seconds: 0, frames: 2, drop_frame: true });
-        assert_eq!(sequence_timing(&i, FrameRate::FPS_25), (FrameRate::FPS_29_97, Some(1800)));
+        assert_eq!(sequence_timing(&i, FrameRate::FPS_25), (FrameRate::FPS_29_97, Some(1800), true));
         i.frame_rate = Some((25, 1));
-        assert_eq!(sequence_timing(&i, FrameRate::FPS_24), (FrameRate::FPS_25, Some(1502)));
+        assert_eq!(sequence_timing(&i, FrameRate::FPS_24), (FrameRate::FPS_25, Some(1502), false));
     }
 }

@@ -138,9 +138,9 @@ impl ImageSequenceSource {
         })?;
         let (frame, has_alpha, pixel_format, timing) = decode_frame(&first, &bytes)?;
         let (w, h) = (frame.width, frame.height);
-        let (rate, start_timecode) = match timing {
+        let (rate, start_timecode, drop_frame_timecode) = match timing {
             Some(info) => crate::still::dng::sequence_timing(&info, rate),
-            None => (rate, None),
+            None => (rate, None, false),
         };
         let ext = first.rsplit('.').next().unwrap_or("image").to_ascii_uppercase();
         let n = frames.len() as i64;
@@ -164,7 +164,7 @@ impl ImageSequenceSource {
             audio_streams: Vec::new(),
             container: "Image Sequence".into(),
             start_timecode,
-            drop_frame_timecode: false,
+            drop_frame_timecode,
             file_size: None,
         };
         let cache = FrameCache::new(256 << 20);

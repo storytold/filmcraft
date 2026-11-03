@@ -197,8 +197,10 @@ pub fn parse(text: &str) -> Result<AleDoc, String> {
 /// Start and end (exclusive) of a data row, in ticks at the heading's rate.
 pub fn row_range(doc: &AleDoc, row: usize) -> Option<(Tick, Tick)> {
     let rate = doc.rate()?;
-    let a = parse_timecode(doc.get(row, "Start")?, rate, false, 0).ok()?;
-    let b = parse_timecode(doc.get(row, "End")?, rate, false, 0).ok()?;
+    // a label with `;` counts drop-frame, as `export_items` writes a drop-frame clip's
+    let frame = |label: &str| parse_timecode(label, rate, label.contains(';'), 0).ok();
+    let a = frame(doc.get(row, "Start")?)?;
+    let b = frame(doc.get(row, "End")?)?;
     Some((rate.tick_of(a), rate.tick_of(b)))
 }
 
@@ -208,6 +210,23 @@ mod tests {
     use filmcraft_media::{AudioStreamInfo, MediaInfo, MediaKind, VideoStreamInfo};
     use filmcraft_project::{ItemKind, Label, MediaClip};
     use filmcraft_time::TimeRange;
+
+    /// `row_range` reads a `;` label drop-frame, so a drop-frame range written by `export_items`
+    /// reads back the frames it spans; a `:` label stays non-drop.
+    #[test]
+    fn drop_frame_labels_read_back_drop_frame() {
+        let cases = [
+            ("29.97", "00;00;59;29", "00;01;00;02", 1799, 1800),
+            ("29.97", "01;00;00;00", "01;00;00;10", 107_892, 107_902),
+            ("29.97", "00:00:59:29", "00:01:00:02", 1799, 1802),
+            ("25", "01:00:00:00", "01:00:00:10", 90_000, 90_010),
+        ];
+        for (fps, start, end, a, b) in cases {
+            let doc = parse(&format!("Heading\nFPS\t{fps}\n\nColumn\nName\tStart\tEnd\n\nData\nA\t{start}\t{end}\n")).unwrap();
+            let rate = doc.rate().unwrap();
+            assert_eq!(row_range(&doc, 0), Some((rate.tick_of(a), rate.tick_of(b))), "{start} {end}");
+        }
+    }
 
     #[test]
     fn non_positive_or_non_finite_fps_is_rejected() {

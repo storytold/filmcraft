@@ -663,17 +663,20 @@ fn drop_frame_sources_show_their_timecode_drop_frame() {
         files.push((dir.join(name), want));
     }
     if let Some(ff) = filmcraft_testkit::oracle::ffmpeg_or_skip("drop-frame timecode") {
-        for name in ["df.mov", "df.m2v"] {
-            let path = dir.join(name);
-            let ok = std::process::Command::new(&ff)
-                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30000/1001:duration=0.2"])
-                .args(["-c:v", if name.ends_with("mov") { "libx264" } else { "mpeg2video" }, "-pix_fmt", "yuv420p", "-timecode", "01:00:00;00"])
-                .arg(&path)
-                .status()
-                .is_ok_and(|s| s.success());
-            if ok {
-                files.push((path, "01;00;00;00"));
+        // a MOV `tmcd` track, and MPEG-2 GOP headers in an elementary, a program and a transport stream
+        for (name, encoder) in [("df.mov", "libx264"), ("df.m2v", "mpeg2video"), ("df.mpg", "mpeg2video"), ("df.ts", "mpeg2video")] {
+            if !filmcraft_testkit::oracle::ffmpeg_has_encoder(&ff, encoder) {
+                filmcraft_testkit::oracle::skip("drop-frame timecode", &format!("ffmpeg has no {encoder} for {name}"));
+                continue;
             }
+            let path = dir.join(name);
+            let status = std::process::Command::new(&ff)
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30000/1001:duration=0.2"])
+                .args(["-c:v", encoder, "-pix_fmt", "yuv420p", "-timecode", "01:00:00;00"])
+                .arg(&path)
+                .status();
+            assert!(status.as_ref().is_ok_and(|s| s.success()), "ffmpeg could not make {name}: {status:?}");
+            files.push((path, "01;00;00;00"));
         }
     }
     for (path, want) in files {
@@ -686,11 +689,40 @@ fn drop_frame_sources_show_their_timecode_drop_frame() {
         let fields = s.execute("metadata.get", json!({"item": items[0].0})).unwrap();
         let media_start = fields["fields"].as_array().unwrap().iter().find(|f| f["name"] == "Media Start").unwrap()["value"].clone();
         assert_eq!(media_start, want, "{name}: Metadata panel");
-        assert_eq!(crate::project_panel::cell(&s.project, s.project.item(items[0]).unwrap(), "Media Start").0, want, "{name}: Project panel");
+        let it = s.project.item(items[0]).unwrap();
+        assert_eq!(crate::project_panel::cell(&s.project, it, "Media Start").0, want, "{name}: Project panel");
+        let duration = crate::project_panel::cell(&s.project, it, "Media Duration").0;
+        assert_eq!(filmcraft_project::find::column_text(&s.project, it, "Media Duration"), duration, "{name}: Find matches the Project panel");
+        // Modify Timecode opens with this value: confirming it leaves the start where it was
+        s.execute("clip.modifyTimecode", json!({"item": items[0].0, "timecode": want})).unwrap();
+        assert_eq!(s.project.item(items[0]).unwrap().as_media().unwrap().info.start_timecode, start, "{name}: Modify Timecode, unchanged");
         let ale = dir.join(format!("{name}.ale"));
         s.execute("file.exportAle", json!({"path": ale.to_string_lossy(), "items": [items[0].0]})).unwrap();
         let doc = filmcraft_interchange::ale::parse(&std::fs::read_to_string(&ale).unwrap()).unwrap();
         assert_eq!(doc.rows[0][2], want, "{name}: ALE Start");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Modify Timecode reads the value in the clip's own count, so a new drop-frame value is counted
+/// drop-frame and a non-drop one non-drop.
+#[test]
+fn modify_timecode_reads_the_value_in_the_clips_own_count() {
+    let dir = tmp_dir("df-modify");
+    make_ntsc_mxf(&dir.join("df.mxf"), 107_892, true);
+    make_ntsc_mxf(&dir.join("ndf.mxf"), 108_000, false);
+    // (source, typed, start after)
+    let cases = [
+        ("df.mxf", "01;00;00;00", 107_892),
+        ("df.mxf", "01;00;10;00", 108_192),
+        ("df.mxf", "00;01;00;02", 1_800),
+        ("ndf.mxf", "01:00:00:00", 108_000),
+        ("ndf.mxf", "01:00:10:00", 108_300),
+    ];
+    for (name, typed, want) in cases {
+        let (mut s, items, _) = session_with(&[dir.join(name).as_path()]);
+        s.execute("clip.modifyTimecode", json!({"item": items[0].0, "timecode": typed})).unwrap();
+        assert_eq!(s.project.item(items[0]).unwrap().as_media().unwrap().info.start_timecode, Some(want), "{name} {typed}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
