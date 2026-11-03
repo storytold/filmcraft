@@ -92,6 +92,20 @@ impl Driver {
     fn grabs_cursor(&self, grab: egui::CursorGrab) -> bool {
         self.sent(&egui::ViewportCommand::CursorGrab(grab))
     }
+    /// Presses at `at` and drags; whether the cursor got locked on the way. Once raw motion has
+    /// arrived, the lock comes as the drag starts, before the next raw motion.
+    fn drag_locks(&mut self, at: egui::Pos2, press: egui::Event) -> bool {
+        let mut locked = false;
+        for events in [
+            vec![egui::Event::PointerMoved(at), press],
+            vec![egui::Event::PointerMoved(at + egui::vec2(10.0, 0.0))],
+            vec![egui::Event::MouseMoved(egui::vec2(100.0, 0.0))],
+        ] {
+            self.input(events);
+            locked |= self.grabs_cursor(egui::CursorGrab::Locked);
+        }
+        locked
+    }
 }
 
 #[test]
@@ -184,11 +198,13 @@ fn the_cursor_is_let_go_when_the_dragged_field_goes_away() {
 }
 
 /// A button let go in another window (after Alt+Tab mid-drag) never reaches FilmCraft: losing focus
-/// lets the cursor go, and a window without focus does not take it again.
+/// lets the cursor go and ends the drag, even once the window has focus again. A new press drags.
 #[test]
 fn the_cursor_is_let_go_when_the_window_loses_focus() {
     let mut d = Driver::demo();
-    d.text_layer();
+    let clip = d.text_layer();
+    d.exec("graphics.set", json!({"clip": clip, "layer": 0, "props": {"rotation": 0.0}}));
+    d.frames(2);
     let r = d.harness.state().auto.find("graphics.prop.rotation").expect("rotation field").rect;
     let at = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
     let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
@@ -200,8 +216,49 @@ fn the_cursor_is_let_go_when_the_window_loses_focus() {
     d.input([egui::Event::WindowFocused(false)]);
     assert!(d.grabs_cursor(egui::CursorGrab::None), "the cursor is let go");
     assert!(d.moves_cursor_to(at), "where the press began");
+    let rotation = d.rotation(clip);
     d.input([egui::Event::MouseMoved(egui::vec2(100.0, 0.0))]);
     assert!(!d.grabs_cursor(egui::CursorGrab::Locked), "nor taken again without focus");
+    // back in FilmCraft with the button already up: egui still sees it held from the old press
+    d.background = false;
+    d.input([egui::Event::WindowFocused(true)]);
+    for _ in 0..3 {
+        d.input([egui::Event::MouseMoved(egui::vec2(100.0, 0.0))]);
+        assert!(!d.grabs_cursor(egui::CursorGrab::Locked), "the old press does not take the cursor again");
+        assert_ne!(d.harness.output().platform_output.cursor_icon, egui::CursorIcon::None, "nor hide it");
+    }
+    assert_eq!(d.rotation(clip), rotation, "nor move the value");
+    // a new press drags as before
+    d.input([button(false)]);
+    assert!(d.drag_locks(at, button(true)), "a new drag takes the cursor");
+    assert!(d.rotation(clip) > rotation, "and moves the value");
+    d.input([egui::Event::PointerMoved(at), button(false)]);
+    assert!(d.grabs_cursor(egui::CursorGrab::None));
+}
+
+/// The button let go outside FilmCraft, the next press comes with no release before it: it starts
+/// a new drag at once.
+#[test]
+fn a_press_after_focus_returns_drags_again() {
+    let mut d = Driver::demo();
+    let clip = d.text_layer();
+    d.exec("graphics.set", json!({"clip": clip, "layer": 0, "props": {"rotation": 0.0}}));
+    d.frames(2);
+    let r = d.harness.state().auto.find("graphics.prop.rotation").expect("rotation field").rect;
+    let at = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    d.input([egui::Event::PointerMoved(at), button(true)]);
+    d.input([egui::Event::PointerMoved(at + egui::vec2(10.0, 0.0))]);
+    d.input([egui::Event::MouseMoved(egui::vec2(100.0, 0.0))]);
+    d.background = true;
+    d.input([egui::Event::WindowFocused(false)]);
+    d.background = false;
+    d.input([egui::Event::WindowFocused(true)]);
+    let rotation = d.rotation(clip);
+    assert!(d.drag_locks(at, button(true)), "the new press takes the cursor");
+    assert!(d.rotation(clip) > rotation, "and moves the value");
+    d.input([egui::Event::PointerMoved(at), button(false)]);
+    assert!(d.grabs_cursor(egui::CursorGrab::None));
 }
 
 /// A touch has no raw mouse motion: once a mouse sent some, a touch drag still follows the finger.
