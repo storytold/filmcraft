@@ -297,3 +297,18 @@ fn captions_never_overlap_with_dense_words() {
     let b = caption_blocks(&words, &rules, R);
     check_blocks(&b, &rules);
 }
+
+/// Higher-track coverage merges into sorted disjoint ranges and answers like the ranges it was
+/// built from (a binary search, not a scan of every clip per word).
+#[test]
+fn coverage_merges_ranges_and_matches_a_linear_scan() {
+    let r = |a: i64, b: i64| TimeRange::from_bounds(Tick(a), Tick(b));
+    let ranges = [r(10, 20), r(15, 30), r(30, 35), r(50, 60), r(70, 70), r(90, 80), r(-5, 0)];
+    let mut c = Coverage::default();
+    c.add(ranges[..3].to_vec());
+    c.add(ranges[3..].to_vec());
+    assert_eq!(c.0, vec![(Tick(-5), Tick(0)), (Tick(10), Tick(35)), (Tick(50), Tick(60))]);
+    for t in -10..100 {
+        assert_eq!(c.contains(Tick(t)), ranges.iter().any(|x| x.contains(Tick(t))), "t = {t}");
+    }
+}
