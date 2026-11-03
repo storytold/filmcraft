@@ -190,44 +190,6 @@ pub(crate) fn named_items(s: &Session, spec: &CommandSpec, p: &Value) -> Option<
 
 // ---------- param helpers ----------
 
-/// The longest marker `markers.edit` takes, in frames (over 46 hours at 60 fps).
-const MAX_MARKER_FRAMES: i64 = 10_000_000;
-
-/// `markers.edit`'s `durationFrames`: absent or null is `None`; anything but a whole number from 0
-/// to [`MAX_MARKER_FRAMES`] is an error.
-fn marker_frames_p(p: &Value) -> Result<Option<i64>> {
-    match p.get("durationFrames").filter(|v| !v.is_null()) {
-        None => Ok(None),
-        Some(v) => match v.as_i64() {
-            Some(f @ 0..=MAX_MARKER_FRAMES) => Ok(Some(f)),
-            _ => Err(bad("markers.edit", "`durationFrames` must be a whole number from 0 to 10000000")),
-        },
-    }
-}
-
-/// `markers.edit`'s `kind`: absent or null is `None`; anything but one of the kind names is an
-/// error.
-pub(crate) fn marker_kind_p(p: &Value) -> Result<Option<MarkerKind>> {
-    match p.get("kind").filter(|v| !v.is_null()) {
-        None => Ok(None),
-        Some(v) => {
-            v.as_str().and_then(marker_kind).map(Some).ok_or_else(|| bad("markers.edit", "`kind` must be comment, chapter, segmentation, webLink or flashCue"))
-        }
-    }
-}
-
-/// A marker type by its `markers.edit` name.
-fn marker_kind(name: &str) -> Option<MarkerKind> {
-    Some(match name {
-        "comment" => MarkerKind::Comment,
-        "chapter" => MarkerKind::Chapter,
-        "segmentation" => MarkerKind::Segmentation,
-        "webLink" => MarkerKind::WebLink,
-        "flashCue" => MarkerKind::FlashCue,
-        _ => return None,
-    })
-}
-
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
 }
@@ -236,17 +198,33 @@ pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
 pub(crate) fn reports_only(id: &str, p: &Value) -> bool {
     id == "sequence.settings" && (p.is_null() || p.as_object().is_some_and(|m| m.is_empty()))
 }
-/// A marker's `color` param: absent (or null) is `None`; anything but a label name is an error
-/// that lists the accepted names, instead of silently becoming Green (#857).
-pub(crate) fn marker_color_p(p: &Value, cmd: &str) -> Result<Option<Label>> {
+/// A marker accepts either an unchanged preset label or an exact six-digit sRGB hex color.
+pub(crate) fn marker_color_p(p: &Value, cmd: &str) -> Result<Option<(Label, Option<filmcraft_project::HexColor>)>> {
     let v = match p.get("color") {
         None | Some(Value::Null) => return Ok(None),
         Some(v) => v,
     };
-    v.as_str().and_then(Label::from_name).map(Some).ok_or_else(|| {
-        let names: Vec<&str> = Label::ALL.iter().map(|l| l.name()).collect();
-        bad(cmd, format!("unknown marker color {v}; use one of: {}", names.join(", ")))
-    })
+    if let Some(text) = v.as_str() {
+        if let Some(label) = Label::from_color_name(text) {
+            return Ok(Some((label, None)));
+        }
+        if let Some(hex) = filmcraft_project::HexColor::parse(text) {
+            return Ok(Some((Label::Green, Some(hex))));
+        }
+    }
+    let names: Vec<&str> = Label::ALL.iter().map(|l| l.name()).chain(Label::COLOR_ALIASES.iter().map(|(name, _)| *name)).collect();
+    Err(bad(cmd, format!("unknown marker color {v}; use #RRGGBB or one of: {}", names.join(", "))))
+}
+
+/// Missing/null authors preserve the existing value; an empty string explicitly clears it.
+/// Reject non-text values, control characters and more than 1024 UTF-8 bytes before editing.
+pub(crate) fn marker_author_p(p: &Value, cmd: &str) -> Result<Option<String>> {
+    let Some(value) = p.get("author").filter(|v| !v.is_null()) else { return Ok(None) };
+    let text = value.as_str().ok_or_else(|| bad(cmd, "author must be text"))?;
+    if text.len() > 1024 || text.chars().any(char::is_control) {
+        return Err(bad(cmd, "author must be at most 1024 UTF-8 bytes without control characters"));
+    }
+    Ok(Some(text.to_string()))
 }
 pub(crate) fn str_p<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
     p.get(k).and_then(Value::as_str)
@@ -1488,7 +1466,9 @@ fn build() -> Vec<CommandSpec> {
         // ================= File =================
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
+            crate::masks::discard_jobs(s);
             s.project = std::sync::Arc::new(filmcraft_project::Project::new(&name));
+            s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
             s.history = Default::default();
             s.history.limit = 200;
@@ -1505,6 +1485,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
             let (p, seq) = crate::demo::demo_project(&s.media);
             s.project = std::sync::Arc::new(p);
+            s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
             s.history = Default::default();
             s.history.limit = 200;
@@ -2161,6 +2142,9 @@ fn build() -> Vec<CommandSpec> {
                     if let Some(it) = p.item(id).cloned() {
                         let bin = p.root.parent_of(id);
                         let nid = p.add_item(&format!("{} Copy", it.name), it.label, it.kind.clone(), bin);
+                        if let Some(copy) = p.item_mut(nid) {
+                            copy.custom_label_color = it.custom_label_color;
+                        }
                         out.push(nid);
                     }
                 }
@@ -2169,28 +2153,83 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(json!({"items": ids.iter().map(|i| i.0).collect::<Vec<_>>()}))
         }),
-        cmd!("edit.label", "Label", [], None, r#"{"label":"Violet|Iris|…"}"#, always, |s, p| {
-            let l = str_p(p, "label").and_then(Label::from_name).ok_or_else(|| bad("edit.label", "unknown label"))?;
-            let clips = s.state.selection.clone();
-            let items = s.state.project_selection.clone();
-            let seq = s.state.active_sequence;
-            s.edit("Label", |pr, _| {
-                for i in &items {
-                    if let Some(it) = pr.item_mut(*i) {
-                        it.label = l;
-                    }
+        cmd!(
+            "edit.label",
+            "Label",
+            [],
+            None,
+            r##"{"label":"preset|#RRGGBB","clips":[id]?,"items":[id]?,"sequence":id?,"saveColor":bool?}"##,
+            always,
+            |s, p| {
+                let text = str_p(p, "label").ok_or_else(|| bad("edit.label", "need a preset name or hex color"))?;
+                let preset = Label::from_color_name(text);
+                let custom = filmcraft_project::HexColor::parse(text);
+                if preset.is_none() && custom.is_none() {
+                    return Err(bad("edit.label", "unknown label; use a preset or #RRGGBB"));
                 }
-                if let Some(q) = seq.and_then(|q| pr.sequence_mut(q)) {
-                    for c in &clips {
-                        if let Some((_, it)) = q.find_item_mut(*c) {
-                            it.label = l;
+                let explicit = p.get("clips").is_some() || p.get("items").is_some();
+                let clips: Vec<ClipId> = match p.get("clips") {
+                    Some(v) => serde_json::from_value(v.clone()).map_err(|_| bad("edit.label", "clips must be an array of ids"))?,
+                    None => {
+                        if explicit {
+                            Vec::new()
+                        } else {
+                            s.state.selection.clone()
                         }
                     }
+                };
+                let items: Vec<ItemId> = match p.get("items") {
+                    Some(v) => serde_json::from_value(v.clone()).map_err(|_| bad("edit.label", "items must be an array of ids"))?,
+                    None => {
+                        if explicit {
+                            Vec::new()
+                        } else {
+                            s.state.project_selection.clone()
+                        }
+                    }
+                };
+                let seq = match p.get("sequence") {
+                    Some(v) => Some(ItemId(v.as_u64().ok_or_else(|| bad("edit.label", "sequence must be an id"))?)),
+                    None => s.state.active_sequence,
+                };
+                let save = match p.get("saveColor") {
+                    Some(v) => v.as_bool().ok_or_else(|| bad("edit.label", "saveColor must be boolean"))?,
+                    None => false,
+                };
+                if save && custom.is_none() {
+                    return Err(bad("edit.label", "saveColor requires a hex color"));
                 }
-                Ok(())
-            })?;
-            Ok(Value::Null)
-        }),
+                s.edit("Label", |pr, _| {
+                    if let Some(color) = custom.filter(|_| save)
+                        && !pr.custom_colors.contains(&color)
+                    {
+                        if pr.custom_colors.len() >= 64 {
+                            return Err(bad("edit.label", "the project already has 64 custom colors"));
+                        }
+                        pr.custom_colors.push(color);
+                    }
+                    for i in &items {
+                        let it = pr.item_mut(*i).ok_or_else(|| bad("edit.label", "project item no longer exists"))?;
+                        if let Some(preset) = preset {
+                            it.label = preset;
+                        }
+                        it.custom_label_color = custom;
+                    }
+                    if !clips.is_empty() {
+                        let q = seq.and_then(|id| pr.sequence_mut(id)).ok_or(EngineError::NoSequence)?;
+                        for c in &clips {
+                            let (_, it) = q.find_item_mut(*c).ok_or_else(|| bad("edit.label", "clip no longer exists"))?;
+                            if let Some(preset) = preset {
+                                it.label = preset;
+                            }
+                            it.custom_label_color = custom;
+                        }
+                    }
+                    Ok(())
+                })?;
+                Ok(Value::Null)
+            }
+        ),
         // ================= Clip =================
         cmd!("clip.rename", "Rename…", ["Clip"], None, r#"{"clip":id?,"clips":[id]?,"item":id?,"name":str?}"#, always, |s, p| {
             // a blank name is refused, as the Project panel's inline rename keeps the old one
@@ -2896,12 +2935,13 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
+        cmd!("colors.addCustom", "Add Custom Color", [], None, r#"{"color":hex,"name":str?}"#, always, crate::palette::add),
         cmd!(
             "markers.add",
             "Add Marker",
             ["Markers"],
             Some("M"),
-            r#"{"target":"program|source","time":ticks?,"name":str?,"comment":str?,"color":label?,"durationFrames":i64?}"#,
+            r#"{"target":"program|source","time":ticks?,"name":str?,"comment":str?,"color":label_or_hex?,"author":str?,"durationFrames":i64?}"#,
             always,
             |s, p| {
                 if let Some(v) = crate::source_monitor::route(s, "markers.add", p)? {
@@ -2911,11 +2951,23 @@ fn build() -> Vec<CommandSpec> {
                 let t = sequence_time_p(s, p, "", "markers.add")?.unwrap_or(ph);
                 let name = str_p(p, "name").unwrap_or("").to_string();
                 let comment = str_p(p, "comment").unwrap_or("").to_string();
-                let color = marker_color_p(p, "markers.add")?.unwrap_or(Label::Green);
+                let (color, custom_color) = marker_color_p(p, "markers.add")?.unwrap_or((Label::Green, None));
+                let author = marker_author_p(p, "markers.add")?.unwrap_or_default();
                 let dur = p.get("durationFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)).unwrap_or_default();
                 let id = s.edit_sequence("Add Marker", |q, ctx, _| {
                     let id = MarkerId(ctx.alloc());
-                    q.markers.push(Marker { id, start: t, duration: dur, name, comment, kind: MarkerKind::Comment, color });
+                    q.markers.push(Marker {
+                        url: String::new(),
+                        author,
+                        custom_color,
+                        id,
+                        start: t,
+                        duration: dur,
+                        name,
+                        comment,
+                        kind: MarkerKind::Comment,
+                        color,
+                    });
                     q.markers.sort_by_key(|m| m.start);
                     Ok(id)
                 })?;
@@ -2979,41 +3031,21 @@ fn build() -> Vec<CommandSpec> {
             "Edit Marker…",
             [],
             None,
-            r#"{"target":"program|source","marker":id,"name":str?,"comment":str?,"color":label?,"durationFrames":i64?,"kind":"comment|chapter|segmentation|webLink|flashCue"?}"#,
+            r#"{"target":"program|source","sequence":id?,"item":id?,"marker":id|"markers":[id],"time":ticks?,"frame":i64?,"durationFrames":i64?,"name":str?,"comment":str?,"author":str?,"url":str?,"color":label_or_hex?,"kind":"comment|chapter|segmentation|webLink|flashCue"?}"#,
             always,
-            |s, p| {
-                // checked before routing, so Source markers are held to the same limits
-                let frames = marker_frames_p(p)?;
-                let kind = marker_kind_p(p)?;
-                if let Some(v) = crate::source_monitor::route(s, "markers.edit", p)? {
-                    return Ok(v);
-                }
-                let id = u64_p(p, "marker").map(MarkerId).ok_or_else(|| bad("markers.edit", "need `marker`"))?;
-                let rate = s.sequence_rate();
-                let color = marker_color_p(p, "markers.edit")?;
-                let p = p.clone();
-                s.edit_sequence("Edit Marker", |q, _, _| {
-                    let m = q.markers.iter_mut().find(|m| m.id == id).ok_or_else(|| bad("markers.edit", "no such marker"))?;
-                    if let Some(n) = str_p(&p, "name") {
-                        m.name = n.into();
-                    }
-                    if let Some(c) = str_p(&p, "comment") {
-                        m.comment = c.into();
-                    }
-                    if let Some(c) = color {
-                        m.color = c;
-                    }
-                    if let Some(f) = frames {
-                        m.duration = rate.tick_of(f);
-                    }
-                    if let Some(k) = kind {
-                        m.kind = k;
-                    }
-                    Ok(())
-                })?;
-                Ok(Value::Null)
-            }
+            |s, p| crate::marker_edit::run(s, p, false)
         ),
+        cmd!(
+            "markers.delete",
+            "Delete Markers",
+            [],
+            None,
+            r#"{"target":"program|source","sequence":id?,"item":id?,"marker":id|"markers":[id]}"#,
+            always,
+            |s, p| crate::marker_edit::run(s, p, true)
+        ),
+        cmd!("colors.updateCustom", "Edit Custom Color", [], None, r#"{"color":hex,"replacement":hex?,"name":str?}"#, always, crate::palette::update),
+        cmd!("colors.removeCustom", "Remove Custom Color", [], None, r#"{"color":hex}"#, always, crate::palette::remove),
         // ================= Playhead / navigation =================
         cmd!("playhead.set", "Set Playhead", [], None, r#"{"time":ticks|"frame":i64|"seconds":f64|"timecode":str}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").ok_or_else(|| bad("playhead.set", "need time/frame/seconds/timecode"))?;
@@ -3198,6 +3230,11 @@ fn build() -> Vec<CommandSpec> {
                     .or_else(|| p.get("deltaFrames").and_then(Value::as_i64).map(|f| s.sequence_rate().tick_of(f)))
                     .unwrap_or_default();
                 let clips = with_links_p(s, p, c);
+                // a ripple trim's step records the ripple id, whichever command runs it
+                let outer = s.command_origin.clone();
+                if mode == TrimMode::Ripple {
+                    s.command_origin = Some(crate::trim::RIPPLE_TRIM_ORIGIN.to_string());
+                }
                 let applied = s.edit_sequence(if mode == TrimMode::Ripple { "Ripple Trim" } else { "Trim" }, |q, ctx, st| {
                     if q.find_item(c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| tr.locked)) {
                         return Err(edit::EditError::Locked.into());
@@ -3234,8 +3271,9 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                     Ok(dd)
-                })?;
-                Ok(json!({"delta": applied.0}))
+                });
+                s.command_origin = outer;
+                Ok(json!({"delta": applied?.0}))
             }
         ),
         // ================= Trim mode =================
@@ -4243,7 +4281,12 @@ pub(crate) fn json_to_param(template: &ParamValue, v: &Value) -> Option<ParamVal
         ParamValue::Text(_) => ParamValue::Text(v.as_str()?.to_string()),
         ParamValue::Path(_) => ParamValue::Path(crate::masks::path_from_json(v)?),
         ParamValue::Curve(_) => {
-            ParamValue::Curve(v.as_array()?.iter().filter_map(|p| Some([p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])).collect())
+            let pts: Vec<[f32; 2]> = v.as_array()?.iter().filter_map(|p| Some([p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32])).collect();
+            // a finite f64 such as 1e300 saturates to an infinite f32, which a saved project cannot reload
+            if !pts.iter().flatten().all(|x| x.is_finite()) {
+                return None;
+            }
+            ParamValue::Curve(pts)
         }
     })
 }
@@ -5025,7 +5068,7 @@ pub fn inspect_project(s: &Session) -> Value {
             "children": b.children.iter().map(|c| match c {
                 filmcraft_project::BinEntry::Item(i) => {
                     let it = p.item(*i);
-                    json!({"item": i.0, "name": it.map(|x| x.name.clone()), "type": it.map(|x| x.type_label()), "duration": it.map(|x| x.duration().0), "label": it.map(|x| x.label.name())})
+                    json!({"item": i.0, "name": it.map(|x| x.name.clone()), "type": it.map(|x| x.type_label()), "duration": it.map(|x| x.duration().0), "label": it.map(|x| x.label.name()), "customLabelColor": it.and_then(|x| x.custom_label_color)})
                 }
                 filmcraft_project::BinEntry::Bin(b) => bin(b, p),
             }).collect::<Vec<_>>()
@@ -5052,7 +5095,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
                 "clip": i.id.0, "item": i.item.0, "name": i.name, "start": i.start.0, "duration": i.duration.0,
                 "startFrame": rate.frame_at(i.start), "durationFrames": rate.frame_at(i.duration), "sourceIn": i.source_in.0, "speed": i.speed, "reverse": i.reverse,
                 "end": i.end().0, "endFrame": rate.frame_at(i.end()), "sourceOut": i.source_out().0, "gainDb": i.gain_db,
-                "enabled": i.enabled, "link": i.link, "label": i.label.name(),
+                "enabled": i.enabled, "link": i.link, "label": i.label.name(), "customLabelColor": i.custom_label_color,
                 "effects": i.effects.iter().map(|e| json!({"effect": e.effect, "enabled": e.enabled, "masks": e.masks.len(), "params": e.params.iter().map(|(k, p)| (k.clone(), json!({"value": format!("{:?}", p.value), "keyframes": p.keyframes.len()}))).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "transitions": t.transitions.iter().map(|x| json!({"id": x.id.0, "effect": x.effect.effect, "start": x.start.0, "duration": x.duration.0, "from": x.from.map(|c| c.0), "to": x.to.map(|c| c.0), "reverse": x.reverse, "align": filmcraft_edit::transitions::bounds(t, x).map(|b| filmcraft_edit::transitions::alignment(x, b.1, rate.frame_duration()).id()), "params": x.effect.params.iter().map(|(k, v)| (k.clone(), serde_json::to_value(&v.value).unwrap_or_default())).collect::<serde_json::Map<_, _>>()})).collect::<Vec<_>>(),
@@ -5070,7 +5113,7 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmcraft_project::Sequence
         "in": q.mark_in.map(|t| t.0),
         "out": q.mark_out.map(|t| t.0),
         "split": q.split,
-        "markers": q.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "duration": m.duration.0, "kind": format!("{:?}", m.kind), "name": m.name, "comment": m.comment, "color": m.color.name()})).collect::<Vec<_>>(),
+        "markers": q.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "duration": m.duration.0, "kind": format!("{:?}", m.kind), "name": m.name, "comment": m.comment, "color": m.color_value(), "author": m.author, "url": m.url})).collect::<Vec<_>>(),
         "video": q.video_tracks.iter().map(tr).collect::<Vec<_>>(),
         "audio": q.audio_tracks.iter().map(tr).collect::<Vec<_>>(),
         "selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
@@ -5140,7 +5183,7 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 }
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
-fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+pub(crate) fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);
@@ -5148,6 +5191,7 @@ fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Opti
     let first = proj.sequences().next().map(|i| i.id);
     s.media.add_stored(&proj, path.as_deref());
     s.project = std::sync::Arc::new(proj);
+    s.project_instance = std::sync::Arc::new(());
     s.document_epoch = s.document_epoch.wrapping_add(1);
     s.history = Default::default();
     s.history.limit = 200;
@@ -5172,6 +5216,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let loaded = filmcraft_format::decode(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let (from, migrated) = (loaded.schema_version, loaded.migrated());
+    crate::masks::discard_jobs(s);
     install_project(s, loaded.project, Some(path.to_string()), true);
     if let Some(view) = loaded.view.filter(|_| s.prefs.timeline.restore_open_sequences) {
         s.restore_project_view(view);

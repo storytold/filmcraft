@@ -40,6 +40,7 @@ pub struct OmfOptions {
 /// Export the audio of `sequence` as an OMF 2.0 file.
 pub fn export(project: &Project, sequence: ItemId, opts: &OmfOptions) -> Result<(Vec<u8>, Report)> {
     let mut report = Report::default();
+    crate::warn_marker_metadata_loss(project, sequence, &mut report);
     let name = opts.name.clone().or_else(|| project.item(sequence).map(|i| i.name.clone())).unwrap_or_else(|| "Sequence".into());
     let mut media = opts.media.clone();
     media.audio_only = true;
