@@ -1,7 +1,7 @@
 //! Responsive design and per-character styles of graphic clips (M10.7).
 //!
 //! - **Per-character styles** ([`StyleRun`], [`CharStyle`]): a text layer's runs override font,
-//!   style, size, fill, faux bold / italic, underline, strikethrough, tracking, baseline shift and caps for a
+//!   style, size, fill, both strokes, faux bold / italic, underline, strikethrough, tracking, baseline shift and caps for a
 //!   range of characters. Ranges are in *characters* (not bytes), sorted and non-overlapping;
 //!   [`apply_char_style`] merges a new style into a range and [`adjust_runs`] keeps runs on the
 //!   right characters when the text is edited (typed characters take the style of the character
@@ -63,6 +63,24 @@ pub struct CharStyle {
     /// Fill colour (sRGB, straight alpha).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fill: Option<[f32; 4]>,
+    /// Stroke overrides; None inherits the corresponding layer property.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<bool>,
+    /// First and second stroke colours (sRGB, straight alpha).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_color: Option<[f32; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2_color: Option<[f32; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_type: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2_width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2_type: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub faux_bold: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -93,6 +111,14 @@ impl CharStyle {
             font_style: over.font_style.clone().or_else(|| self.font_style.clone()),
             size: over.size.or(self.size),
             fill: over.fill.or(self.fill),
+            stroke: over.stroke.or(self.stroke),
+            stroke_color: over.stroke_color.or(self.stroke_color),
+            stroke2_color: over.stroke2_color.or(self.stroke2_color),
+            stroke_width: over.stroke_width.or(self.stroke_width),
+            stroke_type: over.stroke_type.or(self.stroke_type),
+            stroke2: over.stroke2.or(self.stroke2),
+            stroke2_width: over.stroke2_width.or(self.stroke2_width),
+            stroke2_type: over.stroke2_type.or(self.stroke2_type),
             faux_bold: over.faux_bold.or(self.faux_bold),
             faux_italic: over.faux_italic.or(self.faux_italic),
             underline: over.underline.or(self.underline),
