@@ -1019,7 +1019,11 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             // focused Project panel too, not a stale Timeline selection.
             match it.id.as_str() {
                 "edit.selectAll" => it.enabled = true,
-                "edit.deselectAll" => it.enabled = !app.session.state.project_selection.is_empty(),
+                "edit.deselectAll" => {
+                    it.enabled = !app.session.state.project_selection.is_empty()
+                        || app.ui.project_panel.selected_bin.is_some()
+                        || !app.ui.project_panel.selected_bins.is_empty();
+                }
                 "edit.copy" | "edit.cut" => it.enabled = !app.session.state.project_selection.is_empty(),
                 "edit.paste" => it.enabled = true,
                 "edit.clear" => {

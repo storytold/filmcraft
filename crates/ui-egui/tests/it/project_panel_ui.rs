@@ -812,6 +812,25 @@ fn select_all_during_a_search_selects_no_bins() {
     assert!(d.app().session.state.project_selection.is_empty());
 }
 
+/// Deselect All stays enabled in the native menu while only bins are selected, so its key
+/// equivalent still reaches the Project panel.
+#[test]
+fn deselect_all_is_enabled_when_only_a_bin_is_selected() {
+    let mut d = project_driver();
+    let (bin, _) = d.footage();
+    d.app().ui.focused = filmcraft_ui_egui::dock::PanelKind::Project;
+    d.app().session.state.project_selection.clear();
+    d.app().ui.project_panel.selected_bin = None;
+    d.app().ui.project_panel.selected_bins.clear();
+    let enabled = |d: &mut Driver| filmcraft_ui_egui::menus::menu_items(d.app()).into_iter().find(|i| i.id == "edit.deselectAll").unwrap().enabled;
+    assert!(!enabled(&mut d), "nothing selected");
+    d.app().ui.project_panel.selected_bins = vec![bin];
+    assert!(enabled(&mut d), "a selected bin counts");
+    d.app().ui.project_panel.selected_bins.clear();
+    d.app().ui.project_panel.selected_bin = Some(bin);
+    assert!(enabled(&mut d), "a single selected bin counts");
+}
+
 /// With a sequence open, the native macOS menu has Select All enabled and takes Cmd+A (and
 /// Cmd+Shift+A) before the window sees the key: with the Project panel focused they still act on
 /// its items, not on the Timeline's clips (#1752).
