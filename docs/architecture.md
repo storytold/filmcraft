@@ -565,7 +565,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
 - **Model.** `SequenceSettings::color` (`ColorPipeline`: working space Rec. 709 / Rec. 2100 PQ /
   Rec. 2100 HLG, wide gamut, auto tone map) and `Interpretation::color_space` (per media item;
   `None` = from metadata). Commands: `sequence.colorSettings`, `clip.interpretFootage`,
-  `color.spaces`, `media.colorInfo`.
+  `color.spaces`, `media.colorInfo`. Where no tag in a file gives the matrix, transfer or
+  primaries, the metadata holds a default (BT.709 transfer and primaries, the matrix by frame
+  size); `media.colorInfo`'s `assumed` and `probe`'s `video.color_assumed` say which.
 - **Maths** in `filmcraft-color` (`transform`, `log`, `spaces`; formulas and sources in
   [crates/color/README.md](../crates/color/README.md)); the renderer side is `render::colorman`.
 - **Fast path.** A Rec. 709 sequence without wide gamut and media whose metadata says Rec. 709 /
@@ -698,7 +700,8 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
   overlays, video limiter, loudness normalization), Metadata (`udta` `©nam`, `©ART`, `©cpy`, `©des`,
   `©cmt`). `settings.summary()` / `estimate_bytes()` feed Export mode's Summary.
 - **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive
-  H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920, ProRes,
+  H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920 and its
+  TikTok / Instagram Reels / YouTube Shorts variants with loudness normalized to −14 LUFS, ProRes,
   DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF). User presets and favourites persist in
   `<data dir>/export-presets.json` (`export.presets.*`). A `bitrateKbps` in `settings` turns the
   adaptive bitrate off, as the flat parameter does, unless `adaptiveBitrate` comes with it.

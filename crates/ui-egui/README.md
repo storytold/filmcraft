@@ -50,6 +50,15 @@ edits. The preview and release capture this choice together with Shift. `timelin
 accepts `linked: false` for the same operation; ripple followers still obey track sync-lock and
 collision rules, so an unchanged partner that blocks a shortening refuses the edit atomically.
 
+## Selected text strokes
+
+With characters selected using the Type tool, both Stroke rows read and write that range's
+enablement, colour, width and Outer/Center/Inner placement. Unstyled characters inherit each
+layer property independently; without a character selection the controls edit the layer.
+Overrides survive text edits, project saves and Undo/Redo. A width or colour drag is one undo
+step. `graphics_ui::stroke_colour_pickers_edit_only_the_type_tool_selection` drives both rows
+through the control channel; `FILMCRAFT_UI_SHOTS` enables a rendered screenshot.
+
 ## Export range warnings
 
 The Export panel shows the selected range's length in sequence frames and seconds beside Range
