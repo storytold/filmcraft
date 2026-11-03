@@ -13,6 +13,7 @@ type Uid = [u8; 12];
 const MAX_REFERENCE_VISITS: usize = 65_536;
 
 /// A source-clip search stopped at its work limit.
+#[derive(Clone, Copy)]
 struct SearchLimit;
 
 struct R<'a, 'b> {
@@ -26,6 +27,8 @@ struct R<'a, 'b> {
     sources: HashMap<(Uid, u32, String), usize>,
     /// Component visits left for [`R::segment`] over the whole document.
     budget: usize,
+    /// Outcome of the source-clip search under each segment: deterministic, so it is made once.
+    clip_search: HashMap<u32, std::result::Result<Option<u32>, SearchLimit>>,
 }
 
 /// Components one document may expand into timeline items; a small file can reference the same
@@ -48,7 +51,17 @@ fn read_with_budget(bytes: &[u8], report: &mut Report, budget: usize) -> Result<
     let class_of = |o: u32| c.get(o, "OMFI:OOBJ:ObjClass").and_then(|v| v.get(..4).map(|b| [b[0], b[1], b[2], b[3]]));
     let head = c.objects.keys().copied().find(|&o| class_of(o) == Some(*b"HEAD")).ok_or_else(|| perr("no OMF header object".into()))?;
     let be = c.get(head, "OMFI:HEAD:ByteOrder").is_none_or(|v| v.first() != Some(&0x49));
-    let mut r = R { c: &c, report, be, mobs: HashMap::new(), media: HashMap::new(), doc: Document::default(), sources: HashMap::new(), budget };
+    let mut r = R {
+        c: &c,
+        report,
+        be,
+        mobs: HashMap::new(),
+        media: HashMap::new(),
+        doc: Document::default(),
+        sources: HashMap::new(),
+        budget,
+        clip_search: HashMap::new(),
+    };
     let mob_list = r.refs(head, "OMFI:HEAD:Mobs");
     let mob_list = if mob_list.is_empty() {
         c.objects.keys().copied().filter(|&o| matches!(class_of(o).as_ref(), Some(b"CMOB" | b"MMOB" | b"SMOB"))).collect()
@@ -193,6 +206,9 @@ impl R<'_, '_> {
                 self.report.warn(BUDGET_WARNING);
                 break;
             }
+            // Every slot spends a unit, skipped ones too: a list of up to 65,535 repeated slots
+            // must not cost that much work in each of 65,535 repeated compositions.
+            self.budget -= 1;
             let Some(seg) = self.r#ref(s, "OMFI:MSLT:Segment") else { continue };
             let rate = self.rational(s, "OMFI:MSLT:EditRate").filter(|r| r.0 > 0 && r.1 > 0).unwrap_or((25, 1));
             let kind = self.data_kind(seg);
@@ -234,7 +250,6 @@ impl R<'_, '_> {
                 .unwrap_or(1)
                 .min(6);
             comp.tracks.push(CTrack { kind: CKind::Sound, name: tname, number, channels, items });
-            self.budget = self.budget.saturating_sub(1);
         }
         comp
     }
@@ -340,8 +355,13 @@ impl R<'_, '_> {
     /// First source clip under `seg`, depth-first; a sequence referencing itself (directly or
     /// through a cycle) ends the search rather than the stack. `Err` when the search spent its
     /// budget of visited components or queued references before finishing (the answer is unknown).
-    fn first_clip(&self, seg: u32) -> std::result::Result<Option<u32>, SearchLimit> {
-        self.first_clip_within(seg, MAX_CLIP_SEARCH_VISITS, MAX_CLIP_SEARCH_PENDING)
+    fn first_clip(&mut self, seg: u32) -> std::result::Result<Option<u32>, SearchLimit> {
+        if let Some(found) = self.clip_search.get(&seg) {
+            return *found;
+        }
+        let found = self.first_clip_within(seg, MAX_CLIP_SEARCH_VISITS, MAX_CLIP_SEARCH_PENDING);
+        self.clip_search.insert(seg, found);
+        found
     }
 
     fn first_clip_within(&self, seg: u32, max_visits: usize, max_pending: usize) -> std::result::Result<Option<u32>, SearchLimit> {
@@ -437,7 +457,8 @@ impl R<'_, '_> {
                 let (file_channels, sample_rate, bits) = fmt.unwrap_or((1, file_rate.0 as u32, 16));
                 let channel = (file_channels > 1 && sound_slots > 1).then(|| track.saturating_sub(1).min(file_channels - 1));
                 // timecode of the physical source
-                let tc = self.first_clip(seg).ok().flatten().and_then(|clip| {
+                let first = self.first_clip(seg).ok().flatten();
+                let tc = first.and_then(|clip| {
                     let tid = self.uid(clip, "OMFI:SCLP:SourceID")?;
                     let tape = *self.mobs.get(&tid)?;
                     let (start_tc, fps, trate) = self.refs(tape, "OMFI:MOBJ:Slots").into_iter().find_map(|s| {
@@ -528,6 +549,7 @@ mod tests {
             doc: Document::default(),
             sources: HashMap::new(),
             budget: 0,
+            clip_search: HashMap::new(),
         };
         r.first_clip_within(root, max_visits, max_pending)
     }
@@ -568,6 +590,47 @@ mod tests {
         );
         // a search that ends without a clip is not a limit
         assert!(matches!(search(10, 10, |w| obj(w, b"FILL")), Ok(None)));
+    }
+
+    #[test]
+    fn skipped_slots_spend_the_budget() {
+        let mut w = Writer::new();
+        let head = obj(&mut w, b"HEAD");
+        let cm = obj(&mut w, b"CMOB");
+        let slot = obj(&mut w, b"MSLT");
+        list(&mut w, cm, "OMFI:MOBJ:Slots", &[slot; 200]);
+        list(&mut w, head, "OMFI:HEAD:Mobs", &[cm]);
+        list(&mut w, head, "OMFI:HEAD:PrimaryMobs", &[cm]);
+        let bytes = w.finish();
+        let mut report = Report::default();
+        read_with_budget(&bytes, &mut report, 50).unwrap();
+        assert!(report.mentions(BUDGET_WARNING), "slots with no segment cost nothing before");
+    }
+
+    #[test]
+    fn a_source_clip_search_is_made_once_per_segment() {
+        let mut w = Writer::new();
+        let (s, c) = (obj(&mut w, b"SEQU"), obj(&mut w, b"SCLP"));
+        list(&mut w, s, "OMFI:SEQU:Components", &[c]);
+        let bytes = w.finish();
+        let c = Container::open(&bytes).unwrap();
+        let mut report = Report::default();
+        let mut r = R {
+            c: &c,
+            report: &mut report,
+            be: true,
+            mobs: HashMap::new(),
+            media: HashMap::new(),
+            doc: Document::default(),
+            sources: HashMap::new(),
+            budget: 0,
+            clip_search: HashMap::new(),
+        };
+        let first = r.first_clip(s).ok();
+        assert!(matches!(first, Some(Some(_))));
+        assert_eq!(r.clip_search.len(), 1);
+        assert_eq!(r.first_clip(s).ok(), first);
+        assert_eq!(r.clip_search.len(), 1);
     }
 
     #[test]
