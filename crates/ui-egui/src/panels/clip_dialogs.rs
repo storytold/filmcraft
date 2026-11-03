@@ -153,7 +153,8 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         return Some(Err(e));
     }
     let (params, info) = defaults(app, id);
-    app.ui.clip_dialog = Some(ClipDialogDraft { command: id.into(), params, info, error: String::new() });
+    app.ui.clip_dialog =
+        Some(ClipDialogDraft { command: id.into(), params, info, error: String::new(), epoch: asks_to_save(id).then_some(app.session.document_epoch) });
     Some(Ok(json!({"dialog": meta(id).map(|m| m.1)})))
 }
 
@@ -164,7 +165,13 @@ pub fn ask_before_open(app: &mut FilmcraftApp, path: &str) -> Option<Result<Valu
     if !app.session.is_dirty() {
         return None;
     }
-    app.ui.clip_dialog = Some(ClipDialogDraft { command: "file.open".into(), params: json!({"path": path}), info: Value::Null, error: String::new() });
+    app.ui.clip_dialog = Some(ClipDialogDraft {
+        command: "file.open".into(),
+        params: json!({"path": path}),
+        info: Value::Null,
+        error: String::new(),
+        epoch: Some(app.session.document_epoch),
+    });
     Some(Ok(json!({"dialog": "openProject"})))
 }
 
@@ -177,7 +184,13 @@ pub fn ask_before_replace(app: &mut FilmcraftApp, command: &str, params: &Value)
         return None;
     }
     let (_, prefix) = meta(command)?;
-    app.ui.clip_dialog = Some(ClipDialogDraft { command: command.into(), params: params.clone(), info: Value::Null, error: String::new() });
+    app.ui.clip_dialog = Some(ClipDialogDraft {
+        command: command.into(),
+        params: params.clone(),
+        info: Value::Null,
+        error: String::new(),
+        epoch: Some(app.session.document_epoch),
+    });
     Some(Ok(json!({"dialog": prefix})))
 }
 
@@ -195,7 +208,13 @@ pub fn intercept_quit(app: &mut FilmcraftApp) -> bool {
         return false;
     }
     if app.ui.clip_dialog.as_ref().is_none_or(|d| d.command != "app.quit") {
-        app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.quit".into(), params: json!({}), info: Value::Null, error: String::new() });
+        app.ui.clip_dialog = Some(ClipDialogDraft {
+            command: "app.quit".into(),
+            params: json!({}),
+            info: Value::Null,
+            error: String::new(),
+            epoch: Some(app.session.document_epoch),
+        });
     }
     true
 }
@@ -387,6 +406,16 @@ fn frames(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.clip_dialog.clone() else { return };
+    if asks_to_save(&d.command) {
+        let now = app.session.document_epoch;
+        if d.epoch.is_some_and(|e| e != now) {
+            // the project the prompt asked about is gone: its answer must not touch this one
+            app.ui.clip_dialog = None;
+            return;
+        }
+        // a prompt opened through `ui.set` is about the project shown when it first draws
+        d.epoch = Some(now);
+    }
     crate::widgets::revert_drag_on_escape(ctx, egui::Id::unique("clip-dialog-before-drag"), &mut d);
     let Some((title, pre)) = meta(&d.command) else {
         app.ui.clip_dialog = None;

@@ -647,6 +647,11 @@ pub struct ClipDialogDraft {
     pub info: serde_json::Value,
     #[serde(default)]
     pub error: String,
+    /// The `document_epoch` of the project a Save / Don't Save / Cancel prompt is about. A
+    /// project replaced while it is up (a control-channel `file.open`) closes the prompt, so its
+    /// answer never closes or replaces the replacement (#3621).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
 }
 
 /// A pen mask in progress: vertices placed so far, in clip pixels (`[x, y, tangent x, tangent y]`).

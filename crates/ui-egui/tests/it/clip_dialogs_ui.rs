@@ -924,3 +924,20 @@ fn demo_project_asks_to_save_unsaved_changes() {
     assert!(d.app().ui.clip_dialog.is_none(), "no prompt without unsaved changes");
     assert_ne!(d.app().session.project.name, "Clean");
 }
+
+/// #3621: a project replaced over the control channel while New Project's Save / Don't Save /
+/// Cancel prompt is up closes the prompt, so Don't Save can't discard the replacement's edits.
+#[test]
+fn a_save_prompt_closes_when_its_project_is_replaced() {
+    let mut d = Driver::new();
+    d.edit();
+    assert_eq!(d.menu("file.newProject")["dialog"], "newProject");
+    assert!(d.has("newProject.dontSave"));
+    // a script naming the project replaces it directly, and edits the replacement
+    d.exec("file.newProject", json!({"name": "Replacement"}));
+    d.exec("file.newSequence", json!({"width": 16, "height": 16}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "the prompt was about the replaced project");
+    assert!(!d.has("newProject.dontSave"));
+    assert!(d.app().session.is_dirty() && d.app().session.project.name == "Replacement", "the replacement and its edits stay");
+}
