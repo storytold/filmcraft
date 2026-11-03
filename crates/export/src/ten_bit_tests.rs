@@ -161,6 +161,34 @@ fn float_frames_are_the_rgba8_picture_with_more_precision() {
     assert!(rgba[3].abs_diff(128) <= 1, "{:?}", &rgba[..4]);
 }
 
+/// The in-flight budget's estimate of a frame ([`crate::job::frame_bytes`]) is the size of what
+/// [`Pipeline::frame`] returns, whichever buffers a frame keeps.
+#[test]
+fn frame_bytes_is_what_a_frame_holds() {
+    use filmcraft_color::{ColorPipeline, WorkingSpace};
+    let (sdr, seq, m) = ramp();
+    let mut hdr = (*sdr).clone();
+    hdr.sequence_mut(seq).unwrap().settings.color = ColorPipeline { working: WorkingSpace::Rec2100Pq, ..ColorPipeline::REC709 };
+    let hdr = Arc::new(hdr);
+    let with_alpha = |profile: &str| ExportSettings { prores_profile: profile.into(), alpha: true, ..settings(Format::ProRes, "a.mov") };
+    // (what, project, settings, HDR, bytes per pixel)
+    let cases = [
+        ("H.264", &sdr, settings(Format::H264, "a.mp4"), false, 4),
+        ("ProRes HQ", &sdr, settings(Format::ProRes, "a.mov"), false, 12),
+        ("ProRes 4444", &sdr, ExportSettings { prores_profile: "4444".into(), ..settings(Format::ProRes, "a.mov") }, false, 12),
+        ("ProRes 4444 with alpha", &sdr, with_alpha("4444"), false, 16),
+        ("ProRes HQ ignores alpha", &sdr, with_alpha("hq"), false, 12),
+        ("HDR ProRes 4444 with alpha", &hdr, with_alpha("4444"), true, 12),
+    ];
+    for (what, p, s, hdr_out, per_pixel) in cases {
+        let pipe = Pipeline::new(p.clone(), seq, &s, hdr_out).unwrap();
+        let (rgba, floats) = pipe.frame(0, &m);
+        let held = (rgba.len() + floats.len() * 4) as u64;
+        assert_eq!(held, u64::from(W * H) * per_pixel, "{what}: bytes held");
+        assert_eq!(crate::job::frame_bytes(pipe.w, pipe.h, pipe.float_frames, pipe.keeps_rgba_with_floats()), held, "{what}: estimate");
+    }
+}
+
 #[test]
 fn the_video_limiter_holds_on_float_frames() {
     let (p, seq, m) = ramp();
