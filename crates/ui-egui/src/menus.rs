@@ -931,6 +931,12 @@ pub const NATIVE_APP_MENU: [&str; 4] = ["Settings", "Hide FilmCraft", "Hide Othe
 
 pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     let mut v = menu_items_for(&app.session);
+    // the web build has no installed fonts to fall back on: without the craft-fonts Georgian face,
+    // Edit > Language leaves Georgian out (native builds keep it and refuse it with a message)
+    #[cfg(target_arch = "wasm32")]
+    if !crate::i18n::georgian_font_available() {
+        v.retain(|it| it.id != "app.language.georgian");
+    }
     for it in &mut v {
         it.label = app.ui.language.tr(&it.label).to_string();
         match it.id.as_str() {

@@ -555,6 +555,7 @@ fn georgian_switches_and_persists_or_is_refused_without_a_font() {
         app.session.execute("prefs.set", serde_json::json!({"key": "general.interfaceLanguage", "value": "ka"})).unwrap();
         app.apply_prefs(&ctx);
         assert_eq!(app.ui.language, Language::En);
+        assert_eq!(app.ui.status, "no Georgian font is installed on this system; the interface stays in English");
         set_current(Language::En);
         return;
     }
