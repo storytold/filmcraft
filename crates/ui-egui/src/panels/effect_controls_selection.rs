@@ -36,6 +36,7 @@ struct Group {
     high: i64,
     delta: Tick,
     snap: Option<(Tick, f32)>,
+    duplicate: bool,
     ended: bool,
 }
 
@@ -48,6 +49,7 @@ enum Gesture {
 #[derive(Clone, Default)]
 struct State {
     clip: u64,
+    timeline_range: (Tick, Tick),
     points: Vec<Point>,
     gesture: Option<Gesture>,
 }
@@ -56,10 +58,13 @@ pub(crate) struct Interaction {
     state: State,
     points: Vec<Point>,
     area: Rect,
+    timeline_range: (Tick, Tick),
     background: Response,
     cancelled: bool,
 }
 
+/// The timeline range, in ticks, the selected keyframes can move by — `None` when a clip cannot
+/// carry a keyframe at all.
 fn limits(app: &FilmcraftApp, keys: &[KeyframeRef]) -> Option<(i64, i64)> {
     let q = app.session.active_sequence()?;
     let frame = q.settings.frame_rate.frame_duration();
@@ -104,12 +109,13 @@ fn update(group: &mut Group, points: &[Point], pos: Pos2, shift: bool, playhead:
 }
 
 impl Interaction {
-    /// Begin keyframe selection for `clip`: reset on a clip change, cancel a gesture on Escape, start a Shift marquee from the existing selection, and keep
+    /// Begin keyframe selection for `clip`: reset on a clip change or when the visible range moves,
+    /// cancel a gesture on Escape, start a Shift marquee from the existing selection, and keep
     /// gestures as UI-only previews.
-    pub(crate) fn begin(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, clip: u64) -> Self {
+    pub(crate) fn begin(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, clip: u64, timeline_range: (Tick, Tick)) -> Self {
         let mut state = ui.data(|d| d.get_temp::<State>(state_id())).unwrap_or_default();
-        if state.clip != clip {
-            state = State { clip, ..Default::default() };
+        if state.clip != clip || state.timeline_range != timeline_range {
+            state = State { clip, timeline_range, ..Default::default() };
         }
         let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
         if cancelled {
@@ -135,10 +141,11 @@ impl Interaction {
                 None => {}
             }
         }
-        Self { state, points: Vec::new(), area, background, cancelled }
+        Self { state, points: Vec::new(), area, timeline_range, background, cancelled }
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Handle one keyframe's click and drag: select it, then start or continue the group gesture.
     pub(crate) fn key(
         &mut self,
         app: &mut FilmcraftApp,
@@ -163,7 +170,8 @@ impl Interaction {
             }
         }
         let time = super::timeline_time_of(it, key.time);
-        let pixels_per_tick = f64::from(lane.width().max(1.0)) / it.duration.0.max(1) as f64;
+        let shown_duration = self.timeline_range.1.0.saturating_sub(self.timeline_range.0.0).max(1);
+        let pixels_per_tick = f64::from(lane.width().max(1.0)) / shown_duration as f64;
         if self.area.contains(rect.center()) && ui.clip_rect().contains(rect.center()) {
             self.points.push(Point { key: key.clone(), rect, time, pixels_per_tick, interp });
         }
@@ -187,6 +195,7 @@ impl Interaction {
                     high,
                     delta: Tick::ZERO,
                     snap: None,
+                    duplicate: ui.input(|i| i.modifiers.alt),
                     ended: false,
                 };
                 if let Some(pos) = response.interact_pointer_pos() {
@@ -200,12 +209,20 @@ impl Interaction {
                 group.ended = true;
             }
             if group.keys.contains(&key) {
+                if group.duplicate {
+                    let color = if app.ui.keyframe_selection.contains(&key) { app.tokens.hot_text } else { Color32::from_rgb(0xb0, 0xb0, 0xb0) };
+                    paint(ui.painter(), rect, interp, color);
+                } else {
+                    return rect.translate(vec2((group.delta.0 as f64 * pixels_per_tick) as f32, 0.0));
+                }
                 return rect.translate(vec2((group.delta.0 as f64 * pixels_per_tick) as f32, 0.0));
             }
         }
         rect
     }
 
+    /// End the interaction: paint the marquee or the dragged group, run the move or duplicate it
+    /// ended on, and keep the state for the next frame.
     pub(crate) fn finish(mut self, app: &mut FilmcraftApp, ui: &egui::Ui) {
         if let Some(Gesture::Marquee { origin, end, base }) = &self.state.gesture {
             let rect = Rect::from_two_pos(*origin, *end).intersect(self.area);
@@ -236,7 +253,8 @@ impl Interaction {
             }
             if group.ended {
                 if group.delta != Tick::ZERO {
-                    match app.session.execute("effects.moveKeyframes", json!({"keyframes":group.keys,"delta":group.delta.0})) {
+                    let command = if group.duplicate { "effects.duplicateKeyframes" } else { "effects.moveKeyframes" };
+                    match app.session.execute(command, json!({"keyframes":group.keys,"delta":group.delta.0})) {
                         Ok(result) => {
                             if let Ok(keys) = serde_json::from_value(result["keyframes"].clone()) {
                                 app.ui.keyframe_selection = keys;
@@ -269,6 +287,7 @@ pub(crate) fn paint(painter: &egui::Painter, rect: Rect, interp: Interpolation, 
 mod tests {
     use super::*;
     #[test]
+    /// Keyframe timeline coordinates follow a clip's trim, speed and reverse.
     fn keyframe_timeline_coordinates_follow_trim_speed_and_reverse() {
         let mut session = filmcraft_engine::Session::default();
         session.execute("file.openDemoProject", json!({})).unwrap();
@@ -288,6 +307,8 @@ mod tests {
     }
 
     #[test]
+    /// A snap is offered only when the move is reachable: the screen-space threshold tests the
+    /// destination, not the clamped position.
     fn clip_clamping_does_not_extend_the_screen_space_snap_threshold() {
         let key = KeyframeRef { clip: 1, effect: 0, param: "scale".into(), mask: None, time: Tick::ZERO };
         let other = KeyframeRef { param: "rotation".into(), time: Tick::from_seconds_f64(0.95), ..key.clone() };
@@ -317,6 +338,7 @@ mod tests {
             high: Tick::from_seconds_f64(1.0).0,
             delta: Tick::ZERO,
             snap: None,
+            duplicate: false,
             ended: false,
         };
         update(&mut group, &points, egui::pos2(120.0, 0.0), true, Tick::from_seconds_f64(3.0), FrameRate::from_f64(100.0));

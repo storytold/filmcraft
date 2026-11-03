@@ -55,6 +55,8 @@ objc2 = "0.6"
 winit = { version = "0.30", default-features = false }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# Same winit as eframe, to force the X11 (XWayland) backend when `FILMCRAFT_XWAYLAND` asks for it
+# on a Wayland session (`display`); see the module docs there.
 winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

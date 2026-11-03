@@ -155,11 +155,15 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 ## G8. UI fidelity: monitor handles, Effect Controls, docking
 
+- **Have:** Effect Controls has its draggable divider, row lines, scalar and Position value/velocity
+  curves, and a zoom bar that scopes the ruler, property keyframes and graphs. The range scrolls/zooms
+  by dragging, scrubs within the visible time, and is available to automation through `ui.set` /
+  `ui.inspect`. Keyframe and graph coordinates follow the zoom, including drags; five-frame minimum
+  view width and malformed ranges are covered by tests.
 - **Missing:** on-screen transform handles for Motion / Transform in the Program monitor (#639);
-  Effect Controls keyframe zoom bar, draggable divider, row lines (#640–#645); panel docking
-  rearrangement (#493); filmstrip thumbnails (#614);
+  panel docking rearrangement (#493); filmstrip thumbnails (#614);
   Freeform bins and middle-mouse pan (#579);
-  Program monitor Button Editor (+) (#431); keyframe curves for Position (#448); transition
+  Program monitor Button Editor (+) (#431); transition
   editing controls (#577: Effect Controls has the transition's own timeline, drag to slide or resize,
   drag the cut to move it with the transition; the A/B previews with Start / End sliders remain); track renaming (#654); window controls on macOS (#637); UI scale on
   X11 (#457).
@@ -169,7 +173,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 - **Have:** files given at launch (terminal, Open With, file associations) open whatever the case
   of `.fcproj` and are made absolute, and arguments that are not Unicode no longer stop the start;
-  `filmcraft-cli import` stores no Windows `\\?\` paths (#850).
+  `filmcraft-cli import` stores no Windows `\\?\` paths (#850). On a Wayland session a file
+  dropped from the desktop is taken as it is on X11 — the pinned winit fork reports drops through
+  `wl_data_device` — and `FILMCRAFT_XWAYLAND=1` opens the session through XWayland.
 - **Missing:** routine runtime testing off macOS. Linux playback stutter (#617), Wayland title
   bar (#433), case-sensitive extensions (#593), "Report an issue" link (#642), Windows bins cannot
   be left (#587), Sequence Settings won't open on Windows (#586, #351), old hardware (#491).
@@ -350,5 +356,6 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-21 | minor | G10: PSD stills import the flattened composite, 8/16-bit grayscale and RGB (#2116) |
+| 2026-10-23 | minor | G8: Effect Controls keyframe zoom bar, zoom-aware ruler/lane/graphs and automation; validated with headless UI tests |
 | 2026-10-24 | minor | G8: dragging the cut on a transition's timeline in Effect Controls moves the cut, and the transition moves with it (#577) |
 | 2026-10-26 | minor | G13: optional GIF binary transparency, threshold and frame-disposal regression coverage (#3396); estimates unchanged |

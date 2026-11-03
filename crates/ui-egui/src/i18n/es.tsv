@@ -3723,3 +3723,32 @@
 	Previous	Anterior
 	Next	Siguiente
 	Enter a valid HH:MM:SS:FF timecode	Introduce un código de tiempo válido HH:MM:SS:FF
+
+# Effect Controls selection, clipboard and colour picker.
+	A selected clip no longer exists	El clip seleccionado ya no existe
+	A selected effect no longer exists	El efecto seleccionado ya no existe
+	A selected keyframe no longer exists	El fotograma clave seleccionado ya no existe
+	A selected parameter no longer exists	El parámetro seleccionado ya no existe
+	Audio and video effects cannot be pasted as one chain	No se pueden pegar efectos de audio y video en una misma cadena
+	Click to edit color	Haz clic para editar el color
+	Copied {count} effect(s)	Se copiaron {count} efecto(s)
+	Copied {count} keyframe(s)	Se copiaron {count} fotograma(s) clave
+	Copy Effects	Copiar efectos
+	Delete Keyframes	Eliminar fotogramas clave
+	HEX	Hexadecimal
+	Keyframe offset overflows	El desplazamiento del fotograma clave excede el límite
+	No active sequence	No hay ninguna secuencia activa
+	No effects have been copied	No se han copiado efectos
+	No keyframes have been copied	No se han copiado fotogramas clave
+	No selected clips match the copied effects	Ningún clip seleccionado admite los efectos copiados
+	No supported effects are selected	No hay efectos compatibles seleccionados
+	Only standard effects can be copied	Solo se pueden copiar efectos estándar
+	Paste Effects	Pegar efectos
+	Pasted {count} effect(s)	Se pegaron {count} efecto(s)
+	Select keyframes to copy	Selecciona fotogramas clave para copiarlos
+	Select no more than 64 effects to copy	Selecciona como máximo 64 efectos para copiar
+	The copied effects are unavailable	Los efectos copiados no están disponibles
+	The selected effect is unavailable	El efecto seleccionado no está disponible
+	The selected effects contain too much animation or path data to copy	Los efectos seleccionados contienen demasiada animación o datos de trazado para copiarlos
+	The selected keys contain too much path data to copy	Las claves seleccionadas contienen demasiados datos de trazado para copiarlas
+	Too many keyframes to copy	Hay demasiados fotogramas clave para copiar

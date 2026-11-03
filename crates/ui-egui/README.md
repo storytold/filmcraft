@@ -37,6 +37,27 @@ clip outline. `timeline.transitionDropPreview` exposes the span and alignment to
 hover without project edits, the committed span and undo. Set `FILMCRAFT_UI_SNAPSHOT_DIR` to
 render screenshots with wgpu.
 
+## Effect Controls keyframe zoom
+
+The zoom bar under the selected clip's overview scopes the time ruler, keyframe lanes, value/velocity
+graphs and playhead to a portion of the clip. Drag the thumb to scroll the view or either end to
+change its range; the ruler scrubs within the visible range and off-range keyframes/playheads are
+not clamped to its edges. The zoom is UI state only and can be read or set through `ui.inspect` and
+`ui.set {"effectControls":{"timeZoom":[start,end]}}` (pass `null` for the whole clip). The zoom
+bar and track have stable automation ids; its narrowest view is five sequence frames. The test
+`effect_controls_zoom_bar_scales_keyframes_and_ruler` covers the ruler, lane and graph positions,
+zoom-scaled keyframe dragging, hidden out-of-range keys, resizing, and invalid ranges.
+
+Alt+wheel zooms around the playback cursor and is consumed without scrolling the effect rows, including
+the smoothed tail egui emits over the frames after a notch. During effect reordering the dragged
+effect's name follows the pointer on the same translucent blue plate as the tab-reorder ghost, and the
+hand cursor appears only while the drag is under way. Hot-number scrubs lock the cursor and continue to
+use relative mouse movement until release. Delete removes the selected keyframes, or selected
+non-intrinsic effects when no keys are selected. The keyframe and effect context menus can Clear the
+selected group, and the keyframe menu also copies/pastes effects.
+Effect/keyframe clipboard data pastes onto the Timeline selection with Cmd/Ctrl+V. Color-picker
+popups include a hex text field for editing and clipboard copy/paste.
+
 ## Localisation
 
 Edit > Language offers English, Japanese, Spanish, Brazilian Portuguese, Ukrainian, Simplified
