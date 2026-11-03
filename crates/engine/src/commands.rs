@@ -2367,10 +2367,11 @@ fn build() -> Vec<CommandSpec> {
                         if unlocked.is_empty() {
                             return Err(edit::EditError::Locked.into());
                         }
-                        // with a duration, the speed that gives it to the clip asked for, its picture
-                        // before its sound; linked partners share that speed so they stay in sync
+                        // with a duration, the speed that gives it to the first clip asked for, its picture
+                        // before its sound (the clip the dialog reads); linked partners share that speed
+                        // so they stay in sync
                         let is_video = |c: ClipId| q.video_tracks.iter().any(|t| t.item(c).is_some());
-                        let base = unlocked.iter().copied().max_by_key(|c| (requested.contains(c), is_video(*c)));
+                        let base = unlocked.iter().copied().min_by_key(|c| (!requested.contains(c), !is_video(*c)));
                         let speed = match (duration, base.and_then(|c| q.find_item(c))) {
                             (Some(d), Some((_, it))) => (it.source_out() - it.source_in).0 as f64 / d.0 as f64,
                             _ => speed,

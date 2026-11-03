@@ -900,6 +900,31 @@ fn a_dropped_project_file_opens_and_asks_about_unsaved_changes() {
 
 /// #3817: a duration typed in Speed/Duration with several clips selected gives every clip that
 /// duration, not just the first; one undo restores all of them.
+/// Enter does what OK does: once the duration is no longer valid it applies nothing, not the last
+/// valid duration typed.
+#[test]
+fn enter_with_an_invalid_duration_applies_nothing() {
+    let mut d = Driver::new();
+    let clips = [d.v1(0), d.v1(1)];
+    let ids: Vec<u64> = clips.iter().map(|c| c.id.0).collect();
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    d.exec("timeline.select", json!({"clips": ids}));
+    d.menu("clip.speedDuration");
+    d.click("speedDuration.duration");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "00:00:00:10"}));
+    d.frames(3);
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.ok("ui.type", json!({"text": "not a time"}));
+    d.frames(3);
+    d.ok("ui.key", json!({"key": "Enter"}));
+    d.frames(3);
+    assert!(d.app().ui.clip_dialog.is_some(), "the dialog stays open");
+    for (i, c) in clips.iter().enumerate() {
+        assert_eq!(d.v1(i).duration, c.duration, "clip {i} is unchanged");
+    }
+}
+
 #[test]
 fn duration_text_applies_to_every_selected_clip() {
     let mut d = Driver::new();
