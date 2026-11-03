@@ -717,9 +717,16 @@ impl VideoDecoder for VtDecoder {
             // range, which is the range VideoToolbox assumes: asking for the other one makes it
             // convert the samples (PS5 recordings say limited in the container and full in the
             // bitstream).
-            self.layout.color = p.color;
-            if let Some(s) = self.session.as_ref() {
-                s.set_layout(self.layout.clone());
+            if p.color != self.layout.color {
+                self.layout.color = p.color;
+                if let Some(s) = self.session.as_ref() {
+                    // The callback reads the layout as each picture comes out, and up to
+                    // `MAX_IN_FLIGHT` earlier pictures may still be decoding: let them out under
+                    // the colour they were coded with first. (A new AV1 colour never gets here: it
+                    // is part of `av1_format`, a parameter change.)
+                    s.wait();
+                    s.set_layout(self.layout.clone());
+                }
             }
         }
         // An AV1 run starting at a key frame unit without a sequence header of its own (encoders

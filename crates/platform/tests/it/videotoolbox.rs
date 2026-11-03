@@ -292,6 +292,32 @@ fn vp9_container_range_differing_from_the_bitstream_is_bit_exact() {
     assert_eq!(hw.name(), "VideoToolbox VP9");
 }
 
+/// A key frame that changes the colour (and nothing else) mid-stream: the pictures before it, still
+/// decoding when it is submitted, keep the colour they were coded with.
+#[test]
+fn vp9_colour_change_at_a_key_frame_leaves_earlier_pictures_alone() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let clip = |name: &str, space: &str| {
+        #[rustfmt::skip]
+        let args = [
+            "-f", "lavfi", "-i", "testsrc2=s=640x360:r=24:d=1,noise=alls=12:allf=t", "-c:v", "libvpx-vp9",
+            "-b:v", "0", "-crf", "32", "-deadline", "good", "-cpu-used", "8", "-g", "24",
+            "-auto-alt-ref", "1", "-lag-in-frames", "8", "-colorspace", space, "-pix_fmt", "yuv420p",
+        ];
+        fixture(&ff, name, &args).map(|p| read_stream(&p))
+    };
+    let (Some(mut s), Some(b)) = (clip("vp9_bt709.mp4", "bt709"), clip("vp9_bt601.mp4", "smpte170m")) else { return };
+    let shift = s.samples.iter().map(|(_, p)| *p).max().unwrap() + 1;
+    s.samples.extend(b.samples.into_iter().map(|(d, p)| (d, p + shift)));
+    s.sync.extend(b.sync);
+    let Some(mut hw) = hardware(&s) else { return };
+    let a = decode_all(hw.as_mut(), &s.samples);
+    let sw = decode_all(software(&s).as_mut(), &s.samples);
+    assert_ne!(sw.first().map(|f| f.frame.color), sw.last().map(|f| f.frame.color), "the second clip's key frame changes the colour");
+    assert_same("vp9 changing colour at a key frame", &a, &sw);
+    assert_eq!(hw.name(), "VideoToolbox VP9");
+}
+
 #[test]
 fn vp9_mid_stream_failure_and_damage_fall_back_to_software() {
     let ff = filmcraft_testkit::require_ffmpeg!();
