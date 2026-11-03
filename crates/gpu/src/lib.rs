@@ -711,6 +711,18 @@ impl GpuCompositor {
     }
 
     fn render_plan(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>, clear: bool, resolve: bool) -> (wgpu::TextureView, (u32, u32)) {
+        // A plan needing a texture side beyond the device's limit (a camera still is wider
+        // than the 8192 texels many GPUs allow) cannot upload. While the output still fits,
+        // the CPU executor's identical frame is drawn instead of failing every upload and
+        // compositing black (#2996).
+        let max = self.device.limits().max_texture_dimension_2d as usize;
+        let out = match plan {
+            FramePlan::Layers { width, height, .. } | FramePlan::Composite { width, height, .. } => (*width).max(*height),
+            FramePlan::Image(img) => img.w.max(img.h),
+        };
+        if plan.max_side() > max && out <= max {
+            return self.render_plan(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan_cpu_shrunk(plan, max))), None, clear, resolve);
+        }
         let owned;
         let (w, h, layers): (u32, u32, &[PlanLayer]) = match plan {
             FramePlan::Layers { width, height, layers } => (*width as u32, *height as u32, layers.as_slice()),
@@ -971,6 +983,12 @@ impl GpuCompositor {
         if matches!(plan, FramePlan::Composite { .. }) {
             return None;
         }
+        // A plan needing a texture side beyond the device's limit (a multi-megapixel still
+        // wider than the 8192 texels many GPUs allow) cannot be drawn; the export pipeline
+        // renders those frames on the CPU (#2996).
+        if plan.max_side() > self.device.limits().max_texture_dimension_2d as usize {
+            return None;
+        }
         let t = std::time::Instant::now();
         self.render_plan(plan, prep, true, false);
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export") });
@@ -984,6 +1002,11 @@ impl GpuCompositor {
     /// applied, read back as linear premultiplied RGBA f32 (what `LayerFx` ops produce on the
     /// CPU from the same frame). None when the working image does not fit in a texture.
     pub fn effect_image(&mut self, frame: &VideoFrame, fx: &filmcraft_render::plan::LayerFx) -> Option<(u32, u32, Vec<f32>)> {
+        // A source frame beyond the texture limit cannot upload (the working image's own
+        // check lives in `FxStage::job`); the caller renders the effects on the CPU.
+        if frame.width.max(frame.height) > self.device.limits().max_texture_dimension_2d {
+            return None;
+        }
         let key = self.upload(frame, None);
         let src = self.src_info(frame, key)?;
         let views = self.uploads.get(&key)?.views.clone();
@@ -1239,6 +1262,162 @@ fn accum_pass<'e>(enc: &'e mut wgpu::CommandEncoder, view: &wgpu::TextureView, l
         occlusion_query_set: None,
         multiview_mask: None,
     })
+}
+
+/// The plan handed to the CPU executor when a source does not fit a texture: oversized plain
+/// layers are decimated per axis to the detail the placed quad can show (the same decimation
+/// the CPU renderer picks for `want`), converted in linear light so `execute_cpu`'s
+/// intermediates stay bounded instead of full-resolution (#2996). Layers carrying effects
+/// keep their frame: the working image bounds their conversion.
+fn plan_cpu_shrunk(plan: &FramePlan, max: usize) -> FramePlan {
+    let shrink = |layers: &[PlanLayer]| -> Vec<PlanLayer> {
+        layers
+            .iter()
+            .map(|l| {
+                let (fw, fh) = (l.frame.width as usize, l.frame.height as usize);
+                if l.fx.is_some() || fw.max(fh) <= max {
+                    return l.clone();
+                }
+                let (a, b, c, d) = (l.matrix.a, l.matrix.b, l.matrix.c, l.matrix.d);
+                let nx = shrink_decimation(fw, (fw as f64 * (a * a + b * b).sqrt()).max(1.0));
+                let ny = shrink_decimation(fh, (fh as f64 * (c * c + d * d).sqrt()).max(1.0));
+                if nx == 1 && ny == 1 {
+                    return l.clone();
+                }
+                let nu = nx.min(ny);
+                let (rx, ry) = (nx / nu, ny / nu);
+                let input = l.input.as_deref();
+                let img = if rx > 1 || ry > 1 {
+                    // one axis still shrinks: convert in strips, so the intermediate is bounded
+                    // instead of the whole nu-decimated picture
+                    linear_boxed(&l.frame, nu, rx, ry, input)
+                } else {
+                    let (w, h, px) = l.frame.to_linear_f32_decimated_with(nu, input.map(|t| &t.table));
+                    let mut img = filmcraft_render::Image { w, h, px };
+                    if let Some(t) = input.filter(|t| t.has_pixel_stage()) {
+                        img.map_rgb(|c, _, _| t.apply(c));
+                    }
+                    img
+                };
+                PlanLayer {
+                    frame: Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)),
+                    matrix: l.matrix.then_apply(&filmcraft_geom::Affine::scale(fw as f64 / img.w as f64, fh as f64 / img.h as f64)),
+                    opacity: l.opacity,
+                    blend: l.blend,
+                    fx: l.fx.clone(),
+                    input: None,
+                }
+            })
+            .collect()
+    };
+    match plan {
+        FramePlan::Layers { width, height, layers } => FramePlan::Layers { width: *width, height: *height, layers: shrink(layers) },
+        FramePlan::Composite { width, height, steps } => FramePlan::Composite {
+            width: *width,
+            height: *height,
+            steps: steps
+                .iter()
+                .map(|s| match s {
+                    PlanStep::Layers(ls) => PlanStep::Layers(shrink(ls)),
+                    PlanStep::Transition { inputs, effect, progress, scale } => {
+                        PlanStep::Transition { inputs: inputs.each_ref().map(|ls| shrink(ls)), effect: effect.clone(), progress: *progress, scale: *scale }
+                    }
+                })
+                .collect(),
+        },
+        FramePlan::Image(img) => FramePlan::Image(img.clone()),
+    }
+}
+
+/// The `nu`-decimated linear image reduced a further `rx`×`ry` (one of them is always 1, so a
+/// single axis is boxed): tiles of the decimated picture are converted, the layer's pixel
+/// stage applied and averaged into the output one tile at a time, so the intermediate stays
+/// bounded instead of the whole picture.
+fn linear_boxed(frame: &VideoFrame, nu: usize, rx: usize, ry: usize, input: Option<&filmcraft_color::InputTransform>) -> filmcraft_render::Image {
+    let (w, h) = frame.decimated_size(nu);
+    let (tw, th) = ((w / rx).max(1), (h / ry).max(1));
+    let staged = |px: Vec<f32>, w: usize, h: usize| {
+        let mut img = filmcraft_render::Image { w, h, px };
+        if let Some(t) = input.filter(|t| t.has_pixel_stage()) {
+            img.map_rgb(|c, _, _| t.apply(c));
+        }
+        img.px
+    };
+    // a tile converts at most STRIP decimated pixels (~64 MiB of f32)
+    const STRIP: usize = 1 << 22;
+    let mut out = vec![0.0f32; tw * th * 4];
+    if rx > 1 {
+        let (sw, sh) = ((STRIP / (rx * 1024)).max(1) * rx, (STRIP / ((STRIP / (rx * 1024)).max(1) * rx).max(1)).max(1));
+        let mut ox = 0;
+        let mut x = 0;
+        while x < w {
+            let cw = sw.min(w - x);
+            let mut y = 0;
+            while y < h {
+                let (r, px) = frame.to_linear_f32_region(nu, input.map(|t| &t.table), filmcraft_frame::Region { x, y, w: cw, h: sh.min(h - y) });
+                let px = staged(px, r.w, r.h);
+                for yy in 0..r.h {
+                    for c in 0..r.w / rx {
+                        let mut acc = [0.0; 4];
+                        for dx in 0..rx {
+                            let i = (yy * r.w + (c * rx + dx).min(r.w - 1)) * 4;
+                            for k in 0..4 {
+                                acc[k] += px[i + k];
+                            }
+                        }
+                        let o = ((y + yy) * tw + ox + c) * 4;
+                        for k in 0..4 {
+                            out[o + k] = acc[k] / rx as f32;
+                        }
+                    }
+                }
+                y += r.h.max(1);
+            }
+            ox += cw / rx;
+            x += cw;
+        }
+    } else {
+        let (sh, sw) = ((STRIP / (ry * 1024)).max(1) * ry, (STRIP / ((STRIP / (ry * 1024)).max(1) * ry).max(1)).max(1));
+        let mut oy = 0;
+        let mut y = 0;
+        while y < h {
+            let ch = sh.min(h - y);
+            let mut x = 0;
+            while x < w {
+                let (r, px) = frame.to_linear_f32_region(nu, input.map(|t| &t.table), filmcraft_frame::Region { x, y, w: sw.min(w - x), h: ch });
+                let px = staged(px, r.w, r.h);
+                for rr in 0..r.h / ry {
+                    for xx in 0..r.w {
+                        let mut acc = [0.0; 4];
+                        for dy in 0..ry {
+                            let i = ((rr * ry + dy).min(r.h - 1) * r.w + xx) * 4;
+                            for k in 0..4 {
+                                acc[k] += px[i + k];
+                            }
+                        }
+                        let o = ((oy + rr) * tw + x + xx) * 4;
+                        for k in 0..4 {
+                            out[o + k] = acc[k] / ry as f32;
+                        }
+                    }
+                }
+                x += r.w.max(1);
+            }
+            oy += ch / ry;
+            y += ch;
+        }
+    }
+    filmcraft_render::Image { w: tw, h: th, px: out }
+}
+
+/// Largest power of two (capped at 16, like the CPU path's decimation) that still leaves
+/// `have`/`n` at or above `need` pixels.
+fn shrink_decimation(have: usize, need: f64) -> usize {
+    let mut n = 1usize;
+    while n < 16 && have as f64 / (n as f64 * 2.0) >= need {
+        n *= 2;
+    }
+    n
 }
 
 /// The output pixels a layer's quad can touch, as (x, y, width, height) clamped to the `w`×`h`

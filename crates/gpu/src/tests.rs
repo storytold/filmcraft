@@ -9,6 +9,72 @@ fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }
 
+/// A layer's frame wider than the device's texture limit cannot upload; the plan is
+/// composited on the CPU and drawn like a `FramePlan::Image` (#2996).
+#[test]
+fn oversized_source_composites_from_the_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (dev.limits().max_texture_dimension_2d + 64, 8);
+    // not a flat colour: the CPU result has detail for the compositor to reproduce
+    let mut data = vec![0u8; (w * h * 4) as usize];
+    for (i, p) in data.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        p.copy_from_slice(&[(i % 251) as u8, (i % 199) as u8, (i % 127) as u8, 255]);
+    }
+    let frame = Arc::new(VideoFrame::rgba8(w, h, data));
+    let plan = FramePlan::Layers { width: 32, height: 8, layers: vec![PlanLayer::new(frame, Affine::scale(32.0 / w as f64, 1.0), 1.0, Blend::Normal)] };
+    let cpu = execute_cpu(&plan_cpu_shrunk(&plan, dev.limits().max_texture_dimension_2d as usize)).over_black_rgba8();
+    c.composite(&plan);
+    let (ow, oh, px) = c.read_output().expect("readback");
+    assert_eq!((ow, oh), (32, 8));
+    let err = px.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(err <= 1, "oversized source: max error {err} vs the CPU composite");
+}
+
+/// A YUV layer wider than the texture limit but short: the CPU fallback decimates x while
+/// keeping every row of y, and the composite still matches the full-resolution oracle.
+#[test]
+fn oversized_yuv_layer_composites_within_parity() {
+    let Some((dev, q)) = device() else { return };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let w = dev.limits().max_texture_dimension_2d + 64;
+    let plan =
+        FramePlan::Layers { width: 32, height: 8, layers: vec![PlanLayer::new(yuv_frame(w, 8), Affine::scale(32.0 / w as f64, 1.0), 1.0, Blend::Normal)] };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    c.composite(&plan);
+    let (ow, oh, px) = c.read_output().expect("readback");
+    assert_eq!((ow, oh), (32, 8));
+    let mut diffs: Vec<u32> =
+        cpu.chunks(4).zip(px.chunks(4)).map(|(a, b)| (0..3).map(|k| (a[k] as i32 - b[k] as i32).unsigned_abs()).max().unwrap_or(0)).collect();
+    diffs.sort_unstable();
+    let p99 = diffs[diffs.len() * 99 / 100];
+    let mean = diffs.iter().sum::<u32>() as f64 / diffs.len() as f64;
+    assert!(p99 <= 6 && mean < 1.5, "oversized yuv layer: p99 {p99}, mean {mean}");
+}
+
+/// The export path declines a plan it cannot draw so the pipeline renders it on the CPU,
+/// and the device is untouched, so a fitting plan keeps working (#2996).
+#[test]
+fn oversized_source_is_declined_for_gpu_export() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let max = dev.limits().max_texture_dimension_2d;
+    let big = Arc::new(VideoFrame::rgba8(max + 64, 8, vec![255; ((max + 64) * 8 * 4) as usize]));
+    let plan = FramePlan::Layers { width: 32, height: 8, layers: vec![PlanLayer::new(big, Affine::scale(32.0 / (max + 64) as f64, 1.0), 1.0, Blend::Normal)] };
+    assert!(c.render_export_prepared(&plan, None).is_none(), "oversized plan would composite black");
+    let ok = Arc::new(VideoFrame::rgba8(32, 8, vec![255; 32 * 8 * 4]));
+    let plan = FramePlan::Layers { width: 32, height: 8, layers: vec![PlanLayer::new(ok, Affine::IDENTITY, 1.0, Blend::Normal)] };
+    let (w, h, px) = c.render_export_prepared(&plan, None).expect("fitting plan still renders");
+    assert_eq!((w, h), (32, 8));
+    assert!(px.iter().fold(0.0f32, |a, b| a.max(*b)) > 0.5, "device was poisoned by the oversized plan");
+}
+
 #[test]
 fn yuv_code_range_uniforms() {
     let mut mismatches = Vec::new();
@@ -695,4 +761,35 @@ fn accumulator_readback_retires_rejected_native_map() {
         !errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|error| error.contains("Buffer is not mapped")),
         "cleanup attempted to unmap an already rejected mapping"
     );
+}
+
+/// `linear_boxed` converts the oversized source in tiles; the pixels must be exactly what the
+/// whole-picture conversion box-averaged the same way gives (#2996).
+#[test]
+fn linear_boxed_matches_whole_image_boxing() {
+    let (w, h) = (1030usize, 6usize);
+    let data: Vec<u8> = (0..w * h * 4).map(|i| (i * 37 % 251) as u8).collect();
+    let frame = VideoFrame::rgba8(w as u32, h as u32, data);
+    let (_, _, full) = frame.to_linear_f32_decimated_with(1, None);
+    for (rx, ry) in [(4usize, 1usize), (1, 3)] {
+        let got = linear_boxed(&frame, 1, rx, ry, None);
+        let (tw, th) = ((w / rx).max(1), (h / ry).max(1));
+        assert_eq!((got.w, got.h), (tw, th));
+        for oy in 0..th {
+            for ox in 0..tw {
+                for k in 0..4 {
+                    let mut acc = 0.0f32;
+                    let mut n = 0.0f32;
+                    for dy in 0..ry {
+                        for dx in 0..rx {
+                            let i = ((oy * ry + dy).min(h - 1) * w + (ox * rx + dx).min(w - 1)) * 4 + k;
+                            acc += full[i];
+                            n += 1.0;
+                        }
+                    }
+                    assert_eq!(got.px[(oy * tw + ox) * 4 + k], acc / n, "rx {rx} ry {ry} at {ox},{oy} ch {k}");
+                }
+            }
+        }
+    }
 }
