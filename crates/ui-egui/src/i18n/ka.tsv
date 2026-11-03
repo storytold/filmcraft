@@ -3619,8 +3619,6 @@
 	H.265 (HEVC) needs a hardware encoder (NVENC on NVIDIA GPUs, VideoToolbox on macOS); none was found on this machine, and FilmCraft has no software H.265 encoder yet. Choose H.264 or ProRes instead.	H.265-ს (HEVC) აპარატული კოდერი სჭირდება (NVENC NVIDIA-ს GPU-ებზე, VideoToolbox macOS-ზე); ამ კომპიუტერზე ვერცერთი მოიძებნა, FilmCraft-ს კი პროგრამული H.265 კოდერი ჯერ არ აქვს. სანაცვლოდ აირჩიეთ H.264 ან ProRes.
 	AV1 needs a hardware encoder; none was found on this machine, and FilmCraft has no software AV1 encoder yet.	AV1-ს აპარატული კოდერი სჭირდება; ამ კომპიუტერზე ვერცერთი მოიძებნა, FilmCraft-ს კი პროგრამული AV1 კოდერი ჯერ არ აქვს.
 	Check for Updates…	განახლებების შემოწმება…
-	Checking for updates…	განახლებების შემოწმება…
-	Could not check for updates:\n{error}	განახლებების შემოწმება ვერ მოხერხდა:\n{error}
 	FilmCraft {version} is currently the newest version available.	FilmCraft {version} ამჟამად უახლესი ხელმისაწვდომი ვერსიაა.
 	Looks for a newer FilmCraft release and offers to update.	ეძებს FilmCraft-ის უფრო ახალ გამოშვებას და განახლებას გთავაზობთ.
 
