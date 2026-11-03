@@ -796,7 +796,8 @@ fn queue_path_key(path: &str) -> String {
 /// Whether an export to `path` would replace a file: the file itself, or for an image sequence any
 /// of its numbered stills ([`filmcraft_export::image_sequence_path`]: the stem, at least three
 /// digits, the extension). Asked of the host too, whose files (web) are not on the native file
-/// system and cannot be listed: there the first still is checked at every padding width.
+/// system: its listing is searched, and for a host that cannot list, the first still is checked
+/// at every padding width.
 fn output_occupied(s: &Session, path: &str, format: filmcraft_export::Format) -> bool {
     let there = |f: &str| Path::new(f).exists() || s.services.file_size(f).is_ok();
     if !format.is_image_sequence() {
@@ -809,9 +810,13 @@ fn output_occupied(s: &Session, path: &str, format: filmcraft_export::Format) ->
     let stem = p.file_stem().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
     let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_else(|| "png".into());
     let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let Ok(entries) = std::fs::read_dir(dir) else { return false };
-    entries.flatten().any(|e| {
-        let name = e.file_name().to_string_lossy().to_lowercase();
+    let mut names: Vec<String> =
+        std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect()).unwrap_or_default();
+    if let Some(Ok(entries)) = s.services.list_entries(&dir.to_string_lossy()) {
+        names.extend(entries.into_iter().filter(|e| !e.is_dir).map(|e| e.name));
+    }
+    names.iter().any(|name| {
+        let name = name.to_lowercase();
         name.strip_prefix(stem.as_str())
             .and_then(|rest| rest.strip_suffix(ext.as_str()))
             .and_then(|rest| rest.strip_suffix('.'))

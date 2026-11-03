@@ -280,18 +280,29 @@ fn queue_add_numbering_skips_host_files_and_image_sequence_stills() {
         fn export_in_memory(&self) -> bool {
             true
         }
+        fn list_dir(&self, _dir: &str) -> Option<std::io::Result<Vec<String>>> {
+            Some(Ok(self.0.lock().unwrap().iter().cloned().collect()))
+        }
     }
     // names no file in the working directory has: the native file system is asked too
     let name = |n: &str| format!("queue-host-{}{n}.wav", std::process::id());
     let files = Arc::new(HostFiles::default());
     files.0.lock().unwrap().insert(name("_2"));
-    let mut s = Session::new(files);
+    let mut s = Session::new(files.clone());
     s.execute("file.newSequence", json!({"name": "Host", "fps": 25, "width": 16, "height": 16, "video": 0, "audio": 1})).unwrap();
     for _ in 0..2 {
         s.execute("export.queue.add", json!({"path": name(""), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.2})).unwrap();
     }
     let paths: Vec<Value> = queue(&mut s).iter().map(|i| i["path"].clone()).collect();
     assert_eq!(paths, [json!(name("")), json!(name("_3"))], "the host's _2 file is kept");
+    // a later still the host holds takes a generated image-sequence name too
+    let still = |n: &str| format!("queue-host-{}{n}.png", std::process::id());
+    files.0.lock().unwrap().insert(still("_2017"));
+    for _ in 0..2 {
+        s.execute("export.queue.add", json!({"path": still(""), "format": "png", "range": "custom", "startSeconds": 0, "endSeconds": 0.1})).unwrap();
+    }
+    let paths: Vec<Value> = queue(&mut s).iter().map(|i| i["path"].clone()).collect();
+    assert_eq!(paths[2..], [json!(still("")), json!(still("_3"))], "the host's _2017 still is kept");
 
     let mut s = demo();
     let dir = Scratch::new("queue-still-names");
