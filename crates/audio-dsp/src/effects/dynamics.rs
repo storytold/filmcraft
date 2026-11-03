@@ -350,10 +350,13 @@ impl Limiter {
         // step.
         let ramp = self.ramp();
         if ramp != self.box_ring.len() {
-            let held = if self.t < self.long_until { self.long_window } else { 0 }.max(self.box_ring.len() as u64);
-            if (ramp as u64) < held {
-                self.long_window = held;
-                self.long_until = self.t + held;
+            // only a shorter ramp holds the one it replaces, for as long as that ramp's requests
+            // can still be in the sliding minimum (a longer one renews nothing)
+            let old = self.box_ring.len() as u64;
+            if (ramp as u64) < old {
+                let active = self.t < self.long_until;
+                self.long_window = if active { self.long_window.max(old) } else { old };
+                self.long_until = self.long_until.max(self.t + old);
             }
             let g = if self.box_ring.is_empty() { self.rel_state } else { (self.box_sum / self.box_ring.len() as f64) as f32 };
             self.box_ring = vec![g; ramp];
@@ -846,6 +849,28 @@ mod tests {
         let exit = pulse_at + lat;
         let before = y[exit - 240..exit - 1].iter().fold(0.0f32, |a, v| a.max(v.abs()));
         assert!(before < 0.075, "the request was dropped before its pulse came out: peak before the pulse {before}");
+    }
+
+    /// #905: the longer window is held only for requests from before the ramp shortened. A
+    /// look-ahead that keeps changing (keyframed) above the new value does not hold the 30 ms
+    /// window forever: after a while the window is the current ramp's.
+    #[test]
+    fn limiter_changing_lookahead_does_not_renew_the_longer_window() {
+        let mut lim = Limiter::new(SR, 1);
+        lim.set_param("lookahead", 30.0);
+        let mut y = vec![0.0f32; 4800];
+        lim.process(&mut [&mut y]);
+        lim.set_param("lookahead", 5.0);
+        lim.process(&mut [&mut y[..100]]);
+        for _ in 0..40 {
+            lim.set_param("lookahead", 10.0);
+            lim.process(&mut [&mut y[..100]]);
+            lim.set_param("lookahead", 6.0);
+            lim.process(&mut [&mut y[..100]]);
+        }
+        // 8,000 samples after the 30 ms ramp: nothing from it is held any more
+        let ten_ms = (0.010 * SR).round() as u64 + 1;
+        assert!(lim.long_until <= lim.t + ten_ms, "the 30 ms window is still held {} samples ahead", lim.long_until - lim.t);
     }
 
     /// #905: at the default look-ahead (5 ms, the value the old fixed window had, and what the
