@@ -1018,7 +1018,7 @@ pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: 
         let left_out: Vec<String> =
             seq.video_tracks.iter().enumerate().filter(|(i, t)| *i != v && !t.items.is_empty()).map(|(i, _)| format!("V{}", i + 1)).collect();
         if !left_out.is_empty() {
-            let exported = if v < seq.video_tracks.len() { format!("only V{} was exported", v + 1) } else { "no video track was exported".into() };
+            let exported = if seq.video_tracks.get(v).is_some_and(|t| !t.items.is_empty()) { format!("only V{} was exported", v + 1) } else { "no video track was exported".into() };
             report.info(format!("EDLs hold one video track; {exported} (not {})", left_out.join(", ")));
         }
     }
