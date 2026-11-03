@@ -793,12 +793,30 @@ fn queue_path_key(path: &str) -> String {
     path.to_lowercase()
 }
 
-/// Whether an export to `path` would replace a file: the file itself, or for an image sequence its
-/// first numbered still (at any padding width). Asked of the host too, whose files (web) are not on
-/// the native file system.
+/// Whether an export to `path` would replace a file: the file itself, or for an image sequence any
+/// of its numbered stills ([`filmcraft_export::image_sequence_path`]: the stem, at least three
+/// digits, the extension). Asked of the host too, whose files (web) are not on the native file
+/// system and cannot be listed: there the first still is checked at every padding width.
 fn output_occupied(s: &Session, path: &str, format: filmcraft_export::Format) -> bool {
     let there = |f: &str| Path::new(f).exists() || s.services.file_size(f).is_ok();
-    if format.is_image_sequence() { (3..=9).any(|digits| there(&filmcraft_export::image_sequence_path(path, 0, 10u64.pow(digits)))) } else { there(path) }
+    if !format.is_image_sequence() {
+        return there(path);
+    }
+    if (3..=9).any(|digits| there(&filmcraft_export::image_sequence_path(path, 0, 10u64.pow(digits)))) {
+        return true;
+    }
+    let p = Path::new(path);
+    let stem = p.file_stem().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_else(|| "png".into());
+    let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    entries.flatten().any(|e| {
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        name.strip_prefix(stem.as_str())
+            .and_then(|rest| rest.strip_suffix(ext.as_str()))
+            .and_then(|rest| rest.strip_suffix('.'))
+            .is_some_and(|digits| digits.len() >= 3 && digits.bytes().all(|b| b.is_ascii_digit()))
+    })
 }
 
 /// `path` with the first `_N` (from 2) that no queued item writes (`taken`, as [`queue_path_key`]s)

@@ -301,6 +301,14 @@ fn queue_add_numbering_skips_host_files_and_image_sequence_stills() {
     }
     let paths: Vec<String> = queue(&mut s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
     assert_eq!(paths, [dir.path("still.png"), dir.path("still_3.png")]);
+    // only a later still of a name is there (the first one was deleted): the name is still taken
+    s.execute("export.queue.clear", json!({"all": true})).unwrap();
+    std::fs::write(dir.path("shot_2017.png"), b"keep").unwrap();
+    for _ in 0..2 {
+        s.execute("export.queue.add", json!({"path": dir.path("shot.png"), "format": "png", "range": "custom", "startSeconds": 0, "endSeconds": 0.1})).unwrap();
+    }
+    let paths: Vec<String> = queue(&mut s).iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
+    assert_eq!(paths, [dir.path("shot.png"), dir.path("shot_3.png")]);
 }
 
 #[test]
