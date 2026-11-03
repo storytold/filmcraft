@@ -61,7 +61,7 @@ whole interface, one PR) at ~4–8 h per language for the catalog plus tests.
 | *Other shipped:* Turkish | tr | 3,590 (same entries as Spanish, plus the macOS Settings item) | as Spanish | Latin (bundled fonts) | not recorded; welcome | partial | review |
 | *Other shipped:* Bosnian | bs | 3,610 (every entry of the other catalogs) | as Spanish | Latin (bundled fonts) | AI-assisted, not yet native-reviewed; welcome | partial | review |
 | *Other shipped:* Ukrainian | uk | 351 (10.0%) | menus only | Cyrillic (bundled) | not recorded | menus only | 5–9 h |
-| *Other shipped:* Georgian | ka | 3,596 (every Spanish entry) | as Spanish | Georgian (craft-fonts Noto Sans Georgian; native builds, else an installed face) | native speaker | partial | review |
+| *Other shipped:* Georgian | ka | 3,720 (every entry of the other catalogs) | as Spanish | Georgian (craft-fonts Noto Sans Georgian; native builds, else an installed face) | native speaker | partial | review |
 
 UI strings are catalog entries (the non-comment lines of `src/i18n/<code>.tsv`; English counts the
 source strings in the code), so the rows were measured at different times: at this change the
