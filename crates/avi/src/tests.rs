@@ -364,3 +364,46 @@ fn opendml_repeated_index_offsets_are_read_once() {
     assert_eq!(streams[0].chunks.len(), 3);
     assert_eq!(streams[1].chunks.len(), 2);
 }
+
+/// Tiny `AVIX` forms whose `movi` lists claim the rest of the file: each list is held to its
+/// form, so the chunks after them are neither recorded once per list nor recorded at all.
+#[test]
+fn lists_do_not_reach_past_their_container() {
+    let mut file = avi(false, false, false);
+    let forms = 64;
+    for _ in 0..forms {
+        let mut riff = b"RIFF".to_vec();
+        riff.extend_from_slice(&16u32.to_le_bytes());
+        riff.extend_from_slice(b"AVIX");
+        riff.extend_from_slice(b"LIST");
+        riff.extend_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+        riff.extend_from_slice(b"movi");
+        file.extend(riff);
+    }
+    for _ in 0..32 {
+        file.extend(chunk(b"00dc", &[9; 8]));
+    }
+    let f = open(&file).unwrap();
+    assert_eq!(f.index, IndexSource::Scan);
+    assert_eq!(table(&f, 0), vec![(10, true), (6, true), (7, true)]);
+    assert_eq!(table(&f, 1), vec![(16, true), (8, true)]);
+
+    // `rec ` lists inside one `movi` that each claim the rest of it
+    let mut body = Vec::new();
+    for _ in 0..64 {
+        // LIST(16) rec  { LIST(huge) rec  … }
+        body.extend_from_slice(b"LIST");
+        body.extend_from_slice(&16u32.to_le_bytes());
+        body.extend_from_slice(b"rec LIST");
+        body.extend_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+        body.extend_from_slice(b"rec ");
+    }
+    for _ in 0..32 {
+        body.extend(chunk(b"00dc", &[9; 8]));
+    }
+    let mut streams = open(&avi(false, false, false)).unwrap().streams;
+    clear(&mut streams);
+    let movi = list(b"movi", &body);
+    scan(&movi, &mut streams, &|_| true, 12, movi.len() as u64, 0);
+    assert_eq!(streams[0].chunks.len(), 32);
+}
