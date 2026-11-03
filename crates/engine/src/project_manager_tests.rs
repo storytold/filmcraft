@@ -122,3 +122,14 @@ fn nested_subclip_keeps_its_whole_parent_chain_used() {
     assert!(used.contains(&outer) && used.contains(&inner) && used.contains(&items[0]), "{used:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_hostile_project_name_stays_inside_the_destination() {
+    let root = tmp_dir("pm-name");
+    let (mut s, _, _) = project(&root);
+    let dest = root.join("Collected");
+    let r = s.execute("file.projectManager", json!({"destination": dest.to_string_lossy(), "projectName": "../../escaped", "dryRun": true})).unwrap();
+    let out = std::path::PathBuf::from(r["project"].as_str().unwrap());
+    assert_eq!(out.parent(), Some(dest.as_path()), "{out:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
