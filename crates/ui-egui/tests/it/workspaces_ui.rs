@@ -297,6 +297,27 @@ fn closing_before_the_first_frame_keeps_the_remembered_layout() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
+/// A `workspaces.json` whose workspace in use names no workspace (edited or damaged): the launch
+/// keeps the default layout, and closing it does not replace the remembered one.
+#[test]
+fn a_current_workspace_that_names_none_keeps_the_remembered_layout() {
+    let data = data_dir("remember-unknown");
+    let mut d = Driver::launch(&data);
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.ok("ui.panel.close", json!({"panel": "LumetriScopes"}));
+    d.app().remember_layout();
+    drop(d);
+    let mut file = saved_file(&data);
+    file["current"] = json!("Gone");
+    std::fs::write(data.join("workspaces.json"), serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+
+    let mut d = Driver::launch(&data);
+    eframe::App::on_exit(d.app());
+    drop(d);
+    assert_eq!(saved_file(&data), file, "the remembered layout stays");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
 /// A layout saved on purpose is never beaten by an older remembered one: Save Changes to this
 /// Workspace, Reset to Saved Layout and deleting a built-in's changes drop the remembered layout
 /// (so a session that ends without `on_exit` still reopens the saved layout), and a rename keeps
