@@ -831,6 +831,25 @@ fn deselect_all_is_enabled_when_only_a_bin_is_selected() {
     assert!(enabled(&mut d), "a single selected bin counts");
 }
 
+/// After the Delete key removes a selected bin, the panel forgets it: Clear is disabled and a
+/// second Delete neither errors nor targets the removed bin.
+#[test]
+fn keyboard_delete_of_a_bin_clears_the_stale_bin_selection() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, _) = d.footage();
+    d.app().ui.focused = filmcraft_ui_egui::dock::PanelKind::Project;
+    d.app().session.state.project_selection.clear();
+    d.app().ui.project_panel.selected_bin = Some(bin);
+    d.app().ui.project_panel.selected_bins = vec![bin];
+    d.key("Delete");
+    assert!(d.app().session.project.root.find_bin(filmcraft_project::BinId(bin)).is_none(), "the bin was deleted");
+    assert!(d.app().ui.project_panel.selected_bin.is_none());
+    assert!(d.app().ui.project_panel.selected_bins.is_empty());
+    d.key("Delete");
+    assert!(d.app().ui.status.is_empty() || !d.app().ui.status.contains("no such"), "{}", d.app().ui.status);
+}
+
 /// With a sequence open, the native macOS menu has Select All enabled and takes Cmd+A (and
 /// Cmd+Shift+A) before the window sees the key: with the Project panel focused they still act on
 /// its items, not on the Timeline's clips (#1752).
