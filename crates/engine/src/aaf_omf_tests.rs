@@ -379,9 +379,11 @@ fn bit_depth_as_a_string_or_a_number_and_nothing_else() {
             assert_eq!(bits, 24, "{cmd} with bitDepth {depth}");
         }
     }
-    let path = dir.join("refused.aaf").to_string_lossy().into_owned();
-    for depth in [json!("20"), json!("24-bit"), json!(65560), json!(true)] {
-        assert!(s.execute("file.exportAaf", json!({"path": path, "bitDepth": depth})).is_err(), "bitDepth {depth}");
+    for (cmd, ext) in [("file.exportAaf", "aaf"), ("file.exportOmf", "omf")] {
+        let path = dir.join(format!("refused.{ext}")).to_string_lossy().into_owned();
+        for depth in [json!("20"), json!("24-bit"), json!(65560), json!(true)] {
+            assert!(s.execute(cmd, json!({"path": path, "bitDepth": depth})).is_err(), "{cmd} with bitDepth {depth}");
+        }
     }
     let _ = std::fs::remove_dir_all(dir);
 }
