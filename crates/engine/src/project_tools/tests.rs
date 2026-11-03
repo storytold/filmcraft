@@ -693,6 +693,16 @@ fn drop_frame_sources_show_their_timecode_drop_frame() {
         assert_eq!(crate::project_panel::cell(&s.project, it, "Media Start").0, want, "{name}: Project panel");
         let duration = crate::project_panel::cell(&s.project, it, "Media Duration").0;
         assert_eq!(filmcraft_project::find::column_text(&s.project, it, "Media Duration"), duration, "{name}: Find matches the Project panel");
+        // so does a subclip of it, which counts at the media's rate
+        let mut p = (*s.project).clone();
+        let range = filmcraft_time::TimeRange::new(Tick::ZERO, filmcraft_time::FrameRate::FPS_29_97.tick_of(3));
+        let sub = p.add_item("sub", filmcraft_project::Label::Iris, ItemKind::Subclip { parent: items[0], range, restrict_trims: false }, None);
+        let sub = p.item(sub).unwrap();
+        assert_eq!(
+            filmcraft_project::find::column_text(&p, sub, "Media Duration"),
+            crate::project_panel::cell(&p, sub, "Media Duration").0,
+            "{name}: a subclip"
+        );
         // Modify Timecode opens with this value: confirming it leaves the start where it was
         s.execute("clip.modifyTimecode", json!({"item": items[0].0, "timecode": want})).unwrap();
         assert_eq!(s.project.item(items[0]).unwrap().as_media().unwrap().info.start_timecode, start, "{name}: Modify Timecode, unchanged");
@@ -725,4 +735,25 @@ fn modify_timecode_reads_the_value_in_the_clips_own_count() {
         assert_eq!(s.project.item(items[0]).unwrap().as_media().unwrap().info.start_timecode, Some(want), "{name} {typed}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `file.newOfflineFile` keeps a drop-frame timecode: a `;` label counts drop-frame and the file
+/// shows it that way; at a rate without drop-frame the `;` is only a separator.
+#[test]
+fn offline_files_keep_a_drop_frame_timecode() {
+    // (fps, typed, start frame, drop-frame, Metadata panel)
+    let cases = [
+        (29.97, "01;00;00;00", 107_892, true, "01;00;00;00"),
+        (29.97, "01:00:00:00", 108_000, false, "01:00:00:00"),
+        (25.0, "01;00;00;00", 90_000, false, "01:00:00:00"),
+    ];
+    for (fps, typed, start, drop_frame, shown) in cases {
+        let mut s = Session::default();
+        let r = s.execute("file.newOfflineFile", json!({"fps": fps, "timecode": typed, "fileName": "a.mov"})).unwrap();
+        let item = ItemId(r["item"].as_u64().unwrap_or_else(|| panic!("{r}")));
+        let info = &s.project.item(item).unwrap().as_media().unwrap().info;
+        assert_eq!((info.start_timecode, info.drop_frame_timecode), (Some(start), drop_frame), "{fps} {typed}");
+        let fields = s.execute("metadata.get", json!({"item": item.0})).unwrap();
+        assert_eq!(fields["fields"].as_array().unwrap().iter().find(|f| f["name"] == "Media Start").unwrap()["value"], shown, "{fps} {typed}");
+    }
 }
