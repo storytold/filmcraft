@@ -421,8 +421,12 @@ pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
 /// with `copy`, and not with `insert`, which already carries the sync-locked caption tracks.
 fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "timeline.move";
+    let rate = s.sequence_rate();
+    let df = s.active_sequence().is_some_and(|q| q.settings.drop_frame);
     let mut listed: Vec<(ClipId, TrackId, Tick, bool)> = Vec::new();
-    for m in p.get("moves").and_then(Value::as_array).into_iter().flatten() {
+    for (i, m) in p.get("moves").and_then(Value::as_array).into_iter().flatten().enumerate() {
+        // ticks, or a time object at the sequence rate (as `sourceIn` of `timeline.place`)
+        let time = tick_or_time_p(m, "time", rate, df, CMD)?;
         let new_track = str_p(m, "track").is_some_and(|t| t.eq_ignore_ascii_case("new"));
         let track = if new_track {
             let clip = clip_p(m, "clip").ok_or_else(|| bad(CMD, "new track needs a clip"))?;
@@ -431,16 +435,17 @@ fn move_clips(s: &mut Session, p: &Value) -> Result<Value> {
             if q.track(source).is_some_and(|t| t.locked) {
                 return Err(edit::EditError::Locked.into());
             }
-            if m.get("time").and_then(Value::as_i64).is_none() {
-                return Err(bad(CMD, "new track needs a time"));
-            }
             Some(source)
         } else {
             track_p(s, m, "track", CMD)?
         };
-        if let (Some(clip), Some(track), Some(time)) = (clip_p(m, "clip"), track, m.get("time").and_then(Value::as_i64)) {
-            listed.push((clip, track, Tick(time), new_track));
-        }
+        // an entry the move cannot use is refused, never skipped: skipping it moved the rest of
+        // the list, or failed with "need `moves`" when it was the only entry
+        let needs = |what: &str| bad(CMD, format!("`moves[{i}]` needs {what}"));
+        let clip = clip_p(m, "clip").ok_or_else(|| needs("`clip`"))?;
+        let track = track.ok_or_else(|| needs("`track`"))?;
+        let time = time.ok_or_else(|| needs("`time`: ticks or a time object like {\"seconds\": n}, {\"frame\": n} or {\"timecode\": \"…\"}"))?;
+        listed.push((clip, track, time, new_track));
     }
     if listed.is_empty() {
         return Err(bad(CMD, "need `moves`"));
@@ -1716,7 +1721,7 @@ fn build() -> Vec<CommandSpec> {
                     },
                     Ok(b) => {
                         if let Some(fmt) = crate::captions::detect(&path, &b) {
-                            match crate::captions::import(s, &path, &b, fmt, None) {
+                            match crate::captions::import(s, &path, &b, fmt, None, None) {
                                 Ok(r) => reports.push(r),
                                 Err(e) => errors.push(format!("{path}: {e}")),
                             }
@@ -3208,7 +3213,7 @@ fn build() -> Vec<CommandSpec> {
             "Move Clips",
             [],
             None,
-            r#"{"moves":[{"clip":id,"track":id|"V2"|"new" (after the last of its kind),"time":ticks}],"insert":bool,"linked":bool?,"copy":bool?,"captions":[id]?}"#,
+            r#"{"moves":[{"clip":id,"track":id|"V2"|"new" (after the last of its kind),"time":ticks|{"seconds":f}|{"frame":n}|{"timecode":str}}],"insert":bool,"linked":bool?,"copy":bool?,"captions":[id]?}"#,
             has_seq,
             move_clips
         ),

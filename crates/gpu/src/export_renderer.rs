@@ -150,7 +150,7 @@ impl ExportRenderer {
         match &plan {
             // Already the CPU image: return it unchanged instead of rendering it twice.
             FramePlan::Image(img) => Some(img.clone()),
-            FramePlan::Layers { .. } => {
+            FramePlan::Layers { .. } | FramePlan::Composite { .. } => {
                 if device_failed() {
                     return None;
                 }
@@ -163,8 +163,6 @@ impl ExportRenderer {
                 timing::add_frame();
                 Some(Image { w: w as usize, h: h as usize, px })
             }
-            // Transitions: the export path leaves them to the CPU reference renderer.
-            FramePlan::Composite { .. } => None,
         }
     }
 }
@@ -286,6 +284,69 @@ mod tests {
         eprintln!("solid: max |GPU-CPU| linear {max:.6}");
         assert!(max < 0.02, "solid frame differs by {max}");
         assert_parity(&cpu, &gpu, "solid");
+    }
+
+    /// Frames inside a Push transition (forward and reversed), which plans as a GPU composite,
+    /// export on the GPU and match the CPU; a transition it cannot draw stays a CPU frame.
+    #[test]
+    fn transition_frames_export_on_the_gpu() {
+        let Some(mut r) = ExportRenderer::new() else {
+            eprintln!("SKIPPED (gpu transition export): no adapter");
+            return;
+        };
+        let rate = filmcraft_time::FrameRate::FPS_24;
+        let mut p = Project::new("x");
+        let mut m = SourceMap::default();
+        let mut clips = Vec::new();
+        for (i, color) in [[0.9, 0.2, 0.1, 1.0], [0.1, 0.4, 0.95, 1.0]].into_iter().enumerate() {
+            let g = GeneratorSource::new(Generator::ColorMatte { color }, 320, 180, rate, Tick(4 * TICKS_PER_SECOND));
+            let info = g.info().clone();
+            let media = MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            };
+            let item = p.add_item(&format!("c{i}"), Label::Iris, ItemKind::Media(Box::new(media)), None);
+            m.0.insert(item, Arc::new(g));
+            clips.push(item);
+        }
+        let seq = p.new_sequence("s", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
+        let mut ids = Vec::new();
+        for (k, item) in clips.into_iter().enumerate() {
+            let it = p.make_track_item(item, TrackKind::Video, rate.tick_of(24 * k as i64), TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+            ids.push(it.id);
+            p.sequence_mut(seq).unwrap().video_tracks[0].items.push(it);
+        }
+        let opts = RenderOptions::default();
+        for (id, reverse) in [("push", false), ("push", true)] {
+            p.sequence_mut(seq).unwrap().video_tracks[0].transitions = vec![filmcraft_project::Transition {
+                id: filmcraft_project::TransitionId(1),
+                effect: filmcraft_project::find_effect(id).unwrap().instance(),
+                start: rate.tick_of(18),
+                duration: rate.tick_of(12),
+                from: ids.first().copied(),
+                to: ids.get(1).copied(),
+                align: Default::default(),
+                reverse,
+            }];
+            for f in [20, 24, 27] {
+                let t = rate.tick_of(f);
+                assert!(!filmcraft_render::plan::is_cpu_frame(&p, seq, t), "{id} takes a GPU renderer");
+                let before = r.compositor.gpu_transitions;
+                let gpu = r.render(&p, seq, t, opts, &m).expect("GPU transition frame");
+                assert_eq!(r.compositor.gpu_transitions, before + 1, "{id}: drawn on the GPU");
+                assert_parity(&filmcraft_render::render_sequence(&p, seq, t, opts, &m), &gpu, &format!("{id} reverse={reverse} frame {f}"));
+            }
+        }
+        // Film Dissolve has no GPU stage: the whole frame stays a CPU image
+        p.sequence_mut(seq).unwrap().video_tracks[0].transitions[0].effect = filmcraft_project::find_effect("film_dissolve").unwrap().instance();
+        assert!(filmcraft_render::plan::is_cpu_frame(&p, seq, rate.tick_of(24)));
     }
 
     #[test]
