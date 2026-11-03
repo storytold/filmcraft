@@ -25,7 +25,7 @@ pub(super) const LEGACY: &[&str] = &["Legacy", "Video Effects"];
 pub fn simple_text_font(v: Option<&ParamValue>) -> &str {
     match v {
         Some(ParamValue::Text(f)) if !f.is_empty() => f,
-        Some(ParamValue::Choice(1)) => "JetBrains Mono",
+        Some(ParamValue::Choice(1..)) => "JetBrains Mono",
         _ => "Inter",
     }
 }

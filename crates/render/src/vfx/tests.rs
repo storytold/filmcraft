@@ -1494,4 +1494,5 @@ fn simple_text_draws_in_the_chosen_font() {
     // projects saved when Font was a choice of Inter / JetBrains Mono
     assert_eq!(max_diff(&inter, &with(ParamValue::Choice(0))), 0.0);
     assert_eq!(max_diff(&mono, &with(ParamValue::Choice(1))), 0.0);
+    assert_eq!(max_diff(&mono, &with(ParamValue::Choice(2))), 0.0);
 }
