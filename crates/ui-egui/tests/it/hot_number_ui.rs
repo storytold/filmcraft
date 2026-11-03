@@ -183,6 +183,27 @@ fn the_cursor_is_let_go_when_the_dragged_field_goes_away() {
     assert!(d.moves_cursor_to(at), "where the press began");
 }
 
+/// A button let go in another window (after Alt+Tab mid-drag) never reaches FilmCraft: losing focus
+/// lets the cursor go, and a window without focus does not take it again.
+#[test]
+fn the_cursor_is_let_go_when_the_window_loses_focus() {
+    let mut d = Driver::demo();
+    d.text_layer();
+    let r = d.harness.state().auto.find("graphics.prop.rotation").expect("rotation field").rect;
+    let at = egui::pos2(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    d.input([egui::Event::PointerMoved(at), button(true)]);
+    d.input([egui::Event::PointerMoved(at + egui::vec2(10.0, 0.0))]);
+    d.input([egui::Event::MouseMoved(egui::vec2(100.0, 0.0))]);
+    assert!(d.grabs_cursor(egui::CursorGrab::Locked));
+    d.background = true;
+    d.input([egui::Event::WindowFocused(false)]);
+    assert!(d.grabs_cursor(egui::CursorGrab::None), "the cursor is let go");
+    assert!(d.moves_cursor_to(at), "where the press began");
+    d.input([egui::Event::MouseMoved(egui::vec2(100.0, 0.0))]);
+    assert!(!d.grabs_cursor(egui::CursorGrab::Locked), "nor taken again without focus");
+}
+
 /// A touch has no raw mouse motion: once a mouse sent some, a touch drag still follows the finger.
 #[test]
 fn a_touch_drag_follows_the_finger_after_raw_mouse_motion() {

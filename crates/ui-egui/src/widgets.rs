@@ -215,11 +215,13 @@ fn hot_number_drag_multiplier(ui: &Ui) -> f64 {
 
 /// How far a drag on `resp` moved this frame, in points. As in Premiere, the cursor is hidden and
 /// held where the press began, and the drag follows the raw mouse motion, which the screen edge
-/// does not stop (#4177). Without raw motion (the web) or for a touch, it is the pointer's own delta.
+/// does not stop (#4177). Without raw motion (the web), for a touch or in a window without focus, it
+/// is the pointer's own delta.
 fn locked_drag_dx(ui: &Ui, resp: &Response) -> f32 {
-    let (motion, touching, press_origin, pointer) = ui.input(|i| (i.pointer.motion(), i.any_touches(), i.pointer.press_origin(), i.pointer.latest_pos()));
+    let (motion, touching, focused, press_origin, pointer) =
+        ui.input(|i| (i.pointer.motion(), i.any_touches(), window_focused(i), i.pointer.press_origin(), i.pointer.latest_pos()));
     // once any raw motion arrived, `motion` stays `Some` on every frame, also for a touch, which has none
-    let Some(motion) = motion.filter(|_| !touching) else { return resp.drag_delta().x };
+    let Some(motion) = motion.filter(|_| !touching && focused) else { return resp.drag_delta().x };
     let lock = match ui.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())).filter(|l| l.owner == resp.id) {
         Some(lock) => lock,
         None => {
@@ -251,11 +253,18 @@ fn cursor_lock_id() -> egui::Id {
     egui::Id::unique("hot-number-cursor-lock")
 }
 
-/// Ends [`locked_drag_dx`]'s lock once the button is up: the cursor is let go and shows again where
-/// the press began. Also called on every pass, for a drag whose field went away before the release.
+/// Whether the window has keyboard focus. A button let go in another window (after Alt+Tab) never
+/// reaches this one, so its pointer state can still show it held.
+fn window_focused(i: &egui::InputState) -> bool {
+    i.viewport().focused.unwrap_or(i.focused)
+}
+
+/// Ends [`locked_drag_dx`]'s lock once the button is up or the window loses focus: the cursor is
+/// let go and shows again where the press began. Also called on every pass, for a drag whose field
+/// went away before the release.
 pub(crate) fn release_cursor_lock(ctx: &egui::Context) {
     let Some(lock) = ctx.data(|d| d.get_temp::<CursorLock>(cursor_lock_id())) else { return };
-    if ctx.input_for(lock.viewport, |i| i.pointer.any_down()) {
+    if ctx.input_for(lock.viewport, |i| window_focused(i) && i.pointer.any_down()) {
         return;
     }
     ctx.data_mut(|d| d.remove::<CursorLock>(cursor_lock_id()));
