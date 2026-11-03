@@ -366,6 +366,8 @@ fn color_info(s: &mut Session, p: &Value) -> Result<Value> {
         "detected": detected.map(|c| c.id()),
         "detectedLabel": detected.map(|c| c.label()),
         "metadata": m.info.video.as_ref().map(|v| json!({"transfer": format!("{:?}", v.color.transfer), "primaries": format!("{:?}", v.color.primaries), "matrix": format!("{:?}", v.color.matrix), "range": format!("{:?}", v.color.range)})),
+        // which `metadata` values no tag in the file gave (FilmCraft's defaults); null when unknown
+        "assumed": m.info.video.as_ref().and_then(|v| v.color_assumed),
         "override": m.interpret.color_space.map(|c| c.id()),
         "effective": effective.map(|c| c.id()),
         "effectiveLabel": effective.map(|c| c.label()),
