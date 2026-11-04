@@ -305,8 +305,9 @@ pub struct CaptionRules {
     /// Minimum caption duration; a short caption is extended into the silence after it, never
     /// over the next one and never past `max_duration`.
     pub min_duration: Tick,
-    /// Longest caption, measured on its frame-snapped times. A single word that lasts longer gets
-    /// a caption of its own as long as the word, and every caption lasts at least one frame.
+    /// Longest caption, measured on its frame-snapped times. A single word whose frame-snapped span
+    /// is longer gets a caption of its own, which can last longer; every caption lasts at least one
+    /// frame.
     pub max_duration: Tick,
     /// Frames left empty between consecutive captions.
     pub gap_frames: i64,

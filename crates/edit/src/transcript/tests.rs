@@ -242,7 +242,8 @@ fn check_blocks(b: &[CaptionBlock], rules: &CaptionRules) {
         assert!(x.end > x.start, "{x:?}");
         assert_eq!(R.snap(x.start), x.start);
         assert_eq!(R.snap(x.end), x.end);
-        // no word in these tests lasts longer than the maximum, so no caption may either
+        // no word in these tests spans more than the maximum once snapped to frames, so no caption
+        // may last longer either
         assert!(x.end - x.start <= rules.max_duration, "longer than {:?}: {x:?}", rules.max_duration);
         let lines: Vec<&str> = x.text.lines().collect();
         assert!(lines.len() <= rules.lines, "{x:?}");
@@ -346,6 +347,32 @@ fn captions_keep_to_the_maximum_once_snapped_to_frames() {
     let b = spans(&crossed);
     assert_eq!(b.len(), 4, "{b:?}");
     assert!(b.iter().all(|x| x.1 - x.0 == s(2.0)), "{b:?}");
+}
+
+/// A single word is never split, so a word whose frame-snapped span is longer than the maximum
+/// gets a caption of its own over that span, even when the word itself is shorter: at 25 fps a
+/// word from 0.01 s to 2.009 s lasts 1.999 s and spans 0 to 2.04 s.
+#[test]
+fn a_single_word_keeps_its_snapped_span_past_the_maximum() {
+    let word = |text: &str, a: f64, b: f64, index: usize| SeqWord {
+        text: text.into(),
+        start: s(a),
+        end: s(b),
+        clip: ClipId(1),
+        item: MEDIA,
+        index,
+        track: 0,
+        speaker: None,
+        confidence: 1.0,
+    };
+    let rules = CaptionRules { max_duration: s(2.0), ..Default::default() };
+    let alone = caption_blocks(&[word("long", 0.01, 2.009, 0)], &rules, R);
+    assert_eq!(alone.iter().map(|x| (x.start, x.end)).collect::<Vec<_>>(), [(s(0.0), s(2.04))]);
+    // a word close behind it starts the next caption: together they would pass the maximum
+    let both = caption_blocks(&[word("long", 0.01, 2.009, 0), word("next", 2.1, 2.5, 1)], &rules, R);
+    let spans: Vec<(Tick, Tick, &str)> = both.iter().map(|x| (x.start, x.end, x.text.as_str())).collect();
+    // "next" is stretched to the 1 s default minimum
+    assert_eq!(spans, [(s(0.0), s(2.04), "long"), (s(2.08), s(3.08), "next")]);
 }
 
 /// Higher-track coverage merges into sorted disjoint ranges and answers like the ranges it was
