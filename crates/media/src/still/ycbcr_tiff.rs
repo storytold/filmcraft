@@ -75,7 +75,9 @@ pub fn decode(name: &str, bytes: &[u8]) -> Result<Raster> {
     }
     let offsets = uints(tags::STRIP_OFFSETS)?.ok_or_else(|| bad("no StripOffsets"))?;
     let counts = uints(tags::STRIP_BYTE_COUNTS)?.ok_or_else(|| bad("no StripByteCounts"))?;
-    let mut units: Vec<u8> = Vec::with_capacity(need);
+    // fallible: `need` can be hundreds of MiB for a small PackBits file, and a refused reservation must be an error, not an abort
+    let mut units: Vec<u8> = Vec::new();
+    units.try_reserve_exact(need).map_err(|_| bad("image too large to decode"))?;
     let mut strip_bytes = 0usize;
     for (&off, &len) in offsets.iter().zip(&counts) {
         if units.len() >= need {
