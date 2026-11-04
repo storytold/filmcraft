@@ -41,7 +41,10 @@ pub(crate) fn draw_text(img: &mut Image, text: &str, look: TextLook<'_>) {
         return;
     }
     // checked before the box is painted: text that cannot be drawn leaves nothing behind
-    if bounded_raster_size(b[2] - b[0] + px * 0.7, b[3] - b[1] + px * 0.7).is_none() {
+    // the dimensions `rasterize` allocates: its floor/ceil rounding and one-pixel margins included
+    let db = render::device_bounds(&l, &render::at(bx, by.round()));
+    let (rx0, ry0) = (f64::from(db[0]).floor() - 1.0, f64::from(db[1]).floor() - 1.0);
+    if bounded_raster_size((f64::from(db[2]).ceil() + 1.0 - rx0).max(1.0) as f32, (f64::from(db[3]).ceil() + 1.0 - ry0).max(1.0) as f32).is_none() {
         return;
     }
     if box_alpha > 0.0 {
