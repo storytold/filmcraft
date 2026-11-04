@@ -70,19 +70,21 @@ fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcra
     (Arc::new(p), seq, m)
 }
 
+/// One private folder per test process, never a predictable name another user could have prepared.
+fn out_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| tempfile::Builder::new().prefix("fc-gpu-export-").tempdir().unwrap().keep())
+}
+
 fn png(dir: &str, name: &str) -> Vec<u8> {
     // image_sequence_path flattens the path stem: <stem><index>.png in the temp dir itself.
     let index: u64 = name.trim_start_matches("img").trim_end_matches(".png").parse().unwrap_or(0);
-    std::fs::read(std::env::temp_dir().join(format!("fc-gpu-export-{dir}{index:03}.png"))).unwrap()
+    std::fs::read(out_dir().join(format!("{dir}{index:03}.png"))).unwrap()
 }
 
 fn export_png(dir: &str, gpu: GpuRendering, (w, h): (u32, u32)) {
     let (p, seq, m) = project(w, h);
-    let mut s = ExportSettings {
-        format: Format::PngSequence,
-        path: std::env::temp_dir().join(format!("fc-gpu-export-{dir}")).to_string_lossy().into_owned(),
-        ..Default::default()
-    };
+    let mut s = ExportSettings { format: Format::PngSequence, path: out_dir().join(dir).to_string_lossy().into_owned(), ..Default::default() };
     s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)));
     s.gpu_rendering = gpu;
     export(&p, seq, &s, &m, &Progress::default()).unwrap();
