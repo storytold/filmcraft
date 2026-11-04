@@ -399,7 +399,7 @@ fn tessellate_path(d: &str) -> Vec<(Vec<(f32, f32)>, bool)> {
             'A' => {
                 while let [rx, ry, rot, large, sweep, x, y, rest @ ..] = a {
                     let end = abs_pt(rel, cur, *x, *y);
-                    sample_arc(&mut pts, cur, rx.abs(), ry.abs(), *rot, *large != 0.0, *sweep != 0.0, end);
+                    sample_arc(&mut pts, SvgArc { start: cur, radii: (rx.abs(), ry.abs()), rot_deg: *rot, large: *large != 0.0, sweep: *sweep != 0.0, end });
                     cur = end;
                     a = rest;
                 }
@@ -440,7 +440,17 @@ fn sample_quad(pts: &mut Vec<(f32, f32)>, p0: (f32, f32), p1: (f32, f32), p2: (f
     }
 }
 
-fn sample_arc(pts: &mut Vec<(f32, f32)>, start: (f32, f32), rx: f32, ry: f32, rot_deg: f32, large: bool, sweep: bool, end: (f32, f32)) {
+struct SvgArc {
+    start: (f32, f32),
+    radii: (f32, f32),
+    rot_deg: f32,
+    large: bool,
+    sweep: bool,
+    end: (f32, f32),
+}
+
+fn sample_arc(pts: &mut Vec<(f32, f32)>, arc: SvgArc) {
+    let SvgArc { start, radii: (rx, ry), rot_deg, large, sweep, end } = arc;
     if rx < 1e-6 || ry < 1e-6 {
         pts.push(end);
         return;
