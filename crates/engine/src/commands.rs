@@ -4573,11 +4573,14 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
         let (link, new_video, new_audio) = (pr.alloc_id(), pr.alloc_id(), pr.alloc_id());
         let seq = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
         edit::delete_items(seq, &removed);
-        // sound left behind has lost its picture: it is no longer linked
+        // sound left behind has lost its picture: a clip left alone in its link is no longer
+        // linked, but sound clips that stay behind together keep their link to each other
         if video_only {
             let links: Vec<u64> = items.iter().filter(|i| i.0 == TrackKind::Video).filter_map(|i| i.2.link).collect();
+            let left = |l: u64| seq.all_tracks().flat_map(|t| t.items.iter()).filter(|i| i.link == Some(l)).count();
+            let alone: Vec<u64> = links.iter().copied().filter(|l| left(*l) < 2).collect();
             for it in seq.audio_tracks.iter_mut().flat_map(|t| t.items.iter_mut()) {
-                if it.link.is_some_and(|l| links.contains(&l)) {
+                if it.link.is_some_and(|l| alone.contains(&l)) {
                     it.link = None;
                 }
             }
