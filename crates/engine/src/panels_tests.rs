@@ -77,6 +77,25 @@ fn metadata_edits_are_undoable_and_saved_in_the_project() {
     assert_eq!(back.item(id).unwrap().metadata["Scene"], "12");
 }
 
+/// The Out Point is the last frame the marks keep, the frame a Source edit places last and the
+/// Project panel's Video Out Point. It read one frame earlier.
+#[test]
+fn metadata_out_point_is_the_last_frame_kept() {
+    let mut s = demo();
+    let id = s.project.items.values().filter(|i| i.as_media().is_some() && i.has_video()).map(|i| i.id).min().expect("a video clip");
+    s.execute("source.open", json!({"item": id.0})).unwrap();
+    s.execute("markers.markIn", json!({"target": "source", "frame": 24})).unwrap();
+    s.execute("markers.markOut", json!({"target": "source", "frame": 71})).unwrap();
+    let g = s.execute("metadata.get", json!({"item": id.0})).unwrap();
+    let it = s.project.item(id).unwrap();
+    for (field_name, column) in [("In Point", "Video In Point"), ("Out Point", "Video Out Point")] {
+        assert_eq!(field(&g, field_name)["value"], json!(crate::project_panel::cell(&s.project, it, column).0), "{field_name}");
+    }
+    let (_, range) = crate::commands::source_range(&s).unwrap();
+    let rate = it.frame_rate();
+    assert_eq!((rate.frame_at(range.start), rate.frame_at(range.end())), (24, 72), "a Source edit places frames 24 to 71");
+}
+
 #[test]
 fn metadata_targets_follow_the_selection() {
     let mut s = demo();

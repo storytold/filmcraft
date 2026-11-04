@@ -139,12 +139,18 @@ progress and stop it:
   `notifications/progress` `{progressToken: T, progress: <frames done>, total: <frames>, message:
   <job status>}` at most every 100 ms while frames advance. Without a token it sends none.
 - `notifications/cancelled` for the request stops the encode at the next batch (`jobs.cancel`),
-  deletes the partial output (the movie, or the frames and caption sidecar written so far) and sends
-  no response, as the MCP cancellation utility asks.
+  deletes the partial output (the movie, or the frames and caption sidecar written so far, and no
+  other export's files beside them) and sends no response, as the MCP cancellation utility asks.
 - Without `wait` the command returns `{job, path, poll: "jobs.list", cancel: "jobs.cancel"}` at
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
+- An image sequence (PNG, TIFF, DPX, ... stills) never writes the path it is given: `a.png` becomes
+  `a000.png`, `a001.png` and so on. `file.exportMedia`, `export.quick` and the job's `result` then
+  name the first still as `path`, the name `file.import` takes for the sequence, and the two commands
+  add `lastPath`, the last still, and `basePath`, the name the stills are numbered from (a cancelled
+  long export's clean-up removes only the stills numbered from `basePath` with the digits of
+  `lastPath`, up to it). `filmcraft-cli export` prints the first and the last.
 - `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
   strings, empty when none). If the default or explicitly selected In/Out range covers one
   sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
