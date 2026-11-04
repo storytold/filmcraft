@@ -11,8 +11,9 @@ use crate::{
     state::KeyframeRef,
 };
 
+/// Key for the keyframe-selection gesture state in egui's temp store; `begin` resets it when the clip changes.
 fn state_id() -> Id {
-    Id::new("effect-controls-keyframe-selection")
+    Id::unique("effect-controls-keyframe-selection")
 }
 
 #[derive(Clone)]
@@ -102,9 +103,9 @@ fn update(group: &mut Group, points: &[Point], pos: Pos2, shift: bool, playhead:
     }
 }
 
-/// Where a ruler scrub with Shift held lands: on the nearest of `targets` within 8 px, like a keyframe
-/// dragged with Shift (#2441). Otherwise `tick` unchanged.
-pub(crate) fn snap_scrub(tick: Tick, targets: &[Tick], pixels_per_tick: f64) -> Tick {
+/// Where a ruler scrub with Shift held lands: on the nearest of `targets` within 8 px of the pointer time `tick`, like a keyframe
+/// dragged with Shift (#2441). Otherwise `fallback` (the frame-snapped time).
+pub(crate) fn snap_scrub(tick: Tick, targets: &[Tick], pixels_per_tick: f64, fallback: Tick) -> Tick {
     let mut best: Option<(f64, Tick)> = None;
     for target in targets {
         let distance = ((*target - tick).0 as f64 * pixels_per_tick).abs();
@@ -112,7 +113,7 @@ pub(crate) fn snap_scrub(tick: Tick, targets: &[Tick], pixels_per_tick: f64) -> 
             best = Some((distance, *target));
         }
     }
-    best.map_or(tick, |b| b.1)
+    best.map_or(fallback, |b| b.1)
 }
 
 impl Interaction {
@@ -121,6 +122,8 @@ impl Interaction {
         self.points.iter().map(|p| p.time).collect()
     }
 
+    /// Begin keyframe selection for `clip`: reset on a clip change, cancel a gesture on Escape, start a Shift marquee from the existing selection, and keep
+    /// gestures as UI-only previews.
     pub(crate) fn begin(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, clip: u64) -> Self {
         let mut state = ui.data(|d| d.get_temp::<State>(state_id())).unwrap_or_default();
         if state.clip != clip {
@@ -130,7 +133,7 @@ impl Interaction {
         if cancelled {
             state.gesture = None;
         }
-        let background = ui.interact(area, Id::new(("ec-select", clip)), Sense::click_and_drag());
+        let background = ui.interact(area, Id::unique(("ec-select", clip)), Sense::click_and_drag());
         if background.clicked_by(egui::PointerButton::Primary) && !ui.input(|i| i.modifiers.shift) {
             app.ui.keyframe_selection.clear();
         }
@@ -286,10 +289,12 @@ mod tests {
     #[test]
     fn shift_scrub_snaps_to_a_keyframe_within_reach_only() {
         let keys = [Tick(1000), Tick(5000)];
-        assert_eq!(snap_scrub(Tick(1030), &keys, 0.1), Tick(1000));
-        assert_eq!(snap_scrub(Tick(1200), &keys, 0.1), Tick(1200));
-        assert_eq!(snap_scrub(Tick(4950), &keys, 0.1), Tick(5000));
-        assert_eq!(snap_scrub(Tick(3000), &[], 0.1), Tick(3000));
+        assert_eq!(snap_scrub(Tick(1030), &keys, 0.1, Tick(1030)), Tick(1000));
+        assert_eq!(snap_scrub(Tick(1200), &keys, 0.1, Tick(1190)), Tick(1190));
+        assert_eq!(snap_scrub(Tick(4950), &keys, 0.1, Tick(4950)), Tick(5000));
+        assert_eq!(snap_scrub(Tick(3000), &[], 0.1, Tick(2990)), Tick(2990));
+        // the reach is measured from the pointer time, not from the frame-snapped fallback
+        assert_eq!(snap_scrub(Tick(1070), &keys, 0.1, Tick(1100)), Tick(1000));
     }
 
     #[test]

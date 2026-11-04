@@ -4,6 +4,7 @@ use super::*;
 fn computed_window_matches_table_7_33() {
     let w = window();
     for (n, (&a, &b)) in w.iter().zip(tables::WINDOW_TABLE.iter()).enumerate() {
+        let b = b as f32 * 1e-5;
         assert!((a - b).abs() <= 6e-6, "w[{n}] = {a}, table {b}");
     }
     // princen-bradley: w[n]² + w[255-n]²... (the second half mirrors): w[n]² + w[511-n]² = 1

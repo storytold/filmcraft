@@ -9,7 +9,7 @@
 //! - **Geometry.** Point parameters and mask paths are in clip pixels; they are scaled by the
 //!   target / source frame-size ratio so a preset made on 4K media lands in the same place on HD.
 //! - **Intrinsic effects** (Motion, Opacity, Time Remapping) replace the target clip's own instance;
-//!   standard effects are added before the intrinsic ones (render order), like `effects.apply`.
+//!   standard effects are added at the end of the clip's effects, like `effects.apply`.
 //! - **Library.** Built-in presets are authored in code ([`builtin_presets`]); user presets persist
 //!   in `<data dir>/effect-presets.json`. Preset files (export/import) are JSON:
 //!   `{"format": "filmcraft.effect-presets", "version": 1, "presets": [EffectPreset…]}`.
@@ -377,7 +377,7 @@ fn merge_keyframes(new: &mut EffectInstance, old: &EffectInstance) {
 }
 
 /// Put preset effects on a clip: intrinsic ones replace the clip's instance (keeping its keyframes
-/// outside the span the preset animates), others are inserted before the intrinsic effects.
+/// outside the span the preset animates), others are added at the end, like `effects.apply`.
 pub fn put_effects(it: &mut TrackItem, effects: Vec<EffectInstance>) {
     for mut e in effects {
         let intrinsic = e.def().is_some_and(|d| d.intrinsic);
@@ -386,9 +386,7 @@ pub fn put_effects(it: &mut TrackItem, effects: Vec<EffectInstance>) {
             *slot = e;
             continue;
         }
-        let audio = e.def().is_some_and(|d| d.kind == filmcraft_project::EffectKind::Audio);
-        let pos = if audio { it.effects.len() } else { it.effects.iter().position(|x| x.def().is_some_and(|d| d.intrinsic)).unwrap_or(it.effects.len()) };
-        it.effects.insert(pos, e);
+        it.effects.push(e);
     }
 }
 
@@ -567,15 +565,58 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "count": chosen.len()}))
 }
 
+/// Add `incoming` to `library`, each replacing the entry with the same key in place (a file with
+/// many presets used to rescan the growing library once per preset).
+pub(crate) fn merge_by_key<T>(library: &mut Vec<T>, incoming: Vec<T>, key: impl Fn(&T) -> String) {
+    // Drop the library's duplicates of imported keys, keeping the first, so the replacement lands where `find` looks.
+    let imported: std::collections::HashSet<String> = incoming.iter().map(&key).collect();
+    let mut kept = std::collections::HashSet::new();
+    library.retain(|x| {
+        let k = key(x);
+        !imported.contains(&k) || kept.insert(k)
+    });
+    let mut index: std::collections::HashMap<String, usize> = library.iter().enumerate().map(|(i, x)| (key(x), i)).collect();
+    for item in incoming {
+        match index.get(&key(&item)) {
+            Some(&i) => {
+                if let Some(slot) = library.get_mut(i) {
+                    *slot = item;
+                }
+            }
+            None => {
+                index.insert(key(&item), library.len());
+                library.push(item);
+            }
+        }
+    }
+}
+
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("presets.import", "need `path`"))?;
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let presets = parse_file(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let names: Vec<String> = presets.iter().map(|x| x.name.clone()).collect();
-    for pr in presets {
-        s.presets.user.retain(|x| x.name != pr.name);
-        s.presets.user.push(pr);
-    }
+    merge_by_key(&mut s.presets.user, presets, |x| x.name.clone());
     s.presets.persist().map_err(EngineError::Other)?;
     Ok(json!({"imported": names}))
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::merge_by_key;
+
+    #[test]
+    fn merge_replaces_by_key_and_keeps_new_entries_in_order() {
+        let mut lib = vec![("a", 1), ("b", 1)];
+        merge_by_key(&mut lib, vec![("b", 2), ("c", 1), ("c", 2), ("d", 1)], |x| x.0.to_string());
+        assert_eq!(lib, vec![("a", 1), ("b", 2), ("c", 2), ("d", 1)]);
+        // A duplicate already in the library is dropped for an imported key; the first entry is replaced.
+        let mut lib = vec![("a", 1), ("b", 1), ("b", 9)];
+        merge_by_key(&mut lib, vec![("b", 2)], |x| x.0.to_string());
+        assert_eq!(lib, vec![("a", 1), ("b", 2)]);
+        // many distinct names: 200k imports all land
+        let mut lib: Vec<(String, u32)> = Vec::new();
+        merge_by_key(&mut lib, (0..200_000).map(|i| (format!("preset {i}"), i)).collect(), |x| x.0.clone());
+        assert_eq!(lib.len(), 200_000);
+    }
 }
