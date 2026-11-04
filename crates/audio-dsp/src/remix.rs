@@ -23,8 +23,12 @@
 //! | variations | 0 … 100 | 50 | how far from the evenly spaced positions a joint may move to find a better match: ±(1 + 7·v/100) beats |
 //!
 //! The first piece starts at the beginning of the source and the last ends at its end (intro and
-//! outro are kept). The plan length is within half a beat of the target whenever the beat grid
-//! allows it, always within one beat. Everything is deterministic: the same audio, target and
+//! outro are kept). The plan length is always within one beat of the target. A joint prefers to
+//! jump over an even number of beats ([`ODD_JUMP_PENALTY`]): that keeps the position in the bar
+//! (kick on 1 and 3, snare on 2 and 4), and it keeps the music on its own beat when the analysis
+//! reads slow music at double tempo, as it can: the grid is then the eighth notes, and an odd jump
+//! over them moves the music by half a beat. The price is that the length lands up to one beat
+//! (not half a beat) from the target. Everything is deterministic: the same audio, target and
 //! parameters give the same plan.
 //!
 //! Positions are in samples of the analysed signal (`i64`).
@@ -35,6 +39,10 @@ use crate::fft::Fft;
 pub const CONTEXT: usize = 4;
 /// Shortest piece, in beats (no stutter edits).
 pub const MIN_PIECE_BEATS: usize = 4;
+/// What a jump over an odd number of beat pulses costs in the similarity (0 … 1) it is ranked by.
+pub const ODD_JUMP_PENALTY: f32 = 0.3;
+/// What missing the target by a whole beat costs, for the last joint, in the same units.
+pub const LANDING_WEIGHT: f32 = 0.1;
 /// Crossfade at each joint (seconds).
 pub const XFADE_S: f64 = 0.02;
 /// Long enough for a complete music cue while bounding the audio decoded and analysed by Remix.
@@ -561,7 +569,7 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
         let span = (src_left - out_left) / left; // source skipped (+) or replayed (−) per joint
         let ni = closest(src + piece);
         let last = jn + 1 == k;
-        let mut best: Option<(f32, i64, usize, usize)> = None;
+        let mut best: Option<(f32, usize, usize)> = None;
         let lo_i = ni.saturating_sub(window);
         for i in lo_i..=(ni + window).min(m - 1) {
             if b[i] - src < min_piece {
@@ -592,22 +600,24 @@ pub fn plan(a: &Analysis, target: i64, params: Params) -> Result<Plan, RemixErro
                         continue;
                     }
                 }
-                let score = a.jump_score(i, j);
-                // final joint: land as close to the target as possible, then by similarity
-                let key_err = if last { err.abs() / half.max(1) } else { 0 };
+                // Jumps of an even number of pulses keep the position in the bar (kick on 1 and 3,
+                // snare on 2 and 4), and they stay on a beat when the grid is the eighth notes of
+                // slow music (tempo read at double). The last joint also lands close to the target.
+                let pulses = ((b[j] - b[i]) as f64 / a.period).round() as i64;
+                let mut score = a.jump_score(i, j) - if pulses % 2 != 0 { ODD_JUMP_PENALTY } else { 0.0 };
+                if last {
+                    score -= LANDING_WEIGHT * err.abs() as f32 / (2 * half.max(1)) as f32;
+                }
                 let better = match best {
                     None => true,
-                    Some((s, e, bi, bj)) => {
-                        let bad = key_err.cmp(&e);
-                        bad.is_lt() || (bad.is_eq() && (score > s || (score == s && (i, j) < (bi, bj))))
-                    }
+                    Some((s, bi, bj)) => score > s || (score == s && (i, j) < (bi, bj)),
                 };
                 if better {
-                    best = Some((score, key_err, i, j));
+                    best = Some((score, i, j));
                 }
             }
         }
-        let Some((_, _, i, j)) = best else {
+        let Some((_, i, j)) = best else {
             return Err(RemixError::TargetTooShort);
         };
         pieces.push(Piece { src, len: b[i] - src });
@@ -768,6 +778,44 @@ mod tests {
         let refs: Vec<&[f32]> = m.iter().map(Vec::as_slice).collect();
         let a = analyze(&refs, SR).expect("analysis");
         (m, truth, a)
+    }
+
+    /// Joints of plans to 7 targets from 0.45x to 2x the source, 5 Segments settings each, that move
+    /// the music by about half a true beat (`bpm` is the real tempo), out of all of them.
+    fn half_beat_joints(bpm: f64, sr: u32) -> (usize, usize, f64) {
+        let (m, _) = test_music(sr, bpm, 24, 7);
+        let refs: Vec<&[f32]> = m.iter().map(Vec::as_slice).collect();
+        let a = analyze(&refs, sr).expect("analysis");
+        let true_beat = sr as f64 * 60.0 / bpm;
+        let (mut joints, mut bad, mut worst) = (0, 0, 0f64);
+        for frac in [0.45, 0.6, 0.8, 1.2, 1.6, 2.0] {
+            for segments in [0.0, 25.0, 50.0, 75.0, 100.0] {
+                let target = (a.len as f64 * frac) as i64;
+                let Ok(p) = plan(&a, target, Params { segments, variations: 50.0 }) else { continue };
+                worst = worst.max((p.len() - target).abs() as f64 / a.period);
+                for (out, inn) in p.cuts() {
+                    joints += 1;
+                    let d = (inn - out) as f64 / true_beat;
+                    if (d - d.round()).abs() > 0.2 {
+                        bad += 1;
+                    }
+                }
+            }
+        }
+        (bad, joints, worst)
+    }
+
+    /// #4142: slow music is read at double tempo (the grid is its eighth notes). A joint that jumps
+    /// an odd number of those pulses moves the music by half a beat against its own pulse.
+    #[test]
+    fn slow_music_read_at_double_tempo_is_not_cut_off_the_beat() {
+        for (bpm, sr) in [(60.0, 44_100u32), (66.0, 44_100), (70.0, 44_100), (80.0, 44_100), (90.0, 48_000), (90.0, 44_100), (100.0, 44_100), (120.0, 44_100)] {
+            let (bad, joints, worst) = half_beat_joints(bpm, sr);
+            eprintln!("{bpm} BPM at {sr} Hz: {bad} of {joints} joints off the beat, worst length error {worst:.2} beats");
+            assert!(joints > 0);
+            assert_eq!(bad, 0, "{bpm} BPM at {sr} Hz: {bad} of {joints} joints move the music by half a beat");
+            assert!(worst <= 1.0, "{bpm} BPM at {sr} Hz: a plan misses its target by {worst:.2} beats");
+        }
     }
 
     #[test]
