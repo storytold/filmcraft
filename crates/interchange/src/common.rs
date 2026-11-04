@@ -866,7 +866,7 @@ mod tests {
         assert_eq!(rate_from_timebase(30, true), FrameRate::FPS_29_97);
         assert_eq!(rate_from_timebase(60, true), FrameRate::FPS_59_94);
         assert_eq!(rate_from_timebase(25, false), FrameRate::FPS_25);
-        assert_eq!(rate_from_timebase(i64::MAX, true), FrameRate::new(i64::MAX, 1001));
+        assert_eq!(rate_from_timebase(i64::MAX, true), FrameRate::new(MAX_RATE * 1000, 1001));
         assert_eq!(rate_from_f64(24000.0 / 1001.0), FrameRate::FPS_23_976);
         assert_eq!(rate_from_f64(23.976), FrameRate::FPS_23_976);
         assert_eq!(rate_from_f64(48000.0), FrameRate::new(48000, 1));
