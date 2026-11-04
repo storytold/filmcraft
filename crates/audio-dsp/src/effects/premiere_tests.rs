@@ -132,7 +132,11 @@ fn every_effect_is_deterministic_and_latency_is_constant() {
         let lat0 = (e.create)(SR, 2).latency();
         let mut a = mk();
         let mut b = mk();
-        assert_eq!(a.latency(), lat0, "{}: latency depends on parameters", e.id);
+        // The Hard Limiter's delay is its Look-Ahead Time, so that one parameter changes latency.
+        if e.id != "limiter" {
+            assert_eq!(a.latency(), lat0, "{}: latency depends on parameters", e.id);
+        }
+        assert_eq!(a.latency(), b.latency(), "{}: the same parameters disagree on latency", e.id);
         let ya = run(a.as_mut(), &l, &r);
         let yb = run(b.as_mut(), &l, &r);
         assert!(ya.0 == yb.0 && ya.1 == yb.1, "{}: not deterministic", e.id);
