@@ -575,13 +575,17 @@ fn build_state(plan: &Plan, sr: u32) -> Option<GraphState> {
             return None;
         }
     }
+    // the whole compensation is checked before any ring is allocated, so a refused graph costs nothing
+    let delay_of = |strips: &[StripState], r: &RouteSpec| strips[r.target].in_lat - tap_lat(&strips[r.src], r.tap);
     let mut compensation = 0usize;
     for r in &plan.routes {
-        let d = strips[r.target].in_lat - tap_lat(&strips[r.src], r.tap);
-        compensation = compensation.saturating_add(d.saturating_mul(plan.strips[r.target].width));
+        compensation = compensation.saturating_add(delay_of(&strips, r).saturating_mul(plan.strips[r.target].width));
         if compensation > MAX_COMPENSATION_SAMPLES {
             return None;
         }
+    }
+    for r in &plan.routes {
+        let d = delay_of(&strips, r);
         strips[r.src].delays.push(DelayLine::new(d, plan.strips[r.target].width));
     }
     let m = strips.len() - 1;
@@ -889,7 +893,8 @@ pub(crate) fn mix_graph_at(
     let (mut st, skip) = match taken {
         Some(st) => (st, 0usize),
         None => {
-            let Some(st) = build_state(&plan, sr) else { return AudioBuffer::silence(sr, 2, frames) };
+            // refused: silence in the Mix's own width (6 channels for a 5.1 Mix)
+            let Some(st) = build_state(&plan, sr) else { return AudioBuffer::silence(sr, plan.strips.last().map_or(2, |s| s.width), frames) };
             let pre = plan.preroll(Tick::from_units(start, sr as i64), sr).max(st.latency);
             (st, pre)
         }
