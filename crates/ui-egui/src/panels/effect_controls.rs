@@ -1381,7 +1381,7 @@ pub(crate) fn graph_rows(
     let y_of = |v: f64| area.max.y - ((v - lo) / (hi - lo)) as f32 * area.height();
     let v_of = |y: f32| lo + ((area.max.y - y) / area.height()) as f64 * (hi - lo);
     // The plot used to be hover-only, so a double-click never reached the lane (#1277).
-    let plot = ui.interact(area, egui::Id::new(("kfg-plot", clip.0, idx, mask, pd.id)), Sense::click());
+    let plot = ui.interact(area, egui::Id::unique(("kfg-plot", clip.0, idx, mask, pd.id)), Sense::click());
     if plot.double_clicked()
         && let Some(pos) = plot.interact_pointer_pos()
     {
