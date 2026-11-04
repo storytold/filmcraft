@@ -53,7 +53,7 @@ mod run;
 mod stats;
 mod still_encode;
 
-pub use convert::{rgba_to_yuv420_8, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10};
+pub use convert::{Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv420_10, rgbf_to_yuv422_10, to_yuv444_10};
 pub(crate) use encoders::FlacAudio;
 #[cfg(test)]
 use encoders::{aac_factory, h264_factory};

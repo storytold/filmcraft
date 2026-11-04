@@ -1,5 +1,8 @@
 use super::track::{AudioChannels, Marker, Track, TrackItem, TrackKind};
-use super::*;
+use super::{
+    Caption, CaptionTrack, ClipId, Deserialize, EffectInstance, FrameRate, MergedClip, MixerStrip, MulticamSource, Serialize, TICKS_PER_SECOND, Tick,
+    TimeRange, TrackId,
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SequenceSettings {

@@ -1,7 +1,8 @@
+use super::HexColor;
 use super::label::Label;
 use super::sequence::{Sequence, SplitMarks, checked_par};
 use super::track::{AudioChannels, Marker};
-use super::*;
+use super::{BTreeMap, BinId, Deserialize, FrameRate, Generator, ItemId, MediaInfo, Serialize, TICKS_PER_SECOND, Tick, TimeRange};
 
 /// Where an item's pixels/samples come from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -109,9 +110,8 @@ impl MediaClip {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::large_enum_variant)]
 pub enum ItemKind {
-    Media(MediaClip),
+    Media(Box<MediaClip>),
     /// Shared so project snapshots used by undo and background readers do not deep-copy every
     /// timeline. Mutators detach with `Arc::make_mut`.
     Sequence(std::sync::Arc<Sequence>),
@@ -145,6 +145,8 @@ pub struct ProjectItem {
     pub id: ItemId,
     pub name: String,
     pub label: Label,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_label_color: Option<HexColor>,
     pub kind: ItemKind,
     /// Free-form metadata (Description, Scene, Shot, Log Note…).
     #[serde(default)]

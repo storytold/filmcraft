@@ -1,4 +1,4 @@
-use super::*;
+use super::Ordering;
 
 /// Hardware encoder counters (`perf.stats` `export.hardware`): pictures encoded by hardware
 /// encoders, encoders created, and requests a hardware encoder declined (the software encoder

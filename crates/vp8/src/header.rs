@@ -141,6 +141,110 @@ pub struct FrameHeader {
     pub prob_golden: u8,
 }
 
+/// segmentation_header (9.3).
+fn read_segmentation(d: &mut BoolDecoder, seg: &mut Segmentation) {
+    seg.enabled = d.read_flag();
+    seg.update_map = false;
+    if !seg.enabled {
+        return;
+    }
+    seg.update_map = d.read_flag();
+    let update_data = d.read_flag();
+    if update_data {
+        seg.absolute = d.read_flag();
+        for q in &mut seg.quant {
+            *q = d.read_optional_signed(7) as i8;
+        }
+        for l in &mut seg.lf_level {
+            *l = d.read_optional_signed(6) as i8;
+        }
+    }
+    if seg.update_map {
+        for p in &mut seg.tree_probs {
+            *p = if d.read_flag() { d.read_literal(8) as u8 } else { crate::tables::DEFAULT_SEGMENT_PROB };
+        }
+    }
+}
+
+/// Loop filter delta adjustments (9.6).
+fn read_lf_deltas(d: &mut BoolDecoder, lf: &mut LfDeltas) {
+    lf.enabled = d.read_flag();
+    if lf.enabled && d.read_flag() {
+        for v in lf.ref_deltas.iter_mut().chain(lf.mode_deltas.iter_mut()) {
+            if d.read_flag() {
+                *v = d.read_signed(6) as i8;
+            }
+        }
+    }
+}
+
+/// Reference frame refresh / copy / sign bias flags (9.7, 9.8) and the entropy refresh flag.
+fn read_reference_updates(d: &mut BoolDecoder, key_frame: bool, h: &mut FrameHeader) {
+    if key_frame {
+        h.refresh_golden = true;
+        h.refresh_altref = true;
+        h.refresh_entropy = d.read_flag();
+        h.refresh_last = true;
+        return;
+    }
+    h.refresh_golden = d.read_flag();
+    h.refresh_altref = d.read_flag();
+    if !h.refresh_golden {
+        h.copy_to_golden = d.read_literal(2) as u8;
+    }
+    if !h.refresh_altref {
+        h.copy_to_altref = d.read_literal(2) as u8;
+    }
+    h.sign_bias_golden = d.read_flag();
+    h.sign_bias_altref = d.read_flag();
+    h.refresh_entropy = d.read_flag();
+    h.refresh_last = d.read_flag();
+}
+
+/// token_prob_update (13.4).
+fn read_token_prob_updates(d: &mut BoolDecoder, ctx: &mut EntropyContext) {
+    let mut i = 0;
+    for plane in ctx.coeff.iter_mut() {
+        for band in plane.iter_mut() {
+            for c in band.iter_mut() {
+                for p in c.iter_mut() {
+                    if d.read_bool(crate::spec_tables::COEFF_UPDATE_PROBS[i]) {
+                        *p = d.read_literal(8) as u8;
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+}
+
+/// Inter frame probabilities: intra/last/golden, mode probabilities and mv_prob_update (17.2).
+fn read_inter_probs(d: &mut BoolDecoder, h: &mut FrameHeader, ctx: &mut EntropyContext) {
+    h.prob_intra = d.read_literal(8) as u8;
+    h.prob_last = d.read_literal(8) as u8;
+    h.prob_golden = d.read_literal(8) as u8;
+    if d.read_flag() {
+        for p in &mut ctx.ymode {
+            *p = d.read_literal(8) as u8;
+        }
+    }
+    if d.read_flag() {
+        for p in &mut ctx.uv_mode {
+            *p = d.read_literal(8) as u8;
+        }
+    }
+    let mut i = 0;
+    for comp in ctx.mv.iter_mut() {
+        for p in comp.iter_mut() {
+            if d.read_bool(crate::spec_tables::MV_UPDATE_PROBS[i]) {
+                let x = d.read_literal(7) as u8;
+                *p = if x != 0 { x << 1 } else { 1 };
+            }
+            i += 1;
+        }
+    }
+}
+
 /// Read the frame header from the first partition, updating the persistent state.
 /// `saved` receives the entropy context to restore after the frame when
 /// `refresh_entropy_probs` is 0.
@@ -157,42 +261,11 @@ pub fn read_header(
         h.color_space = d.read_literal(1) as u8;
         h.clamping_type = d.read_literal(1) as u8;
     }
-    seg.enabled = d.read_flag();
-    seg.update_map = false;
-    if seg.enabled {
-        seg.update_map = d.read_flag();
-        let update_data = d.read_flag();
-        if update_data {
-            seg.absolute = d.read_flag();
-            for q in &mut seg.quant {
-                *q = d.read_optional_signed(7) as i8;
-            }
-            for l in &mut seg.lf_level {
-                *l = d.read_optional_signed(6) as i8;
-            }
-        }
-        if seg.update_map {
-            for p in &mut seg.tree_probs {
-                *p = if d.read_flag() { d.read_literal(8) as u8 } else { crate::tables::DEFAULT_SEGMENT_PROB };
-            }
-        }
-    }
+    read_segmentation(d, seg);
     h.filter_type = d.read_literal(1) as u8;
     h.filter_level = d.read_literal(6) as u8;
     h.sharpness = d.read_literal(3) as u8;
-    lf.enabled = d.read_flag();
-    if lf.enabled && d.read_flag() {
-        for v in &mut lf.ref_deltas {
-            if d.read_flag() {
-                *v = d.read_signed(6) as i8;
-            }
-        }
-        for v in &mut lf.mode_deltas {
-            if d.read_flag() {
-                *v = d.read_signed(6) as i8;
-            }
-        }
-    }
+    read_lf_deltas(d, lf);
     h.partitions = 1 << d.read_literal(2);
     h.quant = QuantIndices {
         y_ac: d.read_literal(7) as i32,
@@ -202,67 +275,13 @@ pub fn read_header(
         uv_dc_delta: d.read_optional_signed(4),
         uv_ac_delta: d.read_optional_signed(4),
     };
-    if key_frame {
-        h.refresh_golden = true;
-        h.refresh_altref = true;
-        h.refresh_entropy = d.read_flag();
-        h.refresh_last = true;
-    } else {
-        h.refresh_golden = d.read_flag();
-        h.refresh_altref = d.read_flag();
-        if !h.refresh_golden {
-            h.copy_to_golden = d.read_literal(2) as u8;
-        }
-        if !h.refresh_altref {
-            h.copy_to_altref = d.read_literal(2) as u8;
-        }
-        h.sign_bias_golden = d.read_flag();
-        h.sign_bias_altref = d.read_flag();
-        h.refresh_entropy = d.read_flag();
-        h.refresh_last = d.read_flag();
-    }
+    read_reference_updates(d, key_frame, &mut h);
     // The probabilities in effect before this frame's updates come back after it.
     *saved = if h.refresh_entropy { None } else { Some(ctx.clone()) };
-    // token_prob_update (13.4)
-    let mut i = 0;
-    for plane in ctx.coeff.iter_mut() {
-        for band in plane.iter_mut() {
-            for c in band.iter_mut() {
-                for p in c.iter_mut() {
-                    if d.read_bool(crate::spec_tables::COEFF_UPDATE_PROBS[i]) {
-                        *p = d.read_literal(8) as u8;
-                    }
-                    i += 1;
-                }
-            }
-        }
-    }
+    read_token_prob_updates(d, ctx);
     h.skip_prob = if d.read_flag() { Some(d.read_literal(8) as u8) } else { None };
     if !key_frame {
-        h.prob_intra = d.read_literal(8) as u8;
-        h.prob_last = d.read_literal(8) as u8;
-        h.prob_golden = d.read_literal(8) as u8;
-        if d.read_flag() {
-            for p in &mut ctx.ymode {
-                *p = d.read_literal(8) as u8;
-            }
-        }
-        if d.read_flag() {
-            for p in &mut ctx.uv_mode {
-                *p = d.read_literal(8) as u8;
-            }
-        }
-        // mv_prob_update (17.2)
-        let mut i = 0;
-        for comp in ctx.mv.iter_mut() {
-            for p in comp.iter_mut() {
-                if d.read_bool(crate::spec_tables::MV_UPDATE_PROBS[i]) {
-                    let x = d.read_literal(7) as u8;
-                    *p = if x != 0 { x << 1 } else { 1 };
-                }
-                i += 1;
-            }
-        }
+        read_inter_probs(d, &mut h, ctx);
     }
     h
 }

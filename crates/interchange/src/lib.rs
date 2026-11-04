@@ -48,6 +48,47 @@ use serde::{Deserialize, Serialize};
 pub use common::{file_url_to_path, path_to_file_url, resolve_path};
 pub use comp::ExtractedMedia;
 
+/// Warn once when an export cannot carry exact marker metadata, including nested/source markers.
+fn warn_marker_metadata_loss(project: &Project, sequence: ItemId, report: &mut Report) {
+    if !project.custom_colors.is_empty() {
+        report.warn("This format does not preserve the saved custom-color palette or its swatch names. Use a FilmCraft project or OTIO to retain the palette.");
+    }
+    let mut pending = std::collections::BTreeSet::from([sequence]);
+    let mut seen = std::collections::BTreeSet::new();
+    let extra = |m: &filmcraft_project::Marker| m.custom_color.is_some() || !m.author.is_empty() || !m.url.is_empty();
+    while let Some(id) = pending.pop_first() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(item) = project.item(id) else { continue };
+        let has_extra = item.custom_label_color.is_some()
+            || match &item.kind {
+                ItemKind::Sequence(seq) => {
+                    let mut found = seq.markers.iter().any(extra);
+                    for clip in seq.all_tracks().flat_map(|track| &track.items) {
+                        found |= clip.markers.iter().any(extra) || clip.custom_label_color.is_some();
+                        if !seen.contains(&clip.item) {
+                            pending.insert(clip.item);
+                        }
+                    }
+                    found
+                }
+                ItemKind::Media(media) => media.markers.iter().any(extra),
+                ItemKind::Subclip { parent, .. } => {
+                    if !seen.contains(parent) {
+                        pending.insert(*parent);
+                    }
+                    false
+                }
+                _ => false,
+            };
+        if has_extra {
+            report.warn("This format does not preserve marker authors or exact custom colors (including clip labels), or marker URLs. Use a FilmCraft project or OTIO for those properties.");
+            return;
+        }
+    }
+}
+
 /// An interchange format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Format {
@@ -275,7 +316,44 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         Format::Otio => otio::import(&text, opts, &mut report)?,
         Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
     };
+    let mut imported = imported;
+    bound_start_timecodes(&mut imported, &mut report);
     Ok((imported, report))
+}
+
+/// Start timecodes beyond this many frames (about 100 hours at the highest accepted rate) are not
+/// timecodes: a value near `i64::MAX` made the export overflow adding frame numbers to it.
+const MAX_START_TIMECODE: u64 = 360_000_000_000;
+
+/// Reset what a document carries beyond what the frame arithmetic can hold, and say so: frame rates
+/// above `common::MAX_RATE` per second (an FCPXML `frameDuration` of `1/9223372036854775807s` made
+/// `frames_round` overflow on export) and start timecodes beyond `MAX_START_TIMECODE` frames. One pass
+/// after every import, so no format can let such a number through.
+pub(crate) fn bound_start_timecodes(imported: &mut Imported, report: &mut Report) {
+    for item in imported.project.items.values_mut() {
+        let name = item.name.clone();
+        if let Some(seq) = item.as_sequence_mut() {
+            if !common::plausible_rate(seq.settings.frame_rate) {
+                report.warn(format!("sequence \"{name}\" has an implausible frame rate ({}); the default was used", seq.settings.frame_rate));
+                seq.settings.frame_rate = FrameRate::default();
+            }
+            if seq.start_timecode.unsigned_abs() > MAX_START_TIMECODE {
+                report.warn(format!("sequence \"{name}\" has an out-of-range start timecode ({} frames); it starts at 0", seq.start_timecode));
+                seq.start_timecode = 0;
+            }
+        } else if let Some(media) = item.as_media_mut() {
+            if let Some(v) = media.info.video.as_mut()
+                && !common::plausible_rate(v.frame_rate)
+            {
+                report.warn(format!("media \"{name}\" has an implausible frame rate ({}); the default was used", v.frame_rate));
+                v.frame_rate = FrameRate::default();
+            }
+            if media.info.start_timecode.is_some_and(|tc| tc.unsigned_abs() > MAX_START_TIMECODE) {
+                report.warn(format!("media \"{name}\" has an out-of-range start timecode; it was ignored"));
+                media.info.start_timecode = None;
+            }
+        }
+    }
 }
 
 fn decode_text(bytes: &[u8]) -> String {
@@ -425,6 +503,17 @@ pub fn export_edl_per_track(project: &Project, sequence: ItemId, opts: &ExportOp
 /// top-level sequences.
 pub fn merge_into(target: &mut Project, fragment: Imported, bin: Option<BinId>) -> Vec<ItemId> {
     let Imported { project: frag, sequences } = fragment;
+    for color in &frag.custom_colors {
+        if !target.custom_colors.contains(color) {
+            if target.custom_colors.len() >= 64 {
+                continue;
+            }
+            target.custom_colors.push(*color);
+        }
+        if let Some(name) = frag.custom_color_names.get(color) {
+            target.custom_color_names.entry(*color).or_insert_with(|| name.clone());
+        }
+    }
     let mut items: HashMap<ItemId, ItemId> = HashMap::new();
     for id in frag.items.keys() {
         items.insert(*id, ItemId(target.alloc_id()));

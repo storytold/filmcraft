@@ -43,8 +43,10 @@ impl DelayLine {
         let d = d.clamp(0.0, self.max_delay());
         let di = d.floor();
         let frac = d - di;
-        let i0 = (self.w + len - 1 - di as usize) % len;
-        let i1 = (i0 + len - 1) % len;
+        // `w < len` and `di <= len - 3`, so one conditional subtract wraps the index.
+        let i0 = self.w + len - 1 - di as usize;
+        let i0 = if i0 >= len { i0 - len } else { i0 };
+        let i1 = if i0 == 0 { len - 1 } else { i0 - 1 };
         self.buf[i0] + (self.buf[i1] - self.buf[i0]) * frac
     }
     /// Integer read (`d` samples ago, 0 = newest).
@@ -76,7 +78,7 @@ impl Lfo {
     /// Current phase plus `offset` (cycles), wrapped to 0..1.
     #[inline]
     pub(crate) fn phase(&self, offset: f64) -> f64 {
-        (self.phase + offset).rem_euclid(1.0)
+        wrap_phase(self.phase + offset)
     }
     #[inline]
     pub(crate) fn advance(&mut self, hz: f32, sr: f32) {
@@ -84,6 +86,18 @@ impl Lfo {
         if self.phase >= 1.0 {
             self.phase -= self.phase.floor();
         }
+    }
+}
+
+/// `p.rem_euclid(1.0)`, without the `fmod` for phase sums in 0..2 (`p - 1.0` is exact there).
+#[inline]
+pub(crate) fn wrap_phase(p: f64) -> f64 {
+    if (0.0..1.0).contains(&p) {
+        p
+    } else if (1.0..2.0).contains(&p) {
+        p - 1.0
+    } else {
+        p.rem_euclid(1.0)
     }
 }
 
@@ -226,6 +240,43 @@ mod tests {
         assert_eq!(d.read(0.0), 4.0);
         assert_eq!(d.tap(2), 2.0);
         assert!((d.read(1.5) - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn delay_read_matches_modulo_indexing() {
+        let reference = |line: &DelayLine, d: f32| {
+            let len = line.buf.len();
+            let d = d.clamp(0.0, line.max_delay());
+            let di = d.floor();
+            let frac = d - di;
+            let i0 = (line.w + len - 1 - di as usize) % len;
+            let i1 = (i0 + len - 1) % len;
+            line.buf[i0] + (line.buf[i1] - line.buf[i0]) * frac
+        };
+        for max in [0, 1, 2, 7] {
+            let mut line = DelayLine::new(max);
+            for k in 0..3 * (max + 3) {
+                line.push(k as f32 * 0.37 - 1.0);
+                for d in (-8..=4 * max as i32 + 12).map(|i| i as f32 * 0.25).chain([f32::NAN, f32::INFINITY, -f32::INFINITY, 1e30]) {
+                    assert_eq!(line.read(d).to_bits(), reference(&line, d).to_bits(), "max {max} w {} d {d}", line.w);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wrap_phase_matches_rem_euclid() {
+        let edges = [0.0, -0.0, 1.0, 2.0, 3.0, -1.0, 0.5, 1.5, 1e300, f64::MIN_POSITIVE, f64::INFINITY, f64::NEG_INFINITY, f64::NAN];
+        let near = edges.iter().flat_map(|&p: &f64| [p, f64::from_bits(p.to_bits().wrapping_add(1)), f64::from_bits(p.to_bits().wrapping_sub(1))]);
+        let mut r = Prng::new(7);
+        let sums = (0..100_000).map(|_| {
+            let mut lfo = Lfo::default();
+            lfo.advance((r.uniform() + 1.0) * 24000.0, 48000.0);
+            lfo.phase + (r.uniform() as f64 + 1.0) * 1.5
+        });
+        for p in near.chain(sums) {
+            assert_eq!(wrap_phase(p).to_bits(), p.rem_euclid(1.0).to_bits(), "{p:e}");
+        }
     }
 
     #[test]

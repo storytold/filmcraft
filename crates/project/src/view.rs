@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, Deserialize, ItemId, Serialize, TICKS_PER_SECOND, Tick};
 
 /// How a sequence is shown in the Timeline panel: its zoom, scroll position and track heights.
 /// Each open sequence keeps its own (as Premiere's sequence tabs do).

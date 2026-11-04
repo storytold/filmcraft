@@ -1,6 +1,6 @@
 use super::canvas::{anchor_screen, screen_scale, sp, unscale};
 use super::text_edit::text_of;
-use super::*;
+use super::{ClipId, LayerContent, LayerView, Pos2, Value, json};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum DragKind {

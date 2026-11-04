@@ -1,4 +1,4 @@
-use super::*;
+use super::{HashMap, Mutex};
 
 /// `--control-input-only`: drop the window system's input. Screenshot results arrive through
 /// `ScreenshotCallback`, not raw input; all viewport lifecycle and geometry data stay.
@@ -149,8 +149,11 @@ mod mac_ctrl_click_tests {
 #[cfg(test)]
 mod native_window_input_tests {
     use super::*;
+    use serde_json::json;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
+    use crate::{FilmcraftApp, PanelKind};
     use craft_ui::docking::WindowFiles;
     use egui_kittest::Harness;
     use filmcraft_engine::Session;

@@ -53,7 +53,7 @@ fn generated_fixture(secs: u32) -> Option<PathBuf> {
         proxy: None,
         identity: None,
     };
-    let item = p.add_item("scene", Label::Iris, ItemKind::Media(clip), None);
+    let item = p.add_item("scene", Label::Iris, ItemKind::Media(Box::new(clip)), None);
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 1, None);
     let range = TimeRange::new(Tick::ZERO, dur);
     let mut v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, range, rate)?;

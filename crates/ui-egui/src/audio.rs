@@ -1,4 +1,4 @@
-use super::*;
+use super::{Session, panels};
 
 /// How long (s) the audio clock may stand still during playback before the wall clock takes over.
 /// An output stream can open and then never call back (ALSA with a busy or misconfigured device,
@@ -52,7 +52,7 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
         use filmcraft_audio_dsp::channels::Layout;
         let layout = if ch >= 6 && seq.settings.audio_master == filmcraft_project::AudioChannels::Surround51 { Layout::Surround51 } else { Layout::Stereo };
         let mix = if seq_sr == sr {
-            previews.mix_layout(&project, seq_id, cursor, n, &provider, layout, mixdown)
+            previews.mix_layout(&project, seq_id, cursor, n, &provider, filmcraft_engine::previews::MixOutput { layout, mixdown })
         } else {
             // Mix at the sequence rate as one continuous stream, interpolated to the device rate
             // (started afresh when the rate or the channel layout changes while playing).
@@ -64,7 +64,9 @@ pub fn playback_mix(session: &Session, seq_id: filmcraft_project::ItemId, sr: u3
                 buf.fill(0.0);
                 return;
             };
-            let channels = r.process(cursor, n, |s0, m| previews.mix_layout(&project, seq_id, s0, m, &provider, layout, mixdown).channels);
+            let channels = r.process(cursor, n, |s0, m| {
+                previews.mix_layout(&project, seq_id, s0, m, &provider, filmcraft_engine::previews::MixOutput { layout, mixdown }).channels
+            });
             filmcraft_frame::AudioBuffer { sample_rate: sr, channels }
         };
         if layout == Layout::Surround51 {

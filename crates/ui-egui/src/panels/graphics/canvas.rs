@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    Affine, ClipId, FilmcraftApp, ItemKind, LayerView, Pos2, Rect, Vec2, eval_layer, layer_indices, layer_local_bounds, layer_matrix, pos2, selected_graphic,
+};
 
 pub(super) fn sp(a: &Affine, x: f32, y: f32) -> Pos2 {
     let v = a.apply(Vec2::new(x as f64, y as f64));

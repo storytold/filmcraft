@@ -1,8 +1,9 @@
-use super::convert::{rgba_to_yuv420_8, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv422_10, to_yuv444_10};
+use super::convert::{Matrix, Planes444, rgba_to_yuv420_8, rgba_to_yuv422_10, rgbf_to_yuv420_8, rgbf_to_yuv422_10, to_yuv444_10};
 use super::format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PrepareAhead, VideoEncoder};
 use super::stats::{Stage, timed};
-use super::*;
+use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat};
+use std::sync::{Arc, Mutex, PoisonError};
 
 struct MjpegEncoder {
     w: u16,
@@ -152,11 +153,11 @@ impl VideoEncoder for ProResEncoder {
         timed(Stage::Convert, || match (chroma, f.hdr) {
             (filmcraft_prores::ChromaFormat::Yuv444, hdr) => {
                 let (kr, kb) = if hdr.is_some() { self.signal.kr_kb() } else { (0.2126, 0.0722) };
-                to_yuv444_10(f.rgba, hdr, w, h, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr, fr.alpha.as_deref_mut())
+                to_yuv444_10(f.rgba, hdr, w, h, Matrix::new(kr, kb), Planes444 { y: &mut fr.y, cb: &mut fr.cb, cr: &mut fr.cr, alpha: fr.alpha.as_deref_mut() })
             }
             (_, Some(rgb)) => {
                 let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv422_10(rgb, w, h, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
+                rgbf_to_yuv422_10(rgb, w, h, Matrix::new(kr, kb), &mut fr.y, &mut fr.cb, &mut fr.cr)
             }
             (_, None) => rgba_to_yuv422_10(f.rgba, w, h, &mut fr.y, &mut fr.cb, &mut fr.cr),
         });
@@ -230,7 +231,7 @@ impl VideoEncoder for DnxEncoder {
         match f.hdr {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv422_10(rgb, f.width as usize, f.height as usize, kr, kb, &mut fr.y, &mut fr.cb, &mut fr.cr)
+                rgbf_to_yuv422_10(rgb, f.width as usize, f.height as usize, Matrix::new(kr, kb), &mut fr.y, &mut fr.cb, &mut fr.cr)
             }
             None => rgba_to_yuv422_10(f.rgba, f.width as usize, f.height as usize, &mut fr.y, &mut fr.cb, &mut fr.cr),
         }
@@ -298,7 +299,7 @@ impl VideoEncoder for ApvEncoder {
         match f.hdr {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv422_10(rgb, w, h, kr, kb, &mut y422, &mut cb422, &mut cr422);
+                rgbf_to_yuv422_10(rgb, w, h, Matrix::new(kr, kb), &mut y422, &mut cb422, &mut cr422);
             }
             None => rgba_to_yuv422_10(f.rgba, w, h, &mut y422, &mut cb422, &mut cr422),
         }
@@ -370,7 +371,7 @@ fn h264_input(f: &EncoderFrame, signal: ColorSignal, y: &mut Vec<u8>, u: &mut Ve
     match f.hdr {
         Some(rgb) => {
             let (kr, kb) = signal.kr_kb();
-            rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, kr, kb, y, u, v)
+            rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, Matrix::new(kr, kb), y, u, v)
         }
         None => rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, y, u, v),
     }

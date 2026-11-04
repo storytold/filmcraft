@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, Deserialize, Label, Path, PathBuf, Serialize, Session};
 
 /// One editable label colour.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Deserialize, Serialize, TICKS_PER_SECOND, Tick};
 
 /// Project-level settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

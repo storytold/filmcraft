@@ -1,6 +1,6 @@
 use super::item::{ItemKind, MediaClip, ProjectItem};
 use super::sequence::{conformed_size, sane_par};
-use super::*;
+use super::{BTreeMap, ClipId, EffectInstance, ItemId, ParamValue, Project, TimeRange, Vec2, effect};
 
 /// Resolve NaN "auto" point defaults (frame centre / source centre) in an effect instance.
 pub fn resolve_auto_points(e: &mut EffectInstance, frame: (u32, u32), source: (u32, u32)) {

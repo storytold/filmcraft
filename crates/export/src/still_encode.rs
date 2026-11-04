@@ -1,5 +1,5 @@
 use super::format::{ExportSettings, Format};
-use super::*;
+use super::{ExportError, ExrCompression, Result, raster};
 
 /// Encode straight sRGB RGBA8 pixels as a PNG file (thumbnails, previews).
 pub fn encode_png(rgba: Vec<u8>, w: u32, h: u32) -> Result<Vec<u8>> {

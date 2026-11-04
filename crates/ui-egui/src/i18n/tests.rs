@@ -14,7 +14,12 @@ fn catalog_text(l: Language) -> Option<&'static str> {
         Language::Fr => Some(include_str!("fr.tsv")),
         Language::Id => Some(include_str!("id.tsv")),
         Language::It => Some(include_str!("it.tsv")),
+        Language::Bs => Some(include_str!("bs.tsv")),
         Language::Ko => Some(include_str!("ko.tsv")),
+        Language::Cs => Some(include_str!("cs.tsv")),
+        Language::Pl => Some(include_str!("pl.tsv")),
+        Language::Sv => Some(include_str!("sv.tsv")),
+        Language::Tr => Some(include_str!("tr.tsv")),
     }
 }
 
@@ -49,7 +54,7 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
     }
     assert_eq!(Language::En.tr("File"), "File");
     assert_eq!(Language::parse("xx"), None);
-    for code in ["de-DE", "fr-FR", "id-ID", "it-IT"] {
+    for code in ["de-DE", "fr-FR", "id-ID", "it-IT", "cs-CZ", "sv-SE"] {
         assert_eq!(Language::parse(code), None, "the preference stores the bare code");
     }
     // language names are always shown in their own language
@@ -62,7 +67,12 @@ fn unknown_strings_pass_through_and_languages_round_trip() {
         (Language::Fr, "Français"),
         (Language::Id, "Bahasa Indonesia"),
         (Language::It, "Italiano"),
+        (Language::Bs, "Bosanski"),
         (Language::Ko, "한국어"),
+        (Language::Cs, "Čeština"),
+        (Language::Pl, "Polski"),
+        (Language::Sv, "Svenska"),
+        (Language::Tr, "Türkçe"),
     ] {
         assert_eq!(l.name(), name);
     }
@@ -433,126 +443,107 @@ fn tl_literals_are_found_and_unescaped() {
     assert_eq!(tl_literals(src), ["Save", "Say \"hi\"\n", "{n} file(s)"]);
 }
 
+type App = crate::FilmcraftApp;
+
+fn switch(app: &mut App, ctx: &egui::Context, cmd: &str) -> serde_json::Value {
+    crate::menus::invoke(app, ctx, cmd, serde_json::json!({})).unwrap()
+}
+
+/// The saved UI state round-trips the language (`code` is its serialized tag).
+fn assert_ui_persists(app: &App, lang: Language, code: &str) {
+    let saved = serde_json::to_string(&app.ui).unwrap();
+    assert!(saved.contains(&format!("\"language\":\"{code}\"")), "{saved}");
+    let restored: crate::state::UiState = serde_json::from_str(&saved).unwrap();
+    assert_eq!(restored.language, lang);
+}
+
+/// A restart with the saved prefs comes up in `lang`.
+fn assert_restart_keeps(app: &App, lang: Language) {
+    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
+    let mut restarted = filmcraft_engine::Session::default();
+    restarted.prefs = serde_json::from_str(&prefs).unwrap();
+    assert_eq!(App::new(restarted).ui.language, lang);
+}
+
+/// Only `checked_id` is checked among the language menu items.
+fn assert_only_checked(app: &App, checked_id: &str) {
+    for it in crate::menus::menu_items(app).iter().filter(|it| it.id.starts_with("app.language.")) {
+        assert_eq!(it.checked, Some(it.id == checked_id), "{}", it.id);
+    }
+}
+
+fn assert_menu_checked(app: &App, id: &str) {
+    assert!(crate::menus::menu_items(app).iter().any(|it| it.id == id && it.checked == Some(true)));
+}
+
+fn assert_labels(app: &App, labels: &[(&str, &str)]) {
+    let items = crate::menus::menu_items(app);
+    for (id, want) in labels {
+        assert_eq!(items.iter().find(|it| it.id == *id).map(|it| it.label.as_str()), Some(*want), "{id}");
+    }
+}
+
+/// Switch through the menu command and check everything a language change touches.
+/// `earlier` is a language name from an earlier step: it must still show in its own language.
+fn switch_and_check(app: &mut App, ctx: &egui::Context, name: &str, lang: Language, code: &str, own_name: &str, earlier: Option<(&str, &str)>) {
+    let result = switch(app, ctx, &format!("app.language.{name}"));
+    assert_eq!(result, serde_json::json!(code));
+    assert_eq!((app.ui.language, current()), (lang, lang));
+    assert_eq!(app.session.prefs.general.interface_language, code);
+    assert_only_checked(app, &format!("app.language.{name}"));
+    assert_labels(app, &[("file.saveAs", lang.tr("Save As…")), (&format!("app.language.{name}"), own_name)]);
+    if let Some((id, label)) = earlier {
+        assert_labels(app, &[(id, label)]);
+    }
+    assert_ui_persists(app, lang, code);
+    assert_restart_keeps(app, lang);
+}
+
 #[test]
 fn language_commands_switch_and_persist_without_a_document() {
-    let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let mut app = App::new(filmcraft_engine::Session::default());
     let ctx = egui::Context::default();
     // Japanese needs an installed font (see `japanese_needs_an_installed_font`); skip that step without one
     if craft_japanese_font() || system_japanese_font().is_some() {
-        crate::menus::invoke(&mut app, &ctx, "app.language.japanese", serde_json::json!({})).unwrap();
+        switch(&mut app, &ctx, "app.language.japanese");
         assert_eq!(app.ui.language, Language::Ja);
-        let saved = serde_json::to_string(&app.ui).unwrap();
-        let restored: crate::state::UiState = serde_json::from_str(&saved).unwrap();
-        assert_eq!(restored.language, Language::Ja);
+        assert_ui_persists(&app, Language::Ja, "ja");
     }
-    crate::menus::invoke(&mut app, &ctx, "app.language.spanish", serde_json::json!({})).unwrap();
+    switch(&mut app, &ctx, "app.language.spanish");
     assert_eq!(app.ui.language, Language::Es);
-    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
-    let mut restarted = filmcraft_engine::Session::default();
-    restarted.prefs = serde_json::from_str(&prefs).unwrap();
-    assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Es);
-    assert!(crate::menus::menu_items(&app).iter().any(|it| it.id == "app.language.spanish" && it.checked == Some(true)));
-    crate::menus::invoke(&mut app, &ctx, "app.language.portuguese", serde_json::json!({})).unwrap();
+    assert_restart_keeps(&app, Language::Es);
+    assert_menu_checked(&app, "app.language.spanish");
+    switch(&mut app, &ctx, "app.language.portuguese");
     assert_eq!(app.ui.language, Language::PtBr);
     assert_eq!(app.session.prefs.general.interface_language, "pt-br");
-    assert!(crate::menus::menu_items(&app).iter().any(|it| it.id == "app.language.portuguese" && it.checked == Some(true)));
-    let result = crate::menus::invoke(&mut app, &ctx, "app.language.ukrainian", serde_json::json!({})).unwrap();
-    assert_eq!(result, serde_json::json!("uk"));
-    assert_eq!(app.ui.language, Language::Uk);
-    for item in crate::menus::menu_items(&app).iter().filter(|it| it.id.starts_with("app.language.")) {
-        assert_eq!(item.checked, Some(item.id == "app.language.ukrainian"), "{}", item.id);
+    assert_menu_checked(&app, "app.language.portuguese");
+    for (name, lang, code, own, earlier) in [
+        ("ukrainian", Language::Uk, "uk", "Українська", None),
+        ("german", Language::De, "de", "Deutsch", Some(("app.language.spanish", "Español"))),
+        ("french", Language::Fr, "fr", "Français", Some(("app.language.german", "Deutsch"))),
+        ("indonesian", Language::Id, "id", "Bahasa Indonesia", Some(("app.language.french", "Français"))),
+        ("italian", Language::It, "it", "Italiano", Some(("app.language.indonesian", "Bahasa Indonesia"))),
+        ("czech", Language::Cs, "cs", "Čeština", Some(("app.language.italian", "Italiano"))),
+        ("polish", Language::Pl, "pl", "Polski", Some(("app.language.italian", "Italiano"))),
+        ("swedish", Language::Sv, "sv", "Svenska", Some(("app.language.italian", "Italiano"))),
+        ("turkish", Language::Tr, "tr", "Türkçe", Some(("app.language.italian", "Italiano"))),
+        ("bosnian", Language::Bs, "bs", "Bosanski", Some(("app.language.italian", "Italiano"))),
+    ] {
+        switch_and_check(&mut app, &ctx, name, lang, code, own, earlier);
     }
-    let saved = serde_json::to_string(&app.ui).unwrap();
-    assert!(saved.contains("\"language\":\"uk\""), "{saved}");
-    let restored: crate::state::UiState = serde_json::from_str(&saved).unwrap();
-    assert_eq!(restored.language, Language::Uk);
-    assert_eq!(app.session.prefs.general.interface_language, "uk");
-    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
-    let mut restarted = filmcraft_engine::Session::default();
-    restarted.prefs = serde_json::from_str(&prefs).unwrap();
-    assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Uk);
-    let result = crate::menus::invoke(&mut app, &ctx, "app.language.german", serde_json::json!({})).unwrap();
-    assert_eq!(result, serde_json::json!("de"));
-    assert_eq!((app.ui.language, current()), (Language::De, Language::De));
-    assert_eq!(app.session.prefs.general.interface_language, "de");
-    for it in crate::menus::menu_items(&app).iter().filter(|it| it.id.starts_with("app.language.")) {
-        assert_eq!(it.checked, Some(it.id == "app.language.german"), "{}", it.id);
-    }
-    // the menus are drawn in German, the language names in their own language
-    let items = crate::menus::menu_items(&app);
-    let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
-    assert_eq!(label("file.saveAs"), Some(Language::De.tr("Save As…")));
-    assert_eq!(label("app.language.spanish"), Some("Español"));
-    let saved = serde_json::to_string(&app.ui).unwrap();
-    assert!(saved.contains("\"language\":\"de\""), "{saved}");
-    let restored: crate::state::UiState = serde_json::from_str(&saved).unwrap();
-    assert_eq!(restored.language, Language::De);
-    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
-    let mut restarted = filmcraft_engine::Session::default();
-    restarted.prefs = serde_json::from_str(&prefs).unwrap();
-    assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::De);
-    let result = crate::menus::invoke(&mut app, &ctx, "app.language.french", serde_json::json!({})).unwrap();
-    assert_eq!(result, serde_json::json!("fr"));
-    assert_eq!((app.ui.language, current()), (Language::Fr, Language::Fr));
-    assert_eq!(app.session.prefs.general.interface_language, "fr");
-    for it in crate::menus::menu_items(&app).iter().filter(|it| it.id.starts_with("app.language.")) {
-        assert_eq!(it.checked, Some(it.id == "app.language.french"), "{}", it.id);
-    }
-    let items = crate::menus::menu_items(&app);
-    let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
-    assert_eq!(label("file.saveAs"), Some(Language::Fr.tr("Save As…")));
-    assert_eq!(label("app.language.german"), Some("Deutsch"));
-    let saved = serde_json::to_string(&app.ui).unwrap();
-    assert!(saved.contains("\"language\":\"fr\""), "{saved}");
-    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
-    let mut restarted = filmcraft_engine::Session::default();
-    restarted.prefs = serde_json::from_str(&prefs).unwrap();
-    assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Fr);
-    let result = crate::menus::invoke(&mut app, &ctx, "app.language.indonesian", serde_json::json!({})).unwrap();
-    assert_eq!(result, serde_json::json!("id"));
-    assert_eq!((app.ui.language, current()), (Language::Id, Language::Id));
-    assert_eq!(app.session.prefs.general.interface_language, "id");
-    for it in crate::menus::menu_items(&app).iter().filter(|it| it.id.starts_with("app.language.")) {
-        assert_eq!(it.checked, Some(it.id == "app.language.indonesian"), "{}", it.id);
-    }
-    let items = crate::menus::menu_items(&app);
-    let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
-    assert_eq!(label("file.saveAs"), Some(Language::Id.tr("Save As…")));
-    assert_eq!(label("app.language.french"), Some("Français"));
-    assert_eq!(label("app.language.indonesian"), Some("Bahasa Indonesia"));
-    let saved = serde_json::to_string(&app.ui).unwrap();
-    assert!(saved.contains("\"language\":\"id\""), "{saved}");
-    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
-    let mut restarted = filmcraft_engine::Session::default();
-    restarted.prefs = serde_json::from_str(&prefs).unwrap();
-    assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::Id);
-    let result = crate::menus::invoke(&mut app, &ctx, "app.language.italian", serde_json::json!({})).unwrap();
-    assert_eq!(result, serde_json::json!("it"));
-    assert_eq!((app.ui.language, current()), (Language::It, Language::It));
-    assert_eq!(app.session.prefs.general.interface_language, "it");
-    for it in crate::menus::menu_items(&app).iter().filter(|it| it.id.starts_with("app.language.")) {
-        assert_eq!(it.checked, Some(it.id == "app.language.italian"), "{}", it.id);
-    }
-    let items = crate::menus::menu_items(&app);
-    let label = |id: &str| items.iter().find(|it| it.id == id).map(|it| it.label.as_str());
-    assert_eq!(label("file.saveAs"), Some(Language::It.tr("Save As…")));
-    assert_eq!(label("app.language.indonesian"), Some("Bahasa Indonesia"));
-    assert_eq!(label("app.language.italian"), Some("Italiano"));
-    let saved = serde_json::to_string(&app.ui).unwrap();
-    assert!(saved.contains("\"language\":\"it\""), "{saved}");
-    let prefs = serde_json::to_string(&app.session.prefs).unwrap();
-    let mut restarted = filmcraft_engine::Session::default();
-    restarted.prefs = serde_json::from_str(&prefs).unwrap();
-    assert_eq!(crate::FilmcraftApp::new(restarted).ui.language, Language::It);
-    crate::menus::invoke(&mut app, &ctx, "app.language.english", serde_json::json!({})).unwrap();
+    switch(&mut app, &ctx, "app.language.english");
     assert_eq!(app.ui.language, Language::En);
     set_current(Language::En);
+}
+
+fn locales(tags: &[&str]) -> Language {
+    Language::from_locales(&tags.iter().map(|t| t.to_string()).collect::<Vec<_>>())
 }
 
 /// #218: System Language picks the first of the user's preferred languages the interface has.
 #[test]
 fn system_language_follows_the_preferred_locales() {
-    let l = |tags: &[&str]| Language::from_locales(&tags.iter().map(|t| t.to_string()).collect::<Vec<_>>());
+    let l = locales;
     assert_eq!(l(&["es_ES.UTF-8"]), Language::Es);
     assert_eq!(l(&["es-419"]), Language::Es);
     assert_eq!(l(&["ES"]), Language::Es);
@@ -569,6 +560,11 @@ fn system_language_follows_the_preferred_locales() {
         assert_eq!(l(&[tag]), Language::En, "{tag}: Traditional Chinese has no catalog");
     }
     assert_eq!(l(&["zh-TW", "ja-JP"]), Language::Ja);
+}
+
+#[test]
+fn system_language_picks_german_french_indonesian() {
+    let l = locales;
     for tag in ["de", "DE", "de-DE", "de-AT", "de-CH", "de-LI", "de-LU", "de_DE.UTF-8", "de_AT.UTF-8@euro", "de_CH"] {
         assert_eq!(l(&[tag]), Language::De, "{tag}");
     }
@@ -582,6 +578,11 @@ fn system_language_follows_the_preferred_locales() {
     for none in [&["ind"][..], &["i"], &["-id"], &["ms"], &["ms-ID"], &["jv"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
+}
+
+#[test]
+fn system_language_picks_italian_korean_and_the_first_known() {
+    let l = locales;
     for tag in ["it", "IT", "it-IT", "it-CH", "it-SM", "it_IT.UTF-8", "it_IT.UTF-8@euro", "it_CH"] {
         assert_eq!(l(&[tag]), Language::It, "{tag}");
     }
@@ -589,10 +590,23 @@ fn system_language_follows_the_preferred_locales() {
     for tag in ["ko", "ko-KR", "ko_KR.UTF-8"] {
         assert_eq!(l(&[tag]), Language::Ko, "{tag}");
     }
+    for tag in ["cs", "CS", "cs-CZ", "cs_CZ.UTF-8"] {
+        assert_eq!(l(&[tag]), Language::Cs, "{tag}");
+    }
+    for tag in ["sv", "SV", "sv-SE", "sv-FI", "sv-AX", "sv_SE.UTF-8", "sv_FI.UTF-8@euro", "sv_SE"] {
+        assert_eq!(l(&[tag]), Language::Sv, "{tag}");
+    }
+    assert_eq!(l(&["fi-FI", "sv-FI", "en"]), Language::Sv, "Finnish has no catalog");
+    for none in [&["swe"][..], &["s"], &["-sv"], &["da"], &["nb-NO"], &["nn"], &["no"]] {
+        assert_eq!(l(none), Language::En, "{none:?}");
+    }
+    for tag in ["tr", "TR", "tr-TR", "tr_TR.UTF-8", "tr_TR"] {
+        assert_eq!(l(&[tag]), Language::Tr, "{tag}");
+    }
     for none in [&["ita"][..], &["i"], &["-it"]] {
         assert_eq!(l(none), Language::En, "{none:?}");
     }
-    assert_eq!(l(&["sv-SE", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
+    assert_eq!(l(&["da-DK", "nl", "es-MX", "ja"]), Language::Es, "the first one the interface has");
     assert_eq!(l(&["rm-CH", "de-CH", "fr-CH", "en"]), Language::De);
     assert_eq!(l(&["rm-CH", "fr-CH", "de-CH", "en"]), Language::Fr);
     assert_eq!(l(&["en-GB", "es"]), Language::En);
@@ -722,6 +736,14 @@ fn italian_renders_with_bundled_fonts() {
 }
 
 #[test]
+fn czech_renders_with_bundled_fonts() {
+    let (entries, _) = catalog::parse_entries(include_str!("cs.tsv"));
+    let alphabet = "ÁČĎÉĚÍŇÓŘŠŤÚŮÝŽáčďéěíňóřšťúůýž„“‚‘’";
+    let letters = entries.iter().flat_map(|(_, _, cs)| cs.chars()).filter(|ch| ch.is_alphabetic());
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Cs.name().chars()).chain(letters));
+}
+
+#[test]
 fn japanese_needs_an_installed_font() {
     let mut app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
     let ctx = egui::Context::default();
@@ -744,6 +766,7 @@ fn japanese_needs_an_installed_font() {
         for family in crate::theme::font_families() {
             let mut stack = fonts.definitions().families.get(&family).cloned().unwrap_or_default();
             stack.retain(|n| !crate::rtl::is_system_face(n));
+            stack.retain(|n| n != crate::cjk::KOREAN_FACE && n != "system-chinese");
             if craft {
                 assert!(stack.last().is_some_and(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 assert!(!stack.iter().any(|n| n == JAPANESE_FONT), "{family:?}: {stack:?}");
@@ -762,4 +785,103 @@ fn japanese_needs_an_installed_font() {
             }
         }
     });
+}
+
+/// Edit ▸ Language and Settings ▸ Interface Language list the same languages in the same order.
+#[test]
+fn language_menu_and_settings_choices_are_in_the_same_order() {
+    use filmcraft_engine::settings::{Kind, Row};
+    fn choices(rows: &[Row], out: &mut Vec<&'static str>) {
+        for r in rows {
+            match r {
+                Row::Field(f) if f.key == "general.interfaceLanguage" => {
+                    if let Kind::Choice(opts) = f.kind {
+                        out.extend(opts.iter().filter(|(code, _)| *code != "system").map(|(_, label)| *label));
+                    }
+                }
+                Row::Group(_, inner) => choices(inner, out),
+                _ => {}
+            }
+        }
+    }
+    let mut settings = Vec::new();
+    for c in filmcraft_engine::settings::categories() {
+        choices(c.rows, &mut settings);
+    }
+    let app = crate::FilmcraftApp::new(filmcraft_engine::Session::default());
+    let menu: Vec<String> = crate::menus::menu_items(&app).into_iter().filter(|it| it.id.starts_with("app.language.")).map(|it| it.label).collect();
+    assert!(!settings.is_empty());
+    assert_eq!(menu, settings);
+}
+
+#[test]
+fn polish_renders_with_bundled_fonts() {
+    let (entries, errors) = catalog::parse_entries(include_str!("pl.tsv"));
+    assert!(errors.is_empty(), "{errors:?}");
+    // every Polish letter, even ones no entry uses yet, and every letter, curly quote, dash and
+    // ellipsis the entries use
+    let alphabet = "ĄĆĘŁŃÓŚŹŻąćęłńóśźż„”";
+    let letters = entries.iter().flat_map(|(_, _, pl)| pl.chars()).filter(|ch| ch.is_alphabetic() || "„”“‘’–—…".contains(*ch));
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Pl.name().chars()).chain(letters));
+}
+
+#[test]
+fn swedish_renders_with_bundled_fonts() {
+    let (entries, _) = catalog::parse_entries(include_str!("sv.tsv"));
+    // every Swedish letter (é as in "idé", ü in loanwords), even ones no entry uses yet, and every
+    // letter, curly quote, dash and ellipsis the entries use (symbols such as ✔ come from the
+    // English sources)
+    let alphabet = "ÅÄÖÉÜåäöéü";
+    let letters = entries.iter().flat_map(|(_, _, sv)| sv.chars()).filter(|ch| ch.is_alphabetic() || "“”‘’–—…".contains(*ch));
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Sv.name().chars()).chain(letters));
+}
+
+#[test]
+fn russian_renders_with_bundled_fonts() {
+    let (entries, _) = catalog::parse_entries(include_str!("ru.tsv"));
+    // the whole alphabet including «ё», even letters no entry uses yet, and every letter, quote,
+    // dash and ellipsis the entries use
+    let alphabet = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя«»";
+    let letters = entries.iter().flat_map(|(_, _, ru)| ru.chars()).filter(|ch| ch.is_alphabetic() || "«»“”‘’–—…".contains(*ch));
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Ru.name().chars()).chain(letters));
+}
+
+#[test]
+fn turkish_casing_and_search_folding() {
+    assert_eq!(Language::Tr.to_uppercase("i"), "İ");
+    assert_eq!(Language::Tr.to_uppercase("ı"), "I");
+    assert_eq!(Language::Tr.to_lowercase("İ"), "i");
+    assert_eq!(Language::Tr.to_lowercase("I"), "ı");
+    assert_eq!(Language::Tr.to_lowercase("I\u{0307}"), "i");
+    assert_eq!(to_uppercase("file"), "FILE");
+    set_current(Language::Tr);
+    assert_eq!(to_uppercase("i"), "İ");
+    assert_eq!(to_lowercase("I"), "ı");
+    assert_eq!(to_lowercase("I\u{0307}"), "i");
+    assert!(matches_query("Gaussian Blur", "gaussian"));
+    assert!(matches_query("Gaussian Blur", "GAUSSIAN"));
+    assert!(matches_query("Inceleme", "inceleme"));
+    assert!(matches_query("İnceleme", "inceleme"));
+    assert!(matches_query("inceleme", "İnceleme"));
+    assert!(matches_query("Işık", "ışık"));
+    assert!(matches_query("ışık", "IŞIK"));
+    set_current(Language::En);
+}
+
+#[test]
+fn turkish_renders_with_bundled_fonts() {
+    let (entries, _) = catalog::parse_entries(include_str!("tr.tsv"));
+    let alphabet = "ABCÇDEFGĞHIİJKLMNOÖPRSŞTUÜVYZabcçdefgğhıijklmnoöprsştuüvyz";
+    let letters = entries.iter().flat_map(|(_, _, tr)| tr.chars()).filter(|ch| ch.is_alphabetic() || "“”‘’–—…".contains(*ch));
+    assert_bundled_fonts_cover(alphabet.chars().chain(Language::Tr.name().chars()).chain(letters));
+}
+
+/// Every Bosnian locale, with region, script or encoding, picks the Bosnian catalog.
+#[test]
+fn system_language_picks_bosnian() {
+    let l = locales;
+    for tag in ["bs", "BS", "bs-BA", "bs_BA.UTF-8", "bs-Latn-BA", "bs-Cyrl-BA", "BS-ba"] {
+        assert_eq!(l(&[tag]), Language::Bs, "{tag}");
+    }
+    assert_eq!(l(&["hr-HR", "bs-BA"]), Language::Bs, "Croatian has no catalog here, so the next preference wins");
 }

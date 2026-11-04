@@ -1,6 +1,9 @@
 use super::common::{item_rate, items_p, media_root};
 use super::enabled::{selected_audio_clips, subclip_source};
-use super::*;
+use super::{
+    AudioChannelMap, AudioChannels, ClipId, EngineError, ItemId, ItemKind, Label, Result, Session, Tick, TimeRange, Value, bad, bool_p, item_p, json,
+    parse_timecode, str_p,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Clip: subclips, Modify
@@ -41,6 +44,12 @@ pub fn subclip_defaults(s: &Session, p: &Value) -> Option<Value> {
 
 pub(super) fn make_subclip(s: &mut Session, p: &Value) -> Result<Value> {
     let (parent, range, base, label) = subclip_plan(s, p)?;
+    let custom = if let Some(clip) = clip_p_or_selection(s, p) {
+        s.active_sequence().and_then(|q| q.find_item(clip)).and_then(|(_, it)| it.custom_label_color)
+    } else {
+        item_p(p, "item").or_else(|| subclip_source(s)).and_then(|id| s.project.item(id)).and_then(|it| it.custom_label_color)
+    };
+
     let rate = item_rate(&s.project, parent);
     let a = p
         .get("start")
@@ -58,6 +67,9 @@ pub(super) fn make_subclip(s: &mut Session, p: &Value) -> Result<Value> {
     let bin = s.project.root.parent_of(parent).filter(|b| *b != s.project.root.id);
     let id = s.edit("Make Subclip", |pr, st| {
         let id = pr.add_item(&name, label, ItemKind::Subclip { parent, range: TimeRange::from_bounds(a, b), restrict_trims: restrict }, bin);
+        if let Some(item) = pr.item_mut(id) {
+            item.custom_label_color = custom;
+        }
         st.project_selection = vec![id];
         Ok(id)
     })?;
@@ -108,7 +120,7 @@ pub(super) fn edit_subclip(s: &mut Session, p: &Value) -> Result<Value> {
             m.mark_in = Some(a);
             m.mark_out = Some((b - fd).max(a));
             m.markers.retain(|k| k.start >= a && k.start < b);
-            it.kind = ItemKind::Media(m);
+            it.kind = ItemKind::Media(Box::new(m));
         } else {
             it.kind = ItemKind::Subclip { parent, range: TimeRange::from_bounds(a, b), restrict_trims: restrict };
         }
