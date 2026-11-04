@@ -82,6 +82,30 @@ pub fn temp_dir() -> std::path::PathBuf {
     if cfg!(target_arch = "wasm32") { std::path::PathBuf::from("/tmp") } else { std::env::temp_dir() }
 }
 
+/// A folder under [`temp_dir`] that only this user can enter, created fresh the first time it is asked
+/// for and the same for the rest of the process. Use it, not a fixed name in the shared temp folder:
+/// another local user can pre-create that name and plant links in it.
+pub fn private_temp_dir() -> std::path::PathBuf {
+    use std::hash::{BuildHasher, Hasher};
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let mut path = std::path::PathBuf::new();
+        for _ in 0..16 {
+            let nonce = std::collections::hash_map::RandomState::new().build_hasher().finish();
+            path = temp_dir().join(format!("FilmCraft-{nonce:016x}"));
+            let mut dir = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+            // `create` fails when the name exists, so a folder someone else made is never accepted
+            if dir.create(&path).is_ok() {
+                break;
+            }
+        }
+        path
+    })
+    .clone()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("unknown command `{0}`")]
@@ -1469,3 +1493,15 @@ mod source_placement_tests;
 mod frame_export_tests;
 #[cfg(test)]
 mod wasm_clock_tests;
+
+#[cfg(all(test, unix))]
+mod private_temp_dir_tests {
+    #[test]
+    fn the_private_temp_dir_is_new_owner_only_and_stable() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = super::private_temp_dir();
+        assert!(d.is_dir());
+        assert_eq!(std::fs::metadata(&d).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(d, super::private_temp_dir());
+    }
+}

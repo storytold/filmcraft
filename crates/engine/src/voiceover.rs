@@ -422,7 +422,7 @@ pub(crate) fn media_dir(s: &Session, p: &Value, fallback: &str) -> String {
     if let Some(d) = s.path.as_deref().and_then(|x| std::path::Path::new(x).parent()).filter(|d| !d.as_os_str().is_empty()) {
         return d.to_string_lossy().into_owned();
     }
-    let base = s.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.to_path_buf()).unwrap_or_else(|| crate::temp_dir().join("FilmCraft"));
+    let base = s.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.to_path_buf()).unwrap_or_else(crate::private_temp_dir);
     base.join(fallback).to_string_lossy().into_owned()
 }
 
