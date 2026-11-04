@@ -452,7 +452,11 @@ pub fn commands() -> Vec<CommandSpec> {
                 // caption's end starts there.
                 let end = rate.snap_nearest(Tick(t.0.saturating_add(want.0)));
                 let t = rate.snap_nearest(t);
-                let dur = (end - t).max(rate.frame_duration());
+                // At least one frame: to the start of the next frame. `frame_duration` is rounded
+                // down at a rate whose frame is not a whole number of ticks (37.516 fps, 11 fps), so
+                // `t + frame_duration` can fall one tick short of that frame.
+                let end = end.max(rate.tick_of(rate.frame_at(t).saturating_add(1)));
+                let dur = end - t;
                 let text = str_p(p, "text").unwrap_or("New caption").to_string();
                 let id = s.edit_sequence("Add Caption", |q, ctx, st| {
                     let id = edit::captions::add_caption(q, tid, t, dur, &text, ctx)?;

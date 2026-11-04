@@ -180,11 +180,33 @@ fn caption_add_snaps_its_start_to_the_nearest_frame() {
     add(&mut s, "A", 0.0, 1.0).unwrap();
     add(&mut s, "B", 1.0, 1.0).expect("B starts where A ends");
     add(&mut s, "C", 3.0, 0.8).unwrap();
+    add(&mut s, "D", 4.03, 2.02).unwrap();
     let spans: Vec<(String, Tick, Tick)> = s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| (c.text.clone(), c.start, c.end())).collect();
     let want = |text: &str, start: i64, end: i64| (text.to_string(), rate.tick_of(start), rate.tick_of(end));
-    // 3.8 s is frame 113.886, so C ends at the start of frame 114, 24 frames after it starts
-    assert_eq!(spans, vec![want("A", 0, 30), want("B", 30, 60), want("C", 90, 114)]);
+    // 3.8 s is frame 113.886, so C ends at the start of frame 114, 24 frames after it starts.
+    // D starts at frame 120.779 and ends at 6.05 s, frame 181.319; its 2.02 s alone is 60.54
+    // frames, so snapping the duration instead of the end would end it on frame 182.
+    assert_eq!(spans, vec![want("A", 0, 30), want("B", 30, 60), want("C", 90, 114), want("D", 121, 181)]);
     assert_eq!(spans[1].1, clip_start, "a caption asked for at a clip's time starts with the clip");
+}
+
+/// At a rate whose frame is not a whole number of ticks, `frame_duration` is rounded down. At
+/// 37.516 fps a caption asked for at 0.016 s lasting 0.016 s has both ends on frame 1, and the
+/// one-frame minimum used to end it a tick before frame 2, so `captions.list` gave it the same in
+/// and out timecode. It ends at the start of frame 2.
+#[test]
+fn a_caption_on_one_frame_ends_at_the_next_frame() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "37.516", "fps": 37.516, "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    assert_ne!(rate.tick_of(1), Tick::ZERO + rate.frame_duration(), "one frame is not a whole number of ticks");
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    s.execute("captions.add", json!({"track": "C1", "text": "A", "seconds": 0.016, "durationSeconds": 0.016})).unwrap();
+    let c = &s.active_sequence().unwrap().caption_tracks[0].captions[0];
+    assert_eq!((c.start, c.end()), (rate.tick_of(1), rate.tick_of(2)));
+    let listed = s.execute("captions.list", json!({})).unwrap();
+    let row = &listed["tracks"][0]["captions"][0];
+    assert_ne!(row["in"], row["out"], "{listed}");
 }
 
 fn caption_spans(s: &Session) -> Vec<(f64, f64, String)> {
