@@ -519,6 +519,17 @@ impl ExportSettings {
         self.alpha && self.supports_alpha()
     }
 
+    /// Whether the video encoder codes more than 8 bits per sample: ProRes, APV and DNxHR HQX, on
+    /// their own or in MXF. An SDR export hands these encoded floats instead of RGBA8, which
+    /// would leave 8-bit content in a 10-bit file.
+    pub fn encodes_above_8_bit(&self) -> bool {
+        match self.video_format() {
+            Format::ProRes | Format::Apv => true,
+            Format::DnxHr => crate::dnx_profile(&self.dnx_profile) == filmcraft_dnx::Profile::Hqx,
+            _ => false,
+        }
+    }
+
     /// Whether the output is a numbered image sequence.
     pub fn is_image_sequence(&self) -> bool {
         self.format.is_image_sequence()
