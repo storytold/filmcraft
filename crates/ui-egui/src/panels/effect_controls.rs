@@ -1723,8 +1723,9 @@ mod lane_tests {
         {
             assert!((left(stopwatch) - name).abs() < 0.5, "{stopwatch} starts under the effect's name");
         }
-        let twirl = left("effectControls.motion.scale.graphs");
-        assert!(twirl > left("effectControls.effect.motion.twirl") + 10.0, "the graphs twirl sits in from the effect's own");
+        // the fx toggle is centred 28 points into the header
+        let twirl = app.auto.find("effectControls.motion.scale.graphs").map(|e| e.rect[0] + e.rect[2] / 2.0);
+        assert!(twirl.is_some_and(|x| (x - (left("effectControls.effect.motion") + 28.0)).abs() < 0.5), "the graphs twirl sits under the fx toggle");
     }
 
     /// The ruler takes its numbers from the project (clip times, the sequence's frame rate) and
