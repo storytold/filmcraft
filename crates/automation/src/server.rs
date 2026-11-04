@@ -216,13 +216,23 @@ impl FilmcraftMcp {
         Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), roots: None, tool_router: Self::tool_router() }
     }
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), render_lock: Arc::default(), roots: None, tool_router: Self::tool_router() })
+        Ok(Self {
+            backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))),
+            render_lock: Arc::default(),
+            roots: None,
+            tool_router: Self::tool_router(),
+        })
     }
 
     /// Confine the files commands may read and write (`#985`): every command run through this
-    /// server, on either backend, must keep its file parameters inside the roots. `None` (the
-    /// default) leaves everything as it is.
+    /// server, on either backend, must keep its file parameters inside the roots, and a headless
+    /// session's own file access is checked too. `None` (the default) leaves everything as it is.
     pub fn with_roots(mut self, roots: Option<Arc<AutomationRoots>>) -> Self {
+        if let (Some(r), Backend::Headless(s)) = (&roots, &*self.backend) {
+            let mut g = s.lock().unwrap_or_else(PoisonError::into_inner);
+            g.services = Arc::new(crate::confined_services::ConfinedServices::new(g.services.clone(), r.clone()));
+            g.files_confined = true;
+        }
         self.roots = roots;
         self
     }

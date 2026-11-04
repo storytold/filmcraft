@@ -1905,6 +1905,7 @@ version = "0.17.0"
 dependencies = [
  "base64",
  "filmcraft-engine",
+ "filmcraft-media",
  "filmcraft-time",
  "image",
  "rmcp",

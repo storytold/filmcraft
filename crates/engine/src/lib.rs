@@ -455,6 +455,9 @@ pub struct Session {
     pub state: EditorState,
     pub media: Arc<MediaPool>,
     pub services: Arc<dyn Services>,
+    /// File access is limited to chosen folders (`filmcraft-cli mcp --automation-read-root`): work
+    /// that picks its own folder and bypasses [`Self::services`] (ingest) is skipped.
+    pub files_confined: bool,
     pub events: Vec<Event>,
     /// Commands executed (for macros/debugging): (id, params).
     pub journal: Vec<(String, Value)>,
@@ -584,6 +587,7 @@ impl Session {
             },
             media: Arc::new(MediaPool::default()),
             services,
+            files_confined: false,
             events: Vec::new(),
             journal: Vec::new(),
             jobs: Vec::new(),

@@ -15,12 +15,26 @@
 //!   exist is refused, and so is a link that leads nowhere).
 //! - The result must be the root or inside it, compared by whole components (`/work2` is not inside
 //!   `/work`), without regard to case on Windows, whose file systems ignore it.
-//! - Besides the file parameters each command names ([`READS`], [`WRITES`]), any other absolute
-//!   path anywhere in its params is checked the same way, so a path can't slip through an unnamed
-//!   key; `prefs.set` (whose values name folders the app writes into later) is held to the write
-//!   root.
+//! - A path must be absolute. A relative one is refused: it would be checked against this
+//!   process's working directory and, in bridge mode, opened against the app's.
+//! - Every command is classified, and an unclassified one is refused (it fails closed): [`READS`]
+//!   and [`WRITES`] name its file parameters, [`REFUSED`] says why it can't run confined, and
+//!   [`no_files::NO_FILES`] lists the commands that touch no file an agent chooses. A test walks the
+//!   engine's command registry, so a new command fails it until it is classified.
+//! - A command that would pick the place itself when its file parameter is left out must be given
+//!   one (`tts.create` without `dir` writes beside the project). `file.save` needs a `path` too.
+//! - Any other absolute path anywhere in the params, and any string under a path-like key, is
+//!   checked the same way, so a path can't slip through an unnamed key; `prefs.set` (whose values
+//!   name folders the app writes into later) is held to the write root.
 //! - The bridge's UI-driving tools are refused while confined: they could drive the live app's
 //!   file dialogs past the roots.
+//! - In a headless session, [`crate::confined_services`] checks every path again when it is opened,
+//!   which also covers the media a project file names. In bridge mode the session lives in the
+//!   app, so such paths are not covered there.
+//!
+//! Left alone: temporary files, and the app's own settings and libraries, which it keeps under
+//! fixed names in its data folder (`--data-dir`) and no parameter can move. Commands that add
+//! agent-written files to those libraries are in [`REFUSED`].
 //!
 //! A path is checked, then opened: a process that changes the folders in between can still win
 //! that race. The roots keep an agent to the files it was given; they don't guard against other
@@ -30,6 +44,9 @@ use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
+
+mod no_files;
+use no_files::NO_FILES;
 
 /// Read access or write access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,33 +125,56 @@ impl AutomationRoots {
         Err(format!("automation path rejected: outside the {kind} root {}: {path}", root.shown.display()))
     }
 
-    /// Check command `id` with `params` before it runs: every file parameter the command names must
-    /// lie inside the roots, and so must any other absolute path anywhere in `params`.
+    /// Check command `id` with `params` before it runs. A command that isn't classified is refused;
+    /// a classified one must keep every file parameter inside the roots, and name one where leaving
+    /// it out would let the command pick the place itself.
     pub fn check_command(&self, id: &str, params: &Value) -> Result<(), String> {
+        if let Some((_, why)) = REFUSED.iter().find(|(c, _)| *c == id) {
+            return Err(format!("`{id}` is not available while file access is confined: {why}"));
+        }
+        if id == "media.makeOffline" && params.get("deleteFiles").is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false))) {
+            return Err(format!("`{id}` with `deleteFiles` is not available while file access is confined: it deletes the files the project names"));
+        }
         let named = |table: &[(&str, &'static [&'static str])]| table.iter().find(|(c, _)| *c == id).map(|(_, keys)| *keys);
-        // A command that writes is held to the write root throughout; one that only reads, and any
-        // command with no file parameters, to the read root. `prefs.set` writes later where its
-        // values point, so its paths are held to the write root too.
-        let writes = named(WRITES);
-        let reads = named(READS);
-        let access = if writes.is_some() || (reads.is_none() && id == "prefs.set") { Access::Write } else { Access::Read };
-        for key in writes.or(reads).unwrap_or(&[]) {
-            match params.get(*key).filter(|v| !v.is_null()) {
-                None => {}
-                Some(Value::String(s)) => self.check(s, access)?,
-                Some(Value::Array(a)) => {
-                    for v in a {
-                        match v.as_str() {
-                            Some(s) => self.check(s, access)?,
-                            None => return Err(format!("`{id}`: `{key}` must be file paths")),
+        let (writes, reads) = (named(WRITES), named(READS));
+        if writes.is_none() && reads.is_none() && !NO_FILES.contains(&id) {
+            return Err(format!("`{id}` is not available while file access is confined: it isn't known to stay inside the roots"));
+        }
+        for (table, access) in [(reads, Access::Read), (writes, Access::Write)] {
+            let Some(keys) = table else { continue };
+            let given = keys.iter().filter(|k| params.get(**k).is_some_and(|v| !v.is_null())).count();
+            let discarding = id == "audio.voiceover.stop" && params.get("discard") == Some(&Value::Bool(true));
+            if given == 0 && !keys.is_empty() && !LOCATION_OPTIONAL.contains(&id) && !discarding {
+                return Err(format!("`{id}` needs `{}` while file access is confined: without it the command picks the place itself", keys.join("` or `")));
+            }
+            for key in keys {
+                match params.get(*key).filter(|v| !v.is_null()) {
+                    None => {}
+                    Some(Value::String(s)) if NAME_OR_PATH.contains(&(id, *key)) && !s.contains(['/', '\\', '.']) => {}
+                    Some(Value::String(s)) => self.check(s, access)?,
+                    Some(Value::Array(a)) => {
+                        for v in a {
+                            match v.as_str() {
+                                Some(s) => self.check(s, access)?,
+                                None => return Err(format!("`{id}`: `{key}` must be file paths")),
+                            }
                         }
                     }
+                    Some(_) => return Err(format!("`{id}`: `{key}` must be a file path")),
                 }
-                Some(_) => return Err(format!("`{id}`: `{key}` must be a file path")),
             }
         }
+        if id == "file.importAaf"
+            && let Some(p) = params.get("path").and_then(Value::as_str)
+        {
+            self.check(p, Access::Write).map_err(|e| format!("{e} (`{id}` writes the embedded audio beside the file)"))?;
+        }
+        // The rest of the params: what a command writes is held to the write root throughout.
+        let access = if writes.is_some() { Access::Write } else { Access::Read };
+        let skip: Vec<&str> =
+            reads.unwrap_or(&[]).iter().chain(writes.unwrap_or(&[])).copied().chain(IGNORED_KEYS.iter().filter(|(c, _)| *c == id).map(|(_, k)| *k)).collect();
         let mut other = vec![];
-        absolute_paths(params, writes.or(reads).unwrap_or(&[]), &mut other);
+        other_paths(params, &skip, id == "prefs.set", &mut other).map_err(|e| format!("`{id}`: {e}"))?;
         for p in other {
             self.check(&p, access)?;
         }
@@ -150,11 +190,13 @@ const READS: &[(&str, &[&str])] = &[
     ("file.importFromMediaBrowser", &["paths"]),
     ("file.importImageSequence", &["path"]),
     ("file.mediaPropertiesFile", &["path"]),
-    ("media.linkMedia", &["path"]),
+    ("file.newProjectFromTemplate", &["template"]),
+    ("media.relink", &["path"]),
     ("media.replaceFootage", &["path"]),
     ("media.reconnectFullRes", &["path"]),
     ("media.attachProxies", &["path", "paths"]),
-    ("media.autoRelink", &["folder"]),
+    ("media.autoRelink", &["folder", "to"]),
+    ("media.search", &["folder"]),
     ("mediaBrowser.navigate", &["path"]),
     ("mediaBrowser.list", &["path"]),
     ("mediaBrowser.probe", &["path"]),
@@ -166,18 +208,15 @@ const READS: &[(&str, &[&str])] = &[
     ("lumetri.setInputLut", &["path"]),
     ("lumetri.setLook", &["path"]),
     ("lumetri.presets", &["folder"]),
+    ("lumetri.presetThumbnails", &["folder"]),
     ("captions.import", &["path"]),
-    ("graphics.newFromFile", &["path", "paths"]),
-    ("graphics.template.install", &["path"]),
+    ("graphics.newFromFile", &["path"]),
+    ("graphics.template.apply", &["template"]),
+    ("graphics.template.thumbnail", &["template"]),
     ("edit.pasteMedia", &["paths"]),
-    ("presets.import", &["path"]),
-    ("shortcuts.import", &["path"]),
-    ("labels.importPreset", &["path"]),
-    ("export.presets.import", &["path"]),
 ];
 
-/// Commands that write files named by these parameters. `file.save` without `path` writes the
-/// project's own file, which the person at the keyboard chose.
+/// Commands that write files named by these parameters.
 const WRITES: &[(&str, &[&str])] = &[
     ("file.save", &["path"]),
     ("file.saveAs", &["path"]),
@@ -193,6 +232,7 @@ const WRITES: &[(&str, &[&str])] = &[
     ("file.exportFrame", &["path"]),
     ("file.exportAle", &["path"]),
     ("file.exportSelectionProject", &["path"]),
+    ("file.exportGraphicsTemplate", &["path"]),
     ("file.saveAsTemplate", &["path"]),
     ("file.projectSettings.scratchDisks", &["captured", "videoPreviews", "audioPreviews", "autoSave"]),
     ("markers.exportCsv", &["path"]),
@@ -206,19 +246,121 @@ const WRITES: &[(&str, &[&str])] = &[
     ("export.presets.export", &["path"]),
     ("export.queue.add", &["path"]),
     ("export.quick", &["path"]),
+    ("export.resolve", &["path"]),
     ("clip.extractAudio", &["dir"]),
+    ("audio.voiceover.stop", &["dir"]),
     ("tts.create", &["dir"]),
     ("tts.edit", &["dir"]),
     ("tts.preview", &["path"]),
     ("lumetri.presetThumbnails", &["path"]),
-    ("project.ingestSettings", &["destination"]),
+    ("prefs.set", &[]),
 ];
+
+/// Commands in [`READS`] or [`WRITES`] that touch no file when their parameter is left out.
+const LOCATION_OPTIONAL: &[&str] = &[
+    "lumetri.setInputLut",
+    "lumetri.setLook",
+    "lumetri.presets",
+    "lumetri.presetThumbnails",
+    "graphics.template.thumbnail",
+    "file.projectSettings.scratchDisks",
+    "export.resolve",
+    "tts.preview",
+];
+
+/// Parameters that hold a library name or a path: only a value that could be a path is checked.
+const NAME_OR_PATH: &[(&str, &str)] =
+    &[("file.newProjectFromTemplate", "template"), ("graphics.template.apply", "template"), ("graphics.template.thumbnail", "template")];
+
+/// Path-like keys that name no file here.
+const IGNORED_KEYS: &[(&str, &str)] = &[
+    ("effects.list", "folder"),   // a folder of the Effects panel
+    ("masks.add", "path"),        // the mask's outline
+    ("media.autoRelink", "from"), // the part of the stored paths to replace: not opened
+    ("masks.set", "path"),        // the mask's outline
+    ("mixer.setStrip", "output"), // the bus the strip feeds
+];
+
+/// Commands an agent can't run while confined, and why.
+const REFUSED: &[(&str, &str)] = &[
+    ("file.saveAll", "it saves to the project's own path; use `file.save` with a `path`"),
+    ("file.autoSaveNow", "it writes to the app's auto-save folder"),
+    ("file.listAutoSaves", "it reads the app's auto-save folder"),
+    ("file.recover", "it reads the app's recovery folder"),
+    ("file.recoveryList", "it reads the app's recovery folder"),
+    ("file.discardRecovery", "it deletes from the app's recovery folder"),
+    ("file.reveal", "it opens the system's file manager"),
+    ("file.projectManager", "it copies the media a project names, wherever that is"),
+    ("edit.editOriginal", "it opens the media a project names in another application"),
+    ("clip.updateMetadata", "it writes sidecar files beside the media a project names"),
+    ("media.refreshChanged", "it looks at the media a project names, wherever that is"),
+    ("media.createProxies", "it reads the media a project names, wherever that is"),
+    ("project.ingestSettings", "ingest copies imported files to a folder of its own"),
+    ("mediaBrowser.roots", "it lists the computer's drives and home folder"),
+    ("mediaCache.clean", "it deletes from the media cache"),
+    ("fonts.list", "it scans the system's font folders"),
+    ("help.systemReport", "it reports on the computer and writes logs"),
+    ("sequence.renderBar", "render previews are kept beside the project"),
+    ("sequence.renderSelection", "render previews are kept beside the project"),
+    ("sequence.renderInToOut", "render previews are kept beside the project"),
+    ("sequence.renderEffectsInToOut", "render previews are kept beside the project"),
+    ("sequence.renderAudio", "render previews are kept beside the project"),
+    ("sequence.deleteRenderFiles", "render previews are kept beside the project"),
+    ("sequence.deleteRenderFilesInToOut", "render previews are kept beside the project"),
+    ("presets.save", "it adds to the library in the app's data folder"),
+    ("presets.delete", "it changes the library in the app's data folder"),
+    ("presets.rename", "it changes the library in the app's data folder"),
+    ("presets.import", "it adds to the library in the app's data folder"),
+    ("export.presets.save", "it adds to the library in the app's data folder"),
+    ("export.presets.delete", "it changes the library in the app's data folder"),
+    ("export.presets.favorite", "it changes the library in the app's data folder"),
+    ("export.presets.import", "it adds to the library in the app's data folder"),
+    ("shortcuts.set", "it changes the shortcuts in the app's data folder"),
+    ("shortcuts.clear", "it changes the shortcuts in the app's data folder"),
+    ("shortcuts.undo", "it changes the shortcuts in the app's data folder"),
+    ("shortcuts.redo", "it changes the shortcuts in the app's data folder"),
+    ("shortcuts.loadPreset", "it changes the shortcuts in the app's data folder"),
+    ("shortcuts.savePreset", "it adds to the library in the app's data folder"),
+    ("shortcuts.deletePreset", "it deletes from the library in the app's data folder"),
+    ("shortcuts.import", "it adds to the library in the app's data folder"),
+    ("labels.importPreset", "it adds to the library in the app's data folder"),
+    ("labels.deletePreset", "it deletes from the library in the app's data folder"),
+    ("graphics.template.install", "it adds to the library in the app's data folder"),
+    ("graphics.template.remove", "it deletes from the library in the app's data folder"),
+    ("transcript.downloadModel", "it downloads into the app's data folder"),
+    ("tts.downloadVoices", "it downloads into the app's data folder"),
+];
+
+/// Parameter names that hold a file or folder, whatever the command.
+const PATH_KEYS: &[&str] = &[
+    "path",
+    "paths",
+    "dir",
+    "folder",
+    "destination",
+    "file",
+    "files",
+    "output",
+    "outputs",
+    "sidecar",
+    "captured",
+    "videoPreviews",
+    "audioPreviews",
+    "autoSave",
+];
+
+/// Parameter names that hold what a person wrote, where `/x` or `~` is just text.
+const TEXT_KEYS: &[&str] =
+    &["text", "name", "comment", "description", "title", "label", "author", "query", "value", "values", "logNote", "note", "notes", "category"];
 
 /// `path` made absolute with its links followed; for a path that doesn't exist (yet), its nearest
 /// existing folder's links followed and the rest appended.
 fn resolve(path: &str) -> Result<PathBuf, String> {
     if path.is_empty() {
         return Err("automation path rejected: path is empty".into());
+    }
+    if !Path::new(path).is_absolute() {
+        return Err(format!("automation path rejected: give an absolute path: {path}"));
     }
     // Checked as given: making `…\NUL` absolute gives the device path `\\.\NUL` on Windows.
     if cfg!(windows) && Path::new(path).components().any(|c| matches!(c, Component::Normal(n) if is_device_name(&n.to_string_lossy()))) {
@@ -287,30 +429,54 @@ fn is_device_name(component: &str) -> bool {
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
 }
 
-/// Strings in `params` (recursively, except under the `skip` keys the command's table already
-/// checked) that look like absolute paths: leading `/` or `\`, `~`, a Windows drive, or a `file:`
-/// URL. Recursion is bounded, params being input.
-fn absolute_paths(params: &Value, skip: &[&str], out: &mut Vec<String>) {
-    fn walk(v: &Value, out: &mut Vec<String>, depth: usize) {
+/// Does `s` look like an absolute path: leading `/` or `\`, `~`, a Windows drive, or a `file:` URL?
+fn looks_absolute(s: &str) -> bool {
+    let drive = s.len() > 2 && s.as_bytes().get(1) == Some(&b':') && s.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+    s.starts_with('/') || s.starts_with('\\') || s == "~" || s.starts_with("~/") || s.starts_with("~\\") || drive || s.to_ascii_lowercase().starts_with("file:")
+}
+
+/// Strings in `params` (recursively, except under the `skip` keys) to check as paths: anything
+/// under a [`PATH_KEYS`] key, and what looks absolute elsewhere, leaving [`TEXT_KEYS`] out. With
+/// `every`, also any string with a separator or `..`, and text keys are not left out. Params are
+/// input, so depth is bounded: nesting deeper than that is an error, not a pass.
+fn other_paths(params: &Value, skip: &[&str], every: bool, out: &mut Vec<String>) -> Result<(), String> {
+    fn walk(v: &Value, under_path_key: bool, every: bool, out: &mut Vec<String>, depth: usize) -> Result<(), String> {
         if depth > 64 {
-            return;
+            return Err("params are nested too deeply to check".into());
         }
         match v {
             Value::String(s) => {
                 let t = s.trim();
-                let drive = t.len() > 2 && t.as_bytes().get(1) == Some(&b':') && t.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
-                if t.starts_with('/') || t.starts_with('\\') || t.starts_with('~') || drive || t.to_ascii_lowercase().starts_with("file:") {
-                    out.push(t.to_string());
+                if under_path_key || looks_absolute(t) || (every && (t.contains(['/', '\\']) || t.contains(".."))) {
+                    out.push(s.clone());
                 }
             }
-            Value::Array(a) => a.iter().for_each(|x| walk(x, out, depth + 1)),
-            Value::Object(o) => o.values().for_each(|x| walk(x, out, depth + 1)),
+            Value::Array(a) => {
+                for x in a {
+                    walk(x, under_path_key, every, out, depth + 1)?;
+                }
+            }
+            Value::Object(o) => {
+                for (k, x) in o {
+                    if every || !TEXT_KEYS.contains(&k.as_str()) {
+                        walk(x, under_path_key || PATH_KEYS.contains(&k.as_str()), every, out, depth + 1)?;
+                    }
+                }
+            }
             _ => {}
         }
+        Ok(())
     }
     match params {
-        Value::Object(o) => o.iter().filter(|(k, _)| !skip.contains(&k.as_str())).for_each(|(_, v)| walk(v, out, 0)),
-        v => walk(v, out, 0),
+        Value::Object(o) => {
+            for (k, v) in o.iter().filter(|(k, _)| !skip.contains(&k.as_str())) {
+                if every || !TEXT_KEYS.contains(&k.as_str()) {
+                    walk(v, PATH_KEYS.contains(&k.as_str()), every, out, 0)?;
+                }
+            }
+            Ok(())
+        }
+        v => walk(v, false, every, out, 0),
     }
 }
 
@@ -375,10 +541,11 @@ mod tests {
     }
 
     #[test]
-    fn relative_paths_resolve_against_the_working_directory() {
+    fn relative_paths_are_refused() {
         let (base, roots) = folders("relative");
-        // The tests' working directory is the crate's folder: not inside the roots.
-        assert!(roots.check("a.cube", Access::Read).unwrap_err().contains("outside the read root"));
+        for p in ["a.cube", "../a.cube", "~/a.cube", "file:///etc/passwd"] {
+            assert!(roots.check(p, Access::Read).unwrap_err().contains("give an absolute path"), "{p}");
+        }
         assert_eq!(roots.check("", Access::Read).unwrap_err(), "automation path rejected: path is empty");
         let _ = std::fs::remove_dir_all(base);
     }
@@ -500,11 +667,121 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
-    /// A relative path in a command is resolved against the working directory before comparing.
+    /// Every command in the engine's registry is classified exactly once, so a new one fails here
+    /// until someone decides what it may touch; and every path-like parameter its schema names is
+    /// checked. Without this the tables go stale silently (#985: `audio.voiceover.stop`).
     #[test]
-    fn relative_command_paths_are_checked_as_they_would_open() {
-        let (base, roots) = folders("relative-command");
-        assert!(roots.check_command("lut.import", &json!({"path": "a.cube"})).is_err(), "the crate folder is not inside the roots");
+    fn every_command_in_the_registry_is_classified() {
+        let specs = filmcraft_engine::command_specs();
+        let known: Vec<&str> = specs.iter().map(|c| c.id).collect();
+        let tabled = |table: &[(&str, &[&str])], id: &str| table.iter().any(|(c, _)| *c == id);
+        let mut problems = vec![];
+        for c in specs {
+            let places = [tabled(READS, c.id) || tabled(WRITES, c.id), REFUSED.iter().any(|(r, _)| *r == c.id), NO_FILES.contains(&c.id)];
+            if places.iter().filter(|p| **p).count() != 1 {
+                problems.push(format!("{} must be in exactly one of READS/WRITES, REFUSED, NO_FILES: {places:?}", c.id));
+            }
+            if REFUSED.iter().any(|(r, _)| *r == c.id) {
+                continue;
+            }
+            for key in schema_keys(c.params).into_iter().filter(|k| PATH_KEYS.contains(&k.as_str())) {
+                let named = READS.iter().chain(WRITES).any(|(i, keys)| *i == c.id && keys.contains(&key.as_str()));
+                if !named && !IGNORED_KEYS.contains(&(c.id, key.as_str())) {
+                    problems.push(format!("{} takes `{key}`, which no table names: {}", c.id, c.params));
+                }
+            }
+        }
+        // Nothing in the tables that the registry has lost.
+        let listed = READS
+            .iter()
+            .chain(WRITES)
+            .map(|(i, _)| *i)
+            .chain(REFUSED.iter().map(|(i, _)| *i))
+            .chain(NO_FILES.iter().copied())
+            .chain(LOCATION_OPTIONAL.iter().copied());
+        for id in listed.chain(NAME_OR_PATH.iter().map(|(i, _)| *i)).chain(IGNORED_KEYS.iter().map(|(i, _)| *i)) {
+            if !known.contains(&id) {
+                problems.push(format!("{id} is listed but is not a command"));
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    /// The `"key":` names in a command's parameter doc.
+    fn schema_keys(params: &str) -> Vec<String> {
+        params.split('"').collect::<Vec<_>>().windows(2).filter(|w| w[1].trim_start().starts_with(':')).map(|w| w[0].to_string()).collect()
+    }
+
+    #[test]
+    fn unknown_commands_are_refused() {
+        let (base, roots) = folders("unknown");
+        for params in [json!({}), json!({"path": s(base.join("in/a.cube"))})] {
+            let e = roots.check_command("no.suchCommand", &params).unwrap_err();
+            assert!(e.contains("isn't known to stay inside the roots"), "{e}");
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_refused_command_says_why() {
+        let (base, roots) = folders("refused");
+        let e = roots.check_command("clip.updateMetadata", &json!({})).unwrap_err();
+        assert!(e.contains("not available while file access is confined") && e.contains("sidecar"), "{e}");
+        assert!(roots.check_command("media.makeOffline", &json!({"deleteFiles": true})).is_err());
+        assert_eq!(roots.check_command("media.makeOffline", &json!({"deleteFiles": false})), Ok(()));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// The commands the review named: the take's folder is held to the write root, and leaving it
+    /// out is refused rather than letting the command choose.
+    #[test]
+    fn implicit_locations_must_be_named() {
+        let (base, roots) = folders("implicit");
+        for (id, key) in [
+            ("audio.voiceover.stop", "dir"),
+            ("tts.create", "dir"),
+            ("tts.edit", "dir"),
+            ("clip.extractAudio", "dir"),
+            ("graphics.template.export", "path"),
+            ("file.save", "path"),
+            ("file.saveAsTemplate", "path"),
+            ("export.quick", "path"),
+            ("file.exportFrame", "path"),
+        ] {
+            let e = roots.check_command(id, &json!({})).unwrap_err();
+            assert!(e.contains(&format!("needs `{key}`")), "{id}: {e}");
+            let e = roots.check_command(id, &json!({key: s(base.join("in"))})).unwrap_err();
+            assert!(e.contains("outside the write root"), "{id}: {e}");
+            let e = roots.check_command(id, &json!({key: "../elsewhere"})).unwrap_err();
+            assert!(e.contains("give an absolute path"), "{id}: {e}");
+            assert_eq!(roots.check_command(id, &json!({key: s(base.join("out"))})), Ok(()), "{id}");
+        }
+        assert_eq!(roots.check_command("audio.voiceover.stop", &json!({"discard": true})), Ok(()), "a discarded take writes nothing");
+        // Listing the current folder, or walking out of the one given, is a read of a place not named.
+        assert!(roots.check_command("mediaBrowser.list", &json!({})).unwrap_err().contains("needs `path`"));
+        assert!(roots.check_command("mediaBrowser.navigate", &json!({"up": true})).unwrap_err().contains("needs `path`"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// Path-like keys are checked with relative values too; text is left alone.
+    #[test]
+    fn the_sweep_checks_path_keys_and_leaves_text() {
+        let (base, roots) = folders("sweep");
+        let e = roots.check_command("playhead.set", &json!({"nested": {"output": "../../x"}})).unwrap_err();
+        assert!(e.contains("give an absolute path"), "{e}");
+        assert!(roots.check_command("playhead.set", &json!({"other": s(base.join("outside/x"))})).is_err());
+        assert_eq!(roots.check_command("captions.setText", &json!({"text": "/ ~ not a path"})), Ok(()));
+        assert_eq!(roots.check_command("effects.list", &json!({"folder": "Video Transitions/Wipe"})), Ok(()));
+        assert_eq!(roots.check_command("graphics.template.apply", &json!({"template": "Lower Third"})), Ok(()), "a library name");
+        assert!(roots.check_command("graphics.template.apply", &json!({"template": "../x.fcgt"})).is_err());
+        let mut deep = json!("x");
+        for _ in 0..80 {
+            deep = json!([deep]);
+        }
+        assert!(roots.check_command("playhead.set", &json!({"a": deep})).unwrap_err().contains("nested too deeply"));
+        let e = roots.check_command("prefs.set", &json!({"key": "mediaCache.location", "value": "../cache"})).unwrap_err();
+        assert!(e.contains("give an absolute path"), "{e}");
+        assert_eq!(roots.check_command("prefs.set", &json!({"key": "theme", "value": "dark"})), Ok(()));
         let _ = std::fs::remove_dir_all(base);
     }
 }
