@@ -46,6 +46,10 @@ chrono = { workspace = true }
 craft-docpath = { workspace = true }
 web-time = "1"
 
+# Handle-relative, no-follow traversal and deletion of the media cache (#3478).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["std", "fs"] }
+
 [dev-dependencies]
 filmcraft-testkit = { workspace = true }
 filmcraft-dng = { workspace = true, features = ["writer"] }
