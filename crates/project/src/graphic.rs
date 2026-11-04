@@ -427,7 +427,7 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
         // Distance, size and blur size the layer's raster (and its blur kernel): keep them within
         // the parameters' own 0..1000 range, whatever a stored project or template says.
         let d = ff(e, "shadow_distance", t);
-        let d = if d.is_finite() { d.clamp(-MAX_SHADOW_PX, MAX_SHADOW_PX) } else { 0.0 };
+        let d = if d.is_finite() { d.clamp(0.0, MAX_SHADOW_PX) } else { 0.0 };
         let extent = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, MAX_SHADOW_PX) };
         Shadow { color: c, offset: (a.cos() * d, a.sin() * d), size: extent(ff(e, "shadow_size", t)), blur: extent(ff(e, "shadow_blur", t)) }
     });
@@ -636,6 +636,9 @@ mod tests {
         let sh = eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap();
         assert!(sh.offset.0.abs() <= MAX_SHADOW_PX && sh.offset.1.abs() <= MAX_SHADOW_PX);
         assert_eq!((sh.size, sh.blur), (MAX_SHADOW_PX, MAX_SHADOW_PX));
+        // below the parameter's range the shadow must not flip to the opposite side of its angle
+        e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(-50.0);
+        assert_eq!(eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset, (0.0, 0.0));
         e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(f64::NAN);
         assert_eq!(eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset, (0.0, 0.0));
     }
