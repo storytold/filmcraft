@@ -1986,7 +1986,8 @@ fn build() -> Vec<CommandSpec> {
                 return Ok(Value::Null);
             }
             copy_selection(s);
-            let sel = with_links(s, &s.state.selection.clone());
+            // An Alt selection is already exact, as for Clear (#2244).
+            let sel = s.state.selection.clone();
             s.edit_sequence("Cut", |q, _, st| {
                 edit::delete_items(q, &sel);
                 st.selection.clear();
@@ -4310,9 +4311,11 @@ fn param_value_to_json(value: &ParamValue) -> Value {
     }
 }
 
+/// Copy the selected clips as they are: a linked selection already holds both halves, and an
+/// Alt-click picks one half on purpose (#2244).
 fn copy_selection(s: &mut Session) {
     let Some(q) = s.active_sequence() else { return };
-    let sel = with_links(s, &s.state.selection);
+    let sel = &s.state.selection;
     let min = sel.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.start)).min().unwrap_or_default();
     let max = sel.iter().filter_map(|c| q.find_item(*c).map(|(_, i)| i.end())).max().unwrap_or_default();
     // Copy Paste Includes Sequence Markers: the markers inside the copied span go along
@@ -4468,7 +4471,8 @@ pub fn next_nested_name(s: &Session) -> String {
 
 fn nest(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    let sel = with_links(s, &s.state.selection.clone());
+    // An Alt selection is already exact, as for Clear (#2244).
+    let sel = s.state.selection.clone();
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?.clone();
     let name = str_p(p, "name").filter(|n| !n.trim().is_empty()).map(str::to_string).unwrap_or_else(|| next_nested_name(s));
     let mut items: Vec<(TrackKind, usize, filmcraft_project::TrackItem)> = Vec::new();

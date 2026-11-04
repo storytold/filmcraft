@@ -207,3 +207,57 @@ fn toggling_a_partly_selected_group_flips_it_as_a_whole() {
     s.execute("timeline.select", json!({"clips": [v0.0], "toggle": true})).unwrap();
     assert!(s.state.selection.is_empty(), "the whole group is deselected: {:?}", s.state.selection);
 }
+
+/// Cut, Copy and Nest take an Alt selection as it is, as Clear does (#2244): one half of a linked
+/// pair goes, and its partner stays where it was.
+#[test]
+fn cut_copy_and_nest_keep_an_alt_selection_exact() {
+    for command in ["edit.cut", "edit.copy", "clip.nest"] {
+        for audio in [false, true] {
+            let (mut s, [(video, sound), _]) = paired_sequence();
+            let (selected, partner) = if audio { (sound, video) } else { (video, sound) };
+            let partner_at = s.active_sequence().unwrap().find_item(partner).unwrap().1.range();
+            s.execute("timeline.select", json!({"clips": [selected.0], "linked": false})).unwrap();
+            let before = s.project.clone();
+            let r = s.execute(command, json!({})).unwrap();
+            let q = s.active_sequence().unwrap();
+            q.check().unwrap();
+            assert_eq!(q.find_item(partner).unwrap().1.range(), partner_at, "{command} {audio}: the partner stays");
+            assert_eq!(q.find_item(selected).is_none(), command != "edit.copy", "{command} {audio}");
+            if command == "clip.nest" {
+                let nested = s.project.sequence(filmcraft_project::ItemId(r["sequence"].as_u64().unwrap())).unwrap();
+                assert_eq!(nested.all_tracks().map(|t| t.items.len()).sum::<usize>(), 1, "{audio}: only the selected half is nested");
+            } else {
+                assert_eq!(s.state.clipboard.len(), 1, "{command} {audio}: only the selected half is copied");
+                assert_eq!(s.state.clipboard[0].2.id, selected);
+            }
+            assert!(s.state.linked_selection);
+            if command != "edit.copy" {
+                s.execute("edit.undo", json!({})).unwrap();
+                assert_eq!(*s.project, *before, "{command} {audio}: one undo restores the pair");
+            }
+        }
+    }
+}
+
+/// An ordinary click selects both halves, so Cut, Copy and Nest still take the whole pair.
+#[test]
+fn cut_copy_and_nest_take_both_halves_of_a_linked_selection() {
+    for command in ["edit.cut", "edit.copy", "clip.nest"] {
+        let (mut s, [(video, sound), _]) = paired_sequence();
+        s.execute("timeline.select", json!({"clips": [sound.0]})).unwrap();
+        let r = s.execute(command, json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        if command == "edit.copy" {
+            assert_eq!(s.state.clipboard.len(), 2, "both halves are copied");
+            continue;
+        }
+        assert!(q.find_item(video).is_none() && q.find_item(sound).is_none(), "{command}: both halves go");
+        if command == "clip.nest" {
+            let nested = s.project.sequence(filmcraft_project::ItemId(r["sequence"].as_u64().unwrap())).unwrap();
+            assert_eq!(nested.all_tracks().map(|t| t.items.len()).sum::<usize>(), 2, "both halves are nested");
+        } else {
+            assert_eq!(s.state.clipboard.len(), 2, "both halves are cut");
+        }
+    }
+}
