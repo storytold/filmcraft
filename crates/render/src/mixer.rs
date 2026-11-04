@@ -863,6 +863,10 @@ pub(crate) fn mix_graph_at(
     depth: u32,
 ) -> AudioBuffer {
     let sr = seq.settings.sample_rate.max(1);
+    let visit = crate::nest_budget::Visit::enter();
+    if visit.exhausted() {
+        return AudioBuffer::silence(sr, 2, frames);
+    }
     let ovs = live.filter(|l| l.is_active()).map(LiveMix::overrides).unwrap_or_default();
     let plan = Plan::build(seq, &ovs);
     let key = plan.structure_hash(sr);
