@@ -355,7 +355,6 @@ fn hard_limiter_lookahead_changes_anticipation() {
     assert!(bd < 1e-5, "disabled limiter must skip, Δ {bd}");
 }
 
-
 #[test]
 fn render_and_playback_paths_are_identical() {
     // export renders in large batches; playback pulls small device blocks with live meters
