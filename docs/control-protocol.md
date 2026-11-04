@@ -136,7 +136,8 @@ proxies (`media.createProxies`, `media.attachProxies`, `media.toggleProxies`, `p
 (`project.ingestSettings`) and the Project Manager (`file.projectManager`, `pm.*`).
 
 **Moving clips**: `timeline.move {moves: [{clip, track, time}], insert?, linked?, captions?}` → `{moved: [clip ids]}`.
-With Linked Selection on (the default; `linked` overrides the toggle for one call) the linked
+`time` is ticks or a time object at the sequence rate (`{"seconds": 2}`, `{"frame": 48}`, `{"timecode": "00:00:02:00"}`),
+and an entry without a `clip`, `track` or `time` is refused by its index. With Linked Selection on (the default; `linked` overrides the toggle for one call) the linked
 partners of a listed clip that are not listed themselves move by the same time offset and stay on
 their own tracks, so picture and sound stay in sync. Like a listed clip, a partner overwrites
 what is at its destination (or inserts, with `insert`). A partner on a locked track stays where it

@@ -198,7 +198,9 @@ fn attr_sel(p: &Value) -> AttrSel {
     AttrSel { intrinsic, effects }
 }
 
-fn is_standard(e: &filmcraft_project::EffectInstance) -> bool {
+/// Whether Paste / Remove Attributes copies or removes this effect: an effect added to the clip,
+/// not an intrinsic one (Motion, Volume…), a graphic layer or one Essential Sound / Graphics manages.
+pub fn is_attribute_effect(e: &filmcraft_project::EffectInstance) -> bool {
     e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e) && !e.essential
 }
 
@@ -229,7 +231,7 @@ pub(super) fn paste_attributes(s: &mut Session, p: &Value) -> Result<Value> {
                     None => dst.effects.push(e),
                 }
             }
-            for e in src.effects.iter().filter(|e| is_standard(e) && wants_effect(&sel, e)) {
+            for e in src.effects.iter().filter(|e| is_attribute_effect(e) && wants_effect(&sel, e)) {
                 let mut e = e.clone();
                 retime_effect(&mut e, src, &before, scale);
                 dst.effects.push(e);
@@ -264,7 +266,7 @@ pub(super) fn remove_attributes(s: &mut Session, p: &Value) -> Result<Value> {
                     *slot = fresh;
                 }
             }
-            it.effects.retain(|e| !(is_standard(e) && wants_effect(&sel, e)));
+            it.effects.retain(|e| !(is_attribute_effect(e) && wants_effect(&sel, e)));
             if *it != before {
                 n += 1;
             }
