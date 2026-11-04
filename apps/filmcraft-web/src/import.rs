@@ -103,6 +103,14 @@ async fn import_path(path: String, bin: u64) -> Result<Value, String> {
     Err(format!("{path}: timed out loading the file"))
 }
 
+/// Import a file already registered in [`crate::fs`] (a host page's, `host`) into the current
+/// bin: its container index is loaded first, as for picked files.
+pub async fn import_registered(path: String, size: u64) -> Result<Value, String> {
+    let bin = on_ui(|w, _| w.app.import_bin().0).await;
+    prewarm(&path, size).await;
+    import_path(path, bin).await
+}
+
 /// Import browser files (no copies): returns `{items, errors, paths}`.
 pub async fn import_files(files: Vec<web_sys::File>) -> Value {
     // Capture once per batch: navigation while prewarming must not redirect pending imports.
