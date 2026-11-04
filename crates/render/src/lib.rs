@@ -566,6 +566,22 @@ pub(crate) fn item_layer_ex(
                 return Some(plain_layer(&frame, n, op, bl));
             }
         }
+        // A placement that only scales and moves the picture reads a window of it, such as the
+        // middle third of a landscape picture filling a vertical frame: that window alone is
+        // converted. Each converted pixel is what the whole conversion gives at its place, and the
+        // resampler reads nothing outside the window, so the layer is the general path's.
+        if media_interpolation(item, t, &src, seq.settings.frame_rate).is_none()
+            && !colorman::needs_management(&seq.settings.color, colorman::source_space(project, item.item, &frame), &frame)
+            && let Some(rs) = image::AxisResample::new(lw, lh, w, h, &m)
+        {
+            let (x, y, ww, wh) = rs.window();
+            let (r, px) = frame.to_linear_f32_region(n, None, filmcraft_frame::Region { x, y, w: ww, h: wh });
+            let part = Image { w: r.w, h: r.h, px };
+            let placed = rs.apply(&part, (r.x, r.y));
+            pool::recycle_f32(part.px);
+            let (op, bl) = opacity_blend(item, mt);
+            return Some(Layer::Full { image: placed, opacity: op, blend: bl, opaque: false });
+        }
         // anything else takes the general path below, with the frame already fetched
         fetched = Some((src, frame, n));
     }
