@@ -565,6 +565,7 @@ fn roots_base(name: &str) -> (std::path::PathBuf, Arc<AutomationRoots>) {
     (base, Arc::new(roots))
 }
 
+/// The names in `dir`, sorted.
 fn file_names(dir: &std::path::Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     v.sort();

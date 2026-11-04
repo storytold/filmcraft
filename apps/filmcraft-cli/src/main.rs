@@ -564,6 +564,7 @@ async fn cli_render(a: &Args) {
     diag(format_args!("rendered {}x{} in {:.1} ms → {out}", img.w, img.h, dt.as_secs_f64() * 1000.0));
 }
 
+/// `mcp`: serve MCP on stdio, headless or over the bridge, inside the automation roots when given.
 async fn cli_mcp(a: &Args) {
     if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir", "--automation-read-root", "--automation-write-root"]) {
         usage(format!("unknown mcp option `{opt}`"));

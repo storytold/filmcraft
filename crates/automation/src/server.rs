@@ -212,9 +212,11 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
 const MAX_QUEUED_PARSE_ERRORS: usize = 64;
 
 impl FilmcraftMcp {
+    /// A server on an in-process `session`, with nothing confined.
     pub fn headless(session: Session) -> Self {
         Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), roots: None, tool_router: Self::tool_router() }
     }
+    /// A server on the app listening at `addr`, with nothing confined.
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
         Ok(Self {
             backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))),
@@ -353,6 +355,7 @@ impl FilmcraftMcp {
         }
     }
 
+    /// Call `method` on the live app: refused for [`DRIVING_UI`] while confined, an error without a bridge.
     async fn ui(&self, method: &str, params: Value) -> Result<CallToolResult, McpError> {
         if let Some(roots) = &self.roots
             && DRIVING_UI.contains(&method)
@@ -613,6 +616,7 @@ impl FilmcraftMcp {
         }
     }
 
+    /// Any control-channel method; refused outright while confined.
     #[tool(
         title = "Live app: control-channel call",
         description = "Live app: call any control-channel method directly (ui.set, ui.scroll, ui.timeline.hit, ui.timeline.locate, ui.playback, ui.panel.show, ui.menu.list, …).",
@@ -685,6 +689,7 @@ fn cache_hints(context: &rmcp::service::RequestContext<rmcp::RoleServer>, ttl_ms
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for FilmcraftMcp {
+    /// The server's capabilities and instructions, which name the roots in force.
     fn get_info(&self) -> rmcp::model::ServerConfig {
         // Tell the agent what it may touch, so a rejection names something it can act on.
         let mut instructions = INSTRUCTIONS.to_string();

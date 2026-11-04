@@ -406,6 +406,7 @@ fn inside(path: &Path, root: &Path) -> bool {
     root.components().all(|r| path.next().is_some_and(|p| same_component(p, r)))
 }
 
+/// Are two path components the same (without regard to case on Windows)?
 fn same_component(a: Component, b: Component) -> bool {
     a == b || (cfg!(windows) && matches!((a.as_os_str().to_str(), b.as_os_str().to_str()), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b)))
 }
@@ -440,6 +441,7 @@ fn looks_absolute(s: &str) -> bool {
 /// `every`, also any string with a separator or `..`, and text keys are not left out. Params are
 /// input, so depth is bounded: nesting deeper than that is an error, not a pass.
 fn other_paths(params: &Value, skip: &[&str], every: bool, out: &mut Vec<String>) -> Result<(), String> {
+    /// Collect from `v`; `under_path_key` says a key above it is in [`PATH_KEYS`].
     fn walk(v: &Value, under_path_key: bool, every: bool, out: &mut Vec<String>, depth: usize) -> Result<(), String> {
         if depth > 64 {
             return Err("params are nested too deeply to check".into());
@@ -525,6 +527,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// `..` is followed where it exists and refused below a folder that doesn't.
     #[test]
     fn parent_traversal_is_resolved_or_refused() {
         let (base, roots) = folders("dotdot");
@@ -550,6 +553,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// A root must be an existing folder; no roots at all confines nothing, and one root grants only its own access.
     #[test]
     fn a_missing_root_is_an_error_and_none_is_no_confinement() {
         let (base, _) = folders("missing");
@@ -570,6 +574,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// Links out of a root are outside it, dangling ones are refused, and links that stay inside pass.
     #[test]
     fn links_are_followed_before_comparing() {
         let (base, roots) = folders("links");
@@ -619,6 +624,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// Windows device names, with and without an extension, and names that only look like them.
     #[test]
     fn device_names() {
         for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.svg", "NUL "] {
@@ -629,6 +635,7 @@ mod tests {
         }
     }
 
+    /// Named parameters are held to the command's own root, and paths in unnamed keys are caught.
     #[test]
     fn commands_check_their_file_parameters() {
         let (base, roots) = folders("commands");
@@ -712,6 +719,7 @@ mod tests {
         params.split('"').collect::<Vec<_>>().windows(2).filter(|w| w[1].trim_start().starts_with(':')).map(|w| w[0].to_string()).collect()
     }
 
+    /// A command in no table is refused, whatever its params.
     #[test]
     fn unknown_commands_are_refused() {
         let (base, roots) = folders("unknown");
@@ -722,6 +730,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// A refused command names its reason; `media.makeOffline` is refused only when it would delete.
     #[test]
     fn a_refused_command_says_why() {
         let (base, roots) = folders("refused");
