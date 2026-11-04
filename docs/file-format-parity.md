@@ -68,7 +68,7 @@ only). "Tested" names the evidence.
 |---|---|---|---|---|
 | WAV / BWF (timecode, iXML partial) | read + write | yes | yes | 90% |
 | AIFF / AIFC | read + write | yes | yes | 95% |
-| MP3 | read + write | read | **no** | 60% |
+| MP3 | read + write | read | yes (MP3 format: CBR 32-320 kbit/s, 16-48 kHz, mono / joint stereo, own encoder, #977; no VBR, gapless tag or ID3) | 85% |
 | AAC / M4A | read + write | yes | yes (in MP4 / MOV, and AAC Audio: `.m4a` or ADTS `.aac`, #814) | 95% |
 | FLAC, Ogg, Opus | partial | yes | no | ahead on read |
 | WMA | read (Windows) | no | no | 0% |
