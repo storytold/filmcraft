@@ -206,6 +206,23 @@ fn video_cut_menu_is_disabled_when_linked_selection_leaves_audio_behind() {
 }
 
 #[test]
+fn clip_menu_join_matches_video_only_selection() {
+    let mut d = Driver::new();
+    d.exec("playhead.set", json!({"frame": 30}));
+    d.exec("sequence.addEditAllTracks", json!({}));
+    let right_video = d.seq().video_tracks[0].items[1].id;
+    d.exec("sequence.linkedSelection", json!({"on": false}));
+    d.frames(2);
+    d.right_click(right_video, 0.5);
+    let elements = d.ok("ui.elements", json!({"prefix": "timeline.clipMenu.sequence.joinThroughEdits"}));
+    let join = elements.as_array().unwrap().iter().find(|e| e["id"] == "timeline.clipMenu.sequence.joinThroughEdits").unwrap();
+    assert_eq!(join["enabled"], json!(false));
+    let before = d.seq();
+    d.click("timeline.clipMenu.sequence.joinThroughEdits");
+    assert_eq!(d.seq(), before);
+}
+
+#[test]
 fn the_body_of_a_clip_still_opens_the_clip_menu() {
     let mut d = Driver::new();
     let (_, b) = d.cut_on_v1();
