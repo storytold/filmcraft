@@ -209,3 +209,34 @@ fn apply_reports_a_phrase_that_cannot_fit_instead_of_squeezing_it() {
     assert!(r["splitAt"].as_u64().is_some());
     assert!(s.active_sequence().unwrap().video_tracks.iter().all(|t| t.items.is_empty()));
 }
+
+#[test]
+fn from_selection_letters_the_selected_caption_where_it_sits() {
+    let mut s = seq();
+    let cap = s.execute("captions.add", json!({"track": "C1", "text": "Nunca pague 10 mil por um logo sem estratégia", "seconds": 5.0, "durationSeconds": 3.0})).unwrap()["caption"].as_u64().unwrap();
+    s.execute("captions.select", json!({"captions": [cap]})).unwrap();
+    let r = s.execute("lettering.fromSelection", json!({"family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+    assert_eq!(r["applied"], true, "{r}");
+    let clip = filmcraft_project::ClipId(r["clip"].as_u64().unwrap());
+    let q = s.active_sequence().unwrap();
+    let (_, it) = q.find_item(clip).unwrap();
+    // it starts a little before the caption, so the first word is on screen as it is said
+    assert!((it.start.seconds() - 4.9).abs() < 0.05, "{}", it.start.seconds());
+    assert_eq!(it.effects.iter().filter(|e| e.params.contains_key("text")).count(), 9);
+}
+
+#[test]
+fn from_selection_takes_the_text_of_a_selected_graphic() {
+    let mut s = seq();
+    let t = s.execute("graphics.newText", json!({"text": "Marca forte vende mais caro", "newClip": true})).unwrap();
+    s.state.selection = vec![filmcraft_project::ClipId(t["clip"].as_u64().unwrap())];
+    s.state.caption_selection.clear();
+    let r = s.execute("lettering.fromSelection", json!({"family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+    assert_eq!(r["applied"], true, "{r}");
+}
+
+#[test]
+fn from_selection_without_anything_selected_is_an_error() {
+    let mut s = seq();
+    assert!(s.execute("lettering.fromSelection", json!({})).is_err());
+}

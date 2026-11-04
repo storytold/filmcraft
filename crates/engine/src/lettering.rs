@@ -246,13 +246,19 @@ fn word_w(m: &WordMetric, p: &Params) -> f32 {
     m.width100 * size_of(m, p) / 100.0
 }
 
+/// Space between word `i - 1` and word `i` at the requested sizes. Next to a hero the space is
+/// tighter: it is set at the support size, and the hero's own side bearings already add air.
+fn gap(ms: &[WordMetric], p: &Params, i: usize) -> f32 {
+    let base = p.space100 * p.size / 100.0;
+    if ms[i - 1].hero || ms[i].hero { base * 0.7 } else { base }
+}
+
 /// Width of words `a..b` set on one line at the requested sizes.
 fn line_w(ms: &[WordMetric], p: &Params, a: usize, b: usize) -> f32 {
     let mut w = 0.0;
     for (k, m) in ms[a..b].iter().enumerate() {
         if k > 0 {
-            // a space has the support size, also between heroes: tight, like one phrase
-            w += p.space100 * p.size / 100.0;
+            w += gap(ms, p, a + k);
         }
         w += word_w(m, p);
     }
@@ -369,13 +375,18 @@ pub fn compose(ms: &[WordMetric], p: &Params) -> Composed {
         // Block: a line close to the widest is tracked out to it, so the guides hold on both edges.
         let gaps = (b - a).saturating_sub(1);
         let justify = p.composition == Composition::Block && lw >= 0.88 * block_w && lw < block_w;
-        let extra_per_gap = if justify && gaps > 0 { (block_w - lw) / gaps as f32 } else { 0.0 };
+        let mut extra_per_gap = if justify && gaps > 0 { (block_w - lw) / gaps as f32 } else { 0.0 };
+        // Stretching is for a line that is nearly there. Past a fifth of the type size per gap the
+        // words drift apart and read as separate pieces: leave the line flush-left instead.
+        if extra_per_gap > 0.2 * p.size * fit {
+            extra_per_gap = 0.0;
+        }
         let mut x = x0;
         for (j, i) in (a..b).enumerate() {
             let s = size_of(&ms[i], p) * fit;
             let w = word_w(&ms[i], p) * fit;
             words.push(Placed { index: i, line: k, x, baseline, size: s, width: w, hero: ms[i].hero, tracking: 0.0 });
-            x += w + p.space100 * p.size * fit / 100.0 + if j < gaps { extra_per_gap } else { 0.0 };
+            x += w + if i + 1 < b { gap(ms, p, i + 1) * fit } else { 0.0 } + if j < gaps { extra_per_gap } else { 0.0 };
         }
     }
     let width = words.iter().map(|w| w.x + w.width).fold(0.0, f32::max);
@@ -728,6 +739,83 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
+/// Words (with the times they are said at) of the captions in `ids`: the transcript between the
+/// first and the last caption when there is one, else the caption text spread over its time.
+fn words_of_captions(s: &Session, ids: &[filmcraft_project::ClipId]) -> Result<(Vec<Word>, f64, f64)> {
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let mut caps: Vec<(f64, f64, String)> =
+        ids.iter().filter_map(|id| q.find_caption(*id)).map(|(_, c)| (c.start.seconds(), (c.start + c.duration).seconds(), c.text.replace('\n', " "))).collect();
+    if caps.is_empty() {
+        return Err(bad("lettering.fromSelection", "no caption selected"));
+    }
+    caps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (a, b) = (caps[0].0, caps.iter().map(|c| c.1).fold(0.0, f64::max));
+    let said: Vec<_> = crate::transcript::sequence_words(s).into_iter().filter(|w| w.start.seconds() >= a - 0.05 && w.end.seconds() <= b + 0.05).collect();
+    if !said.is_empty() {
+        return Ok((said.iter().map(|w| Word { text: w.text.clone(), start: w.start.seconds(), end: w.end.seconds() }).collect(), a, b));
+    }
+    // no transcript: the words share the caption's time by their length
+    let mut words = Vec::new();
+    for (start, end, text) in &caps {
+        let toks: Vec<&str> = text.split_whitespace().collect();
+        let total: f64 = toks.iter().map(|t| t.chars().count() as f64 + 1.0).sum();
+        let mut t = *start;
+        for tok in toks {
+            let d = (end - start) * (tok.chars().count() as f64 + 1.0) / total;
+            words.push(Word { text: tok.into(), start: t, end: t + d });
+            t += d;
+        }
+    }
+    Ok((words, a, b))
+}
+
+/// The text of the selected graphic clip's text layers (the selected layers, else all of them).
+fn text_of_graphic(s: &Session) -> Option<(String, f64)> {
+    let q = s.active_sequence()?;
+    let clip = *s.state.selection.first()?;
+    let (_, it) = q.find_item(clip)?;
+    let idx = filmcraft_project::graphic::layer_indices(&it.effects);
+    let picked: Vec<usize> = if s.state.graphic_layers.is_empty() { idx.clone() } else { s.state.graphic_layers.iter().filter_map(|n| idx.get(*n).copied()).collect() };
+    let text: Vec<String> = picked
+        .iter()
+        .filter_map(|&i| it.effects.get(i))
+        .filter_map(|e| match &e.params.get("text")?.value {
+            ParamValue::Text(t) if !t.trim().is_empty() => Some(t.replace('\n', " ")),
+            _ => None,
+        })
+        .collect();
+    (!text.is_empty()).then(|| (text.join(" "), it.start.seconds()))
+}
+
+/// `lettering.apply` on what is selected: the captions (timed to the voice) or the text of a
+/// graphic clip, which stays where it is.
+fn from_selection(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "lettering.fromSelection";
+    let mut q = if p.is_object() { p.clone() } else { json!({}) };
+    for k in ["text", "words", "from", "to", "time"] {
+        q.as_object_mut().map(|m| m.remove(k));
+    }
+    let caps: Vec<filmcraft_project::ClipId> = if !s.state.caption_selection.is_empty() {
+        s.state.caption_selection.clone()
+    } else if s.state.selection.is_empty() {
+        let t = s.playhead();
+        s.active_sequence().and_then(|q| q.caption_tracks.iter().find_map(|tr| tr.caption_at(t).map(|c| c.id))).into_iter().collect()
+    } else {
+        Vec::new()
+    };
+    if !caps.is_empty() {
+        let (words, _, _) = words_of_captions(s, &caps)?;
+        let t0 = (words[0].start - LEAD_SECS).max(0.0);
+        q["words"] = json!(words.iter().map(|w| json!({"text": w.text, "start": w.start - t0, "end": w.end - t0})).collect::<Vec<_>>());
+        q["time"] = json!(Tick::from_seconds_f64(t0).0);
+        return apply(s, &q);
+    }
+    let (text, start) = text_of_graphic(s).ok_or_else(|| bad(ID, "select a caption or a graphic clip with text"))?;
+    q["text"] = json!(text);
+    q["time"] = json!(Tick::from_seconds_f64(start).0);
+    apply(s, &q)
+}
+
 pub fn commands() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: "lettering.plan",
@@ -747,6 +835,16 @@ pub fn commands() -> Vec<CommandSpec> {
         params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"heroItalic":bool=false,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
         enabled: has_seq,
         run: apply,
+        journal: true,
+    },
+    CommandSpec {
+        id: "lettering.fromSelection",
+        label: "Lettering from Selection",
+        menu: &["Graphics and Titles"],
+        shortcut: None,
+        params: r#"{same options as lettering.apply, without text/words/from/to/time: the selected captions (timed to the voice; the caption under the playhead when none is selected) or the text of the selected graphic clip}"#,
+        enabled: has_seq,
+        run: from_selection,
         journal: true,
     }]
 }
