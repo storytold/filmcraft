@@ -7,7 +7,7 @@ use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
 use filmcraft_engine::Session;
-use filmcraft_engine::project::ItemId;
+use filmcraft_engine::project::{BinEntry, ItemId};
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
@@ -333,15 +333,37 @@ fn color_matte_dialog_picks_and_changes_the_color() {
     assert!(!d.dialog_open());
 }
 
-/// #3578: File ▸ New ▸ Project from Template… lists the saved project templates and starts a new
-/// project from the chosen one; with unsaved changes Save / Don't Save / Cancel is asked first.
-#[test]
-fn new_project_from_template_lists_the_saved_templates() {
-    let dir = std::env::temp_dir().join(format!("fc-ui-project-templates-{}", std::process::id()));
+/// A driver whose data folder (under `name` in the temp folder) holds two project templates that
+/// differ: Vlog has a bin of its own. The project is saved, so the session is clean.
+fn with_templates(name: &str) -> (Driver, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut d = Driver::new();
     d.app().session.prefs_path = Some(dir.join("preferences.json"));
+    d.exec("file.saveAsTemplate", json!({"name": "Interview"}));
+    d.exec("file.newBin", json!({"name": "Vlog Bin"}));
+    d.exec("file.saveAsTemplate", json!({"name": "Vlog"}));
+    d.exec("file.saveAs", json!({"path": dir.join("start.fcproj").to_string_lossy()}));
+    assert!(!d.app().session.is_dirty());
+    (d, dir)
+}
+
+fn template(dir: &std::path::Path, name: &str) -> String {
+    dir.join("Templates").join(format!("{name}.fcproj")).to_string_lossy().to_string()
+}
+
+fn root_bin(d: &mut Driver, name: &str) -> bool {
+    d.app().session.project.root.children.iter().any(|e| matches!(e, BinEntry::Bin(b) if b.name == name))
+}
+
+/// #3578: File ▸ New ▸ Project from Template… lists the saved project templates and starts a new
+/// project from the chosen one.
+#[test]
+fn new_project_from_template_lists_the_saved_templates() {
+    let mut d = Driver::new();
+    let empty = std::env::temp_dir().join(format!("fc-ui-no-templates-{}", std::process::id()));
+    d.app().session.prefs_path = Some(empty.join("preferences.json"));
     let menus = d.ok("ui.menu.list", json!({}));
     let entry = menus.as_array().unwrap().iter().find(|m| m["id"] == "file.newProjectFromTemplate").cloned().expect("File ▸ New ▸ Project from Template…");
     assert_eq!(entry["path"], json!(["File", "New"]));
@@ -354,25 +376,28 @@ fn new_project_from_template_lists_the_saved_templates() {
     d.click("newFromTemplate.cancel");
     assert!(!d.dialog_open());
 
-    d.exec("file.saveAsTemplate", json!({"name": "Interview"}));
-    d.exec("file.saveAsTemplate", json!({"name": "Vlog"}));
+    let (mut d, dir) = with_templates("fc-ui-project-templates");
     let items = d.app().session.project.items.len();
-    let vlog = dir.join("Templates").join("Vlog.fcproj").to_string_lossy().to_string();
     d.menu("file.newProjectFromTemplate");
     assert!(d.has("newFromTemplate.template"));
-    let first = d.app().ui.extras.dialog.as_ref().unwrap().params["template"].clone();
-    assert_eq!(first, json!(dir.join("Templates").join("Interview.fcproj").to_string_lossy()));
-    d.ok("ui.set", json!({"menuDialog": {"template": vlog, "name": "Episode 1"}}));
+    assert_eq!(d.app().ui.extras.dialog.as_ref().unwrap().params["template"], json!(template(&dir, "Interview")));
+    d.ok("ui.set", json!({"menuDialog": {"template": template(&dir, "Vlog"), "name": "Episode 1"}}));
     d.click("newFromTemplate.ok");
     assert!(!d.dialog_open());
+    assert!(root_bin(&mut d, "Vlog Bin"), "the chosen template");
     let s = &d.app().session;
     assert_eq!(s.project.name, "Episode 1");
     assert_eq!(s.project.items.len(), items);
     assert!(s.path.is_none() && !s.is_dirty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    // unsaved changes: Cancel keeps them
+/// #3578: with unsaved changes, New Project from Template asks Save / Don't Save / Cancel first.
+#[test]
+fn new_project_from_template_asks_to_save_unsaved_changes() {
+    let (mut d, dir) = with_templates("fc-ui-template-prompt");
+    // Cancel keeps the project and its changes
     d.exec("file.newBin", json!({"name": "Unsaved"}));
-    assert!(d.app().session.is_dirty());
     d.menu("file.newProjectFromTemplate");
     d.click("newFromTemplate.ok");
     assert!(!d.dialog_open());
@@ -380,17 +405,36 @@ fn new_project_from_template_lists_the_saved_templates() {
     assert!(d.has("templateProject.save") && d.has("templateProject.dontSave"));
     d.click("templateProject.cancel");
     assert!(d.app().ui.clip_dialog.is_none());
-    assert_eq!(d.app().session.project.name, "Episode 1");
-    assert!(d.app().session.is_dirty());
-    // Don't Save: the template replaces them
+    assert!(root_bin(&mut d, "Unsaved") && d.app().session.is_dirty());
+    // Save: the changes are saved, then the template replaces the project
+    let saved = dir.join("start.fcproj");
     d.menu("file.newProjectFromTemplate");
+    d.click("newFromTemplate.ok");
+    d.click("templateProject.save");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(std::fs::read_to_string(&saved).unwrap().contains("Unsaved"), "the changes were saved");
+    assert!(!root_bin(&mut d, "Vlog Bin") && !root_bin(&mut d, "Unsaved"), "the Interview template");
+    assert!(d.app().session.path.is_none() && !d.app().session.is_dirty());
+    // Save on a never-saved project asks where to save it first
+    d.exec("file.newBin", json!({"name": "Unsaved"}));
+    let saved = dir.join("episode 1.fcproj");
+    let saved_path = saved.to_string_lossy().into_owned();
+    d.app().hooks.pick_save = Some(Box::new(move |_| Some(saved_path.clone())));
+    d.menu("file.newProjectFromTemplate");
+    d.click("newFromTemplate.ok");
+    d.click("templateProject.save");
+    assert!(std::fs::read_to_string(&saved).unwrap().contains("Unsaved"), "saved where the user picked");
+    assert!(!root_bin(&mut d, "Unsaved") && !d.app().session.is_dirty());
+    // Don't Save: the template replaces the changes
+    d.exec("file.newBin", json!({"name": "Unsaved"}));
+    d.menu("file.newProjectFromTemplate");
+    d.ok("ui.set", json!({"menuDialog": {"template": template(&dir, "Vlog")}}));
     d.click("newFromTemplate.ok");
     d.click("templateProject.dontSave");
     assert!(d.app().ui.clip_dialog.is_none());
-    let s = &d.app().session;
-    assert_eq!(s.project.name, "Untitled");
-    assert_eq!(s.project.items.len(), items);
-    assert!(!s.is_dirty());
+    assert!(root_bin(&mut d, "Vlog Bin") && !root_bin(&mut d, "Unsaved"));
+    assert_eq!(d.app().session.project.name, "Untitled");
+    assert!(!d.app().session.is_dirty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
