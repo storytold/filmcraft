@@ -330,6 +330,12 @@ linked, because the list's source times are timecodes; relink it with Align Time
 same frames as importing the EDL next to its media. One relink, together with the files it pulls
 along, is one undo step.
 
+Masks and the point parameters of standard effects are in source pixels, so a file of another frame
+size (the original of a proxy) rescales them: the vertices, tangents and path keyframes of each mask,
+the Position and Anchor Point of the Transform effect, a blur's centre, a gradient's ends and so on,
+keyframes too, by the new size over the old one. A mask's feather and expansion, which are lengths,
+follow the width ratio. Motion is left alone, and an "auto" point stays auto.
+
 Link Media dialog automation ids: `linkMedia.row.<n>`,
 `linkMedia.match.<fileName|extension|clipId|duration|mediaStart|metadata>`, `linkMedia.alignTimecode`,
 `linkMedia.relinkOthers`, `linkMedia.folder`, `linkMedia.browse`, `linkMedia.exactName`,

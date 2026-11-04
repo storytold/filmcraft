@@ -181,6 +181,123 @@ fn forced_relink_takes_the_new_files_properties() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A clip cut on a half-size proxy, then linked to its full-size original: masks and the point
+/// parameters of standard effects (source pixels) keep their spot and size in the picture, in one
+/// undo step. Motion, and a link to a file of the same size, change nothing.
+#[test]
+fn relinking_to_another_frame_size_keeps_masks_and_effect_points_on_the_same_spot_of_the_picture() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::{Keyframe, MaskPath, ParamValue, find_effect};
+    use filmcraft_time::{FrameRate, Tick};
+    let root = tmp_dir("relink-points-size");
+    std::fs::create_dir_all(root.join("proxy")).unwrap();
+    std::fs::create_dir_all(root.join("original")).unwrap();
+    let (proxy, original) = (root.join("proxy/a.mov"), root.join("original/a.mov"));
+    make_movie(&proxy, DemoScene::Aurora, W, H, 12);
+    make_movie(&original, DemoScene::Aurora, W * 2, H * 2, 12);
+    let (mut s, items, seq) = session_with(&[&proxy]);
+    let clip_id = s.project.sequence(seq).unwrap().video_tracks[0].items[0].id;
+    s.execute("masks.add", json!({"clip": clip_id.0, "shape": "ellipse", "center": [80, 45], "size": [40, 40]})).unwrap();
+    // an animated mask, a Transform effect with an animated Position and an Anchor Point that is still "auto"
+    let t6 = FrameRate::FPS_24.tick_of(6);
+    let mut p = (*s.project).clone();
+    let clip = &mut p.sequence_mut(seq).unwrap().video_tracks[0].items[0];
+    let opacity = clip.effect_mut("opacity").unwrap();
+    let mask = &mut opacity.masks[0];
+    mask.path.keyframes = vec![Keyframe::new(Tick::ZERO, mask.path.value.clone()), Keyframe::new(t6, ParamValue::Path(MaskPath::rect(10.0, 20.0, 50.0, 60.0)))];
+    mask.feather.value = ParamValue::Float(10.0);
+    mask.expansion.value = ParamValue::Float(-3.0);
+    let mut transform = find_effect("transform").unwrap().instance();
+    let position = transform.param_mut("position").unwrap();
+    position.value = ParamValue::Vec2(Vec2::new(80.0, 45.0));
+    position.keyframes = vec![Keyframe::new(Tick::ZERO, ParamValue::Vec2(Vec2::new(80.0, 45.0))), Keyframe::new(t6, ParamValue::Vec2(Vec2::new(40.0, 30.0)))];
+    transform.param_mut("anchor").unwrap().value = ParamValue::Vec2(Vec2::new(f64::NAN, f64::NAN));
+    clip.effects.push(transform);
+    s.project = std::sync::Arc::new(p);
+    let effects = |s: &Session| s.project.sequence(seq).unwrap().video_tracks[0].items[0].effects.clone();
+    let before = effects(&s);
+
+    s.execute("media.relink", json!({"item": items[0].0, "path": original.to_string_lossy(), "force": true})).unwrap();
+    assert_eq!(s.project.source_size(items[0]), Some((W * 2, H * 2)));
+    let after = effects(&s);
+    let at = |e: &[filmcraft_project::EffectInstance], id: &str| e.iter().find(|e| e.effect == id).unwrap().clone();
+    // the mask: vertices and tangents, both path keyframes, and the lengths
+    let (m0, m1) = (&at(&before, "opacity").masks[0], &at(&after, "opacity").masks[0]);
+    let path = |m: &filmcraft_project::Mask, k: Option<usize>| match k.map_or(&m.path.value, |k| &m.path.keyframes[k].value) {
+        ParamValue::Path(p) => p.clone(),
+        other => panic!("{other:?}"),
+    };
+    for k in [None, Some(0), Some(1)] {
+        let (a, b) = (path(m0, k), path(m1, k));
+        assert_eq!(a.vertices.len(), b.vertices.len());
+        for (a, b) in a.vertices.iter().zip(&b.vertices) {
+            assert_eq!((b.p.x, b.p.y), (a.p.x * 2.0, a.p.y * 2.0));
+            assert_eq!((b.t_in.x, b.t_in.y), (a.t_in.x * 2.0, a.t_in.y * 2.0));
+            assert_eq!((b.t_out.x, b.t_out.y), (a.t_out.x * 2.0, a.t_out.y * 2.0));
+        }
+    }
+    assert_eq!((m1.feather.value.as_f64(), m1.expansion.value.as_f64()), (Some(20.0), Some(-6.0)));
+    assert_eq!(m1.opacity.value, m0.opacity.value, "a percentage does not depend on the size");
+    // the Transform effect: Position (static and keyframes) doubled, the auto Anchor Point still auto
+    let tf = at(&after, "transform");
+    let pos = tf.param("position").unwrap();
+    assert_eq!(pos.value.as_vec2(), Some(Vec2::new(160.0, 90.0)));
+    assert_eq!(pos.keyframes.iter().map(|k| k.value.as_vec2().unwrap()).collect::<Vec<_>>(), vec![Vec2::new(160.0, 90.0), Vec2::new(80.0, 60.0)]);
+    assert_eq!(
+        tf.param("anchor").unwrap().value.as_vec2(),
+        Some(Vec2::new(f64::from(W), f64::from(H))),
+        "an auto anchor is centred in the real picture, as before"
+    );
+    // Motion does not depend on the source size here
+    assert_eq!(at(&after, "motion"), at(&before, "motion"));
+
+    // one undo step takes the link and every point back
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.source_size(items[0]), Some((W, H)));
+    assert_eq!(at(&effects(&s), "opacity").masks, at(&before, "opacity").masks);
+    assert_eq!(at(&effects(&s), "transform").param("position"), at(&before, "transform").param("position"));
+    // a link to a file of the same size leaves them alone
+    let same = root.join("proxy/b.mov");
+    make_movie(&same, DemoScene::CityNight, W, H, 12);
+    s.execute("media.relink", json!({"item": items[0].0, "path": same.to_string_lossy(), "force": true})).unwrap();
+    assert_eq!(at(&effects(&s), "opacity").masks, at(&before, "opacity").masks);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The same relink, seen in the picture: the opacity mask still cuts out the middle of the frame
+/// after the clip is linked to a file twice the size.
+#[test]
+fn a_mask_still_cuts_out_the_same_part_of_the_picture_after_relinking_to_another_size() {
+    let root = tmp_dir("relink-mask-render");
+    std::fs::create_dir_all(root.join("proxy")).unwrap();
+    std::fs::create_dir_all(root.join("original")).unwrap();
+    let (proxy, original) = (root.join("proxy/a.mov"), root.join("original/a.mov"));
+    make_movie(&proxy, DemoScene::Aurora, W, H, 12);
+    make_movie(&original, DemoScene::Aurora, W * 2, H * 2, 12);
+    let (mut s, items, seq) = session_with(&[&proxy]);
+    // Scale to Frame Size, as clips are placed by default: the picture fills the frame at either size
+    let mut p = (*s.project).clone();
+    p.sequence_mut(seq).unwrap().video_tracks[0].items[0].scale_to_frame = true;
+    // an auto Anchor Point (the centre of whatever picture is linked), so that only the mask is under test
+    let anchor = p.sequence_mut(seq).unwrap().video_tracks[0].items[0].effect_mut("motion").unwrap().param_mut("anchor").unwrap();
+    anchor.value = filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(f64::NAN, f64::NAN));
+    s.project = std::sync::Arc::new(p);
+    let clip_id = s.project.sequence(seq).unwrap().video_tracks[0].items[0].id;
+    s.execute("masks.add", json!({"clip": clip_id.0, "shape": "ellipse", "center": [80, 45], "size": [80, 80]})).unwrap();
+    s.execute("masks.set", json!({"clip": clip_id.0, "feather": 0})).unwrap();
+    let lit = |s: &Session, fx: f32, fy: f32| {
+        let img = s.render_program(1.0).unwrap();
+        let (x, y) = (((img.w as f32 * fx) as usize).min(img.w - 1), ((img.h as f32 * fy) as usize).min(img.h - 1));
+        let px = img.get(x, y);
+        px[0].max(px[1]).max(px[2]) > 0.01
+    };
+    assert!(lit(&s, 0.5, 0.5) && !lit(&s, 0.9, 0.9), "the mask keeps the middle of the proxy");
+    s.execute("media.relink", json!({"item": items[0].0, "path": original.to_string_lossy(), "force": true})).unwrap();
+    assert!(lit(&s, 0.5, 0.5), "the middle of the original is still inside the mask");
+    assert!(!lit(&s, 0.9, 0.9), "and the corner is still outside it");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn make_offline_shows_the_slate_until_relinked() {
     let root = tmp_dir("relink-offline");
