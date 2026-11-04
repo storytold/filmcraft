@@ -635,3 +635,36 @@ async fn ingest_is_skipped_while_confined() {
     assert_eq!(file_names(&base.join("outside")), ["secret.png"]);
     let _ = std::fs::remove_dir_all(base);
 }
+
+/// #985: sources a session opened before it was confined (`--project` at start-up, say) were made
+/// with unrestricted services. They must not keep reading: a still decoded earlier, and an image
+/// sequence whose later frames load on demand. Each is exported unconfined first, as the control.
+#[tokio::test(flavor = "multi_thread")]
+async fn sources_opened_before_confinement_are_dropped() {
+    let (base, roots) = roots_base("cached");
+    let red = image::RgbaImage::from_pixel(64, 64, image::Rgba([255, 0, 0, 255]));
+    for n in 1..=48 {
+        red.save(base.join(format!("outside/seq_{n:04}.png"))).unwrap();
+    }
+    let imports = [
+        json!({"paths": [base.join("outside/secret.png").to_string_lossy()]}),
+        json!({"paths": [base.join("outside/seq_0001.png").to_string_lossy()], "imageSequence": true}),
+    ];
+    for (n, import) in imports.into_iter().enumerate() {
+        let mut s = Session::default();
+        s.execute("file.newProject", json!({"name": "p"})).unwrap();
+        s.execute("file.newSequence", json!({"name": "s", "width": 64, "height": 64})).unwrap();
+        let item = s.execute("file.import", import).unwrap()["items"][0].as_u64().unwrap();
+        s.execute("timeline.place", json!({"item": item, "track": "V1", "seconds": 0.0})).unwrap();
+        let before = base.join(format!("out/before{n}.png"));
+        s.execute("file.exportFrame", json!({"path": before.to_string_lossy(), "seconds": 0.0})).unwrap();
+        assert_eq!(image::open(&before).unwrap().to_rgba8().get_pixel(32, 32).0[..3], [255, 0, 0], "the control, case {n}");
+
+        let m = FilmcraftMcp::headless(s).with_roots(Some(roots.clone()));
+        // Later in the clip, so a sequence has to load a frame it hasn't loaded yet.
+        let after = base.join(format!("out/after{n}.png"));
+        m.run("file.exportFrame", json!({"path": after.to_string_lossy(), "seconds": 0.5})).await.unwrap();
+        assert_ne!(image::open(&after).unwrap().to_rgba8().get_pixel(32, 32).0[..3], [255, 0, 0], "case {n}: footage outside the read root reached the frame");
+    }
+    let _ = std::fs::remove_dir_all(base);
+}

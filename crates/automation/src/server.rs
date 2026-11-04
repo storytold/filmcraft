@@ -233,6 +233,8 @@ impl FilmcraftMcp {
         if let (Some(r), Backend::Headless(s)) = (&roots, &*self.backend) {
             let mut g = s.lock().unwrap_or_else(PoisonError::into_inner);
             g.services = Arc::new(crate::confined_services::ConfinedServices::new(g.services.clone(), r.clone()));
+            // Sources opened so far (`--project`) read through the old services: open them again.
+            g.media.clear();
             g.files_confined = true;
         }
         self.roots = roots;
