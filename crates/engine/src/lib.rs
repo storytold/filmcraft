@@ -310,6 +310,9 @@ impl EffectSel {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EditorState {
     pub active_sequence: Option<ItemId>,
+    /// Per-project Timeline interaction settings, persisted in `ProjectView` and recovery state.
+    #[serde(default)]
+    pub timeline_ui: filmcraft_project::TimelineUiSettings,
     /// Playhead per sequence.
     pub playheads: std::collections::BTreeMap<ItemId, Tick>,
     /// Item loaded in the Source monitor and its playhead (media time).
@@ -451,6 +454,15 @@ pub struct Session {
     /// owners) that belongs to the replaced document even if item ids are reused.
     pub document_epoch: u64,
     pub saved_revision: u64,
+    /// Bumped when only the stored Timeline view (zoom, scroll, track heights) changes. It is
+    /// NOT `revision`: per-frame view changes must not invalidate revision-keyed caches, and a
+    /// clean project must stay clean. `sync_persistence` watches it so the view still reaches
+    /// the autosave journal.
+    pub view_epoch: u64,
+    /// The view counter as of the last successful save: what the project file on disk holds.
+    /// The difference to `view_epoch` is unsaved view state, exactly like `saved_revision` is
+    /// unsaved content.
+    pub saved_view_epoch: u64,
     pub path: Option<String>,
     pub state: EditorState,
     pub media: Arc<MediaPool>,
@@ -574,6 +586,8 @@ impl Session {
             revision: 1,
             document_epoch: 0,
             saved_revision: 1,
+            view_epoch: 0,
+            saved_view_epoch: 0,
             path: None,
             state: EditorState {
                 snapping: true,
@@ -682,14 +696,30 @@ impl Session {
     /// Tell the worker about the current project state if it changed (cheap: an `Arc` clone and a
     /// channel send; serialization happens on the worker). Called after every command.
     pub fn sync_persistence(&mut self) {
-        let dirty = self.is_dirty();
-        let Some(p) = self.persistence.as_mut() else { return };
-        let cur = autosave::Sent { revision: self.revision, saved_revision: self.saved_revision, path: self.path.clone() };
-        if p.last_sent.as_ref() == Some(&cur) {
+        // the worker check and the revision check come first: the project view is a walk over
+        // every sequence and it must not repeat on every command while nothing changed (or when
+        // there is no worker to send it to at all)
+        if self.persistence.is_none() {
             return;
         }
-        if dirty {
-            p.send_dirty(self.project.clone(), self.revision, self.path.clone());
+        let dirty = self.is_dirty();
+        let cur = autosave::Sent {
+            revision: self.revision,
+            saved_revision: self.saved_revision,
+            path: self.path.clone(),
+            view_epoch: self.view_epoch,
+            saved_view_epoch: self.saved_view_epoch,
+        };
+        if self.persistence.as_ref().is_some_and(|p| p.last_sent.as_ref() == Some(&cur)) {
+            return;
+        }
+        // the view reaches the journal whenever it is newer than what the project file holds
+        // (a clean project's zoom or scroll is unsaved state too), and the journal clears again
+        // once a save catches up -- no matter what order the two arrive in
+        let view = (dirty || self.view_epoch != self.saved_view_epoch).then(|| self.project_view());
+        let Some(p) = self.persistence.as_mut() else { return };
+        if let Some(view) = view {
+            p.send_dirty(self.project.clone(), view, self.revision, self.view_epoch, dirty, self.path.clone());
         } else {
             p.send_clean();
         }
@@ -764,8 +794,21 @@ impl Session {
         }
     }
 
+    /// The stored Timeline view (zoom, scroll, sliders) changed. Deliberately does NOT touch
+    /// `revision`: these change on every frame of a drag and must not invalidate frame, peak or
+    /// duplicate-marker caches. `sync_persistence` sees the epoch move and journals the view.
+    pub fn view_changed(&mut self) {
+        self.view_epoch = self.view_epoch.wrapping_add(1);
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
+    }
+
+    /// Mark a project-file view setting as changed and journal its current project view.
+    pub fn project_view_changed(&mut self) {
+        self.bump();
+        self.sync_persistence();
     }
 
     /// Run a command by id.
@@ -899,6 +942,7 @@ impl Session {
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
+            timeline_ui: self.state.timeline_ui.clone(),
         }
     }
 
@@ -908,6 +952,7 @@ impl Session {
     /// view without any open sequence leaves the project on its first sequence: a project saved
     /// by a session that never showed one (a script, the CLI) should not open on an empty Timeline.
     pub fn restore_project_view(&mut self, view: filmcraft_project::ProjectView) {
+        self.state.timeline_ui = view.timeline_ui.checked();
         let mut open: Vec<ItemId> = Vec::new();
         for id in view.open_sequences {
             if self.project.sequence(id).is_some() && !open.contains(&id) {
