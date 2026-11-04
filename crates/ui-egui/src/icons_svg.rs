@@ -224,10 +224,12 @@ fn num(attrs: &str, key: &str) -> f32 {
 
 fn parse_points(s: &str) -> Vec<(f32, f32)> {
     let nums: Vec<f32> = tokenize_nums(s);
-    nums.chunks(2).filter_map(|c| match c {
-        [x, y] => Some((*x, *y)),
-        _ => None,
-    }).collect()
+    nums.chunks(2)
+        .filter_map(|c| match c {
+            [x, y] => Some((*x, *y)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn tokenize_nums(s: &str) -> Vec<f32> {
