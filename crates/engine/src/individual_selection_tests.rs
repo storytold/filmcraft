@@ -226,7 +226,11 @@ fn cut_copy_and_nest_keep_an_alt_selection_exact() {
             assert_eq!(q.find_item(selected).is_none(), command != "edit.copy", "{command} {audio}");
             if command == "clip.nest" {
                 let nested = s.project.sequence(filmcraft_project::ItemId(r["sequence"].as_u64().unwrap())).unwrap();
-                assert_eq!(nested.all_tracks().map(|t| t.items.len()).sum::<usize>(), 1, "{audio}: only the selected half is nested");
+                let inside: Vec<_> = nested.all_tracks().flat_map(|t| t.items.iter()).collect();
+                assert_eq!(inside.len(), 1, "{audio}: only the selected half is nested");
+                // neither half has a partner to follow any more
+                assert_eq!(inside[0].link, None, "{audio}: the nested half is not linked");
+                assert_eq!(q.find_item(partner).unwrap().1.link, None, "{audio}: the half left behind is not linked");
             } else {
                 assert_eq!(s.state.clipboard.len(), 1, "{command} {audio}: only the selected half is copied");
                 assert_eq!(s.state.clipboard[0].2.id, selected);
@@ -255,7 +259,9 @@ fn cut_copy_and_nest_take_both_halves_of_a_linked_selection() {
         assert!(q.find_item(video).is_none() && q.find_item(sound).is_none(), "{command}: both halves go");
         if command == "clip.nest" {
             let nested = s.project.sequence(filmcraft_project::ItemId(r["sequence"].as_u64().unwrap())).unwrap();
-            assert_eq!(nested.all_tracks().map(|t| t.items.len()).sum::<usize>(), 2, "both halves are nested");
+            let inside: Vec<_> = nested.all_tracks().flat_map(|t| t.items.iter()).collect();
+            assert_eq!(inside.len(), 2, "both halves are nested");
+            assert!(inside[0].link.is_some() && inside[0].link == inside[1].link, "the nested pair stays linked");
         } else {
             assert_eq!(s.state.clipboard.len(), 2, "both halves are cut");
         }

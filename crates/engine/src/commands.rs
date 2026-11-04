@@ -4469,6 +4469,22 @@ pub fn next_nested_name(s: &Session) -> String {
         .unwrap_or_else(|| "Nested Sequence".to_string())
 }
 
+/// Clear the link of every clip on an unlocked track of `seq` that is the only clip left with one
+/// of `links`: it has nothing to follow.
+fn unlink_lone_clips(seq: &mut filmcraft_project::Sequence, links: &std::collections::HashSet<u64>) {
+    let mut members: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    for l in seq.all_tracks().flat_map(|t| t.items.iter()).filter_map(|i| i.link) {
+        *members.entry(l).or_default() += 1;
+    }
+    for t in seq.all_tracks_mut().filter(|t| !t.locked) {
+        for it in &mut t.items {
+            if it.link.is_some_and(|l| links.contains(&l) && members.get(&l).copied().unwrap_or(0) < 2) {
+                it.link = None;
+            }
+        }
+    }
+}
+
 fn nest(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     // An Alt selection is already exact, as for Clear (#2244).
@@ -4520,6 +4536,7 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
     let nested_track = |k: TrackKind, ti: usize| if k == TrackKind::Audio { audio_at.get(&ti).copied().unwrap_or(ti) } else { ti };
     // what leaves this sequence: everything nested, less the sound that stays behind
     let removed: Vec<ClipId> = items.iter().filter(|i| !(video_only && i.0 == TrackKind::Audio)).map(|i| i.2.id).collect();
+    let nested_links: std::collections::HashSet<u64> = items.iter().filter_map(|i| i.2.link).collect();
     let stays = |k: TrackKind| video_only && k == TrackKind::Audio;
     let r = s.edit("Nest", |pr, st| {
         let nid = pr.new_sequence(&name, q.settings.clone(), nv, na, None);
@@ -4559,6 +4576,8 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
             for t in nq.all_tracks_mut() {
                 t.sort();
             }
+            // inside the nest too, a clip whose partner was not nested is not linked
+            unlink_lone_clips(nq, &nested_links);
             nq.check().map_err(EngineError::Other)?;
         }
         let rate = q.settings.frame_rate;
@@ -4573,18 +4592,9 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
         let (link, new_video, new_audio) = (pr.alloc_id(), pr.alloc_id(), pr.alloc_id());
         let seq = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
         edit::delete_items(seq, &removed);
-        // sound left behind has lost its picture: a clip left alone in its link is no longer
-        // linked, but sound clips that stay behind together keep their link to each other
-        if video_only {
-            let links: Vec<u64> = items.iter().filter(|i| i.0 == TrackKind::Video).filter_map(|i| i.2.link).collect();
-            let left = |l: u64| seq.all_tracks().flat_map(|t| t.items.iter()).filter(|i| i.link == Some(l)).count();
-            let alone: Vec<u64> = links.iter().copied().filter(|l| left(*l) < 2).collect();
-            for it in seq.audio_tracks.iter_mut().flat_map(|t| t.items.iter_mut()) {
-                if it.link.is_some_and(|l| alone.contains(&l)) {
-                    it.link = None;
-                }
-            }
-        }
+        // a clip that lost its partners to the nest is no longer linked; clips that stay behind
+        // together keep their link to each other
+        unlink_lone_clips(seq, &nested_links);
         // Where the nest goes, as Premiere Pro 26.5.2 places it (about 35 nests observed). With L
         // the lowest video track of the selection and `a` the number of the highest audio track
         // holding selected sound, the picture takes the lowest track T from L up such that
