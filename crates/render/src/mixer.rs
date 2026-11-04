@@ -254,6 +254,16 @@ impl<'a> Lane<'a> {
         if let Some(v) = self.constant() {
             return Some(f(v));
         }
+        // An animated lane holds its last keyframe forever. Once a request starts in that
+        // tail, avoid per-sample Tick conversion, keyframe lookup and gain conversion.
+        // Live holds/releases still evaluate their override at each sample.
+        if self.ov.is_none()
+            && let Some(p) = self.param
+            && let Some(last) = p.keyframes.last()
+            && Tick::from_units(c0, sr as i64) >= last.time
+        {
+            return Some(f(self.auto(last.time)));
+        }
         for (i, o) in out.iter_mut().enumerate() {
             *o = f(self.at(Tick::from_units(c0 + i as i64, sr as i64)));
         }
