@@ -90,7 +90,10 @@ pub fn register() -> Availability {
         // HDR sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere
         // (and on macOS, whose VideoToolbox path is 8-bit) they are tone-mapped to SDR, as before
         filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
+        filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, nvenc::av1_available);
+        filmcraft_export::register_hdr_probe(filmcraft_export::Format::Av1, nvenc::av1_hdr_available);
         nvenc::warm_hevc_probe();
+        nvenc::warm_av1_probe();
     }
     #[cfg(target_os = "windows")]
     {
@@ -129,6 +132,24 @@ pub fn register() -> Availability {
                 available = Availability::Available("NVDEC");
             }
             Err(why) => log::info!("no NVDEC hardware decoding: {why}"),
+        }
+        // NVENC's H.264 encoder factory is registered above; what Linux still needs is the answer to
+        // "is H.265 available here". The format exists where a small HEVC session opens, and HDR
+        // sequences export as HEVC Main 10 (PQ / HLG) only where NVENC has a 10-bit encoder; elsewhere
+        // they are tone-mapped to SDR, as on macOS.
+        //
+        // The probes are deliberately not warmed here, as they are on Windows. Warming starts a
+        // thread that opens a hardware session, and the CLI is short-lived: a fast export finishes and
+        // the process exits while the probe is still inside the driver, whose exit handler then waits
+        // on a join the probe cannot reach because it holds a driver mutex. The first Export draw pays
+        // for the session instead (about 0.1 s, once per launch).
+        #[cfg(target_pointer_width = "64")]
+        {
+            filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, nvenc::hevc_available);
+            filmcraft_export::register_hdr_probe(filmcraft_export::Format::Hevc, nvenc::hevc_hdr_available);
+            // AV1 is the same story: NVENC is its only encoder, on GPUs from the RTX 40 series on
+            filmcraft_export::register_format_probe(filmcraft_export::Format::Av1, nvenc::av1_available);
+            filmcraft_export::register_hdr_probe(filmcraft_export::Format::Av1, nvenc::av1_hdr_available);
         }
         available
     }

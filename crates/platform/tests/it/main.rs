@@ -3,6 +3,7 @@ mod fallback;
 mod hardware_encode;
 mod media_foundation;
 mod nvenc;
+mod nvenc_av1;
 mod nvenc_export;
 mod nvenc_hevc;
 mod nvenc_hevc_export;

@@ -426,7 +426,7 @@ pub fn file_safe(n: &str) -> String {
 }
 
 /// `path` with the settings' extension (added when missing; image sequences keep theirs).
-fn with_extension(path: &str, settings: &ExportSettings) -> String {
+pub(crate) fn with_extension(path: &str, settings: &ExportSettings) -> String {
     let ext = settings.extension();
     match Path::new(path).extension().and_then(|e| e.to_str()) {
         Some(e)

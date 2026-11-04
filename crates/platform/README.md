@@ -61,7 +61,7 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   - After a `flush` (which drains the MFT) the MFT only restarts at an IDR picture; the GOP cache
     always seeks after a flush, and a caller that continues from the middle of a GOP gets an error
     that `HybridDecoder` answers by replaying the run in software.
-- **Windows and 64-bit Linux: NVIDIA NVENC H.264 encoding, and H.265 (HEVC) on Windows** (`nvenc/`), 8-bit SDR 4:2:0 for Export. The driver's
+- **Windows and 64-bit Linux: NVIDIA NVENC H.264, H.265 (HEVC) and AV1 encoding** (`nvenc/`), 8-bit SDR 4:2:0 for Export. The driver's
   `nvEncodeAPI64.dll` (Windows) or `libnvidia-encode.so.1` (Linux), API 12.1, is loaded at run time,
   so machines without NVIDIA still start. Windows uses a Direct3D 11 device; Linux retains a primary
   CUDA context through the runtime-loaded `libcuda.so.1`, released after the encoder is destroyed.
@@ -76,8 +76,9 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   It declines two-pass VBR, HDR, MXF, interlaced output, sizes outside NVENC's limits and systems
   without an NVIDIA GPU or driver, and the software encoder runs instead. A failure during an export
   ends it with an error, since a hardware stream cannot be finished in software. The same session,
-  ring and input path encode H.265, see [Hardware H.265 (HEVC) encoding (Windows,
-  NVENC)](#hardware-h265-hevc-encoding-windows-nvenc).
+  ring and input path encode H.265 and AV1, see [Hardware H.265 (HEVC) encoding (Windows and
+  64-bit Linux, NVENC)](#hardware-h265-hevc-encoding-windows-and-64-bit-linux-nvenc) and
+  [Hardware AV1 encoding](#hardware-av1-encoding-windows-and-64-bit-linux-nvenc).
 - **Linux: NVDEC, H.264 (`avcC`) and HEVC (`hvcC`)** on NVIDIA's proprietary driver (`nvdec/`): H.264
   8-bit and HEVC 8- / 10-bit, 4:2:0 progressive. `libnvcuvid.so.1` and `libcuda.so.1` are loaded at
   run time; without them (or without a device) nothing is registered. NVIDIA's own parser takes the
@@ -196,7 +197,7 @@ The sample entry's `hvcC` record is the one VideoToolbox wrote for the stream (r
 format description's sample description extension atoms, with the VPS / SPS / PPS), so profile,
 level and flags are the encoder's own. If it is missing the export stops with that reason.
 
-## Hardware H.265 (HEVC) encoding (Windows, NVENC)
+## Hardware H.265 (HEVC) encoding (Windows and 64-bit Linux, NVENC)
 
 One codec enum (`nvenc::Codec`, chosen by `Profile::HevcMain` the way `VtProfile::HevcMain` does it
 for VideoToolbox) parameterises the NVENC session: the codec and profile GUIDs, the capability
@@ -211,8 +212,10 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
   `filmcraft_export::register_format_probe`: one small HEVC session (a 640×360 encoder, the answer
   kept; about half a second in a fresh process, nearly all of it opening the Direct3D 11 device and
   the NVENC session, which every NVENC export pays too). `register()` also asks it on a thread of its
-  own (`nvenc::warm_hevc_probe`), so the first draw of the format list does not wait for it; a
-  caller that asks while it runs waits for the same answer. The
+  own (`nvenc::warm_hevc_probe`) on Windows, so the first draw of the format list does not wait for
+  it; a caller that asks while it runs waits for the same answer. On Linux `register()` leaves the
+  probe to the first caller: a probe thread still inside the driver when a short CLI exits keeps the
+  process from ending. The
   Hardware encoding toggle governs H.264 only: with H.265 selected NVENC is used whether it is Auto
   or Off, because nothing else can encode it.
 - **What it writes:** HEVC Main, 8-bit 4:2:0, SDR BT.709 limited range (Main 10 HDR: see below) (the VUI says so, with the
@@ -275,6 +278,30 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
   known from a submission counter (`n % gop == 0`). The sample entry carries `colr` (nclx BT.2020,
   PQ / HLG, limited), and for PQ `mdcv` and `clli`; 8-bit SDR HEVC is unchanged and has no `colr`
   (the VUI carries its description, as in the software H.264 path).
+
+## Hardware AV1 encoding (Windows and 64-bit Linux, NVENC)
+
+`Profile::Av1Main` / `Profile::Av1Main10` select the AV1 codec (`nvenc::Codec::Av1`) in the same
+session, ring and input path as H.264 and H.265. The GPU needs an AV1 encoder (RTX 40 series and
+newer); `nvenc::av1_available` is one small session, answered once, and is what makes
+Export ▸ Format ▸ AV1 available (`register_format_probe`); `nvenc::av1_hdr_available` does the same
+for Main 10 (`register_hdr_probe`). As with H.265 the choice of the format is the opt-in and a
+request NVENC cannot take is an error that says why.
+
+- **What it writes:** AV1 Main, 4:2:0, 8-bit SDR BT.709, or 10-bit BT.2020 with PQ / HLG (Main 10),
+  progressive, preset P5, constant or one-pass variable bitrate, an IDR with a repeated sequence
+  header at every keyframe distance, in MP4 (`av01`; AV1 has no QuickTime option). Samples are low-overhead OBUs
+  (temporal units) as NVENC writes them. Two-pass VBR, CRF, non-square pixels and interlaced output
+  are declined.
+- **The `av1C` is built from the sequence header OBU the encoder wrote** (`nvenc/av1.rs`, parsed with
+  `filmcraft_av1`): profile, level, bit depth, chroma subsampling and the OBU itself as
+  `configOBUs`. A bit depth that differs from the request is an error.
+- **HDR10 static metadata** (mastering display colour volume and content light level) is written
+  as metadata OBUs in front of the first frame of each keyframe unit, converted from the decimal GBR
+  units of the `mdcv` box to AV1's binary RGB fixed point.
+- **The tests** (`tests/it/nvenc_av1.rs`) round-trip SDR, PQ and HLG exports through ffprobe, ffmpeg
+  and our own decoder, and check the Main 10 signalling, the repeated sequence headers and the
+  decoded luma. They skip without an AV1 encoder.
 
 ## Guarantees
 

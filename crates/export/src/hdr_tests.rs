@@ -133,6 +133,13 @@ fn which_exports_are_hdr() {
     assert!(hdr_output(true, false, Format::Hevc, hevc_only));
     assert!(!hdr_output(true, true, Format::Hevc, hevc_only), "settings.sdr forces SDR");
     assert!(!hdr_output(false, false, Format::Hevc, hevc_only));
+    // AV1 likewise: Main 10 only where a registered encoder writes it, and the answer is per format
+    let av1_only = |f: Format| f == Format::Av1;
+    assert!(!hdr_output(true, false, Format::Av1, never), "no probe: tone-mapped SDR");
+    assert!(!hdr_output(true, false, Format::Av1, hevc_only), "an H.265 probe does not make AV1 HDR");
+    assert!(hdr_output(true, false, Format::Av1, av1_only));
+    assert!(!hdr_output(true, true, Format::Av1, av1_only), "settings.sdr forces SDR");
+    assert!(!hdr_output(false, false, Format::Av1, av1_only), "SDR working space");
     // formats without HDR output
     assert!(!hdr_output(true, false, Format::Mjpeg, |_| true));
 }
