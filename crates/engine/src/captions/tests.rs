@@ -209,6 +209,30 @@ fn a_caption_on_one_frame_ends_at_the_next_frame() {
     assert_ne!(row["in"], row["out"], "{listed}");
 }
 
+/// A caption asked for before the sequence starts begins at zero and lasts its duration, snapped to
+/// the nearest frame. The start moves to zero before snapping, so the end is snapped from there.
+/// Snapping the start and end below zero first gave the caption the length of that snapped span:
+/// at 30 fps one asked for at -0.02 s for 0.04 s lasted two frames, where 0.04 s is 1.2 frames. At
+/// a rate whose frame is not a whole number of ticks the end also fell a tick before a frame: at
+/// 11 fps one asked for at -0.09 s for 0.09 s ended a tick before frame 1, so `captions.list` gave
+/// it the same in and out timecode, and at 37.516 fps one asked for at -0.5 s for 1 s ended a tick
+/// before frame 38.
+#[test]
+fn a_caption_asked_for_before_zero_starts_at_zero_and_ends_on_a_frame() {
+    for (fps, at, seconds, frames) in [(30.0, -0.02, 0.04, 1), (11.0, -0.09, 0.09, 1), (37.516, -0.5, 1.0, 38)] {
+        let mut s = demo();
+        s.execute("file.newSequence", json!({"name": "before zero", "fps": fps, "video": 1, "audio": 1})).unwrap();
+        let rate = s.sequence_rate();
+        s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+        s.execute("captions.add", json!({"track": "C1", "text": "A", "seconds": at, "durationSeconds": seconds})).unwrap();
+        let c = &s.active_sequence().unwrap().caption_tracks[0].captions[0];
+        assert_eq!((c.start, c.end()), (Tick::ZERO, rate.tick_of(frames)), "{fps} fps");
+        let listed = s.execute("captions.list", json!({})).unwrap();
+        let row = &listed["tracks"][0]["captions"][0];
+        assert_ne!(row["in"], row["out"], "{fps} fps: {listed}");
+    }
+}
+
 fn caption_spans(s: &Session) -> Vec<(f64, f64, String)> {
     let secs = |t: Tick| (t.seconds() * 10.0).round() / 10.0; // the demo sequence snaps to 23.976 fps frames
     s.active_sequence().unwrap().caption_tracks[0].captions.iter().map(|c| (secs(c.start), secs(c.end()), c.text.clone())).collect()
