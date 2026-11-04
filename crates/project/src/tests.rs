@@ -54,6 +54,18 @@ fn hostile_frame_rates_are_rejected_before_frame_arithmetic() {
 }
 
 #[test]
+fn hostile_sample_rates_are_rejected() {
+    for sample_rate in [0, 1, 2, 7999, 384_001, u32::MAX] {
+        let settings = SequenceSettings { sample_rate, ..Default::default() };
+        assert!(settings.validate().is_err(), "sample rate {sample_rate} should be rejected");
+    }
+    for sample_rate in [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 96000, 192000, 384000] {
+        let settings = SequenceSettings { sample_rate, ..Default::default() };
+        assert!(settings.validate().is_ok(), "sample rate {sample_rate} should be accepted");
+    }
+}
+
+#[test]
 fn corrupt_timeline_times_are_rejected_before_end_arithmetic() {
     let (mut project, media, seq) = demo_project();
     let rate = project.sequence(seq).unwrap().settings.frame_rate;

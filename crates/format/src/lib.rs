@@ -252,6 +252,10 @@ fn validate_loaded(mut loaded: Loaded) -> Result<Loaded, FormatError> {
             }
             filmcraft_project::ItemKind::Sequence(sequence) => {
                 let sequence = std::sync::Arc::make_mut(sequence);
+                if (1..8000).contains(&sequence.settings.sample_rate) {
+                    log::warn!("sequence `{name}`: sample rate {} Hz is below minimum 8000 Hz, raised to 8000 Hz", sequence.settings.sample_rate);
+                    sequence.settings.sample_rate = 8000;
+                }
                 for clip in sequence.audio_tracks.iter_mut().flat_map(|t| t.items.iter_mut()) {
                     if clip.audio_stream >= max {
                         log::warn!("sequence `{name}`: clip `{}` uses audio stream {}, reset to 0", clip.name, clip.audio_stream);
@@ -621,5 +625,16 @@ mod tests {
         assert!(matches!(migrate_with(table, serde_json::json!({}), 5), Err(FormatError::TooNew { found: 5, supported: 4 })));
         let e = migrate_with(&[a, fail], serde_json::json!({}), 1).unwrap_err();
         assert!(matches!(e, FormatError::Migration { from: 2, .. }), "{e}");
+    }
+
+    #[test]
+    fn legacy_low_sample_rate_sequences_are_repaired_on_load() {
+        let mut p = Project::new("Legacy Low Sample Rate");
+        let seq = p.new_sequence("LowRate", filmcraft_project::SequenceSettings { sample_rate: 7999, ..Default::default() }, 1, 1, None);
+        let bytes = encode(&p, false);
+        let loaded = decode(&bytes).expect("legacy 7999 Hz project should be repaired on load");
+        let loaded_seq = loaded.project.sequence(seq).unwrap();
+        assert_eq!(loaded_seq.settings.sample_rate, 8000);
+        assert!(loaded_seq.settings.validate().is_ok());
     }
 }

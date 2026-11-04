@@ -327,8 +327,8 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
         let (rate, w, h) = s.attribute("format").and_then(|f| self.formats.get(f)).copied().unwrap_or((FrameRate::default(), 1920, 1080));
         let df = s.attribute("tcFormat") == Some("DF");
         let mut settings = settings_for(rate, w, h, df);
-        if let Some(sr) = s.attribute("audioRate").and_then(parse_audio_rate) {
-            settings.sample_rate = sr;
+        if let Some(sr) = s.attribute("audioRate").and_then(parse_audio_rate).filter(|&sr| sr > 0) {
+            settings.sample_rate = sr.clamp(8000, 384_000);
         }
         let id = self.b.reserve_sequence(name, settings.clone(), bin);
         let mut seq = empty_sequence(settings);

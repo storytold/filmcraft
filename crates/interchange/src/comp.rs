@@ -772,7 +772,7 @@ pub(crate) fn to_project(doc: Document, opts: &ImportOptions, report: &mut Repor
     // (they may use each other), then build them
     let settings_of = |comp: &Composition| {
         let mut settings = settings_for(comp.rate, comp.width.max(16), comp.height.max(16), comp.drop);
-        settings.sample_rate = comp.sample_rate.max(1);
+        settings.sample_rate = if comp.sample_rate == 0 { 48_000 } else { comp.sample_rate.clamp(8000, 384_000) };
         settings
     };
     let nested_ids: Vec<ItemId> = doc.nested.iter().map(|comp| b.reserve_sequence(&comp.name, settings_of(comp), None)).collect();

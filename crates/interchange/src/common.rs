@@ -583,7 +583,10 @@ impl Builder {
     }
 }
 
-pub(crate) fn empty_sequence(settings: SequenceSettings) -> Sequence {
+pub(crate) fn empty_sequence(mut settings: SequenceSettings) -> Sequence {
+    if !(8000..=384_000).contains(&settings.sample_rate) {
+        settings.sample_rate = if settings.sample_rate == 0 { 48_000 } else { settings.sample_rate.clamp(8000, 384_000) };
+    }
     Sequence {
         settings,
         video_tracks: Vec::new(),

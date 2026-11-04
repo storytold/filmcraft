@@ -513,8 +513,17 @@ impl Imp<'_, '_> {
     }
 
     fn sequence(&mut self, stack: &Value, name: &str, meta: Option<&Value>, rate: FrameRate) -> ItemId {
-        let settings: SequenceSettings =
+        let mut settings: SequenceSettings =
             meta.and_then(|m| m.get("settings")).and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_else(|| settings_for(rate, 1920, 1080, false));
+        if !(8000..=384_000).contains(&settings.sample_rate) {
+            let clamped = if settings.sample_rate == 0 { 48_000 } else { settings.sample_rate.clamp(8000, 384_000) };
+            self.report.warn(format!("sequence `{name}`: sample rate {} Hz is outside 8000..=384000 Hz, clamped to {clamped} Hz", settings.sample_rate));
+            settings.sample_rate = clamped;
+        }
+        if let Err(e) = settings.validate() {
+            self.report.warn(format!("sequence `{name}`: invalid sequence settings ({e}), using defaults"));
+            settings = settings_for(rate, 1920, 1080, false);
+        }
         let id = self.b.reserve_sequence(name, settings.clone(), None);
         if let Some(l) = meta.and_then(|m| m.get("label")).and_then(|l| serde_json::from_value::<Label>(l.clone()).ok())
             && let Some(it) = self.b.p.item_mut(id)
