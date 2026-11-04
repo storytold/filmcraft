@@ -89,6 +89,7 @@ mod tests {
         motion.param_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(pos.0, pos.1));
         motion.param_mut("scale").unwrap().value = ParamValue::Float(scale);
         TrackItem {
+            custom_label_color: None,
             id: ClipId(id),
             item: ItemId(1),
             name: format!("c{id}"),
