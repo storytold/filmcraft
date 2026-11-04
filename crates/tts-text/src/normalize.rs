@@ -310,10 +310,16 @@ fn parse_money(rest: &str, lang: Lang) -> Option<(Vec<String>, usize)> {
         words.push(unit.into());
         return Some((words, skip + used + scale_len));
     }
-    let mut words = english_cardinal(value);
-    push_unit(&mut words, unit, value == 1);
+    let sub_unit_only = value == 0 && had_minor && minor > 0;
+    let mut words = Vec::new();
+    if !sub_unit_only {
+        words = english_cardinal(value);
+        push_unit(&mut words, unit, value == 1);
+    }
     if had_minor && minor > 0 {
-        words.push("and".into());
+        if !sub_unit_only {
+            words.push("and".into());
+        }
         let mut cents = english_cardinal(u64::from(minor));
         push_unit(&mut cents, sub, minor == 1);
         words.extend(cents);
@@ -573,8 +579,8 @@ fn english_month(month: u64) -> Option<&'static str> {
 
 const MAX_FRACTION_DIGITS: usize = 3;
 
-/// `1/2` → "one half"; other small denominators read "N ordinal(s)", anything
-/// bigger reads "N over M".
+/// `1/2` → "one half"; other small denominators read "N ordinal(s)", 1 and anything
+/// bigger read "N over M".
 fn parse_fraction(rest: &str) -> Option<(Vec<Token>, usize)> {
     // Operands of up to three digits: a longer run (a year, as in the `7/2026` left after an
     // impossible date's `13/`) is not a fraction.
@@ -587,8 +593,8 @@ fn parse_fraction(rest: &str) -> Option<(Vec<Token>, usize)> {
         return None;
     }
     let mut words = english_cardinal(n);
-    if d > 12 {
-        // "7/32" → "seven over thirty-two".
+    if d > 12 || d == 1 {
+        // "7/32" → "seven over thirty-two"; "5/1" → "five over one".
         words.push("over".into());
         words.extend(english_cardinal(d));
         return Some((words.into_iter().map(Token::Word).collect(), d_end));
@@ -648,7 +654,29 @@ fn parse_number_core(rest: &str, lang: Lang) -> Option<(Vec<Token>, usize)> {
     if !grouped && digits.len() == 4 && (1100..=2099).contains(&value) && year_is_standalone(rest, used) {
         return Some((year_words(value, lang), used));
     }
+    // A decade such as "1990s" reads as a plural year: "nineteen nineties".
+    if !grouped
+        && digits.len() == 4
+        && (1100..=2099).contains(&value)
+        && value.is_multiple_of(10)
+        && matches!(peek(rest, used), Some('s'))
+        && !peek(rest, used + 1).is_some_and(char::is_alphanumeric)
+    {
+        let mut words = year_words(value, lang);
+        if let Some(Token::Word(last)) = words.last_mut() {
+            *last = pluralize_decade(last);
+        }
+        return Some((words, used + 1));
+    }
     Some((english_cardinal(value).into_iter().map(Token::Word).collect(), used))
+}
+
+/// Plural of the last word of a round year: ninety → nineties, hundred → hundreds.
+fn pluralize_decade(word: &str) -> String {
+    match word.strip_suffix('y') {
+        Some(stem) => format!("{stem}ies"),
+        None => format!("{word}s"),
+    }
 }
 
 fn has_leading_zero_str(digits: &str) -> bool {

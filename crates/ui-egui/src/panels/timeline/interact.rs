@@ -146,7 +146,10 @@ fn marquee_clips(seq: &Sequence, layout: &Layout, r: Rect) -> Vec<ClipId> {
     layout
         .rows
         .iter()
-        .filter(|row| row.rect.intersects(r))
+        .filter(|row| {
+            let s = layout.shown(row);
+            s.height() > 0.0 && s.intersects(r)
+        })
         .filter_map(|row| seq.track(row.track))
         .flat_map(|tr| tr.items.iter().filter(|i| i.start < b && i.end() > a).map(|i| i.id))
         .collect()
@@ -1181,8 +1184,20 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
 
     commit_drag(app, &ctx, &resp, seq, layout);
 
+    // Marker flags overlap the work area's hit padding; a double-click has one owner.
+    let marker_double_clicked = if resp.double_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Some(marker) = marker_under_pointer(seq, layout, p)
+    {
+        crate::panels::marker_properties::open(app, marker);
+        true
+    } else {
+        false
+    };
+
     // ---- double-click the work area bar: it spans the part of the sequence the ruler shows
     if resp.double_clicked()
+        && !marker_double_clicked
         && let Some(p) = resp.interact_pointer_pos()
         && let Hit::WorkArea { .. } = hit(seq, layout, p)
     {
@@ -1201,7 +1216,7 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
         && let Some(p) = resp.interact_pointer_pos()
         && let Some(marker) = marker_under_pointer(seq, layout, p)
     {
-        super::marker_dialog::open(app, &ctx, marker.id);
+        super::super::marker_properties::open(app, marker);
     }
 
     // ---- double-click a transition: Set Transition Duration (Premiere)
@@ -1353,6 +1368,9 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                                         ui.close();
                                     }
                                 }
+                                super::super::custom_colors::menu(app, ui,
+                                    json!({"clips":sel.iter().map(|id| id.0).collect::<Vec<_>>(),"items":[],"sequence":app.session.state.active_sequence.map(|id|id.0)}),
+                                    "timeline.clipMenu.label");
                             });
                             app.auto.add_response("timeline.clipMenu.edit.label", &menu.response, crate::i18n::t(label));
                         });
@@ -1397,12 +1415,32 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
 
 #[cfg(test)]
 mod marquee_tests {
+    use super::super::layout::Row;
     use super::*;
 
     fn layout(v_scroll: f32, a_scroll: f32) -> Layout {
         let content = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 600.0));
         let ruler = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 20.0));
         Layout { content, ruler, rows: Vec::new(), pps: 100.0, scroll: 0.0, split_y: 300.0, v_scroll, a_scroll }
+    }
+
+    /// #2978: V1 scrolled down under the audio tracks, behind A1. A box drawn on A1 takes A1's
+    /// clip, not the hidden video clip there (which a box over the audio tracks used to select).
+    #[test]
+    fn a_box_on_the_audio_tracks_skips_video_rows_scrolled_under_them() {
+        let mut p = filmcraft_project::Project::new("t");
+        let id = p.new_sequence("s", filmcraft_project::SequenceSettings::default(), 1, 1, None);
+        let mut seq = p.sequence(id).cloned().expect("sequence");
+        seq.video_tracks[0].items = vec![crate::panels::timeline_hit::tests::clip(1, 100.0, 300.0)];
+        seq.audio_tracks[0].items = vec![crate::panels::timeline_hit::tests::clip(2, 100.0, 300.0)];
+        let mut l = layout(0.0, 0.0);
+        let band = Rect::from_min_max(pos2(0.0, 320.0), pos2(1000.0, 380.0));
+        l.rows = vec![
+            Row { track: seq.video_tracks[0].id, kind: TrackKind::Video, index: 0, rect: band, lane: false },
+            Row { track: seq.audio_tracks[0].id, kind: TrackKind::Audio, index: 0, rect: band, lane: false },
+        ];
+        let picked = marquee_clips(&seq, &l, Rect::from_min_max(pos2(150.0, 330.0), pos2(250.0, 360.0)));
+        assert_eq!(picked, vec![ClipId(2)]);
     }
 
     /// Review of #3583: a video corner scrolled down past the divider, with the pointer still over the
