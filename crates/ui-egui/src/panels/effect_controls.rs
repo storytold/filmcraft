@@ -1335,6 +1335,12 @@ pub(crate) fn graph_rows(
     actions: &mut Vec<(String, Value)>,
 ) {
     let t = app.tokens;
+    let with_mask = |mut v: Value| -> Value {
+        if let Some(k) = mask {
+            v["mask"] = json!(k);
+        }
+        v
+    };
     let (vr, _) = ui.allocate_exact_size(vec2(body.width(), 110.0), Sense::hover());
     let (velr, _) = ui.allocate_exact_size(vec2(body.width(), 64.0), Sense::hover());
     row_line(ui, velr, lane, &t);
