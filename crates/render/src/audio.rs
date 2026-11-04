@@ -108,7 +108,7 @@ pub(crate) fn track_input_at(
     let range = TimeRange::from_bounds(Tick::from_units(start, sr as i64), Tick::from_units(start + frames as i64, sr as i64));
     let mut tbuf = AudioBuffer::silence(sr, w, frames);
     for item in track.items.iter().filter(|i| i.enabled && i.range().overlaps(&range)) {
-        mix_item(project, item, win, sources, &mut tbuf, 1.0, &live);
+        mix_item(project, item, item, win, sources, &mut tbuf, &live);
     }
     // audio transitions: attenuate the covered region of each side
     for tr in &track.transitions {
@@ -118,8 +118,9 @@ pub(crate) fn track_input_at(
         // Re-mix: recompute the covered samples with crossfade gains. Both sides play over the
         // whole transition, into their handles as the picture does, so a transition centred on a
         // cut overlaps the two clips instead of only fading each on its own side of the cut.
-        let from = tr.from.and_then(|id| track.item(id)).map(|i| with_handles(i, tr.start, tr.end()));
-        let to = tr.to.and_then(|id| track.item(id)).map(|i| with_handles(i, tr.start, tr.end()));
+        let (from_src, to_src) = (tr.from.and_then(|id| track.item(id)), tr.to.and_then(|id| track.item(id)));
+        let from = from_src.map(|i| with_handles(i, tr.start, tr.end()));
+        let to = to_src.map(|i| with_handles(i, tr.start, tr.end()));
         let s0 = tr.start.to_units_floor(sr as i64).max(start);
         let s1 = tr.end().to_units_floor(sr as i64).min(start + frames as i64);
         if s1 <= s0 {
@@ -132,11 +133,11 @@ pub(crate) fn track_input_at(
         }
         let mut a = AudioBuffer::silence(sr, w, n);
         let mut b = AudioBuffer::silence(sr, w, n);
-        if let Some(f) = &from {
-            mix_item(project, f, Window { start: s0, frames: n, sr }, sources, &mut a, 1.0, &live);
+        if let (Some(f), Some(orig)) = (&from, from_src) {
+            mix_item(project, f, orig, Window { start: s0, frames: n, sr }, sources, &mut a, &live);
         }
-        if let Some(tt) = &to {
-            mix_item(project, tt, Window { start: s0, frames: n, sr }, sources, &mut b, 1.0, &live);
+        if let (Some(tt), Some(orig)) = (&to, to_src) {
+            mix_item(project, tt, orig, Window { start: s0, frames: n, sr }, sources, &mut b, &live);
         }
         let dur = (tr.end() - tr.start).to_units_floor(sr as i64).max(1) as f32;
         let base = (s0 - tr.start.to_units_floor(sr as i64)) as f32;
@@ -189,7 +190,9 @@ pub fn pan_gains(pan: f32) -> (f32, f32) {
     ((a.cos() * k).min(1.0), (a.sin() * k).min(1.0))
 }
 
-fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn SourceProvider, out: &mut AudioBuffer, extra: f32, live: &ClipLive) {
+/// `timing` is the clip as stored: keyframed volume and pan are evaluated on its media time, not on
+/// `item`'s, whose `source_in` a transition's handles have shifted.
+fn mix_item(project: &Project, item: &TrackItem, timing: &TrackItem, win: Window, sources: &dyn SourceProvider, out: &mut AudioBuffer, live: &ClipLive) {
     let Window { start, frames, sr } = win;
     let item_s0 = item.start.to_units_floor(sr as i64);
     let item_s1 = item.end().to_units_floor(sr as i64);
@@ -239,7 +242,7 @@ fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn Sour
     let mut blk = 0usize;
     while blk < n {
         let t_tl = Tick::from_units((a0 + blk as i64).div_euclid(64) * 64, sr as i64);
-        let mt = item.source_time_at(t_tl);
+        let mt = timing.source_time_at(t_tl);
         let level = |auto: f64| live.vol.map(|o| o.at(t_tl, auto)).unwrap_or(auto);
         let v = match vol {
             Some(e) => db_to_gain(level(e.f64_at("level", mt))),
@@ -253,7 +256,7 @@ fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn Sour
             None if live.pan.is_some() => pan_gains((balance(0.0) / 100.0) as f32),
             None => (1.0, 1.0),
         };
-        let g = clip_gain * v * extra;
+        let g = clip_gain * v;
         let end = (((a0 + blk as i64).div_euclid(64) + 1) * 64 - a0).min(n as i64) as usize;
         if w == 2 {
             for i in blk..end {
