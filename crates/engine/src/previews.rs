@@ -742,6 +742,7 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         prog.finished.store(true, Ordering::Relaxed);
         *res.lock().unwrap_or_else(|x| x.into_inner()) = Some(r);
     };
+    let run = move || filmcraft_export::on_own_threads(0, run);
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);

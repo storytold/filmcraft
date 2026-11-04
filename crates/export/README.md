@@ -18,6 +18,17 @@ file. Buffered writes are flushed before reads through that same handle. In-memo
 sinks use their existing seekable byte buffer. Read, write and seek failures propagate as export
 errors.
 
+## Threads
+
+`export` renders on the rayon pool it is called in, so the determinism tests can run it on pools
+of any size and get the same file. Background jobs (exports, the export queue, Render Previews and
+proxies) call it through `on_own_threads`, which runs them on the background pool: one thread per
+core, shared by every background job, so an export and Render Previews at once split the cores
+rather than each taking them all. A job capped below the cores (`max_threads`) gets a pool of
+that many threads of its own. From a plain thread they would otherwise render on the global pool,
+where the monitors render their frames, and those frames would queue behind the export's work
+for as long as it ran.
+
 ## Animated GIF transparency
 
 Animated GIF supports the existing `ExportSettings::alpha` option (#3396). In Export mode,

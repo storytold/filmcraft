@@ -527,6 +527,15 @@ fn decode_pool() -> Option<&'static rayon::ThreadPool> {
     .as_ref()
 }
 
+/// Make the threads the caches decode on now, from the calling thread, if they aren't made yet. On
+/// Linux a thread takes its priority from the thread that makes it, so the platform layer makes
+/// them at startup: an export's lowered thread decoding first would otherwise make them lowered
+/// for the monitors too (ADR 0002).
+pub fn start_decode_pool() {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = decode_pool();
+}
+
 /// Run a cache's decoding, its lock held by the caller, on [`decode_pool`], the caller waiting
 /// without doing other rayon work meanwhile (#480).
 ///
