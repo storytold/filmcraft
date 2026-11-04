@@ -85,6 +85,12 @@ fn sticker(w: usize, h: usize, rect: (usize, usize, usize, usize)) -> Arc<VideoF
     frame(w, h, PixelData::Rgba8(Arc::new(px)))
 }
 
+/// An 8-bit RGBA still with alpha 255 everywhere, as an RGB PNG or a JPEG decodes.
+fn card(w: usize, h: usize) -> Arc<VideoFrame> {
+    let px: Vec<u8> = (0..w * h).flat_map(|i| [(i * 11 % 251) as u8, (i * 5 % 241) as u8, (i * 23 % 239) as u8, 255]).collect();
+    frame(w, h, PixelData::Rgba8(Arc::new(px)))
+}
+
 struct Spec {
     frame: Arc<VideoFrame>,
     opacity: f64,
@@ -178,8 +184,12 @@ fn check(what: &str, specs: &[Spec], scale: f32) {
         // twice: the second render starts from recycled buffers
         for round in 0..2 {
             let got = render_sequence(&p, seq, t, opts, &map);
-            same_bits(&got, &reference(&p, seq, t, opts, &map), &format!("{what} (frame {f}, render {round})"));
+            let want = reference(&p, seq, t, opts, &map);
+            same_bits(&got, &want, &format!("{what} (frame {f}, render {round})"));
             pool::recycle_f32(got.px);
+            // and as the monitor's bytes, straight from the frame where it is one picture alone
+            let bytes = render_sequence_rgba8(&p, seq, t, opts, &map);
+            assert!(bytes == (want.w, want.h, want.over_black_with_alpha_rgba8()), "{what} (frame {f}, render {round}): monitor bytes");
         }
     }
 }
@@ -201,6 +211,14 @@ fn shortcuts_give_the_general_paths_bits() {
     check("banner under the camera", &[ban(bar), cam()], 1.0);
     check("camera + sticker", &[cam(), Spec::new(sticker(W, H, corner))], 1.0);
     check("camera + transparent banner", &[cam(), ban((0, 0, 0, 0))], 1.0);
+    // an opaque 8-bit still: the canvas itself as the bottom layer, mixed like any layer above it
+    let crd = || Spec::new(card(W, H));
+    check("card only", &[crd()], 1.0);
+    check("card + bar banner", &[crd(), ban(bar)], 1.0);
+    check("card over the camera", &[cam(), crd()], 1.0);
+    check("card at half opacity", &[Spec { opacity: 50.0, ..crd() }, ban(bar)], 1.0);
+    check("card at half scale", &[crd(), ban(corner)], 0.5);
+    check("card alone at a third", &[crd()], 1.0 / 3.0);
     // opacity and blend modes (every mode, over the camera and as the first layer)
     for mode in 0..Blend::ALL.len() as u32 {
         check(&format!("banner blend {mode}"), &[cam(), Spec { opacity: 70.0, blend: mode, ..ban(corner) }], 1.0);
@@ -218,6 +236,8 @@ fn shortcuts_give_the_general_paths_bits() {
     check("bigger banner", &[cam(), Spec::new(banner(W * 2, H * 2, (0, H * 2 - 18, W * 2, H * 2)))], 1.0);
     // reduced-resolution rendering decimates every frame
     check("half scale", &[cam(), ban(bar)], 0.5);
+    check("camera alone at half scale", &[cam()], 0.5);
+    check("camera alone at a third", &[cam()], 1.0 / 3.0);
     check("quarter scale", &[cam(), ban(corner)], 0.25);
 }
 
@@ -229,12 +249,32 @@ fn which_layers_take_a_shortcut() {
     let layer = |track: usize, allow: bool| {
         item_layer_ex(&p, s, s.video_tracks[track].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: allow })
     };
-    // a camera frame has no alpha: opaque, the whole picture
-    assert!(matches!(layer(0, true), Some(Layer::Full { opaque: true, .. })));
+    // a camera frame has no alpha: opaque, the whole picture, converted when it is needed
+    assert!(matches!(layer(0, true), Some(Layer::Frame { .. })));
+    // alone, it stays that frame up to the monitor's bytes; under a banner it is converted
+    let canvas = |specs: &[Spec]| {
+        let (p, seq, map) = scene(specs);
+        seq_canvas(&p, p.sequence(seq).expect("sequence"), t, opts, &map, None).frame.is_some()
+    };
+    assert!(canvas(&[Spec::new(camera(W, H))]));
+    assert!(!canvas(&[Spec::new(camera(W, H)), Spec::new(banner(W, H, (0, H - 9, W, H)))]));
     // a banner is only its rectangle (rows H-9.. of a 96-wide picture)
     match layer(1, true) {
         Some(Layer::Region { image, x, y, .. }) => assert_eq!((x, y, image.w, image.h), (0, H - 9, W, 9)),
         _ => panic!("the banner should be a region"),
+    }
+    // an 8-bit still with alpha 255 everywhere (an RGB PNG, a JPEG) is opaque too: the whole
+    // picture, taken as the canvas instead of mixed over a zero-filled one; one pixel that is not
+    // opaque keeps it a region
+    let first_layer = |spec: Spec| {
+        let (p, seq, map) = scene(&[spec]);
+        let s = p.sequence(seq).expect("sequence");
+        item_layer_ex(&p, s, s.video_tracks[0].item_at(t).expect("clip"), t, opts, &map, LayerWant { tc: "", allow_region: true })
+    };
+    assert!(matches!(first_layer(Spec::new(card(W, H))), Some(Layer::Full { opaque: true, .. })));
+    match first_layer(Spec::new(sticker(W, H, (0, 0, W, H)))) {
+        Some(Layer::Region { image, x, y, .. }) => assert_eq!((x, y, image.w, image.h), (0, 0, W, H)),
+        _ => panic!("a still with a half-transparent rim should be a region"),
     }
     // without permission every layer is a whole image, and none is known to be opaque
     assert!(matches!(layer(0, false), Some(Layer::Full { opaque: false, .. })));

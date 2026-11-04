@@ -119,7 +119,8 @@ pub struct Display {
 impl Display {
     pub fn new(gpu: bool) -> Self {
         let gpu = if gpu {
-            let instance = eframe::wgpu::Instance::default();
+            // wgpu's instance environment variables apply (`WGPU_BACKEND`, ...), as for the app's window
+            let instance = eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle().with_env());
             let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default())).ok();
             adapter.and_then(|a| pollster::block_on(a.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok()).map(|(d, q)| {
                 let c = filmcraft_gpu::GpuCompositor::new(&d, &q);
@@ -813,10 +814,15 @@ pub fn cli_main() {
                         // Live play (effects rendered per frame), render previews, then play twice.
                         reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("live")));
                         let t0 = Instant::now();
-                        s.execute("sequence.renderEffectsInToOut", json!({"wait": true})).expect("render previews");
-                        eprintln!("  rendered previews in {:.1}s (load {})", t0.elapsed().as_secs_f64(), load_avg());
-                        reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("1st after")));
-                        reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("2nd after")));
+                        // every segment, not only red ones: the bench compares playing previews with playing live
+                        match s.execute("sequence.renderInToOut", json!({"wait": true})) {
+                            Ok(_) => {
+                                eprintln!("  rendered previews in {:.1}s (load {})", t0.elapsed().as_secs_f64(), load_avg());
+                                reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("1st after")));
+                                reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("2nd after")));
+                            }
+                            Err(e) => eprintln!("  rendering previews failed, so no runs after it: {e}"),
+                        }
                         s.previews.delete(None);
                     }
                     _ => reports.push(bench.play(&s, seq, &mut display, *scale, Tick::ZERO, &tag("play"))),

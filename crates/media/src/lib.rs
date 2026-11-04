@@ -131,6 +131,11 @@ pub struct VideoStreamInfo {
     /// HDR static metadata (mastering display, content light level) when the file carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hdr: Option<filmcraft_color::HdrMetadata>,
+    /// Which values of `color` are FilmCraft's defaults rather than read from the file. `None`
+    /// where the source doesn't say: stills, generated media, MPEG program and transport streams,
+    /// and media info saved before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_assumed: Option<filmcraft_color::ColorAssumed>,
 }
 
 /// Most audio streams a source reports (the count comes from the file: never trusted).
@@ -225,7 +230,7 @@ pub trait MediaSource: Send + Sync {
 pub type SharedSource = Arc<dyn MediaSource>;
 
 /// File extensions we recognise at import (the media browser filters on these).
-pub const STILL_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "tga", "dpx", "exr", "hdr", "dng"];
+pub const STILL_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "tga", "dpx", "exr", "hdr", "dng", "psd"];
 pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "wave", "bwf", "aif", "aiff", "mp3", "mp2", "m4a", "aac", "flac", "ogg", "opus"];
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "m2t", "ts", "mpg", "mpeg", "vob", "mod", "tod", "m2v", "m1v", "mpv", "3gp", "y4m", "apv",
@@ -294,7 +299,10 @@ impl MediaSource for OfflineSource {
         Ok(Arc::new(VideoFrame::rgba8(w, h, px).with_pts(req.time)))
     }
     fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer> {
-        Ok(AudioBuffer::silence(sample_rate, self.info.audio().map_or(2, |a| a.channels as usize), frames))
+        // the shape comes from the project's stored metadata (the media is not there to check)
+        let channels = self.info.audio().map_or(2, |a| a.channels as usize);
+        validate_audio_buffer_shape(channels, frames)?;
+        Ok(AudioBuffer::silence(sample_rate, channels, frames))
     }
 }
 
@@ -309,6 +317,25 @@ mod importable_tests {
             assert!(is_importable(Path::new(name)), "{name}");
         }
         assert!(!is_importable(Path::new("notes.txt")));
+    }
+
+    #[test]
+    fn offline_media_does_not_allocate_from_stored_metadata() {
+        let info = MediaInfo {
+            name: "gone.wav".into(),
+            kind: MediaKind::AudioOnly,
+            duration: Tick(0),
+            video: None,
+            audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: 60_000, codec: "pcm".into(), bits_per_sample: None }],
+            container: String::new(),
+            start_timecode: None,
+            file_size: None,
+        };
+        let src = OfflineSource { info };
+        // a 100-day transcription request at the stored channel count
+        // computed as u64: the product overflows a 32-bit usize (x86 Windows), where it must still be rejected
+        let frames = usize::try_from(48_000u64 * 86_400 * 100).unwrap_or(usize::MAX);
+        assert!(src.audio(0, frames, 48_000).is_err());
     }
 
     #[test]

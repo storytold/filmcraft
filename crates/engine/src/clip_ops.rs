@@ -66,6 +66,7 @@ mod video_options;
 use audio_options::{breakout_to_mono, extract_audio};
 pub use common::{SourceView, source_view};
 pub(crate) use common::{collapse_history, collect_ids};
+pub use edit_menu::is_attribute_effect;
 use edit_menu::{apply_label, consolidate_duplicates, paste_attributes, remove_attributes, remove_unused, select_all_matching, select_label_group};
 use enabled::{
     can_label, can_make_subclip, can_paste_attributes, can_replace_from_bin, can_replace_from_source, has_audio_items, has_audio_target, has_clip_items,
@@ -185,7 +186,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Frame Hold Options…",
             &["Clip", "Video Options"],
             None,
-            r#"{"clips":[id]?,"enabled":bool=true,"holdOn":"sourceTimecode|sequenceTime|in|out|playhead","time":ticks?,"timecode":str?,"holdFilters":bool=false}"#,
+            r#"{"clips":[id]?,"enabled":bool=true,"holdOn":"sourceTimecode|sequenceTime|in|out|playhead"?,"time":ticks?,"timecode":str?,"holdFilters":bool=false}"#,
             has_selection,
             frame_hold_options,
         ),
@@ -203,7 +204,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Field Options…",
             &["Clip", "Video Options"],
             None,
-            r#"{"clips":[id]?,"reverseFieldDominance":bool=false,"processing":"none|alwaysDeinterlace|flickerRemoval"}"#,
+            r#"{"clips":[id]?,"reverseFieldDominance":bool=false,"processing":"none|alwaysDeinterlace|flickerRemoval"?}"#,
             has_selection,
             field_options,
         ),

@@ -653,6 +653,9 @@ fn marker_out(m: &Marker) -> CMarker {
 
 fn marker_in(b: &mut Builder, m: &CMarker) -> Marker {
     Marker {
+        url: String::new(),
+        author: String::new(),
+        custom_color: None,
         id: MarkerId(b.alloc()),
         start: m.start,
         duration: m.duration,
@@ -758,7 +761,7 @@ pub(crate) fn to_project(doc: Document, opts: &ImportOptions, report: &mut Repor
             extracted.push(ExtractedMedia {
                 item: id,
                 path: resolved.clone(),
-                wav: crate::wav::wav_file(data, s.file_channels.max(1) as u16, s.sample_rate, s.bits),
+                wav: crate::wav::wav_file(data, u16::try_from(s.file_channels.max(1)).unwrap_or(u16::MAX), s.sample_rate, s.bits),
             });
         }
         for &i in members {

@@ -48,6 +48,7 @@ impl SliceDecoder<'_> {
         let intra_slice = self.sh.slice_type.is_intra();
         loop {
             ensure!(addr < total, "macroblock address {addr} out of range");
+            self.pic.reserve_mbs(1)?;
             self.start_mb(addr);
             let skip = !intra_slice && self.decode_skip_flag(&mut c);
             if skip {
@@ -55,7 +56,7 @@ impl SliceDecoder<'_> {
             } else {
                 self.decode_mb_cabac(&mut c)?;
             }
-            self.pic.mb_done(addr);
+            self.pic.mb_done(addr)?;
             ensure!(!c.overrun(), "CABAC read past end of slice data");
             if c.decode_terminate() == 1 {
                 break;

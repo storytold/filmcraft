@@ -534,3 +534,82 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
     let all: Vec<i64> = (0..20).flat_map(|f| shown(&p, f, false)).collect();
     assert_eq!(all, (10..=29).rev().collect::<Vec<_>>());
 }
+
+#[test]
+fn over_black_rows_match_the_per_value_conversion() {
+    let mut v: Vec<f32> = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.0, 0.0, 1.0, 0.499_999_97, 1e-30, 0.999_999_9, 2.0, -1.0].to_vec();
+    // every table boundary and alpha half step, and the floats just around them
+    for k in 0..=4095 * 2 {
+        let b = (k as f32 * 0.5) / 4095.0;
+        v.extend([b, f32::from_bits(b.to_bits() + 1), f32::from_bits(b.to_bits().saturating_sub(1))]);
+    }
+    for k in 0..=255 * 2 {
+        let b = (k as f32 * 0.5) / 255.0;
+        v.extend([b, f32::from_bits(b.to_bits() + 1), f32::from_bits(b.to_bits().saturating_sub(1))]);
+    }
+    // a spread over all finite floats from 0 to 1
+    v.extend((0..1u32 << 16).map(|k| f32::from_bits((k * 0x3f80) % 0x3f80_0001)));
+    v.truncate(v.len() / 4 * 4);
+    let (mut opaque, mut with_alpha) = (vec![0; v.len()], vec![0; v.len()]);
+    crate::image::over_black_row(&v, &mut opaque, false);
+    crate::image::over_black_row(&v, &mut with_alpha, true);
+    for (i, s) in v.iter().enumerate() {
+        let want = if i % 4 == 3 { (s.clamp(0.0, 1.0) * 255.0).round() as u8 } else { filmcraft_color::linear_to_srgb_u8(*s) };
+        assert_eq!(with_alpha[i], want, "{s:e} at {i}");
+        assert_eq!(opaque[i], if i % 4 == 3 { 255 } else { want }, "{s:e} at {i}");
+    }
+}
+
+#[test]
+fn a_still_image_needs_no_in_between_frame() {
+    // a still reports 29.97 fps, so in a 23.976 sequence at 100 % it looks like a frame rate
+    // conform, but its one picture needs neither Frame Blending nor Optical Flow (#3948)
+    let (mut p, red, _, _, _) = setup();
+    let rate = FrameRate::FPS_23_976;
+    let mut it = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(48)), rate).unwrap();
+    it.time_interpolation = filmcraft_project::TimeInterpolation::OpticalFlow;
+    let t = rate.tick_of(1);
+    let still: SharedSource = Arc::new(filmcraft_media::still::StillSource::from_rgba("still.png", 4, 4, vec![128; 64], false, 64));
+    assert_eq!(still.info().frame_rate(), FrameRate::FPS_29_97);
+    assert!(interpolation_blend(&it, t, FrameRate::FPS_29_97, rate).is_some());
+    assert!(media_interpolation(&it, t, &still, rate).is_none());
+    // a 29.97 source that is not a still still gets the in-between frame
+    let movie: SharedSource =
+        Arc::new(GeneratorSource::new(Generator::ColorMatte { color: [1.0; 4] }, 4, 4, FrameRate::FPS_29_97, Tick(10 * TICKS_PER_SECOND)));
+    let (_, w) = media_interpolation(&it, t, &movie, rate).unwrap();
+    assert!((w - 0.25).abs() < 1e-3, "a quarter into the source frame: {w}");
+}
+
+#[test]
+fn in_between_frames_stay_inside_the_source_range() {
+    // the later frame of a Frame Blending / Optical Flow pair never comes from the clip's source
+    // out on: a reversed clip starts just before it, and a forward one can end next to it (#3948)
+    let (mut p, red, _, _, _) = setup();
+    let src = FrameRate::FPS_23_976;
+    let mut it = p.make_track_item(red, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), src).unwrap();
+    it.time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    it.source_in = src.tick_of(10);
+    // 100 % on 29.97 moves 0.8 of a source frame per frame, so 5 frames end exactly on source frame
+    // 14; 50 % at the media's own rate ends half-way into frame 13 (7 frames) or on frame 14 (8)
+    for (seq, speed, frames) in [(FrameRate::FPS_29_97, 1.0, 5), (src, 0.5, 7), (src, 0.5, 8)] {
+        for reverse in [false, true] {
+            it.speed = speed;
+            it.reverse = reverse;
+            it.start = seq.tick_of(3);
+            it.duration = seq.tick_of(frames);
+            let (source_in, out) = (it.source_in, it.source_out());
+            let mut blended = 0;
+            for k in 0..frames {
+                let t = seq.tick_of(3 + k);
+                if let Some((next, w)) = interpolation_blend(&it, t, src, seq) {
+                    assert!(
+                        next > source_in && next < out,
+                        "{seq:?} at {speed}, reverse {reverse}, frame {k}: next {next:?} outside {source_in:?}..{out:?} (w {w})"
+                    );
+                    blended += 1;
+                }
+            }
+            assert!(blended > 0, "{seq:?} at {speed}, reverse {reverse}: no frame blended");
+        }
+    }
+}
