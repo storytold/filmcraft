@@ -408,3 +408,22 @@ fn a_preset_named_active_does_not_replace_the_active_set() {
     assert_eq!(std::fs::read(&active).ok(), before, "the active set file is untouched");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn presets_named_active_get_their_own_files() {
+    let dir = temp_dir("active-paths");
+    let mut s = Shortcuts::new();
+    s.set_dir(&dir);
+    let presets = dir.join("Keyboard Shortcuts");
+    let path = |n: &str| s.preset_path(n).unwrap();
+    assert_ne!(path("active"), presets.join("active.json"));
+    assert_ne!(path("active"), path("active (preset)"), "a preset named like the old redirect must not collide");
+    // a mixed-case preset saved by an earlier version stays reachable on a case-sensitive file system
+    std::fs::create_dir_all(&presets).unwrap();
+    std::fs::write(presets.join("Active.json"), b"{}").unwrap();
+    if !presets.join("active.json").exists() {
+        assert_eq!(path("Active"), presets.join("Active.json"));
+        assert_ne!(path("active"), presets.join("Active.json"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
