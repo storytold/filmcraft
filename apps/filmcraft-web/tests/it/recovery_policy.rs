@@ -94,6 +94,17 @@ fn failed_snapshot_write_is_retried_without_another_edit() {
 
 /// A failure reported for an older revision doesn't make the newer one be written again.
 #[test]
+fn a_third_snapshot_waits_for_one_in_flight() {
+    let mut p = Policy::default();
+    assert_eq!(p.tick(0.0, 1, 0), Action::WriteSnapshot(1));
+    assert_eq!(p.tick(INTERVAL_S, 2, 0), Action::WriteSnapshot(2));
+    assert_eq!(p.tick(2.0 * INTERVAL_S, 3, 0), Action::WakeAfter(0.5));
+    assert_eq!(p.tick(3.0 * INTERVAL_S, 3, 0), Action::WakeAfter(0.5));
+    p.written(1, true, 3.0 * INTERVAL_S);
+    assert_eq!(p.tick(3.0 * INTERVAL_S + 0.5, 3, 0), Action::WriteSnapshot(3));
+}
+
+#[test]
 fn stale_failure_is_ignored() {
     let mut p = Policy::default();
     assert_eq!(p.tick(0.0, 1, 0), Action::WriteSnapshot(1));

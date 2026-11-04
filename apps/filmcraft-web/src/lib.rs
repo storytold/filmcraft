@@ -125,13 +125,14 @@ impl eframe::App for WebApp {
         self.app.raw_input_hook(ctx, raw_input);
     }
 
-    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    /// Hidden logic pass: host actions, app logic, API replies, jobs, audio, autosave, then IME reset; it does not draw UI.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         i18n::set_current(self.app.ui.language);
         let actions = ACTIONS.with(|a| std::mem::take(&mut *a.borrow_mut()));
         for f in actions {
             f(self, ctx);
         }
-        self.app.logic(ctx, frame);
+        self.app.logic_inner(ctx);
         api::poll_replies();
         // exports advance between frames (no threads)
         if self.app.session.pump_jobs(std::time::Duration::from_millis(30)) {
@@ -152,16 +153,18 @@ impl eframe::App for WebApp {
                 self.app.ui.status.clear();
             }
         }
+        self.app.finish_ime_reset_logic(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        self.app.ui(ui, frame);
+        let Self { app, rejected_recovery, recovery_unavailable, active_recovery_warning, .. } = self;
+        app.ui_with_host_overlays(ui, frame, |app, ui| {
         // These host dialogs use FilmCraft's named fonts after the app installs them.
-        if !self.app.host_overlays_ready() {
+        if !app.host_overlays_ready() {
             return;
         }
-        if !self.app.ui.show_status_bar
-            && let Some(warning) = &self.active_recovery_warning
+        if !app.ui.show_status_bar
+            && let Some(warning) = active_recovery_warning.as_ref()
         {
             egui::Window::new(i18n::t("Recovery paused"))
                 .collapsible(false)
@@ -172,7 +175,7 @@ impl eframe::App for WebApp {
                     ui.label(warning);
                 });
         }
-        if let Some(error) = &self.recovery_unavailable {
+        if let Some(error) = recovery_unavailable.as_ref() {
             egui::Window::new(i18n::t("Recovery unavailable"))
                 .collapsible(false)
                 .resizable(false)
@@ -184,7 +187,7 @@ impl eframe::App for WebApp {
                     ));
                 });
         }
-        if let Some(rejected) = self.rejected_recovery.as_mut() {
+        if let Some(rejected) = rejected_recovery.as_mut() {
             let mut continue_after_download = false;
             egui::Window::new(i18n::t("Recover Unsaved Changes")).collapsible(false).default_width(420.0).show(ui.ctx(), |ui| {
                 match &rejected.reason {
@@ -200,7 +203,7 @@ impl eframe::App for WebApp {
                 ui.label(i18n::t("The file is still in this browser. New recovery snapshots are paused until you preserve it."));
                 let download_label = i18n::t("Download recovery file");
                 let download = ui.button(download_label);
-                self.app.auto.add_response("recovery.download", &download, download_label);
+                app.auto.add_response("recovery.download", &download, download_label);
                 if download.clicked() {
                     let result = match &rejected.download {
                         RecoveryDownload::Bytes(bytes) => fs::download_bytes_now(bytes, &rejected.name),
@@ -218,7 +221,7 @@ impl eframe::App for WebApp {
                     ui.label(i18n::t("After the file has been saved, continue. Editing a new project may replace the browser recovery copy."));
                     let continue_label = i18n::t("I saved the recovery file");
                     let continue_button = ui.button(continue_label);
-                    self.app.auto.add_response("recovery.continue", &continue_button, continue_label);
+                    app.auto.add_response("recovery.continue", &continue_button, continue_label);
                     if continue_button.clicked() {
                         continue_after_download = true;
                     }
@@ -228,9 +231,10 @@ impl eframe::App for WebApp {
                 }
             });
             if continue_after_download {
-                self.rejected_recovery = None;
+                *rejected_recovery = None;
             }
         }
+        });
     }
 }
 
@@ -297,6 +301,7 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
             canvas,
             web_options,
             Box::new(move |cc| {
+                filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
                 set_context(cc.egui_ctx.clone());
                 let ctx = cc.egui_ctx.clone();
                 fs::set_on_data(move || ctx.request_repaint());

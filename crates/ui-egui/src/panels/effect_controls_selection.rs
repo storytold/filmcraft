@@ -11,8 +11,9 @@ use crate::{
     state::KeyframeRef,
 };
 
+/// Key for the keyframe-selection gesture state in egui's temp store; `begin` resets it when the clip changes.
 fn state_id() -> Id {
-    Id::new("effect-controls-keyframe-selection")
+    Id::unique("effect-controls-keyframe-selection")
 }
 
 #[derive(Clone)]
@@ -103,6 +104,8 @@ fn update(group: &mut Group, points: &[Point], pos: Pos2, shift: bool, playhead:
 }
 
 impl Interaction {
+    /// Begin keyframe selection for `clip`: reset on a clip change, cancel a gesture on Escape, start a Shift marquee from the existing selection, and keep
+    /// gestures as UI-only previews.
     pub(crate) fn begin(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, clip: u64) -> Self {
         let mut state = ui.data(|d| d.get_temp::<State>(state_id())).unwrap_or_default();
         if state.clip != clip {
@@ -112,7 +115,7 @@ impl Interaction {
         if cancelled {
             state.gesture = None;
         }
-        let background = ui.interact(area, Id::new(("ec-select", clip)), Sense::click_and_drag());
+        let background = ui.interact(area, Id::unique(("ec-select", clip)), Sense::click_and_drag());
         if background.clicked_by(egui::PointerButton::Primary) && !ui.input(|i| i.modifiers.shift) {
             app.ui.keyframe_selection.clear();
         }

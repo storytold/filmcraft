@@ -231,6 +231,110 @@ fn quitting_with_unsaved_changes_keeps_them_for_next_launch() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A disabled or unwritable replacement journal must never consume the original recovery copy.
+fn recovery_preserves_original(tag: &str, block: Option<&str>, journal_enabled: bool) {
+    let d = temp_dir(tag);
+    let old_dir = autosave::recovery_root(&d).join("1-1");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let project = (*demo().project).clone();
+    let bytes = filmcraft_format::encode(&project, false);
+    let original = old_dir.join("snapshot.fcproj");
+    std::fs::write(&original, &bytes).unwrap();
+
+    let mut s = Session::default();
+    let mut cfg = autosave::AutosaveConfig::new(&d);
+    cfg.journal_debounce = std::time::Duration::from_secs(60);
+    s.start_autosave(cfg).unwrap();
+    s.execute("prefs.set", json!({"key": "autoSave.recoveryJournal", "value": journal_enabled})).unwrap();
+    if let Some(name) = block {
+        // A directory where the atomic write needs a file reliably fails on Windows and Unix.
+        std::fs::create_dir(s.persistence.as_ref().unwrap().session_dir.join(name)).unwrap();
+    }
+    let result = s.execute("file.recover", json!({"id": "1-1"}));
+    assert!(original.is_file(), "failed replacement must preserve the original snapshot");
+    assert_eq!(std::fs::read(&original).unwrap(), bytes);
+    assert_eq!(s.recovery_candidates().len(), 1, "the original must remain discoverable");
+    assert!(s.persistence.as_ref().unwrap().is_running(), "ordinary journal errors must not mark the worker stopped");
+    assert!(result.is_err(), "lack of a confirmed replacement must be reported");
+    assert_eq!(*s.project, project, "the recovered project remains open for Save As");
+    assert!(s.is_dirty());
+    s.shutdown();
+    let found = autosave::scan_candidates(&d, None);
+    assert!(found.iter().any(|c| c.id == "1-1"), "another launch can still recover the original");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn recovery_keeps_original_when_snapshot_write_fails() {
+    recovery_preserves_original("recover-snapshot-fails", Some("snapshot.fcproj"), true);
+}
+
+#[test]
+fn recovery_keeps_original_when_metadata_write_fails() {
+    recovery_preserves_original("recover-meta-fails", Some("session.json"), true);
+}
+
+#[test]
+fn recovery_keeps_original_when_journal_is_disabled() {
+    recovery_preserves_original("recover-journal-disabled", None, false);
+}
+
+#[test]
+fn recovery_can_retry_after_a_failed_journal_write() {
+    let d = temp_dir("recover-retry");
+    let old_dir = autosave::recovery_root(&d).join("1-1");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let project = (*demo().project).clone();
+    std::fs::write(old_dir.join("snapshot.fcproj"), filmcraft_format::encode(&project, false)).unwrap();
+    let mut s = Session::default();
+    let mut cfg = autosave::AutosaveConfig::new(&d);
+    cfg.journal_debounce = std::time::Duration::from_secs(60);
+    s.start_autosave(cfg).unwrap();
+    let obstruction = s.persistence.as_ref().unwrap().session_dir.join("snapshot.fcproj");
+    std::fs::create_dir(&obstruction).unwrap();
+    assert!(s.execute("file.recover", json!({"id": "1-1"})).is_err());
+    assert!(old_dir.join("snapshot.fcproj").is_file());
+    std::fs::remove_dir(&obstruction).unwrap();
+    s.execute("file.recover", json!({"id": "1-1"})).unwrap();
+    assert!(!old_dir.exists());
+    assert!(s.recovery_candidates().is_empty());
+    let replacement = std::fs::read(&obstruction).unwrap();
+    assert_eq!(filmcraft_format::decode(&replacement).unwrap().project, project);
+    assert_eq!(journaled(&mut s), s.revision);
+    s.shutdown();
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn recovery_cleanup_failure_reports_open_project_and_safe_retry() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let d = temp_dir("recover-cleanup-failure");
+    let old_dir = autosave::recovery_root(&d).join("1-1");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let project = filmcraft_project::Project::default();
+    let original = old_dir.join("snapshot.fcproj");
+    std::fs::write(&original, filmcraft_format::encode(&project, false)).unwrap();
+    // Permit the loader's read while denying deletion of this old snapshot.
+    let held = std::fs::OpenOptions::new().read(true).share_mode(3).open(&original).unwrap();
+    let mut s = Session::default();
+    start(&mut s, &d);
+    let error = s.execute("file.recover", json!({"id": "1-1"})).unwrap_err().to_string();
+    assert_eq!(*s.project, project, "recovery already installed the project");
+    assert!(s.is_dirty());
+    assert_eq!(recovery_ids(&mut s), ["1-1"], "failed cleanup must keep the candidate listed");
+    let replacement = &s.persistence.as_ref().unwrap().session_dir;
+    assert!(replacement.join("snapshot.fcproj").is_file());
+    assert!(replacement.join("session.json").is_file());
+    assert!(error.contains("Recovered project is open") && error.contains("new recovery copy is confirmed"), "{error}");
+    assert!(error.contains("candidate remains listed") && error.contains("Save As"), "{error}");
+    assert!(error.contains("if the original recovery copy remains intact") && error.contains("unsaved edits"), "{error}");
+    drop(held);
+    s.shutdown();
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 #[test]
 fn auto_save_ring_rotates_and_can_save_the_project() {
     let d = temp_dir("ring");
@@ -312,13 +416,13 @@ fn invalid_live_dimensions_cannot_replace_the_last_reopenable_recovery_snapshot(
     );
     session.revision += 1;
     session.sync_persistence();
-    session.persistence.as_ref().unwrap().flush();
+    assert!(session.persistence.as_ref().unwrap().flush().is_err());
     session.poll_persistence();
     assert_eq!(std::fs::read(&snapshot).unwrap(), valid_bytes, "invalid state replaced the last reopenable recovery snapshot");
     assert!(session.persistence.as_ref().unwrap().status.last_error.as_deref().is_some_and(|error| error.contains("oversized graphic")));
     assert!(filmcraft_format::decode(&std::fs::read(&snapshot).unwrap()).is_ok());
     std::thread::sleep(std::time::Duration::from_millis(75));
-    session.persistence.as_ref().unwrap().flush();
+    assert!(session.persistence.as_ref().unwrap().flush().is_err());
     let repeated_errors = session.persistence.as_mut().unwrap().drain_events();
     assert!(
         !repeated_errors.iter().any(|event| matches!(event, autosave::WorkerEvent::Error(_))),
@@ -329,7 +433,7 @@ fn invalid_live_dimensions_cannot_replace_the_last_reopenable_recovery_snapshot(
     session.revision += 1;
     let recovered_revision = session.revision;
     session.sync_persistence();
-    session.persistence.as_ref().unwrap().flush();
+    assert_eq!(session.persistence.as_ref().unwrap().flush().unwrap(), Some(recovered_revision));
     assert_eq!(journaled(&mut session), recovered_revision, "a repaired revision must resume recovery writes");
     assert!(filmcraft_format::decode(&std::fs::read(&snapshot).unwrap()).is_ok());
     session.shutdown();
@@ -351,7 +455,7 @@ fn repaired_dimensions_keep_the_journal_deadline_during_continuous_edits() {
         None,
     );
     persistence.send_dirty(std::sync::Arc::new(project.clone()), 1, None);
-    persistence.flush();
+    assert!(persistence.flush().is_err());
     assert!(
         persistence.drain_events().iter().any(|event| matches!(event, autosave::WorkerEvent::Error(error) if error.contains("oversized graphic"))),
         "the first revision must be rejected"

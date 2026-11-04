@@ -9,7 +9,7 @@
 use crate::decoder::RefFrame;
 use crate::frame::{FrameBuf, MiInfo};
 use crate::header::{FrameHeader, RefInfo, SequenceHeader};
-use crate::spec_tables::*;
+use crate::spec_tables::{DEFAULT_INTRA_FRAME_Y_MODE_CDF, NUM_REF_FRAMES, RESTORE_NONE, SUBSAMPLED_SIZE};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 

@@ -43,6 +43,14 @@ impl Driver {
             self.harness.step();
         }
     }
+    fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
+        let t0 = std::time::Instant::now();
+        while !done(self) {
+            assert!(t0.elapsed().as_secs() < 120, "timed out waiting for {what}");
+            self.frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     fn call(&mut self, method: &str, params: Value) -> Value {
         let (req, reply) = ControlRequest::new(method, params.clone());
         self.tx.send(req).unwrap();
@@ -202,17 +210,10 @@ fn create_and_edit_masks_on_the_monitor() {
     d.rect("effectControls.opacity.mask0.track.fwd");
     d.rect("effectControls.opacity.mask0.trackMethod");
     d.ok("ui.click", json!({"id": "effectControls.opacity.mask0.track.fwdFrame"}));
-    let mut finished = false;
-    for _ in 0..400 {
-        d.frames(1);
+    d.wait_until("the tracking job to finish", |d| {
         let jobs = d.exec("jobs.list", json!({}));
-        if jobs.as_array().unwrap().iter().any(|j| j["label"].as_str().unwrap_or("").starts_with("Track") && j["finished"] == true) {
-            finished = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(finished, "tracking job ran");
+        jobs.as_array().unwrap().iter().any(|j| j["label"].as_str().unwrap_or("").starts_with("Track") && j["finished"] == true)
+    });
     d.frames(3);
     let m = d.masks();
     let pen = m.iter().find(|x| x["effectId"] == "opacity").unwrap();
@@ -245,6 +246,160 @@ fn mask_handles_follow_the_clip_selection() {
     d.exec("timeline.select", json!({"clips": [id]}));
     d.frames(3);
     assert!(d.has("program.mask.vertex.0"), "the handles come back with the clip");
+}
+
+/// A marquee dragged from outside the mask selects the vertices it encloses, Shift-click adds one
+/// more, and dragging any selected vertex moves them all in one undo step; a plain click goes back
+/// to one vertex (#3150).
+#[test]
+fn marquee_and_shift_click_select_vertices_that_move_together() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = &seq["video"][0]["items"][0];
+    let (id, start, dur) = (clip["clip"].as_u64().unwrap(), clip["start"].as_i64().unwrap(), clip["duration"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + dur / 2}));
+    d.exec("timeline.select", json!({"clips": [id]}));
+    // corners: 0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left
+    d.exec("masks.add", json!({"clip": id, "effect": "opacity", "shape": "polygon", "center": [800, 540], "size": [600, 400]}));
+    d.frames(3);
+    let pts = |d: &mut Driver| -> Vec<(f64, f64)> {
+        let m = d.masks();
+        (0..4).map(|i| v0(&m[0], i)).collect()
+    };
+    let undo_len = |d: &mut Driver| d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+    // the marquee starts above and left of the shape and encloses the two top corners
+    let (a, b) = (d.center("program.mask.vertex.0"), d.center("program.mask.vertex.1"));
+    d.ok("ui.drag", json!({"from": {"x": a.0 - 25.0, "y": a.1 - 25.0}, "to": {"x": b.0 + 25.0, "y": b.1 + 25.0}, "steps": 6}));
+    d.frames(2);
+    let p0 = pts(&mut d);
+    let undo0 = undo_len(&mut d);
+    d.drag("program.mask.vertex.0", 0.0, -30.0);
+    let p1 = pts(&mut d);
+    for i in [0, 1] {
+        assert!(p1[i].1 < p0[i].1 - 20.0 && (p1[i].0 - p0[i].0).abs() < 1e-6, "vertex {i} moved up with the marquee selection: {p0:?} → {p1:?}");
+    }
+    for i in [2, 3] {
+        assert_eq!(p1[i], p0[i], "vertex {i} outside the marquee stays");
+    }
+    assert_eq!(undo_len(&mut d), undo0 + 1, "one undo step for the drag");
+    d.shot("mask-vertices-marquee");
+
+    // Shift-click adds the bottom-left corner; dragging a selected one moves all three
+    let (x, y) = d.center("program.mask.vertex.3");
+    d.ok("ui.click", json!({"x": x, "y": y, "modifiers": {"shift": true}}));
+    d.frames(2);
+    d.drag("program.mask.vertex.1", 20.0, 0.0);
+    let p2 = pts(&mut d);
+    for i in [0, 1, 3] {
+        assert!(p2[i].0 > p1[i].0 + 10.0, "vertex {i} moved right: {p1:?} → {p2:?}");
+    }
+    assert_eq!(p2[2], p1[2], "the unselected vertex stays");
+
+    // a plain click selects only that vertex again
+    d.ok("ui.click", json!({"id": "program.mask.vertex.0"}));
+    d.frames(2);
+    d.drag("program.mask.vertex.0", 0.0, 20.0);
+    let p3 = pts(&mut d);
+    assert!(p3[0].1 > p2[0].1 + 10.0, "{p2:?} → {p3:?}");
+    for i in [1, 2, 3] {
+        assert_eq!(p3[i], p2[i], "vertex {i} left the selection");
+    }
+
+    // a graphic layer on the picture still takes its own drag: the marquee is only for empty space
+    let at = d.exec("sequence.inspect", json!({}))["playhead"].as_i64().unwrap();
+    let title = d.exec("graphics.newText", json!({"text": "Title", "time": at}))["clip"].as_u64().unwrap();
+    d.exec("masks.translate", json!({"clip": id, "effect": "opacity", "mask": 0, "delta": [700, 0]}));
+    d.exec("timeline.select", json!({"clips": [id]}));
+    d.frames(3);
+    assert!(d.has("program.mask.marquee"), "the mask overlay is on the monitor");
+    let q0 = d.exec("graphics.list", json!({"clip": title}))["layers"][0]["quad"][0][0].as_f64().unwrap();
+    let lr = d.rect(&format!("program.layer.{title}.0"));
+    let (cx, cy) = (lr[0] + lr[2] / 2.0, lr[1] + lr[3] / 2.0);
+    d.ok("ui.drag", json!({"from": {"x": cx, "y": cy}, "to": {"x": cx + 60.0, "y": cy}, "steps": 6}));
+    d.frames(2);
+    let q1 = d.exec("graphics.list", json!({"clip": title}))["layers"][0]["quad"][0][0].as_f64().unwrap();
+    assert!(q1 > q0 + 20.0, "the title moved: {q0} → {q1}");
+}
+
+/// A marquee released over a graphic layer still selects: from outside the outline's box and from
+/// inside it but outside the shape (#3150).
+#[test]
+fn a_marquee_released_over_a_graphic_layer_selects_its_vertices() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = &seq["video"][0]["items"][0];
+    let (id, start, dur) = (clip["clip"].as_u64().unwrap(), clip["start"].as_i64().unwrap(), clip["duration"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + dur / 2}));
+    let at = d.exec("sequence.inspect", json!({}))["playhead"].as_i64().unwrap();
+    let title = d.exec("graphics.newText", json!({"text": "Title", "time": at, "position": [1000, 600]}))["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [id]}));
+    // vertices: 0 top, 1 right, 2 bottom, 3 left; the title sits inside the ellipse
+    d.exec("masks.add", json!({"clip": id, "effect": "opacity", "shape": "ellipse", "center": [960, 540], "size": [800, 500]}));
+    d.frames(3);
+    let pts = |d: &mut Driver| -> Vec<(f64, f64)> {
+        let m = d.masks();
+        (0..4).map(|i| v0(&m[0], i)).collect()
+    };
+    let lr = d.rect(&format!("program.layer.{title}.0"));
+    let to = (lr[0] + lr[2] / 2.0, lr[1] + lr[3] / 2.0);
+    for inset in [-20.0, 1.0] {
+        let bb = d.rect("program.mask.body");
+        let from = (bb[0] + inset, bb[1] + inset);
+        let enclosed: Vec<usize> = (0..4)
+            .filter(|i| {
+                let (x, y) = d.center(&format!("program.mask.vertex.{i}"));
+                x >= from.0 && x <= to.0 && y >= from.1 && y <= to.1
+            })
+            .collect();
+        assert!(!enclosed.is_empty() && enclosed.len() < 4, "the marquee from {from:?} to {to:?} takes some vertices: {enclosed:?}");
+        d.ok("ui.drag", json!({"from": {"x": from.0, "y": from.1}, "to": {"x": to.0, "y": to.1}, "steps": 6}));
+        d.frames(2);
+        let p0 = pts(&mut d);
+        d.drag(&format!("program.mask.vertex.{}", enclosed[0]), 0.0, -20.0);
+        let p1 = pts(&mut d);
+        let moved: Vec<usize> = (0..4).filter(|i| p1[*i] != p0[*i]).collect();
+        assert_eq!(moved, enclosed, "marquee from {from:?}: {p0:?} → {p1:?}");
+    }
+}
+
+/// The vertex selection does not outlive a change in the number of vertices: after a Cmd-click
+/// deletes one (or an edit elsewhere adds or deletes one), the old indices would name other
+/// vertices (#3150).
+#[test]
+fn deleting_a_vertex_drops_the_vertex_selection() {
+    let mut d = Driver::demo();
+    let seq = d.exec("sequence.inspect", json!({}));
+    let clip = &seq["video"][0]["items"][0];
+    let (id, start, dur) = (clip["clip"].as_u64().unwrap(), clip["start"].as_i64().unwrap(), clip["duration"].as_i64().unwrap());
+    d.exec("playhead.set", json!({"time": start + dur / 2}));
+    d.exec("timeline.select", json!({"clips": [id]}));
+    for by_command in [false, true] {
+        d.exec("masks.add", json!({"clip": id, "effect": "opacity", "shape": "polygon", "center": [800, 540], "size": [600, 400]}));
+        d.frames(3);
+        let mask = d.masks().len() - 1;
+        // select corners 1 and 2, then delete corner 0: they become indices 0 and 1
+        d.ok("ui.click", json!({"id": "program.mask.vertex.1"}));
+        d.frames(2);
+        let (x, y) = d.center("program.mask.vertex.2");
+        d.ok("ui.click", json!({"x": x, "y": y, "modifiers": {"shift": true}}));
+        d.frames(2);
+        if by_command {
+            d.exec("masks.removeVertex", json!({"clip": id, "effect": "opacity", "mask": mask, "vertex": 0}));
+        } else {
+            let (x, y) = d.center("program.mask.vertex.0");
+            d.ok("ui.click", json!({"x": x, "y": y, "modifiers": {"command": true}}));
+        }
+        d.frames(2);
+        let pts = |d: &mut Driver| -> Vec<(f64, f64)> {
+            let m = d.masks();
+            (0..3).map(|i| v0(&m[mask], i)).collect()
+        };
+        let p0 = pts(&mut d);
+        d.drag("program.mask.vertex.1", 0.0, -20.0);
+        let p1 = pts(&mut d);
+        let moved: Vec<usize> = (0..3).filter(|i| p1[*i] != p0[*i]).collect();
+        assert_eq!(moved, vec![1], "only the dragged vertex moves (by command: {by_command}): {p0:?} → {p1:?}");
+    }
 }
 
 /// Shift held while placing pen points snaps each new segment to 45° steps from the previous
@@ -387,10 +542,13 @@ fn presets_bin_drag_and_save_dialog() {
         d.ok("ui.click", json!({"id": format!("effectControls.effect.{fx}.twirl")}));
         d.frames(2);
     }
+    // Effect Controls: property fields must be reachable by name as well.
+    d.harness.check_accessibility();
     d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast", "button": "right"}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "effectControls.effect.brightness_contrast.savePreset"}));
     d.frames(2);
+    d.harness.check_accessibility();
     d.rect("savePreset.name");
     d.ok("ui.click", json!({"id": "savePreset.name"}));
     d.ok("ui.key", json!({"key": "Cmd+A"}));

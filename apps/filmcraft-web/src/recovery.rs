@@ -6,7 +6,7 @@
 //! - Imported media are copied to `media/<name>` (the browser streams the copy; nothing goes
 //!   through wasm memory), so the snapshot's `/files/<name>` references resolve after a reload.
 //! - At start-up a dirty snapshot is reopened. `?norecover` skips opening it, and `?fresh` also
-//!   skips the media; both hold the snapshot for download before another session can replace it.
+//!   skips the media; both hold the snapshot for download before this tab can replace it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -31,11 +31,19 @@ enum Outcome {
     Clean { ok: bool },
 }
 
-#[derive(Default)]
 pub struct Autosave {
     policy: Policy,
     outcomes: Rc<RefCell<Vec<Outcome>>>,
     warning: crate::recovery_policy::ValidationWarning,
+    /// Monotonic host clock. Web `logic` may run for hidden tabs; egui's input time is stale there.
+    clock: web_time::Instant,
+}
+
+impl Default for Autosave {
+    /// Default policy with a monotonic host clock, so hidden-tab logic never uses a stale egui input time.
+    fn default() -> Self {
+        Self { policy: Policy::default(), outcomes: Rc::default(), clock: web_time::Instant::now(), warning: Default::default() }
+    }
 }
 
 impl Autosave {
@@ -45,7 +53,7 @@ impl Autosave {
             return None;
         }
         self.warning.refresh(s.revision, || filmcraft_format::validate_project_dimensions(&s.project));
-        let now = ctx.input(|i| i.time);
+        let now = self.clock.elapsed().as_secs_f64();
         for o in self.outcomes.borrow_mut().drain(..) {
             match o {
                 Outcome::Snapshot { revision, ok } => self.policy.written(revision, ok, now),
@@ -67,7 +75,7 @@ impl Autosave {
                 self.warning.clear();
                 // A failed dirty-meta write must not replace the previous snapshot.
                 let bytes = filmcraft_format::encode(&s.project, false);
-                let meta = json!({"dirty": true, "name": crate::recovery_policy::recovery_display_name(&s.project.name), "revision": s.revision, "time": js_sys::Date::now()});
+                let meta = json!({"dirty": true, "name": crate::recovery_policy::recovery_display_name(&s.project.name), "revision": s.revision});
                 let (out, ctx) = (self.outcomes.clone(), ctx.clone());
                 let after_meta: opfs::Done = Box::new(move |ok| {
                     if !ok {

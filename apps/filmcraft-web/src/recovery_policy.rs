@@ -155,6 +155,11 @@ impl Policy {
                 return Action::Nothing;
             }
             let since = self.last_time.map_or(f64::INFINITY, |t| now - t);
+            // At most two serialized snapshots may wait for OPFS; a stalled store must not
+            // retain another copy of the project after every interval.
+            if since >= INTERVAL_S && self.pending_snapshots >= 2 {
+                return Action::WakeAfter(0.5);
+            }
             if since >= INTERVAL_S {
                 self.last_revision = Some(revision);
                 self.last_time = Some(now);

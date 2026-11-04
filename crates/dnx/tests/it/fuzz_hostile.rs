@@ -72,48 +72,60 @@ fn sweep() {
         for n in depth.truncations(seed.len()) {
             run(&seed[..n], &format!("seed {si} truncate {n}"));
         }
-        // The header (and the start of the scan-line index): every byte to extreme values, every bit.
-        for p in 0..seed.len().min(0x300) {
-            for (i, v) in VALUES.into_iter().enumerate() {
-                if !depth.value(p, i) {
-                    continue;
-                }
-                let mut d = seed.clone();
-                d[p] = v;
-                run(&d, &format!("seed {si} byte {p:#x}={v:#x}"));
+        header_flips(&depth, seed, si);
+        big_fields(seed, si);
+        random_rounds(&depth, seed, si);
+    }
+}
+
+/// The header (and the start of the scan-line index): every byte to extreme values, every bit.
+fn header_flips(depth: &Depth, seed: &[u8], si: usize) {
+    for p in 0..seed.len().min(0x300) {
+        for (i, v) in VALUES.into_iter().enumerate() {
+            if !depth.value(p, i) {
+                continue;
             }
-            for b in 0..8 {
-                if !depth.bit(p, b) {
-                    continue;
-                }
-                let mut d = seed.clone();
-                d[p] ^= 1 << b;
-                run(&d, &format!("seed {si} flip {p:#x}.{b}"));
+            let mut d = seed.to_vec();
+            d[p] = v;
+            run(&d, &format!("seed {si} byte {p:#x}={v:#x}"));
+        }
+        for b in 0..8 {
+            if !depth.bit(p, b) {
+                continue;
+            }
+            let mut d = seed.to_vec();
+            d[p] ^= 1 << b;
+            run(&d, &format!("seed {si} flip {p:#x}.{b}"));
+        }
+    }
+}
+
+/// Big dimension fields with the rest intact (lines 0x18, width 0x1A, macroblock rows 0x16C).
+fn big_fields(seed: &[u8], si: usize) {
+    for (off, v) in [(0x18usize, 0xffffu16), (0x1a, 0xffff), (0x18, 0x4000), (0x1a, 0x4000), (0x16c, 0xffff)] {
+        let mut d = seed.to_vec();
+        if let Some(s) = d.get_mut(off..off + 2) {
+            s.copy_from_slice(&v.to_be_bytes());
+        }
+        run(&d, &format!("seed {si} u16 {off:#x}={v:#x}"));
+    }
+}
+
+fn random_rounds(depth: &Depth, seed: &[u8], si: usize) {
+    let mut rng = Rng(0x9e3779b97f4a7c15 ^ si as u64);
+    // Skipped rounds still draw their mutations, so round i matches round i of a full run.
+    for i in 0..depth.rounds {
+        let mut d = seed.to_vec();
+        for _ in 0..1 + rng.below(8) {
+            let p = rng.below(d.len());
+            if rng.below(2) == 0 {
+                d[p] ^= 1 << rng.below(8);
+            } else {
+                d[p] = rng.next() as u8;
             }
         }
-        // Big dimension fields with the rest intact (lines 0x18, width 0x1A, macroblock rows 0x16C).
-        for (off, v) in [(0x18usize, 0xffffu16), (0x1a, 0xffff), (0x18, 0x4000), (0x1a, 0x4000), (0x16c, 0xffff)] {
-            let mut d = seed.clone();
-            if let Some(s) = d.get_mut(off..off + 2) {
-                s.copy_from_slice(&v.to_be_bytes());
-            }
-            run(&d, &format!("seed {si} u16 {off:#x}={v:#x}"));
-        }
-        let mut rng = Rng(0x9e3779b97f4a7c15 ^ si as u64);
-        // Skipped rounds still draw their mutations, so round i matches round i of a full run.
-        for i in 0..depth.rounds {
-            let mut d = seed.clone();
-            for _ in 0..1 + rng.below(8) {
-                let p = rng.below(d.len());
-                if rng.below(2) == 0 {
-                    d[p] ^= 1 << rng.below(8);
-                } else {
-                    d[p] = rng.next() as u8;
-                }
-            }
-            if depth.round(i) {
-                run(&d, &format!("seed {si} random {i}"));
-            }
+        if depth.round(i) {
+            run(&d, &format!("seed {si} random {i}"));
         }
     }
 }
