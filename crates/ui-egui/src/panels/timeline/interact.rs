@@ -166,14 +166,20 @@ fn trim_drag_targets(session: &filmcraft_engine::Session, seq: &Sequence, clip: 
 fn drag_is_locked(session: &filmcraft_engine::Session, seq: &Sequence, drag: &Drag) -> bool {
     let clips = match drag {
         Drag::Move { clips, track_delta, .. } => return move_is_locked(seq, clips, *track_delta),
-        // the trim leaves linked partners and selected clips on locked tracks where they are
-        Drag::Trim { clip, .. } => return move_is_locked(seq, &[*clip], 0),
+        Drag::Trim { clip, mode, linked, .. } => return trim_is_locked(session, seq, *clip, *mode, *linked),
         Drag::Stretch { clip, .. } | Drag::Remix { clip, .. } | Drag::Slip { clip, .. } | Drag::Slide { clip, .. } => vec![*clip],
         Drag::Roll { left, right, .. } => vec![*left, *right],
         Drag::Transition { id, .. } => return seq.all_tracks().any(|t| t.locked && t.transitions.iter().any(|tr| tr.id == *id)),
         _ => return false,
     };
     move_is_locked(seq, &filmcraft_engine::commands::with_links(session, &clips), 0)
+}
+
+/// A regular trim leaves linked partners and selected clips on locked tracks where they are. A
+/// ripple trim would shift later material away from a locked partner, so that partner refuses it.
+fn trim_is_locked(session: &filmcraft_engine::Session, seq: &Sequence, clip: ClipId, mode: filmcraft_edit::TrimMode, linked: bool) -> bool {
+    let clips = if mode == filmcraft_edit::TrimMode::Ripple && linked { filmcraft_engine::commands::with_links(session, &[clip]) } else { vec![clip] };
+    move_is_locked(seq, &clips, 0)
 }
 
 fn move_is_locked(seq: &Sequence, clips: &[ClipId], delta: i32) -> bool {
@@ -319,8 +325,9 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
         let g = grab_at(seq, layout, p, tool, mods, roll_ripple);
         let blocked = tool == Tool::Selection
             && match (g, g.hit()) {
-                // as the trim drag: only the grabbed clip's lock refuses it
-                (Grab::Edge { clip, kind: EdgeKind::Trim | EdgeKind::Ripple, .. }, _) => move_is_locked(seq, &[clip], 0),
+                // the same lock rule as the trim drag it starts
+                (Grab::Edge { clip, kind: EdgeKind::Trim, .. }, _) => trim_is_locked(&app.session, seq, clip, filmcraft_edit::TrimMode::Regular, !mods.alt),
+                (Grab::Edge { clip, kind: EdgeKind::Ripple, .. }, _) => trim_is_locked(&app.session, seq, clip, filmcraft_edit::TrimMode::Ripple, !mods.alt),
                 (_, Hit::Clip { clip, .. }) => {
                     let clips = if app.session.state.selection.contains(&clip) {
                         app.session.state.selection.clone()

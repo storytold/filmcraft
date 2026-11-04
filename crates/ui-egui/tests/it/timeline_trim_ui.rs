@@ -1002,14 +1002,7 @@ fn another_selected_edge_snaps_to_the_playhead() {
 #[test]
 fn a_locked_linked_partner_does_not_block_the_trim() {
     let mut d = Driver::demo();
-    let seq = d.app().session.active_sequence().expect("sequence");
-    let (video, sound, track) = seq.video_tracks[0]
-        .items
-        .iter()
-        .find_map(|v| seq.audio_tracks.iter().find_map(|t| t.items.iter().find(|a| v.link.is_some() && a.link == v.link).map(|a| (v.id.0, a.id.0, t.id.0))))
-        .expect("a linked clip on V1");
-    d.exec("timeline.setTrack", json!({"track": track, "locked": true}));
-    d.frames(3);
+    let (video, sound) = lock_a_linked_sound(&mut d);
     let (v0, a0, undo) = (d.span(video), d.span(sound), d.undo_steps());
     let (_, x1, y) = d.edges(video);
     let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
@@ -1019,4 +1012,34 @@ fn a_locked_linked_partner_does_not_block_the_trim() {
     assert!(d.span(video).1 < v0.1, "the video is trimmed: {v0:?} -> {:?}", d.span(video));
     assert_eq!(d.span(sound), a0, "the sound on the locked track stays");
     assert_eq!(d.undo_steps(), undo + 1);
+}
+
+/// A clip on V1 and its linked sound, with the sound's track locked.
+fn lock_a_linked_sound(d: &mut Driver) -> (u64, u64) {
+    let seq = d.app().session.active_sequence().expect("sequence");
+    let (video, sound, track) = seq.video_tracks[0]
+        .items
+        .iter()
+        .find_map(|v| seq.audio_tracks.iter().find_map(|t| t.items.iter().find(|a| v.link.is_some() && a.link == v.link).map(|a| (v.id.0, a.id.0, t.id.0))))
+        .expect("a linked clip on V1");
+    d.exec("timeline.setTrack", json!({"track": track, "locked": true}));
+    d.frames(3);
+    (video, sound)
+}
+
+/// #3044: a ripple trim would shift later clips away from a linked sound on a locked track, so
+/// that sound still refuses it.
+#[test]
+fn a_locked_linked_partner_blocks_a_ripple_trim() {
+    let mut d = Driver::demo();
+    let (video, sound) = lock_a_linked_sound(&mut d);
+    d.ok("ui.set", json!({"tool": "ripple"}));
+    let (v0, a0, undo) = (d.span(video), d.span(sound), d.undo_steps());
+    let (_, x1, y) = d.edges(video);
+    let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
+    d.press_and_move(from, to, 20);
+    assert!(d.app().tl.drag.is_none(), "the ripple drag does not start");
+    d.release(to);
+    assert_eq!((d.span(video), d.span(sound)), (v0, a0), "nothing moves");
+    assert_eq!(d.undo_steps(), undo);
 }
