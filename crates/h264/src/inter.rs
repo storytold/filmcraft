@@ -72,20 +72,10 @@ fn avg(a: u8, b: u8) -> u8 {
     ((a as u16 + b as u16 + 1) >> 1) as u8
 }
 
-
 /// Load eight consecutive 8-bit samples as `i32x8` (no `unsafe`; `src` must hold at least 8 bytes).
 #[inline(always)]
 fn load8_u8_i32(src: &[u8]) -> wide::i32x8 {
-    wide::i32x8::from([
-        src[0] as i32,
-        src[1] as i32,
-        src[2] as i32,
-        src[3] as i32,
-        src[4] as i32,
-        src[5] as i32,
-        src[6] as i32,
-        src[7] as i32,
-    ])
+    wide::i32x8::from([src[0] as i32, src[1] as i32, src[2] as i32, src[3] as i32, src[4] as i32, src[5] as i32, src[6] as i32, src[7] as i32])
 }
 
 /// Clip eight `i32` lanes to 8-bit and store.
@@ -121,16 +111,7 @@ fn tap6_i16x8(a: wide::i16x8, b: wide::i16x8, c: wide::i16x8, d: wide::i16x8, e:
 /// Load eight consecutive samples as `i16x8` (no `unsafe`; `src` must hold at least 8 bytes).
 #[inline(always)]
 fn load8_u8_i16(src: &[u8]) -> wide::i16x8 {
-    wide::i16x8::from([
-        src[0] as i16,
-        src[1] as i16,
-        src[2] as i16,
-        src[3] as i16,
-        src[4] as i16,
-        src[5] as i16,
-        src[6] as i16,
-        src[7] as i16,
-    ])
+    wide::i16x8::from([src[0] as i16, src[1] as i16, src[2] as i16, src[3] as i16, src[4] as i16, src[5] as i16, src[6] as i16, src[7] as i16])
 }
 
 /// Horizontal 6-tap (unclipped) for `BW` outputs: out[c] uses row[c..c + 6].

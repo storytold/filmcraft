@@ -189,16 +189,7 @@ fn idct8_1d(d: [i32; 8]) -> [i32; 8] {
 
 #[inline(always)]
 fn add_clip8(line: &mut [u8; 8], v: wide::i32x8) {
-    let p = wide::i32x8::from([
-        line[0] as i32,
-        line[1] as i32,
-        line[2] as i32,
-        line[3] as i32,
-        line[4] as i32,
-        line[5] as i32,
-        line[6] as i32,
-        line[7] as i32,
-    ]);
+    let p = wide::i32x8::from([line[0] as i32, line[1] as i32, line[2] as i32, line[3] as i32, line[4] as i32, line[5] as i32, line[6] as i32, line[7] as i32]);
     let sum: wide::i32x8 = p + ((v + wide::i32x8::splat(32)) >> 6u32);
     let r: [i32; 8] = sum.max(wide::i32x8::splat(0)).min(wide::i32x8::splat(255)).into();
     for i in 0..8 {
