@@ -130,3 +130,33 @@ fn a_refused_access_unit_leaves_no_stale_references() {
     assert_eq!(dec.decode(&two, 2).unwrap().len(), 1, "the first I picture is shown when the second arrives");
     assert_eq!(dec.flush().len(), 1);
 }
+
+/// `data` without its extension units (an MPEG-1 stream): everything from a 00 00 01 b5 start code up to the next start code.
+fn mpeg1(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < data.len() {
+        if data[i..].starts_with(&[0, 0, 1, 0xb5]) {
+            i += 4;
+            while i < data.len() && !data[i..].starts_with(&[0, 0, 1]) {
+                i += 1;
+            }
+        } else {
+            out.push(data[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+#[test]
+fn an_mpeg1_d_picture_restarts_decoding_after_a_refused_access_unit() {
+    let mut data = mpeg1(&sequence(64, 64, 1));
+    for _ in 0..200 {
+        data.extend(mpeg1(&picture()));
+    }
+    let mut dec = Decoder::new();
+    assert!(dec.decode(&data, 0).is_err());
+    let two = [mpeg1(&picture_of(4)), mpeg1(&picture_of(4))].concat();
+    assert_eq!(dec.decode(&two, 1).unwrap().len(), 1, "the first D picture is shown when the second arrives");
+}
