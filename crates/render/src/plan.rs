@@ -298,11 +298,12 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
 fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider, nest: u32, layers: &mut PlanStack) {
     let (w, h) = output_size(seq, opts.scale);
     let sc = Scene { project, seq, t, opts, sources, nest };
-    for tr in &seq.video_tracks {
+    let mattes = crate::matte_tracks(project, seq, t, opts.effects);
+    for (ti, tr) in seq.video_tracks.iter().enumerate() {
         if layers.exhausted {
             return;
         }
-        if !tr.enabled {
+        if !tr.enabled || mattes.contains(&ti) {
             continue;
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {

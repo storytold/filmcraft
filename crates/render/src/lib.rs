@@ -230,12 +230,14 @@ fn seq_canvas(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
         return canvas;
     }
     let tc = format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, seq.settings.sample_rate as i64);
+    // a single track (`only`) is rendered as a matte or a map, so it draws even when it is one
+    let mattes = if only.is_none() { matte_tracks(project, seq, t, opts.effects) } else { Vec::new() };
     for (ti, track) in seq.video_tracks.iter().enumerate() {
         // A cancelled frame job (playback moved on) stops here; its result is discarded.
         if filmcraft_media::cancel::cancelled() {
             return canvas;
         }
-        if only.is_some_and(|o| o != ti) || (!track.enabled && only.is_none()) {
+        if only.is_some_and(|o| o != ti) || (!track.enabled && only.is_none()) || mattes.contains(&ti) {
             continue;
         }
         // transition covering t?
@@ -332,6 +334,33 @@ fn seq_canvas(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
 
 fn is_adjustment(project: &Project, item: &TrackItem) -> bool {
     project.item(item.item).is_some_and(|pi| matches!(pi.kind, ItemKind::AdjustmentLayer { .. }))
+}
+
+/// The video tracks of `seq` that a Track Matte Key uses as its matte at `t`: the keyed clip shows
+/// the matte, the matte track itself is not drawn (#4278). With effects off (`effects` false)
+/// nothing is keyed, so every track draws, and so does the matte of an adjustment layer, whose
+/// effects run without the other tracks.
+pub(crate) fn matte_tracks(project: &Project, seq: &Sequence, t: Tick, effects: bool) -> Vec<usize> {
+    let mut out = Vec::new();
+    if !effects {
+        return out;
+    }
+    for (ti, tr) in seq.video_tracks.iter().enumerate().filter(|(_, tr)| tr.enabled) {
+        // a transition shows both of its clips, each with its own effects
+        let items: Vec<&TrackItem> = match tr.transitions.iter().find(|x| x.range().contains(t)) {
+            Some(x) => [x.from, x.to].into_iter().flatten().filter_map(|id| tr.item(id)).collect(),
+            None => tr.item_at(t).into_iter().collect(),
+        };
+        let keyed = items.into_iter().filter(|i| i.enabled && !is_adjustment(project, i));
+        for e in keyed.flat_map(|i| &i.effects).filter(|e| e.enabled && e.effect == "track_matte") {
+            // the Matte choice: 0 is None, n is Video n
+            let Some(matte) = (vfx::chv(e, "matte") as usize).checked_sub(1) else { continue };
+            if matte != ti && !out.contains(&matte) {
+                out.push(matte);
+            }
+        }
+    }
+    out
 }
 
 /// An adjustment layer as a layer over `below` (the composite of the tracks under it): `below`

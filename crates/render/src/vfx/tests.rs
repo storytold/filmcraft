@@ -1339,6 +1339,47 @@ mod pipeline {
         let e = render_sequence(&p2, seq2, r.tick_of(30), RenderOptions::default(), &map2);
         assert!(e.px.iter().all(|v| v.is_finite()));
     }
+
+    /// The report's setup (#4278): blue on V1, red on V2 keyed with Track Matte Key (Matte Luma,
+    /// Video 3), and a white matte on V3 cropped to its left half. Red shows where the matte is
+    /// white, blue where it is not, and the matte itself is not drawn.
+    #[test]
+    fn a_track_matte_reveals_the_keyed_clip_and_is_not_drawn_itself() {
+        let mut p = Project::new("matte");
+        let mut map = SourceMap::default();
+        let r = FrameRate::FPS_24;
+        let mut matte =
+            |p: &mut Project, color: [f32; 4]| add(p, &mut map, GeneratorSource::new(Generator::ColorMatte { color }, 64, 36, r, Tick(10 * TICKS_PER_SECOND)));
+        let blue = matte(&mut p, [0.0, 0.0, 1.0, 1.0]);
+        let red = matte(&mut p, [1.0, 0.0, 0.0, 1.0]);
+        let white = matte(&mut p, [1.0, 1.0, 1.0, 1.0]);
+        let seq = p.new_sequence("s", SequenceSettings { width: 64, height: 36, frame_rate: r, ..Default::default() }, 3, 0, None);
+        place(&mut p, seq, 0, blue, vec![]);
+        let mut tm = inst("track_matte");
+        set(&mut tm, "matte", ParamValue::Choice(3));
+        set(&mut tm, "composite", ParamValue::Choice(1));
+        place(&mut p, seq, 1, red, vec![tm]);
+        let mut crop = inst("crop");
+        setf(&mut crop, "right", 50.0);
+        place(&mut p, seq, 2, white, vec![crop]);
+        let cpu = render_sequence(&p, seq, r.tick_of(0), RenderOptions::default(), &map);
+        // the layer plan (playback and export) leaves the matte out too
+        let planned = crate::plan::execute_cpu(&crate::plan::plan_frame(&p, seq, r.tick_of(0), RenderOptions::default(), &map));
+        for (path, img) in [("cpu", &cpu), ("plan", &planned)] {
+            let (left, right) = (img.get(10, 18), img.get(54, 18));
+            assert!(left[0] > 0.9 && left[1] < 0.1 && left[2] < 0.1, "{path}: red where the matte is white, got {left:?}");
+            assert!(right[0] < 0.1 && right[1] < 0.1 && right[2] > 0.9, "{path}: blue where the matte is empty, got {right:?}");
+        }
+        // with the key turned off nothing is keyed, so the matte draws over the red clip again
+        let key = p.sequence_mut(seq).unwrap().video_tracks[1].items[0].effects.iter_mut().find(|e| e.effect == "track_matte").unwrap();
+        key.enabled = false;
+        let cpu = render_sequence(&p, seq, r.tick_of(0), RenderOptions::default(), &map);
+        let planned = crate::plan::execute_cpu(&crate::plan::plan_frame(&p, seq, r.tick_of(0), RenderOptions::default(), &map));
+        for (path, img) in [("cpu", &cpu), ("plan", &planned)] {
+            let left = img.get(10, 18);
+            assert!(left.iter().all(|v| *v > 0.9), "{path}: the matte shows when the key is off, got {left:?}");
+        }
+    }
 }
 
 #[test]
