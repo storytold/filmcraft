@@ -772,7 +772,7 @@ fn a_graph_with_absurd_latency_is_refused_not_allocated() {
 
 #[test]
 fn a_refused_51_graph_returns_six_channels_of_silence() {
-    let mut r = Rig::new(&[impulse]);
+    let mut r = Rig::new(&[dc]);
     set_master_51(&mut r);
     let mut lim = filmcraft_project::find_effect("hard_limiter").unwrap().instance();
     lim.param_mut("max").unwrap().value = ParamValue::Float(0.0);
