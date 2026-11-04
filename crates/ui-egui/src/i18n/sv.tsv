@@ -35,6 +35,8 @@
 	Align to Video Frame as Group	Justera mot videobildruta som grupp
 	All Panels	Alla paneler
 	Alpha	Alfa
+	Alternate Drag Speed	Alternativ draghastighet
+	Alternate Drag Speed:	Alternativ draghastighet:
 	Appearance	Utseende
 	Appearance…	Utseende…
 	Apply Audio Transition	Använd ljudövergång
@@ -71,6 +73,7 @@
 	Captions…	Undertexter…
 	Caribbean	Karibisk
 	Center Horizontally	Centrera horisontellt
+	Center on Playhead:	Centrera på uppspelninghuvudet:
 	Center Vertically	Centrera vertikalt
 	Cerulean	Azurblå
 	Clear	Rensa
@@ -90,6 +93,7 @@
 	Comparison View	Jämförelsevy
 	Composite Video	Kompositvideo
 	Consolidate Duplicates	Slå samman dubbletter
+	Controls	Styrning
 	Copy	Kopiera
 	Copy Paste Includes Sequence Markers	Kopiering och inklistring tar med sekvensmarkörer
 	Create Captions from Transcript…	Skapa undertexter från transkription…
@@ -123,9 +127,11 @@
 	Ellipse	Ellips
 	Enable	Aktivera
 	Enable Remix	Aktivera Remix
+	Enter Shortcut	Ange genväg
 	Essential Graphics	Grundläggande grafik
 	Essential Sound	Grundläggande ljud
 	Events	Händelser
+	Explode Slider:	Fäll ut reglaget:
 	Export	Exportera
 	Export As Motion Graphics Template…	Exportera som rörlig grafik-mall…
 	Extract	Extrahera
@@ -180,6 +186,7 @@
 	Insert Frame Hold Segment	Infoga frysbildssegment
 	Install Motion Graphics Template…	Installera rörlig grafik-mall…
 	Interpret Footage…	Tolka material…
+	Invert Scrolling	Invertera rullning
 	Join the ArtCraft Discord…	Gå med i ArtCraft på Discord…
 	Keyboard Shortcuts…	Kortkommandon…
 	Label	Etikett
@@ -193,6 +200,7 @@
 	Light	Ljus
 	Link	Länka
 	Link Media…	Länka media…
+	Playhead Centering Range	Intervall för centrering av uppspelninghuvudet
 	Refresh Changed Media	Uppdatera ändrad media
 	Linked Selection	Länkad markering
 	Lock Guides	Lås stödlinjer
@@ -326,6 +334,7 @@
 	Simplify Sequence…	Förenkla sekvens…
 	Snap in Program Monitor	Fäst i programmonitorn
 	Snap in Timeline	Fäst i tidslinjen
+	Snap to Tracks	Fäst vid spår
 	Source	Källa
 	Source Settings…	Källinställningar…
 	Speed/Duration…	Hastighet/längd…
