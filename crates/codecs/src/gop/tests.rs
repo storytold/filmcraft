@@ -888,4 +888,8 @@ fn random_access_search_is_bounded_when_every_claimed_keyframe_is_not_one() {
     // a sample that can start a decode ends the search at once
     assert_eq!(random_access_at_or_before(&s, 100, |_| Some(true)).unwrap(), 100);
     assert_eq!(random_access_at_or_before(&s, 0, |_| Some(false)).unwrap(), 0);
+    // a cancelled request is refused even when the search starts at sample zero
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = filmcraft_media::cancel::with_cancel(&flag, || random_access_at_or_before(&s, 0, |_| Some(true)));
+    assert!(matches!(r, Err(CodecError::Cancelled)));
 }

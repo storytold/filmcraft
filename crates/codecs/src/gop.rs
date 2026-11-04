@@ -578,6 +578,10 @@ const MAX_RANDOM_ACCESS_PROBE_BYTES: usize = 512 << 20;
 /// the search is bounded in probes and bytes, and stops when the request is cancelled.
 fn random_access_at_or_before(s: &dyn VideoSamples, mut key: usize, mut is_ra: impl FnMut(&[u8]) -> Option<bool>) -> crate::Result<usize> {
     let (mut probes, mut bytes) = (0usize, 0usize);
+    // polled before the sample-zero exit too: a cancelled request must not go on to decode from there
+    if filmcraft_media::cancel::cancelled() {
+        return Err(CodecError::Cancelled);
+    }
     while key > 0 {
         if filmcraft_media::cancel::cancelled() {
             return Err(CodecError::Cancelled);
