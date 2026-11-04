@@ -987,11 +987,11 @@ fn persisted_through_file_case(stereo: bool, mode: &str, explicit_left: bool, ma
     let (attempted, actual) = reopen_through_signal(&attempted_file, item, proxy, available);
     assert_persisted_through_signal(&expected, stereo, available, right_channel_explicit(maps, explicit_left));
     eprintln!(
-        "persisted through stereo={stereo} mode={mode} maps={maps} explicit_left={explicit_left} replacement={when} proxy={proxy}: {joined:?}; cached={:?}; unjoined={:?}; attempted={:?}",
+        "persisted through stereo={stereo} mode={mode} maps={maps} explicit_left={explicit_left} replacement={when} proxy={proxy}: {joined:?}; cached={cached:?}; unjoined={unjoined:?}; attempted={attempted:?}",
         joined = attempt.joined,
-        current.channels,
-        expected.channels,
-        actual.channels
+        cached = current.channels,
+        unjoined = expected.channels,
+        attempted = actual.channels
     );
     assert_eq!(actual, expected, "joining must preserve the selected-channel function after save/reopen and later file replacement");
     let items = attempted.active_sequence().unwrap().audio_tracks[0].items.len();
@@ -1259,11 +1259,11 @@ fn persisted_through_nested_case(inner_mix: &str, mode: &str, maps: &str, explic
     assert_persisted_through_signal(&expected, false, 6, right_channel_explicit(maps, explicit_left));
     assert_nested_attempt_energy(&actual);
     eprintln!(
-        "persisted nested mix={inner_mix} mode={mode} maps={maps} explicit_left={explicit_left}: {joined:?}; cached={:?}; unjoined={:?}; attempted={:?}",
+        "persisted nested mix={inner_mix} mode={mode} maps={maps} explicit_left={explicit_left}: {joined:?}; cached={cached:?}; unjoined={unjoined:?}; attempted={attempted:?}",
         joined = attempt.joined,
-        current.channels,
-        expected.channels,
-        actual.channels
+        cached = current.channels,
+        unjoined = expected.channels,
+        attempted = actual.channels
     );
     assert_eq!(actual, expected, "joining must preserve the selected-channel function after save/reopen and a later nested-master layout change");
     let items = attempted.active_sequence().unwrap().audio_tracks[0].items.len();
@@ -1385,10 +1385,10 @@ fn persisted_through_generator_proxy_case(stereo: bool, mode: &str, maps: &str, 
     assert_persisted_through_signal(&expected, stereo, 6, right_channel_explicit(maps, explicit_left));
     assert_generator_attempt_energy(&actual);
     eprintln!(
-        "persisted generator later-proxy stereo={stereo} mode={mode} maps={maps} explicit_left={explicit_left}: {joined:?}; unjoined={:?}; attempted={:?}",
+        "persisted generator later-proxy stereo={stereo} mode={mode} maps={maps} explicit_left={explicit_left}: {joined:?}; unjoined={unjoined:?}; attempted={attempted:?}",
         joined = attempt.joined,
-        expected.channels,
-        actual.channels
+        unjoined = expected.channels,
+        attempted = actual.channels
     );
     assert_eq!(actual, expected, "joining must preserve generator channel selection after later forced proxy attachment and save/reopen");
     let items = attempted.active_sequence().unwrap().audio_tracks[0].items.len();
