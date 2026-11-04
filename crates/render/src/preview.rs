@@ -162,6 +162,8 @@ pub fn video_segments(project: &Project, seq_id: ItemId) -> Vec<Segment> {
         h.json(&(fb - fa));
         let mut clips = Vec::new();
         let mut absolute = false;
+        // one nested-sequence budget for this segment's whole hash walk, not one per sibling layer
+        let walk = crate::nest_budget::Visit::enter();
         for l in &layers {
             match l {
                 Layer::Item(ti, it) => {
@@ -190,6 +192,7 @@ pub fn video_segments(project: &Project, seq_id: ItemId) -> Vec<Segment> {
                 }
             }
         }
+        drop(walk);
         if absolute {
             h.json(&("absolute", fa));
         }
@@ -263,6 +266,8 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
         let mut h = Fnv128(global.0);
         h.json(&(b - a));
         let mut heard = false;
+        // one nested-sequence budget for this segment's whole hash walk, not one per sibling track
+        let walk = crate::nest_budget::Visit::enter();
         for (ti, tr) in seq.audio_tracks.iter().enumerate() {
             if tr.muted || (any_solo && !tr.solo) {
                 continue;
@@ -289,6 +294,7 @@ pub fn audio_segments(project: &Project, seq_id: ItemId) -> Vec<AudioSegment> {
                 heard = true;
             }
         }
+        drop(walk);
         if heard {
             out.push(AudioSegment { first_sample: a, samples: b - a, hash: h.hex() });
         }
@@ -440,7 +446,11 @@ pub fn effect_cost_ms(id: &str) -> f64 {
     }
 }
 
-fn decode_cost_ms(project: &Project, id: ItemId, depth: u32) -> f64 {
+/// Cost charged for nested sequences the cost walk could not reach within its visit budget: above any
+/// real-time budget, so a project too nested to measure is rendered rather than played live.
+const UNMEASURED_NEST_COST_MS: f64 = 1.0e6;
+
+pub(crate) fn decode_cost_ms(project: &Project, id: ItemId, depth: u32) -> f64 {
     let Some(pi) = project.item(id) else { return 0.0 };
     match &pi.kind {
         ItemKind::Media(m) => {
@@ -469,8 +479,11 @@ fn decode_cost_ms(project: &Project, id: ItemId, depth: u32) -> f64 {
         ItemKind::Graphic { .. } => 1.5,
         ItemKind::Sequence(s) => {
             let visit = crate::nest_budget::Visit::enter();
-            if depth > 8 || visit.exhausted() {
+            if depth > 8 {
                 return 0.0;
+            }
+            if visit.exhausted() {
+                return UNMEASURED_NEST_COST_MS;
             }
             // a nested sequence renders its worst segment on the CPU
             let id_cost = s
@@ -508,6 +521,8 @@ fn layer_cost(project: &Project, it: &TrackItem, px: f64, force_cpu: bool) -> f6
 fn estimate_cost(project: &Project, seq: &Sequence, layers: &[Layer]) -> f64 {
     let px = (seq.settings.width as f64 * seq.settings.height as f64) / HD_PIXELS;
     let mut total = 0.0;
+    // one nested-sequence budget for the whole estimate, shared by every layer's decode cost
+    let _walk = crate::nest_budget::Visit::enter();
     for l in layers {
         total += match l {
             Layer::Item(_, it) => layer_cost(project, it, px, false),

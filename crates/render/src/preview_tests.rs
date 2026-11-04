@@ -322,3 +322,22 @@ fn hashing_a_fan_out_of_nests_is_bounded_and_stable() {
     assert_eq!(a.len(), 1);
     assert_eq!(a[0].hash, video_segments(&p, below)[0].hash);
 }
+
+/// A nest the cost walk cannot reach within its visit budget is charged a conservative cost, so it is
+/// rendered instead of being estimated as free; a depth-limited chain still costs nothing extra.
+#[test]
+fn an_unmeasurable_nest_is_charged_a_conservative_cost() {
+    use crate::nest_budget::{MAX_NESTED_VISITS, Visit};
+    use crate::preview::decode_cost_ms;
+    let (mut p, matte, _, _) = setup();
+    let r = FrameRate::FPS_24;
+    let s = p.new_sequence("nest", SequenceSettings { width: 64, height: 64, frame_rate: r, ..Default::default() }, 1, 1, None);
+    let ti = p.make_track_item(matte, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(10)), r).unwrap();
+    p.sequence_mut(s).unwrap().video_tracks[0].items.push(ti);
+    let measured = decode_cost_ms(&p, s, 0);
+    assert!(measured > 0.0 && measured < 1000.0, "{measured}");
+    let _spent: Vec<Visit> = (0..MAX_NESTED_VISITS).map(|_| Visit::enter()).collect();
+    let unmeasured = decode_cost_ms(&p, s, 0);
+    assert!(unmeasured.is_finite() && unmeasured > 1000.0, "{unmeasured}");
+    assert_eq!(decode_cost_ms(&p, s, 9), 0.0, "the depth limit keeps its zero cost");
+}
