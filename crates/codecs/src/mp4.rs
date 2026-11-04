@@ -666,8 +666,13 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
                     None => ap.sample_rate as u32,
                 }
             },
-            // the configuration is an index (7 and 12 are both eight channels), not a count
-            if a.channels() > 0 { a.channels() } else { ap.channels },
+            // the configuration is an index (7 and 12 are both eight channels), not a count; 0 means
+            // a program config element lays the channels out, and the sample entry's count need not
+            // agree (ffmpeg 4.4 wrote 2 for its 5.1 PCE, #4258)
+            match a.channels() {
+                0 => crate::audio::aac_config_channels(&a.asc).unwrap_or(ap.channels),
+                n => n,
+            },
             None,
         ),
         CodecConfig::Pcm(p) => (p.sample_rate as u32, p.channels, Some(p.bits as u32)),
