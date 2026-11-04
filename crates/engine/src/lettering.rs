@@ -19,7 +19,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use filmcraft_geom::Vec2;
-use filmcraft_project::graphic::new_text_layer;
+use filmcraft_project::graphic::{new_shape_layer, new_text_layer};
 use filmcraft_project::{EffectInstance, Interpolation, Keyframe, Param, ParamValue};
 use filmcraft_text::TextStyle;
 use filmcraft_time::Tick;
@@ -720,6 +720,38 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         layers.push(e);
     }
 
+    // A dark band behind the words keeps them readable on any picture (and the brand colours honest:
+    // terracotta heroes on a black band, off-white support). It bleeds off the nearer frame edge.
+    if bool_p(p, "scrim").unwrap_or(true) {
+        let pad_x = params.size as f64 * 0.7;
+        let pad_y = params.size as f64 * 0.6;
+        let (bx0, bx1) = (left as f64 - pad_x, (left + c.width) as f64 + pad_x);
+        let (bx0, bx1) = match str_p(p, "align") {
+            Some("right") => (bx0, fw as f64 + 4.0),
+            Some("left") => (-4.0, bx1),
+            _ => (bx0, bx1),
+        };
+        let (by0, by1) = (top as f64 - pad_y, (top + c.height) as f64 + pad_y);
+        let mut band = new_shape_layer(0, Vec2::new((bx0 + bx1) / 2.0, (by0 + by1) / 2.0), Vec2::new(bx1 - bx0, by1 - by0), Vec::new());
+        band.params.insert("fill_color".into(), Param::new(color("#000000")));
+        band.params.insert("name".into(), Param::new(ParamValue::Text("Faixa".into())));
+        let peak = f64_p(p, "scrimOpacity").unwrap_or(86.0);
+        let t_in = (words[0].start - LEAD_SECS).max(0.0);
+        band.params.insert(
+            "opacity".into(),
+            Param {
+                value: ParamValue::Float(peak),
+                keyframes: vec![
+                    kf(t_in, ParamValue::Float(0.0), Interpolation::Bezier, ENTER_OUT, ENTER_IN),
+                    kf(t_in + ENTER_SECS, ParamValue::Float(peak), Interpolation::Linear, 0.33, 0.33),
+                    kf(exit, ParamValue::Float(peak), Interpolation::Bezier, EXIT_OUT, EXIT_IN),
+                    kf(exit + EXIT_SECS, ParamValue::Float(0.0), Interpolation::Linear, 0.33, EXIT_IN),
+                ],
+            },
+        );
+        layers.insert(0, band);
+    }
+
     let name = format!("Lettering · {}", words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" "));
     let name: String = name.chars().take(60).collect();
     let mut placement = serde_json::Map::new();
@@ -733,6 +765,33 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         placement.insert("track".into(), json!(t));
     }
     let clip = crate::graphics::new_graphic_clip_layers(s, ID, layers, &name, &Value::Object(placement))?;
+    // The caption under the lettering says the same thing: take it off while the lettering is up.
+    let mut hidden = 0;
+    if bool_p(p, "hideCaptions").unwrap_or(true) {
+        let t0 = at.or_else(|| p.get("time").and_then(Value::as_u64).map(|t| Tick(t as _).seconds()));
+        if let Some(t0) = t0 {
+            let (a, b) = (t0 + words[0].start, t0 + last_end);
+            let ids: Vec<filmcraft_project::ClipId> = s
+                .active_sequence()
+                .map(|q| {
+                    q.caption_tracks
+                        .iter()
+                        .flat_map(|tr| tr.captions.iter())
+                        .filter(|c| {
+                            let (cs, ce) = (c.start.seconds(), (c.start + c.duration).seconds());
+                            // under the lettering for a third of its time or more
+                            (ce.min(b) - cs.max(a)) > 0.3 * (ce - cs)
+                        })
+                        .map(|c| c.id)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !ids.is_empty() {
+                hidden = ids.len();
+                crate::captions::delete(s, &ids, false)?;
+            }
+        }
+    }
     Ok(json!({
         "applied": true,
         "clip": clip.0,
@@ -740,6 +799,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         "lines": c.lines.iter().map(|l| l.iter().map(|&i| words[i].text.as_str()).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>(),
         "heroes": hero_idx.iter().map(|&i| words[i].text.clone()).collect::<Vec<_>>(),
         "scale": c.scale,
+        "hiddenCaptions": hidden,
     }))
 }
 
@@ -836,7 +896,7 @@ pub fn commands() -> Vec<CommandSpec> {
         label: "Lettering",
         menu: &["Graphics and Titles", "New Layer"],
         shortcut: None,
-        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"heroItalic":bool=false,"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
+        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"heroItalic":bool=false,"scrim":bool=true (dark band behind),"scrimOpacity":0..100=86,"hideCaptions":bool=true (remove the captions under it),"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
         enabled: has_seq,
         run: apply,
         journal: true,
