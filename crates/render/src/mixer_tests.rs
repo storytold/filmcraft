@@ -791,8 +791,9 @@ fn a_held_speed_changed_clip_plays_its_range() {
     }
 }
 
-/// A 1 kHz tone source that remembers the longest read asked of it and refuses reads longer than
-/// 2^24 frames, as real sources refuse oversized buffers.
+/// A 1 kHz tone source with the channels its info declares that remembers the longest read asked
+/// of it. It refuses reads longer than 2^20 frames, as real sources refuse oversized buffers, so
+/// the test holds no large buffer.
 struct Widest {
     info: MediaInfo,
     widest: std::sync::atomic::AtomicUsize,
@@ -807,57 +808,67 @@ impl MediaSource for Widest {
     }
     fn audio(&self, start: i64, frames: usize, sr: u32) -> filmcraft_media::Result<AudioBuffer> {
         self.widest.fetch_max(frames, std::sync::atomic::Ordering::Relaxed);
-        if frames > 1 << 24 {
+        if frames > 1 << 20 {
             return Err(MediaError::Decode(format!("a read of {frames} frames")));
         }
         let ch: Vec<f32> = (0..frames).map(|i| tone_1k(start + i as i64, 0)).collect();
-        Ok(AudioBuffer { sample_rate: sr, channels: vec![ch.clone(), ch] })
+        let channels = self.info.audio_streams.first().map_or(1, |a| a.channels as usize);
+        Ok(AudioBuffer { sample_rate: sr, channels: vec![ch; channels] })
     }
 }
 
 #[test]
 fn a_damaged_speed_reads_no_more_than_a_source_can_return() {
-    // a project can store any speed, and the source read used to grow with it without limit
-    let info = MediaInfo {
-        name: "tone.wav".into(),
-        kind: MediaKind::AudioOnly,
-        duration: Tick(60 * TICKS_PER_SECOND),
-        video: None,
-        audio_streams: vec![AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "PCM".into(), bits_per_sample: Some(32) }],
-        container: "WAV".into(),
-        start_timecode: None,
-        file_size: None,
-    };
-    for (speed, reverse) in [(1e6, false), (1e6, true), (1e300, false), (f64::INFINITY, true)] {
-        let mut p = Project::new("damaged");
-        let seq = p.new_sequence("mix", SequenceSettings::default(), 0, 1, None);
-        let id = p.add_item(
-            "tone.wav",
-            Label::Iris,
-            ItemKind::Media(Box::new(MediaClip {
-                media: MediaRef::File { path: "tone.wav".into() },
-                info: info.clone(),
-                interpret: Default::default(),
-                mark_in: None,
-                mark_out: None,
-                markers: vec![],
-                offline: false,
-                proxy: None,
-                identity: None,
-            })),
-            None,
-        );
-        let src = Arc::new(Widest { info: info.clone(), widest: Default::default() });
-        let mut map = SourceMap::default();
-        map.0.insert(id, src.clone());
-        let mut clip = p.make_track_item(id, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
-        clip.speed = speed;
-        clip.reverse = reverse;
-        p.sequence_mut(seq).unwrap().audio_tracks[0].items.push(clip);
-        let mix = crate::audio::mix_sequence(&p, p.sequence(seq).unwrap(), 0, 4000, &map);
-        let widest = src.widest.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(widest <= filmcraft_media::MAX_AUDIO_BUFFER_BYTES / 4, "speed {speed}, reversed {reverse}: a read of {widest} frames");
-        assert!(mix.channels.iter().all(|c| c.len() == 4000 && c.iter().all(|v| v.is_finite())), "speed {speed}, reversed {reverse}");
+    // A project can store any speed, and the source read used to grow with it without limit. The
+    // read has to pass the checks the readers apply for the source's channels and rate: the
+    // buffer at the requested rate, and at the source's own rate with the two samples a
+    // resampling read adds.
+    for (channels, rate) in [(2u32, 48_000u32), (6, 48_000), (2, 96_000), (6, 96_000)] {
+        let info = MediaInfo {
+            name: "tone.wav".into(),
+            kind: MediaKind::AudioOnly,
+            duration: Tick(60 * TICKS_PER_SECOND),
+            video: None,
+            audio_streams: vec![AudioStreamInfo { sample_rate: rate, channels, codec: "PCM".into(), bits_per_sample: Some(32) }],
+            container: "WAV".into(),
+            start_timecode: None,
+            file_size: None,
+        };
+        for (speed, reverse) in [(1e6, false), (1e6, true), (1e300, false), (f64::INFINITY, true)] {
+            let mut p = Project::new("damaged");
+            let seq = p.new_sequence("mix", SequenceSettings::default(), 0, 1, None);
+            let id = p.add_item(
+                "tone.wav",
+                Label::Iris,
+                ItemKind::Media(Box::new(MediaClip {
+                    media: MediaRef::File { path: "tone.wav".into() },
+                    info: info.clone(),
+                    interpret: Default::default(),
+                    mark_in: None,
+                    mark_out: None,
+                    markers: vec![],
+                    offline: false,
+                    proxy: None,
+                    identity: None,
+                })),
+                None,
+            );
+            let src = Arc::new(Widest { info: info.clone(), widest: Default::default() });
+            let mut map = SourceMap::default();
+            map.0.insert(id, src.clone());
+            let mut clip = p.make_track_item(id, TrackKind::Audio, Tick::ZERO, TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)), FrameRate::FPS_24).unwrap();
+            clip.speed = speed;
+            clip.reverse = reverse;
+            p.sequence_mut(seq).unwrap().audio_tracks[0].items.push(clip);
+            let q = p.sequence(seq).unwrap();
+            let mix = crate::audio::mix_sequence(&p, q, 0, 4000, &map);
+            let widest = src.widest.load(std::sync::atomic::Ordering::Relaxed);
+            let at = format!("{channels} channels at {rate} Hz, speed {speed}, reversed {reverse}: a read of {widest} frames");
+            let own = filmcraft_media::resample_source_frames(widest, rate, q.settings.sample_rate).unwrap();
+            assert!(filmcraft_media::validate_audio_buffer_shape(channels as usize, widest).is_ok(), "{at}");
+            assert!(filmcraft_media::validate_audio_buffer_shape(channels as usize, own + 2).is_ok(), "{at} ({own} at {rate} Hz)");
+            assert!(mix.channels.iter().all(|c| c.len() == 4000 && c.iter().all(|v| v.is_finite())), "{at}");
+        }
     }
 }
 

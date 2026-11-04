@@ -219,13 +219,13 @@ fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn Sour
         // The nested sequence is the clip's source: speed, reverse and clip effects apply to its
         // mix exactly as they do to a media clip's sound.
         let read = |m0: i64, len: usize| Some(nested_mix(project, &q, Window { start: m0, frames: len, sr }, sources, w, live.depth));
-        effected(item, &read, a0, n, sr, w)
+        effected(item, &read, a0, n, sr, w, source_read_limit(w, nested_rate(&q), sr))
     } else {
         let Some(src) = sources.source(item.item) else { return };
         if !src.info().has_audio() {
             return;
         }
-        effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, w)
+        effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, w, stream_read_limit(src.info(), item, sr))
     };
     // gains: clip gain × Volume (keyframed, per 64-sample block) × channel volume × panner
     let clip_gain = db_to_gain(item.gain_db);
@@ -276,14 +276,19 @@ fn mix_item(project: &Project, item: &TrackItem, win: Window, sources: &dyn Sour
     }
 }
 
+/// The rate a nested sequence is mixed at: its own, kept between 1 kHz and 768 kHz, since a
+/// damaged project can claim any rate and the mix's buffers are sized from it.
+fn nested_rate(nested: &Sequence) -> u32 {
+    nested.settings.sample_rate.clamp(1_000, 768_000)
+}
+
 /// `len` samples of a nested sequence's mix starting at sample `m0` of its own time, counted at
 /// `sr` (the rate of the sequence the nest is in), as `w` channels. The nested sequence is mixed at
 /// its own sample rate and converted when the two differ; time before its start is silent.
 /// `depth` is the nesting depth of the sequence the nest is in.
 fn nested_mix(project: &Project, nested: &Sequence, win: Window, sources: &dyn SourceProvider, w: usize, depth: u32) -> AudioBuffer {
     let Window { start: m0, frames: len, sr } = win;
-    // a damaged project can claim any rate: keep the buffer below sized by a real one
-    let own = nested.settings.sample_rate.clamp(1_000, 768_000);
+    let own = nested_rate(nested);
     let sr = sr.max(1);
     // the nested sequence's samples that cover [m0, m0 + len) at `sr`
     let at = |i: i64| i as f64 * own as f64 / sr as f64;
@@ -323,9 +328,10 @@ fn nested_mix(project: &Project, nested: &Sequence, win: Window, sources: &dyn S
 type SourceAudio<'a> = &'a dyn Fn(i64, usize) -> Option<AudioBuffer>;
 
 /// The clip's audio after speed/reverse and clip effects (before clip gain, Volume and Panner) for
-/// timeline samples `[a0, a0 + n)`, `w` channels.
-fn effected(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
-    let read = |x0: i64, len: usize| raw_channels(item, src, x0, len, sr, w);
+/// timeline samples `[a0, a0 + n)`, `w` channels. A speed-changed clip reads at most `limit`
+/// samples from `src` at once ([`source_read_limit`]).
+fn effected(item: &TrackItem, src: SourceAudio, a0: i64, n: usize, sr: u32, w: usize, limit: usize) -> Vec<Vec<f32>> {
+    let read = |x0: i64, len: usize| raw_channels(item, src, x0, len, sr, w, limit);
     if crate::audio_fx::has_effects(item) { crate::audio_fx::process(item, a0, n, sr, &read) } else { read(a0, n) }
 }
 
@@ -345,7 +351,7 @@ pub fn clip_signal(item: &TrackItem, start: i64, frames: usize, sr: u32, sources
         let n = (a1 - a0) as usize;
         let off = (a0 - start) as usize;
         let g = db_to_gain(item.gain_db);
-        let buf = effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, 2);
+        let buf = effected(item, &|m0, len| src.audio_stream(item.audio_stream, m0, len, sr).ok(), a0, n, sr, 2, stream_read_limit(src.info(), item, sr));
         for (dst, b) in out.iter_mut().zip(&buf) {
             for (d, x) in dst[off..off + n].iter_mut().zip(b) {
                 *d = x * g;
@@ -367,10 +373,24 @@ pub fn clip_is_mono(item: &TrackItem, sources: &dyn SourceProvider) -> Option<bo
     Some(left == right)
 }
 
-/// Longest source read a speed-changed clip makes, in samples: the most one channel of a source
-/// read can hold (`MAX_AUDIO_BUFFER_BYTES`). A project can store any speed; past this the clip
-/// reads silence, as sources refuse longer reads.
-const MAX_READ_SAMPLES: usize = filmcraft_media::MAX_AUDIO_BUFFER_BYTES / std::mem::size_of::<f32>();
+/// Longest source read, in samples at `sr`, that a speed-changed clip makes from a source with
+/// `channels` channels at `rate`. A source refuses a read whose buffer would hold more than
+/// `MAX_AUDIO_BUFFER_BYTES`, at the requested rate or at its own (the AVI, MKV, MP4 and MXF readers
+/// count the two samples a resampling read takes past the window), and a nested sequence's mix,
+/// `channels` wide at its own rate, is held to the same size. A project can store any speed; past
+/// this the clip reads silence.
+fn source_read_limit(channels: usize, rate: u32, sr: u32) -> usize {
+    let frames = filmcraft_media::MAX_AUDIO_BUFFER_BYTES / channels.max(1).saturating_mul(std::mem::size_of::<f32>());
+    // a margin for that rounding and those samples, as the engine's sync analysis keeps
+    let room = frames.saturating_sub(64);
+    let at_own_rate = room as u128 * u128::from(sr.max(1)) / u128::from(rate.max(1));
+    room.min(usize::try_from(at_own_rate).unwrap_or(usize::MAX))
+}
+
+/// [`source_read_limit`] for the stream a media clip plays.
+fn stream_read_limit(info: &filmcraft_media::MediaInfo, item: &TrackItem, sr: u32) -> usize {
+    info.audio_streams.get(item.audio_stream).map_or(0, |a| source_read_limit(a.channels as usize, a.sample_rate, sr))
+}
 
 /// The source position timeline sample `x` of a speed-changed clip reads at `sr`, as a whole
 /// source sample and the fraction of the way to the next one. A forward clip reads the sample that
@@ -387,8 +407,8 @@ fn source_position(item: &TrackItem, x: i64, sr: u32) -> (i64, f64) {
 
 /// The clip's audio (after speed/reverse) for timeline samples `[x0, x0 + len)` as `w` channels
 /// (2: stereo, mono sources on both sides, 5.1 sources folded down; 6: 5.1), with silence outside
-/// the clip.
-fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32, w: usize) -> Vec<Vec<f32>> {
+/// the clip. A speed-changed clip reads at most `limit` samples from `src` at once.
+fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32, w: usize, limit: usize) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0.0f32; len]; w];
     let item_s0 = item.start.to_units_floor(sr as i64);
     let item_s1 = item.end().to_units_floor(sr as i64);
@@ -413,7 +433,7 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         let (first, last) = (source_position(item, a0, sr), source_position(item, a1 - 1, sr));
         let (lo, hi) = if item.reverse { (last.0, first.0) } else { (first.0, last.0) };
         // the read runs from the lowest position to the sample after the highest one
-        let span = usize::try_from(hi.saturating_sub(lo)).unwrap_or(usize::MAX).saturating_add(2).min(MAX_READ_SAMPLES);
+        let span = usize::try_from(hi.saturating_sub(lo)).unwrap_or(usize::MAX).saturating_add(2).min(limit);
         src(lo, span).map(|raw| {
             let at: Vec<(usize, f32)> = (a0..a1)
                 .map(|x| {
