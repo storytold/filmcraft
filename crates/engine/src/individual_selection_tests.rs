@@ -293,3 +293,27 @@ fn the_half_left_behind_is_no_longer_linked() {
         }
     }
 }
+
+/// A link with more than two members keeps the members that stay: removing one Alt-selected sound
+/// clip of a picture linked to two sound clips leaves the picture and the other sound linked.
+#[test]
+fn the_rest_of_a_larger_link_stays_linked() {
+    for command in ["edit.cut", "edit.clear", "edit.rippleDelete"] {
+        let (mut s, [(video, sound), (next_video, next_sound)]) = paired_sequence();
+        for track in ["V1", "A1"] {
+            s.execute("timeline.setTrack", json!({"track": track, "syncLock": false})).unwrap();
+        }
+        for pair in [[next_video, next_sound], [video, sound]] {
+            s.execute("clip.link", json!({"clips": [pair[0].0, pair[1].0]})).unwrap();
+        }
+        s.execute("clip.link", json!({"clips": [video.0, sound.0, next_sound.0]})).unwrap();
+        s.execute("timeline.select", json!({"clips": [sound.0], "linked": false})).unwrap();
+        s.execute(command, json!({})).unwrap();
+        let q = s.active_sequence().unwrap();
+        q.check().unwrap();
+        assert!(q.find_item(sound).is_none(), "{command}");
+        let link = |c| q.find_item(c).unwrap().1.link;
+        assert!(link(video).is_some() && link(video) == link(next_sound), "{command}: the picture and the other sound stay linked");
+        assert_eq!(link(next_video), None, "{command}");
+    }
+}
