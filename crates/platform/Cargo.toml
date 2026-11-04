@@ -35,6 +35,9 @@ filmcraft-time = { workspace = true }
 log = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# pthread_set_qos_class_self_np for background job threads (thread_priority; MIT OR Apache-2.0,
+# already in the lockfile)
+libc = "0.2"
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"
 objc2-core-video = "0.3.2"
