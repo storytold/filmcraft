@@ -72,12 +72,16 @@ fn gigantic_sequences_are_refused() {
     assert!(!accepted(8192, 8192, 1));
 }
 
-/// An I picture (picture header, coding extension, one slice with a junk payload).
-fn picture() -> Vec<u8> {
+/// A picture of `coding_type` (1 = I, 2 = P): picture header, coding extension, one slice with a junk payload.
+fn picture_of(coding_type: u32) -> Vec<u8> {
     let mut h = Bits::default();
     h.put(0, 10); // temporal_reference
-    h.put(1, 3); // picture_coding_type: I
+    h.put(coding_type, 3); // picture_coding_type
     h.put(0xffff, 16); // vbv_delay
+    if coding_type == 2 {
+        h.put(0, 1); // full_pel_forward_vector
+        h.put(7, 3); // forward_f_code
+    }
     let mut e = Bits::default();
     e.put(8, 4); // picture_coding_extension
     e.put(0xffff, 16); // f_codes
@@ -94,6 +98,10 @@ fn picture() -> Vec<u8> {
     out
 }
 
+fn picture() -> Vec<u8> {
+    picture_of(1)
+}
+
 #[test]
 fn an_access_unit_of_many_pictures_stops_early() {
     let mut data = sequence(64, 64, 1);
@@ -104,4 +112,21 @@ fn an_access_unit_of_many_pictures_stops_early() {
     assert!(dec.decode(&data, 0).is_err(), "200 pictures in one access unit must be refused");
     // pictures after the refusal are not decoded: the per-picture slice errors stay near the output cap
     assert!(dec.errors() <= 32, "{} picture errors", dec.errors());
+}
+
+#[test]
+fn a_refused_access_unit_leaves_no_stale_references() {
+    let mut data = sequence(64, 64, 1);
+    for _ in 0..200 {
+        data.extend(picture());
+    }
+    let mut dec = Decoder::new();
+    assert!(dec.decode(&data, 0).is_err());
+    // a P picture cannot continue from the refused access unit's anchor
+    assert!(dec.decode(&picture_of(2), 1).unwrap().is_empty());
+    assert!(dec.flush().is_empty(), "a P picture after the refusal was decoded from stale references");
+    // an I picture restarts decoding; nothing from the refused access unit comes out before it
+    let two = [picture(), picture()].concat();
+    assert_eq!(dec.decode(&two, 2).unwrap().len(), 1, "the first I picture is shown when the second arrives");
+    assert_eq!(dec.flush().len(), 1);
 }

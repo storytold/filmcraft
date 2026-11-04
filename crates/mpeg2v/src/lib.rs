@@ -427,6 +427,8 @@ pub struct Decoder {
     pending: Option<Pending>,
     out: Vec<Picture>,
     output_overflow: bool,
+    /// After a refused access unit the references are gone: only an I picture restarts decoding.
+    need_intra: bool,
     errors: usize,
     last_error: Option<&'static str>,
     threads: bool,
@@ -452,6 +454,7 @@ impl Decoder {
             pending: None,
             out: Vec::new(),
             output_overflow: false,
+            need_intra: false,
             errors: 0,
             last_error: None,
             threads: cfg!(feature = "threads"),
@@ -561,7 +564,9 @@ impl Decoder {
         self.apply_sequence();
         self.finish_picture(data, pts);
         if self.output_overflow {
-            self.out.clear();
+            // the references of a refused access unit are stale: drop them and wait for an I picture
+            self.reset();
+            self.need_intra = true;
             return Err(Error::Invalid("access unit produces too many decoded pictures".into()));
         }
         let out = std::mem::take(&mut self.out);
@@ -595,6 +600,7 @@ impl Decoder {
         self.pending = None;
         self.out.clear();
         self.output_overflow = false;
+        self.need_intra = false;
         self.closed_gop = false;
     }
 
@@ -644,6 +650,13 @@ impl Decoder {
             return;
         }
         let ptype = pd.ph.coding_type;
+        if self.need_intra {
+            if ptype != PictureType::I {
+                self.errors += 1;
+                return; // its references went with the refused access unit
+            }
+            self.need_intra = false;
+        }
         let (shx, shy) = seq.shifts();
         let (w, h) = (seq.mb_width * 16, seq.mb_height * 16);
         let (cw, ch) = (w >> shx, h >> shy);
@@ -661,6 +674,9 @@ impl Decoder {
             } else {
                 self.complete(b.frame, b.meta);
             }
+        }
+        if self.output_overflow {
+            return; // pairing an unpaired field output the last allowed picture: refuse before allocating and decoding this one
         }
         // B pictures need their forward reference unless the GOP is closed
         if ptype == PictureType::B && second.is_none() && (self.bwd.is_none() || (self.fwd.is_none() && !self.closed_gop)) {
