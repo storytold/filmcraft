@@ -36,7 +36,9 @@ use filmcraft_project::mixer::{
     self as pm, FADER_MAX_DB, FADER_MIN_DB, LANE_MUTE, LANE_PAN, LANE_VOLUME, LaneWrite, MASTER_STRIP, lane_info, parse_fx_lane, parse_send_lane, thin_points,
     write_lane,
 };
-use filmcraft_project::{AudioChannels, AutomationMode, InputMap, ItemId, Param, ParamValue, Sequence, Track, TrackId, TrackKind, TrackSend, find_effect};
+use filmcraft_project::{
+    AudioChannels, AutomationMode, ClipId, InputMap, ItemId, Param, ParamValue, Sequence, Track, TrackId, TrackKind, TrackSend, find_effect,
+};
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, time_p, u64_p};
@@ -103,6 +105,10 @@ pub struct Recorder {
     pub seq: Option<ItemId>,
     pub start: Tick,
     pub gestures: Vec<Gesture>,
+    /// The clip each held Clip Mixer control was grabbed on (strip, lane, clip), so releasing it
+    /// after playback crossed a clip boundary still commits to that clip, not the one now under
+    /// the playhead.
+    clip_holds: Vec<(TrackId, String, ClipId)>,
 }
 
 impl Recorder {
@@ -273,7 +279,7 @@ pub fn record_start(s: &mut Session, t: Tick) -> Result<Value> {
         s.previews.live.hold(g.strip, &g.lane, g.value());
     }
     let n = gestures.len();
-    s.mixrec = Recorder { seq: Some(seq_id), start: t, gestures };
+    s.mixrec = Recorder { seq: Some(seq_id), start: t, gestures, clip_holds: std::mem::take(&mut s.mixrec.clip_holds) };
     Ok(json!({"recording": true, "writing": n}))
 }
 
@@ -284,6 +290,13 @@ pub fn touch(s: &mut Session, strip: TrackId, lane: &str, v: f64, t: Tick) -> Re
     let strip_mode = seq_of(s, seq_id)?.strip(strip).ok_or_else(|| bad("mixer.touch", "no such strip"))?.mixer.mode;
     let mode = if is_clip_lane(lane) { clip_mode(s, strip) } else { strip_mode };
     s.previews.live.hold(strip, lane, v);
+    if is_clip_lane(lane) {
+        let clip = seq_of(s, seq_id)?.mix_track(strip).and_then(|tr| tr.item_at(t)).map(|c| c.id);
+        s.mixrec.clip_holds.retain(|(h, l, _)| !(*h == strip && l == lane));
+        if let Some(clip) = clip {
+            s.mixrec.clip_holds.push((strip, lane.to_string(), clip));
+        }
+    }
     if !s.mixrec.active() || !mode.writes() {
         return Ok(json!({"recording": false, "value": v}));
     }
@@ -306,8 +319,25 @@ pub fn touch(s: &mut Session, strip: TrackId, lane: &str, v: f64, t: Tick) -> Re
     Ok(json!({"recording": true, "value": v}))
 }
 
+/// Whether the lane is automated and its strip reads that automation at `t`, so a fader move
+/// that is not being recorded returns to the automation.
+fn reads_automation(s: &Session, strip: TrackId, lane: &str, t: Tick, clip: Option<ClipId>) -> bool {
+    let Some(seq) = s.mixrec.seq.or(s.state.active_sequence).and_then(|id| s.project.sequence(id)) else { return false };
+    if is_clip_lane(lane) {
+        let (eff, par) = clip_target(lane);
+        let animated = seq
+            .mix_track(strip)
+            .and_then(|tr| clip.and_then(|id| tr.items.iter().find(|c| c.id == id)).or_else(|| tr.item_at(t)))
+            .and_then(|c| c.effect(eff).and_then(|e| e.param(par)).map(Param::is_animated))
+            .unwrap_or(false);
+        return animated && clip_mode(s, strip).reads();
+    }
+    seq.strip(strip).is_some_and(|tr| tr.lane(lane).is_some_and(Param::is_animated) && tr.mixer.mode.reads())
+}
+
 /// A control let go at `t`.
 pub fn release(s: &mut Session, strip: TrackId, lane: &str, t: Tick) -> Result<Value> {
+    let clip = s.mixrec.clip_holds.iter().position(|(h, l, _)| *h == strip && l == lane).map(|i| s.mixrec.clip_holds.remove(i).2);
     let automatch = Tick::from_seconds_f64(s.prefs.audio.automatch_time);
     if s.mixrec.active() {
         if let Some(g) = s.mixrec.find(strip, lane) {
@@ -320,15 +350,21 @@ pub fn release(s: &mut Session, strip: TrackId, lane: &str, t: Tick) -> Result<V
             // Latch / Write keep holding the last value until playback stops.
             return Ok(json!({"recording": true}));
         }
-        s.previews.live.clear(strip, lane);
-        return Ok(json!({"recording": false}));
+        // Read / Off during playback: nothing is recorded. Where the lane has no automation to read
+        // the fader is a plain control, so the new level is kept (#2857, as in Premiere Pro, where a
+        // move over a track with no keyframes changes the whole track); an automated lane in Read
+        // returns to its automation.
+        if reads_automation(s, strip, lane, t, clip) {
+            s.previews.live.clear(strip, lane);
+            return Ok(json!({"recording": false}));
+        }
     }
-    // no pass: commit the held value once
+    // no pass (or no automation to return to): commit the held value once
     let held = s.previews.live.get(strip, lane);
     s.previews.live.clear(strip, lane);
     match held {
         Some(o) if is_clip_lane(lane) => {
-            set_clip_value(s, strip, lane, o.value, t)?;
+            commit_clip_value(s, strip, lane, o.value, t, clip)?;
             Ok(json!({"recording": false, "value": o.value}))
         }
         Some(o) => {
@@ -422,15 +458,30 @@ pub fn record_stop(s: &mut Session, t_stop: Tick) -> Result<Value> {
 /// Commit a Clip Mixer value outside a pass: the clip under `t` on the track gets the value (a
 /// keyframe at `t` when the parameter is animated, else its static value).
 pub fn set_clip_value(s: &mut Session, track: TrackId, lane: &str, v: f64, t: Tick) -> Result<()> {
+    commit_clip_value(s, track, lane, v, t, None)
+}
+
+/// [`set_clip_value`] on a given clip (the one a released control was grabbed on) rather than the
+/// one under `t`. That clip may be gone by now, or playback may have left it: then its value is
+/// still the one the user set, and a keyframe goes at the nearest point inside it. In Off mode the
+/// parameter's static value is set even when it is animated, as a strip lane's is.
+fn commit_clip_value(s: &mut Session, track: TrackId, lane: &str, v: f64, t: Tick, clip: Option<ClipId>) -> Result<()> {
     let (eff, par) = clip_target(lane);
     let v = clamp_lane(lane, v);
+    let reads = clip_mode(s, track).reads();
     s.edit_sequence("Audio Clip Mixer", move |q, _, _| {
         let tr = q.mix_track_mut(track).ok_or_else(|| EngineError::Other("no such track".into()))?;
-        let idx = tr.items.iter().position(|c| c.start <= t && t < c.end()).ok_or_else(|| EngineError::Other("no clip under the playhead".into()))?;
+        let idx = match clip {
+            Some(id) => tr.items.iter().position(|c| c.id == id),
+            None => tr.items.iter().position(|c| c.start <= t && t < c.end()),
+        };
+        let Some(idx) = idx else {
+            return if clip.is_some() { Ok(()) } else { Err(EngineError::Other("no clip under the playhead".into())) };
+        };
         let c = &mut tr.items[idx];
-        let mt = c.source_time_at(t);
+        let mt = c.source_time_at(t.clamp(c.start, (c.end() - Tick(1)).max(c.start)));
         let p = c.effect_mut(eff).and_then(|e| e.param_mut(par)).ok_or_else(|| EngineError::Other(format!("the clip has no {eff} effect")))?;
-        if p.is_animated() {
+        if p.is_animated() && reads {
             p.put_keyframe(mt, ParamValue::Float(v));
         } else {
             p.value = ParamValue::Float(v);

@@ -27,16 +27,23 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.floatPanel", "Undock Panel", [], None),
     uic!("window.closePanel", "Close Panel", [], None),
     uic!("app.language.english", "English", ["Edit", "Language"], None),
-    uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
-    uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
-    uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
-    uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
-    uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
-    uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
-    uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
-    uic!("app.language.french", "Français", ["Edit", "Language"], None),
+    // Alphabetical by the language's own name after English; Cyrillic, then CJK names follow
+    // the Latin ones. Settings ▸ General ▸ Interface Language lists them the same way.
     uic!("app.language.indonesian", "Bahasa Indonesia", ["Edit", "Language"], None),
+    uic!("app.language.bosnian", "Bosanski", ["Edit", "Language"], None),
+    uic!("app.language.czech", "Čeština", ["Edit", "Language"], None),
+    uic!("app.language.german", "Deutsch", ["Edit", "Language"], None),
+    uic!("app.language.spanish", "Español", ["Edit", "Language"], None),
+    uic!("app.language.french", "Français", ["Edit", "Language"], None),
     uic!("app.language.italian", "Italiano", ["Edit", "Language"], None),
+    uic!("app.language.polish", "Polski", ["Edit", "Language"], None),
+    uic!("app.language.portuguese", "Português (Brasil)", ["Edit", "Language"], None),
+    uic!("app.language.swedish", "Svenska", ["Edit", "Language"], None),
+    uic!("app.language.turkish", "Türkçe", ["Edit", "Language"], None),
+    uic!("app.language.russian", "Русский", ["Edit", "Language"], None),
+    uic!("app.language.ukrainian", "Українська", ["Edit", "Language"], None),
+    uic!("app.language.japanese", "日本語", ["Edit", "Language"], None),
+    uic!("app.language.chinese", "简体中文", ["Edit", "Language"], None),
     uic!("app.language.korean", "한국어", ["Edit", "Language"], None),
     uic!("source.playback.toggle", "Source Play/Stop", [], None),
     uic!("source.playback.play", "Play Source", [], None),
@@ -117,6 +124,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("window.workspace.audio", "Audio", ["Window", "Workspaces"], Some("Alt+Shift+5")),
     uic!("window.workspace.captionsandgraphics", "Captions and Graphics", ["Window", "Workspaces"], Some("Alt+Shift+6")),
     uic!("window.workspace.allpanels", "All Panels", ["Window", "Workspaces"], None),
+    uic!("window.workspace.vertical", "Vertical", ["Window", "Workspaces"], None),
     uic!("window.workspace.reset", "Reset to Saved Layout", ["Window", "Workspaces"], Some("Alt+Shift+0")),
     uic!("window.workspace.saveChanges", "Save Changes to this Workspace", ["Window", "Workspaces"], None),
     uic!("window.workspace.saveAs", "Save as New Workspace…", ["Window", "Workspaces"], None),
@@ -180,10 +188,42 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
     }
 }
 
+/// Route menu editing to the focused text field; automation can explicitly invoke the engine.
+pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    if text_field_window(ctx).is_some() && edits_text(id) {
+        return activate_native(app, ctx, id);
+    }
+    invoke_command(app, ctx, id, params)
+}
+
+pub(crate) fn menu_items_with_focus(app: &FilmcraftApp, ctx: &egui::Context) -> Vec<MenuItem> {
+    let mut items = menu_items(app);
+    if text_field_window(ctx).is_some() {
+        for item in items.iter_mut().filter(|item| edits_text(&item.id)) {
+            item.enabled = true;
+        }
+    }
+    items
+}
+
 /// Execute a UI or engine command by id.
-pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // Select All / Deselect All act on the Project panel's items when it has focus (#168), only
+    // what the shown bin lists (#456). Here and not in the key handling: on macOS the native menu
+    // takes Cmd+A once Select All is enabled (a sequence is open) and sends the id here (#1752).
+    if app.ui.focused == PanelKind::Project && id == "edit.selectAll" {
+        let (cmd, params) = crate::panels::project::select_all_command(app);
+        return invoke(app, ctx, &cmd, params);
+    }
+    if app.ui.focused == PanelKind::Project && id == "edit.deselectAll" {
+        return invoke(app, ctx, "project.deselectAll", params);
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
+    }
+    // Insert / Overwrite of a first clip that doesn't match the empty sequence: the Clip Mismatch Warning asks first
+    if matches!(id, "source.insert" | "source.overwrite") && crate::panels::clip_mismatch::ask(app, id, &params) {
+        return Ok(json!({"dialog": "clipMismatch"}));
     }
     if filmcraft_engine::source_monitor::source_command(id) && targets_source(app, &params) && params.get("target").is_none() {
         let object = params.as_object_mut().ok_or("command parameters must be an object")?;
@@ -202,7 +242,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             | "app.language.french"
             | "app.language.indonesian"
             | "app.language.italian"
+            | "app.language.bosnian"
             | "app.language.korean"
+            | "app.language.czech"
+            | "app.language.polish"
+            | "app.language.swedish"
+            | "app.language.turkish"
     ) {
         // Japanese needs the craft-fonts (built with CRAFT_FONTS_DIR) or a font installed on the system
         if id == "app.language.japanese" && !crate::i18n::install_japanese_font(ctx) {
@@ -227,7 +272,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             "app.language.french" => crate::i18n::Language::Fr,
             "app.language.indonesian" => crate::i18n::Language::Id,
             "app.language.italian" => crate::i18n::Language::It,
+            "app.language.bosnian" => crate::i18n::Language::Bs,
             "app.language.korean" => crate::i18n::Language::Ko,
+            "app.language.czech" => crate::i18n::Language::Cs,
+            "app.language.polish" => crate::i18n::Language::Pl,
+            "app.language.swedish" => crate::i18n::Language::Sv,
+            "app.language.turkish" => crate::i18n::Language::Tr,
             _ => crate::i18n::Language::En,
         };
         // The preference is updated in memory before it is written, so a failed write (read-only
@@ -420,7 +470,8 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         "view.zoomIn" | "view.zoomOut" => {
             let f = if id == "view.zoomIn" { 1.6 } else { 1.0 / 1.6 };
             let ph = app.session.playhead().seconds();
-            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width);
+            let seconds = app.session.active_sequence().map_or(0.0, |s| s.duration().seconds());
+            crate::panels::timeline::zoom_about(&mut app.ui.timeline, f, ph, app.last_timeline_width, seconds);
             return Ok(Value::Null);
         }
         "view.zoomToSequence" => {
@@ -467,6 +518,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {
             filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
             return crate::panels::interchange_export::open(app, ctx, id);
+        }
+        // File ▸ Export ▸ Captions… (and the Text panel's Export captions…) opens the caption export
+        // settings (#3365); with a path it exports directly.
+        "captions.export" if params.get("path").is_none() => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            return crate::panels::caption_export::open(app, ctx, &params);
         }
         // File ▸ Export ▸ Media… opens the Export mode, like ⌘M (#382); with a path it exports directly.
         "file.exportMedia" if params.get("path").is_none() => {
@@ -598,15 +655,22 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         || (id == "file.saveCopy" && params.get("path").is_none())
         || (id == "file.open" && params.get("path").is_none())
         || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
-        || (matches!(id, "captions.import" | "captions.export") && params.get("path").is_none())
+        || (id == "captions.import" && params.get("path").is_none())
         || (id == "graphics.newFromFile" && params.get("path").is_none())
         || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none())
     {
         return app.file_dialog(id, &params);
     }
+    let save_path = params.get("path").and_then(Value::as_str).map(str::to_string);
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
         app.ui.status = e.clone();
+    }
+    if r.is_ok() {
+        let path = save_path.or_else(|| app.session.path.clone());
+        if let Some(path) = path {
+            saved_status(app, id, &path);
+        }
     }
     if r.is_ok() && matches!(id, "playhead.start" | "playhead.end") {
         crate::panels::timeline::reveal_playhead(app, ctx);
@@ -624,14 +688,32 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
     r
 }
 
+/// Tell the status bar where a project save went (File ▸ Save, Save As, Save a Copy).
+pub(crate) fn saved_status(app: &mut FilmcraftApp, id: &str, path: &str) {
+    match id {
+        "file.save" | "file.saveAs" | "file.saveAll" => app.ui.status = tlf!("Project saved to {path}", path),
+        "file.saveCopy" => app.ui.status = tlf!("Copy of the project saved to {path}", path),
+        _ => {}
+    }
+}
+
 /// Run the command `id` chosen in the native menu bar, which takes the Edit menu's key
 /// equivalents (⌘C, ⌘X, ⌘V, ⌘A, ⌘Z, ⇧⌘Z) before any window sees them: while a text field has
 /// the keyboard, in the main window or a floating panel's own window, the field gets the key
 /// and the project command does not run.
 pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Result<Value, String> {
+    // Select All of a graphic's text is already handled in `invoke`
+    if text_field_window(ctx).is_none() && app.ui.gfx_edit.is_some() && matches!(id, "edit.copy" | "edit.cut" | "edit.paste") {
+        return Ok(graphic_text_command(app, ctx, id));
+    }
     let (Some(window), Some(text)) = (text_field_window(ctx), text_command(id, ctx.os().is_mac())) else {
-        return invoke(app, ctx, id, json!({}));
+        return invoke_command(app, ctx, id, json!({}));
     };
+    // Retain main's immediate Select All for the root window, including Project search. Floating
+    // text fields keep the native event delivery that belongs to their own viewport.
+    if id == "edit.selectAll" && window == egui::ViewportId::ROOT && select_all_in_text_field(ctx) {
+        return Ok(Value::Null);
+    }
     match text {
         TextCommand::Paste => ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste),
         TextCommand::Events(events) if window == egui::ViewportId::ROOT => {
@@ -641,6 +723,15 @@ pub fn activate_native(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) ->
         TextCommand::Events(events) => craft_ui::docking::send_keys(ctx, window, events),
     }
     Ok(Value::Null)
+}
+
+fn select_all_in_text_field(ctx: &egui::Context) -> bool {
+    use egui::text::{CCursor, CCursorRange};
+    let Some(id) = ctx.memory(|m| m.focused()) else { return false };
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return false };
+    state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(usize::MAX))));
+    state.store(ctx, id);
+    true
 }
 
 /// The window whose text field has the keyboard: a floating panel's own OS window, or the main
@@ -653,6 +744,31 @@ pub fn text_field_window(ctx: &egui::Context) -> Option<egui::ViewportId> {
 /// menu keeps such items enabled while one has the keyboard, whatever the project allows.
 pub fn edits_text(id: &str) -> bool {
     text_command(id, false).is_some()
+}
+
+/// Whether the graphic text being edited takes the menu command `id` ([`activate_native`]): Copy,
+/// Cut and Paste go to its text instead of copying or pasting the graphic clip (#1953). Select All
+/// already selects its text in [`invoke`], and Undo stays the project's, as each text edit is one.
+/// The native menu keeps these enabled while a graphic's text is edited.
+pub fn edits_graphic_text(id: &str) -> bool {
+    matches!(id, "edit.copy" | "edit.cut" | "edit.paste" | "edit.selectAll")
+}
+
+/// Hand a native Edit command to the graphic text being edited (main window). The editor gives the
+/// keyboard to any other focused widget (a Text Properties button) and takes it back once nothing
+/// has it, so that widget lets go first and the text receives the event in the next frame.
+fn graphic_text_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Value {
+    let editor = egui::Id::unique(crate::panels::graphics::TEXT_EDIT_ID);
+    if let Some(other) = ctx.memory(|m| m.focused()).filter(|f| *f != editor) {
+        ctx.memory_mut(|m| m.surrender_focus(other));
+    }
+    match id {
+        "edit.paste" => ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::RequestPaste),
+        "edit.cut" => app.synthetic.push(egui::Event::Cut),
+        _ => app.synthetic.push(egui::Event::Copy),
+    }
+    ctx.request_repaint();
+    Value::Null
 }
 
 /// What a focused text field does for an Edit menu command.
@@ -669,6 +785,11 @@ fn text_command(id: &str, mac: bool) -> Option<TextCommand> {
         TextCommand::Events([true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers }).into())
     };
     Some(match id {
+        "edit.clear" => TextCommand::Events(
+            [true, false]
+                .map(|pressed| egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE })
+                .into(),
+        ),
         "edit.copy" => TextCommand::Events(vec![egui::Event::Copy]),
         "edit.cut" => TextCommand::Events(vec![egui::Event::Cut]),
         "edit.paste" => TextCommand::Paste,
@@ -817,8 +938,16 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.french" => it.checked = Some(app.ui.language == crate::i18n::Language::Fr),
             "app.language.indonesian" => it.checked = Some(app.ui.language == crate::i18n::Language::Id),
             "app.language.italian" => it.checked = Some(app.ui.language == crate::i18n::Language::It),
+            "app.language.bosnian" => it.checked = Some(app.ui.language == crate::i18n::Language::Bs),
             "app.language.korean" => it.checked = Some(app.ui.language == crate::i18n::Language::Ko),
+            "app.language.czech" => it.checked = Some(app.ui.language == crate::i18n::Language::Cs),
+            "app.language.polish" => it.checked = Some(app.ui.language == crate::i18n::Language::Pl),
+            "app.language.swedish" => it.checked = Some(app.ui.language == crate::i18n::Language::Sv),
+            "app.language.turkish" => it.checked = Some(app.ui.language == crate::i18n::Language::Tr),
             _ => {}
+        }
+        if let Some(on) = engine_toggle(&app.session, &it.id) {
+            it.checked = Some(on);
         }
         if it.id.starts_with("view.") {
             it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
@@ -828,6 +957,21 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
     crate::panels::workspaces::menu(app, &mut v);
     open_recent(&mut v, &app.session, |n| app.ui.language.tr(n).to_string());
     v
+}
+
+/// Checkmark state of the engine's on/off menu commands (`{"on":bool?}`, toggled when invoked from a
+/// menu without parameters). None = not one of them.
+fn engine_toggle(session: &filmcraft_engine::Session, id: &str) -> Option<bool> {
+    let st = &session.state;
+    Some(match id {
+        "sequence.snap" => st.snapping,
+        "sequence.linkedSelection" => st.linked_selection,
+        "sequence.selectionFollowsPlayhead" => st.selection_follows_playhead,
+        "sequence.showThroughEdits" => st.show_through_edits,
+        "markers.rippleSequenceMarkers" => st.ripple_sequence_markers,
+        "markers.copyPasteIncludesSequenceMarkers" => st.copy_paste_sequence_markers,
+        _ => return None,
+    })
 }
 
 /// File ▸ Open Recent, after Open Project…: the recent projects (General ▸ `recentProjects`),
@@ -917,8 +1061,8 @@ pub fn shortcut_text(s: &str) -> String {
 
 /// Parse "Cmd+Shift+K" into the modifiers a chord requires + its key. Off macOS the Control key
 /// is the primary modifier, so `Ctrl` and `Cmd` are one key and both mean `command` (the engine's
-/// `Chord::effective` says the same): a physical Ctrl press carries `command` there, and egui's
-/// matching asks only for what the pattern names, so a `Ctrl+…` chord matches a `Cmd+…` binding
+/// `Chord::effective` says the same): a physical Ctrl press carries `command` there, and
+/// [`chord_held`] treats Ctrl and Cmd as one key, so a `Ctrl+…` chord matches a `Cmd+…` binding
 /// and the other way round (#245). On a Mac they stay two keys.
 pub fn parse_shortcut(s: &str) -> Option<(egui::Modifiers, egui::Key)> {
     let mut m = egui::Modifiers::NONE;
@@ -977,10 +1121,75 @@ pub fn bindings(app: &FilmcraftApp) -> Vec<KeyBinding> {
     v
 }
 
-/// How many modifiers a chord names: chords naming more are matched first, because egui ignores
-/// extra Shift and Alt when matching a key press.
+/// How many modifiers a chord names: chords naming more are matched first, because a punctuation
+/// or digit key may arrive with an extra Shift or Alt the chord doesn't name (see [`chord_held`]).
 pub fn specificity(m: egui::Modifiers) -> u8 {
     m.command as u8 + m.shift as u8 + m.alt as u8 + m.ctrl as u8
+}
+
+/// Whether a press of `key` with `held` down is the chord `pattern` (from [`parse_shortcut`]) on
+/// `key`. The held modifiers must be exactly the ones the chord names: Ctrl+Alt+Cmd+N is not
+/// Cmd+Alt+N (File ▸ New ▸ Project), and Cmd+Shift+N is not Cmd+N. egui's own matching
+/// (`Modifiers::matches_logically`, and `matches_exact` too) ignores an extra Ctrl on a Mac, and
+/// `matches_logically` any extra Shift and Alt as well, so a chord the user didn't bind ran a
+/// shorter one instead.
+///
+/// - Off macOS Ctrl and Cmd are one key (a physical Ctrl press carries both `ctrl` and `command`,
+///   and [`parse_shortcut`] reads either as `command`, #245); on a Mac they are two.
+/// - Shift and Alt must match exactly on letters and named keys (arrows, Space, Delete, F-keys…),
+///   where they never change which key arrives. A punctuation or digit key is reached with Shift
+///   or Alt on many layouts (`+` is Shift+= on US, `/` is Shift+7 on German, `[` is Option+5 on a
+///   German Mac, digits need Shift on AZERTY), so there an extra Shift or Alt is allowed, as egui
+///   allows it: Ctrl+Shift+= still arrives as Ctrl+Plus (#2253). [`bindings`] lists the most
+///   specific chords first, so a chord that names that Shift or Alt still wins.
+pub fn chord_held(held: egui::Modifiers, key: egui::Key, pattern: egui::Modifiers) -> bool {
+    chord_held_on(cfg!(target_os = "macos"), held, key, pattern)
+}
+
+/// [`chord_held`] for a Mac (`mac`) or another OS, so both are testable on either.
+fn chord_held_on(mac: bool, held: egui::Modifiers, key: egui::Key, pattern: egui::Modifiers) -> bool {
+    let cmd = |m: egui::Modifiers| m.command || m.mac_cmd;
+    let primary = if mac { cmd(held) == cmd(pattern) && held.ctrl == pattern.ctrl } else { (cmd(held) || held.ctrl) == (cmd(pattern) || pattern.ctrl) };
+    let glyph = layout_may_add_shift_or_alt(key);
+    let shift = held.shift == pattern.shift || (glyph && held.shift);
+    let alt = held.alt == pattern.alt || (glyph && held.alt);
+    primary && shift && alt
+}
+
+/// Punctuation and digit keys: some keyboard layouts only reach them with Shift or Alt held.
+fn layout_may_add_shift_or_alt(key: egui::Key) -> bool {
+    use egui::Key;
+    matches!(
+        key,
+        Key::Colon
+            | Key::Comma
+            | Key::Backslash
+            | Key::Slash
+            | Key::Pipe
+            | Key::Questionmark
+            | Key::Exclamationmark
+            | Key::OpenBracket
+            | Key::CloseBracket
+            | Key::OpenCurlyBracket
+            | Key::CloseCurlyBracket
+            | Key::Backtick
+            | Key::Minus
+            | Key::Period
+            | Key::Plus
+            | Key::Equals
+            | Key::Semicolon
+            | Key::Quote
+            | Key::Num0
+            | Key::Num1
+            | Key::Num2
+            | Key::Num3
+            | Key::Num4
+            | Key::Num5
+            | Key::Num6
+            | Key::Num7
+            | Key::Num8
+            | Key::Num9
+    )
 }
 
 /// The key a US layout reports for `k` with Shift held, when it differs.
@@ -1013,7 +1222,7 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
 /// Draw the in-window menu bar.
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("interface-language"), app.ui.language));
-    let items = menu_items(app);
+    let items = menu_items_with_focus(app, ui.ctx());
     // Draw Edit ▸ Label with the user's live palette, not the baked-in label colours.
     let labels = app.session.prefs.labels.clone();
     let ctx = ui.ctx().clone();
@@ -1097,6 +1306,12 @@ pub fn label_color(labels: &filmcraft_engine::settings::LabelPrefs, l: filmcraft
     egui::Color32::from_rgb(r, g, b)
 }
 
+/// The left gutter of a menu row that can carry a checkmark or a label swatch: the label is pushed
+/// right by these spaces and the mark is painted in the room they leave, centred 10 points from the
+/// row's left edge. The two agree at the default font and size; one constant keeps every gutter
+/// (menu bar, right-click menus) the same width.
+const GUTTER: &str = "      ";
+
 /// A label choice in a right-click Label menu (Project panel items, Timeline clips; #786), drawn
 /// as Edit ▸ Label draws it: the user's name for the label with a swatch of its colour in the
 /// left gutter. Registered for automation as `<prefix>.<Label>` (the label's built-in name).
@@ -1109,10 +1324,18 @@ pub fn label_choice(
 ) -> egui::Response {
     let name = labels.name(l);
     let text = crate::i18n::t(&name);
-    let r = ui.button(format!("      {text}"));
+    let r = ui.button(format!("{GUTTER}{text}"));
     auto.add(&format!("{prefix}.{}", l.name()), r.rect, text);
     paint_swatch(ui, r.rect, label_color(labels, l));
     r
+}
+
+/// A checkmark in the left gutter of the menu row `row`.
+fn paint_check(ui: &egui::Ui, row: egui::Rect) {
+    let c = row.left_center() + egui::vec2(10.0, 0.0);
+    let st = egui::Stroke::new(1.5, ui.visuals().text_color());
+    ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], st);
+    ui.painter().line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], st);
 }
 
 /// A label swatch in the left gutter of the menu row `row`.
@@ -1122,36 +1345,70 @@ fn paint_swatch(ui: &egui::Ui, row: egui::Rect, color: egui::Color32) {
     ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color), egui::StrokeKind::Inside);
 }
 
+/// Where a menu item's hover hint opens, from the point the pointer entered the item: +x right,
+/// +y down, in points. The hint's top-left corner goes there, so 0, 18 puts it just below the
+/// arrow cursor, lined up with its tip.
+const HINT_NUDGE: egui::Vec2 = egui::vec2(0.0, 18.0);
+
+/// A hover hint that opens like a menu: below the pointer, where the hover began, and stays put
+/// while the pointer moves within the same item.
+fn hint_at_pointer(ui: &egui::Ui, r: &egui::Response, hint: String) {
+    let key = r.id.with("hint-at");
+    let Some(pointer) = r.hover_pos().filter(|_| r.hovered()) else {
+        ui.data_mut(|d| d.remove::<egui::Pos2>(key));
+        return;
+    };
+    let at = ui.data_mut(|d| *d.get_temp_mut_or_insert_with(key, || pointer));
+    let mut tip = egui::Tooltip::for_enabled(r);
+    tip.popup = tip.popup.at_position(at + HINT_NUDGE).align(egui::RectAlign::BOTTOM_START).gap(0.0);
+    tip.show(|ui| {
+        ui.set_max_width(ui.spacing().tooltip_width);
+        ui.label(hint);
+    });
+}
+
 fn menu_entry(ui: &mut egui::Ui, it: &MenuItem, auto: &mut crate::automation::Registry, labels: &filmcraft_engine::settings::LabelPrefs) -> bool {
     // Checkmarks and label swatches each occupy the same left gutter.
     let swatch = label_menu_swatch(&it.id, labels);
-    let label = if it.checked.is_some() || swatch.is_some() { format!("      {}", it.label) } else { it.label.clone() };
+    let label = if it.checked.is_some() || swatch.is_some() { format!("{GUTTER}{}", it.label) } else { it.label.clone() };
     let mut b = egui::Button::new(label);
     if let Some(s) = &it.shortcut {
         b = b.shortcut_text(shortcut_text(s));
     }
-    let mut r = ui.add_enabled(it.enabled, b);
-    // Help items say whether they open the web browser (and which address) or stay in FilmCraft
+    let r = ui.add_enabled(it.enabled, b);
+    // Help items show the address they open, or say what they do inside FilmCraft
     if let Some(hint) = crate::links::menu_hint(&it.id) {
-        r = r.on_hover_text(hint);
+        hint_at_pointer(ui, &r, hint);
     }
     auto.add(&format!("menu.{}", it.id), r.rect, &it.label);
     if let Some(color) = swatch {
         paint_swatch(ui, r.rect, color);
     }
     if it.checked == Some(true) {
-        let c = r.rect.left_center() + egui::vec2(10.0, 0.0);
-        let col = ui.visuals().text_color();
-        let st = egui::Stroke::new(1.5, col);
-        ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], st);
-        ui.painter().line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], st);
+        paint_check(ui, r.rect);
     }
     r.clicked()
 }
 
+/// A row of a right-click menu with the menu bar's checkmark gutter, so it lines up with the
+/// checkable rows around it. `checked` is as in [`MenuItem::checked`]: `None` is a command,
+/// reported to accessibility as a plain button; `Some` is a checkable row, reported with its state
+/// and showing the checkmark when true.
+pub fn checked_entry(ui: &mut egui::Ui, label: &str, enabled: bool, checked: Option<bool>) -> egui::Response {
+    let r = ui.add_enabled(enabled, egui::Button::new(format!("{GUTTER}{label}")));
+    r.widget_info(|| match checked {
+        Some(checked) => egui::WidgetInfo::selected(egui::Role::Button, enabled, checked, label),
+        None => egui::WidgetInfo::labeled(egui::Role::Button, enabled, label),
+    });
+    if checked == Some(true) {
+        paint_check(ui, r.rect);
+    }
+    r
+}
+
 #[cfg(test)]
 mod parse_shortcut_tests {
-    use super::{label_menu_swatch, parse_shortcut};
+    use super::{chord_held, label_menu_swatch, parse_shortcut};
 
     #[test]
     fn edit_label_menu_swatch_uses_current_custom_palette() {
@@ -1178,19 +1435,90 @@ mod parse_shortcut_tests {
         if cfg!(target_os = "macos") {
             assert_eq!((ctrl.ctrl, ctrl.command), (true, false));
             assert_eq!((cmd.ctrl, cmd.command), (false, true));
-            assert!(!ctrl.matches_logically(cmd) && !cmd.matches_logically(ctrl), "two different keys on a Mac");
+            assert!(!chord_held(ctrl, k, cmd) && !chord_held(cmd, k, ctrl), "two different keys on a Mac");
         } else {
             assert_eq!((ctrl.ctrl, ctrl.command), (false, true));
             assert_eq!(ctrl, cmd, "one key off a Mac");
             // what egui-winit reports for the physical key, and a bare `command` as tests send it
             let physical = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
-            assert!(physical.matches_logically(cmd) && physical.matches_logically(ctrl));
-            assert!(egui::Modifiers::COMMAND.matches_logically(ctrl));
+            assert!(chord_held(physical, k, cmd) && chord_held(physical, k, ctrl));
+            assert!(chord_held(egui::Modifiers::COMMAND, k, ctrl));
         }
-        assert!(!parse_shortcut("Z").unwrap().0.matches_logically(cmd), "a bare key never stands in for the chord");
+        assert!(!chord_held(parse_shortcut("Z").unwrap().0, k, cmd), "a bare key never stands in for the chord");
+        assert!(!chord_held(cmd, k, egui::Modifiers::NONE), "nor the chord for a bare key");
         let (m, k) = parse_shortcut("Cmd+Shift+K").unwrap();
         assert!(m.command && m.shift && !m.alt && k == egui::Key::K);
         assert_eq!(parse_shortcut("+").map(|(_, k)| k), Some(egui::Key::Plus));
+    }
+}
+
+#[cfg(test)]
+mod chord_held_tests {
+    use super::chord_held_on;
+    use egui::{Key, Modifiers};
+
+    /// What egui-winit reports on a Mac for Cmd (`mac_cmd` and `command`) and Control (`ctrl`).
+    const MAC_CMD: Modifiers = Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE };
+    /// What egui-winit reports off a Mac for Ctrl: one key, both flags.
+    const PC_CTRL: Modifiers = Modifiers { ctrl: true, command: true, ..Modifiers::NONE };
+
+    /// The bug: Ctrl+Opt+Cmd+N ran File ▸ New ▸ Project (Cmd+Opt+N), because egui ignores an extra
+    /// Control on a Mac even in `matches_exact`.
+    #[test]
+    fn an_extra_ctrl_on_a_mac_is_not_the_cmd_chord() {
+        let new_project = Modifiers::COMMAND | Modifiers::ALT;
+        assert!(chord_held_on(true, MAC_CMD | Modifiers::ALT, Key::N, new_project), "Cmd+Opt+N still runs it");
+        assert!(!chord_held_on(true, MAC_CMD | Modifiers::ALT | Modifiers::CTRL, Key::N, new_project));
+        assert!(!chord_held_on(true, MAC_CMD | Modifiers::CTRL, Key::N, Modifiers::COMMAND), "Ctrl+Cmd+N is not Cmd+N");
+        assert!(!chord_held_on(true, MAC_CMD, Key::K, Modifiers::CTRL), "Cmd is not Control on a Mac");
+        assert!(chord_held_on(true, Modifiers::CTRL, Key::K, Modifiers::CTRL));
+        assert!(chord_held_on(true, MAC_CMD | Modifiers::CTRL, Key::K, Modifiers::COMMAND | Modifiers::CTRL));
+    }
+
+    /// An extra Shift or Alt on a letter or named key is a different chord, on every OS.
+    #[test]
+    fn an_extra_shift_or_alt_on_a_letter_or_named_key_is_another_chord() {
+        for mac in [true, false] {
+            let cmd = if mac { MAC_CMD } else { PC_CTRL };
+            assert!(!chord_held_on(mac, cmd | Modifiers::SHIFT, Key::N, Modifiers::COMMAND), "Cmd+Shift+N is not Cmd+N");
+            assert!(!chord_held_on(mac, cmd | Modifiers::ALT | Modifiers::SHIFT, Key::N, Modifiers::COMMAND | Modifiers::ALT));
+            assert!(!chord_held_on(mac, Modifiers::ALT, Key::I, Modifiers::NONE), "Alt+I is not I");
+            assert!(!chord_held_on(mac, Modifiers::SHIFT, Key::Delete, Modifiers::NONE), "Shift+Delete is not Delete (#680)");
+            assert!(!chord_held_on(mac, Modifiers::ALT, Key::ArrowLeft, Modifiers::NONE));
+            assert!(!chord_held_on(mac, Modifiers::SHIFT, Key::L, Modifiers::NONE), "Shift+L is its own shuttle key");
+            assert!(chord_held_on(mac, Modifiers::SHIFT, Key::L, Modifiers::SHIFT));
+            assert!(!chord_held_on(mac, Modifiers::NONE, Key::L, Modifiers::SHIFT), "a chord's Shift is required");
+            assert!(chord_held_on(mac, Modifiers::NONE, Key::Space, Modifiers::NONE));
+        }
+    }
+
+    /// Off a Mac Ctrl and Cmd are one key: a Ctrl press (both flags), a bare `command` and a bare
+    /// `ctrl` all match a `Cmd+…`/`Ctrl+…` binding (#245).
+    #[test]
+    fn ctrl_and_cmd_stay_one_key_off_a_mac() {
+        for held in [PC_CTRL, Modifiers::COMMAND, Modifiers::CTRL] {
+            assert!(chord_held_on(false, held, Key::Z, Modifiers::COMMAND), "{held:?}");
+            assert!(chord_held_on(false, held, Key::Z, Modifiers::CTRL), "{held:?}");
+            assert!(!chord_held_on(false, held, Key::Z, Modifiers::NONE), "{held:?} is not a bare Z");
+        }
+        assert!(!chord_held_on(false, Modifiers::NONE, Key::Z, Modifiers::COMMAND));
+    }
+
+    /// Punctuation and digits keep egui's allowance for the Shift or Alt a layout needs to type
+    /// them: Ctrl+Shift+= arrives as Ctrl+Plus (#2253), Shift+; as `:`.
+    #[test]
+    fn punctuation_and_digits_allow_the_shift_or_alt_a_layout_needs() {
+        for mac in [true, false] {
+            let cmd = if mac { MAC_CMD } else { PC_CTRL };
+            assert!(chord_held_on(mac, cmd | Modifiers::SHIFT, Key::Plus, Modifiers::COMMAND), "Ctrl+Shift+= is Ctrl+Plus");
+            assert!(chord_held_on(mac, Modifiers::SHIFT, Key::Colon, Modifiers::SHIFT));
+            assert!(chord_held_on(mac, Modifiers::ALT, Key::OpenBracket, Modifiers::NONE), "`[` is Option+5 on a German Mac");
+            assert!(chord_held_on(mac, Modifiers::SHIFT, Key::Num1, Modifiers::NONE), "digits need Shift on AZERTY");
+            assert!(!chord_held_on(mac, Modifiers::NONE, Key::Colon, Modifiers::SHIFT), "a chord's Shift is still required");
+        }
+        // ...but never an extra Ctrl or Cmd
+        assert!(!chord_held_on(true, MAC_CMD | Modifiers::CTRL, Key::Plus, Modifiers::COMMAND));
+        assert!(!chord_held_on(false, PC_CTRL, Key::Plus, Modifiers::NONE));
     }
 }
 

@@ -1,4 +1,4 @@
-use super::{DIVIDER_H, FilmcraftApp, MASTER_H, Rect, SCROLLBAR_H, Sequence, Tick, TimelineView, TrackId, TrackKind, pos2};
+use super::{DIVIDER_H, FilmcraftApp, MASTER_H, Rect, Sequence, Tick, TimelineView, TrackId, TrackKind, pos2};
 
 /// Geometry of one visible track row.
 #[derive(Clone, Debug)]
@@ -20,6 +20,10 @@ pub struct Layout {
     pub scroll: f64,
     /// The y of the divider between the video tracks (above) and the audio tracks (below).
     pub split_y: f32,
+    /// The vertical scrolls the rows were laid out at; a wheel turn changes the view's own values
+    /// before the next frame lays the rows out again (and clamps them).
+    pub v_scroll: f32,
+    pub a_scroll: f32,
     /// Where the video and the audio rows show (a row scrolled out of view lies outside its span).
     pub video_band: egui::Rangef,
     pub audio_band: egui::Rangef,
@@ -32,14 +36,29 @@ impl Layout {
     pub fn tick_at(&self, x: f32) -> Tick {
         Tick::from_seconds_f64(self.scroll + (x - self.content.min.x) as f64 / self.pps)
     }
+    /// The track row under `y`. Rows are not clipped to their pane: a scrolled video track
+    /// reaches below the divider and a scrolled audio track above it or over the Mix row, so a
+    /// row only counts inside its own pane (video above the divider, audio between the divider
+    /// and the Mix row). Without this a press on an audio track hit the hidden V1 row.
     pub fn row_at(&self, y: f32) -> Option<&Row> {
-        self.rows.iter().find(|r| r.rect.min.y <= y && y < r.rect.max.y)
+        self.rows.iter().find(|r| {
+            let s = self.shown(r);
+            s.min.y <= y && y < s.max.y
+        })
     }
-}
 
-/// The zoom scroll bar along the bottom of the Timeline, under the tracks.
-pub(super) fn zoom_bar_rect(rect: Rect, content: Rect) -> Rect {
-    Rect::from_min_max(pos2(content.min.x, rect.max.y - SCROLLBAR_H + 2.0), pos2(content.max.x, rect.max.y - 2.0))
+    /// The part of `row` its own pane shows (see `row_at`); empty when it is scrolled out.
+    pub fn shown(&self, row: &Row) -> Rect {
+        let mut r = row.rect;
+        match row.kind {
+            TrackKind::Video => r.max.y = r.max.y.min(self.split_y),
+            TrackKind::Audio => {
+                r.min.y = r.min.y.max(self.split_y + DIVIDER_H);
+                r.max.y = r.max.y.min(self.content.max.y - MASTER_H);
+            }
+        }
+        r
+    }
 }
 
 /// #483: where a drop at `y` adds a track: the empty space above the top video track (a video
@@ -82,6 +101,13 @@ pub fn timeline_extent(sequence_seconds: f64) -> f64 {
     sequence_seconds.max(0.0) + 600.0
 }
 
+/// The least `pps` (points a second) the Timeline zooms out to: its whole extent fits a view
+/// `width` points wide, and no farther, so the clips of a short sequence stay in sight. A zero or
+/// invalid width gives a tiny positive floor, never zero.
+pub fn min_pps(sequence_seconds: f64, width: f32) -> f64 {
+    (f64::from(width.max(0.0)) / timeline_extent(sequence_seconds)).clamp(1e-6, 24_000.0)
+}
+
 /// The latest time the left edge of a view `width` points wide can show at `pps` points a second.
 pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
     if pps <= 0.0 || !pps.is_finite() {
@@ -93,7 +119,7 @@ pub fn max_scroll(sequence_seconds: f64, width: f32, pps: f64) -> f64 {
 /// Where the left edge goes so the playhead at `ph` seconds shows in a view `width` points wide
 /// (the page-scroll margin from the left), or `None` when it is in view already.
 pub fn scroll_to_reveal(ph: f64, scroll: f64, pps: f64, width: f64) -> Option<f64> {
-    if !ph.is_finite() || !scroll.is_finite() || !(pps > 0.0 && pps.is_finite()) {
+    if !(ph.is_finite() && scroll.is_finite() && pps > 0.0 && pps.is_finite()) {
         return None;
     }
     let px = (ph - scroll) * pps;
@@ -113,9 +139,9 @@ pub(crate) fn reveal_playhead(app: &mut FilmcraftApp, ctx: &egui::Context) {
 }
 
 /// Zoom about a time (keeps it under the same screen x).
-pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32) {
+pub fn zoom_about(v: &mut TimelineView, factor: f64, anchor_secs: f64, width: f32, sequence_seconds: f64) {
     let old = v.target_pps;
-    let new = (old * factor).clamp(0.05, 24_000.0);
+    let new = (old * factor).clamp(min_pps(sequence_seconds, width), 24_000.0);
     let x = ((anchor_secs - v.target_scroll) * old) as f32;
     let x = if (0.0..=width).contains(&x) { x } else { width / 2.0 };
     v.target_pps = new;

@@ -32,7 +32,7 @@ pub use commands::commands;
 pub use labels::{
     DEFAULT_LABEL_PRESET, LABEL_PRESETS_DIR, LabelColor, LabelDefaults, LabelPrefs, LabelPreset, PresetLabel, hex, is_builtin_label_preset, label_id, parse_hex,
 };
-pub use media_cache::{cache_usage, clean, enforce_policy, media_cache_dir, previews_root};
+pub use media_cache::{CUSTOM_CACHE_FOLDER, cache_usage, clean, enforce_policy, media_cache_dir, previews_root};
 pub use prefs::{
     AppearancePrefs, AudioHardwarePrefs, ColorPrefs, DEFAULT_HIGHLIGHT, GeneralPrefs, GraphicsPrefs, MediaAnalysisPrefs, MediaCachePrefs, MemoryPrefs,
     PluginPrefs, TimelinePrefs, timebase_rate,

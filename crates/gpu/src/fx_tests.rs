@@ -114,6 +114,45 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("black_white", vec![], false),
         ("color_balance", vec![("shadow_r", fl(50.0)), ("mid_g", fl(-40.0)), ("hi_b", fl(80.0)), ("shadow_b", fl(-100.0)), ("hi_r", fl(100.0))], false),
         ("color_balance", vec![("mid_r", fl(70.0)), ("hi_g", fl(-60.0)), ("preserve", ParamValue::Bool(true))], false),
+        (
+            "three_way_color",
+            vec![
+                ("shadow_hue", fl(220.0)),
+                ("shadow_balance", fl(60.0)),
+                ("hi_hue", fl(30.0)),
+                ("hi_balance", fl(80.0)),
+                ("mid_level", fl(-30.0)),
+                ("saturation", fl(130.0)),
+            ],
+            false,
+        ),
+        (
+            "three_way_color",
+            vec![
+                ("shadow_level", fl(50.0)),
+                ("hi_level", fl(-40.0)),
+                ("shadow_threshold", fl(50.0)),
+                ("shadow_softness", fl(0.0)),
+                ("hi_threshold", fl(50.0)),
+                ("hi_softness", fl(0.0)),
+                ("saturation", fl(0.0)),
+            ],
+            false,
+        ),
+        // overlapping ranges (shadow edge above the highlight edge)
+        (
+            "three_way_color",
+            vec![
+                ("shadow_threshold", fl(80.0)),
+                ("hi_threshold", fl(20.0)),
+                ("shadow_balance", fl(70.0)),
+                ("hi_balance", fl(70.0)),
+                ("hi_hue", fl(200.0)),
+                ("shadow_level", fl(30.0)),
+                ("hi_level", fl(30.0)),
+            ],
+            false,
+        ),
         ("leave_color", vec![("amount", fl(80.0)), ("tolerance", fl(20.0)), ("softness", fl(30.0))], true),
         ("leave_color", vec![("amount", fl(100.0)), ("color", col(0.1, 0.8, 0.2)), ("tolerance", fl(0.0)), ("softness", fl(0.0))], true),
         ("change_to_color", vec![], true),
@@ -157,6 +196,12 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("directional_blur", vec![("length", fl(10.0)), ("direction", fl(30.0))], false),
         ("directional_blur", vec![("length", fl(0.2))], false),
         ("directional_blur", vec![("length", fl(1000.0)), ("direction", fl(-100.0))], false),
+        ("bokeh_blur", vec![("amount", fl(0.2))], false),
+        ("bokeh_blur", vec![("amount", fl(3.0)), ("shape", ch(0)), ("highlight", fl(0.0))], false),
+        ("bokeh_blur", vec![("amount", fl(11.0)), ("shape", ch(4)), ("rotation", fl(20.0))], false),
+        ("bokeh_blur", vec![("amount", fl(30.0)), ("shape", ch(1)), ("rotation", fl(-75.0)), ("highlight", fl(100.0)), ("threshold", fl(40.0))], false),
+        ("bokeh_blur", vec![("amount", fl(60.0)), ("shape", ch(5)), ("highlight", fl(300.0)), ("threshold", fl(0.0))], false),
+        ("bokeh_blur", vec![("amount", fl(500.0)), ("shape", ch(2))], false),
         ("sharpen", vec![("amount", fl(80.0))], false),
         ("sharpen", vec![("amount", fl(4000.0))], false),
         ("unsharp_mask", vec![("amount", fl(150.0)), ("radius", fl(3.0)), ("threshold", fl(10.0))], true),
@@ -313,7 +358,35 @@ fn gpu_effects_match_cpu_exactly() {
         eprintln!("no GPU adapter; skipping");
         return;
     };
-    let mut c = GpuCompositor::new(&dev, &q);
+    effects_match_cpu_exactly(&dev, &q);
+}
+
+/// The same on DX12 with FXC, wgpu's shader compiler when `dxcompiler.dll` is not shipped (as in
+/// FilmCraft's builds). FXC aborted on the effect stage ("internal error: compilation aborted
+/// unexpectedly"), so every Windows device on DX12 rendered effects, previews and exports on the
+/// CPU. WARP stands in when there is no GPU.
+#[cfg(windows)]
+#[test]
+fn gpu_effects_match_cpu_exactly_with_fxc() {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::DX12;
+    desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+    let instance = wgpu::Instance::new(desc);
+    let adapter = [false, true].into_iter().find_map(|force_fallback_adapter| {
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter, ..Default::default() })).ok()
+    });
+    let Some(adapter) = adapter else {
+        eprintln!("no DX12 adapter; skipping");
+        return;
+    };
+    eprintln!("DX12 + FXC on {}", adapter.get_info().name);
+    let (dev, q) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("DX12 device");
+    effects_match_cpu_exactly(&dev, &q);
+}
+
+fn effects_match_cpu_exactly(dev: &wgpu::Device, q: &wgpu::Queue) {
+    let mut c = GpuCompositor::new(dev, q);
+    assert!(c.fx.is_some(), "the effect stage did not build on this device (see the log for the pipeline error)");
     let (w, h) = (67u32, 41u32);
     let px = picture(w, h);
     let frame = VideoFrame::rgba_f32(w, h, px.clone());
@@ -333,6 +406,38 @@ fn gpu_effects_match_cpu_exactly() {
         }
     }
     assert!(failures.is_empty(), "GPU effects differ from the CPU:\n{}", failures.join("\n"));
+}
+
+/// #3465 review: a neutral Three-Way Color Corrector leaves every value alone on both paths,
+/// negative and HDR channels included.
+#[test]
+fn gpu_neutral_three_way_leaves_negative_and_hdr_values() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (16u32, 8u32);
+    let mut px = picture(w, h);
+    for (i, p) in px.chunks_mut(4).enumerate() {
+        p[3] = 1.0;
+        if i % 3 == 0 {
+            p[0] = -0.1;
+        }
+        if i % 5 == 0 {
+            p[1] = 2.0;
+        }
+    }
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let e = effect("three_way_color", &[]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("three_way_color has a GPU op");
+    assert!(op.is_identity_three_way());
+    let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+    op.apply(&mut cpu);
+    assert_eq!(cpu.px, px, "the CPU leaves a neutral corrector's input untouched");
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops: vec![op] }).expect("effect image");
+    let (worst, flips) = compare(&px, &gpu);
+    assert!(worst <= EXACT && flips == 0.0, "the GPU changed a neutral corrector's input: {worst:.2e}, {flips:.4} of the values");
 }
 
 #[test]
@@ -455,6 +560,8 @@ fn hostile_parameters_are_bounded() {
         effect("brightness_contrast", &[("brightness", fl(f64::NAN))]),
         effect("gaussian_blur", &[("blurriness", fl(f64::INFINITY))]),
         effect("directional_blur", &[("length", fl(f64::NAN))]),
+        effect("bokeh_blur", &[("rotation", fl(f64::NAN))]),
+        effect("bokeh_blur", &[("highlight", fl(f64::INFINITY))]),
         effect("transform", &[("rotation", fl(f64::NAN))]),
         effect("crop", &[("left", fl(f64::NAN))]),
         effect("offset", &[("shift", pt(f64::INFINITY, 0.0))]),
@@ -504,6 +611,8 @@ fn hostile_parameters_are_bounded() {
         FxOp::eval(&effect("gaussian_blur", &[("blurriness", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
         FxOp::eval(&effect("unsharp_mask", &[("radius", fl(1e30)), ("amount", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
         FxOp::eval(&effect("directional_blur", &[("length", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
+        FxOp::eval(&effect("bokeh_blur", &[("amount", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
+        FxOp::eval(&effect("bokeh_blur", &[("amount", fl(f64::NAN))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
     ];
     let t0 = std::time::Instant::now();
     let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w as u32, h as u32), decimation: 1, ops }).expect("effect image");

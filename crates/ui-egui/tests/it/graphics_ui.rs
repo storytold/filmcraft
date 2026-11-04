@@ -320,6 +320,206 @@ fn shadow_color_drag_is_one_undo_step() {
     assert_eq!(color(&mut d), before, "one undo restores the original color");
 }
 
+/// Both stroke rows keep the character range when changing colour, width and enablement.
+#[test]
+fn stroke_colour_pickers_edit_only_the_type_tool_selection() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics", "tool": "Type"}));
+    d.exec("playhead.set", json!({"seconds": 2}));
+    let p = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": p[0] + p[2] * 0.2, "y": p[1] + p[3] * 0.4}));
+    d.ok("ui.type", json!({"text": "1234"}));
+    let clip = d.exec("graphics.list", json!({}))["clip"].as_u64().unwrap();
+    d.exec(
+        "graphics.set",
+        json!({"clip": clip, "props": {
+            "size": 180, "stroke": true, "stroke_color": "#0000ff", "stroke_width": 8,
+            "stroke2": true, "stroke2_color": "#00ff00", "stroke2_width": 16
+        }}),
+    );
+    d.ok("ui.key", json!({"key": "Home"}));
+    for _ in 0..2 {
+        d.ok("ui.key", json!({"key": "Shift+ArrowRight"}));
+    }
+    d.ok("ui.scroll", json!({"x": 1400.0, "y": 500.0, "dy": -400.0}));
+    d.frames(3);
+    for (id, key) in [("stroke_color", "strokeColor"), ("stroke2_color", "stroke2Color")] {
+        let layer_before = text_param(&mut d, clip, id);
+        let styles = |d: &mut Driver| d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"].clone();
+        let before = styles(&mut d);
+        let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+        d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+        d.frames(3);
+        let red = d.harness.get_by_role_and_label(Role::SpinButton, "R").rect().center();
+        d.ok("ui.drag", json!({"from": {"x": red.x, "y": red.y}, "to": {"x": red.x + 120.0, "y": red.y}, "steps": 4}));
+        d.frames(3);
+        let after = styles(&mut d);
+        assert_ne!(after[0][key], before[0][key], "the {id} picker edits the selected characters");
+        assert_eq!((after[0]["start"].as_u64(), after[0]["end"].as_u64()), (Some(0), Some(2)));
+        assert_eq!(text_param(&mut d, clip, id), layer_before, "unselected text inherits the original colour");
+        assert_eq!(d.exec("history.list", json!({}))["undo"].as_array().unwrap().len(), undo0 + 1);
+        d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+        d.exec("edit.undo", json!({}));
+        assert_eq!(styles(&mut d), before);
+        d.exec("edit.redo", json!({}));
+        assert_eq!(styles(&mut d), after);
+    }
+    for (id, key) in [("stroke_width", "strokeWidth"), ("stroke2_width", "stroke2Width")] {
+        let inherited = text_param(&mut d, clip, id);
+        let before = d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"].clone();
+        let undo0 = d.exec("history.list", json!({}))["undo"].as_array().unwrap().len();
+        let r = d.rect(&format!("graphics.prop.{id}"));
+        let (x, y) = (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+        d.ok("ui.drag", json!({"from": {"x": x, "y": y}, "to": {"x": x + 80.0, "y": y}, "steps": 6}));
+        d.frames(3);
+        let after = d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"].clone();
+        assert!(after[0][key].as_f64().unwrap() > inherited.as_ref().and_then(|v| v.as_f64()).unwrap() + 1.0);
+        assert_eq!((after[0]["start"].as_u64(), after[0]["end"].as_u64()), (Some(0), Some(2)));
+        assert_eq!(text_param(&mut d, clip, id), inherited, "the other characters keep the layer width");
+        assert_eq!(d.exec("history.list", json!({}))["undo"].as_array().unwrap().len(), undo0 + 1);
+        d.exec("edit.undo", json!({}));
+        assert_eq!(d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"], before);
+        d.exec("edit.redo", json!({}));
+        assert_eq!(d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"], after);
+    }
+    for id in ["stroke", "stroke2"] {
+        let inherited = text_param(&mut d, clip, id);
+        for enabled in [false, true] {
+            d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+            let styles = d.exec("graphics.list", json!({"clip": clip}))["layers"][0]["styles"].clone();
+            assert_eq!(styles[0][id].as_bool(), Some(enabled));
+            assert_eq!(text_param(&mut d, clip, id), inherited);
+        }
+    }
+    d.exec(
+        "graphics.setCharStyle",
+        json!({"clip": clip, "start": 0, "end": 2, "style": {"strokeColor": "#ff0000", "strokeWidth": 12, "stroke2Color": "#ffff00", "stroke2Width": 32}}),
+    );
+    // Wait for background rendering before the optional screenshot. The colour and undo
+    // assertions above do not need a finished monitor frame when this runs headless in the suite.
+    if d.shots.is_some() {
+        let revision = d.harness.state().session.revision;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while d.harness.state().program_picture().is_none_or(|k| k.revision != revision) && std::time::Instant::now() < deadline {
+            d.frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(d.harness.state().program_picture().is_some_and(|k| k.revision == revision), "the preview displays the edited stroke colours");
+    }
+    d.shot("per-character-stroke-colours");
+}
+
+/// With a Type-tool selection the Style buttons show and toggle the selected characters' style,
+/// not the layer's: a second click turns Faux Bold (or All Caps, or Small Caps) off again.
+#[test]
+fn style_buttons_toggle_the_selected_characters() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace":"Captions and Graphics","tool":"Type"}));
+    d.exec("playhead.set", json!({"seconds":2}));
+    d.frames(3);
+    let p = d.rect("program.picture");
+    d.ok("ui.click", json!({"x":p[0]+p[2]*0.2,"y":p[1]+p[3]*0.35}));
+    d.ok("ui.type", json!({"text":"Night Drive"}));
+    for _ in 0..5 {
+        d.ok("ui.key", json!({"key":"Shift+ArrowLeft"}));
+    }
+    d.frames(3);
+    let styles = |d: &mut Driver| d.exec("graphics.list", json!({}))["layers"][0]["styles"].clone();
+    for (id, key, on, off) in
+        [("faux_bold", "fauxBold", json!(true), json!(false)), ("all_caps", "caps", json!(1), json!(0)), ("small_caps", "caps", json!(2), json!(0))]
+    {
+        d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+        d.frames(3);
+        assert_eq!(styles(&mut d)[0][key], on, "first click styles the selection: {}", styles(&mut d));
+        d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+        d.frames(3);
+        let st = styles(&mut d);
+        assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0][key].clone()), (json!(6), json!(11), off), "second click unstyles it: {st}");
+    }
+}
+
+/// A selection whose characters mix a style shows its button off (on only when every selected
+/// character has it), so a click styles all of them; reading the first character alone showed it
+/// on, and the click unstyled the characters that had it. The same for the caps buttons, which
+/// are both off when the selection mixes caps modes.
+#[test]
+fn style_button_on_a_mixed_selection_styles_all_of_it() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace":"Captions and Graphics","tool":"Type"}));
+    d.exec("playhead.set", json!({"seconds":2}));
+    d.frames(3);
+    let p = d.rect("program.picture");
+    d.ok("ui.click", json!({"x":p[0]+p[2]*0.2,"y":p[1]+p[3]*0.35}));
+    d.ok("ui.type", json!({"text":"Night Drive"}));
+    for _ in 0..5 {
+        d.ok("ui.key", json!({"key":"ArrowLeft"}));
+    }
+    for _ in 0..2 {
+        d.ok("ui.key", json!({"key":"Shift+ArrowRight"}));
+    }
+    d.frames(3);
+    let styles = |d: &mut Driver| d.exec("graphics.list", json!({}))["layers"][0]["styles"].clone();
+    d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
+    d.frames(3);
+    let st = styles(&mut d);
+    assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0]["fauxBold"].clone()), (json!(6), json!(8), json!(true)), "\"Dr\" is bold: {st}");
+    d.ok("ui.click", json!({"id":"graphics.prop.all_caps"}));
+    d.frames(3);
+    let st = styles(&mut d);
+    assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0]["caps"].clone()), (json!(6), json!(8), json!(1)), "\"Dr\" is All Caps: {st}");
+    for _ in 0..3 {
+        d.ok("ui.key", json!({"key":"Shift+ArrowRight"}));
+    }
+    d.frames(3);
+    // the runs over "Drive" (6..11, contiguous), as (start, end, value of `key`)
+    let runs = |st: &serde_json::Value, key: &str| -> Vec<(u64, u64, serde_json::Value)> {
+        let runs: Vec<_> =
+            st.as_array().into_iter().flatten().map(|r| (r["start"].as_u64().unwrap_or(0), r["end"].as_u64().unwrap_or(0), r[key].clone())).collect();
+        assert_eq!(runs.first().map(|r| r.0), Some(6), "{st}");
+        assert_eq!(runs.last().map(|r| r.1), Some(11), "{st}");
+        assert!(runs.windows(2).all(|w| w[0].1 == w[1].0), "{st}");
+        runs
+    };
+    d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
+    d.frames(3);
+    let st = styles(&mut d);
+    assert!(runs(&st, "fauxBold").iter().all(|r| r.2 == json!(true)), "the click bolds all of \"Drive\": {st}");
+    // "Dr" is All Caps, "ive" is not: both caps buttons are off, so a click makes it all All Caps
+    d.ok("ui.click", json!({"id":"graphics.prop.all_caps"}));
+    d.frames(3);
+    let st = styles(&mut d);
+    assert!(runs(&st, "caps").iter().all(|r| r.2 == json!(1)), "the click makes all of \"Drive\" All Caps: {st}");
+    assert!(runs(&st, "fauxBold").iter().all(|r| r.2 == json!(true)), "and keeps it bold: {st}");
+}
+
+/// Without a Type-tool selection the Style buttons show and toggle the layer's style: an unstyled
+/// layer's buttons are off, so a click turns the style on (an empty selection counted as "every
+/// selected character has it", so the click wrote `false`).
+#[test]
+fn style_buttons_toggle_the_layer_without_a_selection() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let r = d.exec("graphics.newText", json!({"text": "Title"}));
+    let clip = r["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+    d.frames(4);
+    for id in ["faux_bold", "faux_italic", "underline", "strikethrough"] {
+        let on = |d: &mut Driver| text_param(d, clip, id).and_then(|v| v.as_bool()).unwrap_or(false);
+        // near the button's left edge: in the test window the panel's scrollbar covers the
+        // middle of the last button of the row
+        let click = |d: &mut Driver| {
+            let b = d.rect(&format!("graphics.prop.{id}"));
+            d.ok("ui.click", json!({"x": b[0] + 4.0, "y": b[1] + b[3] / 2.0}));
+            d.frames(3);
+        };
+        assert!(!on(&mut d), "{id} starts off");
+        click(&mut d);
+        assert!(on(&mut d), "first click turns {id} on");
+        click(&mut d);
+        assert!(!on(&mut d), "second click turns {id} off");
+    }
+}
+
 /// Character ranges use setCharStyle, but must share the same one-gesture undo rule as a layer.
 #[test]
 fn selected_character_size_drag_is_one_undo_step() {
@@ -486,4 +686,58 @@ fn a_graphics_tab_edit_writes_keyframed_text_where_it_is_shown() {
     };
     assert_eq!(at(&mut d, it.start.0), filmcraft_project::ParamValue::Text("Edited".into()), "the shown (start) value changed");
     assert_eq!(at(&mut d, late), filmcraft_project::ParamValue::Text("End".into()), "the end keeps its own");
+}
+
+/// Click the entry labelled `label` of the open drop-down list with the pointer.
+fn pick(d: &mut Driver, label: &str) {
+    let r = d.harness.get_by_label(label).rect();
+    d.ok("ui.click", json!({"x": (r.min.x + r.max.x) / 2.0, "y": (r.min.y + r.max.y) / 2.0}));
+    d.frames(3);
+}
+
+/// #3539: Effect Controls' Text rows for Font and Font Style are drop-downs of the installed
+/// families and styles (like the Text panel's), and picking one applies it to the text layer.
+#[test]
+fn effect_controls_font_and_style_are_drop_downs_that_apply() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let clip = d.exec("graphics.newText", json!({"text": "Night Drive"}))["clip"].as_u64().unwrap();
+    d.exec("timeline.select", json!({"clips": [clip]}));
+    d.ok("ui.panel.show", json!({"panel": "Effect Controls"}));
+    d.frames(4);
+    let fams = filmcraft_text::families();
+    let fam = fams.iter().map(|(f, _)| f.clone()).find(|f| f != "Inter").expect("another family");
+    let font = d
+        .ok("ui.elements", json!({"prefix": "effectControls.text."}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["id"].as_str())
+        .find(|id| id.ends_with(".font"))
+        .expect("font row")
+        .to_string();
+    // the Text rows sit below the fold of the short panel: scroll them into view
+    for _ in 0..10 {
+        if d.rect(&font)[1] < 440.0 {
+            break;
+        }
+        d.ok("ui.scroll", json!({"x": 150.0, "y": 300.0, "dy": -120.0}));
+        d.frames(2);
+    }
+    let r = d.rect(&font);
+    assert!(r[2] <= 150.0 + 0.5, "the drop-down never asks for more than the value column holds: {r:?}");
+    d.ok("ui.click", json!({"id": font}));
+    d.frames(3);
+    // every visible option is addressable by id (review of #3588)
+    let opts = d.ok("ui.elements", json!({"prefix": format!("{font}.option.")}));
+    let want = format!("{font}.option.{fam}");
+    assert!(opts.as_array().unwrap().iter().any(|e| e["id"].as_str() == Some(want.as_str())), "no {want}");
+    pick(&mut d, &fam);
+    assert_eq!(text_param(&mut d, clip, "font"), Some(filmcraft_project::ParamValue::Text(fam.clone())), "picking a family applies it");
+    // the style list follows the family
+    let style_id = font.replace(".font", ".font_style");
+    d.ok("ui.click", json!({"id": style_id}));
+    d.frames(3);
+    pick(&mut d, "Bold Italic");
+    assert_eq!(text_param(&mut d, clip, "font_style"), Some(filmcraft_project::ParamValue::Text("Bold Italic".into())), "picking a style applies it");
 }

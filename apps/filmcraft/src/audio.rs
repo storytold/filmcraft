@@ -61,6 +61,32 @@ impl Note {
     }
 }
 
+/// Whether the settings name a sample rate the device does not already run at, so its supported
+/// configurations have to be listed. `0` is the settings' "device default".
+fn needs_rate_search(default_rate: u32, want: u32) -> bool {
+    want != 0 && want != default_rate
+}
+
+/// The stream configuration the settings ask for, falling back to the device default.
+///
+/// Listing a device's configurations means probing every format and rate in the driver:
+/// 150-215 ms on WASAPI (measured), while opening the stream itself costs ~20 ms warm (0.5-1 s
+/// from a cold audio engine). So the list is only asked for when the settings name a rate the
+/// device does not already run at (#2633).
+fn stream_config(hw: &AudioHardwarePrefs, document_rate: Option<u32>, dev: &cpal::Device) -> Result<cpal::SupportedStreamConfig, String> {
+    let default = dev.default_output_config().map_err(|e| e.to_string())?;
+    let want = if hw.force_document_rate { document_rate.unwrap_or(hw.sample_rate) } else { hw.sample_rate };
+    if !needs_rate_search(default.sample_rate().0, want) {
+        return Ok(default);
+    }
+    let exact = dev.supported_output_configs().ok().and_then(|it| {
+        it.filter(|c| c.channels() > 0 && (c.min_sample_rate().0..=c.max_sample_rate().0).contains(&want))
+            .max_by_key(|c| (c.channels() == default.channels(), c.sample_format() == cpal::SampleFormat::F32, c.sample_format() == default.sample_format()))
+            .and_then(|c| c.try_with_sample_rate(cpal::SampleRate(want)))
+    });
+    Ok(exact.unwrap_or(default))
+}
+
 /// The host named in the settings (empty or unknown = the default host).
 fn host(name: &str) -> cpal::Host {
     if !name.is_empty()
@@ -158,18 +184,9 @@ impl CpalOut {
         }
     }
 
-    /// The stream configuration the settings ask for, falling back to the device default.
+    /// The stream configuration the settings ask for (see [`stream_config`]).
     fn config(&self, dev: &cpal::Device) -> Result<cpal::SupportedStreamConfig, String> {
-        let default = dev.default_output_config().map_err(|e| e.to_string())?;
-        let want = if self.hw.force_document_rate { self.document_rate.unwrap_or(self.hw.sample_rate) } else { self.hw.sample_rate };
-        let exact = dev.supported_output_configs().ok().and_then(|it| {
-            it.filter(|c| c.channels() > 0 && (c.min_sample_rate().0..=c.max_sample_rate().0).contains(&want))
-                .max_by_key(|c| {
-                    (c.channels() == default.channels(), c.sample_format() == cpal::SampleFormat::F32, c.sample_format() == default.sample_format())
-                })
-                .and_then(|c| c.try_with_sample_rate(cpal::SampleRate(want)))
-        });
-        Ok(exact.unwrap_or(default))
+        stream_config(&self.hw, self.document_rate, dev)
     }
 
     fn converted_stream<T>(&self, dev: &cpal::Device, config: &cpal::StreamConfig, fill: Arc<Mutex<Fill>>) -> Result<cpal::Stream, cpal::BuildStreamError>
@@ -328,7 +345,7 @@ impl Watchdog {
         // An error that arrives with the stream still consuming samples is only a hiccup.
         self.pending_error |= errored;
         let stalled = now.saturating_sub(self.seen.1) >= STALL_RESTART;
-        if !lost && !(self.pending_error && stalled) {
+        if !(lost || (self.pending_error && stalled)) {
             return Verdict::Healthy;
         }
         self.restarts.retain(|t| now.saturating_sub(*t) < RESTART_WINDOW);
@@ -470,6 +487,15 @@ mod tests {
     fn notes_name_the_fallback_device() {
         assert!(Note::Fallback("pipewire".into()).text().contains("'pipewire'"));
         assert!(!Note::NoDevice.text().is_empty());
+    }
+
+    /// #2633: the rate search costs ~190 ms on WASAPI, so the device default is taken as is.
+    #[test]
+    fn the_device_default_rate_is_used_without_listing_every_configuration() {
+        assert!(!needs_rate_search(48_000, 48_000), "the settings ask for the rate the device runs at");
+        assert!(!needs_rate_search(44_100, 0), "0 is the device default");
+        assert!(needs_rate_search(48_000, 44_100), "another rate has to be searched for");
+        assert!(needs_rate_search(48_000, 96_000));
     }
 
     #[test]

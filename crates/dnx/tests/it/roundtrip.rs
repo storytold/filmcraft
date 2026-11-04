@@ -104,3 +104,44 @@ fn corrupt_streams_never_panic() {
         let _ = decode_frame(&d);
     }
 }
+
+#[test]
+fn rejects_repeated_scan_line_indices() {
+    // Every scan index pointing at the first row's payload must not let one coded row fill the
+    // whole raster.
+    let mut enc = Encoder::new(Profile::Hq, 256, 128).unwrap();
+    let mut d = enc.encode(&picture(256, 128, ChromaFormat::Yuv422, 8, 2)).unwrap();
+    assert!(decode_frame(&d).is_ok());
+    let h = filmcraft_dnx::probe(&d).unwrap();
+    assert!(h.mb_rows > 1);
+    let first = filmcraft_dnx::header::SCAN_INDEX_OFFSET;
+    let idx: [u8; 4] = d[first..first + 4].try_into().unwrap();
+    for s in 1..h.mb_rows as usize {
+        d[first + 4 * s..first + 4 * s + 4].copy_from_slice(&idx);
+    }
+    assert!(decode_frame(&d).is_err());
+}
+
+#[test]
+fn rejects_frames_over_the_memory_limit() {
+    // A compact header-only frame claiming a 16384x16384 4:4:4 raster with alpha is refused before
+    // any plane is allocated.
+    let mut enc = Encoder::new(Profile::R444, 64, 64).unwrap();
+    let d = enc.encode(&picture(64, 64, ChromaFormat::Yuv444, 10, 3)).unwrap();
+    let mut h = filmcraft_dnx::probe(&d).unwrap();
+    h.width = 16384;
+    h.lines = 16384;
+    h.mb_rows = 1024;
+    h.alpha = true;
+    h.header_size = filmcraft_dnx::header::header_size_for(h.lines);
+    let mut big = filmcraft_dnx::header::write(&h);
+    let hs = big.len() as u32;
+    for s in 0..h.mb_rows as usize {
+        let o = filmcraft_dnx::header::SCAN_INDEX_OFFSET + 4 * s;
+        big[o..o + 4].copy_from_slice(&(s as u32).to_be_bytes());
+    }
+    big.resize(hs as usize + 4096, 0);
+    assert!(filmcraft_dnx::probe(&big).is_ok());
+    let err = decode_frame(&big).unwrap_err().to_string();
+    assert!(err.contains("memory limit"), "{err}");
+}
