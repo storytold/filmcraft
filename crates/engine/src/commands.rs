@@ -1989,7 +1989,9 @@ fn build() -> Vec<CommandSpec> {
             // An Alt selection is already exact, as for Clear (#2244).
             let sel = s.state.selection.clone();
             s.edit_sequence("Cut", |q, _, st| {
+                let links = links_of(q, &sel);
                 edit::delete_items(q, &sel);
+                unlink_lone_clips(q, &links);
                 st.selection.clear();
                 Ok(())
             })?;
@@ -2034,7 +2036,9 @@ fn build() -> Vec<CommandSpec> {
                     None => s.state.selection.clone(),
                 };
                 s.edit_sequence("Clear", |q, _, st| {
+                    let links = links_of(q, &sel);
                     edit::delete_items(q, &sel);
+                    unlink_lone_clips(q, &links);
                     st.selection.clear();
                     Ok(())
                 })?;
@@ -2064,7 +2068,9 @@ fn build() -> Vec<CommandSpec> {
                     None => s.state.selection.clone(),
                 };
                 s.edit_sequence("Ripple Delete", |q, _, st| {
+                    let links = links_of(q, &sel);
                     let spans = edit::ripple_delete_items(q, &sel)?;
+                    unlink_lone_clips(q, &links);
                     if st.ripple_sequence_markers {
                         for r in spans.iter().rev() {
                             crate::sequence_tools::ripple_markers(&mut q.markers, r.end(), -r.duration);
@@ -4469,14 +4475,20 @@ pub fn next_nested_name(s: &Session) -> String {
         .unwrap_or_else(|| "Nested Sequence".to_string())
 }
 
-/// Clear the link of every clip on an unlocked track of `seq` that is the only clip left with one
-/// of `links`: it has nothing to follow.
+/// The links that `clips` of `seq` belong to.
+fn links_of(seq: &filmcraft_project::Sequence, clips: &[ClipId]) -> std::collections::HashSet<u64> {
+    let clips: std::collections::HashSet<ClipId> = clips.iter().copied().collect();
+    seq.all_tracks().flat_map(|t| t.items.iter()).filter(|i| clips.contains(&i.id)).filter_map(|i| i.link).collect()
+}
+
+/// Clear the link of every clip of `seq` that is the only clip left with one of `links`: it has
+/// nothing to follow. A clip on a locked track stays where it is but loses the link too.
 fn unlink_lone_clips(seq: &mut filmcraft_project::Sequence, links: &std::collections::HashSet<u64>) {
     let mut members: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
     for l in seq.all_tracks().flat_map(|t| t.items.iter()).filter_map(|i| i.link) {
         *members.entry(l).or_default() += 1;
     }
-    for t in seq.all_tracks_mut().filter(|t| !t.locked) {
+    for t in seq.all_tracks_mut() {
         for it in &mut t.items {
             if it.link.is_some_and(|l| links.contains(&l) && members.get(&l).copied().unwrap_or(0) < 2) {
                 it.link = None;

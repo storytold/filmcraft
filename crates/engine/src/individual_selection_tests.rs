@@ -267,3 +267,29 @@ fn cut_copy_and_nest_take_both_halves_of_a_linked_selection() {
         }
     }
 }
+
+/// Removing one half of a linked pair leaves the other half unlinked: it has nothing to follow,
+/// and a later Link on it must link, not unlink. A partner on a locked track stays put and is
+/// unlinked too.
+#[test]
+fn the_half_left_behind_is_no_longer_linked() {
+    for command in ["edit.cut", "edit.clear", "edit.rippleDelete", "clip.nest"] {
+        for locked in [false, true] {
+            let (mut s, [(video, sound), (next_video, next_sound)]) = paired_sequence();
+            for track in ["V1", "A1"] {
+                s.execute("timeline.setTrack", json!({"track": track, "syncLock": false})).unwrap();
+            }
+            s.execute("timeline.select", json!({"clips": [video.0], "linked": false})).unwrap();
+            if locked {
+                s.execute("timeline.setTrack", json!({"track": "A1", "locked": true})).unwrap();
+            }
+            s.execute(command, json!({})).unwrap();
+            let q = s.active_sequence().unwrap();
+            q.check().unwrap();
+            assert!(q.find_item(video).is_none(), "{command} {locked}");
+            assert_eq!(q.find_item(sound).unwrap().1.link, None, "{command} {locked}: the sound left behind is not linked");
+            let link = |c| q.find_item(c).unwrap().1.link;
+            assert!(link(next_video).is_some() && link(next_video) == link(next_sound), "{command} {locked}: other pairs keep their link");
+        }
+    }
+}
