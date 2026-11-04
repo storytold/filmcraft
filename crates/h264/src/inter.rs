@@ -599,7 +599,7 @@ mod tests {
         let check = |n: usize, row: &[u8], rows: [&[u8]; 6]| {
             let mut simd = [0i16; 16];
             let mut scalar = [0i16; 16];
-            let run = match n {
+            match n {
                 16 => {
                     htap_row::<16>(row, &mut simd);
                     for c in 0..16 {
@@ -637,7 +637,6 @@ mod tests {
                     assert_eq!(simd[..4], scalar[..4], "vtap_row n=4");
                 }
             };
-            let _ = run;
         };
         for n in [4usize, 8, 16] {
             let mut row = vec![0u8; n + 5];
