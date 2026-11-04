@@ -850,6 +850,37 @@ fn alt_dragging_an_edge_trims_only_that_side_of_a_link() {
     }
 }
 
+/// A dragged edge takes the linked partner along only with Linked Selection on and Alt up. The
+/// drag passes `linked` to `timeline.trim`, which takes it as an override of the toggle (#4274),
+/// so with the toggle off a plain drag must say `false`, or it would trim both sides.
+#[test]
+fn a_dragged_edge_follows_linked_selection_and_alt() {
+    for (toggle, alt) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut d = Driver::demo();
+        d.exec("sequence.linkedSelection", json!({"on": toggle}));
+        let seq = d.app().session.active_sequence().expect("sequence");
+        let (video, sound) = seq.video_tracks[0]
+            .items
+            .iter()
+            .find_map(|v| {
+                let a = seq.audio_tracks.iter().flat_map(|t| &t.items).find(|a| v.link.is_some() && a.link == v.link)?;
+                Some((v.id.0, a.id.0))
+            })
+            .expect("a linked clip on V1");
+        let (v0, a0) = (d.span(video), d.span(sound));
+        let (_, x1, y) = d.edges(video);
+        d.ok("ui.drag", json!({"from": {"x": x1 - 3.0, "y": y}, "to": {"x": x1 - 63.0, "y": y}, "steps": 20, "modifiers": {"alt": alt}}));
+        d.frames(2);
+        let v1 = d.span(video);
+        assert!(v1.1 < v0.1, "toggle {toggle}, alt {alt}: the video's Out edge was trimmed: {v0:?} -> {v1:?}");
+        if toggle && !alt {
+            assert_eq!(d.span(sound).1, a0.1 - (v0.1 - v1.1), "toggle on, no Alt: the linked audio follows");
+        } else {
+            assert_eq!(d.span(sound), a0, "toggle {toggle}, alt {alt}: the linked audio stays");
+        }
+    }
+}
+
 impl Driver {
     /// Press at `from` and move to `to` over `steps` frames, the button still down.
     fn press_and_move(&mut self, from: Pos2, to: Pos2, steps: usize) {
