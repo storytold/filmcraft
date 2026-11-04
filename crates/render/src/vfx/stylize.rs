@@ -788,6 +788,8 @@ pub fn paint_bucket(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 /// Most brush stamps Write-on keeps, and most pixels it paints, for one frame.
 const MAX_WRITE_ON_STAMPS: usize = 1 << 20;
 const MAX_WRITE_ON_PIXEL_VISITS: u64 = 1 << 28;
+/// Interpolated candidate stamps looked at in all, on or off the canvas (a few per kept stamp).
+const MAX_WRITE_ON_CANDIDATES: usize = 4 * MAX_WRITE_ON_STAMPS;
 
 /// Write-on (obsolete): paints the animated Brush Position's path up to now.
 pub fn write_on(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
@@ -818,7 +820,8 @@ pub fn write_on(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let visible = |p: (f32, f32)| p.0 + r + 1.0 >= 0.0 && p.0 - r - 1.0 < wf && p.1 + r + 1.0 >= 0.0 && p.1 - r - 1.0 < hf;
     let mut stamps: Vec<(f32, f32)> = Vec::new();
     let mut prev: Option<(f32, f32)> = None;
-    for i in first..=n {
+    let mut candidates = 0usize;
+    'path: for i in first..=n {
         let p = to_px(i as f64 * spacing);
         if prev == Some(p) {
             continue;
@@ -827,6 +830,11 @@ pub fn write_on(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let d = ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2)).sqrt();
             let steps = (d / (r * 0.5)).ceil() as usize;
             for s in 1..steps.min(2000) {
+                // off-canvas candidates keep no stamp, so they are counted here or a long off-canvas path would not be bounded
+                candidates += 1;
+                if candidates > MAX_WRITE_ON_CANDIDATES {
+                    break 'path;
+                }
                 let t = s as f32 / steps as f32;
                 let at = (q.0 + (p.0 - q.0) * t, q.1 + (p.1 - q.1) * t);
                 if visible(at) && stamps.len() < MAX_WRITE_ON_STAMPS {

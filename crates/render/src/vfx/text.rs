@@ -35,6 +35,15 @@ pub(crate) fn draw_text(img: &mut Image, text: &str, look: TextLook<'_>) {
     let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(family, "Regular").face).metrics(px);
     let (bx, by) = (pos.x as f32, pos.y as f32 + vm.cap_height / 2.0);
     let b = l.bounds;
+    // `rasterize` works in `i32` device pixels (plus a margin): a position near the limit would overflow it
+    const MAX_DEVICE_COORD: f32 = (1u32 << 29) as f32;
+    if ![bx + b[0], by + b[1], bx + b[2], by + b[3]].iter().all(|v| v.is_finite() && v.abs() < MAX_DEVICE_COORD) {
+        return;
+    }
+    // checked before the box is painted: text that cannot be drawn leaves nothing behind
+    if bounded_raster_size(b[2] - b[0] + px * 0.7, b[3] - b[1] + px * 0.7).is_none() {
+        return;
+    }
     if box_alpha > 0.0 {
         let pad = px * 0.25;
         let boxp = filmcraft_text::Path::rect(bx + b[0] - pad, by + b[1] - pad, bx + b[2] + pad, by + b[3] + pad);
@@ -46,9 +55,6 @@ pub(crate) fn draw_text(img: &mut Image, text: &str, look: TextLook<'_>) {
                 paint_mask(img, &m, x0, y0, [0.0, 0.0, 0.0, 1.0], box_alpha.clamp(0.0, 1.0));
             }
         }
-    }
-    if bounded_raster_size(b[2] - b[0] + px * 0.7, b[3] - b[1] + px * 0.7).is_none() {
-        return;
     }
     let (m, x0, y0) = render::rasterize(&l, &render::at(bx, by.round()));
     paint_mask(img, &m, x0, y0, crate::graphics::premul_linear(color), 1.0);

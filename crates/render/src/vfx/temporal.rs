@@ -366,7 +366,8 @@ pub(crate) fn corrections(path: &StabilizerPath, smooth_frames: f64, no_motion: 
         vec![mean; n]
     } else {
         // the loop below runs 6 sigma + 1 times per frame: a project-supplied radius must not size it
-        let sigma = smooth_frames.clamp(0.01, MAX_SMOOTH_SIGMA);
+        // a NaN smoothness falls back to the minimum (`clamp` would pass the NaN on)
+        let sigma = if smooth_frames.is_nan() { 0.01 } else { smooth_frames.clamp(0.01, MAX_SMOOTH_SIGMA) };
         let r = (sigma * 3.0).ceil() as isize;
         (0..n as isize)
             .map(|k| {
