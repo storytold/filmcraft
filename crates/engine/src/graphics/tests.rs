@@ -599,11 +599,11 @@ fn paragraph_text_wraps_in_its_box_and_hides_what_does_not_fit() {
     assert_eq!(s.execute("graphics.list", json!({"clip": clip.0})).unwrap()["layers"][0]["overflow"], true);
 
     // point text has no box, and a vertical layer never gets one
-    let r = s.execute("graphics.newText", json!({"text": "Title", "newClip": true, "track": 3})).unwrap();
+    let r = s.execute("graphics.newText", json!({"text": "Title", "newClip": true})).unwrap();
     let point = s.execute("graphics.list", json!({"clip": r["clip"]})).unwrap();
     assert_eq!(point["layers"][0]["textType"], "point");
     assert_eq!(point["layers"][0]["box"], json!(null));
-    let r = s.execute("graphics.newText", json!({"text": "Tate", "vertical": true, "box": [300, 300], "newClip": true, "track": 4})).unwrap();
+    let r = s.execute("graphics.newText", json!({"text": "Tate", "vertical": true, "box": [300, 300], "newClip": true})).unwrap();
     assert_eq!(s.execute("graphics.list", json!({"clip": r["clip"]})).unwrap()["layers"][0]["textType"], "point");
 }
 
