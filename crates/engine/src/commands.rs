@@ -715,6 +715,11 @@ pub fn linked_roll_pairs(seq: &filmcraft_project::Sequence, left: ClipId, right:
 
 /// Keep each selected identity once, then expand linked partners when linked selection is on.
 pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
+    with_links_following(s, clips, s.state.linked_selection)
+}
+
+/// `clips`, each once, and with `follow` every clip linked to one of them.
+fn with_links_following(s: &Session, clips: &[ClipId], follow: bool) -> Vec<ClipId> {
     let mut out = Vec::new();
     for c in clips {
         if !out.contains(c) {
@@ -722,7 +727,7 @@ pub fn with_links(s: &Session, clips: &[ClipId]) -> Vec<ClipId> {
         }
     }
     let Some(seq) = s.active_sequence() else { return out };
-    if s.state.linked_selection {
+    if follow {
         let links: Vec<u64> = out.iter().filter_map(|c| seq.find_item(*c).and_then(|(_, i)| i.link)).collect();
         for t in seq.all_tracks() {
             for i in &t.items {
@@ -815,9 +820,15 @@ pub fn trim_delta_linked(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, 
     clamp_trim_linked(q, &clips, edge, mode, delta, &ctx)
 }
 
-/// `clip` and, unless `p` has `"linked": false` (Alt held), its linked partners.
+/// `clip` and its linked partners as `p`'s `"linked"` says for this one call: `true` takes them
+/// along and `false` (Alt held) leaves them, whatever Linked Selection says, as for
+/// `timeline.move`; without it the toggle decides. `true` used to defer to the toggle too, so
+/// with Linked Selection off a trim or rate stretch split its pair (#4274).
 fn with_links_p(s: &Session, p: &Value, clip: ClipId) -> Vec<ClipId> {
-    if bool_p(p, "linked").unwrap_or(true) { with_links(s, &[clip]) } else { vec![clip] }
+    match bool_p(p, "linked") {
+        Some(follow) => with_links_following(s, &[clip], follow),
+        None => with_links(s, &[clip]),
+    }
 }
 
 /// The delta a roll of every cut in `pairs` can apply together: `delta` clamped by each pair's
