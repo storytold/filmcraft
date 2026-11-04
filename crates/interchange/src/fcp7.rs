@@ -950,6 +950,8 @@ impl Exp<'_, '_> {
                         let links: Vec<(String, TrackKind, usize, usize)> = c
                             .link
                             .and_then(|l| link_members.get(&l))
+                            // a clip cut from an over-large group stays unlinked, or its links would restore a larger group on import
+                            .filter(|m| m.contains(&c.id))
                             .map(|m| m.iter().filter_map(|id| clip_xml.get(id).cloned()).collect())
                             .unwrap_or_default();
                         let xid = clip_xml[&c.id].0.clone();
