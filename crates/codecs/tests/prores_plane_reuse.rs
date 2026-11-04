@@ -12,7 +12,10 @@ fn prores_recycled_planes_preserve_pixels_alpha_and_shared_frames() {
     let mut held = None;
     let mut held_pixels = Vec::new();
     let mut recycled_plane_ptrs = [std::ptr::null(); 3];
+    let mut invalidated_plane_ptrs = Vec::new();
     for (i, (profile, width, height)) in [
+        (Profile::Hq, 256, 256),
+        (Profile::Hq, 256, 256),
         (Profile::Hq, 256, 256),
         (Profile::Hq, 256, 256),
         (Profile::Hq, 256, 256),
@@ -49,15 +52,26 @@ fn prores_recycled_planes_preserve_pixels_alpha_and_shared_frames() {
             recycled_plane_ptrs = plane_ptrs;
         } else if i == 2 {
             assert_eq!(plane_ptrs, recycled_plane_ptrs, "the third HQ decode must reuse all three planes recycled from the second");
+        } else if i == 3 || i == 4 {
+            assert!(
+                plane_ptrs.iter().all(|p| !invalidated_plane_ptrs.contains(p)),
+                "decode {i} must not take pooled planes using hints cleared by an error or reset"
+            );
         }
         if i == 0 {
             held_pixels = decoded.frame.to_rgba8();
             held = Some(decoded.frame.clone());
         }
-        filmcraft_frame::pool::recycle(Arc::new(decoded.frame));
         if i == 2 {
             assert!(decoder.decode(&[0; 4], 99).is_err());
+        } else if i == 3 {
+            decoder.reset();
         }
+        if i == 2 || i == 3 {
+            // Recycle only after invalidation: the pool keeps these allocations alive for the next decode.
+            invalidated_plane_ptrs.extend(plane_ptrs);
+        }
+        filmcraft_frame::pool::recycle(Arc::new(decoded.frame));
     }
     assert_eq!(held.unwrap().to_rgba8(), held_pixels, "a retained frame must never be overwritten");
     decoder.reset();
