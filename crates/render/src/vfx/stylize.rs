@@ -163,10 +163,14 @@ pub fn roughen_edges(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 /// step distance to the shape along the shadow direction is found by doubling (min-plus).
 pub fn long_shadow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let ang = (fv(e, "angle", cx) as f64).to_radians();
+    // A shadow longer than the picture's diagonal looks the same as one that long, and an
+    // infinite length kept the doubling loop below from ever ending.
     let len = fv(e, "length", cx) * cx.px_scale;
-    if len < 0.5 {
+    if len.is_nan() || len < 0.5 {
         return;
     }
+    // the fade still runs over the requested `len`; only the passes and the cutoff stop at the extent
+    let reach = len.min((img.w + img.h) as f32);
     let col = lin(cv(e, "color", cx));
     let op = fv(e, "opacity", cx) / 100.0;
     let fade = bv(e, "fade");
@@ -176,7 +180,7 @@ pub fn long_shadow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let inf = f32::INFINITY;
     let mut d: Vec<f32> = img.px.par_chunks(4).map(|p| if p[3] > 0.5 { 0.0 } else { inf }).collect();
     let mut s = 1.0f32;
-    while s <= len * 2.0 {
+    while s <= reach * 2.0 {
         let prev = d.clone();
         d.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
             for (x, v) in row.iter_mut().enumerate() {
@@ -191,7 +195,7 @@ pub fn long_shadow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         });
         s *= 2.0;
     }
-    let mut sh: Vec<f32> = d.par_iter().map(|&v| if v <= len { (if fade { 1.0 - v / len } else { 1.0 }) * op } else { 0.0 }).collect();
+    let mut sh: Vec<f32> = d.par_iter().map(|&v| if v <= reach { (if fade { 1.0 - v / len } else { 1.0 }) * op } else { 0.0 }).collect();
     sh = blur_plane(&sh, w, h, 0.6);
     img.px.par_chunks_mut(4).zip(sh.par_iter()).for_each(|(p, &a)| {
         let mut o = [col[0] * a, col[1] * a, col[2] * a, a];
