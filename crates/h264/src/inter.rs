@@ -675,7 +675,7 @@ mod tests {
         let check = |n: usize, row: &[u8], rows: [&[u8]; 6]| {
             let mut simd = [0i16; 16];
             let mut scalar = [0i16; 16];
-            let run = match n {
+            match n {
                 16 => {
                     htap_row::<16>(row, &mut simd);
                     for c in 0..16 {
@@ -713,7 +713,6 @@ mod tests {
                     assert_eq!(simd[..4], scalar[..4], "vtap_row n=4");
                 }
             };
-            let _ = run;
         };
         for n in [4usize, 8, 16] {
             let mut row = vec![0u8; n + 5];
@@ -765,7 +764,8 @@ mod tests {
         assert_eq!(d, [53; 4]);
     }
 
-    fn chroma_scalar(src: &[u8], ss: usize, fx: u32, fy: u32, bw: usize, bh: usize, out: &mut [u8], os: usize) {
+    fn chroma_scalar(src: &[u8], ss: usize, block: McBlock, out: &mut [u8], os: usize) {
+        let McBlock { fx, fy, bw, bh } = block;
         let (fx, fy) = (fx as u16, fy as u16);
         let (w00, w10, w01, w11) = ((8 - fx) * (8 - fy), fx * (8 - fy), (8 - fx) * fy, fx * fy);
         for r in 0..bh {
@@ -779,7 +779,8 @@ mod tests {
         }
     }
 
-    fn weighted_store_scalar(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&[u8]>, ps: usize, bw: usize, bh: usize, w: Weight) {
+    fn weighted_store_scalar(dst: &mut [u8], ds: usize, p0: Option<&[u8]>, p1: Option<&[u8]>, ps: usize, size: (usize, usize), w: Weight) {
+        let (bw, bh) = size;
         match (p0, p1, w) {
             (Some(a), Some(b), Weight::Default) => {
                 for r in 0..bh {
@@ -838,7 +839,7 @@ mod tests {
                     let mut a = vec![0u8; bh * 16];
                     let mut b = vec![0u8; bh * 16];
                     mc_chroma_win(&src, ss, McBlock { fx, fy, bw, bh }, &mut a, 16);
-                    chroma_scalar(&src, ss, fx, fy, bw, bh, &mut b, 16);
+                    chroma_scalar(&src, ss, McBlock { fx, fy, bw, bh }, &mut b, 16);
                     assert_eq!(a, b, "chroma {bw}x{bh} frac {fx},{fy}");
                 }
             }
@@ -869,7 +870,7 @@ mod tests {
                     let mut scalar = vec![0u8; n];
                     let p1 = if pair { Some(b.as_slice()) } else { None };
                     weighted_store(&mut simd, ps, Some(&a), p1, ps, (bw, bh), w);
-                    weighted_store_scalar(&mut scalar, ps, Some(&a), p1, ps, bw, bh, w);
+                    weighted_store_scalar(&mut scalar, ps, Some(&a), p1, ps, (bw, bh), w);
                     assert_eq!(simd, scalar, "weighted {bw}x{bh} pair={pair} {w:?}");
                 }
             }
