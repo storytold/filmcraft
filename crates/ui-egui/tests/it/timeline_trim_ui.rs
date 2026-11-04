@@ -666,7 +666,8 @@ fn locked_move_keeps_the_original_preview(audio: bool, destination: bool, linked
     } else {
         from
     };
-    let mut to = from + egui::vec2(60.0, 0.0);
+    // 40 px keeps the pointer inside the clip, away from its Out edge, where it would show the trim cursor
+    let mut to = from + egui::vec2(40.0, 0.0);
     if destination {
         let label = if audio { "A2" } else { "V2" };
         let rows = d.ok("ui.elements", json!({"prefix": format!("timeline.track.{label}.target")}));
@@ -967,6 +968,8 @@ fn a_selected_clip_on_a_locked_track_stays_while_the_others_trim() {
     let (c0, m0, undo) = (d.span(city), d.span(music), d.undo_steps());
     let (_, x1, y) = d.edges(city);
     let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
+    d.hover(from);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn, "the edge shows the trim it starts");
     d.press_and_move(from, to, 20);
     assert_ne!(d.cursor(), CursorIcon::NotAllowed);
     d.release(to);
@@ -992,4 +995,28 @@ fn another_selected_edge_snaps_to_the_playhead() {
     d.drag(pos2(x1 - 3.0, y), pos2(x1 - 3.0 - 58.0, y), 20);
     assert_eq!(d.span(dunes).1, playhead, "the other selected Out edge snapped to the playhead");
     assert_eq!(d.span(city).1, c0.1 - (d0.1 - playhead), "the grabbed clip moved by the same amount");
+}
+
+/// #3044: a clip whose linked sound is on a locked track still trims, and its sound stays, as
+/// `timeline.trim` leaves a locked partner.
+#[test]
+fn a_locked_linked_partner_does_not_block_the_trim() {
+    let mut d = Driver::demo();
+    let seq = d.app().session.active_sequence().expect("sequence");
+    let (video, sound, track) = seq.video_tracks[0]
+        .items
+        .iter()
+        .find_map(|v| seq.audio_tracks.iter().find_map(|t| t.items.iter().find(|a| v.link.is_some() && a.link == v.link).map(|a| (v.id.0, a.id.0, t.id.0))))
+        .expect("a linked clip on V1");
+    d.exec("timeline.setTrack", json!({"track": track, "locked": true}));
+    d.frames(3);
+    let (v0, a0, undo) = (d.span(video), d.span(sound), d.undo_steps());
+    let (_, x1, y) = d.edges(video);
+    let (from, to) = (pos2(x1 - 3.0, y), pos2(x1 - 63.0, y));
+    d.hover(from);
+    assert_eq!(d.cursor(), CursorIcon::ResizeColumn);
+    d.drag(from, to, 20);
+    assert!(d.span(video).1 < v0.1, "the video is trimmed: {v0:?} -> {:?}", d.span(video));
+    assert_eq!(d.span(sound), a0, "the sound on the locked track stays");
+    assert_eq!(d.undo_steps(), undo + 1);
 }

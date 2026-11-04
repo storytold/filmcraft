@@ -166,7 +166,9 @@ fn trim_drag_targets(session: &filmcraft_engine::Session, seq: &Sequence, clip: 
 fn drag_is_locked(session: &filmcraft_engine::Session, seq: &Sequence, drag: &Drag) -> bool {
     let clips = match drag {
         Drag::Move { clips, track_delta, .. } => return move_is_locked(seq, clips, *track_delta),
-        Drag::Trim { clip, .. } | Drag::Stretch { clip, .. } | Drag::Remix { clip, .. } | Drag::Slip { clip, .. } | Drag::Slide { clip, .. } => vec![*clip],
+        // the trim leaves linked partners and selected clips on locked tracks where they are
+        Drag::Trim { clip, .. } => return move_is_locked(seq, &[*clip], 0),
+        Drag::Stretch { clip, .. } | Drag::Remix { clip, .. } | Drag::Slip { clip, .. } | Drag::Slide { clip, .. } => vec![*clip],
         Drag::Roll { left, right, .. } => vec![*left, *right],
         Drag::Transition { id, .. } => return seq.all_tracks().any(|t| t.locked && t.transitions.iter().any(|tr| tr.id == *id)),
         _ => return false,
@@ -316,8 +318,10 @@ fn hover_cursor(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layou
     {
         let g = grab_at(seq, layout, p, tool, mods, roll_ripple);
         let blocked = tool == Tool::Selection
-            && match g.hit() {
-                Hit::Clip { clip, .. } => {
+            && match (g, g.hit()) {
+                // as the trim drag: only the grabbed clip's lock refuses it
+                (Grab::Edge { clip, kind: EdgeKind::Trim | EdgeKind::Ripple, .. }, _) => move_is_locked(seq, &[clip], 0),
+                (_, Hit::Clip { clip, .. }) => {
                     let clips = if app.session.state.selection.contains(&clip) {
                         app.session.state.selection.clone()
                     } else if mods.alt {
