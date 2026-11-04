@@ -277,6 +277,37 @@ fn files_in(dir: &Path) -> Vec<String> {
     v
 }
 
+/// An image sequence writes numbered stills, never the path it is given: `file.exportMedia`, its
+/// job's result and `export.quick` name the first still as `path`, and the last as `lastPath`, and
+/// both exist (#4009). A single file keeps its path and has no `lastPath`.
+#[test]
+fn an_image_sequence_reports_the_stills_it_wrote() {
+    let mut s = demo();
+    let dir = Scratch::new("sequence-path");
+    let asked = dir.0.join("a.png");
+    let p = json!({"path": asked.to_string_lossy(), "format": "png", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "scale": 0.125, "wait": true});
+    let frames = s.execute("export.resolve", p.clone()).unwrap()["frames"].as_u64().unwrap();
+    let v = s.execute("file.exportMedia", p).unwrap();
+    let (first, last) = (v["path"].as_str().unwrap(), v["lastPath"].as_str().unwrap());
+    assert!(first.ends_with("a000.png") && last.ends_with(&format!("a{:03}.png", frames - 1)), "{v}");
+    assert!(Path::new(first).exists() && Path::new(last).exists() && !asked.exists(), "{v}");
+    assert_eq!(v["result"]["path"], v["path"], "{v}");
+    assert_eq!(v["basePath"], json!(asked.to_string_lossy()), "the name the stills are numbered from: {v}");
+    assert_eq!(files_in(&dir.0).len() as u64, frames);
+
+    let quick = dir.0.join("q.png");
+    let p = json!({"preset": "PNG Sequence", "path": quick.to_string_lossy(), "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "wait": true});
+    let v = s.execute("export.quick", p).unwrap();
+    assert!(v["path"].as_str().is_some_and(|f| f.ends_with("q000.png") && Path::new(f).exists()), "{v}");
+    assert!(v["lastPath"].as_str().is_some_and(|f| Path::new(f).exists()), "{v}");
+
+    let wav = dir.0.join("b.wav");
+    let p = json!({"path": wav.to_string_lossy(), "format": "wav", "range": "custom", "startSeconds": 0, "endSeconds": 0.1, "wait": true});
+    let v = s.execute("file.exportMedia", p).unwrap();
+    assert_eq!(v["path"], json!(wav.to_string_lossy()), "{v}");
+    assert!(v.get("lastPath").is_none() && v.get("basePath").is_none() && wav.exists(), "{v}");
+}
+
 /// Every built-in preset: 1.0 to 1.08 s of the demo sequence (three frames at 23.976) exported
 /// with `file.exportMedia {preset}`; ffprobe checks container, codec, profile, frame size, frame
 /// rate and audio format, and the data rate where the codec fixes it. Three frames are enough for

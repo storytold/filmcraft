@@ -339,8 +339,9 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
             if let Some(info) = &p.cand.info {
                 let new_tc = info.start_timecode;
                 if align_timecode && let (Some(a), Some(b)) = (old_tc, new_tc) {
-                    // what was at old timecode a + t sits at new media time t + (a - b)
-                    shift = rate.tick_of(b - a);
+                    // what was at old timecode a + t sits at new media time t + (a - b), each
+                    // timecode in its own file's frames (an EDL item's are at the list's rate)
+                    shift = info.frame_rate().tick_of(b) - rate.tick_of(a);
                 }
                 m.info = info.clone();
             }
@@ -530,7 +531,11 @@ pub fn search(s: &Session, p: &Value) -> Result<Value> {
                 continue;
             }
             for f in paths {
-                if let Ok(c) = check_candidate(s, id, &f.to_string_lossy(), &o) {
+                if let Ok(mut c) = check_candidate(s, id, &f.to_string_lossy(), &o) {
+                    // results are listed, not played: holding every candidate's decoder (and a
+                    // decoded still for each alias of one image) kept them all in memory;
+                    // relinking reopens the chosen file
+                    c.source = None;
                     cands.push(c);
                 }
             }

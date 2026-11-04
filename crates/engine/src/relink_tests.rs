@@ -5,10 +5,11 @@
 use filmcraft_media::DemoScene;
 use filmcraft_project::ItemId;
 use filmcraft_render::offline::{OfflineReason, slate_rgba8};
+use filmcraft_time::FrameRate;
 use serde_json::json;
 
 use crate::Session;
-use crate::media_test_util::{frame_rgba, make_movie, psnr, session_with, tmp_dir};
+use crate::media_test_util::{frame_rgba, make_movie, make_movie_at, psnr, session_with, tmp_dir};
 use crate::relink::{apply_remap, derive_remap};
 
 const W: u32 = 160;
@@ -105,6 +106,42 @@ fn auto_relink_by_prefix_and_by_folder_search() {
     assert_eq!(c["identityMatch"], json!(true), "{r}");
     let r = s.execute("media.autoRelink", json!({"folder": root.to_string_lossy()})).unwrap();
     assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "{r}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// An EDL line with no `* SOURCE FILE:` names its file by clip name only. Imported away from the
+// file, the clip is missing like any file that isn't found: the folder search and Relink Others
+// find it, and opening the project asks for it. It was made offline, which all three skip.
+#[test]
+fn edl_clips_named_only_by_clip_name_are_missing_not_made_offline() {
+    let root = tmp_dir("relink-edl-reel");
+    let media = root.join("Media");
+    std::fs::create_dir_all(&media).unwrap();
+    make_movie(&media.join("a.mov"), DemoScene::Aurora, W, H, 24);
+    make_movie(&media.join("b.mov"), DemoScene::CityNight, W, H, 24);
+    let edit = root.join("Edit");
+    std::fs::create_dir_all(&edit).unwrap();
+    let edl = "TITLE: CUT\nFCM: NON-DROP FRAME\n\n\
+        001  A        V     C        00:00:00:00 00:00:00:12 01:00:00:00 01:00:00:12\n* FROM CLIP NAME: a.mov\n\n\
+        002  B        V     C        00:00:00:00 00:00:00:12 01:00:00:12 01:00:01:00\n* FROM CLIP NAME: b.mov\n";
+    std::fs::write(edit.join("cut.edl"), edl).unwrap();
+    let mut s = Session::default();
+    s.execute("file.import", json!({"paths": [edit.join("cut.edl").to_string_lossy()]})).unwrap();
+    let m = s.execute("media.findMissing", json!({})).unwrap();
+    let statuses: Vec<&str> = m["missing"].as_array().unwrap().iter().map(|r| r["status"].as_str().unwrap()).collect();
+    assert_eq!(statuses, ["missing", "missing"], "{m}");
+    let path = root.join("p.fcproj").to_string_lossy().into_owned();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    assert!(open(&path).offline.prompt, "opening the project asks for the missing files");
+
+    // The EDL gives neither a duration nor a picture size, so those checks are off.
+    let checks = json!({"duration": false, "metadata": false});
+    let r = s.execute("media.autoRelink", json!({"folder": media.to_string_lossy(), "match": checks})).unwrap();
+    assert_eq!(r["relinked"].as_array().unwrap().len(), 2, "{r}");
+    let mut s = open(&path);
+    let (item, name) = (m["missing"][0]["item"].as_u64().unwrap(), m["missing"][0]["fileName"].as_str().unwrap());
+    let r = s.execute("media.relink", json!({"item": item, "path": media.join(name).to_string_lossy(), "match": checks})).unwrap();
+    assert_eq!(r["remaining"], json!([]), "relinking one finds the other in its folder: {r}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -482,5 +519,60 @@ fn offline_all_is_saved_and_reopening_does_not_ask_again() {
     .unwrap();
     s.execute("file.save", json!({})).unwrap();
     assert!(open(&path).offline.prompt, "newly missing media asks again");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The first video clip of the active sequence: (its media item, its source in-point).
+fn first_clip(s: &Session) -> (ItemId, filmcraft_time::Tick) {
+    let seq = s.project.sequence(s.state.active_sequence.unwrap()).unwrap();
+    let ti = &seq.video_tracks[0].items[0];
+    (ti.item, ti.source_in)
+}
+
+// An EDL's source times are timecodes. Imported next to its media, a clip lands on the file's
+// own time. Imported elsewhere and relinked with Align Timecode, it kept the timecode as media
+// time, so it showed the file's last frame.
+#[test]
+fn edl_media_relinked_with_align_timecode_lands_where_import_puts_it() {
+    // The EDL is read at 24 fps. Its file runs at 24 fps, or at 25, where each timecode counts in
+    // its own file's frames.
+    for (fps, rate) in [(24, FrameRate::FPS_24), (25, FrameRate::FPS_25)] {
+        edl_media_relinked_at(fps, rate);
+    }
+}
+
+fn edl_media_relinked_at(fps: i64, rate: FrameRate) {
+    let root = tmp_dir(&format!("relink-edl-timecode-{fps}"));
+    let media = root.join("Media");
+    std::fs::create_dir_all(&media).unwrap();
+    // 2 s from 01:00:00:00; the EDL cuts in at 01:00:01:00, one second in
+    let file = media.join("A001.mxf");
+    make_movie_at(&file, DemoScene::Aurora, W, H, rate, 2 * fps, 3600 * fps);
+    let edl = "TITLE: CUT\nFCM: NON-DROP FRAME\n\n001  A001     V     C        01:00:01:00 01:00:01:12 01:00:00:00 01:00:00:12\n* FROM CLIP NAME: A001.mxf\n";
+    let import = |dir: &std::path::Path| {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("cut.edl"), edl).unwrap();
+        let mut s = Session::default();
+        s.execute("file.import", json!({"paths": [dir.join("cut.edl").to_string_lossy()]})).unwrap();
+        s
+    };
+
+    let mut next_to_media = import(&media);
+    assert_eq!(first_clip(&next_to_media).1, FrameRate::FPS_24.tick_of(24), "one second into the {fps} fps file");
+
+    let mut s = import(&root.join("Edit"));
+    let (item, _) = first_clip(&s);
+    let m = s.execute("media.findMissing", json!({})).unwrap();
+    assert_eq!(m["missing"][0]["item"], json!(item.0), "setup: the media is not next to the EDL: {m}");
+    // The EDL gives neither a duration nor a picture size, so those checks are off.
+    let r = s
+        .execute(
+            "media.relink",
+            json!({"item": item.0, "path": file.to_string_lossy(), "alignTimecode": true, "match": {"duration": false, "metadata": false}}),
+        )
+        .unwrap();
+    assert_eq!(r["remaining"], json!([]), "{r}");
+    assert_eq!(first_clip(&s).1, first_clip(&next_to_media).1, "{fps} fps");
+    assert_eq!(frame_rgba(&mut s, 6, 1.0).2, frame_rgba(&mut next_to_media, 6, 1.0).2, "same picture at {fps} fps");
     let _ = std::fs::remove_dir_all(&root);
 }

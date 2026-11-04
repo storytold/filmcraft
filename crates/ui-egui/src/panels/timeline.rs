@@ -30,7 +30,6 @@ mod clips;
 mod headers;
 mod interact;
 mod layout;
-mod marker_dialog;
 mod menus;
 mod ruler;
 mod scrollbars;
@@ -284,7 +283,6 @@ fn label_color(app: &FilmcraftApp, l: filmcraft_project::Label) -> Color32 {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
-    marker_dialog::show(app, &ctx);
     let Some(seq_id) = app.session.state.active_sequence else {
         empty_state(app, ui, rect);
         return;
@@ -411,13 +409,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let master = Rect::from_min_max(pos2(rect.min.x, tracks_area.max.y - MASTER_H), pos2(content.max.x, tracks_area.max.y));
     painter.rect_filled(master, 0.0, t.tl_header_bg);
     painter.text(pos2(rect.min.x + 44.0, master.center().y), Align2::LEFT_CENTER, tl!("Mix"), Tokens::ui(11.5), t.text);
-    painter.text(
-        pos2(rect.min.x + header_w - 12.0, master.center().y),
-        Align2::RIGHT_CENTER,
-        format!("{:.1}", seq.master_volume_db),
-        Tokens::ui(11.5),
-        t.hot_text,
-    );
+    mix_volume(app, ui, seq, Rect::from_min_max(pos2(rect.min.x + header_w - 72.0, master.min.y + 6.0), pos2(rect.min.x + header_w - 8.0, master.max.y - 6.0)));
 
     // ---- caption tracks
     if cap_n > 0 {
@@ -429,14 +421,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     draw_top(app, ui, rect, seq, &layout, &t, seq_id);
 
     // ---- playhead
-    let ph = app.session.playhead();
+    let ph = app.shown_playhead();
     let px = layout.x_of(ph);
     if px >= content.min.x - 1.0 && px <= content.max.x + 1.0 {
         // a short head on the tick row, as in Effect Controls, so it leaves the markers and timecodes clear
         let (top, tip) = (ruler.max.y - 13.0, ruler.max.y);
         let head = [pos2(px - 5.0, top), pos2(px + 5.0, top), pos2(px + 5.0, tip - 5.0), pos2(px, tip), pos2(px - 5.0, tip - 5.0)];
         painter.add(egui::Shape::convex_polygon(head.to_vec(), t.playhead, Stroke::NONE));
-        painter.line_segment([pos2(px, tip), pos2(px, content.max.y)], Stroke::new(1.0, t.playhead));
+        // a path, not a line segment: egui rounds line segments to whole pixels, so while playing
+        // the line would move in uneven pixel steps and part from its head
+        painter.add(egui::Shape::line(vec![pos2(px, tip), pos2(px, content.max.y)], Stroke::new(1.0, t.playhead)));
     }
     // snap indicator
     if let Some(sx) = app.tl.snap_x.take() {
@@ -795,6 +789,36 @@ fn paint_track_edits(
                 x += 8.0;
             }
         }
+    }
+}
+
+/// The Mix track header's level (#3765): the Mix fader at the playhead (its automation, or a
+/// control held in the Audio Track Mixer), as hot text to drag or type, as on an audio track.
+/// Changes go through `mixer.setValue`, so automation is written where the Mix fader has it; the
+/// changes of one press are one undo step, a typed value its own.
+fn mix_volume(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, r: Rect) {
+    use filmcraft_project::mixer::{FADER_MAX_DB, FADER_MIN_DB, LANE_VOLUME, MASTER_STRIP};
+    let now = app.session.playhead();
+    let db = app.session.previews.live.get(MASTER_STRIP, LANE_VOLUME).map(|o| o.value).unwrap_or_else(|| seq.master_strip().lane_value(LANE_VOLUME, now));
+    let mut vui = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::right_to_left(egui::Align::Center)).id_salt("timeline-mix"));
+    let (resp, nv) = crate::widgets::hot_number(
+        &mut vui,
+        tl!("Mix"),
+        egui::Id::unique("timeline-mix-volume"),
+        db.max(FADER_MIN_DB),
+        crate::widgets::HotNumberOptions::new(0.1, (FADER_MIN_DB, FADER_MAX_DB), 1, "", &app.tokens),
+    );
+    app.auto.add("timeline.mix.volume", resp.rect, &format!("{db:.1}"));
+    // as the Audio Track Mixer's fader: a drag holds the control and lets go when it ends (one
+    // undo step, or one gesture of an automation pass); a typed value is set at once
+    let (cmd, p) = match nv {
+        Some(v) if resp.dragged() => ("mixer.touch", json!({"strip": "Mix", "lane": LANE_VOLUME, "value": v, "time": now.0})),
+        Some(v) => ("mixer.setValue", json!({"strip": "Mix", "lane": LANE_VOLUME, "value": v})),
+        None if resp.drag_stopped() => ("mixer.release", json!({"strip": "Mix", "lane": LANE_VOLUME, "time": now.0})),
+        None => return,
+    };
+    if let Err(e) = app.session.execute(cmd, p) {
+        app.ui.status = e.to_string();
     }
 }
 
