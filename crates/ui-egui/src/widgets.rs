@@ -617,7 +617,9 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx, &Tokens::for_kind(ThemeKind::Dark)); // the app's UI font
         // The system face may already use tabular figures. Inter, still in the stack, is the
-        // proportional face this layout has to correct.
+        // proportional face this layout has to correct. Fonts exist only after the first frame.
+        let mut warm = ctx.run_ui(egui::RawInput::default(), |_| {});
+        warm.textures_delta.clear();
         let mut fonts = ctx.fonts_mut(|fonts| fonts.definitions().clone());
         fonts.families.insert(egui::FontFamily::Name("inter-only".into()), vec!["inter".into()]);
         ctx.set_fonts(fonts);
