@@ -17,6 +17,7 @@ pub mod clip_ops;
 pub mod color;
 pub mod commands;
 pub mod decupador;
+pub mod lettering;
 pub mod demo;
 pub mod doc_path;
 pub mod essential_sound;
