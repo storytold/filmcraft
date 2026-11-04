@@ -87,3 +87,31 @@ fn sequence_inspect_reports_a_reversed_clip() {
     let js = s.execute("sequence.inspect", json!({})).unwrap();
     assert!(all(&js).iter().all(|(_, reversed)| !reversed));
 }
+
+/// #4283: at a rate whose frame is not a whole number of ticks (11 fps), a clip or caption that
+/// runs between two frame boundaries counts the frames between them, not one fewer.
+#[test]
+fn durations_count_frames_between_boundaries_at_fractional_tick_rates() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let media = s.project.items.iter().find(|(_, i)| i.as_media().is_some_and(|m| m.info.video.is_some())).map(|(id, _)| id.0).unwrap();
+    s.execute("file.newSequence", json!({"name": "Eleven", "width": 640, "height": 360, "fps": 11, "video": 1, "audio": 1})).unwrap();
+    let rate = s.sequence_rate();
+    assert_ne!(rate.tick_of(1).0 * 11, rate.tick_of(11).0, "a frame at 11 fps is not a whole number of ticks");
+    s.execute("timeline.place", json!({"item": media, "track": "V1", "frame": 0, "duration": {"frame": 11}, "audio": false})).unwrap();
+    for f in [1, 2, 6, 10] {
+        s.execute("timeline.razor", json!({"time": rate.tick_of(f).0, "track": "V1"})).unwrap();
+    }
+    let js = s.execute("sequence.inspect", json!({})).unwrap();
+    let frames: Vec<_> = js["video"][0]["items"].as_array().unwrap().iter().map(|c| c["durationFrames"].as_i64().unwrap()).collect();
+    assert_eq!(frames, [1, 1, 4, 4, 1]);
+
+    s.execute("captions.newTrack", json!({"format": "Subtitle"})).unwrap();
+    for (text, start, end) in [("A", 1, 2), ("B", 6, 10)] {
+        s.execute("captions.add", json!({"track": "C1", "text": text, "frame": start, "durationSeconds": 0.1})).unwrap();
+        s.execute("captions.setTimes", json!({"startFrame": start, "endFrame": end})).unwrap();
+    }
+    let list = s.execute("captions.list", json!({})).unwrap();
+    let durations: Vec<_> = list["tracks"][0]["captions"].as_array().unwrap().iter().map(|c| c["duration"].as_str().unwrap().to_string()).collect();
+    assert_eq!(durations, ["00:00:00:01", "00:00:00:04"]);
+}
