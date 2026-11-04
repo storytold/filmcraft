@@ -127,11 +127,16 @@ fn aac_seven_one_in_latm_reports_and_decodes_every_channel() {
     let (ch, got) = ours(&ts, "aac_71_latm.ts");
     assert_eq!((ch, got.len()), (8, 8), "channels reported and decoded");
     let want = theirs(&ff, &ts, 8);
-    for (c, (a, b)) in got.iter().zip(&want).enumerate() {
-        let d = diff(a, b);
-        println!("channel {c}: peak {:.3}, max |ours - ffmpeg| {d:.5}", peak(a));
+    // ffmpeg 8 writes configuration 7, whose decoded order stays ours, so that one is matched
+    // whatever the order: each of our channels takes a channel of ffmpeg's for itself
+    let in_order = channel_config(&mp4) == Some(12);
+    let mut unmatched: Vec<&Vec<f32>> = want.iter().collect();
+    for (c, a) in got.iter().enumerate() {
         assert!(peak(a) > 0.05, "channel {c} is silent");
-        // ffmpeg 8 writes configuration 7, whose decoded order stays ours
-        assert!(channel_config(&mp4) != Some(12) || d < 0.01, "channel {c}: off ffmpeg's decode by {d}");
+        let (k, d) = unmatched.iter().enumerate().map(|(k, b)| (k, diff(a, b))).min_by(|x, y| x.1.total_cmp(&y.1)).unwrap();
+        println!("channel {c}: peak {:.3}, max |ours - ffmpeg| {d:.5}", peak(a));
+        assert!(d < 0.01, "channel {c}: no channel of ffmpeg's is left that it matches, nearest is off by {d}");
+        unmatched.swap_remove(k);
+        assert!(!in_order || diff(a, &want[c]) < 0.01, "channel {c}: not in ffmpeg's order");
     }
 }
