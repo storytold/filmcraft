@@ -75,8 +75,8 @@ pub enum ProjectDialog {
     ManagePresets { selected: usize, name: String },
     /// Freeform View Options….
     FreeformOptions { options: filmcraft_engine::project_panel::FreeformOptions },
-    /// Freeform ▸ Save Arrangement….
-    SaveArrangement { name: String, bin: Option<u64> },
+    /// Freeform ▸ Save Arrangement…, with the canvas width (unscaled) its unplaced cards wrap at.
+    SaveArrangement { name: String, bin: Option<u64>, width: Option<f64> },
 }
 
 /// Frontend state of the Project panel (`UiState::project_panel`).
@@ -587,7 +587,13 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
     let sw = (bar.width() - 300.0).clamp(40.0, 120.0);
     let sr = Rect::from_min_size(pos2(x + 8.0, bar.min.y + 8.0), vec2(sw, 16.0));
     let mut sz = v.icon_size;
-    let resp = crate::widgets::accessible_name(ui.put(sr, egui::Slider::new(&mut sz, 48.0..=400.0).show_value(false)), tl!("Zoom"));
+    // it sizes Icon view's cards, the Freeform canvas and List view's thumbnails (#3774): a List
+    // without thumbnails has nothing for it to size
+    let mut sui = ui.new_child(egui::UiBuilder::new().max_rect(sr).id_salt((pre, "zoom")));
+    if v.mode == ViewMode::List && !app.session.prefs.project_panel.thumbnails {
+        sui.disable();
+    }
+    let resp = crate::widgets::accessible_name(sui.put(sr, egui::Slider::new(&mut sz, 48.0..=400.0).show_value(false)), tl!("Zoom"));
     app.auto.add(&format!("{pre}.iconSize"), sr, "Zoom");
     // a drag ended by Escape goes back to the size it started from (#580)
     let orig_id = egui::Id::unique((pre, "icon-size-before-drag"));
@@ -952,9 +958,24 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, op: &str, params: &Val
             Ok(Value::Null)
         }
         "saveArrangement" => {
-            let bin = Some(view_of(app, inst).bin.0);
-            app.ui.project_panel.dialog = Some(ProjectDialog::SaveArrangement { name: String::new(), bin });
-            Ok(Value::Null)
+            // the canvas the menu was opened on, which may be a floating bin window; a `bin` that is
+            // not a bin id, or names no bin, is refused, as the engine would save to the root bin
+            // instead (an omitted or null `bin` is the shown view's)
+            let given = params.get("bin").filter(|v| !v.is_null());
+            let id = given.map(|v| v.as_u64().ok_or_else(|| format!("`bin` is a bin id, not {v}")));
+            if let Some(Err(e)) = id {
+                Err(e)
+            } else if let Some(Ok(b)) = id
+                && app.session.project.root.find_bin(BinId(b)).is_none()
+            {
+                Err(format!("no bin {b}"))
+            } else {
+                let given = id.and_then(Result::ok);
+                let bin = given.or_else(|| Some(view_of(app, inst).bin.0));
+                let width = params.get("width").and_then(Value::as_f64);
+                app.ui.project_panel.dialog = Some(ProjectDialog::SaveArrangement { name: String::new(), bin, width });
+                Ok(Value::Null)
+            }
         }
         "revealProject" => {
             let Some(p) = app.session.path.clone() else { return Some(Err("the project has not been saved".into())) };
