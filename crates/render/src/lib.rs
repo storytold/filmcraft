@@ -294,8 +294,13 @@ fn seq_canvas(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, s
         }
         match item_layer_ex(project, seq, item, t, opts, sources, LayerWant { tc: &tc, allow_region: true }) {
             Some(Layer::Full { image, opacity, blend: bl, opaque }) => {
-                if canvas.is_empty() && opaque && opacity == 1.0 && bl == Blend::Normal && (image.w, image.h) == (w, h) {
-                    // mixing an opaque layer over transparent black gives the layer itself
+                if canvas.is_empty() && opacity == 1.0 && bl == Blend::Normal && (image.w, image.h) == (w, h) && image.px.len() == w * h * 4 {
+                    // mixing a layer over transparent black gives the layer itself where it is opaque,
+                    // and is worked out in place elsewhere, without a zero-filled canvas to mix into
+                    let mut image = image;
+                    if !opaque {
+                        blend::over_transparent_black(&mut image);
+                    }
                     canvas.set(image);
                 } else {
                     blend::composite(canvas.get(), &image, opacity, bl);
