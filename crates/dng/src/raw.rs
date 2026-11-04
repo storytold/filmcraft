@@ -171,6 +171,10 @@ fn chunks<'a>(t: &Tiff<'a>, ifd: &Ifd, l: &RawLayout) -> Result<Vec<Chunk<'a>>> 
 /// words in the file's byte order, other depths packed most significant bit first with each row
 /// starting on a byte boundary (TIFF 6.0 §7, DNG BitsPerSample).
 pub fn unpack(bytes: &[u8], w: usize, h: usize, spp: usize, bits: u32, big_endian: bool) -> Result<Vec<u16>> {
+    // zero-bit samples need no input, so a header could ask for any number of them
+    if !(1..=16).contains(&bits) {
+        return Err(Error::Malformed("unsupported bits per sample"));
+    }
     let per_row = w * spp;
     let row_bytes = (per_row * bits as usize).div_ceil(8);
     let need = row_bytes.checked_mul(h).ok_or(Error::TooLarge)?;
@@ -262,4 +266,17 @@ pub fn read(t: &Tiff, ifd: &Ifd) -> Result<RawImage> {
         }
     }
     Ok(RawImage { width: l.width, height: l.height, samples_per_pixel: spp, bits: l.bits, data })
+}
+
+#[cfg(test)]
+mod unpack_tests {
+    use super::*;
+
+    #[test]
+    fn zero_or_oversized_bit_depths_are_rejected_before_allocating() {
+        // zero-bit samples consume no input: one byte used to yield a whole picture of zeros
+        assert!(matches!(unpack(&[0], 1 << 20, 1 << 10, 1, 0, false), Err(Error::Malformed(_))));
+        assert!(matches!(unpack(&[0; 64], 4, 1, 1, 17, false), Err(Error::Malformed(_))));
+        assert_eq!(unpack(&[0x12, 0x34, 0x50], 2, 1, 1, 12, true).unwrap(), vec![0x123, 0x450]);
+    }
 }
