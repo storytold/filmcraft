@@ -116,6 +116,22 @@ fn an_export_over_the_projects_own_media_is_refused() {
     let e = s.execute("file.exportMedia", frames.clone()).unwrap_err().to_string();
     assert!(e.contains("media of"), "{e}");
     assert!(std::fs::read(&frame).unwrap() == before, "the frame changed");
+    // a stem that ends in digits: `Scene 12.png` writes `Scene 12000.png`, so that frame is
+    // refused too, and a frame of another stem in the same folder doesn't block it
+    let mut numbered = range.clone();
+    numbered["format"] = json!("png");
+    numbered["path"] = json!(dir.path("Scene 12.png"));
+    s.execute("file.exportMedia", numbered.clone()).unwrap();
+    let scene_frame = dir.path("Scene 12000.png");
+    s.execute("file.import", json!({"paths": [scene_frame]})).unwrap();
+    let scene_before = std::fs::read(&scene_frame).unwrap();
+    let e = s.execute("file.exportMedia", numbered).unwrap_err().to_string();
+    assert!(e.contains("media of"), "{e}");
+    assert!(std::fs::read(&scene_frame).unwrap() == scene_before, "the frame changed");
+    let mut other = range.clone();
+    other["format"] = json!("png");
+    other["path"] = json!(dir.path("Scene 13.png"));
+    s.execute("file.exportMedia", other).unwrap();
     // the same name in other case is the same file only where the file system says so
     // (macOS, Windows), and is refused exactly there
     let case_blind = Path::new(&dir.path("SHOT001.PNG")).exists();

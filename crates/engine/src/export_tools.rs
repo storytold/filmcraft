@@ -541,12 +541,18 @@ fn media_at(project: &Project, settings: &ExportSettings) -> Option<String> {
     let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("png");
     // A media file named like an output (a number, then `suffix`, any case) stands for the path the
     // export gives that number; the two are compared canonically, so a case-insensitive file system
-    // matches `Shot001.png` to `shot001.png` and a case-sensitive one keeps them apart.
+    // matches `Shot001.png` to `shot001.png` and a case-sensitive one keeps them apart. The stem can
+    // end in digits itself (`Scene 12.png` writes `Scene 12000.png`), so the number is any tail of
+    // the trailing digits at least `min` long, not all of them.
     let generated = |name: &str, file: &Path, infix: &str, suffix: &str, min: usize| {
         let cut = name.len().saturating_sub(suffix.len());
         let (Some(head), Some(tail)) = (name.get(..cut), name.get(cut..)) else { return false };
-        let Some(n) = head.get(head.trim_end_matches(|c: char| c.is_ascii_digit()).len()..) else { return false };
-        tail.eq_ignore_ascii_case(suffix) && n.len() >= min && std::fs::canonicalize(dir.join(format!("{stem}{infix}{n}{suffix}"))).is_ok_and(|c| c == file)
+        let digits = head.len() - head.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+        tail.eq_ignore_ascii_case(suffix)
+            && (min..=digits).any(|len| {
+                let Some(n) = head.get(head.len().saturating_sub(len)..) else { return false };
+                std::fs::canonicalize(dir.join(format!("{stem}{infix}{n}{suffix}"))).is_ok_and(|c| c == file)
+            })
     };
     let written = |file: &Path| {
         if target.as_deref() == Some(file) {
