@@ -644,7 +644,9 @@ fn stream_mux_config(r: &mut filmcraft_bitstream::BitReader) -> Option<LatmConfi
     if r.read_bits(1).ok()? == 1 {
         r.read_bits(8).ok()?; // crcCheckSum
     }
-    Some(LatmConfig { asc: asc_bytes(2, sf as u8, ch as u8), sample_rate: *AAC_RATES.get(sf as usize)?, channels: if ch == 0 { 2 } else { ch } })
+    // `ch` is an index into Table 1.19, not a count: 7 and 12 are eight channels and 11 is seven
+    let channels = if ch == 0 { 2 } else { filmcraft_aac::config_layout(ch as u8)?.iter().map(|e| e.0.channels() as u32).sum() };
+    Some(LatmConfig { asc: asc_bytes(2, sf as u8, ch as u8), sample_rate: *AAC_RATES.get(sf as usize)?, channels })
 }
 
 /// The configuration carried in a LOAS frame (`None` if it reuses an earlier one or is not
@@ -1136,6 +1138,37 @@ pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<std::result::Result<Shared
         return None;
     }
     Some(AudioFileSource::decode(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+#[cfg(test)]
+mod latm_tests {
+    use super::*;
+
+    /// The start of a LOAS frame whose StreamMuxConfig says AAC-LC, 48 kHz and `channel_config`.
+    fn loas(channel_config: u64) -> Vec<u8> {
+        // useSameStreamMux, audioMuxVersion, allStreamsSameTimeFraming, the sub-frame, program and
+        // layer counts; object type, rate index, configuration, its three flags; frameLengthType,
+        // latmBufferFullness, otherData, crcCheckPresent
+        let fields = [(0, 1), (0, 1), (1, 1), (0, 6), (0, 4), (0, 3), (2, 5), (3, 4), (channel_config, 4), (0, 3), (0, 3), (0xFF, 8), (0, 1), (0, 1)];
+        let (bits, width) = fields.iter().fold((0u64, 0), |(bits, width), &(value, n)| ((bits << n) | value, width + n));
+        let body = (bits << (64 - width)).to_be_bytes();
+        [&[0x56, 0xE0, body.len() as u8][..], &body].concat()
+    }
+
+    #[test]
+    fn a_channel_configuration_is_not_a_channel_count() {
+        for (config, channels) in [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 8), (11, 7), (12, 8)] {
+            let got = latm_config(&loas(config)).unwrap_or_else(|| panic!("configuration {config} refused"));
+            assert_eq!((got.channels, got.sample_rate), (channels, 48_000), "configuration {config}");
+        }
+    }
+
+    #[test]
+    fn a_reserved_channel_configuration_is_refused() {
+        for config in [8, 9, 10, 13, 14, 15] {
+            assert_eq!(latm_config(&loas(config)), None, "configuration {config}");
+        }
+    }
 }
 
 #[cfg(test)]
