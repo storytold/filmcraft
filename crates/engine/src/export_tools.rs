@@ -496,6 +496,91 @@ fn write_sidecar(s: &Session, project: &Project, seq: ItemId, settings: &ExportS
     Ok(Some(path))
 }
 
+/// The files an export writes, to keep them out of the project's media while it runs (#3551): the
+/// destination, the numbered stills of an image sequence, the OP-Atom audio files and the caption
+/// sidecar. The export replaces them when it finishes, so a clip that took one as its media would
+/// read the exported bytes the next time the project opens.
+#[derive(Clone, Debug)]
+pub struct ExportOutputs {
+    path: String,
+    sequence: bool,
+    atom: bool,
+    sidecar: Option<String>,
+}
+
+/// More OP-Atom audio files than any export writes.
+const MAX_ATOM_AUDIO_FILES: usize = 256;
+
+impl ExportOutputs {
+    pub(crate) fn new(settings: &ExportSettings, sidecar: Option<String>) -> Self {
+        Self { path: settings.path.clone(), sequence: settings.format.is_image_sequence(), atom: settings.format == Format::MxfOpAtom, sidecar }
+    }
+
+    /// Whether the export writes `candidate`, compared as files (canonical, so another spelling of
+    /// the path or a link to it counts; the case is ignored where the file system ignores it).
+    fn writes(&self, candidate: &str) -> bool {
+        if same_file(&self.path, candidate) || self.sidecar.as_deref().is_some_and(|p| same_file(p, candidate)) {
+            return true;
+        }
+        if self.atom && filmcraft_export::opatom_audio_paths(&self.path, MAX_ATOM_AUDIO_FILES).iter().any(|p| same_file(p, candidate)) {
+            return true;
+        }
+        self.sequence && is_numbered_still_of(&self.path, candidate)
+    }
+}
+
+/// `candidate` is named like a numbered still of an image sequence exported to `path`
+/// (`Shot.png` → `Shot000.png`, `Shot1234.png`), in the same folder.
+fn is_numbered_still_of(path: &str, candidate: &str) -> bool {
+    let (dest, cand) = (Path::new(path), Path::new(candidate));
+    let (Some(stem), Some(ext)) = (dest.file_stem().map(|x| x.to_string_lossy()), dest.extension().map(|x| x.to_string_lossy())) else { return false };
+    let (Some(name), Some(cand_ext)) = (cand.file_stem().map(|x| x.to_string_lossy()), cand.extension().map(|x| x.to_string_lossy())) else { return false };
+    let digits = name.get(stem.len()..).filter(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
+    cand_ext.eq_ignore_ascii_case(&ext) && name.get(..stem.len()).is_some_and(|head| same_name(head, &stem)) && digits.is_some() && same_folder(dest, cand)
+}
+
+fn same_folder(a: &Path, b: &Path) -> bool {
+    let folder = |p: &Path| canonical(p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")));
+    same_name(&folder(a).to_string_lossy(), &folder(b).to_string_lossy())
+}
+
+/// File names compare without regard to case on Windows and macOS.
+fn same_name(a: &str, b: &str) -> bool {
+    if cfg!(any(windows, target_os = "macos")) { a.to_lowercase() == b.to_lowercase() } else { a == b }
+}
+
+/// The canonical path of `p`; of its folder, joined to its name, when the file does not exist yet.
+fn canonical(p: &Path) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    match (p.parent(), p.file_name()) {
+        (Some(dir), Some(name)) => {
+            let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+            std::fs::canonicalize(dir).map_or_else(|_| p.to_path_buf(), |d| d.join(name))
+        }
+        _ => p.to_path_buf(),
+    }
+}
+
+fn same_file(a: &str, b: &str) -> bool {
+    same_name(&canonical(Path::new(a)).to_string_lossy(), &canonical(Path::new(b)).to_string_lossy())
+}
+
+fn job_has_result(j: &crate::Job) -> bool {
+    j.result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
+/// The label of the export still running that writes `path`, if there is one.
+pub fn running_export_writing(s: &Session, path: &str) -> Option<String> {
+    s.jobs.iter().filter(|j| !job_has_result(j)).find(|j| s.export_outputs.get(&j.id).is_some_and(|o| o.writes(path))).map(|j| j.label.clone())
+}
+
+/// The error for taking a file an export is writing as media.
+pub fn running_export_error(label: &str, path: &str) -> String {
+    format!("{path} is being written by \"{label}\"; import or link it once the export has finished")
+}
+
 /// Run an export of `seq` in `project` as a background job (or now, with `wait`); returns the job id.
 pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut settings: ExportSettings, label: String, wait: bool) -> Result<u64> {
     let format = settings.format;
@@ -509,8 +594,11 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     if let Some(dir) = Path::new(&settings.path).parent().filter(|d| !d.as_os_str().is_empty() && !s.services.export_in_memory()) {
         let _ = std::fs::create_dir_all(dir);
     }
-    write_sidecar(s, &project, seq, &settings)?;
+    let sidecar = write_sidecar(s, &project, seq, &settings)?;
     let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let running: Vec<u64> = s.jobs.iter().filter(|j| !job_has_result(j)).map(|j| j.id).collect();
+    s.export_outputs.retain(|job, _| running.contains(job));
+    s.export_outputs.insert(id, ExportOutputs::new(&settings, sidecar));
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     // Export always renders full-resolution media, whatever the proxy toggle says, from its own
     // copies of the files so the monitors keep their decoders.

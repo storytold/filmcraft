@@ -463,6 +463,9 @@ pub struct Session {
     /// Export job → the offline items it drew the slate for, filled when the export finishes
     /// (#1054; `offlineMedia` in `file.exportMedia` and queue results).
     pub export_offline: std::collections::HashMap<u64, Arc<std::sync::Mutex<Vec<media_pool::OfflineMedia>>>>,
+    /// Export job → the files it writes (#3551), so that nothing imports or links one of them
+    /// while the job runs. An entry counts only while its job has no result yet.
+    pub export_outputs: std::collections::HashMap<u64, export_tools::ExportOutputs>,
     /// User preferences (`prefs.*` commands) and where they persist (None = not persisted).
     pub prefs: autosave::Preferences,
     pub prefs_path: Option<std::path::PathBuf>,
@@ -588,6 +591,7 @@ impl Session {
             journal: Vec::new(),
             jobs: Vec::new(),
             export_offline: Default::default(),
+            export_outputs: Default::default(),
             prefs: Default::default(),
             prefs_path: None,
             persistence: None,

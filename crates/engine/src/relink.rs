@@ -207,6 +207,10 @@ pub fn check_candidate(s: &Session, item: ItemId, path: &str, o: &MatchOptions) 
         MediaRef::Generator(_) => return Err(bad("media.relink", "generated media has no file to link")),
     };
     let mut c = Candidate { path: path.to_string(), ..Default::default() };
+    if let Some(label) = crate::export_tools::running_export_writing(s, path) {
+        c.problems.push(crate::export_tools::running_export_error(&label, path));
+        return Ok(c);
+    }
     let (on, oe) = split_ext(file_name(&old));
     let (nn, ne) = split_ext(file_name(path));
     let name_ok = on.eq_ignore_ascii_case(nn);
@@ -413,6 +417,9 @@ pub fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         Some(MediaRef::File { path }) => path,
         _ => return Err(bad("media.relink", format!("item {} is not file media", item.0))),
     };
+    if let Some(label) = crate::export_tools::running_export_writing(s, &path) {
+        return Err(bad("media.relink", crate::export_tools::running_export_error(&label, &path)));
+    }
     let mut c = check_candidate(s, item, &path, &o)?;
     if !c.ok && !force {
         return Err(EngineError::Other(format!("{} doesn't match {}: {}", file_name(&path), file_name(&old), c.problems.join("; "))));
