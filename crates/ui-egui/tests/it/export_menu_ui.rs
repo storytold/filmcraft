@@ -202,3 +202,41 @@ fn marker_csv_save_cancel_and_disabled_menu_leave_the_session_alone() {
     assert_eq!(d.call("ui.menu.invoke", json!({"id":"markers.exportCsv"}))["ok"], false);
     assert!(asked.lock().unwrap().is_empty(), "disabled exports must not open a save dialog");
 }
+
+/// The Timeline's clip menu ▸ Export Clip… asks where to save, suggesting the clip's name as an
+/// MP4, and starts the clip's export in the background without changing the project; a cancelled
+/// save panel exports nothing.
+#[test]
+fn export_clip_from_the_timeline_clip_menu_asks_where_and_exports() {
+    let dir = tmp("clip");
+    let asked = Asked::default();
+    let mut d = Driver::new(session(), Some(dir.clone()), asked.clone());
+    let (clip, name) = {
+        let q = d.harness.state().session.active_sequence().unwrap();
+        let c = &q.video_tracks[0].items[0];
+        (c.id.0, c.name.clone())
+    };
+    let before = d.harness.state().session.project.clone();
+    d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [clip]}}));
+    d.ok("ui.click", json!({"id": format!("timeline.clip.{clip}"), "button": "right"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "timeline.clipMenu.clip.export"}));
+    d.frames(3);
+    let (_, exts, suggested) = asked.lock().unwrap().last().cloned().expect("Export Clip… asked where to save");
+    assert_eq!(exts, ["mp4"]);
+    let stem = std::path::Path::new(&name).file_stem().unwrap().to_string_lossy().to_string();
+    assert_eq!(suggested, format!("{stem}.mp4"));
+    let app = d.harness.state();
+    assert!(app.ui.status.starts_with("Exporting clip to "), "{}", app.ui.status);
+    let job = app.session.jobs.iter().find(|j| j.label.starts_with("Export Clip ")).map(|j| j.id).expect("the export job started");
+    assert_eq!(*app.session.project, *before, "exporting a clip changes nothing in the project");
+    d.ok("engine.execute", json!({"command": "jobs.cancel", "params": {"job": job}}));
+
+    // cancelling the save panel starts nothing
+    let asked = Asked::default();
+    let mut d = Driver::new(session(), None, asked.clone());
+    d.ok("engine.execute", json!({"command": "timeline.select", "params": {"clips": [clip]}}));
+    assert_eq!(d.ok("ui.menu.invoke", json!({"id": "clip.export"})), Value::Null);
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    assert!(d.harness.state().session.jobs.iter().all(|j| !j.label.starts_with("Export Clip ")));
+}

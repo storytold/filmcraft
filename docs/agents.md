@@ -145,6 +145,17 @@ progress and stop it:
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
+- `clip.export` (the Timeline's clip menu ▸ Export Clip…) exports clips on their own: the selection,
+  or `clip` / `clips` with their linked partners, over their own span. By default the output takes
+  the first video clip's source frame size, frame rate and pixel aspect, and the first audio clip's
+  sample rate. It uses the Match Source – Adaptive High Bitrate preset, or WAV when only sound is
+  selected. Motion is rescaled the way Sequence Settings' Scale Motion does it, so a 4K clip shown
+  at 50 % in an HD sequence comes out at 100 % in 4K. `preset`, `format`, `settings` and the flat
+  overrides work as they do for `file.exportMedia`; `range` and `sequence` are refused. Without a
+  `path`, or with a folder, the file is named after the clip and never replaces an existing file
+  (`a.mp4` becomes `a_2.mp4`); no path may name the clip's own media. The answer is shaped like
+  `file.exportMedia`'s, plus `clips`, `range` and `source` (the output's size, rate and sample
+  rate). The project, the selection and the undo history are left unchanged.
 - An image sequence (PNG, TIFF, DPX, ... stills) never writes the path it is given: `a.png` becomes
   `a000.png`, `a001.png` and so on. `file.exportMedia`, `export.quick` and the job's `result` then
   name the first still as `path`, the name `file.import` takes for the sequence, and the two commands
