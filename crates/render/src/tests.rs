@@ -404,7 +404,7 @@ fn unreadable_overlay_keeps_lower_tracks_visible() {
         let overlay = project.add_item(
             "Countdown",
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::File { path: "Countdown.aegraphic".into() },
                 info,
                 interpret: Default::default(),
@@ -414,7 +414,7 @@ fn unreadable_overlay_keeps_lower_tracks_visible() {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         sources.0.insert(overlay, Arc::new(source));

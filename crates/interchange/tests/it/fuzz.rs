@@ -98,13 +98,13 @@ fn project() -> (Project, ItemId) {
     let a = media(&mut p, "/m/a.mov", true, true, r);
     let b = media(&mut p, "/m/Jöran 日本/b.mov", true, true, r);
     let s = sequence(&mut p, "Seq", r, true);
-    let v1 = clip(&mut p, s, TrackKind::Video, 0, a, 0, 50, 10);
-    let a1 = clip(&mut p, s, TrackKind::Audio, 0, a, 0, 50, 10);
+    let v1 = clip(&mut p, s, TrackKind::Video, 0, a, 0..50, 10);
+    let a1 = clip(&mut p, s, TrackKind::Audio, 0, a, 0..50, 10);
     link(&mut p, s, &[v1, a1]);
-    let v2 = clip(&mut p, s, TrackKind::Video, 0, b, 50, 60, 100);
-    clip(&mut p, s, TrackKind::Video, 1, b, 20, 30, 0);
-    clip(&mut p, s, TrackKind::Audio, 1, b, 30, 70, 5);
-    transition(&mut p, s, TrackKind::Video, 0, "cross_dissolve", Some(v1), Some(v2), 45, 10, TransitionAlign::CenterAtCut);
+    let v2 = clip(&mut p, s, TrackKind::Video, 0, b, 50..60, 100);
+    clip(&mut p, s, TrackKind::Video, 1, b, 20..30, 0);
+    clip(&mut p, s, TrackKind::Audio, 1, b, 30..70, 5);
+    transition(&mut p, s, (TrackKind::Video, 0), "cross_dissolve", (Some(v1), Some(v2)), 45..55, TransitionAlign::CenterAtCut);
     (p, s)
 }
 
