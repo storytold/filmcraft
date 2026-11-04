@@ -271,7 +271,7 @@ pub fn on_boot(exe: &Path) -> Result<BootOutcome> {
         // The state stays until the rollback succeeds: a failed one (a locked file, a full disk)
         // must be retried on the next start, or the machine is left on the broken build with its
         // backups still in place. A rollback that fails part-way converges: each start re-restores
-        // the files whose `.prev` is left.
+        // the files whose `.prev` is left and counts the ones it already restored as done.
         rollback(&state, exe)?;
         let outcome = BootOutcome::RolledBack { failed: state.to.clone(), restored: state.from.clone() };
         let _ = std::fs::remove_file(state_path(exe));
@@ -283,16 +283,18 @@ pub fn on_boot(exe: &Path) -> Result<BootOutcome> {
 }
 
 /// Restore every `.prev` over its binary; the failed build is kept as `.broken` for inspection.
+/// A retry after a rollback failed part-way picks up where it stopped: the files whose `.prev` is
+/// gone were restored by the earlier attempt, so only the rest are moved, and the rollback reports
+/// success only once every file in the state is back.
 fn rollback(state: &BootState, exe: &Path) -> Result<()> {
     let dir = exe.parent().ok_or_else(|| UpdateError::Unsupported("the executable has no directory".into()))?;
-    let mut restored_main = false;
     for file in &state.files {
         if file.parent() != Some(dir) {
             continue; // a tampered state file must not make us rename things elsewhere
         }
         let prev = sibling(file, ".prev");
         if !prev.exists() {
-            continue;
+            continue; // already restored by an earlier attempt (or never swapped from an old file)
         }
         let broken = sibling(file, ".broken");
         let _ = std::fs::remove_file(&broken);
@@ -303,10 +305,9 @@ fn rollback(state: &BootState, exe: &Path) -> Result<()> {
             let _ = std::fs::rename(&broken, file);
             return Err(e.into());
         }
-        restored_main |= file == exe;
     }
     sync_dir(dir);
-    if restored_main { Ok(()) } else { Err(UpdateError::Unsupported("the previous version is no longer available to restore".into())) }
+    Ok(())
 }
 
 /// Mark the running new version as healthy.
@@ -541,6 +542,30 @@ mod tests {
         assert_eq!(on_boot(&fx.exe).unwrap(), BootOutcome::RolledBack { failed: "0.7.3".into(), restored: "0.7.2".into() });
         assert_eq!(read(&fx.exe), "app v1");
         assert!(!state_path(&fx.exe).exists());
+    }
+
+    #[test]
+    fn a_rollback_blocked_behind_a_restored_file_completes_on_retry() {
+        let fx = fixture();
+        apply(&fx.staged, &fx.exe).unwrap();
+        let mut s = read_state(&fx.exe).unwrap();
+        s.boots = MAX_UNCONFIRMED_BOOTS;
+        write_state(&fx.exe, &s).unwrap();
+        // The CLI cannot be moved aside: its `.broken` slot is a directory, so the rollback stops
+        // behind it — with the app itself already back on the old build, `.prev` and all.
+        std::fs::create_dir_all(sibling(&fx.cli, ".broken").join("x")).unwrap();
+        assert!(on_boot(&fx.exe).is_err());
+        assert_eq!(read(&fx.exe), "app v1", "the app was restored before the failure");
+        assert!(!sibling(&fx.exe, ".prev").exists());
+        assert_eq!(read(&fx.cli), "cli v2", "the CLI keeps the failed build");
+        assert!(state_path(&fx.exe).exists(), "the state survives for the retry");
+        // The retry must recognize the app as already restored (its `.prev` is gone) and finish
+        // the job instead of erroring forever.
+        std::fs::remove_dir_all(sibling(&fx.cli, ".broken")).unwrap();
+        assert_eq!(on_boot(&fx.exe).unwrap(), BootOutcome::RolledBack { failed: "0.7.3".into(), restored: "0.7.2".into() });
+        assert_eq!(read(&fx.cli), "cli v1");
+        assert!(!state_path(&fx.exe).exists());
+        assert_eq!(on_boot(&fx.exe).unwrap(), BootOutcome::Normal, "and it does not loop");
     }
 
     #[test]

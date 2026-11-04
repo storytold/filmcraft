@@ -5,7 +5,8 @@
 //! install (the release tarball's `install.sh` under `~/.local`, or a plain extracted tree) is
 //! swapped in place, and only after a real write probe succeeds.
 
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::path::Path;
 
 /// Whether this installation may update itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,55 +86,32 @@ pub fn dir_is_writable(dir: &Path) -> bool {
     }
 }
 
-/// An exclusive lock directory entry so two FilmCraft windows never download or swap at once.
-/// Dropping it releases the lock; a lock older than an hour, or whose holder process is gone, is
-/// considered abandoned.
+/// An exclusive lock so two FilmCraft windows never download or swap at once. The exclusion is the
+/// OS's file lock, not the file's presence: the OS drops it when the holder ends, however it ends,
+/// so a crash leaves nothing stale to take over, and the `.lock` file itself stays — removing it
+/// would let one window lock the old file while another locks a new one.
 #[derive(Debug)]
 pub struct UpdateLock {
-    path: PathBuf,
+    _file: File,
 }
 
 impl UpdateLock {
-    const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(3600);
-
     /// Take the lock `dir/.lock`, creating `dir` if needed.
     pub fn acquire(dir: &Path) -> crate::Result<UpdateLock> {
         std::fs::create_dir_all(dir)?;
-        let path = dir.join(".lock");
-        for _ in 0..2 {
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut f) => {
-                    use std::io::Write;
-                    let _ = writeln!(f, "{}", std::process::id());
-                    return Ok(UpdateLock { path });
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let too_old =
-                        std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > Self::STALE_AFTER);
-                    // The holder wrote its PID: one that exited (or crashed) without dropping the
-                    // lock must not block updates for an hour. `/proc` exists only on Linux;
-                    // elsewhere the age above is the only signal.
-                    let holder_gone = Path::new("/proc/self").exists()
-                        && std::fs::read_to_string(&path)
-                            .ok()
-                            .and_then(|s| s.trim().parse::<u32>().ok())
-                            .is_some_and(|pid| pid != std::process::id() && !Path::new(&format!("/proc/{pid}")).exists());
-                    if too_old || holder_gone {
-                        let _ = std::fs::remove_file(&path);
-                        continue;
-                    }
-                    return Err(crate::UpdateError::Locked);
-                }
-                Err(e) => return Err(e.into()),
-            }
+        let file = File::options().create(true).truncate(false).write(true).open(dir.join(".lock"))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            // A live holder has the lock, and there is no stale lock to break: whatever a holder
+            // that exited left behind is a bare file the OS has already unlocked.
+            Err(std::fs::TryLockError::WouldBlock) => return Err(crate::UpdateError::Locked),
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
-        Err(crate::UpdateError::Locked)
-    }
-}
-
-impl Drop for UpdateLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        // Record the holder for diagnosis; the lock never depends on the file's contents.
+        use std::io::Write;
+        let _ = file.set_len(0);
+        let _ = writeln!(&file, "{}", std::process::id());
+        Ok(UpdateLock { _file: file })
     }
 }
 
@@ -178,19 +156,15 @@ mod tests {
         assert!(UpdateLock::acquire(dir.path()).is_ok());
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn lock_of_a_dead_holder_is_taken_as_stale() {
-        // A holder that exited without dropping the lock (a crash, a killed worker) must not block
-        // updates for an hour. A reaped child is guaranteed to have no /proc entry any more.
-        let mut child = std::process::Command::new("true").spawn().unwrap();
-        let dead = child.id();
-        child.wait().unwrap();
+    fn a_dead_holders_leftover_lock_file_does_not_block() {
+        // The exclusion is the OS lock, not the file's presence or contents: whatever a holder that
+        // died mid-update (a crash, a killed worker) leaves behind cannot block the next window.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".lock"), format!("{}\n", dead)).unwrap();
-        assert!(UpdateLock::acquire(dir.path()).is_ok(), "the dead holder's lock is taken over");
-        // A lock naming a live holder (this process) still excludes a second one.
-        std::fs::write(dir.path().join(".lock"), format!("{}\n", std::process::id())).unwrap();
-        assert!(matches!(UpdateLock::acquire(dir.path()), Err(crate::UpdateError::Locked)));
+        std::fs::write(dir.path().join(".lock"), "gone\n").unwrap();
+        let held = UpdateLock::acquire(dir.path()).unwrap();
+        assert!(matches!(UpdateLock::acquire(dir.path()), Err(crate::UpdateError::Locked)), "while held, the OS lock excludes a second window");
+        drop(held);
+        assert!(UpdateLock::acquire(dir.path()).is_ok(), "and it is released on drop");
     }
 }
