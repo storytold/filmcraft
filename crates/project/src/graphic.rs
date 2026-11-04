@@ -426,8 +426,9 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
         let a = (ff(e, "shadow_angle", t) - 90.0).to_radians();
         // Distance, size and blur size the layer's raster (and its blur kernel): keep them within
         // the parameters' own 0..1000 range, whatever a stored project or template says.
-        let d = ff(e, "shadow_distance", t);
-        let d = if d.is_finite() { d.clamp(0.0, MAX_SHADOW_PX) } else { 0.0 };
+        // clamped as stored (f64): converting first would turn a huge finite value into infinity
+        let d = val(e, "shadow_distance", t).as_f64().unwrap_or(0.0);
+        let d = if d.is_finite() { d.clamp(0.0, f64::from(MAX_SHADOW_PX)) as f32 } else { 0.0 };
         let extent = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, MAX_SHADOW_PX) };
         Shadow { color: c, offset: (a.cos() * d, a.sin() * d), size: extent(ff(e, "shadow_size", t)), blur: extent(ff(e, "shadow_blur", t)) }
     });
@@ -639,6 +640,10 @@ mod tests {
         // below the parameter's range the shadow must not flip to the opposite side of its angle
         e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(-50.0);
         assert_eq!(eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset, (0.0, 0.0));
+        // a finite value beyond f32 range is capped, not dropped
+        e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(f64::MAX);
+        let (ox, oy) = eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset;
+        assert!((ox.hypot(oy) - MAX_SHADOW_PX).abs() < 0.01, "{ox} {oy}");
         e.params.get_mut("shadow_distance").unwrap().value = ParamValue::Float(f64::NAN);
         assert_eq!(eval_layer(&e, Tick::ZERO, (1920, 1080)).unwrap().appearance.shadow.unwrap().offset, (0.0, 0.0));
     }
