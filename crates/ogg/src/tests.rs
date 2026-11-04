@@ -218,3 +218,61 @@ fn opus_toc_durations() {
     assert_eq!(opus_packet_samples([0xF8 | 3, 7], 10), None); // 140 ms: invalid
     assert_eq!(opus_packet_samples([0xF8, 0], 0), None);
 }
+
+/// Like `opus_file`, but with explicit granule positions for the data pages (out-of-range values
+/// stand in for a damaged or hostile file).
+fn opus_file_with_granules(npk: usize, granules: &[i64]) -> Vec<u8> {
+    let mut f = Vec::new();
+    let head = opus_head(312);
+    let (l, b) = lace(&[&head], false);
+    page(&mut f, 0x02, 0, 9, 0, &l, &b);
+    let tags = b"OpusTags\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+    let (l, b) = lace(&[&tags], false);
+    page(&mut f, 0, 0, 9, 1, &l, &b);
+    let pkts: Vec<Vec<u8>> = (0..npk).map(|i| pkt(i, 40 + i % 5)).collect();
+    let mut done = 0;
+    for (seq, chunk) in (2..).zip(pkts.chunks(3)) {
+        done += chunk.len();
+        let last = done == npk;
+        let g = granules.get((seq - 2) as usize).copied().unwrap_or(done as i64 * 960);
+        let refs: Vec<&[u8]> = chunk.iter().map(Vec::as_slice).collect();
+        let (l, b) = lace(&refs, false);
+        page(&mut f, if last { 0x04 } else { 0 }, g, 9, seq, &l, &b);
+    }
+    f
+}
+
+#[test]
+fn extreme_granules_are_treated_as_missing_with_a_warning() {
+    // pages near i64::MAX, and a negative granule other than -1, must not overflow the timing
+    for granules in [&[i64::MAX - 10, i64::MAX - 5][..], &[i64::MIN, 1920][..]] {
+        let f = opus_file_with_granules(6, granules);
+        let o = open(&f).unwrap();
+        assert!(o.warnings.iter().any(|w| w.contains("granule")), "{:?}", o.warnings);
+        let t = OpusTiming::of(&o.streams[0], 312);
+        assert_eq!(t.durations, vec![960; 6]);
+        assert_eq!(t.starts.len(), 6);
+        // the bad granules are ignored: the total comes from the packets, never exceeds their sum
+        assert!(t.total <= 6 * 960, "total {} exceeds the packet sum", t.total);
+        assert!(t.starts.windows(2).all(|w| w[1] > w[0] && w[1] - w[0] <= 5760), "{:?}", t.starts);
+    }
+}
+
+#[test]
+fn opus_timing_saturates_on_hostile_granules() {
+    // OpusTiming::of is public: a directly built stream with absurd granules must not overflow
+    let mk = |g: i64, eos: bool| Packet { parts: vec![], size: 40, granule: Some(g), page: 0, eos, prefix: [0xF8, 0] };
+    let st = Stream {
+        serial: 1,
+        codec: Codec::Opus,
+        headers: vec![],
+        packets: vec![mk(i64::MAX - 10, false), mk(i64::MAX, false), mk(i64::MIN, true)],
+        pages: 3,
+        last_granule: None,
+        saw_eos: true,
+    };
+    let t = OpusTiming::of(&st, 312);
+    assert_eq!(t.starts.len(), 3);
+    assert_eq!(t.durations, vec![960; 3]);
+    assert!(t.total >= 0);
+}
