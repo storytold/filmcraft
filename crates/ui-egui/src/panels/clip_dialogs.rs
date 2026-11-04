@@ -275,12 +275,13 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
         }
         "clip.fieldOptions" => (json!({"reverseFieldDominance": false, "processing": "none"}), Value::Null),
         "clip.speedDuration" => {
-            // the first selected picture (else clip), the one `clip.speedDuration` takes a typed
-            // duration from: its current speed, and its duration at that speed for the readout
+            // the first selected unlocked picture (else clip), the one `clip.speedDuration` takes a
+            // typed duration from and changes: its current speed, and its duration at that speed
             let q = s.active_sequence();
             let it = q.and_then(|q| {
                 let is_video = |tid| q.video_tracks.iter().any(|t| t.id == tid);
-                s.state.selection.iter().filter_map(|c| q.find_item(*c)).min_by_key(|(tid, _)| !is_video(*tid)).map(|x| x.1.clone())
+                let locked = |tid| q.track(tid).is_some_and(|t| t.locked);
+                s.state.selection.iter().filter_map(|c| q.find_item(*c)).min_by_key(|(tid, _)| (locked(*tid), !is_video(*tid))).map(|x| x.1.clone())
             });
             let fps = q.map(|q| q.settings.frame_rate.as_f64()).unwrap_or(24.0);
             let speed = it.as_ref().map_or(1.0, |i| i.speed);
