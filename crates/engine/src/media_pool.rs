@@ -248,6 +248,13 @@ impl MediaPool {
         next
     }
 
+    /// Preserve document path resolution and host openers without retaining decoded media.
+    pub(crate) fn fresh_for_retry(&self) -> Self {
+        let next = self.fresh_for_project();
+        *next.stored.write().unwrap_or_else(PoisonError::into_inner) = self.stored.read().unwrap_or_else(PoisonError::into_inner).clone();
+        next
+    }
+
     /// Forget every opened source (files are re-read on next use).
     pub fn clear(&self) {
         self.sources.write().unwrap_or_else(PoisonError::into_inner).clear();
@@ -714,7 +721,10 @@ impl MediaSource for SlateSource {
         Ok(Arc::new(frame.with_pts(req.time)))
     }
     fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
-        Ok(AudioBuffer::silence(sample_rate, self.info.audio().map_or(2, |a| a.channels as usize), frames))
+        // the shape comes from the project's stored metadata (the media is offline)
+        let channels = self.info.audio().map_or(2, |a| a.channels as usize);
+        filmcraft_media::validate_audio_buffer_shape(channels, frames)?;
+        Ok(AudioBuffer::silence(sample_rate, channels, frames))
     }
 }
 
@@ -1016,6 +1026,62 @@ mod tests {
         assert_eq!(cache.bytes, 16 * std::mem::size_of::<f32>());
         cache.insert((Arc::<str>::from("rgba.mov"), 2, 2, OfflineReason::Missing.headline()), VideoFrame::rgba8(2, 2, vec![0; 16]));
         assert_eq!(cache.bytes, 16 * std::mem::size_of::<f32>() + 16, "RGBA8 cache cost is bytes, not pixels");
+    }
+
+    #[test]
+    fn slate_cache_rejects_a_frame_that_exceeds_the_remaining_byte_budget() {
+        let mut cache = SlateFrameCache::default();
+        let frame = VideoFrame::rgba_f32(1280, 720, vec![0.0; 1280 * 720 * 4]);
+        for i in 0..5 {
+            cache.insert((Arc::<str>::from(format!("{i}.mov")), 1280, 720, OfflineReason::Missing.headline()), frame.clone());
+        }
+        assert_eq!(cache.entries.len(), 4, "the fifth float frame exceeds 64 MiB before the entry limit");
+        assert_eq!(cache.bytes, 4 * 1280 * 720 * 4 * std::mem::size_of::<f32>());
+    }
+
+    #[test]
+    fn distinct_cold_slates_render_one_at_a_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Barrier, mpsc};
+        use std::time::Duration;
+
+        let cache = Arc::new(SharedSlateCache::default());
+        let start = Arc::new(Barrier::new(4));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let (entered, entries) = mpsc::channel();
+        let mut releases = Vec::new();
+        let mut workers = Vec::new();
+        for i in 0..4 {
+            let cache = cache.clone();
+            let start = start.clone();
+            let entered = entered.clone();
+            let active = active.clone();
+            let maximum = maximum.clone();
+            let (release, released) = mpsc::channel();
+            releases.push(release);
+            workers.push(std::thread::spawn(move || {
+                start.wait();
+                cached_slate_frame(&cache, (Arc::<str>::from(format!("{i}.mov")), 2, 2, OfflineReason::Missing.headline()), || {
+                    let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    maximum.fetch_max(count, Ordering::SeqCst);
+                    entered.send(i).unwrap();
+                    released.recv().unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(VideoFrame::rgba8(2, 2, vec![0; 16]))
+                })
+            }));
+        }
+        entries.recv_timeout(Duration::from_secs(5)).unwrap();
+        let overlap = entries.recv_timeout(Duration::from_millis(100)).is_ok();
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+        assert!(!overlap, "different cache keys must share the pool's render limit");
+        assert_eq!(maximum.load(Ordering::SeqCst), 1, "generation must stay serialized for every worker");
     }
 
     #[test]

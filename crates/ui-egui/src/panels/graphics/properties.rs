@@ -51,6 +51,14 @@ fn char_style_key(id: &str) -> Option<&'static str> {
         "font_style" => "fontStyle",
         "size" => "size",
         "fill_color" => "color",
+        "stroke_color" => "strokeColor",
+        "stroke2_color" => "stroke2Color",
+        "stroke" => "stroke",
+        "stroke_width" => "strokeWidth",
+        "stroke_type" => "strokeType",
+        "stroke2" => "stroke2",
+        "stroke2_width" => "stroke2Width",
+        "stroke2_type" => "stroke2Type",
         "faux_bold" => "bold",
         "faux_italic" => "italic",
         "underline" => "underline",
@@ -78,6 +86,14 @@ impl Ctx<'_> {
             "font_style" => s.font_style.map(ParamValue::Text),
             "size" => s.size.map(|v| ParamValue::Float(v as f64)),
             "fill_color" => s.fill.map(ParamValue::Color),
+            "stroke_color" => s.stroke_color.map(ParamValue::Color),
+            "stroke2_color" => s.stroke2_color.map(ParamValue::Color),
+            "stroke" => s.stroke.map(ParamValue::Bool),
+            "stroke_width" => s.stroke_width.map(|v| ParamValue::Float(v as f64)),
+            "stroke_type" => s.stroke_type.map(ParamValue::Choice),
+            "stroke2" => s.stroke2.map(ParamValue::Bool),
+            "stroke2_width" => s.stroke2_width.map(|v| ParamValue::Float(v as f64)),
+            "stroke2_type" => s.stroke2_type.map(ParamValue::Choice),
             "faux_bold" => s.faux_bold.map(ParamValue::Bool),
             "faux_italic" => s.faux_italic.map(ParamValue::Bool),
             "underline" => s.underline.map(ParamValue::Bool),
@@ -925,6 +941,78 @@ mod tests {
             assert_eq!(c.value("size").as_f64(), layer_size);
             assert!(!c.flag("faux_bold") && !c.flag("underline"));
             assert_eq!(c.caps(), 0);
+        }
+    }
+
+    #[test]
+    fn stroke_controls_write_and_read_the_selected_characters() {
+        let mut e = graphic::new_text_layer("1234", Vec2::new(100.0, 100.0), 72.0);
+        let mut cx = Ctx {
+            clip: ClipId(1),
+            layer: 0,
+            eidx: 0,
+            e: &e,
+            mt: Tick(0),
+            t: Tokens::for_kind(crate::theme::ThemeKind::Dark),
+            actions: Vec::new(),
+            autos: Vec::new(),
+            range: Some((0, 2)),
+        };
+        for (id, key, value) in [
+            ("stroke_color", "strokeColor", json!("#ff0000")),
+            ("stroke2_color", "stroke2Color", json!("#00ff00")),
+            ("stroke", "stroke", json!(false)),
+            ("stroke_width", "strokeWidth", json!(24.0)),
+            ("stroke_type", "strokeType", json!(1)),
+            ("stroke2", "stroke2", json!(true)),
+            ("stroke2_width", "stroke2Width", json!(48.0)),
+            ("stroke2_type", "stroke2Type", json!(2)),
+        ] {
+            cx.set(id, value.clone());
+            assert_eq!(
+                cx.actions.last(),
+                Some(&(
+                    "graphics.setCharStyle".into(),
+                    json!({
+                        "clip": 1, "layer": 0, "start": 0, "end": 2, "style": {key: value}
+                    })
+                ))
+            );
+        }
+        cx.range = None;
+        cx.set("stroke_color", json!("#0000ff"));
+        assert_eq!(cx.actions.last(), Some(&("graphics.set".into(), json!({"clip": 1, "layer": 0, "props": {"stroke_color": "#0000ff"}}))));
+        drop(cx);
+        let red = serde_json::from_value(json!({"strokeColor": [1.0, 0.0, 0.0, 1.0], "stroke2Color": [0.0, 1.0, 0.0, 1.0],
+            "stroke": false, "strokeWidth": 24.0, "strokeType": 1, "stroke2": true, "stroke2Width": 48.0, "stroke2Type": 2}))
+        .unwrap();
+        e.layer = Some(Box::new(LayerExtra { runs: apply_char_style(&[], 4, 0, 2, &red), ..Default::default() }));
+        for range in [Some((0, 2)), Some((2, 4)), None] {
+            let cx = Ctx {
+                clip: ClipId(1),
+                layer: 0,
+                eidx: 0,
+                e: &e,
+                mt: Tick(0),
+                t: Tokens::for_kind(crate::theme::ThemeKind::Dark),
+                actions: Vec::new(),
+                autos: Vec::new(),
+                range,
+            };
+            for (id, colour) in [("stroke_color", [1.0, 0.0, 0.0, 1.0]), ("stroke2_color", [0.0, 1.0, 0.0, 1.0])] {
+                let expected = if range == Some((0, 2)) { Some(colour) } else { pv(&e, id, Tick(0)).as_color() };
+                assert_eq!(cx.value(id).as_color(), expected, "{id} {range:?}");
+            }
+            for (id, own) in [
+                ("stroke", ParamValue::Bool(false)),
+                ("stroke_width", ParamValue::Float(24.0)),
+                ("stroke_type", ParamValue::Choice(1)),
+                ("stroke2", ParamValue::Bool(true)),
+                ("stroke2_width", ParamValue::Float(48.0)),
+                ("stroke2_type", ParamValue::Choice(2)),
+            ] {
+                assert_eq!(cx.value(id), if range == Some((0, 2)) { own } else { pv(&e, id, Tick(0)) }, "{id} {range:?}");
+            }
         }
     }
 
