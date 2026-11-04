@@ -186,6 +186,30 @@ fn linked_overrides_linked_selection_for_trim_and_rate_stretch() {
     }
 }
 
+/// The delta the Timeline previews for a linked edge drag is the one `timeline.trim` applies with
+/// `"linked": true`, Linked Selection on or off: the preview takes the partners along too, so a
+/// partner with less media left stops the edge where the trim will (#4274).
+#[test]
+fn a_linked_trim_preview_is_clamped_by_the_partner_whatever_the_toggle() {
+    for toggle in [false, true] {
+        let mut s = demo();
+        s.execute("sequence.linkedSelection", json!({"on": toggle})).unwrap();
+        let q = s.active_sequence().unwrap();
+        let v = q.video_tracks[0].items.iter().rev().find(|i| i.link.is_some()).unwrap().clone();
+        let a = q.audio_tracks[0].items.iter().find(|i| i.link == v.link).unwrap().id;
+        // Shorten the video alone, so its partner has less media left after it.
+        s.execute("timeline.trim", json!({"clip": v.id.0, "edge": "out", "mode": "regular", "deltaFrames": -12, "linked": false})).unwrap();
+        let far = Tick(3600 * filmcraft_time::TICKS_PER_SECOND);
+        let alone = commands::trim_delta_linked(&s, v.id, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far, false).unwrap();
+        let shown = commands::trim_delta_linked(&s, v.id, filmcraft_edit::Edge::Out, filmcraft_edit::TrimMode::Regular, far, true).unwrap();
+        assert!(shown < alone, "the partner stops the edge first (toggle {toggle}): {shown:?} vs {alone:?}");
+        let a0 = s.active_sequence().unwrap().find_item(a).unwrap().1.duration;
+        let r = s.execute("timeline.trim", json!({"clip": v.id.0, "edge": "out", "mode": "regular", "delta": far.0, "linked": true})).unwrap();
+        assert_eq!(r["delta"], json!(shown.0), "the preview and the trim agree (toggle {toggle})");
+        assert_eq!(s.active_sequence().unwrap().find_item(a).unwrap().1.duration, a0 + shown, "the partner went along (toggle {toggle})");
+    }
+}
+
 #[test]
 fn slide_moves_linked_audio_with_the_video() {
     let mut s = demo();

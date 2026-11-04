@@ -805,18 +805,19 @@ fn clamp_trim_linked(q: &filmcraft_project::Sequence, clips: &[ClipId], edge: Ed
 /// trim drag shows this, so the edge stops at the end of the media or the neighbouring clip
 /// instead of following the pointer past it (#653).
 pub fn trim_delta(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick) -> Result<Tick> {
-    trim_delta_linked(s, clip, edge, mode, delta, true)
+    trim_delta_linked(s, clip, edge, mode, delta, s.state.linked_selection)
 }
 
-/// [`trim_delta`] for a trim that, with `linked` false (Alt held), leaves the clip's linked
-/// partners alone (#3300).
+/// [`trim_delta`] for a trim whose `linked` says, as `timeline.trim`'s `"linked"` does, whether
+/// the clip's linked partners go along: `false` (Alt held) leaves them (#3300) and `true` takes
+/// them whatever Linked Selection says (#4274).
 pub fn trim_delta_linked(s: &Session, clip: ClipId, edge: Edge, mode: TrimMode, delta: Tick, linked: bool) -> Result<Tick> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let durations = |id: ItemId| crate::media_duration(&s.project, &s.media, id);
     let starts = |id: ItemId| crate::media_start(&s.project, id);
     let mut next = s.project.next_id;
     let ctx = edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &starts, min_duration: q.settings.frame_rate.frame_duration() };
-    let clips = if linked { with_links(s, &[clip]) } else { vec![clip] };
+    let clips = with_links_following(s, &[clip], linked);
     clamp_trim_linked(q, &clips, edge, mode, delta, &ctx)
 }
 
