@@ -789,8 +789,9 @@ fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
 mod tests {
     use super::*;
 
-    /// Latin labels keep the 7 px per character they were laid out with; Japanese labels are as
-    /// wide as they are drawn, so they no longer run into the next tab.
+    /// Latin labels keep at least the 7 px per character the strip was laid out with, and grow
+    /// when the system face is wider. Japanese labels are as wide as they are drawn, so they no
+    /// longer run into the next tab.
     #[test]
     fn tab_widths_follow_the_drawn_label() {
         let ctx = egui::Context::default();
@@ -811,7 +812,10 @@ mod tests {
             });
             out.textures_delta.clear();
         }
-        assert_eq!(widths[..3], [70.0, 56.0, 56.0], "Latin tabs keep 7 px per character");
+        assert!(
+            widths[..3].iter().zip([10.0_f32, 8.0, 8.0]).all(|(width, chars)| *width + 0.01 >= chars * 7.0),
+            "Latin tabs keep at least 7 px per character: {widths:?}"
+        );
         // 5, 6 and 7 Japanese characters of about 12.5 px each, far over the 7 px per character estimate
         for ((width, chars), label) in widths[3..].iter().zip([5.0_f32, 6.0, 7.0]).zip(&labels[3..]) {
             assert!(*width > chars * 7.0 * 1.5, "{label}: {width} px");
