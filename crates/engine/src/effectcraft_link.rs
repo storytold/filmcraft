@@ -927,6 +927,7 @@ fn placeholder_info(name: &str, c: &CompInfo) -> filmcraft_media::MediaInfo {
             codec: "ProRes 4444".into(),
             pixel_format: "yuva444p12".into(),
             color: Default::default(),
+            color_assumed: None,
             has_alpha: true,
             bitrate: None,
             hdr: None,
