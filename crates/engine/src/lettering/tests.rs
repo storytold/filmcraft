@@ -155,3 +155,57 @@ fn plan_with_the_real_shaper() {
     assert_eq!(r["layout"]["overflow"], false);
     assert!(plan(&json!({})).is_err());
 }
+
+fn seq() -> Session {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"width": 1080, "height": 1920, "fps": 30})).unwrap();
+    s
+}
+
+#[test]
+fn apply_makes_one_clip_with_a_layer_per_word_and_no_overshoot() {
+    let mut s = seq();
+    let r = s.execute("lettering.apply", json!({"text": "Nunca pague 10 mil por um logo sem estratégia", "family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+    assert_eq!(r["applied"], true, "{r}");
+    let clip = filmcraft_project::ClipId(r["clip"].as_u64().unwrap());
+    let q = s.active_sequence().unwrap();
+    let (_, it) = q.find_item(clip).unwrap();
+    let layers: Vec<_> = it.effects.iter().filter(|e| e.params.contains_key("text")).collect();
+    assert_eq!(layers.len(), 9);
+    // heroes carry the accent colour, the rest the off-white
+    let fill = |e: &filmcraft_project::EffectInstance| e.params["fill_color"].value.clone();
+    let hero_fill = fill(layers.iter().find(|e| e.params["text"].value == ParamValue::Text("Nunca".into())).unwrap());
+    let plain_fill = fill(layers.iter().find(|e| e.params["text"].value == ParamValue::Text("logo".into())).unwrap());
+    assert_ne!(hero_fill, plain_fill);
+    // opacity stays within 0..=100 at every frame (no overshoot) and every word ends visible
+    let end = Tick::from_seconds_f64(r["duration"].as_f64().unwrap());
+    for e in &layers {
+        let op = &e.params["opacity"];
+        let mut t = Tick(0);
+        while t < end {
+            let v = op.value_at(t).as_f64().unwrap();
+            assert!((-1e-6..=100.0 + 1e-6).contains(&v), "opacity {v} at {t:?}");
+            t = Tick(t.0 + filmcraft_time::TICKS_PER_SECOND / 30);
+        }
+        assert_eq!(op.value_at(Tick::from_seconds_f64(2.0)).as_f64().unwrap().round(), 100.0);
+    }
+    // words arrive one after another
+    let first_visible: Vec<f64> = layers
+        .iter()
+        .map(|e| {
+            let op = &e.params["opacity"];
+            (0..600).map(|f| f as f64 / 100.0).find(|t| op.value_at(Tick::from_seconds_f64(*t)).as_f64().unwrap() > 1.0).unwrap_or(f64::MAX)
+        })
+        .collect();
+    assert!(first_visible.windows(2).all(|w| w[1] >= w[0]), "{first_visible:?}");
+}
+
+#[test]
+fn apply_reports_a_phrase_that_cannot_fit_instead_of_squeezing_it() {
+    let mut s = seq();
+    let long = "Quando a gente começou ninguém acreditava que daria certo, mas a gente insistiu em cada detalhe de cada entrega durante muitos meses seguidos e nunca desistiu de nada";
+    let r = s.execute("lettering.apply", json!({"text": long, "size": 120, "boxHeight": 300})).unwrap();
+    assert_eq!(r["applied"], false);
+    assert!(r["splitAt"].as_u64().is_some());
+    assert!(s.active_sequence().unwrap().video_tracks.iter().all(|t| t.items.is_empty()));
+}

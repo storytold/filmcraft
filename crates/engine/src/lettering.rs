@@ -18,10 +18,14 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use filmcraft_geom::Vec2;
+use filmcraft_project::graphic::new_text_layer;
+use filmcraft_project::{EffectInstance, Interpolation, Keyframe, Param, ParamValue};
 use filmcraft_text::TextStyle;
+use filmcraft_time::Tick;
 
-use crate::commands::{CommandSpec, always, bad, f64_p, str_p};
-use crate::{Result, Session};
+use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, u64_p};
+use crate::{EngineError, Result, Session};
 
 /// Smallest fraction of the base size a lettering may shrink to before it asks to be split.
 pub const MIN_SCALE: f32 = 0.55;
@@ -138,7 +142,7 @@ pub fn heroes(words: &[Word]) -> Vec<usize> {
     let mut ranked: Vec<(usize, f32)> = scores.iter().copied().filter(|(_, s)| *s >= 1.5).collect();
     if ranked.is_empty() {
         // A lettering always has a centre: with no clear winner, the best content word takes it.
-        ranked = scores.iter().copied().filter(|(_, s)| *s >= 1.0).collect();
+        ranked = scores.iter().copied().filter(|(_, s)| *s >= 0.8).collect();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.cmp(&a.0)));
         ranked.truncate(1);
     }
@@ -516,6 +520,214 @@ pub fn plan(p: &Value) -> Result<Value> {
     }))
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Apply: one animated graphic clip, one text layer per word
+// ---------------------------------------------------------------------------------------------
+
+/// The studio's colours (`Empresa/Branding/Paleta de Cores.md`).
+const TERRACOTA: &str = "#CE4E21";
+const OFF_WHITE: &str = "#FFFCF7";
+const PRETO: &str = "#000000";
+
+/// "Entra com convicção. Fica em paz." Quick departure, long settle, no overshoot: the brand's
+/// `cubic-bezier(0.16, 1, 0.3, 1)` as the app's temporal ease (a flat start handle of 8% and a
+/// settle handle of 85%).
+const ENTER_OUT: f64 = 0.08;
+const ENTER_IN: f64 = 0.85;
+/// The brand's exit, `cubic-bezier(0.55, 0, 0.25, 1)`, is exactly a 55% / 75% temporal ease.
+const EXIT_OUT: f64 = 0.55;
+const EXIT_IN: f64 = 0.75;
+/// The brand's italic is 8° and the gesture always goes forward.
+const FORWARD_DEG: f64 = 8.0;
+
+/// Timing of the animation, seconds (the brand's `DURACAO`).
+const ENTER_SECS: f64 = 0.5;
+const STAGGER_SECS: f64 = 0.09;
+const EXIT_SECS: f64 = 0.3;
+/// A word enters this long before it is said, so the eye is there when the voice arrives.
+const LEAD_SECS: f64 = 0.1;
+/// How long the finished lettering stays after the last word.
+const HOLD_SECS: f64 = 0.8;
+
+fn color(hex: &str) -> ParamValue {
+    ParamValue::Color(filmcraft_color::parse_hex(hex).unwrap_or([1.0, 1.0, 1.0, 1.0]))
+}
+
+fn kf(t: f64, value: ParamValue, interp: Interpolation, out_influence: f64, in_influence: f64) -> Keyframe {
+    let mut k = Keyframe::new(Tick::from_seconds_f64(t), value);
+    k.interp = interp;
+    k.out_influence = out_influence;
+    k.in_influence = in_influence;
+    k
+}
+
+/// A word's keyframes: it arrives at `t0` (clip seconds) and leaves with everyone else at `exit`.
+fn animate(layer: &mut EffectInstance, pos: Vec2, size: f64, t0: f64, exit: f64, how: &str) {
+    let enter_end = t0 + ENTER_SECS;
+    let from = match how {
+        // straight up: the plain rise
+        "up" => Vec2::new(pos.x, pos.y + size * 0.3),
+        // along the brand's 8° diagonal, coming from behind: always forward
+        _ => {
+            let d = size * 0.45;
+            let r = FORWARD_DEG.to_radians();
+            Vec2::new(pos.x - d * r.cos(), pos.y + d * r.sin())
+        }
+    };
+    if how != "fade" {
+        layer.params.insert(
+            "position".into(),
+            Param {
+                value: ParamValue::Vec2(pos),
+                keyframes: vec![kf(t0, ParamValue::Vec2(from), Interpolation::Bezier, ENTER_OUT, ENTER_IN), kf(enter_end, ParamValue::Vec2(pos), Interpolation::Linear, 0.33, 0.33)],
+            },
+        );
+    }
+    layer.params.insert(
+        "opacity".into(),
+        Param {
+            value: ParamValue::Float(100.0),
+            keyframes: vec![
+                kf(t0, ParamValue::Float(0.0), Interpolation::Bezier, ENTER_OUT, ENTER_IN),
+                kf(enter_end, ParamValue::Float(100.0), Interpolation::Linear, 0.33, 0.33),
+                kf(exit, ParamValue::Float(100.0), Interpolation::Bezier, EXIT_OUT, EXIT_IN),
+                kf(exit + EXIT_SECS, ParamValue::Float(0.0), Interpolation::Linear, 0.33, EXIT_IN),
+            ],
+        },
+    );
+}
+
+/// Words to set: `text`/`words` as in `lettering.plan`, or the sequence transcript between `from`
+/// and `to` (sequence seconds), with the times they are spoken at. The clip's own zero is the
+/// first word's start less the lead; the result is (words with clip-relative times, placement).
+fn source_words(s: &Session, p: &Value) -> Result<(Vec<Word>, Option<f64>)> {
+    if let (Some(a), Some(b)) = (f64_p(p, "from"), f64_p(p, "to")) {
+        let ws: Vec<_> = crate::transcript::sequence_words(s).into_iter().filter(|w| w.start.seconds() >= a - 1e-6 && w.end.seconds() <= b + 1e-6).collect();
+        if ws.is_empty() {
+            return Err(bad("lettering.apply", format!("no transcript words between {a} and {b} s (Transcribe first)")));
+        }
+        let t0 = (ws[0].start.seconds() - LEAD_SECS).max(0.0);
+        let words = ws.iter().map(|w| Word { text: w.text.clone(), start: w.start.seconds() - t0, end: w.end.seconds() - t0 }).collect();
+        return Ok((words, Some(t0)));
+    }
+    let mut words = words_param(p);
+    if words.is_empty() {
+        return Err(bad("lettering.apply", "give `text`, `words`, or `from` and `to` (sequence seconds of the transcript)"));
+    }
+    if words.iter().all(|w| w.end <= w.start) {
+        // no speech: the words arrive one after another
+        for (i, w) in words.iter_mut().enumerate() {
+            w.start = LEAD_SECS + 0.18 * i as f64;
+            w.end = w.start + 0.18;
+        }
+    }
+    Ok((words, None))
+}
+
+fn apply(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "lettering.apply";
+    let (words, at) = source_words(s, p)?;
+    let (fw, fh) = s.active_sequence().map(|q| (q.settings.width as f32, q.settings.height as f32)).ok_or(EngineError::NoSequence)?;
+
+    let hero_idx: Vec<usize> = match p.get("heroes").and_then(Value::as_array) {
+        Some(a) => a.iter().filter_map(|v| v.as_u64().map(|u| u as usize)).filter(|&i| i < words.len()).collect(),
+        None => heroes(&words),
+    };
+    let mut hero = vec![false; words.len()];
+    for &i in &hero_idx {
+        hero[i] = true;
+    }
+    filmcraft_text::fonts::scan_system();
+    let faces = Faces {
+        family: str_p(p, "family").map_or_else(|| Faces::default().family, Into::into),
+        support: str_p(p, "supportStyle").map_or_else(|| Faces::default().support, Into::into),
+        hero: str_p(p, "heroStyle").map_or_else(|| Faces::default().hero, Into::into),
+    };
+    let (ms, space100) = measure_words(&words, &hero, &faces);
+    let params = Params {
+        box_w: f64_p(p, "boxWidth").map_or(fw * 0.84, |v| v as f32),
+        box_h: f64_p(p, "boxHeight").map_or(fh * 0.5, |v| v as f32),
+        size: f64_p(p, "size").map_or(fw * 0.06, |v| v as f32),
+        hero_scale: f64_p(p, "heroScale").map_or(Params::default().hero_scale, |v| v as f32),
+        space100,
+        leading: Params::default().leading,
+        composition: if str_p(p, "composition") == Some("stair") { Composition::Stair } else { Composition::Block },
+        stair_step: Params::default().stair_step,
+    };
+    if params.box_w <= 0.0 || params.box_h <= 0.0 || params.size <= 0.0 {
+        return Err(bad(ID, "boxWidth, boxHeight and size must be positive"));
+    }
+    let c = compose(&ms, &params);
+    if c.overflow {
+        // Nothing is placed: the caller cuts the phrase and applies each half.
+        return Ok(json!({"applied": false, "overflow": true, "splitAt": c.split_at, "reason": "the phrase does not fit in 3 lines at a readable size"}));
+    }
+
+    // Where the block sits in the frame: centred by default, or against a margin.
+    let margin = fw * 0.08;
+    let left = match str_p(p, "align") {
+        Some("left") => margin,
+        Some("right") => fw - margin - c.width,
+        _ => (fw - c.width) / 2.0,
+    };
+    let top = match str_p(p, "zone") {
+        Some("upper") => fh * 0.18,
+        Some("lower") => fh * 0.80 - c.height,
+        _ => (fh - c.height) / 2.0,
+    };
+
+    let light_text = str_p(p, "theme") != Some("light"); // light letters on the picture by default
+    let (support_hex, hero_hex) = (if light_text { OFF_WHITE } else { PRETO }, TERRACOTA);
+    let how = str_p(p, "animation").unwrap_or("forward");
+    let hero_italic = bool_p(p, "heroItalic").unwrap_or(false);
+
+    let last_end = words.iter().map(|w| w.end).fold(0.0, f64::max);
+    let exit = (last_end + HOLD_SECS).max(words.iter().map(|w| w.start).fold(0.0, f64::max) + ENTER_SECS + 0.4);
+    let duration = exit + EXIT_SECS;
+
+    let mut layers = Vec::with_capacity(words.len());
+    for pl in &c.words {
+        let w = &words[pl.index];
+        let pos = Vec2::new((left + pl.x) as f64, (top + pl.baseline) as f64);
+        let mut e = new_text_layer(&w.text, pos, pl.size as f64);
+        let face = if pl.hero { &faces.hero } else { &faces.support };
+        let face = if pl.hero && hero_italic { format!("{face} Italic") } else { face.clone() };
+        for (id, v) in [("font", ParamValue::Text(faces.family.clone())), ("font_style", ParamValue::Text(face)), ("name", ParamValue::Text(w.text.clone()))] {
+            e.params.insert(id.into(), Param::new(v));
+        }
+        e.params.insert("fill_color".into(), Param::new(color(if pl.hero { hero_hex } else { support_hex })));
+        // kerning on, ligatures off: a lettering is set, not typed
+        e.params.insert("ligatures".into(), Param::new(ParamValue::Bool(false)));
+        // enters just before it is said, behind the previous word by the brand's stagger at least
+        let t0 = (w.start - LEAD_SECS).max(0.0).max(if pl.index > 0 { (words[pl.index - 1].start - LEAD_SECS).max(0.0) + STAGGER_SECS } else { 0.0 });
+        animate(&mut e, pos, pl.size as f64, t0, exit, how);
+        layers.push(e);
+    }
+
+    let name = format!("Lettering · {}", words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" "));
+    let name: String = name.chars().take(60).collect();
+    let mut placement = serde_json::Map::new();
+    placement.insert("seconds".into(), json!(duration));
+    if let Some(at) = at {
+        placement.insert("time".into(), json!(Tick::from_seconds_f64(at).0));
+    } else if let Some(t) = p.get("time").cloned() {
+        placement.insert("time".into(), t);
+    }
+    if let Some(t) = u64_p(p, "track") {
+        placement.insert("track".into(), json!(t));
+    }
+    let clip = crate::graphics::new_graphic_clip_layers(s, ID, layers, &name, &Value::Object(placement))?;
+    Ok(json!({
+        "applied": true,
+        "clip": clip.0,
+        "duration": duration,
+        "lines": c.lines.iter().map(|l| l.iter().map(|&i| words[i].text.as_str()).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>(),
+        "heroes": hero_idx.iter().map(|&i| words[i].text.clone()).collect::<Vec<_>>(),
+        "scale": c.scale,
+    }))
+}
+
 pub fn commands() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: "lettering.plan",
@@ -526,6 +738,16 @@ pub fn commands() -> Vec<CommandSpec> {
         enabled: always,
         run: |_: &mut Session, p: &Value| plan(p),
         journal: false,
+    },
+    CommandSpec {
+        id: "lettering.apply",
+        label: "Lettering",
+        menu: &["Graphics and Titles", "New Layer"],
+        shortcut: None,
+        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"heroItalic":bool=false,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
+        enabled: has_seq,
+        run: apply,
+        journal: true,
     }]
 }
 
