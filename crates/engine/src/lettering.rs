@@ -689,7 +689,11 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     };
 
     let light_text = str_p(p, "theme") != Some("light"); // light letters on the picture by default
-    let (support_hex, hero_hex) = (if light_text { OFF_WHITE } else { PRETO }, TERRACOTA);
+    // The picture can swallow a brand colour (terracotta on an orange wall): the caller may override either.
+    let (support_hex, hero_hex) = (
+        str_p(p, "supportColor").unwrap_or(if light_text { OFF_WHITE } else { PRETO }),
+        str_p(p, "heroColor").unwrap_or(TERRACOTA),
+    );
     let how = str_p(p, "animation").unwrap_or("forward");
     let hero_italic = bool_p(p, "heroItalic").unwrap_or(false);
 
@@ -832,7 +836,7 @@ pub fn commands() -> Vec<CommandSpec> {
         label: "Lettering",
         menu: &["Graphics and Titles", "New Layer"],
         shortcut: None,
-        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"heroItalic":bool=false,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
+        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"heroItalic":bool=false,"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
         enabled: has_seq,
         run: apply,
         journal: true,
