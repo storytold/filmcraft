@@ -828,6 +828,130 @@ fn reopen_through_signal(path: &std::path::Path, item: ItemId, proxy: bool, avai
     (s, signal)
 }
 
+struct ThroughAttempt {
+    query: Value,
+    joined: Result<Value>,
+    before: Arc<Project>,
+    after: Arc<Project>,
+    undo: usize,
+    redo: usize,
+    undo_after: usize,
+    redo_after: usize,
+}
+
+fn select_mapped_clips(s: &mut Session, left: u64, right: u64, maps: &str, explicit_left: bool) {
+    let picked = match maps {
+        "default" => Vec::new(),
+        "explicit" => vec![left, right],
+        _ => vec![if explicit_left { left } else { right }],
+    };
+    if !picked.is_empty() {
+        s.execute("timeline.select", json!({"clips": picked})).unwrap();
+        s.execute("clip.audioChannels", json!({"channels": [0, 1]})).unwrap();
+    }
+}
+
+fn through_join_params(mode: &str, left: u64, right: u64) -> Value {
+    match mode {
+        "all" => json!({"all": true}),
+        "clips" => json!({"clips": [left, right]}),
+        _ => json!({"cut": [left, right]}),
+    }
+}
+
+fn right_channel_explicit(maps: &str, explicit_left: bool) -> bool {
+    maps == "explicit" || (maps == "mixed" && !explicit_left)
+}
+
+fn split_audio_edit(s: &mut Session) -> (ClipId, ClipId) {
+    s.execute("playhead.set", json!({"frame": 12})).unwrap();
+    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
+    let track = s.active_sequence().unwrap().audio_tracks[0].clone();
+    (track.items[0].id, track.items[1].id)
+}
+
+fn attempt_through_join(
+    s: &mut Session,
+    mode: &str,
+    left: u64,
+    right: u64,
+    current: &filmcraft_frame::AudioBuffer,
+    eligibility: &str,
+    playback: &str,
+) -> ThroughAttempt {
+    let before = s.project.clone();
+    let undo = s.history.undo.len();
+    let redo = s.history.redo.len();
+    let opened = s.media.open_sources();
+    let query = s.execute("sequence.throughEdits", json!({})).unwrap();
+    assert_eq!(s.media.open_sources(), opened, "{eligibility}");
+    let joined = s.execute("sequence.joinThroughEdits", through_join_params(mode, left, right));
+    let after = s.project.clone();
+    let undo_after = s.history.undo.len();
+    let redo_after = s.history.redo.len();
+    assert_eq!(remix_track_signal(s), *current, "{playback}");
+    if joined.is_ok() {
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(s.project, before);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(s.project, after);
+    }
+    ThroughAttempt { query, joined, before, after, undo, redo, undo_after, redo_after }
+}
+
+fn assert_join_kept_or_refused(maps: &str, attempt: &ThroughAttempt, items: usize, reject: &str) {
+    if maps == "mixed" {
+        assert!(attempt.joined.is_err(), "{reject}: {joined:?}", joined = attempt.joined);
+        assert!(attempt.query.as_array().unwrap().is_empty());
+        assert_eq!(attempt.after, attempt.before);
+        assert_eq!(attempt.undo_after, attempt.undo);
+        assert_eq!(attempt.redo_after, attempt.redo);
+        assert_eq!(items, 2);
+    } else {
+        assert_eq!(attempt.joined.as_ref().unwrap()["joined"], json!(1));
+        assert_eq!(attempt.query.as_array().unwrap().len(), 1);
+        assert_eq!(items, 1);
+    }
+}
+
+fn file_case_sequence(stereo: bool) -> Value {
+    json!({"video": 0, "audio": 1, "fps": 24.0, "mix": if stereo { "stereo" } else { "5.1" }, "trackType": if stereo { "standard" } else { "5.1" }})
+}
+
+fn import_file_case(s: &mut Session, original: &std::path::Path, stereo: bool, proxy: bool, proxy_file: &std::path::Path) -> ItemId {
+    let imported = s.execute("file.import", json!({"paths": [original.to_string_lossy()]})).unwrap();
+    let item = ItemId(imported["items"][0].as_u64().unwrap());
+    s.execute("file.newSequence", file_case_sequence(stereo)).unwrap();
+    s.execute("timeline.place", json!({"item": item.0, "seconds": 0.0})).unwrap();
+    if proxy {
+        s.execute("media.attachProxies", json!({"item": item.0, "path": proxy_file.to_string_lossy()})).unwrap();
+        s.execute("media.toggleProxies", json!({"enabled": true})).unwrap();
+    }
+    item
+}
+
+fn assert_cached_stereo_layout(source: &filmcraft_media::SharedSource) -> filmcraft_frame::AudioBuffer {
+    assert_eq!(source.info().audio_streams[0].channels, 2);
+    let cached = source.audio_stream(0, 36_000, 32, 48_000).unwrap();
+    assert_eq!(cached.channel_count(), 2, "the opened decoder retains its earlier stereo layout");
+    for samples in &cached.channels {
+        assert_eq!(samples.len(), 32);
+        assert!(samples.iter().all(|&sample| sample > 0.05 && sample < 0.7), "the fixture must produce nonzero cached audio");
+    }
+    cached
+}
+
+fn assert_unity_cached_pan(s: &Session, cached: &filmcraft_frame::AudioBuffer, stereo: bool) -> filmcraft_frame::AudioBuffer {
+    let current = remix_track_signal(s);
+    assert_eq!(current.channel_count(), if stereo { 2 } else { 6 });
+    for (rendered, decoded) in current.channels[..2].iter().zip(&cached.channels) {
+        assert_eq!(rendered.len(), decoded.len());
+        assert!(rendered.iter().zip(decoded).all(|(a, b)| (a - b).abs() < 1e-6), "unity panning must retain the cached samples");
+    }
+    assert!(current.channels[2..].iter().all(|channel| channel.len() == 32 && channel.iter().all(|&sample| sample == 0.0)));
+    current
+}
+
 fn persisted_through_file_case(stereo: bool, mode: &str, explicit_left: bool, maps: &str, when: &str, proxy: bool) {
     let root = crate::media_test_util::tmp_dir("through-persisted-mapping");
     let original = root.join("original.wav");
@@ -840,72 +964,18 @@ fn persisted_through_file_case(stereo: bool, mode: &str, explicit_left: bool, ma
     std::fs::write(&proxy_file, &two).unwrap();
     let replacing = if proxy { &proxy_file } else { &original };
     let mut s = Session::default();
-    let imported = s.execute("file.import", json!({"paths": [original.to_string_lossy()]})).unwrap();
-    let item = ItemId(imported["items"][0].as_u64().unwrap());
-    s.execute(
-        "file.newSequence",
-        json!({"video": 0, "audio": 1, "fps": 24.0, "mix": if stereo { "stereo" } else { "5.1" }, "trackType": if stereo { "standard" } else { "5.1" }}),
-    )
-    .unwrap();
-    s.execute("timeline.place", json!({"item": item.0, "seconds": 0.0})).unwrap();
-    if proxy {
-        s.execute("media.attachProxies", json!({"item": item.0, "path": proxy_file.to_string_lossy()})).unwrap();
-        s.execute("media.toggleProxies", json!({"enabled": true})).unwrap();
-    }
-    s.execute("playhead.set", json!({"frame": 12})).unwrap();
-    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
-    let track = s.active_sequence().unwrap().audio_tracks[0].clone();
-    let (left, right) = (track.items[0].id, track.items[1].id);
-    let picked = match maps {
-        "default" => Vec::new(),
-        "explicit" => vec![left.0, right.0],
-        _ => vec![if explicit_left { left.0 } else { right.0 }],
-    };
-    if !picked.is_empty() {
-        s.execute("timeline.select", json!({"clips": picked})).unwrap();
-        s.execute("clip.audioChannels", json!({"channels": [0, 1]})).unwrap();
-    }
+    let item = import_file_case(&mut s, &original, stereo, proxy, &proxy_file);
+    let (left, right) = split_audio_edit(&mut s);
+    select_mapped_clips(&mut s, left.0, right.0, maps, explicit_left);
     let source = s.source(item).unwrap();
-    assert_eq!(source.info().audio_streams[0].channels, 2);
     if when == "before" {
         std::fs::write(replacing, &six).unwrap();
     }
-    let cached = source.audio_stream(0, 36_000, 32, 48_000).unwrap();
-    assert_eq!(cached.channel_count(), 2, "the opened decoder retains its earlier stereo layout");
-    for samples in &cached.channels {
-        assert_eq!(samples.len(), 32);
-        assert!(samples.iter().all(|&sample| sample > 0.05 && sample < 0.7), "the fixture must produce nonzero cached audio");
-    }
-    let current = remix_track_signal(&s);
-    assert_eq!(current.channel_count(), if stereo { 2 } else { 6 });
-    for (rendered, decoded) in current.channels[..2].iter().zip(&cached.channels) {
-        assert_eq!(rendered.len(), decoded.len());
-        assert!(rendered.iter().zip(decoded).all(|(a, b)| (a - b).abs() < 1e-6), "unity panning must retain the cached samples");
-    }
-    assert!(current.channels[2..].iter().all(|channel| channel.len() == 32 && channel.iter().all(|&sample| sample == 0.0)));
+    let cached = assert_cached_stereo_layout(&source);
+    let current = assert_unity_cached_pan(&s, &cached, stereo);
     s.execute("file.save", json!({"path": unjoined_file.to_string_lossy()})).unwrap();
-    let before = s.project.clone();
-    let undo = s.history.undo.len();
-    let redo = s.history.redo.len();
-    let opened = s.media.open_sources();
-    let query = s.execute("sequence.throughEdits", json!({})).unwrap();
-    assert_eq!(s.media.open_sources(), opened, "eligibility cannot open or decode a source");
-    let params = match mode {
-        "all" => json!({"all": true}),
-        "clips" => json!({"clips": [left.0, right.0]}),
-        _ => json!({"cut": [left.0, right.0]}),
-    };
-    let joined = s.execute("sequence.joinThroughEdits", params);
-    let after = s.project.clone();
-    let undo_after = s.history.undo.len();
-    let redo_after = s.history.redo.len();
-    assert_eq!(remix_track_signal(&s), current, "cached playback alone can look safe");
-    if joined.is_ok() {
-        s.execute("edit.undo", json!({})).unwrap();
-        assert_eq!(s.project, before);
-        s.execute("edit.redo", json!({})).unwrap();
-        assert_eq!(s.project, after);
-    }
+    let attempt =
+        attempt_through_join(&mut s, mode, left.0, right.0, &current, "eligibility cannot open or decode a source", "cached playback alone can look safe");
     s.execute("file.save", json!({"path": attempted_file.to_string_lossy()})).unwrap();
     if when == "after" {
         std::fs::write(replacing, &six).unwrap();
@@ -915,25 +985,17 @@ fn persisted_through_file_case(stereo: bool, mode: &str, explicit_left: bool, ma
     let available = if when == "none" { 2 } else { 6 };
     let (unjoined, expected) = reopen_through_signal(&unjoined_file, item, proxy, available);
     let (attempted, actual) = reopen_through_signal(&attempted_file, item, proxy, available);
-    let right_explicit = maps == "explicit" || (maps == "mixed" && !explicit_left);
-    assert_persisted_through_signal(&expected, stereo, available, right_explicit);
+    assert_persisted_through_signal(&expected, stereo, available, right_channel_explicit(maps, explicit_left));
     eprintln!(
         "persisted through stereo={stereo} mode={mode} maps={maps} explicit_left={explicit_left} replacement={when} proxy={proxy}: {joined:?}; cached={:?}; unjoined={:?}; attempted={:?}",
-        current.channels, expected.channels, actual.channels
+        joined = attempt.joined,
+        current.channels,
+        expected.channels,
+        actual.channels
     );
     assert_eq!(actual, expected, "joining must preserve the selected-channel function after save/reopen and later file replacement");
-    if maps == "mixed" {
-        assert!(joined.is_err(), "mutable file/proxy defaults require exact source-channel maps: {joined:?}");
-        assert!(query.as_array().unwrap().is_empty());
-        assert_eq!(after, before);
-        assert_eq!(undo_after, undo);
-        assert_eq!(redo_after, redo);
-        assert_eq!(attempted.active_sequence().unwrap().audio_tracks[0].items.len(), 2);
-    } else {
-        assert_eq!(joined.unwrap()["joined"], json!(1));
-        assert_eq!(query.as_array().unwrap().len(), 1);
-        assert_eq!(attempted.active_sequence().unwrap().audio_tracks[0].items.len(), 1);
-    }
+    let items = attempted.active_sequence().unwrap().audio_tracks[0].items.len();
+    assert_join_kept_or_refused(maps, &attempt, items, "mutable file/proxy defaults require exact source-channel maps");
     drop((unjoined, attempted));
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1100,15 +1162,7 @@ fn join_through_edits_keeps_nested_stereo_mapping_functions_strict() {
     }
 }
 
-fn persisted_through_nested_case(inner_mix: &str, mode: &str, maps: &str, explicit_left: bool) {
-    let root = crate::media_test_util::tmp_dir("through-nested-master-mapping");
-    let original = root.join("original.wav");
-    let unjoined_file = root.join("unjoined.filmcraft");
-    let attempted_file = root.join("attempted.filmcraft");
-    std::fs::write(&original, filmcraft_media::wav::write_wav16(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6].repeat(48_000), 6, 48_000)).unwrap();
-    let mut s = Session::default();
-    let imported = s.execute("file.import", json!({"paths": [original.to_string_lossy()]})).unwrap();
-    let item = ItemId(imported["items"][0].as_u64().unwrap());
+fn start_nested_sequences(s: &mut Session, item: ItemId, inner_mix: &str) -> (ItemId, ItemId) {
     // A stereo master initially folds this 5.1 track down; changing only that master can expose
     // its centre/rear channels later, without changing the nested item or source file.
     s.execute("file.newSequence", json!({"name": "Inner", "video": 0, "audio": 1, "fps": 24.0, "mix": inner_mix, "trackType": "5.1"})).unwrap();
@@ -1117,56 +1171,20 @@ fn persisted_through_nested_case(inner_mix: &str, mode: &str, maps: &str, explic
     s.execute("file.newSequence", json!({"name": "Outer", "video": 0, "audio": 1, "fps": 24.0, "mix": "5.1", "trackType": "5.1"})).unwrap();
     let outer = s.state.active_sequence.unwrap();
     s.execute("timeline.place", json!({"item": inner.0, "seconds": 0.0})).unwrap();
-    s.execute("playhead.set", json!({"frame": 12})).unwrap();
-    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
-    let track = s.active_sequence().unwrap().audio_tracks[0].clone();
-    let (left, right) = (track.items[0].id, track.items[1].id);
-    let picked = match maps {
-        "default" => Vec::new(),
-        "explicit" => vec![left.0, right.0],
-        _ => vec![if explicit_left { left.0 } else { right.0 }],
-    };
-    if !picked.is_empty() {
-        s.execute("timeline.select", json!({"clips": picked})).unwrap();
-        s.execute("clip.audioChannels", json!({"channels": [0, 1]})).unwrap();
-    }
-    let source = s.source(item).unwrap();
-    let decoded = source.audio_stream(0, 36_000, 32, 48_000).unwrap();
-    assert_persisted_through_signal(&decoded, false, 6, false);
-    let current = remix_track_signal(&s);
+    (inner, outer)
+}
+
+fn assert_stereo_fold(current: &filmcraft_frame::AudioBuffer, inner_mix: &str) {
     let k = std::f32::consts::FRAC_1_SQRT_2;
     for (samples, sample) in current.channels.iter().zip([0.1 + k * (0.3 + 0.5), 0.2 + k * (0.3 + 0.6), 0.0, 0.0, 0.0, 0.0]) {
         assert_eq!(samples.len(), 32);
         assert!(samples.iter().all(|&value| (value - sample).abs() < 1e-4), "nested {inner_mix} expected {sample}, got {samples:?}");
     }
     assert_eq!(current.channel_count(), 6);
-    s.execute("file.save", json!({"path": unjoined_file.to_string_lossy()})).unwrap();
-    let before = s.project.clone();
-    let undo = s.history.undo.len();
-    let redo = s.history.redo.len();
-    let opened = s.media.open_sources();
-    let query = s.execute("sequence.throughEdits", json!({})).unwrap();
-    assert_eq!(s.media.open_sources(), opened, "nested eligibility must not open or decode media");
-    let params = match mode {
-        "all" => json!({"all": true}),
-        "clips" => json!({"clips": [left.0, right.0]}),
-        _ => json!({"cut": [left.0, right.0]}),
-    };
-    let joined = s.execute("sequence.joinThroughEdits", params);
-    let after = s.project.clone();
-    let undo_after = s.history.undo.len();
-    let redo_after = s.history.redo.len();
-    assert_eq!(remix_track_signal(&s), current, "the original stereo master can make unequal mapping functions sound equal");
-    if joined.is_ok() {
-        s.execute("edit.undo", json!({})).unwrap();
-        assert_eq!(s.project, before);
-        s.execute("edit.redo", json!({})).unwrap();
-        assert_eq!(s.project, after);
-    }
-    s.execute("file.save", json!({"path": attempted_file.to_string_lossy()})).unwrap();
-    drop(source);
-    drop(s);
-    for path in [&unjoined_file, &attempted_file] {
+}
+
+fn flip_nested_masters(paths: &[&std::path::Path], inner: ItemId, outer: ItemId) {
+    for path in paths {
         let mut reopened = Session::default();
         reopened.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
         reopened.execute("sequence.open", json!({"item": inner.0})).unwrap();
@@ -1182,41 +1200,74 @@ fn persisted_through_nested_case(inner_mix: &str, mode: &str, maps: &str, explic
         reopened.execute("sequence.open", json!({"item": outer.0})).unwrap();
         reopened.execute("file.save", json!({"path": path.to_string_lossy()})).unwrap();
     }
-    let mut unjoined = Session::default();
-    unjoined.execute("file.open", json!({"path": unjoined_file.to_string_lossy()})).unwrap();
-    let mut attempted = Session::default();
-    attempted.execute("file.open", json!({"path": attempted_file.to_string_lossy()})).unwrap();
-    for reopened in [&mut unjoined, &mut attempted] {
+}
+
+fn assert_reopened_nested_sources(unjoined: &mut Session, attempted: &mut Session, inner: ItemId, outer: ItemId, item: ItemId) {
+    for reopened in [unjoined, attempted] {
         assert_eq!(reopened.project.sequence(inner).unwrap().settings.audio_master, filmcraft_project::AudioChannels::Surround51);
         reopened.execute("sequence.open", json!({"item": outer.0})).unwrap();
         let source = reopened.source(item).unwrap();
         assert_eq!(source.info().audio_streams[0].channels, 6);
         assert_persisted_through_signal(&source.audio_stream(0, 36_000, 32, 48_000).unwrap(), false, 6, false);
     }
-    let expected = remix_track_signal(&unjoined);
-    let actual = remix_track_signal(&attempted);
-    let right_explicit = maps == "explicit" || (maps == "mixed" && !explicit_left);
-    assert_persisted_through_signal(&expected, false, 6, right_explicit);
+}
+
+fn assert_nested_attempt_energy(actual: &filmcraft_frame::AudioBuffer) {
     assert!(actual.channels.iter().all(|samples| samples.len() == 32));
     assert!(actual.channels[0].iter().all(|&sample| sample > 0.09));
     assert!(actual.channels[1].iter().all(|&sample| sample > 0.19));
+}
+
+fn persisted_through_nested_case(inner_mix: &str, mode: &str, maps: &str, explicit_left: bool) {
+    let root = crate::media_test_util::tmp_dir("through-nested-master-mapping");
+    let original = root.join("original.wav");
+    let unjoined_file = root.join("unjoined.filmcraft");
+    let attempted_file = root.join("attempted.filmcraft");
+    std::fs::write(&original, filmcraft_media::wav::write_wav16(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6].repeat(48_000), 6, 48_000)).unwrap();
+    let mut s = Session::default();
+    let imported = s.execute("file.import", json!({"paths": [original.to_string_lossy()]})).unwrap();
+    let item = ItemId(imported["items"][0].as_u64().unwrap());
+    let (inner, outer) = start_nested_sequences(&mut s, item, inner_mix);
+    let (left, right) = split_audio_edit(&mut s);
+    select_mapped_clips(&mut s, left.0, right.0, maps, explicit_left);
+    let source = s.source(item).unwrap();
+    let decoded = source.audio_stream(0, 36_000, 32, 48_000).unwrap();
+    assert_persisted_through_signal(&decoded, false, 6, false);
+    let current = remix_track_signal(&s);
+    assert_stereo_fold(&current, inner_mix);
+    s.execute("file.save", json!({"path": unjoined_file.to_string_lossy()})).unwrap();
+    let attempt = attempt_through_join(
+        &mut s,
+        mode,
+        left.0,
+        right.0,
+        &current,
+        "nested eligibility must not open or decode media",
+        "the original stereo master can make unequal mapping functions sound equal",
+    );
+    s.execute("file.save", json!({"path": attempted_file.to_string_lossy()})).unwrap();
+    drop(source);
+    drop(s);
+    flip_nested_masters(&[&unjoined_file, &attempted_file], inner, outer);
+    let mut unjoined = Session::default();
+    unjoined.execute("file.open", json!({"path": unjoined_file.to_string_lossy()})).unwrap();
+    let mut attempted = Session::default();
+    attempted.execute("file.open", json!({"path": attempted_file.to_string_lossy()})).unwrap();
+    assert_reopened_nested_sources(&mut unjoined, &mut attempted, inner, outer, item);
+    let expected = remix_track_signal(&unjoined);
+    let actual = remix_track_signal(&attempted);
+    assert_persisted_through_signal(&expected, false, 6, right_channel_explicit(maps, explicit_left));
+    assert_nested_attempt_energy(&actual);
     eprintln!(
         "persisted nested mix={inner_mix} mode={mode} maps={maps} explicit_left={explicit_left}: {joined:?}; cached={:?}; unjoined={:?}; attempted={:?}",
-        current.channels, expected.channels, actual.channels
+        joined = attempt.joined,
+        current.channels,
+        expected.channels,
+        actual.channels
     );
     assert_eq!(actual, expected, "joining must preserve the selected-channel function after save/reopen and a later nested-master layout change");
-    if maps == "mixed" {
-        assert!(joined.is_err(), "nested master layouts are mutable, so channel maps must match exactly: {joined:?}");
-        assert!(query.as_array().unwrap().is_empty());
-        assert_eq!(after, before);
-        assert_eq!(undo_after, undo);
-        assert_eq!(redo_after, redo);
-        assert_eq!(attempted.active_sequence().unwrap().audio_tracks[0].items.len(), 2);
-    } else {
-        assert_eq!(joined.unwrap()["joined"], json!(1));
-        assert_eq!(query.as_array().unwrap().len(), 1);
-        assert_eq!(attempted.active_sequence().unwrap().audio_tracks[0].items.len(), 1);
-    }
+    let items = attempted.active_sequence().unwrap().audio_tracks[0].items.len();
+    assert_join_kept_or_refused(maps, &attempt, items, "nested master layouts are mutable, so channel maps must match exactly");
     drop((unjoined, attempted));
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1243,72 +1294,27 @@ fn join_through_edits_keeps_identical_nested_maps_after_save_and_master_change()
     }
 }
 
-fn persisted_through_generator_proxy_case(stereo: bool, mode: &str, maps: &str, explicit_left: bool) {
-    let root = crate::media_test_util::tmp_dir("through-generator-future-proxy");
-    let proxy_file = root.join("six.wav");
-    let unjoined_file = root.join("unjoined.filmcraft");
-    let attempted_file = root.join("attempted.filmcraft");
-    std::fs::write(&proxy_file, filmcraft_media::wav::write_wav16(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6].repeat(48_000), 6, 48_000)).unwrap();
-    let mut s = Session::default();
-    // Public Attach Proxies is enabled when the project contains file media; force may then
-    // target a generated item. Keep the imported file and both persisted controls alive.
-    s.execute("file.import", json!({"paths": [proxy_file.to_string_lossy()]})).unwrap();
-    s.execute(
-        "file.newSequence",
-        json!({"video": 0, "audio": 1, "fps": 24.0, "mix": if stereo { "Stereo" } else { "5.1" }, "trackType": if stereo { "Standard" } else { "5.1" }}),
-    )
-    .unwrap();
-    let item = ItemId(s.execute("file.newBarsAndTone", json!({"seconds": 1.0})).unwrap()["item"].as_u64().unwrap());
-    s.execute("timeline.place", json!({"item": item.0, "seconds": 0.0, "video": false})).unwrap();
-    s.execute("playhead.set", json!({"frame": 12})).unwrap();
-    s.execute("sequence.addEditAllTracks", json!({})).unwrap();
-    let track = s.active_sequence().unwrap().audio_tracks[0].clone();
-    let (left, right) = (track.items[0].id, track.items[1].id);
-    let picked = match maps {
-        "default" => Vec::new(),
-        "explicit" => vec![left.0, right.0],
-        _ => vec![if explicit_left { left.0 } else { right.0 }],
-    };
-    if !picked.is_empty() {
-        s.execute("timeline.select", json!({"clips": picked})).unwrap();
-        s.execute("clip.audioChannels", json!({"channels": [0, 1]})).unwrap();
-    }
-    let source = s.source(item).unwrap();
+fn generator_sequence(stereo: bool) -> Value {
+    json!({"video": 0, "audio": 1, "fps": 24.0, "mix": if stereo { "Stereo" } else { "5.1" }, "trackType": if stereo { "Standard" } else { "5.1" }})
+}
+
+fn assert_native_generator(source: &filmcraft_media::SharedSource) {
     assert_eq!(source.info().audio_streams[0].channels, 2);
     let decoded = source.audio_stream(0, 36_000, 32, 48_000).unwrap();
     assert_eq!(decoded.channel_count(), 2);
     assert!(decoded.channels.iter().all(|samples| samples.len() == 32 && samples.iter().any(|&sample| sample.abs() > 0.01)));
-    let current = remix_track_signal(&s);
+}
+
+fn assert_generator_pan(s: &Session, stereo: bool) -> filmcraft_frame::AudioBuffer {
+    let current = remix_track_signal(s);
     assert_eq!(current.channel_count(), if stereo { 2 } else { 6 });
     assert!(current.channels[..2].iter().all(|samples| samples.len() == 32 && samples.iter().any(|&sample| sample.abs() > 0.01)));
     assert!(current.channels[2..].iter().all(|samples| samples.len() == 32 && samples.iter().all(|&sample| sample == 0.0)));
-    s.execute("file.save", json!({"path": unjoined_file.to_string_lossy()})).unwrap();
-    let before = s.project.clone();
-    let undo = s.history.undo.len();
-    let redo = s.history.redo.len();
-    let opened = s.media.open_sources();
-    let query = s.execute("sequence.throughEdits", json!({})).unwrap();
-    assert_eq!(s.media.open_sources(), opened, "eligibility must not open or decode media");
-    let params = match mode {
-        "all" => json!({"all": true}),
-        "clips" => json!({"clips": [left.0, right.0]}),
-        _ => json!({"cut": [left.0, right.0]}),
-    };
-    let joined = s.execute("sequence.joinThroughEdits", params);
-    let after = s.project.clone();
-    let undo_after = s.history.undo.len();
-    let redo_after = s.history.redo.len();
-    assert_eq!(remix_track_signal(&s), current, "the native generator is stereo before later proxy attachment");
-    if joined.is_ok() {
-        s.execute("edit.undo", json!({})).unwrap();
-        assert_eq!(s.project, before);
-        s.execute("edit.redo", json!({})).unwrap();
-        assert_eq!(s.project, after);
-    }
-    s.execute("file.save", json!({"path": attempted_file.to_string_lossy()})).unwrap();
-    drop(source);
-    drop(s);
-    for path in [&unjoined_file, &attempted_file] {
+    current
+}
+
+fn force_attach_generator_proxies(paths: &[&std::path::Path], item: ItemId, proxy_file: &std::path::Path) {
+    for path in paths {
         let mut reopened = Session::default();
         reopened.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
         assert!(reopened.project.item(item).unwrap().as_media().unwrap().proxy.is_none());
@@ -1321,39 +1327,72 @@ fn persisted_through_generator_proxy_case(stereo: bool, mode: &str, maps: &str, 
         assert_persisted_through_signal(&selected.audio_stream(0, 36_000, 32, 48_000).unwrap(), false, 6, false);
         reopened.execute("file.save", json!({"path": path.to_string_lossy()})).unwrap();
     }
-    let mut unjoined = Session::default();
-    unjoined.execute("file.open", json!({"path": unjoined_file.to_string_lossy()})).unwrap();
-    let mut attempted = Session::default();
-    attempted.execute("file.open", json!({"path": attempted_file.to_string_lossy()})).unwrap();
-    for reopened in [&mut unjoined, &mut attempted] {
+}
+
+fn reopen_proxied_generators(unjoined: &mut Session, attempted: &mut Session, item: ItemId) {
+    for reopened in [unjoined, attempted] {
         reopened.execute("media.toggleProxies", json!({"enabled": true})).unwrap();
         let selected = reopened.source(item).unwrap();
         assert_eq!(selected.info().audio_streams[0].channels, 2);
         assert_persisted_through_signal(&selected.audio_stream(0, 36_000, 32, 48_000).unwrap(), false, 6, false);
     }
-    let expected = remix_track_signal(&unjoined);
-    let actual = remix_track_signal(&attempted);
-    let right_explicit = maps == "explicit" || (maps == "mixed" && !explicit_left);
-    assert_persisted_through_signal(&expected, stereo, 6, right_explicit);
+}
+
+fn assert_generator_attempt_energy(actual: &filmcraft_frame::AudioBuffer) {
     assert!(actual.channels.iter().all(|samples| samples.len() == 32));
     assert!(actual.channels[..2].iter().all(|samples| samples.iter().any(|&sample| sample.abs() > 0.09)));
+}
+
+fn persisted_through_generator_proxy_case(stereo: bool, mode: &str, maps: &str, explicit_left: bool) {
+    let root = crate::media_test_util::tmp_dir("through-generator-future-proxy");
+    let proxy_file = root.join("six.wav");
+    let unjoined_file = root.join("unjoined.filmcraft");
+    let attempted_file = root.join("attempted.filmcraft");
+    std::fs::write(&proxy_file, filmcraft_media::wav::write_wav16(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6].repeat(48_000), 6, 48_000)).unwrap();
+    let mut s = Session::default();
+    // Public Attach Proxies is enabled when the project contains file media; force may then
+    // target a generated item. Keep the imported file and both persisted controls alive.
+    s.execute("file.import", json!({"paths": [proxy_file.to_string_lossy()]})).unwrap();
+    s.execute("file.newSequence", generator_sequence(stereo)).unwrap();
+    let item = ItemId(s.execute("file.newBarsAndTone", json!({"seconds": 1.0})).unwrap()["item"].as_u64().unwrap());
+    s.execute("timeline.place", json!({"item": item.0, "seconds": 0.0, "video": false})).unwrap();
+    let (left, right) = split_audio_edit(&mut s);
+    select_mapped_clips(&mut s, left.0, right.0, maps, explicit_left);
+    let source = s.source(item).unwrap();
+    assert_native_generator(&source);
+    let current = assert_generator_pan(&s, stereo);
+    s.execute("file.save", json!({"path": unjoined_file.to_string_lossy()})).unwrap();
+    let attempt = attempt_through_join(
+        &mut s,
+        mode,
+        left.0,
+        right.0,
+        &current,
+        "eligibility must not open or decode media",
+        "the native generator is stereo before later proxy attachment",
+    );
+    s.execute("file.save", json!({"path": attempted_file.to_string_lossy()})).unwrap();
+    drop(source);
+    drop(s);
+    force_attach_generator_proxies(&[&unjoined_file, &attempted_file], item, &proxy_file);
+    let mut unjoined = Session::default();
+    unjoined.execute("file.open", json!({"path": unjoined_file.to_string_lossy()})).unwrap();
+    let mut attempted = Session::default();
+    attempted.execute("file.open", json!({"path": attempted_file.to_string_lossy()})).unwrap();
+    reopen_proxied_generators(&mut unjoined, &mut attempted, item);
+    let expected = remix_track_signal(&unjoined);
+    let actual = remix_track_signal(&attempted);
+    assert_persisted_through_signal(&expected, stereo, 6, right_channel_explicit(maps, explicit_left));
+    assert_generator_attempt_energy(&actual);
     eprintln!(
         "persisted generator later-proxy stereo={stereo} mode={mode} maps={maps} explicit_left={explicit_left}: {joined:?}; unjoined={:?}; attempted={:?}",
-        expected.channels, actual.channels
+        joined = attempt.joined,
+        expected.channels,
+        actual.channels
     );
     assert_eq!(actual, expected, "joining must preserve generator channel selection after later forced proxy attachment and save/reopen");
-    if maps == "mixed" {
-        assert!(joined.is_err(), "future proxies can change a generator's rendered domain, so maps must match exactly: {joined:?}");
-        assert!(query.as_array().unwrap().is_empty());
-        assert_eq!(after, before);
-        assert_eq!(undo_after, undo);
-        assert_eq!(redo_after, redo);
-        assert_eq!(attempted.active_sequence().unwrap().audio_tracks[0].items.len(), 2);
-    } else {
-        assert_eq!(joined.unwrap()["joined"], json!(1));
-        assert_eq!(query.as_array().unwrap().len(), 1);
-        assert_eq!(attempted.active_sequence().unwrap().audio_tracks[0].items.len(), 1);
-    }
+    let items = attempted.active_sequence().unwrap().audio_tracks[0].items.len();
+    assert_join_kept_or_refused(maps, &attempt, items, "future proxies can change a generator's rendered domain, so maps must match exactly");
     drop((unjoined, attempted));
     std::fs::remove_dir_all(root).unwrap();
 }
