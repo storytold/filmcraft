@@ -128,7 +128,9 @@ Timecode and Clip Name effects also draw with the text engine.
 Without `clip`, commands use the selected graphic clip, else the topmost graphic clip under the
 playhead. Without `layer`, they use the selected layer, else the front one. New graphic clips are
 placed at the playhead on the first video track above the clips there that is free for the
-duration (a track is added if needed).
+duration (a track is added if needed). `track` puts the clip on a given video track instead: a
+0-based index (`2`) or a name as `timeline.place` takes it (`"V3"`). A track the sequence does not
+have, or one that is not free there, is an error.
 
 ## Program monitor
 
