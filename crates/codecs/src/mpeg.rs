@@ -1117,9 +1117,12 @@ mod tests {
                 w.write_bits(0, 13); // one sub-frame, program and layer
                 if version == 1 {
                     w.write_bits(0, 2); // ascLen: one byte
-                    w.write_bits(asc.len() as u32 * 8, 8);
+                    w.write_bits(asc.len() as u32 * 8 + 5, 8); // counts the fill below
                 }
                 asc.iter().for_each(|&b| w.write_bits(b as u32, 8));
+                if version == 1 {
+                    w.write_bits(0b10101, 5); // fillBits
+                }
                 w.write_bits(0, 3); // frameLengthType
                 w.write_bits(0xFF, 8); // latmBufferFullness
                 w.write_bits(0, 2); // no other data, no CRC

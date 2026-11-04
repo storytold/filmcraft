@@ -665,9 +665,8 @@ fn stream_mux_config(r: &mut filmcraft_bitstream::BitReader) -> Option<LatmConfi
     if sub_frames != 0 || programs != 0 || layers != 0 {
         return None;
     }
-    if version == 1 {
-        latm_value(r)?; // ascLen
-    }
+    let asc_len = if version == 1 { Some(latm_value(r)? as usize) } else { None };
+    let asc_start = r.position();
     // AudioSpecificConfig
     let aot = r.read_bits(5).ok()?;
     let sf = r.read_bits(4).ok()?;
@@ -690,6 +689,10 @@ fn stream_mux_config(r: &mut filmcraft_bitstream::BitReader) -> Option<LatmConfi
     } else {
         (asc_bytes(2, sf as u8, ch as u8), ch)
     };
+    // what ascLen counts past the fields read here is fill
+    if let Some(len) = asc_len {
+        r.skip(len.saturating_sub(r.position() - asc_start)).ok()?;
+    }
     let frame_length_type = r.read_bits(3).ok()?;
     if frame_length_type != 0 {
         return None;
