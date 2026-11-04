@@ -71,8 +71,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         crate::menus::menu_bar(app, &mut mu);
         left_end = mu.min_rect().max.x;
     }
-    // Document title, centred
+    // Document title, centred between the menus and the right-hand controls.
     let title = if app.session.is_dirty() { tlf!("{name} - Edited", name = app.session.project.name) } else { app.session.project.name.clone() };
+    draw_header_trailing(app, ui, rect, &p, t, left_end, title);
+}
+
+/// Quick actions, the workspace name, Discord, and the centred title. Narrow windows drop the
+/// lower-priority icons first so the title keeps a readable gap.
+fn draw_header_trailing(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, p: &egui::Painter, t: Tokens, left_end: f32, title: String) {
     let ws = crate::i18n::to_uppercase(crate::i18n::t(&app.ui.workspace));
     let available = (rect.right() - 14.0 - left_end - 10.0).max(0.0);
     if available < 28.0 {
@@ -84,7 +90,55 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let name_width = if available >= 54.0 { wg.size().x + 8.0 } else { 0.0 };
     let workspace_width = 28.0 + if name_width > 0.0 { 10.0 + name_width } else { 0.0 };
     let actions = ((available - workspace_width) / 38.0).floor().clamp(0.0, 6.0) as u8;
-    // Right cluster: icons at ~38 pt pitch, then workspace name in caps.
+    let Some(ws_resp) = draw_header_actions(app, ui, rect, t, actions) else { return };
+    // workspace name (caps)
+    let wr = Rect::from_min_size(pos2(ws_resp.rect.left() - 10.0 - name_width, rect.center().y - 10.0), vec2(name_width, 20.0));
+    let wresp = ui.interact(wr, egui::Id::unique("hdr-ws-name"), Sense::click());
+    if name_width > 0.0 {
+        app.auto.add("header.workspaceName", wr, &ws);
+        p.galley_with_override_text_color(pos2(wr.min.x + 4.0, rect.center().y - wg.size().y / 2.0), wg, if wresp.hovered() { t.text } else { t.text_dim });
+    }
+    let mut controls_left = if name_width > 0.0 { wr.left() } else { ws_resp.rect.left() };
+    // Community: match PhotoCraft's plain outline button; also available in Help on narrow windows.
+    let label = "Discord";
+    let g = p.layout_no_wrap(label.to_string(), Tokens::ui(12.0), t.text_dim);
+    let w = g.size().x + 36.0;
+    let r = Rect::from_min_size(pos2(controls_left - w - 10.0, rect.center().y - 14.0), vec2(w, 28.0));
+    if r.left() >= left_end + 10.0 {
+        let resp = ui.interact(r, egui::Id::unique("hdr-discord"), Sense::click()).on_hover_text(tl!("Join the ArtCraft Discord (discord.gg/artcraft)"));
+        app.auto.add("header.discord", r, "Join the ArtCraft Discord");
+        if resp.hovered() {
+            ui.painter().rect_filled(r, 4.0, t.hover);
+        }
+        let col = if resp.hovered() { t.text } else { t.text_dim };
+        icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 15.0, r.center().y), vec2(14.0, 14.0)), Icon::Chat, col);
+        ui.painter().galley_with_override_text_color(pos2(r.min.x + 28.0, r.center().y - g.size().y / 2.0), g, col);
+        controls_left = r.left();
+        if resp.clicked() {
+            crate::links::open(app, ui.ctx(), crate::links::DISCORD);
+        }
+    }
+    // Localized menus and user titles can be wider than English. Use the actual gap.
+    let left = left_end + 12.0;
+    let right = controls_left - 12.0;
+    if right > left + 40.0 {
+        let mut job = egui::text::LayoutJob::simple_singleline(title, Tokens::ui(14.0), t.tab_text_active);
+        job.wrap.max_width = right - left;
+        job.wrap.max_rows = 1;
+        let galley = p.layout_job(job);
+        let half = galley.size().x / 2.0;
+        let center = if rect.center().x - half >= left && rect.center().x + half <= right { rect.center().x } else { (left + right) / 2.0 };
+        p.with_clip_rect(Rect::from_min_max(pos2(left, rect.min.y), pos2(right, rect.max.y))).galley(
+            pos2(center - half, rect.center().y - galley.size().y / 2.0),
+            galley,
+            t.tab_text_active,
+        );
+    }
+    show_workspace_popup(app, ui, pos2(wr.min.x, rect.max.y + 4.0), &ws_resp, &wresp);
+}
+
+/// Icons at ~38 pt pitch, from the right. Returns the workspace button, which is always kept.
+fn draw_header_actions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, t: Tokens, actions: u8) -> Option<egui::Response> {
     let mut rx = rect.max.x - 14.0;
     let mut btn = |ui: &mut egui::Ui, icon: Icon, id: &str, tip: &str, app: &mut FilmcraftApp| -> Option<egui::Response> {
         let priority = match id {
@@ -145,59 +199,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             crate::panels::settings::cycle_appearance(app, ui.ctx());
         }
     }
-    let Some(ws_resp) = btn(ui, Icon::Workspaces, "workspaces", tl!("Workspaces"), app) else { return };
-    // workspace name (caps)
-    let wr = Rect::from_min_size(pos2(ws_resp.rect.left() - 10.0 - name_width, rect.center().y - 10.0), vec2(name_width, 20.0));
-    let wresp = ui.interact(wr, egui::Id::unique("hdr-ws-name"), Sense::click());
-    if name_width > 0.0 {
-        app.auto.add("header.workspaceName", wr, &ws);
-        p.galley_with_override_text_color(pos2(wr.min.x + 4.0, rect.center().y - wg.size().y / 2.0), wg, if wresp.hovered() { t.text } else { t.text_dim });
-    }
-    let mut controls_left = if name_width > 0.0 { wr.left() } else { ws_resp.rect.left() };
-    // Community: match PhotoCraft's plain outline button; also available in Help on narrow windows.
-    {
-        let label = "Discord";
-        let g = p.layout_no_wrap(label.to_string(), Tokens::ui(12.0), t.text_dim);
-        let w = g.size().x + 36.0;
-        let r = Rect::from_min_size(pos2(controls_left - w - 10.0, rect.center().y - 14.0), vec2(w, 28.0));
-        if r.left() >= left_end + 10.0 {
-            let resp = ui.interact(r, egui::Id::unique("hdr-discord"), Sense::click()).on_hover_text(tl!("Join the ArtCraft Discord (discord.gg/artcraft)"));
-            app.auto.add("header.discord", r, "Join the ArtCraft Discord");
-            if resp.hovered() {
-                ui.painter().rect_filled(r, 4.0, t.hover);
-            }
-            let col = if resp.hovered() { t.text } else { t.text_dim };
-            icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 15.0, r.center().y), vec2(14.0, 14.0)), Icon::Chat, col);
-            ui.painter().galley_with_override_text_color(pos2(r.min.x + 28.0, r.center().y - g.size().y / 2.0), g, col);
-            controls_left = r.left();
-            if resp.clicked() {
-                crate::links::open(app, ui.ctx(), crate::links::DISCORD);
-            }
-        }
-        // Localized menus and user titles can be wider than English. Use the actual gap.
-        let left = left_end + 12.0;
-        let right = controls_left - 12.0;
-        if right > left + 40.0 {
-            let mut job = egui::text::LayoutJob::simple_singleline(title, Tokens::ui(14.0), t.tab_text_active);
-            job.wrap.max_width = right - left;
-            job.wrap.max_rows = 1;
-            let galley = p.layout_job(job);
-            let half = galley.size().x / 2.0;
-            let center = if rect.center().x - half >= left && rect.center().x + half <= right { rect.center().x } else { (left + right) / 2.0 };
-            p.with_clip_rect(Rect::from_min_max(pos2(left, rect.min.y), pos2(right, rect.max.y))).galley(
-                pos2(center - half, rect.center().y - galley.size().y / 2.0),
-                galley,
-                t.tab_text_active,
-            );
-        }
-    }
+    btn(ui, Icon::Workspaces, "workspaces", tl!("Workspaces"), app)
+}
+
+fn show_workspace_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui, anchor: egui::Pos2, ws_resp: &egui::Response, wresp: &egui::Response) {
     let popup_id = egui::Id::unique("workspaces-popup");
     if ws_resp.clicked() || wresp.clicked() {
         ui.ctx().data_mut(|d| d.insert_temp(popup_id, true));
     }
     let open = ui.ctx().data(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
     if open {
-        let anchor = pos2(wr.min.x, rect.max.y + 4.0);
         let area = egui::Area::new(popup_id.with("area")).order(egui::Order::Foreground).fixed_pos(anchor).show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
