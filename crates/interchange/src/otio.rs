@@ -440,11 +440,17 @@ fn collect_timelines<'v>(v: &'v Value, out: &mut Vec<&'v Value>) {
     }
 }
 
+/// The rate of the first item a sequence can run at. Items at an audio sample rate (a gap or
+/// clip at 48000 is valid OTIO) are skipped: no sequence runs at 48000 fps.
 fn first_rate(v: &Value) -> Option<FrameRate> {
     if let Some(sr) = v.get("source_range").filter(|s| !s.is_null()) {
-        return sr.get("duration").and_then(read_rate);
+        return sr.get("duration").and_then(read_rate).filter(|&r| sequence_rate(r));
     }
     v.get("children").and_then(Value::as_array).into_iter().flatten().find_map(first_rate)
+}
+
+fn sequence_rate(rate: FrameRate) -> bool {
+    settings_for(rate, 1920, 1080, false).validate().is_ok()
 }
 
 impl Imp<'_, '_> {
@@ -496,7 +502,7 @@ impl Imp<'_, '_> {
         let meta = fc(tl).or_else(|| fc(stack));
         self.merge_palette(meta);
 
-        let rate = tl.get("global_start_time").and_then(read_rate).or_else(|| first_rate(stack)).unwrap_or_default();
+        let rate = tl.get("global_start_time").and_then(read_rate).filter(|&r| sequence_rate(r)).or_else(|| first_rate(stack)).unwrap_or_default();
         let id = self.sequence(stack, &name, meta, rate);
         if let Some(st) = tl.get("global_start_time").and_then(read_rt)
             && let Some(s) = self.b.p.sequence_mut(id)
