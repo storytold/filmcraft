@@ -339,6 +339,7 @@ fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
         push(elems, format!("{pre}.{key}"), &r, label);
         if r.changed() {
             p[key] = json!(v);
+            ui.ctx().request_repaint();
         }
     });
 }
