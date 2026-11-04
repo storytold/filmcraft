@@ -914,8 +914,9 @@ fn rebase_unedited_video(file: &mut Mp4File, vtrack: Option<usize>, audios: &mut
 /// frame of a delayed video track was never shown). Fragmented files, and edit lists that add up to
 /// nothing or to more than a [`Tick`] holds, keep the media duration.
 ///
-/// Edit durations are whole movie-timescale units (milliseconds in ffmpeg / x264 files and our own
-/// exports), so 320 frames at 24 fps (13.3333 s) are written as 13 333 and would read as 319 frames.
+/// Edit durations are whole movie-timescale units (milliseconds in ffmpeg / x264 files and in our
+/// own exports without encoded audio; those with it count audio samples), so 320 frames at 24 fps
+/// (13.3333 s) are written as 13 333 and would read as 319 frames.
 /// When the last edit plays the media to its end, that edit lasts exactly until the last picture's
 /// presentation ends (its `pts` plus duration: with B-frames that is past `mdhd`, which ends on the
 /// decode timeline). "To its end" means off by less than rounding can be: less than one movie unit

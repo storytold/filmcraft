@@ -134,6 +134,8 @@ pub(crate) fn export(
     } else {
         let mut opts = WriterOptions::new(Brand::Mp4);
         opts.metadata = settings.metadata.udta();
+        // a movie timescale that counts samples lets the audio edit end on the last one rendered
+        opts.movie_timescale = a.sr.max(1);
         let movie_ts = opts.movie_timescale;
         let mut mux = Mp4Writer::new(Out::create(settings)?, opts).map_err(|e| ExportError::Io(e.to_string()))?;
         let mut track = TrackConfig::new(entry, a.sr);

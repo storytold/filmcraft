@@ -624,33 +624,44 @@ fn aac_audio_writes_m4a_and_adts() {
 
 /// An AAC encoder pads its last frame. The audio track's edit list skips the priming and ends at
 /// the last rendered sample, so the padding is not presented and the movie is no longer than the
-/// range: it used to run on to the end of the last encoded frame.
+/// range: it used to run on to the end of the last encoded frame. The movie timescale counts
+/// samples, so a range that is not a whole number of milliseconds (23 frames at 24 fps: 46 000
+/// samples, 958⅓ ms) presents every rendered sample too.
 #[test]
 fn aac_tracks_present_exactly_the_rendered_samples() {
     let (p, seq, m) = matte([0.0, 0.0, 1.0, 1.0], 64, 36, Some(-6.0));
     let dir = Scratch::new("aac-edits");
-    // one second at 48 kHz: 48 000 samples and 1000 ticks of the movie timescale
-    let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND)));
-    for (format, name) in [(Format::Aac, "a.m4a"), (Format::H264, "a.mp4")] {
-        let path = dir.path(name);
-        let settings = ExportSettings {
-            format,
-            path: path.clone(),
-            range,
-            hardware_encoding: HardwareEncoding::Off,
-            gpu_rendering: GpuRendering::Off,
-            audio: AudioSettings { codec: AudioCodec::Aac, ..Default::default() },
-            ..Default::default()
-        };
-        export(&p, seq, &settings, &m, &Progress::default()).unwrap();
-        let file = filmcraft_isobmff::open(std::fs::read(&path).unwrap()).unwrap();
-        let audio = &file.tracks[file.track_of_kind(filmcraft_isobmff::TrackKind::Audio).unwrap()];
-        assert_eq!(file.timescale, 1000, "{name}");
-        assert_eq!(audio.edits.len(), 1, "{name}: {:?}", audio.edits);
-        assert!(audio.edits[0].media_time > 0, "{name}: the edit skips the priming");
-        assert_eq!(audio.edits[0].segment_duration, 1000, "{name}: {:?}", audio.edits);
-        assert_eq!(audio.tkhd_duration, 1000, "{name}");
-        assert_eq!(file.duration, 1000, "{name}: the movie lasts as long as the range");
+    // 24 and 23 frames of the 24 fps fixture at 48 kHz: 2000 samples a frame
+    for (frames, samples) in [(24i64, 48_000u64), (23, 46_000)] {
+        let range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(frames)));
+        for (format, name) in [(Format::Aac, "a.m4a"), (Format::H264, "a.mp4")] {
+            let path = dir.path(&format!("{frames}-{name}"));
+            let settings = ExportSettings {
+                format,
+                path: path.clone(),
+                range,
+                hardware_encoding: HardwareEncoding::Off,
+                gpu_rendering: GpuRendering::Off,
+                audio: AudioSettings { codec: AudioCodec::Aac, ..Default::default() },
+                ..Default::default()
+            };
+            export(&p, seq, &settings, &m, &Progress::default()).unwrap();
+            let file = filmcraft_isobmff::open(std::fs::read(&path).unwrap()).unwrap();
+            let audio = &file.tracks[file.track_of_kind(filmcraft_isobmff::TrackKind::Audio).unwrap()];
+            let at = format!("{name}, {frames} frames");
+            assert_eq!(audio.timescale, 48_000, "{at}");
+            assert_eq!(audio.edits.len(), 1, "{at}: {:?}", audio.edits);
+            assert_eq!(audio.edits[0].media_time, 1024, "{at}: the edit skips the encoder's 1024 priming samples");
+            let edit = audio.edits[0].segment_duration;
+            assert_eq!(
+                u128::from(edit) * 48_000,
+                u128::from(samples) * u128::from(file.timescale),
+                "{at}: the edit lasts {edit} ticks of a {}-tick movie timescale, not {samples} samples",
+                file.timescale
+            );
+            assert_eq!(audio.tkhd_duration, edit, "{at}");
+            assert_eq!(file.duration, edit, "{at}: the movie lasts as long as the range");
+        }
     }
 }
 

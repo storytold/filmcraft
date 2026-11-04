@@ -20,7 +20,9 @@ use crate::{ExportError, ExportSettings, Result};
 /// The edit list of an encoded audio track in an MPEG-4 file: skip the encoder's `priming`
 /// samples, then present the `samples` the range rendered and no more, so the padding an encoder
 /// adds to fill its last frame is not played and does not lengthen the movie. The duration is in
-/// the movie timescale `movie_ts`, rounded down as the muxer rounds the other durations.
+/// the movie timescale `movie_ts`. The writers set that to the sample rate, so the edit ends on the
+/// last rendered sample; in another timescale it is rounded down, as the muxer rounds the other
+/// durations.
 pub(crate) fn encoded_audio_edits(priming: u32, samples: u64, sr: u32, movie_ts: u32) -> Vec<Edit> {
     let segment = u128::from(samples) * u128::from(movie_ts) / u128::from(sr.max(1));
     vec![Edit { segment_duration: u64::try_from(segment).unwrap_or(u64::MAX), media_time: i64::from(priming), media_rate: 0x10000 }]
