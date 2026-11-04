@@ -1,7 +1,7 @@
 //! Menu long tail (M3.11): the dialogs of Find, Create Search Bin, Project Settings (General /
 //! Scratch Disks / Ingest Settings), Get Media File Properties, Edit Offline, Source Settings,
 //! Update Metadata, Automate to Sequence, Scene Edit Detection, Normalize Mix Track, Simplify
-//! Sequence, Transcribe Sequence, Save as Template, Add Flash Cue Marker and the System
+//! Sequence, Transcribe Sequence, Save as Template, New Project from Template, Add Flash Cue Marker and the System
 //! Compatibility Report; plus the frontend side of Edit Original / Reveal Log Files (the OS
 //! opener), Reveal in Finder, Generate Audio Waveform (the timeline's peak cache), Import from
 //! Media Browser (the Media Browser selection) and View ▸ Dynamic Audio Waveforms.
@@ -69,6 +69,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "sequence.simplify" => (tl!("Simplify Sequence"), "simplify", tl!("Simplify")),
         "sequence.transcribe" => (tl!("Transcribe Sequence"), "transcribe", tl!("Transcribe")),
         "file.saveAsTemplate" => (tl!("Save as Template"), "saveTemplate", tl!("Save")),
+        "file.newProjectFromTemplate" => (tl!("New Project from Template"), "newFromTemplate", tl!("OK")),
         "markers.addFlashCue" => (tl!("Flash Cue Marker"), "flashCue", tl!("OK")),
         "help.systemCompatibilityReport" => (tl!("System Compatibility Report"), "systemReport", tl!("Close")),
         "file.newColorMatte" => (tl!("New Color Matte"), "colorMatte", tl!("OK")),
@@ -93,6 +94,7 @@ fn dialog_command(id: &str) -> Option<&'static str> {
         "sequence.simplify" => "sequence.simplify",
         "sequence.transcribe" => "sequence.transcribe",
         "file.saveAsTemplate" => "file.saveAsTemplate",
+        "file.newProjectFromTemplate" => "file.newProjectFromTemplate",
         "markers.addFlashCue" => "markers.addFlashCue",
         "file.newColorMatte" => "file.newColorMatte",
         "project.matteColor" => "project.matteColor",
@@ -346,6 +348,11 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
             (json!({"language": "auto", "track": "mix", "diarize": true}), json!({"tracks": tracks}))
         }
         "file.saveAsTemplate" => (json!({"name": s.project.name}), Value::Null),
+        "file.newProjectFromTemplate" => {
+            let templates = s.execute("file.templates", json!({})).map_err(|e| e.to_string())?;
+            let first = templates.as_array().and_then(|a| a.first()).and_then(|t| t.get("path")).cloned().unwrap_or_else(|| json!(""));
+            (json!({"template": first, "name": "Untitled"}), json!({"templates": templates}))
+        }
         "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
         "file.newColorMatte" => {
             let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
@@ -773,6 +780,18 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 check(ui, &mut elems, pre, p, "diarize", tl!("Recognize when different speakers are talking"));
             }
             "file.saveAsTemplate" => text(ui, &mut elems, pre, p, "name", tl!("Template Name:"), 240.0),
+            "file.newProjectFromTemplate" => {
+                let templates: Vec<(String, String)> = d.info["templates"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|t| Some((t["path"].as_str()?.to_string(), t["name"].as_str().unwrap_or_default().to_string()))).collect())
+                    .unwrap_or_default();
+                if templates.is_empty() {
+                    ui.label(tl!("No project templates yet. Save one with Save as Template… in the File menu."));
+                } else {
+                    combo(ui, &mut elems, "newFromTemplate.template", tl!("Template:"), &mut p["template"], &templates);
+                }
+                text(ui, &mut elems, pre, p, "name", tl!("Project Name:"), 240.0);
+            }
             "file.newColorMatte" => {
                 color(ui, &mut elems, pre, p, "color", tl!("Color:"));
                 text(ui, &mut elems, pre, p, "name", tl!("Name:"), 220.0);
@@ -902,6 +921,22 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
             }
             Ok(None)
         }
+        "file.newProjectFromTemplate" => {
+            if p["template"].as_str().is_none_or(str::is_empty) {
+                return Err(tl!("Choose a project template").into());
+            }
+            let mut q = p.clone();
+            if q["name"].as_str().is_none_or(|n| n.trim().is_empty()) {
+                q.as_object_mut().map(|m| m.remove("name"));
+            }
+            // unsaved changes: Save / Don't Save / Cancel first, then the project is replaced
+            if s.is_dirty() {
+                crate::panels::clip_dialogs::ask_before_replacing(app, "file.newProjectFromTemplate", q);
+                return Ok(None);
+            }
+            s.execute("file.newProjectFromTemplate", q).map_err(|e| e.to_string())?;
+            Ok(None)
+        }
         "file.saveAsTemplate" => {
             let r = s.execute("file.saveAsTemplate", p.clone()).map_err(|e| e.to_string())?;
             app.ui.status = tlf!("Saved template {path}", path = r["path"].as_str().unwrap_or_default());
@@ -993,7 +1028,12 @@ mod tests {
     #[test]
     fn every_command_with_a_menu_dialog_can_be_bound() {
         // project.matteColor recolours the selected matte and needs a colour: the engine refuses it
-        // without one, so its parameter is required and its dialog is reached from the matte itself
-        crate::panels::clip_dialogs::tests::assert_dialog_commands_bindable("menu_dialogs::meta", |id| meta(id).is_some(), &["project.matteColor"]);
+        // without one, so its parameter is required and its dialog is reached from the matte itself.
+        // file.newProjectFromTemplate needs a template the same way: the engine opens none by itself.
+        crate::panels::clip_dialogs::tests::assert_dialog_commands_bindable(
+            "menu_dialogs::meta",
+            |id| meta(id).is_some(),
+            &["project.matteColor", "file.newProjectFromTemplate"],
+        );
     }
 }

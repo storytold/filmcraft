@@ -333,6 +333,67 @@ fn color_matte_dialog_picks_and_changes_the_color() {
     assert!(!d.dialog_open());
 }
 
+/// #3578: File ▸ New ▸ Project from Template… lists the saved project templates and starts a new
+/// project from the chosen one; with unsaved changes Save / Don't Save / Cancel is asked first.
+#[test]
+fn new_project_from_template_lists_the_saved_templates() {
+    let dir = std::env::temp_dir().join(format!("fc-ui-project-templates-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut d = Driver::new();
+    d.app().session.prefs_path = Some(dir.join("preferences.json"));
+    let menus = d.ok("ui.menu.list", json!({}));
+    let entry = menus.as_array().unwrap().iter().find(|m| m["id"] == "file.newProjectFromTemplate").cloned().expect("File ▸ New ▸ Project from Template…");
+    assert_eq!(entry["path"], json!(["File", "New"]));
+    assert_eq!(entry["enabled"], true);
+    // no template saved yet: nothing to pick, and OK keeps the dialog open
+    assert_eq!(d.menu("file.newProjectFromTemplate")["dialog"], "newFromTemplate");
+    assert!(!d.has("newFromTemplate.template") && d.has("newFromTemplate.name"));
+    d.click("newFromTemplate.ok");
+    assert!(d.dialog_open());
+    d.click("newFromTemplate.cancel");
+    assert!(!d.dialog_open());
+
+    d.exec("file.saveAsTemplate", json!({"name": "Interview"}));
+    d.exec("file.saveAsTemplate", json!({"name": "Vlog"}));
+    let items = d.app().session.project.items.len();
+    let vlog = dir.join("Templates").join("Vlog.fcproj").to_string_lossy().to_string();
+    d.menu("file.newProjectFromTemplate");
+    assert!(d.has("newFromTemplate.template"));
+    let first = d.app().ui.extras.dialog.as_ref().unwrap().params["template"].clone();
+    assert_eq!(first, json!(dir.join("Templates").join("Interview.fcproj").to_string_lossy()));
+    d.ok("ui.set", json!({"menuDialog": {"template": vlog, "name": "Episode 1"}}));
+    d.click("newFromTemplate.ok");
+    assert!(!d.dialog_open());
+    let s = &d.app().session;
+    assert_eq!(s.project.name, "Episode 1");
+    assert_eq!(s.project.items.len(), items);
+    assert!(s.path.is_none() && !s.is_dirty());
+
+    // unsaved changes: Cancel keeps them
+    d.exec("file.newBin", json!({"name": "Unsaved"}));
+    assert!(d.app().session.is_dirty());
+    d.menu("file.newProjectFromTemplate");
+    d.click("newFromTemplate.ok");
+    assert!(!d.dialog_open());
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|c| c.command.as_str()), Some("file.newProjectFromTemplate"));
+    assert!(d.has("templateProject.save") && d.has("templateProject.dontSave"));
+    d.click("templateProject.cancel");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert_eq!(d.app().session.project.name, "Episode 1");
+    assert!(d.app().session.is_dirty());
+    // Don't Save: the template replaces them
+    d.menu("file.newProjectFromTemplate");
+    d.click("newFromTemplate.ok");
+    d.click("templateProject.dontSave");
+    assert!(d.app().ui.clip_dialog.is_none());
+    let s = &d.app().session;
+    assert_eq!(s.project.name, "Untitled");
+    assert_eq!(s.project.items.len(), items);
+    assert!(!s.is_dirty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn reveal_in_finder_opens_an_imported_clip() {
     let dir = std::env::temp_dir().join(format!("fc-ui-reveal-{}", std::process::id()));
