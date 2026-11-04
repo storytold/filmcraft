@@ -648,6 +648,20 @@ pub(crate) fn param_row(
     x += 14.0;
     let vx = r.min.x + (r.width() * 0.5).max(150.0);
     row_label(ui, pos2(x, r.center().y), crate::i18n::t(pd.label), vx - 6.0 - x, Tokens::ui(12.0), t.text);
+    // double-clicking a property's name resets it, as the reset button at the row's end does (a
+    // click on the value itself starts typing, so the name is the double-click target)
+    if mask.is_none() {
+        let name = Rect::from_min_max(pos2(x, r.min.y), pos2(vx - 6.0, r.max.y));
+        // the instance index tells two copies of one effect apart; only the visible part of a row
+        // scrolled partly out of view is registered
+        let shown = name.intersect(ui.clip_rect());
+        if shown.is_positive() {
+            app.auto.add(&format!("effectControls.{}.{idx}.{}.name", e.effect, pkey), shown, crate::i18n::t(pd.label));
+        }
+        if row.double_clicked() && row.interact_pointer_pos().is_some_and(|p| name.contains(p)) {
+            actions.push(("effects.resetParam".into(), json!({"clip": clip.0, "effect": idx, "param": pd.id})));
+        }
+    }
     let value = param.value_at(mt);
     let mut vui = ui.new_child(
         egui::UiBuilder::new()

@@ -46,7 +46,7 @@ impl SourceView {
         json!({
             "item": self.item.0, "media": self.media.0, "start": self.start.0, "end": self.end.0, "fps": self.rate.as_f64(),
             "playhead": playhead.0, "markIn": self.mark_in.map(|t| t.0), "markOut": self.mark_out.map(|t| t.0),
-            "markers": self.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "name": m.name, "duration": m.duration.0})).collect::<Vec<_>>(),
+            "markers": self.markers.iter().map(|m| json!({"id": m.id.0, "start": m.start.0, "name": m.name, "duration": m.duration.0, "color":m.color_value(), "author":m.author, "comment":m.comment, "url":m.url, "kind":m.kind})).collect::<Vec<_>>(),
             "subclip": self.subclip.map(|(r, restrict)| json!({"start": r.start.0, "end": r.end().0, "restrictTrims": restrict})),
         })
     }
@@ -115,9 +115,9 @@ pub(super) fn items_p(s: &Session, p: &Value) -> Vec<ItemId> {
 /// Fold the undo steps pushed since the history had `n0` entries into one step named `label`.
 pub(crate) fn collapse_history(s: &mut Session, n0: usize, label: &str) {
     if s.history.undo.len() > n0 {
-        let first = s.history.undo[n0].1.clone();
+        let (first, origin) = (s.history.undo[n0].1.clone(), s.history.undo[n0].2.clone());
         s.history.undo.truncate(n0);
-        s.history.undo.push((label.to_string(), first));
+        s.history.undo.push((label.to_string(), first, origin));
     }
 }
 
