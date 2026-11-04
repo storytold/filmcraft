@@ -227,6 +227,140 @@ fn overwritten_partner_relinks_to_the_surviving_copy() {
 }
 
 #[test]
+fn redundant_request_keeps_reordered_pairs_on_matching_tracks() {
+    let mut fx = Fx::with_track_counts(3, 3);
+    let (v1, v2, v3, a1, a2, a3) = (fx.v(0), fx.v(1), fx.v(2), fx.a(0), fx.a(1), fx.a(2));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut next = fx.next + 1;
+    copy_items(
+        &mut fx.seq,
+        &[(video, v2, f(20)), (video, v3, f(20)), (audio, a3, f(20)), (audio, a2, f(20)), (video, v3, f(20))],
+        false,
+        &mut Fx::ctx(&mut next),
+    )
+    .unwrap();
+    let link_at = |track| fx.seq.track(track).unwrap().items[0].link;
+    assert!(link_at(v2).is_some());
+    assert_eq!(link_at(v2), link_at(a2));
+    assert_eq!(link_at(v3), link_at(a3));
+    assert_ne!(link_at(v2), link_at(v3));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn redundant_request_keeps_an_explicitly_offset_pair_linked() {
+    let mut fx = Fx::new();
+    let (v1, v2, a1, a2) = (fx.v(0), fx.v(1), fx.a(0), fx.a(1));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut next = fx.next + 1;
+    let copied = copy_items(&mut fx.seq, &[(video, v2, f(20)), (audio, a2, f(22)), (video, v2, f(20))], false, &mut Fx::ctx(&mut next)).unwrap();
+    assert_eq!(copied.len(), 2);
+    let picture = &fx.seq.track(v2).unwrap().items[0];
+    let sound = &fx.seq.track(a2).unwrap().items[0];
+    assert!(picture.link.is_some());
+    assert_eq!(picture.link, sound.link);
+    assert_eq!((picture.start, sound.start), (f(20), f(22)));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn repeated_insert_copies_of_one_source_are_not_linked_partners() {
+    let mut fx = Fx::new();
+    let (v1, v2, a1) = (fx.v(0), fx.v(1), fx.a(0));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut next = fx.next + 1;
+    let copied = copy_items(&mut fx.seq, &[(video, v2, f(20)), (video, v2, f(20))], true, &mut Fx::ctx(&mut next)).unwrap();
+    assert_eq!(copied.len(), 2);
+    assert_ne!(copied[0], copied[1]);
+    assert!(copied.iter().all(|id| fx.seq.find_item(*id).unwrap().1.link.is_none()), "separate inserted roots of one source are not audio/video partners");
+}
+
+#[test]
+fn chained_redundant_requests_keep_the_whole_linked_group() {
+    for extra in 1..=4 {
+        let mut fx = Fx::with_track_counts(2, 4);
+        let (v1, v2, a1, a2, a3, a4) = (fx.v(0), fx.v(1), fx.a(0), fx.a(1), fx.a(2), fx.a(3));
+        let video = fx.put(v1, 0, 10, 0);
+        let audio = fx.put(a1, 0, 10, 0);
+        let other_audio = fx.put(a3, 0, 10, 0);
+        for id in [video, audio, other_audio] {
+            fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+        }
+        let mut moves = vec![(video, v2, f(20)), (audio, a2, f(20)), (other_audio, a4, f(20)), (video, v2, f(20)), (audio, a2, f(20))];
+        moves.extend(std::iter::repeat_n((video, v2, f(20)), extra));
+        let mut next = fx.next + 1;
+        let copied = copy_items(&mut fx.seq, &moves, false, &mut Fx::ctx(&mut next)).unwrap();
+        assert_eq!(copied.len(), 3);
+        let link = fx.seq.find_item(copied[0]).unwrap().1.link;
+        assert!(link.is_some());
+        assert!(copied.iter().all(|id| fx.seq.find_item(*id).unwrap().1.link == link));
+        fx.seq.check().unwrap();
+    }
+}
+
+#[test]
+fn equally_specific_replacement_claims_do_not_join_distinct_pairs() {
+    let mut fx = Fx::with_track_counts(2, 3);
+    let (v1, v2, a1, a2, a3) = (fx.v(0), fx.v(1), fx.a(0), fx.a(1), fx.a(2));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    for id in [video, audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut next = fx.next + 1;
+    let copied = copy_items(
+        &mut fx.seq,
+        &[(video, v2, f(20)), (audio, a2, f(20)), (video, v2, f(20)), (audio, a3, f(20)), (video, v2, f(20))],
+        false,
+        &mut Fx::ctx(&mut next),
+    )
+    .unwrap();
+    assert_eq!(copied.len(), 3);
+    assert!(copied.iter().all(|id| fx.seq.find_item(*id).unwrap().1.link.is_none()));
+    fx.seq.check().unwrap();
+}
+
+#[test]
+fn repeated_subgroup_copies_keep_the_third_linked_member() {
+    let mut fx = Fx::with_track_counts(2, 4);
+    let (v1, v2, a1, a2, a3, a4) = (fx.v(0), fx.v(1), fx.a(0), fx.a(1), fx.a(2), fx.a(3));
+    let video = fx.put(v1, 0, 10, 0);
+    let audio = fx.put(a1, 0, 10, 0);
+    let other_audio = fx.put(a3, 0, 10, 0);
+    for id in [video, audio, other_audio] {
+        fx.seq.find_item_mut(id).unwrap().1.link = Some(7);
+    }
+    let mut next = fx.next + 1;
+    let copied = copy_items(
+        &mut fx.seq,
+        &[(video, v2, f(20)), (audio, a2, f(20)), (other_audio, a4, f(20)), (video, v2, f(20)), (audio, a2, f(20))],
+        false,
+        &mut Fx::ctx(&mut next),
+    )
+    .unwrap();
+    assert_eq!(copied.len(), 3);
+    let link = fx.seq.find_item(copied[0]).unwrap().1.link;
+    assert!(link.is_some());
+    assert!(
+        copied.iter().all(|id| fx.seq.find_item(*id).unwrap().1.link == link),
+        "the surviving subgroup replaces its overwritten partners without stranding the third member"
+    );
+    fx.seq.check().unwrap();
+}
+
+#[test]
 fn surviving_linked_pair_keeps_its_partner_when_an_earlier_sound_copy_is_overwritten() {
     let mut fx = Fx::new();
     let (v1, v2, v3, a1, a2) = (fx.v(0), fx.v(1), fx.v(2), fx.a(0), fx.a(1));

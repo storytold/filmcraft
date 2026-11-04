@@ -297,3 +297,68 @@ fn captions_never_overlap_with_dense_words() {
     let b = caption_blocks(&words, &rules, R);
     check_blocks(&b, &rules);
 }
+
+/// Higher-track coverage merges into sorted disjoint ranges and answers like the ranges it was
+/// built from (a binary search, not a scan of every clip per word).
+#[test]
+fn coverage_merges_ranges_and_matches_a_linear_scan() {
+    let r = |a: i64, b: i64| TimeRange::from_bounds(Tick(a), Tick(b));
+    let ranges = [r(10, 20), r(15, 30), r(30, 35), r(50, 60), r(70, 70), r(90, 80), r(-5, 0)];
+    let mut c = Coverage::default();
+    c.add(ranges[..3].to_vec());
+    c.add(ranges[3..].to_vec());
+    assert_eq!(c.0, vec![(Tick(-5), Tick(0)), (Tick(10), Tick(35)), (Tick(50), Tick(60))]);
+    for t in -10..100 {
+        assert_eq!(c.contains(Tick(t)), ranges.iter().any(|x| x.contains(Tick(t))), "t = {t}");
+    }
+}
+
+fn sw(text: &str, i: usize) -> SeqWord {
+    SeqWord {
+        text: text.into(),
+        start: Tick(i as i64),
+        end: Tick(i as i64 + 1),
+        clip: ClipId(1),
+        item: MEDIA,
+        index: i,
+        track: 0,
+        speaker: None,
+        confidence: 1.0,
+    }
+}
+
+/// The straightforward search: restart the query at every position.
+fn naive_search(words: &[SeqWord], query: &str) -> Vec<std::ops::Range<usize>> {
+    let q: Vec<String> = query.split_whitespace().map(filmcraft_project::transcript::normalize_word).filter(|s| !s.is_empty()).collect();
+    let norm: Vec<String> = words.iter().map(SeqWord::normalized).collect();
+    let mut out = Vec::new();
+    for i in 0..norm.len().saturating_sub(q.len().saturating_sub(1)) {
+        if !q.is_empty() && q.iter().enumerate().all(|(k, qw)| if k + 1 == q.len() { norm[i + k].starts_with(qw.as_str()) } else { norm[i + k] == *qw }) {
+            out.push(i..i + q.len());
+        }
+    }
+    out
+}
+
+#[test]
+fn phrase_search_matches_the_plain_search_on_repeated_words() {
+    let mut x = 12345u32;
+    let mut next = || {
+        x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        (x >> 16) as usize
+    };
+    for _ in 0..300 {
+        let words: Vec<SeqWord> = (0..(next() % 30)).map(|i| sw(["a", "ab", "b"][next() % 3], i)).collect();
+        let query: Vec<&str> = (0..(1 + next() % 5)).map(|_| ["a", "ab", "b"][next() % 3]).collect();
+        let query = query.join(" ");
+        assert_eq!(search(&words, &query), naive_search(&words, &query), "{query:?}");
+    }
+}
+
+#[test]
+fn a_long_repeated_prefix_does_not_make_search_quadratic() {
+    let words: Vec<SeqWord> = (0..20_000).map(|i| sw("a", i)).collect();
+    let query = format!("{}b", "a ".repeat(5_000));
+    // (a quadratic search would need ~10^8 comparisons here; the result is the check, not a clock)
+    assert!(search(&words, &query).is_empty());
+}

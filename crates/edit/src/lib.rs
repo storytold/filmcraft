@@ -646,11 +646,11 @@ pub fn copy_items(seq: &mut Sequence, moves: &[(ClipId, TrackId, Tick)], insert_
         it.start = (*start).max(Tick::ZERO);
         placed.push((*dest, it));
     }
-    let (copies, planned_links) = plan_copy_identities(seq, moves, &mut placed, ctx)?;
+    let (copies, planned_links) = plan_copy_identities(seq, moves, &mut placed, insert_mode, ctx)?;
     let (_, fragment_roots) =
         if insert_mode { (insert(&mut work, placed, ctx)?, HashMap::new()) } else { overwrite_with_fragment_roots(&mut work, placed, ctx)? };
     let copied_fragments = copied_fragments(&work, &copies, &fragment_roots)?;
-    relink_broken_groups(&mut work, &planned_links);
+    relink_broken_groups(&mut work, &planned_links, insert_mode);
     unlink_lone_fragments(&mut work, &copied_fragments, &fragment_roots);
     let carried = carried_copy_transitions(seq, &work, &copies, &fragment_roots, ctx);
     place_carried_transitions(&mut work, carried)?;
@@ -676,13 +676,20 @@ fn plan_copy_identities(
     seq: &Sequence,
     moves: &[(ClipId, TrackId, Tick)],
     placed: &mut [(TrackId, TrackItem)],
+    insert_mode: bool,
     ctx: &mut EditCtx,
 ) -> Result<(Vec<CopyRequest>, HashMap<u64, Vec<CopyRequest>>)> {
     let mut group_counts: HashMap<(u64, Tick), HashMap<ClipId, usize>> = HashMap::new();
     let mut group_destinations: HashMap<(u64, Tick), HashMap<ClipId, HashSet<TrackId>>> = HashMap::new();
     let mut link_source_counts: HashMap<u64, HashMap<ClipId, usize>> = HashMap::new();
+    let mut landings = HashSet::new();
     for ((source, dest, _), (_, it)) in moves.iter().zip(placed.iter()) {
         if let Some(link) = it.link {
+            // Identical overwrite requests leave one copy at that landing. Counting them twice
+            // changes pairing even though the earlier copy cannot survive. Inserts retain both.
+            if !insert_mode && !landings.insert((*source, *dest, it.start)) {
+                continue;
+            }
             let old_start = seq.find_item(*source).ok_or(EditError::NoItem(*source))?.1.start;
             let group = (link, it.start - old_start);
             *group_counts.entry(group).or_default().entry(*source).or_default() += 1;
@@ -770,37 +777,36 @@ fn copied_fragments(work: &Sequence, copies: &[CopyRequest], fragment_roots: &Ha
     Ok(out)
 }
 
-/// A planned group keeps its link while its members survive. When one member was overwritten,
-/// only a later singleton copy of that same source at that exact landing can take its place.
-/// Two broken groups are never joined just because their survivors share the same source link
-/// and time: a replacement claimed by more than one group stays where it is.
-fn relink_broken_groups(work: &mut Sequence, planned_links: &HashMap<u64, Vec<CopyRequest>>) {
-    let mut singleton_replacements: HashMap<(ClipId, TrackId, Tick), Vec<(ClipId, u64)>> = HashMap::new();
+/// Exact source/track/time slots describe a copy cohort. Nested duplicate requests share a
+/// cohort only when one containing slot-set includes every alternative; incomparable plans
+/// retain their own links. A whole planned group moves together, preserving intact pairs.
+fn relink_broken_groups(work: &mut Sequence, planned_links: &HashMap<u64, Vec<CopyRequest>>, insert_mode: bool) {
+    if insert_mode {
+        return;
+    }
+    type Landing = (ClipId, TrackId, Tick);
+    let required: HashMap<u64, HashSet<Landing>> =
+        planned_links.iter().map(|(&link, members)| (link, members.iter().map(|m| (m.0, m.1, m.2)).collect())).collect();
     for (&provisional, members) in planned_links {
-        if let [only] = members.as_slice() {
-            let &(source, dest, delta, id) = only;
-            if work.find_item(id).and_then(|(_, it)| it.link) == Some(provisional) {
-                singleton_replacements.entry((source, dest, delta)).or_default().push((id, provisional));
+        let Some(slots) = required.get(&provisional) else { continue };
+        let mut greatest: Option<(u64, &HashSet<Landing>)> = None;
+        for (&candidate, candidate_slots) in &required {
+            if slots.is_subset(candidate_slots)
+                && greatest.is_none_or(|(id, current)| candidate_slots.len() > current.len() || (candidate_slots.len() == current.len() && candidate < id))
+            {
+                greatest = Some((candidate, candidate_slots));
             }
         }
-    }
-    let mut proposals: HashMap<ClipId, Vec<u64>> = HashMap::new();
-    for (&provisional, members) in planned_links {
-        if members.len() < 2 || !members.iter().any(|m| work.find_item(m.3).is_some()) {
+        let Some((link, containing)) = greatest else { continue };
+        if required.values().filter(|other| slots.is_subset(other)).any(|other| !other.is_subset(containing)) {
             continue;
         }
-        for missing in members.iter().filter(|m| work.find_item(m.3).is_none()) {
-            if let Some(candidates) = singleton_replacements.get(&(missing.0, missing.1, missing.2))
-                && let [(replacement, _)] = candidates.as_slice()
+        for &(_, _, _, id) in members {
+            if let Some((_, it)) = work.find_item_mut(id)
+                && it.link == Some(provisional)
             {
-                proposals.entry(*replacement).or_default().push(provisional);
+                it.link = Some(link);
             }
-        }
-    }
-    for (replacement, claims) in proposals {
-        let [provisional] = claims.as_slice() else { continue };
-        if let Some((_, it)) = work.find_item_mut(replacement) {
-            it.link = Some(*provisional);
         }
     }
 }

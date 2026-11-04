@@ -550,7 +550,10 @@ impl MediaSource for SlateSource {
         Ok(Arc::new((*f).clone().with_pts(req.time)))
     }
     fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
-        Ok(AudioBuffer::silence(sample_rate, self.info.audio().map_or(2, |a| a.channels as usize), frames))
+        // the shape comes from the project's stored metadata (the media is offline)
+        let channels = self.info.audio().map_or(2, |a| a.channels as usize);
+        filmcraft_media::validate_audio_buffer_shape(channels, frames)?;
+        Ok(AudioBuffer::silence(sample_rate, channels, frames))
     }
 }
 
