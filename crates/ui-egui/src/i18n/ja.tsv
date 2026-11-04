@@ -3731,3 +3731,15 @@
 	Previous	前へ
 	Next	次へ
 	Enter a valid HH:MM:SS:FF timecode	有効なタイムコードを HH:MM:SS:FF 形式で入力してください
+	Open Presets Folder	プリセットフォルダーを開く
+	Scan Presets Folder	プリセットフォルダーをスキャン
+	From preset file:	プリセットファイル：
+	No presets folder: the app has no data directory	プリセットフォルダーがありません：アプリにデータディレクトリがありません
+	Imported {n} preset(s)	{n} 個のプリセットを読み込みました
+	Imported {n} preset(s); {skipped} skipped	{n} 個のプリセットを読み込みました（{skipped} 個スキップ）
+	Imported {n} preset(s); {warnings} with unsupported parameters	{n} 個のプリセットを読み込みました（{warnings} 個に未対応パラメーターあり）
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	{n} 個のプリセットを読み込みました（{skipped} 個スキップ、{warnings} 個に未対応パラメーターあり）
+	Imported {n} preset(s); not imported: {error}	{n} 個のプリセットを読み込みました。読み込めませんでした：{error}
+	Preset library updated: {imported} loaded, {removed} removed	プリセットライブラリを更新しました：{imported} 個読み込み、{removed} 個削除
+	Preset library updated	プリセットライブラリを更新しました
+	Preset library is up to date	プリセットライブラリは最新です

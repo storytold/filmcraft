@@ -3723,3 +3723,15 @@
 	Previous	Anterior
 	Next	Siguiente
 	Enter a valid HH:MM:SS:FF timecode	Introduce un código de tiempo válido HH:MM:SS:FF
+	Open Presets Folder	Abrir carpeta de ajustes preestablecidos
+	Scan Presets Folder	Escanear carpeta de ajustes preestablecidos
+	From preset file:	Desde archivo de ajustes preestablecidos:
+	No presets folder: the app has no data directory	No hay carpeta de ajustes preestablecidos: la aplicación no tiene directorio de datos
+	Imported {n} preset(s)	Se importaron {n} ajustes preestablecidos
+	Imported {n} preset(s); {skipped} skipped	Se importaron {n} ajustes preestablecidos; {skipped} omitidos
+	Imported {n} preset(s); {warnings} with unsupported parameters	Se importaron {n} ajustes preestablecidos; {warnings} con parámetros no compatibles
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	Se importaron {n} ajustes preestablecidos; {skipped} omitidos, {warnings} con parámetros no compatibles
+	Imported {n} preset(s); not imported: {error}	Se importaron {n} ajustes preestablecidos; no se importó: {error}
+	Preset library updated: {imported} loaded, {removed} removed	Biblioteca de ajustes preestablecidos actualizada: {imported} cargados, {removed} eliminados
+	Preset library updated	Biblioteca de ajustes preestablecidos actualizada
+	Preset library is up to date	La biblioteca de ajustes preestablecidos está actualizada

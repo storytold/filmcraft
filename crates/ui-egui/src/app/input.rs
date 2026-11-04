@@ -46,14 +46,27 @@ impl FilmcraftApp {
             return;
         }
         let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
-        if let Ok(v) = imported
-            && let Some((pos, viewport)) = pointer
-            && self.session.prefs.timeline.drop_import_to_timeline
-        {
-            let items: Vec<filmcraft_engine::project::ItemId> =
-                v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
-            if !items.is_empty() {
-                self.pending_timeline_drop = Some((items, pos, viewport));
+        if let Ok(v) = imported {
+            if let Some(errs) = v.get("errors").and_then(serde_json::Value::as_array)
+                && !errs.is_empty()
+            {
+                self.ui.status = errs.iter().filter_map(serde_json::Value::as_str).collect::<Vec<_>>().join("; ");
+            } else if let Some(presets) = v.get("presets").and_then(serde_json::Value::as_array)
+                && !presets.is_empty()
+            {
+                if !self.ui.expanded_fx.contains(&"Presets".to_string()) {
+                    self.ui.expanded_fx.push("Presets".to_string());
+                }
+                self.ui.status = tlf!("Imported {n} preset(s)", n = presets.len());
+            }
+            if let Some((pos, viewport)) = pointer
+                && self.session.prefs.timeline.drop_import_to_timeline
+            {
+                let items: Vec<filmcraft_engine::project::ItemId> =
+                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+                if !items.is_empty() {
+                    self.pending_timeline_drop = Some((items, pos, viewport));
+                }
             }
         }
     }

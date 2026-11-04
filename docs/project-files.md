@@ -193,6 +193,16 @@ Support/FilmCraft` on macOS, `%APPDATA%\FilmCraft` on Windows, and `$XDG_DATA_HO
 `~/.local/share/filmcraft` elsewhere. A `portable.txt` file next to the executable (the Windows
 portable zip ships one) makes it `data` next to the executable instead.
 
+### Effect Presets
+
+User effect presets live in `<data dir>/presets.json`. In addition, FilmCraft creates and scans
+`<data dir>/Effect Presets` on startup (and whenever **Effects ▸ Presets ▸ Scan Presets Folder** or
+`presets.scan` runs) for `.prfpset` (Adobe Premiere Pro Effect Preset, plain XML or gzip-compressed)
+and `.json` preset packs. Dropping `.prfpset` files into `<data dir>/Effect Presets`, into the
+application window, or importing them via **File ▸ Import…** / **Effects ▸ Presets ▸ Import Presets…**
+loads their presets with their nested folder hierarchy, static parameters, animated keyframes,
+Bezier curves, and keyframe scaling/anchoring modes.
+
 ### Cost
 
 The UI thread only gives the worker thread an `Arc<Project>`: the immutable snapshot the engine
