@@ -234,7 +234,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         for (clip, it, kind) in &clips {
             let clip = *clip;
             let (hr, _) = bui.allocate_exact_size(vec2(body.width(), 18.0), Sense::hover());
-            bui.painter().rect_filled(Rect::from_min_max(row_fill(hr).min, pos2(lane.max.x, hr.max.y)), 0.0, t.section_band);
+            // the band stays in the effect list: at the top of the list the keyframe area beside the
+            // heading is the clip's bar, so a band across both would show for Audio but not Video
+            bui.painter().rect_filled(row_fill(hr), 0.0, t.section_band);
             let heading = if *kind == TrackKind::Video { tl!("Video") } else { tl!("Audio") };
             bui.painter().text(pos2(hr.min.x + 8.0, hr.center().y), Align2::LEFT_CENTER, heading, Tokens::semibold(11.5), t.text_dim);
             // a graphic with Responsive Design – Time: its clip effects below keep media time (#3361)
