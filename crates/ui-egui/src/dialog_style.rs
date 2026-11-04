@@ -5,9 +5,16 @@ use egui::{CornerRadius, Frame, Id, InnerResponse, Margin, Rect, RichText, Strok
 /// Corner radius shared by application dialog frames.
 pub const RADIUS: u8 = 6;
 
-/// Dialog body using the active panel background and separator roles.
+/// Dialog body using the active panel background and separator roles, with no inner margin: for
+/// dialogs that draw a full-width [`header`] bar and pad their own body (Export Frame, file dialogs).
 pub fn frame(t: &Tokens) -> Frame {
     Frame::new().fill(t.panel_bg).stroke(Stroke::new(1.0, t.separator)).corner_radius(RADIUS).inner_margin(0)
+}
+
+/// Themed body for a Modal whose contents start at the frame edge: egui's popup frame keeps its
+/// padding and shadow, so headings and controls stay clear of the rounded border.
+pub fn padded_frame(ctx: &egui::Context, t: &Tokens) -> Frame {
+    Frame::popup(&ctx.global_style()).fill(t.panel_bg).stroke(Stroke::new(1.0, t.separator)).corner_radius(RADIUS)
 }
 
 /// Header for blocking Modal containers and custom draggable dialogs such as Export Frame.
