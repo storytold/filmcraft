@@ -139,6 +139,13 @@ fn aac_to_wav_order(channel_config: u8) -> Option<&'static [usize]> {
     })
 }
 
+/// The number of channels AudioSpecificConfig `asc` decodes to, counting the elements of a program
+/// config element when the channel configuration is 0. `None` if it can't be read or names none.
+pub(crate) fn aac_channels(asc: &[u8]) -> Option<u32> {
+    let n = filmcraft_aac::AudioSpecificConfig::parse(asc).ok()?.channels();
+    u32::try_from(n).ok().filter(|&n| n > 0)
+}
+
 /// `channels` reordered by `order` (output channel → decoded channel). A decode whose channel count
 /// does not match the order is returned unchanged.
 fn reorder(mut channels: Vec<Vec<f32>>, order: Option<&[usize]>) -> Vec<Vec<f32>> {

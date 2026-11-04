@@ -666,8 +666,10 @@ fn audio_stream_info(t: &filmcraft_isobmff::Track, bytes: &crate::Src) -> Option
                     None => ap.sample_rate as u32,
                 }
             },
-            // the configuration is an index (7 and 12 are both eight channels), not a count
-            if a.channels() > 0 { a.channels() } else { ap.channels },
+            // the configuration is an index (7 and 12 are both eight channels), not a count; 0
+            // leaves the layout to a program config element, and a muxer may still write 2 in
+            // the sample entry (#4258)
+            if a.channels() > 0 { a.channels() } else { crate::audio::aac_channels(&a.asc).unwrap_or(ap.channels) },
             None,
         ),
         CodecConfig::Pcm(p) => (p.sample_rate as u32, p.channels, Some(p.bits as u32)),
