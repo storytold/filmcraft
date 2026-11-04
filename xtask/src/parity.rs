@@ -40,6 +40,8 @@ const MAX_DEPTH: usize = 16;
 const MAX_ITEMS: usize = 20_000;
 /// Most UTF-8 bytes retained in one expanded leaf path.
 const MAX_PATH_BYTES: usize = 4 * 1024;
+/// Nodes one reference file may make the walk visit, so ancestors that never reach a leaf are bounded too.
+const MAX_NODES: usize = 200_000;
 /// Keys holding a node's label, and its children.
 const LABEL_KEYS: [&str; 3] = ["name", "title", "label"];
 const CHILD_KEYS: [&str; 6] = ["children", "items", "submenu", "menu", "menuItems", "menu_items"];
@@ -284,7 +286,7 @@ fn reference_paths(v: &Value, area: Area) -> Result<Vec<Vec<String>>, String> {
         root = inner;
     }
     let mut out = Vec::new();
-    walk(root, &[], 0, area.min_len(), &mut out)?;
+    walk(root, &[], 0, area.min_len(), &mut out, &mut 0)?;
     Ok(out)
 }
 
@@ -322,14 +324,23 @@ fn split_path(s: &str) -> Option<Vec<String>> {
     (parts.len() >= 2 && parts.iter().all(|p| !p.is_empty())).then_some(parts)
 }
 
-fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Vec<String>>) -> Result<(), String> {
+fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Vec<String>>, nodes: &mut usize) -> Result<(), String> {
     if depth > MAX_DEPTH {
         return Err(format!("reference is nested deeper than {MAX_DEPTH} levels"));
     }
+    *nodes += 1;
+    if *nodes > MAX_NODES {
+        return Err(format!("reference has more than {MAX_NODES} nodes"));
+    }
+    // Checked before the ancestors are copied, so a long ancestor shared by many containers costs nothing.
     let with = |label: &str| {
+        let bytes = prefix.iter().try_fold(label.trim().len(), |n, part| n.checked_add(part.len()));
+        if bytes.is_none_or(|b| b > MAX_PATH_BYTES) {
+            return Err(format!("reference path has more than {MAX_PATH_BYTES} bytes"));
+        }
         let mut p = prefix.to_vec();
         p.push(label.trim().to_string());
-        p
+        Ok(p)
     };
     match v {
         Value::String(s) => match split_path(s).filter(|_| prefix.is_empty()) {
@@ -348,7 +359,7 @@ fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Ve
                             push_leaf(menus, label, min, out)?;
                         }
                     }
-                    _ => walk(el, prefix, depth + 1, min, out)?,
+                    _ => walk(el, prefix, depth + 1, min, out, nodes)?,
                 }
             }
             Ok(())
@@ -357,7 +368,7 @@ fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Ve
             Some(label) => {
                 let children = CHILD_KEYS.iter().find_map(|k| o.get(*k).filter(|c| has_entries(c)));
                 match children {
-                    Some(c) if !is_separator(label) => walk(c, &with(label), depth + 1, min, out),
+                    Some(c) if !is_separator(label) => walk(c, &with(label)?, depth + 1, min, out, nodes),
                     Some(_) => Ok(()),
                     None => push_leaf(prefix, label, min, out),
                 }
@@ -365,7 +376,7 @@ fn walk(v: &Value, prefix: &[String], depth: usize, min: usize, out: &mut Vec<Ve
             None => {
                 for (k, val) in o {
                     if has_entries(val) {
-                        walk(val, &with(k), depth + 1, min, out)?;
+                        walk(val, &with(k)?, depth + 1, min, out, nodes)?;
                     } else {
                         push_leaf(prefix, k, min, out)?;
                     }
@@ -537,15 +548,13 @@ impl Report {
         ));
         s.push_str(&format!("| {column} | Items | Same place | Elsewhere | Missing | Presence |\n|---|---|---|---|---|---|\n"));
         let mut per: Vec<(String, [usize; 3])> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
         for (p, pl) in &self.items {
             let top = area.group(p);
-            let i = match per.iter().position(|(t, _)| *t == top) {
-                Some(i) => i,
-                None => {
-                    per.push((top, [0; 3]));
-                    per.len() - 1
-                }
-            };
+            let i = *index.entry(top.clone()).or_insert_with(|| {
+                per.push((top, [0; 3]));
+                per.len() - 1
+            });
             let col = match pl {
                 Placement::Same => 0,
                 Placement::Elsewhere(_) => 1,
@@ -631,6 +640,11 @@ mod tests {
             let long = format!("File > {}", "x".repeat(MAX_PATH_BYTES));
             assert!(reference_paths(&json!([long]), area).unwrap_err().contains("bytes"));
         }
+        // a long ancestor over children that are all skipped is refused before it is copied
+        let anc = json!([{ "name": "x".repeat(MAX_PATH_BYTES + 1), "children": ["-"] }]);
+        assert!(reference_paths(&anc, Area::Menus).unwrap_err().contains("bytes"));
+        // so is a walk over more nodes than the budget, even when none becomes an item
+        assert!(reference_paths(&json!(vec![""; MAX_NODES + 1]), Area::Menus).unwrap_err().contains("nodes"));
         // odd values are skipped, not trusted
         assert_eq!(reference_paths(&json!([1, null, true, {"name": 5}, ["File"]]), Area::Menus).unwrap(), Vec::<Vec<String>>::new());
     }
