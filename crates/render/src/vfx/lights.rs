@@ -118,11 +118,12 @@ pub fn edge_glow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 }
 
 /// Sum of `a^k · src(p − k·d)` for k = 0…len (an exponentially decaying streak), by doubling.
-fn streak(src: &Image, dir: (f32, f32), len: f32) -> Image {
+/// `len` sets the decay and normalisation; `reach` (at most `len`) bounds how far the passes go.
+fn streak(src: &Image, dir: (f32, f32), len: f32, reach: f32) -> Image {
     let a = (-1.0 / len.max(1.0)).exp();
     let mut s = src.clone();
     let mut n = 1.0f32;
-    while n < len * 3.0 {
+    while n < reach * 3.0 {
         let prev = s.clone();
         let k = a.powf(n);
         let (dx, dy) = (dir.0 * n, dir.1 * n);
@@ -147,6 +148,8 @@ pub fn glint(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let hi = highlights(img, fv(e, "threshold", cx) / 100.0, 0.08);
     let rays = [2usize, 4, 6, 8][chv(e, "rays").min(3) as usize];
     let len = fv(e, "length", cx) * cx.px_scale;
+    // past the picture's extent a longer streak adds nothing but more full-image passes (its weighting still uses `len`)
+    let reach = len.clamp(0.0, (hi.w + hi.h) as f32);
     let rot = fv(e, "rotation", cx).to_radians();
     let inten = fv(e, "intensity", cx) / 100.0 * 3.0;
     let col = lin(cv(e, "color", cx));
@@ -155,7 +158,7 @@ pub fn glint(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         .into_par_iter()
         .map(|i| {
             let a = rot + std::f32::consts::TAU * i as f32 / rays as f32;
-            streak(&hi, (a.cos(), a.sin()), len * 0.35)
+            streak(&hi, (a.cos(), a.sin()), len * 0.35, reach * 0.35)
         })
         .collect();
     let mut acc = Image::new(img.w, img.h);

@@ -1190,6 +1190,27 @@ fn builtin_presets_are_valid_and_unique() {
     assert_eq!(back.settings.adaptive_bitrate, Some(0.2));
 }
 
+/// The short-form presets: 9:16 1080×1920 H.264 filling the frame at the sequence's rate, with
+/// loudness normalization on at the platforms' level, and the sharing site's own bitrate.
+#[test]
+fn short_form_presets_are_vertical_and_loudness_normalized() {
+    for (name, kbps, max_kbps) in
+        [("TikTok 1080×1920", 10_000, 12_000), ("Instagram Reels 1080×1920", 8_000, 10_000), ("YouTube Shorts 1080×1920", 12_000, 16_000)]
+    {
+        let p = presets::find_builtin(name).unwrap_or_else(|| panic!("{name} is a built-in preset"));
+        let s = &p.settings;
+        assert_eq!((p.category.as_str(), s.format, s.frame_size, s.frame_rate), ("Web & Social", Format::H264, Some((1080, 1920)), None), "{name}");
+        assert_eq!(s.scaling, Scaling::ScaleToFill, "{name}");
+        assert_eq!((s.bitrate_kbps, s.max_bitrate_kbps, s.bitrate_mode), (kbps, Some(max_kbps), BitrateMode::Vbr1Pass), "{name}");
+        assert_eq!((s.audio.codec, s.audio.sample_rate), (AudioCodec::Aac, Some(48_000)), "{name}");
+        let l = &s.effects.loudness;
+        assert!(l.enabled, "{name}");
+        assert_eq!((l.target_lufs, l.true_peak_dbtp), (presets::SHORT_FORM_LUFS, presets::SHORT_FORM_PEAK_DBTP), "{name}");
+        // found whatever the case, as `--preset` and the preset browser look names up
+        assert_eq!(presets::find_builtin(&name.to_lowercase()).map(|p| p.name), Some(name.to_string()));
+    }
+}
+
 /// #108: the default 320 kbps is more than AAC can carry in stereo at 22.05 kHz (6 bits per sample
 /// and channel). The export failed with "bitrate out of range"; it is now capped to the limit.
 #[test]
