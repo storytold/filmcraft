@@ -141,11 +141,15 @@ fn aac_to_wav_order(channel_config: u8) -> Option<&'static [usize]> {
 }
 
 /// [`aac_to_wav_order`] for a stream. A program config element lists front, side, back and LFE
-/// elements in that order, so one with the elements of channel configuration 3–6 has its speakers
-/// (#4258). Any other list has no speaker order we can tell, and keeps the decoded order.
+/// elements in that order, so one that opens with a centre and a front pair and goes on with the
+/// elements of channel configuration 3–6 has its speakers (#4258). Any other list has no speaker
+/// order we can tell, and keeps the decoded order.
 fn aac_stream_order(asc: &filmcraft_aac::AudioSpecificConfig) -> Option<&'static [usize]> {
     if asc.channel_config != 0 {
         return aac_to_wav_order(asc.channel_config);
+    }
+    if !asc.pce.as_ref()?.front.iter().map(|e| e.0).eq([false, true]) {
+        return None;
     }
     let elements = asc.layout();
     let same = |config: &u8| filmcraft_aac::config_layout(*config).is_some_and(|l| l.iter().map(|e| e.0).eq(elements.iter().map(|e| e.0)));
@@ -1356,6 +1360,10 @@ mod surround_order_tests {
         assert_eq!(aac_stream_order(&with(centre_first)), aac_to_wav_order(6));
         let ffmpeg = filmcraft_aac::ProgramConfig { front: vec![(true, 0), (false, 0)], side: vec![(false, 1)], back: vec![(true, 1)], ..Default::default() };
         assert_eq!(aac_stream_order(&with(ffmpeg)), None);
+        // the same element types with no front pair: the side pair is not left and right
+        let no_front_pair =
+            filmcraft_aac::ProgramConfig { front: vec![(false, 0)], side: vec![(true, 0)], back: vec![(true, 1)], lfe: vec![0], ..Default::default() };
+        assert_eq!(aac_stream_order(&with(no_front_pair)), None);
     }
 
     #[test]

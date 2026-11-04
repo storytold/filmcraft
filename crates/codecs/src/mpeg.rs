@@ -534,6 +534,9 @@ impl MpegSource {
                     let frames = (0..st.units.len()).map_while(|k| file.read_unit(&self.bytes, ai, k).ok());
                     let units = frames.map(|f| crate::audio::adts_split(&f).map(|s| s.1.to_vec()).unwrap_or_default());
                     adts_pce = crate::audio::adts_pce_config(&first, units);
+                    if adts_pce.is_none() && filmcraft_aac::AdtsHeader::parse(&first).is_ok_and(|h| h.channel_config == 0) {
+                        return self.audio_unsupported(&codec_name, format!("{codec_name}: no program config element lays out its channels"));
+                    }
                 }
                 let channels = adts_pce.as_deref().and_then(crate::audio::aac_channels).unwrap_or(fi.channels);
                 (c, fi.sample_rate, channels as usize, Some(fi.samples), None)
@@ -1199,5 +1202,14 @@ mod tests {
         let frames = pce_adts_frames(false);
         let bare: Vec<u8> = frames.iter().skip(1).flatten().copied().collect();
         assert!(crate::open_bytes("bare.aac", bare.into()).is_err());
+        // in a transport stream the track says so, instead of reporting stereo that never decodes
+        let mut mux = TsMux { out: Vec::new(), cc: Default::default() };
+        mux.psi(&[(0x0F, 0x1100)]);
+        for (k, f) in frames.iter().skip(1).enumerate() {
+            mux.pes(0x1100, &pes(0xC0, Some(90_000 + 1920 * k as i64), f));
+        }
+        let src = MpegSource::open("bare.ts", mux.out.into()).unwrap();
+        assert!(src.info().audio().unwrap().codec.ends_with("(unsupported)"));
+        assert!(src.audio(0, 4800, 48_000).is_err());
     }
 }
