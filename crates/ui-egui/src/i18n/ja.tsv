@@ -3672,3 +3672,62 @@
 	Change the sequence to match the clip's settings?	シーケンスをクリップの設定に合わせますか？
 	Change Sequence Settings	シーケンス設定を変更
 	Keep Existing Settings	現在の設定を維持
+	Temporal Interpolation	時間補間
+	Select items to clear	消去する項目を選択してください
+	Opens in your web browser: {url}	ウェブブラウザーで開きます：{url}
+	A range marker needs a positive duration	範囲マーカーのデュレーションは正の値にしてください
+	Add Custom Color	カスタムカラーを追加
+	Add and apply	追加して適用
+	Add color	カラーを追加
+	Add custom color	カスタムカラーを追加
+	Add custom color…	カスタムカラーを追加…
+	Author	作成者
+	Chapter	チャプター
+	Choose Color…	カラーを選択…
+	Choose color with system picker	システムのカラーピッカーで選択
+	Color picker	カラーピッカー
+	Color selected markers	選択したマーカーのカラーを変更
+	Custom Color…	カスタムカラー…
+	Delete Marker	マーカーを削除
+	Delete selected markers	選択したマーカーを削除
+	Edit Custom Color	カスタムカラーを編集
+	Edit Marker	マーカーを編集
+	Edit color	カラーを編集
+	Editing or removing a swatch leaves assigned colors unchanged.	スウォッチを編集または削除しても、割り当て済みのカラーは変わりません。
+	Enter six hex digits, for example FF80C0.	16進数を6桁入力してください（例：FF80C0）。
+	Hex	16進数
+	Hex color	16進数カラー
+	Manage Colors	カラーを管理
+	Manage Colors…	カラーを管理…
+	Marker owner is unavailable	マーカーの所有元を利用できません
+	No markers	マーカーがありません
+	No matching markers	一致するマーカーがありません
+	No saved colors	保存済みのカラーがありません
+	No sequence open	シーケンスが開かれていません
+	No source clip open	ソースクリップが開かれていません
+	Notes	メモ
+	Project Colors	プロジェクトカラー
+	Range marker	範囲マーカー
+	Remove saved color	保存済みのカラーを削除
+	Save color	カラーを保存
+	Search markers	マーカーを検索
+	Search name, notes, author	名前、メモ、作成者を検索
+	Select all	すべて選択
+	Select all visible markers	表示中のすべてのマーカーを選択
+	Sequence: {name}	シーケンス：{name}
+	Source: {name}	ソース：{name}
+	Source: {name} (shared source markers)	ソース：{name}（共有ソースマーカー）
+	System color picker unavailable: {error}	システムのカラーピッカーを利用できません：{error}
+	Time is outside the supported range	時刻が対応範囲外です
+	{count} selected	{count} 個選択中
+	Remove Custom Color	カスタムカラーを削除
+	Edit Markers	マーカーを編集
+	Delete Markers	マーカーを削除
+	Marker changed or was removed. Reopen it to continue.	マーカーが変更または削除されました。続行するには開き直してください。
+	URL	URL
+	Open Link	リンクを開く
+	Opens this address in your web browser	このアドレスをウェブブラウザーで開きます
+	Enter a valid HTTP or HTTPS URL without credentials	認証情報を含まない有効な HTTP または HTTPS URL を入力してください
+	Previous	前へ
+	Next	次へ
+	Enter a valid HH:MM:SS:FF timecode	有効なタイムコードを HH:MM:SS:FF 形式で入力してください

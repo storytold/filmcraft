@@ -219,6 +219,9 @@ fn timecode_marker_and_in_point_sync_within_one_frame() {
     for (it, t) in [(items[0], rate.tick_of(event_frame_a)), (items[1], rate.snap(at_b))] {
         let m = p.item_mut(it).unwrap().as_media_mut().unwrap();
         m.markers.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(900 + it.0),
             start: t,
             duration: Tick::ZERO,

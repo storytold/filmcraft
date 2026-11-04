@@ -156,8 +156,12 @@ pub struct Stream {
 impl Stream {
     /// Stream index of a `movi` chunk id (`00dc`, `01wb`…): its first two characters.
     fn number(id: &[u8; 4]) -> Option<usize> {
-        let d = |b: u8| (b as char).to_digit(16).map(|v| v as usize);
-        Some(d(id[0])? * 16 + d(id[1])?)
+        // ffmpeg-style writers number streams in decimal ("10dc" = 10), Video for Windows in hex
+        // ("0adc" = 10): a hex letter means hex, two decimal digits mean decimal
+        let [a, b, ..] = *id;
+        let radix = if [a, b].iter().any(|c| matches!(c, b'a'..=b'f' | b'A'..=b'F')) { 16 } else { 10 };
+        let d = |c: u8| (c as char).to_digit(radix).map(|v| v as usize);
+        Some(d(a)? * radix as usize + d(b)?)
     }
 }
 
@@ -227,12 +231,15 @@ fn header_at<S: ByteSource + ?Sized>(src: &S, at: u64) -> Result<([u8; 4], u64, 
 }
 
 /// Iterate the chunks of `[from, to)`: (id, size, data offset). Stops at the first unreadable
-/// header; every step moves forward, so it ends.
+/// header; every step moves forward, so it ends. A child's size is clamped to its parent's end,
+/// so lists never reach past their container: overlapping `movi` or `rec ` lists would otherwise
+/// each scan (and record) the same physical chunks again.
 fn children<S: ByteSource + ?Sized>(src: &S, from: u64, to: u64) -> Vec<([u8; 4], u64, u64)> {
     let mut out = Vec::new();
     let mut at = from;
     while at.checked_add(8).is_some_and(|e| e <= to) {
         let Ok((id, size, data)) = header_at(src, at) else { break };
+        let size = size.min(to.saturating_sub(data));
         out.push((id, size, data));
         // chunks are padded to an even size
         let Some(next) = data.checked_add(size).and_then(|e| e.checked_add(size & 1)) else { break };
@@ -583,5 +590,16 @@ impl AviFile {
     pub fn read_chunk<S: ByteSource + ?Sized>(&self, src: &S, stream: usize, i: usize) -> Result<Vec<u8>> {
         let c = self.streams.get(stream).and_then(|s| s.chunks.get(i)).ok_or_else(|| Error::Invalid(format!("no chunk {i} in stream {stream}")))?;
         read(src, c.offset, u64::from(c.size))
+    }
+
+    /// `len` bytes of chunk `i` of stream `stream`, from `off` bytes into it (only those bytes are read).
+    pub fn read_chunk_range<S: ByteSource + ?Sized>(&self, src: &S, stream: usize, i: usize, off: usize, len: usize) -> Result<Vec<u8>> {
+        let c = self.streams.get(stream).and_then(|s| s.chunks.get(i)).ok_or_else(|| Error::Invalid(format!("no chunk {i} in stream {stream}")))?;
+        let end = off
+            .checked_add(len)
+            .filter(|&e| e as u64 <= u64::from(c.size))
+            .ok_or_else(|| Error::Invalid(format!("range outside chunk {i} of stream {stream}")))?;
+        let at = c.offset.checked_add(off as u64).ok_or_else(|| Error::Invalid(format!("chunk {i} offset overflows")))?;
+        read(src, at, (end - off) as u64)
     }
 }
