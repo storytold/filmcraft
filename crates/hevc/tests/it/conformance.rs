@@ -270,12 +270,17 @@ fn wpp_with_missing_entry_points_matches_serial() {
         for (label, keep) in cases {
             let (rewritten, changed) = truncate_entry_points(&data, keep);
             // (slices4 has a single entry point per slice: only dropping all of them changes it)
-            assert!(changed > 0 || (name == "slices4" && label != "none"), "{name}: {label}: no slice header had entry points to remove");
+            if changed == 0 && name == "slices4" && label == "first only" {
+                continue;
+            }
+            assert!(changed > 0, "{name}: {label}: no slice header had entry points to remove");
             let path = std::env::temp_dir().join(format!("hevc_wpp_entry_points_{}_{name}.hevc", std::process::id()));
             std::fs::write(&path, &rewritten).unwrap();
             let decoded = [1, 2, 4].map(|threads| {
                 let r = common::decode_file_cfg(&path, threads, false, Some(true));
-                (threads, r.unwrap_or_else(|(au, e, _)| panic!("{name} ({label}, {threads} threads): error at {au}: {e}")).0)
+                let (pics, stats) = r.unwrap_or_else(|(au, e, _)| panic!("{name} ({label}, {threads} threads): error at {au}: {e}"));
+                assert!(stats.wpp_pictures > 0, "{name} ({label}, {threads} threads): still a WPP stream");
+                (threads, pics)
             });
             std::fs::remove_file(&path).ok();
             for (threads, pics) in decoded {
