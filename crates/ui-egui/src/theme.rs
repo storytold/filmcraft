@@ -740,8 +740,10 @@ mod tests {
         let coords: Vec<_> = data.tweak.coords.as_ref().iter().map(|(tag, value)| (tag.into_bytes(), *value)).collect();
         assert_eq!(coords, [(*b"wght", 600.0), (*b"opsz", 16.0)]);
         let mut malformed = data.clone();
-        malformed.font.to_mut()[48..52].copy_from_slice(&(900u32 << 16).to_be_bytes());
-        malformed.font.to_mut()[56..60].copy_from_slice(&(100u32 << 16).to_be_bytes());
+        let mut bytes = malformed.bytes().to_vec();
+        bytes[48..52].copy_from_slice(&(900u32 << 16).to_be_bytes());
+        bytes[56..60].copy_from_slice(&(100u32 << 16).to_be_bytes());
+        malformed.font = Arc::new(bytes);
         malformed.tweak.coords.clear();
         set_system_font_axes(&mut malformed, 600);
         assert_eq!(malformed.tweak.coords.as_ref().len(), 1, "inverted axis ranges are ignored without panicking");
