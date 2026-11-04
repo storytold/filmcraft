@@ -162,48 +162,49 @@ pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mu
     // Per row: gather the luma sums, then the vectorisable part (codes, chroma differences) over
     // whole rows, then add the differences pairwise in the order the per-pixel loop added them.
     let rows_init = || (vec![0f32; w], vec![0f32; w], vec![0f32; w], vec![0f32; cw], vec![0f32; cw]);
-    let step = |(ty, tb, tr, us, vs): &mut (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>), (cy, (yr, (ur, vr))): (usize, (&mut [u8], (&mut [u8], &mut [u8])))| {
-            let rows = yr.len() / w;
-            us.fill(0.0);
-            vs.fill(0.0);
-            for (dy, yrow) in yr.chunks_exact_mut(w).enumerate() {
-                let row = cy * 2 + dy;
-                let Some(src) = rgba.get(row * w * 4..(row + 1) * w * 4) else { continue };
-                for (p, (yy, (b, r))) in src.as_chunks::<4>().0.iter().zip(ty.iter_mut().zip(tb.iter_mut().zip(tr.iter_mut()))) {
-                    let (pr, pg, pb) = (usize::from(p[0]), usize::from(p[1]), usize::from(p[2]));
-                    *yy = kr[pr] + kg[pg] + kb[pb];
-                    *b = unit[pb];
-                    *r = unit[pr];
-                }
-                for (o, &yy) in yrow.iter_mut().zip(ty.iter()) {
-                    *o = code8(16.0 + 219.0 * yy);
-                }
-                for (b, &yy) in tb.iter_mut().zip(ty.iter()) {
-                    *b = (*b - yy) / 1.8556;
-                }
-                for (r, &yy) in tr.iter_mut().zip(ty.iter()) {
-                    *r = (*r - yy) / 1.5748;
-                }
-                for (acc, pair) in us.iter_mut().zip(tb.as_chunks::<2>().0) {
-                    *acc += pair[0];
-                    *acc += pair[1];
-                }
-                for (acc, pair) in vs.iter_mut().zip(tr.as_chunks::<2>().0) {
-                    *acc += pair[0];
-                    *acc += pair[1];
-                }
-                if w % 2 == 1 {
-                    // the odd last column has a chroma sample of its own
-                    us[cw - 1] += tb[w - 1];
-                    vs[cw - 1] += tr[w - 1];
-                }
+    let step = |(ty, tb, tr, us, vs): &mut (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>),
+                (cy, (yr, (ur, vr))): (usize, (&mut [u8], (&mut [u8], &mut [u8])))| {
+        let rows = yr.len() / w;
+        us.fill(0.0);
+        vs.fill(0.0);
+        for (dy, yrow) in yr.chunks_exact_mut(w).enumerate() {
+            let row = cy * 2 + dy;
+            let Some(src) = rgba.get(row * w * 4..(row + 1) * w * 4) else { continue };
+            for (p, (yy, (b, r))) in src.as_chunks::<4>().0.iter().zip(ty.iter_mut().zip(tb.iter_mut().zip(tr.iter_mut()))) {
+                let (pr, pg, pb) = (usize::from(p[0]), usize::from(p[1]), usize::from(p[2]));
+                *yy = kr[pr] + kg[pg] + kb[pb];
+                *b = unit[pb];
+                *r = unit[pr];
             }
-            for (cx, (uo, vo)) in ur.iter_mut().zip(vr.iter_mut()).enumerate() {
-                // pixels averaged into this chroma sample: 2 per row (1 in an odd last column), `rows` rows
-                let cnt = ((w - 2 * cx).min(2) * rows) as f32;
-                *uo = code8(128.0 + 224.0 * us[cx] / cnt);
-                *vo = code8(128.0 + 224.0 * vs[cx] / cnt);
+            for (o, &yy) in yrow.iter_mut().zip(ty.iter()) {
+                *o = code8(16.0 + 219.0 * yy);
             }
+            for (b, &yy) in tb.iter_mut().zip(ty.iter()) {
+                *b = (*b - yy) / 1.8556;
+            }
+            for (r, &yy) in tr.iter_mut().zip(ty.iter()) {
+                *r = (*r - yy) / 1.5748;
+            }
+            for (acc, pair) in us.iter_mut().zip(tb.as_chunks::<2>().0) {
+                *acc += pair[0];
+                *acc += pair[1];
+            }
+            for (acc, pair) in vs.iter_mut().zip(tr.as_chunks::<2>().0) {
+                *acc += pair[0];
+                *acc += pair[1];
+            }
+            if w % 2 == 1 {
+                // the odd last column has a chroma sample of its own
+                us[cw - 1] += tb[w - 1];
+                vs[cw - 1] += tr[w - 1];
+            }
+        }
+        for (cx, (uo, vo)) in ur.iter_mut().zip(vr.iter_mut()).enumerate() {
+            // pixels averaged into this chroma sample: 2 per row (1 in an odd last column), `rows` rows
+            let cnt = ((w - 2 * cx).min(2) * rows) as f32;
+            *uo = code8(128.0 + 224.0 * us[cx] / cnt);
+            *vo = code8(128.0 + 224.0 * vs[cx] / cnt);
+        }
     };
     if crate::avoid_nested_rayon() {
         crate::note_sequential_yuv();
