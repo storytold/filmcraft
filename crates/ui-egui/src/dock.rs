@@ -837,16 +837,19 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
         if is_active {
             // × closes the sequence's tab (the sequence stays in the project)
             let cr = Rect::from_center_size(pos2(tab_rect.min.x + 10.0, text_y), vec2(8.0, 8.0));
-            let cresp = ui.interact(cr.expand(4.0).intersect(view), egui::Id::unique(("tab-close", *id)), Sense::click());
-            cresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, cresp.enabled(), "close sequence"));
-            reg.add_response(&format!("timeline.tab.{id}.close"), &cresp, "close sequence");
-            let cc = if cresp.hovered() { t.tab_text_active } else { t.tab_text };
-            tabs_painter.line_segment([cr.left_top(), cr.right_bottom()], Stroke::new(1.2, cc));
-            tabs_painter.line_segment([cr.right_top(), cr.left_bottom()], Stroke::new(1.2, cc));
-            paint_widget_focus(&tabs_painter, &cresp, t);
-            if cresp.clicked() {
-                actions.push(SeqAction::Close(*id));
-                closed = true;
+            let close_hit = cr.expand(4.0).intersect(view);
+            if close_hit.is_positive() {
+                let cresp = ui.interact(close_hit, egui::Id::unique(("tab-close", *id)), Sense::click());
+                cresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, cresp.enabled(), "close sequence"));
+                reg.add_response(&format!("timeline.tab.{id}.close"), &cresp, "close sequence");
+                let cc = if cresp.hovered() { t.tab_text_active } else { t.tab_text };
+                tabs_painter.line_segment([cr.left_top(), cr.right_bottom()], Stroke::new(1.2, cc));
+                tabs_painter.line_segment([cr.right_top(), cr.left_bottom()], Stroke::new(1.2, cc));
+                paint_widget_focus(&tabs_painter, &cresp, t);
+                if cresp.clicked() {
+                    actions.push(SeqAction::Close(*id));
+                    closed = true;
+                }
             }
             let uy = strip.max.y - 2.0;
             tabs_painter.line_segment([pos2(label_x, uy), pos2(label_x + label_w, uy)], Stroke::new(1.0, t.tab_text_active));

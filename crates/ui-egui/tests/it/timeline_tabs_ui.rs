@@ -280,6 +280,9 @@ fn tabs_that_do_not_fit_scroll_with_the_arrows_without_changing_the_shown_sequen
     // all the way left reaches the first tab; the left arrow then has nothing to do
     for _ in 0..20 {
         d.click("timeline.tabs.scrollLeft");
+        if let Some(close) = d.rect(&format!("timeline.tab.{last}.close")) {
+            assert!(inside(close), "the close button is never half outside the panel: {close:?}");
+        }
     }
     assert!(d.has(&format!("timeline.tab.{main}")) && !d.has(&format!("timeline.tab.{last}")));
     assert_eq!(d.active(), last);
