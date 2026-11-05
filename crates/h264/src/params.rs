@@ -526,6 +526,9 @@ impl Sps {
         self.max_dpb_frames()
     }
 
+    /// `Error::Unsupported` for streams this decoder does not implement: interlaced coding, chroma
+    /// formats other than 4:2:0 / 4:2:2, bit depths outside 8..=10 or unequal for luma and chroma,
+    /// lossless coding, and pictures above the memory limit.
     pub fn check_supported(&self) -> Result<()> {
         if u64::from(self.width()).saturating_mul(u64::from(self.height())) > MAX_LUMA_SAMPLES {
             return unsupported("picture dimensions exceed the decoder memory limit");
@@ -533,11 +536,14 @@ impl Sps {
         if !self.frame_mbs_only {
             return unsupported("interlaced (field / MBAFF) coding");
         }
-        if self.chroma_array_type() != 1 {
-            return unsupported(format!("chroma_format_idc {} (only 4:2:0 is implemented)", self.chroma_format_idc));
+        if !matches!(self.chroma_array_type(), 1 | 2) {
+            return unsupported(format!("chroma_format_idc {} (only 4:2:0 and 4:2:2 are implemented)", self.chroma_format_idc));
         }
-        if self.bit_depth_luma != 8 || self.bit_depth_chroma != 8 {
-            return unsupported(format!("bit depth luma {} chroma {} (only 8-bit is implemented)", self.bit_depth_luma, self.bit_depth_chroma));
+        if self.bit_depth_luma != self.bit_depth_chroma || !(8..=10).contains(&self.bit_depth_luma) {
+            return unsupported(format!(
+                "bit depth luma {} chroma {} (8 to 10 bits, equal for luma and chroma, are implemented)",
+                self.bit_depth_luma, self.bit_depth_chroma
+            ));
         }
         if self.qpprime_y_zero_transform_bypass {
             return unsupported("qpprime_y_zero_transform_bypass (lossless)");
