@@ -202,8 +202,32 @@ struct Partial {
     prefix: Vec<u8>,
 }
 
+/// Memory budget for the packet lists `open` builds, in bytes (256 MiB; about 4.8 million packets).
+/// Zero-length packets cost one lacing byte each in the file but a whole [`Packet`] in memory, so
+/// without a bound a small hostile file could make `open` allocate about fifty times its own size.
+///
+/// The budget is global: it is shared by all logical bitstreams of the file. It counts each audio
+/// [`Packet`] struct plus its `parts` entries (at their final count, so a packet spanning pages is
+/// charged once). It does not count allocator overhead or `Vec` capacity, so the real memory use
+/// for many small packets can be roughly twice the budget. Header packets and the per-stream
+/// structures are not charged either.
+pub const PACKET_BUDGET_BYTES: usize = 256 << 20;
+
+/// What one packet costs against the budget: the struct plus its byte ranges.
+fn packet_cost(p: &Packet) -> usize {
+    std::mem::size_of::<Packet>().saturating_add(p.parts.len().saturating_mul(std::mem::size_of::<(u64, u32)>()))
+}
+
 /// Read every page and assemble the packets of every logical bitstream.
+///
+/// Stops with a warning, keeping what it has, once the packet lists would exceed
+/// [`PACKET_BUDGET_BYTES`].
 pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
+    open_with_packet_budget(src, PACKET_BUDGET_BYTES)
+}
+
+/// [`open`] with an explicit packet memory budget in bytes (a test hook for small budgets).
+fn open_with_packet_budget(src: &(impl ByteSource + ?Sized), packet_budget: usize) -> Result<OggFile> {
     let len = src.len();
     let mut streams: Vec<Stream> = Vec::new();
     let mut by_serial: HashMap<u32, usize> = HashMap::new();
@@ -212,8 +236,10 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
     let mut pos = 0u64;
     let mut found_any = false;
     let mut recovery_budget: usize = 64 << 20;
+    let mut packet_bytes: usize = 0;
+    let mut budget_hit = false;
     let mut hdr = [0u8; 27 + 255];
-    while pos + 27 <= len {
+    'pages: while pos + 27 <= len {
         src.read_at(pos, &mut hdr[..27])?;
         if &hdr[..4] != b"OggS" || hdr[4] != 0 {
             recovery_budget = recovery_budget.saturating_sub(27);
@@ -323,6 +349,15 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
             if st.headers.len() < st.codec.header_count() && st.packets.is_empty() {
                 st.headers.push(read_parts(src, &pk.parts)?);
             } else {
+                let cost = packet_cost(&pk);
+                match packet_bytes.checked_add(cost) {
+                    Some(total) if total <= packet_budget => packet_bytes = total,
+                    _ => {
+                        warnings.push(format!("stopped reading at byte {pos}: packet list exceeds {} MiB", packet_budget >> 20));
+                        budget_hit = true;
+                        break 'pages;
+                    }
+                }
                 st.packets.push(pk);
             }
         }
@@ -331,7 +366,8 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<OggFile> {
     if !found_any {
         return Err(Error::NotOgg);
     }
-    if !partial.is_empty() {
+    // after a budget stop the cut page may end inside a packet; the budget warning already explains it
+    if !partial.is_empty() && !budget_hit {
         warnings.push("file ends inside a packet".into());
     }
     Ok(OggFile { streams, warnings })
