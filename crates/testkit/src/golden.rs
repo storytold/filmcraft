@@ -348,8 +348,8 @@ mod tests {
         if blessing() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("filmcraft-testkit-golden-{}", std::process::id()));
-        let path = dir.join("ramp.png");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ramp.png");
         let img = ramp(32, 16, 255);
         write_png(&path, &img).unwrap();
         assert!(check_golden(&path, &img, Tolerance::EXACT, "t", "unit test").is_ok());
@@ -360,7 +360,7 @@ mod tests {
         far.px.iter_mut().step_by(4).for_each(|v| *v = 255 - *v);
         let e = check_golden(&path, &far, Tolerance::RENDER, "t", "unit test").unwrap_err();
         assert!(e.contains("PSNR"), "{e}");
-        assert!(check_golden(&dir.join("missing.png"), &img, Tolerance::RENDER, "t", "unit test").unwrap_err().contains("FILMCRAFT_BLESS"));
+        assert!(check_golden(&dir.path().join("missing.png"), &img, Tolerance::RENDER, "t", "unit test").unwrap_err().contains("FILMCRAFT_BLESS"));
     }
 
     #[test]

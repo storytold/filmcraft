@@ -434,7 +434,14 @@ pub fn effect_cost_ms(id: &str) -> f64 {
     }
 }
 
+/// Source references [`decode_cost_ms`] follows before giving up (nested sequences stop at 8).
+const MAX_COST_DEPTH: u32 = 64;
+
 fn decode_cost_ms(project: &Project, id: ItemId, depth: u32) -> f64 {
+    // every source kind, not only sequences: subclip parents can form a cycle in a damaged project
+    if depth > MAX_COST_DEPTH {
+        return 0.0;
+    }
     let Some(pi) = project.item(id) else { return 0.0 };
     match &pi.kind {
         ItemKind::Media(m) => {

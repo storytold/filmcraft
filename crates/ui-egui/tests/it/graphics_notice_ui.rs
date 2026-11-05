@@ -115,9 +115,11 @@ fn a_reset_that_cannot_be_saved_says_why_and_keeps_the_button() {
 fn the_notice_follows_the_interface_language() {
     let notice = GraphicsNotice::new("software rendering", Box::new(|| Ok(())));
     let mut d = Driver::new(Some(notice));
-    d.app().ui.language = filmcraft_ui_egui::i18n::Language::Es;
+    let es = filmcraft_ui_egui::i18n::Language::Es;
+    d.app().ui.language = es;
     d.frames(3);
-    assert_eq!(d.label("graphics.notice"), "Modo gráfico seguro: procesamiento por software");
-    assert_eq!(d.label("graphics.notice.reset"), "Usar gráficos predeterminados");
+    let title = filmcraft_ui_egui::i18n::fmt(es.tr("Safe graphics mode: {mode}"), &[("mode", es.tr("software rendering"))]);
+    assert_eq!(d.label("graphics.notice"), title);
+    assert_eq!(d.label("graphics.notice.reset"), es.tr("Use Default Graphics"));
     filmcraft_ui_egui::i18n::set_current(filmcraft_ui_egui::i18n::Language::En);
 }

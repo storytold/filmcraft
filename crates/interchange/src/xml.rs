@@ -159,6 +159,17 @@ pub(crate) fn num(v: f64) -> String {
 }
 
 pub(crate) fn parse(text: &str) -> Result<roxmltree::Document<'_>, String> {
+    // FCP7 XML commonly carries a plain `<!DOCTYPE xmeml>` declaration, which
+    // roxmltree accepts only with DTD parsing enabled. Internal subsets are not
+    // needed by any supported interchange format and can expand entities far
+    // beyond the input size, so reject them before handing the document to the
+    // parser. External entities remain unresolved because no resolver is set.
+    if let Some(start) = text.find("<!DOCTYPE") {
+        let declaration = &text[start..text[start..].find('>').map_or(text.len(), |end| start + end)];
+        if declaration.contains('[') {
+            return Err("internal DTD subsets are not supported".into());
+        }
+    }
     let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
     roxmltree::Document::parse_with_options(text, opts).map_err(|e| e.to_string())
 }
@@ -195,5 +206,11 @@ mod tests {
         let a = d.root_element();
         assert_eq!(a.attribute("name"), Some("x\ny\tz\r"));
         assert_eq!(child(a, "b").and_then(|b| b.text()), Some("a\nb"));
+    }
+
+    #[test]
+    fn rejects_internal_dtd_entity_expansion() {
+        let text = "<!DOCTYPE root [<!ENTITY word 'expanded'>]><root>&word;</root>";
+        assert_eq!(parse(text).unwrap_err(), "internal DTD subsets are not supported");
     }
 }

@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -24,7 +25,7 @@ jobs:
     with:
       app-name: filmcraft
       app-title: FilmCraft
-      craft-fonts-ref: bfcbf714e45a3ea8e98f88ab2b7971372a576414
+      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
       version: ${{ inputs.version }}
     secrets:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -41,3 +42,4 @@ jobs:
       AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
       AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
       AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+      LINUX_SIGNING_KEY: ${{ secrets.LINUX_SIGNING_KEY }}

@@ -43,7 +43,7 @@ fn project_with(width: u32, height: u32, adjusted: bool) -> (Arc<filmcraft_proje
     let red = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -53,7 +53,7 @@ fn project_with(width: u32, height: u32, adjusted: bool) -> (Arc<filmcraft_proje
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let tracks = if adjusted { 2 } else { 1 };

@@ -123,12 +123,15 @@ pub fn idct4_add(d: &[i32; 16], dst: &mut [u8], stride: usize) {
     }
 }
 
-/// DC-only shortcut: all AC coefficients zero.
-#[allow(dead_code)]
-pub fn idct4_dc_add(dc: i32, dst: &mut [u8], stride: usize) {
+/// `idct4_add` / `idct8_add` when all AC coefficients are zero: every output sample is
+/// `(dc + 32) >> 6`, so the transform reduces to adding that to the `N`x`N` block.
+pub fn idct_dc_add<const N: usize>(dc: i32, dst: &mut [u8], stride: usize) {
     let v = (dc + 32) >> 6;
-    for i in 0..4 {
-        for p in &mut dst[i * stride..i * stride + 4] {
+    for i in 0..N {
+        let Some(line) = dst.get_mut(i * stride..).and_then(|d| d.first_chunk_mut::<N>()) else {
+            return;
+        };
+        for p in line {
             *p = clip_u8(*p as i32 + v);
         }
     }
@@ -236,9 +239,37 @@ mod tests {
         let mut a = [100u8; 16];
         let mut b = [100u8; 16];
         idct4_add(&d, &mut a, 4);
-        idct4_dc_add(640, &mut b, 4);
+        idct_dc_add::<4>(640, &mut b, 4);
         assert_eq!(a, b);
         assert!(a.iter().all(|&v| v == 110));
+    }
+
+    #[test]
+    fn dc_shortcut_matches_full_transforms() {
+        let mut rng = 0x0bad_cafe_dead_beefu64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        for iter in 0..5000 {
+            let range = [64u64, 1024, 8192, 1 << 15][iter % 4];
+            let dc = (next() % (2 * range + 1)) as i32 - range as i32;
+            let base: Vec<u8> = (0..24 * 8).map(|_| next() as u8).collect();
+            let mut d4 = [0i32; 16];
+            d4[0] = dc;
+            let (mut a, mut b) = (base.clone(), base.clone());
+            idct4_add(&d4, &mut a[3..], 24);
+            idct_dc_add::<4>(dc, &mut b[3..], 24);
+            assert_eq!(a, b, "4x4 iteration {iter}");
+            let mut d8 = [0i32; 64];
+            d8[0] = dc;
+            let (mut a, mut b) = (base.clone(), base);
+            idct8_add(&d8, &mut a[5..], 24);
+            idct_dc_add::<8>(dc, &mut b[5..], 24);
+            assert_eq!(a, b, "8x8 iteration {iter}");
+        }
     }
 
     #[test]

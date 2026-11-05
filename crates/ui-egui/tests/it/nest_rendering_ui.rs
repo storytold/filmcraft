@@ -67,9 +67,10 @@ impl Driver {
 
 impl Driver {
     /// The cached waveform peaks of `item`, once `ready` accepts them (they are made in the
-    /// background; drawing the Timeline asks for them).
+    /// background; drawing the Timeline asks for them), for at most two minutes of wall-clock time.
     fn peaks_when(&mut self, item: u64, ready: impl Fn(&[(f32, f32)]) -> bool) -> Vec<(f32, f32)> {
-        for _ in 0..400 {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed().as_secs() < 120 {
             self.frames(1);
             let got = self.app().tl.peaks.lock().unwrap().get(&(ItemId(item), 0)).cloned();
             if let Some(p) = got.filter(|p| ready(p)) {
