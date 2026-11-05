@@ -17,6 +17,10 @@ use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 use crate::{FilmcraftApp, panels};
 
+/// How far a divider's grab zone reaches into the panels on either side of it (craft-ui's
+/// resize handle default); a panel's scrollbars stay clear of it.
+const DIVIDER_REACH: f32 = 3.0;
+
 /// The dock area's egui id; `DockArea::hit_rects` and `float_space` read by it.
 pub fn area_id() -> egui::Id {
     egui::Id::unique("filmcraft-docking")
@@ -501,6 +505,9 @@ impl DockContent<PanelKind> for FilmContent<'_> {
         self.app.auto.add(&format!("panel.{}", panel.id()), rect, panel.title());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).id_salt(("panel", panel.id())));
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        // A divider's grab zone reaches into the panel beside it; keep the scrollbars out of it.
+        let spacing = &mut child.style_mut().spacing.scroll;
+        spacing.bar_outer_margin = spacing.bar_outer_margin.max(DIVIDER_REACH);
         panels::show(self.app, &mut child, *panel, rect);
         // FilmCraft's drag payload lives in context data, not egui's drag-and-drop, so craft-ui
         // routes it to the native window under the pointer only when asked, each frame.

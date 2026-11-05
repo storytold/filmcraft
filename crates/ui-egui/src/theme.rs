@@ -238,7 +238,7 @@ impl Tokens {
             danger: Color32::from_rgb(0xdc, 0x51, 0x3d),
             radius: 0.0,
             radius_sm: 4.0,
-            gap: 4.0,
+            gap: 7.0,
             tab_h: 32.0,
         };
         match kind {
