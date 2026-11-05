@@ -30,12 +30,12 @@
 //! `begin` opens a scope. The first command a scope runs takes a [`Checkpoint`] of the
 //! document just before it runs, because a guest can change the document only through `cmd.execute`.
 //! `end` with a fault puts the checkpoint back. What a checkpoint covers: the project, the editor
-//! state, the undo and redo stacks and the command journal. What it cannot cover: files a command
-//! wrote and jobs it started.
+//! state, the undo and redo stacks, the command journal and the path the document saves to. What it
+//! cannot cover: files a command wrote and jobs it started.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::ThreadId;
@@ -82,6 +82,8 @@ pub struct Checkpoint {
     undo: Vec<Step>,
     redo: Vec<Step>,
     merge_key: Option<String>,
+    /// Where the document saves. `file.newProject` and `file.open` change it.
+    path: Option<String>,
     journal_len: usize,
     /// The project was clean (saved) when the scope began.
     clean: bool,
@@ -98,6 +100,7 @@ impl Checkpoint {
             undo: s.history.undo.clone(),
             redo: s.history.redo.clone(),
             merge_key: s.history.merge_key.clone(),
+            path: s.path.clone(),
             journal_len: s.journal.len(),
             clean: !s.is_dirty(),
             last_revision: s.revision,
@@ -107,6 +110,8 @@ impl Checkpoint {
     /// Put the document back. The revision still goes up, so the change feed reports the revert.
     fn restore(self, s: &mut Session) {
         let hooks = s.hooks.clone();
+        let path_moved = s.path != self.path;
+        s.path = self.path;
         hooks.with_cause(Cause::Job("plugin rollback"), || {
             s.set_project(self.project);
             s.state = self.state;
@@ -119,6 +124,14 @@ impl Checkpoint {
                 s.saved_revision = s.revision;
             }
         });
+        if path_moved {
+            // The previews follow the path, as they do when the document is saved elsewhere.
+            if s.path.is_some() {
+                s.previews_follow_path();
+            } else {
+                s.previews.reset_temp();
+            }
+        }
         s.sync_persistence();
         s.previews.live.publish_project(Arc::clone(&s.project));
     }
@@ -129,8 +142,17 @@ struct Live {
     thread: ThreadId,
 }
 
+/// Where a queued job is. The waiting thread and [`Bridge::pump`] race to move it out of `QUEUED`,
+/// and the one that wins decides. A job is never abandoned and run too.
+const QUEUED: u8 = 0;
+/// The session thread took the job. The caller waits for its result, because it may edit the
+/// document or write a file even after the caller's wait has run out.
+const RUNNING: u8 = 1;
+/// The caller gave up before the session thread took the job. The pump drops it.
+const CANCELLED: u8 = 2;
+
 struct Job {
-    cancelled: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
     work: Box<dyn FnOnce(&mut Session) + Send>,
 }
 
@@ -220,20 +242,26 @@ impl Bridge {
             return Err(Unavailable::Busy);
         }
         let (tx, rx) = channel();
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(AtomicU8::new(QUEUED));
         let job = Job {
-            cancelled: Arc::clone(&cancelled),
+            state: Arc::clone(&state),
             work: Box::new(move |s| {
-                // The waiting thread may have given up. Nothing is left to tell.
+                // The receiver is alive while the job runs: the caller waits for a running job.
                 let _ = tx.send(f(s));
             }),
         };
         lock(&self.mailbox).push_back(job);
         match rx.recv_timeout(self.wait) {
             Ok(r) => Ok(r),
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
-                cancelled.store(true, Ordering::Release);
-                Err(Unavailable::TimedOut)
+            Err(RecvTimeoutError::Disconnected) => Err(Unavailable::TimedOut),
+            Err(RecvTimeoutError::Timeout) => {
+                // Cancel only a job nobody has started. A running job finishes, and the caller gets
+                // its real answer instead of a timeout that hides an edit.
+                match state.compare_exchange(QUEUED, CANCELLED, Ordering::AcqRel, Ordering::Acquire) {
+                    Ok(_) => Err(Unavailable::TimedOut),
+                    // The sender drops without a value when the job panics.
+                    Err(_) => rx.recv().map_err(|_| Unavailable::TimedOut),
+                }
             }
         }
     }
@@ -246,7 +274,8 @@ impl Bridge {
             let Some(job) = lock(&self.mailbox).pop_front() else {
                 return ran;
             };
-            if job.cancelled.load(Ordering::Acquire) {
+            // The caller may have cancelled while the job waited. Then it is not run.
+            if job.state.compare_exchange(QUEUED, RUNNING, Ordering::AcqRel, Ordering::Acquire).is_err() {
                 continue;
             }
             let work = job.work;
