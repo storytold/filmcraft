@@ -49,8 +49,8 @@ pub enum H264Profile {
     Main,
     #[default]
     High,
-    /// High 10: 10-bit 4:2:0 color, without the banding of 8 bits (HDR exports keep their 10-bit
-    /// precision).
+    /// High 10: 10-bit 4:2:0 encoding. HDR exports keep their 10-bit precision; SDR exports are
+    /// rendered at 8 bits first, so this adds no banding of its own but cannot remove it.
     #[serde(rename = "high10")]
     High10,
 }

@@ -3752,5 +3752,5 @@
 	Every frame a keyframe (edit-friendly, larger files)	すべてのフレームをキーフレームにする (編集しやすく、ファイルは大きくなる)
 	H.264 High 10 Master	H.264 High 10 マスター
 	H.264 High 10 Intra	H.264 High 10 Intra
-	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding	シーケンスと同じサイズの H.264 High 10 (10-bit 4:2:0)、固定品質 CRF 16、AAC 320 kbps。バンディングのないマスター
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	シーケンスと同じサイズの H.264 High 10 (10-bit 4:2:0)、固定品質 CRF 16、AAC 320 kbps。10 ビットのマスター
 	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0、すべてのフレームがキーフレーム)、CRF 12、AAC 320 kbps。編集しやすい中間ファイル

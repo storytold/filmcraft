@@ -175,7 +175,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         p(
             "H.264 High 10 Master",
             bc,
-            "H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a master without banding",
+            "H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master",
             high10(16.0, false),
         ),
         p(
