@@ -109,10 +109,48 @@ fn capped_working_image_keeps_the_graphic_placed_at_full_scale() {
     let drawn = |x: usize, y: usize| output.get(x, y)[3] > 0.9;
     let clear = |x: usize, y: usize| output.get(x, y)[3] < 0.1;
     assert!(drawn(160, 90), "the shape's centre");
-    // a pixel inside each edge of the 100×60 shape, and a pixel outside each: a raster placed at
-    // its halved scale leaves the inner probes clear, one placed at double scale fills the outer
+    // inside the 100×60 shape, a pixel or two from each edge and well within it, and outside it,
+    // just past each edge and well beyond: a raster placed at its halved scale leaves the inner
+    // probes clear, one placed at double scale fills the outer
     assert!(drawn(111, 90) && drawn(208, 90) && drawn(160, 61) && drawn(160, 118), "the shape keeps its full extent");
-    assert!(clear(108, 90) && clear(211, 90) && clear(160, 58) && clear(160, 121), "and no more than that");
+    assert!(drawn(120, 90) && drawn(200, 90) && drawn(160, 65) && drawn(160, 115), "and is filled");
+    assert!(clear(108, 90) && clear(211, 90) && clear(160, 58) && clear(160, 121), "and nothing lies just outside its edges");
+    assert!(clear(100, 90) && clear(220, 90) && clear(160, 50) && clear(160, 130), "or further out");
+}
+
+/// The same capped working image under an opacity mask instead of an effect: the mask is
+/// applied at the raster's scale, so its edges land where they were drawn on the graphic.
+#[test]
+fn capped_working_image_applies_an_opacity_mask_at_the_graphics_scale() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::graphic::new_shape_layer;
+    use filmcraft_project::mask::{Mask, MaskPath};
+
+    let mut project = Project::new("capped mask");
+    let rate = FrameRate::FPS_24;
+    let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 7680, height: 4320, rate }, None);
+    let sequence = project.new_sequence("sequence", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    item.scale_to_frame = false;
+    // the placement test's 100×60 shape (output x 110..210, y 60..120) under an 80×50 ellipse
+    // mask at the same centre: output x 120..200 on the centre row, y 65..115 on the centre column
+    item.effects.push(new_shape_layer(0, Vec2::new(3840.0, 2160.0), Vec2::new(100.0, 60.0), vec![]));
+    item.effect_mut("opacity").unwrap().masks.push(Mask::new("m", MaskPath::ellipse(Vec2::new(3840.0, 2160.0), Vec2::new(40.0, 25.0))));
+    project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(item);
+    let seq = project.sequence(sequence).unwrap();
+    let item = &seq.video_tracks[0].items[0];
+    assert!(item.has_opacity_masks() && !item.has_standard_effects(), "the mask alone sends the graphic through the working raster");
+    let working = base_layer(&project, seq, item, Tick::ZERO, RenderOptions::default(), &SourceMap::default(), 1.0).unwrap();
+    assert_eq!((working.w, working.h), (3840, 2160));
+    let output = render_sequence(&project, sequence, Tick::ZERO, RenderOptions::default(), &SourceMap::default());
+    let drawn = |x: usize, y: usize| output.get(x, y)[3] > 0.9;
+    let clear = |x: usize, y: usize| output.get(x, y)[3] < 0.1;
+    assert!(drawn(160, 90), "the shape's centre");
+    // five pixels inside and outside the ellipse: the raster is at half scale, so a mask edge
+    // spans about two output pixels; a mask applied at the raster's halved scale would hide the
+    // inner probes, one at double scale would show the outer
+    assert!(drawn(125, 90) && drawn(195, 90) && drawn(160, 70) && drawn(160, 110), "the shape shows inside the mask");
+    assert!(clear(115, 90) && clear(205, 90) && clear(160, 60) && clear(160, 120), "and is hidden outside it");
 }
 
 fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {

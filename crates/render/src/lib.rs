@@ -703,6 +703,8 @@ fn graphic_raster_dimensions(src_size: (u32, u32), want: f32) -> (usize, usize) 
         // legal frame side so its fallback does not allocate the entire pixel budget.
         return (1, filmcraft_project::MAX_FRAME_SIDE as usize);
     }
+    // The widest raster within the budget, by bisection. It is not the closed-form square root:
+    // `height_for` rounds up, so a width from the closed form can land one row over the budget.
     let (mut lo, mut hi) = (1, desired_w.max(1));
     while lo < hi {
         let mid = lo + (hi - lo).div_ceil(2);
@@ -764,9 +766,9 @@ pub(crate) fn base_layer(
         ItemKind::Graphic { .. } => {
             let (gw, gh) = graphic_raster_dimensions(src_size, want);
             let mut img = Image::new(gw, gh);
-            // The vectors draw at the raster's own scale, not at `want`: a raster the budget
-            // reduced is placed downstream by gw / src width, so drawing at `want` would scale
-            // the picture twice.
+            // The vectors draw at the raster's own scale, not at `want`: a budget-capped raster
+            // is placed downstream by gw / src width, so drawing at `want` would scale the
+            // picture twice.
             let raster_matrix = graphic_raster_matrix(src_size, (gw, gh));
             graphic_clip::render_graphic(item, mt, src_size, &raster_matrix, &mut img);
             img
