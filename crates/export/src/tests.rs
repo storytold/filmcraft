@@ -81,10 +81,14 @@ fn mjpeg_mov_roundtrip() {
 fn the_report_names_the_encoder_that_wrote_the_file() {
     let (p, seq, m) = project();
     let path = tmp("named.mov");
-    let r = export(&p, seq, &ExportSettings { format: Format::Mjpeg, path, ..Default::default() }, &m, &Progress::default()).unwrap();
+    let prog = Progress::default();
+    let r = export(&p, seq, &ExportSettings { format: Format::Mjpeg, path, ..Default::default() }, &m, &prog).unwrap();
     // no hardware encoder is registered in this crate's tests, so the software one wrote it
     assert_eq!(r.encoder, "software QuickTime (Motion JPEG)", "{}", r.encoder);
     assert_eq!(r.declined, None, "nothing declined it");
+    // the status says it too, so the app shows which encoder ran without reading the result
+    let status = prog.status.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(status.contains("software QuickTime (Motion JPEG)"), "{status}");
 }
 
 /// A GIF is a stream written by the image crate's encoder, even though it shares the still-writing

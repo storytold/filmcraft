@@ -539,7 +539,13 @@ impl Exporter {
         let nframes = self.frames();
         if !self.settings.part_of_batch {
             progress.finished.store(true, Ordering::Relaxed);
-            progress.set_status(format!("Done in {secs:.1}s"));
+            // The status says which encoder wrote the file: a hardware encoder that declined leaves the
+            // software encoder to write it, and the reason belongs in the line the user reads.
+            let encoder = format!("{} {}", self.venc.name(), self.settings.video_format().label());
+            progress.set_status(match &self.declined {
+                Some(why) => format!("Done in {secs:.1}s ({encoder} - the hardware encoder declined: {why})"),
+                None => format!("Done in {secs:.1}s ({encoder})"),
+            });
         }
         Ok(Step::Done(Report {
             path: self.settings.path.clone(),
