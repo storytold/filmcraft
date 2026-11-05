@@ -464,7 +464,7 @@ impl Look {
     }
     /// A: one huge word and little else; tight; every word rises from behind a mask.
     pub fn monumental() -> Self {
-        Self { name: "monumental", size_k: 0.04, hero_scale: 3.4, leading: 0.84, sup_face: "Regular", hero_face: "Regular", hero_family: Some("Italianno"), sup_caps: false, hero_caps: false, sup_track: 10.0, hero_track: 0.0, hero_italic: false, composition: Composition::Block, reveal: Reveal::Mask, rule: false, drift: 0.0, hero_from_scale: 1.0 }
+        Self { name: "monumental", size_k: 0.04, hero_scale: 2.8, leading: 0.84, sup_face: "Regular", hero_face: "ExtraBold Italic", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 10.0, hero_track: -25.0, hero_italic: false, composition: Composition::Block, reveal: Reveal::Mask, rule: false, drift: 0.0, hero_from_scale: 1.0 }
     }
     /// B: small tracked capitals against an italic giant, a guide line over it all.
     pub fn editorial() -> Self {
