@@ -41,7 +41,7 @@ fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcra
     let red = p.add_item(
         &info.name.clone(),
         Label::Iris,
-        ItemKind::Media(MediaClip {
+        ItemKind::Media(Box::new(MediaClip {
             media: MediaRef::Generator(g.generator.clone()),
             info,
             interpret: Default::default(),
@@ -51,7 +51,7 @@ fn project(width: u32, height: u32) -> (Arc<filmcraft_project::Project>, filmcra
             offline: false,
             proxy: None,
             identity: None,
-        }),
+        })),
         None,
     );
     let seq = p.new_sequence("s", SequenceSettings { width, height, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, 1, 1, None);

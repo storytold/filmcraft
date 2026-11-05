@@ -46,13 +46,7 @@ fn ffmpeg_decodes_intra_and_inter_residual_stream() {
     }
 
     for (i, (y_plane, uv_plane)) in frames.iter().enumerate() {
-        let frame = YuvFrame {
-            y: y_plane,
-            u: uv_plane,
-            v: uv_plane,
-            y_stride: w as usize,
-            uv_stride: (w / 2) as usize,
-        };
+        let frame = YuvFrame { y: y_plane, u: uv_plane, v: uv_plane, y_stride: w as usize, uv_stride: (w / 2) as usize };
         let p = enc.encode(&frame, (i as i64) * 1000).unwrap();
         packets.push(p);
     }
@@ -101,12 +95,7 @@ fn ffmpeg_decodes_intra_and_inter_residual_stream() {
     assert!(probe_json.contains("\"level\": 8"), "expected level 8 (Level 4.0), got {probe_json}");
 
     // 2. ffmpeg full stream decode
-    let ffmpeg_out = Command::new(&ffmpeg)
-        .args(["-v", "error", "-xerror", "-i"])
-        .arg(&mp4_path)
-        .args(["-f", "null", "-"])
-        .output()
-        .unwrap();
+    let ffmpeg_out = Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i"]).arg(&mp4_path).args(["-f", "null", "-"]).output().unwrap();
     assert!(ffmpeg_out.status.success(), "ffmpeg decode failed: {}", String::from_utf8_lossy(&ffmpeg_out.stderr));
 
     // 3. in-tree filmcraft-av1 decoder verification
@@ -141,13 +130,7 @@ fn ffmpeg_and_ffprobe_verify_4k_level_12_agreement() {
 
     let y_plane = vec![128u8; (w * h) as usize];
     let uv_plane = vec![128u8; ((w / 2) * (h / 2)) as usize];
-    let frame = YuvFrame {
-        y: &y_plane,
-        u: &uv_plane,
-        v: &uv_plane,
-        y_stride: w as usize,
-        uv_stride: (w / 2) as usize,
-    };
+    let frame = YuvFrame { y: &y_plane, u: &uv_plane, v: &uv_plane, y_stride: w as usize, uv_stride: (w / 2) as usize };
     let packet = enc.encode(&frame, 0).unwrap();
 
     let av1c = Av1Config {
@@ -178,11 +161,8 @@ fn ffmpeg_and_ffprobe_verify_4k_level_12_agreement() {
     fs::write(&mp4_path, &mp4_bytes).unwrap();
 
     // Verify ffprobe sees level 12 (Level 5.0) matching sequence header and av1C
-    let probe_out = Command::new(&ffprobe)
-        .args(["-v", "error", "-show_entries", "stream=codec_name,width,height,level", "-of", "json"])
-        .arg(&mp4_path)
-        .output()
-        .unwrap();
+    let probe_out =
+        Command::new(&ffprobe).args(["-v", "error", "-show_entries", "stream=codec_name,width,height,level", "-of", "json"]).arg(&mp4_path).output().unwrap();
     assert!(probe_out.status.success(), "ffprobe failed: {}", String::from_utf8_lossy(&probe_out.stderr));
     let probe_json = String::from_utf8_lossy(&probe_out.stdout);
     assert!(probe_json.contains("\"codec_name\": \"av1\""), "expected av1, got {probe_json}");
@@ -191,12 +171,7 @@ fn ffmpeg_and_ffprobe_verify_4k_level_12_agreement() {
     assert!(probe_json.contains("\"level\": 12"), "expected level 12 (Level 5.0), got {probe_json}");
 
     // Verify ffmpeg decodes 4K without errors
-    let ffmpeg_out = Command::new(&ffmpeg)
-        .args(["-v", "error", "-xerror", "-i"])
-        .arg(&mp4_path)
-        .args(["-f", "null", "-"])
-        .output()
-        .unwrap();
+    let ffmpeg_out = Command::new(&ffmpeg).args(["-v", "error", "-xerror", "-i"]).arg(&mp4_path).args(["-f", "null", "-"]).output().unwrap();
     assert!(ffmpeg_out.status.success(), "ffmpeg 4k decode failed: {}", String::from_utf8_lossy(&ffmpeg_out.stderr));
 
     let _ = fs::remove_file(&mp4_path);

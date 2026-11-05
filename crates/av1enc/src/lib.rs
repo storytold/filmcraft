@@ -107,6 +107,7 @@ pub struct Encoder {
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn compute_block_sad(src: &[u8], src_stride: usize, ref_plane: &[u8], ref_stride: usize, x0: usize, y0: usize, w: usize, h: usize) -> u64 {
     let mut sad = 0u64;
     for r in 0..h {
@@ -133,6 +134,7 @@ fn compute_block_sad(src: &[u8], src_stride: usize, ref_plane: &[u8], ref_stride
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn copy_block(src: &[u8], src_stride: usize, dst: &mut [u8], dst_stride: usize, x0: usize, y0: usize, w: usize, h: usize) {
     for r in 0..h {
         let Some(y) = y0.checked_add(r) else { continue };
@@ -631,6 +633,7 @@ fn encode_partition(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: us
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn get_dc_sign_ctx(x4: usize, y4: usize, w4: usize, h4: usize, max_x4: usize, max_y4: usize, above: &[u8], left: &[u8]) -> usize {
     let mut dc_sign = 0i32;
     for k in 0..w4 {
@@ -662,6 +665,7 @@ fn get_dc_sign_ctx(x4: usize, y4: usize, w4: usize, h4: usize, max_x4: usize, ma
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn get_chroma_txb_skip_ctx(x4: usize, y4: usize, w4: usize, h4: usize, max_x4: usize, max_y4: usize, above: &[u8], left: &[u8]) -> usize {
     let mut a = 0u8;
     let mut l = 0u8;
@@ -682,6 +686,7 @@ fn get_chroma_txb_skip_ctx(x4: usize, y4: usize, w4: usize, h4: usize, max_x4: u
     7 + (a != 0) as usize + (l != 0) as usize
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_dc_sign(above: &mut [u8], left: &mut [u8], x4: usize, y4: usize, w4: usize, h4: usize, level: u32, is_neg: bool) {
     let cat = if level > 0 { if is_neg { 1 } else { 2 } } else { 0 };
     for k in 0..w4 {
@@ -696,6 +701,7 @@ fn update_dc_sign(above: &mut [u8], left: &mut [u8], x4: usize, y4: usize, w4: u
     }
 }
 
+#[allow(clippy::cognitive_complexity)]
 fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize, sb64_analysis: Option<(u8, bool, bool)>) {
     let bw4 = 1usize << bsl;
     let bh4 = 1usize << bsl;
@@ -908,10 +914,7 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
 
     if ctx.is_key {
         ctx.sym.write_symbol_no_update(if has_residual { 0 } else { 1 }, tables::DEFAULT_SKIP_CDF.get(skip_ctx).unwrap_or(&tables::DEFAULT_SKIP_CDF[0]));
-        let intra_y_cdf = tables::DEFAULT_INTRA_FRAME_Y_MODE_CDF
-            .get(actx)
-            .and_then(|a| a.get(lctx))
-            .unwrap_or(&tables::DEFAULT_INTRA_FRAME_Y_MODE_CDF[0][0]);
+        let intra_y_cdf = tables::DEFAULT_INTRA_FRAME_Y_MODE_CDF.get(actx).and_then(|a| a.get(lctx)).unwrap_or(&tables::DEFAULT_INTRA_FRAME_Y_MODE_CDF[0][0]);
         ctx.sym.write_symbol_no_update(y_mode as usize, intra_y_cdf);
     } else {
         let above_intra = if avail_u { ctx.grid_ref_frame.get((r - 1) * ctx.mi_cols + c).copied().unwrap_or(0) == 0 } else { true };
@@ -934,9 +937,15 @@ fn encode_block(ctx: &mut TileEncodeCtx<'_, '_>, r: usize, c: usize, bsl: usize,
     }
 
     if cfl_allowed {
-        ctx.sym.write_symbol_no_update(uv_mode as usize, tables::DEFAULT_UV_MODE_CFL_ALLOWED_CDF.get(y_mode as usize).unwrap_or(&tables::DEFAULT_UV_MODE_CFL_ALLOWED_CDF[0]));
+        ctx.sym.write_symbol_no_update(
+            uv_mode as usize,
+            tables::DEFAULT_UV_MODE_CFL_ALLOWED_CDF.get(y_mode as usize).unwrap_or(&tables::DEFAULT_UV_MODE_CFL_ALLOWED_CDF[0]),
+        );
     } else {
-        ctx.sym.write_symbol_no_update(uv_mode as usize, tables::DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF.get(y_mode as usize).unwrap_or(&tables::DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF[0]));
+        ctx.sym.write_symbol_no_update(
+            uv_mode as usize,
+            tables::DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF.get(y_mode as usize).unwrap_or(&tables::DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF[0]),
+        );
     }
 
     if uv_mode == intra::V_PRED || uv_mode == intra::H_PRED {
@@ -1045,6 +1054,7 @@ fn should_split_64x64(y_plane: &[u8], stride: usize, x0: usize, y0: usize, block
     var >= var_threshold
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_and_reconstruct_plane_dc(
     src_plane: &[u8],
     src_stride: usize,
