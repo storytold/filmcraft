@@ -183,9 +183,16 @@ impl Encoder {
         }
         let bs = usize::from(self.cfg.block_size);
         let mut out = Vec::new();
-        while self.pending.first().is_some_and(|p| p.len() >= bs) {
-            let block: Vec<Vec<i32>> = self.pending.iter_mut().map(|p| p.drain(..bs).collect()).collect();
+        // Walk the buffered samples by offset and compact once: draining each block from the
+        // front moved the whole remainder per frame, quadratic in the batch length.
+        let mut at = 0;
+        while self.pending.first().is_some_and(|p| p.len() - at >= bs) {
+            let block: Vec<Vec<i32>> = self.pending.iter().map(|p| p.get(at..at + bs).unwrap_or_default().to_vec()).collect();
             out.push(self.frame(&block));
+            at += bs;
+        }
+        for p in &mut self.pending {
+            p.drain(..at);
         }
         Ok(out)
     }

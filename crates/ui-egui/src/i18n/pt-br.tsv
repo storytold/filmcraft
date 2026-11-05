@@ -461,7 +461,7 @@
 	Replace	Substituir
 	Yes	Sim
 	No	Não
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Adicione mídia ao projeto. Solte arquivos em qualquer lugar da janela ou escolha uma origem abaixo.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Adicione mídia ao projeto. Solte arquivos ou pastas em qualquer lugar da janela ou escolha uma origem abaixo.
 	Browse files…	Procurar arquivos…
 	Movies, audio and stills from disk	Filmes, áudio e imagens estáticas do disco
 	Demo footage	Clipes de demonstração
@@ -3464,6 +3464,7 @@
 	Clip Speed / Duration	Velocidade/duração do clipe
 	Speed:	Velocidade:
 	Reverse Speed	Inverter velocidade
+	Maintain Audio Pitch	Manter tom do áudio
 	Ripple Edit, Shifting Trailing Clips	Edição em cascata, deslocando os clipes seguintes
 	About	Sobre
 	Contributors	Colaboradores

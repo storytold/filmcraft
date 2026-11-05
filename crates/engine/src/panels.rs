@@ -214,9 +214,10 @@ pub fn metadata_fields(p: &Project, id: ItemId) -> Vec<Field> {
         ItemKind::Sequence(q) => (q.mark_in, q.mark_out),
         _ => (None, None),
     };
+    // `mark_out` is the start of the last frame kept, as edits and the Project panel read it
     if let (Some(i), Some(o)) = marks {
         add("Clip", "In Point", tc(start + i, rate), false);
-        add("Clip", "Out Point", tc(start + o - rate.frame_duration(), rate), false);
+        add("Clip", "Out Point", tc(start + o, rate), false);
     }
     if let Some(v) = media.and_then(|m| m.info.video.as_ref()) {
         add("Clip", "Video Info", format!("{} x {} ({:.4})", v.width, v.height, v.par.0 as f64 / v.par.1.max(1) as f64), false);

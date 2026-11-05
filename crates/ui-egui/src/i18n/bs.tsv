@@ -469,7 +469,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Jeste li sigurni da želite odbaciti promjene u '{file}'?
 	Yes	Da
 	No	Ne
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Dodajte medije u projekat. Ispustite datoteke bilo gdje u prozoru ili odaberite izvor ispod.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Dodajte medije u projekat. Ispustite datoteke ili foldere bilo gdje u prozoru ili odaberite izvor ispod.
 	Browse files…	Pregledaj datoteke…
 	Movies, audio and stills from disk	Filmovi, zvuk i fotografije s diska
 	Demo footage	Demo snimak
@@ -3458,6 +3458,7 @@
 	Clip Speed / Duration	Brzina / trajanje klipa
 	Speed:	Brzina:
 	Reverse Speed	Obrnuta brzina
+	Maintain Audio Pitch	Zadrži visinu tona
 	Ripple Edit, Shifting Trailing Clips	Ripple montaža, pomjeranje narednih klipova
 	About	O programu
 	Contributors	Saradnici
