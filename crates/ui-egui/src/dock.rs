@@ -618,6 +618,17 @@ pub enum SeqAction {
 
 const ARROW_W: f32 = 18.0;
 
+/// What the sequence tabs remember between frames to keep the shown tab in view.
+#[derive(Clone, Copy, Default)]
+struct TabScroll {
+    offset: f32,
+    active: Option<u64>,
+    view_width: f32,
+    start: Option<f32>,
+    width: f32,
+    visible: bool,
+}
+
 fn sequence_widths(ui: &egui::Ui, seqs: &SeqTabs) -> Vec<f32> {
     seqs.open
         .iter()
@@ -744,17 +755,21 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
     let content_w = (total - 8.0).max(0.0) + 2.0 * pad;
     let max_offset = (content_w - view.width()).max(0.0);
     let scroll_id = egui::Id::unique("timeline-tab-scroll");
-    let (mut offset, shown, shown_width, shown_start) =
-        ui.ctx().data(|d| d.get_temp::<(f32, Option<u64>, f32, Option<f32>)>(scroll_id)).unwrap_or((0.0, None, 0.0, None));
+    let last: TabScroll = ui.ctx().data(|d| d.get_temp(scroll_id)).unwrap_or_default();
+    let mut offset = last.offset;
     let active_id = seqs.open.get(active_at).map(|(id, _)| *id);
     let active_start = starts.get(active_at).copied();
-    if (shown != active_id || shown_width != view.width() || shown_start != active_start)
-        && let (Some(start), Some(w)) = (starts.get(active_at), widths.get(active_at))
+    let active_width = widths.get(active_at).copied().unwrap_or(0.0);
+    // A tab that moved or grew only drags the view along when it was in view; a view scrolled
+    // away from it stays where the user left it.
+    let moved = last.visible && (last.start != active_start || last.width != active_width);
+    if (last.active != active_id || last.view_width != view.width() || moved)
+        && let Some(start) = active_start
     {
-        if *start < offset {
-            offset = *start;
-        } else if start + w + 2.0 * pad > offset + view.width() {
-            offset = start + w + 2.0 * pad - view.width();
+        if start < offset {
+            offset = start;
+        } else if start + active_width + 2.0 * pad > offset + view.width() {
+            offset = start + active_width + 2.0 * pad - view.width();
         }
     }
     offset = if all_fit { 0.0 } else { offset.clamp(0.0, max_offset) };
@@ -762,7 +777,9 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
     if let Some((left, right)) = arrows {
         offset = scroll_arrows(ui, strip, [left, right], offset, max_offset, t, reg);
     }
-    ui.ctx().data_mut(|d| d.insert_temp(scroll_id, (offset, active_id, view.width(), active_start)));
+    let visible = active_start.is_some_and(|start| start + pad < offset + view.width() && start + active_width + pad > offset);
+    let state = TabScroll { offset, active: active_id, view_width: view.width(), start: active_start, width: active_width, visible };
+    ui.ctx().data_mut(|d| d.insert_temp(scroll_id, state));
     let list_id = egui::Id::unique("timeline-tab-list");
     let mut list_opened = false;
     if let Some(r) = more {
