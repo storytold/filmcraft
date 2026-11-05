@@ -50,12 +50,17 @@ pub struct PlanLayer {
 }
 
 /// The GPU effect stage of a layer: the frame is decoded into a working image of `size` (the
-/// frame box-decimated by `decimation`, as the CPU decodes it), `ops` run on it in order, and the
-/// result is placed with the layer's matrix, opacity and blend mode.
+/// frame box-decimated by `decimation`, as the CPU decodes it, then turned clockwise by `turns`
+/// quarter turns), `ops` run on it in order, and the result is placed with the layer's matrix,
+/// opacity and blend mode.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerFx {
     pub size: (u32, u32),
     pub decimation: u32,
+    /// The container's display rotation, left to this stage (see [`MediaSource::video_frame_unturned`]).
+    ///
+    /// [`MediaSource::video_frame_unturned`]: filmcraft_media::MediaSource::video_frame_unturned
+    pub turns: u8,
     pub ops: Vec<FxOp>,
 }
 
@@ -469,7 +474,10 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         let lin = ((motion.a * motion.a + motion.b * motion.b).sqrt()).max((motion.c * motion.c + motion.d * motion.d).sqrt());
         let want = (lin * opts.scale as f64).clamp(1.0 / 64.0, 1.0) as f32;
         let time = crate::video_source_time(item, t, src.info().frame_rate());
-        let Ok(frame) = src.video_frame(FrameRequest { time, scale: want }) else { return };
+        // The GPU turns the frame as decoded, the container's display rotation folded into the
+        // layer's matrix or its effect stage: turning a 4K frame on the CPU is too slow to play (#3467).
+        let Ok((frame, turns)) = src.video_frame_unturned(FrameRequest { time, scale: want }) else { return };
+        let upright = |f: &VideoFrame| if turns % 2 == 1 { (f.height, f.width) } else { (f.width, f.height) };
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // HDR and wide-gamut media on a Rec. 709 sequence is converted on the GPU too (#965); log
         // media and other pipelines are converted on the CPU (below), and so are blended
@@ -481,8 +489,9 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         if plain && !chain.is_empty() {
             // GPU effect stage: the working image the CPU would decode (`base_layer`), the
             // effects evaluated for it, placed as `item_layer` places it
-            let n = crate::decimation(frame.width as f32, size.0 as f32 * want);
-            let (lw, lh) = ((frame.width as usize / n).max(1), (frame.height as usize / n).max(1));
+            let (fw, fh) = upright(&frame);
+            let n = crate::decimation(fw as f32, size.0 as f32 * want);
+            let (lw, lh) = ((fw as usize / n).max(1), (fh as usize / n).max(1));
             let px_scale = lw as f32 / size.0.max(1) as f32;
             let tc = "";
             let cx = crate::effects::FxCtx {
@@ -501,7 +510,7 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
                 let m = Affine::scale(opts.scale as f64, opts.scale as f64)
                     .then_apply(&motion)
                     .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
-                let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, ops };
+                let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, turns, ops };
                 out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), input });
                 return;
             }
@@ -510,13 +519,16 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
             // drawn instead of the full picture (a quarter at 1/2, a sixteenth at 1/4 of the
             // upload and sampling). The mean is taken over Y'CbCr codes, not linear light as
             // the shader's supersampling does, so this stays limited to the opt-in draft mode.
-            let n = if filmcraft_media::cancel::draft() { crate::decimation(frame.width as f32, size.0 as f32 * want) } else { 1 };
+            let n = if filmcraft_media::cancel::draft() { crate::decimation(upright(&frame).0 as f32, size.0 as f32 * want) } else { 1 };
             let frame = match frame.box_decimated(n) {
                 Some(small) => Arc::new(small),
                 None => frame,
             };
-            let px_scale = frame.width as f64 / size.0.max(1) as f64;
-            let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion).then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale));
+            let px_scale = upright(&frame).0 as f64 / size.0.max(1) as f64;
+            let m = Affine::scale(opts.scale as f64, opts.scale as f64)
+                .then_apply(&motion)
+                .then_apply(&Affine::scale(1.0 / px_scale, 1.0 / px_scale))
+                .then_apply(&quarter_turns(turns, frame.width as f64, frame.height as f64));
             out.push(PlanLayer { input, ..PlanLayer::new(frame, m, op * extra_opacity, bl) });
             return;
         }
@@ -525,6 +537,17 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
     let tc = filmcraft_time::format_time(t, seq.settings.frame_rate, seq.settings.drop_frame, filmcraft_time::TimeDisplay::Timecode, 48_000);
     if let Some((img, op2, _)) = crate::item_layer(project, seq, item, t, opts, sources, &tc) {
         out.push(PlanLayer::new(cpu_frame(img), Affine::IDENTITY, op2 * extra_opacity, bl));
+    }
+}
+
+/// Maps a `w`×`h` frame's pixels to the frame turned clockwise by `q` quarter turns, as
+/// [`VideoFrame::rotated`] turns it.
+pub fn quarter_turns(q: u8, w: f64, h: f64) -> Affine {
+    match q % 4 {
+        1 => Affine { a: 0.0, b: 1.0, c: -1.0, d: 0.0, e: h, f: 0.0 },
+        2 => Affine { a: -1.0, b: 0.0, c: 0.0, d: -1.0, e: w, f: h },
+        3 => Affine { a: 0.0, b: -1.0, c: 1.0, d: 0.0, e: 0.0, f: w },
+        _ => Affine::IDENTITY,
     }
 }
 
@@ -540,7 +563,7 @@ pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
 
 /// [`effect_image`] of a colour-managed layer ([`PlanLayer::input`]).
 pub fn effect_image_with(frame: &VideoFrame, fx: &LayerFx, input: Option<&filmcraft_color::InputTransform>) -> crate::Image {
-    let mut img = linear_image(frame, fx.decimation.max(1) as usize, input);
+    let mut img = turned(linear_image(frame, fx.decimation.max(1) as usize, input), fx.turns);
     for op in &fx.ops {
         op.apply(&mut img);
     }
@@ -588,6 +611,26 @@ fn linear_image(frame: &VideoFrame, n: usize, input: Option<&filmcraft_color::In
     img
 }
 
+/// `img` turned clockwise by `q` quarter turns, as [`VideoFrame::rotated`] turns a frame.
+fn turned(img: crate::Image, q: u8) -> crate::Image {
+    if q.is_multiple_of(4) {
+        return img;
+    }
+    let (w, h) = (img.w, img.h);
+    let (ow, oh) = if q % 2 == 1 { (h, w) } else { (w, h) };
+    let mut px = vec![0.0; img.px.len()];
+    for (i, p) in img.px.as_chunks::<4>().0.iter().enumerate() {
+        let (x, y) = (i % w, i / w);
+        let (ox, oy) = match q % 4 {
+            1 => (h - 1 - y, x),
+            2 => (w - 1 - x, h - 1 - y),
+            _ => (y, w - 1 - x),
+        };
+        px[(oy * ow + ox) * 4..][..4].copy_from_slice(p);
+    }
+    crate::Image { w: ow, h: oh, px }
+}
+
 fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
     let (width, height) = (canvas.w, canvas.h);
     for l in layers {
@@ -607,6 +650,26 @@ fn execute_layers(canvas: &mut crate::Image, layers: &[PlanLayer]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quarter_turns_place_a_frame_as_rotated_turns_it() {
+        // 3×2 frame, every pixel distinct
+        let px: Vec<f32> = (0..6).flat_map(|i| [i as f32 / 8.0, 0.0, 0.0, 1.0]).collect();
+        let frame = VideoFrame::rgba_f32(3, 2, px);
+        for q in 0..4u8 {
+            let upright = Arc::new(frame.rotated(q));
+            let (w, h) = (upright.width as usize, upright.height as usize);
+            let want = execute_cpu(&FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer::new(upright, Affine::IDENTITY, 1.0, Blend::Normal)] });
+            let m = quarter_turns(q, 3.0, 2.0);
+            let got = execute_cpu(&FramePlan::Layers { width: w, height: h, layers: vec![PlanLayer::new(Arc::new(frame.clone()), m, 1.0, Blend::Normal)] });
+            assert_eq!(got.px, want.px, "q = {q}");
+            // the effect stage's turn of a working image too
+            let img = turned(crate::Image { w: 3, h: 2, px: (0..24).map(|i| i as f32).collect() }, q);
+            let frame24 = VideoFrame::rgba_f32(3, 2, (0..24).map(|i| i as f32).collect()).rotated(q);
+            let filmcraft_frame::PixelData::RgbaF32(px) = &frame24.data else { panic!("rgba f32") };
+            assert_eq!((img.w as u32, img.h as u32, &img.px[..]), (frame24.width, frame24.height, &px[..]), "q = {q}");
+        }
+    }
 
     #[test]
     fn flattening_an_operation_preserves_its_picture() {
