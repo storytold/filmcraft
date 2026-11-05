@@ -26,7 +26,7 @@ pub const CONTINUE_LABEL: &str = "Continue";
 pub const UNDO_LABEL: &str = "Undo";
 
 /// Undo step label of `link.editIn`.
-const STEP: &str = "link.editIn";
+pub(crate) const STEP: &str = "link.editIn";
 
 /// What the user is asked to keep or undo.
 #[derive(Debug, Clone, PartialEq, Eq)]

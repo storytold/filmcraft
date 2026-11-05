@@ -34,13 +34,20 @@ pub fn show(ctx: &egui::Context, session: &mut Session) {
 
 /// [`show`] with the UI translation. `translate` maps an English string to the language in use.
 pub fn show_translated(ctx: &egui::Context, session: &mut Session, translate: &dyn Fn(&str) -> String) {
-    show_notice(ctx, session, &host(), translate);
-    show_with(ctx, session, &host());
+    let host = host();
+    show_notice(ctx, session, &host, translate);
+    show_prompts(ctx, session, &host);
 }
 
 /// [`show`] for a given host.
 pub fn show_with(ctx: &egui::Context, session: &mut Session, host: &Host) {
     show_notice(ctx, session, host, &|text| text.to_string());
+    show_prompts(ctx, session, host);
+}
+
+/// The result watch and the waiting question. The notice is not drawn here: each entry point draws
+/// it once with its own translation.
+fn show_prompts(ctx: &egui::Context, session: &mut Session, host: &Host) {
     watch_results(ctx, session);
     let Some(waiting) = prompt::peek() else { return };
     if matches!(waiting, Prompt::Starting { .. }) && !advance_start(ctx, session, host, &waiting) {
@@ -237,6 +244,51 @@ fn retry(session: &mut Session, waiting: &Prompt, choice: Option<&str>) {
 mod tests {
     use super::*;
     use crate::fixtures::{linked_offline, write_movie};
+
+    fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(text) => out.push(text.galley.text().to_string()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|inner| collect_text(inner, out)),
+            _ => {}
+        }
+    }
+
+    /// The text the last of a few frames of `draw` paints. An `Area` is hidden on its first frame,
+    /// while it measures itself. Both banners use the same `Area` id, so counting layers cannot tell
+    /// one banner from two. Counting painted text can.
+    fn painted_text(mut draw: impl FnMut(&egui::Context)) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut texts = Vec::new();
+        for _ in 0..4 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| draw(&ui.ctx().clone()));
+            output.textures_delta.clear();
+            texts.clear();
+            output.shapes.iter().for_each(|clipped| collect_text(&clipped.shape, &mut texts));
+        }
+        texts
+    }
+
+    /// The hand-off banner is drawn once per frame. Drawn twice, the English banner would sit on
+    /// top of the translated one.
+    #[test]
+    fn each_entry_point_draws_the_banner_once() {
+        let _exclusive = crate::manager::exclusive();
+        let mut session = Session::default();
+        session.history.undo.push((notice::STEP.to_string(), std::sync::Arc::clone(&session.project), None));
+        notice::set(notice::LinkNotice { link_id: "l".into(), instance: String::new(), lifted: vec!["Blur".into()], dropped: Vec::new() });
+        let sentence = |texts: &[String]| texts.iter().filter(|text| text.contains("Click Continue")).cloned().collect::<Vec<_>>();
+
+        let translated = painted_text(|ctx| show_translated(ctx, &mut session, &|text| format!("translated {text}")));
+        let drawn = sentence(&translated);
+        assert_eq!(drawn.len(), 1, "show_translated painted the sentence {} times: {drawn:?}", drawn.len());
+        assert!(drawn[0].starts_with("translated "), "the sentence on screen is the translated one: {drawn:?}");
+
+        let plain = painted_text(|ctx| show_with(ctx, &mut session, &crate::host::host()));
+        let drawn = sentence(&plain);
+        assert_eq!(drawn.len(), 1, "show_with painted the sentence {} times: {drawn:?}", drawn.len());
+        assert!(!drawn[0].starts_with("translated "));
+        notice::take();
+    }
 
     /// The per-frame hook is what brings a result online when no `link.refresh` arrives.
     #[test]
