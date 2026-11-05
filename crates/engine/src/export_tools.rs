@@ -286,6 +286,12 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
     if let Some(v) = str_p(p, "apvProfile") {
         settings.apv_profile = v.to_string();
     }
+    if let Some(v) = str_p(p, "h264Profile") {
+        settings.h264_profile = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "h264Profile: baseline | main | high | high10"))?;
+    }
+    if let Some(v) = bool_p(p, "h264IntraOnly") {
+        settings.h264_intra_only = v;
+    }
     if let Some(v) = str_p(p, "audioCodec") {
         settings.audio.codec = serde_json::from_value(json!(v)).map_err(|_| bad(cmd, "audioCodec: auto | aac | pcm | flac"))?;
     }
@@ -566,6 +572,34 @@ fn file_name(path: &str) -> String {
     Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string())
 }
 
+/// For an image sequence, the first and last numbered stills it writes: it never writes
+/// `settings.path` itself. They are counted the way `export.resolve` counts `frames` (#4009).
+fn sequence_files(project: &Project, seq: ItemId, settings: &ExportSettings) -> Option<(String, String)> {
+    if !settings.is_image_sequence() {
+        return None;
+    }
+    let q = project.sequence(seq)?;
+    let range = filmcraft_export::export_range(project, seq, settings).ok()?;
+    let r = settings.resolve(q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate);
+    let (f0, f1) = filmcraft_export::frame_span(r.rate, range);
+    let count = u64::try_from(f1.saturating_sub(f0)).ok().filter(|n| *n > 0)?;
+    Some((filmcraft_export::image_sequence_path(&settings.path, 0, count), filmcraft_export::image_sequence_path(&settings.path, count - 1, count)))
+}
+
+/// An export's `path` in a command result: the file written, for an image sequence its first
+/// still, with `lastPath` beside it and `basePath`, the name the stills are numbered from (what
+/// cleaning up after a cancelled export goes by).
+fn output_json(out: &mut Value, path: &str, files: Option<(String, String)>) {
+    match files {
+        Some((first, last)) => {
+            out["path"] = json!(first);
+            out["lastPath"] = json!(last);
+            out["basePath"] = json!(path);
+        }
+        None => out["path"] = json!(path),
+    }
+}
+
 /// `file.exportMedia`: export the active (or `sequence`) sequence now.
 pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.exportMedia";
@@ -580,8 +614,10 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     settings.path = output_path(s, p, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
+    let files = sequence_files(&project, seq, &settings);
     let id = spawn_export(s, project, seq, settings, format!("Export {}", file_name(&path)), wait)?;
-    let mut out = json!({"job": id, "path": path, "warnings": warnings});
+    let mut out = json!({"job": id, "warnings": warnings});
+    output_json(&mut out, &path, files);
     if let Some(pr) = preset {
         out["preset"] = json!(pr.name);
     }
@@ -954,10 +990,13 @@ fn quick(s: &mut Session, p: &Value) -> Result<Value> {
     settings.path = output_path(s, &q, seq, &settings, None);
     let wait = bool_p(p, "wait").unwrap_or(false);
     let path = settings.path.clone();
+    let files = sequence_files(&project, seq, &settings);
     let id = spawn_export(s, project, seq, settings, format!("Quick Export {}", file_name(&path)), wait)?;
     let used = preset.map(|x| x.name).unwrap_or(name);
     s.export_queue.quick_preset = Some(used.clone());
-    Ok(json!({"job": id, "path": path, "preset": used, "warnings": warnings}))
+    let mut out = json!({"job": id, "preset": used, "warnings": warnings});
+    output_json(&mut out, &path, files);
+    Ok(out)
 }
 
 fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1121,16 +1160,16 @@ fn presets_import(s: &mut Session, p: &Value) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let f = parse_file(&bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let mut names = Vec::new();
+    let mut incoming = Vec::with_capacity(f.presets.len());
     for mut pr in f.presets {
         if filmcraft_export::presets::find_builtin(&pr.name).is_some() {
             pr.name = format!("{} (imported)", pr.name);
         }
         pr.builtin = false;
-        let k = preset_key(&pr.name);
-        s.export_presets.user.retain(|x| preset_key(&x.name) != k);
         names.push(pr.name.clone());
-        s.export_presets.user.push(pr);
+        incoming.push(pr);
     }
+    crate::presets::merge_by_key(&mut s.export_presets.user, incoming, |x| preset_key(&x.name));
     s.export_presets.persist().map_err(EngineError::Other)?;
     Ok(json!({"imported": names}))
 }

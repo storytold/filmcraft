@@ -472,7 +472,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Jeste li sigurni da želite odbaciti promjene u '{file}'?
 	Yes	Da
 	No	Ne
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Dodajte medije u projekat. Ispustite datoteke bilo gdje u prozoru ili odaberite izvor ispod.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Dodajte medije u projekat. Ispustite datoteke ili foldere bilo gdje u prozoru ili odaberite izvor ispod.
 	Browse files…	Pregledaj datoteke…
 	Movies, audio and stills from disk	Filmovi, zvuk i fotografije s diska
 	Demo footage	Demo snimak
@@ -3461,6 +3461,7 @@
 	Clip Speed / Duration	Brzina / trajanje klipa
 	Speed:	Brzina:
 	Reverse Speed	Obrnuta brzina
+	Maintain Audio Pitch	Zadrži visinu tona
 	Ripple Edit, Shifting Trailing Clips	Ripple montaža, pomjeranje narednih klipova
 	About	O programu
 	Contributors	Saradnici
@@ -3621,3 +3622,13 @@
 
 # Sequence: the Delete Work Area Render Files confirmation.
 	Delete preview files that overlap the work area?	Izbrisati datoteke pregleda koje se preklapaju s radnim područjem?
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10-bitna boja
+	All Intra	Samo intra
+	Every frame a keyframe (edit-friendly, larger files)	Svaka sličica je ključna (pogodno za montažu, veće datoteke)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bitno 4:2:0) u veličini sekvence, konstantan kvalitet CRF 16, AAC 320 kbps; 10-bitni master
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bitno 4:2:0, svaka sličica je ključna), CRF 12, AAC 320 kbps; međuformat pogodan za montažu
