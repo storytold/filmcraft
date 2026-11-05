@@ -6,7 +6,7 @@
 //! simply values above 1.0. Log media decodes to scene-linear reflectance (18 % grey = 0.18).
 //!
 //! **Input** ([`InputTransform`]): signal → per-channel decode table (curve) → HLG OOTF (BT.2100,
-//! 1000 cd/m² nominal peak, γ = 1.2; adapted to an SDR display with [`HLG_SDR_GAMMA`] when Auto Tone
+//! 1000 cd/m² nominal peak, γ = 1.2; adapted to an SDR display with γ = 0.85 when Auto Tone
 //! Map brings HLG into an SDR working space) → 3×3 gamut matrix into the working primaries → tone
 //! mapping (only when a PQ or log source enters an SDR working space and Auto Tone Map is on) →
 //! gamut compression (only when the source gamut is wider than the working gamut).
