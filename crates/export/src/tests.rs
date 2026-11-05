@@ -356,6 +356,25 @@ fn hdr_exports_signal_pq_and_hlg() {
     }
 }
 
+/// Renders the job's first frame as the CPU does, then declines, as a renderer whose device was
+/// lost. The flag is shared: the export's pool makes a renderer per thread, on one device.
+struct FailsAfterOneFrame;
+static FAILED_ONE_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+impl FrameRenderer for FailsAfterOneFrame {
+    fn render(
+        &mut self,
+        project: &Project,
+        seq: filmcraft_project::ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn filmcraft_render::SourceProvider,
+    ) -> Option<filmcraft_render::Image> {
+        let failed = FAILED_ONE_FRAME.swap(true, std::sync::atomic::Ordering::SeqCst);
+        (!failed).then(|| filmcraft_render::render_sequence(project, seq, t, opts, sources))
+    }
+}
+
 /// Scenario runner for the GPU hook: everything in one test because the renderer registry is
 /// process-global and parallel tests would see each other's factories.
 #[test]
@@ -390,7 +409,19 @@ fn gpu_hook_scenarios() {
     assert_eq!(gpu_render_stats().fallbacks, 0, "Off must not count as fallback");
     assert_ne!(std::fs::read(tmp("fake-gpu000.png")).unwrap(), std::fs::read(tmp("fake-off000.png")).unwrap(), "the fake GPU picture must reach the export");
 
-    // 3. Hostile and degenerate frame sizes must not panic with a renderer attached.
+    // 3. A renderer that fails partway (a lost GPU device): the rest of the job renders on the
+    // CPU, each fallback is counted, and the file is the one a CPU export writes, no frame blank.
+    crate::reset_frame_renderers_for_tests();
+    crate::register_frame_renderer(|| Some(Box::new(FailsAfterOneFrame) as Box<dyn FrameRenderer>));
+    mk(&tmp("lost.png"), Some(true));
+    assert_eq!(gpu_render_stats().frames, 1, "{:?}", gpu_render_stats());
+    assert_eq!(gpu_render_stats().fallbacks, 1, "{:?}", gpu_render_stats());
+    for name in ["000", "001"] {
+        let (off, lost) = (tmp(&format!("off{name}.png")), tmp(&format!("lost{name}.png")));
+        assert_eq!(std::fs::read(off).unwrap(), std::fs::read(lost).unwrap(), "frame {name} of the interrupted export");
+    }
+
+    // 4. Hostile and degenerate frame sizes must not panic with a renderer attached.
     crate::reset_frame_renderers_for_tests();
     crate::register_frame_renderer(|| None);
     for (w, h) in [(1, 1), (17, 13), (4096, 1)] {

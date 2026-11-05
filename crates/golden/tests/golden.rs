@@ -770,27 +770,189 @@ fn gpu_matches_cpu_on_golden_scenes() {
     let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
     let mut failures = Vec::new();
     for (name, _, make) in scenes() {
-        let s = make();
-        let t = RATE.tick_of(s.frame);
-        let cpu = render_cpu(&s);
-        let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
-        let kind = if matches!(plan, filmcraft_render::plan::FramePlan::Layers { .. }) { "layers" } else { "cpu image" };
-        c.composite(&plan);
-        let (gw, gh, mut px) = c.read_output().expect("GPU readback");
-        px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
-        let gpu = Rgba8::new(gw, gh, px);
-        let d = diff(&cpu, &gpu).unwrap();
-        // mean over RGB only (alpha is equal by construction)
-        let mean_rgb = d.mean_abs * 4.0 / 3.0;
-        eprintln!("{name} ({kind}): GPU vs CPU {d}");
-        if d.p99 > 6 || mean_rgb >= 1.5 {
-            let dir = filmcraft_testkit::golden::failures_dir();
-            let _ = filmcraft_testkit::golden::write_png(&dir.join(format!("{name}.gpu.png")), &gpu);
-            let _ = filmcraft_testkit::golden::write_png(&dir.join(format!("{name}.cpu.png")), &cpu);
-            failures.push(format!("{name} ({kind}): {d}; images in {}", dir.display()));
-        }
+        failures.extend(gpu_vs_cpu(&mut c, name, &make()));
     }
     assert!(failures.is_empty(), "GPU differs from the CPU reference:\n{}", failures.join("\n"));
+}
+
+/// Render `s` on both paths; a description of the difference when it is over the parity limit
+/// (99th percentile 6 of 255, mean under 1.5 over RGB).
+fn gpu_vs_cpu(c: &mut filmcraft_gpu::GpuCompositor, name: &str, s: &Scene) -> Option<String> {
+    let t = RATE.tick_of(s.frame);
+    let cpu = render_cpu(s);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+    let kind = if matches!(plan, filmcraft_render::plan::FramePlan::Layers { .. }) { "layers" } else { "cpu image" };
+    // the resolve pass runs the sequence's display transform, as the app sets it (an HDR
+    // working space composites in working linear and is tone mapped there)
+    c.set_display_transform(display_for(s, &plan));
+    c.composite(&plan);
+    let (gw, gh, mut px) = c.read_output().expect("GPU readback");
+    px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
+    let gpu = Rgba8::new(gw, gh, px);
+    let d = diff(&cpu, &gpu).unwrap();
+    // mean over RGB only (alpha is equal by construction)
+    let mean_rgb = d.mean_abs * 4.0 / 3.0;
+    eprintln!("{name} ({kind}): GPU vs CPU {d}");
+    if d.p99 <= 6 && mean_rgb < 1.5 {
+        return None;
+    }
+    let dir = filmcraft_testkit::golden::failures_dir();
+    let _ = filmcraft_testkit::golden::write_png(&dir.join(format!("{name}.gpu.png")), &gpu);
+    let _ = filmcraft_testkit::golden::write_png(&dir.join(format!("{name}.cpu.png")), &cpu);
+    Some(format!("{name} ({kind}): {d}; images in {}", dir.display()))
+}
+
+/// A sequence in `working` with Rec. 2100 PQ footage at 60 % opacity over nothing, so the
+/// accumulator holds fractional alpha where the display transform runs.
+fn hdr_translucent(working: filmcraft_color::WorkingSpace) -> Scene {
+    let mut b = Builder::new(1);
+    b.p.sequence_mut(b.seq).unwrap().settings.color = filmcraft_color::ColorPipeline { working, ..filmcraft_color::ColorPipeline::REC709 };
+    let pq = ColorInfo { transfer: Transfer::Pq, primaries: Primaries::Bt2020, ..ColorInfo::SRGB_FULL };
+    let src = b.encoded(DemoScene::CityNight, ColorSpace::Rec2100Pq, 6.0, Some(pq), None);
+    let c = b.place(0, src, 0, 48);
+    b.fixed(c, "opacity", &[("opacity", fl(60.0))]);
+    b.at(12)
+}
+
+/// A PQ sequence dissolving from PQ footage to SDR footage, halfway through.
+fn hdr_into_sdr() -> Scene {
+    let mut b = Builder::new(1);
+    b.p.sequence_mut(b.seq).unwrap().settings.color =
+        filmcraft_color::ColorPipeline { working: filmcraft_color::WorkingSpace::Rec2100Pq, ..filmcraft_color::ColorPipeline::REC709 };
+    let pq = ColorInfo { transfer: Transfer::Pq, primaries: Primaries::Bt2020, ..ColorInfo::SRGB_FULL };
+    let a = b.encoded(DemoScene::CityNight, ColorSpace::Rec2100Pq, 6.0, Some(pq), None);
+    let z = b.demo(DemoScene::Aurora);
+    let ca = b.place(0, a, 0, 24);
+    let cz = b.place(0, z, 24, 24);
+    b.transition(0, "cross_dissolve", ca, cz, 24, 12);
+    b.at(24)
+}
+
+/// HDR sequences on the GPU against the CPU: PQ and HLG working spaces, with fractional alpha at
+/// the display transform, and SDR footage mixed into a PQ sequence.
+#[test]
+fn gpu_matches_cpu_on_hdr_sequences() {
+    use filmcraft_color::WorkingSpace;
+    let Some((dev, q)) = device("gpu hdr parity", false) else {
+        return;
+    };
+    let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
+    let scenes: [(&str, Scene); 3] = [
+        ("hdr_translucent_pq", hdr_translucent(WorkingSpace::Rec2100Pq)),
+        ("hdr_translucent_hlg", hdr_translucent(WorkingSpace::Rec2100Hlg)),
+        ("hdr_into_sdr", hdr_into_sdr()),
+    ];
+    let failures: Vec<String> = scenes.iter().filter_map(|(name, s)| gpu_vs_cpu(&mut c, name, s)).collect();
+    assert!(failures.is_empty(), "GPU differs from the CPU reference:\n{}", failures.join("\n"));
+}
+
+/// The resolve pass's display transform for `plan` of scene `s`, chosen as the app chooses it
+/// (`gpu_present`): none for a CPU-rendered frame, which is already in monitor space.
+fn display_for(s: &Scene, plan: &filmcraft_render::plan::FramePlan) -> Option<filmcraft_color::GpuOutputParams> {
+    let pipe = s.project.sequence(s.seq).map(|q| q.settings.color);
+    filmcraft_gpu::sequence_display(plan, pipe.and_then(|p| filmcraft_render::colorman::display_transform(&p).gpu_params()))
+}
+
+/// An export of a PQ sequence, PQ footage cutting to SDR footage, frame by frame: the GPU renderer
+/// against `render_sequence`, for an SDR file and for an HDR file (the working-space picture, in
+/// 12-bit PQ codes). What follows the render (`Pipeline::frame`'s encode, rounding and limiter) is
+/// one code path for both.
+#[test]
+fn gpu_export_matches_cpu_on_a_mixed_hdr_clip() {
+    let Some(mut r) = filmcraft_gpu::ExportRenderer::new() else {
+        eprintln!("SKIPPED (gpu hdr export): no adapter");
+        return;
+    };
+    let mut b = Builder::new(1);
+    b.p.sequence_mut(b.seq).unwrap().settings.color =
+        filmcraft_color::ColorPipeline { working: filmcraft_color::WorkingSpace::Rec2100Pq, ..filmcraft_color::ColorPipeline::REC709 };
+    let pq = ColorInfo { transfer: Transfer::Pq, primaries: Primaries::Bt2020, ..ColorInfo::SRGB_FULL };
+    let a = b.encoded(DemoScene::CityNight, ColorSpace::Rec2100Pq, 6.0, Some(pq), None);
+    let z = b.demo(DemoScene::Aurora);
+    b.place(0, a, 0, 24);
+    b.place(0, z, 24, 24);
+    let s = b.at(0);
+    let code = |v: f32| filmcraft_color::pq_inverse_eotf((v.max(0.0) * 203.0 / 10_000.0).min(1.0)) * 4095.0;
+    for frame in [0, 12, 23, 24, 36, 47] {
+        let t = RATE.tick_of(frame);
+        let sdr = RenderOptions::default();
+        let gpu = r.render(&s.project, s.seq, t, sdr, &s.sources).expect("a GPU frame");
+        let cpu = render_sequence(&s.project, s.seq, t, sdr, &s.sources);
+        let as_rgba = |i: &filmcraft_render::Image| Rgba8::new(i.w as u32, i.h as u32, i.over_black_rgba8());
+        let d = diff(&as_rgba(&cpu), &as_rgba(&gpu)).unwrap();
+        eprintln!("export frame {frame}, SDR file: {d}");
+        assert!(d.p99 <= 6 && d.mean_abs < 1.5, "frame {frame}, SDR file: {d}");
+
+        let hdr = RenderOptions { working_output: true, ..Default::default() };
+        let gpu = r.render(&s.project, s.seq, t, hdr, &s.sources).expect("a GPU frame");
+        let cpu = render_sequence(&s.project, s.seq, t, hdr, &s.sources);
+        assert_eq!((gpu.w, gpu.h), (cpu.w, cpu.h));
+        let mut codes: Vec<f32> = gpu.px.iter().zip(&cpu.px).map(|(g, c)| (code(*g) - code(*c)).abs()).collect();
+        codes.sort_unstable_by(f32::total_cmp);
+        let (p99, max) = (codes[codes.len() * 99 / 100], codes[codes.len() - 1]);
+        eprintln!("export frame {frame}, HDR file: 12-bit PQ codes p99 {p99:.2}, max {max:.2}");
+        assert!(p99 <= 8.0, "frame {frame}, HDR file: p99 {p99} 12-bit codes");
+    }
+}
+
+/// A frame of an HDR (Rec. 2100 PQ) sequence that the compositor cannot finish (a Wipe) comes
+/// back as one CPU image, already converted for the monitor: the GPU shows it as it is, without
+/// tone mapping it a second time.
+#[test]
+fn gpu_shows_an_hdr_cpu_frame_as_rendered() {
+    let Some((dev, q)) = device("gpu hdr cpu frame", false) else {
+        return;
+    };
+    let mut b = Builder::new(1);
+    b.p.sequence_mut(b.seq).unwrap().settings.color =
+        filmcraft_color::ColorPipeline { working: filmcraft_color::WorkingSpace::Rec2100Pq, ..filmcraft_color::ColorPipeline::REC709 };
+    let pq = ColorInfo { transfer: Transfer::Pq, primaries: Primaries::Bt2020, ..ColorInfo::SRGB_FULL };
+    let a = b.encoded(DemoScene::CityNight, ColorSpace::Rec2100Pq, 6.0, Some(pq), None);
+    let z = b.demo(DemoScene::Aurora);
+    let ca = b.place(0, a, 0, 24);
+    let cz = b.place(0, z, 24, 24);
+    b.transition(0, "wipe", ca, cz, 24, 12);
+    let s = b.at(24);
+    let t = RATE.tick_of(s.frame);
+    let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, t, RenderOptions::default(), &s.sources);
+    assert!(matches!(plan, filmcraft_render::plan::FramePlan::Image(_)), "a Wipe is rendered on the CPU");
+    let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
+    c.set_display_transform(display_for(&s, &plan));
+    c.composite(&plan);
+    let (gw, gh, mut px) = c.read_output().expect("GPU readback");
+    px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
+    let d = diff(&render_cpu(&s), &Rgba8::new(gw, gh, px)).unwrap();
+    let mean_rgb = d.mean_abs * 4.0 / 3.0;
+    assert!(d.p99 <= 6 && mean_rgb < 1.5, "HDR CPU frame on the GPU differs from the CPU: {d}");
+}
+
+/// The export's GPU renderer returns what `render_sequence` does, for an SDR file (the picture
+/// through the sequence's display transform) and an HDR one (the working-space picture): HDR and
+/// wide-gamut sequences export on the GPU too, so an SDR export of one must be tone mapped there.
+#[test]
+fn gpu_export_matches_cpu_on_golden_scenes() {
+    let Some(mut r) = filmcraft_gpu::ExportRenderer::new() else {
+        eprintln!("SKIPPED (gpu export parity): no adapter");
+        return;
+    };
+    let mut failures = Vec::new();
+    for (name, _, make) in scenes() {
+        let s = make();
+        let t = RATE.tick_of(s.frame);
+        for working_output in [false, true] {
+            let opts = RenderOptions { working_output, ..Default::default() };
+            // (transitions are left to the CPU renderer by the export path)
+            let Some(gpu) = r.render(&s.project, s.seq, t, opts, &s.sources) else { continue };
+            let cpu = render_sequence(&s.project, s.seq, t, opts, &s.sources);
+            let to8 = |img: &filmcraft_render::Image| Rgba8::new(img.w as u32, img.h as u32, img.over_black_rgba8());
+            let d = diff(&to8(&cpu), &to8(&gpu)).unwrap();
+            let mean_rgb = d.mean_abs * 4.0 / 3.0;
+            if d.p99 > 6 || mean_rgb >= 1.5 {
+                failures.push(format!("{name} (working output {working_output}): {d}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "GPU export differs from the CPU reference:\n{}", failures.join("\n"));
 }
 
 /// Per-pixel max RGB difference (99th percentile, mean) over the pixels at least 1.5 px from every

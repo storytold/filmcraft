@@ -184,8 +184,9 @@ Each codec README has the full fixture matrix and the measured results.
   to Black at 25 %, Wipe at 50 %, Timecode / Clip Name burn-in text, graphic clips (also a built-in
   graphics template with overridden properties and per-character styles with a pinned box), and colour
   management: S-Log3/S-Gamut3.Cine footage interpreted into Rec. 709 (`log_to_rec709`) and
-  Rec. 2100 PQ footage tone mapped into Rec. 709 (`hdr_tone_map`; the footage is demo frames
-  re-encoded by the test's `Encoded` source). Each frame is compared
+  Rec. 2100 PQ footage tone mapped into Rec. 709 (`hdr_tone_map`), and Lumetri grading in a
+  Rec. 2100 PQ sequence, tone mapped for the monitor (`lumetri_hdr_pq`); the footage of both is
+  demo frames re-encoded by the test's `Encoded` source. Each frame is compared
   with `crates/golden/goldens/<scene>.png` by `filmcraft_testkit::golden`:
   **PSNR ≥ 45 dB, max abs ≤ 12, 99th-percentile per-pixel max channel difference ≤ 2** (8-bit
   sRGB levels; `Tolerance::RENDER`). On failure the actual frame and a ×8 difference image go to
@@ -214,6 +215,13 @@ Each codec README has the full fixture matrix and the measured results.
   This found a real bug: the GPU upload cache was keyed by pixel-buffer address without keeping
   the buffer alive, so a new frame allocated at a freed frame's address was drawn with the stale
   texture (fixed; regression test `upload_cache_keeps_buffers_alive`).
+- `gpu_matches_cpu_on_golden_scenes` sets each scene's display transform as the app does, so the
+  colour-managed scenes (`hdr_tone_map`, and `lumetri_hdr_pq` in a Rec. 2100 PQ sequence) are
+  converted and tone mapped on the GPU too.
+- `gpu_export_matches_cpu_on_golden_scenes` renders the scenes the GPU export renderer takes
+  (`ExportRenderer::render` returns None for transitions, which the export leaves to the CPU) and
+  compares them with `render_sequence`, for display (SDR) and working-space (HDR) output, with the
+  same criterion.
 
 ## 4. UI: control channel and screenshots
 
