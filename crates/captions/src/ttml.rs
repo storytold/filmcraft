@@ -187,7 +187,7 @@ fn inline(text: &str) -> String {
         }
         let Some(ch) = rest.chars().next() else { break };
         sync(&mut out, &active, &mut emitted);
-        // a stored entity is the character it names, escaped once for XML (not its `&` again)
+        // a stored entity is the character it names, escaped once for XML
         if let Some((decoded, len)) = filmcraft_project::caption::entity_at(rest) {
             out.push_str(&esc(&decoded.to_string()));
             rest = &rest[len..];
