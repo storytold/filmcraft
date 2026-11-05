@@ -26,7 +26,7 @@
 //! - Frame Hold Options `frameHold.*`: `enabled`, `holdOn.<in|out|playhead|sourceTimecode|sequenceTime>`,
 //!   `timecode`, `holdFilters`;
 //! - Field Options `fieldOptions.*`: `reverseFieldDominance`, `processing.<none|alwaysDeinterlace|flickerRemoval>`;
-//! - Clip Speed / Duration `speedDuration.*`: `speed`, `duration`, `reverse`, `ripple`,
+//! - Clip Speed / Duration `speedDuration.*`: `speed`, `duration`, `reverse`, `maintainPitch`, `ripple`,
 //!   `interpolation.<frameSampling|frameBlending|opticalFlow>`;
 //! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`;
 //! - Quit (asked when the window is closed with unsaved changes, see [`intercept_quit`])
@@ -278,9 +278,12 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             let fps = q.map(|q| q.settings.frame_rate.as_f64()).unwrap_or(24.0);
             let speed = it.as_ref().map_or(1.0, |i| i.speed);
             let interp = it.as_ref().map_or(filmcraft_project::TimeInterpolation::default(), |i| i.time_interpolation);
+            let maintain_pitch = it.as_ref().is_some_and(|i| i.maintain_pitch);
             (
-                json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0 || it.as_ref().is_some_and(|i| i.reverse), "ripple": false, "interpolation": interp.name()}),
-                json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps}),
+                json!({"speed": (speed.abs() * 100.0 * 100.0).round() / 100.0, "reverse": speed < 0.0 || it.as_ref().is_some_and(|i| i.reverse), "maintainPitch": maintain_pitch, "ripple": false, "interpolation": interp.name()}),
+                // the setting the checkbox starts at: sent on OK only when changed, so a selection whose
+                // clips differ keeps each clip's own setting unless the checkbox is used
+                json!({"duration": it.as_ref().map_or(0, |i| i.duration.0), "speed": speed.abs(), "fps": fps, "maintainPitch": maintain_pitch}),
             )
         }
         _ => (json!({}), Value::Null),
@@ -632,6 +635,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), tl!("Enter a positive duration within the supported speed range."));
                 }
                 check(ui, &mut elems, pre, p, "reverse", tl!("Reverse Speed"), true);
+                check(ui, &mut elems, pre, p, "maintainPitch", tl!("Maintain Audio Pitch"), true);
                 check(ui, &mut elems, pre, p, "ripple", tl!("Ripple Edit, Shifting Trailing Clips"), true);
                 ui.label(RichText::new(tl!("Time Interpolation")).strong());
                 for m in filmcraft_project::TimeInterpolation::ALL {
@@ -807,7 +811,14 @@ fn finish(d: &ClipDialogDraft) -> Value {
     let mut p = d.params.clone();
     match d.command.as_str() {
         "clip.speedDuration" => {
-            p.as_object_mut().map(|m| m.remove("duration"));
+            if let Some(m) = p.as_object_mut() {
+                m.remove("duration");
+                // Maintain Audio Pitch is sent only when the checkbox changed: left out, every
+                // selected clip keeps its own setting
+                if m.get("maintainPitch") == d.info.get("maintainPitch") {
+                    m.remove("maintainPitch");
+                }
+            }
         }
         "file.newOfflineFile" if p["name"].as_str().is_some_and(str::is_empty) => {
             p.as_object_mut().map(|m| m.remove("name"));
@@ -827,6 +838,30 @@ fn finish(d: &ClipDialogDraft) -> Value {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Speed/Duration seeds Maintain Audio Pitch from the first selected clip; pressing OK without
+    /// touching it must not overwrite the other clips' settings (#1684).
+    #[test]
+    fn speed_duration_sends_maintain_pitch_only_when_the_checkbox_changed() {
+        let mut d = ClipDialogDraft {
+            command: "clip.speedDuration".into(),
+            params: json!({"speed": 200.0, "duration": "00:00:05:00", "reverse": false, "maintainPitch": false, "ripple": false}),
+            info: json!({"maintainPitch": false}),
+            ..Default::default()
+        };
+        let p = finish(&d);
+        assert!(p.get("maintainPitch").is_none(), "unchanged: left out, {p}");
+        assert!(p.get("duration").is_none());
+        assert_eq!(p["speed"], json!(200.0));
+        d.params["maintainPitch"] = json!(true);
+        assert_eq!(finish(&d)["maintainPitch"], json!(true), "turned on: sent");
+        d.info["maintainPitch"] = json!(true);
+        d.params["maintainPitch"] = json!(false);
+        assert_eq!(finish(&d)["maintainPitch"], json!(false), "turned off: sent");
+        // filled without the dialog's defaults (an agent's `ui.set`): sent as given
+        d.info = Value::Null;
+        assert_eq!(finish(&d)["maintainPitch"], json!(false));
+    }
 
     /// Asserts that every undoable engine command that `opens` says opens a dialog of `table` (run
     /// with no parameters) can be bound to a key, unless `except` names it with a reason (#2024).

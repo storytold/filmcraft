@@ -376,6 +376,10 @@ pub(crate) fn restore_program_monitor(app: &mut FilmcraftApp, ctx: &egui::Contex
     // already correct layout stays a no-op because Move and the resize below change nothing.
     let template = crate::dock::saved_docking(&app.workspaces, &app.ui.workspace);
     let (mut anchor, zone, size) = startup_program_slot(&template).unwrap_or((PanelKind::Source, Zone::Right, craft_ui::layout::SplitSize::Ratio(0.5)));
+    // A workspace can put the preview beside a whole column rather than a single panel (Vertical
+    // runs it down the right of the source/project/timeline column). Anchoring a panel would
+    // insert it inside that column instead, so split the root itself in that case.
+    let placement = if program_splits_the_root(&template) { Placement::Edge(zone) } else { Placement::Split(zone) };
     if !app.ui.dock.contains(&anchor) {
         // The panel the preview is docked against went away: use the Source, else bring the
         // anchor back, so the startup relationship can be rebuilt.
@@ -387,17 +391,17 @@ pub(crate) fn restore_program_monitor(app: &mut FilmcraftApp, ctx: &egui::Contex
     }
     let place = |app: &mut FilmcraftApp, anchor: PanelKind| -> Result<(), String> {
         if app.ui.dock.contains(&panel) {
-            match app.apply_dock(Action::Move { panel, anchor, placement: Placement::Split(zone) }) {
+            match app.apply_dock(Action::Move { panel, anchor, placement: placement.clone() }) {
                 Ok(()) => Ok(()),
                 Err(_) => {
                     // A preview tabbed into the anchor's own group cannot move relative to it:
                     // take it out first and put it back beside the group.
                     app.apply_dock(Action::Close { panel })?;
-                    app.apply_dock(Action::OpenAt { panel, anchor, placement: Placement::Split(zone) })
+                    app.apply_dock(Action::OpenAt { panel, anchor, placement: placement.clone() })
                 }
             }
         } else {
-            app.apply_dock(Action::OpenAt { panel, anchor, placement: Placement::Split(zone) })
+            app.apply_dock(Action::OpenAt { panel, anchor, placement: placement.clone() })
         }
     };
     if let Err(e) = place(app, anchor) {
@@ -450,6 +454,16 @@ fn startup_program_slot(layout: &crate::dock::Layout) -> Option<(PanelKind, craf
 
 fn is_program_group(node: &craft_ui::docking::Node<PanelKind>) -> bool {
     matches!(node, craft_ui::docking::Node::Tabs { panels, .. } if panels.contains(&PanelKind::Program))
+}
+
+/// Is the preview a direct child of the startup layout's root split? Then its sibling is a whole
+/// subtree (the Vertical workspace), which no single-panel anchor can put back.
+fn program_splits_the_root(layout: &crate::dock::Layout) -> bool {
+    matches!(
+        layout.root.as_ref(),
+        Some(craft_ui::docking::Node::Split { first, second, .. })
+            if is_program_group(first) || is_program_group(second)
+    )
 }
 
 /// The path from the root to the split whose child is the Program Monitor's group, if any.
