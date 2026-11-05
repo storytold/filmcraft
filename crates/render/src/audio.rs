@@ -389,7 +389,7 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         remixed
     } else if (speed - 1.0).abs() < 1e-9 && !item.reverse {
         src(src_start_ticks.to_units_floor(sr as i64), n)
-    } else if let Some(stretched) = crate::stretch::applies(item, speed).then(|| crate::stretch::read(item, src, a0, n, sr)).flatten() {
+    } else if let Some(stretched) = crate::stretch::applies(item, speed).then(|| crate::stretch::read(item, src, a0, n, sr, w)).flatten() {
         // Maintain Audio Pitch: time-stretched (falls back to varispeed for a span too long to read)
         Some(stretched)
     } else {
@@ -445,6 +445,24 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
         dst[off..off + m].copy_from_slice(&ch[..m]);
     }
     out
+}
+
+/// The source channels (of `available`) a clip plays on a track of `w` channels (2 or 6), as
+/// [`raw_channels`] picks them: a six-channel fold-down, its [`source_pair`], or its [`source_51`]
+/// channels. Maintain Audio Pitch aligns its grains on these and stretches only these.
+pub(crate) fn played_channels(item: &TrackItem, available: usize, w: usize) -> Vec<usize> {
+    let mut v = if w == 2 {
+        source_51_fold(item, available).unwrap_or_else(|| {
+            let (l, r) = source_pair(item, available);
+            vec![l, r]
+        })
+    } else {
+        source_51(item, available)
+    };
+    v.retain(|&c| c < available);
+    v.sort_unstable();
+    v.dedup();
+    v
 }
 
 /// The source channels a clip on a 5.1 track plays: six picked channels (Modify ▸ Audio Channels),
