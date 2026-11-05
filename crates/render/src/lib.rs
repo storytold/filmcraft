@@ -676,15 +676,17 @@ fn media_image(project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, mf:
     }
 }
 
-/// Disabled effects leave graphics on the direct vector path, so toggling one off cannot
-/// silently reduce the detail of a large graphic.
+/// Whether a graphic's picture goes through a working raster: it has an opacity mask, or an
+/// enabled effect that is not intrinsic or a layer. A disabled effect does not count (unlike
+/// `has_standard_effects`), so toggling one off cannot silently reduce the detail of a large
+/// graphic drawn on the vector path.
 fn graphic_needs_raster(item: &TrackItem, effects_enabled: bool) -> bool {
     item.has_opacity_masks()
         || effects_enabled && item.effects.iter().any(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e))
 }
 
-/// Bound the float working image used when effects or opacity masks rasterise a graphic.
-/// Graphics on the vector path draw directly into the output frame.
+/// Pixel ceiling of the float working image a graphic is rasterised into for its effects or
+/// opacity masks. Graphics on the vector path draw directly into the output frame.
 const MAX_EFFECT_GRAPHIC_PIXELS: u64 = 3840 * 2160;
 
 fn graphic_raster_dimensions(src_size: (u32, u32), want: f32) -> (usize, usize) {
@@ -714,8 +716,9 @@ fn graphic_raster_dimensions(src_size: (u32, u32), want: f32) -> (usize, usize) 
 }
 
 fn graphic_raster_matrix(src_size: (u32, u32), raster_size: (usize, usize)) -> Affine {
-    // Use exactly the width-derived scale consumed by item_layer_ex for Motion,
-    // opacity masks and effects. raster_size's height is rounded from this scale.
+    // One uniform scale from the raster's width, the scale item_layer_ex derives for Motion,
+    // opacity masks and effects. It does not scale height by raster_size.1 / src_size.1: the
+    // height is this scale rounded up, and a separate factor would warp the picture.
     let scale = raster_size.0 as f64 / f64::from(src_size.0.max(1));
     Affine::scale(scale, scale)
 }
@@ -761,6 +764,9 @@ pub(crate) fn base_layer(
         ItemKind::Graphic { .. } => {
             let (gw, gh) = graphic_raster_dimensions(src_size, want);
             let mut img = Image::new(gw, gh);
+            // The vectors draw at the raster's own scale, not at `want`: a raster the budget
+            // reduced is placed downstream by gw / src width, so drawing at `want` would scale
+            // the picture twice.
             let raster_matrix = graphic_raster_matrix(src_size, (gw, gh));
             graphic_clip::render_graphic(item, mt, src_size, &raster_matrix, &mut img);
             img

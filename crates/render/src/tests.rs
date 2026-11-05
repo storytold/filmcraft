@@ -99,7 +99,7 @@ fn capped_working_image_keeps_the_graphic_placed_at_full_scale() {
     item.effects.push(new_shape_layer(0, Vec2::new(3840.0, 2160.0), Vec2::new(100.0, 60.0), vec![]));
     item.effects.push(filmcraft_project::find_effect("invert").unwrap().instance());
     project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(item);
-    // the working image is the budget's quarter of the graphic, not the graphic
+    // the working image is the 3840×2160 budget, half the graphic's scale, not the graphic's size
     let seq = project.sequence(sequence).unwrap();
     let item = &seq.video_tracks[0].items[0];
     let working = base_layer(&project, seq, item, Tick::ZERO, RenderOptions::default(), &SourceMap::default(), 1.0).unwrap();
