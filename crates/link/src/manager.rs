@@ -184,7 +184,11 @@ impl LinkManager {
         let shared =
             Arc::new(Shared { wanted: Mutex::new(Vec::new()), slots: Mutex::new(BTreeMap::new()), version: AtomicU64::new(0), stop: AtomicBool::new(false) });
         let worker = Arc::clone(&shared);
-        let spawned = std::thread::Builder::new().name("link-manager".into()).spawn(move || Runner::new(worker, config).run());
+        let spawned = std::thread::Builder::new().name("link-manager".into()).spawn(move || {
+            let wake = Arc::clone(&config.wake);
+            let state = Arc::clone(&worker);
+            run_guarded(&state, &*wake, move || Runner::new(worker, config).run());
+        });
         let handle = match spawned {
             Ok(handle) => Some(handle),
             Err(err) => {
@@ -237,6 +241,27 @@ impl Drop for LinkManager {
 }
 
 // ---------------------------------------------------------------- the thread
+
+/// What the badge says when the thread has stopped for good.
+const STOPPED: &str = "the link manager stopped";
+
+/// Run `body`, the loop of the manager thread. A panic ends the loop, and nothing would update the
+/// links again. They would show their last state, such as `linked`, forever. So a panic is logged,
+/// every link becomes `NotLive` with the supply dropped (the UI puts the result file back), and
+/// `wake` asks the UI for a frame to show it.
+fn run_guarded(shared: &Shared, wake: &(dyn Fn() + Send + Sync), body: impl FnOnce()) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_ok() {
+        return;
+    }
+    log::error!("{STOPPED} after a panic; its links stay not live");
+    for slot in lock(&shared.slots).values_mut() {
+        slot.supply = None;
+        slot.retry_at = None;
+        slot.state = LinkState::NotLive(NotLive::Other(STOPPED.to_string()));
+    }
+    shared.version.fetch_add(1, Ordering::SeqCst);
+    wake();
+}
 
 struct Connection {
     record: InstanceRecord,
@@ -978,6 +1003,34 @@ mod tests {
         let path = format!("/tmp/fc-mgr-result-{}-{name}.mov", std::process::id());
         std::fs::write(&path, b"x").unwrap();
         path
+    }
+
+    #[test]
+    fn a_panic_in_the_thread_leaves_every_link_not_live_and_wakes_the_ui() {
+        let shared = Shared { wanted: Mutex::new(Vec::new()), slots: Mutex::new(BTreeMap::new()), version: AtomicU64::new(0), stop: AtomicBool::new(false) };
+        for (link, state) in [("live", LinkState::Live), ("pending", LinkState::Pending)] {
+            let mut slot = Slot::new();
+            slot.state = state;
+            lock(&shared.slots).insert(link.to_string(), slot);
+        }
+        let woke = std::sync::atomic::AtomicUsize::new(0);
+        let wake = || {
+            woke.fetch_add(1, Ordering::SeqCst);
+        };
+
+        // A loop that ends on its own changes nothing.
+        run_guarded(&shared, &wake, || {});
+        assert_eq!(lock(&shared.slots).get("live").unwrap().state, LinkState::Live);
+        assert_eq!((shared.version.load(Ordering::SeqCst), woke.load(Ordering::SeqCst)), (0, 0));
+
+        run_guarded(&shared, &wake, || panic!("the loop failed"));
+        for link in ["live", "pending"] {
+            let state = lock(&shared.slots).get(link).unwrap().state.clone();
+            assert_eq!(state, LinkState::NotLive(NotLive::Other(STOPPED.to_string())), "{link}");
+            assert_eq!(state.badge(), "linked, not live: the link manager stopped");
+        }
+        assert_eq!(shared.version.load(Ordering::SeqCst), 1, "the installer sees a change");
+        assert_eq!(woke.load(Ordering::SeqCst), 1, "the UI is asked for a frame");
     }
 
     #[test]
