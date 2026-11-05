@@ -1341,7 +1341,10 @@ pub const CURVE_IDS: [&str; 9] =
 
 /// The Lumetri curves of `e` baked into tables of [`CURVE_TABLE_SIZE`] entries, in [`CURVE_IDS`]
 /// order. None where a curve does nothing: Curves off, a luma / RGB curve that is the identity,
-/// a hue / saturation curve without points.
+/// a hue / saturation curve without points. The hue-keyed curves wrap around the hue circle
+/// ([`hue_lut`]); Luma vs Sat and Sat vs Sat are keyed on a 0…1 axis and stay flat beyond their
+/// outermost points ([`vs_sat_lut`], #2699), as `lumetri_advanced` applied them before the tables
+/// were shared.
 pub(crate) fn lumetri_curve_tables(e: &EffectInstance) -> [Option<Vec<f32>>; 9] {
     const N: usize = CURVE_TABLE_SIZE;
     if !on(e, "curves_on") {
@@ -1349,7 +1352,11 @@ pub(crate) fn lumetri_curve_tables(e: &EffectInstance) -> [Option<Vec<f32>>; 9] 
     }
     CURVE_IDS.map(|id| {
         let c = curve_param(e, id)?;
-        if id.starts_with("curve_") { (!is_identity_curve(&c)).then(|| curve_lut(&c, N)) } else { hue_lut(&c, N) }
+        match id {
+            "curve_luma" | "curve_red" | "curve_green" | "curve_blue" => (!is_identity_curve(&c)).then(|| curve_lut(&c, N)),
+            "luma_vs_sat" | "sat_vs_sat" => vs_sat_lut(&c, N),
+            _ => hue_lut(&c, N),
+        }
     })
 }
 
@@ -1699,6 +1706,28 @@ mod lumetri_cpu_parity_tests {
 
     fn col(r: f32, g: f32, b: f32) -> ParamValue {
         ParamValue::Color([r, g, b, 1.0])
+    }
+
+    /// #2699: Luma vs Sat and Sat vs Sat are keyed on a 0…1 axis and stay flat beyond their outermost
+    /// points. The shared table baker keeps that: it must not wrap them around like the hue curves.
+    #[test]
+    fn curve_tables_keep_vs_sat_curves_flat() {
+        let pts = [[0.5, 0.5], [0.9, 0.0]];
+        let n = CURVE_TABLE_SIZE;
+        let want = vs_sat_lut(&pts, n).unwrap();
+        let tables = lumetri_curve_tables(&effect(&[("luma_vs_sat", ParamValue::Curve(pts.to_vec())), ("sat_vs_sat", ParamValue::Curve(pts.to_vec()))]));
+        for id in ["luma_vs_sat", "sat_vs_sat"] {
+            let i = CURVE_IDS.iter().position(|c| *c == id).unwrap();
+            let t = tables[i].as_ref().unwrap_or_else(|| panic!("{id}: no table"));
+            assert!((t[0] - 0.5).abs() < 1e-5, "{id}: left of the first point follows it, got {}", t[0]);
+            assert!(t[n - 1].abs() < 1e-5, "{id}: right of the last point follows it, got {}", t[n - 1]);
+            assert!(t.iter().zip(&want).all(|(a, b)| (a - b).abs() < 1e-6), "{id}: table is not vs_sat_lut");
+        }
+        // the hue-keyed curves still wrap around the hue circle
+        let hue = lumetri_curve_tables(&effect(&[("hue_vs_sat", ParamValue::Curve(pts.to_vec()))]));
+        let i = CURVE_IDS.iter().position(|c| *c == "hue_vs_sat").unwrap();
+        let t = hue[i].as_ref().unwrap();
+        assert!((t[0] - t[n - 1]).abs() < 1e-3, "hue_vs_sat is periodic: {} vs {}", t[0], t[n - 1]);
     }
 
     #[test]
