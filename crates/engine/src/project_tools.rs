@@ -788,6 +788,8 @@ pub fn project_subset(p: &Project, keep: &BTreeSet<ItemId>) -> Project {
     prune(&mut out.root, keep);
     out.transcripts.retain(|id, _| keep.contains(id));
     out.narrations.retain(|id, _| keep.contains(id));
+    // a source graphic holds its item's text and metadata: it leaves with that item only
+    out.source_graphics.retain(|id, _| keep.contains(id));
     out.search_bins.clear();
     out
 }

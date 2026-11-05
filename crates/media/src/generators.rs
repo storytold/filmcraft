@@ -107,6 +107,7 @@ impl GeneratorSource {
             has_alpha: matches!(generator, Generator::TransparentVideo),
             bitrate: None,
             hdr: None,
+            color_assumed: None,
         });
         let audio = generator.has_audio().then(|| AudioStreamInfo {
             sample_rate: 48_000,

@@ -27,13 +27,19 @@ fn rotated_mov(matrix: [i32; 9]) -> Arc<[u8]> {
 
 /// A four-frame 25 fps ProRes MOV (64×32) whose video track carries `edits`.
 fn mov_with_edits(edits: Vec<filmcraft_isobmff::Edit>) -> Arc<[u8]> {
+    mov_at(25, 1000, 4, edits)
+}
+
+/// An `n`-frame ProRes MOV (64×32) at `fps` (track timescale `fps`, one tick per frame) with movie
+/// timescale `movie`, whose video track carries `edits`.
+fn mov_at(fps: u32, movie: u32, n: usize, edits: Vec<filmcraft_isobmff::Edit>) -> Arc<[u8]> {
     let fr = filmcraft_prores::Frame::new(64, 32, filmcraft_prores::ChromaFormat::Yuv422, 10, false);
     let data = filmcraft_prores::Encoder::new(filmcraft_prores::Profile::Hq, 64, 32).encode(&fr).expect("encode");
-    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).expect("writer");
-    let mut cfg = TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), 25);
+    let mut mux = Mp4Writer::new(std::io::Cursor::new(Vec::new()), WriterOptions { movie_timescale: movie, ..WriterOptions::new(Brand::Mov) }).expect("writer");
+    let mut cfg = TrackConfig::new(SampleEntry::prores(FourCc(*b"apch"), 64, 32), fps);
     cfg.edits = edits;
     let t = mux.add_track(cfg).expect("track");
-    for _ in 0..4 {
+    for _ in 0..n {
         mux.write_sample(t, WriteSample { data: &data, duration: 1, composition_offset: 0, is_sync: true }).expect("sample");
     }
     mux.finish().expect("finish").into_inner().into()
@@ -61,6 +67,62 @@ fn duration_follows_the_edit_list() {
     assert_eq!(frames(&Mp4Source::open("huge.mov", mov_with_edits(huge)).expect("open")), 4);
     let zero = vec![Edit { segment_duration: 0, media_time: 0, media_rate: 0x10000 }];
     assert_eq!(frames(&Mp4Source::open("zero.mov", mov_with_edits(zero)).expect("open")), 4);
+}
+
+/// Edit durations are whole milliseconds (the movie timescale ffmpeg, x264 and our own exports
+/// write), so a clip whose length is not a whole number of milliseconds lost its last frame: 320
+/// frames at 24 fps (13.3333 s, written as 13 333) imported as 319.
+#[test]
+fn an_edit_rounded_to_the_movie_timescale_keeps_the_last_frame() {
+    use filmcraft_isobmff::Edit;
+    let frames = |s: &Mp4Source| s.info().duration.to_rational_floor(1, 24);
+    let open = |n: usize, edits: Vec<Edit>| Mp4Source::open("rounded.mov", mov_at(24, 1000, n, edits)).expect("open");
+    // the whole media: 5 frames = 208.33 ms, written as 208
+    let whole = vec![Edit { segment_duration: 208, media_time: 0, media_rate: 0x10000 }];
+    let s = open(5, whole);
+    assert_eq!(frames(&s), 5);
+    assert_eq!(s.info().duration, Tick::from_rational(5, 1, 24), "exactly the media's length");
+    assert!(s.video_frame(FrameRequest::full(Tick::from_rational(4, 1, 24))).is_ok());
+    // skip the first frame (B-frame delay style): 4 frames = 166.67 ms, written as 166 (or 167)
+    for ms in [166, 167] {
+        let skip = vec![Edit { segment_duration: ms, media_time: 1, media_rate: 0x10000 }];
+        assert_eq!(frames(&open(5, skip)), 4, "{ms} ms");
+    }
+    // 320 frames, skipping one: the case from the VA-API long-GOP export
+    let long = vec![Edit { segment_duration: 13_291, media_time: 1, media_rate: 0x10000 }];
+    assert_eq!(frames(&open(320, long)), 319);
+    let long = vec![Edit { segment_duration: 13_333, media_time: 0, media_rate: 0x10000 }];
+    assert_eq!(frames(&open(320, long)), 320);
+    // an edit that ends a frame or more before the media does still trims it
+    let trimmed = vec![Edit { segment_duration: 125, media_time: 0, media_rate: 0x10000 }];
+    assert_eq!(frames(&open(5, trimmed)), 3);
+    // with the movie timescale the track's (24), nothing is rounded: an edit exactly one unit
+    // (one frame) short of the media is a real trim and keeps its four frames
+    let one_short = vec![Edit { segment_duration: 4, media_time: 0, media_rate: 0x10000 }];
+    let s = Mp4Source::open("one_short.mov", mov_at(24, 24, 5, one_short)).expect("open");
+    assert_eq!(s.info().duration, Tick::from_rational(4, 1, 24));
+    let whole = vec![Edit { segment_duration: 5, media_time: 0, media_rate: 0x10000 }];
+    assert_eq!(frames(&Mp4Source::open("whole24.mov", mov_at(24, 24, 5, whole)).expect("open")), 5);
+    // the same at 23 / 23, where the two lengths in Ticks are floored and come out less than a
+    // movie unit apart: the comparison is exact, in the timescales themselves
+    let one_short = vec![Edit { segment_duration: 4, media_time: 0, media_rate: 0x10000 }];
+    let s = Mp4Source::open("one_short23.mov", mov_at(23, 23, 5, one_short)).expect("open");
+    assert_eq!(s.info().duration, Tick::from_rational(4, 1, 23));
+    // a movie unit (1/24 s) longer than a picture (1/30 s): 4/24 s is exactly five of six pictures,
+    // less than a movie unit short of the media but a whole picture short, so a real trim
+    let five = vec![Edit { segment_duration: 4, media_time: 0, media_rate: 0x10000 }];
+    let s = Mp4Source::open("coarse.mov", mov_at(30, 24, 6, five)).expect("open");
+    assert_eq!(s.info().duration, Tick::from_rational(5, 1, 30));
+    // a coarse unit still rounds: six pictures (6/30 s = 4.8/24) written rounded up as 5 are less
+    // than a unit and less than a picture over the media, so all six play
+    let six = vec![Edit { segment_duration: 5, media_time: 0, media_rate: 0x10000 }];
+    let s = Mp4Source::open("coarse6.mov", mov_at(30, 24, 6, six)).expect("open");
+    assert_eq!(s.info().duration, Tick::from_rational(6, 1, 30));
+    // a dwell (rate 0) or a media_time past the end keeps the edit's own length
+    let dwell = vec![Edit { segment_duration: 208, media_time: 0, media_rate: 0 }];
+    assert_eq!(frames(&open(5, dwell)), 4);
+    let past = vec![Edit { segment_duration: 208, media_time: 99, media_rate: 0x10000 }];
+    assert_eq!(frames(&open(5, past)), 4);
 }
 
 /// #714: a video track without an edit list whose pictures carry a composition delay (B-frame
@@ -376,6 +438,39 @@ fn prores_alpha_comes_from_the_frame_header() {
         let s = Mp4Source::open("p.mov", prores_mov(profile, fourcc, chroma, alpha)).expect("open");
         let v = s.info().video.as_ref().expect("video");
         assert_eq!((v.pixel_format.as_str(), v.has_alpha), (want, alpha), "{}", String::from_utf8_lossy(fourcc));
+    }
+}
+
+/// [`prores_mov`] with its sample entry retyped `icod`: an Apple Intermediate Codec MOV as far as
+/// the demuxer can tell (there is no AIC encoder to make a real one).
+fn aic_mov() -> Arc<[u8]> {
+    let mut b = prores_mov(filmcraft_prores::Profile::Hq, b"apch", filmcraft_prores::ChromaFormat::Yuv422, false).to_vec();
+    // stsd (ISO/IEC 14496-12 §8.5.2): type, version/flags, entry_count, then the first entry's size and type
+    let k = b.windows(4).position(|x| x == b"stsd").expect("stsd") + 16;
+    assert_eq!(&b[k..k + 4], b"apch");
+    b[k..k + 4].copy_from_slice(b"icod");
+    b.into()
+}
+
+/// #3646: Apple Intermediate Codec has no published specification and no decoder here. Probe names
+/// it, and so do the errors a frame request and both decoder constructors return, instead of
+/// "no decoder for unknown video".
+#[test]
+fn apple_intermediate_codec_is_named_though_nothing_decodes_it() {
+    let s = Mp4Source::open("aic.mov", aic_mov()).expect("open");
+    assert_eq!(s.info().video.as_ref().map(|v| v.codec.as_str()), Some("Apple Intermediate Codec"));
+    let why = "no decoder for Apple Intermediate Codec video";
+    match s.video_frame(FrameRequest::full(Tick::ZERO)) {
+        Err(MediaError::Unsupported(e)) => assert_eq!(e, why),
+        other => panic!("expected the no-decoder error, got {:?}", other.map(|_| ())),
+    }
+    let entry = &s.file.tracks[s.vtrack.expect("video track")].entries[0];
+    for r in [crate::make_video_decoder(entry), crate::software_video_decoder(entry)] {
+        match r {
+            Err(CodecError::Unsupported(e)) => assert_eq!(e, why),
+            Err(e) => panic!("expected the no-decoder error, got {e}"),
+            Ok(_) => panic!("a decoder accepted Apple Intermediate Codec"),
+        }
     }
 }
 
