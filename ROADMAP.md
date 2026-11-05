@@ -7,7 +7,7 @@
 
 **Stage: alpha** · next: beta, ~19 points of ready-for-real-work and ~400–700 h away, plus opening Premiere's `.prproj` ([why](docs/target-app-parity.md#stage); passes the [core-workflow gate](docs/roadmap.md#alpha-gate))
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-22 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-05 · **Change:** minor (ProRes alpha final-run conformance and native macOS validation; language table: Czech, #1156; NVENC H.265 export on Linux) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Progress toward parity with Adobe Premiere Pro. This page is the summary; the detail is in
 [docs/target-app-parity.md](docs/target-app-parity.md) (assessment, methodology, calibration),
@@ -112,6 +112,7 @@ Ranked; detail and "done when" in [docs/roadmap.md](docs/roadmap.md) and [docs/g
 
 ## Progress log
 
+- **2026-11-05:** NVENC H.265 export on Linux (#1648, #1624). `nvenc::export::factory` sends H.265 to `hevc_factory` on every platform NVENC runs on, not only Windows, and the Linux block of `register()` installs the H.265 format probe and the H.265 HDR probe, so the format is offered wherever a small HEVC session opens and an HDR sequence exports as HEVC Main 10 wherever NVENC has a 10-bit encoder. Choosing the format is the opt-in: there is no software encoder to fall back to, so H.265 was simply not available on Linux at all. The probe is deliberately **not** warmed on Linux, as it is on Windows: warming starts a thread that opens a hardware session, and the CLI is short-lived, so the process can exit while the probe is still inside the driver, whose exit handler then waits on a join the probe cannot reach. Measured by @tydude001 on Linux with an NVIDIA GPU, `filmcraft-cli --test cli` hung in 21 of 45 runs with the thread started and in 0 of 45 without it. **Not verified on Linux or NVIDIA hardware here**: this was written and reviewed on Windows, where the change compiles and the Linux-gated code cross-checks for `x86_64-unknown-linux-gnu`, but nobody has run it on a Linux machine with an NVIDIA GPU yet.
 - **2026-10-22:** ProRes 4444 / XQ alpha slices include the final singleton run code required by RDD 36:2022. Six HD fixtures rejected by native macOS decoding now pass; syntax regression tests cover final runs and slice widths ([details](crates/prores/README.md#alpha-bitstream-conformance), EffectCraft #293).
 
 - **2026-10-20:** the on/off items of the Sequence and Markers menus (Snap in Timeline, Linked Selection, Selection Follows Playhead, Show Through Edits, Ripple Sequence Markers, Copy Paste Includes Sequence Markers) show their checkmark, so choosing one visibly turns it on or off (#2623)
