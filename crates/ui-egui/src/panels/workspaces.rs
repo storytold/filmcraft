@@ -23,6 +23,13 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     let r = match ws {
         "reset" => {
             let n = app.ui.workspace.clone();
+            if app.workspaces.session.is_some() {
+                let mut next = app.workspaces.clone();
+                next.session = None;
+                if let Err(e) = app.set_workspaces(next) {
+                    app.ui.status = e;
+                }
+            }
             app.set_workspace(&n);
             Ok(json!({"workspace": n}))
         }
@@ -64,6 +71,7 @@ fn save(app: &mut FilmcraftApp, name: &str) -> Result<(), String> {
         None => saved.push(entry),
     }
     next.current = name.to_string();
+    next.session = None;
     app.set_workspaces(next)
 }
 
@@ -116,6 +124,9 @@ fn delete(app: &mut FilmcraftApp, name: &str) -> Result<Value, String> {
     let mut next = app.workspaces.clone();
     let before = next.saved.len();
     next.saved.retain(|s| s.name != name);
+    if next.session.as_ref().is_some_and(|s| s.name == name) {
+        next.session = None;
+    }
     if next.saved.len() == before {
         return Err(if is_builtin(name) { format!("`{name}` is a built-in workspace and can't be deleted") } else { format!("unknown workspace `{name}`") });
     }

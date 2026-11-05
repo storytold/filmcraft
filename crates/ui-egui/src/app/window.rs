@@ -31,6 +31,37 @@ impl FilmcraftApp {
         }
     }
 
+    /// Reopen a workspace as left at the end of the last session.
+    pub fn restore_workspace(&mut self, name: &str) {
+        self.ui.workspace = name.to_string();
+        self.ui.dock = dock::session_docking(&self.workspaces, name);
+        self.pending_panel_raise = None;
+        self.ui.keys.maximized = None;
+        if self.workspaces.current != name {
+            let mut next = self.workspaces.clone();
+            next.current = name.to_string();
+            if let Err(e) = self.set_workspaces(next) {
+                self.ui.status = e;
+            }
+        }
+        if name == "Color" {
+            self.ui.show_scopes = false;
+        }
+    }
+
+    /// Snapshot the current workspace layout as the session state so that reopening the app
+    /// restores the exact panels open when the app closed.
+    pub fn save_session_workspace(&mut self) {
+        if let Ok(entry) = dock::SavedWorkspace::new(&self.ui.workspace, &self.ui.dock) {
+            let mut next = self.workspaces.clone();
+            next.current = self.ui.workspace.clone();
+            next.session = Some(entry);
+            if let Err(e) = self.set_workspaces(next) {
+                self.ui.status = e;
+            }
+        }
+    }
+
     pub fn show_panel(&mut self, p: PanelKind) {
         // closed while floating: it floats again where it was (#1985); taken before the Timeline's
         // own restore below docks it

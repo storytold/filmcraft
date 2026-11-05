@@ -646,17 +646,27 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 ui.label(tlf!("Save changes to “{project_name}” before closing?", project_name));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let r = ui.button(tl!("Cancel"));
+                    let btn_size = egui::vec2(84.0, 28.0);
+                    let r = ui.add(egui::Button::new(RichText::new(tl!("Cancel")).size(13.0)).min_size(btn_size));
                     push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
                     if r.clicked() {
                         action = Some("cancel");
                     }
-                    let r = ui.button(tl!("Don't Save"));
+                    let r = ui.add(
+                        egui::Button::new(RichText::new(tl!("Don't Save")).size(13.0).color(egui::Color32::WHITE))
+                            .fill(egui::Color32::from_rgb(0xc0, 0x39, 0x2b))
+                            .min_size(btn_size),
+                    );
                     push(&mut elems, format!("{pre}.dontSave"), &r, "Don't Save");
                     if r.clicked() {
                         action = Some("dontSave");
                     }
-                    let r = ui.add_enabled(can_save, egui::Button::new(tl!("Save")));
+                    let r = ui.add_enabled(
+                        can_save,
+                        egui::Button::new(RichText::new(tl!("Save")).size(13.0).color(egui::Color32::WHITE))
+                            .fill(egui::Color32::from_rgb(0x27, 0xae, 0x60))
+                            .min_size(btn_size),
+                    );
                     push(&mut elems, format!("{pre}.save"), &r, "Save");
                     if r.clicked() {
                         action = Some("save");

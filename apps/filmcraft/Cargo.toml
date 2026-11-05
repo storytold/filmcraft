@@ -11,10 +11,10 @@ build = "build.rs"
 workspace = true
 
 [features]
-default = []
+default = ["neural-voices"]
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
-# Natural Text to Speech voices (Kokoro-82M on the CPU, downloaded on first use).
+# Natural Text to Speech voices (Kokoro-82M on the CPU, Piper on tract-onnx, downloaded on first use).
 neural-voices = ["filmcraft-engine/neural-voices"]
 
 [dependencies]

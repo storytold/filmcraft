@@ -158,6 +158,8 @@ pub const WORKSPACES_FILE: &str = "workspaces.json";
 pub struct WorkspacePrefs {
     pub saved: Vec<SavedWorkspace>,
     pub current: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<SavedWorkspace>,
 }
 
 /// A named workspace. `workspace` is a craft-ui [`Workspace`] kept as JSON, so one unreadable
@@ -257,6 +259,32 @@ pub fn saved_workspace(prefs: &WorkspacePrefs, name: &str) -> Workspace {
 /// The saved layout of a workspace (see [`saved_workspace`]).
 pub fn saved_docking(prefs: &WorkspacePrefs, name: &str) -> Layout {
     saved_workspace(prefs, name).layout
+}
+
+/// A workspace as left at the end of the last session: the session layout if it matches
+/// `name`, else the saved or built-in workspace.
+pub fn session_workspace(prefs: &WorkspacePrefs, name: &str) -> Workspace {
+    if let Some(session) = &prefs.session
+        && session.name == name
+    {
+        let ws = if session.workspace.is_null() {
+            legacy::layout(&session.layout, &session.floating).map(Workspace::new)
+        } else {
+            serde_json::from_value::<Workspace>(session.workspace.clone()).ok()
+        };
+        if let Some(ws) = ws
+            && ws.validate().is_ok()
+        {
+            return ws;
+        }
+    }
+    saved_workspace(prefs, name)
+}
+
+/// The docking layout of a workspace as left at the end of the last session (see
+/// [`session_workspace`]).
+pub fn session_docking(prefs: &WorkspacePrefs, name: &str) -> Layout {
+    session_workspace(prefs, name).layout
 }
 
 /// The frame tree and floating groups FilmCraft wrote before its workspaces were craft-ui
@@ -866,7 +894,11 @@ mod tests {
             "floating": [{"root": {"Split": {"axis": "Vertical", "size": {"FixedFirst": 100.0},
                 "first": {"Tabs": {"panels": ["Info"], "active": 0}}, "second": {"Tabs": {"panels": ["Effects"], "active": 0}}}},
                 "rect": [10.0, 20.0, 300.0, 304.0]}]}, "hidden": []});
-        let prefs = WorkspacePrefs { saved: vec![SavedWorkspace { name: "Mine".into(), workspace, ..Default::default() }], current: "Mine".into() };
+        let prefs = WorkspacePrefs {
+            saved: vec![SavedWorkspace { name: "Mine".into(), workspace, ..Default::default() }],
+            current: "Mine".into(),
+            ..Default::default()
+        };
         let loaded = saved_docking(&prefs, "Mine");
         assert!(loaded.is_docked(PanelKind::Tools) && loaded.is_visible(PanelKind::Info) && loaded.is_visible(PanelKind::Effects), "{loaded:?}");
         let root = loaded.root.as_ref().unwrap();
@@ -913,7 +945,7 @@ mod tests {
         assert_eq!(*size, SplitSize::FixedFirst(300.0));
         assert_eq!(saved_docking(&prefs, "Broken"), workspace("Broken"));
         let saved = SavedWorkspace { name: "Mine".into(), workspace: serde_json::to_value(Workspace::new(mine.clone())).unwrap(), ..Default::default() };
-        let prefs = WorkspacePrefs { saved: vec![saved], current: "Mine".into() };
+        let prefs = WorkspacePrefs { saved: vec![saved], current: "Mine".into(), ..Default::default() };
         let text = serde_json::to_string(&prefs).unwrap();
         assert!(!text.contains("\"layout\":{\"Split\""), "{text}");
         let back: WorkspacePrefs = serde_json::from_str(&text).unwrap();
@@ -956,7 +988,7 @@ mod tests {
             saved: Vec<OldSaved>,
         }
         let read = |layout: &Layout| {
-            let prefs = WorkspacePrefs { saved: vec![SavedWorkspace::new("Mine", layout).unwrap()], current: "Mine".into() };
+            let prefs = WorkspacePrefs { saved: vec![SavedWorkspace::new("Mine", layout).unwrap()], current: "Mine".into(), ..Default::default() };
             let text = serde_json::to_string(&prefs).unwrap();
             assert_eq!(saved_docking(&serde_json::from_str(&text).unwrap(), "Mine"), *layout, "{text}");
             let old: OldPrefs = serde_json::from_str(&text).unwrap();
@@ -996,5 +1028,24 @@ mod tests {
             second: Box::new(effects.root),
         };
         assert_eq!(read(&split), (None, vec![]));
+    }
+
+    #[test]
+    fn session_workspace_restores_matching_session_or_falls_back() {
+        let mut editing = workspace("Editing");
+        editing.open_near(PanelKind::TextToSpeech, PanelKind::Properties);
+        let session_entry = SavedWorkspace::new("Editing", &editing).unwrap();
+        let prefs = WorkspacePrefs { saved: vec![], current: "Editing".into(), session: Some(session_entry) };
+        // session layout restored for Editing
+        let restored = session_docking(&prefs, "Editing");
+        assert!(restored.contains(&PanelKind::TextToSpeech));
+
+        // other workspaces fall back to clean default
+        let color = session_docking(&prefs, "Color");
+        assert_eq!(color, workspace("Color"));
+
+        // cleared session falls back to default Editing
+        let cleared = WorkspacePrefs { session: None, ..prefs };
+        assert_eq!(session_docking(&cleared, "Editing"), workspace("Editing"));
     }
 }
