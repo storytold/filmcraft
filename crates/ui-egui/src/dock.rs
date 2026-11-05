@@ -747,9 +747,10 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
             Rect::from_min_size(pos2(more.min.x - ARROW_W - 2.0, strip.center().y - 10.0), vec2(ARROW_W, 20.0)),
         )
     });
-    let (view_min, view_max, pad) = match arrows {
-        Some((left, right)) => (left.max.x + 2.0, right.min.x - 2.0, 2.0),
-        None => (strip.min.x, strip.max.x, 12.0),
+    let (view_min, view_max, pad) = match (arrows, more) {
+        (Some((left, right)), _) => (left.max.x + 2.0, right.min.x - 2.0, 2.0),
+        (None, Some(more)) => (strip.min.x, more.min.x - 2.0, 12.0),
+        (None, None) => (strip.min.x, strip.max.x, 12.0),
     };
     let view = Rect::from_min_max(pos2(view_min, strip.min.y), pos2(view_max.max(view_min), strip.max.y));
     let content_w = (total - 8.0).max(0.0) + 2.0 * pad;
