@@ -1440,3 +1440,37 @@ mod stabilizer_corrections_cache {
         }
     }
 }
+
+#[test]
+fn extreme_long_shadow_and_glint_lengths_finish() {
+    let mut img = Image::new(16, 16);
+    img.px[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    // an infinite Long Shadow length used to keep its doubling loop running forever
+    for len in [f64::INFINITY, f64::MAX, 1e30] {
+        for id in ["long_shadow", "glint"] {
+            let mut e = inst(id);
+            setf(&mut e, "length", len);
+            let o = run(id, &e, &img, &cx());
+            assert!(o.px.iter().all(|v| !v.is_nan()), "{id} at {len}");
+        }
+    }
+}
+
+/// A length beyond the picture's extent still sets the weighting: only the work is capped.
+#[test]
+fn lengths_past_the_picture_keep_their_fade_and_weighting() {
+    let mut img = Image::new(16, 16);
+    img.px[(8 * 16 + 8) * 4..(8 * 16 + 8) * 4 + 4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    let render = |id: &str, len: f64| {
+        let mut e = inst(id);
+        setf(&mut e, "length", len);
+        run(id, &e, &img, &cx())
+    };
+    let total = |o: &Image| o.px.iter().map(|&v| v as f64).sum::<f64>();
+    // 32 is the extent of this 16 x 16 picture
+    let (shadow_320, shadow_far) = (total(&render("long_shadow", 320.0)), total(&render("long_shadow", 1e9)));
+    assert!(shadow_320 > 0.9 * shadow_far, "fade over the requested 320 px ({shadow_320}) must stay near the unfaded shadow ({shadow_far})");
+    assert!(shadow_320 < shadow_far, "the fade still follows the requested length: {shadow_320} vs {shadow_far}");
+    let (glint_32, glint_320) = (total(&render("glint", 32.0)), total(&render("glint", 320.0)));
+    assert!((glint_32 - glint_320).abs() > 0.01 * glint_32.abs(), "glint weighting follows the requested length: {glint_32} vs {glint_320}");
+}
