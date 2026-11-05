@@ -526,6 +526,9 @@ impl Sps {
         self.max_dpb_frames()
     }
 
+    /// `Error::Unsupported` for streams this decoder does not implement: interlaced coding, chroma
+    /// formats other than 4:2:0 / 4:2:2, bit depths outside 8..=10 or unequal for luma and chroma,
+    /// lossless coding, and pictures above the memory limit.
     pub fn check_supported(&self) -> Result<()> {
         if u64::from(self.width()).saturating_mul(u64::from(self.height())) > MAX_LUMA_SAMPLES {
             return unsupported("picture dimensions exceed the decoder memory limit");

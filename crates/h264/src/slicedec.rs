@@ -56,6 +56,7 @@ fn mbs_fit(decoded: usize, add: usize, total: usize) -> bool {
 }
 
 impl<S: Sample> PicState<S> {
+    /// Fresh decoding state for `frame`: black planes in its sample format, no macroblocks decoded.
     pub fn new(frame: FrameRef) -> Self {
         let (mb_w, mb_h) = (frame.mb_w, frame.mb_h());
         PicState {
@@ -212,6 +213,7 @@ pub(crate) struct Scratch<S> {
 }
 
 impl<S: Sample> Scratch<S> {
+    /// Zeroed scratch buffers, boxed (they are several KiB).
     pub fn new() -> Box<Self> {
         Box::new(Scratch {
             coef: [0; 256],
@@ -235,6 +237,7 @@ pub(crate) struct Nb {
 
 const NB_NA: Nb = Nb { avail: false, ref_idx: -1, mv: [0, 0] };
 
+/// Decodes the macroblocks of one slice into a picture with `S` samples.
 pub struct SliceDecoder<'a, S> {
     pub sh: &'a SliceHeader,
     pub pps: &'a Pps,
@@ -297,12 +300,15 @@ fn predict_block<S: Sample>(
     }
 }
 
+/// Median of three motion-vector components (8.4.1.3.1).
 #[inline(always)]
 fn median(a: i16, b: i16, c: i16) -> i16 {
     a.max(b).min(a.min(b).max(c))
 }
 
 impl<'a, S: Sample> SliceDecoder<'a, S> {
+    /// Set up a slice of `pic`; P and B slices in 4:2:2 pictures are rejected (no 4:2:2 inter
+    /// prediction yet).
     pub fn new(sh: &'a SliceHeader, pps: &'a Pps, sps: &'a Sps, pic: &'a mut PicState<S>, refs: &'a [Vec<RefPic>; 2], ls: &'a LevelScale) -> Result<Self> {
         let fmt = pic.planes.fmt;
         ensure!(fmt.mb_hc == 8 || sh.slice_type.is_intra(), "inter prediction in 4:2:2 streams is not implemented");
@@ -356,6 +362,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         })
     }
 
+    /// Weighted prediction parameters of the slice (8.4.2.3): explicit tables with offsets scaled to
+    /// the bit depth, or implicit weights from the POC distances.
     fn build_weights(sh: &SliceHeader, pps: &Pps, refs: &[Vec<RefPic>; 2], cur_poc: i32, fmt: Format) -> Weights {
         // explicit offsets are in units of 8-bit samples (8-301, 8-302)
         let o = |v: i32| v * (1 << (fmt.bit_depth - 8));
@@ -460,6 +468,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
     }
 
+    /// nC for the chroma AC block `raster` of component `c` from the left and top neighbours
+    /// (9.2.1); 4:2:2 has four rows of chroma blocks.
     fn nc_chroma(&self, c: usize, raster: usize) -> i32 {
         let (bx, by) = (raster & 1, raster >> 1);
         let bottom = self.fmt.chroma_blocks() - 2;
@@ -959,6 +969,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
     // Reconstruction
     // ------------------------------------------------------------------------------------------
 
+    /// Inverse transform luma 4x4 block `raster` and add it to the prediction (DC-only shortcut).
     fn add_luma_block4(&mut self, raster: usize) {
         if self.s.blk_nz & (1 << raster) == 0 {
             return;
@@ -980,6 +991,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
     }
 
+    /// Inverse transform luma 8x8 block `b8` and add it to the prediction (DC-only shortcut).
     fn add_luma_block8(&mut self, b8: usize) {
         if self.s.blk_nz & (1 << b8) == 0 {
             return;
@@ -1001,6 +1013,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
     }
 
+    /// Inverse transform the coded chroma 4x4 blocks (4 per component in 4:2:0, 8 in 4:2:2) and add
+    /// them to the prediction.
     fn add_chroma(&mut self) {
         let stride = self.pic.planes.cwidth;
         let (max, hc) = (self.fmt.max(), self.fmt.mb_hc);
@@ -1179,6 +1193,7 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         Ok(())
     }
 
+    /// Record QP'Y and the chroma QPs of the current macroblock for deblocking and QP prediction.
     pub fn store_qp(&mut self) {
         let qp = self.qp;
         let qpc = [self.chroma_qp(qp, 0) as i8, self.chroma_qp(qp, 1) as i8];
@@ -1502,6 +1517,8 @@ impl<'a, S: Sample> SliceDecoder<'a, S> {
         }
     }
 
+    /// residual( ) with CAVLC (7.3.5.3): luma DC / AC / 4x4 blocks (8x8 as four interleaved 4x4),
+    /// then chroma DC (2x2 or 2x4) and chroma AC for the blocks `cbp` marks as coded.
     fn residual_cavlc(&mut self, r: &mut BitReader, cbp: u8) -> Result<()> {
         let kind = self.mb().kind;
         let t8 = self.mb().transform_8x8;

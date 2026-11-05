@@ -5,12 +5,15 @@ use std::sync::{Arc, OnceLock};
 /// Storage type of decoded samples: `u8` for 8-bit streams (half the memory and cache traffic of
 /// 16-bit storage), `u16` for higher bit depths. Values are always within `0..1 << bit_depth`.
 pub trait Sample: Copy + Default + PartialEq + Eq + std::fmt::Debug + Send + Sync + 'static {
+    /// The sample value as `i32`.
     fn to_i32(self) -> i32;
+    /// The sample value as `i16` (exact: at most 10 bits).
     fn to_i16(self) -> i16;
     /// `v` clipped to `0..=max` (`max` = (1 << bit_depth) - 1; always 255 for `u8`).
     fn clip(v: i32, max: i32) -> Self;
     /// The samples of a published row if they are stored with this type.
     fn row_planes(s: &RowSamples) -> Option<&RowPlanes<Self>>;
+    /// Wrap the samples of a finished row for publishing.
     fn wrap_row(p: RowPlanes<Self>) -> RowSamples;
     /// An empty output plane with room for `len` samples (see [`set_plane_allocator`]).
     fn alloc_plane(len: usize) -> Vec<Self>;
@@ -185,6 +188,7 @@ impl<S: Sample> Planes<S> {
         let mid = S::clip(fmt.mid(), fmt.max());
         Planes { y: vec![S::default(); width * height], cb: vec![mid; cw * ch], cr: vec![mid; cw * ch], width, height, cwidth: cw, fmt }
     }
+    /// Mid-grey luma and neutral chroma (concealment for missing frames).
     pub fn gray(width: usize, height: usize, fmt: Format) -> Self {
         let mut p = Self::new(width, height, fmt);
         p.y.fill(S::clip(fmt.mid(), fmt.max()));
@@ -323,6 +327,7 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// A frame of `mb_w` x `mb_h` macroblocks in sample format `fmt` with no rows published yet.
     pub fn new(id: u32, poc: i32, mb_w: usize, mb_h: usize, fmt: Format) -> Self {
         Frame {
             id,

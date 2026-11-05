@@ -62,6 +62,7 @@ contents). Percent is ready-for-real-work for that codec: depth, profiles, speed
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-05 | minor | H.264 High 10 and High 4:2:2 Intra decode in software (XAVC Intra, AVC-Intra); 4:2:2 inter remains unsupported |
 | 2026-11-02 | minor | Apple Intermediate Codec row: named on import and in the no-decoder error, no decoder (#3646) |
 | 2026-10-22 | minor | ProRes alpha final-run syntax regression tests and native macOS HD decode validation |
 | 2026-10-11 | minor | CinemaDNG / DNG decode (#1065) |

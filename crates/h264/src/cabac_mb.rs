@@ -367,6 +367,8 @@ impl<S: Sample> SliceDecoder<'_, S> {
         (st.cbf_dc & (1 << bit) != 0) as usize
     }
 
+    /// condTermFlagN for a chroma AC coded_block_flag (9.3.3.1.1.9): `(bx, by)` is the 4x4 block
+    /// position within the component (`by` up to 3 in 4:2:2), negative for the left / top neighbour.
     fn cbf_chroma_ac_cond(&self, comp: usize, bx: i32, by: i32, intra_cur: bool) -> usize {
         if bx >= 0 && by >= 0 {
             return (self.mb().nnz_c[comp][(by * 2 + bx) as usize] != 0) as usize;
@@ -451,6 +453,8 @@ impl<S: Sample> SliceDecoder<'_, S> {
         n as u8
     }
 
+    /// residual( ) with CABAC (7.3.5.3): luma DC / AC / 4x4 / 8x8 blocks, then chroma DC (2x2 or 2x4)
+    /// and chroma AC for the blocks `cbp` marks as coded.
     fn residual_cabac(&mut self, c: &mut Cabac, cbp: u8) -> Result<()> {
         let kind = self.mb().kind;
         let intra = kind.is_intra();

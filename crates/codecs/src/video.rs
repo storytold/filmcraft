@@ -301,6 +301,7 @@ impl H264Decoder {
         let threads = Self::threads_now();
         Self { avcc: Vec::new(), dec: filmcraft_h264::Decoder::with_threads(threads), length_size: 0, draft: false, threads }
     }
+    /// Tightly packed frame from a decoded picture: 8-bit pictures as `Yuv8`, higher bit depths (`Picture::wide`) as `Yuv16`, 4:2:0 or 4:2:2 chroma.
     fn convert(p: filmcraft_h264::Picture) -> DecodedFrame {
         use std::sync::Arc;
         let draft = p.draft;

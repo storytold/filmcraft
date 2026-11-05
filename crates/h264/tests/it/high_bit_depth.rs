@@ -7,6 +7,7 @@ use filmcraft_h264::{Decoder, Picture};
 use std::path::PathBuf;
 use std::process::Command;
 
+/// A libx264 fixture generated with ffmpeg and checked against ffmpeg's decode.
 struct HbdFixture {
     name: &'static str,
     width: u32,
@@ -94,6 +95,7 @@ const FIXTURES: &[HbdFixture] = &[
     },
 ];
 
+/// The fixture called `name`.
 fn fixture(name: &str) -> &'static HbdFixture {
     FIXTURES.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("unknown fixture {name}"))
 }
@@ -141,6 +143,8 @@ fn raw(p: &Picture) -> Vec<u8> {
     }
 }
 
+/// Decode fixture `name` with `threads` threads and compare every frame byte-for-byte with
+/// ffmpeg's raw output.
 fn check(name: &str, threads: usize) {
     let f = fixture(name);
     let Some((h264, yuv)) = ensure(f) else { return };

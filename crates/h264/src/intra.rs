@@ -33,6 +33,8 @@ impl Edge {
     }
 }
 
+/// Neighbouring samples of the `n` x `n` block at (`x`, `y`): unavailable ones are `mid`
+/// (1 << (BitDepth - 1)); top-right samples are read only when `a.top_right`.
 fn load_edge<S: Sample>(plane: &[S], stride: usize, x: usize, y: usize, n: usize, a: Avail, mid: i32) -> Edge {
     let mut e = Edge { top: [mid; 16], left: [mid; 8], tl: mid };
     if a.top {

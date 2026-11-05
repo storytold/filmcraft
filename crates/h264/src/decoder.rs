@@ -90,6 +90,7 @@ struct Shared {
 
 /// The recycled picture buffers of one sample type.
 trait PoolSample: Sample {
+    /// The pool of `Self` pictures in `shared`.
     fn pool(shared: &Shared) -> &Mutex<Vec<PicState<Self>>>;
 }
 
@@ -380,6 +381,9 @@ impl Decoder {
         ls
     }
 
+    /// Parse a coded slice NAL unit, start a new picture on its first slice and queue the slice for
+    /// decoding. Streams the decoder cannot handle fail with `Error::Unsupported` before the
+    /// SPS-dependent header fields are validated.
     fn handle_slice(&mut self, nal: &[u8], hdr: NalHeader, pts: i64) -> Result<()> {
         let rbsp = unescape_rbsp(&nal[1..]);
         let ppss = &self.ppss;
@@ -465,6 +469,8 @@ impl Decoder {
         Ok(())
     }
 
+    /// Begin a picture: activate the SPS (a size or sample format change flushes the DPB), handle
+    /// `frame_num` gaps and allocate the frame in the sample format of the SPS.
     fn start_picture(&mut self, sh: &SliceHeader, sps: &Arc<Sps>, pts: i64) -> Result<()> {
         self.call_pictures += 1;
         if self.call_pictures > MAX_PICTURES_PER_CALL {
@@ -566,6 +572,7 @@ impl Decoder {
         run_job(frame, slices, &shared, draft);
     }
 
+    /// Queue pictures that left the DPB in output order.
     fn emit(&mut self, outs: Vec<Output<FrameRef>>) {
         self.out_queue.extend(outs);
     }
@@ -597,6 +604,8 @@ fn run_job(frame: FrameRef, slices: Vec<SliceJob>, shared: &Shared, draft: bool)
     }
 }
 
+/// Decode, deblock and publish one picture with `S` samples, reusing a pooled buffer of the same
+/// size and format when there is one.
 fn run_job_typed<S: PoolSample>(frame: FrameRef, slices: Vec<SliceJob>, shared: &Shared, draft: bool) {
     let reuse = S::pool(shared).lock().ok().and_then(|mut p| p.pop());
     let mut pic: PicState<S> = match reuse {
@@ -670,6 +679,7 @@ fn run_job_typed<S: PoolSample>(frame: FrameRef, slices: Vec<SliceJob>, shared: 
     }
 }
 
+/// Decode the macroblocks of one slice into `pic` (CABAC or CAVLC by the PPS).
 fn decode_slice<S: Sample>(s: &SliceJob, pic: &mut PicState<S>) -> Result<()> {
     let mut sd = SliceDecoder::new(&s.sh, &s.pps, &s.sps, pic, &s.refs, &s.ls)?;
     if s.pps.entropy_coding_mode {
@@ -696,6 +706,7 @@ fn output_meta(sps: &Sps, pts: i64, key: bool) -> OutputMeta {
     }
 }
 
+/// Cropped output picture: 8-bit samples in `y` / `u` / `v`, higher bit depths in `wide`.
 fn make_picture(o: &Output<FrameRef>) -> Picture {
     let (cx, cy, cw, ch) = o.meta.crop;
     let (cx, cy, cw, ch) = (cx as usize, cy as usize, cw as usize, ch as usize);

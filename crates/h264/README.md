@@ -26,16 +26,17 @@ oracles and fixture generators.
 - Macroblocks: I (Intra 4x4 / 8x8 / 16x16, I_PCM), P (all partitions, P_8x8ref0, P_Skip),
   B (all partitions and sub-partitions, B_Skip, B_Direct_16x16, B_Direct_8x8), spatial and temporal
   direct prediction with/without `direct_8x8_inference`, constrained intra prediction.
-- Transforms / quantisation: 4x4, 8x8, Intra16x16 DC Hadamard, 2x2 chroma DC; flat and custom
-  scaling matrices (SPS and PPS level).
+- Transforms / quantisation: 4x4, 8x8, Intra16x16 DC Hadamard, 2x2 chroma DC (4:2:0) and 2x4
+  chroma DC (4:2:2); flat and custom scaling matrices (SPS and PPS level).
 - Inter prediction: quarter-sample 6-tap luma, eighth-sample chroma, explicit and implicit weighted
   prediction, multiple reference frames, long-term references.
 - DPB: sliding window, all MMCOs (1-6), IDR / `no_output_of_prior_pics`, bumping with DPB size from
   the level (or VUI `max_dec_frame_buffering`) and `max_num_reorder_frames`.
 - Deblocking filter: full bS derivation, `disable_deblocking_filter_idc` 0/1/2, slice offsets,
   8x8-transform edges.
-- Output: cropped 8-bit planar 4:2:0 pictures in output order with the caller's `pts`, POC, key
-  flag, VUI colour description (range, primaries, transfer, matrix) and sample aspect ratio.
+- Output: cropped planar 4:2:0 or 4:2:2 pictures (8-bit in `y`/`u`/`v`, higher bit depths in
+  `wide`) in output order with the caller's `pts`, POC, key flag, VUI colour description (range,
+  primaries, transfer, matrix) and sample aspect ratio.
 - Frame-level multithreading (see below).
 - Draft mode for reduced-resolution playback (off by default): non-reference pictures skip the
   deblocking filter and are flagged `Picture::draft`; every other picture stays bit-exact.
@@ -121,6 +122,11 @@ with ffmpeg + libx264; tests print a message and skip when `/opt/homebrew/bin/ff
 - Vectorised kernels against their straightforward forms on random input: the deblocking edge
   filter against the per-line filter, the 4x4 / 8x8 inverse transforms against the per-column
   formulation.
+- High bit depth / 4:2:2 (`tests/it/high_bit_depth.rs`): nine libx264 fixtures (High 4:2:2 Intra
+  at 8 and 10 bits, CABAC and CAVLC, several slices, extreme QPs, `cqm=jvt`; High 10 with B-frames,
+  weighted prediction and CAVLC) compared byte-for-byte with ffmpeg's `yuv422p`/`yuv422p10le`/
+  `yuv420p10le` output, with 1 and 4 threads; a 4:2:2 inter stream must return
+  `Error::Unsupported`.
 
 ### Fixture matrix (all bit-exact, single- and multi-threaded)
 

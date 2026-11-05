@@ -42,6 +42,7 @@ fn fetch_window(p: PlaneRef, x: i32, y: i32, bw: usize, bh: usize, win: &mut [u8
     }
 }
 
+/// The 6-tap luma filter a - 5b + 20c + 20d - 5e + f on `i32` values.
 #[inline(always)]
 fn tap6(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 {
     a - 5 * b + 20 * c + 20 * d - 5 * e + f
@@ -56,6 +57,7 @@ fn clip1(v: i32) -> u8 {
 /// Copy `n` samples with a fixed-size move for the common block widths.
 #[inline(always)]
 fn copy_n<S: Sample>(dst: &mut [S], src: &[S], n: usize) {
+    /// Copy `N` samples as one array move.
     fn fixed<S: Sample, const N: usize>(dst: &mut [S], src: &[S]) {
         if let (Some(d), Some(s)) = (dst.first_chunk_mut::<N>(), src.first_chunk::<N>()) {
             *d = *s;
@@ -88,6 +90,7 @@ fn vtap_row<S: Sample, const BW: usize>(rows: [&[S]; 6], out: &mut [S::Tap; 16])
     }
 }
 
+/// Copy one `BW`-sample block row as an array move; short slices are left alone.
 #[inline(always)]
 fn copy_fixed<S: Sample, const BW: usize>(dst: &mut [S], src: &[S]) {
     if let (Some(d), Some(s)) = (dst.first_chunk_mut::<BW>(), src.first_chunk::<BW>()) {
@@ -124,6 +127,7 @@ pub fn mc_luma_win<S: Sample>(src: &[S], ss: usize, blk: McBlock, out: &mut [S],
     }
 }
 
+/// [`mc_luma_win`] for a block width known at compile time; `max` is the largest sample value.
 #[inline(always)]
 fn luma_win<S: Sample, const BW: usize>(src: &[S], ss: usize, (fx, fy): (u32, u32), bh: usize, out: &mut [S], os: usize, max: i32) {
     let round5 = |v: S::Tap| S::round5(v, max);
@@ -257,6 +261,7 @@ pub fn mc_chroma_win<S: Sample>(src: &[S], ss: usize, blk: McBlock, out: &mut [S
     }
 }
 
+/// [`mc_chroma_win`] for a block width known at compile time.
 #[inline(always)]
 fn chroma_win<S: Sample, const BW: usize>(src: &[S], ss: usize, fx: u32, fy: u32, bh: usize, out: &mut [S], os: usize) {
     if fx == 0 && fy == 0 {
