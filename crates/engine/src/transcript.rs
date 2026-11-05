@@ -5,7 +5,8 @@
 //! transcript are addressed by index (`from`, `to`, inclusive), as `transcript.inspect` lists them.
 //!
 //! Speech recognition goes through a [`Transcriber`]: [`Session::transcriber`] when a host or a
-//! test installed one, else the Whisper model named by `model` from `<data dir>/models` (needs the
+//! test installed one, else the Decupador Inteligente when it is set up (`decupador.json`) and no
+//! Whisper model is named, else the Whisper model named by `model` from `<data dir>/models` (needs the
 //! engine feature `whisper`; without it `transcript.generate` fails with a clear error, and agents
 //! can still bring their own transcript with `transcript.set`).
 
@@ -40,6 +41,28 @@ pub fn speech_available() -> bool {
     filmcraft_speech::available()
 }
 
+/// The Decupador Inteligente's settings (`<data dir>/decupador.json`, or `FILMCRAFT_DECUPADOR_HOME`),
+/// when the studio's transcriber is set up on this machine. It is then the default recogniser.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn decupador_config() -> Option<filmcraft_speech::decupador::Config> {
+    // the engine's own tests never see the decupador set up on the machine running them
+    if cfg!(test) {
+        return None;
+    }
+    let path = crate::autosave::default_data_dir().map(|d| d.join("decupador.json")).unwrap_or_default();
+    filmcraft_speech::decupador::Config::load(&path)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn decupador_available() -> bool {
+    false
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn decupador_available() -> bool {
+    decupador_config().is_some()
+}
+
 /// The words of the active sequence's transcript.
 pub fn sequence_words(s: &Session) -> Vec<SeqWord> {
     match s.active_sequence() {
@@ -64,7 +87,7 @@ pub(crate) const NO_SPEECH: &str =
 /// `transcript.generate` can run: a host installed a transcriber or the build has speech-to-text
 /// (#97: it reported enabled and then always failed).
 pub(crate) fn can_transcribe(s: &Session) -> std::result::Result<(), String> {
-    if s.transcriber.is_some() || speech_available() { Ok(()) } else { Err(NO_SPEECH.into()) }
+    if s.transcriber.is_some() || speech_available() || decupador_available() { Ok(()) } else { Err(NO_SPEECH.into()) }
 }
 
 /// `transcript.downloadModel` can run: built with `speech-download` (#98).
@@ -109,7 +132,7 @@ fn targets(s: &Session, p: &Value) -> Vec<ItemId> {
 }
 
 /// Mono 16 kHz audio of a media item (None: no audio).
-fn item_audio(s: &Session, item: ItemId) -> Option<Vec<f32>> {
+pub(crate) fn item_audio(s: &Session, item: ItemId) -> Option<Vec<f32>> {
     let dur = match &s.project.item(item)?.kind {
         ItemKind::Media(m) => m.duration(),
         _ => return None,
@@ -129,12 +152,25 @@ fn speech_err(e: SpeechError) -> EngineError {
 }
 
 /// The transcriber to use: the installed one, else the named catalogue model.
-fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
+pub(crate) fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
     if let Some(t) = &s.transcriber {
         return Ok(t.clone());
     }
+    // The Decupador Inteligente (faster-whisper through the studio's pipeline) unless a Whisper
+    // model is asked for by name.
+    let asked = str_p(p, "model");
+    #[cfg(not(target_arch = "wasm32"))]
+    if asked.is_none_or(|m| m.starts_with(filmcraft_speech::decupador::ID_PREFIX)) {
+        match decupador_config() {
+            Some(cfg) => return Ok(Arc::new(filmcraft_speech::decupador::Decupador::new(cfg))),
+            None if asked.is_some() => {
+                return Err(EngineError::Other("the Decupador Inteligente is not set up on this machine (no decupador.json in the data directory)".into()));
+            }
+            None => {}
+        }
+    }
     // Settings ▸ Media Analysis & Transcription ▸ Speech model
-    let model = str_p(p, "model").unwrap_or(&s.prefs.media_analysis.whisper_model);
+    let model = asked.unwrap_or(&s.prefs.media_analysis.whisper_model);
     if filmcraft_speech::models::find(model).is_none() {
         return Err(speech_err(SpeechError::UnknownModel(model.into())));
     }
@@ -162,6 +198,10 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
         max_speakers: u64_p(p, "maxSpeakers").map(|n| n.clamp(1, 32) as usize).unwrap_or(Options::default().max_speakers),
     };
+    // The Decupador Inteligente keeps its own language (decupador.json) unless one is asked for:
+    // the editor's default language is a Whisper setting.
+    #[cfg(not(target_arch = "wasm32"))]
+    let opts = if t.id().starts_with(filmcraft_speech::decupador::ID_PREFIX) && str_p(p, "language").is_none() { Options { language: None, ..opts } } else { opts };
     let mut done: Vec<(ItemId, Transcript)> = Vec::new();
     let mut skipped = Vec::new();
     for item in items {
@@ -434,8 +474,9 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
 fn models(_: &mut Session, _: &Value) -> Result<Value> {
     let dir = models_dir();
     Ok(json!({
-        "available": filmcraft_speech::available(),
-        "default": filmcraft_speech::models::DEFAULT_MODEL,
+        "available": filmcraft_speech::available() || decupador_available(),
+        "default": if decupador_available() { "decupador" } else { filmcraft_speech::models::DEFAULT_MODEL },
+        "decupador": decupador_json(),
         "dir": dir.as_ref().map(|d| d.to_string_lossy().to_string()),
         "models": filmcraft_speech::models::catalogue().iter().map(|m| json!({
             "id": m.id, "name": m.name, "multilingual": m.multilingual, "description": m.description,
@@ -443,6 +484,19 @@ fn models(_: &mut Session, _: &Value) -> Result<Value> {
             "installed": dir.as_ref().is_some_and(|d| filmcraft_speech::models::installed(d, m)),
         })).collect::<Vec<_>>(),
     }))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn decupador_json() -> Value {
+    match decupador_config() {
+        Some(c) => json!({"configured": true, "home": c.home.to_string_lossy(), "python": c.python, "model": c.model, "language": c.language}),
+        None => json!({"configured": false}),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn decupador_json() -> Value {
+    json!({"configured": false})
 }
 
 /// Download a catalogue model into `<data dir>/models` (feature `speech-download`). Hosts show

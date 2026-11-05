@@ -3587,6 +3587,14 @@
 	Export the labels to a preset file…	Exporter les étiquettes dans un fichier de paramètre prédéfini…
 	Show the presets folder	Afficher le dossier des paramètres prédéfinis
 	Delete this preset	Supprimer ce paramètre prédéfini
+# Decupador Inteligente (Sequence ▸ Decupador Inteligente).
+	Decupador Inteligente	Decupador Inteligente
+	Apply Decoupage Plan…	Appliquer le plan de découpage…
+	Mark Decoupage Candidates	Marquer les candidats du découpage
+	List Decoupage Candidates	Lister les candidats du découpage
+	Transcribe Session…	Transcrire la session…
+	Decoupage Context	Contexte du découpage
+	Align Script…	Aligner le script…
 # View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	Réinitialiser le zoom de l'interface
 	Track Color	Couleur de la piste

@@ -72,6 +72,43 @@ impl FilmcraftApp {
                 }
                 app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
             }),
+            // Sequence ▸ Decupador Inteligente ▸ Align Script: the script next to the takes, else choose one
+            "decupador.alignScript" => {
+                let mut auto = params.clone();
+                if !auto.is_object() {
+                    auto = json!({});
+                }
+                match self.session.execute("decupador.alignScript", auto) {
+                    Err(e) if e.to_string().contains("no script found") => self.pick(FileDialog::open_files(&["pdf", "md", "txt"]), |app, paths| {
+                        let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                        let r = app.session.execute("decupador.alignScript", json!({"path": path})).map_err(|e| e.to_string());
+                        if let Err(e) = &r {
+                            app.ui.status = e.clone();
+                        }
+                        r
+                    }),
+                    Err(e) => {
+                        self.ui.status = e.to_string();
+                        Err(e.to_string())
+                    }
+                    Ok(v) => Ok(v),
+                }
+            }
+            // Sequence ▸ Decupador Inteligente ▸ Apply Decoupage Plan: choose the premiere_cuts.json
+            "decupador.applyPlan" => self.pick(FileDialog::open_files(&["json"]), |app, paths| {
+                let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
+                let r = app.session.execute("decupador.applyPlan", json!({"path": path})).map_err(|e| e.to_string());
+                match &r {
+                    Ok(v) => {
+                        let missing = v.get("missingFiles").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+                        if missing > 0 {
+                            app.ui.status = format!("{missing} file(s) of the plan are missing");
+                        }
+                    }
+                    Err(e) => app.ui.status = e.clone(),
+                }
+                r
+            }),
             "graphics.newFromFile" => {
                 let exts: Vec<&str> = filmcraft_media::STILL_EXTENSIONS.iter().chain(filmcraft_media::VIDEO_EXTENSIONS).copied().collect();
                 self.pick(FileDialog::open_files(&exts), |app, paths| {

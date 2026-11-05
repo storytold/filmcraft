@@ -3605,6 +3605,14 @@
 	Shows the version, community links and credits in a FilmCraft window.	FilmCraft 창에 버전, 커뮤니티 링크, 제작진을 보여 줍니다.
 	Couldn't open your web browser	웹 브라우저를 열 수 없습니다
 	Open this address in your browser yourself:	이 주소를 브라우저에서 직접 여세요:
+# Decupador Inteligente (Sequence ▸ Decupador Inteligente).
+	Decupador Inteligente	Decupador Inteligente
+	Apply Decoupage Plan…	디쿠파주 계획 적용…
+	Mark Decoupage Candidates	디쿠파주 후보 표시
+	List Decoupage Candidates	디쿠파주 후보 나열
+	Transcribe Session…	세션 받아쓰기…
+	Decoupage Context	디쿠파주 컨텍스트
+	Align Script…	대본 정렬…
 # View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	인터페이스 확대/축소 재설정
 	Track Color	트랙 색상

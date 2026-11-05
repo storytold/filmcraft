@@ -657,6 +657,8 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
         || (id == "file.save" && params.get("path").is_none() && app.session.path.is_none())
         || (id == "captions.import" && params.get("path").is_none())
         || (id == "graphics.newFromFile" && params.get("path").is_none())
+        || (id == "decupador.applyPlan" && params.get("path").is_none() && params.get("plan").is_none())
+        || (id == "decupador.alignScript" && params.get("path").is_none())
         || (crate::EXPORT_SAVE_DIALOGS.iter().any(|(c, ..)| *c == id) && params.get("path").is_none())
     {
         return app.file_dialog(id, &params);

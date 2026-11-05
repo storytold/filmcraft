@@ -3588,6 +3588,13 @@
 
 # The native macOS application menu (Settings…).
 	Settings	Preferências
+	Decupador Inteligente	Decupador Inteligente
+	Apply Decoupage Plan…	Aplicar plano de decupagem…
+	Mark Decoupage Candidates	Marcar candidatos da decupagem
+	List Decoupage Candidates	Listar candidatos da decupagem
+	Transcribe Session…	Transcrever sessão…
+	Decoupage Context	Contexto da decupagem
+	Align Script…	Alinhar roteiro…
 # View > Reset Interface Zoom (#2253).
 	Reset Interface Zoom	Redefinir zoom da interface
 	Track Color	Cor da trilha

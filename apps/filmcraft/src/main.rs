@@ -88,7 +88,9 @@ fn main() -> eframe::Result {
     // First, so the panic hook and every start-up record are logged (`logging`).
     let logger = logging::install();
     // lossy, so a value that is not Unicode is reported like any other bad port instead of ignored
-    let env_port = std::env::var_os("FILMCRAFT_CONTROL_PORT").map(|p| p.to_string_lossy().into_owned());
+    // The Decupador Inteligente drives the editor from Claude Code: with `controlPort` in
+    // `decupador.json` the control server starts however the app is opened (Finder, Dock).
+    let env_port = std::env::var_os("FILMCRAFT_CONTROL_PORT").map(|p| p.to_string_lossy().into_owned()).or_else(decupador_control_port);
     let launch = match args::parse(env_port, std::env::args_os().skip(1)) {
         Ok(Cli::Run(l)) => l,
         Ok(Cli::Help) => {
@@ -611,4 +613,11 @@ mod tests {
         // #1644: the Open Project dialog's "All files" fallback is a single `*`.
         assert_eq!(super::file_filters::all_files(), ["*"]);
     }
+}
+
+/// `controlPort` of `<data dir>/decupador.json`, when the Decupador Inteligente is set up.
+fn decupador_control_port() -> Option<String> {
+    let path = filmcraft_engine::autosave::default_data_dir()?.join("decupador.json");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    v.get("controlPort").and_then(serde_json::Value::as_u64).map(|p| p.to_string())
 }

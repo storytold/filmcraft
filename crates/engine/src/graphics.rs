@@ -99,13 +99,18 @@ pub(crate) fn graphic_source(p: &mut filmcraft_project::Project, w: u32, h: u32,
 /// Place a new graphic clip holding `layer` at the playhead: on the first video track above the
 /// topmost clip at the playhead that is free for the duration (a track is added if needed).
 fn new_graphic_clip(s: &mut Session, cmd: &str, layer: filmcraft_project::EffectInstance, name: &str, p: &Value) -> Result<ClipId> {
+    new_graphic_clip_layers(s, cmd, vec![layer], name, p)
+}
+
+/// [`new_graphic_clip`] for a clip that starts with several layers (one undo step).
+pub(crate) fn new_graphic_clip_layers(s: &mut Session, cmd: &str, layers: Vec<filmcraft_project::EffectInstance>, name: &str, p: &Value) -> Result<ClipId> {
     let seconds = f64_p(p, "seconds").unwrap_or(5.0).max(0.01);
     // Here `seconds` is duration, not the generic time parser's placement alias.
     let mut placement = p.clone();
     if let Some(params) = placement.as_object_mut() {
         params.remove("seconds");
     }
-    place_video_clip(s, cmd, name, &placement, "New Graphic", vec![layer], move |pr, (w, h, rate)| {
+    place_video_clip(s, cmd, name, &placement, "New Graphic", layers, move |pr, (w, h, rate)| {
         let src = graphic_source(pr, w, h, rate);
         (src, rate.snap_nearest(Tick::from_seconds_f64(seconds)).max(rate.frame_duration()))
     })

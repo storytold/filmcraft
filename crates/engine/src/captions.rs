@@ -54,7 +54,7 @@ pub fn track_param(s: &Session, p: &Value) -> Option<TrackId> {
     }
 }
 
-fn caption_ids(s: &Session, p: &Value) -> Vec<ClipId> {
+pub(crate) fn caption_ids(s: &Session, p: &Value) -> Vec<ClipId> {
     if let Some(a) = p.get("captions").and_then(Value::as_array) {
         return a.iter().filter_map(Value::as_u64).map(ClipId).collect();
     }
