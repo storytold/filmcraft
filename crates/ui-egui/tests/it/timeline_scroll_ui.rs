@@ -528,3 +528,24 @@ fn turning_animations_off_zooms_and_scrolls_in_one_step() {
     d.frames(2);
     assert!(animation_time(&mut d) > 0.0);
 }
+
+/// Show Next / Previous Screen (Page Down / Page Up in the Timeline) move the view by exactly one
+/// screen of content, so nothing is skipped or shown twice. `last_timeline_width` is already the
+/// width right of the track headers; the headers used to be taken off a second time, which paged
+/// about 80 % of a screen in this window and less the narrower the Timeline got.
+#[test]
+fn next_and_previous_screen_page_by_the_visible_width() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"timeline": {"pps": 100.0, "scroll": 0.0}}));
+    d.frames(3);
+    let width = f64::from(d.app().last_timeline_width);
+    d.exec("timeline.nextScreen", json!({}));
+    let (scroll, pps, ..) = d.view();
+    assert!((scroll - width / pps).abs() < 1e-6, "Page Down shows the next screen: scroll {scroll}, screen {}", width / pps);
+    d.exec("timeline.nextScreen", json!({}));
+    let (scroll, ..) = d.view();
+    assert!((scroll - 2.0 * width / pps).abs() < 1e-6, "twice: scroll {scroll}");
+    d.exec("timeline.prevScreen", json!({}));
+    let (scroll, ..) = d.view();
+    assert!((scroll - width / pps).abs() < 1e-6, "Page Up goes back one screen: scroll {scroll}");
+}

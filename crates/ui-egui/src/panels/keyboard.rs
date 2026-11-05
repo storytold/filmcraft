@@ -205,8 +205,8 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         }
         "timeline.nextScreen" | "timeline.prevScreen" => {
             let tv = &mut app.ui.timeline;
-            let w = (app.last_timeline_width.max(200.0) - tv.header_w) as f64;
-            let page = w / tv.pps.max(1e-6);
+            // `last_timeline_width` is already the width right of the track headers
+            let page = f64::from(app.last_timeline_width.max(1.0)) / tv.target_pps.max(1e-6);
             let d = if id == "timeline.nextScreen" { page } else { -page };
             tv.target_scroll = (tv.target_scroll + d).max(0.0);
             Ok(json!({"scroll": tv.target_scroll}))
