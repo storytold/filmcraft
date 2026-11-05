@@ -2,6 +2,7 @@
 //! decoding Auto and Off (Windows). Its own test binary: the switch is process-wide.
 #![cfg(target_os = "windows")]
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use common::*;

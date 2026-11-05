@@ -49,6 +49,10 @@ pub enum H264Profile {
     Main,
     #[default]
     High,
+    /// High 10: 10-bit 4:2:0 encoding. HDR exports keep their 10-bit precision; SDR exports are
+    /// rendered at 8 bits first, so this adds no banding of its own but cannot remove it.
+    #[serde(rename = "high10")]
+    High10,
 }
 
 impl H264Profile {
@@ -57,7 +61,13 @@ impl H264Profile {
             H264Profile::Baseline => "Baseline",
             H264Profile::Main => "Main",
             H264Profile::High => "High",
+            H264Profile::High10 => "High 10",
         }
+    }
+
+    /// Bits per sample of the coded pictures.
+    pub fn bit_depth(self) -> u8 {
+        if self == H264Profile::High10 { 10 } else { 8 }
     }
 }
 
@@ -509,10 +519,10 @@ impl ExportSettings {
     }
 
     /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): PNG, TIFF,
-    /// Targa and OpenEXR sequences and ProRes 4444 / 4444 XQ QuickTime movies.
+    /// Targa and OpenEXR sequences, GIF (binary transparency), and ProRes 4444 / 4444 XQ movies.
     pub fn supports_alpha(&self) -> bool {
         match self.format {
-            Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence => true,
+            Format::PngSequence | Format::TiffSequence | Format::TgaSequence | Format::ExrSequence | Format::Gif => true,
             Format::ProRes => crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444,
             _ => false,
         }
@@ -628,7 +638,7 @@ impl ExportSettings {
                 px * fps * bpp
             }
             Format::Mjpeg | Format::JpegSequence => px * 8.0 * (0.4 + self.quality as f64 / 100.0 * 2.0) * fps / 8.0,
-            Format::PngSequence => px * 4.0 * 0.45 * 8.0 * fps,
+            Format::PngSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 0.45 * 8.0 * fps,
             Format::BmpSequence => px * 3.0 * 8.0 * fps,
             Format::TiffSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 8.0 * fps,
             Format::TgaSequence => px * if self.keeps_alpha() { 4.0 } else { 3.0 } * 8.0 * fps,
@@ -680,8 +690,10 @@ impl ExportSettings {
             match self.video_format() {
                 Format::H264 => {
                     v += &format!(
-                        ", {} {}, {}",
+                        ", {}{} ({}-bit) {}, {}",
                         self.h264_profile.label(),
+                        if self.h264_intra_only { " Intra" } else { "" },
+                        self.h264_profile.bit_depth(),
                         self.h264_level.map(|l| format!("L{}.{}", l / 10, l % 10)).unwrap_or_else(|| "auto level".into()),
                         self.bitrate_mode.label()
                     );
@@ -691,7 +703,7 @@ impl ExportSettings {
                         BitrateMode::Cqp => format!(", QP {}", self.qp.unwrap_or(23)),
                         _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
                     };
-                    v += &format!(", keyframe every {} frames", r.keyint);
+                    v += &if self.h264_intra_only { ", every frame a keyframe".to_string() } else { format!(", keyframe every {} frames", r.keyint) };
                 }
                 Format::Hevc => {
                     // Main 10 only where a registered encoder writes HDR (NVENC); VideoToolbox is 8-bit
@@ -705,8 +717,7 @@ impl ExportSettings {
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::Av1 => {
-                    let profile = if crate::hdr_available(Format::Av1) { "AV1 Main / Main 10 for HDR" } else { "AV1 Main" };
-                    v += &format!(", {profile} (hardware encoder), {}", self.bitrate_mode.label());
+                    v += &format!(", AV1 Main (hardware encoder), {}", self.bitrate_mode.label());
                     v += &match self.bitrate_mode {
                         BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
                         BitrateMode::Cqp => format!(", QP {}", self.qp.unwrap_or(23)),

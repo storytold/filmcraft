@@ -37,6 +37,6 @@ let packet = ogg.read_packet(&bytes, s, k)?;
 ## Tests
 
 `src/tests.rs` writes synthetic pages: timing with pre-skip and end trimming, packets across pages,
-a corrupted page (CRC), every truncation and 300 mutations. `crates/codecs/tests/ogg_oracle.rs`
+a corrupted page (CRC), every truncation and 300 mutations. `crates/codecs/tests/it/ogg_oracle.rs`
 compares with FFmpeg's libopus / Vorbis decodes (exact length; SNR ≥ 50 dB CELT, ≥ 10 dB SILK,
 Vorbis 139 dB) and checks random seeks against the continuous decode.

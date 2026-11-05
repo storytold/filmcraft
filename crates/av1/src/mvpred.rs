@@ -1,7 +1,10 @@
 //! Motion vector prediction processes (spec 7.10): find_mv_stack, has_overlappable_candidates
 //! and find_warp_samples.
 
-use crate::spec_tables::*;
+use crate::spec_tables::{
+    GLOBAL_GLOBALMV, GLOBALMV, IDENTITY, INTRA_FRAME, LEAST_SQUARES_SAMPLES_MAX, MAX_REF_MV_STACK_SIZE, MV_BORDER, NEAR_NEWMV, NEAREST_NEWMV, NEW_NEARESTMV,
+    NEW_NEARMV, NEW_NEWMV, NEWMV, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, REF_CAT_LEVEL, TRANSLATION, WARPEDMODEL_PREC_BITS,
+};
 use crate::tile::TileDecoder;
 
 pub(crate) type MvP = [i32; 2];
