@@ -457,3 +457,48 @@ async fn parallel_bridge_render_frames_each_return_their_own_frame() {
     }
     assert_eq!(playhead.load(std::sync::atomic::Ordering::SeqCst), 200, "the playhead must end where it started");
 }
+
+/// A client that floods malformed lines and never reads its output stalls its own input: parse
+/// errors wait for the writer instead of piling up in memory without bound.
+#[tokio::test(flavor = "multi_thread")]
+async fn unread_parse_errors_stall_the_input() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let (mut tx, server_in) = tokio::io::duplex(4096);
+    let (server_out, rx) = tokio::io::duplex(4096);
+    tokio::spawn(FilmcraftMcp::headless(Session::default()).serve_io(server_in, server_out));
+    // Each 2-byte line answers with a ~100-byte error: far more than the pipes, the read buffer and the queue hold.
+    const LINES: usize = 1 << 16;
+    let junk = "x\n".repeat(LINES);
+    // The write stays in this task and is polled alongside the reads; a spawned task would drop `tx` on
+    // completion and end the server while replies are still queued.
+    let mut write = std::pin::pin!(tx.write_all(junk.as_bytes()));
+    // With the output unread the server stops reading, so the write stays pending.
+    let early = tokio::time::timeout(std::time::Duration::from_millis(500), &mut write).await;
+    assert!(early.is_err(), "the server kept reading input while its output was not read: {early:?}");
+    // Reading the output lets the input drain, and the pending write completes.
+    let drain = async {
+        let mut lines = tokio::io::BufReader::new(rx).lines();
+        let first: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(first["error"]["code"], -32700, "{first}");
+        for n in 1..LINES {
+            let got = lines.next_line().await.unwrap();
+            assert!(got.is_some(), "replies stopped after {n} of {LINES}");
+        }
+    };
+    let both = tokio::time::timeout(std::time::Duration::from_secs(120), async { tokio::join!(write, drain) });
+    let (written, ()) = both.await.expect("the drain stalled: input stopped being read");
+    written.expect("the pending write completes once the output is read");
+}
+
+/// When the output fails, the reader stops: the server ends instead of waiting on an input whose replies cannot be delivered.
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_output_stops_the_reader() {
+    use tokio::io::AsyncWriteExt;
+    let (mut tx, server_in) = tokio::io::duplex(4096);
+    let (server_out, rx) = tokio::io::duplex(4096);
+    drop(rx);
+    let server = tokio::spawn(FilmcraftMcp::headless(Session::default()).serve_io(server_in, server_out));
+    tx.write_all(b"x\n").await.unwrap(); // `tx` stays open: only a failed output can end the server
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(30), server).await;
+    assert!(ended.is_ok(), "the server kept reading after its output failed");
+}

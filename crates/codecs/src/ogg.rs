@@ -19,7 +19,7 @@ use filmcraft_ogg::{Codec, OggFile, OpusTiming};
 use filmcraft_time::Tick;
 
 use crate::CodecError;
-use crate::audio::{OPUS_PRE_ROLL, OPUS_RATE, PacketDecoder, read_resampled};
+use crate::audio::{OPUS_PRE_ROLL, OPUS_RATE, PacketDecoder, check_decoded_budget, read_resampled};
 
 impl filmcraft_ogg::ByteSource for crate::Src {
     fn len(&self) -> u64 {
@@ -173,6 +173,7 @@ fn decode_vorbis(file: &OggFile, bytes: &crate::Src, s: usize) -> crate::Result<
     for (i, p) in st.packets.iter().enumerate() {
         let data = file.read_packet(bytes, s, i).map_err(|e| CodecError::Container(e.to_string()))?;
         if let Ok(pcm) = dec.decode(&data, 0) {
+            check_decoded_budget(out.iter().map(Vec::len).sum(), pcm.iter().take(ch).map(Vec::len).sum())?;
             for (c, o) in out.iter_mut().enumerate() {
                 if let Some(src) = pcm.get(c) {
                     o.extend_from_slice(src);

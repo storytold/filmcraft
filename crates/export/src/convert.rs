@@ -118,8 +118,21 @@ fn code8(x: f32) -> u8 {
     ((x + 0.5) as i32).clamp(1, 254) as u8
 }
 
+/// Whether a source of `len` values holds a non-empty `w` x `h` picture of `per_px` values per pixel.
+/// The 8-bit conversions size their planes from `w` and `h`, so they check this first: a short
+/// source would otherwise allocate planes far larger than the data (or index past its end).
+fn covers(len: usize, w: usize, h: usize, per_px: usize) -> bool {
+    w > 0 && h > 0 && w.checked_mul(h).and_then(|n| n.checked_mul(per_px)).is_some_and(|n| len >= n)
+}
+
 /// BT.709 limited-range 8-bit 4:2:0 from straight RGBA8 (2×2 chroma average).
 pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
+    if !covers(rgba.len(), w, h, 4) {
+        y.clear();
+        u.clear();
+        v.clear();
+        return;
+    }
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     y.resize(w * h, 0);
     u.resize(cw * ch, 0);
@@ -181,6 +194,12 @@ pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mu
 
 /// Limited-range 8-bit 4:2:0 from encoded R'G'B' floats with matrix (Kr, Kb).
 pub fn rgbf_to_yuv420_8(rgb: &[f32], w: usize, h: usize, m: Matrix, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
+    if !covers(rgb.len(), w, h, 3) {
+        y.clear();
+        u.clear();
+        v.clear();
+        return;
+    }
     let Matrix { kr, kb } = m;
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let kg = 1.0 - kr - kb;
@@ -356,5 +375,28 @@ mod tests {
             let rgba: Vec<u8> = (0..6 * 4).flat_map(|_| [c[0], c[1], c[2], 255]).collect();
             check(&rgba, 6, 4);
         }
+    }
+}
+
+#[cfg(test)]
+mod short_source_tests {
+    use super::*;
+
+    #[test]
+    fn a_source_shorter_than_its_size_converts_to_nothing_without_allocating_the_planes() {
+        let (mut y, mut u, mut v) = (vec![1u8; 4], vec![1u8; 4], vec![1u8; 4]);
+        // a huge claimed size over a tiny source: no plane is sized from it
+        rgba_to_yuv420_8(&[0; 16], 1 << 30, 1 << 30, &mut y, &mut u, &mut v);
+        assert!(y.is_empty() && u.is_empty() && v.is_empty());
+        let m = Matrix { kr: 0.2126, kb: 0.0722 };
+        rgbf_to_yuv420_8(&[0.0; 6], usize::MAX, 2, m, &mut y, &mut u, &mut v);
+        assert!(y.is_empty());
+        rgbf_to_yuv420_8(&[0.0; 6], 2, 2, m, &mut y, &mut u, &mut v);
+        assert!(y.is_empty(), "2 x 2 needs 12 floats");
+        rgba_to_yuv420_8(&[0; 16], 0, 4, &mut y, &mut u, &mut v);
+        assert!(y.is_empty());
+        // a full-size source still converts
+        rgba_to_yuv420_8(&[128; 16], 2, 2, &mut y, &mut u, &mut v);
+        assert_eq!((y.len(), u.len(), v.len()), (4, 1, 1));
     }
 }
