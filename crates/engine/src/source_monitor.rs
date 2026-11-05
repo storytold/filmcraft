@@ -178,9 +178,9 @@ pub(crate) fn route(s: &mut Session, id: &str, p: &Value) -> Result<Option<Value
         }
         "markers.goNext" | "markers.goPrev" => {
             let time = if id.ends_with("Next") {
-                view.markers.iter().map(|m| m.start).filter(|t| *t > cursor).min()
+                view.markers.iter().filter(|m| s.state.marker_shown(m)).map(|m| m.start).filter(|t| *t > cursor).min()
             } else {
-                view.markers.iter().map(|m| m.start).filter(|t| *t < cursor).max()
+                view.markers.iter().filter(|m| s.state.marker_shown(m)).map(|m| m.start).filter(|t| *t < cursor).max()
             };
             if let Some(t) = time {
                 s.execute("source.setPlayhead", json!({"time":t.0}))?;
@@ -200,10 +200,11 @@ pub(crate) fn route(s: &mut Session, id: &str, p: &Value) -> Result<Option<Value
             let (color, custom_color) = color(p, id)?.unwrap_or((Label::Green, None));
             let author = crate::commands::marker_author_p(p, id)?.unwrap_or_default();
             let root = view.media;
-            let marker = s.edit("Add Source Marker", |pr, _| {
+            let marker = s.edit("Add Source Marker", |pr, st| {
                 if pr.next_id == u64::MAX {
                     return Err(bad(id, "project ids are exhausted"));
                 }
+                st.show_marker_color(color, custom_color);
                 let marker = MarkerId(pr.alloc_id());
                 let list = marker_list(pr, root)?;
                 list.push(Marker {
@@ -224,12 +225,12 @@ pub(crate) fn route(s: &mut Session, id: &str, p: &Value) -> Result<Option<Value
             return Ok(Some(json!({"marker":marker.0})));
         }
         "markers.clearCurrent" | "markers.clearAll" => {
-            s.edit("Clear Source Markers", |pr, _| {
+            s.edit("Clear Source Markers", |pr, st| {
                 let list = marker_list(pr, view.media)?;
                 if id.ends_with("All") {
-                    list.clear();
+                    list.retain(|m| !st.marker_shown(m));
                 } else {
-                    list.retain(|m| m.start != cursor);
+                    list.retain(|m| m.start != cursor || !st.marker_shown(m));
                 }
                 Ok(())
             })?;
@@ -324,6 +325,28 @@ mod tests {
         }
         let small = TimeRange::new(Tick::ZERO, Tick(1));
         assert_eq!(adjust_range(small, small, FrameRate::FPS_24, RangeEdge::Out, Tick(i64::MAX)).unwrap(), small);
+    }
+    #[test]
+    fn source_marker_commands_leave_hidden_colours_alone_and_adding_shows_them_again() {
+        let mut s = fixture();
+        let rate = source_view(&s, ItemId(5)).unwrap().rate;
+        for (frame, color) in [(10, "Green"), (20, "Rose"), (30, "Green")] {
+            s.execute("markers.add", json!({"target":"source","time":rate.tick_of(frame).0,"color":color})).unwrap();
+        }
+        let colors = |s: &Session| source_view(s, ItemId(5)).unwrap().markers.iter().map(|m| m.color).collect::<Vec<_>>();
+        s.execute("markers.filterColors", json!({"color":"Rose","visible":false})).unwrap();
+        s.execute("source.setPlayhead", json!({"time":rate.tick_of(10).0})).unwrap();
+        s.execute("markers.goNext", json!({"target":"source"})).unwrap();
+        assert_eq!(s.state.source_playhead, rate.tick_of(30));
+        s.execute("markers.goPrev", json!({"target":"source"})).unwrap();
+        assert_eq!(s.state.source_playhead, rate.tick_of(10));
+        s.execute("source.setPlayhead", json!({"time":rate.tick_of(20).0})).unwrap();
+        s.execute("markers.clearCurrent", json!({"target":"source"})).unwrap();
+        assert_eq!(colors(&s), [Label::Green, Label::Rose, Label::Green]);
+        s.execute("markers.clearAll", json!({"target":"source"})).unwrap();
+        assert_eq!(colors(&s), [Label::Rose]);
+        s.execute("markers.add", json!({"target":"source","time":rate.tick_of(40).0,"color":"Rose"})).unwrap();
+        assert!(s.state.hidden_marker_colors.is_empty());
     }
     #[test]
     fn source_markers_are_undoable_and_independent_of_sequence_markers() {

@@ -29,7 +29,7 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
     if to_playhead {
         cands.push(app.session.playhead());
     }
-    cands.extend(seq.markers.iter().map(|m| m.start));
+    cands.extend(seq.markers.iter().filter(|m| app.session.state.marker_shown(m)).map(|m| m.start));
     cands.extend(seq.mark_in);
     cands.extend(seq.mark_out);
     let x = layout.x_of(t);

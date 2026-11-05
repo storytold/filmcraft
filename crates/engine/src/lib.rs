@@ -425,6 +425,22 @@ pub struct EditorState {
     pub find: Option<project_tools::FindState>,
 }
 
+impl EditorState {
+    /// Whether the Markers panel's colour filter shows `marker`. A hidden marker stays in the
+    /// project, but the Timeline, the monitors, snapping and the marker commands leave it alone.
+    pub fn marker_shown(&self, marker: &filmcraft_project::Marker) -> bool {
+        marker.custom_color.map_or(!self.hidden_marker_colors.contains(&marker.color), |c| !self.hidden_custom_marker_colors.contains(&c))
+    }
+
+    /// Show a marker colour again: a marker just added in a hidden colour must not be invisible.
+    pub fn show_marker_color(&mut self, color: filmcraft_project::Label, custom: Option<filmcraft_project::HexColor>) {
+        match custom {
+            Some(custom) => self.hidden_custom_marker_colors.retain(|c| *c != custom),
+            None => self.hidden_marker_colors.retain(|c| *c != color),
+        }
+    }
+}
+
 /// Events for frontends (drained each frame).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum Event {
