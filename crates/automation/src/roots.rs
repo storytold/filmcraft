@@ -379,6 +379,7 @@ const REFUSED: &[(&str, &str)] = &[
     ("presets.delete", "it changes the library in the app's data folder"),
     ("presets.rename", "it changes the library in the app's data folder"),
     ("presets.import", "it adds to the library in the app's data folder"),
+    ("presets.scan", "it reads the library in the app's data folder and rewrites its index"),
     ("export.presets.save", "it adds to the library in the app's data folder"),
     ("export.presets.delete", "it changes the library in the app's data folder"),
     ("export.presets.favorite", "it changes the library in the app's data folder"),
