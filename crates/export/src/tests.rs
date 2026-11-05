@@ -75,6 +75,18 @@ fn mjpeg_mov_roundtrip() {
     }
 }
 
+/// The export result says which encoder wrote the file, so a file the hardware encoder
+/// declined - and the software encoder took instead - is visible (#3952).
+#[test]
+fn the_report_names_the_encoder_that_wrote_the_file() {
+    let (p, seq, m) = project();
+    let path = tmp("named.mov");
+    let r = export(&p, seq, &ExportSettings { format: Format::Mjpeg, path, ..Default::default() }, &m, &Progress::default()).unwrap();
+    // no hardware encoder is registered in this crate's tests, so the software one wrote it
+    assert_eq!(r.encoder, "software QuickTime (Motion JPEG)", "{}", r.encoder);
+    assert_eq!(r.declined, None, "nothing declined it");
+}
+
 #[test]
 fn wav_png_gif() {
     let (p, seq, m) = project();

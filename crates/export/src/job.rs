@@ -171,6 +171,8 @@ pub struct Exporter {
     overlapped_steps: u64,
     brand: Brand,
     venc: Box<dyn VideoEncoder>,
+    /// Why the hardware encoder declined, when one did and the software encoder took over.
+    declined: Option<String>,
     aenc: Option<Box<dyn AudioEncoder>>,
     audio: Option<AudioOut>,
     /// The loudness pass ran (or is not needed).
@@ -211,6 +213,8 @@ pub(crate) fn hdr_output(working_hdr: bool, sdr: bool, format: Format, hdr_avail
 }
 
 fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
+    // The reason a hardware encoder declined belongs to this export, not to the last one.
+    crate::clear_hw_decline_reason();
     pick_encoder(&video_factories().read().unwrap_or_else(|e| e.into_inner()).clone(), settings.video_format(), w, h, rate, settings)
 }
 
@@ -298,6 +302,7 @@ impl Exporter {
             overlapped_steps: 0,
             brand,
             venc,
+            declined: crate::hw_decline_reason(),
             aenc,
             audio,
             measured,
@@ -493,6 +498,7 @@ impl Exporter {
             let stats = self.venc.pass_stats().ok_or_else(|| ExportError::Encode("two-pass statistics missing".into()))?;
             self.settings.h264_pass = H264Pass::Second(stats);
             self.venc = make_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate)?;
+            self.declined = crate::hw_decline_reason();
             self.first_pass = false;
             self.next = self.f0;
             return Ok(Step::Progress);
@@ -542,6 +548,8 @@ impl Exporter {
             bytes,
             render_fps: nframes as f64 / secs.max(1e-6),
             extra_files,
+            encoder: format!("{} {}", self.venc.name(), self.settings.video_format().label()),
+            declined: self.declined.clone(),
         }))
     }
 

@@ -138,7 +138,7 @@ pub fn videotoolbox_encoder_factory(
         Ok(c) => c,
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
-            filmcraft_export::note_hw_encode_declined();
+            filmcraft_export::note_hw_encode_declined_with(why);
             return None;
         }
     };
@@ -149,7 +149,7 @@ pub fn videotoolbox_encoder_factory(
         }
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
-            filmcraft_export::note_hw_encode_declined();
+            filmcraft_export::note_hw_encode_declined_with(why);
             None
         }
     }
@@ -242,6 +242,10 @@ impl HardwareEncoder {
 }
 
 impl VideoEncoder for HardwareEncoder {
+    fn name(&self) -> &'static str {
+        "VideoToolbox"
+    }
+
     fn sample_entry(&self) -> SampleEntry {
         let c = self.vt.config();
         let (w, h) = (c.width.min(u32::from(u16::MAX)) as u16, c.height.min(u32::from(u16::MAX)) as u16);

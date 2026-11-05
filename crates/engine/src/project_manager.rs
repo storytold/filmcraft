@@ -233,6 +233,8 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
             bytes,
             render_fps: 0.0,
             extra_files: Vec::new(),
+            encoder: String::new(),
+            declined: None,
         });
         if let Err(e) = &r {
             *prog.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e.clone());
