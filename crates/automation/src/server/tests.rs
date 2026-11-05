@@ -668,3 +668,24 @@ async fn sources_opened_before_confinement_are_dropped() {
     }
     let _ = std::fs::remove_dir_all(base);
 }
+
+fn session_with_job(result: Option<Result<filmcraft_engine::export::Report, String>>) -> Session {
+    let mut s = Session::default();
+    s.jobs.push(filmcraft_engine::Job { id: 1, label: "export".into(), progress: Arc::default(), result: Arc::new(Mutex::new(result)) });
+    s
+}
+
+/// A running job holds sources opened before the roots, which reads through them would not check.
+#[test]
+#[should_panic(expected = "confine the session before starting jobs")]
+fn confining_a_session_with_a_running_job_panics() {
+    let (_base, roots) = roots_base("running-job");
+    let _ = FilmcraftMcp::headless(session_with_job(None)).with_roots(Some(roots));
+}
+
+/// A job that has finished holds nothing, so it doesn't stand in the way.
+#[test]
+fn confining_a_session_after_a_job_finished_works() {
+    let (_base, roots) = roots_base("finished-job");
+    let _ = FilmcraftMcp::headless(session_with_job(Some(Err("done".into())))).with_roots(Some(roots));
+}
