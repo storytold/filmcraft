@@ -8,6 +8,7 @@ mod caption_properties_ui;
 mod caption_razor_ui;
 mod captions_font_ui;
 mod chrome_ui;
+mod cinema_ui;
 mod clip_audio_ui;
 mod clip_dialogs_ui;
 mod clip_mismatch_ui;
