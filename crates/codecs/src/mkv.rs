@@ -37,6 +37,8 @@ struct AudioState {
     packets: HashMap<usize, Arc<Vec<Vec<f32>>>>,
     order: Vec<usize>,
     last_decoded: Option<usize>,
+    /// Bytes of the decoded packets held in `packets`.
+    bytes: usize,
 }
 
 /// One playable audio track with its own decoder state and timing tables.
@@ -300,9 +302,9 @@ fn hdr_metadata(c: &filmcraft_matroska::Color) -> Option<filmcraft_color::HdrMet
 
 /// Colour of a video track: the `Colour` element wins; what it leaves unspecified, or all of it
 /// when there is none, comes from the stream's own description (the SPS VUI in an `avcC` /
-/// `hvcC`, the sequence header in an `av1C`); the rest defaults by frame size. The flag says
-/// whether `Colour` signals anything that overrides the decoder.
-fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<ColorCodes>) -> (ColorInfo, bool) {
+/// `hvcC`, the sequence header in an `av1C`); the rest defaults by frame size, as the second value
+/// says. The flag says whether `Colour` signals anything that overrides the decoder.
+fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<ColorCodes>) -> (ColorInfo, filmcraft_color::ColorAssumed, bool) {
     // H.273 code points; `Range`: 1 broadcast (limited), 2 full, 0 / 3 not signalled here
     let code = |c: Option<u64>| c.unwrap_or(2);
     let container = v.color.as_ref().map(|col| {
@@ -315,7 +317,7 @@ fn color_of(v: &filmcraft_matroska::VideoInfo, w: u32, h: u32, stream: Option<Co
     });
     let explicit = container.is_some_and(|c| Matrix::from_code(c.matrix).is_some() || Transfer::from_code(c.transfer).is_some() || c.full_range == Some(true));
     let sources: Vec<ColorCodes> = [container, stream].into_iter().flatten().collect();
-    (crate::stream_color::resolve(w, h, &sources), explicit)
+    (crate::stream_color::resolve(w, h, &sources), crate::stream_color::assumed(&sources), explicit)
 }
 
 fn codec_label(c: &Codec) -> String {
@@ -423,7 +425,7 @@ impl MkvSource {
                 }
             };
             ventry = sample_entry(&t.codec, &t.codec_private, t.video.as_ref(), w as u16, h as u16);
-            let (color, explicit) = color_of(&v, w, h, ventry.as_ref().and_then(|e| crate::stream_color::from_codec_config(&e.codec)));
+            let (color, assumed, explicit) = color_of(&v, w, h, ventry.as_ref().and_then(|e| crate::stream_color::from_codec_config(&e.codec)));
             if explicit {
                 explicit_color = Some(color);
             }
@@ -441,6 +443,7 @@ impl MkvSource {
                 has_alpha: v.alpha_mode != 0,
                 bitrate,
                 hdr: v.color.as_ref().and_then(hdr_metadata),
+                color_assumed: Some(assumed),
             }
         });
         let audio_streams: Vec<AudioStreamInfo> = atracks.iter().filter_map(|&i| file.tracks.get(i)).filter_map(audio_info).collect();
@@ -469,7 +472,7 @@ impl MkvSource {
                     }
                     _ => 0,
                 };
-                let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None });
+                let state = Mutex::new(AudioState { decoder: None, packets: HashMap::new(), order: Vec::new(), last_decoded: None, bytes: 0 });
                 Some(MkvAudio { track: i, state, starts, preroll })
             })
             .collect();
@@ -574,12 +577,7 @@ impl MkvSource {
             }
         };
         let p = Arc::new(decoded);
-        st.packets.insert(i, p.clone());
-        st.order.push(i);
-        if st.order.len() > 4096 {
-            let old = st.order.remove(0);
-            st.packets.remove(&old);
-        }
+        crate::audio::cache_packet(&mut st.packets, &mut st.order, &mut st.bytes, i, &p);
         Ok(p)
     }
 }
@@ -645,6 +643,16 @@ impl MediaSource for MkvSource {
         let target = from_tick(&self.file.tracks[ti], rate, t, self.snap);
         let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], rate, t - m, self.snap));
         Ok(self.video.frame_late(&MkvVideo { src: self, track: ti }, target, late)?)
+    }
+
+    /// The frame as decoded, with the track's display rotation left to the caller (#3467).
+    fn video_frame_unturned(&self, req: FrameRequest) -> Result<(Arc<VideoFrame>, u8), MediaError> {
+        let ti = self.vtrack.ok_or(MediaError::NoStream("video"))?;
+        let t = req.time.max(Tick::ZERO);
+        let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
+        let target = from_tick(&self.file.tracks[ti], rate, t, self.snap);
+        let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], rate, t - m, self.snap));
+        Ok(self.video.frame_late_unturned(&MkvVideo { src: self, track: ti }, target, late)?)
     }
 
     fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> Result<AudioBuffer, MediaError> {

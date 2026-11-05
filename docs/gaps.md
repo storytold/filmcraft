@@ -238,7 +238,9 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   encoder does).
 - **Have:** PNG, TIFF, BMP, JPEG, Targa and DPX (10-bit) image sequences (#779); OpenEXR
   sequences (half float, linear; uncompressed, RLE, ZIPS or ZIP; #806, #874); AAC Audio
-  (audio-only `.m4a`, or ADTS `.aac`; #814); ProRes 4444 / 4444 XQ in the export UI (#342).
+  (audio-only `.m4a`, or ADTS `.aac`; #814); ProRes 4444 / 4444 XQ in the export UI (#342); H.264
+  High 10 and High 10 Intra from the built-in encoder in MP4, MOV and MXF OP1a (10-bit SDR and HDR,
+  #1221; High 4:2:2, High 4:4:4 Predictive and lossless H.264 are still missing).
 - **GIF transparency:** Include Alpha Channel preserves binary transparency (#3396), with an
   explicit 128/255 alpha threshold; decoded synthetic animation tests cover moving transparent
   regions and clearing prior frames. Partial transparency remains a GIF limitation. See the

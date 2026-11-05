@@ -283,6 +283,112 @@ fn pins_follow_text_growth() {
 }
 
 #[test]
+fn character_stroke_sizes_and_switches_do_not_change_the_layer() {
+    let mut s = demo("gt-char-stroke-size");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "甲12乙"})).unwrap());
+    let before = item(&s, c);
+    let style = json!({"stroke": true, "strokeWidth": 24, "strokeType": "inner", "stroke2": false, "stroke2Width": 36, "stroke2Type": "center"});
+    let result = s.execute("graphics.setCharStyle", json!({"clip": c.0, "start": 1, "end": 3, "style": style})).unwrap();
+    assert_eq!(
+        result["styles"],
+        json!([{"start": 1, "end": 3, "stroke": true, "strokeWidth": 24.0, "strokeType": 2,
+        "stroke2": false, "stroke2Width": 36.0, "stroke2Type": 1}])
+    );
+    let after = item(&s, c);
+    for (a, b) in after.effects.iter().zip(&before.effects) {
+        assert_eq!(a.params, b.params, "layer parameters stay unchanged");
+    }
+    assert_eq!(serde_json::from_str::<TrackItem>(&serde_json::to_string(&after).unwrap()).unwrap(), after);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(item(&s, c), before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(item(&s, c), after);
+    let path = tmp_dir("gt-char-stroke-size-save").join("stroke-sizes.fcproj");
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(item(&reopened, c).effects, after.effects);
+}
+
+#[test]
+fn character_stroke_sizes_and_types_reject_invalid_values_atomically() {
+    let mut s = demo("gt-char-stroke-size-invalid");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "1234"})).unwrap());
+    let before = item(&s, c);
+    let history = s.execute("history.list", json!({})).unwrap();
+    for key in ["strokeWidth", "stroke_width", "stroke2Width", "stroke2_width"] {
+        for value in [json!(null), json!("wide"), json!(-1), json!(1001), json!(1e300)] {
+            assert!(s.execute("graphics.setCharStyle", json!({"clip": c.0, "style": {key: value}})).is_err());
+            assert_eq!(item(&s, c), before);
+        }
+    }
+    for key in ["stroke", "stroke2", "strokeType", "stroke2Type"] {
+        for value in [json!(null), json!("invalid"), json!(-1), json!(3)] {
+            assert!(s.execute("graphics.setCharStyle", json!({"clip": c.0, "style": {key: value}})).is_err());
+            assert_eq!(item(&s, c), before);
+        }
+    }
+    assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+}
+
+#[test]
+fn character_stroke_colours_are_local_undoable_and_persistent() {
+    let mut s = demo("gt-char-strokes");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "甲12乙"})).unwrap());
+    s.execute("graphics.setCharStyle", json!({"clip": c.0, "start": 1, "end": 3, "style": {"color": "#ffff00"}})).unwrap();
+    let before = item(&s, c);
+    let styled = s
+        .execute(
+            "graphics.setCharStyle",
+            json!({
+                "clip": c.0, "start": 1, "end": 3,
+                "style": {"strokeColor": "#ff0000", "stroke2Color": "#0000ff"}
+            }),
+        )
+        .unwrap()["styles"]
+        .clone();
+    assert_eq!(
+        styled,
+        json!([{
+            "start": 1, "end": 3, "fill": [1.0, 1.0, 0.0, 1.0], "strokeColor": [1.0, 0.0, 0.0, 1.0], "stroke2Color": [0.0, 0.0, 1.0, 1.0]
+        }])
+    );
+    let after = item(&s, c);
+    assert_eq!(after.effects[0].params, before.effects[0].params, "layer appearance is unchanged");
+    let saved = serde_json::to_string(&after).unwrap();
+    assert_eq!(serde_json::from_str::<TrackItem>(&saved).unwrap(), after);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(item(&s, c), before);
+    s.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(item(&s, c), after);
+    let path = tmp_dir("gt-char-strokes-save").join("strokes.fcproj");
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let mut reopened = Session::default();
+    reopened.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!(item(&reopened, c).effects, after.effects, "project files preserve both stroke colours");
+    s.execute("graphics.setText", json!({"clip": c.0, "text": "新甲12乙"})).unwrap();
+    let runs = s.execute("graphics.list", json!({"clip": c.0})).unwrap()["layers"][0]["styles"].clone();
+    assert_eq!((runs[0]["start"].as_u64(), runs[0]["end"].as_u64()), (Some(2), Some(4)));
+    s.execute("graphics.setCharStyle", json!({"clip": c.0, "clear": true})).unwrap();
+    assert_eq!(s.execute("graphics.list", json!({"clip": c.0})).unwrap()["layers"][0]["styles"], json!([]));
+}
+
+#[test]
+fn character_stroke_colours_reject_invalid_input_without_edits() {
+    let mut s = demo("gt-char-strokes-invalid");
+    let c = clip_of(&s.execute("graphics.newText", json!({"text": "1234"})).unwrap());
+    let before = item(&s, c);
+    let history = s.execute("history.list", json!({})).unwrap();
+    for key in ["strokeColor", "stroke_color", "stroke2Color", "stroke2_color"] {
+        for colour in [json!(null), json!(true), json!("invalid"), json!([1, 2]), json!([1e300, 0, 0, 1])] {
+            assert!(s.execute("graphics.setCharStyle", json!({"clip": c.0, "style": {key: colour}})).is_err(), "{key}: {colour}");
+            assert_eq!(item(&s, c), before);
+            assert_eq!(s.execute("history.list", json!({})).unwrap(), history);
+        }
+    }
+}
+
+#[test]
 fn character_styles_follow_edits() {
     let mut s = demo("gt-chars");
     let c = clip_of(&s.execute("graphics.newText", json!({"text": "Hello World"})).unwrap());
