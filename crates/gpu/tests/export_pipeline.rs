@@ -26,6 +26,10 @@ impl FrameRenderer for GpuFrameRenderer {
     ) -> Option<filmcraft_render::Image> {
         self.0.render(project, seq, t, opts, sources)
     }
+
+    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+        self.0.caps()
+    }
 }
 
 /// The colour matte on V1, and with `adjusted` an adjustment layer over it on V2 (Proc Amp and

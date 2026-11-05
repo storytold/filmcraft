@@ -36,7 +36,7 @@ use rayon::prelude::*;
 use filmcraft_color::{Matrix, Range, Transfer};
 use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use filmcraft_render::Blend;
-use filmcraft_render::plan::{FramePlan, PlanLayer, PlanStep};
+use filmcraft_render::plan::{DeviceCaps, FramePlan, PlanLayer, PlanStep};
 
 pub mod adapter;
 pub mod export_renderer;
@@ -93,8 +93,8 @@ pub struct GpuCompositor {
     pub gpu_transitions: u64,
     pub cpu_transitions: u64,
     /// Adjustment layers ([`PlanStep::Adjust`]) run by the effect stage, and frames with one that
-    /// were composited on the CPU instead (no effect stage on this device, or a frame larger than
-    /// a texture).
+    /// were composited on the CPU here instead: a plan made for another device ([`Self::caps`]), or
+    /// the effect stage declining it. Planning with this device's caps keeps the second at zero.
     pub gpu_adjustments: u64,
     pub cpu_adjustments: u64,
     /// Total bytes uploaded (stats).
@@ -970,7 +970,9 @@ impl GpuCompositor {
             self.cpu_transitions += 1;
             return cpu(self);
         }
-        if steps.iter().any(|s| matches!(s, PlanStep::Adjust { .. })) && !self.can_adjust(width, height) {
+        // plan_frame makes Adjust steps only for this device's caps, so the monitor and the export
+        // never get here; a plan made for another device still gets the right picture
+        if steps.iter().any(|s| matches!(s, PlanStep::Adjust { .. })) && !self.caps().adjusts(width, height) {
             self.cpu_adjustments += 1;
             return cpu(self);
         }
@@ -1020,10 +1022,10 @@ impl GpuCompositor {
         out
     }
 
-    /// Whether [`PlanStep::Adjust`] steps of a `width`×`height` frame run on this device: it has
-    /// an effect stage and the frame fits in a texture.
-    pub fn can_adjust(&self, width: usize, height: usize) -> bool {
-        self.fx.is_some() && width.max(height) <= self.device.limits().max_texture_dimension_2d as usize
+    /// What this device runs, for planning its frames ([`filmcraft_render::plan::plan_frame`]):
+    /// adjustment layers up to its texture limit when it has an effect stage.
+    pub fn caps(&self) -> DeviceCaps {
+        DeviceCaps { adjust_side: if self.fx.is_some() { self.device.limits().max_texture_dimension_2d } else { 0 } }
     }
 
     /// The adjustment layer `ops` on the accumulator (`canvas`, of size `w`×`h`): it is drawn
@@ -1085,9 +1087,9 @@ impl GpuCompositor {
     }
 
     /// Export rendering: `plan` composited into the linear float accumulator and read back as
-    /// premultiplied RGBA f32 (the sRGB resolve is skipped). Layer plans and transition
-    /// composites (`plan_frame` composites only transitions the GPU draws); None on a failed
-    /// read-back.
+    /// premultiplied RGBA f32 (the sRGB resolve is skipped). Layer plans and composites
+    /// (`plan_frame` composites only the transitions and adjustment layers the device draws);
+    /// None on a failed read-back.
     pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<f32>)> {
         let t = std::time::Instant::now();
         self.render_plan(plan, prep, true, false);

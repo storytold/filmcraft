@@ -270,11 +270,11 @@ alternating rounds, `filmcraft-cli … run` of `file.exportMedia` (H.264, `gpuRe
 | the CityNight demo footage under an adjustment layer (Lumetri: contrast, exposure, vignette; Gaussian Blur 4) | 35.5, 35.8 | **9.4, 8.6** |
 | a real edit: 1080p H.264 camera clips with dips to black, an adjustment layer with Lumetri over 89 % of it, about 150 titles and shapes above | 26.1, 24.4 | **5.2, 5.0** |
 
-3.9× and 4.9× faster. GPU 3D utilisation (`nvidia-smi dmon`) went from 1–4 % to 18–31 %. The two
-builds' files decode to the same picture within encoder noise (ffmpeg `psnr` between them: average
-61.4 / 54.0 dB, lowest frame 58.8 / 52.6 dB). The whole 82 s real edit (2,472 frames) exports in
-43.7 s; with the adjustment layer the render stage is still most of that (decoded pictures and
-the composite still go through the CPU, and titles are rasterised there).
+4.0× and 5.0× faster (means of the two rounds). GPU 3D utilisation (`nvidia-smi dmon`) went from
+1–4 % to 18–31 %. The two builds' files decode to the same picture within encoder noise (ffmpeg `psnr`
+between them: average 61.4 / 54.0 dB, lowest frame 58.8 / 52.6 dB). The whole 82 s real edit (2,472
+frames) exports in 43.7 s; with the adjustment layer the render stage is still most of that (decoded
+pictures and the composite still go through the CPU, and titles are rasterised there).
 
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 

@@ -53,7 +53,7 @@ against 793 s with our software encoder (SSIM 0.990). NVENC HEVC round trip 48.9
 | Accelerated video effects | ~82 of ~92 effects marked Accelerated (reference list `plan/premiere/10-effects-list.md`) | **35 effect ids** (`render::gpufx::GPU_EFFECTS`): colour, levels, blurs (Bokeh Blur included), sharpen, crop, transform, flips, vignette, video limiter, ASC CDL, channel mix, Lumetri basic / creative / vignette | ~40% |
 | Lumetri curves, wheels, HSL secondary | GPU | CPU | 0% |
 | Keys (Ultra Key), masks, distortions, transitions | GPU | CPU (masks have WGSL parity tests, not in the live path) | 10% |
-| Adjustment layers | GPU when every effect on them is accelerated | **GPU** for a full-frame one at 100 % opacity, Normal, unmasked, with only GPU effects (`PlanStep::Adjust`): 3.9–4.9× faster GPU exports under one; any other one renders the whole frame on the CPU | 60% |
+| Adjustment layers | GPU when every effect on them is accelerated | **GPU** for a full-frame one at 100 % opacity, Normal, unmasked, with only GPU effects (`PlanStep::Adjust`): 4.0–5.0× faster GPU exports under one; any other one renders the whole frame on the CPU | 60% |
 | Export rendering on the GPU | yes | **yes** (#421; Export ▸ GPU Rendering, Auto): 2.4× (1080p) to 3.2× (4K) faster on effects-heavy timelines | 80% |
 | Thumbnails on the GPU (26.0) | yes | CPU | 0% |
 | Software adapter fallback | warns | silently renders everything on the CPU (#632) | — |

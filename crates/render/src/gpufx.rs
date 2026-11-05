@@ -466,8 +466,6 @@ impl FxOp {
                 let amt = f(e, "amount", cx) / 100.0 * (w.min(h) as f32) * 0.5;
                 FxOp::crop_rect(w, h, 0.0, 0.0, 0.0, 0.0, amt)
             }
-            // the shutter's motion blur (`vfx::distort::transform_fx`) is CPU only
-            "transform" if b(e, "shutter_override") && f(e, "shutter_angle", cx) > 0.5 => return None,
             "transform" => {
                 // With its own shutter angle the CPU blurs the motion over seven samples
                 // (`vfx::distort::transform_fx`, under the same condition); the GPU op places one

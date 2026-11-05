@@ -73,9 +73,9 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
     // render previews are opaque, so the grid and Display Mode ▸ Alpha take live renders
     let live = grid || display == DisplayMode::Alpha;
     let cpu_target = target;
-    let target = match (use_gpu, target) {
-        (true, Target::Sequence(s)) => Target::SequencePlan(s),
-        (false, Target::Sequence(s)) if live => Target::SequenceLive(s),
+    let target = match (app.gpu.as_ref().filter(|_| use_gpu), target) {
+        (Some(g), Target::Sequence(s)) => Target::SequencePlan(s, g.compositor.caps()),
+        (None, Target::Sequence(s)) if live => Target::SequenceLive(s),
         (_, t) => t,
     };
     // Draft decoding (opt-in): only while playing at 1/2 resolution or lower.
