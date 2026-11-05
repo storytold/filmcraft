@@ -77,9 +77,9 @@ impl LrCtx<'_> {
 /// Loop restoration (7.17): returns LrFrame given UpscaledCurrFrame and UpscaledCdefFrame.
 /// Bands of 64 luma rows are restored in parallel: every unit reads only the two input frames
 /// and writes only its own samples.
-pub(crate) fn loop_restoration(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf, pool: &Pool) -> crate::Result<FrameBuf> {
+pub(crate) fn loop_restoration(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf, pool: &Pool) -> FrameBuf {
     let fh = &fs.fh;
-    let mut lr = cdef.try_clone()?;
+    let mut lr = cdef.clone();
     let up_w = fh.upscaled_width as i32;
     let fr_h = fh.frame_height as i32;
     let bd = fs.bit_depth;
@@ -131,7 +131,7 @@ pub(crate) fn loop_restoration(fs: &FrameState, cur: &FrameBuf, cdef: &FrameBuf,
         }
     });
     drop(planes);
-    Ok(lr)
+    lr
 }
 
 /// A (up to 4x4) block of plane samples to restore, with the bit depth.

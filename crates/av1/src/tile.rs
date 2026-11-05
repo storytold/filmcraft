@@ -27,7 +27,7 @@ use crate::spec_tables::{
 };
 use crate::state::{FrameShared, TileState};
 use crate::symbol::SymbolDecoder;
-use crate::transform::{inverse_transform_2d, inverse_transform_dc};
+use crate::transform::inverse_transform_2d;
 
 mod coeffs;
 mod loop_restoration;

@@ -766,7 +766,7 @@ fn decode_frame(job: &FrameJob, pool: &Pool, stats: &mut DecodeStats) -> Result<
     {
         cdfs = s;
     }
-    crate::postfilter::apply(&mut fs, stats, pool, job.draft)?;
+    crate::postfilter::apply(&mut fs, stats, pool, job.draft);
     stats.draft_frames += job.draft as u64;
     let t = Timer::start();
     stats.frames += 1;
