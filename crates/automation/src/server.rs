@@ -325,7 +325,7 @@ impl FilmcraftMcp {
         let params = match self.roots.clone() {
             Some(roots) => {
                 if matches!(&*self.backend, Backend::Bridge(_)) {
-                    AutomationRoots::check_bridge_command(id).map_err(AutomationError::BadRequest)?;
+                    AutomationRoots::check_bridge_command(id, &params).map_err(AutomationError::BadRequest)?;
                 }
                 // The check of a write walks folders, which doesn't belong on an async worker.
                 let id = id.to_string();

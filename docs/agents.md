@@ -21,7 +21,7 @@ Any other option is rejected (exit 2).
 `--automation-read-root DIR` and/or `--automation-write-root DIR` (each an existing folder; a
 missing or non-folder one is a usage error, exit 2). A command may then only read files under a
 read root and only write files under a write root. A root left out grants no access of its kind;
-without both flags nothing is confined. While confined:
+with neither flag, nothing is confined. While confined:
 
 - Paths must be absolute. Each is resolved (links followed, `..` below a missing folder refused) and
   must land inside the root, or the tool returns an error naming the root so the agent can correct
@@ -35,7 +35,8 @@ without both flags nothing is confined. While confined:
   `graphics.template.export` need `path`.
 - A command that writes is refused while the folder it writes in, or any folder below that or
   reached through a link from there, holds a link leading out of the write root: exports choose the
-  final file names after the check, so any name there could be used.
+  final file names after the check, so any name there could be used. A write that would have to
+  look at over a million files and folders this way is refused too.
 - Headless sessions check every file again as it is opened, so footage a project names outside the
   read root shows as offline.
 - Bridge mode enforces the command checks before each command reaches the app, and refuses the
@@ -47,6 +48,10 @@ without both flags nothing is confined. While confined:
   It refuses `file.revert` too, which reads the app's project from wherever it's saved.
 - Bridge mode refuses every command that names files while the app's project has ingest on, which
   would copy what is imported to a folder of its own. Turn ingest off in the app's Project Settings.
+- Bridge mode imports media files only. The app would add a preset file to its library, write a
+  document's audio beside it, and take all that a folder holds. `captions.import` still reads
+  captions, `file.importAaf` still imports a document inside both roots, and a headless session
+  can import documents.
 
 Not confined: the `--project` file the server was started with (the footage it names is), temporary
 files, the settings and libraries the app keeps in its data folder, and the desktop app's own

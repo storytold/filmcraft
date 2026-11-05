@@ -767,6 +767,11 @@ async fn the_bridge_refuses_the_apps_export_queue() {
     }
     let e = m.run("file.revert", json!({})).await.unwrap_err().to_string();
     assert!(e.contains("wherever it's saved"), "{e}");
+    // Importing takes media files only.
+    let preset = base.join("in/p.prfpset");
+    std::fs::write(&preset, "<PremiereData/>").unwrap();
+    let e = m.run("file.import", json!({"paths": [preset.to_string_lossy()]})).await.unwrap_err().to_string();
+    assert!(e.contains("takes only media files"), "{e}");
     // A direct export gets past the checks, and fails only on reaching the app.
     let e = m.run("file.exportMedia", json!({"path": q.to_string_lossy()})).await.unwrap_err().to_string();
     assert!(!e.contains("confined"), "{e}");

@@ -28,14 +28,16 @@
 //!   checked the same way, so a path can't slip through an unnamed key; `prefs.set` (whose values
 //!   name folders the app writes into later) is held to the write root.
 //! - On the bridge, a command that names files is refused while the app's project has ingest on:
-//!   the app would copy what is imported to a folder of ingest's own.
+//!   the app would copy what is imported to a folder of ingest's own. Importing there takes media
+//!   files only ([`IMPORTS`]), apart from `file.importAaf`, which is held to both roots.
 //! - The bridge's UI-driving tools are refused while confined: they could drive the live app's
 //!   file dialogs past the roots.
 //! - A command that writes is refused while the folder it writes in, or any folder below that or
 //!   reached through a link from there, holds a link leading out of the write root. Exports add or change the extension, take the
 //!   sequence's name in a folder, number their stills and put caption files beside the output, and
 //!   an AAF or OMF export writes into a folder of its own beside the file. They open those names
-//!   themselves after this check, so the names aren't known here but the folder is.
+//!   themselves after this check, so the names aren't known here but the folder is. A folder too
+//!   large to look through ([`WRITE_SCAN_LIMIT`]) refuses the write.
 //! - In a headless session, [`crate::confined_services`] checks every path again when it is opened,
 //!   which also covers the media a project file names. In bridge mode the session lives in the
 //!   app, so such paths are not covered there.
@@ -138,12 +140,18 @@ impl AutomationRoots {
     /// [`Self::check`], and no link in its folder (or in it, if it's a folder), or in any folder
     /// below that, may lead out of the write root: see the module docs.
     fn check_write_target(&self, path: &str) -> Result<(), String> {
+        self.scan_write_target(path, WRITE_SCAN_LIMIT)
+    }
+
+    /// [`Self::check_write_target`], giving up with a refusal after `limit` entries.
+    fn scan_write_target(&self, path: &str, limit: usize) -> Result<(), String> {
         self.check(path, Access::Write)?;
         let given = Path::new(path);
         let folder = if path.ends_with(['/', '\\']) || given.is_dir() { Some(given) } else { given.parent() };
         let cannot_list = |e: std::io::Error| format!("automation path rejected: cannot list the folders of {path}: {e}");
         let mut folders: Vec<PathBuf> = folder.map(Path::to_path_buf).into_iter().collect();
         let mut seen = HashSet::new();
+        let mut entries = 0usize;
         while let Some(folder) = folders.pop() {
             let real = match std::fs::canonicalize(&folder) {
                 Ok(real) => real,
@@ -157,6 +165,12 @@ impl AutomationRoots {
             }
             for entry in std::fs::read_dir(&real).map_err(cannot_list)? {
                 let entry = entry.map_err(cannot_list)?;
+                entries += 1;
+                if entries > limit {
+                    return Err(format!(
+                        "automation path rejected: over {limit} files and folders to check for links around {path}: write to a smaller folder"
+                    ));
+                }
                 let kind = entry.file_type().map_err(cannot_list)?;
                 if kind.is_symlink() {
                     // Written lossily it would name some other file, which doesn't exist and so passes.
@@ -184,12 +198,25 @@ impl AutomationRoots {
     /// one, `export.queue.list` too while the queue is running, show its path or stop it), and
     /// `file.revert`, which reads the open project again from wherever it's saved. Export with
     /// `file.exportMedia` or `export.quick` instead.
-    pub fn check_bridge_command(id: &str) -> Result<(), String> {
+    pub fn check_bridge_command(id: &str, params: &Value) -> Result<(), String> {
         if id.starts_with("export.queue.") {
             return Err(format!("`{id}` is not available while file access is confined: the app's export queue can hold exports to anywhere"));
         }
         if id == "file.revert" {
             return Err(format!("`{id}` is not available while file access is confined: it reads the app's project from wherever it's saved"));
+        }
+        if IMPORTS.contains(&id) {
+            for key in ["path", "paths"] {
+                let named = params.get(key).map_or(vec![], |v| v.as_array().map_or(vec![v], |a| a.iter().collect()));
+                for path in named.into_iter().filter_map(Value::as_str).map(Path::new) {
+                    if !filmcraft_media::is_importable(path) {
+                        return Err(format!(
+                            "`{id}` takes only media files on the bridge while file access is confined, and not {}: the app adds a preset file to its library and writes a document's audio beside it",
+                            path.display()
+                        ));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -258,6 +285,10 @@ impl AutomationRoots {
         Ok(())
     }
 }
+
+/// How many files and folders one write looks at for links: unchecked ones could hold a link out,
+/// so past this the write is refused.
+const WRITE_SCAN_LIMIT: usize = 1_000_000;
 
 /// Commands that read files named by these parameters.
 const READS: &[(&str, &[&str])] = &[
@@ -331,6 +362,20 @@ const WRITES: &[(&str, &[&str])] = &[
     ("tts.preview", &["path"]),
     ("lumetri.presetThumbnails", &["path"]),
     ("prefs.set", &[]),
+];
+
+/// Commands that import what they name through `file.import`, which opens a media file and goes by
+/// the content of anything else: it can also add a preset file to the app's library or write a
+/// document's audio beside it. A folder imports all it holds. The session's own checks cover that
+/// in a headless session, not on the bridge.
+const IMPORTS: &[&str] = &[
+    "file.import",
+    "file.importFromMediaBrowser",
+    "file.importImageSequence",
+    "mediaBrowser.import",
+    "mediaBrowser.openInSource",
+    "edit.pasteMedia",
+    "graphics.newFromFile",
 ];
 
 /// Commands in [`READS`] or [`WRITES`] that touch no file when their parameter is left out.
@@ -495,10 +540,11 @@ fn plain(p: PathBuf) -> PathBuf {
     }
 }
 
-/// A Windows device name (`CON`, `NUL`, `COM1`… also with an extension), which names no file.
+/// A Windows device name (`CON`, `NUL`, `COM1`, `COM¹`… also with an extension or a stream), which
+/// names no file.
 fn is_device_name(component: &str) -> bool {
-    let stem = component.split('.').next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
-    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"));
+    let stem = component.split(['.', ':']).next().unwrap_or(component).trim_end_matches(' ').to_ascii_uppercase();
+    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"));
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
 }
 
@@ -709,6 +755,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// A write looks at so many files for links and no more, and what it hasn't seen can't pass.
+    #[test]
+    fn a_write_in_a_folder_too_large_to_check_is_refused() {
+        let (base, roots) = folders("too-large");
+        let out = base.join("out");
+        for name in ["a", "b", "c"] {
+            std::fs::write(out.join(name), b"x").unwrap();
+        }
+        let target = s(out.join("result.mp4"));
+        assert_eq!(roots.scan_write_target(&target, 3), Ok(()));
+        let e = roots.scan_write_target(&target, 2).unwrap_err();
+        assert!(e.contains("write to a smaller folder"), "{e}");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
     /// A link whose name can't be written as text can't be checked, so it refuses the write.
     #[cfg(unix)]
     #[test]
@@ -791,13 +852,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// Importing on the bridge takes media files: the app would add a preset file to its library and
+    /// write a document's audio beside it, goes by the content of such a file, and imports all a
+    /// folder holds.
+    #[test]
+    fn the_bridge_imports_only_media_files() {
+        let folder = std::env::temp_dir();
+        let folder = folder.to_string_lossy();
+        for id in IMPORTS {
+            for not_media in ["/in/p.prfpset", "/in/cut.aaf", "/in/cut.omf", "/in/cut.xml", "/in/no-extension", &*folder] {
+                for params in [json!({"paths": ["/in/a.png", not_media]}), json!({"paths": not_media}), json!({"path": not_media})] {
+                    let e = AutomationRoots::check_bridge_command(id, &params).unwrap_err();
+                    assert!(e.contains("takes only media files"), "{id} {params}: {e}");
+                }
+            }
+            assert_eq!(AutomationRoots::check_bridge_command(id, &json!({"paths": ["/in/a.png", "/in/a.wav", "/in/a.mp4"]})), Ok(()), "{id}");
+        }
+        assert_eq!(AutomationRoots::check_bridge_command("captions.import", &json!({"path": "/in/a.srt"})), Ok(()));
+    }
+
     /// Windows device names, with and without an extension, and names that only look like them.
     #[test]
     fn device_names() {
-        for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.svg", "NUL "] {
+        for d in ["CON", "nul", "Com1", "LPT9.txt", "aux.svg", "NUL ", "COM¹", "lpt³.txt", "com²", "NUL:", "con:x"] {
             assert!(is_device_name(d), "{d}");
         }
-        for f in ["console", "com10", "COM0", "lpt", "a.cube", "nul-x"] {
+        for f in ["console", "com10", "COM0", "lpt", "a.cube", "nul-x", "COM⁴"] {
             assert!(!is_device_name(f), "{f}");
         }
     }

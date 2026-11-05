@@ -114,7 +114,7 @@ OPTIONS
                                 default: the app's data directory)
   --automation-read-root <dir>  `mcp`: only files under this folder may be read (it must exist)
   --automation-write-root <dir> `mcp`: only files under this folder may be written. A root left out
-                                grants no access of its kind; without both nothing is confined.
+                                grants no access of its kind; with neither, nothing is confined.
                                 With --bridge they are enforced before each command reaches the app
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
