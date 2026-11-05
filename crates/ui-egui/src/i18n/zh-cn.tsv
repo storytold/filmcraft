@@ -3754,3 +3754,13 @@
 	Preset library updated: {imported} loaded, {removed} removed	预设库已更新：已加载 {imported} 个，已移除 {removed} 个
 	Preset library updated	预设库已更新
 	Preset library is up to date	预设库已是最新
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10 位色彩
+	All Intra	全帧内
+	Every frame a keyframe (edit-friendly, larger files)	每一帧都是关键帧（便于剪辑，文件更大）
+	H.264 High 10 Master	H.264 High 10 母版
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10（10 位 4:2:0，采用序列的尺寸），恒定质量 CRF 16，AAC 320 kbps；10 位母版
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra（10 位 4:2:0，每一帧都是关键帧），CRF 12，AAC 320 kbps；便于剪辑的中间文件

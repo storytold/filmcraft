@@ -3684,3 +3684,13 @@
 	Previous	Zurück
 	Next	Weiter
 	Enter a valid HH:MM:SS:FF timecode	Gültigen Timecode als HH:MM:SS:FF eingeben
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10-Bit-Farbe
+	All Intra	Nur Intra
+	Every frame a keyframe (edit-friendly, larger files)	Jedes Bild ein Keyframe (schnittfreundlich, größere Dateien)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 Bit 4:2:0) in der Größe der Sequenz, konstante Qualität CRF 16, AAC 320 kbps; ein 10-Bit-Master
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 Bit 4:2:0, jedes Bild ein Keyframe), CRF 12, AAC 320 kbps; ein schnittfreundliches Zwischenformat
