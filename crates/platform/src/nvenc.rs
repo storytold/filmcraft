@@ -923,4 +923,29 @@ mod tests {
         }));
         assert_eq!(calls, 2, "a failed probe is tried again");
     }
+
+    /// The same, with the window the production code uses rather than none: a failure is asked
+    /// again once the window has passed. The test above uses a zero window, so it cannot see this.
+    #[test]
+    fn a_failed_probe_is_asked_again_after_the_window() {
+        let answer = ProbeAnswer { answer: std::sync::Mutex::new(None), retry: std::time::Duration::from_millis(1) };
+        let mut calls = 0;
+        assert!(!answer.get(|| {
+            calls += 1;
+            false
+        }));
+        // inside the window the failure is remembered
+        assert!(!answer.get(|| {
+            calls += 1;
+            false
+        }));
+        assert_eq!(calls, 1, "a failure is remembered for the window");
+        // and after it, the probe is asked again
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(!answer.get(|| {
+            calls += 1;
+            false
+        }));
+        assert_eq!(calls, 2, "a failed probe is asked again after the window");
+    }
 }
