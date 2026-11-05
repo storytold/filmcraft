@@ -1,5 +1,5 @@
 use super::*;
-use filmcraft_project::graphic_design::char_style_at;
+use filmcraft_project::graphic_design::{CharStyle, char_style_at, range_styles};
 
 // ---------------------------------------------------------------------------------------------
 // Properties / Essential Graphics
@@ -51,6 +51,14 @@ fn char_style_key(id: &str) -> Option<&'static str> {
         "font_style" => "fontStyle",
         "size" => "size",
         "fill_color" => "color",
+        "stroke_color" => "strokeColor",
+        "stroke2_color" => "stroke2Color",
+        "stroke" => "stroke",
+        "stroke_width" => "strokeWidth",
+        "stroke_type" => "strokeType",
+        "stroke2" => "stroke2",
+        "stroke2_width" => "stroke2Width",
+        "stroke2_type" => "stroke2Type",
         "faux_bold" => "bold",
         "faux_italic" => "italic",
         "underline" => "underline",
@@ -78,6 +86,14 @@ impl Ctx<'_> {
             "font_style" => s.font_style.map(ParamValue::Text),
             "size" => s.size.map(|v| ParamValue::Float(v as f64)),
             "fill_color" => s.fill.map(ParamValue::Color),
+            "stroke_color" => s.stroke_color.map(ParamValue::Color),
+            "stroke2_color" => s.stroke2_color.map(ParamValue::Color),
+            "stroke" => s.stroke.map(ParamValue::Bool),
+            "stroke_width" => s.stroke_width.map(|v| ParamValue::Float(v as f64)),
+            "stroke_type" => s.stroke_type.map(ParamValue::Choice),
+            "stroke2" => s.stroke2.map(ParamValue::Bool),
+            "stroke2_width" => s.stroke2_width.map(|v| ParamValue::Float(v as f64)),
+            "stroke2_type" => s.stroke2_type.map(ParamValue::Choice),
             "faux_bold" => s.faux_bold.map(ParamValue::Bool),
             "faux_italic" => s.faux_italic.map(ParamValue::Bool),
             "underline" => s.underline.map(ParamValue::Bool),
@@ -89,16 +105,47 @@ impl Ctx<'_> {
         };
         own.unwrap_or(layer)
     }
-    /// Whether the Style row's button for the boolean property `id` (bold, italic, underline) is on.
-    fn flag(&self, id: &str) -> bool {
-        self.value(id).as_bool().unwrap_or(false)
+    /// The character overrides of each character of the Type-tool selection (empty without one).
+    fn selected(&self) -> Vec<CharStyle> {
+        let (Some((a, b)), Some(x)) = (self.range, self.e.layer.as_ref()) else { return Vec::new() };
+        range_styles(&x.runs, graphic::text_chars(self.e, self.mt), a, b)
     }
-    /// The caps the All Caps / Small Caps buttons show: 0 none, 1 all caps, 2 small caps.
+    /// Whether the Style row's button for the boolean property `id` (bold, italic, underline,
+    /// strikethrough) is on. With a Type-tool selection it is on only when every selected
+    /// character has the style (its own override, else the layer's value), so a click on a mixed
+    /// selection styles all of it instead of unstyling the characters that had it.
+    fn flag(&self, id: &str) -> bool {
+        let chars = self.selected();
+        if chars.is_empty() {
+            return self.value(id).as_bool().unwrap_or(false);
+        }
+        let layer = pv(self.e, id, self.mt).as_bool().unwrap_or(false);
+        chars.iter().all(|c| {
+            match id {
+                "faux_bold" => c.faux_bold,
+                "faux_italic" => c.faux_italic,
+                "underline" => c.underline,
+                "strikethrough" => c.strikethrough,
+                _ => None,
+            }
+            .unwrap_or(layer)
+        })
+    }
+    /// The caps the All Caps / Small Caps buttons show: 0 none, 1 all caps, 2 small caps. With a
+    /// Type-tool selection the mode all selected characters share, 0 when they mix modes.
     fn caps(&self) -> u32 {
-        match self.value("caps") {
+        let choice = |v: ParamValue| match v {
             ParamValue::Choice(c) => c,
             _ => 0,
+        };
+        let chars = self.selected();
+        if chars.is_empty() {
+            return choice(self.value("caps"));
         }
+        let layer = choice(pv(self.e, "caps", self.mt));
+        let mut caps = chars.iter().map(|c| c.caps.unwrap_or(layer));
+        let first = caps.next().unwrap_or(layer);
+        if caps.all(|c| c == first) { first } else { 0 }
     }
     fn set(&mut self, id: &str, v: Value) {
         if let (Some((a, b)), Some(k)) = (self.range, char_style_key(id)) {
@@ -673,15 +720,14 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.number(ui, tl!("Text Box Width"), NumberField { id: "box_width", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
             cx.number(ui, tl!("Text Box Height"), NumberField { id: "box_height", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
             let (_, mut vui) = cx.row(ui, tl!("Style"));
-            let flag = |id: &str| cx.flag(id);
             let caps = cx.caps();
             for (id, label, tip, on, font) in [
-                ("faux_bold", "T", tl!("Faux Bold"), flag("faux_bold"), Tokens::semibold(14.0)),
-                ("faux_italic", "T", tl!("Faux Italic"), flag("faux_italic"), egui::FontId::new(14.0, egui::FontFamily::Proportional)),
+                ("faux_bold", "T", tl!("Faux Bold"), cx.flag("faux_bold"), Tokens::semibold(14.0)),
+                ("faux_italic", "T", tl!("Faux Italic"), cx.flag("faux_italic"), egui::FontId::new(14.0, egui::FontFamily::Proportional)),
                 ("all_caps", "TT", tl!("All Caps"), caps == 1, Tokens::ui(12.0)),
                 ("small_caps", "Tt", tl!("Small Caps"), caps == 2, Tokens::ui(12.0)),
-                ("underline", "U", tl!("Underline"), flag("underline"), Tokens::ui(13.0)),
-                ("strikethrough", "S", tl!("Strikethrough"), flag("strikethrough"), Tokens::ui(13.0)),
+                ("underline", "U", tl!("Underline"), cx.flag("underline"), Tokens::ui(13.0)),
+                ("strikethrough", "S", tl!("Strikethrough"), cx.flag("strikethrough"), Tokens::ui(13.0)),
             ] {
                 let r = letter_button(&mut vui, label, tip, on, &t, font);
                 letter_button_mark(&vui, id, &r, on, &t);
@@ -895,6 +941,78 @@ mod tests {
             assert_eq!(c.value("size").as_f64(), layer_size);
             assert!(!c.flag("faux_bold") && !c.flag("underline"));
             assert_eq!(c.caps(), 0);
+        }
+    }
+
+    #[test]
+    fn stroke_controls_write_and_read_the_selected_characters() {
+        let mut e = graphic::new_text_layer("1234", Vec2::new(100.0, 100.0), 72.0);
+        let mut cx = Ctx {
+            clip: ClipId(1),
+            layer: 0,
+            eidx: 0,
+            e: &e,
+            mt: Tick(0),
+            t: Tokens::for_kind(crate::theme::ThemeKind::Dark),
+            actions: Vec::new(),
+            autos: Vec::new(),
+            range: Some((0, 2)),
+        };
+        for (id, key, value) in [
+            ("stroke_color", "strokeColor", json!("#ff0000")),
+            ("stroke2_color", "stroke2Color", json!("#00ff00")),
+            ("stroke", "stroke", json!(false)),
+            ("stroke_width", "strokeWidth", json!(24.0)),
+            ("stroke_type", "strokeType", json!(1)),
+            ("stroke2", "stroke2", json!(true)),
+            ("stroke2_width", "stroke2Width", json!(48.0)),
+            ("stroke2_type", "stroke2Type", json!(2)),
+        ] {
+            cx.set(id, value.clone());
+            assert_eq!(
+                cx.actions.last(),
+                Some(&(
+                    "graphics.setCharStyle".into(),
+                    json!({
+                        "clip": 1, "layer": 0, "start": 0, "end": 2, "style": {key: value}
+                    })
+                ))
+            );
+        }
+        cx.range = None;
+        cx.set("stroke_color", json!("#0000ff"));
+        assert_eq!(cx.actions.last(), Some(&("graphics.set".into(), json!({"clip": 1, "layer": 0, "props": {"stroke_color": "#0000ff"}}))));
+        drop(cx);
+        let red = serde_json::from_value(json!({"strokeColor": [1.0, 0.0, 0.0, 1.0], "stroke2Color": [0.0, 1.0, 0.0, 1.0],
+            "stroke": false, "strokeWidth": 24.0, "strokeType": 1, "stroke2": true, "stroke2Width": 48.0, "stroke2Type": 2}))
+        .unwrap();
+        e.layer = Some(Box::new(LayerExtra { runs: apply_char_style(&[], 4, 0, 2, &red), ..Default::default() }));
+        for range in [Some((0, 2)), Some((2, 4)), None] {
+            let cx = Ctx {
+                clip: ClipId(1),
+                layer: 0,
+                eidx: 0,
+                e: &e,
+                mt: Tick(0),
+                t: Tokens::for_kind(crate::theme::ThemeKind::Dark),
+                actions: Vec::new(),
+                autos: Vec::new(),
+                range,
+            };
+            for (id, colour) in [("stroke_color", [1.0, 0.0, 0.0, 1.0]), ("stroke2_color", [0.0, 1.0, 0.0, 1.0])] {
+                let expected = if range == Some((0, 2)) { Some(colour) } else { pv(&e, id, Tick(0)).as_color() };
+                assert_eq!(cx.value(id).as_color(), expected, "{id} {range:?}");
+            }
+            for (id, own) in [
+                ("stroke", ParamValue::Bool(false)),
+                ("stroke_width", ParamValue::Float(24.0)),
+                ("stroke_type", ParamValue::Choice(1)),
+                ("stroke2", ParamValue::Bool(true)),
+                ("stroke2_width", ParamValue::Float(48.0)),
+                ("stroke2_type", ParamValue::Choice(2)),
+            ] {
+                assert_eq!(cx.value(id), if range == Some((0, 2)) { own } else { pv(&e, id, Tick(0)) }, "{id} {range:?}");
+            }
         }
     }
 
