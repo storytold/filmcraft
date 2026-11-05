@@ -243,7 +243,7 @@ impl State {
         device.copy_to_host(address, &mut host)?;
         let luma = host.get(..luma_size).ok_or("NVDEC luma range is invalid")?;
         let chroma = host.get(luma_size..).ok_or("NVDEC chroma range is invalid")?;
-        to_frame(&Biplanar { luma, chroma, stride: pitch as usize, rows: self.coded.1 as usize }, &self.geometry)
+        to_frame(&Biplanar { luma, chroma, stride: pitch as usize, chroma_stride: pitch as usize, rows: self.coded.1 as usize }, &self.geometry)
     }
 }
 fn mapped_layout(coded: (u32, u32), bits: u32, pitch: u32) -> Result<(usize, usize), String> {
