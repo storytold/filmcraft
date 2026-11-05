@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::graphic::{LayerContent, LayerSpec, LinearGradient, ShapeProps, Stroke, StrokeStyle, TextProps, eval_layer};
+use filmcraft_project::graphic::{LayerContent, MAX_LAYER_BLUR, LayerSpec, LinearGradient, ShapeProps, Stroke, StrokeStyle, TextProps, eval_layer};
 use filmcraft_project::graphic_design::{GraphicMeta, PinNode, remap_time, resolve_pins, roll_offset};
 use filmcraft_project::{EffectInstance, TrackItem};
 use filmcraft_text::raster::{Xform, apply, fill_into, xform_scale};
@@ -427,8 +427,14 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
         let grow = (sh.size + sh.blur) * s + 2.0;
         bb = union(bb, [bb[0] + shadow_dev.0 - grow, bb[1] + shadow_dev.1 - grow, bb[2] + shadow_dev.0 + grow, bb[3] + shadow_dev.1 + grow]);
     }
+    // a layer blur spreads the ink about three sigmas past its edge
+    let blur_dev = if ap.blur.is_finite() { ap.blur.clamp(0.0, MAX_LAYER_BLUR) * s } else { 0.0 };
+    let blur_grow = if blur_dev >= 0.3 { blur_dev * 3.0 + 2.0 } else { 0.0 };
+    if blur_grow > 0.0 {
+        bb = [bb[0] - blur_grow, bb[1] - blur_grow, bb[2] + blur_grow, bb[3] + blur_grow];
+    }
     // clip to the canvas, keeping enough margin for blur to read content just outside it
-    let margin = ap.shadow.as_ref().map_or(2.0, |sh| (sh.blur + sh.size) * s + shadow_dev.0.abs().max(shadow_dev.1.abs()) + 2.0);
+    let margin = ap.shadow.as_ref().map_or(2.0, |sh| (sh.blur + sh.size) * s + shadow_dev.0.abs().max(shadow_dev.1.abs()) + 2.0) + blur_grow;
     let x0 = bb[0].floor().max(-margin) as i32;
     let y0 = bb[1].floor().max(-margin) as i32;
     let x1 = bb[2].ceil().min(cw as f32 + margin) as i32;
@@ -509,11 +515,15 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
     for stroke in strokes.iter().rev() {
         stroke_cover.visit(stroke, |k| !outer(k), |sm, style| over_mask(&mut px, sm, premul_linear(style.color)));
     }
+    let mut img = Image { w, h, px };
+    if blur_dev >= 0.3 {
+        crate::effects::gaussian(&mut img, blur_dev, blur_dev, false);
+    }
     let op = spec.transform.opacity;
     if op < 1.0 {
-        px.iter_mut().for_each(|v| *v *= op);
+        img.px.iter_mut().for_each(|v| *v *= op);
     }
-    Some(LayerRaster { x: x0, y: y0, img: Image { w, h, px } })
+    Some(LayerRaster { x: x0, y: y0, img })
 }
 
 type Cache = Mutex<HashMap<u64, (u64, Option<Arc<LayerRaster>>)>>;

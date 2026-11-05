@@ -488,3 +488,52 @@ fn responsive_time_remaps_layer_keyframes_not_the_clips_own_effects() {
     assert!((own_at(&item, 2.5) - 0.5).abs() < 1e-4, "media 4.5 s: {}", own_at(&item, 2.5));
     assert!((own_at(&item, 0.0) - 1.0).abs() < 1e-4, "media 2 s: {}", own_at(&item, 0.0));
 }
+
+fn blur_render(blur: f64) -> Image {
+    let mut e = new_text_layer("H", Vec2::new(150.0, 200.0), 120.0);
+    set(&mut e, "blur", ParamValue::Float(blur));
+    let mut image = Image::new(400, 300);
+    render_graphic_layers(&[e], Tick::ZERO, (400, 300), &Affine::IDENTITY, &mut image);
+    image
+}
+
+fn coverage(img: &Image) -> (usize, f32) {
+    let mut n = 0;
+    let mut peak = 0.0f32;
+    for y in 0..img.h {
+        for x in 0..img.w {
+            let a = img.get(x, y)[3];
+            if a > 0.01 {
+                n += 1;
+            }
+            peak = peak.max(a);
+        }
+    }
+    (n, peak)
+}
+
+#[test]
+fn layer_blur_spreads_ink_past_the_glyph_and_softens_it() {
+    let (sharp_n, sharp_peak) = coverage(&blur_render(0.0));
+    let (soft_n, soft_peak) = coverage(&blur_render(12.0));
+    assert!(sharp_n > 0 && sharp_peak > 0.9);
+    // wider: the blur grows the raster instead of clipping at the glyph box
+    assert!(soft_n > sharp_n, "{soft_n} <= {sharp_n}");
+    // softer: the stems lose their solid core
+    assert!(soft_peak < sharp_peak);
+}
+
+#[test]
+fn layer_blur_zero_is_identical_to_no_param() {
+    let mut plain = Image::new(400, 300);
+    render_graphic_layers(&[new_text_layer("H", Vec2::new(150.0, 200.0), 120.0)], Tick::ZERO, (400, 300), &Affine::IDENTITY, &mut plain);
+    assert_eq!(plain.px, blur_render(0.0).px);
+}
+
+#[test]
+fn layer_blur_survives_hostile_values() {
+    for v in [f64::NAN, f64::INFINITY, -5.0, 1e12] {
+        let img = blur_render(v);
+        assert!(img.px.iter().all(|x| x.is_finite()), "blur {v}");
+    }
+}

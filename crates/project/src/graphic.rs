@@ -95,6 +95,9 @@ fn tx(id: &'static str, label: &'static str, def: &str, animatable: bool, group:
     p(id, label, ParamKind::Text, ParamValue::Text(def.into()), animatable, group)
 }
 
+/// Largest layer blur honoured, layer pixels (keeps the blurred raster bounded).
+pub const MAX_LAYER_BLUR: f32 = 200.0;
+
 fn appearance() -> Vec<ParamDef> {
     const A: &str = "Appearance";
     vec![
@@ -124,6 +127,7 @@ fn appearance() -> Vec<ParamDef> {
         fl("shadow_distance", "Shadow Distance", 10.0, (0.0, 1000.0), (0.0, 100.0), "", A),
         fl("shadow_size", "Shadow Size", 0.0, (0.0, 1000.0), (0.0, 100.0), "", A),
         fl("shadow_blur", "Shadow Blur", 40.0, (0.0, 1000.0), (0.0, 200.0), "", A),
+        fl("blur", "Layer Blur", 0.0, (0.0, MAX_LAYER_BLUR as f64), (0.0, 60.0), "px", A),
     ]
 }
 
@@ -212,6 +216,8 @@ pub struct Appearance {
     /// (colour with opacity in alpha, padding px, corner radius px).
     pub background: Option<([f32; 4], f32, f32)>,
     pub shadow: Option<Shadow>,
+    /// Gaussian blur of the whole layer (fill, strokes, shadow), in layer pixels. 0 = sharp.
+    pub blur: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -444,6 +450,7 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
             strokes,
             background,
             shadow,
+            blur: Some(ff(e, "blur", t)).filter(|b| b.is_finite()).map_or(0.0, |b| b.clamp(0.0, MAX_LAYER_BLUR)),
         },
         transform: LayerTransform {
             position,
