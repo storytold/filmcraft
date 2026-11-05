@@ -301,3 +301,85 @@ fn the_script_never_sets_a_word_it_has_no_accent_for() {
     assert_eq!(hero_face_for(&faces, "não").0, "Host Grotesk Lettering");
     assert_eq!(hero_face_for(&faces, "cavalo").0, "Kieyto");
 }
+
+fn layers_of(s: &Session, r: &Value) -> Vec<filmcraft_project::EffectInstance> {
+    let clip = filmcraft_project::ClipId(r["clip"].as_u64().unwrap());
+    let q = s.active_sequence().unwrap();
+    let (_, it) = q.find_item(clip).unwrap();
+    it.effects.iter().filter(|e| e.params.contains_key("text")).cloned().collect()
+}
+
+const PHRASE: &str = "Nunca pague 10 mil por um logo sem estratégia";
+
+#[test]
+fn every_preset_applies_one_layer_per_word_and_everyone_ends_visible_and_sharp() {
+    for pr in motion::PRESETS {
+        let mut s = seq();
+        let r = s.execute("lettering.apply", json!({"text": PHRASE, "preset": pr.id, "family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+        assert_eq!(r["applied"], true, "{}: {r}", pr.id);
+        let layers = layers_of(&s, &r);
+        assert_eq!(layers.len(), 9, "{}", pr.id);
+        let mid = Tick::from_seconds_f64(r["duration"].as_f64().unwrap() * 0.7);
+        for e in &layers {
+            let op = e.params["opacity"].value_at(mid).as_f64().unwrap();
+            assert!((op - 100.0).abs() < 1e-6, "{} opacity {op}", pr.id);
+            if let Some(b) = e.params.get("blur") {
+                assert!(b.value_at(mid).as_f64().unwrap().abs() < 1e-6, "{} still blurred", pr.id);
+            }
+            for id in ["position", "scale", "rotation", "blur", "opacity"] {
+                if let Some(p) = e.params.get(id) {
+                    assert!(p.keyframes.len() <= motion::MAX_SAMPLES + 4, "{} {id} keyframes {}", pr.id, p.keyframes.len());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn an_unknown_preset_is_an_error_that_lists_the_known_ones() {
+    let mut s = seq();
+    let e = s.execute("lettering.apply", json!({"text": PHRASE, "preset": "nope"})).unwrap_err().to_string();
+    assert!(e.contains("partial-blur-in-up"), "{e}");
+}
+
+#[test]
+fn block_presets_move_every_word_together_and_word_presets_follow_the_voice() {
+    let words: Vec<Value> = ["Eu", "matei", "o", "cavalo"].iter().enumerate().map(|(i, t)| json!({"text": t, "start": 0.3 + i as f64 * 0.5, "end": 0.7 + i as f64 * 0.5})).collect();
+    let first_visible = |e: &filmcraft_project::EffectInstance| (0..900).map(|f| f as f64 / 100.0).find(|t| e.params["opacity"].value_at(Tick::from_seconds_f64(*t)).as_f64().unwrap() > 1.0).unwrap_or(f64::MAX);
+    let mut s = seq();
+    let r = s.execute("lettering.apply", json!({"words": words, "preset": "up-smooth", "family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+    let starts: Vec<f64> = layers_of(&s, &r).iter().map(first_visible).collect();
+    assert!(starts.windows(2).all(|w| (w[0] - w[1]).abs() < 0.02), "{starts:?}");
+    let mut s = seq();
+    let r = s.execute("lettering.apply", json!({"words": words, "preset": "left-smooth-word", "family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+    let starts: Vec<f64> = layers_of(&s, &r).iter().map(first_visible).collect();
+    assert!(starts.windows(2).all(|w| w[1] > w[0] + 0.3), "{starts:?}");
+}
+
+#[test]
+fn a_hero_word_travels_further_than_a_plain_one() {
+    let mut s = seq();
+    let r = s.execute("lettering.apply", json!({"text": PHRASE, "preset": "up-smooth", "family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+    let layers = layers_of(&s, &r);
+    let travel = |name: &str| {
+        let e = layers.iter().find(|e| e.params["text"].value == ParamValue::Text(name.into())).unwrap();
+        let p = &e.params["position"];
+        let y0 = p.keyframes.first().and_then(|k| if let ParamValue::Vec2(v) = k.value { Some(v.y) } else { None }).unwrap();
+        let y1 = p.keyframes.last().and_then(|k| if let ParamValue::Vec2(v) = k.value { Some(v.y) } else { None }).unwrap();
+        y0 - y1
+    };
+    assert!(travel("Nunca") > travel("logo") * 1.2, "{} vs {}", travel("Nunca"), travel("logo"));
+}
+
+#[test]
+fn fast_speech_makes_a_shorter_entrance_than_slow_speech() {
+    let mk = |gap: f64| -> Vec<Value> { ["Eu", "matei", "o", "cavalo"].iter().enumerate().map(|(i, t)| json!({"text": t, "start": 0.3 + i as f64 * gap, "end": 0.3 + i as f64 * gap + gap * 0.8})).collect() };
+    let settle = |gap: f64| {
+        let mut s = seq();
+        let r = s.execute("lettering.apply", json!({"words": mk(gap), "preset": "up-smooth", "family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+        let e = layers_of(&s, &r).remove(0);
+        let ks = &e.params["opacity"].keyframes;
+        ks.iter().find(|k| k.value.as_f64().is_some_and(|v| (v - 100.0).abs() < 1e-6)).map(|k| k.time.seconds()).unwrap() - ks[0].time.seconds()
+    };
+    assert!(settle(0.12) < settle(0.9));
+}

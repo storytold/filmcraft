@@ -24,6 +24,8 @@ use filmcraft_project::{EffectInstance, Interpolation, Keyframe, Mask, MaskPath,
 use filmcraft_text::TextStyle;
 use filmcraft_time::Tick;
 
+mod motion;
+
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, u64_p};
 use crate::{EngineError, Result, Session};
 
@@ -793,6 +795,107 @@ fn animate(layer: &mut EffectInstance, g: &Geo, t0: f64, exit: f64, how: &str, l
     }
 }
 
+
+/// Motion of one word under a [`motion::Preset`]: the tracks run from their offsets to rest at
+/// `t0` for `dur` seconds, then everybody fades out at `exit`.
+struct PresetRun<'a> {
+    preset: &'a motion::Preset,
+    t0: f64,
+    dur: f64,
+    exit: f64,
+    /// Distance/blur multiplier (hero emphasis × pause).
+    k: f64,
+    /// Pixel offsets are specified for a 1920 px frame.
+    px: f64,
+    /// 1-based line of the word.
+    line: usize,
+}
+
+fn apply_preset(layer: &mut EffectInstance, g: &Geo, r: &PresetRun) {
+    use motion::{Ease, Prop, sample};
+    let (pos, size) = (g.pos, g.size);
+    // pivot at the middle of the word so rotation and scale turn around it
+    let anchor = Vec2::new(g.width / 2.0, -size * 0.3);
+    let rest = pos + anchor;
+    let end = r.exit + EXIT_SECS;
+    let mut opacity_done = false;
+    let mut pivot = false;
+    let mut x_from = 0.0;
+    let mut y_from = 0.0;
+    for t in r.preset.tracks {
+        let on_line = match t.lines {
+            1 => r.line % 2 == 1,
+            2 => r.line % 2 == 0,
+            _ => true,
+        };
+        if !on_line {
+            continue;
+        }
+        let e = t.ease.unwrap_or(r.preset.ease);
+        let from = t.from;
+        match t.prop {
+            Prop::X => x_from = from * r.px * r.k,
+            Prop::Y => y_from = from * r.px * r.k,
+            Prop::Scale => {
+                pivot = true;
+                let mut ks = sample(r.t0, r.dur, e, 100.0 + (from - 100.0) * r.k.min(1.5), 100.0, ParamValue::Float);
+                ks.push(kf(end, ParamValue::Float(100.0), Interpolation::Linear, 0.33, 0.33));
+                layer.params.insert("scale".into(), Param { value: ParamValue::Float(100.0), keyframes: ks });
+            }
+            Prop::Rotation => {
+                pivot = true;
+                let ks = sample(r.t0, r.dur, e, from * r.k.min(1.5), 0.0, ParamValue::Float);
+                layer.params.insert("rotation".into(), Param { value: ParamValue::Float(0.0), keyframes: ks });
+            }
+            Prop::Blur => {
+                let ks = sample(r.t0, r.dur, e, from * r.px * r.k, 0.0, ParamValue::Float);
+                layer.params.insert("blur".into(), Param { value: ParamValue::Float(0.0), keyframes: ks });
+            }
+            Prop::Opacity => {
+                opacity_done = true;
+                let mut ks = if t.blink {
+                    motion::blink_keys(r.t0, r.dur, |v| ParamValue::Float(v * 100.0))
+                } else {
+                    sample(r.t0, r.dur, e, from * 100.0, 100.0, ParamValue::Float)
+                };
+                ks.push(kf(r.exit, ParamValue::Float(100.0), Interpolation::Bezier, EXIT_OUT, EXIT_IN));
+                ks.push(kf(end, ParamValue::Float(0.0), Interpolation::Linear, 0.33, EXIT_IN));
+                layer.params.insert("opacity".into(), Param { value: ParamValue::Float(100.0), keyframes: ks });
+            }
+        }
+    }
+    if !opacity_done {
+        // a preset that keeps the word solid still leaves with everyone else
+        let ks = vec![
+            kf(r.t0, ParamValue::Float(100.0), Interpolation::Linear, 0.33, 0.33),
+            kf(r.exit, ParamValue::Float(100.0), Interpolation::Bezier, EXIT_OUT, EXIT_IN),
+            kf(end, ParamValue::Float(0.0), Interpolation::Linear, 0.33, EXIT_IN),
+        ];
+        layer.params.insert("opacity".into(), Param { value: ParamValue::Float(100.0), keyframes: ks });
+    }
+    let base = if pivot { rest } else { pos };
+    if pivot {
+        layer.params.insert("anchor".into(), Param::new(ParamValue::Vec2(anchor)));
+    }
+    if x_from != 0.0 || y_from != 0.0 {
+        let e = r.preset.tracks.iter().find(|t| matches!(t.prop, motion::Prop::X | motion::Prop::Y)).map_or(r.preset.ease, |t| t.ease.unwrap_or(r.preset.ease));
+        let e = if e == Ease::Hold { Ease::Linear } else { e };
+        let ks: Vec<Keyframe> = {
+            let mut a = sample(r.t0, r.dur, e, 0.0, 1.0, ParamValue::Float);
+            // reuse the sampled progress as a 0→1 ramp, convert to positions
+            a.iter_mut().for_each(|k| {
+                if let ParamValue::Float(u) = k.value {
+                    k.value = ParamValue::Vec2(Vec2::new(base.x + x_from * (1.0 - u), base.y + y_from * (1.0 - u)));
+                }
+            });
+            a
+        };
+        layer.params.insert("position".into(), Param { value: ParamValue::Vec2(base), keyframes: ks });
+    } else if pivot {
+        layer.params.insert("position".into(), Param::new(ParamValue::Vec2(base)));
+    }
+}
+
 /// Motion blur, simulated: the engine blurs motion only per clip (its Transform shutter), not per
 /// word, so each moving word gets a few faint copies that trail it by a fraction of a shutter
 /// (1/60 s spread over `GHOSTS` copies). They exist only while the word travels, in and out.
@@ -986,6 +1089,46 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         Some(h) => (last_start - LEAD_SECS).max(0.0) + ENTER_SECS + h.max(0.0),
         None => (last_end + HOLD_SECS).max(last_start + ENTER_SECS + 0.4),
     };
+    let chosen = match str_p(p, "preset") {
+        Some(id) => Some(motion::preset(id).ok_or_else(|| bad(ID, format!("unknown preset `{id}` ({})", motion::preset_ids().join(", "))))?),
+        None => None,
+    };
+    // speech reaction: the pace of the voice bends the duration of every entrance
+    let starts: Vec<f64> = words.iter().map(|w| w.start).collect();
+    let timed = words.iter().any(|w| w.end > w.start);
+    let dur_k = if timed { motion::duration_factor(motion::median_gap(&starts)) } else { 1.0 };
+    let preset_dur = |hero: bool| chosen.map_or(0.0, |pr| (pr.ms / 1000.0 * dur_k * if hero { 1.15 } else { 1.0 }).clamp(0.05, 2.0));
+    // when each word would enter, then the start each preset group shares (its earliest word)
+    let mut word_t0 = vec![0.0f64; words.len()];
+    for (i, w) in words.iter().enumerate() {
+        word_t0[i] = (w.start - LEAD_SECS).max(0.0).max(if i > 0 { (words[i - 1].start - LEAD_SECS).max(0.0) + STAGGER_SECS } else { 0.0 });
+    }
+    let group_of = |pl: &Placed| match chosen.map(|pr| pr.scope) {
+        Some(motion::Scope::Block) => 0,
+        Some(motion::Scope::Line) => pl.line,
+        _ => pl.index,
+    };
+    let mut group_t0: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
+    for pl in &c.words {
+        let e = group_t0.entry(group_of(pl)).or_insert(f64::MAX);
+        *e = e.min(word_t0.get(pl.index).copied().unwrap_or(0.0));
+    }
+    if let Some(pr) = chosen.filter(|pr| pr.scope == motion::Scope::Line) {
+        // lines follow each other by at least the preset's stagger
+        let mut prev: Option<f64> = None;
+        for v in group_t0.values_mut() {
+            if let Some(a) = prev {
+                *v = v.max(a + pr.stagger_ms / 1000.0);
+            }
+            prev = Some(*v);
+        }
+    }
+    let exit = if chosen.is_some() {
+        let last_t0 = group_t0.values().copied().fold(0.0, f64::max);
+        exit.max(last_t0 + preset_dur(true) + 0.3)
+    } else {
+        exit
+    };
     let duration = exit + EXIT_SECS;
 
     let mut layers = Vec::with_capacity(words.len());
@@ -1040,12 +1183,20 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         // enters just before it is said, behind the previous word by the brand's stagger at least
         let t0 = (w.start - LEAD_SECS).max(0.0).max(if pl.index > 0 { (words[pl.index - 1].start - LEAD_SECS).max(0.0) + STAGGER_SECS } else { 0.0 });
         let geo = Geo { pos, size: pl.size as f64, width: pl.width as f64, hero: pl.hero, fw: fw as f64 };
-        animate(&mut e, &geo, t0, exit, how, &look);
-        if look.reveal == Reveal::Mask && bool_p(p, "motionBlur").unwrap_or(true) {
-            layers.extend(ghosts(&e, t0, exit));
-        }
-        if look.focus > 0.0 && bool_p(p, "focus").unwrap_or(true) {
-            layers.extend(focus_copies(&e, pl.size as f64 * look.focus, t0));
+        if let Some(pr) = chosen {
+            // emphasis and pauses bend the distance; a hero travels further
+            let gap = if pl.index > 0 { w.start - words.get(pl.index - 1).map_or(w.start, |q| q.end) } else { 0.0 };
+            let k = if pl.hero { motion::Reaction::HERO } else { 1.0 } * if timed { motion::pause_factor(gap) } else { 1.0 };
+            let run = PresetRun { preset: pr, t0: group_t0.get(&group_of(pl)).copied().unwrap_or(t0), dur: preset_dur(pl.hero), exit, k, px: fw as f64 / 1920.0, line: pl.line + 1 };
+            apply_preset(&mut e, &geo, &run);
+        } else {
+            animate(&mut e, &geo, t0, exit, how, &look);
+            if look.reveal == Reveal::Mask && bool_p(p, "motionBlur").unwrap_or(true) {
+                layers.extend(ghosts(&e, t0, exit));
+            }
+            if look.focus > 0.0 && bool_p(p, "focus").unwrap_or(true) {
+                layers.extend(focus_copies(&e, pl.size as f64 * look.focus, t0));
+            }
         }
         layers.push(e);
     }
@@ -1265,7 +1416,7 @@ pub fn commands() -> Vec<CommandSpec> {
         label: "Lettering",
         menu: &["Graphics and Titles", "New Layer"],
         shortcut: None,
-        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"look":"classic|monumental|editorial|cinetico"="classic" (type, scale, tracking, reveal; the other options override it),"rule":bool? (guide line over the block),"scriptStroke":f=0.004 (outline of the script heroes, fraction of the size),"motionBlur":bool=true (faint trailing copies while a word moves),"hold":sec? (how long it stays after the last word has arrived; default until 0.8 s after the voice),"heroItalic":bool=false,"scrim":bool=false (black plate behind the hero word only),"scrimOpacity":0..100=92,"shadow":bool=true (hard 3 px drop shadow on every word),"hideCaptions":bool=true (remove the captions under it),"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
+        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"preset":"partial-blur-in-up|delay-up-slide|up-smooth|blink-right-up-combined|blinks-spinning-word|left-smooth-word|bouncy-follow-up|up-smooth-script-word|left-up-smooth-combined|caption-fade-scale"? (text motion preset; replaces the look's reveal; reacts to the pace of the speech, emphasis and pauses),"look":"classic|monumental|editorial|cinetico"="classic" (type, scale, tracking, reveal; the other options override it),"rule":bool? (guide line over the block),"scriptStroke":f=0.004 (outline of the script heroes, fraction of the size),"motionBlur":bool=true (faint trailing copies while a word moves),"hold":sec? (how long it stays after the last word has arrived; default until 0.8 s after the voice),"heroItalic":bool=false,"scrim":bool=false (black plate behind the hero word only),"scrimOpacity":0..100=92,"shadow":bool=true (hard 3 px drop shadow on every word),"hideCaptions":bool=true (remove the captions under it),"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
         enabled: has_seq,
         run: apply,
         journal: true,
