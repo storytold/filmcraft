@@ -42,6 +42,7 @@ pub mod paste_media;
 pub mod perf;
 pub mod presets;
 pub mod previews;
+pub mod prfpset;
 pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
