@@ -1902,6 +1902,7 @@ dependencies = [
  "serde_json",
  "subtle",
  "sys-locale",
+ "tempfile",
  "winit",
  "winresource",
  "zbus",

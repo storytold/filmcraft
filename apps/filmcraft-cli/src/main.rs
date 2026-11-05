@@ -109,8 +109,9 @@ OPTIONS
                                 project take turns, so each edits what the last one saved
   --save-as <p.fcproj>          save the project to this path when done
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
-  --data-dir <dir>              FilmCraft data directory for user export presets (headless;
-                                default: the app's data directory)
+  --data-dir <dir>              FilmCraft data directory for user export presets (headless) and,
+                                with --bridge, the control-token file (default: the app's
+                                data directory)
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
 
@@ -175,7 +176,9 @@ impl Backend {
             if a.opt("--project").is_some() || a.flag("--demo") {
                 usage("--bridge drives the running app; open projects there (exec file.open path=…)");
             }
-            return Backend::Bridge(BridgeClient::new(addr).unwrap_or_else(|e| usage(e)));
+            // the token file of an app started with `--data-dir` is in that folder
+            let data_dir = a.opt("--data-dir").map(std::path::PathBuf::from);
+            return Backend::Bridge(BridgeClient::with_data_dir(addr, data_dir.as_deref()).unwrap_or_else(|e| usage(e)));
         }
         let mut s = Session::default();
         // user export presets (and other per-user libraries) from the data directory
@@ -547,7 +550,10 @@ async fn cli_mcp(a: &Args) {
         usage(format!("unknown mcp option `{opt}`"));
     }
     let server = match a.opt("--bridge") {
-        Some(addr) => filmcraft_automation::FilmcraftMcp::bridge(addr).unwrap_or_else(|e| usage(e)),
+        Some(addr) => {
+            let data_dir = a.opt("--data-dir").map(std::path::PathBuf::from);
+            filmcraft_automation::FilmcraftMcp::bridge_with_data_dir(addr, data_dir.as_deref()).unwrap_or_else(|e| usage(e))
+        }
         None => match Backend::open(a) {
             Backend::Local(s) => filmcraft_automation::FilmcraftMcp::headless(*s),
             Backend::Bridge(_) => usage("mcp: use --bridge ADDR to drive a running app"),
