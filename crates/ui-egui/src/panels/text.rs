@@ -764,13 +764,13 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
                 actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "backgroundPadding": pad})));
             }
         }
-        let mut radius = st.corner_radius;
+        let mut radius = drag_start(ui, st.corner_radius);
         let resp = ui
             // the full range captions.setStyle accepts, so a stored radius is never clamped on display
             .add(crate::widgets::number_drag(&mut radius).range(0.0..=500.0).speed(0.5).prefix(tl!("Radius ")).suffix(" px"))
             .on_hover_text(tl!("Box corner radius (px at 1080 lines)"));
         app.auto.add("text.captions.style.cornerRadius", resp.rect, "Caption box corner radius");
-        if let Some(v) = committed_drag(ui, &resp, radius) {
+        if let Some(v) = committed_drag(ui, &resp, radius).filter(|v| *v != st.corner_radius) {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "cornerRadius": v})));
         }
         ui.label(egui::RichText::new(tl!("Align")).size(11.0).color(app.tokens.text_dim));

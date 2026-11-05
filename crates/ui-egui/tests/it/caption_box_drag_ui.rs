@@ -141,3 +141,12 @@ fn dragging_the_radius_field_saves_the_new_radius() {
     d.drag(RADIUS, &GROW_BY_15, Some(2));
     assert_eq!(d.style()["cornerRadius"].as_f64().unwrap(), 15.0, "Escape cancels the drag");
 }
+
+#[test]
+fn a_drag_back_to_the_stored_radius_changes_nothing() {
+    const RADIUS: &str = "text.captions.style.cornerRadius";
+    let mut d = Driver::captions();
+    d.type_into(RADIUS, "20");
+    d.drag(RADIUS, &OUT_AND_BACK, None);
+    assert_eq!(d.style()["cornerRadius"].as_f64().unwrap(), 20.0, "the field ended the drag back at 20");
+}
