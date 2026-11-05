@@ -152,7 +152,8 @@ pub struct Report {
     /// Further files written besides `path` (MXF OP-Atom audio files).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_files: Vec<String>,
-    /// What wrote the stream: "software H.264", "NVENC H.264", "Media Foundation H.265".
+    /// What wrote the stream: "software H.264", "NVENC H.264", "Media Foundation H.265",
+    /// "software GIF". An image sequence writes stills, so it leaves this empty.
     /// A hardware encoder that declined leaves the software encoder to write the file, and
     /// this says so - the same bytes under a different name are not the same file.
     #[serde(default, skip_serializing_if = "String::is_empty")]

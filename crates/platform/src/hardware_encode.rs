@@ -138,7 +138,7 @@ pub fn videotoolbox_encoder_factory(
         Ok(c) => c,
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
-            filmcraft_export::note_hw_encode_declined_with(why);
+            filmcraft_export::note_hw_encode_declined_with(&why);
             return None;
         }
     };
@@ -149,7 +149,7 @@ pub fn videotoolbox_encoder_factory(
         }
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
-            filmcraft_export::note_hw_encode_declined_with(why);
+            filmcraft_export::note_hw_encode_declined_with(&why);
             None
         }
     }

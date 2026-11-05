@@ -87,6 +87,27 @@ fn the_report_names_the_encoder_that_wrote_the_file() {
     assert_eq!(r.declined, None, "nothing declined it");
 }
 
+/// A GIF is a stream written by the image crate's encoder, even though it shares the still-writing
+/// path; an image sequence writes stills, so no encoder wrote it (#4339).
+#[test]
+fn gif_names_its_encoder_and_image_sequences_do_not() {
+    let (p, seq, m) = project();
+    let range = TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(6));
+    let gif =
+        export(&p, seq, &ExportSettings { format: Format::Gif, path: tmp("named.gif"), range: Some(range), ..Default::default() }, &m, &Progress::default())
+            .unwrap();
+    assert_eq!(gif.encoder, "software GIF");
+    let stills = export(
+        &p,
+        seq,
+        &ExportSettings { format: Format::PngSequence, path: tmp("named-seq.png"), range: Some(range), ..Default::default() },
+        &m,
+        &Progress::default(),
+    )
+    .unwrap();
+    assert_eq!(stills.encoder, "", "an image sequence has no encoder");
+}
+
 #[test]
 fn wav_png_gif() {
     let (p, seq, m) = project();

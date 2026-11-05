@@ -254,8 +254,9 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
         bytes,
         render_fps: nframes as f64 / secs.max(1e-6),
         extra_files: Vec::new(),
-        // an image sequence writes stills, not a stream: no encoder wrote it
-        encoder: String::new(),
+        // a GIF is a stream written by the image crate's encoder; an image sequence writes
+        // stills, so no encoder wrote it
+        encoder: if settings.format == Format::Gif { "software GIF".to_string() } else { String::new() },
         declined: None,
     })
 }
