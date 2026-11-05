@@ -741,7 +741,7 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
     let total = widths.iter().map(|w| w + 8.0).sum::<f32>();
     let all_fit = total <= strip.width() - 12.0;
     let more = (!all_fit).then(|| Rect::from_min_size(pos2(strip.max.x - 22.0, strip.center().y - 10.0), vec2(18.0, 20.0)));
-    let arrows = more.map(|more| {
+    let arrows = more.filter(|_| strip.width() > ARROW_W * 2.0 + 30.0).map(|more| {
         (
             Rect::from_min_size(pos2(strip.min.x + 2.0, strip.center().y - 10.0), vec2(ARROW_W, 20.0)),
             Rect::from_min_size(pos2(more.min.x - ARROW_W - 2.0, strip.center().y - 10.0), vec2(ARROW_W, 20.0)),
