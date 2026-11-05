@@ -8,6 +8,7 @@
 //! * [`biquad`] — RBJ-cookbook biquads (TDF-II) with analytic magnitude response.
 //! * [`sync`] — offset between two recordings of one event (GCC-PHAT, sample-accurate).
 //! * [`resample`] — streaming, block-invariant rate conversion for playback on a device at another rate.
+//! * [`stretch`] — WSOLA time stretch that keeps the pitch (Speed/Duration ▸ Maintain Audio Pitch).
 //! * [`channels`] — channel layouts, ITU-R BS.775 up/downmix, 5.1 mixdown types, the 5.1 panner.
 //!
 //! Conventions: audio is **planar f32** (`&mut [&mut [f32]]`, one slice per channel, all the same
@@ -30,6 +31,7 @@ pub mod oversample;
 pub mod remix;
 pub mod resample;
 mod smooth;
+pub mod stretch;
 pub mod sync;
 
 pub use effects::{Category, EffectInfo, create_effect, effect_info, effects};
@@ -224,16 +226,17 @@ pub fn gain_to_db(g: f32) -> f32 {
     20.0 * g.abs().log10()
 }
 
-/// Flush tiny values to zero (denormal protection for recursive state).
+/// Flush tiny values to zero (denormal protection for recursive state). Non-finite values are
+/// zeroed too, so one NaN or infinite input sample cannot poison the state until `reset`.
 #[inline(always)]
 pub(crate) fn flush(x: f64) -> f64 {
-    if x.abs() < 1e-30 { 0.0 } else { x }
+    if (1e-30..=f64::MAX).contains(&x.abs()) { x } else { 0.0 }
 }
 
 /// f32 variant of [`flush`] for f32 delay lines.
 #[inline(always)]
 pub(crate) fn flush32(x: f32) -> f32 {
-    if x.abs() < 1e-25 { 0.0 } else { x }
+    if (1e-25..=f32::MAX).contains(&x.abs()) { x } else { 0.0 }
 }
 
 /// Common block length of planar channels.

@@ -100,15 +100,14 @@ fn go_to_selected(s: &mut Session, end: bool) -> Result<Value> {
     Ok(json!({"time": s.playhead().0}))
 }
 
-/// Reveal Nested Sequence: open the nested sequence of the selected clip (or the topmost nested
-/// clip under the playhead on a targeted track) with its playhead on the matching frame.
-fn reveal_nested(s: &mut Session) -> Result<Value> {
+/// The clip Reveal Nested Sequence opens: the first selected nested sequence clip, else the
+/// topmost one under the playhead on a targeted track.
+fn nested_to_reveal(s: &Session) -> Option<filmcraft_project::TrackItem> {
     let ph = s.playhead();
     let tg = s.targeting().targeted;
-    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let seq = s.active_sequence()?;
     let is_nest = |it: &filmcraft_project::TrackItem| s.project.sequence(it.item).is_some();
-    let pick = s
-        .state
+    s.state
         .selection
         .iter()
         .filter_map(|c| seq.find_item(*c).map(|(_, i)| i))
@@ -116,7 +115,21 @@ fn reveal_nested(s: &mut Session) -> Result<Value> {
         .or_else(|| {
             seq.video_tracks.iter().rev().chain(seq.audio_tracks.iter()).filter(|t| tg.contains(&t.id)).filter_map(|t| t.item_at(ph)).find(|i| is_nest(i))
         })
-        .ok_or_else(|| EngineError::Other("select a nested sequence clip".into()))?;
+        .cloned()
+}
+
+/// Reveal Nested Sequence is enabled when there is a nested clip to reveal, so the Timeline's
+/// clip menu and the Sequence menu grey it out on plain clips instead of failing when chosen.
+fn has_nested_to_reveal(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    nested_to_reveal(s).map(|_| ()).ok_or_else(|| "select a nested sequence clip".into())
+}
+
+/// Reveal Nested Sequence: open the nested sequence of the selected clip (or the topmost nested
+/// clip under the playhead on a targeted track) with its playhead on the matching frame.
+fn reveal_nested(s: &mut Session) -> Result<Value> {
+    let ph = s.playhead();
+    let pick = nested_to_reveal(s).ok_or_else(|| EngineError::Other("select a nested sequence clip".into()))?;
     let (nested, t) = (pick.item, pick.source_time_at(ph.clamp(pick.start, pick.end() - Tick(1))));
     s.execute("sequence.open", json!({"item": nested.0}))?;
     s.set_playhead(t);
@@ -723,7 +736,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec("playhead.prevEditAnyTrack", "Go to Previous Edit Point on Any Track", Some("Shift+Up"), "{}", has_seq, |s, _| go_to_edit(s, false, true)),
         spec("playhead.selectedClipStart", "Go to Selected Clip Start", Some("Shift+Home"), "{}", has_selection, |s, _| go_to_selected(s, false)),
         spec("playhead.selectedClipEnd", "Go to Selected Clip End", Some("Shift+End"), "{}", has_selection, |s, _| go_to_selected(s, true)),
-        spec("sequence.revealNested", "Reveal Nested Sequence", Some("Cmd+Alt+F"), "{}", has_seq, |s, _| reveal_nested(s)),
+        spec("sequence.revealNested", "Reveal Nested Sequence", Some("Cmd+Alt+F"), "{}", has_nested_to_reveal, |s, _| reveal_nested(s)),
         // ---- selection
         spec("timeline.selectClipAtPlayhead", "Select Clip at Playhead", Some("D"), "{}", has_seq, |s, _| select_clip_at_playhead(s)),
         spec("timeline.selectNextClip", "Select Next Clip", Some("Cmd+Down"), "{}", has_seq, |s, _| select_step(s, true)),

@@ -4,6 +4,9 @@
 use crate::{Dialog, FilmcraftApp};
 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    crate::panels::marker_properties::show(app, ctx);
+    crate::panels::custom_colors::show(app, ctx);
+    crate::panels::palette_manager::show(app, ctx);
     crate::panels::media_dialogs::show(app, ctx);
     crate::panels::color_dialogs::show(app, ctx);
     crate::panels::clip_dialogs::show(app, ctx);
@@ -79,6 +82,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
         Dialog::SequenceSettings => {
             if !crate::panels::sequence_settings::show(app, ctx) && app.dialog == Some(d) {
+                app.dialog = None;
+            }
+            return;
+        }
+        Dialog::ClipMismatch => {
+            if !crate::panels::clip_mismatch::show(app, ctx) && app.dialog == Some(d) {
                 app.dialog = None;
             }
             return;
@@ -435,11 +444,11 @@ fn about(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let t = app.tokens;
     match tab {
         1 => {
-            ui.set_width(680.0);
+            ui.set_width(820.0);
             crate::credits::contributors_ui(ui, &t, &mut app.auto);
         }
         2 => {
-            ui.set_width(680.0);
+            ui.set_width(820.0);
             crate::credits::models_ui(ui);
         }
         _ => about_tab(app, ui),

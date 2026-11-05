@@ -339,8 +339,9 @@ fn apply(s: &mut Session, plans: Vec<Plan>, align_timecode: bool, label: &str) -
             if let Some(info) = &p.cand.info {
                 let new_tc = info.start_timecode;
                 if align_timecode && let (Some(a), Some(b)) = (old_tc, new_tc) {
-                    // what was at old timecode a + t sits at new media time t + (a - b)
-                    shift = rate.tick_of(b - a);
+                    // what was at old timecode a + t sits at new media time t + (a - b), each
+                    // timecode in its own file's frames (an EDL item's are at the list's rate)
+                    shift = info.frame_rate().tick_of(b) - rate.tick_of(a);
                 }
                 m.info = info.clone();
             }
@@ -530,7 +531,11 @@ pub fn search(s: &Session, p: &Value) -> Result<Value> {
                 continue;
             }
             for f in paths {
-                if let Ok(c) = check_candidate(s, id, &f.to_string_lossy(), &o) {
+                if let Ok(mut c) = check_candidate(s, id, &f.to_string_lossy(), &o) {
+                    // results are listed, not played: holding every candidate's decoder (and a
+                    // decoded still for each alias of one image) kept them all in memory;
+                    // relinking reopens the chosen file
+                    c.source = None;
                     cands.push(c);
                 }
             }
@@ -750,15 +755,30 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "Offline All",
             menu: &[],
             shortcut: None,
-            params: "{}  (leave every missing file offline and close the Link Media dialog)",
+            params: "{}  (mark every missing file offline, saved with the project, and close the Link Media dialog)",
             enabled: always,
-            run: |s, _| {
-                s.offline.prompt = false;
-                Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
-            },
-            journal: false,
+            run: offline_all,
+            journal: true,
         },
     ]
+}
+
+/// `media.offlineAll`: mark every missing item offline on purpose, so the project remembers the
+/// choice and reopening it does not ask again (as in Premiere). Relinking clears the mark.
+fn offline_all(s: &mut Session, _: &Value) -> Result<Value> {
+    let ids: Vec<ItemId> = s.offline.missing.iter().copied().filter(|i| s.project.item(*i).and_then(|it| it.as_media()).is_some_and(|m| !m.offline)).collect();
+    if !ids.is_empty() {
+        s.edit("Offline All", |proj, _| {
+            for i in &ids {
+                if let Some(m) = proj.item_mut(*i).and_then(|it| it.as_media_mut()) {
+                    m.offline = true;
+                }
+            }
+            Ok(())
+        })?;
+    }
+    s.offline.prompt = false;
+    Ok(json!({"offline": s.offline.missing.iter().map(|i| i.0).collect::<Vec<_>>()}))
 }
 
 /// After a project opens: find missing files and ask for them.
@@ -770,9 +790,11 @@ pub fn on_open(s: &mut Session) -> usize {
         log::warn!("media paths stored in the project not opened: {}", refused.join(", "));
         s.toast(format!("Not opening {} media file(s) the project names on another computer or device; File > Link Media… reconnects them", refused.len()));
     }
-    s.offline.prompt = !s.offline.missing.is_empty();
-    if !s.offline.missing.is_empty() {
-        s.toast(format!("{} media file(s) are missing; File > Link Media… reconnects them", s.offline.missing.len()));
+    // Items made offline on purpose (Make Offline / Offline All) don't ask again.
+    let missing = list.iter().filter(|m| m.status == "missing").count();
+    s.offline.prompt = missing > 0;
+    if missing > 0 {
+        s.toast(format!("{missing} media file(s) are missing; File > Link Media… reconnects them"));
     }
     list.len()
 }

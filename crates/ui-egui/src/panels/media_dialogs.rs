@@ -34,7 +34,10 @@ fn mb(b: u64) -> String {
 /// Draw whichever media dialogs are open; open Link Media when a project needs it.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if app.session.offline.prompt && app.ui.link_media.is_none() {
-        app.ui.link_media = Some(LinkMediaDraft::default());
+        // Asked on open: list only the newly missing files, not the ones already made offline.
+        let s = &app.session;
+        let skipped = s.offline.missing.iter().filter(|i| s.project.item(**i).and_then(|it| it.as_media()).is_some_and(|m| m.offline)).map(|i| i.0).collect();
+        app.ui.link_media = Some(LinkMediaDraft { skipped, ..LinkMediaDraft::default() });
     }
     if app.ui.link_media.is_some() {
         link_media(app, ctx);
@@ -354,12 +357,18 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
         }
         Some("offline") => {
+            let _ = app.session.execute("media.makeOffline", json!({"items": [item]}));
             d.skipped.push(item);
             d.candidates.clear();
             d.candidate = None;
         }
-        Some("offlineAll") | Some("cancel") => {
+        Some("offlineAll") => {
             let _ = app.session.execute("media.offlineAll", json!({}));
+            keep = false;
+        }
+        // Cancel leaves the files missing for this session only; the next open asks again.
+        Some("cancel") => {
+            app.session.offline.prompt = false;
             keep = false;
         }
         _ => {}

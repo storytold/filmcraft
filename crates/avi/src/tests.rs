@@ -1,5 +1,17 @@
 use super::*;
 
+#[test]
+fn stream_number_supports_decimal_and_hex_ids() {
+    assert_eq!(Stream::number(b"10dc"), Some(10));
+    assert_eq!(Stream::number(b"0adc"), Some(10));
+    assert_eq!(Stream::number(b"00dc"), Some(0));
+    assert_eq!(Stream::number(b"09wb"), Some(9));
+    assert_eq!(Stream::number(b"0Fdc"), Some(15));
+    // `from_str_radix` would take a sign; a chunk id never has one
+    assert_eq!(Stream::number(b"+1dc"), None);
+    assert_eq!(Stream::number(b"ixdc"), None);
+}
+
 fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
     let mut v = id.to_vec();
     v.extend_from_slice(&(data.len() as u32).to_le_bytes());
@@ -23,6 +35,8 @@ fn strl(video: bool) -> Vec<u8> {
     let (scale, rate, ss) = if video { (1u32, 25u32, 0u32) } else { (4, 192_000, 4) };
     strh[20..24].copy_from_slice(&scale.to_le_bytes());
     strh[24..28].copy_from_slice(&rate.to_le_bytes());
+    // declared length: 3 frames, 6 audio blocks
+    strh[32..36].copy_from_slice(&(if video { 3u32 } else { 6 }).to_le_bytes());
     strh[44..48].copy_from_slice(&ss.to_le_bytes());
     let strf = if video {
         let mut b = vec![0u8; 40];
@@ -148,6 +162,74 @@ fn not_avi_and_truncated_recordings() {
     let f = open(&cut).unwrap();
     assert_eq!(f.streams[0].chunks.len(), 3);
     assert!(f.read_chunk(&cut, 0, 0).is_ok());
+}
+
+/// The idx1 entries of one stream damaged (offsets past the file) while the other's are fine: the
+/// video still comes from a scan of `movi` instead of vanishing, its key frames unknown, and the
+/// audio keeps its index. A stream with no data at all stays empty.
+#[test]
+fn a_stream_whose_index_entries_are_damaged_is_scanned() {
+    let mut file = avi(true, false, false);
+    let ix = file.windows(4).rposition(|w| w == b"idx1").unwrap() + 8;
+    for e in file[ix..].as_chunks_mut::<16>().0.iter_mut().filter(|e| &e[..4] == b"00dc") {
+        e[8..12].copy_from_slice(&0xFFFF_FF00u32.to_le_bytes());
+    }
+    let f = open(&file).unwrap();
+    assert_eq!(f.index, IndexSource::Idx1);
+    assert_eq!(table(&f, 0), vec![(10, true), (6, true), (7, true)]);
+    assert!(!f.streams[0].keyframes_known);
+    assert_eq!(f.read_chunk(&file, 0, 1).unwrap(), vec![3; 6]);
+    assert_eq!(table(&f, 1), vec![(16, true), (8, true)]);
+    assert!(f.streams[1].keyframes_known);
+    // with an AVIX extension after it: the first RIFF's frames come first, then the extension's
+    let mut extended = file.clone();
+    extended.extend(chunk(b"RIFF", &[b"AVIX".to_vec(), list(b"movi", &chunk(b"00dc", &[6; 9]))].concat()));
+    let f = open(&extended).unwrap();
+    assert_eq!(table(&f, 0), vec![(10, true), (6, true), (7, true), (9, true)]);
+    assert_eq!(table(&f, 1), vec![(16, true), (8, true)]);
+    // an audio-only recording of a file that declares video: nothing to find
+    let mut silent = avi(true, false, false);
+    while let Some(i) = silent.windows(4).position(|w| w == b"00dc") {
+        silent[i..i + 4].copy_from_slice(b"JUNK");
+    }
+    let f = open(&silent).unwrap();
+    assert!(f.streams[0].chunks.is_empty());
+    assert_eq!(table(&f, 1), vec![(16, true), (8, true)]);
+}
+
+/// A healthy file whose index leaves a stream empty because it declares no data (an audio track
+/// that never recorded a sample) opens from the index alone: the stream is not looked for in
+/// `movi`, which a large file would pay for with a read per chunk.
+#[test]
+fn an_empty_stream_that_declares_no_data_is_not_scanned() {
+    struct Counted<'a>(&'a [u8], std::cell::Cell<usize>);
+    impl ByteSource for Counted<'_> {
+        fn len(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            self.1.set(self.1.get() + 1);
+            self.0.read_at(offset, buf)
+        }
+    }
+    let open_counted = |file: &[u8]| {
+        let src = Counted(file, Default::default());
+        (open(&src).unwrap(), src.1.get())
+    };
+    let intact = avi(true, false, false);
+    // the audio's index entries gone and its length zero; its chunks stay where a scan would find them
+    let mut file = intact.clone();
+    let ix = file.windows(4).rposition(|w| w == b"idx1").unwrap() + 8;
+    for e in file[ix..].as_chunks_mut::<16>().0.iter_mut().filter(|e| &e[..4] == b"01wb") {
+        e[..4].copy_from_slice(b"JUNK");
+    }
+    let strh = file.windows(4).enumerate().filter(|(_, w)| w == b"strh").nth(1).unwrap().0 + 8;
+    file[strh + 32..strh + 36].fill(0);
+    let (f, reads) = open_counted(&file);
+    assert_eq!(f.index, IndexSource::Idx1);
+    assert_eq!(table(&f, 0), vec![(10, true), (6, false), (7, true)]);
+    assert!(f.streams[1].chunks.is_empty() && f.streams[1].keyframes_known);
+    assert_eq!(reads, open_counted(&intact).1);
 }
 
 /// Every single-byte change and every truncation of a valid file opens or fails, never panics, and
@@ -281,4 +363,73 @@ fn opendml_repeated_index_offsets_are_read_once() {
     assert!(read_odml(&file, &mut streams));
     assert_eq!(streams[0].chunks.len(), 3);
     assert_eq!(streams[1].chunks.len(), 2);
+}
+
+/// Tiny `AVIX` forms whose `movi` lists claim the rest of the file: each list is held to its
+/// form, so the chunks after them are neither recorded once per list nor recorded at all.
+#[test]
+fn lists_do_not_reach_past_their_container() {
+    let mut file = avi(false, false, false);
+    let forms = 64;
+    for _ in 0..forms {
+        let mut riff = b"RIFF".to_vec();
+        riff.extend_from_slice(&16u32.to_le_bytes());
+        riff.extend_from_slice(b"AVIX");
+        riff.extend_from_slice(b"LIST");
+        riff.extend_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+        riff.extend_from_slice(b"movi");
+        file.extend(riff);
+    }
+    for _ in 0..32 {
+        file.extend(chunk(b"00dc", &[9; 8]));
+    }
+    let f = open(&file).unwrap();
+    assert_eq!(f.index, IndexSource::Scan);
+    assert_eq!(table(&f, 0), vec![(10, true), (6, true), (7, true)]);
+    assert_eq!(table(&f, 1), vec![(16, true), (8, true)]);
+
+    // `rec ` lists inside one `movi` that each claim the rest of it
+    let mut body = Vec::new();
+    for _ in 0..64 {
+        // LIST(16) rec  { LIST(huge) rec  … }
+        body.extend_from_slice(b"LIST");
+        body.extend_from_slice(&16u32.to_le_bytes());
+        body.extend_from_slice(b"rec LIST");
+        body.extend_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+        body.extend_from_slice(b"rec ");
+    }
+    for _ in 0..32 {
+        body.extend(chunk(b"00dc", &[9; 8]));
+    }
+    let mut streams = open(&avi(false, false, false)).unwrap().streams;
+    clear(&mut streams);
+    let movi = list(b"movi", &body);
+    scan(&movi, &mut streams, &|_| true, 12, movi.len() as u64, 0);
+    assert_eq!(streams[0].chunks.len(), 32);
+}
+
+#[test]
+fn read_chunk_range_reads_only_the_range_and_refuses_one_outside_the_chunk() {
+    let data: Vec<u8> = (0..100).collect();
+    let stream = Stream {
+        kind: StreamKind::Audio,
+        handler: [0; 4],
+        scale: 1,
+        rate: 1,
+        start: 0,
+        length: 0,
+        sample_size: 0,
+        video: None,
+        audio: None,
+        name: None,
+        chunks: vec![Chunk { offset: 10, size: 50, key: true }],
+        keyframes_known: false,
+        super_index: Vec::new(),
+    };
+    let file = AviFile { header: MainHeader::default(), streams: vec![stream], index: IndexSource::Scan };
+    assert_eq!(file.read_chunk_range(&data, 0, 0, 5, 3).unwrap(), [15, 16, 17]);
+    assert_eq!(file.read_chunk_range(&data, 0, 0, 0, 50).unwrap().len(), 50);
+    assert!(file.read_chunk_range(&data, 0, 0, 48, 3).is_err(), "past the chunk's size");
+    assert!(file.read_chunk_range(&data, 0, 0, usize::MAX, 2).is_err());
+    assert!(file.read_chunk_range(&data, 0, 1, 0, 1).is_err());
 }
