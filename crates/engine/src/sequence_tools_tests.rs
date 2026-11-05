@@ -662,6 +662,50 @@ fn range_and_chapter_markers() {
 }
 
 #[test]
+fn marker_commands_leave_hidden_colours_alone_and_adding_shows_them_again() {
+    let mut s = demo();
+    s.execute("markers.clearAll", json!({})).unwrap();
+    for (frame, color) in [(10, "Green"), (20, "Rose"), (30, "Green")] {
+        s.execute("markers.add", json!({"frame": frame, "color": color})).unwrap();
+    }
+    let colors = |s: &Session| s.active_sequence().unwrap().markers.iter().map(|m| m.color).collect::<Vec<_>>();
+    s.execute("markers.filterColors", json!({"color": "Rose", "visible": false})).unwrap();
+    // Go to Next / Previous Marker step over it
+    s.execute("playhead.set", json!({"frame": 10})).unwrap();
+    s.execute("markers.goNext", json!({})).unwrap();
+    assert_eq!(s.playhead(), f(&s, 30));
+    s.execute("markers.goPrev", json!({})).unwrap();
+    assert_eq!(s.playhead(), f(&s, 10));
+    // Clear Selected Marker on its frame leaves it, and a hidden marker is still in the project
+    s.execute("playhead.set", json!({"frame": 20})).unwrap();
+    s.execute("markers.clearCurrent", json!({})).unwrap();
+    assert_eq!(colors(&s), [Label::Green, Label::Rose, Label::Green]);
+    // Clear Markers clears the shown ones only, in one undo step
+    s.execute("markers.clearAll", json!({})).unwrap();
+    assert_eq!(colors(&s), [Label::Rose]);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(colors(&s).len(), 3);
+    // every way of adding a marker in a hidden colour shows that colour again
+    for (cmd, params) in [
+        ("markers.add", json!({"frame": 40, "color": "Rose"})),
+        ("markers.addRange", json!({"color": "Rose"})),
+        ("markers.addChapter", json!({"frame": 50, "color": "Rose"})),
+        ("markers.addFlashCue", json!({"frame": 55, "color": "Rose"})),
+    ] {
+        s.execute("markers.filterColors", json!({"color": "Rose", "visible": false})).unwrap();
+        s.execute(cmd, params).unwrap();
+        assert!(s.state.hidden_marker_colors.is_empty(), "{cmd}");
+    }
+    // a custom colour is filtered on its own: hiding it leaves its preset alone
+    s.execute("markers.add", json!({"frame": 60, "color": "#123456"})).unwrap();
+    let custom = s.active_sequence().unwrap().markers.iter().find(|m| m.custom_color.is_some()).unwrap().clone();
+    s.execute("markers.filterColors", json!({"color": "#123456", "visible": false})).unwrap();
+    assert!(!s.state.marker_shown(&custom));
+    s.execute("markers.add", json!({"frame": 70, "color": "#123456"})).unwrap();
+    assert!(s.state.marker_shown(&custom));
+}
+
+#[test]
 fn unknown_marker_colours_are_rejected_not_stored_as_green() {
     // Unknown names and non-string values must not silently become Green.
     let mut s = demo();
