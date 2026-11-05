@@ -713,6 +713,7 @@ fn graphic_raster_dimensions(src_size: (u32, u32), want: f32) -> (usize, usize) 
     // rounds up, so a width from the closed form can land one row over the budget.
     let (mut lo, mut hi) = (1, desired_w.max(1).min(side));
     while lo < hi {
+        // the upper midpoint: with (hi - lo) / 2, hi == lo + 1 and fits(lo) would loop forever
         let mid = lo + (hi - lo).div_ceil(2);
         if fits(mid) {
             lo = mid;
