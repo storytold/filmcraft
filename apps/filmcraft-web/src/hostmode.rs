@@ -39,6 +39,15 @@ pub fn open_size_ok(len: u64) -> bool {
     len <= MAX_OPEN_BYTES
 }
 
+/// The largest project read whole, the same bound as `fs::WHOLE_FILE_MAX`. A larger `.fcproj`
+/// is refused before its bytes are copied; media up to [`MAX_OPEN_BYTES`] stays a `Blob`.
+pub const PROJECT_OPEN_MAX: u64 = 256 << 20;
+
+/// Whether a project may be copied into the file table and read whole.
+pub fn project_open_ok(len: u64) -> bool {
+    len <= PROJECT_OPEN_MAX
+}
+
 /// Whether a written file becomes the document's file (`filmcraft:save` with `saveAs: true`):
 /// a write the session adopted as its project path that the host did not already have as the
 /// document.

@@ -4,7 +4,7 @@
 #[path = "../../src/hostmode.rs"]
 mod rules;
 
-use rules::{DEFAULT_OPEN_NAME, MAX_OPEN_BYTES, is_project, is_save_as, open_name, open_size_ok};
+use rules::{DEFAULT_OPEN_NAME, MAX_OPEN_BYTES, PROJECT_OPEN_MAX, is_project, is_save_as, open_name, open_size_ok, project_open_ok};
 
 #[test]
 fn open_names_fall_back_to_the_default_and_lose_path_separators() {
@@ -46,4 +46,12 @@ fn open_sizes_up_to_the_limit_are_accepted() {
     assert!(open_size_ok(MAX_OPEN_BYTES));
     assert!(!open_size_ok(MAX_OPEN_BYTES + 1));
     assert_eq!(MAX_OPEN_BYTES >> 20, 512);
+}
+
+#[test]
+fn a_project_over_256_mib_is_refused_before_it_would_be_copied() {
+    assert!(project_open_ok(PROJECT_OPEN_MAX));
+    assert!(!project_open_ok(PROJECT_OPEN_MAX + 1));
+    assert!(open_size_ok(PROJECT_OPEN_MAX + 1), "media may still be that large, as a Blob");
+    assert_eq!(PROJECT_OPEN_MAX >> 20, 256);
 }

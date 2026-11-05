@@ -11,8 +11,9 @@
 //!   bytes, so it says `file: false` and a host sends `bytes`.
 //! - `filmcraft:open` (from the host): `{ name, bytes }`. A `.fcproj` opens like a project picked
 //!   with File › Open or dropped on the page; any other file imports like a dropped one. Over
-//!   [`MAX_OPEN_BYTES`] (512 MiB, refused before any byte is copied) or malformed: a message in
-//!   the app's status bar, never a crash.
+//!   [`MAX_OPEN_BYTES`] (512 MiB), or a project over [`PROJECT_OPEN_MAX`] (256 MiB, the whole-file
+//!   read), refused before any byte is copied; anything malformed is a message in the app's
+//!   status bar, never a crash.
 //! - `filmcraft:save` (to the host): `{ name, saveAs, bytes }` for every file FilmCraft would
 //!   otherwise download — see the `saveAs` rule below.
 //! - `filmcraft:dirty` whenever unsaved changes appear or go away (the session's own
@@ -53,7 +54,7 @@ use std::rc::Rc;
 use craft_web_host::web::{FileData, Host, Message};
 use filmcraft_engine::Session;
 
-use crate::hostmode::{MAX_OPEN_BYTES, is_project, is_save_as, open_name, open_size_ok};
+use crate::hostmode::{MAX_OPEN_BYTES, PROJECT_OPEN_MAX, is_project, is_save_as, open_name, open_size_ok, project_open_ok};
 
 /// The app id in the host messages (`filmcraft:ready`).
 const APP: &str = "filmcraft";
@@ -179,6 +180,11 @@ fn deliver_open(bridge: &Bridge, name: &str, data: &FileData) {
     }
     let name = open_name(name);
     if is_project(&name) {
+        // A project is read whole, and that read stops at 256 MiB. Refuse a larger one before
+        // copying it into the file table, where the open would then fail.
+        if !project_open_ok(len) {
+            return rejected_open(format!("{len} bytes is over the {} MiB limit for reading a project whole", PROJECT_OPEN_MAX >> 20));
+        }
         let bytes = array.to_vec();
         let path = format!("/projects/{name}");
         let opened = bridge.clone();
