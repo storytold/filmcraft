@@ -1985,7 +1985,10 @@ fn build() -> Vec<CommandSpec> {
                 next.set(k, p.get("value").cloned().ok_or_else(|| bad("prefs.set", "need `value`"))?).map_err(|e| bad("prefs.set", e))?;
             }
             if let Some(m) = p.get("values").and_then(Value::as_object) {
-                for (k, v) in m {
+                // units first, so each duration is checked against the unit it is saved with
+                let mut entries: Vec<_> = m.iter().collect();
+                entries.sort_by_key(|(k, _)| !crate::settings::is_unit_key(k));
+                for (k, v) in entries {
                     next.set(k, v.clone()).map_err(|e| bad("prefs.set", e))?;
                 }
             }
