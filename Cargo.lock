@@ -1147,6 +1147,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-web-host"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=2e2312ddaf21bc3d85cd3395d0955c7d239306f6#2e2312ddaf21bc3d85cd3395d0955c7d239306f6"
+dependencies = [
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2584,6 +2593,7 @@ dependencies = [
 name = "filmcraft-web"
 version = "0.17.0"
 dependencies = [
+ "craft-web-host",
  "eframe",
  "egui",
  "filmcraft-codecs",

@@ -133,10 +133,6 @@ fn query_flag(name: &str) -> bool {
     web_sys::window().and_then(|w| w.location().search().ok()).and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok()).is_some_and(|p| p.has(name))
 }
 
-fn query_param(name: &str) -> Option<String> {
-    web_sys::window().and_then(|w| w.location().search().ok()).and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok()).and_then(|p| p.get(name))
-}
-
 /// Entry point (called by the page's bootstrap script once the wasm module is instantiated).
 #[wasm_bindgen]
 pub async fn start(canvas_id: String) -> Result<(), JsValue> {
@@ -145,19 +141,13 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
     let canvas: web_sys::HtmlCanvasElement = doc.get_element_by_id(&canvas_id).ok_or("no canvas")?.dyn_into()?;
 
-    // Host modes: `?host=parent`, a same-origin page framing FilmCraft in an `<iframe>`, opens
-    // files in it and stores what it saves (`host`); unframed there is no parent, so that URL
-    // on its own stays the normal app with downloads. `data-host="page"` on the canvas opts a
-    // page in instead: it runs FilmCraft in its own document and talks over DOM `CustomEvent`s
-    // on the canvas. In host mode the host sends the document to edit, so no demo project
-    // opens and nothing from an earlier visit is recovered.
-    let host = if query_param("host").as_deref() == Some("parent") {
-        host::Bridge::new()
-    } else if hostmode::page_host_requested(canvas.get_attribute("data-host").as_deref()) {
-        Some(host::Bridge::for_page(&canvas))
-    } else {
-        None
-    };
+    // Host modes (`craft-web-host`): `?host=parent`, a same-origin page framing FilmCraft in an
+    // `<iframe>`, opens files in it and stores what it saves (`host`); unframed there is no parent,
+    // so that URL on its own stays the normal app with downloads. `data-host="page"` on the canvas
+    // opts a page in instead: it runs FilmCraft in its own document and talks over DOM
+    // `CustomEvent`s on the canvas. In host mode the host sends the document to edit, so no demo
+    // project opens and nothing from an earlier visit is recovered.
+    let host = host::Bridge::connect(&canvas);
     let in_host_mode = host.is_some();
 
     let isolated = js_sys::Reflect::get(&js_sys::global(), &"crossOriginIsolated".into()).ok().and_then(|v| v.as_bool()).unwrap_or(false);

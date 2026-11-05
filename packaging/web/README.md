@@ -83,7 +83,7 @@ downloading them. The two sides talk `postMessage` with plain window messages th
 
 | Message | Direction | Fields |
 |---|---|---|
-| `filmcraft:ready` | app → page | `version`: the app is running and listening; send a file now |
+| `filmcraft:ready` | app → page | `version`, `appVersion`: the app is running and listening; send a file now |
 | `filmcraft:open` | page → app | `name`, `bytes` (an `ArrayBuffer` or `Uint8Array`): a `.fcproj` opens like File › Open, anything else imports like a file dropped on the page. Over 512 MiB or malformed: refused with a message in the app, nothing crashes |
 | `filmcraft:save` | app → page | `name`, `saveAs`, `bytes` (a transferred `ArrayBuffer`): every file the app would otherwise download — Save, Save As, Save a Copy, video / frame / audio exports, captions, interchange (AAF, OMF, EDL, markers), extracted audio, the schema backup. The page stores it and reports failures itself. `saveAs` says whether the file becomes the document's file — the project the next Save writes: `true` when the app adopts the file and the page didn't already have it as the document (Save As, and the first Save of a project the page never sent); `false` for a Save of the document under its own name and for every copy (Save a Copy, exports, the schema backup beside an upgraded project) |
 | `filmcraft:dirty` | app → page | `dirty`: unsaved changes appeared or went away |
@@ -158,6 +158,8 @@ await start("filmcraft_canvas"); // the canvas id the app renders on
   `data-host="page"` turns this mode on only when `?host=parent` is absent: if `?host=parent` is
   present it takes precedence, so a same-origin framed page uses the parent bridge, while an
   unframed or cross-origin page gets no bridge and keeps normal downloads.
+
+The messages and both transports are the shared contract of [`craft-web-host`](https://github.com/storytold/craft-libs/tree/main/crates/web-host) (storytold/craft-libs#420), the same for every Craft app: its README lists every message, including `saved`, with the compatibility notes. In `filmcraft:ready`, `version` is the contract's (`"1"`) and `appVersion` is this app's release. FilmCraft reads bytes, so a host sends `bytes`, not a `File`.
 
 ### Trust and limits
 

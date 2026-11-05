@@ -1,9 +1,6 @@
 //! Pure host-mode rules, shared by the bridge ([`crate::host`]) and testable without a browser:
-//! what opts a page into hosting FilmCraft in its own document, and the name and kind the
-//! bridge reads out of an open request. Pure, so it is tested natively in `tests/it/hostmode.rs`.
-
-/// The one `data-host` value that opts a page in: the exact string `"page"`.
-pub const PAGE_HOST: &str = "page";
+//! the name and kind the bridge reads out of an open request, and the `saveAs` rule. Which pages
+//! host the app is `craft-web-host`'s. Pure, so it is tested natively in `tests/it/hostmode.rs`.
 
 /// The file name used when an open request carries no usable one: an untitled project — what
 /// a host that never names a file still opens (FilmCraft's document is its project file).
@@ -13,18 +10,16 @@ pub const DEFAULT_OPEN_NAME: &str = "Untitled.fcproj";
 /// file dropped on the page.
 pub const PROJECT_EXT: &str = ".fcproj";
 
-/// Does this `data-host` value ask for page host mode? Only the exact value [`PAGE_HOST`]
-/// counts; anything else is ignored, so the page host mode stays opt-in. `?host=parent`, the
-/// parent bridge's URL opt-in, is answered before this is asked.
-pub fn page_host_requested(data_host: Option<&str>) -> bool {
-    data_host == Some(PAGE_HOST)
-}
+/// The name `craft-web-host` gives an open request that carries no usable one (it cleans a host's
+/// name and falls back to this).
+const NAMELESS: &str = "document";
 
-/// A usable file name for an open request: the host's name when it isn't blank, else the
-/// [`DEFAULT_OPEN_NAME`]. `/` and `\` become `_`, as [`crate::fs::register_blob`] does for
-/// dropped names — the name becomes a path in the virtual file table.
-pub fn open_name(name: Option<&str>) -> String {
-    let name = name.filter(|n| !n.trim().is_empty()).unwrap_or(DEFAULT_OPEN_NAME);
+/// A usable file name for an open request: the cleaned name the crate hands over, or
+/// [`DEFAULT_OPEN_NAME`] when the host sent none. `/` and `\` become `_`, as
+/// [`crate::fs::register_blob`] does for dropped names — the name becomes a path in the virtual
+/// file table.
+pub fn open_name(name: &str) -> String {
+    let name = if name == NAMELESS || name.trim().is_empty() { DEFAULT_OPEN_NAME } else { name };
     name.chars().map(|c| if c == '/' || c == '\\' { '_' } else { c }).collect()
 }
 

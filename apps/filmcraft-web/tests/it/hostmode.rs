@@ -1,26 +1,18 @@
-//! The page host mode's pure rules (the `data-host` opt-in, open names, project or media). They run
+//! The page host mode's pure rules (open names, project or media). They run
 //! natively even though the rest of the crate is wasm32-only.
 
 #[path = "../../src/hostmode.rs"]
 mod rules;
 
-use rules::{DEFAULT_OPEN_NAME, MAX_OPEN_BYTES, is_project, is_save_as, open_name, open_size_ok, page_host_requested};
-
-#[test]
-fn only_the_exact_page_value_opts_in() {
-    assert!(page_host_requested(Some("page")));
-    for off in [None, Some(""), Some("Page"), Some("PAGE"), Some(" page"), Some("page "), Some("parent")] {
-        assert!(!page_host_requested(off), "{off:?} must keep the page host mode off");
-    }
-}
+use rules::{DEFAULT_OPEN_NAME, MAX_OPEN_BYTES, is_project, is_save_as, open_name, open_size_ok};
 
 #[test]
 fn open_names_fall_back_to_the_default_and_lose_path_separators() {
-    assert_eq!(open_name(Some("Trailer v2.fcproj")), "Trailer v2.fcproj");
-    assert_eq!(open_name(Some(" Sheet2/../../etc.fcproj ")), " Sheet2_.._.._etc.fcproj ");
-    assert_eq!(open_name(Some("")), DEFAULT_OPEN_NAME);
-    assert_eq!(open_name(Some("   ")), DEFAULT_OPEN_NAME);
-    assert_eq!(open_name(None), DEFAULT_OPEN_NAME);
+    assert_eq!(open_name("Trailer v2.fcproj"), "Trailer v2.fcproj");
+    assert_eq!(open_name("Sheet2/../etc.fcproj"), "Sheet2_.._etc.fcproj");
+    assert_eq!(open_name("document"), DEFAULT_OPEN_NAME, "what the crate says for a missing or blank name");
+    assert_eq!(open_name(""), DEFAULT_OPEN_NAME);
+    assert_eq!(open_name("   "), DEFAULT_OPEN_NAME);
 }
 
 #[test]
