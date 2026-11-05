@@ -201,7 +201,8 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     // The Decupador Inteligente keeps its own language (decupador.json) unless one is asked for:
     // the editor's default language is a Whisper setting.
     #[cfg(not(target_arch = "wasm32"))]
-    let opts = if t.id().starts_with(filmcraft_speech::decupador::ID_PREFIX) && str_p(p, "language").is_none() { Options { language: None, ..opts } } else { opts };
+    let opts =
+        if t.id().starts_with(filmcraft_speech::decupador::ID_PREFIX) && str_p(p, "language").is_none() { Options { language: None, ..opts } } else { opts };
     let mut done: Vec<(ItemId, Transcript)> = Vec::new();
     let mut skipped = Vec::new();
     for item in items {

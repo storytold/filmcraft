@@ -47,7 +47,11 @@ fn never_more_than_three_lines_and_no_lone_last_word() {
         let last = c.lines.last().unwrap();
         if c.lines.len() > 1 && last.len() == 1 {
             let m = metrics(&w, &h);
-            assert!(m[last[0]].hero || c.words.iter().find(|p| p.index == last[0]).unwrap().width >= 0.45 * c.width, "widow in {text}: {:?}", line_texts(&w, &c));
+            assert!(
+                m[last[0]].hero || c.words.iter().find(|p| p.index == last[0]).unwrap().width >= 0.45 * c.width,
+                "widow in {text}: {:?}",
+                line_texts(&w, &c)
+            );
         }
         // every word is placed once, in order
         let idx: Vec<usize> = c.words.iter().map(|p| p.index).collect();
@@ -166,7 +170,12 @@ fn seq() -> Session {
 #[test]
 fn apply_makes_one_clip_with_a_layer_per_word_and_no_overshoot() {
     let mut s = seq();
-    let r = s.execute("lettering.apply", json!({"text": "Nunca pague 10 mil por um logo sem estratégia", "family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+    let r = s
+        .execute(
+            "lettering.apply",
+            json!({"text": "Nunca pague 10 mil por um logo sem estratégia", "family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"}),
+        )
+        .unwrap();
     assert_eq!(r["applied"], true, "{r}");
     let clip = filmcraft_project::ClipId(r["clip"].as_u64().unwrap());
     let q = s.active_sequence().unwrap();
@@ -214,7 +223,11 @@ fn apply_reports_a_phrase_that_cannot_fit_instead_of_squeezing_it() {
 #[test]
 fn from_selection_letters_the_selected_caption_where_it_sits() {
     let mut s = seq();
-    let cap = s.execute("captions.add", json!({"track": "C1", "text": "Nunca pague 10 mil por um logo sem estratégia", "seconds": 5.0, "durationSeconds": 3.0})).unwrap()["caption"].as_u64().unwrap();
+    let cap = s
+        .execute("captions.add", json!({"track": "C1", "text": "Nunca pague 10 mil por um logo sem estratégia", "seconds": 5.0, "durationSeconds": 3.0}))
+        .unwrap()["caption"]
+        .as_u64()
+        .unwrap();
     s.execute("captions.select", json!({"captions": [cap]})).unwrap();
     let r = s.execute("lettering.fromSelection", json!({"family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
     assert_eq!(r["applied"], true, "{r}");
@@ -257,10 +270,13 @@ fn monumental_look_reveals_each_word_through_a_mask_and_makes_heroes_huge() {
         assert_eq!(e.masks.len(), 1);
         let ParamValue::Path(closed) = e.masks[0].path.value_at(Tick(0)) else { panic!("mask path expected") };
         let ParamValue::Path(open) = e.masks[0].path.value_at(Tick::from_seconds_f64(2.5)) else { panic!("mask path expected") };
-        let height = |p: &filmcraft_project::MaskPath| p.vertices.iter().map(|v| v.p.y).fold(f64::MIN, f64::max) - p.vertices.iter().map(|v| v.p.y).fold(f64::MAX, f64::min);
+        let height = |p: &filmcraft_project::MaskPath| {
+            p.vertices.iter().map(|v| v.p.y).fold(f64::MIN, f64::max) - p.vertices.iter().map(|v| v.p.y).fold(f64::MAX, f64::min)
+        };
         assert!(height(&closed) < 1.0 && height(&open) > 10.0);
     }
-    let size = |name: &str| layers.iter().find(|e| e.params["text"].value == ParamValue::Text(name.into())).and_then(|e| e.params["size"].value.as_f64()).unwrap();
+    let size =
+        |name: &str| layers.iter().find(|e| e.params["text"].value == ParamValue::Text(name.into())).and_then(|e| e.params["size"].value.as_f64()).unwrap();
     assert!(size("Nunca") > 2.0 * size("logo"));
 }
 

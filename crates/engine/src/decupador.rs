@@ -21,10 +21,12 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use filmcraft_audio_dsp::sync::{SyncOptions, find_offset};
 use filmcraft_edit::transcript::SeqWord;
 use filmcraft_interchange::Format;
-use filmcraft_audio_dsp::sync::{SyncOptions, find_offset};
-use filmcraft_project::{ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, MediaRef, Sequence, SequenceSettings, TrackItem, TrackKind, Transcript};
+use filmcraft_project::{
+    ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, MediaRef, Sequence, SequenceSettings, TrackItem, TrackKind, Transcript,
+};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p};
@@ -232,10 +234,13 @@ fn apply_plan(s: &mut Session, p: &Value) -> Result<Value> {
     let cuts: Vec<&Cut> = plan.cuts.iter().filter(|c| wanted.is_none_or(|w| c.id == w)).collect();
     if cuts.is_empty() {
         let ids: Vec<&str> = plan.cuts.iter().map(|c| c.id.as_str()).collect();
-        return Err(bad(CMD, match wanted {
-            Some(w) => format!("no cut `{w}` in the plan (cuts: {})", ids.join(", ")),
-            None => "the plan has no cuts".into(),
-        }));
+        return Err(bad(
+            CMD,
+            match wanted {
+                Some(w) => format!("no cut `{w}` in the plan (cuts: {})", ids.join(", ")),
+                None => "the plan has no cuts".into(),
+            },
+        ));
     }
     let mut timelines = Vec::new();
     let mut summary = Vec::new();
@@ -306,12 +311,19 @@ pub fn candidates(words: &[SeqWord], min_silence: f64, min_prob: f64, max_gap: f
     for w in words.windows(2) {
         let gap = secs(w[1].start) - secs(w[0].end);
         if gap >= min_silence {
-            out.push(Candidate { kind: "silence", start: w[0].end, end: w[1].start, text: format!("{} … {}", w[0].text, w[1].text), value: (gap * 100.0).round() / 100.0 });
+            out.push(Candidate {
+                kind: "silence",
+                start: w[0].end,
+                end: w[1].start,
+                text: format!("{} … {}", w[0].text, w[1].text),
+                value: (gap * 100.0).round() / 100.0,
+            });
         }
     }
     // fillers: words and phrases, longest first so "tipo assim" wins over "tipo"
     let normed: Vec<String> = words.iter().map(|w| norm(&w.text)).collect();
-    let mut phrases: Vec<Vec<String>> = muletas.iter().map(|m| m.split_whitespace().map(norm).filter(|x| !x.is_empty()).collect::<Vec<_>>()).filter(|v| !v.is_empty()).collect();
+    let mut phrases: Vec<Vec<String>> =
+        muletas.iter().map(|m| m.split_whitespace().map(norm).filter(|x| !x.is_empty()).collect::<Vec<_>>()).filter(|v| !v.is_empty()).collect();
     phrases.sort_by_key(|p| std::cmp::Reverse(p.len()));
     let mut i = 0;
     while i < normed.len() {
@@ -329,7 +341,13 @@ pub fn candidates(words: &[SeqWord], min_silence: f64, min_prob: f64, max_gap: f
     let flush = |span: &mut Vec<&SeqWord>, out: &mut Vec<Candidate>| {
         if let (Some(a), Some(b)) = (span.first(), span.last()) {
             let low = span.iter().map(|w| f64::from(w.confidence)).fold(1.0, f64::min);
-            out.push(Candidate { kind: "lowConfidence", start: a.start, end: b.end, text: span.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" "), value: (low * 1000.0).round() / 1000.0 });
+            out.push(Candidate {
+                kind: "lowConfidence",
+                start: a.start,
+                end: b.end,
+                text: span.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" "),
+                value: (low * 1000.0).round() / 1000.0,
+            });
         }
         span.clear();
     };
@@ -394,7 +412,18 @@ fn mark(s: &mut Session, p: &Value) -> Result<Value> {
         let removed = before - q.markers.len();
         for c in &cs {
             let (name, comment, color) = marker_of(c);
-            q.markers.push(Marker { id: MarkerId(ctx.alloc()), url: String::new(), author: String::new(), custom_color: None, start: c.start, duration: (c.end - c.start).max(Tick::ZERO), name, comment, kind: MarkerKind::Comment, color });
+            q.markers.push(Marker {
+                id: MarkerId(ctx.alloc()),
+                url: String::new(),
+                author: String::new(),
+                custom_color: None,
+                start: c.start,
+                duration: (c.end - c.start).max(Tick::ZERO),
+                name,
+                comment,
+                kind: MarkerKind::Comment,
+                color,
+            });
         }
         q.markers.sort_by_key(|m| m.start);
         Ok(removed)
@@ -521,7 +550,11 @@ fn best_sync(recorders: &[Vec<f32>], camera: &[f32]) -> Option<(usize, f64, f32)
     recorders
         .iter()
         .enumerate()
-        .filter_map(|(i, a)| find_offset(a, camera, sr, &SyncOptions::default()).filter(|r| !r.inverted || r.confidence > 0.0).map(|r| (i, r.lag_fine / f64::from(sr), r.confidence)))
+        .filter_map(|(i, a)| {
+            find_offset(a, camera, sr, &SyncOptions::default())
+                .filter(|r| !r.inverted || r.confidence > 0.0)
+                .map(|r| (i, r.lag_fine / f64::from(sr), r.confidence))
+        })
         .max_by(|x, y| x.2.total_cmp(&y.2))
 }
 
@@ -580,7 +613,11 @@ fn transcribe_session(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other("none of the takes has audio that can be read".into()));
     }
     let tr = crate::transcript::transcriber(s, p)?;
-    let opts = filmcraft_speech::Options { language: str_p(p, "language").filter(|l| !l.is_empty() && *l != "auto").map(str::to_string), diarize: false, max_speakers: 1 };
+    let opts = filmcraft_speech::Options {
+        language: str_p(p, "language").filter(|l| !l.is_empty() && *l != "auto").map(str::to_string),
+        diarize: false,
+        max_speakers: 1,
+    };
     let mut whole = tr.transcribe(&all, &opts, &mut |_, _| true).map_err(|e| EngineError::Other(e.to_string()))?;
     whole.normalize();
     let per_take = split_words(&whole, &spans);
@@ -632,7 +669,8 @@ fn transcribe_session(s: &mut Session, p: &Value) -> Result<Value> {
                 // the camera's own sound: its picture sits right above it, linked
                 let l = pr.alloc_id();
                 ti.link = Some(l);
-                let mut v = pr.make_track_item(t.item, TrackKind::Video, at, TimeRange::new(Tick::ZERO, len), rate).ok_or_else(|| bad(CMD, "bad video take"))?;
+                let mut v =
+                    pr.make_track_item(t.item, TrackKind::Video, at, TimeRange::new(Tick::ZERO, len), rate).ok_or_else(|| bad(CMD, "bad video take"))?;
                 v.duration = ti.duration;
                 v.link = Some(l);
                 if let Some((_, size)) = sizes.iter().find(|(i, _)| *i == t.item) {
@@ -657,7 +695,8 @@ fn transcribe_session(s: &mut Session, p: &Value) -> Result<Value> {
             if len <= source_in {
                 continue;
             }
-            let mut ti = pr.make_track_item(item, TrackKind::Video, at, TimeRange::new(source_in, len - source_in), rate).ok_or_else(|| bad(CMD, "bad video take"))?;
+            let mut ti =
+                pr.make_track_item(item, TrackKind::Video, at, TimeRange::new(source_in, len - source_in), rate).ok_or_else(|| bad(CMD, "bad video take"))?;
             if let Some((_, size)) = sizes.iter().find(|(i, _)| *i == item) {
                 for e in &mut ti.effects {
                     filmcraft_project::resolve_auto_points(e, (settings.width, settings.height), *size);
@@ -741,7 +780,12 @@ fn context(s: &mut Session, p: &Value) -> Result<Value> {
     let mut cur: Vec<&SeqWord> = Vec::new();
     let flush = |cur: &mut Vec<&SeqWord>, lines: &mut Vec<String>| {
         if let (Some(a), Some(b)) = (cur.first(), cur.last()) {
-            lines.push(format!("[{}–{}] {}", mmss(a.start.seconds()), mmss(b.end.seconds()), cur.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ")));
+            lines.push(format!(
+                "[{}–{}] {}",
+                mmss(a.start.seconds()),
+                mmss(b.end.seconds()),
+                cur.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ")
+            ));
         }
         cur.clear();
     };
@@ -1235,7 +1279,18 @@ fn align_script(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit_sequence("Align Script", |q, ctx, _| {
         q.markers.retain(|m| !m.name.starts_with(SCRIPT_PREFIX));
         for (start, end, name, comment, color) in markers {
-            q.markers.push(Marker { id: MarkerId(ctx.alloc()), url: String::new(), author: String::new(), custom_color: None, start, duration: (end - start).max(Tick::ZERO), name, comment, kind: MarkerKind::Comment, color });
+            q.markers.push(Marker {
+                id: MarkerId(ctx.alloc()),
+                url: String::new(),
+                author: String::new(),
+                custom_color: None,
+                start,
+                duration: (end - start).max(Tick::ZERO),
+                name,
+                comment,
+                kind: MarkerKind::Comment,
+                color,
+            });
         }
         q.markers.sort_by_key(|m| m.start);
         Ok(())
@@ -1260,13 +1315,29 @@ fn has_words(s: &Session) -> std::result::Result<(), String> {
     if crate::transcript::sequence_words(s).is_empty() { Err("the sequence has no transcript (Transcribe first)".into()) } else { Ok(()) }
 }
 
-fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], params: &'static str, enabled: fn(&Session) -> std::result::Result<(), String>, run: fn(&mut Session, &Value) -> Result<Value>, journal: bool) -> CommandSpec {
+fn spec(
+    id: &'static str,
+    label: &'static str,
+    menu: &'static [&'static str],
+    params: &'static str,
+    enabled: fn(&Session) -> std::result::Result<(), String>,
+    run: fn(&mut Session, &Value) -> Result<Value>,
+    journal: bool,
+) -> CommandSpec {
     CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal }
 }
 
 pub fn commands() -> Vec<CommandSpec> {
     vec![
-        spec("decupador.applyPlan", "Apply Decoupage Plan…", &["Sequence", "Decupador Inteligente"], r#"{"plan":{cuts:[{id,title?,segments:[{start,end}]}]}?,"path":str?,"cut":str?,"sequence":id?,"root":str?}"#, always, apply_plan, true),
+        spec(
+            "decupador.applyPlan",
+            "Apply Decoupage Plan…",
+            &["Sequence", "Decupador Inteligente"],
+            r#"{"plan":{cuts:[{id,title?,segments:[{start,end}]}]}?,"path":str?,"cut":str?,"sequence":id?,"root":str?}"#,
+            always,
+            apply_plan,
+            true,
+        ),
         spec(
             "decupador.markCandidates",
             "Mark Decoupage Candidates",
@@ -1285,9 +1356,25 @@ pub fn commands() -> Vec<CommandSpec> {
             transcribe_session,
             true,
         ),
-        spec("decupador.alignScript", "Align Script…", &["Sequence", "Decupador Inteligente"], r#"{"path":str?,"sequence":id?}"#, has_words, align_script, true),
+        spec(
+            "decupador.alignScript",
+            "Align Script…",
+            &["Sequence", "Decupador Inteligente"],
+            r#"{"path":str?,"sequence":id?}"#,
+            has_words,
+            align_script,
+            true,
+        ),
         spec("decupador.context", "Decoupage Context", &[], r#"{"sequence":id?,"paragraphGap":f?}"#, has_seq, context, false),
-        spec("decupador.candidates", "List Decoupage Candidates", &[], r#"{"minSilence":f?,"minProb":f?,"maxGap":f?,"muletas":[str]?}"#, has_words, list, false),
+        spec(
+            "decupador.candidates",
+            "List Decoupage Candidates",
+            &[],
+            r#"{"minSilence":f?,"minProb":f?,"maxGap":f?,"muletas":[str]?}"#,
+            has_words,
+            list,
+            false,
+        ),
     ]
 }
 
@@ -1297,7 +1384,17 @@ mod tests {
     use filmcraft_project::{ClipId, ItemId};
 
     fn w(text: &str, a: f64, b: f64, conf: f32) -> SeqWord {
-        SeqWord { text: text.into(), start: Tick::from_seconds_f64(a), end: Tick::from_seconds_f64(b), clip: ClipId(1), item: ItemId(1), index: 0, track: 0, speaker: None, confidence: conf }
+        SeqWord {
+            text: text.into(),
+            start: Tick::from_seconds_f64(a),
+            end: Tick::from_seconds_f64(b),
+            clip: ClipId(1),
+            item: ItemId(1),
+            index: 0,
+            track: 0,
+            speaker: None,
+            confidence: conf,
+        }
     }
 
     fn muletas() -> Vec<String> {
@@ -1319,7 +1416,10 @@ mod tests {
         ];
         let c = candidates(&words, 0.8, 0.6, 0.6, &muletas());
         let kinds: Vec<(&str, &str)> = c.iter().map(|c| (c.kind, c.text.as_str())).collect();
-        assert_eq!(kinds, vec![("filler", "então"), ("filler", "é"), ("silence", "importante. … Tipo"), ("filler", "tipo assim"), ("lowConfidence", "eee hum")]);
+        assert_eq!(
+            kinds,
+            vec![("filler", "então"), ("filler", "é"), ("silence", "importante. … Tipo"), ("filler", "tipo assim"), ("lowConfidence", "eee hum")]
+        );
         assert_eq!(c[2].value, 1.3);
         assert_eq!(c[4].value, 0.3);
         // the conjunction "e" is not the filler "é"
@@ -1364,7 +1464,11 @@ mod tests {
         // moov > mvhd, version 0 (32-bit times) and version 1 (64-bit times)
         let mvhd = |v1: bool, t: u64| {
             let mut b = Vec::new();
-            let body: Vec<u8> = if v1 { [vec![1, 0, 0, 0], t.to_be_bytes().to_vec(), vec![0; 20]].concat() } else { [vec![0, 0, 0, 0], (t as u32).to_be_bytes().to_vec(), vec![0; 20]].concat() };
+            let body: Vec<u8> = if v1 {
+                [vec![1, 0, 0, 0], t.to_be_bytes().to_vec(), vec![0; 20]].concat()
+            } else {
+                [vec![0, 0, 0, 0], (t as u32).to_be_bytes().to_vec(), vec![0; 20]].concat()
+            };
             b.extend_from_slice(&((8 + body.len()) as u32).to_be_bytes());
             b.extend_from_slice(b"mvhd");
             b.extend_from_slice(&body);
@@ -1426,7 +1530,8 @@ mod tests {
         use filmcraft_speech::FixedTranscriber;
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
-        let takes: Vec<u64> = s.project.items.values().filter(|i| matches!(i.kind, ItemKind::Media(_)) && i.has_video() && i.has_audio()).map(|i| i.id.0).collect();
+        let takes: Vec<u64> =
+            s.project.items.values().filter(|i| matches!(i.kind, ItemKind::Media(_)) && i.has_video() && i.has_audio()).map(|i| i.id.0).collect();
         assert!(takes.len() >= 2, "the demo has clips with sound");
         let mut t = Transcript { language: "pt".into(), ..Default::default() };
         for k in 0..120 {
@@ -1507,13 +1612,24 @@ mod tests {
         .map(|t| (String::new(), t.to_string()))
         .collect();
         let lines: Vec<String> = script_lines(&blocks).into_iter().map(|l| l.text).collect();
-        assert_eq!(lines, ["Sua marca já tentou virar outra coisa pra vender mais?", "A dualidade de separar o negócio de nosso propósito, acaba nos desviando.", "Segue aqui pra gente destrinchar isso."]);
-        assert_eq!(blocks_of_text("# Abertura\nLinha um\ncontinua\n\nLinha dois\n").into_iter().map(|b| b.1).collect::<Vec<_>>(), ["Linha um continua", "Linha dois"]);
+        assert_eq!(
+            lines,
+            [
+                "Sua marca já tentou virar outra coisa pra vender mais?",
+                "A dualidade de separar o negócio de nosso propósito, acaba nos desviando.",
+                "Segue aqui pra gente destrinchar isso."
+            ]
+        );
+        assert_eq!(
+            blocks_of_text("# Abertura\nLinha um\ncontinua\n\nLinha dois\n").into_iter().map(|b| b.1).collect::<Vec<_>>(),
+            ["Linha um continua", "Linha dois"]
+        );
     }
 
     #[test]
     fn the_script_lines_up_with_attempts_and_false_starts() {
-        let script = vec![Line { text: "E se, no fim, nenhuma dessas roupas for a sua marca?".into() }, Line { text: "Segue aqui pra gente destrinchar isso.".into() }];
+        let script =
+            vec![Line { text: "E se, no fim, nenhuma dessas roupas for a sua marca?".into() }, Line { text: "Segue aqui pra gente destrinchar isso.".into() }];
         let said = "Luz, ação. E se no fim nenhuma dessas roupas for a sua... pera aí. E se no fim nenhuma dessas roupas for a sua marca? Bate a palma. Segue aqui para a gente destrinchar melhor esse assunto. Fechou.";
         let words: Vec<SeqWord> = said.split_whitespace().enumerate().map(|(i, t)| w(t, i as f64 * 0.4, i as f64 * 0.4 + 0.3, 0.9)).collect();
         let a = align(&script, &words);
@@ -1550,7 +1666,8 @@ mod tests {
     #[test]
     fn timeline_links_picture_and_sound() {
         let rate = FrameRate::new(30, 1);
-        let p = Placed { video: "/v.mov".into(), audio: "/a.m4a".into(), external_audio: true, video_in: 10, frames: 30, audio_in: Tick::from_seconds_f64(2.5) };
+        let p =
+            Placed { video: "/v.mov".into(), audio: "/a.m4a".into(), external_audio: true, video_in: 10, frames: 30, audio_in: Tick::from_seconds_f64(2.5) };
         let t = timeline("T", &[p], rate, &SequenceSettings::default());
         let kids = &t["tracks"]["children"];
         assert_eq!(kids[0]["kind"], "Video");
