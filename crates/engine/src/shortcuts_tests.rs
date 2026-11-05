@@ -390,3 +390,40 @@ fn default_keymaps_have_no_conflicts_on_any_platform() {
         assert!(mac.iter().any(|b| b.command == cmd && b.keys == keys), "{cmd} {keys} on macOS");
     }
 }
+
+#[test]
+fn a_preset_named_active_does_not_replace_the_active_set() {
+    let dir = temp_dir("active-name");
+    let mut s = Shortcuts::new();
+    s.set_dir(&dir);
+    let active = dir.join("Keyboard Shortcuts").join("active.json");
+    let before = std::fs::read(&active).ok();
+    // a preset file whose own name is "active", imported without activating it
+    let file = dir.join("in.json");
+    s.export(&file).unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    v["name"] = json!("active");
+    std::fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
+    s.import(&file, false).unwrap();
+    assert_eq!(std::fs::read(&active).ok(), before, "the active set file is untouched");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn presets_named_active_get_their_own_files() {
+    let dir = temp_dir("active-paths");
+    let mut s = Shortcuts::new();
+    s.set_dir(&dir);
+    let presets = dir.join("Keyboard Shortcuts");
+    let path = |n: &str| s.preset_path(n).unwrap();
+    assert_ne!(path("active"), presets.join("active.json"));
+    assert_ne!(path("active"), path("active (preset)"), "a preset named like the old redirect must not collide");
+    // a mixed-case preset saved by an earlier version stays reachable on a case-sensitive file system
+    std::fs::create_dir_all(&presets).unwrap();
+    std::fs::write(presets.join("Active.json"), b"{}").unwrap();
+    if !presets.join("active.json").exists() {
+        assert_eq!(path("Active"), presets.join("Active.json"));
+        assert_ne!(path("active"), presets.join("Active.json"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

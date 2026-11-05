@@ -461,7 +461,7 @@
 	Replace	Reemplazar
 	Yes	Sí
 	No	No
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Añade medios a tu proyecto. Suelta archivos en cualquier parte de la ventana o elige un origen abajo.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Añade medios a tu proyecto. Suelta archivos o carpetas en cualquier parte de la ventana o elige un origen abajo.
 	Browse files…	Examinar archivos…
 	Movies, audio and stills from disk	Películas, audio e imágenes fijas del disco
 	Demo footage	Material de demostración
@@ -3479,6 +3479,7 @@
 	Clip Speed / Duration	Velocidad/duración del clip
 	Speed:	Velocidad:
 	Reverse Speed	Invertir velocidad
+	Maintain Audio Pitch	Mantener tono del audio
 	Ripple Edit, Shifting Trailing Clips	Edición de rizo, desplazando los clips posteriores
 	About	Acerca de
 	Contributors	Colaboradores
@@ -3723,3 +3724,15 @@
 	Previous	Anterior
 	Next	Siguiente
 	Enter a valid HH:MM:SS:FF timecode	Introduce un código de tiempo válido HH:MM:SS:FF
+	Open Presets Folder	Abrir carpeta de ajustes preestablecidos
+	Scan Presets Folder	Escanear carpeta de ajustes preestablecidos
+	From preset file:	Desde archivo de ajustes preestablecidos:
+	No presets folder: the app has no data directory	No hay carpeta de ajustes preestablecidos: la aplicación no tiene directorio de datos
+	Imported {n} preset(s)	Se importaron {n} ajustes preestablecidos
+	Imported {n} preset(s); {skipped} skipped	Se importaron {n} ajustes preestablecidos; {skipped} omitidos
+	Imported {n} preset(s); {warnings} with unsupported parameters	Se importaron {n} ajustes preestablecidos; {warnings} con parámetros no compatibles
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	Se importaron {n} ajustes preestablecidos; {skipped} omitidos, {warnings} con parámetros no compatibles
+	Imported {n} preset(s); not imported: {error}	Se importaron {n} ajustes preestablecidos; no se importó: {error}
+	Preset library updated: {imported} loaded, {removed} removed	Biblioteca de ajustes preestablecidos actualizada: {imported} cargados, {removed} eliminados
+	Preset library updated	Biblioteca de ajustes preestablecidos actualizada
+	Preset library is up to date	La biblioteca de ajustes preestablecidos está actualizada
