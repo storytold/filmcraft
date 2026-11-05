@@ -1,7 +1,7 @@
 //! Responsive design and per-character styles of graphic clips (M10.7).
 //!
 //! - **Per-character styles** ([`StyleRun`], [`CharStyle`]): a text layer's runs override font,
-//!   style, size, fill, faux bold / italic, underline, strikethrough, tracking, baseline shift and caps for a
+//!   style, size, fill, both strokes, faux bold / italic, underline, strikethrough, tracking, baseline shift and caps for a
 //!   range of characters. Ranges are in *characters* (not bytes), sorted and non-overlapping;
 //!   [`apply_char_style`] merges a new style into a range and [`adjust_runs`] keeps runs on the
 //!   right characters when the text is edited (typed characters take the style of the character
@@ -63,6 +63,24 @@ pub struct CharStyle {
     /// Fill colour (sRGB, straight alpha).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fill: Option<[f32; 4]>,
+    /// Stroke overrides; None inherits the corresponding layer property.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<bool>,
+    /// First and second stroke colours (sRGB, straight alpha).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_color: Option<[f32; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2_color: Option<[f32; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_type: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2_width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke2_type: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub faux_bold: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -93,6 +111,14 @@ impl CharStyle {
             font_style: over.font_style.clone().or_else(|| self.font_style.clone()),
             size: over.size.or(self.size),
             fill: over.fill.or(self.fill),
+            stroke: over.stroke.or(self.stroke),
+            stroke_color: over.stroke_color.or(self.stroke_color),
+            stroke2_color: over.stroke2_color.or(self.stroke2_color),
+            stroke_width: over.stroke_width.or(self.stroke_width),
+            stroke_type: over.stroke_type.or(self.stroke_type),
+            stroke2: over.stroke2.or(self.stroke2),
+            stroke2_width: over.stroke2_width.or(self.stroke2_width),
+            stroke2_type: over.stroke2_type.or(self.stroke2_type),
             faux_bold: over.faux_bold.or(self.faux_bold),
             faux_italic: over.faux_italic.or(self.faux_italic),
             underline: over.underline.or(self.underline),
@@ -157,6 +183,20 @@ pub fn apply_char_style(runs: &[StyleRun], n: usize, start: usize, end: usize, s
         *c = c.merged(style);
     }
     compress(&v)
+}
+
+/// The overrides of each character `start..end` of a text of `n` characters (clamped to the text).
+/// Only the range is built (the Style row reads it on every redraw), with the runs merged in
+/// their order as in [`expand`].
+pub fn range_styles(runs: &[StyleRun], n: usize, start: usize, end: usize) -> Vec<CharStyle> {
+    let (start, end) = (start.min(n), end.min(n));
+    let mut v = vec![CharStyle::default(); end.saturating_sub(start)];
+    for r in runs {
+        for c in v.iter_mut().take(r.end.min(end).saturating_sub(start)).skip(r.start.saturating_sub(start)) {
+            *c = c.merged(&r.style);
+        }
+    }
+    v
 }
 
 /// Remove every override from characters `start..end`.
@@ -470,6 +510,34 @@ mod tests {
     }
     fn bold() -> CharStyle {
         CharStyle { faux_bold: Some(true), ..Default::default() }
+    }
+
+    #[test]
+    fn range_styles_lists_each_selected_character() {
+        let runs = apply_char_style(&[], 10, 2, 6, &bold());
+        let v = range_styles(&runs, 10, 4, 8);
+        assert_eq!(v, vec![bold(), bold(), CharStyle::default(), CharStyle::default()]);
+        assert_eq!(range_styles(&runs, 10, 8, 50).len(), 2, "clamped to the text");
+        assert!(range_styles(&runs, 10, 6, 3).is_empty());
+        assert!(range_styles(&runs, 10, 4, 4).is_empty(), "a caret selects nothing");
+        assert!(range_styles(&runs, 10, 12, 20).is_empty(), "past the end");
+        assert!(range_styles(&runs, 0, 0, 5).is_empty());
+    }
+
+    #[test]
+    fn range_styles_matches_the_expanded_text_for_every_range() {
+        // Overlapping, unsorted and out-of-range runs: later runs merge over earlier ones.
+        let red = CharStyle { fill: Some([1.0, 0.0, 0.0, 1.0]), ..Default::default() };
+        let big = CharStyle { size: Some(120.0), faux_bold: Some(false), ..Default::default() };
+        let runs = vec![StyleRun { start: 5, end: 9, style: red }, StyleRun { start: 1, end: 6, style: bold() }, StyleRun { start: 3, end: 40, style: big }];
+        let n = 10;
+        let all = expand(&runs, n);
+        for start in 0..=n + 2 {
+            for end in 0..=n + 2 {
+                let want: Vec<CharStyle> = all.iter().take(end.min(n)).skip(start.min(n)).cloned().collect();
+                assert_eq!(range_styles(&runs, n, start, end), want, "{start}..{end}");
+            }
+        }
     }
 
     #[test]

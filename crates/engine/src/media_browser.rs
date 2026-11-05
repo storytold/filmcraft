@@ -454,16 +454,23 @@ struct Folder {
 }
 
 /// The files the browser shows in `dir` and its sub-folders, as a tree; `None` when the tree
-/// holds none (or `budget` folders were walked already).
-fn walk_folder(services: &dyn Services, dir: &str, depth: usize, budget: &mut usize) -> Option<Folder> {
+/// holds none (or `budget` folders were walked already). A folder that cannot be listed is added
+/// to `errors` rather than silently left out of the import.
+fn walk_folder(services: &dyn Services, dir: &str, depth: usize, budget: &mut usize, errors: &mut Vec<String>) -> Option<Folder> {
     *budget = budget.checked_sub(1)?;
-    let entries = list(services, dir, "all").ok()?;
+    let entries = match list(services, dir, "all") {
+        Ok(entries) => entries,
+        Err(e) => {
+            errors.push(format!("{dir}: {e}"));
+            return None;
+        }
+    };
     let mut folder = Folder { name: base_name(dir), files: Vec::new(), subs: Vec::new() };
     for e in entries {
         if !e.is_dir {
             folder.files.push(e.path);
         } else if depth < FOLDER_IMPORT_MAX_DEPTH
-            && let Some(sub) = walk_folder(services, &e.path, depth + 1, budget)
+            && let Some(sub) = walk_folder(services, &e.path, depth + 1, budget, errors)
         {
             folder.subs.push(sub);
         }
@@ -528,6 +535,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let mut files = Vec::new();
     let mut folders = Vec::new();
     let mut empty = Vec::new();
+    let mut walk_errors = Vec::new();
     let mut budget = FOLDER_IMPORT_MAX_FOLDERS;
     for path in paths {
         let is_dir = matches!(s.services.list_entries(&path), Some(Ok(_))) && kind_of(&path).is_none();
@@ -540,7 +548,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
                 Err(_) => files.push(path),
             }
         } else {
-            match walk_folder(&*s.services, &path, 0, &mut budget) {
+            match walk_folder(&*s.services, &path, 0, &mut budget, &mut walk_errors) {
                 Some(f) => folders.push(f),
                 None => empty.push(path),
             }
@@ -550,18 +558,38 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     if seq {
         files.truncate(1);
     }
+    // folders without media, or with sub-folders that could not be listed: reported alongside
+    // whatever did import, not silently skipped
+    let folder_errors: Vec<String> = walk_errors.into_iter().chain(empty.iter().map(|e| format!("{e}: no media files"))).collect();
     if folders.is_empty() {
-        if files.is_empty() && !empty.is_empty() {
-            return Err(bad("mediaBrowser.import", format!("no media files in {}", empty.join(", "))));
+        if files.is_empty() && !folder_errors.is_empty() {
+            return Err(bad("mediaBrowser.import", folder_errors.join("; ")));
         }
         let mut q = json!({"paths": files, "imageSequence": seq});
         if let Some(b) = bin {
             q["bin"] = json!(b);
         }
-        return s.execute("file.import", q);
+        return match s.execute("file.import", q) {
+            Ok(r) if folder_errors.is_empty() => Ok(r),
+            // `file.import`'s result keeps its shape (an Ingest result stays an object); the folder
+            // errors are added to its `errors`
+            Ok(mut r) => {
+                if let Value::Object(m) = &mut r {
+                    match m.get_mut("errors") {
+                        Some(Value::Array(a)) => a.extend(folder_errors.into_iter().map(Value::String)),
+                        _ => {
+                            m.insert("errors".into(), json!(folder_errors));
+                        }
+                    }
+                }
+                Ok(r)
+            }
+            Err(e) if folder_errors.is_empty() => Err(e),
+            Err(e) => Err(bad("mediaBrowser.import", format!("{e}; {}", folder_errors.join("; ")))),
+        };
     }
     let mut out = serde_json::Map::new();
-    merge_import(&mut out, json!({"items": [], "errors": empty.iter().map(|e| format!("{e}: no media files")).collect::<Vec<_>>(), "bins": []}));
+    merge_import(&mut out, json!({"items": [], "errors": folder_errors, "bins": []}));
     if !files.is_empty() {
         import_into(s, &files, bin, &mut out);
     }

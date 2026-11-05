@@ -449,7 +449,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Opravdu chcete zahodit změny v souboru „{file}“?
 	Yes	Ano
 	No	Ne
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Přidejte média do projektu. Přetáhněte soubory kamkoli do okna nebo vyberte zdroj níže.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Přidejte média do projektu. Přetáhněte soubory nebo složky kamkoli do okna nebo vyberte zdroj níže.
 	Browse files…	Procházet soubory…
 	Movies, audio and stills from disk	Video, zvuk a statické obrázky z disku
 	Demo footage	Ukázkové záběry
@@ -3446,6 +3446,7 @@
 	Clip Speed / Duration	Rychlost / doba trvání klipu
 	Speed:	Rychlost:
 	Reverse Speed	Obrátit směr přehrávání
+	Maintain Audio Pitch	Zachovat výšku tónu
 	Ripple Edit, Shifting Trailing Clips	Úprava s posunem následujících klipů
 	About	O aplikaci
 	Contributors	Přispěvatelé

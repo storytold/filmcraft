@@ -447,7 +447,7 @@
 	Are you sure you want to discard your changes to '{file}'?	'{file}' üzerindeki değişikliklerinizi göz ardı etmek istediğinizden emin misiniz?
 	Yes	Evet
 	No	Hayır
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Projenize medya ekleyin. Dosyaları pencerenin herhangi bir yerine bırakın veya aşağıdan bir kaynak seçin.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Projenize medya ekleyin. Dosyaları veya klasörleri pencerenin herhangi bir yerine bırakın veya aşağıdan bir kaynak seçin.
 	Browse files…	Dosyalara göz at…
 	Movies, audio and stills from disk	Diskten filmler, sesler ve sabit görüntüler
 	Demo footage	Demo çekimleri
@@ -3460,6 +3460,7 @@
 	Clip Speed / Duration	Klip Hızı / Süresi
 	Speed:	Hız:
 	Reverse Speed	Hızı Tersine Çevir
+	Maintain Audio Pitch	Ses Perdesini Koru
 	Ripple Edit, Shifting Trailing Clips	Kayan Düzenleme, Sonraki Klipleri Kaydırarak
 	About	Hakkında
 	Contributors	Katkıda Bulunanlar

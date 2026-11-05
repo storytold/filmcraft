@@ -447,7 +447,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Czy na pewno odrzucić zmiany w „{file}”?
 	Yes	Tak
 	No	Nie
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Dodaj multimedia do projektu. Upuść pliki w dowolnym miejscu okna lub wybierz źródło poniżej.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Dodaj multimedia do projektu. Upuść pliki lub foldery w dowolnym miejscu okna lub wybierz źródło poniżej.
 	Browse files…	Przeglądaj pliki…
 	Movies, audio and stills from disk	Filmy, audio i zdjęcia z dysku
 	Demo footage	Materiał demonstracyjny
@@ -3457,6 +3457,7 @@
 	Clip Speed / Duration	Szybkość / czas trwania klipu
 	Speed:	Szybkość:
 	Reverse Speed	Odwróć kierunek
+	Maintain Audio Pitch	Zachowaj wysokość dźwięku
 	Ripple Edit, Shifting Trailing Clips	Edycja ripple, przesuwanie kolejnych klipów
 	About	Informacje
 	Contributors	Współtwórcy
