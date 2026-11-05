@@ -571,9 +571,9 @@ async fn cli_mcp(a: &Args) {
     }
     let roots = mcp_roots(a).unwrap_or_else(|e| usage(e));
     let server = match a.opt("--bridge") {
-        Some(addr) => filmcraft_automation::FilmcraftMcp::bridge(addr).unwrap_or_else(|e| usage(e)).with_roots(roots.clone()),
+        Some(addr) => filmcraft_automation::FilmcraftMcp::bridge(addr).unwrap_or_else(|e| usage(e)).with_roots(roots.clone()).unwrap_or_else(|e| usage(e)),
         None => match Backend::open(a) {
-            Backend::Local(s) => filmcraft_automation::FilmcraftMcp::headless(*s).with_roots(roots.clone()),
+            Backend::Local(s) => filmcraft_automation::FilmcraftMcp::headless(*s).with_roots(roots.clone()).unwrap_or_else(|e| usage(e)),
             Backend::Bridge(_) => usage("mcp: use --bridge ADDR to drive a running app"),
         },
     };

@@ -514,7 +514,7 @@ async fn confined_server_rejects_paths_outside_the_roots() {
     }
     std::fs::write(base.join("outside/clip.wav"), b"x").unwrap();
     let roots = AutomationRoots::new(Some(&base.join("in").to_string_lossy()), Some(&base.join("out").to_string_lossy())).unwrap().unwrap();
-    let m = FilmcraftMcp::headless(demo()).with_roots(Some(Arc::new(roots)));
+    let m = FilmcraftMcp::headless(demo()).with_roots(Some(Arc::new(roots))).unwrap();
     // A write inside the write root works and lands there.
     let r = m.run("markers.exportCsv", json!({"path": base.join("out/markers.csv").to_string_lossy()})).await.unwrap();
     assert!(base.join("out/markers.csv").exists(), "{r}");
@@ -540,7 +540,7 @@ async fn driving_the_ui_is_refused_while_confined() {
     let roots = AutomationRoots::new(Some(&base.to_string_lossy()), None).unwrap().unwrap();
     let plain = FilmcraftMcp::headless(Session::default());
     assert!(!plain.get_info().instructions.unwrap().contains("confined"), "unconfined by default");
-    let m = plain.with_roots(Some(Arc::new(roots)));
+    let m = plain.with_roots(Some(Arc::new(roots))).unwrap();
     assert!(m.get_info().instructions.unwrap().contains("confined"), "{:?}", m.get_info().instructions);
     let click = Parameters(ClickParams { id: Some("tools.Razor".into()), x: None, y: None, button: None, count: None, modifiers: None });
     let r = m.ui_click(click).await.unwrap();
@@ -576,7 +576,7 @@ fn file_names(dir: &std::path::Path) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread")]
 async fn voiceover_take_is_held_to_the_write_root() {
     let (base, roots) = roots_base("voiceover");
-    let m = FilmcraftMcp::headless(demo()).with_roots(Some(roots));
+    let m = FilmcraftMcp::headless(demo()).with_roots(Some(roots)).unwrap();
     m.run("audio.voiceover.start", json!({"preroll": 0})).await.unwrap();
     for (params, want) in [
         (json!({}), "needs `dir`"),
@@ -615,7 +615,7 @@ async fn footage_a_project_names_is_held_to_the_read_root() {
     plain.run("file.open", json!({"path": project})).await.unwrap();
     assert_eq!(frame(&plain, "plain.png").await[..3], [255, 0, 0], "the control: unconfined, the footage is read");
 
-    let confined = FilmcraftMcp::headless(Session::default()).with_roots(Some(roots));
+    let confined = FilmcraftMcp::headless(Session::default()).with_roots(Some(roots)).unwrap();
     confined.run("file.open", json!({"path": project})).await.unwrap();
     assert_ne!(frame(&confined, "confined.png").await[..3], [255, 0, 0], "the footage outside the read root reached the frame");
     let _ = std::fs::remove_dir_all(base);
@@ -629,7 +629,7 @@ async fn ingest_is_skipped_while_confined() {
     image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 255, 255])).save(&clip).unwrap();
     let mut s = demo();
     s.execute("project.ingestSettings", json!({"enabled": true, "action": "copy", "destination": base.join("outside/ingest").to_string_lossy()})).unwrap();
-    let m = FilmcraftMcp::headless(s).with_roots(Some(roots));
+    let m = FilmcraftMcp::headless(s).with_roots(Some(roots)).unwrap();
     let r = m.run("file.import", json!({"paths": [clip.to_string_lossy()]})).await.unwrap();
     assert_eq!(r["ingest"]["skipped"], "file access is confined", "{r}");
     assert_eq!(file_names(&base.join("outside")), ["secret.png"]);
@@ -660,7 +660,7 @@ async fn sources_opened_before_confinement_are_dropped() {
         s.execute("file.exportFrame", json!({"path": before.to_string_lossy(), "seconds": 0.0})).unwrap();
         assert_eq!(image::open(&before).unwrap().to_rgba8().get_pixel(32, 32).0[..3], [255, 0, 0], "the control, case {n}");
 
-        let m = FilmcraftMcp::headless(s).with_roots(Some(roots.clone()));
+        let m = FilmcraftMcp::headless(s).with_roots(Some(roots.clone())).unwrap();
         // Later in the clip, so a sequence has to load a frame it hasn't loaded yet.
         let after = base.join(format!("out/after{n}.png"));
         m.run("file.exportFrame", json!({"path": after.to_string_lossy(), "seconds": 0.5})).await.unwrap();
@@ -677,27 +677,27 @@ fn session_with_job(result: Option<Result<filmcraft_engine::export::Report, Stri
 
 /// A running job holds sources opened before the roots, which reads through them would not check.
 #[test]
-#[should_panic(expected = "confine the session before starting jobs")]
-fn confining_a_session_with_a_running_job_panics() {
+fn confining_a_session_with_a_running_job_is_refused() {
     let (_base, roots) = roots_base("running-job");
-    let _ = FilmcraftMcp::headless(session_with_job(None)).with_roots(Some(roots));
+    let e = FilmcraftMcp::headless(session_with_job(None)).with_roots(Some(roots)).err();
+    assert_eq!(e.as_deref(), Some("confine the session before starting jobs"));
 }
 
 /// A job that has finished holds nothing, so it doesn't stand in the way.
 #[test]
 fn confining_a_session_after_a_job_finished_works() {
     let (_base, roots) = roots_base("finished-job");
-    let _ = FilmcraftMcp::headless(session_with_job(Some(Err("done".into())))).with_roots(Some(roots));
+    let _ = FilmcraftMcp::headless(session_with_job(Some(Err("done".into())))).with_roots(Some(roots)).unwrap();
 }
 
 /// A queued export keeps its output path, and starting it doesn't check that path again.
 #[test]
-#[should_panic(expected = "confine the session before queueing exports")]
-fn confining_a_session_with_queued_exports_panics() {
+fn confining_a_session_with_queued_exports_is_refused() {
     let (base, roots) = roots_base("queued");
     let mut s = demo();
     s.execute("export.queue.add", json!({"path": base.join("outside/q.mp4").to_string_lossy(), "format": "h264"})).unwrap();
-    let _ = FilmcraftMcp::headless(s).with_roots(Some(roots));
+    let e = FilmcraftMcp::headless(s).with_roots(Some(roots)).err();
+    assert_eq!(e.as_deref(), Some("confine the session before queueing exports"));
 }
 
 /// The queue of a confined headless session only holds checked paths, so it can still run.
@@ -709,7 +709,7 @@ async fn a_confined_session_can_queue_and_start_inside_the_write_root() {
     s.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
     let v = s.execute("file.import", json!({"paths": [base.join("outside/secret.png").to_string_lossy()]})).unwrap();
     s.execute("timeline.place", json!({"item": v["items"][0], "track": "V1", "seconds": 0})).unwrap();
-    let m = FilmcraftMcp::headless(s).with_roots(Some(roots));
+    let m = FilmcraftMcp::headless(s).with_roots(Some(roots)).unwrap();
     let q = base.join("out/q.mp4");
     m.run("export.queue.add", json!({"path": q.to_string_lossy(), "format": "h264", "start": true, "wait": true})).await.unwrap();
     assert!(q.exists(), "the queued export was written");
@@ -721,7 +721,7 @@ async fn a_confined_session_can_queue_and_start_inside_the_write_root() {
 #[tokio::test]
 async fn the_bridge_refuses_the_apps_export_queue() {
     let (base, roots) = roots_base("bridge-queue");
-    let m = FilmcraftMcp::bridge("127.0.0.1:9").unwrap().with_roots(Some(roots));
+    let m = FilmcraftMcp::bridge("127.0.0.1:9").unwrap().with_roots(Some(roots)).unwrap();
     let q = base.join("out/q.mp4");
     let queue: Vec<_> = filmcraft_engine::command_specs().iter().map(|c| c.id).filter(|id| id.starts_with("export.queue.")).collect();
     assert!(queue.len() >= 9, "{queue:?}");

@@ -230,23 +230,26 @@ impl FilmcraftMcp {
     /// server, on either backend, must keep its file parameters inside the roots, and a headless
     /// session's own file access is checked too. `None` (the default) leaves everything as it is.
     ///
-    /// Panics if a headless session already has a job running, since the job keeps the sources it
-    /// opened and nothing here can reach them, or has anything in its export queue, since each item
-    /// keeps its own output path. Confine the session before starting either, as the CLI does.
-    pub fn with_roots(mut self, roots: Option<Arc<AutomationRoots>>) -> Self {
+    /// An error if a headless session already has a job running, since the job keeps the sources
+    /// it opened and nothing here can reach them, or has anything in its export queue, since each
+    /// item keeps its own output path. Confine the session before starting either, as the CLI does.
+    pub fn with_roots(mut self, roots: Option<Arc<AutomationRoots>>) -> Result<Self, String> {
         if let (Some(r), Backend::Headless(s)) = (&roots, &*self.backend) {
             let mut g = s.lock().unwrap_or_else(PoisonError::into_inner);
-            let running = g.jobs.iter().any(|j| j.result.lock().unwrap_or_else(PoisonError::into_inner).is_none());
-            assert!(!running, "confine the session before starting jobs");
+            if g.jobs.iter().any(|j| j.result.lock().unwrap_or_else(PoisonError::into_inner).is_none()) {
+                return Err("confine the session before starting jobs".into());
+            }
             // Queued exports keep the paths they were given, and starting one doesn't check them again.
-            assert!(g.export_queue.items.is_empty(), "confine the session before queueing exports");
+            if !g.export_queue.items.is_empty() {
+                return Err("confine the session before queueing exports".into());
+            }
             g.services = Arc::new(crate::confined_services::ConfinedServices::new(g.services.clone(), r.clone()));
             // Sources opened so far (`--project`) read through the old services: open them again.
             g.media.clear();
             g.files_confined = true;
         }
         self.roots = roots;
-        self
+        Ok(self)
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {
