@@ -23,4 +23,4 @@ mod normalize;
 pub mod phonemize;
 
 pub use normalize::{Lang, NormalizeError, Token, normalize};
-pub use phonemize::{Chunk, LexError, Lexicon, MAX_CHUNK_CHARS, Overrides, SYMBOLS, phonemize};
+pub use phonemize::{Chunk, LexError, Lexicon, MAX_CHUNK_CHARS, Overrides, SYMBOLS, phonemize, russian_word_phonemes};

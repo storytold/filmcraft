@@ -131,10 +131,12 @@ impl Weights {
 /// Candle's pickle reader is used only for the fixed, catalogued checkpoint.
 /// Verify its immutable size and digest before any pickle object is expanded.
 fn verify_checkpoint(path: &Path) -> Result<(), TtsError> {
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let file = crate::catalog::FILES
         .iter()
-        .find(|file| file.name == "kokoro-v1_0.pth")
-        .ok_or_else(|| err("Kokoro checkpoint is missing from the package catalogue"))?;
+        .chain(crate::catalog::KOKORO_RU_FILES.iter())
+        .find(|file| file.name == file_name)
+        .ok_or_else(|| err(format!("Kokoro checkpoint `{file_name}` is missing from the package catalogue")))?;
     let metadata = std::fs::metadata(path).map_err(|e| err(format!("{}: {e}", path.display())))?;
     if metadata.len() != file.size {
         return Err(err(format!("{}: checkpoint size does not match the official package", path.display())));

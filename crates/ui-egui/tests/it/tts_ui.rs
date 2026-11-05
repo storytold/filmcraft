@@ -131,6 +131,7 @@ fn write_add_click_to_edit_and_save_in_place() {
     }
     // type a script and add a pause
     d.click("tts.text");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
     d.type_text("Hello from the panel.");
     d.click("tts.addPause");
     d.click("tts.text");
@@ -190,7 +191,11 @@ fn settings_controls_and_hear_this_voice() {
     let mut d = Driver::demo(&dir);
     d.exec("window.panel.TextToSpeech", json!({}));
     d.frames(3);
+    // Automatically populated with English sample text
+    assert_eq!(d.draft()["text"].as_str().unwrap(), filmcraft_tts::sample_sentence_for_language("en-US"));
     // Save is disabled with an empty script
+    d.harness.state_mut().ui.tts.text.clear();
+    d.frames(3);
     d.click("tts.save");
     assert!(d.narration_clips().is_empty());
     // Hear this voice runs a preview (the headless harness has no audio output: a status line)
@@ -205,5 +210,65 @@ fn settings_controls_and_hear_this_voice() {
     assert!(!d.ids("tts.").iter().any(|i| i == "tts.pitch"));
     d.click("tts.advanced");
     assert!(d.ids("tts.").iter().any(|i| i == "tts.pitch"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn russian_language_selection_and_narration() {
+    let dir = scratch("russian");
+    let mut d = Driver::demo(&dir);
+    d.exec("window.panel.TextToSpeech", json!({}));
+    d.frames(3);
+    assert_eq!(d.draft()["language"], "en-US");
+    d.harness.state_mut().ui.tts.language = "ru-RU".into();
+    d.harness.state_mut().ui.tts.text = filmcraft_tts::sample_sentence_for_language("ru-RU").into();
+    d.harness.state_mut().ui.tts.voice = "basic-russian-female".into();
+    d.frames(3);
+    assert_eq!(d.draft()["language"], "ru-RU");
+    assert_eq!(d.draft()["voice"], "basic-russian-female");
+
+    d.click("tts.text");
+    d.ok("ui.key", json!({"key": "Cmd+A"}));
+    d.type_text("Привет мир.");
+    d.click("tts.save");
+    d.settle();
+    let clips = d.narration_clips();
+    assert_eq!(clips.len(), 1);
+    let clip = clips[0];
+    let n = d.exec("tts.inspect", json!({"clip": clip}));
+    assert_eq!(n["narration"]["text"].as_str().unwrap(), "Привет мир.");
+    assert_eq!(n["narration"]["voice"].as_str().unwrap(), "basic-russian-female");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn russian_natural_voices_in_catalog() {
+    let dir = scratch("russian-natural");
+    let mut d = Driver::demo(&dir);
+    let v = d.exec("tts.voices", json!({"language": "ru-RU"}));
+    let voices = v["voices"].as_array().unwrap();
+    assert!(voices.iter().any(|x| x["id"] == "piper-dmitri" && x["language"] == "ru-RU" && x["engine"] == "neural"));
+    assert!(voices.iter().any(|x| x["id"] == "piper-irina" && x["language"] == "ru-RU" && x["engine"] == "neural"));
+
+    let v_ru = d.exec("tts.voices", json!({"voice": "piper-dmitri"}));
+    assert_eq!(v_ru["package"]["id"], "piper-ru");
+    assert_eq!(v_ru["package"]["name"], "Russian natural voices (Piper ru_RU)");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn example_text_automatically_populated() {
+    let dir = scratch("auto-example");
+    let mut d = Driver::demo(&dir);
+    d.exec("window.panel.TextToSpeech", json!({}));
+    d.frames(3);
+    assert_eq!(d.draft()["text"].as_str().unwrap(), filmcraft_tts::sample_sentence_for_language("en-US"));
+
+    d.harness.state_mut().ui.tts.language = "ru-RU".into();
+    d.harness.state_mut().ui.tts.text = filmcraft_tts::sample_sentence_for_language("ru-RU").into();
+    d.frames(3);
+    assert_eq!(d.draft()["text"].as_str().unwrap(), filmcraft_tts::sample_sentence_for_language("ru-RU"));
+
     let _ = std::fs::remove_dir_all(&dir);
 }

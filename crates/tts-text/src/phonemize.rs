@@ -376,6 +376,9 @@ fn word_phonemes(word: &str, lex: &Lexicon, overrides: Option<&BTreeMap<String, 
             }
         }
     }
+    if lang == Lang::RuRu {
+        return Some(russian_word_phonemes(&lower));
+    }
     // Spelled-out single letters use the letter's name; a lowercase single
     // letter that is a function word (a, i) stays on the normal path.
     if is_single_letter(word) {
@@ -406,6 +409,223 @@ fn word_phonemes(word: &str, lex: &Lexicon, overrides: Option<&BTreeMap<String, 
         return Some(p);
     }
     letter_to_sound(&lower)
+}
+
+/// Non-genitive exceptions ending in -ого / -его where 'г' is pronounced /g/.
+const RU_GENITIVE_EXCEPTIONS: &[&str] = &[
+    "много",
+    "немного",
+    "намного",
+    "строго",
+    "нестрого",
+    "дорого",
+    "недорого",
+    "убого",
+    "полого",
+    "итого",
+    "логово",
+    "логос",
+    "иго",
+    "педагог",
+    "демагог",
+    "лего",
+    "эго",
+];
+
+/// Russian genitive normalization: turns adjectival and pronominal `-ого`/`-его`
+/// into `-ово`/`-ево` according to standard Russian orthoepy ("вашего" → "вашево").
+pub fn normalize_russian_genitive(word: &str) -> String {
+    if word.contains('-') {
+        let parts: Vec<String> = word.split('-').map(normalize_russian_genitive_token).collect();
+        return parts.join("-");
+    }
+    normalize_russian_genitive_token(word)
+}
+
+fn normalize_russian_genitive_token(lower: &str) -> String {
+    if lower == "сегодня" {
+        return "севодня".to_string();
+    }
+    if RU_GENITIVE_EXCEPTIONS.contains(&lower) {
+        return lower.to_string();
+    }
+    // Fixed pronominal genitives
+    if matches!(
+        lower,
+        "его"
+            | "него"
+            | "сего"
+            | "того"
+            | "этого"
+            | "всего"
+            | "моего"
+            | "твоего"
+            | "своего"
+            | "нашего"
+            | "вашего"
+            | "кого"
+            | "чего"
+            | "никого"
+            | "ничего"
+            | "одного"
+    ) {
+        if let Some(prefix) = lower.strip_suffix("его") {
+            return format!("{prefix}ево");
+        } else if let Some(prefix) = lower.strip_suffix("ого") {
+            return format!("{prefix}ово");
+        }
+    }
+    // Adjectives / participles ending in -ого / -его with stem length >= 2 chars
+    if lower.chars().count() > 3 {
+        if let Some(prefix) = lower.strip_suffix("его") {
+            return format!("{prefix}ево");
+        } else if let Some(prefix) = lower.strip_suffix("ого") {
+            return format!("{prefix}ово");
+        }
+    }
+    lower.to_string()
+}
+
+/// Russian Cyrillic word to Piper IPA phonemes.
+pub fn russian_word_phonemes(word: &str) -> String {
+    let lower: String = normalize_russian_genitive(&word.to_lowercase());
+    let chars: Vec<char> = lower.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    let n = chars.len();
+
+    let is_vowel = |c: char| matches!(c, 'а' | 'о' | 'у' | 'ы' | 'э' | 'я' | 'ё' | 'ю' | 'е' | 'и');
+    let is_softening_vowel = |c: char| matches!(c, 'я' | 'ё' | 'ю' | 'е' | 'и');
+    let is_paired_voiced = |c: char| matches!(c, 'б' | 'в' | 'г' | 'д' | 'ж' | 'з');
+    let is_paired_voiceless = |c: char| matches!(c, 'п' | 'ф' | 'к' | 'т' | 'ш' | 'с');
+    let is_unpaired_voiceless = |c: char| matches!(c, 'х' | 'ц' | 'ч' | 'щ');
+    let is_voiceless = |c: char| is_paired_voiceless(c) || is_unpaired_voiceless(c);
+    let is_voicing_trigger = |c: char| matches!(c, 'б' | 'г' | 'д' | 'ж' | 'з');
+
+    for i in 0..n {
+        let c = chars[i];
+        let next_c = chars.get(i + 1).copied();
+        let prev_c = if i > 0 { chars.get(i - 1).copied() } else { None };
+
+        let prev_is_vowel_or_none = prev_c.is_none_or(|p| is_vowel(p) || p == 'ь' || p == 'ъ' || p == ' ');
+
+        match c {
+            'а' => out.push('a'),
+            'о' => out.push('o'),
+            'у' => out.push('u'),
+            'ы' => out.push('ɨ'),
+            'э' => out.push('ɛ'),
+
+            'я' | 'ё' | 'ю' | 'е' => {
+                if prev_is_vowel_or_none {
+                    out.push('j');
+                }
+                match c {
+                    'я' => out.push('a'),
+                    'ё' => out.push('o'),
+                    'ю' => out.push('u'),
+                    'е' => {
+                        // After always-hard sibilants ж, ш, ц, 'е' is pronounced [ɨ]
+                        if prev_c.is_some_and(|p| matches!(p, 'ж' | 'ш' | 'ц')) {
+                            out.push('ɨ');
+                        } else {
+                            out.push('e');
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            'и' => {
+                if prev_c == Some('ь') {
+                    out.push('j');
+                }
+                // After always-hard sibilants ж, ш, ц, 'и' is pronounced [ɨ] (жи-ши)
+                if prev_c.is_some_and(|p| matches!(p, 'ж' | 'ш' | 'ц')) {
+                    out.push('ɨ');
+                } else {
+                    out.push('i');
+                }
+            }
+
+            'б' | 'в' | 'г' | 'д' | 'ж' | 'з' | 'п' | 'ф' | 'к' | 'т' | 'ш' | 'с' => {
+                let mut voiced = is_paired_voiced(c);
+
+                let mut lookahead = i + 1;
+                while lookahead < n && (chars[lookahead] == 'ь' || chars[lookahead] == 'ъ') {
+                    lookahead += 1;
+                }
+                let next_effective = chars.get(lookahead).copied();
+
+                if voiced {
+                    if next_effective.is_none() || next_effective.is_some_and(is_voiceless) {
+                        voiced = false;
+                    }
+                } else if is_paired_voiceless(c) && next_effective.is_some_and(is_voicing_trigger) {
+                    voiced = true;
+                }
+
+                let palatalize = if c == 'ж' || c == 'ш' { false } else { next_c.is_some_and(|next| next == 'ь' || is_softening_vowel(next)) };
+
+                let base = match (c, voiced) {
+                    ('б' | 'п', true) => "b",
+                    ('б' | 'п', false) => "p",
+                    ('в' | 'ф', true) => "v",
+                    ('в' | 'ф', false) => "f",
+                    ('г' | 'к', true) => "ɡ",
+                    ('г' | 'к', false) => "k",
+                    ('д' | 'т', true) => "d",
+                    ('д' | 'т', false) => "t",
+                    ('ж' | 'ш', true) => "ʐ",
+                    ('ж' | 'ш', false) => "ʂ",
+                    ('з' | 'с', true) => "z",
+                    ('з' | 'с', false) => "s",
+                    _ => "",
+                };
+                out.push_str(base);
+                if palatalize {
+                    out.push('ʲ');
+                }
+            }
+
+            'л' | 'м' | 'н' | 'р' => {
+                let palatalize = next_c.is_some_and(|next| next == 'ь' || is_softening_vowel(next));
+                let base = match c {
+                    'л' => "l",
+                    'м' => "m",
+                    'н' => "n",
+                    'р' => "r",
+                    _ => "",
+                };
+                out.push_str(base);
+                if palatalize {
+                    out.push('ʲ');
+                }
+            }
+
+            'х' => {
+                let palatalize = next_c.is_some_and(|next| next == 'ь' || is_softening_vowel(next));
+                out.push('x');
+                if palatalize {
+                    out.push('ʲ');
+                }
+            }
+
+            'ц' => out.push_str("ts"),
+            'ч' => out.push_str("tɕ"),
+            'щ' => out.push_str("ɕː"),
+            'й' => out.push('j'),
+
+            'ь' | 'ъ' => {}
+
+            p if p.is_alphabetic() || p.is_whitespace() || KEPT_PUNCT.contains(&p) || p == '-' => {
+                out.push(p);
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// A raw-phoneme override `/…/`: strip the slashes and accept it only when every
