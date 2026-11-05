@@ -170,14 +170,15 @@ pub fn detect(bytes: &[u8], extension: Option<&str>) -> Option<Format> {
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]);
     let head = head.trim_start_matches('\u{feff}').trim_start();
     if head.starts_with('<') {
+        // the root element first: an MLT document can mention `<xmeml` or `<fcpxml` in a comment
+        if root_element(head) == Some("mlt") {
+            return Some(Format::Mlt);
+        }
         if head.contains("<xmeml") {
             return Some(Format::Fcp7Xml);
         }
         if head.contains("<fcpxml") {
             return Some(Format::Fcpxml);
-        }
-        if root_element(head) == Some("mlt") {
-            return Some(Format::Mlt);
         }
         return extension.and_then(Format::from_extension).filter(|f| matches!(f, Format::Fcp7Xml | Format::Fcpxml | Format::Mlt));
     }

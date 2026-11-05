@@ -502,6 +502,9 @@ fn detection_and_import_only() {
     assert_eq!(detect(b"<?xml version='1.0'?>\n<!DOCTYPE mlt>\n<!-- made by hand -->\n<mlt>\n</mlt>", None), Some(Format::Mlt));
     assert_eq!(detect(b"<?xml version='1.0'?>\n<mltfoo/>", None), None);
     assert_eq!(detect(b"<!-- <mlt> --><other/>", None), None);
+    // ... and the other XML formats' names in a comment before an <mlt> root don't count either
+    assert_eq!(detect(b"<!-- exported from <xmeml> -->\n<mlt/>", Some("kdenlive")), Some(Format::Mlt));
+    assert_eq!(detect(b"<?xml version='1.0'?>\n<!-- not <fcpxml> -->\n<mlt/>", None), Some(Format::Mlt));
     assert_eq!(detect(b"<?xml version='1.0'?>\n<!-- unclosed", Some("mlt")), Some(Format::Mlt), "the extension decides when the root can't be read");
     assert_eq!(Format::Mlt.extension(), "kdenlive");
     assert!(!Format::Mlt.can_export());
