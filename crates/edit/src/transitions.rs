@@ -215,6 +215,7 @@ mod tests {
 
     fn clip(id: u64, start: i64, dur: i64) -> TrackItem {
         TrackItem {
+            custom_label_color: None,
             id: ClipId(id),
             item: ItemId(1),
             name: format!("c{id}"),
@@ -235,6 +236,7 @@ mod tests {
             essential: None,
             multicam: None,
             time_interpolation: Default::default(),
+            maintain_pitch: false,
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),

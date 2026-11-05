@@ -38,6 +38,10 @@ use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Resul
 // Shared vocabulary
 // ---------------------------------------------------------------------------------------------
 
+/// Most members of a link group written into each clip's `<link>` list (a group is a clip's own
+/// video and a few audio channels, so real ones are far smaller).
+const MAX_LINK_MEMBERS: usize = 64;
+
 struct ClipRemap {
     speed: f64,
     reverse: bool,
@@ -796,6 +800,9 @@ fn read_markers(n: Node, rate: FrameRate, b: &mut Builder) -> Vec<Marker> {
         let duration = if out_f > in_f { rate.tick_of(out_f) - start } else { Tick::ZERO };
         let color = child_text(m, "color").and_then(label_from).unwrap_or(Label::Green);
         out.push(Marker {
+            url: String::new(),
+            author: String::new(),
+            custom_color: None,
             id: MarkerId(b.alloc()),
             start,
             duration,
@@ -827,6 +834,7 @@ struct Exp<'a, 'r> {
 }
 
 pub(crate) fn export(p: &Project, seq_id: ItemId, opts: &ExportOptions, report: &mut Report) -> Result<String> {
+    crate::warn_marker_metadata_loss(p, seq_id, report);
     p.sequence(seq_id).ok_or(Error::NoSequence(seq_id))?;
     let mut x = Exp {
         p,
@@ -904,6 +912,11 @@ impl Exp<'_, '_> {
                 }
             }
         }
+        // Each clip lists every member of its group, so a group of n clips writes n * n links.
+        if let Some(n) = link_members.values().map(Vec::len).filter(|&n| n > MAX_LINK_MEMBERS).max() {
+            self.report.warn(format!("a link group of {n} clips was exported with its first {MAX_LINK_MEMBERS} members"));
+            link_members.values_mut().for_each(|m| m.truncate(MAX_LINK_MEMBERS));
+        }
         if seq.all_tracks().any(|t| t.items.iter().any(|i| i.group.is_some())) {
             self.report.info("clip groups have no FCP7 XML equivalent and were not exported");
         }
@@ -937,6 +950,8 @@ impl Exp<'_, '_> {
                         let links: Vec<(String, TrackKind, usize, usize)> = c
                             .link
                             .and_then(|l| link_members.get(&l))
+                            // a clip cut from an over-large group stays unlinked, or its links would restore a larger group on import
+                            .filter(|m| m.contains(&c.id))
                             .map(|m| m.iter().filter_map(|id| clip_xml.get(id).cloned()).collect())
                             .unwrap_or_default();
                         let xid = clip_xml[&c.id].0.clone();
