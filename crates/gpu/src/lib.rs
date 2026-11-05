@@ -984,6 +984,9 @@ impl GpuCompositor {
         let empty = FramePlan::Layers { width, height, layers: Vec::new() };
         let (canvas, dims) = self.render_plan(&empty, None, true, false);
         let mut children = prep.map(|p| p.children.iter());
+        // counted once the frame is done on the GPU: a frame that falls back to the CPU half way
+        // throws away the steps drawn so far
+        let (mut transitions, mut adjustments) = (0u64, 0u64);
         for step in steps {
             match step {
                 PlanStep::Layers(layers) => {
@@ -1001,7 +1004,7 @@ impl GpuCompositor {
                         views[index] = view;
                     }
                     self.transition.draw((&self.device, &self.queue), &canvas, [&views[0], &views[1]], dims, effect, *progress);
-                    self.gpu_transitions += 1;
+                    transitions += 1;
                 }
                 PlanStep::Adjust { ops } => {
                     if self.adjust(&canvas, dims, ops).is_none() {
@@ -1011,10 +1014,12 @@ impl GpuCompositor {
                         self.cpu_adjustments += 1;
                         return cpu(self);
                     }
-                    self.gpu_adjustments += 1;
+                    adjustments += 1;
                 }
             }
         }
+        self.gpu_transitions += transitions;
+        self.gpu_adjustments += adjustments;
         let out = self.render_plan(&empty, None, false, resolve);
         if let Some(f) = self.fx.as_mut() {
             f.end_frame();
@@ -1123,7 +1128,10 @@ impl GpuCompositor {
         });
         let stage = self.fx.as_mut()?;
         stage.begin_frame();
-        let job = stage.job(&self.device, &self.queue, fx, sbg, &self.dummy)?;
+        let Some(job) = stage.job(&self.device, &self.queue, fx, sbg, &self.dummy) else {
+            stage.end_frame();
+            return None;
+        };
         let row = (w * 16).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fx-readback"),
