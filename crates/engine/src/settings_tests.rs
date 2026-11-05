@@ -126,7 +126,9 @@ fn categories_follow_premiere_order() {
             "playback",
             "plugins",
             "timeline",
-            "trim"
+            "trim",
+            // FilmCraft addition
+            "controlServer"
         ]
     );
 }
@@ -1250,4 +1252,31 @@ fn selection_follows_playhead_is_in_the_settings_registry() {
     assert_eq!(cat, "timeline");
     assert!(matches!(f.kind, Kind::Bool));
     assert_eq!(settings::field("timeline.selectionFollowsPlayhead").map(|f| f.key), Some("timeline.selectionFollowsPlayhead"));
+}
+
+#[test]
+fn control_server_settings_default_off_and_clamp_the_port() {
+    let dir = tmp_dir("control-server");
+    let path = dir.join(crate::autosave::PREFS_FILE);
+    let mut s = Session { prefs_path: Some(path.clone()), ..Session::default() };
+    assert!(!s.prefs.control_server.start_at_launch, "off by default");
+    assert_eq!(s.prefs.control_server.port, 9876);
+    assert_eq!(s.prefs.control_server.launch_port(), None);
+    assert!(settings::field("controlServer.port").is_some_and(|f| f.enabled_by == Some("controlServer.startAtLaunch")));
+    set(&mut s, "controlServer.startAtLaunch", json!(true));
+    set(&mut s, "controlServer.port", json!(9900));
+    assert_eq!(s.prefs.control_server.launch_port(), Some(9900));
+    // Hostile values from agents: privileged and out-of-range ports are clamped.
+    set(&mut s, "controlServer.port", json!(80));
+    assert_eq!(s.prefs.control_server.port, 1024);
+    set(&mut s, "controlServer.port", json!(70_000));
+    assert_eq!(s.prefs.control_server.port, 65_535);
+    // Beyond the stored integer type: refused, the value is kept.
+    assert!(s.execute("prefs.set", json!({"key": "controlServer.port", "value": 1e12})).is_err());
+    assert_eq!(s.prefs.control_server.port, 65_535);
+    // Persisted for the next launch, which reads the file before the session exists.
+    let loaded = Preferences::load(&path);
+    assert_eq!(loaded.control_server.launch_port(), Some(65_535));
+    set(&mut s, "controlServer.startAtLaunch", json!(false));
+    assert_eq!(Preferences::load(&path).control_server.launch_port(), None);
 }

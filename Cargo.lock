@@ -1889,6 +1889,7 @@ dependencies = [
  "filmcraft-render",
  "filmcraft-time",
  "filmcraft-ui-egui",
+ "getrandom 0.3.4",
  "glob",
  "log",
  "muda",

@@ -164,6 +164,7 @@ pub struct Preferences {
     pub audio_hardware: settings::AudioHardwarePrefs,
     pub auto_save: AutoSavePrefs,
     pub color: settings::ColorPrefs,
+    pub control_server: settings::ControlServerPrefs,
     pub graphics: settings::GraphicsPrefs,
     pub labels: settings::LabelPrefs,
     pub media: MediaPrefs,
@@ -194,6 +195,7 @@ impl Default for Preferences {
             audio_hardware: Default::default(),
             auto_save: Default::default(),
             color: Default::default(),
+            control_server: Default::default(),
             graphics: Default::default(),
             labels: Default::default(),
             media: Default::default(),
@@ -489,6 +491,37 @@ impl Preferences {
         }
         filmcraft_format::atomic_write(path, &serde_json::to_vec_pretty(self).unwrap_or_default())
     }
+}
+
+/// The preferences file in the data directory.
+pub const PREFS_FILE: &str = "preferences.json";
+
+/// The control server's credential in the data directory: written by the desktop app when
+/// Settings ▸ Control Server starts the server and `FILMCRAFT_CONTROL_TOKEN` is not set, read by
+/// both the app and `filmcraft-cli … --bridge` when that variable is not set. Owner-only on Unix.
+pub const CONTROL_TOKEN_FILE: &str = "control-token";
+
+/// Whether `token` is a usable control credential: 64 hex characters.
+pub fn is_control_token(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The credential stored in `<data_dir>/control-token`, if there is a usable one.
+pub fn read_control_token(data_dir: &Path) -> Option<String> {
+    // A valid file is 64 bytes plus perhaps a newline; don't read more from a stray large file.
+    let meta = fs::metadata(data_dir.join(CONTROL_TOKEN_FILE)).ok()?;
+    if !meta.is_file() || meta.len() > 1024 {
+        return None;
+    }
+    let text = fs::read_to_string(data_dir.join(CONTROL_TOKEN_FILE)).ok()?;
+    let token = text.trim();
+    is_control_token(token).then(|| token.to_string())
+}
+
+/// The control credential a client or the app uses: `FILMCRAFT_CONTROL_TOKEN` when it is set (even
+/// a malformed value, so the app can say what is wrong), else the token file in `data_dir`.
+pub fn control_token(data_dir: Option<&Path>) -> Option<String> {
+    std::env::var("FILMCRAFT_CONTROL_TOKEN").ok().filter(|t| !t.is_empty()).or_else(|| data_dir.and_then(read_control_token))
 }
 
 /// A file with this name next to the executable makes the install portable: its data directory is

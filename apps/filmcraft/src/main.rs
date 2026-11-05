@@ -7,8 +7,10 @@
 //! Without a project, `--demo` or `--empty`, Settings ▸ General ▸ At Startup decides: Show Home
 //! (the demo project), Open Most Recent, or an empty project.
 //!
-//! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
-//! `FILMCRAFT_CONTROL_TOKEN` is required (see `docs/control-protocol.md`).
+//! `--control <port>` (or `FILMCRAFT_CONTROL_PORT`, or Settings ▸ Control Server ▸ Start the control
+//! server when FilmCraft starts) starts a localhost JSON-lines control server; it needs
+//! `FILMCRAFT_CONTROL_TOKEN` or the `control-token` file in the data folder, which the Settings
+//! start creates (see `docs/control-protocol.md`).
 //! see `filmcraft_ui_egui::control` for the methods. A port that is not a number is an error from
 //! either source.
 //!
@@ -138,12 +140,14 @@ fn main() -> eframe::Result {
     if graphics.mode() == graphics::Mode::Default {
         register_gpu_frame_renderer();
     }
+    // Settings ▸ Control Server: start the control server without `--control` (which wins).
+    let settings_port = if launch.control_port.is_none() { data_root.as_deref().and_then(control_server::port_from_settings) } else { None };
     let started = loop {
         let mut options = native_options(launch.control_port.is_some());
         // Before eframe creates the wgpu instance (e.g. no OpenGL on Windows, see graphics.rs).
         graphics::apply(&mut options, graphics.mode(), backend_override);
         let app_created = Arc::new(AtomicBool::new(false));
-        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), graphics.clone(), Arc::clone(&app_created)));
+        let result = eframe::run_native("FilmCraft", options, app_creator(launch.clone(), settings_port, graphics.clone(), Arc::clone(&app_created)));
         let app_created = app_created.load(Ordering::Relaxed);
         match &result {
             // wgpu reported the failure (no adapter, device creation failed) before the app
@@ -203,7 +207,9 @@ fn native_options(agent: bool) -> eframe::NativeOptions {
 
 /// Creates the app once eframe has its window and graphics device; sets `created` when it runs,
 /// and confirms the graphics mode once two frames have painted.
-fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
+/// `settings_port` is the port Settings ▸ Control Server starts the control server on when the
+/// command line asked for none.
+fn app_creator(launch: Launch, settings_port: Option<u16>, graphics: graphics::GraphicsStart, created: Arc<AtomicBool>) -> eframe::AppCreator<'static> {
     let Launch { control_port, control_input_only, files, demo, startup_flag, recover, data_dir, graphics: _ } = launch;
     Box::new(move |cc| {
         filmcraft_ui_egui::install_ime_reset_callbacks(&cc.egui_ctx);
@@ -211,7 +217,12 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // Start the control server before anything touches recovery state: `file.recover`
         // consumes its candidate, and an input-only session that must abort (no server) may not
         // take that step first, or the recovered work is lost (#3436).
-        let control = control_port.map(|port| control_server::start(port, cc.egui_ctx.clone()));
+        let token_dir = data_dir.clone().or_else(default_data_dir);
+        let control = match (control_port, settings_port) {
+            (Some(port), _) => Some(control_server::start(port, cc.egui_ctx.clone(), token_dir.as_deref(), false)),
+            (None, Some(port)) => Some(control_server::start(port, cc.egui_ctx.clone(), token_dir.as_deref(), true)),
+            (None, None) => None,
+        };
         if control_input_only && let Some((_, _, Some(why))) = &control {
             return Err(Box::new(control_server::ControlServerRequired(why.reason())));
         }

@@ -651,7 +651,7 @@ impl Session {
     /// the data directory and finds unsaved changes left by sessions that died
     /// ([`Session::recovery_candidates`]).
     pub fn start_autosave(&mut self, cfg: autosave::AutosaveConfig) -> std::io::Result<()> {
-        let prefs_path = cfg.data_dir.join("preferences.json");
+        let prefs_path = cfg.data_dir.join(autosave::PREFS_FILE);
         self.prefs = autosave::Preferences::load(&prefs_path);
         // a restart restores the persisted Selection Follows Playhead toggle (#3089)
         self.state.selection_follows_playhead = self.prefs.timeline.selection_follows_playhead;

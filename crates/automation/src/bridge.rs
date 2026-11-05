@@ -31,14 +31,20 @@ pub struct BridgeClient {
 
 impl BridgeClient {
     /// `addr` such as `127.0.0.1:9876` (loopback only). Reads `FILMCRAFT_CONTROL_TOKEN`
-    /// from the environment; the desktop app requires this credential on every request.
+    /// from the environment, else the `control-token` file in the data folder (written by the app
+    /// when Settings ▸ Control Server starts the server); the app requires it on every request.
     pub fn new(addr: impl Into<String>) -> Result<Self, AutomationError> {
         let addr = addr.into();
         let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(&addr);
         if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
             return Err(AutomationError::BadRequest(format!("bridge address must be loopback, got `{addr}`")));
         }
-        Ok(Self { addr, token: std::env::var("FILMCRAFT_CONTROL_TOKEN").ok(), idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
+        Ok(Self {
+            addr,
+            token: filmcraft_engine::autosave::control_token(filmcraft_engine::autosave::default_data_dir().as_deref()),
+            idle: Mutex::new(Vec::new()),
+            next_id: AtomicU64::new(1),
+        })
     }
 
     /// Run engine command `id` in the app. A blocking export (`file.exportMedia` with
@@ -124,7 +130,7 @@ impl BridgeClient {
             .await
             .map_err(|_| AutomationError::Bridge(format!("timed out connecting to {}", self.addr)))?
             .map_err(|e| AutomationError::Bridge(format!(
-                "cannot connect to {} ({e}); start the app with `filmcraft --control <port>` and set FILMCRAFT_CONTROL_TOKEN to the same 64-hex-character value on both sides (see docs/control-protocol.md)",
+                "cannot connect to {} ({e}); start the app with `filmcraft --control <port>` (or turn on Settings ▸ Control Server) and set FILMCRAFT_CONTROL_TOKEN to the same 64-hex-character value on both sides, or leave it unset on both to use the control-token file in the data folder (see docs/control-protocol.md)",
                 self.addr
             )))?;
         let (r, w) = s.into_split();

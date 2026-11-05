@@ -31,6 +31,7 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "
 serde_json = { workspace = true }
 # Constant-time comparison of control-channel credentials.
 subtle = "2.6"
+getrandom = "0.3"
 log = { workspace = true }
 rfd = { workspace = true }
 cpal = "0.16"
