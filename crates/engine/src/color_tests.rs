@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use crate::Session;
+use crate::{Services, Session};
 use filmcraft_color::{Lut, Lut3d};
 use filmcraft_project::{ClipId, ParamValue};
 
@@ -203,14 +203,14 @@ fn lumetri_presets_list_apply_and_thumbnails() {
     assert_eq!(r["folders"], json!(["Cinematic", "Film Emulation", "Monochrome", "Technical"]));
     let mono = s.execute("lumetri.presets", json!({"folder": "monochrome"})).unwrap();
     assert!(mono["presets"].as_array().unwrap().iter().all(|p| p["folder"] == "Monochrome"));
-    // apply: one undo step adding a configured Lumetri Color before the intrinsic effects
+    // apply: one undo step adding a configured Lumetri Color at the end of the clip's effects
     let before = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.len();
     let r = s.execute("lumetri.applyPreset", json!({"name": "Neutral Mono"})).unwrap();
     assert_eq!(r["clips"], 1);
     let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
     assert_eq!(it.effects.len(), before + 1);
     let k = it.effects.iter().position(|e| e.effect == "lumetri").unwrap();
-    assert!(it.effects[k + 1..].iter().all(|e| e.def().is_some_and(|d| d.intrinsic)) || k + 1 == it.effects.len());
+    assert_eq!(k + 1, it.effects.len());
     assert_eq!(it.effects[k].param("saturation").unwrap().value, ParamValue::Float(0.0));
     let img = s.render_program(0.25).unwrap();
     let grey = img.px.as_chunks::<4>().0.iter().filter(|p| p[3] > 0.5).all(|p| (p[0] - p[1]).abs() < 0.01 && (p[1] - p[2]).abs() < 0.01);
@@ -253,4 +253,70 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     let item = it.item;
     let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
     assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
+}
+
+/// Records the files a session writes, and has no others.
+#[derive(Default)]
+struct WrittenFiles(std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>);
+
+impl Services for WrittenFiles {
+    fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        self.0.lock().unwrap().get(path).cloned().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path.to_string()))
+    }
+    fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        self.0.lock().unwrap().insert(path.into(), data.to_vec());
+        Ok(())
+    }
+}
+
+#[test]
+fn preset_thumbnails_are_written_through_the_host_and_no_wider_than_the_presets() {
+    let files = std::sync::Arc::new(WrittenFiles::default());
+    let mut s = Session::new(files.clone());
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    // The PNG goes through `Services`, not straight to the disk.
+    let path = "/virtual/lumetri-grid.png";
+    s.execute("lumetri.presetThumbnails", json!({"folder": "Technical", "width": 64, "path": path})).unwrap();
+    assert!(files.read_file(path).unwrap().starts_with(b"\x89PNG"));
+    assert!(!std::path::Path::new(path).exists());
+    // Asking for more columns than there are presets lays them out in one row.
+    let n = filmcraft_render::lumetri_presets::presets().len();
+    let r = s.execute("lumetri.presetThumbnails", json!({"width": 16, "columns": 32})).unwrap();
+    assert_eq!(r["columns"].as_u64(), Some(n as u64));
+    assert_eq!(r["width"].as_u64(), Some((n * (16 + 4) + 4) as u64));
+}
+
+/// `media.colorInfo` says which `metadata` values no tag in the file gave. An untagged ffmpeg H.264
+/// file and one tagged BT.709 give the same `metadata`; `assumed` tells them apart.
+#[test]
+fn color_info_says_which_values_no_tag_gave() {
+    let Some(ffmpeg) = filmcraft_testkit::oracle::ffmpeg_or_skip("color_info_assumed") else { return };
+    let dir = filmcraft_testkit::fixtures_dir("engine/color-assumed");
+    let make = |name: &str, filter: &[&str]| {
+        filmcraft_testkit::fixtures::generate(&dir.join(name), |tmp| {
+            std::process::Command::new(&ffmpeg)
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=25:duration=0.2"])
+                .args(filter)
+                .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"])
+                .arg(tmp)
+                .status()
+                .is_ok_and(|s| s.success())
+        })
+    };
+    let Some(untagged) = make("untagged.mp4", &[]) else { return };
+    let Some(tagged) = make("tagged.mp4", &["-vf", "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"]) else { return };
+    let mut s = Session::default();
+    let mut info = |path: &std::path::Path| {
+        let r = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
+        s.execute("media.colorInfo", json!({"item": r["items"][0]})).unwrap()
+    };
+    let (untagged, tagged) = (info(&untagged), info(&tagged));
+    assert_eq!(untagged["metadata"], tagged["metadata"], "the same values for decoding");
+    assert_eq!(untagged["assumed"], json!({"matrix": true, "transfer": true, "primaries": true}), "{untagged}");
+    assert_eq!(tagged["assumed"], json!({"matrix": false, "transfer": false, "primaries": false}), "{tagged}");
+    // generated media doesn't say
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let item = s.active_sequence().unwrap().find_item(clip).unwrap().1.item;
+    assert_eq!(s.execute("media.colorInfo", json!({"item": item.0})).unwrap()["assumed"], serde_json::Value::Null);
 }

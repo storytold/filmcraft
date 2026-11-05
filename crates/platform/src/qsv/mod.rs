@@ -115,16 +115,16 @@ fn probe_codec_win(subtype: windows::core::GUID) -> bool {
 
 #[cfg(not(target_os = "windows"))]
 fn probe_codec_hevc(_ten_bit: bool) -> bool {
-    IntelGpu::probe().ok().flatten().is_some()
+    // Media Foundation QSV encoding is supported only on Windows;
+    // non-Windows reports unavailable until a VA-API session backend is implemented.
+    false
 }
 
 #[cfg(not(target_os = "windows"))]
 fn probe_codec_av1(_ten_bit: bool) -> bool {
-    let Ok(Some(gpu)) = IntelGpu::probe() else {
-        return false;
-    };
-    let id = gpu.device_id;
-    (0x5690..=0x56c2).contains(&id) || (0x7d40..=0x7d67).contains(&id) || (0x64a0..=0x64b0).contains(&id)
+    // Media Foundation QSV encoding is supported only on Windows;
+    // non-Windows reports unavailable until a VA-API session backend is implemented.
+    false
 }
 
 #[cfg(test)]
@@ -150,5 +150,13 @@ mod tests {
         assert_eq!(Codec::H264.name(), "H.264");
         assert_eq!(Codec::Hevc.name(), "HEVC");
         assert_eq!(Codec::Av1.name(), "AV1");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn non_windows_qsv_reports_unavailable_without_session_backend() {
+        assert!(!hevc_available(), "QSV HEVC must be unavailable on non-Windows until a backend is implemented");
+        assert!(!av1_available(), "QSV AV1 must be unavailable on non-Windows until a backend is implemented");
+        assert!(!is_available());
     }
 }

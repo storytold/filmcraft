@@ -20,6 +20,21 @@ pub(crate) fn escape(s: &str) -> String {
     o
 }
 
+/// Like `escape`, but also encodes whitespace that attribute-value
+/// normalization would otherwise turn into spaces.
+pub(crate) fn escape_attr(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' => o.push_str("&#10;"),
+            '\r' => o.push_str("&#13;"),
+            '\t' => o.push_str("&#9;"),
+            c => o.push_str(&escape(c.encode_utf8(&mut [0; 4]))),
+        }
+    }
+    o
+}
+
 /// Pretty-printing XML writer (two-space indent, one element per line).
 pub(crate) struct XmlWriter {
     out: String,
@@ -46,7 +61,7 @@ impl XmlWriter {
         self.out.push('<');
         self.out.push_str(name);
         for (k, v) in attrs {
-            let _ = write!(self.out, " {k}=\"{}\"", escape(v));
+            let _ = write!(self.out, " {k}=\"{}\"", escape_attr(v));
         }
     }
 
@@ -144,6 +159,17 @@ pub(crate) fn num(v: f64) -> String {
 }
 
 pub(crate) fn parse(text: &str) -> Result<roxmltree::Document<'_>, String> {
+    // FCP7 XML commonly carries a plain `<!DOCTYPE xmeml>` declaration, which
+    // roxmltree accepts only with DTD parsing enabled. Internal subsets are not
+    // needed by any supported interchange format and can expand entities far
+    // beyond the input size, so reject them before handing the document to the
+    // parser. External entities remain unresolved because no resolver is set.
+    if let Some(start) = text.find("<!DOCTYPE") {
+        let declaration = &text[start..text[start..].find('>').map_or(text.len(), |end| start + end)];
+        if declaration.contains('[') {
+            return Err("internal DTD subsets are not supported".into());
+        }
+    }
     let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
     roxmltree::Document::parse_with_options(text, opts).map_err(|e| e.to_string())
 }
@@ -168,5 +194,23 @@ mod tests {
         assert_eq!(num(100.0), "100");
         assert_eq!(num(-0.0), "0");
         assert_eq!(num(0.1 + 0.2).parse::<f64>().unwrap(), 0.1 + 0.2);
+    }
+
+    #[test]
+    fn attr_whitespace_roundtrip() {
+        let mut w = XmlWriter::new(None);
+        w.open("a", &[("name", "x\ny\tz\r")]);
+        w.text("b", "a\nb");
+        let s = w.finish();
+        let d = parse(&s).unwrap();
+        let a = d.root_element();
+        assert_eq!(a.attribute("name"), Some("x\ny\tz\r"));
+        assert_eq!(child(a, "b").and_then(|b| b.text()), Some("a\nb"));
+    }
+
+    #[test]
+    fn rejects_internal_dtd_entity_expansion() {
+        let text = "<!DOCTYPE root [<!ENTITY word 'expanded'>]><root>&word;</root>";
+        assert_eq!(parse(text).unwrap_err(), "internal DTD subsets are not supported");
     }
 }

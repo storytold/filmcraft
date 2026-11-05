@@ -62,14 +62,8 @@ impl QsvEncoder {
             self.extract_headers(&p.data);
             let comp_offset = i32::try_from((p.pts.saturating_sub(p.dts)).saturating_mul(den)).unwrap_or(0);
             let data = match self.codec {
-                Codec::H264 => {
-                    crate::nvenc::annex_b_to_length_prefixed_for(crate::nvenc::Codec::H264, &p.data)
-                        .unwrap_or(p.data)
-                }
-                Codec::Hevc => {
-                    crate::nvenc::annex_b_to_length_prefixed_for(crate::nvenc::Codec::Hevc, &p.data)
-                        .unwrap_or(p.data)
-                }
+                Codec::H264 => crate::nvenc::annex_b_to_length_prefixed_for(crate::nvenc::Codec::H264, &p.data).unwrap_or(p.data),
+                Codec::Hevc => crate::nvenc::annex_b_to_length_prefixed_for(crate::nvenc::Codec::Hevc, &p.data).unwrap_or(p.data),
                 Codec::Av1 => p.data,
             };
             out.push(EncodedPacket { data, key: p.key, duration, composition_offset: comp_offset });
@@ -198,7 +192,7 @@ impl VideoEncoder for QsvEncoder {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
                 filmcraft_export::timed(filmcraft_export::Stage::Convert, || {
-                    filmcraft_export::rgbf_to_yuv420_10(rgb, w, h, kr, kb, &mut self.y16, &mut self.u16, &mut self.v16)
+                    filmcraft_export::rgbf_to_yuv420_10(rgb, w, h, filmcraft_export::Matrix::new(kr, kb), &mut self.y16, &mut self.u16, &mut self.v16)
                 })?;
                 self.session.encode_p010(&self.y16, &self.u16, &self.v16, pts).map_err(|e| ExportError::Encode(format!("Intel encode failed: {e}")))?
             }
@@ -230,15 +224,16 @@ impl VideoEncoder for QsvEncoder {
             Codec::Hevc => {
                 let bit_depth = if self.ten_bit { 10 } else { 8 };
                 let hvcc = if !self.vps.is_empty() && !self.sps.is_empty() && !self.pps.is_empty() {
-                    crate::nvenc::hevc::hevc_config(&self.vps, &self.sps, &self.pps, (self.w, self.h), bit_depth)
-                        .unwrap_or_else(|_| filmcraft_isobmff::HevcConfig {
+                    crate::nvenc::hevc::hevc_config(&self.vps, &self.sps, &self.pps, (self.w, self.h), bit_depth).unwrap_or_else(|_| {
+                        filmcraft_isobmff::HevcConfig {
                             general_profile_idc: if bit_depth == 10 { 2 } else { 1 },
                             general_level_idc: 120,
                             chroma_format_idc: 1,
                             bit_depth_luma: bit_depth,
                             bit_depth_chroma: bit_depth,
                             ..Default::default()
-                        })
+                        }
+                    })
                 } else {
                     filmcraft_isobmff::HevcConfig {
                         general_profile_idc: if bit_depth == 10 { 2 } else { 1 },
@@ -250,9 +245,7 @@ impl VideoEncoder for QsvEncoder {
                     }
                 };
                 let mut e = SampleEntry::hevc(hvcc, w, h);
-                if self.signal.is_hdr() {
-                    self.signal.apply_to(&mut e, false);
-                }
+                self.signal.apply_to(&mut e, false);
                 e
             }
             Codec::Av1 => {
@@ -266,9 +259,7 @@ impl VideoEncoder for QsvEncoder {
                     ..Default::default()
                 };
                 let mut e = SampleEntry::av1(av1_cfg, w, h);
-                if self.signal.is_hdr() {
-                    self.signal.apply_to(&mut e, false);
-                }
+                self.signal.apply_to(&mut e, false);
                 e
             }
         }

@@ -56,3 +56,13 @@ fn qsv_probes_do_not_panic() {
     filmcraft_platform::qsv::warm_hevc_probe();
     filmcraft_platform::qsv::warm_av1_probe();
 }
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn non_windows_qsv_probes_report_unavailable() {
+    assert!(!filmcraft_platform::qsv::hevc_available());
+    assert!(!filmcraft_platform::qsv::hevc_hdr_available());
+    assert!(!filmcraft_platform::qsv::av1_available());
+    assert!(!filmcraft_platform::qsv::av1_hdr_available());
+    assert!(!filmcraft_platform::qsv::is_available());
+}
