@@ -322,12 +322,20 @@ impl FilmcraftMcp {
     /// Run an engine command on whichever backend. With roots in force, the command's file
     /// parameters are checked first: one outside them is an error the agent can act on.
     pub async fn run(&self, id: &str, params: Value) -> Result<Value, AutomationError> {
-        if let Some(roots) = &self.roots {
-            if matches!(&*self.backend, Backend::Bridge(_)) {
-                AutomationRoots::check_bridge_command(id).map_err(AutomationError::BadRequest)?;
+        let params = match self.roots.clone() {
+            Some(roots) => {
+                if matches!(&*self.backend, Backend::Bridge(_)) {
+                    AutomationRoots::check_bridge_command(id).map_err(AutomationError::BadRequest)?;
+                }
+                // The check of a write walks folders, which doesn't belong on an async worker.
+                let id = id.to_string();
+                tokio::task::spawn_blocking(move || roots.check_command(&id, &params).map(|()| params))
+                    .await
+                    .map_err(join_error)?
+                    .map_err(AutomationError::BadRequest)?
             }
-            roots.check_command(id, &params).map_err(AutomationError::BadRequest)?;
-        }
+            None => params,
+        };
         match &*self.backend {
             Backend::Headless(s) => {
                 let s = s.clone();
