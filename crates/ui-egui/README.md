@@ -50,8 +50,9 @@ render screenshots with wgpu.
 
 Dragging an effect, effect preset or Lumetri preset onto a selected Timeline clip applies it to
 all selected clips in one undo step and preserves the selection. The hover outlines show the
-target group (`timeline.effectDropPreview.<clip id>`). Dropping onto an unselected clip targets
-and selects only that clip. Transitions continue to target one edit point.
+target group (`timeline.effectDropPreview.<clip id>`), clipped to the Timeline content so
+partially offscreen clips cannot paint over track headers or the ruler. Dropping onto an
+unselected clip targets and selects only that clip. Transitions continue to target one edit point.
 `effect_drop_ui` covers real pointer drags, group/single targets, hover feedback, selection and
 undo/redo; `FILMCRAFT_UI_SNAPSHOT_DIR` enables rendered snapshots.
 

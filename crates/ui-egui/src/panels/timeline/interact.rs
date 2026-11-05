@@ -1123,7 +1123,7 @@ fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                         && let Some(row) = layout.rows.iter().find(|r| r.track == tid)
                     {
                         let r = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.min.y), pos2(layout.x_of(it.end()), row.rect.max.y));
-                        ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+                        ui.painter().with_clip_rect(layout.content).rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
                         app.auto.add(&format!("timeline.effectDropPreview.{}", target.0), r.intersect(layout.content), "Apply effect");
                     }
                 }

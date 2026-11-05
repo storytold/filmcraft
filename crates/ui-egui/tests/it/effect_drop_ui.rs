@@ -5,6 +5,7 @@ use filmcraft_engine::Session;
 use filmcraft_ui_egui::FilmcraftApp;
 use serde_json::json;
 
+/// Advance one egui frame, forwarding synthetic input through the desktop input hook.
 fn step(h: &mut Harness<'static, FilmcraftApp>) {
     let ctx = h.ctx.clone();
     let mut raw = std::mem::take(h.input_mut());
@@ -14,6 +15,7 @@ fn step(h: &mut Harness<'static, FilmcraftApp>) {
     h.step();
 }
 
+/// Move the pointer and optionally press or release its primary button across frames.
 fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bool>) {
     h.input_mut().events.push(Event::PointerMoved(pos));
     if pressed == Some(true) {
@@ -25,11 +27,13 @@ fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bo
     step(h);
 }
 
+/// Find the current screen bounds of an automation element, failing if it is missing.
 fn rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> Rect {
     let [x, y, w, height] = h.state().auto.elements.iter().find(|e| e.id == id).unwrap_or_else(|| panic!("missing {id}")).rect;
     Rect::from_min_size(pos2(x, y), vec2(w, height))
 }
 
+/// Build an Effects workspace with three linked clips and a deterministic Timeline zoom.
 fn harness(effect: &str) -> Harness<'static, FilmcraftApp> {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
@@ -58,6 +62,7 @@ fn harness(effect: &str) -> Harness<'static, FilmcraftApp> {
     h
 }
 
+/// Verify real effect and preset drops, their hover targets, selection, and single-step undo/redo.
 #[test]
 fn effect_drop_targets_selected_group_or_unselected_clip_and_undoes_once() {
     for (search, source, effect) in [
@@ -104,5 +109,48 @@ fn effect_drop_targets_selected_group_or_unselected_clip_and_undoes_once() {
             h.state_mut().session.execute("edit.redo", json!({})).unwrap();
             assert_eq!(h.state().session.project.to_json(), after);
         }
+    }
+}
+
+/// Keep a partially offscreen selected clip's effect outline out of the Timeline headers.
+#[test]
+fn selected_effect_preview_is_clipped_when_another_selected_clip_is_offscreen() {
+    let mut h = harness("Gaussian Blur");
+    let ids: Vec<_> = h.state().session.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| i.id).collect();
+    h.state_mut().session.execute("timeline.select", json!({"clips": [ids[0].0, ids[1].0]})).unwrap();
+    h.state_mut().ui.timeline.pps = 200.0;
+    h.state_mut().ui.timeline.target_pps = 200.0;
+    h.state_mut().ui.timeline.scroll = 1.0;
+    h.state_mut().ui.timeline.target_scroll = 1.0;
+    step(&mut h);
+    let content = rect(&h, "timeline.tracks");
+    let from = rect(&h, "effects.item.gaussian_blur").center();
+    let target = rect(&h, &format!("timeline.clip.{}", ids[1].0));
+    let to = pos2(target.right().min(content.right()) - 20.0, target.center().y);
+    let before = h.state().session.project.to_json();
+    pointer(&mut h, from, Some(true));
+    pointer(&mut h, from + vec2(0.0, 10.0), None);
+    pointer(&mut h, to, None);
+    let preview = rect(&h, &format!("timeline.effectDropPreview.{}", ids[0].0));
+    // The first clip spans 0..2 s while the view begins at 1 s, so half its outline is
+    // geometrically over the headers. Its paint clip must prevent those pixels from appearing.
+    let expected = Rect::from_min_max(pos2(content.left() - 200.0, preview.top()), pos2(content.left() + 200.0, preview.bottom()));
+    let outlines: Vec<_> = h
+        .output()
+        .shapes
+        .iter()
+        .filter(
+            |shape| matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == expected && r.stroke.width == 2.0 && r.stroke.color == h.state().tokens.accent),
+        )
+        .collect();
+    assert!(!outlines.is_empty(), "the offscreen clip still has a drop outline");
+    for outline in outlines {
+        assert!(content.contains_rect(outline.clip_rect), "preview paint clip {:?} escapes {content:?}", outline.clip_rect);
+    }
+    assert_eq!(h.state().session.project.to_json(), before, "hover must not edit");
+    if let Some(dir) = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        h.render().unwrap().save(dir.join("effect-drop-offscreen.png")).unwrap();
     }
 }
