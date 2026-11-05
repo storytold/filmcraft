@@ -406,7 +406,19 @@ fn link_media_dialog_relinks_moved_media() {
     let folder = root.join("Moved").to_string_lossy().into_owned();
     d.app().ui.link_media.as_mut().unwrap().folder = folder;
     d.click("linkMedia.search");
-    assert_eq!(d.ids("linkMedia.candidate.").len(), 1);
+    // the folder is walked on another thread (#3937): its candidates show once the walk is done,
+    // and the dialog keeps drawing meanwhile
+    let mut candidates = d.ids("linkMedia.candidate.");
+    for _ in 0..400 {
+        if !candidates.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.frames(1);
+        candidates = d.ids("linkMedia.candidate.");
+    }
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    assert!(d.app().ui.link_media_search.is_none(), "the finished search is dropped");
     d.frames(4);
     d.snapshot("media-link-search");
     d.click("linkMedia.link");

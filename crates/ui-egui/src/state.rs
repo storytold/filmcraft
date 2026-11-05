@@ -568,6 +568,9 @@ pub struct UiState {
     /// Link Media dialog (open when Some).
     #[serde(default)]
     pub link_media: Option<LinkMediaDraft>,
+    /// The Link Media search walking its folder on another thread (#3937).
+    #[serde(skip)]
+    pub link_media_search: Option<crate::panels::media_dialogs::LinkMediaSearch>,
     /// Create Proxies dialog (open when Some).
     #[serde(default)]
     pub create_proxies: Option<ProxyDraft>,
@@ -1042,6 +1045,7 @@ impl Default for UiState {
             gfx_edit: None,
             pen_points: vec![],
             link_media: None,
+            link_media_search: None,
             create_proxies: None,
             project_manager: None,
             make_offline: None,
