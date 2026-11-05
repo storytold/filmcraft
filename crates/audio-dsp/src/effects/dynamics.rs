@@ -268,10 +268,10 @@ pub struct Limiter {
     lag_pos: usize,
     /// Monotonic deque for the sliding minimum: (sample index, gain).
     minq: VecDeque<(u64, f32)>,
-    /// After the ramp shortens: the longer window the sliding minimum keeps until this sample, so
-    /// a request already in it stays until its peak has left the delay line.
-    long_window: u64,
-    long_until: u64,
+    /// After the ramp shortens: the longer windows the sliding minimum keeps, each until the
+    /// requests made with it have aged out (window, until sample), so a request already in it
+    /// stays until its peak has left the delay line.
+    holds: Vec<(u64, u64)>,
     /// Box filter ring (the look-ahead ramp) and running sum.
     box_ring: Vec<f32>,
     box_pos: usize,
@@ -316,8 +316,7 @@ impl Limiter {
             lag: Vec::new(),
             lag_pos: 0,
             minq: VecDeque::with_capacity(look + 2),
-            long_window: 0,
-            long_until: 0,
+            holds: Vec::new(),
             box_ring: vec![1.0; look + 1],
             box_pos: 0,
             box_sum: (look + 1) as f64,
@@ -327,6 +326,11 @@ impl Limiter {
         };
         s.apply_params(true);
         s
+    }
+
+    /// The longest window still held from a ramp that was shortened (0 when none is).
+    fn held_window(&self) -> u64 {
+        self.holds.iter().filter(|&&(_, until)| until > self.t).map(|&(w, _)| w).max().unwrap_or(0)
     }
 
     /// The gain ramp before a peak, in samples: `lookahead` ms plus the peak's own sample (the
@@ -354,9 +358,11 @@ impl Limiter {
             // can still be in the sliding minimum (a longer one renews nothing)
             let old = self.box_ring.len() as u64;
             if (ramp as u64) < old {
-                let active = self.t < self.long_until;
-                self.long_window = if active { self.long_window.max(old) } else { old };
-                self.long_until = self.long_until.max(self.t + old);
+                let (t, until) = (self.t, self.t + old);
+                // expired holds go, and so does any no longer and no later than this one; each
+                // hold keeps its own window and end, so a later change never extends an older one
+                self.holds.retain(|&(w, u)| u > t && !(w <= old && u <= until));
+                self.holds.push((old, until));
             }
             let g = if self.box_ring.is_empty() { self.rel_state } else { (self.box_sum / self.box_ring.len() as f64) as f32 };
             self.box_ring = vec![g; ramp];
@@ -404,7 +410,7 @@ impl AudioEffect for Limiter {
         self.box_sum = self.box_ring.len() as f64;
         self.rel_state = 1.0;
         self.t = 0;
-        self.long_until = 0;
+        self.holds.clear();
         self.gr_meter = 0.0;
     }
     fn process(&mut self, channels: &mut [&mut [f32]]) {
@@ -445,7 +451,7 @@ impl AudioEffect for Limiter {
                 }
             }
             self.minq.push_back((self.t, greq));
-            let window = if self.t < self.long_until { window.max(self.long_window) } else { window };
+            let window = window.max(self.held_window());
             while let Some(&(idx, _)) = self.minq.front() {
                 if idx + window <= self.t {
                     self.minq.pop_front();
@@ -862,15 +868,18 @@ mod tests {
         lim.process(&mut [&mut y]);
         lim.set_param("lookahead", 5.0);
         lim.process(&mut [&mut y[..100]]);
-        for _ in 0..40 {
+        let ten_ms = (0.010 * SR).round() as u64 + 1;
+        for i in 0..40 {
             lim.set_param("lookahead", 10.0);
             lim.process(&mut [&mut y[..100]]);
             lim.set_param("lookahead", 6.0);
             lim.process(&mut [&mut y[..100]]);
+            // once the 30 ms ramp's requests have aged out (1,441 samples), the window in use is
+            // at most the 10 ms one the changes keep replacing
+            if i >= 8 {
+                assert!(lim.held_window() <= ten_ms, "change {i}: a {} sample window is still held", lim.held_window());
+            }
         }
-        // 8,000 samples after the 30 ms ramp: nothing from it is held any more
-        let ten_ms = (0.010 * SR).round() as u64 + 1;
-        assert!(lim.long_until <= lim.t + ten_ms, "the 30 ms window is still held {} samples ahead", lim.long_until - lim.t);
     }
 
     /// #905: at the default look-ahead (5 ms, the value the old fixed window had, and what the
