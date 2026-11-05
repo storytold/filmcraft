@@ -881,7 +881,9 @@ fn effects_are_indented_under_their_folders() {
     let mut d = Driver::demo();
     d.ok("ui.panel.show", json!({"panel": "Effects"}));
     d.frames(3);
-    for folder in ["Video Effects", "Video Effects/Blur & Sharpen", "Presets", "Lumetri Presets", "Lumetri Presets/Monochrome"] {
+    // Presets is opened last: its Import/Scan rows push the Lumetri sub-folders below the
+    // panel's visible area, where they can no longer be clicked.
+    for folder in ["Video Effects", "Video Effects/Blur & Sharpen", "Lumetri Presets", "Lumetri Presets/Monochrome", "Presets"] {
         d.click(&format!("effects.folder.{folder}"));
     }
     d.frames(2);
@@ -897,6 +899,32 @@ fn effects_are_indented_under_their_folders() {
         let (a, b) = (text_x(&mut d, outer), text_x(&mut d, inner));
         assert!(b >= a + 12.0, "`{inner}` ({b}) is not indented under `{outer}` ({a})");
     }
+}
+
+/// #2719: opening the Presets folder scans `<data dir>/Effect Presets`, so a preset file copied
+/// there while the app is running shows up without choosing Scan or restarting.
+#[test]
+fn opening_presets_folder_scans_the_library() {
+    let data = tempfile::tempdir().unwrap();
+    let mut session = Session::default();
+    session.execute("file.openDemoProject", json!({})).expect("demo project");
+    session.presets.set_dir(data.path());
+    let library = session.presets.library_dir().unwrap();
+    let mut d = Driver::with(session);
+    d.ok("ui.panel.show", json!({"panel": "Effects"}));
+    d.frames(3);
+
+    let name = "Dropped While Running";
+    let mut preset = serde_json::to_value(&d.app().session.presets.all()[0]).unwrap();
+    preset["name"] = json!(name);
+    let file = json!({"format": "filmcraft.effect-presets", "version": 1, "presets": [preset]});
+    std::fs::write(library.join("dropped.json"), serde_json::to_vec(&file).unwrap()).unwrap();
+    d.frames(2);
+    assert!(!d.app().session.presets.all().iter().any(|p| p.name == name), "nothing scans before the folder opens");
+
+    d.click("effects.folder.Presets");
+    assert!(d.app().session.presets.all().iter().any(|p| p.name == name), "opening Presets loads the dropped file");
+    assert!(d.ids("effects.preset.").iter().any(|id| id.ends_with(name)), "{:?}", d.ids("effects.preset."));
 }
 
 #[test]
