@@ -146,9 +146,9 @@ fn capped_working_image_applies_an_opacity_mask_at_the_graphics_scale() {
     let drawn = |x: usize, y: usize| output.get(x, y)[3] > 0.9;
     let clear = |x: usize, y: usize| output.get(x, y)[3] < 0.1;
     assert!(drawn(160, 90), "the shape's centre");
-    // five pixels inside and outside the ellipse, past the mask's default feather (10 source
-    // pixels, 10 output pixels here); a mask applied at the raster's halved scale would hide the
-    // inner probes, one at double scale would show the outer
+    // five pixels inside and outside the ellipse, at the ends of the mask's default feather (10
+    // source pixels, 10 output pixels here); a mask applied at the raster's halved scale would
+    // hide the inner probes, one at double scale would show the outer
     assert!(drawn(125, 90) && drawn(195, 90) && drawn(160, 70) && drawn(160, 110), "the shape shows inside the mask");
     assert!(clear(115, 90) && clear(205, 90) && clear(160, 60) && clear(160, 120), "and is hidden outside it");
 }
