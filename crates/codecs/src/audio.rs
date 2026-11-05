@@ -1,5 +1,6 @@
 //! Audio decoding: PCM directly; compressed codecs through symphonia (bootstrap, MPL-2.0 unmodified).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use filmcraft_frame::{AudioBuffer, VideoFrame};
@@ -925,6 +926,8 @@ impl AudioFileSource {
             if samples.is_empty() {
                 samples = vec![Vec::new(); channels.len()];
             }
+            let add: usize = channels.iter().map(Vec::len).sum();
+            check_decoded_budget(samples.iter().map(Vec::len).sum(), add)?;
             for (out, channel) in samples.iter_mut().zip(channels) {
                 out.extend(channel);
             }
@@ -966,9 +969,53 @@ fn id3v2_len(bytes: &[u8]) -> usize {
     }
 }
 
+/// Decoded-packet caches (AVI, MP4, Matroska) keep at most this many packets and this many bytes:
+/// one packet can decode to far more than it holds (a PCM chunk, or overlapping references that
+/// each decode in full), so the count alone does not bound memory.
+pub(crate) const MAX_PACKET_CACHE_ENTRIES: usize = 4096;
+pub(crate) const MAX_PACKET_CACHE_BYTES: usize = 256 << 20;
+
+/// A cached decoded packet: how many bytes it holds.
+pub(crate) trait PacketBytes {
+    fn packet_bytes(&self) -> usize;
+}
+
+impl PacketBytes for Vec<Vec<f32>> {
+    fn packet_bytes(&self) -> usize {
+        self.iter().map(|c| c.len().saturating_mul(4)).fold(0, usize::saturating_add)
+    }
+}
+
+/// Add packet `i` to a cache (`packets`, oldest-first `order`, running `bytes`), then drop the
+/// oldest packets, keeping the newest, until the cache is within both limits.
+pub(crate) fn cache_packet<P: PacketBytes>(packets: &mut HashMap<usize, Arc<P>>, order: &mut Vec<usize>, bytes: &mut usize, i: usize, p: &Arc<P>) {
+    packets.insert(i, p.clone());
+    order.push(i);
+    *bytes = bytes.saturating_add(p.packet_bytes());
+    while order.len() > 1 && (order.len() > MAX_PACKET_CACHE_ENTRIES || *bytes > MAX_PACKET_CACHE_BYTES) {
+        let old = order.remove(0);
+        if let Some(q) = packets.remove(&old) {
+            *bytes = bytes.saturating_sub(q.packet_bytes());
+        }
+    }
+}
+
 /// Most samples (all channels together) a standalone ADTS file decodes into memory: 4 GiB of f32,
 /// about three hours of 48 kHz stereo. Longer files are refused rather than allocated.
 const MAX_ADTS_SAMPLES: usize = 1 << 30;
+
+/// Most samples (all channels together) a standalone file or an Ogg Vorbis stream keeps decoded in
+/// memory: the same 4 GiB of f32 as [`MAX_ADTS_SAMPLES`]. A file that decodes to more is refused.
+pub(crate) const MAX_DECODED_SAMPLES: usize = MAX_ADTS_SAMPLES;
+
+/// Whether `retained` samples plus `add` more stay within [`MAX_DECODED_SAMPLES`] (compact packets
+/// can decode to blocks far larger than themselves, so a small file could otherwise exhaust memory).
+pub(crate) fn check_decoded_budget(retained: usize, add: usize) -> Result<()> {
+    if retained.saturating_add(add) > MAX_DECODED_SAMPLES {
+        return Err(CodecError::Unsupported("audio too long to decode into memory (over 4 GiB decoded): shorten or transcode it".into()));
+    }
+    Ok(())
+}
 
 /// The length of the ADTS frame starting `b` (ISO/IEC 13818-7 §6.2: 12-bit sync word, layer `00`,
 /// 13-bit `frame_length` including the header), when it starts with a header and fits in `b`.
@@ -1418,6 +1465,13 @@ mod gapless_tests {
 
     /// #1137: the LAME tag's encoder delay (576) plus the decoder delay (529) is cut from the start.
     #[test]
+    fn decoded_budget_is_enforced_without_allocating() {
+        assert!(check_decoded_budget(0, MAX_DECODED_SAMPLES).is_ok());
+        assert!(check_decoded_budget(MAX_DECODED_SAMPLES, 1).is_err());
+        assert!(check_decoded_budget(usize::MAX, usize::MAX).is_err());
+    }
+
+    #[test]
     fn mp3_encoder_delay_is_trimmed() {
         let src = AudioFileSource::decode("tagged.mp3", Arc::from(tagged_mp3())).unwrap();
         assert_eq!(src.samples[0].len(), AUDIO_FRAMES * 1152 - (576 + 529));
@@ -1436,5 +1490,43 @@ mod decode_pcm_tests {
         let out = decode_pcm(&[0u8; 64], &cfg);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(Vec::is_empty));
+    }
+}
+
+#[cfg(test)]
+mod packet_cache_tests {
+    use super::*;
+
+    /// A packet that claims a size (nothing is allocated).
+    struct Claim(usize);
+    impl PacketBytes for Claim {
+        fn packet_bytes(&self) -> usize {
+            self.0
+        }
+    }
+
+    #[test]
+    fn the_cache_is_held_to_its_byte_budget_and_keeps_the_newest() {
+        let (mut packets, mut order, mut bytes) = (HashMap::new(), Vec::new(), 0usize);
+        let third = MAX_PACKET_CACHE_BYTES / 3 + 1;
+        for i in 0..5 {
+            cache_packet(&mut packets, &mut order, &mut bytes, i, &Arc::new(Claim(third)));
+        }
+        assert_eq!(order, [3, 4], "only what fits in the budget stays, newest last");
+        assert_eq!(bytes, 2 * third);
+        // one packet over the whole budget is still kept (it is the newest)
+        cache_packet(&mut packets, &mut order, &mut bytes, 9, &Arc::new(Claim(MAX_PACKET_CACHE_BYTES * 2)));
+        assert_eq!(order, [9]);
+        assert!(packets.contains_key(&9) && packets.len() == 1);
+    }
+
+    #[test]
+    fn the_entry_limit_still_applies() {
+        let (mut packets, mut order, mut bytes) = (HashMap::new(), Vec::new(), 0usize);
+        for i in 0..MAX_PACKET_CACHE_ENTRIES + 10 {
+            cache_packet(&mut packets, &mut order, &mut bytes, i, &Arc::new(Claim(1)));
+        }
+        assert_eq!(order.len(), MAX_PACKET_CACHE_ENTRIES);
+        assert_eq!(packets.len(), MAX_PACKET_CACHE_ENTRIES);
     }
 }

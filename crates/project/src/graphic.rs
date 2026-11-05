@@ -207,11 +207,45 @@ pub struct Appearance {
     /// Set when Fill Type is Linear Gradient. Replaces the solid fill. A text run with its own
     /// fill colour stays solid; the other characters keep the ramp.
     pub gradient: Option<LinearGradient>,
-    /// (colour, width px, type: 0 outer, 1 centre, 2 inner), outermost last.
-    pub strokes: Vec<([f32; 4], f32, u32)>,
+    /// Enabled strokes, outermost last.
+    pub strokes: Vec<Stroke>,
     /// (colour with opacity in alpha, padding px, corner radius px).
     pub background: Option<([f32; 4], f32, f32)>,
     pub shadow: Option<Shadow>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stroke {
+    pub style: StrokeStyle,
+    /// Resolved styles in the same order as `TextProps::runs`.
+    pub runs: Vec<StrokeStyle>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StrokeStyle {
+    pub enabled: bool,
+    pub color: [f32; 4],
+    /// Width in layer pixels.
+    pub width: f32,
+    /// 0 outer, 1 centre, 2 inner.
+    pub kind: u32,
+}
+
+impl StrokeStyle {
+    pub fn active(&self) -> bool {
+        self.enabled && self.width.is_finite() && self.width > 0.0
+    }
+
+    fn with_char_style(self, c: &crate::graphic_design::CharStyle, second: bool) -> Self {
+        let (enabled, color, width, kind) =
+            if second { (c.stroke2, c.stroke2_color, c.stroke2_width, c.stroke2_type) } else { (c.stroke, c.stroke_color, c.stroke_width, c.stroke_type) };
+        Self {
+            enabled: enabled.unwrap_or(self.enabled),
+            color: color.unwrap_or(self.color),
+            width: width.filter(|v| v.is_finite()).map_or(self.width, |v| v.clamp(0.0, 1000.0)),
+            kind: kind.filter(|v| *v <= 2).unwrap_or(self.kind),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -368,8 +402,13 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
     };
     let mut strokes = Vec::new();
     for (on, c, w, k) in [("stroke", "stroke_color", "stroke_width", "stroke_type"), ("stroke2", "stroke2_color", "stroke2_width", "stroke2_type")] {
-        if bb(e, on, t) && ff(e, w, t) > 0.0 {
-            strokes.push((cc(e, c, t), ff(e, w, t), ch(e, k, t)));
+        let style = StrokeStyle { enabled: bb(e, on, t), color: cc(e, c, t), width: ff(e, w, t).clamp(0.0, 1000.0), kind: ch(e, k, t) };
+        let runs: Vec<_> = match &content {
+            LayerContent::Text(text) => text.runs.iter().map(|(_, s)| style.with_char_style(s, on == "stroke2")).collect(),
+            LayerContent::Shape(_) => Vec::new(),
+        };
+        if style.active() || runs.iter().any(StrokeStyle::active) {
+            strokes.push(Stroke { style, runs });
         }
     }
     let background = bb(e, "background", t).then(|| {
