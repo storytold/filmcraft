@@ -903,8 +903,7 @@ impl Session {
         };
         let journal = declared_journal && !commands::reports_only(id, &params);
         let clock = Arc::clone(&self.clock);
-        let seq = self.call_seq;
-        self.call_seq = self.call_seq.saturating_add(1);
+        let seq = self.next_call_seq();
         let (params, ctx) = match hooked {
             Some((id_arc, hooks)) => {
                 let mut call = craft_command::Call { id: id_arc, params, depth: self.exec_depth.saturating_add(1), origin, seq };
@@ -1025,18 +1024,25 @@ impl Session {
         result
     }
 
+    /// The `seq` of the next gated call. `execute` and `open_ui` share this counter, so no two
+    /// calls of one session have the same `seq`.
+    fn next_call_seq(&mut self) -> u64 {
+        let seq = self.call_seq;
+        self.call_seq = self.call_seq.saturating_add(1);
+        seq
+    }
+
     /// Gate a command `execute` does not resolve. A veto returns `Err` after `after` has run.
     /// The caller runs the UI body, then [`Session::close_ui`]. Nested `execute` does not flush
     /// until this gate closes and `exec_depth` is 0.
     pub fn open_ui(&mut self, id: &str, params: &Value) -> std::result::Result<UiGate, String> {
         let hooks = self.hooks.clone();
-        self.call_seq = self.call_seq.saturating_add(1);
         let mut call = craft_command::Call {
             id: Arc::from(id),
             params: params.clone(),
             depth: self.exec_depth.saturating_add(1),
             origin: craft_command::Origin::Ui,
-            seq: self.call_seq,
+            seq: self.next_call_seq(),
         };
         let clock = Arc::clone(&self.clock);
         let verdict = hooks.before(self, &mut call, &*clock);
