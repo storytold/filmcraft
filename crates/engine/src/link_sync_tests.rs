@@ -133,3 +133,25 @@ fn every_member_lists_every_other_and_other_media_has_no_offset() {
     let v = inspect(&mut s);
     assert!(clip(&v, video).get("sync").is_none(), "an unlinked clip has no sync field");
 }
+
+#[test]
+fn the_timeline_indicators_round_to_whole_frames() {
+    let (mut s, video, sound) = linked_pair();
+    let rate = s.sequence_rate();
+    let marks = |s: &Session| crate::link_sync::out_of_sync_frames(s.active_sequence().unwrap(), rate);
+    assert!(marks(&s).is_empty(), "in sync");
+    move_to(&mut s, video, 14);
+    assert_eq!(marks(&s), [(video, 4), (sound, -4)].into_iter().collect());
+
+    // off the frame grid: under half a frame shows nothing, more rounds to the nearest frame
+    let frame = rate.frame_duration().0;
+    for (ticks, shown) in [(frame / 3, None), (frame * 2 / 3, Some(1)), (frame * 5 / 2 + 1, Some(3))] {
+        s.edit_sequence("nudge", |q, _, _| {
+            q.find_item_mut(video).unwrap().1.start = rate.tick_of(10) + filmcraft_time::Tick(ticks);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(marks(&s).get(&video).copied(), shown, "{ticks} ticks late");
+        assert_eq!(marks(&s).get(&sound).copied(), shown.map(|f| -f));
+    }
+}

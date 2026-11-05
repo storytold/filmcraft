@@ -585,6 +585,25 @@ fn animate_view(app: &mut FilmcraftApp, ctx: &egui::Context, content: Rect, seq_
 /// The clips in the visible rows: each track's items (with their drag previews, copies,
 /// waveforms and thumbnails), duplicate-frame stripes, empty nested-sequence overhangs,
 /// through edits, transitions and the locked-track hatch.
+/// An out-of-sync linked clip's offset from its partner (#4275): a signed frame count, white on
+/// red so it reads on every label color, at the right of the header (left of the fx badge).
+fn paint_out_of_sync(app: &mut FilmcraftApp, p: &egui::Painter, body: Rect, it: &TrackItem, frames: i64) {
+    let w = body.width();
+    if w < 30.0 {
+        return;
+    }
+    let text = format!("{frames:+}");
+    let font = egui::FontId::new(10.5, egui::FontFamily::Name("semibold".into()));
+    let galley = p.layout_no_wrap(text.clone(), font, Color32::WHITE);
+    let fx = (it.has_standard_effects() || it.has_modified_intrinsics()) && w > 40.0;
+    let right = body.max.x - if fx { 22.0 } else { 4.0 };
+    let r = Rect::from_min_max(pos2(right - galley.size().x - 6.0, body.min.y + 2.0), pos2(right, body.min.y + 15.0));
+    let cp = p.with_clip_rect(body.intersect(p.clip_rect()));
+    cp.rect_filled(r, 2.0, Color32::from_rgb(0xc8, 0x1e, 0x1e));
+    cp.galley(pos2(r.center().x - galley.size().x / 2.0, r.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
+    app.auto.add(&format!("timeline.clip.{}.outOfSync", it.id.0), r.intersect(p.clip_rect()), &text);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_clips(
     app: &mut FilmcraftApp,
@@ -615,6 +634,7 @@ fn draw_clips(
         ctx.set_cursor_icon(CursorIcon::Copy);
     }
     let duplicates = if app.session.state.show_duplicate_frame_markers { duplicate_markers(app, ctx, seq_id, seq) } else { Arc::default() };
+    let out_of_sync = filmcraft_engine::link_sync::out_of_sync_frames(seq, rate);
     for r in rows {
         let Some(tr) = seq.track(r.track) else { continue };
         let clip_rect = if r.kind == TrackKind::Video { vclip } else { aclip };
@@ -659,6 +679,9 @@ fn draw_clips(
                 paint_duplicate_stripes(app, &inside, layout, &d.ranges, start - it.start, (body.max.y - 3.0, body.max.y), visible, col, it.id);
             }
             app.auto.add(&format!("timeline.clip.{}", it.id.0), body.intersect(content), &it.name);
+            if let Some(&frames) = out_of_sync.get(&it.id) {
+                paint_out_of_sync(app, &p, body, it, frames);
+            }
             // a nest that runs past the end of its sequence's contents: that part is empty
             if !previews.contains_key(&it.id)
                 && let Some(empty) = app.session.project.nest_overhang(it)
