@@ -661,9 +661,22 @@ impl Shortcuts {
         v
     }
 
-    fn preset_path(&self, name: &str) -> Option<PathBuf> {
+    pub(crate) fn preset_path(&self, name: &str) -> Option<PathBuf> {
         let safe: String = name.chars().map(|c| if c.is_alphanumeric() || " -_().".contains(c) { c } else { '_' }).collect();
-        self.presets_dir().map(|d| d.join(format!("{}.json", safe.trim())))
+        let mut file = format!("{}.json", safe.trim());
+        let dir = self.presets_dir()?;
+        // A preset called "active" must not replace the active set restored at startup. It is saved as
+        // "active~.json": `~` is never kept in a sanitised name, so no other preset can share that path.
+        // A file that already has this exact (differently cased) name is a preset saved by an earlier
+        // version on a case-sensitive file system, and stays reachable; a case-insensitive one lists
+        // `active.json` instead, so it is not mistaken for one.
+        if file.eq_ignore_ascii_case(ACTIVE_FILE) {
+            let legacy = file != ACTIVE_FILE && std::fs::read_dir(&dir).is_ok_and(|rd| rd.flatten().any(|e| e.file_name() == file.as_str()));
+            if !legacy {
+                file = format!("{}~.json", safe.trim());
+            }
+        }
+        Some(dir.join(file))
     }
 
     /// Use the per-user data directory: loads the active set saved there (if any).
