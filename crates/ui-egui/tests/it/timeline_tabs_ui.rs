@@ -255,6 +255,54 @@ fn tabs_that_do_not_fit_are_reached_through_a_list() {
 }
 
 #[test]
+fn tabs_that_do_not_fit_scroll_with_the_arrows_without_changing_the_shown_sequence() {
+    let mut d = Driver::new();
+    let main = d.active();
+    assert!(!d.has("timeline.tabs.scrollLeft") && !d.has("timeline.tabs.scrollRight"), "no arrows while every tab fits");
+    let mut seqs = vec![main];
+    for i in 0..12 {
+        seqs.push(d.new_sequence(&format!("Scene assembly {i:02}")));
+    }
+    let last = *seqs.last().unwrap();
+    assert_eq!(d.open().len(), 13, "no limit on open sequences");
+    let strip = d.rect("panel.Timeline").unwrap();
+    let inside = |r: [f64; 4]| r[0] >= strip[0] && r[0] + r[2] <= strip[0] + strip[2];
+    // the shown tab is at the far end: only the left arrow works
+    assert!(d.has(&format!("timeline.tab.{last}")) && !d.has(&format!("timeline.tab.{main}")));
+    let before: Vec<u64> = seqs.iter().copied().filter(|s| d.has(&format!("timeline.tab.{s}"))).collect();
+    d.click("timeline.tabs.scrollLeft");
+    let after: Vec<u64> = seqs.iter().copied().filter(|s| d.has(&format!("timeline.tab.{s}"))).collect();
+    assert_eq!(d.active(), last, "scrolling does not switch sequences");
+    assert!(after.first() < before.first(), "earlier tabs come into view: {before:?} -> {after:?}");
+    for s in &after {
+        assert!(inside(d.rect(&format!("timeline.tab.{s}")).unwrap()), "tab {s} stays inside the panel");
+    }
+    // all the way left reaches the first tab; the left arrow then has nothing to do
+    for _ in 0..20 {
+        d.click("timeline.tabs.scrollLeft");
+    }
+    assert!(d.has(&format!("timeline.tab.{main}")) && !d.has(&format!("timeline.tab.{last}")));
+    assert_eq!(d.active(), last);
+    // and back to the end
+    for _ in 0..20 {
+        d.click("timeline.tabs.scrollRight");
+    }
+    assert!(d.has(&format!("timeline.tab.{last}")) && !d.has(&format!("timeline.tab.{main}")));
+    // showing a sequence from outside the strip scrolls its tab into view
+    d.show(main);
+    assert!(d.has(&format!("timeline.tab.{main}")), "the shown tab is visible");
+    d.snapshot("timeline-tab-arrows");
+    // closing tabs until they fit again removes the arrows
+    for s in seqs.iter().skip(1) {
+        d.exec("sequence.close", json!({"item": s}));
+    }
+    d.frames(3);
+    assert_eq!(d.open(), vec![main]);
+    assert!(!d.has("timeline.tabs.scrollLeft") && !d.has("timeline.tabs.scrollRight") && !d.has("timeline.tabs.more"));
+    assert!(d.has(&format!("timeline.tab.{main}")));
+}
+
+#[test]
 fn a_reopened_project_shows_its_tabs_as_they_were_left() {
     let dir = std::env::temp_dir().join(format!("filmcraft-tabs-ui-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
