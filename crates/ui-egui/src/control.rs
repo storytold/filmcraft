@@ -25,6 +25,26 @@ use std::sync::mpsc::Sender;
 
 use serde_json::{Value, json};
 
+const MAX_CLICK_COUNT: u64 = 10;
+const MAX_DRAG_STEPS: u64 = 1_024;
+/// Synthetic input is consumed a step per frame; bound what a client can queue ahead of that.
+const MAX_SYNTHETIC_EVENTS: usize = 16_384;
+
+/// Read a pointer repetition count, using `default` when `key` is absent or null.
+///
+/// Reject non-integer, negative and above-`maximum` values; raise accepted counts to `minimum`.
+fn bounded_repetitions(params: &Value, key: &str, default: u64, minimum: u64, maximum: u64) -> Result<u64, String> {
+    // The MCP bridge serializes omitted optional counts as null.
+    let value = match params.get(key) {
+        None | Some(Value::Null) => default,
+        Some(value) => value.as_u64().ok_or_else(|| format!("`{key}` must be a non-negative integer"))?,
+    };
+    if value > maximum {
+        return Err(format!("`{key}` must not exceed {maximum}"));
+    }
+    Ok(value.max(minimum))
+}
+
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::state::{Mode, PlaybackRes, ThumbnailMode, Tool};
@@ -53,7 +73,8 @@ pub enum Outcome {
     AfterInput,
     Screenshot {
         path: Option<String>,
-        crop: Option<[f32; 4]>,
+        /// Resolved to fresh geometry at issue time, not here.
+        crop: Option<crate::capture::CropTarget>,
     },
 }
 
@@ -96,240 +117,295 @@ fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
     Ok(egui::pos2(x as f32, y as f32))
 }
 
-pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
-    let p = &req.params;
+fn handle_ui_set(app: &mut FilmcraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     let s = |k: &str| p.get(k).and_then(Value::as_str);
-    match req.method.as_str() {
-        "engine.execute" | "ui.menu.invoke" => {
-            let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
-            let params = p.get("params").cloned().unwrap_or(json!({}));
-            match crate::menus::invoke(app, ctx, id, params) {
-                Ok(v) => ok(v),
-                Err(e) => err(e),
-            }
+    // Text to Speech panel draft (voice, pitch, pace, text…), merged into the current one
+    if let Some(patch) = p.get("tts") {
+        let mut cur = serde_json::to_value(&app.ui.tts).unwrap_or_default();
+        merge(&mut cur, patch);
+        match serde_json::from_value(cur) {
+            Ok(d) => app.ui.tts = d,
+            Err(e) => return err(format!("bad `tts`: {e}")),
         }
-        "engine.commands" => match app.session.execute("command.list", json!({})) {
-            Ok(v) => ok(v),
-            Err(e) => err(e),
-        },
-        "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items(app)).unwrap_or_default()),
-        "ui.inspect" => ok(inspect(app, ctx)),
-        "perf.stats" => ok(crate::perf::stats(app)),
-        "ui.elements" => {
-            if app.timeline_still < 2 {
-                // rects of timeline elements are still moving (e.g. the fit after opening a sequence)
-                return Outcome::Retry("the timeline is still zooming".into());
-            }
-            let prefix = s("prefix").unwrap_or("");
-            ok(serde_json::to_value(app.auto.query(prefix)).unwrap_or_default())
+    }
+    if let Some(t) = s("tool") {
+        match Tool::from_name(t) {
+            Some(t) => app.ui.tool = t,
+            None => return err(format!("unknown tool `{t}`")),
         }
-        "ui.set" => {
-            // Text to Speech panel draft (voice, pitch, pace, text…), merged into the current one
-            if let Some(patch) = p.get("tts") {
-                let mut cur = serde_json::to_value(&app.ui.tts).unwrap_or_default();
-                merge(&mut cur, patch);
-                match serde_json::from_value(cur) {
-                    Ok(d) => app.ui.tts = d,
-                    Err(e) => return err(format!("bad `tts`: {e}")),
+    }
+    if let Some(w) = s("workspace") {
+        match crate::dock::find(&app.workspaces, w) {
+            Some(w) => app.set_workspace(&w),
+            None => return err(format!("unknown workspace `{w}`")),
+        }
+    }
+    if let Some(m) = s("mode") {
+        app.ui.mode = match m.to_ascii_lowercase().as_str() {
+            "import" => Mode::Import,
+            "export" => Mode::Export,
+            _ => Mode::Edit,
+        };
+    }
+    if let Some(th) = s("theme") {
+        match crate::theme::ThemeKind::from_name(th) {
+            Some(k) => crate::panels::settings::set_theme(app, ctx, k),
+            None => return err("unknown theme (dark, medium, light)"),
+        }
+    }
+    // the open Settings dialog: page and draft values (`{"page": id, "values": {key: value}}`)
+    if let Some(st) = p.get("settings")
+        && let Err(e) = crate::panels::settings::patch(app, st)
+    {
+        return err(e);
+    }
+    if let Some(f) = s("focused").and_then(PanelKind::from_name) {
+        app.ui.focused = f;
+    }
+    if let Some(r) = s("playbackRes") {
+        app.ui.program.res =
+            PlaybackRes::ALL.into_iter().find(|x| x.label().eq_ignore_ascii_case(r) || format!("{x:?}").eq_ignore_ascii_case(r)).unwrap_or(app.ui.program.res);
+    }
+    if let Err(e) = set_timeline(app, p) {
+        return err(e);
+    }
+    if let Some(q) = s("effectsSearch") {
+        app.ui.effects_search = q.to_string();
+    }
+    // Effect Controls keyframe selection (`[{clip, effect, param, mask?, time}]`), replaced;
+    // references to missing keyframes are dropped by the panel
+    if let Some(v) = p.get("keyframeSelection") {
+        match serde_json::from_value(v.clone()) {
+            Ok(sel) => app.ui.keyframe_selection = sel,
+            Err(e) => return err(format!("`keyframeSelection`: {e}")),
+        }
+    }
+    if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
+        app.ui.program.safe_margins = v;
+    }
+    // Monitor view state (serde fields of `MonitorView`), merged into the current state.
+    if let Err(e) = set_monitor_views(app, p) {
+        return err(e);
+    }
+    // Export mode state (`panels::export_mode::ExportUi`), deep-merged; `"preset": name`
+    // applies that preset's settings first
+    if let Some(patch) = p.get("export").filter(|v| v.is_object()) {
+        if let Some(name) = patch.get("preset").and_then(Value::as_str)
+            && name != crate::panels::export_mode::CUSTOM
+            && !crate::panels::export_mode::apply_preset(app, name)
+        {
+            return err(format!("no export preset named `{name}`"));
+        }
+        let mut cur = serde_json::to_value(&app.ui.export).unwrap_or_default();
+        merge(&mut cur, patch);
+        match serde_json::from_value(cur) {
+            Ok(e) => app.ui.export = e,
+            Err(e) => return err(format!("`export`: {e}")),
+        }
+    }
+    // panel settings (`panels::panel_state`): {"scopes": {...}, "timecode": {...}, …}, merged
+    if let Some(patch) = p.get("panels") {
+        let mut cur = serde_json::to_value(&app.ui.panels).unwrap_or_default();
+        merge(&mut cur, patch);
+        match serde_json::from_value(cur) {
+            Ok(v) => app.ui.panels = v,
+            Err(e) => return err(format!("`panels`: {e}")),
+        }
+    }
+    // Project panel / Media Browser view state (`panels::project`, `panels::media_browser`), merged
+    if let Err(e) = set_panel_views(app, p) {
+        return err(e);
+    }
+    // Essential Graphics ▸ Browse and the template / font dialogs (`panels::graphics_templates`), merged
+    if let Some(patch) = p.get("gfxTemplates") {
+        let mut cur = serde_json::to_value(&app.ui.gfx_templates).unwrap_or_default();
+        merge(&mut cur, patch);
+        match serde_json::from_value(cur) {
+            Ok(v) => app.ui.gfx_templates = v,
+            Err(e) => return err(format!("`gfxTemplates`: {e}")),
+        }
+    }
+    // the Type tool's text editing state: {"clip", "layer", "caret", "anchor"} (byte offsets) or null
+    if let Some(v) = p.get("gfxEdit")
+        && let Err(e) = set_gfx_edit(app, v)
+    {
+        return err(e);
+    }
+    // fields of the open Edit / Clip / File dialog (`panels::clip_dialogs`)
+    if let Some(m) = p.get("clipDialog").and_then(Value::as_object) {
+        let Some(d) = app.ui.clip_dialog.as_mut() else { return err("no clip dialog is open") };
+        for (k, v) in m {
+            d.params[k.as_str()] = v.clone();
+        }
+    }
+    // fields of the open M3.11 menu dialog (`panels::menu_dialogs`)
+    if let Some(m) = p.get("menuDialog").and_then(Value::as_object) {
+        let Some(d) = app.ui.extras.dialog.as_mut() else { return err("no menu dialog is open") };
+        for (k, v) in m {
+            d.params[k.as_str()] = v.clone();
+        }
+    }
+    ok(Value::Null)
+}
+
+/// The `timeline` part of a `ui.set` payload: playback zoom and scroll, fit, track heights
+/// and the thumbnail mode.
+fn set_timeline(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
+    let Some(tl) = p.get("timeline") else { return Ok(()) };
+    if let Some(v) = tl.get("pps").and_then(Value::as_f64) {
+        app.ui.timeline.target_pps = v;
+    }
+    if let Some(v) = tl.get("scroll").and_then(Value::as_f64) {
+        app.ui.timeline.target_scroll = v;
+    }
+    if tl.get("fit").and_then(Value::as_bool) == Some(true) {
+        app.ui.timeline.fit_pending = true;
+    }
+    if let Some(v) = tl.get("videoTrackHeight").and_then(Value::as_f64) {
+        app.ui.timeline.video_track_h = v as f32;
+    }
+    if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64) {
+        app.ui.timeline.audio_track_h = v as f32;
+    }
+    if let Some(v) = tl.get("showVideoNames").and_then(Value::as_bool) {
+        app.ui.timeline.show_video_names = v;
+    }
+    if let Some(v) = tl.get("showAudioNames").and_then(Value::as_bool) {
+        app.ui.timeline.show_audio_names = v;
+    }
+    // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
+    if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {
+        if m.eq_ignore_ascii_case("off") {
+            app.ui.timeline.show_thumbnails = false;
+        } else {
+            let Some(mode) = ThumbnailMode::from_name(m) else {
+                return Err(format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"));
+            };
+            app.ui.timeline.show_thumbnails = true;
+            app.ui.timeline.thumbnail_mode = mode;
+        }
+    }
+    Ok(())
+}
+
+/// The `gfxEdit` part of a `ui.set` payload: which layer the Type tool edits. Resolves that
+/// layer's identity from the document and refreshes the IME target when it changes.
+fn set_gfx_edit(app: &mut FilmcraftApp, v: &Value) -> Result<(), String> {
+    match serde_json::from_value::<Option<crate::state::GfxEdit>>(v.clone()) {
+        Ok(mut e) => {
+            // An explicit `ui.set.gfxEdit {clip, layer}` names the layer currently at
+            // that index. Resolve its identity from the document instead of inheriting
+            // a stale uid/fingerprint from a previous edit session: after a reorder,
+            // delete or undo the requested index may now hold a different layer.
+            if let Some(new) = e.as_mut() {
+                match crate::panels::graphics::current_layer_identity(&app.session, new.clip, new.layer) {
+                    Some((uid, fingerprint)) => {
+                        new.uid = uid;
+                        new.fingerprint = fingerprint;
+                    }
+                    None => {
+                        new.uid = 0;
+                        new.fingerprint = 0;
+                    }
                 }
             }
-            if let Some(t) = s("tool") {
-                match Tool::from_name(t) {
-                    Some(t) => app.ui.tool = t,
-                    None => return err(format!("unknown tool `{t}`")),
+            let changed = match (&app.ui.gfx_edit, &e) {
+                (None, None) => false,
+                (Some(old), Some(new)) => {
+                    // A stable uid is the owner key. The compact fingerprint only
+                    // decides identity for a uid-less layer, and zero there means
+                    // "the requested index" rather than a different owner.
+                    old.clip != new.clip
+                        || old.layer != new.layer
+                        || old.uid != new.uid
+                        || (new.uid == 0 && old.fingerprint != 0 && old.fingerprint != new.fingerprint)
                 }
-            }
-            if let Some(w) = s("workspace") {
-                match crate::dock::find(&app.workspaces, w) {
-                    Some(w) => app.set_workspace(&w),
-                    None => return err(format!("unknown workspace `{w}`")),
-                }
-            }
-            if let Some(m) = s("mode") {
-                app.ui.mode = match m.to_ascii_lowercase().as_str() {
-                    "import" => Mode::Import,
-                    "export" => Mode::Export,
-                    _ => Mode::Edit,
-                };
-            }
-            if let Some(th) = s("theme") {
-                match crate::theme::ThemeKind::from_name(th) {
-                    Some(k) => crate::panels::settings::set_theme(app, ctx, k),
-                    None => return err("unknown theme (dark, medium, light)"),
-                }
-            }
-            // the open Settings dialog: page and draft values (`{"page": id, "values": {key: value}}`)
-            if let Some(st) = p.get("settings")
-                && let Err(e) = crate::panels::settings::patch(app, st)
+                _ => true,
+            };
+            if changed {
+                app.restart_ime_target();
+            } else if let (Some(old), Some(new)) = (&app.ui.gfx_edit, &e)
+                && (old.caret, old.anchor) != (new.caret, new.anchor)
             {
-                return err(e);
+                // Caret is not part of the stable owner. Only a known composition
+                // becomes stale; commit-only input without one remains eligible.
+                app.invalidate_ime_composition();
             }
-            if let Some(f) = s("focused").and_then(PanelKind::from_name) {
-                app.ui.focused = f;
-            }
-            if let Some(r) = s("playbackRes") {
-                app.ui.program.res = PlaybackRes::ALL
-                    .into_iter()
-                    .find(|x| x.label().eq_ignore_ascii_case(r) || format!("{x:?}").eq_ignore_ascii_case(r))
-                    .unwrap_or(app.ui.program.res);
-            }
-            if let Some(tl) = p.get("timeline") {
-                if let Some(v) = tl.get("pps").and_then(Value::as_f64) {
-                    app.ui.timeline.target_pps = v;
-                }
-                if let Some(v) = tl.get("scroll").and_then(Value::as_f64) {
-                    app.ui.timeline.target_scroll = v;
-                }
-                if tl.get("fit").and_then(Value::as_bool) == Some(true) {
-                    app.ui.timeline.fit_pending = true;
-                }
-                if let Some(v) = tl.get("videoTrackHeight").and_then(Value::as_f64) {
-                    app.ui.timeline.video_track_h = v as f32;
-                }
-                if let Some(v) = tl.get("audioTrackHeight").and_then(Value::as_f64) {
-                    app.ui.timeline.audio_track_h = v as f32;
-                }
-                // Show Video Thumbnails: "off" or a mode ("head", "headAndTail", "continuous")
-                if let Some(m) = tl.get("thumbnails").and_then(Value::as_str) {
-                    if m.eq_ignore_ascii_case("off") {
-                        app.ui.timeline.show_thumbnails = false;
-                    } else {
-                        let Some(mode) = ThumbnailMode::from_name(m) else {
-                            return err(format!("unknown thumbnail mode `{m}` (off, head, headAndTail, continuous)"));
-                        };
-                        app.ui.timeline.show_thumbnails = true;
-                        app.ui.timeline.thumbnail_mode = mode;
-                    }
-                }
-            }
-            if let Some(q) = s("effectsSearch") {
-                app.ui.effects_search = q.to_string();
-            }
-            // Effect Controls keyframe selection (`[{clip, effect, param, mask?, time}]`), replaced;
-            // references to missing keyframes are dropped by the panel
-            if let Some(v) = p.get("keyframeSelection") {
-                match serde_json::from_value(v.clone()) {
-                    Ok(sel) => app.ui.keyframe_selection = sel,
-                    Err(e) => return err(format!("`keyframeSelection`: {e}")),
-                }
-            }
-            if let Some(v) = p.get("safeMargins").and_then(Value::as_bool) {
-                app.ui.program.safe_margins = v;
-            }
-            // Monitor view state (serde fields of `MonitorView`), merged into the current state.
-            for k in ["program", "source"] {
-                let Some(patch) = p.get(k).and_then(Value::as_object) else { continue };
-                let mv = if k == "program" { &mut app.ui.program } else { &mut app.ui.source };
-                let mut cur = serde_json::to_value(&*mv).unwrap_or_default();
-                if let Some(o) = cur.as_object_mut() {
-                    for (f, v) in patch {
-                        o.insert(f.clone(), v.clone());
-                    }
-                }
-                match serde_json::from_value(cur) {
-                    Ok(m) => *mv = m,
-                    Err(e) => return err(format!("`{k}`: {e}")),
-                }
-            }
-            // Export mode state (`panels::export_mode::ExportUi`), deep-merged; `"preset": name`
-            // applies that preset's settings first
-            if let Some(patch) = p.get("export").filter(|v| v.is_object()) {
-                if let Some(name) = patch.get("preset").and_then(Value::as_str)
-                    && name != crate::panels::export_mode::CUSTOM
-                    && !crate::panels::export_mode::apply_preset(app, name)
-                {
-                    return err(format!("no export preset named `{name}`"));
-                }
-                let mut cur = serde_json::to_value(&app.ui.export).unwrap_or_default();
-                merge(&mut cur, patch);
-                match serde_json::from_value(cur) {
-                    Ok(e) => app.ui.export = e,
-                    Err(e) => return err(format!("`export`: {e}")),
-                }
-            }
-            // panel settings (`panels::panel_state`): {"scopes": {...}, "timecode": {...}, …}, merged
-            if let Some(patch) = p.get("panels") {
-                let mut cur = serde_json::to_value(&app.ui.panels).unwrap_or_default();
-                merge(&mut cur, patch);
-                match serde_json::from_value(cur) {
-                    Ok(v) => app.ui.panels = v,
-                    Err(e) => return err(format!("`panels`: {e}")),
-                }
-            }
-            // Project panel / Media Browser view state (`panels::project`, `panels::media_browser`), merged
-            for (k, which) in [("projectPanel", 0), ("mediaBrowser", 1)] {
-                let Some(patch) = p.get(k) else { continue };
-                let mut cur =
-                    if which == 0 { serde_json::to_value(&app.ui.project_panel) } else { serde_json::to_value(&app.ui.media_browser) }.unwrap_or_default();
-                merge(&mut cur, patch);
-                let r = if which == 0 {
-                    serde_json::from_value(cur).map(|v| app.ui.project_panel = v)
-                } else {
-                    serde_json::from_value(cur).map(|v| app.ui.media_browser = v)
-                };
-                if let Err(e) = r {
-                    return err(format!("`{k}`: {e}"));
-                }
-            }
-            // Essential Graphics ▸ Browse and the template / font dialogs (`panels::graphics_templates`), merged
-            if let Some(patch) = p.get("gfxTemplates") {
-                let mut cur = serde_json::to_value(&app.ui.gfx_templates).unwrap_or_default();
-                merge(&mut cur, patch);
-                match serde_json::from_value(cur) {
-                    Ok(v) => app.ui.gfx_templates = v,
-                    Err(e) => return err(format!("`gfxTemplates`: {e}")),
-                }
-            }
-            // the Type tool's text editing state: {"clip", "layer", "caret", "anchor"} (byte offsets) or null
-            if let Some(v) = p.get("gfxEdit") {
-                match serde_json::from_value(v.clone()) {
-                    Ok(e) => app.ui.gfx_edit = e,
-                    Err(e) => return err(format!("`gfxEdit`: {e}")),
-                }
-            }
-            // fields of the open Edit / Clip / File dialog (`panels::clip_dialogs`)
-            if let Some(m) = p.get("clipDialog").and_then(Value::as_object) {
-                let Some(d) = app.ui.clip_dialog.as_mut() else { return err("no clip dialog is open") };
-                for (k, v) in m {
-                    d.params[k.as_str()] = v.clone();
-                }
-            }
-            // fields of the open M3.11 menu dialog (`panels::menu_dialogs`)
-            if let Some(m) = p.get("menuDialog").and_then(Value::as_object) {
-                let Some(d) = app.ui.extras.dialog.as_mut() else { return err("no menu dialog is open") };
-                for (k, v) in m {
-                    d.params[k.as_str()] = v.clone();
-                }
-            }
-            ok(Value::Null)
+            app.ui.gfx_edit = e;
+            Ok(())
         }
-        "ui.panel.show" | "ui.panel.close" => {
-            let Some(panel) = s("panel").and_then(PanelKind::from_name) else { return err("unknown `panel`") };
-            if req.method == "ui.panel.show" {
-                app.show_panel(panel);
-            } else {
-                if let Err(error) = app.apply_dock(craft_ui::docking::Action::Close { panel }) {
-                    return err(&error);
-                }
+        Err(e) => Err(format!("`gfxEdit`: {e}")),
+    }
+}
+
+/// The `program` / `source` parts of a `ui.set` payload: serde fields of `MonitorView`,
+/// merged into the current state.
+fn set_monitor_views(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
+    // Monitor view state (serde fields of `MonitorView`), merged into the current state.
+    for k in ["program", "source"] {
+        let Some(patch) = p.get(k).and_then(Value::as_object) else { continue };
+        let mv = if k == "program" { &mut app.ui.program } else { &mut app.ui.source };
+        let mut cur = serde_json::to_value(&*mv).unwrap_or_default();
+        if let Some(o) = cur.as_object_mut() {
+            for (f, v) in patch {
+                o.insert(f.clone(), v.clone());
             }
-            ok(Value::Null)
         }
+        match serde_json::from_value(cur) {
+            Ok(m) => *mv = m,
+            Err(e) => return Err(format!("`{k}`: {e}")),
+        }
+    }
+    Ok(())
+}
+
+/// The `projectPanel` / `mediaBrowser` parts of a `ui.set` payload: each panel's view state,
+/// merged.
+fn set_panel_views(app: &mut FilmcraftApp, p: &Value) -> Result<(), String> {
+    // Project panel / Media Browser view state (`panels::project`, `panels::media_browser`), merged
+    for (k, which) in [("projectPanel", 0), ("mediaBrowser", 1)] {
+        let Some(patch) = p.get(k) else { continue };
+        let mut cur = if which == 0 { serde_json::to_value(&app.ui.project_panel) } else { serde_json::to_value(&app.ui.media_browser) }.unwrap_or_default();
+        merge(&mut cur, patch);
+        let r = if which == 0 {
+            serde_json::from_value(cur).map(|v| app.ui.project_panel = v)
+        } else {
+            serde_json::from_value(cur).map(|v| app.ui.media_browser = v)
+        };
+        if let Err(e) = r {
+            return Err(format!("`{k}`: {e}"));
+        }
+    }
+    Ok(())
+}
+
+fn handle_synthetic_input(app: &mut FilmcraftApp, p: &Value, method: &str) -> Outcome {
+    let s = |key: &str| p.get(key).and_then(Value::as_str);
+    match method {
         "ui.click" | "ui.move" => {
             let pos = match point(app, p) {
                 Ok(p) => p,
                 Err(e) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
                 Err(e) => return err(e),
             };
+            // validate before queuing anything, so a refused count leaves no modifier held
+            let count = if method == "ui.click" {
+                match bounded_repetitions(p, "count", 1, 0, MAX_CLICK_COUNT) {
+                    Ok(count) => count,
+                    Err(error) => return err(error),
+                }
+            } else {
+                0
+            };
             let m = modifiers(p);
             app.synthetic.push(egui::Event::ModifiersChanged(m));
             app.synthetic.push(egui::Event::PointerMoved(pos));
-            if req.method == "ui.click" {
+            if method == "ui.click" {
                 let button = match s("button") {
                     Some("right") => egui::PointerButton::Secondary,
                     Some("middle") => egui::PointerButton::Middle,
                     _ => egui::PointerButton::Primary,
                 };
-                let count = p.get("count").and_then(Value::as_u64).unwrap_or(1);
                 for _ in 0..count {
                     app.synthetic.push(egui::Event::PointerButton { pos, button, pressed: true, modifiers: m });
                     app.synthetic.push(egui::Event::PointerButton { pos, button, pressed: false, modifiers: m });
@@ -345,7 +421,10 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 (Err(e), _) | (_, Err(e)) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
                 (Err(e), _) | (_, Err(e)) => return err(e),
             };
-            let steps = p.get("steps").and_then(Value::as_u64).unwrap_or(12).max(2);
+            let steps = match bounded_repetitions(p, "steps", 12, 2, MAX_DRAG_STEPS) {
+                Ok(steps) => steps,
+                Err(error) => return err(error),
+            };
             let m = modifiers(p);
             app.synthetic.push(egui::Event::ModifiersChanged(m));
             app.synthetic.push(egui::Event::PointerMoved(a));
@@ -369,6 +448,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             app.synthetic.push(egui::Event::PointerMoved(pos));
             app.synthetic.push(egui::Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Point,
+                source: egui::MouseWheelSource::Wheel,
                 delta: egui::vec2(dx, dy),
                 modifiers: modifiers(p),
                 phase: egui::TouchPhase::Move,
@@ -399,6 +479,62 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             app.synthetic.push(egui::Event::Key { key: egui::Key::F35, physical_key: None, pressed: false, repeat: false, modifiers: Default::default() });
             Outcome::AfterInput
         }
+        _ => err("unsupported synthetic input"),
+    }
+}
+
+/// Execute one control request. Synthetic input is capped by `MAX_SYNTHETIC_EVENTS` before queueing, screenshot crops stay symbolic until capture, and
+/// `gfxEdit` layer identity is resolved from the document.
+pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+    let p = &req.params;
+    let s = |k: &str| p.get(k).and_then(Value::as_str);
+    if matches!(req.method.as_str(), "ui.click" | "ui.move" | "ui.drag" | "ui.scroll" | "ui.key" | "ui.type") && app.synthetic.len() >= MAX_SYNTHETIC_EVENTS {
+        return err("too many synthetic input events are queued; wait for the current input to be processed");
+    }
+    match req.method.as_str() {
+        "engine.execute" | "ui.menu.invoke" => {
+            let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
+            let params = p.get("params").cloned().unwrap_or(json!({}));
+            let invoke = if req.method == "engine.execute" { crate::menus::invoke_command } else { crate::menus::invoke };
+            match invoke(app, ctx, id, params) {
+                Ok(v) => ok(v),
+                Err(e) => err(e),
+            }
+        }
+        "engine.commands" => match app.session.execute("command.list", json!({})) {
+            Ok(v) => ok(v),
+            Err(e) => err(e),
+        },
+        "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items_with_focus(app, ctx)).unwrap_or_default()),
+        "ui.inspect" => ok(inspect(app, ctx)),
+        "ui.docking" => {
+            let hits = craft_ui::docking::DockArea::<PanelKind>::hit_rects(ctx, crate::dock_ui::area_id());
+            let hits: Vec<Value> = hits.iter().map(|(hit, r)| json!({"hit": hit, "rect": [r.left(), r.top(), r.width(), r.height()]})).collect();
+            ok(json!({"layout": app.ui.dock, "focused": app.ui.focused, "maximized": app.ui.keys.maximized, "hitRects": hits}))
+        }
+        "perf.stats" => ok(crate::perf::stats(app)),
+        "ui.elements" => {
+            if app.timeline_still < 2 {
+                // rects of timeline elements are still moving (e.g. the fit after opening a sequence)
+                return Outcome::Retry("the timeline is still zooming".into());
+            }
+            let prefix = s("prefix").unwrap_or("");
+            ok(serde_json::to_value(app.auto.query(prefix)).unwrap_or_default())
+        }
+        "ui.set" => handle_ui_set(app, ctx, p),
+        "ui.panel.show" | "ui.panel.close" => {
+            let Some(panel) = s("panel").and_then(PanelKind::from_name) else { return err("unknown `panel`") };
+            if req.method == "ui.panel.show" {
+                app.show_panel(panel);
+            } else {
+                if let Err(error) = app.apply_dock(craft_ui::docking::Action::Close { panel }) {
+                    return err(&error);
+                }
+            }
+            ok(Value::Null)
+        }
+        "ui.click" | "ui.move" | "ui.drag" | "ui.scroll" | "ui.key" | "ui.type" => handle_synthetic_input(app, p, req.method.as_str()),
+
         "ui.timeline.hit" => {
             let pos = match point(app, p) {
                 Ok(p) => p,
@@ -422,8 +558,14 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(json!({"playing": app.playback.playing, "playhead": app.session.playhead().0}))
         }
         "ui.screenshot" => {
-            let crop = s("panel").and_then(PanelKind::from_name).and_then(|pk| app.auto.find(&format!("panel.{}", pk.id())).map(|e| e.rect));
-            let crop = crop.or_else(|| s("id").and_then(|id| app.auto.find(id).map(|e| e.rect)));
+            // Keep the target symbolic: the crop must come from the layout that is actually
+            // captured, not from whatever the registry held when this control request arrived.
+            let crop = if let Some(panel) = s("panel") {
+                let Some(pk) = PanelKind::from_name(panel) else { return err(format!("unknown panel `{panel}`")) };
+                Some(crate::capture::CropTarget::Element(format!("panel.{}", pk.id())))
+            } else {
+                s("id").map(|id| crate::capture::CropTarget::Element(id.to_string()))
+            };
             // Bring the window on screen so a frame is presented, without taking keyboard focus.
             app.raise_for_control(ctx);
             Outcome::Screenshot { path: s("path").map(str::to_string), crop }
@@ -487,10 +629,11 @@ fn merge(v: &mut Value, patch: &Value) {
     }
 }
 
+/// Read-only JSON snapshot; focus and element counts come from the current accepted registry pass.
 pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
     let size = ctx.content_rect().size();
     let keyboard_focus = ctx.memory(|memory| memory.focused()).map(|id| {
-        let elements: Vec<_> = app.auto.previous.iter().filter(|element| element.response_id == Some(id)).collect();
+        let elements: Vec<_> = app.auto.all().iter().filter(|element| element.response_id == Some(id)).collect();
         json!({
             "widgetId": format!("{:016x}", id.value()),
             "elementIds": elements.iter().map(|element| element.id.as_str()).collect::<Vec<_>>(),
@@ -511,24 +654,53 @@ pub fn inspect(app: &FilmcraftApp, ctx: &egui::Context) -> Value {
         "playhead": app.session.playhead().0,
         "activeSequence": app.session.state.active_sequence.map(|i| i.0),
         "selection": app.session.state.selection.iter().map(|c| c.0).collect::<Vec<_>>(),
-        "elements": app.auto.previous.len(),
+        "elements": app.auto.all().len(),
         "dialog": app.dialog.map(|d| format!("{d:?}")),
     })
 }
 
 /// Save a screenshot (optionally cropped to a rect in points) as PNG; returns the reply JSON.
 pub fn save_screenshot(ctx: &egui::Context, image: &egui::ColorImage, path: Option<&str>, crop: Option<[f32; 4]>) -> Value {
-    let ppp = ctx.pixels_per_point();
-    let [w, h] = image.size;
-    let (x0, y0, cw, ch) = match crop {
-        Some([x, y, cw, ch]) => {
-            let x0 = ((x * ppp) as usize).min(w);
-            let y0 = ((y * ppp) as usize).min(h);
-            (x0, y0, ((cw * ppp) as usize).min(w - x0), ((ch * ppp) as usize).min(h - y0))
-        }
-        None => (0, 0, w, h),
+    save_screenshot_with_ppp(image, path, crop, ctx.pixels_per_point())
+}
+
+/// Intersect a crop rectangle in points with the captured image, converting through `ppp`.
+///
+/// Negative origins are clipped to the image rather than saturated while keeping the requested
+/// width, which would shift the captured region. A crop that does not overlap the image (or has a
+/// non-finite or non-positive size) is refused instead of returning a zero-sized or wrong image.
+fn crop_pixels(size: [usize; 2], crop: Option<[f32; 4]>, ppp: f32) -> Result<(usize, usize, usize, usize), String> {
+    let [w, h] = size;
+    let Some([x, y, cw, ch]) = crop else { return Ok((0, 0, w, h)) };
+    if !(x.is_finite() && y.is_finite() && cw.is_finite() && ch.is_finite()) || cw <= 0.0 || ch <= 0.0 {
+        return Err("screenshot crop must be a finite rectangle with positive width and height".into());
+    }
+    let ppp = f64::from(ppp);
+    let clamp = |v: f64, max: usize| v.max(0.0).min(max as f64);
+    let x0 = clamp(f64::from(x) * ppp, w).floor() as usize;
+    let y0 = clamp(f64::from(y) * ppp, h).floor() as usize;
+    let x1 = clamp((f64::from(x) + f64::from(cw)) * ppp, w).ceil() as usize;
+    let y1 = clamp((f64::from(y) + f64::from(ch)) * ppp, h).ceil() as usize;
+    let (cw, ch) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+    if cw == 0 || ch == 0 {
+        return Err("screenshot crop does not intersect the image".into());
+    }
+    Ok((x0, y0, cw, ch))
+}
+
+/// Save a screenshot whose scale was captured with the request. Hidden logic ticks must not read
+/// `Context::pixels_per_point()` for an image produced from a different UI pass.
+pub fn save_screenshot_with_ppp(image: &egui::ColorImage, path: Option<&str>, crop: Option<[f32; 4]>, ppp: f32) -> Value {
+    let ppp = if ppp.is_finite() && ppp > 0.0 { ppp } else { 1.0 };
+    let (x0, y0, cw, ch) = match crop_pixels(image.size, crop, ppp) {
+        Ok(rect) => rect,
+        Err(e) => return json!({"ok": false, "error": e}),
     };
-    let mut rgba = Vec::with_capacity(cw * ch * 4);
+    let [w, _] = image.size;
+    let Some(capacity) = cw.checked_mul(ch).and_then(|pixels| pixels.checked_mul(std::mem::size_of::<egui::Color32>())) else {
+        return json!({"ok": false, "error": "screenshot crop size overflows the image buffer"});
+    };
+    let mut rgba = Vec::with_capacity(capacity);
     for y in y0..y0 + ch {
         for x in x0..x0 + cw {
             let c = image.pixels[y * w + x];
@@ -589,7 +761,12 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
         }
         !c
     }
-    let mut raw = Vec::with_capacity((w as usize * 4 + 1) * h as usize);
+    let row = (w as usize)
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(1))
+        .and_then(|bytes| bytes.checked_mul(h as usize))
+        .ok_or_else(|| "PNG size overflows the image buffer".to_string())?;
+    let mut raw = Vec::with_capacity(row);
     for y in 0..h as usize {
         raw.push(0);
         raw.extend_from_slice(&rgba[y * w as usize * 4..(y + 1) * w as usize * 4]);
@@ -621,11 +798,153 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
+mod input_bounds_tests {
+    use super::*;
+
+    /// Create an empty editor session for inspecting queued synthetic input without a window.
+    fn app() -> FilmcraftApp {
+        FilmcraftApp::new(filmcraft_engine::Session::default())
+    }
+
+    /// Dispatch a control request and fail the test if hostile parameters cause a panic.
+    fn request(app: &mut FilmcraftApp, method: &str, params: Value) -> Outcome {
+        let (req, _) = ControlRequest::new(method, params);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(app, &egui::Context::default(), &req)))
+            .expect("hostile control parameters must not panic")
+    }
+
+    /// Require an immediate error naming `field`, with all previously queued input unchanged.
+    fn assert_rejected(app: &mut FilmcraftApp, method: &str, params: Value, field: &str) {
+        let before = app.synthetic.clone();
+        let Outcome::Done(reply) = request(app, method, params) else { panic!("invalid input must return an error immediately") };
+        assert_eq!(reply["ok"], false);
+        assert!(reply["error"].as_str().unwrap().contains(field), "{reply}");
+        assert_eq!(app.synthetic, before, "rejection must not queue partial input or change existing input");
+    }
+
+    /// Check the first rejected click count without allocating an enormous event queue.
+    #[test]
+    fn click_count_above_limit_is_rejected() {
+        // A small boundary value reproduces the missing guard without exhausting memory.
+        assert_rejected(&mut app(), "ui.click", json!({"x": 10, "y": 20, "count": 11}), "count");
+    }
+
+    /// Check that one step above the drag limit returns an error before queuing input.
+    #[test]
+    fn drag_steps_above_limit_are_rejected() {
+        assert_rejected(&mut app(), "ui.drag", json!({"from": {"x": 0, "y": 0}, "to": {"x": 10, "y": 20}, "steps": 1025}), "steps");
+    }
+
+    /// Reject extreme counts and malformed types while preserving pending and subsequent input.
+    #[test]
+    fn hostile_counts_and_steps_leave_pending_input_unchanged() {
+        let mut app = app();
+        app.synthetic.push(egui::Event::PointerGone);
+        for value in [json!(u32::MAX), json!(u64::MAX), json!(-1), json!(1.5), json!("2"), json!(true), json!([]), json!({})] {
+            assert_rejected(&mut app, "ui.click", json!({"x": 10, "y": 20, "count": value}), "count");
+            assert_rejected(&mut app, "ui.drag", json!({"from": {"x": 0, "y": 0}, "to": {"x": 10, "y": 20}, "steps": value}), "steps");
+        }
+        // A rejected request must not prevent subsequent valid input.
+        assert!(matches!(request(&mut app, "ui.click", json!({"x": 10, "y": 20})), Outcome::AfterInput));
+    }
+
+    /// Verify missing/null defaults, accepted click bounds, button pairs and modifier resets.
+    #[test]
+    fn valid_click_counts_preserve_button_pairs_and_modifiers() {
+        let mut app = app();
+        let pos = egui::pos2(10.0, 20.0);
+        let modifiers = egui::Modifiers { shift: true, ..Default::default() };
+        for (value, count) in [(None, 1), (Some(Value::Null), 1), (Some(json!(0)), 0), (Some(json!(1)), 1), (Some(json!(2)), 2), (Some(json!(10)), 10)] {
+            app.synthetic.clear();
+            let mut params = json!({"x": 10, "y": 20, "button": "right", "modifiers": {"shift": true}});
+            if let Some(v) = value {
+                params["count"] = v;
+            }
+            assert!(matches!(request(&mut app, "ui.click", params), Outcome::AfterInput));
+            let mut expected = vec![egui::Event::ModifiersChanged(modifiers), egui::Event::PointerMoved(pos)];
+            for _ in 0..count {
+                for pressed in [true, false] {
+                    expected.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers });
+                }
+            }
+            expected.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+            assert_eq!(app.synthetic, expected);
+        }
+        app.synthetic.clear();
+        assert!(matches!(request(&mut app, "ui.move", json!({"x": 10, "y": 20, "count": u64::MAX})), Outcome::AfterInput));
+        assert_eq!(app.synthetic.len(), 3, "ui.move does not use count");
+    }
+
+    /// Verify missing/null defaults and accepted drag bounds retain endpoints and button release.
+    #[test]
+    fn valid_drag_steps_preserve_defaults_endpoints_and_release() {
+        let mut app = app();
+        for (value, steps) in [(None, 12), (Some(Value::Null), 12), (Some(json!(0)), 2), (Some(json!(1)), 2), (Some(json!(2)), 2), (Some(json!(1024)), 1024)] {
+            app.synthetic.clear();
+            let mut params = json!({"from": {"x": 0, "y": 0}, "to": {"x": 10, "y": 20}, "modifiers": {"shift": true}});
+            if let Some(v) = value {
+                params["steps"] = v;
+            }
+            assert!(matches!(request(&mut app, "ui.drag", params), Outcome::AfterInput));
+            assert_eq!(app.synthetic.len(), steps + 5);
+            let modifiers = egui::Modifiers { shift: true, ..Default::default() };
+            assert_eq!(app.synthetic[0], egui::Event::ModifiersChanged(modifiers));
+            assert_eq!(app.synthetic[1], egui::Event::PointerMoved(egui::pos2(0.0, 0.0)));
+            assert_eq!(
+                app.synthetic[2],
+                egui::Event::PointerButton { pos: egui::pos2(0.0, 0.0), button: egui::PointerButton::Primary, pressed: true, modifiers }
+            );
+            assert_eq!(app.synthetic[steps + 2], egui::Event::PointerMoved(egui::pos2(10.0, 20.0)));
+            assert_eq!(
+                app.synthetic[steps + 3],
+                egui::Event::PointerButton { pos: egui::pos2(10.0, 20.0), button: egui::PointerButton::Primary, pressed: false, modifiers }
+            );
+            assert_eq!(app.synthetic[steps + 4], egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        }
+    }
+}
+
+#[cfg(test)]
 mod base64_tests {
+    use serde_json::json;
+
     #[test]
     fn rfc4648_vectors() {
         for (i, o) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
             assert_eq!(super::base64(i.as_bytes()), o);
         }
+    }
+
+    /// Negative and overhanging panel origins clip to the visible image without shifting the requested region, at any scale.
+    #[test]
+    fn screenshot_crop_clips_negative_panel_origin() {
+        // A panel starting two points left of / one point above the window: only the visible
+        // 2×3 pixels are captured, not the requested 4×4 starting at (0, 0).
+        assert_eq!(super::crop_pixels([8, 8], Some([-2.0, -1.0, 4.0, 4.0]), 1.0).unwrap(), (0, 0, 2, 3));
+        // The same crop at 2× scale clips the same logical region to the pixel grid.
+        assert_eq!(super::crop_pixels([16, 16], Some([-2.0, -1.0, 4.0, 4.0]), 2.0).unwrap(), (0, 0, 4, 6));
+        // Partly outside on the right/bottom uses the visible remainder.
+        assert_eq!(super::crop_pixels([8, 8], Some([6.0, 5.0, 4.0, 4.0]), 1.0).unwrap(), (6, 5, 2, 3));
+    }
+
+    /// Crops with no overlap or a non-finite/non-positive size are refused, never rendered as a zero-sized image.
+    #[test]
+    fn screenshot_crop_outside_the_image_is_refused() {
+        for crop in [[-8.0, -8.0, 4.0, 4.0], [8.0, 0.0, 4.0, 4.0], [0.0, 9.0, 4.0, 4.0]] {
+            let err = super::crop_pixels([8, 8], Some(crop), 1.0).expect_err("a crop outside the image must be refused");
+            assert!(err.contains("does not intersect"), "{err}");
+        }
+        for crop in [[0.0, 0.0, 0.0, 4.0], [0.0, 0.0, -4.0, 4.0], [f32::NAN, 0.0, 4.0, 4.0], [0.0, 0.0, f32::INFINITY, 4.0]] {
+            let err = super::crop_pixels([8, 8], Some(crop), 1.0).expect_err("an invalid crop must be refused");
+            assert!(err.contains("finite rectangle"), "{err}");
+        }
+    }
+
+    #[test]
+    fn synthetic_event_repetition_is_bounded() {
+        assert_eq!(super::bounded_repetitions(&json!({}), "count", 1, 0, super::MAX_CLICK_COUNT).unwrap(), 1);
+        assert_eq!(super::bounded_repetitions(&json!({"steps": 1}), "steps", 12, 2, super::MAX_DRAG_STEPS).unwrap(), 2);
+        assert!(super::bounded_repetitions(&json!({"count": u64::MAX}), "count", 1, 0, super::MAX_CLICK_COUNT).is_err());
+        assert!(super::bounded_repetitions(&json!({"steps": "many"}), "steps", 12, 2, super::MAX_DRAG_STEPS).is_err());
     }
 }

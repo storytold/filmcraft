@@ -16,7 +16,7 @@ pub fn total_physical_memory() -> Option<u64> {
     let content = std::fs::read_to_string("/proc/meminfo").ok()?;
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("MemTotal:") {
-            let kb: u64 = rest.trim().split_whitespace().next()?.parse().ok()?;
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
             return Some(kb.saturating_mul(1024));
         }
     }
@@ -64,8 +64,22 @@ mod tests {
         }
         // < 14 GiB -> 1 GiB
         assert_eq!(default_frame_budget_for_ram(8 * 1024 * 1024 * 1024), 1 << 30);
+        // Threshold edge at 14.0 GiB:
+        // 13.9 GiB -> 1.0 GiB
+        let gib_13_9 = (13.9 * 1024.0 * 1024.0 * 1024.0) as u64;
+        assert_eq!(default_frame_budget_for_ram(gib_13_9), 1 << 30);
+        // 14.0 GiB -> 1.5 GiB
+        let gib_14_0 = (14.0 * 1024.0 * 1024.0 * 1024.0) as u64;
+        assert_eq!(default_frame_budget_for_ram(gib_14_0), 3 << 29);
         // 16 GiB -> 1.5 GiB
         assert_eq!(default_frame_budget_for_ram(16 * 1024 * 1024 * 1024), 3 << 29);
+        // Threshold edge at 30.0 GiB:
+        // 29.9 GiB -> 1.5 GiB
+        let gib_29_9 = (29.9 * 1024.0 * 1024.0 * 1024.0) as u64;
+        assert_eq!(default_frame_budget_for_ram(gib_29_9), 3 << 29);
+        // 30.0 GiB -> 2.5 GiB
+        let gib_30_0 = (30.0 * 1024.0 * 1024.0 * 1024.0) as u64;
+        assert_eq!(default_frame_budget_for_ram(gib_30_0), (5u64 << 29).min(usize::MAX as u64) as usize);
         // 32 GiB -> 2.5 GiB
         assert_eq!(default_frame_budget_for_ram(32 * 1024 * 1024 * 1024), (5u64 << 29).min(usize::MAX as u64) as usize);
         // 64 GiB -> 2.5 GiB (maintainer conservative ceiling)

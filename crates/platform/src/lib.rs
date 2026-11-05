@@ -66,9 +66,9 @@ pub enum Availability {
     Unavailable(&'static str),
 }
 
-/// Register the platform's hardware video decoders (call once at startup; repeated calls are
-/// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
-/// using FilmCraft's own decoders.
+/// Register the platform's hardware video decoders and scale the default GOP frame budget
+/// with physical RAM (call once at startup; repeated calls are harmless). Streams they do not
+/// take, and every stream while hardware decoding is Off, keep using FilmCraft's own decoders.
 pub fn register() -> Availability {
     static MEM_BUDGET_INIT: std::sync::Once = std::sync::Once::new();
     MEM_BUDGET_INIT.call_once(|| {
