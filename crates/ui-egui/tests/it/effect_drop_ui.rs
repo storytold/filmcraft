@@ -154,3 +154,108 @@ fn selected_effect_preview_is_clipped_when_another_selected_clip_is_offscreen() 
         h.render().unwrap().save(dir.join("effect-drop-offscreen.png")).unwrap();
     }
 }
+
+/// Preview linked audio recipients once even when linked selection is disabled or partly explicit.
+#[test]
+fn audio_effect_preview_includes_linked_recipients_and_deduplicates_them() {
+    for include_audio in [false, true] {
+        let mut h = harness("Parametric Equalizer");
+        let q = h.state().session.active_sequence().unwrap();
+        let video: Vec<_> = q.video_tracks[0].items.iter().map(|i| i.id).collect();
+        let audio: Vec<_> = q.audio_tracks[0].items.iter().map(|i| i.id).collect();
+        let mut selection = vec![video[0], video[1]];
+        if include_audio {
+            selection.push(audio[0]);
+        }
+        h.state_mut().session.state.linked_selection = false;
+        h.state_mut().session.execute("timeline.select", json!({"clips": selection.iter().map(|c| c.0).collect::<Vec<_>>()})).unwrap();
+        step(&mut h);
+        let before = h.state().session.project.to_json();
+        let from = rect(&h, "effects.item.parametric_eq").center();
+        let to = rect(&h, &format!("timeline.clip.{}", video[0].0)).center();
+        pointer(&mut h, from, Some(true));
+        pointer(&mut h, from + vec2(0.0, 10.0), None);
+        pointer(&mut h, to, None);
+        for (i, id) in video.iter().enumerate().chain(audio.iter().enumerate()) {
+            let count = h.state().auto.elements.iter().filter(|e| e.id == format!("timeline.effectDropPreview.{}", id.0)).count();
+            assert_eq!(count, usize::from(i < 2), "preview recipient {id:?}");
+        }
+        assert_eq!(h.state().session.project.to_json(), before, "hover must not edit");
+        pointer(&mut h, to, Some(false));
+        assert_eq!(h.state().session.state.selection, selection);
+        let q = h.state().session.active_sequence().unwrap();
+        for (i, id) in audio.iter().enumerate() {
+            assert_eq!(q.find_item(*id).unwrap().1.effects.iter().filter(|e| e.effect == "parametric_eq").count(), usize::from(i < 2));
+        }
+        for id in &video {
+            assert!(!q.find_item(*id).unwrap().1.effects.iter().any(|e| e.effect == "parametric_eq"));
+        }
+        let after = h.state().session.project.to_json();
+        h.state_mut().session.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(h.state().session.project.to_json(), before);
+        h.state_mut().session.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(h.state().session.project.to_json(), after);
+    }
+}
+
+/// Confine scrolled previews to their own track panes and omit fully hidden outlines.
+#[test]
+fn effect_preview_stays_in_its_video_or_audio_pane_after_vertical_scroll() {
+    for (case, video_scroll, audio_scroll, audio_height) in
+        [("video bottom", 50.0, 0.0, 100.0), ("audio top", 0.0, 50.0, 100.0), ("audio bottom", 0.0, 0.0, 200.0), ("hidden video", 10_000.0, 0.0, 100.0)]
+    {
+        let mut h = harness("Parametric Equalizer");
+        let q = h.state().session.active_sequence().unwrap();
+        let video = q.video_tracks[0].items[0].id;
+        let audio = q.audio_tracks[0].items[0].id;
+        h.state_mut().session.execute("timeline.select", json!({"clips": [video.0, audio.0]})).unwrap();
+        h.state_mut().ui.timeline.video_track_h = 100.0;
+        h.state_mut().ui.timeline.audio_track_h = audio_height;
+        h.state_mut().ui.timeline.v_scroll = video_scroll;
+        h.state_mut().ui.timeline.a_scroll = audio_scroll;
+        step(&mut h);
+        let layout = h.state().tl.layout.as_ref().unwrap().clone();
+        let hovered = if case == "video bottom" { video } else { audio };
+        let (tid, it) = h.state().session.active_sequence().unwrap().find_item(hovered).unwrap();
+        let row = layout.rows.iter().find(|r| r.track == tid).unwrap();
+        let shown = layout.shown(row).intersect(layout.content);
+        let to = pos2((layout.x_of(it.start) + layout.x_of(it.end())) / 2.0, shown.center().y);
+        assert!(shown.is_positive(), "{case}: hover stays in a visible track");
+        let from = rect(&h, "effects.item.parametric_eq").center();
+        let before = h.state().session.project.to_json();
+        pointer(&mut h, from, Some(true));
+        pointer(&mut h, from + vec2(0.0, 10.0), None);
+        pointer(&mut h, to, None);
+        for id in [video, audio] {
+            let (tid, it) = h.state().session.active_sequence().unwrap().find_item(id).unwrap();
+            let row = layout.rows.iter().find(|r| r.track == tid).unwrap();
+            let expected = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.top()), pos2(layout.x_of(it.end()), row.rect.bottom()));
+            let pane = layout.shown(row).intersect(layout.content);
+            let visible = expected.intersect(pane).is_positive();
+            let previews: Vec<_> = h.state().auto.elements.iter().filter(|e| e.id == format!("timeline.effectDropPreview.{}", id.0)).collect();
+            assert_eq!(previews.len(), usize::from(visible), "{case}: preview visibility for {id:?}");
+            let outlines: Vec<_> = h
+                .output()
+                .shapes
+                .iter()
+                .filter(
+                    |s| matches!(&s.shape, egui::Shape::Rect(r) if r.rect == expected && r.stroke.width == 2.0 && r.stroke.color == h.state().tokens.accent),
+                )
+                .collect();
+            assert_eq!(!outlines.is_empty(), visible, "{case}: painted outline visibility");
+            for outline in outlines {
+                assert!(pane.contains_rect(outline.clip_rect), "{case}: {:?} escapes {pane:?}", outline.clip_rect);
+            }
+            for preview in previews {
+                let [x, y, w, height] = preview.rect;
+                assert!(pane.contains_rect(Rect::from_min_size(pos2(x, y), vec2(w, height))), "{case}: automation must match the visible preview");
+            }
+        }
+        assert_eq!(h.state().session.project.to_json(), before, "hover must not edit");
+        if let Some(dir) = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR") {
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            h.render().unwrap().save(dir.join(format!("effect-drop-{case}.png"))).unwrap();
+        }
+    }
+}

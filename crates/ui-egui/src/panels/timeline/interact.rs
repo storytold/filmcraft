@@ -1118,13 +1118,26 @@ fn effect_drop_preview(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
                     }
                 }
             } else {
-                for target in &clips {
+                let mut outline_targets = clips.clone();
+                if matches!(filmcraft_project::find_effect(&effect).map(|d| d.kind), Some(filmcraft_project::EffectKind::Audio)) {
+                    for target in filmcraft_engine::commands::audio_effect_targets(&app.session, &clips) {
+                        if !outline_targets.contains(&target) {
+                            outline_targets.push(target);
+                        }
+                    }
+                }
+                for target in &outline_targets {
                     if let Some((tid, it)) = seq.find_item(*target)
                         && let Some(row) = layout.rows.iter().find(|r| r.track == tid)
                     {
                         let r = Rect::from_min_max(pos2(layout.x_of(it.start), row.rect.min.y), pos2(layout.x_of(it.end()), row.rect.max.y));
-                        ui.painter().with_clip_rect(layout.content).rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
-                        app.auto.add(&format!("timeline.effectDropPreview.{}", target.0), r.intersect(layout.content), "Apply effect");
+                        let pane = layout.shown(row).intersect(layout.content);
+                        let visible = r.intersect(pane);
+                        if !visible.is_positive() {
+                            continue;
+                        }
+                        ui.painter().with_clip_rect(pane).rect_stroke(r, 3.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
+                        app.auto.add(&format!("timeline.effectDropPreview.{}", target.0), visible, "Apply effect");
                     }
                 }
             }
