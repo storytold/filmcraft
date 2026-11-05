@@ -490,8 +490,9 @@ pub struct UiState {
     pub dark: bool,
     /// Lumetri scopes visible in the Program monitor area.
     pub show_scopes: bool,
-    /// Cinema mode: the Program monitor fills the whole window and the cursor is hidden.
-    #[serde(default)]
+    /// Cinema mode: the Program monitor fills the whole window and the cursor is hidden. Only
+    /// `view.fullScreenProgram` turns it on, so it is not part of the saved state.
+    #[serde(skip)]
     pub fullscreen_program: bool,
     /// The window was already fullscreen before cinema mode started.
     #[serde(skip)]

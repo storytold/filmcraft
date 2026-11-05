@@ -272,7 +272,15 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     };
     let range_start = mark_in.unwrap_or(origin);
     let prefix = if which == Which::Program { "program" } else { "source" };
-    let mv = monitor_view::view(app, which).clone();
+    let mut mv = monitor_view::view(app, which).clone();
+    if cinema {
+        // The finished picture: the monitor's saved settings are back when cinema mode ends.
+        mv.display = DisplayMode::Composite;
+        mv.multicam = false;
+        mv.safe_margins = false;
+        mv.transparency_grid = false;
+        mv.zoom = None;
+    }
     let display = mv.display_mode().unwrap_or(DisplayMode::Composite);
     // Multi-Camera view: the angle grid on the left, the program on the right (bypassed in cinema)
     let multicam = !cinema && which == Which::Program && mv.multicam;
