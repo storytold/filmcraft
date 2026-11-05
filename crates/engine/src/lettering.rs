@@ -738,7 +738,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
 
     // A black plate behind the hero word only (a run of neighbouring heroes shares one), so the
     // terracotta reads on any picture while the support words stay free on the image.
-    if bool_p(p, "scrim").unwrap_or(true) {
+    if bool_p(p, "scrim").unwrap_or(false) {
         let peak = f64_p(p, "scrimOpacity").unwrap_or(92.0);
         let mut order: Vec<&Placed> = c.words.iter().collect();
         order.sort_by_key(|w| w.index);
@@ -925,7 +925,7 @@ pub fn commands() -> Vec<CommandSpec> {
         label: "Lettering",
         menu: &["Graphics and Titles", "New Layer"],
         shortcut: None,
-        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"heroItalic":bool=false,"scrim":bool=true (black plate behind the hero word only),"scrimOpacity":0..100=92,"shadow":bool=true (hard 3 px drop shadow on every word),"hideCaptions":bool=true (remove the captions under it),"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
+        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"heroItalic":bool=false,"scrim":bool=false (black plate behind the hero word only),"scrimOpacity":0..100=92,"shadow":bool=true (hard 3 px drop shadow on every word),"hideCaptions":bool=true (remove the captions under it),"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
         enabled: has_seq,
         run: apply,
         journal: true,
