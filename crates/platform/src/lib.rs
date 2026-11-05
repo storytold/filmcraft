@@ -81,6 +81,8 @@ pub fn register() -> Availability {
         // before the first draw of the format list asks
         hardware_encode::warm_hevc_probe();
         filmcraft_codecs::hw::set_hw_backend("VideoToolbox");
+        // the preview estimate counts AV1 as hardware only where this Mac has the decoder (M3 on)
+        filmcraft_render::preview::set_av1_hardware(videotoolbox::av1_hardware_available());
         Availability::Available("VideoToolbox")
     }
     // Export ▸ H.265: NVENC is FilmCraft's only HEVC encoder on Windows, so the format is available

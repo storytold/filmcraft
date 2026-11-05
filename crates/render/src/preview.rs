@@ -45,6 +45,7 @@
 use filmcraft_project::{ClipId, ItemId, ItemKind, Project, Sequence, TrackItem, TrackKind, Transition};
 use filmcraft_time::{FrameRate, Tick};
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Bump when the hash layout or the preview format changes (invalidates every preview).
 pub const HASH_VERSION: &str = "filmcraft-preview-v1";
@@ -67,9 +68,20 @@ const HD_PIXELS: f64 = 1920.0 * 1080.0;
 /// Whether this build's platform decodes VP9 / AV1 in hardware (VideoToolbox on Apple silicon,
 /// Media Foundation on Windows).
 const VP9_HW: bool = cfg!(any(all(target_os = "macos", target_arch = "aarch64"), target_os = "windows"));
-// AV1: Windows, and Apple silicon from the M3 on (an M1 / M2 has no AV1 decoder and gets the
-// software estimate wrong; the platform crate's availability query is below this crate's layer).
-const AV1_HW: bool = cfg!(any(all(target_os = "macos", target_arch = "aarch64"), target_os = "windows"));
+// AV1 depends on the machine, not the build: Windows, and on a Mac only the media engine of the M3
+// and later. `filmcraft_platform::register` asks VideoToolbox and records the answer here; until
+// then (or with no platform registered) a Mac counts as decoding AV1 in software.
+static AV1_HW: AtomicBool = AtomicBool::new(cfg!(target_os = "windows"));
+
+/// Record whether this machine decodes AV1 in hardware, for the preview estimate: an M1 / M2 has no
+/// AV1 decoder, so the stream plays in software and needs the software estimate.
+pub fn set_av1_hardware(available: bool) {
+    AV1_HW.store(available, Ordering::Relaxed);
+}
+
+fn av1_hw() -> bool {
+    AV1_HW.load(Ordering::Relaxed)
+}
 
 /// How a segment plays without a preview.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -465,7 +477,7 @@ fn decode_cost_ms(project: &Project, id: ItemId, depth: u32) -> f64 {
                 // the software decoder has no frame threading yet
                 if VP9_HW { 6.0 } else { 30.0 }
             } else if c.contains("av1") {
-                if AV1_HW { 6.0 } else { 20.0 }
+                if av1_hw() { 6.0 } else { 20.0 }
             } else if c.contains("vp8") {
                 10.0
             } else {
@@ -534,7 +546,7 @@ fn estimate_cost(project: &Project, seq: &Sequence, layers: &[Layer]) -> f64 {
 /// WebM codecs this platform decodes in software only: too slow to count as native.
 fn slow_codec(codec: &str) -> bool {
     let c = codec.to_ascii_lowercase();
-    c.contains("vp8") || (c.contains("vp9") && !VP9_HW) || (c.contains("av1") && !AV1_HW)
+    c.contains("vp8") || (c.contains("vp9") && !VP9_HW) || (c.contains("av1") && !av1_hw())
 }
 
 /// A single clip that plays natively: no standard effects, untouched fixed effects, normal speed,
@@ -582,5 +594,19 @@ impl std::io::Write for Fnv128 {
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod av1_tests {
+    #[test]
+    fn av1_counts_as_native_only_where_the_machine_decodes_it_in_hardware() {
+        // an M1 / M2 Mac: software AV1, slow and costed as software
+        super::set_av1_hardware(false);
+        assert!(super::slow_codec("AV1"));
+        // an M3 or later: the hardware decoder
+        super::set_av1_hardware(true);
+        assert!(!super::slow_codec("AV1"));
+        super::set_av1_hardware(cfg!(target_os = "windows"));
     }
 }
