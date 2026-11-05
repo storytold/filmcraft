@@ -764,12 +764,12 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             ("x", tl!("Pad X "), tl!("Box padding left and right (px at 1080 lines)"), pad_x),
             ("y", tl!("Pad Y "), tl!("Box padding above and below (px at 1080 lines)"), pad_y),
         ] {
-            let mut v = value;
+            let mut v = drag_start(ui, value);
             // the full range captions.setStyle accepts: a narrower one would clamp a stored value
             // (and report it changed) as soon as the panel shows it
             let resp = ui.add(crate::widgets::number_drag(&mut v).range(0.0..=500.0).speed(0.5).prefix(label).suffix(" px")).on_hover_text(tip);
             app.auto.add(&format!("text.captions.style.backgroundPadding.{axis}"), resp.rect, "Caption box padding");
-            if let Some(v) = committed_drag(ui, &resp, v) {
+            if let Some(v) = committed_drag(ui, &resp, v).filter(|v| *v != value) {
                 let pad = if axis == "x" { [v, pad_y] } else { [pad_x, v] };
                 actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "backgroundPadding": pad})));
             }
@@ -829,6 +829,19 @@ fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
             app.ui.status = e;
         }
     }
+}
+
+/// The value the next widget, a caption style number field, starts this frame from: what a drag on
+/// it has reached (kept by `committed_drag`), else `stored`.
+///
+/// egui reports a change against this value, so a drag back to `stored` still registers, and the
+/// field keeps showing the dragged value while the pointer holds still.
+fn drag_start(ui: &egui::Ui, stored: f32) -> f32 {
+    let id = ui.next_auto_id();
+    if !ui.ctx().is_being_dragged(id) {
+        return stored;
+    }
+    ui.data(|d| d.get_temp(id.with("caption-style-pending"))).unwrap_or(stored)
 }
 
 #[cfg(test)]
