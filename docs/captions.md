@@ -14,7 +14,8 @@ version 2; version 1 projects open with no caption tracks).
   outline width and colour, alignment (left/centre/right), position (top/middle/bottom) and
   margin (a fraction of the frame height, default 0.08; `captions.setStyle` clamps it to 0–0.45),
   line spacing, and the wrap width (`maxWidth`: lines wrap at this fraction of the frame width,
-  0.05–1, default 0.9; line breaks typed into a caption are kept).
+  0.05–1, default 0.9; past 0.9, left- and right-aligned lines also keep their box inside the frame;
+  line breaks typed into a caption are kept).
 - **Caption**: in/out in exact `Tick`s, text (lines separated by `\n`; `<i>`, `<b>`, `<u>` kept
   as written), optional speaker, and the WebVTT cue id and cue settings, kept for round trips.
   Captions on a track never overlap.

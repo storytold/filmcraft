@@ -121,7 +121,14 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let px = (style.size.clamp(4.0, MAX_CAPTION_SIZE_1080) * scale).clamp(4.0, h as f32);
     // a hostile wrap width (NaN, negative, huge) falls back to or is clamped near the 90 % default
     let wrap_at = if style.max_width.is_finite() { style.max_width.clamp(0.05, 1.0) } else { 0.9 };
-    let max_w = w as f32 * wrap_at;
+    let (line_override, align_override) = vtt_overrides(&c.settings);
+    let align = align_override.unwrap_or(style.align);
+    let pad_x = (px * 0.3).round();
+    let side = w as f32 * 0.05;
+    // past the default 90 %, a left- or right-aligned line also has to leave room for the side
+    // inset and its box; up to 90 % it wraps where it always did
+    let room = if wrap_at > 0.9 && align != CaptionAlign::Center { (w as f32 - side - 2.0 * pad_x).max(w as f32 * 0.9) } else { f32::MAX };
+    let max_w = (w as f32 * wrap_at).min(room);
     let ts = caption_style(&style.font, &style.font_style, px);
     let mut lines: Vec<String> = Vec::new();
     // (speaker names are metadata; like Premiere, they are not burned in)
@@ -135,10 +142,7 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(&ts.family, &ts.style).face).metrics(px);
     let (asc, desc) = (vm.ascent, vm.descent);
     let lh = px * style.line_spacing.clamp(0.8, 4.0);
-    let pad_x = (px * 0.3).round();
     let block_h = lh * lines.len() as f32;
-    let (line_override, align_override) = vtt_overrides(&c.settings);
-    let align = align_override.unwrap_or(style.align);
     let margin = style.margin.clamp(0.0, 0.45) * h as f32;
     let top = match (line_override, style.anchor) {
         (Some(f), _) => (f * h as f32).min(h as f32 - block_h),
@@ -148,7 +152,6 @@ pub fn render_caption(c: &Caption, style: &CaptionStyle, w: usize, h: usize) -> 
     }
     .max(0.0)
     .round();
-    let side = w as f32 * 0.05;
     let widths: Vec<f32> = lines.iter().map(|l| filmcraft_text::measure(l, &ts)).collect();
     let xs: Vec<f32> = widths
         .iter()
@@ -628,6 +631,24 @@ mod tests {
         let two = render_caption(&cap("One\nTwo"), &full, 1080, 1920).unwrap();
         let lh = (54.0 * 1920.0 / 1080.0 * full.line_spacing) as usize;
         assert!(two.h.abs_diff(one.h + lh) <= 2, "typed break: {} vs {} + {lh}", two.h, one.h);
+    }
+
+    #[test]
+    fn wide_aligned_lines_stay_inside_the_frame() {
+        // at 100 %, centred lines may use the full width, but left- and right-aligned ones start
+        // from the side inset and need room for their box
+        let (w, px) = (640.0_f32, 54.0_f32 / 3.0);
+        let ts = caption_style(&CaptionStyle::default().font, "SemiBold", px);
+        let room = w - w * 0.05 - 2.0 * (px * 0.3).round();
+        // the shortest text that wraps differently at the two widths
+        let text = (1..200).map(|n| "word ".repeat(n)).find(|t| wrap(t.trim(), &ts, w).len() != wrap(t.trim(), &ts, room).len()).unwrap();
+        let (full, inset) = (wrap(text.trim(), &ts, w).len(), wrap(text.trim(), &ts, room).len());
+        for (align, want) in [(CaptionAlign::Center, full), (CaptionAlign::Left, inset), (CaptionAlign::Right, inset)] {
+            let st = CaptionStyle { align, max_width: 1.0, anchor: CaptionAnchor::Top, margin: 0.0, line_spacing: 1.0, ..Default::default() };
+            let o = render_caption(&cap(&text), &st, 640, 360).unwrap();
+            let lines = (o.h as f32 / px) as usize;
+            assert_eq!(lines, want, "{align:?}: {} px tall", o.h);
+        }
     }
 
     #[test]
