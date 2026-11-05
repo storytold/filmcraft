@@ -712,6 +712,22 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
             e.params.insert(id.into(), Param::new(v));
         }
         e.params.insert("fill_color".into(), Param::new(color(if pl.hero { hero_hex } else { support_hex })));
+        // hard drop shadow, 3 px right and 3 px down (at 1080p), no blur: it lifts the word off the picture
+        if bool_p(p, "shadow").unwrap_or(true) {
+            let k = fw as f64 / 1920.0;
+            let d = 3.0 * std::f64::consts::SQRT_2 * k;
+            for (id, v) in [
+                ("shadow", ParamValue::Bool(true)),
+                ("shadow_color", color("#000000")),
+                ("shadow_opacity", ParamValue::Float(100.0)),
+                ("shadow_angle", ParamValue::Float(135.0)),
+                ("shadow_distance", ParamValue::Float(d)),
+                ("shadow_size", ParamValue::Float(0.0)),
+                ("shadow_blur", ParamValue::Float(0.0)),
+            ] {
+                e.params.insert(id.into(), Param::new(v));
+            }
+        }
         // kerning on, ligatures off: a lettering is set, not typed
         e.params.insert("ligatures".into(), Param::new(ParamValue::Bool(false)));
         // enters just before it is said, behind the previous word by the brand's stagger at least
@@ -720,36 +736,49 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         layers.push(e);
     }
 
-    // A dark band behind the words keeps them readable on any picture (and the brand colours honest:
-    // terracotta heroes on a black band, off-white support). It bleeds off the nearer frame edge.
+    // A black plate behind the hero word only (a run of neighbouring heroes shares one), so the
+    // terracotta reads on any picture while the support words stay free on the image.
     if bool_p(p, "scrim").unwrap_or(true) {
-        let pad_x = params.size as f64 * 0.7;
-        let pad_y = params.size as f64 * 0.6;
-        let (bx0, bx1) = (left as f64 - pad_x, (left + c.width) as f64 + pad_x);
-        let (bx0, bx1) = match str_p(p, "align") {
-            Some("right") => (bx0, fw as f64 + 4.0),
-            Some("left") => (-4.0, bx1),
-            _ => (bx0, bx1),
-        };
-        let (by0, by1) = (top as f64 - pad_y, (top + c.height) as f64 + pad_y);
-        let mut band = new_shape_layer(0, Vec2::new((bx0 + bx1) / 2.0, (by0 + by1) / 2.0), Vec2::new(bx1 - bx0, by1 - by0), Vec::new());
-        band.params.insert("fill_color".into(), Param::new(color("#000000")));
-        band.params.insert("name".into(), Param::new(ParamValue::Text("Faixa".into())));
-        let peak = f64_p(p, "scrimOpacity").unwrap_or(86.0);
-        let t_in = (words[0].start - LEAD_SECS).max(0.0);
-        band.params.insert(
-            "opacity".into(),
-            Param {
-                value: ParamValue::Float(peak),
-                keyframes: vec![
-                    kf(t_in, ParamValue::Float(0.0), Interpolation::Bezier, ENTER_OUT, ENTER_IN),
-                    kf(t_in + ENTER_SECS, ParamValue::Float(peak), Interpolation::Linear, 0.33, 0.33),
-                    kf(exit, ParamValue::Float(peak), Interpolation::Bezier, EXIT_OUT, EXIT_IN),
-                    kf(exit + EXIT_SECS, ParamValue::Float(0.0), Interpolation::Linear, 0.33, EXIT_IN),
-                ],
-            },
-        );
-        layers.insert(0, band);
+        let peak = f64_p(p, "scrimOpacity").unwrap_or(92.0);
+        let mut order: Vec<&Placed> = c.words.iter().collect();
+        order.sort_by_key(|w| w.index);
+        let mut runs: Vec<Vec<&Placed>> = Vec::new();
+        for pl in order.into_iter().filter(|w| w.hero) {
+            match runs.last_mut() {
+                Some(r) if r.last().is_some_and(|l| l.index + 1 == pl.index && l.line == pl.line) => r.push(pl),
+                _ => runs.push(vec![pl]),
+            }
+        }
+        let mut plates = Vec::new();
+        for r in runs {
+            let (first, last) = (r[0], r[r.len() - 1]);
+            let size = r.iter().map(|w| w.size).fold(0.0, f32::max) as f64;
+            let (px, py) = (size * 0.14, size * 0.1);
+            let x0 = (left + first.x) as f64 - px;
+            let x1 = (left + last.x + last.width) as f64 + px;
+            let base = (top + first.baseline) as f64;
+            let (y0, y1) = (base - size * 0.8 - py, base + size * 0.24 + py);
+            let mut band = new_shape_layer(0, Vec2::new((x0 + x1) / 2.0, (y0 + y1) / 2.0), Vec2::new(x1 - x0, y1 - y0), Vec::new());
+            band.params.insert("fill_color".into(), Param::new(color("#000000")));
+            band.params.insert("name".into(), Param::new(ParamValue::Text("Placa".into())));
+            let t_in = (words[first.index].start - LEAD_SECS).max(0.0).max(if first.index > 0 { (words[first.index - 1].start - LEAD_SECS).max(0.0) + STAGGER_SECS } else { 0.0 });
+            band.params.insert(
+                "opacity".into(),
+                Param {
+                    value: ParamValue::Float(peak),
+                    keyframes: vec![
+                        kf(t_in, ParamValue::Float(0.0), Interpolation::Bezier, ENTER_OUT, ENTER_IN),
+                        kf(t_in + ENTER_SECS, ParamValue::Float(peak), Interpolation::Linear, 0.33, 0.33),
+                        kf(exit, ParamValue::Float(peak), Interpolation::Bezier, EXIT_OUT, EXIT_IN),
+                        kf(exit + EXIT_SECS, ParamValue::Float(0.0), Interpolation::Linear, 0.33, EXIT_IN),
+                    ],
+                },
+            );
+            plates.push(band);
+        }
+        for (i, band) in plates.into_iter().enumerate() {
+            layers.insert(i, band);
+        }
     }
 
     let name = format!("Lettering · {}", words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" "));
@@ -896,7 +925,7 @@ pub fn commands() -> Vec<CommandSpec> {
         label: "Lettering",
         menu: &["Graphics and Titles", "New Layer"],
         shortcut: None,
-        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"heroItalic":bool=false,"scrim":bool=true (dark band behind),"scrimOpacity":0..100=86,"hideCaptions":bool=true (remove the captions under it),"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
+        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"heroItalic":bool=false,"scrim":bool=true (black plate behind the hero word only),"scrimOpacity":0..100=92,"shadow":bool=true (hard 3 px drop shadow on every word),"hideCaptions":bool=true (remove the captions under it),"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
         enabled: has_seq,
         run: apply,
         journal: true,
