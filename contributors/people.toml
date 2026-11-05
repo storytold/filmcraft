@@ -109,3 +109,7 @@ real_name = "Alexander Alber"
 
 [people.dylanmtaylor]
 sync_github_name = true
+
+[people.bysh71]
+display_name = "Felix"
+sync_github_name = false
