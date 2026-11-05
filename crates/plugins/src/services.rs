@@ -109,7 +109,9 @@ impl Services for AppServices {
 
     fn fill_random(&self, buf: &mut [u8]) {
         if let Err(e) = getrandom::fill(buf) {
-            // Entropy is a permission-gated nicety. A failure must not hand out zeros as random.
+            // `Services::fill_random` cannot report a failure, so the host hands the guest this
+            // zero-filled buffer as if it were random. The failure is logged. Reporting it to the guest
+            // as a failed call takes a fallible `fill_random` in craft-plugin-host.
             log::error!("no operating system entropy: {e}");
             buf.fill(0);
         }
