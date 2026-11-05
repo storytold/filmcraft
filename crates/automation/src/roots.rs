@@ -28,10 +28,11 @@
 //!   name folders the app writes into later) is held to the write root.
 //! - The bridge's UI-driving tools are refused while confined: they could drive the live app's
 //!   file dialogs past the roots.
-//! - A command that writes is refused while the folder it writes in holds a link leading out of the
-//!   write root. Exports add or change the extension, take the sequence's name in a folder, number
-//!   their stills and put caption files beside the output, and open those names themselves after
-//!   this check, so the names aren't known here but the folder is.
+//! - A command that writes is refused while the folder it writes in, or any folder below that,
+//!   holds a link leading out of the write root. Exports add or change the extension, take the
+//!   sequence's name in a folder, number their stills and put caption files beside the output, and
+//!   an AAF or OMF export writes into a folder of its own beside the file. They open those names
+//!   themselves after this check, so the names aren't known here but the folder is.
 //! - In a headless session, [`crate::confined_services`] checks every path again when it is opened,
 //!   which also covers the media a project file names. In bridge mode the session lives in the
 //!   app, so such paths are not covered there.
@@ -130,25 +131,30 @@ impl AutomationRoots {
     }
 
     /// May a command write at `path`, or at another name it derives there? `path` must pass
-    /// [`Self::check`], and no link in its folder (or in it, if it's a folder) may lead out of the
-    /// write root: see the module docs.
+    /// [`Self::check`], and no link in its folder (or in it, if it's a folder), or in any folder
+    /// below that, may lead out of the write root: see the module docs.
     fn check_write_target(&self, path: &str) -> Result<(), String> {
         self.check(path, Access::Write)?;
         let given = Path::new(path);
         let folder = if path.ends_with(['/', '\\']) || given.is_dir() { Some(given) } else { given.parent() };
-        let Some(folder) = folder else { return Ok(()) };
-        let cannot_list = |e: std::io::Error| format!("automation path rejected: cannot list the folder of {path}: {e}");
-        let entries = match std::fs::read_dir(folder) {
-            Ok(entries) => entries,
-            // Nothing there yet, so nothing there leads anywhere.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(cannot_list(e)),
-        };
-        for entry in entries {
-            let entry = entry.map_err(cannot_list)?;
-            if entry.file_type().map_err(cannot_list)?.is_symlink() {
-                self.check(&entry.path().to_string_lossy(), Access::Write)
-                    .map_err(|e| format!("{e} (a command writing to {path} may pick that name, so the link has to go first)"))?;
+        let cannot_list = |e: std::io::Error| format!("automation path rejected: cannot list the folders of {path}: {e}");
+        let mut folders: Vec<PathBuf> = folder.map(Path::to_path_buf).into_iter().collect();
+        while let Some(folder) = folders.pop() {
+            let entries = match std::fs::read_dir(&folder) {
+                Ok(entries) => entries,
+                // Nothing there yet, so nothing there leads anywhere.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(cannot_list(e)),
+            };
+            for entry in entries {
+                let entry = entry.map_err(cannot_list)?;
+                let kind = entry.file_type().map_err(cannot_list)?;
+                if kind.is_symlink() {
+                    self.check(&entry.path().to_string_lossy(), Access::Write)
+                        .map_err(|e| format!("{e} (a command writing to {path} may pick that name, so the link has to go first)"))?;
+                } else if kind.is_dir() {
+                    folders.push(entry.path());
+                }
             }
         }
         Ok(())
@@ -653,6 +659,11 @@ mod tests {
             let e = roots.check_command(id, &json!({"path": path})).unwrap_err();
             assert!(e.contains("may pick that name"), "{id} {path}: {e}");
         }
+        // A link in a folder below counts: an AAF writes into `<name> Media` beside the file.
+        std::fs::create_dir_all(out.join("aaf/x Media")).unwrap();
+        assert!(made(&base.join("outside/old.mp4"), &out.join("aaf/x Media/x Video Mixdown.mov")));
+        let e = roots.check_command("file.exportAaf", &json!({"path": s(out.join("aaf/x.aaf"))})).unwrap_err();
+        assert!(e.contains("may pick that name"), "{e}");
         // One level down, the folder is clean, and its own links stay inside the root.
         let params = json!({"path": s(out.join("clean/result"))});
         assert_eq!(roots.check_command("file.exportMedia", &params), Ok(()));
