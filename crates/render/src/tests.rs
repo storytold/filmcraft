@@ -80,6 +80,34 @@ fn graphic_with_effect_renders_through_the_bounded_working_image() {
     assert!((output.get(160, 90)[0] - plain.get(160, 90)[0]).abs() > 0.1, "the standard effect must change the graphic's colour");
 }
 
+/// A graphic larger than the working-image budget, rendered at its own scale: the capped
+/// working image is placed with the scale it was drawn at, so a shape keeps its size and place
+/// in the output instead of shrinking with the raster.
+#[test]
+fn capped_working_image_keeps_the_graphic_placed_at_full_scale() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::graphic::new_shape_layer;
+
+    let mut project = Project::new("capped placement");
+    let rate = FrameRate::FPS_24;
+    // 7680×4320 is four times the budget; a 320×180 sequence shows its centre at 1:1
+    let graphic = project.add_item("title", Label::Iris, ItemKind::Graphic { width: 7680, height: 4320, rate }, None);
+    let sequence = project.new_sequence("sequence", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
+    item.scale_to_frame = false;
+    // a 100×60 shape at the graphic's centre: output x 110..210, y 60..120
+    item.effects.push(new_shape_layer(0, Vec2::new(3840.0, 2160.0), Vec2::new(100.0, 60.0), vec![]));
+    item.effects.push(filmcraft_project::find_effect("invert").unwrap().instance());
+    project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(item);
+    let output = render_sequence(&project, sequence, Tick::ZERO, RenderOptions::default(), &SourceMap::default());
+    assert_eq!((output.w, output.h), (320, 180));
+    let drawn = |x: usize, y: usize| output.get(x, y)[3] > 0.9;
+    assert!(drawn(160, 90), "the shape's centre");
+    // inside the shape at full scale, outside it at the raster's halved scale
+    assert!(drawn(120, 90) && drawn(200, 90) && drawn(160, 65) && drawn(160, 115), "the shape keeps its full extent");
+    assert!(!drawn(100, 90) && !drawn(220, 90) && !drawn(160, 50) && !drawn(160, 130), "and no more than that");
+}
+
 fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {
     let mut p = Project::new("r");
     let mut map = SourceMap::default();
