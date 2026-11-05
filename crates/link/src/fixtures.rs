@@ -198,6 +198,32 @@ impl Drop for TempProject {
     }
 }
 
+/// A private directory for a test, removed when the guard drops, also when the test panics. A stale
+/// directory of an earlier run (same process id) is removed first. The guard does not create it:
+/// `RuntimeDir::at` and the test body do.
+pub struct ScratchDir {
+    path: std::path::PathBuf,
+}
+
+impl ScratchDir {
+    /// `/tmp/<name>-<pid>`. The path stays short because a socket path inside it has a length limit.
+    pub fn new(name: &str) -> Self {
+        let path = std::path::PathBuf::from(format!("/tmp/{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        Self { path }
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 pub fn project_json(session: &Session) -> String {
     serde_json::to_string(session.project.as_ref()).expect("project json")
 }
@@ -278,4 +304,39 @@ pub fn linked_offline(session: &mut Session, link_id: &str, path: &str) -> ItemI
     entry.as_media_mut().expect("a media item").media = filmcraft_engine::project::MediaRef::File { path: path.to_string() };
     entry.metadata.insert(crate::link_ops::LINK_KEY.to_string(), serde_json::to_string(&linked).expect("record json"));
     item
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScratchDir;
+
+    #[test]
+    fn a_scratch_dir_is_removed_on_drop_and_on_unwind() {
+        let scratch = ScratchDir::new("fc-scratch-drop");
+        let path = scratch.path().to_path_buf();
+        std::fs::create_dir_all(path.join("inner")).unwrap();
+        std::fs::write(path.join("inner/file"), b"x").unwrap();
+        drop(scratch);
+        assert!(!path.exists(), "the directory outlived the guard");
+
+        let scratch = ScratchDir::new("fc-scratch-unwind");
+        let path = scratch.path().to_path_buf();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            std::fs::create_dir_all(scratch.path()).unwrap();
+            panic!("a test body failed");
+        }));
+        assert!(outcome.is_err());
+        drop(scratch);
+        assert!(!path.exists(), "the directory outlived a panic");
+    }
+
+    #[test]
+    fn a_scratch_dir_clears_a_stale_directory_of_the_same_name() {
+        let path = std::path::PathBuf::from(format!("/tmp/fc-scratch-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("old"), b"x").unwrap();
+        let scratch = ScratchDir::new("fc-scratch-stale");
+        assert!(!path.exists(), "an earlier run's files were kept");
+        drop(scratch);
+    }
 }

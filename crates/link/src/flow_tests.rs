@@ -17,7 +17,7 @@ use filmcraft_engine::project::{ClipId, ItemId};
 use filmcraft_engine::time::FrameRate;
 use serde_json::{Value, json};
 
-use crate::fixtures::{TempProject, project_json, video_session};
+use crate::fixtures::{ScratchDir, TempProject, project_json, video_session};
 use crate::host::{Headless, Host, LaunchProgress, Launched, Launcher};
 use crate::link_ops::{LINK_KEY, find_link};
 use crate::prompt::{self, Prompt};
@@ -268,7 +268,8 @@ fn linked_item(session: &Session) -> (ItemId, crate::record::LinkRecord) {
 fn link_commands_end_to_end() {
     let _exclusive = crate::manager::exclusive();
     let saved = TempProject::new("flow");
-    let dir = RuntimeDir::at(format!("/tmp/fcl-{}", std::process::id())).expect("runtime dir");
+    let scratch = ScratchDir::new("fcl");
+    let dir = RuntimeDir::at(scratch.path()).expect("runtime dir");
     let host = Host { backend: Arc::new(Headless), launcher: Arc::new(NeverInstalled), runtime: Some(RuntimeDir::at(dir.path()).unwrap()) };
     crate::host::install(host);
 
@@ -646,7 +647,8 @@ fn a_source_with_no_file_prepares_behind_the_dialog() {
     let _exclusive = crate::manager::exclusive();
     let _serial = crate::fixtures::prepare_serial();
     let saved = TempProject::new("flow-prepare");
-    let dir = RuntimeDir::at(format!("/tmp/fclp-{}", std::process::id())).expect("runtime dir");
+    let scratch = ScratchDir::new("fclp");
+    let dir = RuntimeDir::at(scratch.path()).expect("runtime dir");
     let up = FakeEffectCraft::start(&dir);
     let host =
         crate::host::install(Host { backend: Arc::new(Headless), launcher: Arc::new(NeverInstalled), runtime: Some(RuntimeDir::at(dir.path()).unwrap()) });
