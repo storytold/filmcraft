@@ -291,12 +291,19 @@ fn tabs_that_do_not_fit_scroll_with_the_arrows_without_changing_the_shown_sequen
         d.click("timeline.tabs.scrollRight");
     }
     assert!(d.has(&format!("timeline.tab.{last}")) && !d.has(&format!("timeline.tab.{main}")));
+    // closing a tab before the shown one moves the shown tab: it stays in view
+    d.show(seqs[6]);
+    assert!(d.has(&format!("timeline.tab.{}", seqs[6])));
+    d.exec("sequence.close", json!({"item": seqs[5]}));
+    d.frames(3);
+    assert_eq!(d.active(), seqs[6]);
+    assert!(d.has(&format!("timeline.tab.{}.close", seqs[6])), "the shown tab is still in view after an earlier tab closed");
     // showing a sequence from outside the strip scrolls its tab into view
     d.show(main);
     assert!(d.has(&format!("timeline.tab.{main}")), "the shown tab is visible");
     d.snapshot("timeline-tab-arrows");
     // closing tabs until they fit again removes the arrows
-    for s in seqs.iter().skip(1) {
+    for s in seqs.iter().skip(1).filter(|s| **s != seqs[5]) {
         d.exec("sequence.close", json!({"item": s}));
     }
     d.frames(3);

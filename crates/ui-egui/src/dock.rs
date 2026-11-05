@@ -744,9 +744,11 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
     let content_w = (total - 8.0).max(0.0) + 2.0 * pad;
     let max_offset = (content_w - view.width()).max(0.0);
     let scroll_id = egui::Id::unique("timeline-tab-scroll");
-    let (mut offset, shown, shown_width) = ui.ctx().data(|d| d.get_temp::<(f32, Option<u64>, f32)>(scroll_id)).unwrap_or((0.0, None, 0.0));
+    let (mut offset, shown, shown_width, shown_start) =
+        ui.ctx().data(|d| d.get_temp::<(f32, Option<u64>, f32, Option<f32>)>(scroll_id)).unwrap_or((0.0, None, 0.0, None));
     let active_id = seqs.open.get(active_at).map(|(id, _)| *id);
-    if (shown != active_id || shown_width != view.width())
+    let active_start = starts.get(active_at).copied();
+    if (shown != active_id || shown_width != view.width() || shown_start != active_start)
         && let (Some(start), Some(w)) = (starts.get(active_at), widths.get(active_at))
     {
         if *start < offset {
@@ -760,7 +762,7 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
     if let Some((left, right)) = arrows {
         offset = scroll_arrows(ui, strip, [left, right], offset, max_offset, t, reg);
     }
-    ui.ctx().data_mut(|d| d.insert_temp(scroll_id, (offset, active_id, view.width())));
+    ui.ctx().data_mut(|d| d.insert_temp(scroll_id, (offset, active_id, view.width(), active_start)));
     let list_id = egui::Id::unique("timeline-tab-list");
     let mut list_opened = false;
     if let Some(r) = more {
