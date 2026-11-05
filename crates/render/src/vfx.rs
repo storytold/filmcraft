@@ -16,6 +16,8 @@ pub(crate) use blur::bokeh;
 pub use blur::{KERNEL_REACH, bokeh_kernel};
 mod color;
 pub(crate) use color::cdl;
+#[cfg(test)]
+mod burnin_tests;
 mod distort;
 mod immersive;
 mod lights;
@@ -66,6 +68,18 @@ pub trait FxEnv: Sync {
     }
     fn file_name(&self) -> String;
     fn sequence_name(&self) -> String;
+    /// The source item's full length as a timecode (Media Duration).
+    fn media_duration(&self) -> String {
+        String::new()
+    }
+    /// The clip's length on the timeline as a timecode (Clip Duration).
+    fn clip_duration(&self) -> String {
+        String::new()
+    }
+    /// One of the source item's Metadata panel fields (Description, Comment, Scene, Shot…).
+    fn metadata(&self, _field: &str) -> String {
+        String::new()
+    }
     /// Full-resolution sequence frame size.
     fn sequence_size(&self) -> (u32, u32);
     /// Full-resolution clip source size.
@@ -177,6 +191,18 @@ impl FxEnv for ItemEnv<'_> {
             .find(|p| matches!(&p.kind, filmcraft_project::ItemKind::Sequence(s) if std::ptr::eq(&**s, self.seq)))
             .map(|p| p.name.clone())
             .unwrap_or_default()
+    }
+    fn media_duration(&self) -> String {
+        let s = &self.seq.settings;
+        let Some(p) = self.project.item(self.item.item) else { return String::new() };
+        format_time(p.duration(), p.frame_rate(), false, TimeDisplay::Timecode, s.sample_rate as i64)
+    }
+    fn clip_duration(&self) -> String {
+        let s = &self.seq.settings;
+        format_time(self.item.duration, s.frame_rate, s.drop_frame, TimeDisplay::Timecode, s.sample_rate as i64)
+    }
+    fn metadata(&self, field: &str) -> String {
+        self.project.item(self.item.item).and_then(|p| p.metadata.get(field).cloned()).unwrap_or_default()
     }
     fn sequence_size(&self) -> (u32, u32) {
         (self.seq.settings.width, self.seq.settings.height)
