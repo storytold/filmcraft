@@ -727,10 +727,10 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             }
         });
         app.auto.add("text.captions.style.fontStyle", r.response.rect, "Caption font style");
-        let mut size = st.size;
+        let mut size = drag_start(ui, st.size);
         let resp = ui.add(crate::widgets::number_drag(&mut size).range(8.0..=200.0).speed(0.5).suffix(" px"));
         app.auto.add("text.captions.style.size", resp.rect, "Caption size");
-        if let Some(v) = committed_drag(ui, &resp, size) {
+        if let Some(v) = committed_drag(ui, &resp, size).filter(|v| *v != st.size) {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "size": v})));
         }
         let mut col = Color32::from_rgba_unmultiplied(st.color[0], st.color[1], st.color[2], st.color[3]);
@@ -801,6 +801,19 @@ fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
             app.ui.status = e;
         }
     }
+}
+
+/// The value the next widget, a caption style number field, starts this frame from: what a drag on
+/// it has reached (kept by `committed_drag`), else `stored`.
+///
+/// egui reports a change against this value, so a drag back to `stored` still registers, and the
+/// field keeps showing the dragged value while the pointer holds still.
+fn drag_start(ui: &egui::Ui, stored: f32) -> f32 {
+    let id = ui.next_auto_id();
+    if !ui.ctx().is_being_dragged(id) {
+        return stored;
+    }
+    ui.data(|d| d.get_temp(id.with("caption-style-pending"))).unwrap_or(stored)
 }
 
 #[cfg(test)]

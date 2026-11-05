@@ -32,6 +32,7 @@ impl Driver {
         d
     }
 
+    /// Run `n` frames, passing queued input through the app's raw input hook as eframe does.
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
             let ctx = self.harness.ctx.clone();
@@ -42,6 +43,7 @@ impl Driver {
         }
     }
 
+    /// Send a control request and wait for its successful result.
     fn ok(&mut self, method: &str, params: Value) -> Value {
         let (req, reply) = ControlRequest::new(method, params.clone());
         self.tx.send(req).unwrap();
@@ -55,12 +57,14 @@ impl Driver {
         panic!("no reply to {method} {params}");
     }
 
+    /// The first caption track's stored style.
     fn style(&mut self) -> Value {
         self.ok("engine.execute", json!({"command": "captions.list", "params": {}}))["tracks"][0]["style"].clone()
     }
 
-    /// Press on `id`, move right over several frames, optionally press Escape along the way, release.
-    fn drag(&mut self, id: &str, escape: bool) {
+    /// Press on `id`, move by each of `moves` (px) on its own frame, optionally press Escape on move
+    /// `escape_at`, hold still for a few frames, release.
+    fn drag(&mut self, id: &str, moves: &[f32], escape_at: Option<usize>) {
         let elements = self.ok("ui.elements", json!({"prefix": id}));
         let e = elements.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}"));
         let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
@@ -70,14 +74,15 @@ impl Driver {
         self.frames(1);
         push(self, egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
         self.frames(1);
-        for step in 0..8 {
-            p.x += 5.0;
+        for (step, dx) in moves.iter().enumerate() {
+            p.x += dx;
             push(self, egui::Event::PointerMoved(p));
-            if escape && step == 4 {
+            if escape_at == Some(step) {
                 push(self, egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
             }
             self.frames(1);
         }
+        self.frames(3);
         push(self, egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
         self.frames(3);
     }
@@ -95,18 +100,29 @@ impl Driver {
 
 const SIZE: &str = "text.captions.style.size";
 
+/// The stored size of the first caption track.
 fn size(d: &mut Driver) -> f64 {
     d.style()["size"].as_f64().unwrap()
 }
+
+/// The first move only starts the drag; the rest count at the field's 0.5 per px.
+const GROW_BY_15: [f32; 4] = [5.0, 10.0, 10.0, 10.0];
 
 #[test]
 fn dragging_the_size_field_saves_the_new_size() {
     let mut d = Driver::captions();
     d.type_into(SIZE, "60");
     assert_eq!(size(&mut d), 60.0, "typing sets it");
-    d.drag(SIZE, false);
-    let dragged = size(&mut d);
-    assert!(dragged > 60.0, "a drag right grows it: {dragged}");
-    d.drag(SIZE, true);
-    assert_eq!(size(&mut d), dragged, "Escape cancels the drag");
+    d.drag(SIZE, &GROW_BY_15, None);
+    assert_eq!(size(&mut d), 75.0, "the value of the drag's last move, not an earlier one");
+    d.drag(SIZE, &GROW_BY_15, Some(2));
+    assert_eq!(size(&mut d), 75.0, "Escape cancels the drag");
+}
+
+#[test]
+fn a_drag_back_to_the_stored_size_changes_nothing() {
+    let mut d = Driver::captions();
+    d.type_into(SIZE, "60");
+    d.drag(SIZE, &[5.0, 10.0, 10.0, -10.0, -10.0], None);
+    assert_eq!(size(&mut d), 60.0, "the field ended the drag back at the stored size");
 }
