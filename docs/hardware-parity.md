@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-10-17 · **Change:** major (Windows H.264 / HEVC hardware export through Media Foundation: vendor-neutral, so Intel / AMD / Qualcomm GPUs encode instead of falling back to the CPU; H.265 offered on Linux through NVENC) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-17 · **Last updated:** 2026-11-05 · **Change:** major (Windows H.264 / HEVC hardware export through Media Foundation: vendor-neutral, so Intel / AMD / Qualcomm GPUs encode instead of falling back to the CPU; the Linux H.265 line corrected — #1648 is proposed, not shipped) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Each hardware feature Premiere uses, per platform, against ours. Implementation detail lives in
 [`crates/platform/README.md`](../crates/platform/README.md) (decode / encode backends, the one
@@ -36,7 +36,7 @@ and re-uploaded to wgpu (**no zero-copy** yet), which Premiere avoids.
 |---|---|---|---|---|---|
 | H.264 8-bit | yes | **yes** (VideoToolbox, opt-in, no B-frames) | Intel QSV, NVENC, AMD | **NVENC, Media Foundation** (opt-in) | **NVENC only** |
 | H.264 10-bit / 4:2:2 | yes (Apple silicon) | no | Intel | no | no |
-| HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC, Media Foundation** | **NVENC** |
+| HEVC Main 8-bit | yes | **yes** (hardware-only format) | QSV, NVENC, AMD | **NVENC, Media Foundation** | no (#1648 proposed) |
 | HEVC Main 10 / HDR (PQ, HLG) | yes | **no** (tone-mapped to 8-bit SDR) | yes | **NVENC yes** (HDR10 SEI, `mdcv` / `clli`); Media Foundation 8-bit only | no |
 | ProRes | Apple silicon | software only | software | software | software |
 | AV1 | — | no | via plug-ins / newer GPUs | no (encoder MFTs exist; no plumbing) | no |
