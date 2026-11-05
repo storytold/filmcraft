@@ -296,12 +296,9 @@ fn open_section(
 /// Apply Match result) as a 3D LUT (`lumetri.exportCube`; automation id `panel.menu.LumetriColor.exportCube`).
 /// True when the menu should close.
 pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
-    let has = app
-        .session
-        .state
-        .selection
-        .iter()
-        .any(|c| app.session.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, it)| it.effects.iter().any(|e| e.effect == "lumetri")));
+    let has = app.session.state.selection.iter().any(|c| {
+        app.session.active_sequence().and_then(|q| q.find_item(*c)).is_some_and(|(_, it)| it.effects.iter().any(|e| e.enabled && e.effect == "lumetri"))
+    });
     let r = ui.add_enabled(has, egui::Button::new(tl!("Export .cube…")));
     app.auto.add_response("panel.menu.LumetriColor.exportCube", &r, "Export .cube…");
     if r.clicked() {

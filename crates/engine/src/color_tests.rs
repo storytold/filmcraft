@@ -385,6 +385,8 @@ fn export_cube_exports_an_apply_match_result_and_refuses_what_it_cannot() {
     assert!(s.execute("lumetri.exportCube", json!({"path": path})).is_err());
     assert!(s.execute("lumetri.exportCube", json!({"clip": clip.0, "path": path})).is_err());
     assert!(!std::path::Path::new(&path).exists());
+    // a malformed `clip` is an error, not the selection's clip
+    assert!(s.execute("lumetri.exportCube", json!({"clip": "x", "path": path})).is_err());
     let q = s.active_sequence().unwrap();
     let other = q.video_tracks[0].items.iter().rfind(|i| i.id != clip).unwrap();
     let reference = other.start + filmcraft_time::Tick(other.duration.0 / 2);
@@ -395,6 +397,18 @@ fn export_cube_exports_an_apply_match_result_and_refuses_what_it_cannot() {
     let lut = Lut3d::parse_cube(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let grey = lut.apply([0.5, 0.5, 0.5]);
     assert!((0..3).any(|k| (grey[k] - 0.5).abs() > 0.002), "the match grades: {grey:?}");
+    // a Lumetri that is switched off is not a grade to export
+    let set_enabled = |s: &mut Session, on: bool| {
+        s.edit_sequence("toggle", |q, _, _| {
+            let (_, it) = q.find_item_mut(clip).unwrap();
+            it.effects.iter_mut().for_each(|e| e.enabled = on);
+            Ok(())
+        })
+        .unwrap();
+    };
+    set_enabled(&mut s, false);
+    assert!(s.execute("lumetri.exportCube", json!({"clip": clip.0, "path": path})).is_err());
+    set_enabled(&mut s, true);
     // hostile parameters
     for params in
         [json!({"path": path, "size": 1}), json!({"path": path, "size": 66}), json!({"path": path, "size": -3}), json!({"path": path, "size": 4.5}), json!({})]

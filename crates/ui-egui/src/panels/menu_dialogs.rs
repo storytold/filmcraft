@@ -235,10 +235,16 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             if let Err(e) = enabled(app, id) {
                 return Some(Err(e));
             }
-            let stem = app.session.state.selection.iter().find_map(|c| app.session.active_sequence()?.find_item(*c).map(|(_, it)| it.name.clone()));
+            // the clip is fixed now, not when the dialog closes
+            let found = app.session.state.selection.iter().find_map(|c| {
+                let (_, it) = app.session.active_sequence()?.find_item(*c)?;
+                it.effects.iter().any(|e| e.enabled && e.effect == "lumetri").then(|| (c.0, it.name.clone()))
+            });
+            let Some((clip, stem)) = found.map(|(c, n)| (c, Some(n))) else { return Some(Err("select a clip with Lumetri Color".into())) };
             let stem: String =
                 stem.unwrap_or_else(|| "Lumetri".into()).chars().map(|c| if matches!(c, '/' | '\\') || c.is_control() { '-' } else { c }).collect();
             let mut p = params.as_object().cloned().unwrap_or_default();
+            p.entry("clip").or_insert(json!(clip));
             let id = id.to_string();
             return Some(app.pick(FileDialog::save_as(tl!("Cube LUT"), &["cube"], &format!("{stem}.cube")), move |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };

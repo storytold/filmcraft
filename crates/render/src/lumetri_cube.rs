@@ -84,7 +84,7 @@ pub fn sample_lumetri(
         return Err("the lattice is too large".into());
     }
     let n = (size - 1) as f32;
-    for (i, px) in img.px.chunks_exact_mut(4).enumerate() {
+    for (i, px) in img.px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let (r, g, b) = (i % size, (i / size) % size, i / (size * size));
         let lin = dec([r as f32 / n, g as f32 / n, b as f32 / n]);
         px.copy_from_slice(&[lin[0], lin[1], lin[2], 1.0]);
@@ -103,14 +103,13 @@ pub fn sample_lumetri(
     for e in &graded {
         effects::apply(&mut img, e, &cx);
     }
-    let data = img
-        .px
-        .chunks_exact(4)
-        .map(|p| {
-            let c = enc([p[0], p[1], p[2]]);
-            c.map(|v| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 })
-        })
-        .collect();
+    let mut data = Vec::with_capacity(size * size * size);
+    for p in img.px.as_chunks::<4>().0 {
+        if !p.iter().all(|v| v.is_finite()) {
+            return Err("the grade gives a value that is not a number".into());
+        }
+        data.push(enc([p[0], p[1], p[2]]).map(|v| v.clamp(0.0, 1.0)));
+    }
     Ok(CubeSample { lut: Lut3d { title: title.to_string(), size, domain_min: [0.0; 3], domain_max: [1.0; 3], data }, left_out })
 }
 
