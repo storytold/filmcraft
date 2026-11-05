@@ -386,3 +386,18 @@ fn every_interchange_document_the_importer_reads_is_listed() {
     let l = s.execute("mediaBrowser.list", json!({"path": "/home/me/Movies", "fileTypes": "aaf"})).unwrap();
     assert_eq!(names(&l), ["Selects", "cut.aaf"]);
 }
+
+/// Files dropped together with a folder that holds no media import, and the folder is reported
+/// rather than silently skipped (#2632).
+#[test]
+fn importing_files_with_an_empty_folder_reports_the_folder() {
+    let mut fs = FakeFs::new();
+    let wav = filmcraft_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
+    fs.dirs.extend(["/Shoot", "/Shoot/Empty"].map(String::from));
+    fs.files.get_mut().unwrap().insert("/Shoot/slate.wav".into(), wav);
+    let mut s = Session::new(Arc::new(fs));
+    let r = s.execute("mediaBrowser.import", json!({"paths": ["/Shoot/slate.wav", "/Shoot/Empty"], "imageSequence": false})).unwrap();
+    assert_eq!(r["items"].as_array().unwrap().len(), 1, "{r}");
+    let errors = r["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| e.as_str().unwrap().contains("/Shoot/Empty: no media files")), "{r}");
+}
