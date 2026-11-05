@@ -251,7 +251,7 @@ interchange and pro formats.
 | New project, import clips | 15% | 80% | Drag-and-drop and Import work for phone MP4 / MOV (H.264, HEVC); MKV multi-audio (#601) fails |
 | Put clips on the timeline, arrange | 15% | 85% | Drop to timeline (#517), snapping, tracks; new tracks by dropping missing (#483) |
 | Trim, split, delete | 15% | 80% | Razor, trim, ripple delete; Backspace on gaps (#648) and deselect (#683) confuse |
-| Undo / redo | 5% | 95% | Snapshot undo for every command |
+| Undo / redo | 5% | 95% | Snapshot undo for every command; each History panel step shows its tool or command icon |
 | Titles | 10% | 75% | Type tool, templates; Arabic text broken (#395) |
 | Transitions (cross dissolve) | 5% | 85% | Drag on, resize (#503) |
 | Music and volume | 10% | 75% | Clip volume, fades, meters; device issues off macOS |
