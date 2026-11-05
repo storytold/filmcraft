@@ -461,3 +461,47 @@ fn edit_distance(a: &[char], b: &[char]) -> usize {
     }
     prev[b.len()]
 }
+
+#[test]
+fn test_russian_phonemization() {
+    assert_eq!(russian_word_phonemes("привет"), "prʲivʲet");
+    assert_eq!(russian_word_phonemes("лодка"), "lotka");
+    assert_eq!(russian_word_phonemes("город"), "ɡorot");
+    assert_eq!(russian_word_phonemes("день"), "dʲenʲ");
+    assert_eq!(russian_word_phonemes("съел"), "sjel");
+    assert_eq!(russian_word_phonemes("щи"), "ɕːi");
+    assert_eq!(russian_word_phonemes("чай"), "tɕaj");
+
+    // Genitive endings and sibilant vowels:
+    assert_eq!(russian_word_phonemes("вашего"), "vaʂɨvo");
+    assert_eq!(russian_word_phonemes("нашего"), "naʂɨvo");
+    assert_eq!(russian_word_phonemes("его"), "jevo");
+    assert_eq!(russian_word_phonemes("красивого"), "krasʲivovo");
+    assert_eq!(russian_word_phonemes("сегодня"), "sʲevodnʲa");
+    // Non-genitive exceptions keep /g/:
+    assert_eq!(russian_word_phonemes("много"), "mnoɡo");
+    assert_eq!(russian_word_phonemes("строго"), "stroɡo");
+    assert_eq!(russian_word_phonemes("дорого"), "doroɡo");
+    // Sibilants hard [ɨ] (жи-ши):
+    assert_eq!(russian_word_phonemes("жизнь"), "ʐɨznʲ");
+    assert_eq!(russian_word_phonemes("машина"), "maʂɨna");
+
+    let chunks = phonemize("Привет, мир!", Lang::RuRu, &Lexicon::empty(), &Overrides::default()).expect("phonemize");
+    assert_eq!(chunks.len(), 1);
+    match &chunks[0] {
+        Chunk::Phonemes(s) => {
+            assert!(s.contains("prʲivʲet"), "unexpected phonemes: {s}");
+            assert!(s.contains("mʲir"), "unexpected phonemes: {s}");
+        }
+        _ => panic!("expected Chunk::Phonemes"),
+    }
+
+    let chunks_vashego = phonemize("вашего", Lang::RuRu, &Lexicon::empty(), &Overrides::default()).expect("phonemize");
+    assert_eq!(chunks_vashego.len(), 1);
+    match &chunks_vashego[0] {
+        Chunk::Phonemes(s) => {
+            assert!(s.contains("vaʂɨvo"), "unexpected phonemes for 'вашего': {s}");
+        }
+        _ => panic!("expected Chunk::Phonemes"),
+    }
+}

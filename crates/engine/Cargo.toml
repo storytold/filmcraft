@@ -15,8 +15,8 @@ default = []
 whisper = ["filmcraft-speech/whisper"]
 # Speech-model downloads over HTTPS.
 speech-download = ["filmcraft-speech/download"]
-# Natural voices for Text to Speech: Kokoro-82M on candle (CPU) and their download.
-neural-voices = ["filmcraft-tts/kokoro", "speech-download"]
+# Natural voices for Text to Speech: Kokoro-82M on candle (CPU), Piper on tract-onnx (pure Rust) and their download.
+neural-voices = ["filmcraft-tts/kokoro", "filmcraft-tts/piper", "speech-download"]
 
 [dependencies]
 filmcraft-time = { workspace = true }
