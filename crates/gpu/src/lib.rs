@@ -635,7 +635,7 @@ impl GpuCompositor {
                 filmcraft_color::GpuCurve::Pq => 2.0,
                 filmcraft_color::GpuCurve::Hlg => 3.0,
             };
-            let (hl, hk) = p.hlg.unwrap_or(([0.0; 3], 0.0));
+            let (hl, hk) = p.hlg.map_or(([0.0; 3], 0.0), |o| (o.luma, o.scale));
             let mx = p.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
             let (sp, dp) = p.tone.unwrap_or((0.0, 0.0));
             let dl = p.desaturate.unwrap_or([0.0; 3]);
@@ -679,7 +679,7 @@ impl GpuCompositor {
             blend.index() as f32,
             src.alpha,
             0.0,
-            0.0,
+            src.input.and_then(|p| p.hlg).map_or(0.0, |o| o.exponent),
         ];
         let mut u = [0.0; UNIFORM_FLOATS];
         u[..28].copy_from_slice(&base);
