@@ -683,6 +683,50 @@ fn lumetri_unsupported_sections_fall_back() {
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 }
 
+/// A log source with effects: the effect stage draws it onto the working image through the CPU's
+/// decode table (binding 6) as a plain layer does; with the dummy bound there an S-Log3 clip with
+/// any GPU effect came out black.
+#[test]
+fn log_source_with_effects_matches_cpu() {
+    use filmcraft_color::{ColorPipeline, ColorSpace, InputTransform, Range};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let pipe = ColorPipeline { working: filmcraft_color::WorkingSpace::Rec2100Hlg, wide_gamut: true, auto_tone_map: true };
+    let t = Arc::new(InputTransform::new(ColorSpace::SLog3SGamut3Cine, Range::Limited, &pipe, None));
+    let (w, h) = (256usize, 4usize);
+    // a luma ramp over the whole limited range, one chroma value throughout (see
+    // `gpu_matches_cpu_for_a_log_source`)
+    let y: Vec<u8> = (0..w * h).map(|i| (16 + (i % w) * 219 / w) as u8).collect();
+    let frame = Arc::new(VideoFrame {
+        width: w as u32,
+        height: h as u32,
+        data: PixelData::Yuv8 { planes: [Arc::new(y), Arc::new(vec![100; w * h]), Arc::new(vec![150; w * h])], chroma: Chroma::C444, alpha: None },
+        color: filmcraft_color::ColorInfo { range: Range::Limited, ..filmcraft_color::ColorInfo::REC709 },
+        par: (1, 1),
+        pts: Default::default(),
+    });
+    let mut cxh = cx(Tick::ZERO, 1.0);
+    cxh.working = pipe.working;
+    let e = effect("brightness_contrast", &[("brightness", fl(-10.0)), ("contrast", fl(20.0))]);
+    let op = FxOp::eval(&e, &cxh, w, h).expect("brightness / contrast op");
+    assert!(op.gpu_ok());
+    let fx = Some(Arc::new(LayerFx { size: (w as u32, h as u32), decimation: 1, ops: vec![op] }));
+    let plan = FramePlan::Layers {
+        width: w,
+        height: h,
+        layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx, input: Some(t) }],
+    };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    let mut c = GpuCompositor::new(&dev, &q);
+    c.composite(&plan);
+    let (_, _, gpu) = c.read_output().expect("readback");
+    let (p99, mean, max) = stats8(&cpu, &gpu, &vec![true; w * h]);
+    eprintln!("log source with effects (S-Log3 -> HLG): p99 {p99}, mean {mean:.2}, max {max}");
+    assert!(p99 <= 6 && mean < 1.5, "p99 {p99}, mean {mean}, max {max}");
+}
+
 /// Layers with effect chains in a composited plan — YUV and RGBA sources, a decimated working
 /// image, rotated / scaled placement, partial opacity and alpha, blend modes — match the CPU plan
 /// executor.
@@ -816,6 +860,44 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
         let (p99, mean, _) = stats8(&cpu, &gpu, &interior(&plan));
         eprintln!("effect stage {stage}: interior p99 {p99}, mean {mean:.3}");
         assert!(p99 <= 6 && mean < 1.5, "stage {stage}: p99 {p99}, mean {mean}");
+    }
+}
+
+/// A colour-managed layer (PQ media) with effects comes out the same with and without the GPU
+/// effect stage: the CPU fallback decodes it through the layer's input transform too.
+#[test]
+fn cpu_effect_fallback_keeps_the_input_transform() {
+    use filmcraft_color::{ColorInfo, ColorPipeline, ColorSpace, InputTransform, Primaries};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let (w, h) = (256u32, 4u32);
+    let y: Vec<u16> = (0..h).flat_map(|_| (0..w).map(|x| (64 + x * 876 / 255) as u16)).collect();
+    let n = (w * h) as usize;
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(vec![480; n]), Arc::new(vec![560; n])], chroma: Chroma::C444, bits: 10, alpha: None };
+    let color = ColorInfo { matrix: Matrix::Bt2020Ncl, transfer: Transfer::Pq, primaries: Primaries::Bt2020, range: Range::Limited };
+    let frame = Arc::new(VideoFrame { width: w, height: h, data, color, par: (1, 1), pts: Default::default() });
+    let t = Arc::new(InputTransform::new(ColorSpace::from_info(&color), color.range, &ColorPipeline::REC709, None));
+    let e = effect("brightness_contrast", &[("brightness", fl(-10.0)), ("contrast", fl(20.0))]);
+    let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("brightness / contrast op");
+    let layer = PlanLayer {
+        fx: Some(Arc::new(LayerFx { size: (w, h), decimation: 1, ops: vec![op] })),
+        input: Some(t),
+        ..PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)
+    };
+    let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    for stage in [true, false] {
+        let mut c = GpuCompositor::new(&dev, &q);
+        if !stage {
+            c.fx = None;
+        }
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let (p99, mean, max) = stats8(&cpu, &gpu, &vec![true; n]);
+        eprintln!("PQ layer with effects, effect stage {stage}: p99 {p99}, mean {mean:.2}, max {max}");
+        assert!(p99 <= 6 && mean < 1.5, "stage {stage}: p99 {p99}, mean {mean}, max {max}");
     }
 }
 

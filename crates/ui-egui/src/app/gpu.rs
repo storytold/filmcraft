@@ -1,4 +1,5 @@
 use super::{FilmcraftApp, FrameKey, GpuState, frames, gpu_compositor_unsupported, plan_side};
+use crate::frames::Target;
 
 impl FilmcraftApp {
     /// Enable the GPU compositor on the eframe wgpu device.
@@ -46,6 +47,14 @@ impl FilmcraftApp {
             self.disable_gpu("device error");
             return None;
         }
+        // The resolve pass finishes a *sequence* frame: the sequence's working space → monitor
+        // (`colorman::display_transform`). A plain sequence's transform is the identity, and item
+        // frames (Source monitor, thumbnails) are already in their item's space.
+        let pipe = match key.target {
+            Target::Sequence(id) | Target::SequencePlan(id) => self.session.project.sequence(id).map(|q| q.settings.color),
+            _ => None,
+        };
+        let display = plan.display(pipe);
         let g = self.gpu.as_mut()?;
         if g.last_key == Some(key)
             && let Some(t) = g.texture
@@ -57,6 +66,7 @@ impl FilmcraftApp {
             return None;
         }
         let t0 = web_time::Instant::now();
+        g.compositor.set_display_transform(display);
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let (view, size) = g.compositor.composite_prepared(&plan.plan, Some(&plan.prepared));
             (view.clone(), size)
