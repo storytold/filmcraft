@@ -12,8 +12,18 @@ fn effects_graphic_raster_stays_within_working_image_budget() {
         let (w, h) = graphic_raster_dimensions(source, want);
         assert!(w >= 1 && h >= 1);
         assert!((w as u64) * (h as u64) <= MAX_EFFECT_GRAPHIC_PIXELS);
+        let side = filmcraft_project::MAX_FRAME_SIDE as usize;
+        assert!(w <= side, "{source:?}: {w} wide exceeds a frame side");
     }
-    assert_eq!(graphic_raster_dimensions((1, u32::MAX), 1.0), (1, filmcraft_project::MAX_FRAME_SIDE as usize));
+    // metadata outside a valid graphic's bounds: a wide source is held to one legal side, which
+    // cuts nothing at the width-derived scale; a tall one keeps its height within the budget,
+    // since a height bound would cut the picture off; only a source too tall for a one-pixel
+    // raster gets a single side
+    let side = filmcraft_project::MAX_FRAME_SIDE as usize;
+    assert_eq!(graphic_raster_dimensions((u32::MAX, 1), 1.0), (side, 1));
+    assert_eq!(graphic_raster_dimensions((10_000_000, 3), 1.0), (side, 1));
+    assert_eq!(graphic_raster_dimensions((2, 10_000_000), 1.0), (1, 5_000_000));
+    assert_eq!(graphic_raster_dimensions((1, u32::MAX), 1.0), (1, side));
     assert_eq!(graphic_raster_dimensions((3_840, 2_160), 1.0), (3_840, 2_160));
     assert_eq!(graphic_raster_dimensions((1_920, 1_080), 0.5), (960, 540));
     let (w, h) = graphic_raster_dimensions((32_768, 8_192), 1.0);
@@ -118,7 +128,7 @@ fn capped_working_image_keeps_the_graphic_placed_at_full_scale() {
     assert!(clear(100, 90) && clear(220, 90) && clear(160, 50) && clear(160, 130), "or further out");
 }
 
-/// The same capped working image under an opacity mask instead of an effect: the mask is
+/// A graphic over the working-image budget under an opacity mask and no effect: the mask is
 /// applied at the raster's scale, so its edges land where they were drawn on the graphic.
 #[test]
 fn capped_working_image_applies_an_opacity_mask_at_the_graphics_scale() {
@@ -132,8 +142,8 @@ fn capped_working_image_applies_an_opacity_mask_at_the_graphics_scale() {
     let sequence = project.new_sequence("sequence", SequenceSettings { width: 320, height: 180, frame_rate: rate, ..Default::default() }, 1, 0, None);
     let mut item = project.make_track_item(graphic, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(24)), rate).unwrap();
     item.scale_to_frame = false;
-    // the placement test's 100×60 shape (output x 110..210, y 60..120) under an 80×50 ellipse
-    // mask at the same centre: output x 120..200 on the centre row, y 65..115 on the centre column
+    // a 100×60 shape (output x 110..210, y 60..120) under an 80×50 ellipse mask at the same
+    // centre: output x 120..200 on the centre row, y 65..115 on the centre column
     item.effects.push(new_shape_layer(0, Vec2::new(3840.0, 2160.0), Vec2::new(100.0, 60.0), vec![]));
     item.effect_mut("opacity").unwrap().masks.push(Mask::new("m", MaskPath::ellipse(Vec2::new(3840.0, 2160.0), Vec2::new(40.0, 25.0))));
     project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(item);
