@@ -106,6 +106,50 @@ fn builtin_and_legacy_workspace_shapes_roundtrip_and_save_floating() {
 }
 
 #[test]
+fn session_layout_memorizes_opened_tts_and_resets_to_saved_layout() {
+    let dir = std::env::temp_dir().join(format!("filmcraft-session-dock-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut session = Session::default();
+    session.prefs_path = Some(dir.join("preferences.json"));
+    let mut app = FilmcraftApp::new(session);
+    assert!(!app.ui.dock.contains(&PanelKind::TextToSpeech));
+
+    // Open TTS near Properties/Text
+    app.show_panel(PanelKind::TextToSpeech);
+    assert!(app.ui.dock.contains(&PanelKind::TextToSpeech));
+
+    // Simulate session exit snapshot
+    app.save_session_workspace();
+
+    // Verify session persisted to disk in workspaces.json
+    let prefs = dock::WorkspacePrefs::load(&dir.join(dock::WORKSPACES_FILE));
+    assert!(prefs.session.is_some());
+    let restored = dock::session_docking(&prefs, "Editing");
+    assert!(restored.contains(&PanelKind::TextToSpeech));
+
+    // Restart app
+    let mut restarted_session = Session::default();
+    restarted_session.prefs_path = Some(dir.join("preferences.json"));
+    let restarted = FilmcraftApp::new(restarted_session);
+    let mut h = Harness::builder().with_size(vec2(1600.0, 980.0)).with_accessibility_check(false).build_eframe(move |_| restarted);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    // Reopened app restored TTS automatically
+    assert!(h.state().ui.dock.contains(&PanelKind::TextToSpeech));
+
+    // Reset to Saved Layout reverts back to clean factory Editing layout without TTS
+    let ctx = h.ctx.clone();
+    menus::invoke(h.state_mut(), &ctx, "window.workspace.reset", json!({})).unwrap();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!h.state().ui.dock.contains(&PanelKind::TextToSpeech));
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn legacy_effects_workspace_drops_only_the_known_inactive_duplicate() {
     let expected = dock::workspace("Effects");
     let mut legacy_tree = expected.root.clone().unwrap();

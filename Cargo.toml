@@ -63,6 +63,7 @@ filmcraft-platform = { path = "crates/platform" }
 filmcraft-testkit = { path = "crates/testkit" }
 
 # foundation
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 thiserror = "2"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

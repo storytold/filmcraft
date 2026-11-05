@@ -72,7 +72,7 @@ fn monitor_readouts_and_dropdowns_do_not_overlap() {
                         std::fs::create_dir_all(&directory).unwrap();
                         h.render().unwrap().save(format!("{directory}/film-{prefix}-{kind:?}-{width}-{scale}x.png")).unwrap();
                     }
-                    let controls = ["timecode", "zoom", "resolution", "settings"].map(|name| element(&h, &format!("{prefix}.{name}")));
+                    let controls = ["timecode", "zoom", "resolution", "speed", "settings"].map(|name| element(&h, &format!("{prefix}.{name}")));
                     let timecodes: Vec<_> = h
                         .output()
                         .shapes
