@@ -28,6 +28,10 @@
 //!   name folders the app writes into later) is held to the write root.
 //! - The bridge's UI-driving tools are refused while confined: they could drive the live app's
 //!   file dialogs past the roots.
+//! - A command that writes is refused while the folder it writes in holds a link leading out of the
+//!   write root. Exports add or change the extension, take the sequence's name in a folder, number
+//!   their stills and put caption files beside the output, and open those names themselves after
+//!   this check, so the names aren't known here but the folder is.
 //! - In a headless session, [`crate::confined_services`] checks every path again when it is opened,
 //!   which also covers the media a project file names. In bridge mode the session lives in the
 //!   app, so such paths are not covered there.
@@ -125,6 +129,31 @@ impl AutomationRoots {
         Err(format!("automation path rejected: outside the {kind} root {}: {path}", root.shown.display()))
     }
 
+    /// May a command write at `path`, or at another name it derives there? `path` must pass
+    /// [`Self::check`], and no link in its folder (or in it, if it's a folder) may lead out of the
+    /// write root: see the module docs.
+    fn check_write_target(&self, path: &str) -> Result<(), String> {
+        self.check(path, Access::Write)?;
+        let given = Path::new(path);
+        let folder = if path.ends_with(['/', '\\']) || given.is_dir() { Some(given) } else { given.parent() };
+        let Some(folder) = folder else { return Ok(()) };
+        let cannot_list = |e: std::io::Error| format!("automation path rejected: cannot list the folder of {path}: {e}");
+        let entries = match std::fs::read_dir(folder) {
+            Ok(entries) => entries,
+            // Nothing there yet, so nothing there leads anywhere.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(cannot_list(e)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(cannot_list)?;
+            if entry.file_type().map_err(cannot_list)?.is_symlink() {
+                self.check(&entry.path().to_string_lossy(), Access::Write)
+                    .map_err(|e| format!("{e} (a command writing to {path} may pick that name, so the link has to go first)"))?;
+            }
+        }
+        Ok(())
+    }
+
     /// What the bridge refuses on top of [`Self::check_command`]: commands that act on paths the
     /// app already holds, which no parameter names and the app's own file access doesn't check.
     /// That's the export queue, whose items can write anywhere (most of these commands would start
@@ -156,6 +185,7 @@ impl AutomationRoots {
         if writes.is_none() && reads.is_none() && !NO_FILES.contains(&id) {
             return Err(format!("`{id}` is not available while file access is confined: it isn't known to stay inside the roots"));
         }
+        let check = |path: &str, access| if access == Access::Write { self.check_write_target(path) } else { self.check(path, access) };
         for (table, access) in [(reads, Access::Read), (writes, Access::Write)] {
             let Some(keys) = table else { continue };
             let given = keys.iter().filter(|k| params.get(**k).is_some_and(|v| !v.is_null())).count();
@@ -167,11 +197,11 @@ impl AutomationRoots {
                 match params.get(*key).filter(|v| !v.is_null()) {
                     None => {}
                     Some(Value::String(s)) if NAME_OR_PATH.contains(&(id, *key)) && !s.contains(['/', '\\', '.']) => {}
-                    Some(Value::String(s)) => self.check(s, access)?,
+                    Some(Value::String(s)) => check(s, access)?,
                     Some(Value::Array(a)) => {
                         for v in a {
                             match v.as_str() {
-                                Some(s) => self.check(s, access)?,
+                                Some(s) => check(s, access)?,
                                 None => return Err(format!("`{id}`: `{key}` must be file paths")),
                             }
                         }
@@ -183,7 +213,7 @@ impl AutomationRoots {
         if id == "file.importAaf"
             && let Some(p) = params.get("path").and_then(Value::as_str)
         {
-            self.check(p, Access::Write).map_err(|e| format!("{e} (`{id}` writes the embedded audio beside the file)"))?;
+            check(p, Access::Write).map_err(|e| format!("{e} (`{id}` writes the embedded audio beside the file)"))?;
         }
         // The rest of the params: what a command writes is held to the write root throughout.
         let access = if writes.is_some() { Access::Write } else { Access::Read };
@@ -192,7 +222,7 @@ impl AutomationRoots {
         let mut other = vec![];
         other_paths(params, &skip, id == "prefs.set", &mut other).map_err(|e| format!("`{id}`: {e}"))?;
         for p in other {
-            self.check(&p, access)?;
+            check(&p, access)?;
         }
         Ok(())
     }
@@ -590,19 +620,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// A link at `link` leading to `target`, if this system lets us make one.
+    fn made(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, link).is_ok();
+        #[cfg(windows)]
+        return if target.is_dir() { std::os::windows::fs::symlink_dir(target, link) } else { std::os::windows::fs::symlink_file(target, link) }.is_ok();
+        #[cfg(not(any(unix, windows)))]
+        return false;
+    }
+
+    /// Exports open names they derive after the check, so a link beside the path counts.
+    #[test]
+    fn a_link_out_beside_a_write_refuses_it() {
+        let (base, roots) = folders("derived");
+        std::fs::write(base.join("outside/old.mp4"), b"old").unwrap();
+        if !made(&base.join("outside/old.mp4"), &base.join("out/result.mp4")) {
+            eprintln!("skipped: symbolic links can't be made here");
+            let _ = std::fs::remove_dir_all(base);
+            return;
+        }
+        let out = base.join("out");
+        std::fs::create_dir(out.join("clean")).unwrap();
+        for (id, path) in [
+            ("file.exportMedia", s(out.join("result"))),
+            ("export.quick", s(out.join("result"))),
+            ("export.queue.add", s(out.join("result"))),
+            ("markers.exportCsv", s(out.join("other.csv"))),
+            ("file.exportMedia", format!("{}/", s(out.clone()))),
+            ("file.exportMedia", s(out.clone())),
+        ] {
+            let e = roots.check_command(id, &json!({"path": path})).unwrap_err();
+            assert!(e.contains("may pick that name"), "{id} {path}: {e}");
+        }
+        // One level down, the folder is clean, and its own links stay inside the root.
+        let params = json!({"path": s(out.join("clean/result"))});
+        assert_eq!(roots.check_command("file.exportMedia", &params), Ok(()));
+        std::fs::write(out.join("clean/a.mp4"), b"mine").unwrap();
+        assert!(made(&out.join("clean/a.mp4"), &out.join("clean/b.mp4")));
+        assert_eq!(roots.check_command("file.exportMedia", &params), Ok(()));
+        // A link that leads nowhere could create the file outside.
+        assert!(made(&base.join("outside/gone.mp4"), &out.join("clean/gone.mp4")));
+        assert!(roots.check_command("file.exportMedia", &params).unwrap_err().contains("a link that leads nowhere"));
+        // A folder that doesn't exist yet holds nothing.
+        assert_eq!(roots.check_command("file.exportMedia", &json!({"path": s(out.join("new/deeper/result"))})), Ok(()));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
     /// Links out of a root are outside it, dangling ones are refused, and links that stay inside pass.
     #[test]
     fn links_are_followed_before_comparing() {
         let (base, roots) = folders("links");
-        #[cfg(unix)]
-        let made = |target: &Path, link: &Path| std::os::unix::fs::symlink(target, link).is_ok();
-        #[cfg(windows)]
-        let made = |target: &Path, link: &Path| {
-            let made = if target.is_dir() { std::os::windows::fs::symlink_dir(target, link) } else { std::os::windows::fs::symlink_file(target, link) };
-            made.is_ok()
-        };
-        #[cfg(not(any(unix, windows)))]
-        let made = |_: &Path, _: &Path| false;
         // Windows needs Developer Mode or elevation to make links: nothing to test without them.
         if !made(&base.join("outside/secret.cube"), &base.join("in/leak.cube")) {
             eprintln!("skipped: symbolic links can't be made here");
