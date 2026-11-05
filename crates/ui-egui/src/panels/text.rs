@@ -769,8 +769,7 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             // (and report it changed) as soon as the panel shows it
             let resp = ui.add(crate::widgets::number_drag(&mut v).range(0.0..=500.0).speed(0.5).prefix(label).suffix(" px")).on_hover_text(tip);
             app.auto.add(&format!("text.captions.style.backgroundPadding.{axis}"), resp.rect, "Caption box padding");
-            let escaped = resp.drag_stopped() && ui.input(|i| i.key_pressed(egui::Key::Escape));
-            if !escaped && (resp.drag_stopped() || (resp.changed() && !resp.dragged())) {
+            if let Some(v) = committed_drag(ui, &resp, v) {
                 let pad = if axis == "x" { [v, pad_y] } else { [pad_x, v] };
                 actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "backgroundPadding": pad})));
             }
@@ -803,6 +802,26 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
     child.min_rect().height()
 }
 
+/// The edit a caption style number field commits this frame, given the `value` it just showed.
+///
+/// A dragged value only lives on the frames of the drag: the field is rebuilt from the stored style
+/// every frame and egui doesn't write on the release frame, so the value is kept until release,
+/// and dropped if Escape ended the drag (#580). A typed edit commits at once.
+fn committed_drag(ui: &egui::Ui, resp: &egui::Response, value: f32) -> Option<f32> {
+    let pending = resp.id.with("caption-style-pending");
+    if resp.dragged() {
+        if resp.changed() {
+            ui.data_mut(|d| d.insert_temp(pending, value));
+        }
+        return None;
+    }
+    if resp.drag_stopped() {
+        let dragged = ui.data_mut(|d| d.remove_temp::<f32>(pending));
+        return if ui.input(|i| i.key_pressed(egui::Key::Escape)) { None } else { dragged };
+    }
+    resp.changed().then_some(value)
+}
+
 fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
     let ctx = ui.ctx().clone();
     for (cmd, p) in actions {
@@ -815,6 +834,45 @@ fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Drags a number field stored as 50 (rebuilt from the store every frame, like the style
+    /// fields) by `steps` moves, pressing Escape on move `escape_at`; returns what it committed.
+    fn drag_field(steps: usize, escape_at: Option<usize>) -> Vec<f32> {
+        let ctx = egui::Context::default();
+        let start = egui::pos2(30.0, 12.0);
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut frames = vec![vec![egui::Event::PointerMoved(start)], vec![button(start, true)]];
+        for step in 1..=steps {
+            let mut events = vec![egui::Event::PointerMoved(egui::pos2(30.0 + 10.0 * step as f32, 12.0))];
+            if escape_at == Some(step) {
+                events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+            }
+            frames.push(events);
+        }
+        frames.push(vec![button(egui::pos2(30.0 + 10.0 * steps as f32, 12.0), false)]);
+        frames.push(vec![]);
+        let mut committed = Vec::new();
+        for events in frames {
+            let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                let mut v = 50.0_f32;
+                let resp = ui.add(crate::widgets::number_drag(&mut v).range(5.0..=100.0).speed(0.5));
+                committed.extend(committed_drag(ui, &resp, v));
+            });
+            out.textures_delta.clear();
+        }
+        committed
+    }
+
+    #[test]
+    fn a_style_drag_commits_the_dragged_value_once_on_release() {
+        let committed = drag_field(4, None);
+        assert_eq!(committed.len(), 1, "{committed:?}");
+        assert!(committed[0] > 50.0, "the drag's value, not the stored one: {committed:?}");
+        assert_eq!(drag_field(0, None), Vec::<f32>::new(), "a click without a drag commits nothing");
+        assert_eq!(drag_field(4, Some(2)), Vec::<f32>::new(), "Escape cancels the drag");
+        // nothing is left behind for the next drag on a fresh context either
+        assert_eq!(drag_field(4, None), committed);
+    }
 
     /// Latin labels keep the 7 px per character they were laid out with; Japanese labels are as
     /// wide as they are drawn, so they no longer run into the next tab.

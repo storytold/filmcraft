@@ -955,6 +955,11 @@ fn media_browser_navigation_import_and_columns() {
     d.key("Shift+O");
     assert!(d.app().session.state.source_item.is_some());
     assert_eq!(d.app().session.project.items.len(), 2);
+    // opening a clip in Source shows Source, so the Media Browser is no longer maximized (#3669)
+    assert_ne!(d.app().ui.keys.maximized, Some(filmcraft_ui_egui::dock::PanelKind::MediaBrowser));
+    d.ok("ui.set", json!({"focused": "MediaBrowser"}));
+    d.ok("ui.menu.invoke", json!({"id": "window.maximizeFrame"}));
+    d.frames(2);
     // Edit Columns…
     d.click("panel.menu.MediaBrowser");
     d.click("mediaBrowser.menu.editColumns");
@@ -1707,4 +1712,23 @@ fn a_card_menu_stacks_only_the_selected_cards_of_its_bin() {
     let stack = |d: &mut Driver, i: u64| d.app().session.project.item(ItemId(i)).unwrap().metadata.get(FREEFORM_STACK).cloned();
     assert!(stack(&mut d, items[0]).is_some() && stack(&mut d, items[1]).is_some(), "this bin's cards are stacked");
     assert_eq!(stack(&mut d, other), None, "the other bin's item is left alone");
+}
+
+/// #3774 review: Save Arrangement takes the bin of the canvas it was opened on; an unknown bin
+/// is refused instead of saving to the root bin.
+#[test]
+fn save_arrangement_refuses_an_unknown_bin() {
+    let mut d = project_driver();
+    let (bin, _) = d.footage();
+    for bad in [json!(987_654), json!(-1), json!("footage"), json!(1.5)] {
+        let r = d.call("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": bad, "width": 400.0}}));
+        assert_eq!(r["ok"], json!(false), "bin {bad}: {r}");
+        assert!(d.app().ui.project_panel.dialog.is_none(), "no dialog for bin {bad}");
+    }
+    let root = d.app().session.project.root.id.0;
+    let saved = d.exec("project.freeform.arrangements", json!({"bin": root}));
+    assert_eq!(saved["arrangements"].as_array().map(Vec::len), Some(0), "nothing saved to the root: {saved}");
+    // a bin that exists opens the dialog
+    d.ok("ui.menu.invoke", json!({"id": "projectPanel.saveArrangement", "params": {"bin": bin, "width": 400.0}}));
+    assert!(d.app().ui.project_panel.dialog.is_some());
 }
