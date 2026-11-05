@@ -182,6 +182,8 @@ pub fn register_reader_opener(f: filmcraft_media::ReaderOpener) {
 #[derive(Clone)]
 pub(crate) struct Src(pub filmcraft_media::SharedReader);
 
+// `filmcraft_isobmff::ByteSource`, `filmcraft_matroska::ByteSource` and `filmcraft_ogg::ByteSource` are
+// `craft_media::ByteSource`: one impl serves all three.
 impl filmcraft_isobmff::ByteSource for Src {
     fn len(&self) -> u64 {
         self.0.len()
@@ -192,15 +194,6 @@ impl filmcraft_isobmff::ByteSource for Src {
 }
 
 impl filmcraft_avi::ByteSource for Src {
-    fn len(&self) -> u64 {
-        self.0.len()
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
-        self.0.read_at(offset, buf)
-    }
-}
-
-impl filmcraft_matroska::ByteSource for Src {
     fn len(&self) -> u64 {
         self.0.len()
     }
