@@ -341,11 +341,11 @@ fn a_divider_beside_a_scrollbar_grabs_without_taking_the_scrollbar() {
     let y = panel[1] + 60.0;
     let (rows, size) = (first_effect_top(&h), effects_width(&mut h));
     // On the scrollbar: the list scrolls, the divider stays.
-    drag_with(&mut h, PointerButton::Primary, pos2(edge - 6.0, y), pos2(edge - 6.0, y + 120.0));
+    drag_with(&mut h, PointerButton::Primary, pos2(edge - 12.0, y), pos2(edge - 12.0, y + 120.0));
     assert!(first_effect_top(&h) < rows - 1.0, "dragging the scrollbar did not scroll the list");
     assert_near(effects_width(&mut h), size);
     // Sideways on the scrollbar: still no resize.
-    drag_with(&mut h, PointerButton::Primary, pos2(edge - 6.0, y), pos2(edge + 20.0, y));
+    drag_with(&mut h, PointerButton::Primary, pos2(edge - 12.0, y), pos2(edge + 20.0, y));
     assert_near(effects_width(&mut h), size);
     // Just inside the panel's edge and in the middle of the gap: the divider moves, the list does not.
     let rows = first_effect_top(&h);
