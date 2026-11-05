@@ -1,3 +1,5 @@
+use filmcraft_project::{Track, Transition};
+
 use super::layout::Layout;
 use super::{ClipId, FilmcraftApp, Grab, Hit, Pos2, SNAP_PX, Sequence, Tick, Value, grab_at, json};
 
@@ -46,6 +48,49 @@ fn snap_to(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exc
             c
         }
         None => t,
+    }
+}
+
+/// Where transition `tr` on `track` goes (start, duration) when its `edge` (both ends when
+/// `None`) is dragged by `delta` (#4328): [`snap`] on the end that moves, or for a move on
+/// whichever end snaps closer, as far as [`filmcraft_edit::transitions::drag_span`] lets it go.
+/// A snap target it can't reach is passed over, for the other end's or none. Transitions are not
+/// snap targets themselves; an end on a clip edge or the playhead holds there as a clip edge does.
+pub(super) fn snap_transition(
+    app: &mut FilmcraftApp,
+    seq: &Sequence,
+    layout: &Layout,
+    track: &Track,
+    tr: &Transition,
+    edge: Option<filmcraft_edit::Edge>,
+    delta: Tick,
+) -> Option<(Tick, Tick)> {
+    let prev = app.tl.snap_x;
+    let span = |d: Tick| filmcraft_edit::transitions::drag_span(track, tr, edge, d, seq.settings.frame_rate.frame_duration());
+    // how far the dragged end (the start, for a move) goes
+    let moved = |(s, d): (Tick, Tick)| if edge == Some(filmcraft_edit::Edge::Out) { s + d - tr.end() } else { s - tr.start };
+    // `snap` sets the indicator only when it snaps: that tells a snap onto `t` itself from none
+    let snap_end = |app: &mut FilmcraftApp, base: Tick| {
+        app.tl.snap_x = None;
+        let d = snap(app, seq, layout, base + delta, &[]) - base;
+        app.tl.snap_x.map(|x| (d, x))
+    };
+    let mut snaps: Vec<(Tick, f32)> = match edge {
+        Some(filmcraft_edit::Edge::In) => snap_end(app, tr.start).into_iter().collect(),
+        Some(filmcraft_edit::Edge::Out) => snap_end(app, tr.end()).into_iter().collect(),
+        None => [snap_end(app, tr.start), snap_end(app, tr.end())].into_iter().flatten().collect(),
+    };
+    // the closer snap first (the start's on a tie)
+    snaps.sort_by_key(|(d, _)| (*d - delta).0.unsigned_abs());
+    match snaps.into_iter().find_map(|(d, x)| span(d).filter(|s| moved(*s) == d).map(|s| (s, x))) {
+        Some((s, x)) => {
+            app.tl.snap_x = Some(x);
+            Some(s)
+        }
+        None => {
+            app.tl.snap_x = prev;
+            span(delta)
+        }
     }
 }
 
