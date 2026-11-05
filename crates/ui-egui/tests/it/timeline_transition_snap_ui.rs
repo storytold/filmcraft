@@ -6,6 +6,7 @@
 //! cross dissolve centred on their cut (33..63f), at 2.5 px a frame.
 
 use egui::pos2;
+use filmcraft_engine::Session;
 use serde_json::json;
 
 use super::timeline_transition_move_ui::{harness, pointer, rect, step};
@@ -14,6 +15,12 @@ use super::timeline_transition_move_ui::{harness, pointer, rect, step};
 /// `.in` or `.out`) with the playhead at `playhead` frames and snapping `on` or off, and returns
 /// the committed transition's start and end in frames and its alignment.
 fn drag_transition(part: &str, dx: f32, playhead: i64, on: bool) -> (i64, i64, String) {
+    drag_transition_after(part, dx, playhead, on, |_, _, _| {})
+}
+
+/// [`drag_transition`] once `setup` has changed the session, given the transition's id and the
+/// ticks in a frame.
+fn drag_transition_after(part: &str, dx: f32, playhead: i64, on: bool, setup: impl FnOnce(&mut Session, u64, i64)) -> (i64, i64, String) {
     let mut h = harness(false);
     let rate = h.state().session.sequence_rate();
     let frame = rate.tick_of(1).0;
@@ -22,6 +29,8 @@ fn drag_transition(part: &str, dx: f32, playhead: i64, on: bool) -> (i64, i64, S
     step(&mut h);
     let tr0 = h.state().session.active_sequence().unwrap().video_tracks[0].transitions[0].clone();
     assert_eq!((tr0.start.0 / frame, tr0.end().0 / frame), (33, 63), "the default 30-frame dissolve centred on the cut at 48f");
+    setup(&mut h.state_mut().session, tr0.id.0, frame);
+    step(&mut h);
     let p0 = rect(&h, &format!("timeline.transition.{}{part}", tr0.id.0)).center();
     pointer(&mut h, p0, Some(true));
     for i in 1..=5 {
@@ -77,4 +86,17 @@ fn a_moved_transition_snaps_the_end_nearer_its_target() {
 fn a_transition_end_snaps_to_its_clips_end_before_the_playhead_past_it() {
     assert_eq!(span(".out", 77.7, 97, true), (33, 96), "stops at the clip's end");
     assert_eq!(span(".out", 77.7, 97, false), (33, 94), "snapping off: the raw frame");
+}
+
+/// The end of a Start at Cut transition (48..60f) dragged to 50f (-25.3 px, 10 frames) passes
+/// over the nearest target it can't reach for the next one: the cut at 48f, two frames off, would
+/// leave none of it, so it lands on the marker at 53f, three frames off.
+#[test]
+fn a_transition_end_passes_over_a_target_it_cannot_reach_for_the_next() {
+    let setup = |s: &mut Session, id: u64, frame: i64| {
+        s.execute("sequence.setTransition", json!({"transition": id, "start": 48 * frame, "duration": 12 * frame})).unwrap();
+        s.execute("markers.add", json!({"time": 53 * frame})).unwrap();
+    };
+    assert_eq!(drag_transition_after(".out", -25.3, 0, true, setup), (48, 53, "start".to_owned()), "on the marker");
+    assert_eq!(drag_transition_after(".out", -25.3, 0, false, setup), (48, 50, "start".to_owned()), "snapping off: the raw frame");
 }
