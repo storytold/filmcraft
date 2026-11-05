@@ -21,7 +21,8 @@ const arg = (k, d) => {
   return i > 0 ? process.argv[i + 1] : d;
 };
 const url = arg("url", "http://127.0.0.1:8765/");
-const out = arg("out", join(tmpdir(), "filmcraft-web-smoke"));
+// The default is a fresh private folder, never a predictable name another user could have prepared.
+const out = arg("out", mkdtempSync(join(tmpdir(), "filmcraft-web-smoke-")));
 const media = arg("media", "web-test.mp4");
 const chrome = arg("chrome", process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "google-chrome");
 const port = Number(arg("port", "9333"));

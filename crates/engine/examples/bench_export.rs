@@ -137,8 +137,8 @@ fn main() {
         None => ffmpeg_fixture(secs).or_else(|| generated_fixture(secs)).expect("could not write the source fixture (or pass --source)"),
     };
     let keep = arg(&args, "--keep").map(PathBuf::from);
-    let dir = std::env::temp_dir().join(format!("filmcraft-bench-export-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    // A fresh private folder, never a predictable name another user could have prepared.
+    let dir = tempfile::Builder::new().prefix("filmcraft-bench-export-").tempdir().expect("temp dir").keep();
     let out = keep.clone().unwrap_or_else(|| dir.join(format!("out.{}", if format == "prores" { "mov" } else { "mp4" })));
     let mut s = session(&src);
     let mut times = Vec::new();

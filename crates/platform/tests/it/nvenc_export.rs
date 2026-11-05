@@ -43,8 +43,9 @@ fn project(w: u32, h: u32, frames: i64) -> (Arc<Project>, filmcraft_project::Ite
 }
 
 fn tmp(name: &str) -> String {
-    let d = std::env::temp_dir().join(format!("fc-nvenc-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
+    // One private folder per test process, never a predictable name another user could have prepared.
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let d = DIR.get_or_init(|| tempfile::Builder::new().prefix("fc-nvenc-").tempdir().unwrap().keep());
     d.join(name).to_string_lossy().to_string()
 }
 
