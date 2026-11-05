@@ -73,14 +73,14 @@ restart intervals that split a line, and MXF-wrapped CinemaDNG.
 
 ## Tests
 
-- `tests/roundtrip.rs`: container parsing in both byte orders with and without a preview IFD;
+- `tests/it/roundtrip.rs`: container parsing in both byte orders with and without a preview IFD;
   uncompressed samples bit-exact at 8–16 bits, strips and tiles; lossless JPEG bit-exact for every
   predictor and component count, full-swing 16-bit data (every difference category, SSSS = 16),
   restarts and point transform; developed values against hand-computed ones (black / white,
   white balance, ForwardMatrix, BaselineExposure, ActiveArea, DefaultCrop, LinearRaw); CinemaDNG
   FrameRate / TimeCodes / ReelName; hostile files (every truncation, 12 000 mutations under
   `catch_unwind`, cyclic IFDs, huge sizes, bad offsets, zero denominators).
-- `tests/oracle_libraw.rs`: LibRaw's `unprocessed_raw` reads the same samples from our synthetic
+- `tests/it/oracle_libraw.rs`: LibRaw's `unprocessed_raw` reads the same samples from our synthetic
   files (uncompressed 8–16-bit in both byte orders, lossless JPEG predictors 1–7 with one and two
   components). Skipped when it is not installed.
 - Unit tests: matrix maths, the published sRGB matrix, McCamy temperatures, calibration

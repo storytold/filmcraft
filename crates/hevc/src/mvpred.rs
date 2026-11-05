@@ -36,9 +36,26 @@ fn same_motion(a: &MvField, b: &MvField) -> bool {
     true
 }
 
+/// A prediction block: the coding block (`xc`, `yc`, size `ncb`) it belongs to, its own position
+/// (`xp`, `yp`), size (`w` x `h`) and index `part_idx` within the coding block, and the coding
+/// block's partitioning mode.
+#[derive(Clone, Copy)]
+pub struct PredBlock {
+    pub xc: i32,
+    pub yc: i32,
+    pub ncb: i32,
+    pub xp: i32,
+    pub yp: i32,
+    pub w: i32,
+    pub h: i32,
+    pub part_idx: usize,
+    pub part: PartMode,
+}
+
 impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
-    /// Prediction block availability (6.4.2).
-    fn pb_avail(&self, xc: i32, yc: i32, ncb: i32, xp: i32, yp: i32, w: i32, h: i32, part_idx: usize, xn: i32, yn: i32) -> bool {
+    /// Prediction block availability (6.4.2) of the neighbouring location (`xn`, `yn`).
+    fn pb_avail(&self, pb: &PredBlock, xn: i32, yn: i32) -> bool {
+        let PredBlock { xc, yc, ncb, xp, yp, w, h, part_idx, .. } = *pb;
         let same_cb = xc <= xn && yc <= yn && xc + ncb > xn && yc + ncb > yn;
         let avail = if !same_cb {
             self.pic.zavail(xp, yp, xn, yn, self.slice_addr)
@@ -59,23 +76,14 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
     }
 
     /// Merge mode motion (8.5.3.2.2).
-    pub fn derive_merge(
-        &self,
-        xc: i32,
-        yc: i32,
-        ncb: i32,
-        xp0: i32,
-        yp0: i32,
-        w0: i32,
-        h0: i32,
-        part_idx0: usize,
-        part: PartMode,
-        merge_idx: usize,
-    ) -> MvField {
+    pub fn derive_merge(&self, pb: &PredBlock, merge_idx: usize) -> MvField {
+        let PredBlock { xc, yc, ncb, w: w0, h: h0, part, .. } = *pb;
         let pml = self.pps.log2_parallel_merge_level;
-        let (xp, yp, w, h, part_idx) = if pml > 2 && ncb == 8 { (xc, yc, ncb, ncb, 0) } else { (xp0, yp0, w0, h0, part_idx0) };
+        // with a parallel merge level above 4x4, the 8x8 coding block's 2Nx2N candidates are shared
+        let pb = if pml > 2 && ncb == 8 { PredBlock { xp: xc, yp: yc, w: ncb, h: ncb, part_idx: 0, ..*pb } } else { *pb };
+        let PredBlock { xp, yp, w, h, part_idx, .. } = pb;
         let same_mer = |xn: i32, yn: i32| (xp >> pml) == (xn >> pml) && (yp >> pml) == (yn >> pml);
-        let avail = |xn: i32, yn: i32| self.pb_avail(xc, yc, ncb, xp, yp, w, h, part_idx, xn, yn) && !same_mer(xn, yn);
+        let avail = |xn: i32, yn: i32| self.pb_avail(&pb, xn, yn) && !same_mer(xn, yn);
         let mut list: [MvField; 5] = [MvField::default(); 5];
         let mut n = 0;
         let max = self.sh.max_num_merge_cand as usize;
@@ -236,20 +244,8 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
     }
 
     /// AMVP predictor (8.5.3.2.6, 8.5.3.2.7).
-    pub fn derive_amvp(
-        &self,
-        xc: i32,
-        yc: i32,
-        ncb: i32,
-        xp: i32,
-        yp: i32,
-        w: i32,
-        h: i32,
-        part_idx: usize,
-        l: usize,
-        ref_idx: usize,
-        mvp_flag: usize,
-    ) -> [i16; 2] {
+    pub fn derive_amvp(&self, pb: &PredBlock, l: usize, ref_idx: usize, mvp_flag: usize) -> [i16; 2] {
+        let PredBlock { xp, yp, w, h, .. } = *pb;
         let target = &self.refs[l][ref_idx];
         let (tpoc, tlt) = (target.poc, target.long_term);
         let cur_poc = self.pic.poc;
@@ -276,7 +272,7 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
             pick.map(|(mv, r)| if r.poc != tpoc && !r.long_term && !tlt { scale_mv(mv, cur_poc - r.poc, cur_poc - tpoc) } else { mv })
         };
         let pa = [(xp - 1, yp + h), (xp - 1, yp + h - 1)];
-        let av_a = [self.pb_avail(xc, yc, ncb, xp, yp, w, h, part_idx, pa[0].0, pa[0].1), self.pb_avail(xc, yc, ncb, xp, yp, w, h, part_idx, pa[1].0, pa[1].1)];
+        let av_a = [self.pb_avail(pb, pa[0].0, pa[0].1), self.pb_avail(pb, pa[1].0, pa[1].1)];
         let is_scaled = av_a[0] || av_a[1];
         let mut a = None;
         for k in 0..2 {
@@ -291,12 +287,12 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
                 }
             }
         }
-        let pb = [(xp + w, yp - 1), (xp + w - 1, yp - 1), (xp - 1, yp - 1)];
-        let av_b = [0, 1, 2].map(|k| self.pb_avail(xc, yc, ncb, xp, yp, w, h, part_idx, pb[k].0, pb[k].1));
+        let pbk = [(xp + w, yp - 1), (xp + w - 1, yp - 1), (xp - 1, yp - 1)];
+        let av_b = [0, 1, 2].map(|k| self.pb_avail(pb, pbk[k].0, pbk[k].1));
         let mut b = None;
         for k in 0..3 {
             if av_b[k] && b.is_none() {
-                b = unscaled(&self.mv_at(pb[k].0, pb[k].1));
+                b = unscaled(&self.mv_at(pbk[k].0, pbk[k].1));
             }
         }
         if !is_scaled && b.is_some() {
@@ -306,7 +302,7 @@ impl<'a, S: crate::picture::Sample> SliceDecoder<'a, S> {
             b = None;
             for k in 0..3 {
                 if av_b[k] && b.is_none() {
-                    b = scaled(&self.mv_at(pb[k].0, pb[k].1));
+                    b = scaled(&self.mv_at(pbk[k].0, pbk[k].1));
                 }
             }
         }

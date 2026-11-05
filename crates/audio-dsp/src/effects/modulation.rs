@@ -2,7 +2,7 @@
 //! Delay. All modulated delays read with linear interpolation; feedback loops are bounded
 //! (|g| < 1, or saturating for the Analog Delay).
 
-use super::util::{AllPass1, DelayLine, Envelope, Lfo, OnePole, coef, uni_sine, uni_tri};
+use super::util::{AllPass1, DelayLine, Envelope, Lfo, OnePole, coef, uni_sine, uni_tri, wrap_phase};
 use crate::{AudioEffect, ParamSpec, ParamValues, Smoothed, Unit, block_len, db_to_gain, param_plumbing};
 
 const SM: f32 = 20.0;
@@ -212,7 +212,7 @@ impl AudioEffect for Flanger {
                 let line = &mut self.lines[ch];
                 let y = line.read(d0 + (d1 - d0) * shape(p));
                 let wet = if special {
-                    let y2 = line.read(d0 + (d1 - d0) * shape((p + 0.5).rem_euclid(1.0)));
+                    let y2 = line.read(d0 + (d1 - d0) * shape(wrap_phase(p + 0.5)));
                     0.5 * (y - y2) + 0.5 * y
                 } else {
                     y

@@ -415,7 +415,7 @@ pub fn font_families() -> Vec<FontFamily> {
 }
 
 /// Install the Latin UI fonts, Chinese fallback (craft-fonts or an installed face), Japanese
-/// craft-fonts, Arabic and Hebrew fallbacks (craft-fonts or installed faces, [`crate::rtl`]) and
+/// craft-fonts, Arabic and Hebrew fallbacks (craft-fonts or installed faces, `crate::rtl`) and
 /// egui visuals. Document names keep their glyphs in every interface language.
 pub fn install(ctx: &egui::Context, t: &Tokens) {
     let mut fonts = FontDefinitions::default();
@@ -610,7 +610,7 @@ mod tests {
         filmcraft_text::fonts::scan_system();
         let available = filmcraft_text::fonts::all_faces()
             .iter()
-            .any(|f| matches!(f.info.origin, "system" | filmcraft_text::fonts::CRAFT_ORIGIN) && CHINESE.chars().all(|c| f.has_char(c)));
+            .any(|f| matches!(f.info.origin, "system" | filmcraft_text::fonts::CRAFT_ORIGIN) && f.covers_text(CHINESE));
         if !available {
             eprintln!("SKIPPED: no craft-fonts or installed Chinese font");
             return;
@@ -642,7 +642,8 @@ mod tests {
     fn korean_text_renders_with_an_installed_korean_font() {
         const KOREAN: &str = "한국어 입력 테스트";
         filmcraft_text::fonts::scan_system();
-        let available = filmcraft_text::fonts::all_faces().iter().any(|f| f.info.origin == "system" && KOREAN.chars().all(|c| f.has_char(c)));
+        // `covers_text`, not `has_char`: probing keeps no font file loaded (see `cjk::find_system_font`)
+        let available = filmcraft_text::fonts::all_faces().iter().any(|f| f.info.origin == "system" && f.covers_text(KOREAN));
         if !available {
             eprintln!("SKIPPED: no installed Korean font");
             return;
@@ -676,8 +677,12 @@ mod tests {
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             for (family, stack) in &defs.families {
-                // installed right-to-left faces (Hebrew is not in craft-fonts) come after the craft run
-                let stack: Vec<&String> = stack.iter().filter(|n| !crate::rtl::is_system_face(n)).collect();
+                // installed faces come after the craft run: right-to-left ones (Hebrew is not in
+                // craft-fonts) and the Hangul face (none is in craft-fonts)
+                let stack: Vec<&String> = stack
+                    .iter()
+                    .filter(|n| !crate::rtl::is_system_face(n) && n.as_str() != crate::cjk::KOREAN_FACE && n.as_str() != crate::cjk::THAI_FACE)
+                    .collect();
                 let first = stack.iter().position(|n| n.starts_with("craft:")).unwrap_or(stack.len());
                 assert!(first > 0 && stack[first..].iter().all(|n| n.starts_with("craft:")), "{family:?}: {stack:?}");
                 let first_japanese = stack.iter().find(|n| n.starts_with("craft:BIZ") || n.starts_with("craft:Shippori"));
@@ -701,7 +706,10 @@ mod tests {
     #[test]
     fn works_without_craft_fonts() {
         let ctx = installed();
-        let n = filmcraft_text::fonts::craft_japanese().count() + crate::cjk::craft_fonts().count() + crate::rtl::craft_fonts().count();
+        let n = filmcraft_text::fonts::craft_japanese().count()
+            + crate::cjk::craft_fonts().count()
+            + crate::rtl::craft_fonts().count()
+            + crate::cjk::thai_craft_fonts().count();
         ctx.fonts_mut(|fonts| {
             let defs = fonts.definitions().clone();
             assert_eq!(defs.font_data.keys().filter(|k| k.starts_with("craft:")).count(), n);

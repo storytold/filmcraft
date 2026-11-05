@@ -88,6 +88,50 @@ fn aaf_embedded_trimmed_audio_round_trips_sample_exact() {
 }
 
 #[test]
+fn embedded_aaf_and_omf_import_leave_existing_media_files_intact() {
+    for (format, extension) in [(filmcraft_interchange::Format::Aaf, "aaf"), (filmcraft_interchange::Format::Omf, "omf")] {
+        let (mut s, _items, seq, dir) = setup(&format!("embedded-collision-{extension}"));
+        let path = dir.join(format!("cut.{extension}"));
+        let path_text = path.to_string_lossy().into_owned();
+        let command = if format == filmcraft_interchange::Format::Aaf { "file.exportAaf" } else { "file.exportOmf" };
+        s.execute(command, json!({"path": path_text, "audio": "embedded", "sequence": seq.0})).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let opts = filmcraft_interchange::ImportOptions { base_dir: Some(dir.to_string_lossy().into_owned()), name: Some("cut".into()), ..Default::default() };
+        let (_, extracted, _) = if format == filmcraft_interchange::Format::Aaf {
+            filmcraft_interchange::aaf::import(&bytes, &opts).unwrap()
+        } else {
+            filmcraft_interchange::omf::import(&bytes, &opts).unwrap()
+        };
+        let first = extracted.first().expect("embedded audio");
+        let original = b"ORIGINAL USER DATA";
+        std::fs::create_dir_all(std::path::Path::new(&first.path).parent().unwrap()).unwrap();
+        std::fs::write(&first.path, original).unwrap();
+
+        let response = s.execute("file.import", json!({"paths": [path_text]})).unwrap();
+        assert!(std::fs::read(&first.path).unwrap().as_slice() == original, "{extension}: existing file was overwritten");
+        let imported = s.project.sequence(imported_seq(&response)).unwrap();
+        let new_path = path_of(&s, imported.audio_tracks[0].items[0].item);
+        assert_ne!(new_path, first.path, "{extension}: imported audio still points at the existing file");
+        assert!(new_path.ends_with(" (2).wav"), "{extension}: {new_path}");
+        assert!(std::fs::read(&new_path).unwrap() == first.wav, "{extension}: imported audio was not extracted to the new path");
+        #[cfg(unix)]
+        {
+            let protected = dir.join("protected.wav");
+            std::fs::write(&protected, original).unwrap();
+            std::fs::remove_file(&first.path).unwrap();
+            std::os::unix::fs::symlink(&protected, &first.path).unwrap();
+            let again = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
+            assert!(std::fs::read(&protected).unwrap().as_slice() == original, "{extension}: symlink target was overwritten");
+            let imported_again = s.project.sequence(imported_seq(&again)).unwrap();
+            let third_path = path_of(&s, imported_again.audio_tracks[0].items[0].item);
+            assert!(third_path.ends_with(" (3).wav"), "{extension}: {third_path}");
+            assert!(std::fs::read(&third_path).unwrap() == first.wav, "{extension}: the third extraction is not the embedded audio");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
 fn aaf_separate_aiff_breakout_and_linked() {
     let (mut s, items, seq, dir) = setup("aaf-separate");
     let path = dir.join("sep.aaf").to_string_lossy().into_owned();
@@ -312,6 +356,38 @@ fn commands_are_registered_with_menus_and_validate_params() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+// `bitDepth` as `describe` lists it ("16|24", a string) or as a number. A string was read as 16
+// without a word, and 65560 wrapped to 24 (#4019).
+#[test]
+fn bit_depth_as_a_string_or_a_number_and_nothing_else() {
+    let (mut s, _, _, dir) = setup("aaf-bit-depth");
+    for (k, (cmd, ext, depth)) in [
+        ("file.exportAaf", "aaf", json!("24")),
+        ("file.exportOmf", "omf", json!("24")),
+        ("file.exportAaf", "aaf", json!(24)),
+        ("file.exportAaf", "aaf", json!(24.0)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = dir.join(format!("d{k}.{ext}")).to_string_lossy().into_owned();
+        let r = s.execute(cmd, json!({"path": path, "audio": "separate", "audioFormat": "aiff", "bitDepth": depth})).unwrap();
+        let files = r["mediaFiles"].as_array().unwrap();
+        assert!(!files.is_empty(), "{r}");
+        for f in files {
+            let (_, _, _, bits) = filmcraft_interchange::wav::parse_aiff(&std::fs::read(f.as_str().unwrap()).unwrap()).unwrap();
+            assert_eq!(bits, 24, "{cmd} with bitDepth {depth}");
+        }
+    }
+    for (cmd, ext) in [("file.exportAaf", "aaf"), ("file.exportOmf", "omf")] {
+        let path = dir.join(format!("refused.{ext}")).to_string_lossy().into_owned();
+        for depth in [json!("20"), json!("24-bit"), json!(65560), json!(true)] {
+            assert!(s.execute(cmd, json!({"path": path, "bitDepth": depth})).is_err(), "{cmd} with bitDepth {depth}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // Selected-stream essence uses only PR361 schema13 placement and decoder fields.
 mod selected_streams {
     use crate::{Services, Session};
@@ -398,7 +474,7 @@ mod selected_streams {
         let item = project.add_item(
             "distinct tones",
             Label::Iris,
-            ItemKind::Media(MediaClip {
+            ItemKind::Media(Box::new(MediaClip {
                 media: MediaRef::File { path: format!("tone-source-{streams}.wav") },
                 info: source.info.clone(),
                 interpret: Default::default(),
@@ -408,7 +484,7 @@ mod selected_streams {
                 offline: false,
                 proxy: None,
                 identity: None,
-            }),
+            })),
             None,
         );
         s.project = Arc::new(project);

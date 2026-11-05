@@ -8,6 +8,7 @@
 //! decode, and a hardware decoder that fails mid-stream switches to
 //! [`crate::software_video_decoder`], so registering one never makes a file undecodable.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use filmcraft_isobmff::{CodecConfig, SampleEntry};
@@ -175,10 +176,14 @@ impl StreamInfo {
     /// with (parameter sets, a sequence header, a key frame of another format).
     pub fn parameters_changed(&self, sample: &[u8]) -> bool {
         match self {
-            Self::Nal(i) => i.nals(sample).into_iter().any(|n| {
-                n.first().is_some_and(|&h| i.is_parameter_set(i.nal_type(h)))
-                    && !i.parameter_sets.iter().any(|p| without_trailing_zeros(p) == without_trailing_zeros(n))
-            }),
+            Self::Nal(i) => {
+                let configured: HashSet<&[u8]> = i.parameter_sets.iter().map(|p| without_trailing_zeros(p)).collect();
+                let mut checked = HashSet::new();
+                i.nals(sample).into_iter().any(|n| {
+                    let n = without_trailing_zeros(n);
+                    n.first().is_some_and(|&h| i.is_parameter_set(i.nal_type(h))) && checked.insert(n) && !configured.contains(n)
+                })
+            }
             Self::Frame(i) => i.parameters_changed(sample),
         }
     }
@@ -455,5 +460,17 @@ mod tests {
         assert!(!info.parameters_changed(&sample(&[&hvcc_pps[..], &[0, 0]].concat())), "nor are several");
         assert!(info.parameters_changed(&sample(&hvcc_pps[..6])), "a missing byte that is not zero is a change");
         assert!(info.parameters_changed(&sample(&[0x44, 0x01, 0xe0, 0xf7, 0xc0, 0x4c, 0x91])), "another PPS is a change");
+    }
+
+    #[test]
+    fn repeated_parameter_sets_are_checked_once_per_distinct_nal() {
+        let pps = vec![0x44, 0x01, 0xe0, 0xf7, 0xc0, 0x4c, 0x90];
+        let info = StreamInfo::Nal(hevc_info(std::iter::repeat_n(pps.clone(), 256).collect()));
+        let mut sample = Vec::new();
+        for _ in 0..256 {
+            sample.extend_from_slice(&(pps.len() as u32).to_be_bytes());
+            sample.extend_from_slice(&pps);
+        }
+        assert!(!info.parameters_changed(&sample));
     }
 }
