@@ -239,80 +239,6 @@ fn retry(session: &mut Session, waiting: &Prompt, choice: Option<&str>) {
     let _ = session.execute("link.editIn", params);
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod tests {
-    use super::*;
-    use crate::fixtures::{linked_offline, write_movie};
-
-    fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
-        match shape {
-            egui::Shape::Text(text) => out.push(text.galley.text().to_string()),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|inner| collect_text(inner, out)),
-            _ => {}
-        }
-    }
-
-    /// The text the last of a few frames of `draw` paints. An `Area` is hidden on its first frame,
-    /// while it measures itself. Both banners use the same `Area` id, so counting layers cannot tell
-    /// one banner from two. Counting painted text can.
-    fn painted_text(mut draw: impl FnMut(&egui::Context)) -> Vec<String> {
-        let ctx = egui::Context::default();
-        let mut texts = Vec::new();
-        for _ in 0..4 {
-            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| draw(&ui.ctx().clone()));
-            output.textures_delta.clear();
-            texts.clear();
-            output.shapes.iter().for_each(|clipped| collect_text(&clipped.shape, &mut texts));
-        }
-        texts
-    }
-
-    /// The hand-off banner is drawn once per frame. Drawn twice, the English banner would sit on
-    /// top of the translated one.
-    #[test]
-    fn each_entry_point_draws_the_banner_once() {
-        let _exclusive = crate::manager::exclusive();
-        let mut session = Session::default();
-        session.history.undo.push((notice::STEP.to_string(), std::sync::Arc::clone(&session.project), None));
-        notice::set(notice::LinkNotice { link_id: "l".into(), instance: String::new(), lifted: vec!["Blur".into()], dropped: Vec::new() });
-        let sentence = |texts: &[String]| texts.iter().filter(|text| text.contains("Click Continue")).cloned().collect::<Vec<_>>();
-
-        let translated = painted_text(|ctx| show_translated(ctx, &mut session, &|text| format!("translated {text}")));
-        let drawn = sentence(&translated);
-        assert_eq!(drawn.len(), 1, "show_translated painted the sentence {} times: {drawn:?}", drawn.len());
-        assert!(drawn[0].starts_with("translated "), "the sentence on screen is the translated one: {drawn:?}");
-
-        let plain = painted_text(|ctx| show_with(ctx, &mut session, &crate::host::host()));
-        let drawn = sentence(&plain);
-        assert_eq!(drawn.len(), 1, "show_with painted the sentence {} times: {drawn:?}", drawn.len());
-        assert!(!drawn[0].starts_with("translated "));
-        notice::take();
-    }
-
-    /// The per-frame hook is what brings a result online when no `link.refresh` arrives.
-    #[test]
-    fn a_frame_brings_a_new_result_online() {
-        let _exclusive = crate::manager::exclusive();
-        let dir = std::env::temp_dir().join(format!("fc-link-frame-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("result.mov").to_string_lossy().into_owned();
-        let mut session = Session::default();
-        let item = linked_offline(&mut session, "b0516273-4e8f-4091-a2a3-5e6f708192a3", &path);
-        write_movie(&path, 160, 90, 24);
-        // The prompt slot is shared by every test in the process, so only the result watch runs here.
-        // The process poller looks once a second and other tests share it, so frames run until it looks.
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while session.project.item(item).unwrap().as_media().unwrap().offline && std::time::Instant::now() < until {
-            watch_results(&egui::Context::default(), &mut session);
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        let media = session.project.item(item).unwrap().as_media().unwrap();
-        assert!(!media.offline, "the frame hook left the finished result offline");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
 /// An app name in the banner text and the colour family it is drawn in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Brand {
@@ -431,4 +357,78 @@ fn undo_notice(session: &mut Session, host: &Host, pending: &notice::LinkNotice)
     .ok();
     let peer = peer.as_mut().map(|peer| peer as &mut dyn crate::edit_in::LinkPeer);
     notice::undo(session, peer, pending).unwrap_or_else(|why| why)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::fixtures::{linked_offline, write_movie};
+
+    fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(text) => out.push(text.galley.text().to_string()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|inner| collect_text(inner, out)),
+            _ => {}
+        }
+    }
+
+    /// The text the last of a few frames of `draw` paints. An `Area` is hidden on its first frame,
+    /// while it measures itself. Both banners use the same `Area` id, so counting layers cannot tell
+    /// one banner from two. Counting painted text can.
+    fn painted_text(mut draw: impl FnMut(&egui::Context)) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut texts = Vec::new();
+        for _ in 0..4 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| draw(&ui.ctx().clone()));
+            output.textures_delta.clear();
+            texts.clear();
+            output.shapes.iter().for_each(|clipped| collect_text(&clipped.shape, &mut texts));
+        }
+        texts
+    }
+
+    /// The hand-off banner is drawn once per frame. Drawn twice, the English banner would sit on
+    /// top of the translated one.
+    #[test]
+    fn each_entry_point_draws_the_banner_once() {
+        let _exclusive = crate::manager::exclusive();
+        let mut session = Session::default();
+        session.history.undo.push((notice::STEP.to_string(), std::sync::Arc::clone(&session.project), None));
+        notice::set(notice::LinkNotice { link_id: "l".into(), instance: String::new(), lifted: vec!["Blur".into()], dropped: Vec::new() });
+        let sentence = |texts: &[String]| texts.iter().filter(|text| text.contains("Click Continue")).cloned().collect::<Vec<_>>();
+
+        let translated = painted_text(|ctx| show_translated(ctx, &mut session, &|text| format!("translated {text}")));
+        let drawn = sentence(&translated);
+        assert_eq!(drawn.len(), 1, "show_translated painted the sentence {} times: {drawn:?}", drawn.len());
+        assert!(drawn[0].starts_with("translated "), "the sentence on screen is the translated one: {drawn:?}");
+
+        let plain = painted_text(|ctx| show_with(ctx, &mut session, &crate::host::host()));
+        let drawn = sentence(&plain);
+        assert_eq!(drawn.len(), 1, "show_with painted the sentence {} times: {drawn:?}", drawn.len());
+        assert!(!drawn[0].starts_with("translated "));
+        notice::take();
+    }
+
+    /// The per-frame hook is what brings a result online when no `link.refresh` arrives.
+    #[test]
+    fn a_frame_brings_a_new_result_online() {
+        let _exclusive = crate::manager::exclusive();
+        let dir = std::env::temp_dir().join(format!("fc-link-frame-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("result.mov").to_string_lossy().into_owned();
+        let mut session = Session::default();
+        let item = linked_offline(&mut session, "b0516273-4e8f-4091-a2a3-5e6f708192a3", &path);
+        write_movie(&path, 160, 90, 24);
+        // The prompt slot is shared by every test in the process, so only the result watch runs here.
+        // The process poller looks once a second and other tests share it, so frames run until it looks.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while session.project.item(item).unwrap().as_media().unwrap().offline && std::time::Instant::now() < until {
+            watch_results(&egui::Context::default(), &mut session);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let media = session.project.item(item).unwrap().as_media().unwrap();
+        assert!(!media.offline, "the frame hook left the finished result offline");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
