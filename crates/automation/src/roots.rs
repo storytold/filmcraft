@@ -27,6 +27,8 @@
 //! - Any other absolute path anywhere in the params, and any string under a path-like key, is
 //!   checked the same way, so a path can't slip through an unnamed key; `prefs.set` (whose values
 //!   name folders the app writes into later) is held to the write root.
+//! - On the bridge, a command that names files is refused while the app's project has ingest on:
+//!   the app would copy what is imported to a folder of ingest's own.
 //! - The bridge's UI-driving tools are refused while confined: they could drive the live app's
 //!   file dialogs past the roots.
 //! - A command that writes is refused while the folder it writes in, or any folder below that or
@@ -190,6 +192,13 @@ impl AutomationRoots {
             return Err(format!("`{id}` is not available while file access is confined: it reads the app's project from wherever it's saved"));
         }
         Ok(())
+    }
+
+    /// Does command `id` name files? On the bridge those are refused while the app's project has
+    /// ingest on, since an import then copies files to a folder of ingest's own, and the commands
+    /// that import are several and grow.
+    pub fn names_files(id: &str) -> bool {
+        READS.iter().chain(WRITES).any(|(c, _)| *c == id)
     }
 
     /// Check command `id` with `params` before it runs. A command that isn't classified is refused;

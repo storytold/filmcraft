@@ -690,6 +690,42 @@ fn confining_a_session_after_a_job_finished_works() {
     let _ = FilmcraftMcp::headless(session_with_job(Some(Err("done".into())))).with_roots(Some(roots)).unwrap();
 }
 
+/// With ingest on, an import in the app copies files to a folder of ingest's own. Only a clear
+/// "off" lets a command that names files through, and a command naming none needs no answer.
+#[tokio::test]
+async fn the_bridge_refuses_commands_naming_files_unless_ingest_is_off() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let (base, roots) = roots_base("bridge-ingest");
+    let inspect = [json!({"ingestEnabled": true}), json!({}), json!({"ingestEnabled": false})];
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let (s, _) = listener.accept().await.unwrap();
+        let (r, mut w) = s.into_split();
+        let mut lines = tokio::io::BufReader::new(r).lines();
+        let mut answers = inspect.into_iter();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let req: Value = serde_json::from_str(&line).unwrap();
+            let result = match req["params"]["command"].as_str().unwrap_or_default() {
+                "project.inspect" => answers.next().unwrap(),
+                "file.import" => json!({"items": []}),
+                _ => Value::Null,
+            };
+            let line = format!("{}\n", json!({"id": req["id"], "ok": true, "result": result}));
+            w.write_all(line.as_bytes()).await.unwrap();
+        }
+    });
+    let m = FilmcraftMcp::bridge(&addr).unwrap().with_roots(Some(roots)).unwrap();
+    let import = json!({"paths": [base.join("in/ok.png").to_string_lossy()]});
+    for what in ["on", "not said"] {
+        let e = m.run("file.import", import.clone()).await.unwrap_err().to_string();
+        assert!(e.contains("ingest is on"), "{what}: {e}");
+    }
+    assert_eq!(m.run("project.selectAll", json!({})).await.unwrap(), Value::Null);
+    assert_eq!(m.run("file.import", import).await.unwrap(), json!({"items": []}));
+    let _ = std::fs::remove_dir_all(base);
+}
+
 /// A queued export keeps its output path, and starting it doesn't check that path again.
 #[test]
 fn confining_a_session_with_queued_exports_is_refused() {

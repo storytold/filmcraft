@@ -329,10 +329,24 @@ impl FilmcraftMcp {
                 }
                 // The check of a write walks folders, which doesn't belong on an async worker.
                 let id = id.to_string();
-                tokio::task::spawn_blocking(move || roots.check_command(&id, &params).map(|()| params))
-                    .await
-                    .map_err(join_error)?
-                    .map_err(AutomationError::BadRequest)?
+                let checked = {
+                    let id = id.clone();
+                    tokio::task::spawn_blocking(move || roots.check_command(&id, &params).map(|()| params))
+                        .await
+                        .map_err(join_error)?
+                        .map_err(AutomationError::BadRequest)?
+                };
+                // A session in the app isn't confined, so its ingest would still run. Only a clear "off" will do.
+                if let Backend::Bridge(b) = &*self.backend
+                    && AutomationRoots::names_files(&id)
+                    && b.execute("project.inspect", json!({})).await?.get("ingestEnabled") != Some(&Value::Bool(false))
+                {
+                    return Err(AutomationError::BadRequest(format!(
+                        "`{id}` is not available while file access is confined and ingest is on in the app's project: \
+                         it copies what is imported to a folder of its own. Turn ingest off in the app's Project Settings first"
+                    )));
+                }
+                checked
             }
             None => params,
         };
