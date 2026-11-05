@@ -570,3 +570,24 @@ fn a_click_on_the_lumetri_curve_places_a_point() {
     d.frames(3);
     assert_eq!(points(&mut d), before + 1, "a click off the curve adds none");
 }
+
+#[test]
+fn lumetri_panel_menu_offers_export_cube() {
+    // #4127: the Lumetri Color panel menu has Export .cube… for the selected clip's grade
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.exec("effects.setParam", json!({"clip": clip, "effect": "lumetri", "param": "exposure", "value": 0.7}));
+    d.frames(3);
+    d.click("panel.menu.LumetriColor");
+    assert!(d.element("panel.menu.LumetriColor.exportCube").is_some(), "Export .cube… is in the panel menu");
+    // with a path the menu command exports straight away; without one it asks where (a save dialog)
+    let path = std::env::temp_dir().join(format!("filmcraft-ui-grade-{}.cube", std::process::id()));
+    let r = d.ok("ui.menu.invoke", json!({"id": "lumetri.exportCube", "params": {"path": path.to_string_lossy(), "size": 9}}));
+    assert_eq!(r["size"], 9, "{r}");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("LUT_3D_SIZE 9"), "{text}");
+    std::fs::remove_file(&path).ok();
+}
