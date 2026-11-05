@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::graphic::{LayerContent, MAX_LAYER_BLUR, LayerSpec, LinearGradient, ShapeProps, Stroke, StrokeStyle, TextProps, eval_layer};
+use filmcraft_project::graphic::{LayerContent, LayerSpec, LinearGradient, MAX_LAYER_BLUR, ShapeProps, Stroke, StrokeStyle, TextProps, eval_layer};
 use filmcraft_project::graphic_design::{GraphicMeta, PinNode, remap_time, resolve_pins, roll_offset};
 use filmcraft_project::{EffectInstance, TrackItem};
 use filmcraft_text::raster::{Xform, apply, fill_into, xform_scale};

@@ -137,7 +137,14 @@ use Prop::*;
 /// The text-only presets of the spec. 09 (a continuous slide) and the decorated ones (badges,
 /// marker, glow, water) are not here: they need more than a motion on the words.
 pub const PRESETS: &[Preset] = &[
-    Preset { id: "partial-blur-in-up", scope: Scope::Block, ms: 600.0, stagger_ms: 0.0, ease: OutCubic, tracks: &[tr(Y, 40.0), tr(Opacity, 0.0), tr(Blur, 16.0)] },
+    Preset {
+        id: "partial-blur-in-up",
+        scope: Scope::Block,
+        ms: 600.0,
+        stagger_ms: 0.0,
+        ease: OutCubic,
+        tracks: &[tr(Y, 40.0), tr(Opacity, 0.0), tr(Blur, 16.0)],
+    },
     Preset { id: "delay-up-slide", scope: Scope::Line, ms: 500.0, stagger_ms: 120.0, ease: OutQuint, tracks: &[tr(Y, 50.0), tr(Opacity, 0.0)] },
     Preset { id: "up-smooth", scope: Scope::Block, ms: 700.0, stagger_ms: 0.0, ease: InOutQuad, tracks: &[tr(Y, 60.0), tr(Opacity, 0.0)] },
     Preset {
@@ -171,7 +178,14 @@ pub const PRESETS: &[Preset] = &[
             tr(Opacity, 0.0),
         ],
     },
-    Preset { id: "caption-fade-scale", scope: Scope::Word, ms: 400.0, stagger_ms: 60.0, ease: OutQuart, tracks: &[tr(Scale, 90.0), tr(Opacity, 0.0), tr(Blur, 4.0)] },
+    Preset {
+        id: "caption-fade-scale",
+        scope: Scope::Word,
+        ms: 400.0,
+        stagger_ms: 60.0,
+        ease: OutQuart,
+        tracks: &[tr(Scale, 90.0), tr(Opacity, 0.0), tr(Blur, 4.0)],
+    },
 ];
 
 pub fn preset(id: &str) -> Option<&'static Preset> {
@@ -215,11 +229,7 @@ pub fn duration_factor(gap: Option<f64>) -> f64 {
 
 /// Extra distance for a word that follows a pause of `pause` seconds (0 → none, ≥1 s → +30%).
 pub fn pause_factor(pause: f64) -> f64 {
-    if !pause.is_finite() || pause <= 0.25 {
-        1.0
-    } else {
-        1.0 + 0.3 * ((pause - 0.25) / 0.75).clamp(0.0, 1.0)
-    }
+    if !pause.is_finite() || pause <= 0.25 { 1.0 } else { 1.0 + 0.3 * ((pause - 0.25) / 0.75).clamp(0.0, 1.0) }
 }
 
 /// Sampled keyframes of `from → rest` over `dur` seconds from `t0`, easing `e`.
