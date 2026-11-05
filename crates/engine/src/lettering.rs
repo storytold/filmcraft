@@ -455,31 +455,42 @@ pub struct Look {
     pub drift: f64,
     /// Heroes land from this scale (1 = no scale move).
     pub hero_from_scale: f64,
+    /// A third voice for the accent word of a lettering: (family, face, size multiplier).
+    pub accent: Option<(&'static str, &'static str, f32)>,
+    /// Blur-in radius at the start of the entrance, as a fraction of the word size (0 = none).
+    pub focus: f64,
 }
 
 impl Look {
     /// The first version: kept so nothing already applied changes.
     pub fn classic() -> Self {
-        Self { name: "classic", size_k: 0.06, hero_scale: 1.7, leading: 0.98, sup_face: "Light", hero_face: "ExtraBold", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 0.0, hero_track: 0.0, hero_italic: false, composition: Composition::Block, reveal: Reveal::Slide, rule: false, drift: 0.0, hero_from_scale: 1.0 }
+        Self { name: "classic", size_k: 0.06, hero_scale: 1.7, leading: 0.98, sup_face: "Light", hero_face: "ExtraBold", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 0.0, hero_track: 0.0, hero_italic: false, composition: Composition::Block, reveal: Reveal::Slide, rule: false, drift: 0.0, hero_from_scale: 1.0, accent: None, focus: 0.0 }
     }
     /// A: one huge word and little else; tight; every word rises from behind a mask.
     pub fn monumental() -> Self {
-        Self { name: "monumental", size_k: 0.04, hero_scale: 2.8, leading: 0.84, sup_face: "Regular", hero_face: "ExtraBold Italic", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 10.0, hero_track: -25.0, hero_italic: false, composition: Composition::Block, reveal: Reveal::Mask, rule: false, drift: 0.0, hero_from_scale: 1.0 }
+        Self { name: "monumental", size_k: 0.04, hero_scale: 2.8, leading: 0.84, sup_face: "Regular", hero_face: "ExtraBold Italic", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 10.0, hero_track: -25.0, hero_italic: false, composition: Composition::Block, reveal: Reveal::Mask, rule: false, drift: 0.0, hero_from_scale: 1.0, accent: None, focus: 0.0 }
     }
     /// B: small tracked capitals against an italic giant, a guide line over it all.
     pub fn editorial() -> Self {
-        Self { name: "editorial", size_k: 0.028, hero_scale: 3.3, leading: 0.9, sup_face: "Bold", hero_face: "ExtraBold", hero_family: None, sup_caps: true, hero_caps: false, sup_track: 140.0, hero_track: -25.0, hero_italic: true, composition: Composition::Block, reveal: Reveal::Mask, rule: true, drift: 0.0, hero_from_scale: 1.0 }
+        Self { name: "editorial", size_k: 0.028, hero_scale: 3.3, leading: 0.9, sup_face: "Bold", hero_face: "ExtraBold", hero_family: None, sup_caps: true, hero_caps: false, sup_track: 140.0, hero_track: -25.0, hero_italic: true, composition: Composition::Block, reveal: Reveal::Mask, rule: true, drift: 0.0, hero_from_scale: 1.0, accent: None, focus: 0.0 }
     }
     /// C: the stair on the 8° diagonal, big heroes that land from a push-in, a slow drift after.
     pub fn cinetico() -> Self {
-        Self { name: "cinetico", size_k: 0.04, hero_scale: 2.6, leading: 0.88, sup_face: "Regular", hero_face: "ExtraBold", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 0.0, hero_track: -30.0, hero_italic: false, composition: Composition::Stair, reveal: Reveal::Slide, rule: false, drift: 0.012, hero_from_scale: 1.18 }
+        Self { name: "cinetico", size_k: 0.04, hero_scale: 2.6, leading: 0.88, sup_face: "Regular", hero_face: "ExtraBold", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 0.0, hero_track: -30.0, hero_italic: false, composition: Composition::Stair, reveal: Reveal::Slide, rule: false, drift: 0.012, hero_from_scale: 1.18, accent: None, focus: 0.0 }
     }
+    /// Heavy italic white, an accent word in a serif italic, small light support; words rise out of
+    /// a blur with a soft shadow (the reference: a viral title pack).
+    pub fn viral() -> Self {
+        Self { name: "viral", size_k: 0.04, hero_scale: 2.6, leading: 0.86, sup_face: "Light", hero_face: "ExtraBold Italic", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 0.0, hero_track: -25.0, hero_italic: false, composition: Composition::Block, reveal: Reveal::Slide, rule: false, drift: 0.0, hero_from_scale: 1.0, accent: Some(("Inria Serif", "Bold Italic", 1.12)), focus: 0.16 }
+    }
+
     pub fn by_name(n: &str) -> Option<Self> {
         match n {
             "classic" => Some(Self::classic()),
             "monumental" => Some(Self::monumental()),
             "editorial" => Some(Self::editorial()),
             "cinetico" => Some(Self::cinetico()),
+            "viral" => Some(Self::viral()),
             _ => None,
         }
     }
@@ -538,6 +549,11 @@ pub fn measure_words(words: &[Word], hero: &[bool], faces: &Faces) -> (Vec<WordM
 
 /// As [`measure_words`], with the look's capitalisation and tracking (1/1000 em) in the widths.
 pub fn measure_words_with(words: &[Word], hero: &[bool], faces: &Faces, look: &Look) -> (Vec<WordMetric>, f32) {
+    measure_words_accent(words, hero, &vec![false; words.len()], faces, look)
+}
+
+/// As [`measure_words_with`]; a hero flagged in `accent` is measured in the look's accent face.
+pub fn measure_words_accent(words: &[Word], hero: &[bool], accent: &[bool], faces: &Faces, look: &Look) -> (Vec<WordMetric>, f32) {
     let sup = style(&faces.family, &faces.support);
     let her = style(&faces.hero_family, &faces.hero);
     let space = filmcraft_text::measure("a a", &sup) - filmcraft_text::measure("aa", &sup);
@@ -548,8 +564,16 @@ pub fn measure_words_with(words: &[Word], hero: &[bool], faces: &Faces, look: &L
             let n = normalize(&w.text);
             let shown = look.shown(&w.text, hero[i]);
             let (hf, hs, mul) = hero_face_for(faces, &w.text);
-            let her_i = if hero[i] && (hf != faces.hero_family || hs != faces.hero) { style(&hf, &hs) } else { her.clone() };
-            let track = if hero[i] && mul == 1.0 { look.hero_track } else if hero[i] { 0.0 } else { look.sup_track };
+            let acc = accent.get(i).copied().unwrap_or(false).then_some(look.accent).flatten();
+            let her_i = if let Some((fam, face, _)) = acc {
+                style(fam, face)
+            } else if hero[i] && (hf != faces.hero_family || hs != faces.hero) {
+                style(&hf, &hs)
+            } else {
+                her.clone()
+            };
+            let mul = acc.map_or(mul, |(_, _, m)| m);
+            let track = if acc.is_some() { ACCENT_TRACK } else if hero[i] && mul == 1.0 { look.hero_track } else if hero[i] { 0.0 } else { look.sup_track };
             WordMetric {
                 scale_mul: if hero[i] { mul } else { 1.0 },
                 width100: filmcraft_text::measure(&shown, if hero[i] { &her_i } else { &sup }) + track as f32 / 10.0 * shown.chars().count() as f32,
@@ -642,6 +666,9 @@ pub fn plan(p: &Value) -> Result<Value> {
 // ---------------------------------------------------------------------------------------------
 
 /// The studio's colours (`Empresa/Branding/Paleta de Cores.md`).
+/// Tracking of the accent word, 1/1000 em: a serif italic is set a little tight.
+const ACCENT_TRACK: f64 = -10.0;
+const ACCENT_ORANGE: &str = "#FF8A1F";
 const TERRACOTA: &str = "#CE4E21";
 const OFF_WHITE: &str = "#FFFCF7";
 const PRETO: &str = "#000000";
@@ -806,6 +833,32 @@ fn ghosts(main: &EffectInstance, t0: f64, exit: f64) -> Vec<EffectInstance> {
     out
 }
 
+/// Blur-in, simulated: the engine has no per-word blur, so four faint copies start `radius` px
+/// away (left, right, up, down) and converge on the word while it travels and fades in.
+fn focus_copies(main: &EffectInstance, radius: f64, t0: f64) -> Vec<EffectInstance> {
+    let enter_end = t0 + ENTER_SECS;
+    let mut out = Vec::new();
+    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+        let mut g = main.clone();
+        let off = Vec2::new(dx * radius, dy * radius);
+        if let Some(pos) = g.params.get("position").cloned() {
+            let mut q = pos.clone();
+            if let Some(first) = q.keyframes.first_mut() {
+                if let ParamValue::Vec2(v) = first.value {
+                    first.value = ParamValue::Vec2(v + off);
+                }
+            }
+            g.params.insert("position".into(), q);
+        }
+        g.params.insert("shadow".into(), Param::new(ParamValue::Bool(false)));
+        let lin = |t: f64, v: f64| kf(t, ParamValue::Float(v), Interpolation::Linear, 0.33, 0.33);
+        let keys = vec![lin(t0, 0.0), lin(t0 + 0.05, 26.0), lin(enter_end - 0.04, 9.0), lin(enter_end, 0.0)];
+        g.params.insert("opacity".into(), Param { value: ParamValue::Float(0.0), keyframes: keys });
+        out.push(g);
+    }
+    out
+}
+
 /// Words to set: `text`/`words` as in `lettering.plan`, or the sequence transcript between `from`
 /// and `to` (sequence seconds), with the times they are spoken at. The clip's own zero is the
 /// first word's start less the lead; the result is (words with clip-relative times, placement).
@@ -848,7 +901,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     }
     filmcraft_text::fonts::scan_system();
     let mut look = match str_p(p, "look") {
-        Some(n) => Look::by_name(n).ok_or_else(|| bad(ID, format!("unknown look `{n}` (classic, monumental, editorial, cinetico)")))?,
+        Some(n) => Look::by_name(n).ok_or_else(|| bad(ID, format!("unknown look `{n}` (classic, monumental, editorial, cinetico, viral)")))?,
         None => Look::classic(),
     };
     if let Some(c) = str_p(p, "composition") {
@@ -869,7 +922,21 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     };
     // an italic hero is measured in its italic face
     let measure_faces = Faces { hero: if look.hero_italic && faces.hero_family == faces.family { format!("{} Italic", faces.hero) } else { faces.hero.clone() }, ..faces.clone() };
-    let (ms, space100) = measure_words_with(&words, &hero, &measure_faces, &look);
+    // the accent word: the last hero of the lettering, then every other one going back
+    let mut accent = vec![false; words.len()];
+    if look.accent.is_some() {
+        match p.get("accents").and_then(Value::as_array) {
+            Some(a) => a.iter().filter_map(Value::as_u64).filter(|&i| (i as usize) < words.len()).for_each(|i| accent[i as usize] = true),
+            None => {
+                let mut sorted = hero_idx.clone();
+                sorted.sort_unstable();
+                for (n, &i) in sorted.iter().rev().enumerate() {
+                    accent[i] = n % 2 == 0;
+                }
+            }
+        }
+    }
+    let (ms, space100) = measure_words_accent(&words, &hero, &accent, &measure_faces, &look);
     let params = Params {
         box_w: f64_p(p, "boxWidth").map_or(fw * 0.84, |v| v as f32),
         box_h: f64_p(p, "boxHeight").map_or(fh * 0.5, |v| v as f32),
@@ -909,7 +976,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         str_p(p, "supportColor").unwrap_or(if light_text { OFF_WHITE } else { PRETO }),
         str_p(p, "heroColor").unwrap_or(TERRACOTA),
     );
-    let how = str_p(p, "animation").unwrap_or("forward");
+    let how = str_p(p, "animation").unwrap_or(if look.name == "viral" { "up" } else { "forward" });
     let hero_italic = look.hero_italic;
 
     let last_end = words.iter().map(|w| w.end).fold(0.0, f64::max);
@@ -927,18 +994,26 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         let pos = Vec2::new((left + pl.x) as f64, (top + pl.baseline) as f64);
         let shown = look.shown(&w.text, pl.hero);
         let mut e = new_text_layer(&shown, pos, pl.size as f64);
-        let (fam, face, _) = if pl.hero { hero_face_for(&faces, &w.text) } else { (faces.family.clone(), faces.support.clone(), 1.0) };
+        let acc = if accent.get(pl.index).copied().unwrap_or(false) { look.accent } else { None };
+        let (fam, face, _) = if let Some((f, st, _)) = acc {
+            (f.to_string(), st.to_string(), 1.0)
+        } else if pl.hero {
+            hero_face_for(&faces, &w.text)
+        } else {
+            (faces.family.clone(), faces.support.clone(), 1.0)
+        };
         let face = if pl.hero && hero_italic && fam == faces.family && !face.contains("Italic") { format!("{face} Italic") } else { face };
         for (id, v) in [("font", ParamValue::Text(fam.clone())), ("font_style", ParamValue::Text(face)), ("name", ParamValue::Text(w.text.clone()))] {
             e.params.insert(id.into(), Param::new(v));
         }
         // a hairline script needs body to hold on a busy picture: a stroke of its own colour thickens it
-        if pl.hero && fam != faces.family {
+        if pl.hero && acc.is_none() && fam != faces.family {
             e.params.insert("stroke".into(), Param::new(ParamValue::Bool(true)));
             e.params.insert("stroke_color".into(), Param::new(color(hero_hex)));
             e.params.insert("stroke_width".into(), Param::new(ParamValue::Float(pl.size as f64 * f64_p(p, "scriptStroke").unwrap_or(0.004))));
         }
-        e.params.insert("fill_color".into(), Param::new(color(if pl.hero { hero_hex } else { support_hex })));
+        let fill = if acc.is_some() { str_p(p, "accentColor").unwrap_or(ACCENT_ORANGE) } else if pl.hero && look.accent.is_some() { support_hex } else if pl.hero { hero_hex } else { support_hex };
+        e.params.insert("fill_color".into(), Param::new(color(fill)));
         // soft drop shadow, down and to the right: it lifts the word off the picture without a hard edge
         let soft = look.name != "classic";
         if bool_p(p, "shadow").unwrap_or(true) {
@@ -958,7 +1033,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // kerning on, ligatures off: a lettering is set, not typed
         e.params.insert("ligatures".into(), Param::new(ParamValue::Bool(false)));
-        let track = if pl.hero { look.hero_track } else { look.sup_track };
+        let track = if acc.is_some() { ACCENT_TRACK } else if pl.hero { look.hero_track } else { look.sup_track };
         if track != 0.0 {
             e.params.insert("tracking".into(), Param::new(ParamValue::Float(track)));
         }
@@ -968,6 +1043,9 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         animate(&mut e, &geo, t0, exit, how, &look);
         if look.reveal == Reveal::Mask && bool_p(p, "motionBlur").unwrap_or(true) {
             layers.extend(ghosts(&e, t0, exit));
+        }
+        if look.focus > 0.0 && bool_p(p, "focus").unwrap_or(true) {
+            layers.extend(focus_copies(&e, pl.size as f64 * look.focus, t0));
         }
         layers.push(e);
     }
