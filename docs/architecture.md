@@ -565,7 +565,9 @@ frame (Y'CbCr/RGB + metadata) ─► source colour space: Interpret Footage over
 - **Model.** `SequenceSettings::color` (`ColorPipeline`: working space Rec. 709 / Rec. 2100 PQ /
   Rec. 2100 HLG, wide gamut, auto tone map) and `Interpretation::color_space` (per media item;
   `None` = from metadata). Commands: `sequence.colorSettings`, `clip.interpretFootage`,
-  `color.spaces`, `media.colorInfo`.
+  `color.spaces`, `media.colorInfo`. Where no tag in a file gives the matrix, transfer or
+  primaries, the metadata holds a default (BT.709 transfer and primaries, the matrix by frame
+  size); `media.colorInfo`'s `assumed` and `probe`'s `video.color_assumed` say which.
 - **Maths** in `filmcraft-color` (`transform`, `log`, `spaces`; formulas and sources in
   [crates/color/README.md](../crates/color/README.md)); the renderer side is `render::colorman`.
 - **Fast path.** A Rec. 709 sequence without wide gamut and media whose metadata says Rec. 709 /
