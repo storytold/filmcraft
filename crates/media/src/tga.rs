@@ -744,6 +744,39 @@ mod tests {
     }
 
     #[test]
+    fn inflated_developer_count_scans_the_next_chunk_as_an_entry_and_rejects_its_pixel_payload() {
+        // a directory claiming two entries over one real entry: the ten bytes after it, scanned as
+        // the second entry, name a payload inside the pixels, which is refused like any other
+        let mut file = header(2, 2, 1, 24, 0x20);
+        file.extend_from_slice(&[0, 0, 255, 0, 255, 0]);
+        let directory = file.len() as u32;
+        file.extend_from_slice(&2u16.to_le_bytes());
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&(directory + 22).to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(&2u16.to_le_bytes());
+        file.extend_from_slice(&(HEADER as u32 + 3).to_le_bytes());
+        file.extend_from_slice(&1u32.to_le_bytes());
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(&directory.to_le_bytes());
+        file.extend_from_slice(FOOTER);
+        assert!(matches!(decode("inflated.tga", &file), Err(MediaError::Decode(_))), "a scanned entry's payload inside the pixels is refused");
+    }
+
+    #[test]
+    fn legacy_pixels_that_end_in_signature_at_or_after_the_header_are_read_as_a_footer() {
+        // a footerless 36×1 grayscale image whose last 26 bytes happen to be eight zeros and the
+        // signature: the putative trailer begins at byte 28, so it is taken for a footer and the
+        // image, left with 10 pixel bytes, is rejected as truncated (the ambiguity the body states)
+        let prefix = 18usize;
+        let width = (prefix + FOOTER.len()) as u16;
+        let mut file = header(3, width, 1, 8, 0x20);
+        file.extend(vec![0; prefix]);
+        file.extend_from_slice(FOOTER);
+        assert!(matches!(decode("legacy-footerish.tga", &file), Err(MediaError::Decode(_))));
+    }
+
+    #[test]
     fn mutated_tga_footer_files_never_panic() {
         let mut file = header(2, 2, 1, 24, 0x20);
         file.extend_from_slice(&[0, 0, 255, 0, 255, 0]);
