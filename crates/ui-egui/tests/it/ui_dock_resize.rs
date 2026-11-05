@@ -355,3 +355,40 @@ fn a_divider_beside_a_scrollbar_grabs_without_taking_the_scrollbar() {
     assert_near(effects_width(&mut h), size + 10.0);
     assert_eq!(first_effect_top(&h), rows, "a divider drag scrolled the list");
 }
+
+/// Where two dividers meet, the corner handle reaches further into the panel than a divider
+/// does: a scrollbar beside it still scrolls, and the corner still moves both dividers.
+#[test]
+fn a_divider_junction_beside_a_scrollbar_grabs_without_taking_the_scrollbar() {
+    let mut h = effects_beside_timeline();
+    h.state_mut().ui.dock = craft_ui::docking::Layout {
+        root: Some(craft_ui::docking::Node::Split {
+            axis: craft_ui::layout::SplitAxis::Horizontal,
+            size: craft_ui::layout::SplitSize::FixedFirst(400.0),
+            first: Box::new(craft_ui::docking::Node::Split {
+                axis: craft_ui::layout::SplitAxis::Vertical,
+                size: craft_ui::layout::SplitSize::FixedFirst(250.0),
+                first: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Effects], active: 0 }),
+                second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+            }),
+            second: Box::new(craft_ui::docking::Node::Tabs { panels: vec![PanelKind::Timeline], active: 0 }),
+        }),
+        floating: vec![],
+    };
+    frames(&mut h, 4);
+    let panel = h.state().auto.find("panel.Effects").unwrap().rect;
+    let (edge, bottom) = (panel[0] + panel[2], panel[1] + panel[3]);
+    let corner = h.state().auto.query("dock.corner.").first().map(|e| e.rect).expect("the dividers meet in a corner handle");
+    assert!(corner[0] <= edge - 6.0, "the corner handle {corner:?} does not reach into the panel at {edge}");
+
+    let (rows, size) = (first_effect_top(&h), effects_width(&mut h));
+    // On the scrollbar beside the corner, 12 points inside the edge: the list scrolls.
+    drag_with(&mut h, PointerButton::Primary, pos2(edge - 12.0, bottom - 6.0), pos2(edge - 12.0, bottom - 60.0));
+    assert!(first_effect_top(&h) < rows - 1.0, "dragging the scrollbar beside the corner did not scroll the list");
+    assert_near(effects_width(&mut h), size);
+    // Inside the corner handle: both dividers move, the list stays.
+    let rows = first_effect_top(&h);
+    drag_with(&mut h, PointerButton::Primary, pos2(edge - 2.0, bottom + 2.0), pos2(edge + 18.0, bottom + 2.0));
+    assert_near(effects_width(&mut h), size + 20.0);
+    assert_eq!(first_effect_top(&h), rows, "a corner drag scrolled the list");
+}
