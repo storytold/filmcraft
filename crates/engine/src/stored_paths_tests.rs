@@ -193,3 +193,41 @@ fn interchange_media_paths_open_only_on_this_computer_or_beside_the_document() {
     let r = s.execute("file.import", json!({"paths": [doc.to_string_lossy()]})).unwrap();
     assert_eq!(r["documents"][0]["linkedMedia"], json!(1), "a path beside the document links: {r}");
 }
+
+/// `path` written relative to the working directory, or None when the two share no root (another
+/// drive on Windows).
+fn from_working_dir(path: &Path) -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let (here, there): (Vec<_>, Vec<_>) = (cwd.components().collect(), path.components().collect());
+    let common = here.iter().zip(&there).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        return None;
+    }
+    let mut rel: std::path::PathBuf = std::iter::repeat_n("..", here.len() - common).collect();
+    rel.extend(&there[common..]);
+    Some(rel)
+}
+
+// A document given by a relative path (the CLI, MCP) links its relative media. Its media paths
+// came out relative to the working directory and were then taken from the document's folder a
+// second time (`edit/edit/sub/a.mov`, #4001).
+#[test]
+fn a_document_given_by_a_relative_path_links_its_relative_media() {
+    let root = tmp_dir("stored-paths-relative-doc");
+    std::fs::create_dir_all(root.join("edit").join("sub")).unwrap();
+    std::fs::create_dir_all(root.join("media")).unwrap();
+    make_movie(&root.join("edit").join("sub").join("a.mov"), DemoScene::Aurora, W, H, 12);
+    make_movie(&root.join("media").join("b.mov"), DemoScene::CityNight, W, H, 12);
+    let edit = root.join("edit");
+    // the same document also through a folder and back: its absolute path keeps `sub/..`
+    let (Some(doc), Some(via_sub)) = (from_working_dir(&edit.join("cut.xml")), from_working_dir(&edit.join("sub").join("..").join("cut.xml"))) else {
+        return;
+    };
+    for (doc, url) in [(&doc, "sub/a.mov"), (&doc, "../media/b.mov"), (&via_sub, "../media/b.mov")] {
+        std::fs::write(doc, xml(url)).unwrap();
+        let mut s = Session::default();
+        let r = s.execute("file.import", json!({"paths": [doc.to_string_lossy()]})).unwrap();
+        assert_eq!(r["documents"][0]["linkedMedia"], json!(1), "{url} from {}: {r}", doc.display());
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

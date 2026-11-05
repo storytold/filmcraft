@@ -224,7 +224,7 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let services = s.services.clone();
     let run = move || {
         let t0 = web_time::Instant::now();
-        let r = execute(proj, work, sources, previews.map(|d| (d, prev_dst)), &project_path, pr, &prog, &*services);
+        let r = execute(proj, work, sources, previews.map(|d| (d, prev_dst)), JobEnv { project_path: &project_path, pr, prog: &prog, services: &*services });
         let secs = t0.elapsed().as_secs_f64();
         let r = r.map(|bytes| filmcraft_export::Report {
             path: project_path.clone(),
@@ -256,17 +256,22 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What a consolidate job runs against, apart from the project and its work list.
+struct JobEnv<'a> {
+    project_path: &'a str,
+    pr: &'a Preset,
+    prog: &'a filmcraft_export::Progress,
+    services: &'a dyn crate::Services,
+}
+
 fn execute(
     mut proj: Project,
     work: Vec<Work>,
     sources: BTreeMap<ItemId, filmcraft_media::SharedSource>,
     previews: Option<(PathBuf, PathBuf)>,
-    project_path: &str,
-    pr: &Preset,
-    prog: &filmcraft_export::Progress,
-    services: &dyn crate::Services,
+    env: JobEnv<'_>,
 ) -> std::result::Result<u64, String> {
+    let JobEnv { project_path, pr, prog, services } = env;
     let mut bytes = 0;
     let openers = filmcraft_codecs::openers();
     for w in &work {

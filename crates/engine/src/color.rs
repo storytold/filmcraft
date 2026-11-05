@@ -366,6 +366,8 @@ fn color_info(s: &mut Session, p: &Value) -> Result<Value> {
         "detected": detected.map(|c| c.id()),
         "detectedLabel": detected.map(|c| c.label()),
         "metadata": m.info.video.as_ref().map(|v| json!({"transfer": format!("{:?}", v.color.transfer), "primaries": format!("{:?}", v.color.primaries), "matrix": format!("{:?}", v.color.matrix), "range": format!("{:?}", v.color.range)})),
+        // which `metadata` values no tag in the file gave (FilmCraft's defaults); null when unknown
+        "assumed": m.info.video.as_ref().and_then(|v| v.color_assumed),
         "override": m.interpret.color_space.map(|c| c.id()),
         "effective": effective.map(|c| c.id()),
         "effectiveLabel": effective.map(|c| c.label()),
@@ -392,7 +394,7 @@ fn list_presets(_: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Lumetri Presets ▸ apply: a new Lumetri Color configured as the preset on each video clip
-/// (standard effects go before the intrinsic ones, like `effects.apply`).
+/// (added at the end of the clip's effects, like `effects.apply`).
 fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "lumetri.applyPreset";
     let name = str_p(p, "name").ok_or_else(|| bad(cmd, "need `name`"))?;
@@ -406,8 +408,7 @@ fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
         let mut n = 0;
         for t in q.video_tracks.iter_mut() {
             for it in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
-                let pos = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(it.effects.len());
-                it.effects.insert(pos, inst.clone());
+                it.effects.push(inst.clone());
                 n += 1;
             }
         }
@@ -419,7 +420,7 @@ fn apply_preset(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"preset": preset.name, "clips": n}))
 }
 
-fn preset_thumbnails(_: &mut Session, p: &Value) -> Result<Value> {
+fn preset_thumbnails(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "lumetri.presetThumbnails";
     let presets = presets_of(p);
     if presets.is_empty() {
@@ -427,12 +428,15 @@ fn preset_thumbnails(_: &mut Session, p: &Value) -> Result<Value> {
     }
     let w = p.get("width").and_then(Value::as_u64).unwrap_or(160).clamp(16, 1920) as usize;
     let h = (w * 9 / 16).max(9);
-    let cols = p.get("columns").and_then(Value::as_u64).unwrap_or(4).clamp(1, 32) as usize;
+    // No wider than the presets shown: extra columns are empty cells, and 32 of them at the
+    // largest width made a grid of over a gigabyte for ten thumbnails.
+    let cols = (p.get("columns").and_then(Value::as_u64).unwrap_or(4).clamp(1, 32) as usize).min(presets.len());
     let img = filmcraft_render::lumetri_presets::grid(&presets, cols, w, h);
     let mut out = json!({"presets": presets.iter().map(|x| x.name).collect::<Vec<_>>(), "width": img.w, "height": img.h, "cell": [w, h], "columns": cols});
     if let Some(path) = str_p(p, "path") {
         let png = filmcraft_export::encode_png(img.over_black_rgba8(), img.w as u32, img.h as u32).map_err(|e| bad(cmd, e.to_string()))?;
-        std::fs::write(path, png).map_err(|e| bad(cmd, format!("{path}: {e}")))?;
+        // Through the host, like every other export (#379): `std::fs` traps on the web.
+        s.services.write_file(path, &png).map_err(|e| bad(cmd, format!("{path}: {e}")))?;
         out["path"] = json!(path);
     }
     Ok(out)

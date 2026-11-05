@@ -187,6 +187,46 @@ fn drag(h: &mut Harness<'_, FilmcraftApp>, from: egui::Pos2, to: egui::Pos2, mod
     }
 }
 
+fn keyboard_resize(h: &mut Harness<'_, FilmcraftApp>, grip_id: egui::Id) {
+    let before_keys = h.state().ui.dock.floating[0].rect;
+    for key in [egui::Key::ArrowRight, egui::Key::ArrowDown] {
+        for pressed in [true, false] {
+            h.event(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+            step(h);
+        }
+    }
+    assert_eq!(h.state().ui.dock.floating[0].rect[2], before_keys[2] + 8.0);
+    assert_eq!(h.state().ui.dock.floating[0].rect[3], before_keys[3] + 8.0);
+    h.event(Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    step(h);
+    h.event(Event::Key { key: egui::Key::Tab, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
+    for _ in 0..3 {
+        step(h);
+    }
+    assert_ne!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
+}
+
+fn maximize_frame_round_trip(h: &mut Harness<'_, FilmcraftApp>, action_log: &mut Vec<serde_json::Value>) {
+    let saved_root = h.state().ui.dock.clone();
+    let saved_floating = h.state().ui.dock.floating.clone();
+    let ctx = h.ctx.clone();
+    // Maximize Frame fills the area with a docked frame
+    h.state_mut().ui.focused = PanelKind::Program;
+    menus::invoke(h.state_mut(), &ctx, "window.maximizeFrame", json!({})).unwrap();
+    for _ in 0..3 {
+        step(h);
+    }
+    assert!(rect(h, "panel.Program").width() > 1000.0);
+    action_log.push(action_state(h, "maximized"));
+    assert_eq!(h.state().ui.dock, saved_root);
+    assert_eq!(h.state().ui.dock.floating, saved_floating);
+    menus::invoke(h.state_mut(), &ctx, "window.maximizeFrame", json!({})).unwrap();
+    for _ in 0..3 {
+        step(h);
+    }
+    assert_eq!(h.state().ui.dock.floating, saved_floating);
+}
+
 #[test]
 fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() {
     let mut session = Session::default();
@@ -249,22 +289,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     h.ctx.memory_mut(|memory| memory.request_focus(grip_id));
     step(&mut h);
     assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
-    let before_keys = h.state().ui.dock.floating[0].rect;
-    for key in [egui::Key::ArrowRight, egui::Key::ArrowDown] {
-        for pressed in [true, false] {
-            h.event(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
-            step(&mut h);
-        }
-    }
-    assert_eq!(h.state().ui.dock.floating[0].rect[2], before_keys[2] + 8.0);
-    assert_eq!(h.state().ui.dock.floating[0].rect[3], before_keys[3] + 8.0);
-    h.event(Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
-    step(&mut h);
-    h.event(Event::Key { key: egui::Key::Tab, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
-    for _ in 0..3 {
-        step(&mut h);
-    }
-    assert_ne!(h.ctx.memory(|memory| memory.focused()), Some(grip_id));
+    keyboard_resize(&mut h, grip_id);
     action_log.push(action_state(&h, "keyboard-resized"));
     let resized = h.state().ui.dock.floating[0].rect;
     let header = rect(&h, "panel.float.0.move");
@@ -273,24 +298,7 @@ fn real_panel_drag_merges_splits_floats_and_redocks_without_editing_documents() 
     assert!(h.state().ui.dock.floating[0].rect[0] < resized[0] - 15.0);
     assert!(h.state().ui.dock.floating[0].rect[1] < resized[1] - 10.0);
     action_log.push(action_state(&h, "moved"));
-    let saved_root = h.state().ui.dock.clone();
-    let saved_floating = h.state().ui.dock.floating.clone();
-    let ctx = h.ctx.clone();
-    // Maximize Frame fills the area with a docked frame
-    h.state_mut().ui.focused = PanelKind::Program;
-    menus::invoke(h.state_mut(), &ctx, "window.maximizeFrame", json!({})).unwrap();
-    for _ in 0..3 {
-        step(&mut h);
-    }
-    assert!(rect(&h, "panel.Program").width() > 1000.0);
-    action_log.push(action_state(&h, "maximized"));
-    assert_eq!(h.state().ui.dock, saved_root);
-    assert_eq!(h.state().ui.dock.floating, saved_floating);
-    menus::invoke(h.state_mut(), &ctx, "window.maximizeFrame", json!({})).unwrap();
-    for _ in 0..3 {
-        step(&mut h);
-    }
-    assert_eq!(h.state().ui.dock.floating, saved_floating);
+    maximize_frame_round_trip(&mut h, &mut action_log);
 
     if let Some(directory) = &snapshots {
         std::fs::create_dir_all(directory).unwrap();
@@ -708,6 +716,77 @@ fn clicking_the_active_sequence_tab_focuses_the_timeline() {
     assert_eq!(h.state().ui.focused, PanelKind::Project);
     let active = h.state().session.state.active_sequence.unwrap().0;
     click(&mut h, &format!("timeline.tab.{active}"));
+    assert_eq!(h.state().ui.focused, PanelKind::Timeline);
+}
+
+/// Dock `panel` as a tab of `anchor`'s group, in front.
+fn tab_into(h: &mut Harness<'_, FilmcraftApp>, panel: PanelKind, anchor: PanelKind) {
+    let ctx = h.ctx.clone();
+    let action = Action::Move { panel, anchor, placement: Placement::Tab { before: None } };
+    menus::invoke(h.state_mut(), &ctx, "window.dockAction", json!({ "action": action })).unwrap();
+    menus::invoke(h.state_mut(), &ctx, "window.panel.activate", json!({ "panel": panel.id() })).unwrap();
+    for _ in 0..3 {
+        step(h);
+    }
+    assert!(h.state().ui.dock.is_visible(panel) && same_group(&h.state().ui.dock, panel, anchor));
+}
+
+/// #3653: with another tab in front of the Program monitor, clicking the Timeline (its body or a
+/// sequence tab) brings Program to the front, as in Premiere; the focus stays on the Timeline.
+#[test]
+fn clicking_the_timeline_brings_the_program_monitor_to_the_front() {
+    let mut h = demo_harness();
+    tab_into(&mut h, PanelKind::Properties, PanelKind::Program);
+    assert!(!h.state().ui.dock.is_visible(PanelKind::Program));
+    click(&mut h, "panel.tab.Project");
+    click(&mut h, "panel.Timeline");
+    let dock = &h.state().ui.dock;
+    assert!(dock.is_visible(PanelKind::Program), "Program stayed behind Properties");
+    assert!(same_group(dock, PanelKind::Program, PanelKind::Properties), "the group changed");
+    assert_eq!(h.state().ui.focused, PanelKind::Timeline);
+
+    click(&mut h, "panel.tab.Properties");
+    assert!(!h.state().ui.dock.is_visible(PanelKind::Program));
+    let active = h.state().session.state.active_sequence.unwrap().0;
+    click(&mut h, &format!("timeline.tab.{active}"));
+    assert!(h.state().ui.dock.is_visible(PanelKind::Program), "a sequence tab click left Program behind");
+    assert_eq!(h.state().ui.focused, PanelKind::Timeline);
+}
+
+/// #3653: Program sharing the Timeline's own group stays behind it, so the Timeline is not hidden
+/// by a click on it.
+#[test]
+fn program_in_the_timeline_group_stays_behind_it() {
+    let mut h = demo_harness();
+    tab_into(&mut h, PanelKind::Program, PanelKind::Timeline);
+    click(&mut h, "panel.tab.Timeline");
+    click(&mut h, "panel.Timeline");
+    assert!(h.state().ui.dock.is_visible(PanelKind::Timeline), "the Timeline was hidden");
+    assert!(!h.state().ui.dock.is_visible(PanelKind::Program));
+    assert_eq!(h.state().ui.focused, PanelKind::Timeline);
+}
+
+/// #3653: a closed Program monitor stays closed when the Timeline is clicked, and a floating one is
+/// left as it is.
+#[test]
+fn clicking_the_timeline_leaves_a_closed_or_floating_program_monitor_alone() {
+    let mut h = demo_harness();
+    let ctx = h.ctx.clone();
+    menus::invoke(h.state_mut(), &ctx, "window.panel.close", json!({"panel": "Program"})).unwrap();
+    click(&mut h, "panel.Timeline");
+    assert!(!h.state().ui.dock.contains(&PanelKind::Program), "a click reopened Program");
+
+    menus::invoke(h.state_mut(), &ctx, "window.panel.activate", json!({"panel": "Program"})).unwrap();
+    menus::invoke(h.state_mut(), &ctx, "window.floatPanel", json!({"panel": "Info", "rect": [45, 65, 420, 320]})).unwrap();
+    let action = Action::Move { panel: PanelKind::Program, anchor: PanelKind::Info, placement: Placement::Tab { before: None } };
+    menus::invoke(h.state_mut(), &ctx, "window.dockAction", json!({ "action": action })).unwrap();
+    menus::invoke(h.state_mut(), &ctx, "window.panel.activate", json!({"panel": "Info"})).unwrap();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!h.state().ui.dock.docked(PanelKind::Program) && !h.state().ui.dock.is_visible(PanelKind::Program));
+    click(&mut h, "panel.Timeline");
+    assert!(h.state().ui.dock.is_visible(PanelKind::Info), "the floating window changed tab");
     assert_eq!(h.state().ui.focused, PanelKind::Timeline);
 }
 

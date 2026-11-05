@@ -14,6 +14,18 @@ pub trait Sample: Copy + Default + PartialEq + Eq + std::fmt::Debug + Send + Syn
     fn wrap_row(p: RowPlanes<Self>) -> RowSamples;
     /// An empty output plane with room for `len` samples (see [`set_plane_allocator`]).
     fn alloc_plane(len: usize) -> Vec<Self>;
+    /// Unclipped first-pass result of the 6-tap luma interpolation filter (8.4.2.2.1): `i16` for
+    /// 8-bit samples (-2550..=10710 fits, and twice the lanes vectorise), `i32` above.
+    type Tap: Copy + Default + Into<i32> + std::fmt::Debug;
+    /// The 6-tap filter a - 5b + 20c + 20d - 5e + f.
+    fn tap6(a: Self, b: Self, c: Self, d: Self, e: Self, f: Self) -> Self::Tap;
+    /// Round and clip a first-pass value: Clip1((v + 16) >> 5).
+    fn round5(v: Self::Tap, max: i32) -> Self;
+    /// Rounded average (a + b + 1) >> 1.
+    fn avg(a: Self, b: Self) -> Self;
+    /// Chroma sample interpolation (8-266): (w[0] s[0] + w[1] s[1] + w[2] s[2] + w[3] s[3] + 32) >> 6
+    /// with weights summing to 64.
+    fn bilinear(w: [u16; 4], s: [Self; 4]) -> Self;
 }
 
 impl Sample for u8 {
@@ -42,6 +54,26 @@ impl Sample for u8 {
     fn alloc_plane(len: usize) -> Vec<u8> {
         PLANE_ALLOCATOR.get().copied().unwrap_or(Vec::with_capacity)(len)
     }
+    type Tap = i16;
+    #[inline(always)]
+    fn tap6(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) -> i16 {
+        let [a, b, c, d, e, f] = [a, b, c, d, e, f].map(i16::from);
+        a - 5 * b + 20 * c + 20 * d - 5 * e + f
+    }
+    #[inline(always)]
+    fn round5(v: i16, _max: i32) -> u8 {
+        ((v + 16) >> 5).clamp(0, 255) as u8
+    }
+    #[inline(always)]
+    fn avg(a: u8, b: u8) -> u8 {
+        ((a as u16 + b as u16 + 1) >> 1) as u8
+    }
+    #[inline(always)]
+    fn bilinear(w: [u16; 4], s: [u8; 4]) -> u8 {
+        // at most 64 * 255 + 32: fits u16
+        let v = w[0] * s[0] as u16 + w[1] * s[1] as u16 + w[2] * s[2] as u16 + w[3] * s[3] as u16;
+        ((v + 32) >> 6) as u8
+    }
 }
 
 impl Sample for u16 {
@@ -69,6 +101,25 @@ impl Sample for u16 {
     }
     fn alloc_plane(len: usize) -> Vec<u16> {
         PLANE_ALLOCATOR_U16.get().copied().unwrap_or(Vec::with_capacity)(len)
+    }
+    type Tap = i32;
+    #[inline(always)]
+    fn tap6(a: u16, b: u16, c: u16, d: u16, e: u16, f: u16) -> i32 {
+        let [a, b, c, d, e, f] = [a, b, c, d, e, f].map(i32::from);
+        a - 5 * b + 20 * c + 20 * d - 5 * e + f
+    }
+    #[inline(always)]
+    fn round5(v: i32, max: i32) -> u16 {
+        ((v + 16) >> 5).max(0).min(max) as u16
+    }
+    #[inline(always)]
+    fn avg(a: u16, b: u16) -> u16 {
+        ((a as u32 + b as u32 + 1) >> 1) as u16
+    }
+    #[inline(always)]
+    fn bilinear(w: [u16; 4], s: [u16; 4]) -> u16 {
+        let v = w[0] as u32 * s[0] as u32 + w[1] as u32 * s[1] as u32 + w[2] as u32 * s[2] as u32 + w[3] as u32 * s[3] as u32;
+        ((v + 32) >> 6) as u16
     }
 }
 
@@ -376,7 +427,7 @@ impl Frame {
     /// Copy the w x h luma window at (x0, y0) (clamped to the picture) into `out` (stride `os`).
     /// A frame stored with another sample type (only after a format change) reads as mid-grey.
     #[inline]
-    pub fn luma_window<S: Sample>(&self, x0: i32, y0: i32, w: usize, h: usize, out: &mut [S], os: usize) {
+    pub fn luma_window<S: Sample>(&self, (x0, y0): (i32, i32), w: usize, h: usize, out: &mut [S], os: usize) {
         let (width, height) = (self.width, self.height);
         for r in 0..h {
             let yy = (y0 + r as i32).clamp(0, height as i32 - 1) as usize;
@@ -391,7 +442,7 @@ impl Frame {
 
     /// Copy the w x h window of chroma component `c` at (x0, y0) (clamped) into `out`.
     #[inline]
-    pub fn chroma_window<S: Sample>(&self, c: usize, x0: i32, y0: i32, w: usize, h: usize, out: &mut [S], os: usize) {
+    pub fn chroma_window<S: Sample>(&self, c: usize, (x0, y0): (i32, i32), w: usize, h: usize, out: &mut [S], os: usize) {
         let (cw, ch, hc) = (self.cwidth, self.cheight, self.fmt.mb_hc);
         for r in 0..h {
             let yy = (y0 + r as i32).clamp(0, ch as i32 - 1) as usize;
@@ -461,7 +512,10 @@ fn copy_line<S: Sample, const N: usize>(line: &[S], x0: i32, out: &mut [S], w: u
 }
 
 /// Copy `out.len()` samples of `line` starting at x0, replicating edge samples outside the line.
-#[inline(always)]
+/// Kept out of line so the fixed-size path of `copy_line` stays an inline move rather than being
+/// merged with this variable-length copy into a libc memcpy call.
+#[cold]
+#[inline(never)]
 fn copy_clamped<S: Sample>(line: &[S], x0: i32, out: &mut [S]) {
     let w = out.len();
     if x0 >= 0 && x0 as usize + w <= line.len() {

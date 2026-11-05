@@ -78,7 +78,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if f.name == "Label" {
                     let cur = Label::from_name(&f.value).unwrap_or(Label::Violet);
                     let mut sel = cur;
-                    let r = egui::ComboBox::from_id_salt(("md-label", item.0))
+                    let r = craft_ui::ComboBox::from_id_salt(("md-label", item.0))
                         .selected_text(crate::i18n::t(cur.name()))
                         .width(ui.available_width().min(200.0))
                         .show_ui(ui, |ui| {

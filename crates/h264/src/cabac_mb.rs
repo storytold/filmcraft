@@ -3,7 +3,7 @@
 
 use crate::cabac::Cabac;
 use crate::error::{Result, ensure, invalid};
-use crate::mbtypes::*;
+use crate::mbtypes::{MbTypeInfo, Part, SubMbInfo, b_mb_type, b_sub_mb_type, intra_mb_type, p_mb_type, p_sub_mb_type};
 use crate::picture::{MbKind, Sample};
 use crate::slice::SliceType;
 use crate::slicedec::{MbCur, SliceDecoder};
@@ -50,6 +50,7 @@ impl<S: Sample> SliceDecoder<'_, S> {
         let intra_slice = self.sh.slice_type.is_intra();
         loop {
             ensure!(addr < total, "macroblock address {addr} out of range");
+            self.pic.reserve_mbs(1)?;
             self.start_mb(addr);
             let skip = !intra_slice && self.decode_skip_flag(&mut c);
             if skip {
@@ -57,7 +58,7 @@ impl<S: Sample> SliceDecoder<'_, S> {
             } else {
                 self.decode_mb_cabac(&mut c)?;
             }
-            self.pic.mb_done(addr);
+            self.pic.mb_done(addr)?;
             ensure!(!c.overrun(), "CABAC read past end of slice data");
             if c.decode_terminate() == 1 {
                 break;
