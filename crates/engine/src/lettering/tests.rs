@@ -10,6 +10,7 @@ fn metrics(words: &[Word], hero: &[usize]) -> Vec<WordMetric> {
         .iter()
         .enumerate()
         .map(|(i, w)| WordMetric {
+            scale_mul: 1.0,
             width100: w.text.chars().count() as f32 * 55.0,
             hero: hero.contains(&i),
             binds_next: binds_forward(&normalize(&w.text)) || (has_digit(&w.text) && words.get(i + 1).is_some_and(|x| x.text.chars().count() <= 4)),
@@ -244,7 +245,7 @@ fn from_selection_without_anything_selected_is_an_error() {
 #[test]
 fn monumental_look_reveals_each_word_through_a_mask_and_makes_heroes_huge() {
     let mut s = seq();
-    let r = s.execute("lettering.apply", json!({"text": "Nunca pague 10 mil por um logo sem estratégia", "look": "monumental", "family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+    let r = s.execute("lettering.apply", json!({"text": "Nunca pague 10 mil por um logo sem estratégia", "look": "monumental", "motionBlur": false, "family": "Inter", "heroFamily": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
     assert_eq!(r["applied"], true, "{r}");
     let clip = filmcraft_project::ClipId(r["clip"].as_u64().unwrap());
     let q = s.active_sequence().unwrap();
@@ -269,4 +270,34 @@ fn hold_shortens_the_stay_so_the_next_lettering_can_follow() {
     let long = s.execute("lettering.apply", json!({"text": "Eu matei o cavalo", "look": "monumental"})).unwrap();
     let short = s.execute("lettering.apply", json!({"text": "Eu matei o cavalo", "look": "monumental", "hold": 0.1})).unwrap();
     assert!(short["duration"].as_f64().unwrap() < long["duration"].as_f64().unwrap());
+}
+
+#[test]
+fn motion_blur_adds_trailing_copies_that_vanish_once_the_word_has_settled() {
+    let mut s = seq();
+    let r = s.execute("lettering.apply", json!({"text": "Eu matei o cavalo", "look": "monumental", "family": "Inter", "heroFamily": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+    let clip = filmcraft_project::ClipId(r["clip"].as_u64().unwrap());
+    let q = s.active_sequence().unwrap();
+    let (_, it) = q.find_item(clip).unwrap();
+    let layers: Vec<_> = it.effects.iter().filter(|e| e.params.contains_key("text")).collect();
+    // 4 words, each with its copies behind it
+    assert_eq!(layers.len(), 4 * (1 + GHOSTS));
+    // a copy is invisible while its word sits still, and never brighter than half
+    let still = Tick::from_seconds_f64(1.2);
+    for e in layers.iter().filter(|e| e.params["opacity"].keyframes.len() == 7) {
+        assert_eq!(e.params["opacity"].value_at(still).as_f64().unwrap(), 0.0);
+        assert!(e.params["opacity"].keyframes.iter().all(|k| k.value.as_f64().unwrap() <= 50.0));
+    }
+}
+
+#[test]
+fn the_script_never_sets_a_word_it_has_no_accent_for() {
+    assert!(script_covers("Kieyto", "cavalo"));
+    assert!(script_covers("Kieyto", "ação".replace('ã', "a").as_str()));
+    assert!(!script_covers("Kieyto", "não"));
+    assert!(!script_covers("Kieyto", "excelência,"));
+    assert!(script_covers("Host Grotesk Lettering", "não"));
+    let faces = Faces { hero_family: "Kieyto".into(), hero: "Personal Use".into(), ..Faces::default() };
+    assert_eq!(hero_face_for(&faces, "não").0, "Host Grotesk Lettering");
+    assert_eq!(hero_face_for(&faces, "cavalo").0, "Kieyto");
 }
