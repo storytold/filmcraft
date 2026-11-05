@@ -116,3 +116,14 @@ fn dragging_the_padding_fields_saves_the_new_padding() {
     d.drag(PAD_X, true);
     assert_eq!(padding(&mut d), [x2, y2], "Escape cancels the drag");
 }
+
+#[test]
+fn dragging_the_radius_field_saves_the_new_radius() {
+    const RADIUS: &str = "text.captions.style.cornerRadius";
+    let mut d = Driver::captions();
+    d.drag(RADIUS, false);
+    let radius = d.style()["cornerRadius"].as_f64().unwrap();
+    assert!(radius > 0.0, "a drag right grows it: {radius}");
+    d.drag(RADIUS, true);
+    assert_eq!(d.style()["cornerRadius"].as_f64().unwrap(), radius, "Escape cancels the drag");
+}
