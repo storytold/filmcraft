@@ -105,6 +105,11 @@ fn size(d: &mut Driver) -> f64 {
     d.style()["size"].as_f64().unwrap()
 }
 
+/// How many steps the session can undo.
+fn undo_steps(d: &Driver) -> usize {
+    d.harness.state().session.history.undo.len()
+}
+
 /// The first move only starts the drag; the rest count at the field's 0.5 per px.
 const GROW_BY_15: [f32; 4] = [5.0, 10.0, 10.0, 10.0];
 
@@ -113,8 +118,10 @@ fn dragging_the_size_field_saves_the_new_size() {
     let mut d = Driver::captions();
     d.type_into(SIZE, "60");
     assert_eq!(size(&mut d), 60.0, "typing sets it");
+    let undo = undo_steps(&d);
     d.drag(SIZE, &GROW_BY_15, None);
     assert_eq!(size(&mut d), 75.0, "the value of the drag's last move, not an earlier one");
+    assert_eq!(undo_steps(&d), undo + 1, "one undo step for the drag");
     d.drag(SIZE, &GROW_BY_15, Some(2));
     assert_eq!(size(&mut d), 75.0, "Escape cancels the drag");
 }
@@ -123,6 +130,8 @@ fn dragging_the_size_field_saves_the_new_size() {
 fn a_drag_back_to_the_stored_size_changes_nothing() {
     let mut d = Driver::captions();
     d.type_into(SIZE, "60");
+    let undo = undo_steps(&d);
     d.drag(SIZE, &[5.0, 10.0, 10.0, -10.0, -10.0], None);
     assert_eq!(size(&mut d), 60.0, "the field ended the drag back at the stored size");
+    assert_eq!(undo_steps(&d), undo, "no undo step for it either");
 }
