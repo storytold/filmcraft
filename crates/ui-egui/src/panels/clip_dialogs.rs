@@ -12,7 +12,8 @@
 //! - every dialog: `<p>.ok`, `<p>.cancel`, and `<p>.<key>` for each control;
 //! - Paste Attributes `pasteAttributes.*`: `motion`, `opacity`, `timeRemapping`, `volume`,
 //!   `channelVolume`, `panner`, `effects`, `effect.<id>`, `scaleTimes`;
-//! - Remove Attributes `removeAttributes.*`: the same without `scaleTimes`;
+//! - Remove Attributes `removeAttributes.*`: the same without `scaleTimes`, plus `hint` (the line
+//!   that says ticked attributes are removed);
 //! - Offline File `offlineFile.*`: `fileName`, `name`, `tapeName`, `video`, `audio`, `width`,
 //!   `height`, `fps`, `timecode`, `seconds`, `description`;
 //! - Nested Sequence Name `nest.*`: `name`;
@@ -176,10 +177,11 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
     let s = &app.session;
     match id {
         "edit.pasteAttributes" | "edit.removeAttributes" => {
-            // effects offered: the copied clips' (Paste) or the selected clips' (Remove) standard effects
+            // effects offered: the copied clips' (Paste) or the selected clips' (Remove) effects that
+            // the command copies or removes (not Essential Sound's, which a ticked box would not remove)
             let mut names: Vec<(String, String)> = Vec::new();
             let mut add = |e: &filmcraft_project::EffectInstance| {
-                if let Some(d) = e.def().filter(|d| !d.intrinsic && !filmcraft_project::graphic::is_layer_id(d.id))
+                if let Some(d) = e.def().filter(|_| filmcraft_engine::clip_ops::is_attribute_effect(e))
                     && !names.iter().any(|n| n.0 == d.id)
                 {
                     names.push((d.id.to_string(), d.name.to_string()));
@@ -376,6 +378,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         match d.command.as_str() {
             "edit.pasteAttributes" | "edit.removeAttributes" => {
                 let (v, a) = (d.info["video"].as_bool().unwrap_or(true), d.info["audio"].as_bool().unwrap_or(true));
+                // a ticked box means "remove", not "keep on" (#3789: an effect was unticked to turn it off)
+                if d.command == "edit.removeAttributes" {
+                    let hint = tl!("Ticked attributes are removed from the selected clips.");
+                    let r = ui.label(RichText::new(hint).weak());
+                    push(&mut elems, format!("{pre}.hint"), &r, hint);
+                }
                 ui.label(RichText::new(tl!("Video Attributes")).strong());
                 for (k, l) in intrinsic_video() {
                     check(ui, &mut elems, pre, p, k, l, v);

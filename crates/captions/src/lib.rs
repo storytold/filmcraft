@@ -129,6 +129,9 @@ pub struct Document {
     pub blocks: Vec<String>,
     /// Non-fatal problems found while reading (skipped cues…).
     pub warnings: Vec<String>,
+    /// BCP 47 language tag of the text, when known: TTML's `xml:lang` on import, the caption
+    /// track's language on export. TTML and DFXP write it (else `en`).
+    pub language: Option<String>,
 }
 
 impl Document {
@@ -242,8 +245,61 @@ pub fn write(doc: &Document, format: Format, opts: WriteOptions) -> Vec<u8> {
         Format::Scc => scc::write(doc, opts.drop_frame).into_bytes(),
         Format::Mcc => mcc::write(doc, opts.drop_frame).into_bytes(),
         Format::Stl => stl::write(doc, opts.rate),
-        Format::Ttml => ttml::write(doc, ttml::Flavor::Imsc1, opts.rate, "en").into_bytes(),
-        Format::Dfxp => ttml::write(doc, ttml::Flavor::Dfxp, opts.rate, "en").into_bytes(),
+        Format::Ttml => ttml::write(doc, ttml::Flavor::Imsc1, opts.rate, doc.language.as_deref().unwrap_or("")).into_bytes(),
+        Format::Dfxp => ttml::write(doc, ttml::Flavor::Dfxp, opts.rate, doc.language.as_deref().unwrap_or("")).into_bytes(),
+    }
+}
+
+/// How many characters [`charset_warnings`] names one by one per caption stream; the rest share one warning.
+const LISTED_CHARS: usize = 20;
+
+/// What writing `doc` as `format` does to text the caption data cannot carry. SCC and MCC drop
+/// the characters CEA-608 has no code for (…) or send a close one (’ as '), and MCC's CEA-708
+/// service sends `?` for the characters it has no code for. One warning per such character, in
+/// order of first use, with how often and the first caption that has it. Other formats: none.
+pub fn charset_warnings(doc: &Document, format: Format, opts: WriteOptions) -> Vec<String> {
+    let mut out = Vec::new();
+    if matches!(format, Format::Scc | Format::Mcc) {
+        lossy_chars(doc, "CEA-608", cea608::shown_as, opts.drop_frame, &mut out);
+    }
+    if format == Format::Mcc {
+        lossy_chars(doc, "CEA-708", |c| Some(mcc::shown_as_708(c)), opts.drop_frame, &mut out);
+    }
+    out
+}
+
+/// Warnings for the characters of `doc` that `shown_as` does not give back unchanged.
+fn lossy_chars(doc: &Document, stream: &str, shown_as: impl Fn(char) -> Option<char>, drop_frame: bool, out: &mut Vec<String>) {
+    // (character, what a decoder shows instead, count, frame of the first caption with it)
+    let mut lost: Vec<(char, Option<char>, usize, i64)> = Vec::new();
+    let mut index: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
+    let mut cues: Vec<&Cue> = doc.cues.iter().filter(|c| c.end > c.start).collect();
+    cues.sort_by_key(|c| c.start);
+    for cue in cues {
+        // the text the SCC and MCC writers encode: plain text in 32-column rows
+        for c in scc::wrap_rows(&filmcraft_project::plain_text(&cue.text)).iter().flat_map(|r| r.chars()) {
+            let shown = shown_as(c);
+            if shown == Some(c) {
+                continue;
+            }
+            match index.get(&c).and_then(|&i| lost.get_mut(i)) {
+                Some(entry) => entry.2 = entry.2.saturating_add(1),
+                None => {
+                    index.insert(c, lost.len());
+                    lost.push((c, shown, 1, scc::frame_of(cue.start)));
+                }
+            }
+        }
+    }
+    let times = |n: usize| if n == 1 { "once".to_string() } else { format!("{n} times") };
+    for &(c, shown, n, frame) in lost.iter().take(LISTED_CHARS) {
+        let what = shown.map_or_else(|| "dropped".to_string(), |s| format!("written as \"{s}\""));
+        let at = scc::format_timecode(frame, drop_frame);
+        out.push(format!("{stream} has no \"{c}\" (U+{:04X}): {what} {}, first in the caption at {at}", c as u32, times(n)));
+    }
+    if let Some(rest) = lost.get(LISTED_CHARS..).filter(|rest| !rest.is_empty()) {
+        let n = rest.iter().fold(0usize, |n, e| n.saturating_add(e.2));
+        out.push(format!("{stream} has no code for {} more characters either: changed or dropped {}", rest.len(), times(n)));
     }
 }
 
@@ -313,9 +369,13 @@ pub fn format_clock(t: Tick, sep: char) -> String {
     format!("{h:02}:{m:02}:{s:02}{sep}{f:03}")
 }
 
-/// Build a caption track from a document. Ids are allocated with `alloc`.
+/// Build a caption track from a document, in the document's language when it has one (else
+/// the default, `en`). Ids are allocated with `alloc`.
 pub fn track_from_document(doc: &Document, id: TrackId, name: &str, format: CaptionFormat, alloc: &mut dyn FnMut() -> u64) -> CaptionTrack {
     let mut t = CaptionTrack::new(id, name.to_string(), format);
+    if let Some(language) = &doc.language {
+        t.language = language.clone();
+    }
     t.vtt_blocks = doc.blocks.clone();
     t.captions = doc
         .cues
@@ -354,6 +414,7 @@ pub fn document_from_track(t: &CaptionTrack, offset: Tick) -> Document {
             .collect(),
         blocks: t.vtt_blocks.clone(),
         warnings: Vec::new(),
+        language: Some(t.language.clone()).filter(|l| !l.is_empty()),
     }
 }
 
@@ -397,6 +458,46 @@ mod tests {
         for f in Format::ALL {
             assert_eq!(Format::from_name(f.extension()), Some(f));
         }
+    }
+
+    /// SCC and MCC exports name each character CEA-608 or CEA-708 drops or replaces (#4023).
+    #[test]
+    fn charset_warnings_name_lost_characters() {
+        let rate = FrameRate::FPS_29_97;
+        let cue = |s: i64, text: &str| Cue { start: rate.tick_of(s), end: rate.tick_of(s + 60), text: text.into(), ..Default::default() };
+        let doc = Document { cues: vec![cue(0, "Espere… isso é “demais” — não?"), cue(90, "<i>Don’t</i> stop… ♪")], ..Default::default() };
+        let opts = WriteOptions::default();
+        let dropped = "CEA-608 has no \"…\" (U+2026): dropped 2 times, first in the caption at 00:00:00;00";
+        let replaced = "CEA-608 has no \"’\" (U+2019): written as \"'\" once, first in the caption at 00:00:03;00";
+        assert_eq!(charset_warnings(&doc, Format::Scc, opts), [dropped, replaced]);
+        // CEA-708 carries … (G2) and ’ but not the em dash, which 608 does carry
+        let em_dash = "CEA-708 has no \"—\" (U+2014): written as \"?\" once, first in the caption at 00:00:00;00";
+        assert_eq!(charset_warnings(&doc, Format::Mcc, opts), [dropped, replaced, em_dash]);
+        let ndf = charset_warnings(&doc, Format::Scc, WriteOptions { drop_frame: false, ..opts });
+        assert!(ndf[0].ends_with("00:00:00:00"), "{ndf:?}");
+        for f in [Format::Srt, Format::WebVtt, Format::Ttml, Format::Dfxp] {
+            assert!(charset_warnings(&doc, f, opts).is_empty(), "{f:?}");
+        }
+        // what the warnings name is what the files lose
+        let scc = scc::parse(&String::from_utf8(write(&doc, Format::Scc, opts)).unwrap()).unwrap();
+        assert_eq!(scc.cues[0].text, "Espere isso é “demais” — não?");
+        let clean = Document { cues: vec![cue(0, "Café “q” ♪ — ação")], ..Default::default() };
+        assert!(charset_warnings(&clean, Format::Scc, opts).is_empty());
+    }
+
+    /// A track in a script 608 cannot show gives a bounded list, not one warning per character.
+    #[test]
+    fn charset_warnings_are_bounded() {
+        let text: String = (0x4e00..0x4e00 + 400).filter_map(char::from_u32).collect();
+        let doc = Document {
+            cues: (0..3)
+                .map(|i| Cue { start: Tick(i * TICKS_PER_SECOND), end: Tick((i + 1) * TICKS_PER_SECOND), text: text.clone(), ..Default::default() })
+                .collect(),
+            ..Default::default()
+        };
+        let w = charset_warnings(&doc, Format::Scc, WriteOptions::default());
+        assert_eq!(w.len(), LISTED_CHARS + 1);
+        assert_eq!(w[LISTED_CHARS], "CEA-608 has no code for 380 more characters either: changed or dropped 1140 times");
     }
 
     #[test]
