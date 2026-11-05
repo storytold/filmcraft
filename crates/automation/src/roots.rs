@@ -14,7 +14,8 @@
 //!   existing folder's real path is taken and the rest appended (`..` below a folder that doesn't
 //!   exist is refused, and so is a link that leads nowhere).
 //! - The result must be the root or inside it, compared by whole components (`/work2` is not inside
-//!   `/work`), without regard to case on Windows, whose file systems ignore it.
+//!   `/work`) and exactly: both have the spelling the file system gives them by then, so another
+//!   spelling of the root still matches, and a folder that differs only in case does not.
 //! - A path must be absolute. A relative one is refused: it would be checked against this
 //!   process's working directory and, in bridge mode, opened against the app's.
 //! - Every command is classified, and an unclassified one is refused (it fails closed): [`READS`]
@@ -466,16 +467,10 @@ fn resolve(path: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// Is `path` (resolved) the root or inside it, component by component (without regard to case on
-/// Windows, whose file systems ignore it)?
+/// Is `path` (resolved) the root or inside it, component by component?
 fn inside(path: &Path, root: &Path) -> bool {
     let mut path = path.components();
-    root.components().all(|r| path.next().is_some_and(|p| same_component(p, r)))
-}
-
-/// Are two path components the same (without regard to case on Windows)?
-fn same_component(a: Component, b: Component) -> bool {
-    a == b || (cfg!(windows) && matches!((a.as_os_str().to_str(), b.as_os_str().to_str()), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b)))
+    root.components().all(|r| path.next() == Some(r))
 }
 
 /// A canonical path without Windows' `\\?\` (or `\\?\UNC\`) prefix, for people.
@@ -761,6 +756,28 @@ mod tests {
         assert!(e.contains("reserved device names"), "{e}");
         assert!(roots.check(&s(base.join("out/com1.txt")), Access::Write).is_err());
         assert_eq!(roots.check(&s(base.join("out/console.txt")), Access::Write), Ok(()));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A folder can be set to tell case apart, and then `Root` is not `root`.
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_differing_only_in_case_is_another_folder() {
+        let (base, _) = folders("case-sensitive");
+        let parent = base.join("parent");
+        std::fs::create_dir(&parent).unwrap();
+        let set = std::process::Command::new("fsutil").args(["file", "setCaseSensitiveInfo"]).arg(&parent).arg("enable").output();
+        if !set.is_ok_and(|o| o.status.success()) {
+            eprintln!("skipped: can't set a folder to tell case apart here");
+            let _ = std::fs::remove_dir_all(base);
+            return;
+        }
+        std::fs::create_dir(parent.join("root")).unwrap();
+        std::fs::create_dir(parent.join("Root")).unwrap();
+        let roots = AutomationRoots::new(None, Some(&s(parent.join("root")))).unwrap().unwrap();
+        assert_eq!(roots.check(&s(parent.join("root/x.png")), Access::Write), Ok(()));
+        let e = roots.check(&s(parent.join("Root/x.png")), Access::Write).unwrap_err();
+        assert!(e.contains("outside the write root"), "{e}");
         let _ = std::fs::remove_dir_all(base);
     }
 
