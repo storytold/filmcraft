@@ -113,10 +113,10 @@ pub fn score(words: &[Word], i: usize) -> f32 {
     if dur > 0.0 && len > 0 && dur / len as f64 > 0.095 {
         s += 1.0;
     }
-    if let Some(next) = words.get(i + 1) {
-        if next.start - w.end >= 0.35 {
-            s += 1.0;
-        }
+    if let Some(next) = words.get(i + 1)
+        && next.start - w.end >= 0.35
+    {
+        s += 1.0;
     }
     if i > 0 && w.start - words[i - 1].end >= 0.5 {
         s += 0.5;
@@ -330,10 +330,10 @@ pub fn compose(ms: &[WordMetric], p: &Params) -> Composed {
     // Every set of `k-1` interior break points, k = 1..=MAX_LINES.
     let mut best: Option<(f32, f32, Vec<usize>)> = None;
     let mut consider = |ends: Vec<usize>| {
-        if let Some((c, fit)) = partition_cost(ms, p, &ends) {
-            if best.as_ref().is_none_or(|b| c < b.0) {
-                best = Some((c, fit, ends));
-            }
+        if let Some((c, fit)) = partition_cost(ms, p, &ends)
+            && best.as_ref().is_none_or(|b| c < b.0)
+        {
+            best = Some((c, fit, ends));
         }
     };
     consider(vec![n]);
@@ -796,6 +796,71 @@ fn animate(layer: &mut EffectInstance, g: &Geo, t0: f64, exit: f64, how: &str, l
 }
 
 
+/// Which preset (if any) animates the lettering, and when each of its groups starts.
+struct PresetPlan {
+    chosen: Option<&'static motion::Preset>,
+    /// The words carry speech timing (the preset can follow the voice).
+    timed: bool,
+    /// Entrance-duration factor from the pace of the speech.
+    dur_k: f64,
+    /// When each preset group (block, line or word) enters, clip seconds.
+    group_t0: std::collections::BTreeMap<usize, f64>,
+    /// The exit time, pushed later if the preset needs longer than the look did.
+    exit: f64,
+}
+
+impl PresetPlan {
+    fn new(p: &Value, words: &[Word], c: &Composed, exit: f64) -> Result<Self> {
+        let chosen = match str_p(p, "preset") {
+            Some(id) => Some(motion::preset(id).ok_or_else(|| bad("lettering.apply", format!("unknown preset `{id}` ({})", motion::preset_ids().join(", "))))?),
+            None => None,
+        };
+        // speech reaction: the pace of the voice bends the duration of every entrance
+        let starts: Vec<f64> = words.iter().map(|w| w.start).collect();
+        let timed = words.iter().any(|w| w.end > w.start);
+        let dur_k = if timed { motion::duration_factor(motion::median_gap(&starts)) } else { 1.0 };
+        let mut plan = Self { chosen, timed, dur_k, group_t0: Default::default(), exit };
+        let Some(pr) = chosen else { return Ok(plan) };
+        // when each word would enter, then the start each group shares (its earliest word)
+        let word_t0: Vec<f64> = (0..words.len())
+            .map(|i| {
+                let lead = |j: usize| words.get(j).map_or(0.0, |w| (w.start - LEAD_SECS).max(0.0));
+                lead(i).max(if i > 0 { lead(i - 1) + STAGGER_SECS } else { 0.0 })
+            })
+            .collect();
+        for pl in &c.words {
+            let e = plan.group_t0.entry(plan.group_of(pl)).or_insert(f64::MAX);
+            *e = e.min(word_t0.get(pl.index).copied().unwrap_or(0.0));
+        }
+        if pr.scope == motion::Scope::Line {
+            // lines follow each other by at least the preset's stagger
+            let mut prev: Option<f64> = None;
+            for v in plan.group_t0.values_mut() {
+                if let Some(a) = prev {
+                    *v = v.max(a + pr.stagger_ms / 1000.0);
+                }
+                prev = Some(*v);
+            }
+        }
+        let last_t0 = plan.group_t0.values().copied().fold(0.0, f64::max);
+        plan.exit = exit.max(last_t0 + plan.dur(true) + 0.3);
+        Ok(plan)
+    }
+
+    /// Entrance duration, seconds (a hero takes a little longer).
+    fn dur(&self, hero: bool) -> f64 {
+        self.chosen.map_or(0.0, |pr| (pr.ms / 1000.0 * self.dur_k * if hero { 1.15 } else { 1.0 }).clamp(0.05, 2.0))
+    }
+
+    fn group_of(&self, pl: &Placed) -> usize {
+        match self.chosen.map(|pr| pr.scope) {
+            Some(motion::Scope::Block) => 0,
+            Some(motion::Scope::Line) => pl.line,
+            _ => pl.index,
+        }
+    }
+}
+
 /// Motion of one word under a [`motion::Preset`]: the tracks run from their offsets to rest at
 /// `t0` for `dur` seconds, then everybody fades out at `exit`.
 struct PresetRun<'a> {
@@ -825,7 +890,7 @@ fn apply_preset(layer: &mut EffectInstance, g: &Geo, r: &PresetRun) {
     for t in r.preset.tracks {
         let on_line = match t.lines {
             1 => r.line % 2 == 1,
-            2 => r.line % 2 == 0,
+            2 => r.line.is_multiple_of(2),
             _ => true,
         };
         if !on_line {
@@ -946,10 +1011,10 @@ fn focus_copies(main: &EffectInstance, radius: f64, t0: f64) -> Vec<EffectInstan
         let off = Vec2::new(dx * radius, dy * radius);
         if let Some(pos) = g.params.get("position").cloned() {
             let mut q = pos.clone();
-            if let Some(first) = q.keyframes.first_mut() {
-                if let ParamValue::Vec2(v) = first.value {
-                    first.value = ParamValue::Vec2(v + off);
-                }
+            if let Some(first) = q.keyframes.first_mut()
+                && let ParamValue::Vec2(v) = first.value
+            {
+                first.value = ParamValue::Vec2(v + off);
             }
             g.params.insert("position".into(), q);
         }
@@ -989,6 +1054,10 @@ fn source_words(s: &Session, p: &Value) -> Result<(Vec<Word>, Option<f64>)> {
     Ok((words, None))
 }
 
+// The base `apply` (before the motion work) was already over the threshold; splitting it touches
+// the style and layout code the other two lettering tracks are changing, so it is split once they
+// are merged.
+#[allow(clippy::cognitive_complexity)]
 fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     const ID: &str = "lettering.apply";
     let (words, at) = source_words(s, p)?;
@@ -1089,46 +1158,10 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         Some(h) => (last_start - LEAD_SECS).max(0.0) + ENTER_SECS + h.max(0.0),
         None => (last_end + HOLD_SECS).max(last_start + ENTER_SECS + 0.4),
     };
-    let chosen = match str_p(p, "preset") {
-        Some(id) => Some(motion::preset(id).ok_or_else(|| bad(ID, format!("unknown preset `{id}` ({})", motion::preset_ids().join(", "))))?),
-        None => None,
-    };
-    // speech reaction: the pace of the voice bends the duration of every entrance
-    let starts: Vec<f64> = words.iter().map(|w| w.start).collect();
-    let timed = words.iter().any(|w| w.end > w.start);
-    let dur_k = if timed { motion::duration_factor(motion::median_gap(&starts)) } else { 1.0 };
-    let preset_dur = |hero: bool| chosen.map_or(0.0, |pr| (pr.ms / 1000.0 * dur_k * if hero { 1.15 } else { 1.0 }).clamp(0.05, 2.0));
-    // when each word would enter, then the start each preset group shares (its earliest word)
-    let mut word_t0 = vec![0.0f64; words.len()];
-    for (i, w) in words.iter().enumerate() {
-        word_t0[i] = (w.start - LEAD_SECS).max(0.0).max(if i > 0 { (words[i - 1].start - LEAD_SECS).max(0.0) + STAGGER_SECS } else { 0.0 });
-    }
-    let group_of = |pl: &Placed| match chosen.map(|pr| pr.scope) {
-        Some(motion::Scope::Block) => 0,
-        Some(motion::Scope::Line) => pl.line,
-        _ => pl.index,
-    };
-    let mut group_t0: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
-    for pl in &c.words {
-        let e = group_t0.entry(group_of(pl)).or_insert(f64::MAX);
-        *e = e.min(word_t0.get(pl.index).copied().unwrap_or(0.0));
-    }
-    if let Some(pr) = chosen.filter(|pr| pr.scope == motion::Scope::Line) {
-        // lines follow each other by at least the preset's stagger
-        let mut prev: Option<f64> = None;
-        for v in group_t0.values_mut() {
-            if let Some(a) = prev {
-                *v = v.max(a + pr.stagger_ms / 1000.0);
-            }
-            prev = Some(*v);
-        }
-    }
-    let exit = if chosen.is_some() {
-        let last_t0 = group_t0.values().copied().fold(0.0, f64::max);
-        exit.max(last_t0 + preset_dur(true) + 0.3)
-    } else {
-        exit
-    };
+    let plan = PresetPlan::new(p, &words, &c, exit)?;
+    let (chosen, timed, exit) = (plan.chosen, plan.timed, plan.exit);
+    let (group_t0, preset_dur) = (&plan.group_t0, |hero: bool| plan.dur(hero));
+    let group_of = |pl: &Placed| plan.group_of(pl);
     let duration = exit + EXIT_SECS;
 
     let mut layers = Vec::with_capacity(words.len());
@@ -1285,33 +1318,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         placement.insert("track".into(), json!(t));
     }
     let clip = crate::graphics::new_graphic_clip_layers(s, ID, layers, &name, &Value::Object(placement))?;
-    // The caption under the lettering says the same thing: take it off while the lettering is up.
-    let mut hidden = 0;
-    if bool_p(p, "hideCaptions").unwrap_or(true) {
-        let t0 = at.or_else(|| p.get("time").and_then(Value::as_u64).map(|t| Tick(t as _).seconds()));
-        if let Some(t0) = t0 {
-            let (a, b) = (t0 + words[0].start, t0 + last_end);
-            let ids: Vec<filmcraft_project::ClipId> = s
-                .active_sequence()
-                .map(|q| {
-                    q.caption_tracks
-                        .iter()
-                        .flat_map(|tr| tr.captions.iter())
-                        .filter(|c| {
-                            let (cs, ce) = (c.start.seconds(), (c.start + c.duration).seconds());
-                            // under the lettering for a third of its time or more
-                            (ce.min(b) - cs.max(a)) > 0.3 * (ce - cs)
-                        })
-                        .map(|c| c.id)
-                        .collect()
-                })
-                .unwrap_or_default();
-            if !ids.is_empty() {
-                hidden = ids.len();
-                crate::captions::delete(s, &ids, false)?;
-            }
-        }
-    }
+    let hidden = if bool_p(p, "hideCaptions").unwrap_or(true) { hide_captions(s, p, at, words.first().map_or(0.0, |w| w.start), last_end)? } else { 0 };
     Ok(json!({
         "applied": true,
         "clip": clip.0,
@@ -1321,6 +1328,32 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         "scale": c.scale,
         "hiddenCaptions": hidden,
     }))
+}
+
+/// The caption under the lettering says the same thing: take it off while the lettering is up.
+/// Returns how many captions were removed.
+fn hide_captions(s: &mut Session, p: &Value, at: Option<f64>, first_start: f64, last_end: f64) -> Result<usize> {
+    let Some(t0) = at.or_else(|| p.get("time").and_then(Value::as_u64).map(|t| Tick(t as _).seconds())) else { return Ok(0) };
+    let (a, b) = (t0 + first_start, t0 + last_end);
+    let ids: Vec<filmcraft_project::ClipId> = s
+        .active_sequence()
+        .map(|q| {
+            q.caption_tracks
+                .iter()
+                .flat_map(|tr| tr.captions.iter())
+                .filter(|c| {
+                    let (cs, ce) = (c.start.seconds(), (c.start + c.duration).seconds());
+                    // under the lettering for a third of its time or more
+                    (ce.min(b) - cs.max(a)) > 0.3 * (ce - cs)
+                })
+                .map(|c| c.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !ids.is_empty() {
+        crate::captions::delete(s, &ids, false)?;
+    }
+    Ok(ids.len())
 }
 
 /// Words (with the times they are said at) of the captions in `ids`: the transcript between the

@@ -126,7 +126,7 @@ fn place(cut: &Cut, plan_video: Option<&str>, root: &Path, rate: FrameRate) -> s
     let mut out = Vec::new();
     for (i, s) in cut.segments.iter().enumerate() {
         let video = s.source_video.as_deref().or(plan_video).ok_or_else(|| format!("segment {} of `{}` has no source_video", i + 1, cut.id))?;
-        if !(s.end > s.start) || s.start < 0.0 {
+        if s.end.is_nan() || s.start.is_nan() || s.end <= s.start || s.start < 0.0 {
             return Err(format!("segment {} of `{}` has an empty or negative range", i + 1, cut.id));
         }
         let video_in = rate.frame_at(rate.snap_nearest(Tick::from_seconds_f64(s.start)));

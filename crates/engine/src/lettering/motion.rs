@@ -29,14 +29,11 @@ pub enum Scope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ease {
     Linear,
-    OutQuad,
     OutCubic,
     OutQuart,
     OutQuint,
     OutExpo,
     InOutQuad,
-    InOutCubic,
-    InOutSine,
     OutBack,
     Elastic,
     /// Jumps to the end at the start (the opacity of a "keyed" reveal).
@@ -48,7 +45,6 @@ pub fn ease(e: Ease, t: f64) -> f64 {
     let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 1.0 };
     match e {
         Ease::Linear => t,
-        Ease::OutQuad => 1.0 - (1.0 - t).powi(2),
         Ease::OutCubic => 1.0 - (1.0 - t).powi(3),
         Ease::OutQuart => 1.0 - (1.0 - t).powi(4),
         Ease::OutQuint => 1.0 - (1.0 - t).powi(5),
@@ -66,14 +62,6 @@ pub fn ease(e: Ease, t: f64) -> f64 {
                 1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
             }
         }
-        Ease::InOutCubic => {
-            if t < 0.5 {
-                4.0 * t * t * t
-            } else {
-                1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
-            }
-        }
-        Ease::InOutSine => -((std::f64::consts::PI * t).cos() - 1.0) / 2.0,
         Ease::OutBack => {
             let (c1, c3) = (1.70158, 2.70158);
             1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
@@ -136,7 +124,6 @@ const fn tr_e(prop: Prop, from: f64, e: Ease) -> Track {
 #[derive(Clone, Copy, Debug)]
 pub struct Preset {
     pub id: &'static str,
-    pub name: &'static str,
     pub scope: Scope,
     pub ms: f64,
     pub stagger_ms: f64,
@@ -150,12 +137,11 @@ use Prop::*;
 /// The text-only presets of the spec. 09 (a continuous slide) and the decorated ones (badges,
 /// marker, glow, water) are not here: they need more than a motion on the words.
 pub const PRESETS: &[Preset] = &[
-    Preset { id: "partial-blur-in-up", name: "Partial Blur In / Up", scope: Scope::Block, ms: 600.0, stagger_ms: 0.0, ease: OutCubic, tracks: &[tr(Y, 40.0), tr(Opacity, 0.0), tr(Blur, 16.0)] },
-    Preset { id: "delay-up-slide", name: "Delay Up Slide", scope: Scope::Line, ms: 500.0, stagger_ms: 120.0, ease: OutQuint, tracks: &[tr(Y, 50.0), tr(Opacity, 0.0)] },
-    Preset { id: "up-smooth", name: "Up Smooth", scope: Scope::Block, ms: 700.0, stagger_ms: 0.0, ease: InOutQuad, tracks: &[tr(Y, 60.0), tr(Opacity, 0.0)] },
+    Preset { id: "partial-blur-in-up", scope: Scope::Block, ms: 600.0, stagger_ms: 0.0, ease: OutCubic, tracks: &[tr(Y, 40.0), tr(Opacity, 0.0), tr(Blur, 16.0)] },
+    Preset { id: "delay-up-slide", scope: Scope::Line, ms: 500.0, stagger_ms: 120.0, ease: OutQuint, tracks: &[tr(Y, 50.0), tr(Opacity, 0.0)] },
+    Preset { id: "up-smooth", scope: Scope::Block, ms: 700.0, stagger_ms: 0.0, ease: InOutQuad, tracks: &[tr(Y, 60.0), tr(Opacity, 0.0)] },
     Preset {
         id: "blink-right-up-combined",
-        name: "Blink / Right Slide / Up Smooth",
         scope: Scope::Line,
         ms: 800.0,
         stagger_ms: 150.0,
@@ -164,19 +150,17 @@ pub const PRESETS: &[Preset] = &[
     },
     Preset {
         id: "blinks-spinning-word",
-        name: "Blinks Spinning",
         scope: Scope::Word,
         ms: 400.0,
         stagger_ms: 80.0,
         ease: OutBack,
         tracks: &[tr(Rotation, -90.0), tr_e(Opacity, 0.0, Hold)],
     },
-    Preset { id: "left-smooth-word", name: "Left Smooth", scope: Scope::Word, ms: 450.0, stagger_ms: 70.0, ease: OutCubic, tracks: &[tr(X, -40.0), tr(Opacity, 0.0)] },
-    Preset { id: "bouncy-follow-up", name: "Bouncy Follow Up", scope: Scope::Block, ms: 750.0, stagger_ms: 0.0, ease: Elastic, tracks: &[tr(Y, 80.0), tr_e(Opacity, 0.0, OutCubic)] },
-    Preset { id: "up-smooth-script-word", name: "Up Smooth (Script)", scope: Scope::Word, ms: 550.0, stagger_ms: 100.0, ease: InOutQuad, tracks: &[tr(Y, 35.0), tr(Opacity, 0.0)] },
+    Preset { id: "left-smooth-word", scope: Scope::Word, ms: 450.0, stagger_ms: 70.0, ease: OutCubic, tracks: &[tr(X, -40.0), tr(Opacity, 0.0)] },
+    Preset { id: "bouncy-follow-up", scope: Scope::Block, ms: 750.0, stagger_ms: 0.0, ease: Elastic, tracks: &[tr(Y, 80.0), tr_e(Opacity, 0.0, OutCubic)] },
+    Preset { id: "up-smooth-script-word", scope: Scope::Word, ms: 550.0, stagger_ms: 100.0, ease: InOutQuad, tracks: &[tr(Y, 35.0), tr(Opacity, 0.0)] },
     Preset {
         id: "left-up-smooth-combined",
-        name: "Left Smooth / Up Smooth",
         scope: Scope::Line,
         ms: 600.0,
         stagger_ms: 100.0,
@@ -187,7 +171,7 @@ pub const PRESETS: &[Preset] = &[
             tr(Opacity, 0.0),
         ],
     },
-    Preset { id: "caption-fade-scale", name: "Smooth Caption (Fade & Scale)", scope: Scope::Word, ms: 400.0, stagger_ms: 60.0, ease: OutQuart, tracks: &[tr(Scale, 90.0), tr(Opacity, 0.0), tr(Blur, 4.0)] },
+    Preset { id: "caption-fade-scale", scope: Scope::Word, ms: 400.0, stagger_ms: 60.0, ease: OutQuart, tracks: &[tr(Scale, 90.0), tr(Opacity, 0.0), tr(Blur, 4.0)] },
 ];
 
 pub fn preset(id: &str) -> Option<&'static Preset> {
@@ -208,7 +192,6 @@ pub struct Reaction {
 }
 
 impl Reaction {
-    pub const NEUTRAL: Reaction = Reaction { duration_k: 1.0, hero_k: 1.0 };
     /// Hero words travel this much further and take this much longer.
     pub const HERO: f64 = 1.3;
 }
@@ -282,7 +265,7 @@ mod tests {
 
     #[test]
     fn every_easing_starts_at_zero_ends_at_one_and_never_panics() {
-        for e in [Linear, OutQuad, OutCubic, OutQuart, OutQuint, OutExpo, InOutQuad, InOutCubic, InOutSine, OutBack, Elastic] {
+        for e in [Linear, OutCubic, OutQuart, OutQuint, OutExpo, InOutQuad, OutBack, Elastic] {
             assert!(ease(e, 0.0).abs() < 1e-9, "{e:?} start");
             assert!((ease(e, 1.0) - 1.0).abs() < 1e-9, "{e:?} end");
             for t in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -3.0, 9.0] {
