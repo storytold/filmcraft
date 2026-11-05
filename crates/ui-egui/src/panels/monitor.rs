@@ -191,7 +191,7 @@ fn draw_picture(app: &mut FilmcraftApp, ui: &mut egui::Ui, which: Which, mv: &cr
 }
 
 fn drop_indicator(app: &FilmcraftApp, ui: &mut egui::Ui, video_area: Rect, which: Which, t: &Tokens) {
-    if which == Which::Program && app.playback.playing {
+    if which == Which::Program && app.playback.playing && !app.ui.fullscreen_program {
         let c = if app.playback.meter.counts().1 > 0 { t.render_yellow } else { t.render_green };
         ui.painter().circle_filled(pos2(video_area.min.x + 10.0, video_area.min.y + 10.0), 4.0, c);
     }
@@ -207,6 +207,7 @@ fn shown_view(saved: &crate::state::MonitorView, cinema: bool) -> crate::state::
         mv.safe_margins = false;
         mv.transparency_grid = false;
         mv.zoom = None;
+        mv.show_rulers = false;
     }
     mv
 }
@@ -366,7 +367,6 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     drop_indicator(app, ui, video_area, which, &t);
     if cinema {
         ui.set_clip_rect(saved_clip);
-        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
         return;
     }
     // A click on the Program monitor around the picture lets go of what is selected on it (#683;
