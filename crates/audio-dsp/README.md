@@ -147,9 +147,13 @@ its nominal input position, moved by at most 8 ms to where its first hop best ma
 grain's natural continuation (normalised cross-correlation of a mono guide, coarse on every other
 sample and offset, then refined), so the crossfaded halves are in phase. `align` picks the
 position and `overlap` makes one output hop; the caller keeps the chain of positions and reads the
-input (the renderer keeps it per clip, see `filmcraft-render`'s `stretch`). Tested on tones from
-110 Hz to 1 kHz at 50 %–300 %: pitch within 2 %, level within 0.03 RMS, no steps larger than the
-tone's own slope.
+input (the renderer keeps it per reader of a clip, see `filmcraft-render`'s `stretch`). The renderer
+builds the guide only from the source channels the clip plays and reads grains only from the clip's
+own source span (in to out point; outside it reads silence), so a handle or an unplayed channel
+never sounds or steers the alignment. Tested on tones from 110 Hz to 1 kHz at 50 %–300 %: pitch
+within 2 %, level within 0.03 RMS, no steps larger than the tone's own slope; and on noise, where a
+read cut into blocks, or interleaved with another reader of the same clip, gives the same samples
+as one continuous read.
 
 Why not the shuttle's `PitchShifter` (`ui-egui`'s `shuttle` runs it ahead of a `StreamResampler` to
 keep pitch at J/L speeds)? That pair is a stream: it has latency (the FFT size) and state carried
@@ -158,11 +162,13 @@ order from where it started. Clip audio is read by random access: playback, expo
 waveforms and loudness matching each ask for any span of the timeline. A seek would have to rebuild
 the stream and pre-roll its latency, and every reader of a clip would need a stream of its own.
 `Wsola` keeps no state: grain `k`'s position follows only from grain `k - 1`'s, and the renderer
-keeps the last positions of each chain, so a read in order continues the chain exactly, however
-the reads are cut, and a read anywhere else starts a new chain a few grains early (see Known
-limits for what that means for the samples). A phase vocoder also
-smears transients over its FFT window, which matters for dialogue and music cut at speed; WSOLA
-copies the input's own waveform, so transients stay sharp at the 50 %–300 % speeds clips use.
+keeps the last positions of each chain, keyed by where the chain's last read ended, so a read in
+order continues its own chain exactly (however the reads are cut, and whatever other readers of
+the clip do in between), and a read anywhere else starts a new chain a few grains early (see Known
+limits for what that means for the samples). A phase vocoder also smears transients over its FFT
+window, which matters for dialogue and music cut at speed; WSOLA copies the input's own waveform,
+so a transient that is heard keeps its shape (see Known limits for which ones are not heard, or are
+heard twice).
 
 ## Known limits
 
@@ -178,6 +184,13 @@ copies the input's own waveform, so transients stay sharp at the 50 %–300 % sp
   of a span through different histories, such as an export that starts where playback stopped,
   are not bit-identical. Making them so needs every chain to be canonical (computed from the clip's
   start, or reset at fixed grains with a seam), which is not done.
+- Time stretch, faster than 1×: grains are read every `speed × 15 ms` of input but each plays
+  only 30 ms, so above 2× part of the input between grains is never heard (a third of it at 3×).
+  A click or consonant shorter than the gap can vanish.
+- Time stretch, slower than 1×: grains overlap more in the input than in the output, so a short
+  transient can be heard more than once, a few milliseconds apart (a flam rather than a click).
+- Time stretch at a clip's edges: grains read silence outside the clip's source span, so the first
+  and last hop (≤ 15 ms) fade against silence instead of continuing into the handle.
 - Time stretch: a single read whose source span exceeds 2^24 samples (a very fast clip read in
   one long request) is not stretched; the renderer resamples it instead (varispeed, so the pitch
   changes for that read).
