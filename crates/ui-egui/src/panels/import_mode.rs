@@ -14,7 +14,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ui.painter().text(
         rect.min + vec2(24.0, 58.0),
         Align2::LEFT_CENTER,
-        tl!("Add media to your project. Drop files anywhere in the window, or choose a source below."),
+        tl!("Add media to your project. Drop files or folders anywhere in the window, or choose a source below."),
         Tokens::ui(13.0),
         t.text_dim,
     );
