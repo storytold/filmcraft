@@ -59,8 +59,9 @@ impl Driver {
         self.ok("engine.execute", json!({"command": "captions.list", "params": {}}))["tracks"][0]["style"].clone()
     }
 
-    /// Press on `id`, move right over several frames, optionally press Escape along the way, release.
-    fn drag(&mut self, id: &str, escape: bool) {
+    /// Press on `id`, move by each of `moves` (px) on its own frame, optionally press Escape on move
+    /// `escape_at`, hold still for a few frames, release.
+    fn drag(&mut self, id: &str, moves: &[f32], escape_at: Option<usize>) {
         let elements = self.ok("ui.elements", json!({"prefix": id}));
         let e = elements.as_array().unwrap().iter().find(|e| e["id"] == json!(id)).unwrap_or_else(|| panic!("no element {id}"));
         let r: Vec<f32> = e["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
@@ -70,14 +71,15 @@ impl Driver {
         self.frames(1);
         push(self, egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
         self.frames(1);
-        for step in 0..8 {
-            p.x += 5.0;
+        for (step, dx) in moves.iter().enumerate() {
+            p.x += dx;
             push(self, egui::Event::PointerMoved(p));
-            if escape && step == 4 {
+            if escape_at == Some(step) {
                 push(self, egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
             }
             self.frames(1);
         }
+        self.frames(3);
         push(self, egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
         self.frames(3);
     }
@@ -99,15 +101,27 @@ fn wrap(d: &mut Driver) -> f64 {
     d.style()["maxWidth"].as_f64().unwrap()
 }
 
+/// The first move only starts the drag; the rest count at the field's 0.5 per px.
+const GROW_BY_15: [f32; 4] = [5.0, 10.0, 10.0, 10.0];
+/// Out and back to where the drag started.
+const OUT_AND_BACK: [f32; 5] = [5.0, 10.0, 10.0, -10.0, -10.0];
+
 #[test]
 fn dragging_the_wrap_field_saves_the_new_width() {
     let mut d = Driver::captions();
     // down from the default first: 90 % has only 10 points of room to grow
     d.type_into(WRAP, "60");
     assert!((wrap(&mut d) - 0.6).abs() < 1e-3, "typing sets it: {}", wrap(&mut d));
-    d.drag(WRAP, false);
-    let dragged = wrap(&mut d);
-    assert!(dragged > 0.61, "a drag right widens it: {dragged}");
-    d.drag(WRAP, true);
-    assert_eq!(wrap(&mut d), dragged, "Escape cancels the drag");
+    d.drag(WRAP, &GROW_BY_15, None);
+    assert_eq!(wrap(&mut d), 0.75, "the value of the drag's last move, not an earlier one");
+    d.drag(WRAP, &GROW_BY_15, Some(2));
+    assert_eq!(wrap(&mut d), 0.75, "Escape cancels the drag");
+}
+
+#[test]
+fn a_drag_back_to_the_stored_width_changes_nothing() {
+    let mut d = Driver::captions();
+    d.type_into(WRAP, "60");
+    d.drag(WRAP, &OUT_AND_BACK, None);
+    assert!((wrap(&mut d) - 0.6).abs() < 1e-3, "the field ended the drag back at 60 %: {}", wrap(&mut d));
 }

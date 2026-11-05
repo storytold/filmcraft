@@ -743,12 +743,13 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "color": c})));
         }
         // to one decimal, so a saved 90.5 % shows as itself
-        let mut wrap = (st.max_width * 1000.0).round() / 10.0;
+        let stored_wrap = (st.max_width * 1000.0).round() / 10.0;
+        let mut wrap = drag_start(ui, stored_wrap);
         let resp = ui
             .add(crate::widgets::number_drag(&mut wrap).range(5.0..=100.0).speed(0.5).max_decimals(1).prefix(tl!("Wrap ")).suffix(" %"))
             .on_hover_text(tl!("Wrap lines at this share of the frame width"));
         app.auto.add("text.captions.style.maxWidth", resp.rect, "Caption wrap width");
-        if let Some(v) = committed_drag(ui, &resp, wrap) {
+        if let Some(v) = committed_drag(ui, &resp, wrap).filter(|v| *v != stored_wrap) {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "maxWidth": v / 100.0})));
         }
         let mut bg = st.background;
@@ -812,6 +813,19 @@ fn run(app: &mut FilmcraftApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
             app.ui.status = e;
         }
     }
+}
+
+/// The value the next widget, a caption style number field, starts this frame from: what a drag on
+/// it has reached (kept by `committed_drag`), else `stored`.
+///
+/// egui reports a change against this value, so a drag back to `stored` still registers, and the
+/// field keeps showing the dragged value while the pointer holds still.
+fn drag_start(ui: &egui::Ui, stored: f32) -> f32 {
+    let id = ui.next_auto_id();
+    if !ui.ctx().is_being_dragged(id) {
+        return stored;
+    }
+    ui.data(|d| d.get_temp(id.with("caption-style-pending"))).unwrap_or(stored)
 }
 
 #[cfg(test)]
