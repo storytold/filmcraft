@@ -284,7 +284,8 @@ mod arrow_step {
         press(&mut h, Key::ArrowUp, Modifiers::NONE);
         press(&mut h, Key::ArrowUp, Modifiers::NONE);
         assert_eq!(h.state().value, 5.0);
-        let mut h = editing(3.0, "1+1", (0.0, 100.0), 0);
+        assert_eq!(h.state().changes, [5.0], "the press at the limit applies nothing");
+        let mut h = editing(0.0, "1+1", (0.0, 100.0), 0);
         press(&mut h, Key::ArrowUp, Modifiers::NONE);
         assert_eq!(h.state().value, 3.0);
     }

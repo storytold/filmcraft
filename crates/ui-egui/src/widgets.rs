@@ -164,7 +164,8 @@ fn step_typed_value(ui: &Ui, edit_id: egui::Id, buf: &mut String, value: f64, ra
     let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
     st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(len))));
     st.store(ui.ctx(), edit_id);
-    Some(new)
+    // at the edge of the range the value does not change: nothing to apply
+    ((new - value).abs() > f64::EPSILON).then_some(new)
 }
 
 /// Whether a field has keyboard focus, also while the window is in the background: `has_focus` is
