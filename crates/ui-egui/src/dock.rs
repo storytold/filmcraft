@@ -770,7 +770,7 @@ pub fn sequence_tabs(ui: &mut egui::Ui, strip: Rect, seqs: &SeqTabs, t: &Tokens,
         if start < offset {
             offset = start;
         } else if start + active_width + 2.0 * pad > offset + view.width() {
-            offset = start + active_width + 2.0 * pad - view.width();
+            offset = (start + active_width + 2.0 * pad - view.width()).min(start);
         }
     }
     offset = if all_fit { 0.0 } else { offset.clamp(0.0, max_offset) };
