@@ -15,7 +15,8 @@
 //! load (RCL, ENM, PAC + tab offset per row, text) is scheduled into free frames before the cue so
 //! its End of Caption lands exactly on the cue start; an Erase Displayed Memory clears it at the
 //! cue end (omitted when the next caption replaces it). Rows are bottom-aligned (row 15 last),
-//! centred, wrapped at 32 columns; characters outside the 608 sets are dropped.
+//! centred, wrapped at 32 columns; characters outside the 608 sets are dropped (see
+//! [`crate::charset_warnings`]).
 
 use std::collections::BTreeMap;
 

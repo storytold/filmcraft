@@ -337,7 +337,7 @@ fn roll(seq: &Sequence, track: TrackId, clip: ClipId, edge: Edge) -> EdgeKind {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use egui::{Rect, pos2};
     use filmcraft_project::{ItemId, Label, Project, SequenceSettings, TrackItem, TrackKind};
@@ -349,7 +349,7 @@ mod tests {
     const TOP: f32 = 100.0;
 
     /// A clip on screen from `x0` to `x1` px (the layout is 100 px per second).
-    fn clip(id: u64, x0: f64, x1: f64) -> TrackItem {
+    pub(crate) fn clip(id: u64, x0: f64, x1: f64) -> TrackItem {
         TrackItem {
             custom_label_color: None,
             id: ClipId(id),
@@ -372,6 +372,7 @@ mod tests {
             essential: None,
             multicam: None,
             time_interpolation: Default::default(),
+            maintain_pitch: false,
             hold_filters: false,
             field_options: None,
             source_channels: Vec::new(),
