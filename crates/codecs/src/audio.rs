@@ -244,6 +244,10 @@ impl PacketDecoder {
             C::Alac { cookie } => {
                 // the decoder allocates frame length × channels from the file's cookie (a big-endian u32 first)
                 let frame_length = cookie.get(..4).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes);
+                if frame_length == Some(0) {
+                    // the decoder would have no room for samples, and the stream would never give any audio
+                    return Err(CodecError::Unsupported("ALAC: frame length is zero".into()));
+                }
                 if frame_length.is_some_and(|n| n > ALAC_MAX_FRAME_LENGTH) {
                     return Err(CodecError::Unsupported("ALAC: frame length too large".into()));
                 }
@@ -815,6 +819,7 @@ pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f3
     }
     let bps = (cfg.bits as usize).div_ceil(8);
     let n = data.len() / (bps * ch);
+    let top_bit = if cfg.signed { 0 } else { i32::MIN };
     let mut out = vec![Vec::with_capacity(n); ch];
     for i in 0..n {
         for (c, o) in out.iter_mut().enumerate() {
@@ -836,12 +841,13 @@ pub fn decode_pcm(data: &[u8], cfg: &filmcraft_isobmff::PcmConfig) -> Vec<Vec<f3
                 (16, _, true) => i16::from_be_bytes([b[0], b[1]]) as f32 / 32768.0,
                 (24, _, false) => (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0,
                 (24, _, true) => (i32::from_be_bytes([b[0], b[1], b[2], 0]) >> 8) as f32 / 8_388_608.0,
-                (32, false, false) => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
-                (32, false, true) => i32::from_be_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
+                // offset binary is flipped in the integer: f32 would round the signed value first and lose what is near silence
+                (32, false, false) => (i32::from_le_bytes([b[0], b[1], b[2], b[3]]) ^ top_bit) as f32 / 2_147_483_648.0,
+                (32, false, true) => (i32::from_be_bytes([b[0], b[1], b[2], b[3]]) ^ top_bit) as f32 / 2_147_483_648.0,
                 _ => 0.0,
             };
-            // the arms above read 16- to 32-bit samples as signed: offset binary is that with the top bit flipped
-            let v = match (!cfg.signed && !cfg.float && matches!(cfg.bits, 16 | 24 | 32), v < 0.0) {
+            // the arms above read 16- and 24-bit samples as signed: offset binary is that with the top bit flipped
+            let v = match (!cfg.signed && !cfg.float && matches!(cfg.bits, 16 | 24), v < 0.0) {
                 (true, true) => v + 1.0,
                 (true, false) => v - 1.0,
                 (false, _) => v,
@@ -1576,6 +1582,36 @@ mod hostile_config_tests {
         let mut c = frame_length.to_be_bytes().to_vec();
         c.extend_from_slice(&[0, 16, 40, 10, 14, 2, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xbb, 0x80]);
         c
+    }
+
+    /// Near the midpoint an unsigned 32-bit sample keeps the level `f32` can represent: centring
+    /// it after the conversion rounded it would turn it into silence.
+    #[test]
+    fn unsigned_32_bit_pcm_is_centred_before_it_is_rounded() {
+        let pcm = |big_endian, signed| PcmConfig { bits: 32, float: false, big_endian, signed, channels: 1, sample_rate: 48_000.0 };
+        let smallest = 1.0 / 2_147_483_648.0;
+        for big_endian in [false, true] {
+            let read = |v: u32, signed| {
+                let bytes = if big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+                decode_pcm(&bytes, &pcm(big_endian, signed))[0][0]
+            };
+            assert_eq!(read(0x8000_0001, false), smallest);
+            assert_eq!(read(0x7FFF_FFFF, false), -smallest);
+            assert_eq!(read(0x8000_0000, false), 0.0);
+            assert_eq!(read(0x0000_0000, false), -1.0);
+            assert_eq!(read(0xFFFF_FFFF, false), 1.0);
+            // signed is unchanged
+            assert_eq!(read(0x0000_0001, true), smallest);
+            assert_eq!(read(0x8000_0000, true), -1.0);
+        }
+    }
+
+    /// A frame length of zero builds a decoder with no room for samples, so a probe would call the
+    /// stream decodable and it would never produce audio.
+    #[test]
+    fn alac_frame_length_of_zero_is_refused() {
+        let r = PacketDecoder::for_isobmff(&CodecConfig::Alac { cookie: alac_cookie(0) }, 48_000);
+        assert!(matches!(r, Err(CodecError::Unsupported(_))));
     }
 
     #[test]
