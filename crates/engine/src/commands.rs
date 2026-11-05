@@ -989,7 +989,19 @@ fn import_source(
     Ok(id)
 }
 
+/// The optional `bin` of a `file.new…` command: the bin the new item lands in (the project's root
+/// when absent or null). A bin that does not exist is an error, not a silent fall back to the root.
+fn bin_p(s: &Session, p: &Value, cmd: &str) -> Result<Option<filmcraft_project::BinId>> {
+    let Some(v) = p.get("bin").filter(|v| !v.is_null()) else { return Ok(None) };
+    let id = v.as_u64().map(filmcraft_project::BinId).ok_or_else(|| bad(cmd, "`bin` must be a bin id"))?;
+    if s.project.root.find_bin(id).is_none() {
+        return Err(bad(cmd, format!("no bin {}", id.0)));
+    }
+    Ok(Some(id))
+}
+
 fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value) -> Result<Value> {
+    let bin = bin_p(s, p, "file.new")?;
     let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
     let w = u64_p(p, "width").map(|v| v as u32).unwrap_or(st.width);
     let h = u64_p(p, "height").map(|v| v as u32).unwrap_or(st.height);
@@ -999,7 +1011,7 @@ fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Va
     let pool = s.media.clone();
     let par = filmcraft_project::sane_par(st.par);
     let id = s.edit(&format!("New {name}"), |pr, st| {
-        let id = crate::demo::add_generator(pr, &pool, src, &name, label, None);
+        let id = crate::demo::add_generator(pr, &pool, src, &name, label, bin);
         // made for the sequence: its pixels have the sequence's aspect, as in Premiere
         if let Some(ItemKind::Media(m)) = pr.item_mut(id).map(|i| &mut i.kind)
             && let Some(v) = m.info.video.as_mut()
@@ -1512,9 +1524,10 @@ fn build() -> Vec<CommandSpec> {
             "Sequence…",
             ["File", "New"],
             Some("Cmd+N"),
-            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?}"#,
+            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?,"bin":binId?}"#,
             always,
             |s, p| s.edit_group("New Sequence", |s| {
+                let bin = bin_p(s, p, "file.newSequence")?;
                 // `fromItems` is `fromItem` for a list: the first sets the sequence, the rest follow it back to back
                 let mut from_ids: Vec<ItemId> = match p.get("fromItems") {
                     None => Vec::new(),
@@ -1564,7 +1577,7 @@ fn build() -> Vec<CommandSpec> {
                 let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Sequence {n:02}"));
                 let seq_label = s.prefs.labels.defaults.sequence;
                 let id = s.edit("New Sequence", |pr, st2| {
-                    let id = pr.new_sequence(&name, st, nv as usize, na as usize, None);
+                    let id = pr.new_sequence(&name, st, nv as usize, na as usize, bin);
                     if let Some(it) = pr.item_mut(id) {
                         it.label = seq_label;
                     }
@@ -1608,7 +1621,8 @@ fn build() -> Vec<CommandSpec> {
             let id = s.edit("New Bin", |pr, _| Ok(pr.add_bin(&n, parent)))?;
             Ok(json!({"bin": id.0}))
         }),
-        cmd!("file.newAdjustmentLayer", "Adjustment Layer…", ["File", "New"], None, r#"{"seconds":f64=5}"#, always, |s, p| {
+        cmd!("file.newAdjustmentLayer", "Adjustment Layer…", ["File", "New"], None, r#"{"seconds":f64=5,"bin":binId?}"#, always, |s, p| {
+            let bin = bin_p(s, p, "file.newAdjustmentLayer")?;
             let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
             let secs = f64_p(p, "seconds").unwrap_or(5.0);
             let id = s.edit("New Adjustment Layer", |pr, st2| {
@@ -1616,40 +1630,40 @@ fn build() -> Vec<CommandSpec> {
                     "Adjustment Layer",
                     Label::Lavender,
                     ItemKind::AdjustmentLayer { width: st.width, height: st.height, rate: st.frame_rate, duration: Tick::from_seconds_f64(secs) },
-                    None,
+                    bin,
                 );
                 st2.project_selection = vec![id];
                 Ok(id)
             })?;
             Ok(json!({"item": id.0}))
         }),
-        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10}"#, always, |s, p| new_generator(
+        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10,"bin":binId?}"#, always, |s, p| new_generator(
             s,
             Generator::BarsAndTone,
             "Bars and Tone",
             Label::Lavender,
             p
         )),
-        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64}"#, always, |s, p| new_generator(
+        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64,"bin":binId?}"#, always, |s, p| new_generator(
             s,
             Generator::BlackVideo,
             "Black Video",
             Label::Lavender,
             p
         )),
-        cmd!("file.newColorMatte", "Color Matte…", ["File", "New"], None, r##"{"color":"#rrggbb"?,"seconds":f64=5}"##, always, |s, p| {
+        cmd!("file.newColorMatte", "Color Matte…", ["File", "New"], None, r##"{"color":"#rrggbb"?,"seconds":f64=5,"bin":binId?}"##, always, |s, p| {
             let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
             new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
         }),
         cmd!("project.matteColor", "Color Matte Color…", [], None, r##"{"item":id?,"color":"#rrggbb"}"##, always, set_matte_color),
-        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, "{}", always, |s, p| new_generator(
+        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, r#"{"bin":binId?}"#, always, |s, p| new_generator(
             s,
             Generator::CountingLeader,
             "Universal Counting Leader",
             Label::Lavender,
             p
         )),
-        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, "{}", always, |s, p| new_generator(
+        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, r#"{"bin":binId?}"#, always, |s, p| new_generator(
             s,
             Generator::TransparentVideo,
             "Transparent Video",

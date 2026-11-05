@@ -77,6 +77,7 @@ pub fn open(app: &mut FilmcraftApp) {
         tab: "general".into(),
         name,
         new_sequence: false,
+        bin: None,
         video_tracks: 3,
         audio_tracks: 3,
         fps_num: st.frame_rate.num,
@@ -103,6 +104,7 @@ pub fn open_new(app: &mut FilmcraftApp) {
     app.ui.sequence_settings = SequenceSettingsDraft {
         tab: "general".into(),
         new_sequence: true,
+        bin: crate::panels::project::shown_bin(app),
         video_tracks: 3,
         audio_tracks: 3,
         fps_num: st.frame_rate.num,
@@ -136,6 +138,9 @@ fn new_sequence_params(d: &SequenceSettingsDraft) -> (Map<String, Value>, Map<St
     p.insert("fps".into(), json!(rate(d).as_f64()));
     p.insert("sampleRate".into(), json!(d.sample_rate));
     p.insert("mix".into(), json!(d.mix));
+    if let Some(bin) = d.bin {
+        p.insert("bin".into(), json!(bin));
+    }
     p.insert("video".into(), json!(d.video_tracks.min(256)));
     p.insert("audio".into(), json!(d.audio_tracks.min(256)));
     // what's left: only the settings `file.newSequence` has no parameter for
@@ -610,6 +615,9 @@ mod tests {
             json!({"name":"Shorts","width":1080,"height":1920,"fps":24_000.0/1001.0,"sampleRate":48_000,"mix":"Stereo","video":2,"audio":4})
         );
         assert!(rest.is_empty(), "everything else is the default: {rest:?}");
+        // a sequence made while the Project panel shows a bin lands in it
+        let (p, _) = new_sequence_params(&SequenceSettingsDraft { new_sequence: true, bin: Some(7), ..Default::default() });
+        assert_eq!(p.get("bin"), Some(&json!(7)));
         // what file.newSequence has no parameter for follows on the new sequence; a blank name
         // lets the command name it
         let d = SequenceSettingsDraft {

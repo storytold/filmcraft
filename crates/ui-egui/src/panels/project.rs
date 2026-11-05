@@ -1056,6 +1056,13 @@ pub fn new_bin(app: &mut FilmcraftApp, params: &Value) -> Result<Value, String> 
     Ok(r)
 }
 
+/// The bin the Project panel is showing, `None` at the project's root: where a New Item or File ▸ New
+/// puts what it makes.
+pub fn shown_bin(app: &FilmcraftApp) -> Option<u64> {
+    let v = view_of(app, shown_inst(app));
+    (v.bin != app.session.project.root.id).then_some(v.bin.0)
+}
+
 /// Commit the inline rename (Enter / focus lost).
 pub fn commit_rename(app: &mut FilmcraftApp) {
     let Some(r) = app.ui.project_panel.rename.take() else { return };
