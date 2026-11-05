@@ -99,13 +99,19 @@ fn capped_working_image_keeps_the_graphic_placed_at_full_scale() {
     item.effects.push(new_shape_layer(0, Vec2::new(3840.0, 2160.0), Vec2::new(100.0, 60.0), vec![]));
     item.effects.push(filmcraft_project::find_effect("invert").unwrap().instance());
     project.sequence_mut(sequence).unwrap().video_tracks[0].items.push(item);
+    // the working image is the budget's quarter of the graphic, not the graphic
+    let seq = project.sequence(sequence).unwrap();
+    let item = &seq.video_tracks[0].items[0];
+    let working = base_layer(&project, seq, item, Tick::ZERO, RenderOptions::default(), &SourceMap::default(), 1.0).unwrap();
+    assert_eq!((working.w, working.h), (3840, 2160));
     let output = render_sequence(&project, sequence, Tick::ZERO, RenderOptions::default(), &SourceMap::default());
     assert_eq!((output.w, output.h), (320, 180));
     let drawn = |x: usize, y: usize| output.get(x, y)[3] > 0.9;
+    let clear = |x: usize, y: usize| output.get(x, y)[3] < 0.1;
     assert!(drawn(160, 90), "the shape's centre");
     // inside the shape at full scale, outside it at the raster's halved scale
     assert!(drawn(120, 90) && drawn(200, 90) && drawn(160, 65) && drawn(160, 115), "the shape keeps its full extent");
-    assert!(!drawn(100, 90) && !drawn(220, 90) && !drawn(160, 50) && !drawn(160, 130), "and no more than that");
+    assert!(clear(100, 90) && clear(220, 90) && clear(160, 50) && clear(160, 130), "and no more than that");
 }
 
 fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {
