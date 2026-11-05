@@ -41,6 +41,7 @@ pub fn factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettin
             H264Profile::Baseline => Profile::H264Baseline,
             H264Profile::Main => Profile::H264Main,
             H264Profile::High => Profile::H264High,
+            H264Profile::High10 => return None,
         },
         Codec::Hevc => {
             if hdr {
@@ -206,7 +207,7 @@ impl VideoEncoder for AmfEncoder {
             (true, Some(rgb)) => {
                 let (kr, kb) = self.signal.kr_kb();
                 filmcraft_export::timed(filmcraft_export::Stage::Convert, || {
-                    filmcraft_export::rgbf_to_yuv420_10(rgb, self.w as usize, self.h as usize, kr, kb, &mut self.y16, &mut self.u16, &mut self.v16)
+                    filmcraft_export::rgbf_to_yuv420_10(rgb, self.w as usize, self.h as usize, filmcraft_export::Matrix::new(kr, kb), &mut self.y16, &mut self.u16, &mut self.v16)
                 })?;
                 self.session.encode_10bit(&self.y16, &self.u16, &self.v16, pts, duration)
             }

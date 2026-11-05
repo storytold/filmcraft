@@ -1,0 +1,18 @@
+# Refuse to run under a nextest older than the fixed release: GHSA-vc25-qg58-w57c is fixed in
+# 0.9.150, and CI installs exactly that version (an older nextest exits 92 REQUIRED_VERSION_NOT_MET).
+nextest-version = "0.9.150"
+
+# `cargo nextest run` (used by `cargo xtask ci`) runs every test in a process of its own, in parallel.
+
+[test-groups]
+# NVENC sessions are a limited resource on consumer GPUs.
+nvenc = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "package(filmcraft-platform) and (binary(/nvenc/) or test(/nvenc/))"
+test-group = "nvenc"
+
+# A throughput gate: it measures one core's speed, so nothing else runs beside it.
+[[profile.default.overrides]]
+filter = "package(filmcraft-render) and binary(mixer_perf)"
+threads-required = "num-test-threads"

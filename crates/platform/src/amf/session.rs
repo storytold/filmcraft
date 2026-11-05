@@ -3,7 +3,11 @@
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
-use super::ffi::*;
+use super::ffi::{
+    runtime, AmfBuffer, AmfComponent, AmfContext, AmfSurface, AmfVariant, AMF_DX11_1, AMF_EOF, AMF_INPUT_FULL, AMF_MEMORY_HOST, AMF_OK,
+    AMF_REPEAT, AMF_SURFACE_NV12, AMF_SURFACE_P010, AMF_VIDEO_ENCODER_AV1_OUTPUT_FRAME_TYPE_KEY, AMF_VIDEO_ENCODER_HEVC_OUTPUT_DATA_TYPE_IDR,
+    AMF_VIDEO_ENCODER_HW_AV1, AMF_VIDEO_ENCODER_HW_HEVC, AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_IDR, AMF_VIDEO_ENCODER_VCE_AVC,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Codec {
@@ -48,6 +52,7 @@ pub struct Config {
     pub profile: Profile,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Packet {
     pub data: Vec<u8>,
     pub key: bool,
@@ -390,15 +395,30 @@ impl Session {
             }
         }
 
+        Self::drain_loop(Duration::from_secs(5), || self.poll_output(true))
+    }
+
+    pub(crate) fn drain_loop<F>(timeout: Duration, mut poller: F) -> Result<Vec<Packet>, String>
+    where
+        F: FnMut() -> Result<(Vec<Packet>, bool), String>,
+    {
         let mut packets = Vec::new();
         let start = Instant::now();
+        let mut eof_reached = false;
         loop {
-            let (chunk, eof) = self.poll_output(true)?;
+            let (chunk, eof) = poller()?;
             packets.extend(chunk);
-            if eof || start.elapsed() > Duration::from_secs(5) {
+            if eof {
+                eof_reached = true;
+                break;
+            }
+            if start.elapsed() > timeout {
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));
+        }
+        if !eof_reached {
+            return Err("AMF drain timed out before receiving EOF".to_string());
         }
         Ok(packets)
     }
@@ -498,4 +518,36 @@ fn is_keyframe(codec: Codec, data: &[u8]) -> bool {
         }
     }
     false
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_loop_fails_on_timeout_without_eof() {
+        let res = Session::drain_loop(Duration::from_millis(20), || {
+            Ok((vec![], false))
+        });
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("timed out before receiving EOF"));
+    }
+
+    #[test]
+    fn drain_loop_succeeds_on_eof() {
+        let mut count = 0;
+        let res = Session::drain_loop(Duration::from_millis(100), || {
+            count += 1;
+            if count == 3 {
+                Ok((vec![Packet { data: vec![1, 2, 3], key: true, pts: 0, dts: 0 }], true))
+            } else {
+                Ok((vec![], false))
+            }
+        });
+        assert!(res.is_ok());
+        let packets = res.unwrap();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].data, vec![1, 2, 3]);
+    }
 }

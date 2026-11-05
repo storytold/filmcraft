@@ -278,10 +278,8 @@ fn cbf_dc(nb: &NbCtx, bit: u8) -> u32 {
     f(nb.left) + 2 * f(nb.top)
 }
 
-/// Write the whole macroblock layer (after mb_skip_flag = 0 in P/B slices).
-pub fn write_mb<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
-    let cur = nb.cur;
-    // ---- mb_type
+/// mb_type (and the P_L0_8x8 sub_mb_types of a P_8x8 macroblock).
+fn write_mb_type<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
     match c.kind {
         MbKind::I4x4 | MbKind::I8x8 | MbKind::I16x16 => write_intra_type(s, nb, c),
         MbKind::PInter => {
@@ -299,78 +297,77 @@ pub fn write_mb<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
         // Skip / none macroblocks are not written with write_mb.
         _ => debug_assert!(false, "write_mb on a skipped macroblock"),
     }
-    let is_inxn = c.kind.is_inxn();
     if c.kind == MbKind::PInter && c.part == Part::P8x8 {
         for _ in 0..4 {
             s.decision(21, 1); // P_L0_8x8
         }
     }
-    // ---- mb_pred
-    if is_inxn {
-        if nb.t8x8_mode {
-            let cond = |m: Option<&MbInfo>| m.is_some_and(|m| m.t8x8) as usize;
-            s.decision(399 + cond(nb.left) + cond(nb.top), c.t8x8 as u32);
+}
+
+/// transform_size_8x8_flag.
+fn write_transform_size_flag<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
+    let cond = |m: Option<&MbInfo>| m.is_some_and(|m| m.t8x8) as usize;
+    s.decision(399 + cond(nb.left) + cond(nb.top), c.t8x8 as u32);
+}
+
+/// prev_intra_NxN_pred_mode flags / rem_intra_NxN_pred_mode values.
+fn write_intra_pred_modes<S: BinSink>(s: &mut S, c: &MbCode) {
+    let n = if c.t8x8 { 4 } else { 16 };
+    for i in 0..n {
+        let p = c.ipred[i];
+        if p < 0 {
+            s.decision(68, 1);
+        } else {
+            s.decision(68, 0);
+            s.decision(69, (p & 1) as u32);
+            s.decision(69, ((p >> 1) & 1) as u32);
+            s.decision(69, ((p >> 2) & 1) as u32);
         }
-        let n = if c.t8x8 { 4 } else { 16 };
-        for i in 0..n {
-            let p = c.ipred[i];
-            if p < 0 {
-                s.decision(68, 1);
-            } else {
-                s.decision(68, 0);
-                s.decision(69, (p & 1) as u32);
-                s.decision(69, ((p >> 1) & 1) as u32);
-                s.decision(69, ((p >> 2) & 1) as u32);
+    }
+}
+
+/// intra_chroma_pred_mode.
+fn write_chroma_pred_mode<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
+    let cond = |m: Option<&MbInfo>| m.is_some_and(|m| m.kind.is_intra() && m.chroma_mode != 0) as usize;
+    let m = c.chroma_mode as u32;
+    s.decision(64 + cond(nb.left) + cond(nb.top), (m > 0) as u32);
+    if m > 0 {
+        s.decision(64 + 3, (m > 1) as u32);
+        if m > 1 {
+            s.decision(64 + 3, (m > 2) as u32);
+        }
+    }
+}
+
+/// mvd_lX components of every partition that uses each list.
+fn write_mvds<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
+    for list in 0..2 {
+        for p in 0..c.part.count() {
+            if !c.uses_list(p, list) {
+                continue;
             }
+            let (px, py, _, _) = c.part.rect(p);
+            let r = (py / 4) * 4 + px / 4;
+            let mvd = c.mvd[list][p];
+            write_mvd(s, 0, mvd.x as i32, mvd_sum(nb, r, list, 0));
+            write_mvd(s, 1, mvd.y as i32, mvd_sum(nb, r, list, 1));
         }
     }
-    if c.kind.is_intra() {
-        let cond = |m: Option<&MbInfo>| m.is_some_and(|m| m.kind.is_intra() && m.chroma_mode != 0) as usize;
-        let m = c.chroma_mode as u32;
-        s.decision(64 + cond(nb.left) + cond(nb.top), (m > 0) as u32);
-        if m > 0 {
-            s.decision(64 + 3, (m > 1) as u32);
-            if m > 1 {
-                s.decision(64 + 3, (m > 2) as u32);
-            }
+}
+
+/// mb_qp_delta.
+fn write_qp_delta<S: BinSink>(s: &mut S, nb: &NbCtx, v: i32) {
+    let m = if v > 0 { 2 * v as u32 - 1 } else { (-2 * v) as u32 };
+    s.decision(60 + nb.prev_dqp_nz as usize, (m > 0) as u32);
+    if m > 0 {
+        for k in 1..=m {
+            s.decision(if k == 1 { 62 } else { 63 }, (k < m) as u32);
         }
     }
-    if matches!(c.kind, MbKind::PInter | MbKind::BInter) {
-        for list in 0..2 {
-            for p in 0..c.part.count() {
-                if !c.uses_list(p, list) {
-                    continue;
-                }
-                let (px, py, _, _) = c.part.rect(p);
-                let r = (py / 4) * 4 + px / 4;
-                let mvd = c.mvd[list][p];
-                write_mvd(s, 0, mvd.x as i32, mvd_sum(nb, r, list, 0));
-                write_mvd(s, 1, mvd.y as i32, mvd_sum(nb, r, list, 1));
-            }
-        }
-    }
-    // ---- cbp, transform size, qp delta
-    if c.kind != MbKind::I16x16 {
-        write_cbp(s, nb, c.cbp);
-        if c.cbp & 15 != 0 && nb.t8x8_mode && !is_inxn {
-            let cond = |m: Option<&MbInfo>| m.is_some_and(|m| m.t8x8) as usize;
-            s.decision(399 + cond(nb.left) + cond(nb.top), c.t8x8 as u32);
-        }
-    }
-    if c.cbp == 0 && c.kind != MbKind::I16x16 {
-        return;
-    }
-    {
-        let v = c.qp_delta;
-        let m = if v > 0 { 2 * v as u32 - 1 } else { (-2 * v) as u32 };
-        s.decision(60 + nb.prev_dqp_nz as usize, (m > 0) as u32);
-        if m > 0 {
-            for k in 1..=m {
-                s.decision(if k == 1 { 62 } else { 63 }, (k < m) as u32);
-            }
-        }
-    }
-    // ---- residual
+}
+
+/// Luma residual blocks of the macroblock.
+fn write_luma_residual<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
     if c.kind == MbKind::I16x16 {
         write_residual(s, Cat::LumaDc, &c.luma_dc, cbf_dc(nb, 0));
         if c.cbp & 15 != 0 {
@@ -379,22 +376,26 @@ pub fn write_mb<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
                 write_residual(s, Cat::LumaAc, &c.luma4[blk][1..16], cbf_luma(nb, y * 4 + x));
             }
         }
-    } else {
-        for b8 in 0..4 {
-            if (c.cbp >> b8) & 1 == 0 {
-                continue;
-            }
-            if c.t8x8 {
-                write_residual(s, Cat::Luma8x8, &c.luma8[b8], 0);
-            } else {
-                for i in 0..4 {
-                    let blk = b8 * 4 + i;
-                    let (x, y) = BLK4_XY[blk];
-                    write_residual(s, Cat::Luma4x4, &c.luma4[blk], cbf_luma(nb, y * 4 + x));
-                }
+        return;
+    }
+    for b8 in 0..4 {
+        if (c.cbp >> b8) & 1 == 0 {
+            continue;
+        }
+        if c.t8x8 {
+            write_residual(s, Cat::Luma8x8, &c.luma8[b8], 0);
+        } else {
+            for i in 0..4 {
+                let blk = b8 * 4 + i;
+                let (x, y) = BLK4_XY[blk];
+                write_residual(s, Cat::Luma4x4, &c.luma4[blk], cbf_luma(nb, y * 4 + x));
             }
         }
     }
+}
+
+/// Chroma DC / AC residual blocks of the macroblock.
+fn write_chroma_residual<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
     let chroma = c.cbp >> 4;
     if chroma != 0 {
         for comp in 0..2 {
@@ -408,5 +409,37 @@ pub fn write_mb<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
             }
         }
     }
-    let _ = cur;
+}
+
+/// Write the whole macroblock layer (after mb_skip_flag = 0 in P/B slices).
+pub fn write_mb<S: BinSink>(s: &mut S, nb: &NbCtx, c: &MbCode) {
+    write_mb_type(s, nb, c);
+    let is_inxn = c.kind.is_inxn();
+    // ---- mb_pred
+    if is_inxn {
+        if nb.t8x8_mode {
+            write_transform_size_flag(s, nb, c);
+        }
+        write_intra_pred_modes(s, c);
+    }
+    if c.kind.is_intra() {
+        write_chroma_pred_mode(s, nb, c);
+    }
+    if matches!(c.kind, MbKind::PInter | MbKind::BInter) {
+        write_mvds(s, nb, c);
+    }
+    // ---- cbp, transform size, qp delta
+    if c.kind != MbKind::I16x16 {
+        write_cbp(s, nb, c.cbp);
+        if c.cbp & 15 != 0 && nb.t8x8_mode && !is_inxn {
+            write_transform_size_flag(s, nb, c);
+        }
+    }
+    if c.cbp == 0 && c.kind != MbKind::I16x16 {
+        return;
+    }
+    write_qp_delta(s, nb, c.qp_delta);
+    // ---- residual
+    write_luma_residual(s, nb, c);
+    write_chroma_residual(s, nb, c);
 }

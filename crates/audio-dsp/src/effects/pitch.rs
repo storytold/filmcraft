@@ -16,7 +16,9 @@ const OVERLAP: usize = 8;
 
 #[derive(Clone, Debug)]
 struct PvState {
-    last_phase: Vec<f32>,
+    /// Previous frame's analysis spectrum (bins 0..=n/2); its phase is only needed at peaks.
+    last_re: Vec<f32>,
+    last_im: Vec<f32>,
     /// Accumulated phase rotation per output bin (from the previous frame).
     rot: Vec<f32>,
     new_rot: Vec<f32>,
@@ -26,7 +28,6 @@ struct PvState {
 #[derive(Clone, Debug)]
 struct Scratch {
     mag: Vec<f32>,
-    phase: Vec<f32>,
     out_re: Vec<f32>,
     out_im: Vec<f32>,
     peaks: Vec<usize>,
@@ -65,14 +66,8 @@ impl PitchShifter {
             hop: n / OVERLAP,
             spec: Spectral::new(n, false),
             stft: vec![StftChannel::new(n); ch],
-            state: vec![PvState { last_phase: vec![0.0; bins], rot: vec![0.0; bins], new_rot: vec![0.0; bins] }; ch],
-            scratch: Scratch {
-                mag: vec![0.0; bins],
-                phase: vec![0.0; bins],
-                out_re: vec![0.0; bins],
-                out_im: vec![0.0; bins],
-                peaks: Vec::with_capacity(bins),
-            },
+            state: vec![PvState { last_re: vec![0.0; bins], last_im: vec![0.0; bins], rot: vec![0.0; bins], new_rot: vec![0.0; bins] }; ch],
+            scratch: Scratch { mag: vec![0.0; bins], out_re: vec![0.0; bins], out_im: vec![0.0; bins], peaks: Vec::with_capacity(bins) },
             target_ratio: 1.0,
             ratio: 1.0,
         };
@@ -95,7 +90,6 @@ fn shift_frame(spec: &mut Spectral, st: &mut PvState, sc: &mut Scratch, ratio: f
     for k in 0..bins {
         let (re, im) = (spec.re[k], spec.im[k]);
         sc.mag[k] = (re * re + im * im).sqrt();
-        sc.phase[k] = im.atan2(re);
         max_mag = max_mag.max(sc.mag[k]);
         sc.out_re[k] = 0.0;
         sc.out_im[k] = 0.0;
@@ -133,27 +127,32 @@ fn shift_frame(spec: &mut Spectral, st: &mut PvState, sc: &mut Scratch, ratio: f
             bins
         };
         // Instantaneous frequency of the peak (bins).
-        let d = wrap(sc.phase[p] - st.last_phase[p] - p as f32 * expect);
+        let phase = spec.im[p].atan2(spec.re[p]);
+        let last_phase = st.last_im[p].atan2(st.last_re[p]);
+        let d = wrap(phase - last_phase - p as f32 * expect);
         let f = p as f32 + d / expect;
         let target = (p as f32 * ratio).round() as isize;
         let delta = target - p as isize;
         let prev_rot = if (0..bins as isize).contains(&target) { st.rot[target as usize] } else { 0.0 };
         let rot = wrap(prev_rot + (ratio - 1.0) * f * expect);
+        // mag·e^{i(φ+rot)} = X·e^{i·rot}: one sin_cos per region instead of one per bin.
+        let (s, c) = rot.sin_cos();
         for k in start..end {
             let t = k as isize + delta;
             if t < 0 || t >= bins as isize {
                 continue;
             }
             let t = t as usize;
-            let (s, c) = (sc.phase[k] + rot).sin_cos();
-            sc.out_re[t] += sc.mag[k] * c;
-            sc.out_im[t] += sc.mag[k] * s;
+            let (re, im) = (spec.re[k], spec.im[k]);
+            sc.out_re[t] += re * c - im * s;
+            sc.out_im[t] += re * s + im * c;
             st.new_rot[t] = rot;
         }
         start = end;
     }
     for k in 0..bins {
-        st.last_phase[k] = sc.phase[k];
+        st.last_re[k] = spec.re[k];
+        st.last_im[k] = spec.im[k];
         spec.re[k] = sc.out_re[k];
         spec.im[k] = sc.out_im[k];
     }
@@ -168,7 +167,8 @@ impl AudioEffect for PitchShifter {
     fn reset(&mut self) {
         self.stft.iter_mut().for_each(StftChannel::reset);
         for s in &mut self.state {
-            s.last_phase.iter_mut().for_each(|v| *v = 0.0);
+            s.last_re.iter_mut().for_each(|v| *v = 0.0);
+            s.last_im.iter_mut().for_each(|v| *v = 0.0);
             s.rot.iter_mut().for_each(|v| *v = 0.0);
         }
         self.ratio = self.target_ratio;
@@ -239,6 +239,80 @@ mod tests {
             let r = rms(tail);
             assert!((db(a_out / std::f64::consts::SQRT_2 / r)).abs() < 1.0);
         }
+    }
+
+    /// The previous per-bin version of `shift_frame` (atan2 and sin_cos for every bin).
+    fn shift_frame_reference(re: &mut [f32], im: &mut [f32], last_phase: &mut [f32], rot: &mut [f32], ratio: f32, expect: f32) {
+        let bins = last_phase.len();
+        let mag: Vec<f32> = (0..bins).map(|k| (re[k] * re[k] + im[k] * im[k]).sqrt()).collect();
+        let phase: Vec<f32> = (0..bins).map(|k| im[k].atan2(re[k])).collect();
+        let max_mag = mag.iter().fold(0.0f32, |a, &m| a.max(m));
+        let (mut out_re, mut out_im, mut new_rot) = (vec![0.0f32; bins], vec![0.0f32; bins], vec![0.0f32; bins]);
+        let floor = max_mag * 1e-5;
+        let peaks: Vec<usize> = (0..bins)
+            .filter(|&k| {
+                let m = mag[k];
+                m > floor && (k.saturating_sub(2)..k).all(|j| mag[j] < m) && (k + 1..=(k + 2).min(bins - 1)).all(|j| mag[j] <= m)
+            })
+            .collect();
+        let mut start = 0usize;
+        for (i, &p) in peaks.iter().enumerate() {
+            let end = match peaks.get(i + 1) {
+                Some(&q) => (p + 1..q).fold(p + 1, |mi, j| if mag[j] < mag[mi] { j } else { mi }),
+                None => bins,
+            };
+            let d = wrap(phase[p] - last_phase[p] - p as f32 * expect);
+            let f = p as f32 + d / expect;
+            let target = (p as f32 * ratio).round() as isize;
+            let delta = target - p as isize;
+            let prev_rot = if (0..bins as isize).contains(&target) { rot[target as usize] } else { 0.0 };
+            let r = wrap(prev_rot + (ratio - 1.0) * f * expect);
+            for k in start..end {
+                let t = k as isize + delta;
+                if t < 0 || t >= bins as isize {
+                    continue;
+                }
+                let t = t as usize;
+                let (s, c) = (phase[k] + r).sin_cos();
+                out_re[t] += mag[k] * c;
+                out_im[t] += mag[k] * s;
+                new_rot[t] = r;
+            }
+            start = end;
+        }
+        last_phase.copy_from_slice(&phase);
+        re[..bins].copy_from_slice(&out_re);
+        im[..bins].copy_from_slice(&out_im);
+        rot.copy_from_slice(&new_rot);
+    }
+
+    #[test]
+    fn matches_per_bin_reference_to_rounding() {
+        let n = fft_size(SR);
+        let (bins, hop) = (n / 2 + 1, n / OVERLAP);
+        let expect = 2.0 * PI * hop as f32 / n as f32;
+        let mut rng = Rng::new(3);
+        let tones = [sine(220.0, 0.3, SR as f64, 40 * hop + n, 0.0), sine(1234.5, 0.2, SR as f64, 40 * hop + n, 1.0)];
+        let x: Vec<f32> = (0..40 * hop + n).map(|i| tones[0][i] + tones[1][i] + 0.05 * rng.uniform()).collect();
+        let mut spec = Spectral::new(n, false);
+        let mut st = PvState { last_re: vec![0.0; bins], last_im: vec![0.0; bins], rot: vec![0.0; bins], new_rot: vec![0.0; bins] };
+        let mut sc = Scratch { mag: vec![0.0; bins], out_re: vec![0.0; bins], out_im: vec![0.0; bins], peaks: Vec::new() };
+        let (mut last_phase, mut rot) = (vec![0.0f32; bins], vec![0.0f32; bins]);
+        let (mut ratio, mut worst) = (1.0f32, 0.0f32);
+        for f in 0..40 {
+            let target = if f < 20 { 2f32.powf(7.0 / 12.0) } else { 2f32.powf(-5.0 / 12.0) };
+            ratio += (target - ratio) * 0.5;
+            spec.analyse(&x[f * hop..f * hop + n]);
+            let (mut re, mut im) = (spec.re.clone(), spec.im.clone());
+            shift_frame(&mut spec, &mut st, &mut sc, ratio, expect);
+            shift_frame_reference(&mut re, &mut im, &mut last_phase, &mut rot, ratio, expect);
+            assert!(st.rot.iter().zip(&rot).all(|(a, b)| a.to_bits() == b.to_bits()), "frame {f}: rotations differ");
+            let peak = (0..bins).map(|k| re[k].hypot(im[k])).fold(0.0f32, f32::max);
+            for k in 0..bins {
+                worst = worst.max((spec.re[k] - re[k]).hypot(spec.im[k] - im[k]) / peak);
+            }
+        }
+        assert!(worst < 1e-5, "relative deviation {worst}");
     }
 
     #[test]

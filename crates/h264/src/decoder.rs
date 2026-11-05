@@ -16,7 +16,16 @@ use crate::transform::LevelScale;
 use crate::{ColorInfo, Picture};
 use filmcraft_bitstream::{BitReader, annexb_nals, length_prefixed_nals, unescape_rbsp};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Most pictures one `decode` call may start: a chunk is an access unit, or a few in a transport
+/// stream packet. Each picture is a full frame, and small slices make them cheap to ask for.
+const MAX_PICTURES_PER_CALL: usize = 64;
+
+/// The decoder supports at most 16 reference pictures, so constructing more
+/// inferred gap pictures cannot improve a usable reference list.
+const MAX_INFERRED_GAP_FRAMES: u32 = 16;
 
 /// One slice of a picture job.
 struct SliceJob {
@@ -74,6 +83,8 @@ struct Shared {
     stats: Mutex<DecodeStats>,
     /// Recycled picture buffers.
     pool: Mutex<Vec<PicState>>,
+    /// Set by [`Decoder::reset`]: jobs still running stop at the next macroblock row.
+    cancel: Arc<AtomicBool>,
 }
 
 /// H.264 decoder.
@@ -84,6 +95,8 @@ pub struct Decoder {
     dpb: Dpb<FrameRef>,
     poc_state: PocState,
     prev_ref_frame_num: u32,
+    /// Pictures started by the current `decode` call (see [`MAX_PICTURES_PER_CALL`]).
+    call_pictures: usize,
     pending: Option<PendingPic>,
     next_id: u32,
     active_sps: Option<Arc<Sps>>,
@@ -145,6 +158,7 @@ impl Decoder {
             dpb: Dpb::new(),
             poc_state: PocState::default(),
             prev_ref_frame_num: 0,
+            call_pictures: 0,
             pending: None,
             next_id: 1,
             active_sps: None,
@@ -177,6 +191,26 @@ impl Decoder {
 
     pub fn draft(&self) -> bool {
         self.draft
+    }
+
+    /// Forget the stream (parameter sets, `avcC` configuration, reference pictures and pending
+    /// output) as if the decoder were new, e.g. to seek. Unlike making a new decoder, this keeps the
+    /// worker threads, the draft setting and the recycled picture buffers, and the pictures still
+    /// being decoded stop at their next macroblock row instead of running to the end.
+    pub fn reset(&mut self) {
+        self.shared.cancel.store(true, Ordering::Relaxed);
+        let pool = self.shared.pool.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default();
+        self.shared = Arc::new(Shared { pool: Mutex::new(pool), ..Shared::default() });
+        self.spss.fill(None);
+        self.ppss.fill(None);
+        self.nal_length_size = None;
+        self.dpb = Dpb::new();
+        self.poc_state = PocState::default();
+        self.prev_ref_frame_num = 0;
+        self.pending = None;
+        self.active_sps = None;
+        self.ls_cache.clear();
+        self.out_queue.clear();
     }
 
     /// Configure from an `avcC` (AVCDecoderConfigurationRecord) box payload.
@@ -226,6 +260,7 @@ impl Decoder {
             Some(n) => length_prefixed_nals(data, n)?,
             None => annexb_nals(data),
         };
+        self.call_pictures = 0;
         let mut result = Ok(());
         for nal in nals {
             if let Err(e) = self.handle_nal(nal, pts) {
@@ -234,7 +269,7 @@ impl Decoder {
             }
         }
         // The access unit is complete: hand its picture to a decoding job.
-        self.submit_pending();
+        self.submit_pending()?;
         if let Some(e) = self.take_error() {
             result = result.and(Err(e));
         }
@@ -254,7 +289,7 @@ impl Decoder {
 
     /// Output all remaining pictures (end of stream).
     pub fn flush(&mut self) -> Vec<Picture> {
-        self.submit_pending();
+        let _ = self.submit_pending();
         let mut outs = Vec::new();
         self.dpb.flush(&mut outs);
         self.emit(outs);
@@ -304,7 +339,7 @@ impl Decoder {
             nal_type::SLICE_DPA | nal_type::SLICE_DPB | nal_type::SLICE_DPC => {
                 return unsupported("data partitioning (Extended profile)");
             }
-            nal_type::END_SEQ | nal_type::END_STREAM => self.submit_pending(),
+            nal_type::END_SEQ | nal_type::END_STREAM => self.submit_pending()?,
             // SEI, AUD, filler, SPS extension, prefix NAL, subset SPS, auxiliary and extension slices: skipped.
             _ => {}
         }
@@ -329,13 +364,16 @@ impl Decoder {
         let (sh, _, _) = SliceHeader::parse(&rbsp, hdr, |id| {
             let pps = ppss[id as usize].as_ref().ok_or_else(|| Error::MissingParameterSet(format!("PPS {id}")))?;
             let sps = spss[pps.sps_id as usize].as_ref().ok_or_else(|| Error::MissingParameterSet(format!("SPS {}", pps.sps_id)))?;
+            // Before the header fields that depend on the SPS: they are validated for the streams
+            // we decode (a 10-bit slice may have a QP below 0), so a stream we cannot decode must
+            // fail as unsupported here, not as invalid there (#626).
+            sps.check_supported()?;
             found = Some((pps.clone(), sps.clone()));
             Ok((&**pps, &**sps))
         })?;
         let Some((pps, sps)) = found else {
             return Err(Error::MissingParameterSet("PPS".into()));
         };
-        sps.check_supported()?;
         if pps.num_slice_groups > 1 {
             return unsupported("slice groups (FMO)");
         }
@@ -353,7 +391,7 @@ impl Decoder {
             Some(p) => is_new_picture(&p.first, &sh, &sps) || sh.first_mb_in_slice == 0 || !Arc::ptr_eq(&p.sps, &sps),
         };
         if new_pic {
-            self.submit_pending();
+            self.submit_pending()?;
             if sh.first_mb_in_slice != 0 && self.active_sps.is_none() {
                 return invalid("stream does not start with the first slice of a picture");
             }
@@ -401,6 +439,10 @@ impl Decoder {
     }
 
     fn start_picture(&mut self, sh: &SliceHeader, sps: &Arc<Sps>, pts: i64) -> Result<()> {
+        self.call_pictures += 1;
+        if self.call_pictures > MAX_PICTURES_PER_CALL {
+            return Err(Error::Invalid("too many pictures in one chunk".into()));
+        }
         // Activate SPS; a resolution change flushes the DPB.
         let changed = match &self.active_sps {
             None => true,
@@ -425,6 +467,10 @@ impl Decoder {
         } else {
             let max = sps.max_frame_num();
             if sh.frame_num != self.prev_ref_frame_num && sh.frame_num != (self.prev_ref_frame_num + 1) % max {
+                let gap = (sh.frame_num + max - self.prev_ref_frame_num - 1) % max;
+                if gap > MAX_INFERRED_GAP_FRAMES {
+                    return Err(Error::Invalid("frame number gap exceeds the supported reference limit".into()));
+                }
                 // frame_num gap (8.2.5.2): insert "non-existing" frames. Their samples are never used by
                 // conforming streams; copy the latest decoded frame for concealment.
                 let meta = Arc::new(output_meta(sps, pts, false));
@@ -464,8 +510,8 @@ impl Decoder {
     }
 
     /// Start decoding the pending picture and do its reference marking / DPB insertion.
-    fn submit_pending(&mut self) {
-        let Some(p) = self.pending.take() else { return };
+    fn submit_pending(&mut self) -> Result<()> {
+        let Some(p) = self.pending.take() else { return Ok(()) };
         let PendingPic { frame, sps, first, poc, pts, key, slices } = p;
         let draft = self.draft && first.nal_ref_idc == 0;
         self.dispatch(frame.clone(), slices, draft);
@@ -476,8 +522,9 @@ impl Decoder {
         let meta = Arc::new(OutputMeta { draft, ..output_meta(&sps, pts, key) });
         let mut outs = Vec::new();
         let fpoc = frame.poc;
-        self.dpb.store_picture(&first, frame, fpoc, sps.max_frame_num(), sps.max_num_ref_frames as usize, meta, &mut outs);
+        self.dpb.store_picture(&first, frame, fpoc, (sps.max_frame_num(), sps.max_num_ref_frames as usize), meta, &mut outs)?;
         self.emit(outs);
+        Ok(())
     }
 
     fn dispatch(&mut self, frame: FrameRef, slices: Vec<SliceJob>, draft: bool) {
@@ -513,12 +560,20 @@ fn run_job(frame: FrameRef, slices: Vec<SliceJob>, shared: &Shared, draft: bool)
         _ => PicState::new(frame.clone()),
     };
     pic.skip_deblock = draft;
+    pic.cancel = Some(shared.cancel.clone());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut first_err = None;
         for s in &slices {
+            if pic.cancelled() {
+                break;
+            }
             if let Err(e) = decode_slice(s, &mut pic) {
                 first_err.get_or_insert(e);
             }
+        }
+        if pic.cancelled() {
+            // Nothing will show this picture: publish the remaining rows as they are.
+            pic.skip_deblock = true;
         }
         pic.flush_rows(true);
         first_err
