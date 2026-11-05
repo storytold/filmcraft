@@ -729,6 +729,8 @@ async fn the_bridge_refuses_the_apps_export_queue() {
         let e = m.run(id, json!({"id": 1, "path": q.to_string_lossy()})).await.unwrap_err().to_string();
         assert!(e.contains("the app's export queue can hold exports to anywhere"), "{id}: {e}");
     }
+    let e = m.run("file.revert", json!({})).await.unwrap_err().to_string();
+    assert!(e.contains("wherever it's saved"), "{e}");
     // A direct export gets past the checks, and fails only on reaching the app.
     let e = m.run("file.exportMedia", json!({"path": q.to_string_lossy()})).await.unwrap_err().to_string();
     assert!(!e.contains("confined"), "{e}");

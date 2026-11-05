@@ -125,13 +125,18 @@ impl AutomationRoots {
         Err(format!("automation path rejected: outside the {kind} root {}: {path}", root.shown.display()))
     }
 
-    /// What the bridge refuses on top of [`Self::check_command`]: the app's whole export queue. It
-    /// can hold items its user added, with output paths anywhere, and most of these commands would
-    /// start one (`export.queue.list` too, while the queue is running), show its path or stop it.
-    /// Export with `file.exportMedia` or `export.quick` instead.
+    /// What the bridge refuses on top of [`Self::check_command`]: commands that act on paths the
+    /// app already holds, which no parameter names and the app's own file access doesn't check.
+    /// That's the export queue, whose items can write anywhere (most of these commands would start
+    /// one, `export.queue.list` too while the queue is running, show its path or stop it), and
+    /// `file.revert`, which reads the open project again from wherever it's saved. Export with
+    /// `file.exportMedia` or `export.quick` instead.
     pub fn check_bridge_command(id: &str) -> Result<(), String> {
         if id.starts_with("export.queue.") {
             return Err(format!("`{id}` is not available while file access is confined: the app's export queue can hold exports to anywhere"));
+        }
+        if id == "file.revert" {
+            return Err(format!("`{id}` is not available while file access is confined: it reads the app's project from wherever it's saved"));
         }
         Ok(())
     }

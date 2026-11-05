@@ -41,6 +41,7 @@ without both flags nothing is confined. While confined:
   names is opened wherever it is.
 - Bridge mode also refuses every `export.queue.*` command, because the app's queue can hold exports
   its user added to anywhere. Use `file.exportMedia` or `export.quick`, which are checked.
+  It refuses `file.revert` too, which reads the app's project from wherever it's saved.
 
 Not confined: the `--project` file the server was started with (the footage it names is), temporary
 files, the settings and libraries the app keeps in its data folder, and the desktop app's own
