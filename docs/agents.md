@@ -33,9 +33,9 @@ without both flags nothing is confined. While confined:
 - A command must name its destination where it would otherwise pick one: `tts.create`, `tts.edit`
   and `audio.voiceover.stop` need `dir`; `file.save`, `file.saveAsTemplate` and
   `graphics.template.export` need `path`.
-- A command that writes is refused while the folder it writes in, or any folder below that, holds a
-  link leading out of the write root: exports choose the final file names after the check, so any
-  name there could be used.
+- A command that writes is refused while the folder it writes in, or any folder below that or
+  reached through a link from there, holds a link leading out of the write root: exports choose the
+  final file names after the check, so any name there could be used.
 - Headless sessions check every file again as it is opened, so footage a project names outside the
   read root shows as offline.
 - Bridge mode enforces the command checks before each command reaches the app, and refuses the

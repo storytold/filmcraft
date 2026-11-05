@@ -28,8 +28,8 @@
 //!   name folders the app writes into later) is held to the write root.
 //! - The bridge's UI-driving tools are refused while confined: they could drive the live app's
 //!   file dialogs past the roots.
-//! - A command that writes is refused while the folder it writes in, or any folder below that,
-//!   holds a link leading out of the write root. Exports add or change the extension, take the
+//! - A command that writes is refused while the folder it writes in, or any folder below that or
+//!   reached through a link from there, holds a link leading out of the write root. Exports add or change the extension, take the
 //!   sequence's name in a folder, number their stills and put caption files beside the output, and
 //!   an AAF or OMF export writes into a folder of its own beside the file. They open those names
 //!   themselves after this check, so the names aren't known here but the folder is.
@@ -45,6 +45,7 @@
 //! that race. The roots keep an agent to the files it was given; they don't guard against other
 //! programs on the computer.
 
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
@@ -139,19 +140,28 @@ impl AutomationRoots {
         let folder = if path.ends_with(['/', '\\']) || given.is_dir() { Some(given) } else { given.parent() };
         let cannot_list = |e: std::io::Error| format!("automation path rejected: cannot list the folders of {path}: {e}");
         let mut folders: Vec<PathBuf> = folder.map(Path::to_path_buf).into_iter().collect();
+        let mut seen = HashSet::new();
         while let Some(folder) = folders.pop() {
-            let entries = match std::fs::read_dir(&folder) {
-                Ok(entries) => entries,
+            let real = match std::fs::canonicalize(&folder) {
+                Ok(real) => real,
                 // Nothing there yet, so nothing there leads anywhere.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(cannot_list(e)),
             };
-            for entry in entries {
+            // Links can lead back to a folder already looked at.
+            if !seen.insert(real.clone()) {
+                continue;
+            }
+            for entry in std::fs::read_dir(&real).map_err(cannot_list)? {
                 let entry = entry.map_err(cannot_list)?;
                 let kind = entry.file_type().map_err(cannot_list)?;
                 if kind.is_symlink() {
                     self.check(&entry.path().to_string_lossy(), Access::Write)
                         .map_err(|e| format!("{e} (a command writing to {path} may pick that name, so the link has to go first)"))?;
+                    // Inside the root, but what it leads to can hold a link out.
+                    if entry.path().is_dir() {
+                        folders.push(entry.path());
+                    }
                 } else if kind.is_dir() {
                     folders.push(entry.path());
                 }
@@ -664,6 +674,17 @@ mod tests {
         assert!(made(&base.join("outside/old.mp4"), &out.join("aaf/x Media/x Video Mixdown.mov")));
         let e = roots.check_command("file.exportAaf", &json!({"path": s(out.join("aaf/x.aaf"))})).unwrap_err();
         assert!(e.contains("may pick that name"), "{e}");
+        // So does one in a folder that a link inside the root leads to.
+        std::fs::create_dir_all(out.join("chain")).unwrap();
+        std::fs::create_dir_all(out.join("other")).unwrap();
+        assert!(made(&out.join("other"), &out.join("chain/y Media")));
+        assert!(made(&base.join("outside/old.mp4"), &out.join("other/y Video Mixdown.mov")));
+        let e = roots.check_command("file.exportAaf", &json!({"path": s(out.join("chain/y.aaf"))})).unwrap_err();
+        assert!(e.contains("may pick that name"), "{e}");
+        // Links that go round in a circle end the walk.
+        std::fs::create_dir_all(out.join("loop/a")).unwrap();
+        assert!(made(&out.join("loop"), &out.join("loop/a/up")));
+        assert_eq!(roots.check_command("file.exportAaf", &json!({"path": s(out.join("loop/x.aaf"))})), Ok(()));
         // One level down, the folder is clean, and its own links stay inside the root.
         let params = json!({"path": s(out.join("clean/result"))});
         assert_eq!(roots.check_command("file.exportMedia", &params), Ok(()));
