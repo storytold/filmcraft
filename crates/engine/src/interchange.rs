@@ -69,6 +69,8 @@ fn write_embedded_audio(s: &Session, path: &str, wav: &[u8]) -> Result<String> {
         match s.services.write_file_new(&candidate, wav) {
             Ok(()) => return Ok(candidate),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // An occupied name is compared again rather than taken as a mismatch: another
+                // import may have written these same bytes there since the search pass.
                 if s.services.existing_file_matches(&candidate, wav).unwrap_or(false) {
                     return Ok(candidate);
                 }

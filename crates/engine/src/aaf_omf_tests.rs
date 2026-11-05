@@ -641,3 +641,20 @@ mod selected_streams {
         assert!(files.writes.lock().unwrap().is_empty());
     }
 }
+
+/// The native matcher answers false for a name nothing occupies, as the trait documents, rather
+/// than an error the caller would have to treat as a mismatch.
+#[test]
+fn an_absent_candidate_is_not_a_match() {
+    use crate::Services as _;
+    let dir = std::env::temp_dir().join(format!("filmcraft-absent-candidate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let absent = dir.join("take.wav");
+    let path = absent.to_str().unwrap();
+    assert!(!crate::FsServices.existing_file_matches(path, b"RIFF").unwrap(), "an absent file is not an occupied one");
+    std::fs::write(&absent, b"RIFF").unwrap();
+    assert!(crate::FsServices.existing_file_matches(path, b"RIFF").unwrap());
+    assert!(!crate::FsServices.existing_file_matches(path, b"RIFX").unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}

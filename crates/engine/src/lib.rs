@@ -229,7 +229,12 @@ impl Services for FsServices {
     fn existing_file_matches(&self, path: &str, data: &[u8]) -> std::io::Result<bool> {
         use std::io::Read;
 
-        let before = std::fs::symlink_metadata(path)?;
+        // an absent candidate is not an occupied file: false, as the trait says, not an error
+        let before = match std::fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        };
         let Ok(expected_len) = u64::try_from(data.len()) else { return Ok(false) };
         if !before.file_type().is_file() || before.len() != expected_len {
             return Ok(false);
