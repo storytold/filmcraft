@@ -3750,3 +3750,13 @@
 	Highlight Level	ღია ტონების დონე
 	Highlight Softness	ღია ტონების სირბილე
 	Key Out Brights	ღია ტონების ამოკვეთა
+	10-bit color	10-ბიტიანი ფერი
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	დაამატეთ მედია პროექტში. ჩააგდეთ ფაილები ან საქაღალდეები ფანჯრის ნებისმიერ ადგილას, ან აირჩიეთ წყარო ქვემოთ.
+	All Intra	მხოლოდ Intra
+	Every frame a keyframe (edit-friendly, larger files)	ყოველი კადრი საკვანძოა (მონტაჟისთვის მოსახერხებელი, უფრო დიდი ფაილები)
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10-bit 4:2:0) სეკვენციის ზომით, მუდმივი ხარისხი CRF 16, AAC 320 kbps; 10-ბიტიანი მასტერი
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10-bit 4:2:0, ყოველი კადრი საკვანძოა), CRF 12, AAC 320 kbps; მონტაჟისთვის მოსახერხებელი შუალედური ფორმატი
+	H.264 High 10 Master	H.264 High 10 მასტერი
+	High 10	High 10
+	Maintain Audio Pitch	აუდიოს ტონის სიმაღლის შენარჩუნება
