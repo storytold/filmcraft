@@ -346,6 +346,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-05 | minor | NVENC H.265 encode on Linux (#1648, #1624): the format is offered wherever NVENC can open an HEVC session |
 | 2026-10-30 | minor | G14: three key languages have no catalog (Hindi, Arabic, Vietnamese); Korean, Italian, German and Russian are near-complete; Ukrainian is menus only; G13 GIF transparency retained |
 | 2026-10-12 | minor | Removed shipped items: AVI import (#598), FLAC in MP4 (#603), multicam paging, deselect on empty space (#683), Project marquee (#578), image-sequence downloads in Chrome (#378), slow interchange import (#461) |
 | 2026-10-10 | major | Created from ROADMAP.md's "Where we are lacking" (2026-10-05); re-ranked against Premiere 26.5.2 and the 188 open issues; added `.prproj`, 10-bit / 4:2:2 camera decode, launch crashes and missing PR CI, localization, delivery formats |

@@ -210,9 +210,13 @@ level 4 High tier, which many hardware decoders refuse; it is now level 4.1 Main
   `"format": "hevc"`. `register()` hands `nvenc::hevc_available` to
   `filmcraft_export::register_format_probe`: one small HEVC session (a 640×360 encoder, the answer
   kept; about half a second in a fresh process, nearly all of it opening the Direct3D 11 device and
-  the NVENC session, which every NVENC export pays too). `register()` also asks it on a thread of its
-  own (`nvenc::warm_hevc_probe`), so the first draw of the format list does not wait for it; a
-  caller that asks while it runs waits for the same answer. The
+  the NVENC session, which every NVENC export pays too). On Windows `register()` also asks it on a
+  thread of its own (`nvenc::warm_hevc_probe`), so the first draw of the format list does not wait
+  for it; a caller that asks while it runs waits for the same answer. **Linux does not warm it**:
+  the probe opens a hardware session, and a short-lived CLI can exit while the probe is still inside
+  the driver, whose exit handler then waits on a join the probe cannot reach - measured by
+  @tydude001, `filmcraft-cli --test cli` hung in 21 of 45 runs with the thread started and in 0 of 45
+  without it. The
   Hardware encoding toggle governs H.264 only: with H.265 selected NVENC is used whether it is Auto
   or Off, because nothing else can encode it.
 - **What it writes:** HEVC Main, 8-bit 4:2:0, SDR BT.709 limited range (Main 10 HDR: see below) (the VUI says so, with the
