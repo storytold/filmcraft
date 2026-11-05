@@ -9,5 +9,6 @@ publish = false
 workspace = true
 
 [dependencies]
+chrono = { workspace = true, features = ["clock"] }
 serde_json = { workspace = true }
 filmcraft-testkit = { workspace = true }
