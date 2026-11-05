@@ -450,7 +450,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Vill du verkligen slänga ändringarna i '{file}'?
 	Yes	Ja
 	No	Nej
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Lägg till media i projektet. Släpp filer var som helst i fönstret eller välj en källa nedan.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Lägg till media i projektet. Släpp filer eller mappar var som helst i fönstret eller välj en källa nedan.
 	Browse files…	Bläddra bland filer…
 	Movies, audio and stills from disk	Filmer, ljud och stillbilder från disk
 	Demo footage	Demomaterial
@@ -3461,6 +3461,7 @@
 	Clip Speed / Duration	Klipphastighet/längd
 	Speed:	Hastighet:
 	Reverse Speed	Omvänd hastighet
+	Maintain Audio Pitch	Behåll ljudets tonhöjd
 	Ripple Edit, Shifting Trailing Clips	Rippelredigering, flyttar efterföljande klipp
 	About	Om
 	Contributors	Bidragsgivare

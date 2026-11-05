@@ -139,12 +139,18 @@ progress and stop it:
   `notifications/progress` `{progressToken: T, progress: <frames done>, total: <frames>, message:
   <job status>}` at most every 100 ms while frames advance. Without a token it sends none.
 - `notifications/cancelled` for the request stops the encode at the next batch (`jobs.cancel`),
-  deletes the partial output (the movie, or the frames and caption sidecar written so far) and sends
-  no response, as the MCP cancellation utility asks.
+  deletes the partial output (the movie, or the frames and caption sidecar written so far, and no
+  other export's files beside them) and sends no response, as the MCP cancellation utility asks.
 - Without `wait` the command returns `{job, path, poll: "jobs.list", cancel: "jobs.cancel"}` at
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
+- An image sequence (PNG, TIFF, DPX, ... stills) never writes the path it is given: `a.png` becomes
+  `a000.png`, `a001.png` and so on. `file.exportMedia`, `export.quick` and the job's `result` then
+  name the first still as `path`, the name `file.import` takes for the sequence, and the two commands
+  add `lastPath`, the last still, and `basePath`, the name the stills are numbered from (a cancelled
+  long export's clean-up removes only the stills numbered from `basePath` with the digits of
+  `lastPath`, up to it). `filmcraft-cli export` prints the first and the last.
 - `file.exportMedia`, `export.quick`, `export.resolve` and `export.queue.add` also return `warnings` (an array of
   strings, empty when none). If the default or explicitly selected In/Out range covers one
   sequence frame and at least one mark is set, the warning suggests `range: "entire"` (#3364).
@@ -248,6 +254,14 @@ filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the runnin
 strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 (`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.
 `--save` writes back to `--project`; `--save-as path` writes elsewhere.
+
+Runs that save over the project they opened take turns, so parallel scripts don't lose edits. Each
+holds an OS lock on `.<name>.lock` next to the project from before it reads the file until it exits;
+the next one says so on stderr, waits, and then edits what the first one saved. A crash releases the
+lock, and the empty file left behind is harmless. Only these CLI runs take the lock: the desktop app,
+`mcp`, and a `file.save` line in a script run without `--save` don't. OS locks can also be unreliable
+over network shares and synced folders. If the lock can't be taken, the run warns on stderr and
+saves anyway.
 
 Media that is offline when it is needed (the file is missing, was made offline, or can't be read)
 renders as the "media not found" placeholder. `export` and `render` then name each such item on

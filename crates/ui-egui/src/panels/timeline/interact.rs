@@ -146,7 +146,10 @@ fn marquee_clips(seq: &Sequence, layout: &Layout, r: Rect) -> Vec<ClipId> {
     layout
         .rows
         .iter()
-        .filter(|row| row.rect.intersects(r))
+        .filter(|row| {
+            let s = layout.shown(row);
+            s.height() > 0.0 && s.intersects(r)
+        })
         .filter_map(|row| seq.track(row.track))
         .flat_map(|tr| tr.items.iter().filter(|i| i.start < b && i.end() > a).map(|i| i.id))
         .collect()
@@ -1412,12 +1415,32 @@ pub(super) fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence
 
 #[cfg(test)]
 mod marquee_tests {
+    use super::super::layout::Row;
     use super::*;
 
     fn layout(v_scroll: f32, a_scroll: f32) -> Layout {
         let content = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 600.0));
         let ruler = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 20.0));
         Layout { content, ruler, rows: Vec::new(), pps: 100.0, scroll: 0.0, split_y: 300.0, v_scroll, a_scroll }
+    }
+
+    /// #2978: V1 scrolled down under the audio tracks, behind A1. A box drawn on A1 takes A1's
+    /// clip, not the hidden video clip there (which a box over the audio tracks used to select).
+    #[test]
+    fn a_box_on_the_audio_tracks_skips_video_rows_scrolled_under_them() {
+        let mut p = filmcraft_project::Project::new("t");
+        let id = p.new_sequence("s", filmcraft_project::SequenceSettings::default(), 1, 1, None);
+        let mut seq = p.sequence(id).cloned().expect("sequence");
+        seq.video_tracks[0].items = vec![crate::panels::timeline_hit::tests::clip(1, 100.0, 300.0)];
+        seq.audio_tracks[0].items = vec![crate::panels::timeline_hit::tests::clip(2, 100.0, 300.0)];
+        let mut l = layout(0.0, 0.0);
+        let band = Rect::from_min_max(pos2(0.0, 320.0), pos2(1000.0, 380.0));
+        l.rows = vec![
+            Row { track: seq.video_tracks[0].id, kind: TrackKind::Video, index: 0, rect: band, lane: false },
+            Row { track: seq.audio_tracks[0].id, kind: TrackKind::Audio, index: 0, rect: band, lane: false },
+        ];
+        let picked = marquee_clips(&seq, &l, Rect::from_min_max(pos2(150.0, 330.0), pos2(250.0, 360.0)));
+        assert_eq!(picked, vec![ClipId(2)]);
     }
 
     /// Review of #3583: a video corner scrolled down past the divider, with the pointer still over the

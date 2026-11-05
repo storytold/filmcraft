@@ -463,7 +463,7 @@
 	Replace	置き換え
 	Yes	はい
 	No	いいえ
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	プロジェクトにメディアを追加します。ウィンドウ内の任意の場所にファイルをドロップするか、下のソースを選択してください。
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	プロジェクトにメディアを追加します。ウィンドウ内の任意の場所にファイルまたはフォルダーをドロップするか、下のソースを選択してください。
 	Browse files…	ファイルを参照…
 	Movies, audio and stills from disk	ディスク上のムービー、オーディオ、静止画
 	Demo footage	デモ素材
@@ -3472,6 +3472,7 @@
 	Clip Speed / Duration	クリップの速度 / 長さ
 	Speed:	速度:
 	Reverse Speed	逆再生する
+	Maintain Audio Pitch	オーディオのピッチを維持
 	Ripple Edit, Shifting Trailing Clips	後続のクリップをずらしてリップル編集する
 	About	バージョン情報
 	Contributors	コントリビューター
@@ -3731,3 +3732,15 @@
 	Previous	前へ
 	Next	次へ
 	Enter a valid HH:MM:SS:FF timecode	有効なタイムコードを HH:MM:SS:FF 形式で入力してください
+	Open Presets Folder	プリセットフォルダーを開く
+	Scan Presets Folder	プリセットフォルダーをスキャン
+	From preset file:	プリセットファイル：
+	No presets folder: the app has no data directory	プリセットフォルダーがありません：アプリにデータディレクトリがありません
+	Imported {n} preset(s)	{n} 個のプリセットを読み込みました
+	Imported {n} preset(s); {skipped} skipped	{n} 個のプリセットを読み込みました（{skipped} 個スキップ）
+	Imported {n} preset(s); {warnings} with unsupported parameters	{n} 個のプリセットを読み込みました（{warnings} 個に未対応パラメーターあり）
+	Imported {n} preset(s); {skipped} skipped, {warnings} with unsupported parameters	{n} 個のプリセットを読み込みました（{skipped} 個スキップ、{warnings} 個に未対応パラメーターあり）
+	Imported {n} preset(s); not imported: {error}	{n} 個のプリセットを読み込みました。読み込めませんでした：{error}
+	Preset library updated: {imported} loaded, {removed} removed	プリセットライブラリを更新しました：{imported} 個読み込み、{removed} 個削除
+	Preset library updated	プリセットライブラリを更新しました
+	Preset library is up to date	プリセットライブラリは最新です
