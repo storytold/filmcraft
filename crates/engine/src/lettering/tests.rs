@@ -240,3 +240,33 @@ fn from_selection_without_anything_selected_is_an_error() {
     let mut s = seq();
     assert!(s.execute("lettering.fromSelection", json!({})).is_err());
 }
+
+#[test]
+fn monumental_look_reveals_each_word_through_a_mask_and_makes_heroes_huge() {
+    let mut s = seq();
+    let r = s.execute("lettering.apply", json!({"text": "Nunca pague 10 mil por um logo sem estratégia", "look": "monumental", "family": "Inter", "supportStyle": "Regular", "heroStyle": "Bold"})).unwrap();
+    assert_eq!(r["applied"], true, "{r}");
+    let clip = filmcraft_project::ClipId(r["clip"].as_u64().unwrap());
+    let q = s.active_sequence().unwrap();
+    let (_, it) = q.find_item(clip).unwrap();
+    let layers: Vec<_> = it.effects.iter().filter(|e| e.params.contains_key("text")).collect();
+    assert_eq!(layers.len(), 9);
+    // every word has a window that starts closed (no height) and ends open
+    for e in &layers {
+        assert_eq!(e.masks.len(), 1);
+        let ParamValue::Path(closed) = e.masks[0].path.value_at(Tick(0)) else { panic!("mask path expected") };
+        let ParamValue::Path(open) = e.masks[0].path.value_at(Tick::from_seconds_f64(2.5)) else { panic!("mask path expected") };
+        let height = |p: &filmcraft_project::MaskPath| p.vertices.iter().map(|v| v.p.y).fold(f64::MIN, f64::max) - p.vertices.iter().map(|v| v.p.y).fold(f64::MAX, f64::min);
+        assert!(height(&closed) < 1.0 && height(&open) > 10.0);
+    }
+    let size = |name: &str| layers.iter().find(|e| e.params["text"].value == ParamValue::Text(name.into())).and_then(|e| e.params["size"].value.as_f64()).unwrap();
+    assert!(size("Nunca") > 2.0 * size("logo"));
+}
+
+#[test]
+fn hold_shortens_the_stay_so_the_next_lettering_can_follow() {
+    let mut s = seq();
+    let long = s.execute("lettering.apply", json!({"text": "Eu matei o cavalo", "look": "monumental"})).unwrap();
+    let short = s.execute("lettering.apply", json!({"text": "Eu matei o cavalo", "look": "monumental", "hold": 0.1})).unwrap();
+    assert!(short["duration"].as_f64().unwrap() < long["duration"].as_f64().unwrap());
+}
