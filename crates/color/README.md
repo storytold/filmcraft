@@ -38,6 +38,8 @@ for limited- and full-range files.
 | ARRI LogC4 | ARRI Wide Gamut 4 | ARRI, *ARRI LogC4 Logarithmic Color Space — Specification* (2022) | CV | a = (2¹⁸ − 16)/117.45, b = 928/1023, c = 95/1023, s = 7·ln2·2^(7 − 14c/b)/(a·b), t = (2^(6 − 14c/b) − 64)/a; y ≥ 0: x = (2^(14(y − c)/b + 6) − 64)/a; else x = y·s + t |
 | Apple Log | BT.2020 | Apple, *Apple Log Profile* white paper (2023) | IRE | R0 = −0.05641088, Rt = 0.01, c = 47.28711236, β = 0.00964052, γ = 0.08550479, δ = 0.69336945; P ≥ c(Rt − R0)²: x = 2^((P − δ)/γ) − β; else x = √(P/c) + R0 |
 | DJI D-Log | D-Gamut | DJI, *White Paper on D-Log and D-Gamut of DJI Cinema Color System* (2017) | CV | y ≤ 0.14: x = (y − 0.0929)/6.025; else x = (10^(3.89616y − 2.27752) − 0.0108)/0.9892 |
+| Fujifilm F-Log | F-Gamut (= BT.2020 primaries) | Fujifilm, *GFX ETERNA Technical Guide – White Paper* v1.01 (2026), F-Log conversion formula (same as the F-Log data sheet) | CV | y ≥ cut2: x = 10^((y − d)/c)/a − b/a; else x = (y − f)/e; a 0.555556, b 0.009468, c 0.344676, d 0.790453, e 8.735631, f 0.092864, cut1 0.00089, cut2 0.100537775223865 |
+| Fujifilm F-Log2 / F-Log2 C | F-Gamut / F-Gamut C (R 0.7347, 0.2653; G 0.0263, 0.9737; B 0.1173, −0.0224) | same document, F-Log2 C / F-Log2 conversion formula | CV | same form; a 5.555556, b 0.064829, c 0.245281, d 0.384316, e 8.799461, f 0.092864, cut1 0.000889, cut2 0.100686685370811 |
 
 The encoders are the exact inverses given in the same documents. DJI **D-Log M** is not
 implemented: DJI has not published its formula (only conversion LUTs), and we do not derive curves
