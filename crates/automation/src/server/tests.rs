@@ -689,3 +689,48 @@ fn confining_a_session_after_a_job_finished_works() {
     let (_base, roots) = roots_base("finished-job");
     let _ = FilmcraftMcp::headless(session_with_job(Some(Err("done".into())))).with_roots(Some(roots));
 }
+
+/// A queued export keeps its output path, and starting it doesn't check that path again.
+#[test]
+#[should_panic(expected = "confine the session before queueing exports")]
+fn confining_a_session_with_queued_exports_panics() {
+    let (base, roots) = roots_base("queued");
+    let mut s = demo();
+    s.execute("export.queue.add", json!({"path": base.join("outside/q.mp4").to_string_lossy(), "format": "h264"})).unwrap();
+    let _ = FilmcraftMcp::headless(s).with_roots(Some(roots));
+}
+
+/// The queue of a confined headless session only holds checked paths, so it can still run.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confined_session_can_queue_and_start_inside_the_write_root() {
+    let (base, roots) = roots_base("queue-inside");
+    let mut s = Session::default();
+    s.execute("file.newProject", json!({"name": "p"})).unwrap();
+    s.execute("file.newSequence", json!({"width": 16, "height": 16})).unwrap();
+    let v = s.execute("file.import", json!({"paths": [base.join("outside/secret.png").to_string_lossy()]})).unwrap();
+    s.execute("timeline.place", json!({"item": v["items"][0], "track": "V1", "seconds": 0})).unwrap();
+    let m = FilmcraftMcp::headless(s).with_roots(Some(roots));
+    let q = base.join("out/q.mp4");
+    m.run("export.queue.add", json!({"path": q.to_string_lossy(), "format": "h264", "start": true, "wait": true})).await.unwrap();
+    assert!(q.exists(), "the queued export was written");
+    let _ = std::fs::remove_dir_all(base);
+}
+
+/// The app's queue can hold its user's exports to anywhere: a confined client can add to it, but
+/// not set it going. The refusal comes before any connection to the app.
+#[tokio::test]
+async fn the_bridge_refuses_to_start_the_apps_export_queue() {
+    let (base, roots) = roots_base("bridge-queue");
+    let m = FilmcraftMcp::bridge("127.0.0.1:9").unwrap().with_roots(Some(roots));
+    let q = base.join("out/q.mp4");
+    for (id, p) in
+        [("export.queue.start", json!({})), ("export.queue.retry", json!({"id": 1})), ("export.queue.add", json!({"path": q.to_string_lossy(), "start": true}))]
+    {
+        let e = m.run(id, p).await.unwrap_err().to_string();
+        assert!(e.contains("the queue can hold exports to anywhere"), "{id}: {e}");
+    }
+    // Adding without starting gets past the checks, and fails only on reaching the app.
+    let e = m.run("export.queue.add", json!({"path": q.to_string_lossy()})).await.unwrap_err().to_string();
+    assert!(!e.contains("confined"), "{e}");
+    let _ = std::fs::remove_dir_all(base);
+}

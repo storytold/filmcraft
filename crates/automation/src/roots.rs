@@ -125,6 +125,23 @@ impl AutomationRoots {
         Err(format!("automation path rejected: outside the {kind} root {}: {path}", root.shown.display()))
     }
 
+    /// What the bridge refuses on top of [`Self::check_command`]. The app's export queue can hold
+    /// items its user added, with output paths anywhere, so a command that sets the queue going
+    /// would write outside the write root. Export with `file.exportMedia` or `export.quick` instead.
+    pub fn check_bridge_command(id: &str, params: &Value) -> Result<(), String> {
+        let starts = match id {
+            "export.queue.start" | "export.queue.retry" => true,
+            "export.queue.add" => params.get("start").is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false))),
+            _ => false,
+        };
+        if starts {
+            return Err(format!(
+                "`{id}` is not available while file access is confined: it would set the app's export queue going, and the queue can hold exports to anywhere"
+            ));
+        }
+        Ok(())
+    }
+
     /// Check command `id` with `params` before it runs. A command that isn't classified is refused;
     /// a classified one must keep every file parameter inside the roots, and name one where leaving
     /// it out would let the command pick the place itself.

@@ -39,6 +39,9 @@ without both flags nothing is confined. While confined:
   UI-driving tools (`ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_control`), since they could
   drive the app's file dialogs past the roots. The app itself is not confined: footage a project
   names is opened wherever it is.
+- Bridge mode also refuses anything that sets the app's export queue going (`export.queue.start`,
+  `export.queue.retry`, `export.queue.add` with `start`), because the queue can hold exports its
+  user added to anywhere. Use `file.exportMedia` or `export.quick`, which are checked.
 
 Not confined: the `--project` file the server was started with (the footage it names is), temporary
 files, the settings and libraries the app keeps in its data folder, and the desktop app's own

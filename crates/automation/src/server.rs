@@ -230,13 +230,16 @@ impl FilmcraftMcp {
     /// server, on either backend, must keep its file parameters inside the roots, and a headless
     /// session's own file access is checked too. `None` (the default) leaves everything as it is.
     ///
-    /// Panics if a headless session already has a job running: the job keeps the sources it opened,
-    /// which nothing here can reach. Confine the session before starting jobs, as the CLI does.
+    /// Panics if a headless session already has a job running, since the job keeps the sources it
+    /// opened and nothing here can reach them, or has anything in its export queue, since each item
+    /// keeps its own output path. Confine the session before starting either, as the CLI does.
     pub fn with_roots(mut self, roots: Option<Arc<AutomationRoots>>) -> Self {
         if let (Some(r), Backend::Headless(s)) = (&roots, &*self.backend) {
             let mut g = s.lock().unwrap_or_else(PoisonError::into_inner);
             let running = g.jobs.iter().any(|j| j.result.lock().unwrap_or_else(PoisonError::into_inner).is_none());
             assert!(!running, "confine the session before starting jobs");
+            // Queued exports keep the paths they were given, and starting one doesn't check them again.
+            assert!(g.export_queue.items.is_empty(), "confine the session before queueing exports");
             g.services = Arc::new(crate::confined_services::ConfinedServices::new(g.services.clone(), r.clone()));
             // Sources opened so far (`--project`) read through the old services: open them again.
             g.media.clear();
@@ -318,6 +321,9 @@ impl FilmcraftMcp {
     pub async fn run(&self, id: &str, params: Value) -> Result<Value, AutomationError> {
         if let Some(roots) = &self.roots {
             roots.check_command(id, &params).map_err(AutomationError::BadRequest)?;
+            if matches!(&*self.backend, Backend::Bridge(_)) {
+                AutomationRoots::check_bridge_command(id, &params).map_err(AutomationError::BadRequest)?;
+            }
         }
         match &*self.backend {
             Backend::Headless(s) => {
