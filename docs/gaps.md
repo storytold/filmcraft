@@ -69,13 +69,14 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   intra pictures: Sony XAVC Intra, AVC-Intra) in software, bit-exact with ffmpeg.
 - **Missing:** H.264 4:2:2 inter prediction (long-GOP 4:2:2: XAVC S / XAVC L 4:2:2, most
   mirrorless 4:2:2 MOVs), 4:4:4, lossless, interlaced field / MBAFF (`crates/h264/README.md`);
-  HEVC has no 4:2:2 / RExt. Most mirrorless and cinema cameras record exactly these (Sony XAVC
-  S-I / XAVC HS 4:2:2 10-bit, Panasonic, Canon XF-AVC, Fujifilm).
+  HEVC has no 4:2:2 / RExt. Most mirrorless and cinema cameras record long-GOP 4:2:2 (Sony
+  XAVC S / XAVC HS 4:2:2 10-bit, Panasonic long-GOP, Canon XF-AVC long-GOP, Fujifilm).
 - **Evidence:** #626 (Panasonic Lumix 4K 10-bit 4:2:2 MOV). On macOS VideoToolbox decodes 10-bit
   4:2:2 H.264 / HEVC on chips that support it; Windows Media Foundation and Linux decline them, and
   there is no software fallback, so the clip fails. Premiere decodes them everywhere (and in
   hardware on Apple silicon, Intel and NVIDIA Blackwell).
-- **Impact:** camera originals from most current cameras do not open on Windows or Linux.
+- **Impact:** long-GOP 4:2:2 camera originals (H.264 and HEVC) do not open on Windows or Linux;
+  intra-only 4:2:2 (XAVC Intra, AVC-Intra) and High 10 do.
 - **Estimate:** H.264 4:2:2 inter (chroma motion compensation, inter chroma deblocking) 5–10 h;
   HEVC Main 4:2:2 10 (RExt subset) 15–25 h. Doc: [codec-parity.md](codec-parity.md).
 

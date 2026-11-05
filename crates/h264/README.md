@@ -1,7 +1,8 @@
 # filmcraft-h264
 
 Clean-room, pure-Rust (no `unsafe`) H.264 / AVC decoder, implemented from the public ITU-T
-Rec. H.264 (ISO/IEC 14496-10) specification. It is an L0 crate: it depends only on
+Rec. H.264 (ISO/IEC 14496-10) specification, 06/2026 edition (the edition the generated CAVLC
+and CABAC tables cite). It is an L0 crate: it depends only on
 `filmcraft-bitstream`, `thiserror`, and optionally `rayon` (default feature `threads`), and builds
 for `wasm32-unknown-unknown`.
 
