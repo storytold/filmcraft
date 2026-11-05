@@ -109,9 +109,10 @@ fn capped_working_image_keeps_the_graphic_placed_at_full_scale() {
     let drawn = |x: usize, y: usize| output.get(x, y)[3] > 0.9;
     let clear = |x: usize, y: usize| output.get(x, y)[3] < 0.1;
     assert!(drawn(160, 90), "the shape's centre");
-    // inside the shape at full scale, outside it at the raster's halved scale
-    assert!(drawn(120, 90) && drawn(200, 90) && drawn(160, 65) && drawn(160, 115), "the shape keeps its full extent");
-    assert!(clear(100, 90) && clear(220, 90) && clear(160, 50) && clear(160, 130), "and no more than that");
+    // a pixel inside each edge of the 100×60 shape, and a pixel outside each: a raster placed at
+    // its halved scale leaves the inner probes clear, one placed at double scale fills the outer
+    assert!(drawn(111, 90) && drawn(208, 90) && drawn(160, 61) && drawn(160, 118), "the shape keeps its full extent");
+    assert!(clear(108, 90) && clear(211, 90) && clear(160, 58) && clear(160, 121), "and no more than that");
 }
 
 fn setup() -> (Project, ItemId, ItemId, ItemId, SourceMap) {
