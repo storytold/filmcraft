@@ -48,11 +48,12 @@ pub struct Word {
 /// the commonest auxiliaries. They are never heroes and a line never ends on the ones that bind
 /// to the next word (see [`binds_forward`]).
 const STOP: &[&str] = &[
-    "a", "o", "as", "os", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "por", "pelo", "pela", "pelos", "pelas", "para",
-    "pra", "pro", "com", "e", "ou", "mas", "que", "se", "ao", "aos", "à", "às", "num", "numa", "me", "te", "lhe", "nos", "vos", "meu", "minha", "seu", "sua", "teu", "tua",
-    "isso", "isto", "esse", "essa", "este", "esta", "aquele", "aquela", "é", "são", "foi", "era", "ser", "tem", "ter", "há", "já", "só", "também", "como", "quando", "onde",
-    "então", "aí", "né", "tipo", "ele", "ela", "eles", "elas", "eu", "tu", "você", "vocês", "nós", "lá", "aqui", "até", "ainda", "porque", "pois", "sobre", "entre", "sem",
-    "the", "an", "of", "to", "in", "on", "and", "or", "is", "are", "was", "it", "for", "at", "by", "with", "you", "your",
+    "a", "o", "as", "os", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas", "por", "pelo", "pela", "pelos", "pelas",
+    "para", "pra", "pro", "com", "e", "ou", "mas", "que", "se", "ao", "aos", "à", "às", "num", "numa", "me", "te", "lhe", "nos", "vos", "meu", "minha", "seu",
+    "sua", "teu", "tua", "isso", "isto", "esse", "essa", "este", "esta", "aquele", "aquela", "é", "são", "foi", "era", "ser", "tem", "ter", "há", "já", "só",
+    "também", "como", "quando", "onde", "então", "aí", "né", "tipo", "ele", "ela", "eles", "elas", "eu", "tu", "você", "vocês", "nós", "lá", "aqui", "até",
+    "ainda", "porque", "pois", "sobre", "entre", "sem", "the", "an", "of", "to", "in", "on", "and", "or", "is", "are", "was", "it", "for", "at", "by", "with",
+    "you", "your",
 ];
 
 /// Negations: small words that flip the sense, so they weigh like content words.
@@ -61,7 +62,30 @@ const NEGATION: &[&str] = &["não", "nunca", "jamais", "nada", "ninguém", "nenh
 /// Words a line must not end on: they belong to what follows ("de", "o", "para", "e", "que", …).
 /// Negations bind forward too ("não faça"), as do the numeral articles.
 fn binds_forward(norm: &str) -> bool {
-    (STOP.contains(&norm) && !matches!(norm, "isso" | "isto" | "ele" | "ela" | "eles" | "elas" | "aqui" | "lá" | "já" | "só" | "ainda" | "também" | "é" | "são" | "foi" | "era" | "tem" | "há" | "eu" | "tu"))
+    (STOP.contains(&norm)
+        && !matches!(
+            norm,
+            "isso"
+                | "isto"
+                | "ele"
+                | "ela"
+                | "eles"
+                | "elas"
+                | "aqui"
+                | "lá"
+                | "já"
+                | "só"
+                | "ainda"
+                | "também"
+                | "é"
+                | "são"
+                | "foi"
+                | "era"
+                | "tem"
+                | "há"
+                | "eu"
+                | "tu"
+        ))
         || NEGATION.contains(&norm)
 }
 
@@ -464,24 +488,124 @@ pub struct Look {
 impl Look {
     /// The first version: kept so nothing already applied changes.
     pub fn classic() -> Self {
-        Self { name: "classic", size_k: 0.06, hero_scale: 1.7, leading: 0.98, sup_face: "Light", hero_face: "ExtraBold", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 0.0, hero_track: 0.0, hero_italic: false, composition: Composition::Block, reveal: Reveal::Slide, rule: false, drift: 0.0, hero_from_scale: 1.0, accent: None, focus: 0.0 }
+        Self {
+            name: "classic",
+            size_k: 0.06,
+            hero_scale: 1.7,
+            leading: 0.98,
+            sup_face: "Light",
+            hero_face: "ExtraBold",
+            hero_family: None,
+            sup_caps: false,
+            hero_caps: false,
+            sup_track: 0.0,
+            hero_track: 0.0,
+            hero_italic: false,
+            composition: Composition::Block,
+            reveal: Reveal::Slide,
+            rule: false,
+            drift: 0.0,
+            hero_from_scale: 1.0,
+            accent: None,
+            focus: 0.0,
+        }
     }
     /// A: one huge word and little else; tight; every word rises from behind a mask.
     pub fn monumental() -> Self {
-        Self { name: "monumental", size_k: 0.04, hero_scale: 2.8, leading: 0.84, sup_face: "Regular", hero_face: "ExtraBold Italic", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 10.0, hero_track: -25.0, hero_italic: false, composition: Composition::Block, reveal: Reveal::Mask, rule: false, drift: 0.0, hero_from_scale: 1.0, accent: None, focus: 0.0 }
+        Self {
+            name: "monumental",
+            size_k: 0.04,
+            hero_scale: 2.8,
+            leading: 0.84,
+            sup_face: "Regular",
+            hero_face: "ExtraBold Italic",
+            hero_family: None,
+            sup_caps: false,
+            hero_caps: false,
+            sup_track: 10.0,
+            hero_track: -25.0,
+            hero_italic: false,
+            composition: Composition::Block,
+            reveal: Reveal::Mask,
+            rule: false,
+            drift: 0.0,
+            hero_from_scale: 1.0,
+            accent: None,
+            focus: 0.0,
+        }
     }
     /// B: small tracked capitals against an italic giant, a guide line over it all.
     pub fn editorial() -> Self {
-        Self { name: "editorial", size_k: 0.028, hero_scale: 3.3, leading: 0.9, sup_face: "Bold", hero_face: "ExtraBold", hero_family: None, sup_caps: true, hero_caps: false, sup_track: 140.0, hero_track: -25.0, hero_italic: true, composition: Composition::Block, reveal: Reveal::Mask, rule: true, drift: 0.0, hero_from_scale: 1.0, accent: None, focus: 0.0 }
+        Self {
+            name: "editorial",
+            size_k: 0.028,
+            hero_scale: 3.3,
+            leading: 0.9,
+            sup_face: "Bold",
+            hero_face: "ExtraBold",
+            hero_family: None,
+            sup_caps: true,
+            hero_caps: false,
+            sup_track: 140.0,
+            hero_track: -25.0,
+            hero_italic: true,
+            composition: Composition::Block,
+            reveal: Reveal::Mask,
+            rule: true,
+            drift: 0.0,
+            hero_from_scale: 1.0,
+            accent: None,
+            focus: 0.0,
+        }
     }
     /// C: the stair on the 8° diagonal, big heroes that land from a push-in, a slow drift after.
     pub fn cinetico() -> Self {
-        Self { name: "cinetico", size_k: 0.04, hero_scale: 2.6, leading: 0.88, sup_face: "Regular", hero_face: "ExtraBold", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 0.0, hero_track: -30.0, hero_italic: false, composition: Composition::Stair, reveal: Reveal::Slide, rule: false, drift: 0.012, hero_from_scale: 1.18, accent: None, focus: 0.0 }
+        Self {
+            name: "cinetico",
+            size_k: 0.04,
+            hero_scale: 2.6,
+            leading: 0.88,
+            sup_face: "Regular",
+            hero_face: "ExtraBold",
+            hero_family: None,
+            sup_caps: false,
+            hero_caps: false,
+            sup_track: 0.0,
+            hero_track: -30.0,
+            hero_italic: false,
+            composition: Composition::Stair,
+            reveal: Reveal::Slide,
+            rule: false,
+            drift: 0.012,
+            hero_from_scale: 1.18,
+            accent: None,
+            focus: 0.0,
+        }
     }
     /// Heavy italic white, an accent word in a serif italic, small light support; words rise out of
     /// a blur with a soft shadow (the reference: a viral title pack).
     pub fn viral() -> Self {
-        Self { name: "viral", size_k: 0.04, hero_scale: 2.6, leading: 0.86, sup_face: "Light", hero_face: "ExtraBold Italic", hero_family: None, sup_caps: false, hero_caps: false, sup_track: 0.0, hero_track: -25.0, hero_italic: false, composition: Composition::Block, reveal: Reveal::Slide, rule: false, drift: 0.0, hero_from_scale: 1.0, accent: Some(("Inria Serif", "Bold Italic", 1.12)), focus: 0.16 }
+        Self {
+            name: "viral",
+            size_k: 0.04,
+            hero_scale: 2.6,
+            leading: 0.86,
+            sup_face: "Light",
+            hero_face: "ExtraBold Italic",
+            hero_family: None,
+            sup_caps: false,
+            hero_caps: false,
+            sup_track: 0.0,
+            hero_track: -25.0,
+            hero_italic: false,
+            composition: Composition::Block,
+            reveal: Reveal::Slide,
+            rule: false,
+            drift: 0.0,
+            hero_from_scale: 1.0,
+            accent: Some(("Inria Serif", "Bold Italic", 1.12)),
+            focus: 0.16,
+        }
     }
 
     pub fn by_name(n: &str) -> Option<Self> {
@@ -573,13 +697,22 @@ pub fn measure_words_accent(words: &[Word], hero: &[bool], accent: &[bool], face
                 her.clone()
             };
             let mul = acc.map_or(mul, |(_, _, m)| m);
-            let track = if acc.is_some() { ACCENT_TRACK } else if hero[i] && mul == 1.0 { look.hero_track } else if hero[i] { 0.0 } else { look.sup_track };
+            let track = if acc.is_some() {
+                ACCENT_TRACK
+            } else if hero[i] && mul == 1.0 {
+                look.hero_track
+            } else if hero[i] {
+                0.0
+            } else {
+                look.sup_track
+            };
             WordMetric {
                 scale_mul: if hero[i] { mul } else { 1.0 },
                 width100: filmcraft_text::measure(&shown, if hero[i] { &her_i } else { &sup }) + track as f32 / 10.0 * shown.chars().count() as f32,
                 hero: hero[i],
                 // a number binds to its unit ("10 mil", "3 vezes")
-                binds_next: binds_forward(&n) || (has_digit(&w.text) && words.get(i + 1).is_some_and(|x| x.text.chars().all(|c| c.is_alphabetic()) && x.text.chars().count() <= 4)),
+                binds_next: binds_forward(&n)
+                    || (has_digit(&w.text) && words.get(i + 1).is_some_and(|x| x.text.chars().all(|c| c.is_alphabetic()) && x.text.chars().count() <= 4)),
                 clause_end: w.text.ends_with([',', '.', ';', ':', '?', '!', '…', '—']),
             }
         })
@@ -602,7 +735,11 @@ fn words_param(p: &Value) -> Vec<Word> {
             .iter()
             .filter_map(|w| {
                 let t = w.get("text").and_then(Value::as_str)?;
-                Some(Word { text: t.into(), start: w.get("start").and_then(Value::as_f64).unwrap_or(0.0), end: w.get("end").and_then(Value::as_f64).unwrap_or(0.0) })
+                Some(Word {
+                    text: t.into(),
+                    start: w.get("start").and_then(Value::as_f64).unwrap_or(0.0),
+                    end: w.get("end").and_then(Value::as_f64).unwrap_or(0.0),
+                })
             })
             .collect(),
         None => words_from_text(str_p(p, "text").unwrap_or("")),
@@ -659,7 +796,6 @@ pub fn plan(p: &Value) -> Result<Value> {
         "layout": c,
     }))
 }
-
 
 // ---------------------------------------------------------------------------------------------
 // Apply: one animated graphic clip, one text layer per word
@@ -759,10 +895,16 @@ fn animate(layer: &mut EffectInstance, g: &Geo, t0: f64, exit: f64, how: &str, l
             let open = MaskPath::rect(x0, top, x1, bottom);
             let mut m = Mask::new("Revela", open.clone());
             m.feather = Param::new(ParamValue::Float(0.0));
-            m.path = Param { value: ParamValue::Path(open.clone()), keyframes: vec![bez(t0, ParamValue::Path(closed)), kf(t0 + ENTER_SECS * 0.8, ParamValue::Path(open), Interpolation::Linear, 0.33, 0.33)] };
+            m.path = Param {
+                value: ParamValue::Path(open.clone()),
+                keyframes: vec![bez(t0, ParamValue::Path(closed)), kf(t0 + ENTER_SECS * 0.8, ParamValue::Path(open), Interpolation::Linear, 0.33, 0.33)],
+            };
             layer.masks.push(m);
             // the fade-in is quicker than the move, so the word appears as it travels
-            let fade_in = vec![kf(t0, ParamValue::Float(0.0), Interpolation::Bezier, 0.3, 0.65), kf(t0 + ENTER_SECS * 0.65, ParamValue::Float(100.0), Interpolation::Linear, 0.33, 0.33)];
+            let fade_in = vec![
+                kf(t0, ParamValue::Float(0.0), Interpolation::Bezier, 0.3, 0.65),
+                kf(t0 + ENTER_SECS * 0.65, ParamValue::Float(100.0), Interpolation::Linear, 0.33, 0.33),
+            ];
             layer.params.insert("opacity".into(), Param { value: ParamValue::Float(100.0), keyframes: fade_out(fade_in) });
         }
         Reveal::Slide => {
@@ -780,7 +922,10 @@ fn animate(layer: &mut EffectInstance, g: &Geo, t0: f64, exit: f64, how: &str, l
             }
             layer.params.insert(
                 "opacity".into(),
-                Param { value: ParamValue::Float(100.0), keyframes: fade_out(vec![bez(t0, ParamValue::Float(0.0)), kf(enter_end, ParamValue::Float(100.0), Interpolation::Linear, 0.33, 0.33)]) },
+                Param {
+                    value: ParamValue::Float(100.0),
+                    keyframes: fade_out(vec![bez(t0, ParamValue::Float(0.0)), kf(enter_end, ParamValue::Float(100.0), Interpolation::Linear, 0.33, 0.33)]),
+                },
             );
         }
     }
@@ -788,7 +933,13 @@ fn animate(layer: &mut EffectInstance, g: &Geo, t0: f64, exit: f64, how: &str, l
     if g.hero && look.hero_from_scale != 1.0 {
         layer.params.insert(
             "scale".into(),
-            Param { value: ParamValue::Float(100.0), keyframes: vec![bez(t0, ParamValue::Float(look.hero_from_scale * 100.0)), kf(enter_end, ParamValue::Float(100.0), Interpolation::Linear, 0.33, 0.33)] },
+            Param {
+                value: ParamValue::Float(100.0),
+                keyframes: vec![
+                    bez(t0, ParamValue::Float(look.hero_from_scale * 100.0)),
+                    kf(enter_end, ParamValue::Float(100.0), Interpolation::Linear, 0.33, 0.33),
+                ],
+            },
         );
     }
 }
@@ -826,7 +977,15 @@ fn ghosts(main: &EffectInstance, t0: f64, exit: f64) -> Vec<EffectInstance> {
         }
         g.params.insert("shadow".into(), Param::new(ParamValue::Bool(false)));
         let lin = |t: f64, v: f64| kf(t, ParamValue::Float(v), Interpolation::Linear, 0.33, 0.33);
-        let keys = vec![lin(t0 + dt, 0.0), lin(t0 + dt + 0.05, w), lin(enter_end - 0.05, w * 0.5), lin(enter_end, 0.0), lin(exit, 0.0), lin(exit + 0.04, w), lin(end, 0.0)];
+        let keys = vec![
+            lin(t0 + dt, 0.0),
+            lin(t0 + dt + 0.05, w),
+            lin(enter_end - 0.05, w * 0.5),
+            lin(enter_end, 0.0),
+            lin(exit, 0.0),
+            lin(exit + 0.04, w),
+            lin(end, 0.0),
+        ];
         g.params.insert("opacity".into(), Param { value: ParamValue::Float(0.0), keyframes: keys });
         out.push(g);
     }
@@ -921,7 +1080,10 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         hero: str_p(p, "heroStyle").unwrap_or(look.hero_face).into(),
     };
     // an italic hero is measured in its italic face
-    let measure_faces = Faces { hero: if look.hero_italic && faces.hero_family == faces.family { format!("{} Italic", faces.hero) } else { faces.hero.clone() }, ..faces.clone() };
+    let measure_faces = Faces {
+        hero: if look.hero_italic && faces.hero_family == faces.family { format!("{} Italic", faces.hero) } else { faces.hero.clone() },
+        ..faces.clone()
+    };
     // the accent word: the last hero of the lettering, then every other one going back
     let mut accent = vec![false; words.len()];
     if look.accent.is_some() {
@@ -972,10 +1134,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
 
     let light_text = str_p(p, "theme") != Some("light"); // light letters on the picture by default
     // The picture can swallow a brand colour (terracotta on an orange wall): the caller may override either.
-    let (support_hex, hero_hex) = (
-        str_p(p, "supportColor").unwrap_or(if light_text { OFF_WHITE } else { PRETO }),
-        str_p(p, "heroColor").unwrap_or(TERRACOTA),
-    );
+    let (support_hex, hero_hex) = (str_p(p, "supportColor").unwrap_or(if light_text { OFF_WHITE } else { PRETO }), str_p(p, "heroColor").unwrap_or(TERRACOTA));
     let how = str_p(p, "animation").unwrap_or(if look.name == "viral" { "up" } else { "forward" });
     let hero_italic = look.hero_italic;
 
@@ -1012,7 +1171,15 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
             e.params.insert("stroke_color".into(), Param::new(color(hero_hex)));
             e.params.insert("stroke_width".into(), Param::new(ParamValue::Float(pl.size as f64 * f64_p(p, "scriptStroke").unwrap_or(0.004))));
         }
-        let fill = if acc.is_some() { str_p(p, "accentColor").unwrap_or(ACCENT_ORANGE) } else if pl.hero && look.accent.is_some() { support_hex } else if pl.hero { hero_hex } else { support_hex };
+        let fill = if acc.is_some() {
+            str_p(p, "accentColor").unwrap_or(ACCENT_ORANGE)
+        } else if pl.hero && look.accent.is_some() {
+            support_hex
+        } else if pl.hero {
+            hero_hex
+        } else {
+            support_hex
+        };
         e.params.insert("fill_color".into(), Param::new(color(fill)));
         // soft drop shadow, down and to the right: it lifts the word off the picture without a hard edge
         let soft = look.name != "classic";
@@ -1033,7 +1200,13 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // kerning on, ligatures off: a lettering is set, not typed
         e.params.insert("ligatures".into(), Param::new(ParamValue::Bool(false)));
-        let track = if acc.is_some() { ACCENT_TRACK } else if pl.hero { look.hero_track } else { look.sup_track };
+        let track = if acc.is_some() {
+            ACCENT_TRACK
+        } else if pl.hero {
+            look.hero_track
+        } else {
+            look.sup_track
+        };
         if track != 0.0 {
             e.params.insert("tracking".into(), Param::new(ParamValue::Float(track)));
         }
@@ -1063,15 +1236,33 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         let t_end = t_in + ENTER_SECS * 1.3;
         line.params.insert(
             "size".into(),
-            Param { value: ParamValue::Vec2(Vec2::new(w, h)), keyframes: vec![kf(t_in, ParamValue::Vec2(Vec2::new(1.0, h)), Interpolation::Bezier, ENTER_OUT, ENTER_IN), kf(t_end, ParamValue::Vec2(Vec2::new(w, h)), Interpolation::Linear, 0.33, 0.33)] },
+            Param {
+                value: ParamValue::Vec2(Vec2::new(w, h)),
+                keyframes: vec![
+                    kf(t_in, ParamValue::Vec2(Vec2::new(1.0, h)), Interpolation::Bezier, ENTER_OUT, ENTER_IN),
+                    kf(t_end, ParamValue::Vec2(Vec2::new(w, h)), Interpolation::Linear, 0.33, 0.33),
+                ],
+            },
         );
         line.params.insert(
             "position".into(),
-            Param { value: ParamValue::Vec2(Vec2::new(x0 + w / 2.0, y)), keyframes: vec![kf(t_in, ParamValue::Vec2(Vec2::new(x0 + 0.5, y)), Interpolation::Bezier, ENTER_OUT, ENTER_IN), kf(t_end, ParamValue::Vec2(Vec2::new(x0 + w / 2.0, y)), Interpolation::Linear, 0.33, 0.33)] },
+            Param {
+                value: ParamValue::Vec2(Vec2::new(x0 + w / 2.0, y)),
+                keyframes: vec![
+                    kf(t_in, ParamValue::Vec2(Vec2::new(x0 + 0.5, y)), Interpolation::Bezier, ENTER_OUT, ENTER_IN),
+                    kf(t_end, ParamValue::Vec2(Vec2::new(x0 + w / 2.0, y)), Interpolation::Linear, 0.33, 0.33),
+                ],
+            },
         );
         line.params.insert(
             "opacity".into(),
-            Param { value: ParamValue::Float(100.0), keyframes: vec![kf(exit, ParamValue::Float(100.0), Interpolation::Bezier, EXIT_OUT, EXIT_IN), kf(exit + EXIT_SECS, ParamValue::Float(0.0), Interpolation::Linear, 0.33, EXIT_IN)] },
+            Param {
+                value: ParamValue::Float(100.0),
+                keyframes: vec![
+                    kf(exit, ParamValue::Float(100.0), Interpolation::Bezier, EXIT_OUT, EXIT_IN),
+                    kf(exit + EXIT_SECS, ParamValue::Float(0.0), Interpolation::Linear, 0.33, EXIT_IN),
+                ],
+            },
         );
         layers.insert(0, line);
     }
@@ -1101,7 +1292,11 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
             let mut band = new_shape_layer(0, Vec2::new((x0 + x1) / 2.0, (y0 + y1) / 2.0), Vec2::new(x1 - x0, y1 - y0), Vec::new());
             band.params.insert("fill_color".into(), Param::new(color("#000000")));
             band.params.insert("name".into(), Param::new(ParamValue::Text("Placa".into())));
-            let t_in = (words[first.index].start - LEAD_SECS).max(0.0).max(if first.index > 0 { (words[first.index - 1].start - LEAD_SECS).max(0.0) + STAGGER_SECS } else { 0.0 });
+            let t_in = (words[first.index].start - LEAD_SECS).max(0.0).max(if first.index > 0 {
+                (words[first.index - 1].start - LEAD_SECS).max(0.0) + STAGGER_SECS
+            } else {
+                0.0
+            });
             band.params.insert(
                 "opacity".into(),
                 Param {
@@ -1176,8 +1371,11 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
 /// first and the last caption when there is one, else the caption text spread over its time.
 fn words_of_captions(s: &Session, ids: &[filmcraft_project::ClipId]) -> Result<(Vec<Word>, f64, f64)> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let mut caps: Vec<(f64, f64, String)> =
-        ids.iter().filter_map(|id| q.find_caption(*id)).map(|(_, c)| (c.start.seconds(), (c.start + c.duration).seconds(), c.text.replace('\n', " "))).collect();
+    let mut caps: Vec<(f64, f64, String)> = ids
+        .iter()
+        .filter_map(|id| q.find_caption(*id))
+        .map(|(_, c)| (c.start.seconds(), (c.start + c.duration).seconds(), c.text.replace('\n', " ")))
+        .collect();
     if caps.is_empty() {
         return Err(bad("lettering.fromSelection", "no caption selected"));
     }
@@ -1208,7 +1406,8 @@ fn text_of_graphic(s: &Session) -> Option<(String, f64)> {
     let clip = *s.state.selection.first()?;
     let (_, it) = q.find_item(clip)?;
     let idx = filmcraft_project::graphic::layer_indices(&it.effects);
-    let picked: Vec<usize> = if s.state.graphic_layers.is_empty() { idx.clone() } else { s.state.graphic_layers.iter().filter_map(|n| idx.get(*n).copied()).collect() };
+    let picked: Vec<usize> =
+        if s.state.graphic_layers.is_empty() { idx.clone() } else { s.state.graphic_layers.iter().filter_map(|n| idx.get(*n).copied()).collect() };
     let text: Vec<String> = picked
         .iter()
         .filter_map(|&i| it.effects.get(i))
@@ -1250,36 +1449,38 @@ fn from_selection(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub fn commands() -> Vec<CommandSpec> {
-    vec![CommandSpec {
-        id: "lettering.plan",
-        label: "Plan Lettering",
-        menu: &[],
-        shortcut: None,
-        params: r#"{"text":str? | "words":[{text,start?,end?}]?,"box":[w,h]=[880,1200],"size":px=64,"heroScale":f=1.7,"composition":"block|stair"="block","heroes":[index]? (default: chosen by the rules),"family":str?,"supportStyle":str="Light","heroStyle":str="ExtraBold","leading":f=0.98,"stairStep":f=0.9}"#,
-        enabled: always,
-        run: |_: &mut Session, p: &Value| plan(p),
-        journal: false,
-    },
-    CommandSpec {
-        id: "lettering.apply",
-        label: "Lettering",
-        menu: &["Graphics and Titles", "New Layer"],
-        shortcut: None,
-        params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"look":"classic|monumental|editorial|cinetico"="classic" (type, scale, tracking, reveal; the other options override it),"rule":bool? (guide line over the block),"scriptStroke":f=0.004 (outline of the script heroes, fraction of the size),"motionBlur":bool=true (faint trailing copies while a word moves),"hold":sec? (how long it stays after the last word has arrived; default until 0.8 s after the voice),"heroItalic":bool=false,"scrim":bool=false (black plate behind the hero word only),"scrimOpacity":0..100=92,"shadow":bool=true (hard 3 px drop shadow on every word),"hideCaptions":bool=true (remove the captions under it),"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
-        enabled: has_seq,
-        run: apply,
-        journal: true,
-    },
-    CommandSpec {
-        id: "lettering.fromSelection",
-        label: "Lettering from Selection",
-        menu: &["Graphics and Titles"],
-        shortcut: None,
-        params: r#"{same options as lettering.apply, without text/words/from/to/time: the selected captions (timed to the voice; the caption under the playhead when none is selected) or the text of the selected graphic clip}"#,
-        enabled: has_seq,
-        run: from_selection,
-        journal: true,
-    }]
+    vec![
+        CommandSpec {
+            id: "lettering.plan",
+            label: "Plan Lettering",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"text":str? | "words":[{text,start?,end?}]?,"box":[w,h]=[880,1200],"size":px=64,"heroScale":f=1.7,"composition":"block|stair"="block","heroes":[index]? (default: chosen by the rules),"family":str?,"supportStyle":str="Light","heroStyle":str="ExtraBold","leading":f=0.98,"stairStep":f=0.9}"#,
+            enabled: always,
+            run: |_: &mut Session, p: &Value| plan(p),
+            journal: false,
+        },
+        CommandSpec {
+            id: "lettering.apply",
+            label: "Lettering",
+            menu: &["Graphics and Titles", "New Layer"],
+            shortcut: None,
+            params: r#"{"text":str? | "words":[{text,start?,end?}]? | "from":sec,"to":sec (sequence seconds: the transcript between them, timed to the voice),"time":ticks? (where the clip starts; default the playhead; with from/to, a little before the first word),"zone":"center|upper|lower"="center","align":"center|left|right"="center","composition":"block|stair"="block","animation":"forward|up|fade"="forward","theme":"dark|light"="dark" (dark = light letters on the picture),"heroes":[index]?,"look":"classic|monumental|editorial|cinetico"="classic" (type, scale, tracking, reveal; the other options override it),"rule":bool? (guide line over the block),"scriptStroke":f=0.004 (outline of the script heroes, fraction of the size),"motionBlur":bool=true (faint trailing copies while a word moves),"hold":sec? (how long it stays after the last word has arrived; default until 0.8 s after the voice),"heroItalic":bool=false,"scrim":bool=false (black plate behind the hero word only),"scrimOpacity":0..100=92,"shadow":bool=true (hard 3 px drop shadow on every word),"hideCaptions":bool=true (remove the captions under it),"heroColor":hex? (default terracotta),"supportColor":hex?,"size":px?,"heroScale":f=1.7,"boxWidth":px?,"boxHeight":px?,"track":index?}"#,
+            enabled: has_seq,
+            run: apply,
+            journal: true,
+        },
+        CommandSpec {
+            id: "lettering.fromSelection",
+            label: "Lettering from Selection",
+            menu: &["Graphics and Titles"],
+            shortcut: None,
+            params: r#"{same options as lettering.apply, without text/words/from/to/time: the selected captions (timed to the voice; the caption under the playhead when none is selected) or the text of the selected graphic clip}"#,
+            enabled: has_seq,
+            run: from_selection,
+            journal: true,
+        },
+    ]
 }
 
 #[cfg(test)]

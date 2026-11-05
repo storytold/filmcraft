@@ -86,7 +86,13 @@ impl Config {
     pub fn load(path: &Path) -> Option<Config> {
         let mut cfg = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Config>(&t).ok());
         if let Some(home) = std::env::var_os("FILMCRAFT_DECUPADOR_HOME").filter(|h| !h.is_empty()) {
-            let c = cfg.get_or_insert_with(|| Config { home: PathBuf::new(), python: default_python(), model: default_model(), language: default_language(), whisper_options: serde_json::Value::Null });
+            let c = cfg.get_or_insert_with(|| Config {
+                home: PathBuf::new(),
+                python: default_python(),
+                model: default_model(),
+                language: default_language(),
+                whisper_options: serde_json::Value::Null,
+            });
             c.home = PathBuf::from(home);
         }
         cfg.filter(|c| c.home.join("src").join("transcriber.py").is_file())
