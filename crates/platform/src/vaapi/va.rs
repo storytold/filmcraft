@@ -3,13 +3,19 @@
 //! (decode configuration, context and surfaces for one stream) decodes pictures and reads them back
 //! as NV12 images.
 //!
+//! A decoded surface can also be handed over as DMABUF (`vaExportSurfaceHandle`, DRM PRIME 2) with
+//! [`Display::export_surface`]: the plane layout and the objects' file descriptors, for a compositor
+//! that imports them as a texture (no readback). The import itself is not here yet: wgpu's safe API
+//! has no external-memory import, so it needs raw Vulkan (`wgpu-hal`) plus the same-GPU rule and a
+//! fallback to the readback.
+//!
 //! FFI module (docs/adr/0001-platform-ffi.md): every `unsafe` block has a `// SAFETY:` comment, the
 //! public API is safe, and the one callback into Rust (libva's error messages) runs under
 //! `catch_unwind`.
 
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::fs::{File, OpenOptions};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -46,10 +52,14 @@ struct Api {
     create_image: ffi::vaCreateImage,
     destroy_image: ffi::vaDestroyImage,
     get_image: ffi::vaGetImage,
+    /// Maps a surface's own memory as an image (no copy into a second image); optional.
+    derive_image: Option<ffi::vaDeriveImage>,
     put_image: ffi::vaPutImage,
     map_buffer: ffi::vaMapBuffer,
     unmap_buffer: ffi::vaUnmapBuffer,
     get_display_drm: ffi::vaGetDisplayDRM,
+    /// DMABUF export; None on a libva older than 2.1 (the readback stays the only path there).
+    export_surface_handle: Option<ffi::vaExportSurfaceHandle>,
 }
 
 static API: OnceLock<Result<Api, String>> = OnceLock::new();
@@ -71,6 +81,14 @@ fn load() -> Result<Api, String> {
             // out; the library it points into is kept loaded in `Api` for the life of the process.
             let s = unsafe { $lib.get::<ffi::$name>(concat!(stringify!($name), "\0").as_bytes()) };
             *s.map_err(|e| format!("{}: {e}", stringify!($name)))?
+        }};
+    }
+    // A symbol an older libva may not have: absent is not an error (the caller declines).
+    macro_rules! sym_opt {
+        ($lib:expr, $name:ident) => {{
+            // SAFETY: as `sym!`, but the pointer is kept only when the symbol resolves.
+            let s = unsafe { $lib.get::<ffi::$name>(concat!(stringify!($name), "\0").as_bytes()) };
+            s.ok().map(|s| *s)
         }};
     }
     Ok(Api {
@@ -96,10 +114,12 @@ fn load() -> Result<Api, String> {
         create_image: sym!(va, vaCreateImage),
         destroy_image: sym!(va, vaDestroyImage),
         get_image: sym!(va, vaGetImage),
+        derive_image: sym_opt!(va, vaDeriveImage),
         put_image: sym!(va, vaPutImage),
         map_buffer: sym!(va, vaMapBuffer),
         unmap_buffer: sym!(va, vaUnmapBuffer),
         get_display_drm: sym!(drm, vaGetDisplayDRM),
+        export_surface_handle: sym_opt!(va, vaExportSurfaceHandle),
         _va: va,
         _drm: drm,
     })
@@ -221,6 +241,89 @@ impl Display {
         &self.vendor
     }
 
+    /// Make `count` decode surfaces of `rt_format` at `size` (no attributes). The caller destroys
+    /// them with [`destroy_surfaces`](Self::destroy_surfaces) or hands them to a session.
+    pub fn create_surfaces(&self, rt_format: c_uint, size: (u32, u32), count: usize) -> Result<Vec<VASurfaceID>, String> {
+        let count_c = c_uint::try_from(count).map_err(|_| "too many surfaces")?;
+        let mut surfaces = vec![ffi::VA_INVALID_SURFACE; count];
+        // SAFETY: `surfaces` has room for `count` ids; `self.dpy` is an initialised display; no
+        // attributes are passed (null, 0), so the driver picks the layout.
+        let st = unsafe { (self.api.create_surfaces)(self.dpy, rt_format, size.0, size.1, surfaces.as_mut_ptr(), count_c, std::ptr::null_mut(), 0) };
+        self.check(st, "vaCreateSurfaces")?;
+        Ok(surfaces)
+    }
+
+    /// Destroy surfaces made by [`create_surfaces`](Self::create_surfaces).
+    pub fn destroy_surfaces(&self, surfaces: &mut [VASurfaceID]) -> Result<(), String> {
+        if surfaces.is_empty() {
+            return Ok(());
+        }
+        let count = c_int::try_from(surfaces.len()).map_err(|_| "too many surfaces")?;
+        // SAFETY: `surfaces` is a live slice of ids this display made, `count` its length.
+        let st = unsafe { (self.api.destroy_surfaces)(self.dpy, surfaces.as_mut_ptr(), count) };
+        self.check(st, "vaDestroySurfaces")?;
+        surfaces.fill(ffi::VA_INVALID_SURFACE);
+        Ok(())
+    }
+
+    /// Export `surface` as DMABUF (DRM PRIME 2, one layer per plane): the plane layout - format,
+    /// object, offset, pitch - and the objects' file descriptors, which the caller owns and which
+    /// are closed when the returned value drops. This is what a GPU importer
+    /// (`VK_EXT_external_memory_dma_buf` + `VK_EXT_image_drm_format_modifier`) binds as a texture
+    /// where the compositor works, instead of a readback. The surface is synchronised first
+    /// (`vaSyncSurface`; the export itself does not wait), so the picture is complete when the
+    /// importer reads it. `Err` when libva has no `vaExportSurfaceHandle`, the driver refuses the
+    /// surface, or what it describes is inconsistent.
+    pub fn export_surface(&self, surface: VASurfaceID) -> Result<SurfaceDmabuf, String> {
+        let export = self.api.export_surface_handle.ok_or("libva has no vaExportSurfaceHandle (needs libva 2.1)")?;
+        // SAFETY: `surface` is an id this display made; vaSyncSurface only waits for its work.
+        let st = unsafe { (self.api.sync_surface)(self.dpy, surface) };
+        self.check(st, "vaSyncSurface")?;
+        // SAFETY: every field is a plain integer, an array of integers or (below) a file
+        // descriptor libva fills in; an all-zero descriptor is "nothing exported" and is checked
+        // before anything is read from it.
+        let mut d: ffi::VADRMPRIMESurfaceDescriptor = unsafe { std::mem::zeroed() };
+        // one layer per plane, read-only: the decoder wrote the surface, the importer only reads it
+        let flags = ffi::VA_EXPORT_SURFACE_READ_ONLY | ffi::VA_EXPORT_SURFACE_SEPARATE_LAYERS;
+        // SAFETY: `self.dpy` is an initialised display, `surface` an id this display made, and `d`
+        // is a live descriptor libva fills in. The driver creates the file descriptors it lists and
+        // hands them to the caller (va_drmcommon.h: the driver does not close them).
+        let st = unsafe { export(self.dpy, surface, ffi::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, flags, &mut d) };
+        self.check(st, "vaExportSurfaceHandle")?;
+        // What the driver describes is input-derived: check the counts before they are used as
+        // lengths, and every index before it indexes an object.
+        let objects = (d.num_objects as usize).min(d.objects.len());
+        let layers = (d.num_layers as usize).min(d.layers.len());
+        // Own every descriptor the driver handed over before checking anything, so an error below
+        // closes them all instead of leaking the ones not yet looked at.
+        // SAFETY: libva hands each listed descriptor to the caller (it does not close it), so this
+        // takes ownership: each is closed exactly once, when its `OwnedFd` is dropped.
+        let fds: Vec<Option<OwnedFd>> = d.objects.iter().take(objects).map(|o| (o.fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(o.fd) })).collect();
+        if objects == 0 {
+            return Err("vaExportSurfaceHandle described no objects".into());
+        }
+        let mut out_objects = Vec::with_capacity(objects);
+        for (o, fd) in d.objects.iter().zip(fds) {
+            let fd = fd.ok_or("vaExportSurfaceHandle described an invalid file descriptor")?;
+            out_objects.push(DmabufObject { fd, size: o.size, modifier: o.drm_format_modifier });
+        }
+        let mut planes = Vec::new();
+        for l in d.layers.iter().take(layers) {
+            let n = l.num_planes as usize;
+            for (p, ((&object, &offset), &pitch)) in l.object_index.iter().zip(&l.offset).zip(&l.pitch).take(n).enumerate() {
+                let object = object as usize;
+                if object >= objects {
+                    return Err(format!("vaExportSurfaceHandle described plane {p} in object {object} of {objects}"));
+                }
+                planes.push(DmabufPlane { format: l.drm_format, object, offset, pitch });
+            }
+        }
+        if planes.is_empty() {
+            return Err("vaExportSurfaceHandle described no planes".into());
+        }
+        Ok(SurfaceDmabuf { fourcc: d.fourcc, width: d.width, height: d.height, objects: out_objects, planes })
+    }
+
     fn check(&self, st: ffi::VAStatus, what: &str) -> Result<(), String> {
         if st == ffi::VA_STATUS_SUCCESS {
             return Ok(());
@@ -254,6 +357,8 @@ pub struct Session {
     context: ffi::VAContextID,
     surfaces: Vec<VASurfaceID>,
     image: Option<VAImage>,
+    /// Whether to read pictures through `vaDeriveImage` (cleared the first time it fails).
+    derive: bool,
     /// Coded size of the surfaces (luma samples).
     size: (u32, u32),
     geometry: Geometry,
@@ -321,12 +426,8 @@ impl Session {
         }
         let config = config.ok_or(why)?;
         // From here on `Drop` releases what was made.
-        let mut s = Self { display, config, context: ffi::VA_INVALID_ID, surfaces: Vec::new(), image: None, size, geometry };
-        let count_c = c_uint::try_from(count).map_err(|_| "too many surfaces")?;
-        let mut surfaces = vec![ffi::VA_INVALID_SURFACE; count];
-        // SAFETY: `surfaces` has room for `count` ids; no attributes are passed (null, 0).
-        let st = unsafe { (api.create_surfaces)(dpy, rt_format, size.0, size.1, surfaces.as_mut_ptr(), count_c, std::ptr::null_mut(), 0) };
-        s.display.check(st, "vaCreateSurfaces")?;
+        let mut s = Self { display, config, context: ffi::VA_INVALID_ID, surfaces: Vec::new(), image: None, derive: true, size, geometry };
+        let surfaces = s.display.create_surfaces(rt_format, size, count)?;
         s.surfaces = surfaces;
         let (w, h) = (c_int::try_from(size.0).map_err(|_| "picture too wide")?, c_int::try_from(size.1).map_err(|_| "picture too tall")?);
         let n = c_int::try_from(count).map_err(|_| "too many surfaces")?;
@@ -431,6 +532,30 @@ impl Session {
         Ok(image)
     }
 
+    /// The picture in surface `index`, read through an image derived from the surface itself:
+    /// the driver maps the decoded memory instead of copying it into a second image first, which
+    /// is most of `vaGetImage`'s cost at 4K. An error leaves the caller to use `vaGetImage`.
+    fn read_derived(&mut self, index: usize) -> Result<VideoFrame, String> {
+        let derive = self.display.api.derive_image.ok_or("libva has no vaDeriveImage")?;
+        let surface = *self.surfaces.get(index).ok_or("surface out of range")?;
+        let api = self.display.api;
+        // SAFETY: `surface` is one of this session's surfaces.
+        let st = unsafe { (api.sync_surface)(self.display.dpy, surface) };
+        self.display.check(st, "vaSyncSurface")?;
+        let mut image = VAImage { image_id: ffi::VA_INVALID_ID, buf: ffi::VA_INVALID_ID, ..Default::default() };
+        // SAFETY: `surface` was made on this display; `image` is a live output the driver fills in.
+        let st = unsafe { derive(self.display.dpy, surface, &mut image) };
+        self.display.check(st, "vaDeriveImage")?;
+        let frame = self.read_image(&image);
+        // SAFETY: the image was derived above on this display and is destroyed once; its buffer
+        // has been unmapped by `read_image`.
+        let st = unsafe { (api.destroy_image)(self.display.dpy, image.image_id) };
+        // a derived image the driver cannot free would pile up: stop deriving (the caller falls
+        // back to vaGetImage)
+        self.display.check(st, "vaDestroyImage (derived image)")?;
+        frame
+    }
+
     /// Every sample of `image` set to mid-gray: 128 in NV12, 512 (0x8000 in the high bits of
     /// little-endian 16-bit words) in P010.
     fn write_gray(&self, image: &VAImage) -> Result<(), String> {
@@ -497,12 +622,9 @@ fn biplanar_view<'a>(image: &VAImage, data: &'a [u8]) -> Result<Biplanar<'a>, St
         return Err(format!("the read-back image is not NV12 / P010 (fourcc {:#x}, {} planes)", image.format.fourcc, image.num_planes));
     }
     let [p0, p1, _] = image.pitches;
-    if p0 != p1 {
-        return Err(format!("NV12 planes with different pitches ({p0}, {p1})"));
-    }
     let luma = data.get(image.offsets[0] as usize..).ok_or("NV12 luma offset out of range")?;
     let chroma = data.get(image.offsets[1] as usize..).ok_or("NV12 chroma offset out of range")?;
-    Ok(Biplanar { luma, chroma, stride: p0 as usize, rows: usize::from(image.height) })
+    Ok(Biplanar { luma, chroma, stride: p0 as usize, chroma_stride: p1 as usize, rows: usize::from(image.height) })
 }
 
 impl Accel for Session {
@@ -531,6 +653,15 @@ impl Accel for Session {
     }
 
     fn read(&mut self, index: usize) -> Result<VideoFrame, String> {
+        if self.derive {
+            match self.read_derived(index) {
+                Ok(frame) => return Ok(frame),
+                Err(e) => {
+                    log::info!("VA-API: reading pictures with vaGetImage ({e})");
+                    self.derive = false;
+                }
+            }
+        }
         let image = self.get_image(index)?;
         self.read_image(&image)
     }
@@ -576,10 +707,106 @@ impl Drop for Session {
     }
 }
 
+/// One DMABUF object of an exported surface: its file descriptor (owned: closed on drop), its size
+/// in bytes and the DRM format modifier the driver decoded the surface with.
+#[derive(Debug)]
+pub struct DmabufObject {
+    pub fd: OwnedFd,
+    pub size: u32,
+    pub modifier: u64,
+}
+
+/// One plane of an exported surface: the DRM format, which object holds it, the offset inside that
+/// object and the pitch in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmabufPlane {
+    pub format: u32,
+    pub object: usize,
+    pub offset: u32,
+    pub pitch: u32,
+}
+
+/// A decoded surface as DMABUF ([`Display::export_surface`]): what a GPU importer needs to bind the
+/// picture as a texture with no GPU → CPU readback. The objects' file descriptors are owned here.
+#[derive(Debug)]
+pub struct SurfaceDmabuf {
+    /// `VA_FOURCC_*` of the whole surface (NV12, P010, …).
+    pub fourcc: u32,
+    pub width: u32,
+    pub height: u32,
+    pub objects: Vec<DmabufObject>,
+    pub planes: Vec<DmabufPlane>,
+}
+
+/// Whether the loaded libva can export a surface as DMABUF (`vaExportSurfaceHandle`, libva 2.1):
+/// the prerequisite of a zero-copy GPU path. Checked without opening a display.
+pub fn can_export_surface() -> bool {
+    matches!(api(), Ok(a) if a.export_surface_handle.is_some())
+}
+
 /// Whether this system has a working VA-API driver on a DRM render node (checked once), with the
 /// driver's description, or why not.
 pub fn probe() -> &'static Result<String, String> {
     static PROBE: OnceLock<Result<String, String>> = OnceLock::new();
     // the display opened to answer is the one sessions share
     PROBE.get_or_init(|| shared().map(|d| d.vendor().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The DMABUF export describes a decoded surface's planes and hands over its objects: the first
+    /// half of the zero-copy path, checked on the real driver. Skips without one (and without
+    /// `vaExportSurfaceHandle`).
+    #[test]
+    fn surface_export_describes_the_planes() {
+        let Ok(vendor) = probe() else {
+            eprintln!("no VA-API driver, skipping");
+            return;
+        };
+        let Ok(d) = shared() else {
+            eprintln!("no shared display, skipping");
+            return;
+        };
+        if !can_export_surface() {
+            eprintln!("{vendor}: libva without vaExportSurfaceHandle, skipping");
+            return;
+        }
+        // 8-bit 4:2:0: NV12, two planes (luma, interleaved chroma), at least one byte per sample
+        let mut s8 = d.create_surfaces(ffi::VA_RT_FORMAT_YUV420, (64, 64), 1).unwrap();
+        {
+            let e = d.export_surface(s8[0]).unwrap();
+            assert_eq!(e.fourcc, ffi::VA_FOURCC_NV12, "{e:?}");
+            assert_eq!((e.width, e.height), (64, 64));
+            assert_eq!(e.planes.len(), 2, "{e:?}");
+            assert!(e.planes.iter().all(|p| p.pitch >= 64), "{e:?}");
+            assert!(e.objects.iter().all(|o| o.size > 0), "{e:?}");
+            // the descriptors are real dmabufs: they fstat like any file
+            for o in &e.objects {
+                let f = File::from(o.fd.try_clone().unwrap());
+                assert!(f.metadata().unwrap().len() > 0, "{e:?}");
+            }
+        }
+        d.destroy_surfaces(&mut s8).unwrap();
+        // 10-bit 4:2:0: a 10-bit format (P010 or wider), still two planes
+        let mut s10 = match d.create_surfaces(ffi::VA_RT_FORMAT_YUV420_10, (64, 64), 1) {
+            Ok(s) => s,
+            // a driver without 10-bit 4:2:0 surfaces: the 8-bit half above is the whole test
+            Err(e) if e.ends_with(&format!("({:#x})", ffi::VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT)) => {
+                eprintln!("{vendor}: no 10-bit 4:2:0 surfaces ({e}), skipping the 10-bit export");
+                return;
+            }
+            Err(e) => panic!("{vendor}: 10-bit surfaces: {e}"),
+        };
+        {
+            let e = d.export_surface(s10[0]).unwrap();
+            assert_ne!(e.fourcc, ffi::VA_FOURCC_NV12, "10-bit surface as 8-bit: {e:?}");
+            assert_eq!(e.planes.len(), 2, "{e:?}");
+            assert!(e.planes.iter().all(|p| p.pitch >= 128), "10-bit pitch in bytes: {e:?}");
+            assert!(e.objects.iter().all(|o| o.size > 0), "{e:?}");
+            eprintln!("{vendor}: 8-bit NV12 and 10-bit 0x{:08x} exported over DMABUF", e.fourcc);
+        }
+        d.destroy_surfaces(&mut s10).unwrap();
+    }
 }

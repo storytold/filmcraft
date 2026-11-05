@@ -9,11 +9,14 @@ use std::sync::Arc;
 
 use filmcraft_frame::{Chroma, PixelData, VideoFrame, pool};
 
-/// A mapped biplanar surface: a luma plane followed by interleaved chroma, `stride` bytes per row.
+/// A mapped biplanar surface: a luma plane (`stride` bytes per row) and interleaved chroma
+/// (`chroma_stride` bytes per row; the same as `stride` for most surfaces, but a derived VA-API
+/// image may pitch its planes differently).
 pub struct Biplanar<'a> {
     pub luma: &'a [u8],
     pub chroma: &'a [u8],
     pub stride: usize,
+    pub chroma_stride: usize,
     /// Rows in the luma plane (the surface height, which may exceed the picture's).
     pub rows: usize,
 }
@@ -48,8 +51,12 @@ pub fn to_frame(src: &Biplanar, g: &Geometry) -> Result<VideoFrame, String> {
     let (cox, coy) = (ox / 2, oy / 2);
     let needs_rows = oy.checked_add(h).ok_or("picture size overflows")?;
     let needs_cols = ox.checked_add(w).and_then(|c| c.checked_mul(bps)).ok_or("picture size overflows")?;
-    if src.rows < needs_rows || src.stride < needs_cols || src.stride < (cox + cw) * 2 * bps {
-        return Err(format!("decoded surface ({} rows, {} byte rows) is smaller than the {w}x{h} picture at {ox},{oy}", src.rows, src.stride));
+    let needs_chroma_cols = cox.checked_add(cw).and_then(|c| c.checked_mul(2 * bps)).ok_or("picture size overflows")?;
+    if src.rows < needs_rows || src.stride < needs_cols || src.chroma_stride < needs_chroma_cols {
+        return Err(format!(
+            "decoded surface ({} rows, {} / {} byte rows) is smaller than the {w}x{h} picture at {ox},{oy}",
+            src.rows, src.stride, src.chroma_stride
+        ));
     }
     let data = if bps == 1 {
         let mut yp = pool::take_u8(w * h);
@@ -59,7 +66,7 @@ pub fn to_frame(src: &Biplanar, g: &Geometry) -> Result<VideoFrame, String> {
         let (mut u, mut v) = (pool::take_u8(cw * ch), pool::take_u8(cw * ch));
         for y in 0..ch {
             // two passes over the row: each is a simple strided copy the compiler vectorises
-            let pairs = row(src.chroma, src.stride, coy + y, cox * 2, cw * 2)?.as_chunks::<2>().0;
+            let pairs = row(src.chroma, src.chroma_stride, coy + y, cox * 2, cw * 2)?.as_chunks::<2>().0;
             u.extend(pairs.iter().map(|p| p[0]));
             v.extend(pairs.iter().map(|p| p[1]));
         }
@@ -72,7 +79,7 @@ pub fn to_frame(src: &Biplanar, g: &Geometry) -> Result<VideoFrame, String> {
         }
         let (mut u, mut v) = (pool::take_u16(cw * ch), pool::take_u16(cw * ch));
         for y in 0..ch {
-            let quads = row(src.chroma, src.stride, coy + y, cox * 4, cw * 4)?.as_chunks::<4>().0;
+            let quads = row(src.chroma, src.chroma_stride, coy + y, cox * 4, cw * 4)?.as_chunks::<4>().0;
             u.extend(quads.iter().map(|q| u16::from_le_bytes([q[0], q[1]]) >> shift));
             v.extend(quads.iter().map(|q| u16::from_le_bytes([q[2], q[3]]) >> shift));
         }
@@ -95,13 +102,28 @@ mod tests {
         let (stride, rows) = (10usize, 6usize);
         let luma: Vec<u8> = (0..stride * rows).map(|i| i as u8).collect();
         let chroma: Vec<u8> = (0..stride * rows / 2).map(|i| 100 + i as u8).collect();
-        let f = to_frame(&Biplanar { luma: &luma, chroma: &chroma, stride, rows }, &geometry((2, 2, 4, 4), 8)).unwrap();
+        let f = to_frame(&Biplanar { luma: &luma, chroma: &chroma, stride, chroma_stride: stride, rows }, &geometry((2, 2, 4, 4), 8)).unwrap();
         let PixelData::Yuv8 { planes, chroma: c, .. } = &f.data else { panic!("8-bit") };
         assert_eq!(*c, Chroma::C420);
         assert_eq!(&planes[0][..], &[22, 23, 24, 25, 32, 33, 34, 35, 42, 43, 44, 45, 52, 53, 54, 55]);
         // chroma rows 1..3, pairs from byte 2: row 1 starts at 10, row 2 at 20
         assert_eq!(&planes[1][..], &[112, 114, 122, 124]);
         assert_eq!(&planes[2][..], &[113, 115, 123, 125]);
+    }
+
+    #[test]
+    fn chroma_rows_use_their_own_pitch() {
+        // a 4x4 picture: luma 4 bytes per row, chroma padded to 6 (a derived VA-API image can
+        // pitch its planes differently)
+        let luma: Vec<u8> = (0..16).collect();
+        let chroma: Vec<u8> = vec![100, 101, 102, 103, 0, 0, 110, 111, 112, 113, 0, 0];
+        let f = to_frame(&Biplanar { luma: &luma, chroma: &chroma, stride: 4, chroma_stride: 6, rows: 4 }, &geometry((0, 0, 4, 4), 8)).unwrap();
+        let PixelData::Yuv8 { planes, .. } = &f.data else { panic!("8-bit") };
+        assert_eq!(&planes[0][..], &luma[..]);
+        assert_eq!(&planes[1][..], &[100, 102, 110, 112]);
+        assert_eq!(&planes[2][..], &[101, 103, 111, 113]);
+        // a chroma pitch too short for the picture is an error, not a short read
+        assert!(to_frame(&Biplanar { luma: &luma, chroma: &chroma, stride: 4, chroma_stride: 3, rows: 4 }, &geometry((0, 0, 4, 4), 8)).is_err());
     }
 
     #[test]
@@ -115,7 +137,7 @@ mod tests {
         for (i, s) in chroma.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             *s = ((500 + i as u16) << 6).to_le_bytes();
         }
-        let f = to_frame(&Biplanar { luma: &luma, chroma: &chroma, stride, rows }, &geometry((0, 0, 4, 2), 10)).unwrap();
+        let f = to_frame(&Biplanar { luma: &luma, chroma: &chroma, stride, chroma_stride: stride, rows }, &geometry((0, 0, 4, 2), 10)).unwrap();
         let PixelData::Yuv16 { planes, bits, .. } = &f.data else { panic!("16-bit") };
         assert_eq!(*bits, 10);
         assert_eq!(&planes[0][..], &[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -123,17 +145,38 @@ mod tests {
     }
 
     #[test]
+    fn p010_chroma_rows_use_their_own_pitch() {
+        // a 4x4 P010 picture: luma 8 bytes per row, chroma 8 bytes padded to 12
+        let (stride, chroma_stride, rows) = (8usize, 12usize, 4usize);
+        let mut luma = vec![0u8; stride * rows];
+        for (i, s) in luma.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+            *s = (((i as u16) + 1) << 6).to_le_bytes();
+        }
+        let mut chroma = vec![0u8; chroma_stride * 2];
+        for row in 0..2 {
+            for i in 0..4 {
+                let at = row * chroma_stride + i * 2;
+                chroma[at..at + 2].copy_from_slice(&((500 + row as u16 * 10 + i as u16) << 6).to_le_bytes());
+            }
+        }
+        let f = to_frame(&Biplanar { luma: &luma, chroma: &chroma, stride, chroma_stride, rows }, &geometry((0, 0, 4, 4), 10)).unwrap();
+        let PixelData::Yuv16 { planes, .. } = &f.data else { panic!("16-bit") };
+        assert_eq!(&planes[0][..], &(1..=16).collect::<Vec<u16>>()[..]);
+        assert_eq!((&planes[1][..], &planes[2][..]), (&[500, 502, 510, 512][..], &[501, 503, 511, 513][..]));
+    }
+
+    #[test]
     fn surfaces_smaller_than_the_picture_are_errors() {
         let luma = vec![0u8; 64];
         let chroma = vec![0u8; 32];
-        let src = Biplanar { luma: &luma, chroma: &chroma, stride: 8, rows: 8 };
+        let src = Biplanar { luma: &luma, chroma: &chroma, stride: 8, chroma_stride: 8, rows: 8 };
         for crop in [(0, 0, 9, 8), (0, 0, 8, 9), (4, 0, 8, 8), (0, 0, 0, 8), (u32::MAX, 0, 8, 8), (0, 0, 8, 8)] {
             let r = to_frame(&src, &geometry(crop, 8));
             assert_eq!(r.is_ok(), crop == (0, 0, 8, 8), "{crop:?}");
         }
         assert!(to_frame(&src, &geometry((0, 0, 4, 4), 12)).is_err());
         // a short chroma plane is an error, not a panic
-        let short = Biplanar { luma: &luma, chroma: &chroma[..8], stride: 8, rows: 8 };
+        let short = Biplanar { luma: &luma, chroma: &chroma[..8], stride: 8, chroma_stride: 8, rows: 8 };
         assert!(to_frame(&short, &geometry((0, 0, 8, 8), 8)).is_err());
     }
 }
