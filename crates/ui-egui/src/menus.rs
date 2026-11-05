@@ -228,7 +228,7 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut
     // New Item and File ▸ New make their item in the bin the Project panel shows (the dialogs of
     // Sequence and Color Matte take it when they open); a `bin` of the caller wins
     if matches!(id, "file.newAdjustmentLayer" | "file.newBarsAndTone" | "file.newBlackVideo" | "file.newCountingLeader" | "file.newTransparentVideo")
-        && params.get("bin").is_none()
+        && params.get("bin").is_none_or(Value::is_null)
         && let Some(bin) = crate::panels::project::shown_bin(app)
         && let Some(object) = params.as_object_mut()
     {
