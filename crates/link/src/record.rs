@@ -176,11 +176,15 @@ fn byte_at(bytes: &[u8], index: usize) -> Option<u8> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use std::path::PathBuf;
-
     use serde_json::{Value, json};
 
     use super::*;
+
+    /// `crates/ipc/schemas/link-record.schema.json` of the craft-libs revision this workspace pins
+    /// (`craft-ipc` in the root `Cargo.toml`), copied byte for byte. The craft-ipc crate does not
+    /// export the schema, and a path outside this repository is missing in a standalone checkout.
+    /// When the pin moves, copy the file again.
+    const LINK_RECORD_SCHEMA: &str = include_str!("../tests/link-record.schema.json");
 
     fn sample() -> LinkRecord {
         LinkRecord {
@@ -217,10 +221,7 @@ mod tests {
         assert_eq!(serialized.get("badge").and_then(Value::as_str), Some("kept"));
         assert_eq!(serialized["format"].get("tint").and_then(Value::as_str), Some("warm"));
 
-        let schema_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../../crates/ipc/schemas/link-record.schema.json");
-        let shown = schema_path.display().to_string();
-        assert!(schema_path.is_file(), "schema file missing: {shown}");
-        let schema: Value = serde_json::from_slice(&std::fs::read(&schema_path).expect("read schema")).expect("parse schema");
+        let schema: Value = serde_json::from_str(LINK_RECORD_SCHEMA).expect("parse schema");
         let validator = jsonschema::options().should_validate_formats(true).build(&schema).expect("compile schema");
         let errors: Vec<_> = validator.iter_errors(&serialized).map(|err| err.to_string()).collect();
         assert!(errors.is_empty(), "{errors:?}");
