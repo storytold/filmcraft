@@ -385,3 +385,46 @@ fn set_style_font_style() {
     s.execute("captions.setStyle", json!({"reset": true})).unwrap();
     assert_eq!(s.active_sequence().unwrap().caption_tracks[0].style.font_style, "SemiBold");
 }
+
+/// The caption track language reaches TTML, and import can set it (#4025).
+#[test]
+fn caption_track_language_survives_import_and_ttml_export() {
+    let dir = std::env::temp_dir().join(format!("fc-cap-lang-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let srt = dir.join("pt.srt");
+    std::fs::write(&srt, "1\n00:00:01,000 --> 00:00:02,000\nOlá\n").unwrap();
+    let ttml = dir.join("out.ttml").to_string_lossy().to_string();
+    let mut s = demo();
+    let r = s.execute("captions.import", json!({"path": srt.to_string_lossy()})).unwrap();
+    s.execute("captions.setTrack", json!({"track": "C1", "language": "pt-BR"})).unwrap();
+    s.execute("captions.export", json!({"path": ttml, "track": "C1"})).unwrap();
+    let xml = std::fs::read_to_string(&ttml).unwrap();
+    assert!(xml.contains(r#"xml:lang="pt-BR""#), "{xml}");
+    assert_eq!(r["language"], "en", "an SRT says nothing of its language: {r}");
+    // import takes a language, and a TTML file brings its own
+    let r = s.execute("captions.import", json!({"path": srt.to_string_lossy(), "language": "es-419"})).unwrap();
+    assert_eq!(r["language"], "es-419");
+    let r = s.execute("captions.import", json!({"path": ttml})).unwrap();
+    assert_eq!(r["language"], "pt-BR");
+    let list = s.execute("captions.list", json!({})).unwrap();
+    let langs: Vec<&str> = list["tracks"].as_array().unwrap().iter().map(|t| t["language"].as_str().unwrap()).collect();
+    assert_eq!(langs, ["pt-BR", "es-419", "pt-BR"], "new tracks go on top: {list}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `captions.export` lists the characters an SCC or MCC file cannot carry (#4023).
+#[test]
+fn caption_export_warns_about_characters_608_and_708_cannot_carry() {
+    let dir = std::env::temp_dir().join(format!("fc-cap-charset-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = demo();
+    s.execute("captions.newTrack", json!({"format": "CEA-608", "language": "pt-BR"})).unwrap();
+    s.execute("captions.add", json!({"text": "Espere… isso é “demais” — não?", "seconds": 0.0, "durationSeconds": 2.0})).unwrap();
+    let export = |s: &mut Session, ext: &str| s.execute("captions.export", json!({"path": dir.join(format!("cc.{ext}")).to_string_lossy()})).unwrap();
+    let ellipsis = "CEA-608 has no \"…\" (U+2026): dropped once, first in the caption at 00:00:00;00";
+    assert_eq!(export(&mut s, "scc")["warnings"], json!([ellipsis]));
+    let em_dash = "CEA-708 has no \"—\" (U+2014): written as \"?\" once, first in the caption at 00:00:00;00";
+    assert_eq!(export(&mut s, "mcc")["warnings"], json!([ellipsis, em_dash]));
+    assert_eq!(export(&mut s, "srt")["warnings"], json!([]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
