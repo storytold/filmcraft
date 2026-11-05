@@ -74,7 +74,7 @@ fn moved_project(root: &Path) -> String {
     let r = s.execute("file.import", json!({"paths": files.iter().map(|f| f.to_string_lossy()).collect::<Vec<_>>()})).unwrap();
     let items: Vec<u64> = r["items"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
     let rate = FrameRate::FPS_24;
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let seq = p.new_sequence("Harbour Cut", SequenceSettings { width: 640, height: 360, frame_rate: rate, ..Default::default() }, 1, 1, None);
     let mut at = Tick::ZERO;
     for it in items {
@@ -87,7 +87,7 @@ fn moved_project(root: &Path) -> String {
         p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
         at += d;
     }
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     let path = root.join("p.fcproj").to_string_lossy().into_owned();
     s.execute("file.save", json!({"path": path})).unwrap();
     drop(s); // Close decoder files before moving their directory on Windows.
@@ -187,7 +187,7 @@ fn source_transport_steps_every_frame_at_a_fractional_tick_rate() {
     let generator = Generator::Demo(DemoScene::OceanSunset);
     let src = GeneratorSource::new(generator.clone(), 32, 18, rate, rate.tick_of(41));
     let mut session = Session::default();
-    let item = Arc::make_mut(&mut session.project).add_item(
+    let item = session.project_mut().add_item(
         "31 fps source",
         Label::Iris,
         ItemKind::Media(Box::new(MediaClip {
@@ -230,7 +230,7 @@ fn source_menu_steps_use_ordinals_for_explicit_targets_and_focus() {
         session.execute("file.newSequence", json!({"fps": 31, "width": 32, "height": 18})).unwrap();
         session.execute("playhead.set", json!({"frame": 10})).unwrap();
         session.execute("prefs.set", json!({"key": "playback.stepManyFrames", "value": 12})).unwrap();
-        let item = Arc::make_mut(&mut session.project).add_item(
+        let item = session.project_mut().add_item(
             "31 fps menu source",
             Label::Iris,
             ItemKind::Media(Box::new(MediaClip {
@@ -306,7 +306,7 @@ fn zero_tick_frame_duration_source() -> (Driver, Tick) {
     let src = GeneratorSource::new(generator.clone(), 32, 18, rate, Tick(508_032_000_000_000)); // 2000 seconds.
     let mut session = Session::default();
     session.execute("file.newSequence", json!({"fps": 31, "width": 32, "height": 18})).unwrap();
-    let item = Arc::make_mut(&mut session.project).add_item(
+    let item = session.project_mut().add_item(
         "Source with less than one tick per frame",
         Label::Iris,
         ItemKind::Media(Box::new(MediaClip {
@@ -357,7 +357,7 @@ fn link_media_large_lists_and_long_paths_keep_actions_on_screen() {
     for (width, height) in [(1600.0, 980.0), (1024.0, 768.0), (800.0, 600.0)] {
         let mut s = Session::default();
         s.execute("file.openDemoProject", json!({})).unwrap();
-        let mut p = (*s.project).clone();
+        let mut p = (**s.project).clone();
         let template = p.items.values().find_map(|i| i.as_media()).unwrap().clone();
         for n in 0..100 {
             let mut media = template.clone();
@@ -366,7 +366,7 @@ fn link_media_large_lists_and_long_paths_keep_actions_on_screen() {
             let id = p.add_item(&format!("Missing clip {n}"), Label::Iris, ItemKind::Media(Box::new(media)), None);
             s.offline.missing.push(id);
         }
-        s.project = Arc::new(p);
+        s.set_project(Arc::new(p));
         let mut app = FilmcraftApp::new(s);
         app.ui.link_media = Some(Default::default());
         let mut builder = Harness::builder().with_size(egui::vec2(width, height)).with_max_steps(10_000);

@@ -28,7 +28,7 @@ fn spec(
     enabled: Enabled,
     run: Run,
 ) -> CommandSpec {
-    CommandSpec { id, label, menu, shortcut, params, enabled, run, journal: true }
+    CommandSpec { id, label, menu, shortcut, alt_shortcuts: &[], params, enabled, run, journal: true }
 }
 
 fn has_caption_track(s: &Session) -> std::result::Result<(), String> {
@@ -623,6 +623,7 @@ pub fn commands() -> Vec<CommandSpec> {
             label: "List Captions",
             menu: &[],
             shortcut: None,
+            alt_shortcuts: &[],
             params: r#"{"track":id|"C1"?}"#,
             enabled: always,
             run: |s, p| {

@@ -33,6 +33,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         label: "Scene Edit Detection…",
         menu: &["Clip"],
         shortcut: None,
+        alt_shortcuts: &[],
         params: r#"{"clips":[id]?,"sensitivity":0..100=50,"minShotFrames":n=6,"applyCuts":bool=true,"createSubclips":bool=false,"generateMarkers":bool=false,"wait":bool=false}"#,
         enabled: has_video_selection,
         run: detect,

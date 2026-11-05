@@ -869,7 +869,8 @@ pub(crate) mod tests {
     /// checked as well. Non-undoable commands (views such as Properties) stay out of the shortcut
     /// editor by design, so they are not checked.
     pub(crate) fn assert_dialog_commands_bindable(table: &str, opens: impl Fn(&str) -> bool, except: &[&str]) {
-        let bindable = filmcraft_engine::Session::default().shortcuts.commands();
+        let session = filmcraft_engine::Session::default();
+        let bindable = session.shortcuts.commands(&session.registry);
         let checked: Vec<&str> =
             filmcraft_engine::command_specs().iter().filter(|c| c.journal && opens(c.id) && !except.contains(&c.id)).map(|c| c.id).collect();
         assert!(!checked.is_empty(), "{table}: no command was checked");

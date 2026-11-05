@@ -15,7 +15,7 @@ const H: u32 = 180;
 /// Give V1's clip a Motion move and a blur, so proxies must render effects scale-aware.
 fn add_effects(s: &mut Session) {
     let seq = s.state.active_sequence.unwrap();
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let q = p.sequence_mut(seq).unwrap();
     let it = &mut q.video_tracks[0].items[0];
     let m = it.effect_mut("motion").unwrap();
@@ -26,7 +26,7 @@ fn add_effects(s: &mut Session) {
         b.value = ParamValue::Float(6.0);
     }
     it.effects.push(blur);
-    s.project = std::sync::Arc::new(p);
+    s.set_project(std::sync::Arc::new(p));
 }
 
 #[test]
@@ -309,7 +309,7 @@ fn ingest_copy_does_not_create_a_destination_when_the_source_is_missing() {
     let before = s.project.clone();
     std::fs::rename(&source, root.join("Moved.wav")).unwrap();
     assert!(crate::proxies::ingest(&mut s, &[item]).is_err());
-    assert_eq!(s.project, before, "failed copy does not relink the item");
+    assert_eq!(*s.project, before, "failed copy does not relink the item");
     assert!(!dest.exists(), "no destination is created before the source can be opened");
     let _ = std::fs::remove_dir_all(root);
 }

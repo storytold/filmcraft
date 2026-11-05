@@ -299,9 +299,9 @@ fn linked_trim_monitor() -> Driver {
     }
     let after = d.app().session.project.clone();
     d.exec("edit.undo", json!({}));
-    assert_eq!(*d.app().session.project, *before);
+    assert_eq!(**d.app().session.project, *before);
     d.exec("edit.redo", json!({}));
-    assert_eq!(*d.app().session.project, *after);
+    assert_eq!(**d.app().session.project, *after);
     d
 }
 
@@ -772,7 +772,7 @@ fn move_existing_clip_to_a_new_track(audio: bool, linked: bool) {
     d.frames(2);
     let preview = d.ok("ui.elements", json!({"prefix":format!("timeline.newTrackPreview.{}",clip.0)}));
     assert_eq!(preview.as_array().unwrap().len(), 1, "new destination is shown during the drag");
-    assert_eq!(*d.app().session.project, *before);
+    assert_eq!(**d.app().session.project, *before);
     assert_eq!(d.app().session.history.undo.len(), undo);
     d.harness.input_mut().events.push(egui::Event::PointerButton {
         pos: to,
@@ -795,9 +795,9 @@ fn move_existing_clip_to_a_new_track(audio: bool, linked: bool) {
     assert_eq!(d.app().session.history.undo.len(), undo + 1);
     let after = d.app().session.project.clone();
     d.exec("edit.undo", json!({}));
-    assert_eq!(*d.app().session.project, *before);
+    assert_eq!(**d.app().session.project, *before);
     d.exec("edit.redo", json!({}));
-    assert_eq!(*d.app().session.project, *after);
+    assert_eq!(**d.app().session.project, *after);
 }
 
 #[test]

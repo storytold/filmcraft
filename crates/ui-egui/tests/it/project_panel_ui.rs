@@ -1463,7 +1463,7 @@ fn dragging_clips_onto_new_item_makes_a_matching_sequence() {
     let clips = |d: &mut Driver| d.app().session.active_sequence().map(|q| q.video_tracks.iter().map(|t| t.items.len()).sum::<usize>()).unwrap_or(0);
     let drop = json!({"id": "project.button.new-item"});
     // footage that differs from a new sequence's defaults, so matching it shows
-    if let Some(filmcraft_project::ItemKind::Media(m)) = std::sync::Arc::make_mut(&mut d.app().session.project).item_mut(ItemId(items[0])).map(|i| &mut i.kind)
+    if let Some(filmcraft_project::ItemKind::Media(m)) = d.app().session.project_mut().item_mut(ItemId(items[0])).map(|i| &mut i.kind)
         && let Some(v) = m.info.video.as_mut()
     {
         (v.width, v.height, v.frame_rate) = (1280, 720, filmcraft_time::FrameRate::FPS_25);

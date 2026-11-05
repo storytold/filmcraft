@@ -303,7 +303,7 @@ fn fader_moves_during_playback_in_read_mode() {
     s.execute("mixer.release", json!({"strip": "A1", "time": sec(1.0)})).unwrap();
     assert!(s.previews.live.get(a1(&s).id, LANE_VOLUME).is_none());
     s.execute("mixer.recordStop", json!({"time": sec(3.0)})).unwrap();
-    assert_eq!(*s.project, *before, "automation untouched");
+    assert_eq!(**s.project, *before, "automation untouched");
 }
 
 #[test]

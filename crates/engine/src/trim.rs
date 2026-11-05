@@ -568,13 +568,13 @@ fn apply_dynamic(s: &mut Session, offset: Tick) -> Result<Tick> {
     let (undo_len, journal_len, limit) = (s.history.undo.len(), s.journal.len(), s.history.limit);
     let redo = std::mem::take(&mut s.history.redo);
     s.history.limit = usize::MAX;
-    s.project = d.before.clone();
+    s.set_project(d.before.clone());
     let r = if offset == Tick::ZERO { Ok(vec![json!(0)]) } else { trim_all_raw(s, &|_, _| Some(offset)) };
     let applied = match r {
         Ok(a) => a.first().and_then(Value::as_i64).map(Tick).unwrap_or_default(),
         Err(_) => {
             // refused outright (e.g. it would break sync): stay where we were
-            s.project = d.before.clone();
+            s.set_project(d.before.clone());
             if d.offset != Tick::ZERO {
                 let _ = trim_all_raw(s, &|_, _| Some(d.offset));
             }
@@ -611,7 +611,7 @@ pub fn commit(s: &mut Session) -> Value {
     let Some(d) = s.trim_play.dynamic.take() else { return json!({"committed": false}) };
     let rate = s.sequence_rate();
     if d.offset == Tick::ZERO || Arc::ptr_eq(&d.before, &s.project) {
-        s.project = d.before;
+        s.set_project(d.before);
         s.state.trim_shift = d.shift_before;
         return json!({"committed": false, "offsetFrames": 0});
     }
@@ -634,14 +634,13 @@ pub fn commit(s: &mut Session) -> Value {
 pub fn cancel(s: &mut Session) -> Result<Value> {
     s.trim_play.around = None;
     if let Some(d) = s.trim_play.dynamic.take() {
-        s.project = d.before;
+        s.set_project(d.before);
         s.state.trim_shift = d.shift_before;
         s.fix_state();
         if let Some(t) = s.active_sequence().and_then(|q| s.state.edit_points.first().and_then(|e| edit_time(q, e))) {
             s.set_playhead(t);
         }
-        s.revision += 1;
-        s.events.push(crate::Event::ProjectChanged { revision: s.revision });
+        s.bump();
     }
     Ok(Value::Null)
 }

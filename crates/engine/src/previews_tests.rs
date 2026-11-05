@@ -27,7 +27,7 @@ fn session_with(name: &str, video: Generator) -> (Session, ClipId) {
     let mut s = Session::default();
     s.previews.set_dir(Some(tmp(name)));
     let r = FrameRate::FPS_24;
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let matte = crate::demo::add_generator(&mut p, &s.media, GeneratorSource::new(video, 64, 36, r, Tick(10 * TICKS_PER_SECOND)), "Matte", Label::Iris, None);
     let tone = crate::demo::add_generator(
         &mut p,
@@ -49,7 +49,7 @@ fn session_with(name: &str, video: Generator) -> (Session, ClipId) {
     let q = p.sequence_mut(seq).unwrap();
     q.video_tracks[0].items = vec![a, b];
     q.audio_tracks[0].items = vec![au];
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     s.state.active_sequence = Some(seq);
     s.state.open_sequences = vec![seq];
     (s, a_id)
@@ -312,7 +312,7 @@ fn enter_renders_the_red_segment_and_leaves_the_yellow_one() {
     let mut s = Session::default();
     s.previews.set_dir(Some(tmp("enter-red")));
     let r = FrameRate::FPS_24;
-    let mut p = (*s.project).clone();
+    let mut p = (**s.project).clone();
     let matte = GeneratorSource::new(Generator::ColorMatte { color: [0.2, 0.5, 0.8, 1.0] }, 1920, 1080, r, Tick(TICKS_PER_SECOND));
     let matte = crate::demo::add_generator(&mut p, &s.media, matte, "Matte", Label::Iris, None);
     // 1080p, where four heavy effects cost more than a frame lasts (red) and a Tint does not
@@ -328,7 +328,7 @@ fn enter_renders_the_red_segment_and_leaves_the_yellow_one() {
     let red = clip(&mut p, 0, &["gaussian_blur", "sharpen", "lumetri", "noise"]);
     let yellow = clip(&mut p, 2, &["tint"]);
     p.sequence_mut(seq).unwrap().video_tracks[0].items = vec![red, yellow];
-    s.project = Arc::new(p);
+    s.set_project(Arc::new(p));
     s.state.active_sequence = Some(seq);
     s.state.open_sequences = vec![seq];
     assert_eq!(states(&s), vec!["red", "yellow"]);

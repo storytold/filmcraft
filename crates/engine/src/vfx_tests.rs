@@ -39,7 +39,8 @@ fn transition_preview_is_read_only_and_matches_apply_and_undo() {
         }
         assert!(preview_transition(&s, &json!({"effect": effect, "clip": u64::MAX}), kind).is_err());
         let track = s.active_sequence().unwrap().tracks(kind)[0].id;
-        std::sync::Arc::make_mut(&mut s.project).sequence_mut(s.state.active_sequence.unwrap()).unwrap().track_mut(track).unwrap().locked = true;
+        let seq = s.state.active_sequence.unwrap();
+        s.project_mut().sequence_mut(seq).unwrap().track_mut(track).unwrap().locked = true;
         assert!(preview_transition(&s, &json!({"effect": effect, "clip": s.active_sequence().unwrap().track(track).unwrap().items[0].id.0}), kind).is_err());
     }
 }
@@ -206,7 +207,7 @@ fn transition_duration_is_clamped_to_what_the_cut_supports() {
     let clips: Vec<_> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|c| c.id).collect();
     assert!(clips.len() >= 2, "the demo project needs at least two V1 clips for this test");
     let (first_start, second_end) = {
-        let items = &mut std::sync::Arc::make_mut(&mut s.project).sequence_mut(sid).unwrap().track_mut(track).unwrap().items;
+        let items = &mut s.project_mut().sequence_mut(sid).unwrap().track_mut(track).unwrap().items;
         items[0].duration = frame.mul_ratio(3, 1);
         let cut = items[0].end();
         items[1].start = cut;
@@ -236,7 +237,7 @@ fn transition_duration_is_clamped_to_what_the_cut_supports() {
 
     // A cut whose clips are shorter than a frame is refused instead of creating a
     // zero-length transition.
-    let items = &mut std::sync::Arc::make_mut(&mut s.project).sequence_mut(sid).unwrap().track_mut(track).unwrap().items;
+    let items = &mut s.project_mut().sequence_mut(sid).unwrap().track_mut(track).unwrap().items;
     items[1].duration = Tick(0);
     let err =
         preview_transition(&s, &json!({"effect": "cross_dissolve", "clip": clips[1].0, "edge": "in", "frames": 5}), TrackKind::Video).unwrap_err().to_string();

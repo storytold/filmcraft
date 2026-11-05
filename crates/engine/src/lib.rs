@@ -9,6 +9,7 @@
 //! thanks to structural sharing of untouched items).
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
+#![allow(clippy::disallowed_methods)]
 
 pub mod aaf_omf;
 pub mod autosave;
@@ -60,6 +61,7 @@ pub mod source_monitor;
 pub mod sync;
 pub mod transcript;
 pub mod trim;
+pub mod ui_ids;
 pub mod voiceover;
 
 use std::sync::Arc;
@@ -99,9 +101,18 @@ pub enum EngineError {
     Media(#[from] filmcraft_media::MediaError),
     #[error("{0}")]
     Other(String),
+    #[error(transparent)]
+    Command(#[from] craft_command::CommandError),
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<craft_plugin_host::invoke::CallError> for EngineError {
+    fn from(e: craft_plugin_host::invoke::CallError) -> Self {
+        EngineError::Other(format!("plug-in: {e}"))
+    }
+}
 
 /// Host services (file access, clipboard…) injected by the frontend.
 pub trait Services: Send + Sync {
@@ -240,6 +251,12 @@ pub struct History {
     /// Key of the last [`Session::edit_merged`] step: a continuous gesture (a fader drag) with the
     /// same key folds into that one undo step.
     pub merge_key: Option<String>,
+    /// Clip selections to bring back when undo or redo switches to a given project snapshot. A
+    /// snapshot holds the project and nothing of the editor state, so a command that swaps the
+    /// selected clips for new ones (`link.editIn`) would leave an empty selection after its undo.
+    /// Entries are found by snapshot identity (`Arc::ptr_eq`), so stack trims and collapses do not
+    /// move them. See [`History::remember_selection`].
+    selection_memo: Vec<(Arc<Project>, Vec<ClipId>)>,
 }
 
 impl History {
@@ -249,6 +266,23 @@ impl History {
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
+
+    /// Select `selection` when undo or redo switches to `snapshot` (a project in `undo` or `redo`).
+    /// The clips that no longer exist then are dropped. Replaces an earlier entry for `snapshot` and
+    /// forgets entries whose snapshot left both stacks.
+    pub fn remember_selection(&mut self, snapshot: &Arc<Project>, selection: Vec<ClipId>) {
+        let (undo, redo) = (&self.undo, &self.redo);
+        self.selection_memo
+            .retain(|(kept, _)| !Arc::ptr_eq(kept, snapshot) && undo.iter().chain(redo.iter()).any(|(_, project, _)| Arc::ptr_eq(project, kept)));
+        self.selection_memo.push((Arc::clone(snapshot), selection));
+    }
+
+    /// The selection remembered for `snapshot`, which is not remembered again.
+    fn take_selection(&mut self, snapshot: &Arc<Project>) -> Option<Vec<ClipId>> {
+        let at = self.selection_memo.iter().position(|(kept, _)| Arc::ptr_eq(kept, snapshot))?;
+        Some(self.selection_memo.swap_remove(at).1)
+    }
+
     /// The History panel's Delete Redoable Actions: removes every step that Redo would bring
     /// back. The project and the undo steps stay as they are. Returns how many steps were removed.
     pub fn delete_redoable(&mut self) -> usize {
@@ -263,6 +297,7 @@ impl History {
         self.undo.clear();
         self.redo.clear();
         self.merge_key = None;
+        self.selection_memo.clear();
         n
     }
 }
@@ -442,7 +477,7 @@ pub enum Event {
 }
 
 pub struct Session {
-    pub project: Arc<Project>,
+    pub project: craft_command::Tracked<Arc<Project>>,
     /// Runtime identity of the opened project, stable across edits/undo and renewed on replacement.
     pub project_instance: Arc<()>,
     pub history: History,
@@ -456,6 +491,8 @@ pub struct Session {
     pub state: EditorState,
     pub media: Arc<MediaPool>,
     pub services: Arc<dyn Services>,
+    /// Time source for the gate budgets (2 ms per call, 6 ms per 16 ms window). Tests inject a fixed one.
+    pub clock: Arc<dyn craft_command::Clock + Send + Sync>,
     pub events: Vec<Event>,
     /// Commands executed (for macros/debugging): (id, params).
     pub journal: Vec<(String, Value)>,
@@ -490,6 +527,12 @@ pub struct Session {
     pub shortcuts: shortcuts::Shortcuts,
     /// Missing / offline media found by the last scan (Link Media dialog).
     pub offline: relink::OfflineState,
+    /// Badge text of each linked media item ("linked", "linked, not live: <reason>"). The link crate fills it
+    /// once per frame; the project panel and the timeline read it.
+    pub link_badges: std::collections::BTreeMap<ItemId, String>,
+    /// Frames each live linked item showed: `(live, late, fallback)`. The link crate fills it once per
+    /// frame (`media.status` reports it). Late and fallback frames came from the result file.
+    pub link_frames: std::collections::BTreeMap<ItemId, (u64, u64, u64)>,
     /// Proxy / ingest / project-manager jobs whose results still have to be applied to the project.
     pub media_jobs: Vec<proxies::PendingJob>,
     /// Mask tracking jobs whose keyframes are still being written.
@@ -512,7 +555,14 @@ pub struct Session {
     /// Media Browser navigation (directory, back / forward history, selected files).
     pub browser: media_browser::BrowserState,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
-    exec_depth: u32,
+    pub exec_depth: u32,
+    /// Monotonic id for [`craft_command::Call::seq`].
+    pub call_seq: u64,
+    /// Set by a merged edit, consumed by [`Session::bump`].
+    pub pending_merged: bool,
+    /// `Arc` so the plug-in host (`filmcraft-plugins`) registers into the same table.
+    pub registry: Arc<craft_command::Registry<Session, EngineError>>,
+    pub hooks: craft_command::Hooks<Session>,
     /// Id of the outermost command [`Session::execute`] is running, stored with each undo step
     /// it makes.
     pub(crate) command_origin: Option<String>,
@@ -560,6 +610,27 @@ impl Job {
     }
 }
 
+struct SystemClock;
+
+/// Result class for a UI-only command. The egui crate does not name `craft_command`.
+pub enum UiOutcome {
+    Ok,
+    Err,
+    Panicked,
+}
+
+/// An open UI-only gate. [`Session::close_ui`] finishes it.
+pub struct UiGate {
+    info: craft_command::CallInfo,
+    pub params: Value,
+}
+
+impl craft_command::Clock for SystemClock {
+    fn now_ms(&self) -> u64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    }
+}
+
 impl Default for Session {
     fn default() -> Self {
         Self::new(Arc::new(FsServices))
@@ -569,7 +640,7 @@ impl Default for Session {
 impl Session {
     pub fn new(services: Arc<dyn Services>) -> Self {
         Self {
-            project: Arc::new(Project::new("Untitled")),
+            project: craft_command::Tracked::new(Arc::new(Project::new("Untitled"))),
             project_instance: Arc::new(()),
             history: History { limit: 200, ..Default::default() },
             revision: 1,
@@ -585,6 +656,7 @@ impl Session {
             },
             media: Arc::new(MediaPool::default()),
             services,
+            clock: Arc::new(SystemClock),
             events: Vec::new(),
             journal: Vec::new(),
             jobs: Vec::new(),
@@ -602,6 +674,8 @@ impl Session {
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
+            link_badges: Default::default(),
+            link_frames: Default::default(),
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
@@ -613,6 +687,10 @@ impl Session {
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
+            call_seq: 0,
+            pending_merged: false,
+            registry: Arc::new(craft_command::Registry::new(commands::command_specs())),
+            hooks: craft_command::Hooks::new(),
             command_origin: None,
             media_stamps: Default::default(),
             media_scan: None,
@@ -769,29 +847,92 @@ impl Session {
         self.revision != self.saved_revision
     }
 
+    /// Mutable project. Marks the document dirty until [`Session::bump`].
+    pub fn project_mut(&mut self) -> &mut Project {
+        Arc::make_mut(self.project.write())
+    }
+
+    pub fn set_project(&mut self, project: Arc<Project>) {
+        *self.project.write() = project;
+    }
+
+    pub fn replace_project(&mut self, project: Arc<Project>) -> Arc<Project> {
+        std::mem::replace(self.project.write(), project)
+    }
+
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
-        let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        self.execute_as(id, params, craft_command::Origin::Execute)
+    }
+
+    /// Run a command by id for `origin`, which the gates see on the `Call`. A plug-in's `cmd.execute`
+    /// passes `Origin::Plugin`.
+    pub fn execute_as(&mut self, id: &str, params: Value, origin: craft_command::Origin) -> Result<Value> {
+        let Some(cmd) = self.registry.resolve(id) else {
+            return Err(EngineError::UnknownCommand(id.to_string()));
+        };
+        // Idle fast path: nothing can observe this call, so skip the id allocation, the Hooks clone, cause, gates and depth.
+        if self.hooks.is_idle() {
+            return self.execute_resolved(id, None, params, cmd, origin);
+        }
+        let id_arc: Arc<str> = Arc::from(id);
+        let hooks = self.hooks.clone();
+        let depth = self.exec_depth.saturating_add(1);
+        hooks.with_cause(craft_command::Cause::Command { id: Arc::clone(&id_arc), depth, origin }, || {
+            self.execute_resolved(id, Some((id_arc, hooks.clone())), params, cmd, origin)
+        })
+    }
+
+    /// `hooked` is `None` on the idle fast path: no `Call`, gates, enter/leave or `after`.
+    fn execute_resolved(
+        &mut self,
+        id: &str,
+        hooked: Option<(Arc<str>, craft_command::Hooks<Session>)>,
+        params: Value,
+        cmd: craft_command::CommandEntry<'static, Session, EngineError>,
+        origin: craft_command::Origin,
+    ) -> Result<Value> {
         // headless sessions (CLI, MCP, control channel) have no UI frame loop calling
         // `poll_persistence`: apply background mask tracking before each command (#3302)
         if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
             masks::poll(self);
         }
-        let journal = spec.journal && !commands::reports_only(id, &params);
+        let declared_journal = match &cmd {
+            craft_command::CommandEntry::Static(spec) => spec.journal,
+            craft_command::CommandEntry::Dynamic(cmd) => cmd.journal,
+        };
+        let journal = declared_journal && !commands::reports_only(id, &params);
+        let clock = Arc::clone(&self.clock);
+        let seq = self.call_seq;
+        self.call_seq = self.call_seq.saturating_add(1);
+        let (params, ctx) = match hooked {
+            Some((id_arc, hooks)) => {
+                let mut call = craft_command::Call { id: id_arc, params, depth: self.exec_depth.saturating_add(1), origin, seq };
+                // Nested execute does not flush. An inner flush would report a write the outer command still bumps.
+                let verdict = hooks.before(self, &mut call, &*clock);
+                let params = call.params.clone();
+                let info = call.info();
+                if let craft_command::Verdict::Veto { reason, by } = verdict {
+                    return self.finish_call(&hooks, &info, craft_command::Outcome::Vetoed, Err(craft_command::CommandError::Vetoed { reason, by }.into()));
+                }
+                (params, Some((hooks, info)))
+            }
+            None => (params, None),
+        };
         if self.exec_depth == 0 && journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }
-        if let Err(why) = self.enabled_for(spec, &params) {
+        if let Err(why) = self.command_enabled(&cmd, &params) {
             let e = EngineError::Disabled(id.to_string(), why);
             if self.exec_depth == 0 {
                 self.log.push(panels::Level::Warning, id, e.to_string());
             }
-            return Err(e);
+            return self.finish_execute(ctx, craft_command::Outcome::Disabled, Err(e));
         }
         // Only an editing command can introduce clips for the sequence-only scope. Loading a
         // document or restoring an undo snapshot must not run recognition or change that snapshot.
         let transcription_before = (self.exec_depth == 0
-            && spec.journal
+            && declared_journal
             && self.prefs.media_analysis.auto_transcribe
             && self.prefs.media_analysis.auto_transcribe_scope == "sequenceClips"
             && !matches!(id, "edit.undo" | "edit.redo" | "file.newProject" | "file.openDemoProject" | "file.open" | "file.revert" | "file.recover"))
@@ -801,23 +942,32 @@ impl Session {
             self.command_origin = Some(id.to_string());
         }
         self.exec_depth += 1;
+        let _depth = ctx.as_ref().map(|(hooks, _)| hooks.enter());
         // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
         // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
         // session and its unsaved project down. The panic hook has logged where it happened.
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
-            .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))));
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run_resolved(&cmd, &params)));
         self.exec_depth -= 1;
+        let _depth = ctx.as_ref().map(|(hooks, _)| hooks.leave());
         if outermost {
             self.command_origin = None;
         }
+        let (outcome, result) = match ran {
+            Ok(Ok(value)) => (craft_command::Outcome::Ok, Ok(value)),
+            Ok(Err(err)) => (craft_command::Outcome::Err, Err(err)),
+            Err(_) => (
+                craft_command::Outcome::Panicked,
+                Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))),
+            ),
+        };
         if self.exec_depth == 0 {
             source_monitor::track_history(self);
         }
         // source graphics: an edited instance updates the shared layers and the other instances
-        if r.is_ok() && journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
+        if result.is_ok() && journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
             graphic_templates::sync_source_graphics(self);
         }
-        if r.is_ok()
+        if result.is_ok()
             && let Some(before) = transcription_before
             && !Arc::ptr_eq(&before, &self.project)
             && let Err(e) = transcript::auto_transcribe_sequence_clips(self, &before)
@@ -827,20 +977,111 @@ impl Session {
             self.events.push(Event::Toast { message, error: true });
         }
         if self.exec_depth == 0
-            && let Err(e) = &r
+            && let Err(e) = &result
         {
             self.log.push(panels::Level::Error, id, e.to_string());
         }
         self.sync_persistence();
-        // playback reads the newest snapshot (mixer moves, mutes… are heard while playing)
-        self.previews.live.publish_project(self.project.clone());
-        if r.is_ok() && journal {
+        // playback reads the newest snapshot (mixer moves, mutes... are heard while playing)
+        self.previews.live.publish_project(Arc::clone(&self.project));
+        if result.is_ok() && journal {
             self.journal.push((id.to_string(), params));
             if self.journal.len() > 10_000 {
                 self.journal.drain(..1000);
             }
         }
-        r
+        self.finish_execute(ctx, outcome, result)
+    }
+
+    /// Close an `execute` call. The idle path (`ctx` is `None`) still flushes so the dirty flag clears.
+    fn finish_execute(
+        &mut self,
+        ctx: Option<(craft_command::Hooks<Session>, craft_command::CallInfo)>,
+        outcome: craft_command::Outcome,
+        result: Result<Value>,
+    ) -> Result<Value> {
+        match ctx {
+            Some((hooks, info)) => self.finish_call(&hooks, &info, outcome, result),
+            None => {
+                if self.exec_depth == 0 {
+                    self.hooks.flush(&mut self.project, self.revision);
+                }
+                result
+            }
+        }
+    }
+
+    fn finish_call(
+        &mut self,
+        hooks: &craft_command::Hooks<Session>,
+        info: &craft_command::CallInfo,
+        outcome: craft_command::Outcome,
+        result: Result<Value>,
+    ) -> Result<Value> {
+        hooks.after(info, &outcome, &*self.clock);
+        if self.exec_depth == 0 {
+            hooks.flush(&mut self.project, self.revision);
+        }
+        result
+    }
+
+    /// Gate a command `execute` does not resolve. A veto returns `Err` after `after` has run.
+    /// The caller runs the UI body, then [`Session::close_ui`]. Nested `execute` does not flush
+    /// until this gate closes and `exec_depth` is 0.
+    pub fn open_ui(&mut self, id: &str, params: &Value) -> std::result::Result<UiGate, String> {
+        let hooks = self.hooks.clone();
+        self.call_seq = self.call_seq.saturating_add(1);
+        let mut call = craft_command::Call {
+            id: Arc::from(id),
+            params: params.clone(),
+            depth: self.exec_depth.saturating_add(1),
+            origin: craft_command::Origin::Ui,
+            seq: self.call_seq,
+        };
+        let clock = Arc::clone(&self.clock);
+        let verdict = hooks.before(self, &mut call, &*clock);
+        let info = call.info();
+        if let craft_command::Verdict::Veto { reason, by } = verdict {
+            let err = craft_command::CommandError::Vetoed { reason, by };
+            let message = err.to_string();
+            let _ = self.finish_call(&hooks, &info, craft_command::Outcome::Vetoed, Err(err.into()));
+            return Err(message);
+        }
+        self.exec_depth = self.exec_depth.saturating_add(1);
+        let _depth = hooks.enter();
+        Ok(UiGate { info, params: call.params })
+    }
+
+    /// Pair of [`Session::open_ui`]. `after` runs, then `flush` when this call is the outermost one.
+    pub fn close_ui(&mut self, gate: UiGate, outcome: UiOutcome) {
+        let hooks = self.hooks.clone();
+        self.exec_depth = self.exec_depth.saturating_sub(1);
+        let _depth = hooks.leave();
+        let outcome = match outcome {
+            UiOutcome::Ok => craft_command::Outcome::Ok,
+            UiOutcome::Err => craft_command::Outcome::Err,
+            UiOutcome::Panicked => craft_command::Outcome::Panicked,
+        };
+        let _ = self.finish_call(&hooks, &gate.info, outcome, Ok(Value::Null));
+    }
+
+    fn command_enabled(&mut self, cmd: &craft_command::CommandEntry<'static, Session, EngineError>, params: &Value) -> std::result::Result<(), String> {
+        match cmd {
+            craft_command::CommandEntry::Static(spec) => self.enabled_for(spec, params),
+            craft_command::CommandEntry::Dynamic(cmd) => match &cmd.enablement {
+                // A FilmCraft session always has a project.
+                craft_command::Enablement::Always | craft_command::Enablement::HasDocument => Ok(()),
+                craft_command::Enablement::HasSelection => commands::has_selection(self),
+                craft_command::Enablement::Cached(state) => state.clone(),
+            },
+        }
+    }
+
+    fn run_resolved(&mut self, cmd: &craft_command::CommandEntry<'static, Session, EngineError>, params: &Value) -> Result<Value> {
+        match cmd {
+            craft_command::CommandEntry::Static(spec) => (spec.run)(self, params),
+            craft_command::CommandEntry::Dynamic(cmd) => (cmd.run)(self, params),
+        }
     }
 
     /// Another command arrives while trim-mode playback runs: a dynamic trim is committed first
@@ -889,7 +1130,38 @@ impl Session {
 
     /// Whether the command can run on the current selection (what the menus show).
     pub fn is_enabled(&self, id: &str) -> bool {
-        commands::find(id).is_some_and(|c| (c.enabled)(self).is_ok())
+        self.enabled_state(id).is_ok()
+    }
+
+    /// [`Session::is_enabled`] with the reason: `Err` holds the text a menu shows as the hover
+    /// hint of a greyed entry.
+    pub fn enabled_state(&self, id: &str) -> std::result::Result<(), String> {
+        match self.registry.resolve(id) {
+            Some(craft_command::CommandEntry::Static(spec)) => (spec.enabled)(self),
+            Some(craft_command::CommandEntry::Dynamic(cmd)) => match &cmd.enablement {
+                craft_command::Enablement::Always | craft_command::Enablement::HasDocument => Ok(()),
+                craft_command::Enablement::HasSelection => commands::has_selection(self),
+                craft_command::Enablement::Cached(state) => state.clone(),
+            },
+            None => Err("unknown command".to_string()),
+        }
+    }
+
+    /// Menu commands in registry order. Dynamic plugin rows are included.
+    /// Each row is `(id, label, menu path)`.
+    pub fn menu_command_rows(&self) -> Vec<(String, String, Vec<String>)> {
+        let mut rows = Vec::new();
+        self.registry.for_each(|view| {
+            let path = match view.menu {
+                craft_command::Menu::Static(parts) => parts.iter().map(|part| (*part).to_string()).collect::<Vec<_>>(),
+                craft_command::Menu::Shared(parts) => parts.iter().map(|part| part.to_string()).collect(),
+            };
+            if path.is_empty() {
+                return;
+            }
+            rows.push((view.id.to_string(), view.label.to_string(), path));
+        });
+        rows
     }
 
     /// What is open, to store beside the project when it is saved.
@@ -960,12 +1232,12 @@ impl Session {
 
     /// Apply an undoable project edit. The closure gets a mutable copy; on error nothing changes.
     pub fn edit<R>(&mut self, label: &str, f: impl FnOnce(&mut Project, &mut EditorState) -> Result<R>) -> Result<R> {
-        let mut p = (*self.project).clone();
+        let mut p = (**self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
         self.refuse_self_nesting(&p)?;
         self.drop_orphan_transitions(&mut p);
-        let old = std::mem::replace(&mut self.project, Arc::new(p));
+        let old = self.replace_project(Arc::new(p));
         self.history.undo.push((label.to_string(), old, self.command_origin.clone()));
         if self.history.undo.len() > self.history.limit {
             self.history.undo.remove(0);
@@ -987,14 +1259,15 @@ impl Session {
             self.history.merge_key = Some(key.to_string());
             return Ok(r);
         }
-        let mut p = (*self.project).clone();
+        let mut p = (**self.project).clone();
         let mut st = self.state.clone();
         let r = f(&mut p, &mut st)?;
         self.refuse_self_nesting(&p)?;
         self.drop_orphan_transitions(&mut p);
-        self.project = Arc::new(p);
+        self.set_project(Arc::new(p));
         self.state = st;
         self.drop_stale_gap();
+        self.pending_merged = true;
         self.bump();
         Ok(r)
     }
@@ -1014,7 +1287,7 @@ impl Session {
             s.history.undo.truncate(undo);
             s.history.redo = redo.clone();
             s.history.merge_key = None;
-            s.project = project.clone();
+            s.set_project(project.clone());
             s.state = state.clone();
             s.bump();
         };
@@ -1062,7 +1335,7 @@ impl Session {
             n += 1;
         }
         if let Some(prev) = earliest {
-            self.project = prev;
+            self.set_project(prev);
             self.history.merge_key = None;
             self.fix_state();
             self.bump();
@@ -1110,23 +1383,50 @@ impl Session {
     }
 
     pub fn undo(&mut self) -> Option<String> {
-        let (label, prev, origin) = self.history.undo.pop()?;
-        self.history.merge_key = None;
-        let cur = std::mem::replace(&mut self.project, prev);
-        self.history.redo.push((label.clone(), cur, origin));
-        self.fix_state();
-        self.bump();
-        Some(label)
+        let hooks = self.hooks.clone();
+        hooks.with_cause(craft_command::Cause::Undo, || {
+            let (label, prev, origin) = self.history.undo.pop()?;
+            self.history.merge_key = None;
+            let restore = self.history.take_selection(&prev);
+            let selected = self.state.selection.clone();
+            let cur = self.replace_project(prev);
+            if restore.is_some() {
+                // Redo of this step brings back the selection it had.
+                self.history.selection_memo.push((Arc::clone(&cur), selected));
+            }
+            self.history.redo.push((label.clone(), cur, origin));
+            self.fix_state();
+            self.restore_selection(restore);
+            self.bump();
+            Some(label)
+        })
     }
 
     pub fn redo(&mut self) -> Option<String> {
-        let (label, next, origin) = self.history.redo.pop()?;
-        self.history.merge_key = None;
-        let cur = std::mem::replace(&mut self.project, next);
-        self.history.undo.push((label.clone(), cur, origin));
-        self.fix_state();
-        self.bump();
-        Some(label)
+        let hooks = self.hooks.clone();
+        hooks.with_cause(craft_command::Cause::Redo, || {
+            let (label, next, origin) = self.history.redo.pop()?;
+            self.history.merge_key = None;
+            let restore = self.history.take_selection(&next);
+            let selected = self.state.selection.clone();
+            let cur = self.replace_project(next);
+            if restore.is_some() {
+                self.history.selection_memo.push((Arc::clone(&cur), selected));
+            }
+            self.history.undo.push((label.clone(), cur, origin));
+            self.fix_state();
+            self.restore_selection(restore);
+            self.bump();
+            Some(label)
+        })
+    }
+
+    /// Select `clips` of the active sequence after an undo or redo, when the step remembered a selection.
+    fn restore_selection(&mut self, clips: Option<Vec<ClipId>>) {
+        let Some(clips) = clips else { return };
+        let Some(sequence) = self.active_sequence() else { return };
+        let kept: Vec<ClipId> = clips.into_iter().filter(|clip| sequence.find_item(*clip).is_some()).collect();
+        self.state.selection = kept;
     }
 
     /// Drop dangling references after undo/redo/delete.
@@ -1181,6 +1481,13 @@ impl Session {
     fn bump(&mut self) {
         self.revision += 1;
         self.events.push(Event::ProjectChanged { revision: self.revision });
+        let merged = self.pending_merged;
+        self.pending_merged = false;
+        let hooks = self.hooks.clone();
+        let cause = hooks.current_cause();
+        let snapshot = Arc::clone(&self.project);
+        hooks.changed(self.revision, cause, merged, snapshot);
+        self.project.mark_bumped();
     }
 
     pub fn toast(&mut self, msg: impl Into<String>) {
@@ -1466,6 +1773,8 @@ mod work_area_tests;
 #[cfg(test)]
 mod source_placement_tests;
 
+#[cfg(test)]
+mod enabled_state_tests;
 #[cfg(test)]
 mod frame_export_tests;
 #[cfg(test)]

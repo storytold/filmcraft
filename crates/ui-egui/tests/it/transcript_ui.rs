@@ -35,7 +35,7 @@ fn long_transcript_redraw_benchmark() {
     // Extend only the synthetic fixture clip so all 10,000 words are actually laid out.
     let session = &mut d.harness.state_mut().session;
     let id = session.state.active_sequence.unwrap();
-    let seq = std::sync::Arc::make_mut(&mut session.project).sequence_mut(id).unwrap();
+    let seq = session.project_mut().sequence_mut(id).unwrap();
     seq.audio_tracks[0].items.truncate(1);
     seq.audio_tracks[0].items[0].source_in = filmcraft_time::Tick::ZERO;
     seq.audio_tracks[0].items[0].duration = filmcraft_time::Tick::from_seconds_f64(4000.0);

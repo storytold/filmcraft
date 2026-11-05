@@ -152,7 +152,7 @@ fn merged_drag_is_one_undo_step_and_project_round_trips() {
     s.execute("masks.set", json!({"mode": "subtract", "trackMethod": "position", "expansion": -4})).unwrap();
     let bytes = filmcraft_format::encode(&s.project, false);
     let back = filmcraft_format::decode(&bytes).unwrap().project;
-    assert_eq!(&back, &*s.project);
+    assert_eq!(&back, &**s.project);
     let l = s.execute("masks.list", json!({})).unwrap();
     assert_eq!(l["masks"][0]["mode"], "Subtract");
     assert_eq!(l["masks"][0]["trackMethod"], "Position");
@@ -249,7 +249,7 @@ fn tracking_session() -> (Session, ClipId) {
         p.make_track_item(item, filmcraft_project::TrackKind::Video, Tick::ZERO, filmcraft_time::TimeRange::new(Tick::ZERO, rate.tick_of(48)), rate).unwrap();
     let clip = ti.id;
     p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
-    let mut s = Session { project: std::sync::Arc::new(p), ..Default::default() };
+    let mut s = Session { project: craft_command::Tracked::new(std::sync::Arc::new(p)), ..Default::default() };
     s.state.active_sequence = Some(seq);
     s.state.selection = vec![clip];
     s.media.insert(item, std::sync::Arc::new(Moving { info }));

@@ -758,7 +758,7 @@ mod tests {
             assert!(filmcraft_render::colorman::override_of(&project, a).is_none());
             assert!(filmcraft_render::colorman::source_peak_nits(&project, a).is_none());
             assert!(crate::sync::project_clip(&project, a).is_none());
-            let mut session = crate::Session { project: Arc::new(project.clone()), ..Default::default() };
+            let mut session = crate::Session { project: craft_command::Tracked::new(Arc::new(project.clone())), ..Default::default() };
             session.state.project_selection = vec![a];
             assert!(!session.is_enabled("file.mediaProperties"));
             assert!(session.execute("transcript.generate", serde_json::json!({"items":[a.0]})).is_err());

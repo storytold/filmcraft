@@ -40,7 +40,7 @@ pub(crate) const CLIP_MENU: &[&[(&str, &str)]] = &[
         ("Clear", "edit.clear"),
         ("Ripple Delete", "edit.rippleDelete"),
     ],
-    &[("Edit Original", "edit.editOriginal"), ("Replace With Clip From Source Monitor", "clip.replaceFromSource")],
+    &[("Edit Original", "edit.editOriginal"), ("Edit in EffectCraft", "link.editIn"), ("Replace With Clip From Source Monitor", "clip.replaceFromSource")],
     &[
         ("Enable", "clip.enable"),
         ("Link", "clip.link"),
@@ -268,7 +268,9 @@ pub(super) fn multicam_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picked: &
     ui.add_enabled_ui(!nests.is_empty(), |ui| {
         let r = ui.menu_button(tl!("Multi-Camera"), |ui| {
             for (label, cmd) in [(if enabled { tl!("✓ Enable") } else { tl!("Enable") }, "clip.multicamEnable"), (tl!("Flatten"), "clip.multicamFlatten")] {
-                let r = ui.add_enabled(app.session.is_enabled(cmd), egui::Button::new(label));
+                let reason = app.session.enabled_state(cmd).err();
+                let r = ui.add_enabled(reason.is_none(), egui::Button::new(label));
+                let r = crate::menus::disabled_hint(r, reason.as_deref());
                 app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
                 if r.clicked() {
                     run = Some((cmd, json!({})));
@@ -286,7 +288,9 @@ pub(super) fn multicam_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picked: &
                 }
             }
         });
-        app.auto.add("timeline.clipMenu.clip.multicam", r.response.rect, "Multi-Camera");
+        let hint = nests.is_empty().then(|| tl!("select a nested sequence clip"));
+        let response = crate::menus::disabled_hint(r.response, hint);
+        app.auto.add("timeline.clipMenu.clip.multicam", response.rect, "Multi-Camera");
     });
     if let Some((cmd, params)) = run {
         if let Err(e) = app.session.execute(cmd, params) {
