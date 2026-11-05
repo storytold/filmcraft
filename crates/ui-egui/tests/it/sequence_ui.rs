@@ -783,6 +783,35 @@ fn marker_panel_search_selection_filters_and_palette_manager() {
     assert!(d.app().ui.marker_properties.is_some());
 }
 
+/// #4336: a marker row's tooltip shows what the marker has, and a marker with nothing to show has
+/// no tooltip: an empty one covered the colour bar of the row below.
+#[test]
+fn marker_row_tooltip_only_shows_what_the_marker_has() {
+    use egui_kittest::kittest::Queryable as _;
+
+    let mut d = Driver::demo();
+    d.exec("markers.clearAll", json!({}));
+    let mut add = |params: Value| d.exec("markers.add", params)["marker"].as_u64().unwrap();
+    let plain = add(json!({"frame": 10}));
+    let blank = add(json!({"frame": 20, "comment": "   "}));
+    let noted = add(json!({"frame": 30, "comment": "Check the cut"}));
+    let signed = add(json!({"frame": 40, "comment": "Trim this", "author": "Ada"}));
+    d.ok("ui.panel.show", json!({"panel": "Markers"}));
+    d.frames(3);
+    let hover = |d: &mut Driver, marker: u64| {
+        d.ok("ui.move", json!({"id": format!("markers.row.{marker}")}));
+        d.frames(60);
+        d.harness.ctx.memory(|m| m.areas().visible_layer_ids().iter().any(|l| l.order == egui::Order::Tooltip))
+    };
+    assert!(!hover(&mut d, plain), "no author or comment, no tooltip");
+    d.snapshot("marker-row-no-tooltip", "markers.");
+    assert!(!hover(&mut d, blank), "spaces are nothing to show");
+    assert!(hover(&mut d, noted));
+    assert!(d.harness.query_by_label("Check the cut").is_some(), "no blank line for the missing author");
+    assert!(hover(&mut d, signed));
+    assert!(d.harness.query_by_label("Ada\nTrim this").is_some());
+}
+
 #[derive(Debug)]
 struct NativeProbeSession {
     state: std::rc::Rc<std::cell::Cell<filmcraft_ui_egui::widgets::color_picker::NativeColorState>>,
