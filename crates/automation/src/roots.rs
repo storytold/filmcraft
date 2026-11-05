@@ -156,7 +156,12 @@ impl AutomationRoots {
                 let entry = entry.map_err(cannot_list)?;
                 let kind = entry.file_type().map_err(cannot_list)?;
                 if kind.is_symlink() {
-                    self.check(&entry.path().to_string_lossy(), Access::Write)
+                    // Written lossily it would name some other file, which doesn't exist and so passes.
+                    let link = entry.path();
+                    let Some(link_text) = link.to_str() else {
+                        return Err(format!("automation path rejected: a link whose path isn't text, so it can't be checked: {}", link.display()));
+                    };
+                    self.check(link_text, Access::Write)
                         .map_err(|e| format!("{e} (a command writing to {path} may pick that name, so the link has to go first)"))?;
                     // Inside the root, but what it leads to can hold a link out.
                     if entry.path().is_dir() {
@@ -696,6 +701,25 @@ mod tests {
         assert!(roots.check_command("file.exportMedia", &params).unwrap_err().contains("a link that leads nowhere"));
         // A folder that doesn't exist yet holds nothing.
         assert_eq!(roots.check_command("file.exportMedia", &json!({"path": s(out.join("new/deeper/result"))})), Ok(()));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A link whose name can't be written as text can't be checked, so it refuses the write.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_with_a_name_that_is_not_text_refuses_a_write() {
+        use std::os::unix::ffi::OsStrExt;
+        let (base, roots) = folders("not-text");
+        let out = base.join("out");
+        let link = out.join(std::ffi::OsStr::from_bytes(b"bad\xff.mp4"));
+        // macOS file systems refuse such names: nothing to test there.
+        if !made(&base.join("outside/old.mp4"), &link) {
+            eprintln!("skipped: this file system refuses such names");
+            let _ = std::fs::remove_dir_all(base);
+            return;
+        }
+        let e = roots.check_command("file.exportMedia", &json!({"path": s(out.join("result"))})).unwrap_err();
+        assert!(e.contains("isn't text"), "{e}");
         let _ = std::fs::remove_dir_all(base);
     }
 
