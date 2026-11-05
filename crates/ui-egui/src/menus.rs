@@ -224,18 +224,34 @@ pub fn invoke_command(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, par
 /// first: ask where (Save As), then run `id` on the same selection. A cancelled dialog cancels the
 /// command and says so in the status line only. The check comes first: a call the command would
 /// refuse anyway (nothing selected) must not ask for a file name.
+///
+/// A host that shows the dialog without blocking answers later, so everything that needs the saved
+/// project runs in the dialog's continuation: it finds the path the save set, puts the selection
+/// back, and runs the command.
 fn save_first_then(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
     if app.session.path.is_none() && app.session.is_enabled(id) {
         let selection = app.session.state.selection.clone();
-        app.file_dialog("file.save", &json!({}))?;
-        if app.session.path.is_none() {
-            app.ui.status = tl!("Edit in EffectCraft cancelled").to_string();
-            return Ok(Value::Null);
-        }
-        // Saving does not move the selection. If it ever does, the command must not link another clip.
-        if app.session.state.selection != selection {
-            app.session.state.selection = selection;
-        }
+        let (ctx, id) = (ctx.clone(), id.to_owned());
+        return app.save_project_dialog(
+            "file.save",
+            Some(Box::new(move |app, saved| {
+                match saved {
+                    // The save failed. Its message is already on the status line.
+                    Some(Err(why)) => return Err(why),
+                    Some(Ok(_)) if app.session.path.is_some() => {}
+                    _ => {
+                        app.ui.status = tl!("Edit in EffectCraft cancelled").to_string();
+                        return Ok(Value::Null);
+                    }
+                }
+                // Saving does not move the selection, but the user may have clicked while the dialog was
+                // open. The command must link the clip that was selected when it started.
+                if app.session.state.selection != selection {
+                    app.session.state.selection = selection;
+                }
+                invoke_gated(app, &ctx, &id, params)
+            })),
+        );
     }
     invoke_gated(app, ctx, id, params)
 }

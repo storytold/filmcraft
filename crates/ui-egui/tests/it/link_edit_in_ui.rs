@@ -4,8 +4,8 @@
 //! `link.editIn` is installed with a recording stand-in for the Craft Link crate, which this crate
 //! does not depend on. The tests check what the command saw: the selection when it ran.
 
-use std::sync::mpsc::{Sender, channel};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -13,6 +13,7 @@ use filmcraft_engine::Session;
 use filmcraft_engine::project::ClipId;
 use filmcraft_ui_egui::FilmcraftApp;
 use filmcraft_ui_egui::control::ControlRequest;
+use filmcraft_ui_egui::native_dialogs::FileDialog;
 use serde_json::{Value, json};
 
 /// The selection at each run of the stand-in.
@@ -215,6 +216,71 @@ fn an_unsaved_project_saves_first_and_then_edits_in_the_same_selection() {
     assert_eq!(all.len(), before + 1, "link.editIn ran after the save");
     assert_eq!(all.last().unwrap(), &chosen, "on the selection the user made");
     assert!(!d.app().ui.status.contains("EffectCraft:"), "a good run is quiet");
+}
+
+/// Save As dialogs a non-blocking host was asked to show, with the sender that answers each.
+type Asked = Arc<Mutex<Vec<Sender<Vec<String>>>>>;
+
+/// An unsaved project on a host that shows dialogs without blocking: Save As returns before the user
+/// answers, and the test answers through the sender in the returned list.
+fn unsaved_on_a_non_blocking_host() -> (Driver, Asked) {
+    let mut d = Driver::unsaved();
+    let asked: Asked = Arc::default();
+    let log = Arc::clone(&asked);
+    d.app().hooks.run_dialog = Some(Box::new(move |dialog: FileDialog| -> Receiver<Vec<String>> {
+        assert!(matches!(dialog, FileDialog::SaveProject { .. }), "only Save As is expected: {dialog:?}");
+        let (tx, rx) = channel();
+        log.lock().unwrap().push(tx);
+        rx
+    }));
+    (d, asked)
+}
+
+#[test]
+fn a_non_blocking_save_as_runs_edit_in_after_the_answer_on_the_selection_it_started_with() {
+    let (mut d, asked) = unsaved_on_a_non_blocking_host();
+    let (first, second) = d.two_video_clips();
+    d.select(&[first]);
+    let mut chosen: Vec<u64> = d.app().session.state.selection.iter().map(|c| c.0).collect();
+    chosen.sort_unstable();
+    let target = save_target("saved-later.fcproj");
+    let before = runs().len();
+
+    d.ok("ui.key", json!({"key": "Cmd+Alt+Shift+E"}));
+    d.frames(3);
+    // The dialog is open. The command has not run and has not been called cancelled.
+    assert_eq!(asked.lock().unwrap().len(), 1, "Save As was offered once");
+    assert_eq!(runs().len(), before, "nothing runs before the answer");
+    assert!(d.app().session.path.is_none(), "still unsaved");
+    assert_ne!(d.app().ui.status, "Edit in EffectCraft cancelled", "the dialog is not answered yet");
+
+    // The user clicks another clip while the dialog is open, then picks a file.
+    d.select(&[second]);
+    let answer = asked.lock().unwrap().pop().unwrap();
+    answer.send(vec![target.clone()]).unwrap();
+    d.frames(3);
+
+    assert_eq!(d.app().session.path.as_deref(), Some(target.as_str()), "the project was saved where the user chose");
+    let all = runs();
+    assert_eq!(all.len(), before + 1, "link.editIn ran after the answer");
+    assert_eq!(all.last().unwrap(), &chosen, "on the selection it started with");
+    assert_ne!(d.app().ui.status, "Edit in EffectCraft cancelled");
+}
+
+#[test]
+fn cancelling_a_non_blocking_save_as_cancels_edit_in_quietly() {
+    let (mut d, asked) = unsaved_on_a_non_blocking_host();
+    let (first, _) = d.two_video_clips();
+    d.select(&[first]);
+    let before = runs().len();
+    d.ok("ui.key", json!({"key": "Cmd+Alt+Shift+E"}));
+    d.frames(3);
+    assert_ne!(d.app().ui.status, "Edit in EffectCraft cancelled", "the dialog is not answered yet");
+    asked.lock().unwrap().pop().unwrap().send(Vec::new()).unwrap();
+    d.frames(3);
+    assert_eq!(runs().len(), before, "nothing ran");
+    assert!(d.app().session.path.is_none(), "still unsaved");
+    assert_eq!(d.app().ui.status, "Edit in EffectCraft cancelled");
 }
 
 #[test]
