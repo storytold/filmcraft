@@ -32,7 +32,8 @@ impl FilmcraftApp {
         }
     }
 
-    /// Import the dropped files that exist; with a pointer and Timeline ▸ drop imports to the
+    /// Import the dropped files and folders that exist (a folder as a bin of its media, each
+    /// sub-folder a bin within it, as in Premiere); with a pointer and Timeline ▸ drop imports to the
     /// timeline, queue the new items for the Timeline drawn in that viewport. A dropped project
     /// file opens instead, as File ▸ Open would (asking first about unsaved changes, #3843).
     fn import_dropped(&mut self, ctx: &egui::Context, dropped: &[egui::DroppedFileHandle], pointer: Option<(egui::Pos2, egui::ViewportId)>) {
@@ -45,28 +46,35 @@ impl FilmcraftApp {
         if paths.is_empty() {
             return;
         }
-        let imported = self.session.execute("file.import", json!({"paths": paths, "bin": self.import_bin().0}));
-        if let Ok(v) = imported {
-            if let Some(errs) = v.get("errors").and_then(serde_json::Value::as_array)
-                && !errs.is_empty()
-            {
-                self.ui.status = errs.iter().filter_map(serde_json::Value::as_str).collect::<Vec<_>>().join("; ");
-            } else if let Some(presets) = v.get("presets").and_then(serde_json::Value::as_array)
-                && !presets.is_empty()
-            {
-                if !self.ui.expanded_fx.contains(&"Presets".to_string()) {
-                    self.ui.expanded_fx.push("Presets".to_string());
+        // A dropped folder becomes a bin named after it, with its sub-folders as bins inside it
+        // (Premiere's behaviour): `mediaBrowser.import` walks it with the Media Browser's depth and
+        // folder budgets. Plain files import exactly as before: `imageSequence: false` keeps
+        // `file.import`'s single-file behaviour.
+        let imported = self.session.execute("mediaBrowser.import", json!({"paths": paths, "bin": self.import_bin().0, "imageSequence": false}));
+        // Say why a drop did not fully import (a folder without media, an unsupported file), as the
+        // Import dialog does.
+        match &imported {
+            Ok(v) => {
+                if let Some(errs) = v["errors"].as_array().filter(|e| !e.is_empty()) {
+                    self.ui.status = errs.iter().filter_map(|e| e.as_str()).collect::<Vec<_>>().join("; ");
+                } else if let Some(presets) = v["presets"].as_array().filter(|p| !p.is_empty()) {
+                    // dropped preset files land in the Presets bin: open it and say how many
+                    if !self.ui.expanded_fx.iter().any(|k| k == "Presets") {
+                        self.ui.expanded_fx.push("Presets".to_string());
+                    }
+                    self.ui.status = tlf!("Imported {n} preset(s)", n = presets.len());
                 }
-                self.ui.status = tlf!("Imported {n} preset(s)", n = presets.len());
             }
-            if let Some((pos, viewport)) = pointer
-                && self.session.prefs.timeline.drop_import_to_timeline
-            {
-                let items: Vec<filmcraft_engine::project::ItemId> =
-                    v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
-                if !items.is_empty() {
-                    self.pending_timeline_drop = Some((items, pos, viewport));
-                }
+            Err(e) => self.ui.status = e.to_string(),
+        }
+        if let Ok(v) = imported
+            && let Some((pos, viewport)) = pointer
+            && self.session.prefs.timeline.drop_import_to_timeline
+        {
+            let items: Vec<filmcraft_engine::project::ItemId> =
+                v["items"].as_array().map(|a| a.iter().filter_map(|i| i.as_u64()).map(filmcraft_engine::project::ItemId).collect()).unwrap_or_default();
+            if !items.is_empty() {
+                self.pending_timeline_drop = Some((items, pos, viewport));
             }
         }
     }
