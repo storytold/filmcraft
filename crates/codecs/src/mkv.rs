@@ -199,6 +199,12 @@ impl LazyState {
         if file.tracks.get(track).is_none_or(|t| t.samples.is_empty()) {
             return None;
         }
+        // The audio streams are the audio tracks with samples, so one that starts after the first
+        // span would be missing here and present in the full index the audio is served from,
+        // numbering every later stream differently: index it whole.
+        if file.tracks.iter().any(|t| t.kind == TrackKind::Audio && t.samples.is_empty()) {
+            return None;
+        }
         let state = LazyState { demux, track, spans, origin: 0, bounds: (0, 0), window: Arc::default(), broken: false };
         Some((file, state))
     }
@@ -1362,6 +1368,42 @@ mod lazy_index_tests {
             let px = pixels(&lazy, k);
             assert_eq!(px, pixels(&full, k), "frame {k}");
             assert_eq!(px, pixels(&open(&clip()), k), "frame {k} is the first track's");
+        }
+    }
+
+    #[test]
+    fn an_audio_track_that_starts_late_keeps_the_stream_numbers() {
+        // a dub track whose first block is past the first span: the lazy open must list the same
+        // audio streams as the full index, or stream 0 of one is stream 1 of the other
+        let mut late = TrackSpec::new(TrackKind::Audio, "A_PCM/INT/LIT");
+        late.audio = Some((8_000.0, 1, Some(16)));
+        let mut early = TrackSpec::new(TrackKind::Audio, "A_PCM/INT/LIT");
+        early.audio = Some((16_000.0, 1, Some(16)));
+        let mut v = TrackSpec::new(TrackKind::Video, "V_MJPEG");
+        v.video_size = Some((256, 256));
+        v.default_duration_ns = Some(1_000_000_000 / FPS as u64);
+        let mut w = MkvWriter::new(std::io::Cursor::new(Vec::new()), vec![v, late, early], MuxOptions::default()).unwrap();
+        for k in 0..FRAMES {
+            let pts = k * 1_000_000_000 / FPS;
+            w.write_frame(0, pts, k % FPS == 0, &picture(k as u8), None).unwrap();
+            if k % 5 == 0 {
+                if k >= 5 * FPS {
+                    let pcm: Vec<u8> = (0..4000).flat_map(|_| 1_000i16.to_le_bytes()).collect();
+                    w.write_frame(1, pts, true, &pcm, Some(500_000_000)).unwrap();
+                }
+                let pcm: Vec<u8> = (0..8000).flat_map(|_| 3_000i16.to_le_bytes()).collect();
+                w.write_frame(2, pts, true, &pcm, Some(500_000_000)).unwrap();
+            }
+        }
+        let bytes: Arc<[u8]> = w.finish().unwrap().into_inner().into();
+        let (lazy, full) = (open(&bytes), open_full(&bytes));
+        let rates = |s: &super::MkvSource| s.info().audio_streams.iter().map(|a| a.sample_rate).collect::<Vec<_>>();
+        assert_eq!(rates(&full), vec![8_000, 16_000]);
+        assert_eq!(rates(&lazy), rates(&full));
+        for stream in 0..2 {
+            let a = lazy.audio_stream(stream, 16_000 * 10, 400, 16_000).unwrap();
+            let b = full.audio_stream(stream, 16_000 * 10, 400, 16_000).unwrap();
+            assert_eq!(a.channels, b.channels, "stream {stream}");
         }
     }
 
