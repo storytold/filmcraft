@@ -284,6 +284,36 @@ fn collections_and_bare_tracks() {
     assert!(import(b"not json", Format::Otio, None).is_err());
 }
 
+/// An item may be at an audio sample rate: a 1.5 s gap written as 72 000 at rate 48 000 is valid
+/// OTIO, and so is a global start time at that rate. No sequence runs at 48 000 fps, so these do
+/// not set the sequence rate (it was 48 000, and importing the file into a project failed); the
+/// items keep their exact times.
+#[test]
+fn items_at_a_sample_rate_do_not_set_the_sequence_rate() {
+    let (sr, fps) = (48_000.0, 25.0);
+    for global_start in ["null".to_string(), rt(3600.0 * sr, sr)] {
+        let d = format!(
+            r#"{{"OTIO_SCHEMA": "Timeline.1", "name": "Synced", "global_start_time": {global_start}, "tracks": {{"OTIO_SCHEMA": "Stack.1", "children": [
+                {{"OTIO_SCHEMA": "Track.1", "name": "A", "kind": "Video", "children": [
+                    {{"OTIO_SCHEMA": "Gap.1", "source_range": {gap}}},
+                    {{"OTIO_SCHEMA": "Clip.2", "name": "cam", "source_range": {cam}, "media_references": {{"DEFAULT_MEDIA": {{"OTIO_SCHEMA": "MissingReference.1"}}}}, "active_media_reference_key": "DEFAULT_MEDIA"}}]}},
+                {{"OTIO_SCHEMA": "Track.1", "name": "REC", "kind": "Audio", "children": [
+                    {{"OTIO_SCHEMA": "Clip.2", "name": "rec", "source_range": {rec}, "media_references": {{"DEFAULT_MEDIA": {{"OTIO_SCHEMA": "MissingReference.1"}}}}, "active_media_reference_key": "DEFAULT_MEDIA"}}]}}]}}}}"#,
+            gap = tr(0.0, 1.5 * sr, sr),
+            cam = tr(0.0, 100.0, fps),
+            rec = tr(0.0, 10.0 * sr, sr),
+        );
+        let (imp, rep) = import(d.as_bytes(), Format::Otio, None).unwrap();
+        let s = imp.project.sequence(only_seq(&imp)).unwrap();
+        assert_eq!(s.settings.frame_rate, FrameRate::FPS_25, "global start {global_start}: {rep}");
+        s.settings.validate().unwrap();
+        assert_eq!(s.start_timecode, if global_start == "null" { 0 } else { 3600 * 25 });
+        let cam = &s.video_tracks[0].items[0];
+        assert_eq!((cam.start, cam.duration), (Tick(TICKS_PER_SECOND * 3 / 2), FrameRate::FPS_25.tick_of(100)));
+        assert_eq!(s.audio_tracks[0].items[0].duration, Tick(TICKS_PER_SECOND * 10));
+    }
+}
+
 fn palette_collection(first: serde_json::Value, second: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"OTIO_SCHEMA":"SerializableCollection.1","children":[
         {"OTIO_SCHEMA":"Timeline.1","name":"First","metadata":{"filmcraft":first},"tracks":{"OTIO_SCHEMA":"Stack.1","children":[]}},
