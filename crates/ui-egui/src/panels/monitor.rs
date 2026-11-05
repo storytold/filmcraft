@@ -197,6 +197,20 @@ fn drop_indicator(app: &FilmcraftApp, ui: &mut egui::Ui, video_area: Rect, which
     }
 }
 
+/// The monitor's settings as drawn: cinema mode shows the finished picture, and the saved settings
+/// are back when it ends.
+fn shown_view(saved: &crate::state::MonitorView, cinema: bool) -> crate::state::MonitorView {
+    let mut mv = saved.clone();
+    if cinema {
+        mv.display = DisplayMode::Composite;
+        mv.multicam = false;
+        mv.safe_margins = false;
+        mv.transparency_grid = false;
+        mv.zoom = None;
+    }
+    mv
+}
+
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
@@ -272,15 +286,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     };
     let range_start = mark_in.unwrap_or(origin);
     let prefix = if which == Which::Program { "program" } else { "source" };
-    let mut mv = monitor_view::view(app, which).clone();
-    if cinema {
-        // The finished picture: the monitor's saved settings are back when cinema mode ends.
-        mv.display = DisplayMode::Composite;
-        mv.multicam = false;
-        mv.safe_margins = false;
-        mv.transparency_grid = false;
-        mv.zoom = None;
-    }
+    let mv = shown_view(monitor_view::view(app, which), cinema);
     let display = mv.display_mode().unwrap_or(DisplayMode::Composite);
     // Multi-Camera view: the angle grid on the left, the program on the right (bypassed in cinema)
     let multicam = !cinema && which == Which::Program && mv.multicam;
