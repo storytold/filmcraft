@@ -185,18 +185,45 @@ impl BitOut {
     }
 }
 
-/// Encode `samples` (`width` × `height` × `comps`, interleaved) as lossless JPEG.
-pub fn lj92(samples: &[u16], width: usize, height: usize, comps: usize, precision: u8, predictor: u8, restart_lines: usize, pt: u8) -> Vec<u8> {
-    let comps = comps.clamp(1, 4);
-    let row = width * comps;
-    let initial = 1i32 << (precision - pt - 1);
-    // differences, line by line
+/// Lossless JPEG encoding parameters for [`lj92`].
+#[derive(Clone, Copy, Debug)]
+pub struct Lj92Params {
+    pub width: usize,
+    pub height: usize,
+    pub comps: usize,
+    pub precision: u8,
+    pub predictor: u8,
+    pub restart_lines: usize,
+    pub pt: u8,
+}
+
+/// One coded difference: (component, category, extra bits, line).
+type Coded = (usize, u32, u32, i32);
+/// Per-component Huffman table: (BITS, symbols, code of each category).
+type HuffTable = ([u8; 16], Vec<u8>, [(u32, u32); 17]);
+
+/// Split a prediction difference into its category (SSSS) and extra bits.
+fn categorize(d16: i32) -> (u32, u32) {
+    if d16 == 32_768 {
+        return (16, 0);
+    }
+    let d = if d16 >= 32_768 { d16 - 65_536 } else { d16 };
+    let ssss = 32 - d.unsigned_abs().leading_zeros();
+    let extra = if d >= 0 { d as u32 } else { (d + (1 << ssss) - 1) as u32 };
+    (ssss, extra)
+}
+
+/// Predict, difference and categorise every sample; returns the codes and per-component category counts.
+fn difference_codes(samples: &[u16], p: &Lj92Params) -> (Vec<Coded>, Vec<Vec<u32>>) {
+    let comps = p.comps;
+    let row = p.width * comps;
+    let initial = 1i32 << (p.precision - p.pt - 1);
     let mut cats: Vec<Vec<u32>> = vec![vec![0; 17]; comps];
-    let mut coded: Vec<(usize, u32, u32, i32)> = Vec::with_capacity(samples.len()); // (comp, ssss, extra, line)
-    let s = |i: usize| i32::from(samples.get(i).copied().unwrap_or(0) >> pt);
-    for y in 0..height {
-        let first_line = restart_lines == 0 && y == 0 || restart_lines != 0 && y % restart_lines == 0;
-        for x in 0..width {
+    let mut coded: Vec<Coded> = Vec::with_capacity(samples.len());
+    let s = |i: usize| i32::from(samples.get(i).copied().unwrap_or(0) >> p.pt);
+    for y in 0..p.height {
+        let first_line = p.restart_lines == 0 && y == 0 || p.restart_lines != 0 && y % p.restart_lines == 0;
+        for x in 0..p.width {
             for c in 0..comps {
                 let i = y * row + x * comps + c;
                 let px = if first_line && x == 0 {
@@ -206,42 +233,43 @@ pub fn lj92(samples: &[u16], width: usize, height: usize, comps: usize, precisio
                 } else if x == 0 {
                     s(i - row)
                 } else {
-                    predict(predictor, s(i - comps), s(i - row), s(i - row - comps))
+                    predict(p.predictor, s(i - comps), s(i - row), s(i - row - comps))
                 };
-                let d16 = (s(i) - px).rem_euclid(65_536);
-                let (ssss, extra) = if d16 == 32_768 {
-                    (16, 0)
-                } else {
-                    let d = if d16 >= 32_768 { d16 - 65_536 } else { d16 };
-                    let ssss = 32 - d.unsigned_abs().leading_zeros();
-                    let extra = if d >= 0 { d as u32 } else { (d + (1 << ssss) - 1) as u32 };
-                    (ssss, extra)
-                };
+                let (ssss, extra) = categorize((s(i) - px).rem_euclid(65_536));
                 cats[c][ssss as usize] += 1;
                 coded.push((c, ssss, extra, y as i32));
             }
         }
     }
-    // per component: the used categories by frequency get 2-bit then 6-bit codes
-    let mut tables = Vec::new();
-    for counts in &cats {
-        let mut syms: Vec<u8> = (0..17u8).filter(|&k| counts[usize::from(k)] > 0).collect();
-        syms.sort_by_key(|&k| std::cmp::Reverse(counts[usize::from(k)]));
-        if syms.is_empty() {
-            syms.push(0);
-        }
-        let mut code_of = [(0u32, 0u32); 17];
-        for (i, &k) in syms.iter().enumerate() {
-            code_of[usize::from(k)] = if i < 3 { (i as u32, 2) } else { (0b110000 + (i as u32 - 3), 6) };
-        }
-        let mut bits = [0u8; 16];
-        bits[1] = syms.len().min(3) as u8;
-        bits[5] = syms.len().saturating_sub(3) as u8;
-        tables.push((bits, syms, code_of));
-    }
+    (coded, cats)
+}
+
+/// Per component: the used categories by frequency get 2-bit then 6-bit codes.
+fn build_tables(cats: &[Vec<u32>]) -> Vec<HuffTable> {
+    cats.iter()
+        .map(|counts| {
+            let mut syms: Vec<u8> = (0..17u8).filter(|&k| counts[usize::from(k)] > 0).collect();
+            syms.sort_by_key(|&k| std::cmp::Reverse(counts[usize::from(k)]));
+            if syms.is_empty() {
+                syms.push(0);
+            }
+            let mut code_of = [(0u32, 0u32); 17];
+            for (i, &k) in syms.iter().enumerate() {
+                code_of[usize::from(k)] = if i < 3 { (i as u32, 2) } else { (0b110000 + (i as u32 - 3), 6) };
+            }
+            let mut bits = [0u8; 16];
+            bits[1] = syms.len().min(3) as u8;
+            bits[5] = syms.len().saturating_sub(3) as u8;
+            (bits, syms, code_of)
+        })
+        .collect()
+}
+
+/// Write SOI, SOF3, DHT, optional DRI and SOS.
+fn write_headers(p: &Lj92Params, tables: &[HuffTable]) -> Vec<u8> {
+    let (width, height, comps) = (p.width, p.height, p.comps);
     let mut out = vec![0xFF, 0xD8];
-    // SOF3
-    let mut sof = vec![precision, (height >> 8) as u8, height as u8, (width >> 8) as u8, width as u8, comps as u8];
+    let mut sof = vec![p.precision, (height >> 8) as u8, height as u8, (width >> 8) as u8, width as u8, comps as u8];
     for c in 0..comps {
         sof.extend([c as u8, 0x11, 0]);
     }
@@ -253,20 +281,25 @@ pub fn lj92(samples: &[u16], width: usize, height: usize, comps: usize, precisio
         dht.extend(syms);
     }
     segment(&mut out, 0xC4, &dht);
-    if restart_lines != 0 {
-        let ri = (restart_lines * width) as u16;
+    if p.restart_lines != 0 {
+        let ri = (p.restart_lines * width) as u16;
         segment(&mut out, 0xDD, &ri.to_be_bytes());
     }
     let mut sos = vec![comps as u8];
     for c in 0..comps {
         sos.extend([c as u8, (c as u8) << 4]);
     }
-    sos.extend([predictor, 0, pt]);
+    sos.extend([p.predictor, 0, p.pt]);
     segment(&mut out, 0xDA, &sos);
+    out
+}
+
+/// Entropy-code the differences (with restart markers) and append EOI.
+fn write_entropy(out: Vec<u8>, coded: &[Coded], tables: &[HuffTable], restart_lines: usize) -> Vec<u8> {
     let mut bo = BitOut { out, acc: 0, n: 0 };
     let mut line = 0;
     let mut rst = 0u8;
-    for (c, ssss, extra, y) in coded {
+    for &(c, ssss, extra, y) in coded {
         if restart_lines != 0 && y != line && (y as usize).is_multiple_of(restart_lines) {
             bo.flush();
             bo.out.extend([0xFF, 0xD0 + rst]);
@@ -283,6 +316,15 @@ pub fn lj92(samples: &[u16], width: usize, height: usize, comps: usize, precisio
     let mut out = bo.out;
     out.extend([0xFF, 0xD9]);
     out
+}
+
+/// Encode `samples` (`width` × `height` × `comps`, interleaved) as lossless JPEG.
+pub fn lj92(samples: &[u16], params: &Lj92Params) -> Vec<u8> {
+    let p = Lj92Params { comps: params.comps.clamp(1, 4), ..*params };
+    let (coded, cats) = difference_codes(samples, &p);
+    let tables = build_tables(&cats);
+    let out = write_headers(&p, &tables);
+    write_entropy(out, &coded, &tables, p.restart_lines)
 }
 
 fn segment(out: &mut Vec<u8>, marker: u8, body: &[u8]) {
@@ -356,7 +398,8 @@ fn put_chunks(buf: &mut Vec<u8>, samples: &[u16], o: &Options) -> (Vec<u32>, Vec
                 Compression::None => pack(&chunk, cw * spp, o.bits, o.big_endian),
                 Compression::LosslessJpeg { predictor, components, restart_lines, pt } => {
                     let comps = components.max(1);
-                    lj92(&chunk, cw * spp / comps, rows, comps, o.bits as u8, predictor, restart_lines, pt)
+                    let params = Lj92Params { width: cw * spp / comps, height: rows, comps, precision: o.bits as u8, predictor, restart_lines, pt };
+                    lj92(&chunk, &params)
                 }
             };
             if buf.len() % 2 == 1 {

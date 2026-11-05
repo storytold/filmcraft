@@ -161,7 +161,7 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             let qpl = (p.qp as i32 + q.qp as i32 + 1) >> 1;
             let (tc, beta) = tc_beta(qpl, bs, tc_off, beta_off, bd);
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
-            filter_luma(&mut pic.planes[0], y * w + x, 1, w, tc, beta, nfp, nfq, bd);
+            filter_luma(&mut pic.planes[0], EdgeSeg { o: y * w + x, step: 1, along: w }, beta, EdgeFilter { tc, nfp, nfq, bd });
         }
     }
     // chroma vertical edges (8x8 chroma grid = 16 luma samples), bS == 2 only
@@ -180,7 +180,7 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
                 let qpi = ((p.qp as i32 + q.qp as i32 + 1) >> 1) + off;
                 let qt = (qpc_420(qpi) + 2 + tc_off).clamp(0, 53);
                 let tc = (TC_TABLE[qt as usize] as i32) << (bdc - 8);
-                filter_chroma(&mut pic.planes[c], (y / 2) * cw + x / 2, 1, cw, tc, nfp, nfq, bdc);
+                filter_chroma(&mut pic.planes[c], EdgeSeg { o: (y / 2) * cw + x / 2, step: 1, along: cw }, EdgeFilter { tc, nfp, nfq, bd: bdc });
             }
         }
     }
@@ -205,7 +205,7 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
             let qpl = (p.qp as i32 + q.qp as i32 + 1) >> 1;
             let (tc, beta) = tc_beta(qpl, bs, tc_off, beta_off, bd);
             let (nfp, nfq) = (p.flags & F_NOFILTER != 0, q.flags & F_NOFILTER != 0);
-            filter_luma(&mut pic.planes[0], y * w + x, w, 1, tc, beta, nfp, nfq, bd);
+            filter_luma(&mut pic.planes[0], EdgeSeg { o: y * w + x, step: w, along: 1 }, beta, EdgeFilter { tc, nfp, nfq, bd });
         }
     }
     for by in (y0 / 4..y1 / 4).filter(|b| b % 4 == 0 && *b > 0) {
@@ -222,21 +222,40 @@ fn deblock_row<S: Sample>(pic: &mut PicState<S>, r: usize) {
                 let qpi = ((p.qp as i32 + q.qp as i32 + 1) >> 1) + off;
                 let qt = (qpc_420(qpi) + 2 + tc_off).clamp(0, 53);
                 let tc = (TC_TABLE[qt as usize] as i32) << (bdc - 8);
-                filter_chroma(&mut pic.planes[c], (y / 2) * cw + x / 2, cw, 1, tc, nfp, nfq, bdc);
+                filter_chroma(&mut pic.planes[c], EdgeSeg { o: (y / 2) * cw + x / 2, step: cw, along: 1 }, EdgeFilter { tc, nfp, nfq, bd: bdc });
             }
         }
     }
 }
 
-/// Filter one 4-sample luma edge segment. `o` = offset of q0 of the first line, `step` = distance
-/// between p/q samples across the edge, `along` = distance between lines.
+/// Where a 4-line edge segment lies in a plane: `o` = offset of q0 of the first line, `step` =
+/// distance between p/q samples across the edge, `along` = distance between lines.
+#[derive(Clone, Copy)]
+struct EdgeSeg {
+    o: usize,
+    step: usize,
+    along: usize,
+}
+
+/// How an edge segment is filtered: the clipping threshold `tc`, the no-filter flags of the p and
+/// q sides and the bit depth.
+#[derive(Clone, Copy)]
+struct EdgeFilter {
+    tc: i32,
+    nfp: bool,
+    nfq: bool,
+    bd: u32,
+}
+
+/// Filter one 4-sample luma edge segment.
 ///
 /// The 4 x 8 samples (p3..p0, q0..q3 of each line) are read once into an array, filtered there
 /// and written back, a whole line at a time for vertical edges (`step` = 1) and a whole row of
 /// the 4 lines at a time for horizontal ones (`along` = 1): no per-sample index arithmetic or
 /// bounds checks in the filter itself.
-#[allow(clippy::too_many_arguments)]
-fn filter_luma<S: Sample>(s: &mut [S], o: usize, step: usize, along: usize, tc: i32, beta: i32, nfp: bool, nfq: bool, bd: u32) {
+fn filter_luma<S: Sample>(s: &mut [S], seg: EdgeSeg, beta: i32, ef: EdgeFilter) {
+    let EdgeSeg { o, step, along } = seg;
+    let EdgeFilter { tc, nfp, nfq, bd } = ef;
     // l[k][i]: line k, i = 0..4 -> p3, p2, p1, p0 and i = 4..8 -> q0, q1, q2, q3
     let mut l = [[0i32; 8]; 4];
     let Some(start) = o.checked_sub(4 * step) else { return };
@@ -339,8 +358,9 @@ fn filter_luma_lines(l: &mut [[i32; 8]; 4], tc: i32, beta: i32, nfp: bool, nfq: 
 }
 
 /// Filter one 4-sample chroma edge segment.
-#[allow(clippy::too_many_arguments)]
-fn filter_chroma<S: Sample>(s: &mut [S], o: usize, step: usize, along: usize, tc: i32, nfp: bool, nfq: bool, bd: u32) {
+fn filter_chroma<S: Sample>(s: &mut [S], seg: EdgeSeg, ef: EdgeFilter) {
+    let EdgeSeg { o, step, along } = seg;
+    let EdgeFilter { tc, nfp, nfq, bd } = ef;
     let max = (1i32 << bd) - 1;
     for k in 0..4 {
         let base = o + k * along;
@@ -381,14 +401,67 @@ fn sao_row<S: Sample>(pic: &PicState<S>, r: usize) -> [Vec<S>; 3] {
             }
             let x0 = rx * cs;
             let x1 = (x0 + cs).min(w);
-            sao_ctb(pic, c, rs, x0, x1, y0, y1, w, h, &p, &mut out[c]);
+            sao_ctb(pic, &SaoBlock { c, rs, x0, x1, y0, y1, w, h }, &p, &mut out[c]);
         }
     }
     out
 }
 
+/// A CTB of plane `c` (CTB raster address `rs`) to apply SAO to: columns `x0..x1` and rows
+/// `y0..y1` of a plane `w` x `h` samples.
+#[derive(Clone, Copy)]
+struct SaoBlock {
+    c: usize,
+    rs: usize,
+    x0: usize,
+    x1: usize,
+    y0: usize,
+    y1: usize,
+    w: usize,
+    h: usize,
+}
+
+fn sao_ctb<S: Sample>(pic: &PicState<S>, blk: &SaoBlock, p: &crate::slicedec::SaoParams, dst: &mut [S]) {
+    let SaoBlock { c, rs, x0, x1, y0, y1, w, h } = *blk;
+    let bd = if c == 0 { pic.bd_y } else { pic.bd_c };
+    let max = (1i32 << bd) - 1;
+    let sc = if c == 0 { 0 } else { 1 };
+    let offs = p.offsets[c].map(|v| v as i32);
+    let plane = &pic.planes[c];
+    if p.type_idx[c] == 1 {
+        let band = (p.band_pos[c] as i32, offs);
+        for y in y0..y1 {
+            sao_band_run(&plane[y * w + x0..y * w + x1], &mut dst[(y - y0) * w + x0..(y - y0) * w + x1], bd - 5, band, max);
+        }
+    } else {
+        sao_edge_ctb(pic, c, rs, x0, x1, y0, y1, w, h, p, max, dst);
+    }
+    // Samples of CUs that must not be modified (transquant bypass, PCM without loop filter) get
+    // their deblocked values back.
+    if pic.pps.transquant_bypass || pic.sps.pcm_loop_filter_disabled {
+        let n = 4 >> sc;
+        for by in ((y0 << sc) >> 2)..(((y1 << sc) + 3) >> 2).min(pic.h4) {
+            let ya = (by * 4) >> sc;
+            for bx in ((x0 << sc) >> 2)..(((x1 << sc) + 3) >> 2).min(pic.w4) {
+                if pic.blk[by * pic.w4 + bx].flags & F_NOFILTER == 0 {
+                    continue;
+                }
+                let xa = (bx * 4) >> sc;
+                let xb = (xa + n).min(x1);
+                for y in ya..(ya + n).min(y1) {
+                    dst[(y - y0) * w + xa..(y - y0) * w + xb].copy_from_slice(&plane[y * w + xa..y * w + xb]);
+                }
+            }
+        }
+    }
+}
+
+/// Edge offset of one CTB. Which of the 8 neighbouring CTBs may be used (inside the picture, not
+/// in another slice / tile without cross-boundary filtering) is worked out once; each line is then
+/// split into the left column, the inner run and the right column, and each part whose neighbours
+/// are usable goes through [`sao_edge_run`].
 #[allow(clippy::too_many_arguments)]
-fn sao_ctb<S: Sample>(
+fn sao_edge_ctb<S: Sample>(
     pic: &PicState<S>,
     c: usize,
     rs: usize,
@@ -399,59 +472,20 @@ fn sao_ctb<S: Sample>(
     w: usize,
     h: usize,
     p: &crate::slicedec::SaoParams,
+    max: i32,
     dst: &mut [S],
 ) {
-    let bd = if c == 0 { pic.bd_y } else { pic.bd_c };
-    let max = (1i32 << bd) - 1;
-    let sc = if c == 0 { 0 } else { 1 };
     let offs = p.offsets[c].map(|v| v as i32);
-    // samples of CUs that must not be modified
-    let nofilter = |pic: &PicState<S>, x: usize, y: usize| pic.blk[((y << sc) >> 2) * pic.w4 + ((x << sc) >> 2)].flags & F_NOFILTER != 0;
-    let any_nofilter = {
-        let mut a = false;
-        for by in ((y0 << sc) >> 2)..(((y1 << sc) + 3) >> 2).min(pic.h4) {
-            for bx in ((x0 << sc) >> 2)..(((x1 << sc) + 3) >> 2).min(pic.w4) {
-                a |= pic.blk[by * pic.w4 + bx].flags & F_NOFILTER != 0;
-            }
-        }
-        a
-    };
-    if p.type_idx[c] == 1 {
-        let shift = bd - 5;
-        let mut table = [0i32; 32];
-        for k in 0..4 {
-            table[(k + p.band_pos[c] as usize) & 31] = offs[k];
-        }
-        for y in y0..y1 {
-            if !any_nofilter {
-                let band = (p.band_pos[c] as i32, offs);
-                sao_band_run(&pic.planes[c][y * w + x0..y * w + x1], &mut dst[(y - y0) * w + x0..(y - y0) * w + x1], shift, band, max);
-                continue;
-            }
-            for x in x0..x1 {
-                if nofilter(pic, x, y) {
-                    continue;
-                }
-                let v = pic.planes[c][y * w + x].to_i32();
-                dst[(y - y0) * w + x] = S::from_i32((v + table[(v >> shift) as usize]).clamp(0, max));
-            }
-        }
-        return;
-    }
-    let (hp, vp): ([i32; 2], [i32; 2]) = match p.eo_class[c] {
+    let (hp, vp): ([isize; 2], [isize; 2]) = match p.eo_class[c] {
         0 => ([-1, 1], [0, 0]),
         1 => ([0, 0], [-1, 1]),
         2 => ([-1, 1], [-1, 1]),
         _ => ([1, -1], [-1, 1]),
     };
-    // Neighbouring CTBs whose samples may not be used (other slice / tile without cross-boundary
-    // filtering), checked per sample only near CTB borders.
-    let s = pic.log2_ctb as usize - sc;
     let cur_slice = pic.ctb_slice[rs];
     let lf_cur = pic.slices[cur_slice as usize].lf_across;
     let cur_ts = pic.layout.rs_to_ts[rs];
-    let cross_ok = |pic: &PicState<S>, xn: usize, yn: usize| -> bool {
-        let nrs = (yn >> s) * pic.wctb + (xn >> s);
+    let cross_ok = |nrs: usize| -> bool {
         if nrs == rs {
             return true;
         }
@@ -474,57 +508,47 @@ fn sao_ctb<S: Sample>(
         }
         true
     };
+    // avail[dy][dx]: the CTB at (rx + dx - 1, ry + dy - 1) may be used.
+    let (rx, ry) = (rs % pic.wctb, rs / pic.wctb);
+    let mut avail = [[false; 3]; 3];
+    for (dy, row) in avail.iter_mut().enumerate() {
+        for (dx, a) in row.iter_mut().enumerate() {
+            let inside = (dx != 0 || x0 > 0) && (dx != 2 || x1 < w) && (dy != 0 || y0 > 0) && (dy != 2 || y1 < h);
+            *a = inside && cross_ok((ry + dy - 1) * pic.wctb + rx + dx - 1);
+        }
+    }
     let edge_map = [1usize, 2, 0, 3, 4];
     // Offset per (2 + sum of neighbour signs); edgeIdx 0 adds nothing.
     let by_sum = edge_map.map(|e| if e == 0 { 0 } else { offs[e - 1] });
-    // Any sample: neighbours outside the picture or in a CTB that may not be used leave it as is.
-    let general = |x: usize, y: usize| -> Option<S> {
-        if any_nofilter && nofilter(pic, x, y) {
-            return None;
+    let side = |v: isize, lo: usize, hi: usize| {
+        if v < lo as isize {
+            0
+        } else if v >= hi as isize {
+            2
+        } else {
+            1
         }
-        let mut sum = 0i32;
-        let v = pic.planes[c][y * w + x].to_i32();
-        for k in 0..2 {
-            let xn = x as i32 + hp[k];
-            let yn = y as i32 + vp[k];
-            if xn < 0 || yn < 0 || xn >= w as i32 || yn >= h as i32 {
-                return None;
-            }
-            let (xn, yn) = (xn as usize, yn as usize);
-            if (xn < x0 || xn >= x1 || yn < y0 || yn >= y1) && !cross_ok(pic, xn, yn) {
-                return None;
-            }
-            sum += (v - pic.planes[c][yn * w + xn].to_i32()).signum();
-        }
-        Some(S::from_i32((v + by_sum[(2 + sum) as usize]).clamp(0, max)))
     };
-    // Samples whose two neighbours lie inside this CTB need none of those checks: a tight loop
-    // (same arithmetic) for them, the general path for the CTB border.
-    let (mx, my) = ((hp[0] != 0) as usize, (vp[0] != 0) as usize);
+    let mx = (hp[0] != 0) as usize;
     let plane = &pic.planes[c];
     for y in y0..y1 {
-        let inner_row = !any_nofilter && y >= y0 + my && y + my < y1 && x1 - x0 > 2 * mx;
-        if !inner_row {
-            for x in x0..x1 {
-                if let Some(v) = general(x, y) {
-                    dst[(y - y0) * w + x] = v;
-                }
+        let (ya, yb) = (y as isize + vp[0], y as isize + vp[1]);
+        let (dya, dyb) = (side(ya, y0, y1), side(yb, y0, y1));
+        for (xs, xe) in [(x0, x0 + mx), (x0 + mx, x1 - mx), (x1 - mx, x1)] {
+            if xs >= xe {
+                continue;
             }
-            continue;
-        }
-        for x in (x0..x0 + mx).chain(x1 - mx..x1) {
-            if let Some(v) = general(x, y) {
-                dst[(y - y0) * w + x] = v;
+            let (xa, xb) = (xs as isize + hp[0], xs as isize + hp[1]);
+            let n = xe - xs;
+            if !avail[dya][side(xa, x0, x1)] || !avail[dyb][side(xb, x0, x1)] {
+                continue;
             }
+            let cur = &plane[y * w + xs..][..n];
+            let na = &plane[ya as usize * w + xa as usize..][..n];
+            let nb = &plane[yb as usize * w + xb as usize..][..n];
+            let out = &mut dst[(y - y0) * w + xs..][..n];
+            sao_edge_run(cur, na, nb, out, &by_sum, max);
         }
-        let (ya, yb) = ((y as i32 + vp[0]) as usize, (y as i32 + vp[1]) as usize);
-        let (xa, xb) = (x0 as i32 + mx as i32 + hp[0], x0 as i32 + mx as i32 + hp[1]);
-        let n = x1 - x0 - 2 * mx;
-        let cur = &plane[y * w + x0 + mx..][..n];
-        let na = &plane[ya * w + xa as usize..][..n];
-        let nb = &plane[yb * w + xb as usize..][..n];
-        let out = &mut dst[(y - y0) * w + x0 + mx..][..n];
-        sao_edge_run(cur, na, nb, out, &by_sum, max);
     }
 }
 
@@ -649,8 +673,9 @@ mod luma_filter_tests {
 
     /// The luma edge filter as it was before reading the samples into an array (indexing the
     /// picture sample by sample), as the reference.
-    #[allow(clippy::too_many_arguments)]
-    fn reference(s: &mut [u16], o: usize, step: usize, along: usize, tc: i32, beta: i32, nfp: bool, nfq: bool, bd: u32) {
+    fn reference(s: &mut [u16], seg: EdgeSeg, beta: i32, ef: EdgeFilter) {
+        let EdgeSeg { o, step, along } = seg;
+        let EdgeFilter { tc, nfp, nfq, bd } = ef;
         let px = |s: &[u16], k: usize, i: usize| s[o + k * along - (i + 1) * step] as i32;
         let qx = |s: &[u16], k: usize, i: usize| s[o + k * along + i * step] as i32;
         let dp0 = (px(s, 0, 2) - 2 * px(s, 0, 1) + px(s, 0, 0)).abs();
@@ -740,8 +765,9 @@ mod luma_filter_tests {
             for vertical in [true, false] {
                 let (o, step, along) = if vertical { (4 * w + 8, 1, w) } else { (8 * w + 4, w, 1) };
                 let (mut a, mut b) = (plane.clone(), plane.clone());
-                filter_luma(&mut a, o, step, along, tc, beta, nfp, nfq, bd);
-                reference(&mut b, o, step, along, tc, beta, nfp, nfq, bd);
+                let (seg, ef) = (EdgeSeg { o, step, along }, EdgeFilter { tc, nfp, nfq, bd });
+                filter_luma(&mut a, seg, beta, ef);
+                reference(&mut b, seg, beta, ef);
                 assert_eq!(a, b, "case {case} vertical {vertical}");
                 filtered += (a != plane) as usize;
             }

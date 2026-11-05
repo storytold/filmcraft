@@ -127,7 +127,6 @@ impl<F: Clone> Dpb<F> {
 
     /// Insert "non-existing" frames for a frame_num gap (8.2.5.2). `make_frame` gives each one's
     /// picture and POC.
-    #[allow(clippy::too_many_arguments)]
     pub fn fill_frame_num_gap(
         &mut self,
         prev_ref_frame_num: u32,
@@ -340,14 +339,12 @@ impl<F: Clone> Dpb<F> {
 
     /// Reference marking for the just-decoded picture and insertion into the DPB with output bumping.
     /// Returns pictures ready for output.
-    #[allow(clippy::too_many_arguments)]
     pub fn store_picture(
         &mut self,
         sh: &SliceHeader,
         frame: F,
         poc: i32,
-        max_frame_num: u32,
-        max_num_ref_frames: usize,
+        (max_frame_num, max_num_ref_frames): (u32, usize),
         meta: Arc<OutputMeta>,
         out: &mut Vec<Output<F>>,
     ) -> Result<()> {

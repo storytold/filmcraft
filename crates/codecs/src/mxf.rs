@@ -62,7 +62,9 @@ pub struct MxfSource {
 /// Picture order counts of AVC access units (Annex B), in stored order, as presentation
 /// positions: the rank of (IDR period, POC) (8.2.1.1, picture order count type 0; types 1 and 2
 /// never reorder for the streams written by AVC encoders we have seen, so they keep stored order).
-pub fn avc_presentation_order(heads: &[Vec<u8>]) -> Option<Vec<i64>> {
+///
+/// `heads` is consumed one access unit at a time, so a long stream need not hold every head at once.
+pub fn avc_presentation_order<H: AsRef<[u8]>>(heads: impl IntoIterator<Item = H>) -> Option<Vec<i64>> {
     use filmcraft_bitstream::{annexb_nals, unescape_rbsp};
     use filmcraft_h264::params::{Pps, Sps};
     use filmcraft_h264::slice::{NalHeader, SliceHeader};
@@ -70,10 +72,10 @@ pub fn avc_presentation_order(heads: &[Vec<u8>]) -> Option<Vec<i64>> {
     let mut ppss: Vec<Option<Pps>> = vec![None; 256];
     let (mut prev_msb, mut prev_lsb) = (0i64, 0i64);
     let mut period = 0i64;
-    let mut keys: Vec<(i64, i64)> = Vec::with_capacity(heads.len());
-    for (i, h) in heads.iter().enumerate() {
+    let mut keys: Vec<(i64, i64)> = Vec::new();
+    for (i, h) in heads.into_iter().enumerate() {
         let mut key = None;
-        for nal in annexb_nals(h) {
+        for nal in annexb_nals(h.as_ref()) {
             let Ok(hdr) = NalHeader::parse(nal[0]) else { continue };
             let rbsp = unescape_rbsp(&nal[1..]);
             match hdr.nal_unit_type {
@@ -229,13 +231,9 @@ impl MxfSource {
             vpts = t.samples.iter().map(|s| s.pts).collect();
             vorder = t.display_order.clone();
             if t.needs_reorder && matches!(t.codec, Codec::Avc { .. }) {
-                let heads: Vec<Vec<u8>> = (0..t.samples.len())
-                    .map(|i| {
-                        let s = t.samples[i];
-                        filmcraft_media::reader::read_range(&*bytes.0, s.offset, (s.size as usize).min(16 << 10)).unwrap_or_default()
-                    })
-                    .collect();
-                match avc_presentation_order(&heads) {
+                let heads =
+                    t.samples.iter().map(|s| filmcraft_media::reader::read_range(&*bytes.0, s.offset, (s.size as usize).min(16 << 10)).unwrap_or_default());
+                match avc_presentation_order(heads) {
                     Some(pts) => {
                         vorder = vec![0; pts.len()];
                         for (s, &d) in pts.iter().enumerate() {
@@ -321,6 +319,7 @@ impl MxfSource {
                 has_alpha: p.alpha_depth > 0,
                 bitrate: (secs > 0.0).then(|| (bytes_total as f64 * 8.0 / (t.samples.len().max(1) as f64 / rate.as_f64().max(1e-9))) as u64),
                 hdr: None,
+                color_assumed: Some(filmcraft_color::ColorAssumed::ALL),
             });
         }
         // Audio: all PCM sound tracks of the first track's rate, channels in track order
@@ -330,7 +329,7 @@ impl MxfSource {
         if let Some(&a0) = atracks.first() {
             let si0 = file.tracks[a0].sound.clone().unwrap_or_default();
             let rate = si0.sample_rate;
-            let mut channels = 0;
+            let mut channels: u32 = 0;
             for &ai in &atracks {
                 let t = &file.tracks[ai];
                 let Some(si) = t.sound.as_ref() else { continue };
@@ -342,11 +341,18 @@ impl MxfSource {
                 let stored = t.stored_sample_frames().saturating_sub(first);
                 let presented = t.duration.map_or(stored, |du| ((du as i128 * n as i128 / d.max(1) as i128) as u64).min(stored));
                 aframes = aframes.min(presented);
-                channels += si.channels.max(1);
+                let next =
+                    channels.checked_add(si.channels.max(1)).ok_or_else(|| CodecError::Unsupported("MXF: combined audio channel count overflows".into()))?;
+                if next > filmcraft_media::MAX_AUDIO_CHANNELS {
+                    return Err(CodecError::Unsupported(format!("MXF: combined audio exceeds {} channels", filmcraft_media::MAX_AUDIO_CHANNELS)));
+                }
+                channels = next;
                 combined.push((ai, first));
             }
             let sr = if rate.is_valid() { (rate.num as f64 / rate.den as f64).round() as u32 } else { 48_000 };
-            audio = Some(AudioStreamInfo { sample_rate: sr.max(1), channels, codec: file.tracks[a0].codec.name().into(), bits_per_sample: Some(si0.bits) });
+            if let Ok((sr, channels)) = filmcraft_media::bounded_audio_dimensions(sr, channels) {
+                audio = Some(AudioStreamInfo { sample_rate: sr, channels, codec: file.tracks[a0].codec.name().into(), bits_per_sample: Some(si0.bits) });
+            }
         }
         if aframes == u64::MAX {
             aframes = 0;
@@ -461,15 +467,20 @@ impl MediaSource for MxfSource {
         let ainfo = self.info.audio().ok_or(MediaError::NoStream("audio"))?;
         let src_rate = ainfo.sample_rate;
         let ch = ainfo.channels.max(1) as usize;
+        let exact = src_rate == sample_rate;
+        let source_frames = if exact { frames } else { filmcraft_media::resample_source_frames(frames, src_rate, sample_rate)? };
+        let need =
+            if exact { source_frames } else { source_frames.checked_add(2).ok_or_else(|| MediaError::Decode("audio source window overflows".into()))? };
+        filmcraft_media::validate_audio_buffer_shape(ch, need)?;
+        filmcraft_media::validate_audio_buffer_shape(ch, frames)?;
         let mut out = AudioBuffer::silence(sample_rate, ch, frames);
         let ratio = src_rate as f64 / sample_rate as f64;
-        let exact = src_rate == sample_rate;
         let s0 = if exact { start } else { (start as f64 * ratio).floor() as i64 };
-        let need = if exact { frames as i64 } else { (frames as f64 * ratio).ceil() as i64 + 2 };
+        let need_i64 = i64::try_from(need).unwrap_or(i64::MAX);
         // clip the request to the presented range [0, aframes)
         let a = s0.max(0);
-        let b = (s0 + need).min(self.aframes as i64);
-        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need.max(0) as usize]; ch];
+        let b = s0.saturating_add(need_i64).min(self.aframes as i64);
+        let mut src: Vec<Vec<f32>> = vec![vec![0.0; need]; ch];
         if b > a {
             let mut c0 = 0;
             for &(ti, first) in &self.atracks {

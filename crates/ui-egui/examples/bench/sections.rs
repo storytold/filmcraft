@@ -256,7 +256,7 @@ pub fn scrub(o: &Opts) -> Vec<Value> {
         for _ in 0..o.repeat {
             let bench = new_bench(&s, 0.0);
             let mut display = Display::new(o.gpu);
-            let r = bench.scrub(&s, seq, &mut display, 1.0, seeks, drags, 24, Duration::from_secs(8));
+            let r = bench.scrub(&s, seq, &mut display, 1.0, playback::ScrubPlan { seeks, drags, drag_frames: 24, timeout: Duration::from_secs(8) });
             let positions = (seeks + drags) as f64;
             let row = json!({
                 "scenario": scenario,

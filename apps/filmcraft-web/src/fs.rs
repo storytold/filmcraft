@@ -424,6 +424,10 @@ impl Services for WebServices {
     }
 }
 
+thread_local! {
+    static DOWNLOAD_CLOCK: web_time::Instant = web_time::Instant::now();
+}
+
 /// Offer bytes as a browser download named `name`. Downloads are clicked at least
 /// [`crate::download_pacing::GAP_MS`] apart: Chrome drops a burst of them (#378).
 pub fn download(name: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
@@ -434,7 +438,8 @@ pub fn download(name: &str, data: &[u8]) -> Result<(), wasm_bindgen::JsValue> {
     a.set_href(&url);
     a.set_download(file_name(name));
     a.style().set_property("display", "none")?;
-    let delay = DOWNLOADS.with(|d| d.borrow_mut().reserve(js_sys::Date::now()));
+    let now_ms = DOWNLOAD_CLOCK.with(|clock| clock.elapsed().as_secs_f64() * 1000.0);
+    let delay = DOWNLOADS.with(|d| d.borrow_mut().reserve(now_ms));
     let name = name.to_owned();
     wasm_bindgen_futures::spawn_local(async move {
         if delay > 0.0 {

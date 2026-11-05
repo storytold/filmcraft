@@ -5,7 +5,7 @@
 #[path = "../tests/it/common/mod.rs"]
 mod common;
 
-use filmcraft_h264enc::*;
+use filmcraft_h264enc::{Encoder, EncoderConfig, Preset, Profile, RateControl};
 use std::time::Instant;
 
 fn main() {

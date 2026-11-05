@@ -3,7 +3,7 @@
 use crate::bits::Reader;
 use crate::dct::idct8x8;
 use crate::header::{FrameHeader, PictureHeader, row_slice_widths};
-use crate::tables::*;
+use crate::tables::{DC_CB, DC_CTX_INIT, FIRST_DC_CB, LEVEL_CB, LEVEL_CTX_INIT, RUN_CB, RUN_CTX_INIT, SCAN_INTERLACED, SCAN_PROGRESSIVE, qscale};
 use crate::{AlphaType, ChromaFormat, Error, Frame, Interlace, Result};
 
 /// Maximum aggregate decoded plane storage for one ProRes frame (256 MiB).
@@ -130,7 +130,7 @@ pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> 
         .checked_add(chroma.checked_mul(2).ok_or(Error::Invalid("chroma plane count overflows"))?)
         .and_then(|n| if hdr.alpha == AlphaType::None { Some(n) } else { n.checked_add(luma) })
         .ok_or(Error::Invalid("frame plane count overflows"))?;
-    if !samples.checked_mul(std::mem::size_of::<u16>()).is_some_and(|n| n <= MAX_FRAME_BYTES) {
+    if samples.checked_mul(std::mem::size_of::<u16>()).is_none_or(|n| n > MAX_FRAME_BYTES) {
         return Err(Error::Invalid("frame dimensions exceed the decoder memory limit"));
     }
     let interlaced = hdr.interlace != Interlace::Progressive;
@@ -219,7 +219,8 @@ pub fn decode_frame_into(data: &[u8], opts: &DecodeOptions, out: &mut Frame) -> 
             for (k, &w) in widths.iter().enumerate() {
                 let si = row * widths.len() + k;
                 let (start, len) = pic.slices[si];
-                decode_slice(&ctx, &data[start..start + len], mb_x, w, band, step, pic.parity, scratch).map_err(|_| Error::Slice { picture: pi, slice: si })?;
+                decode_slice(&ctx, &data[start..start + len], mb_x, w, band, Lines { step, parity: pic.parity }, scratch)
+                    .map_err(|_| Error::Slice { picture: pi, slice: si })?;
                 mb_x += w;
             }
         }
@@ -272,8 +273,15 @@ fn qfactors(qmat: &[u8; 64], qs: u32) -> [f32; 64] {
     q
 }
 
-#[allow(clippy::too_many_arguments)]
-fn decode_slice(ctx: &Ctx, d: &[u8], mb_x: usize, mbs: usize, band: &mut Band, step: usize, parity: usize, s: &mut Scratch) -> std::result::Result<(), ()> {
+/// Line stepping of the picture inside its frame: `step` is 2 for field pictures, `parity` the first line.
+#[derive(Clone, Copy)]
+struct Lines {
+    step: usize,
+    parity: usize,
+}
+
+fn decode_slice(ctx: &Ctx, d: &[u8], mb_x: usize, mbs: usize, band: &mut Band, il: Lines, s: &mut Scratch) -> std::result::Result<(), ()> {
+    let Lines { step, parity } = il;
     if d.len() < 6 {
         return Err(());
     }
@@ -309,7 +317,7 @@ fn decode_slice(ctx: &Ctx, d: &[u8], mb_x: usize, mbs: usize, band: &mut Band, s
     for (b, blk) in s.coeffs[..nb].iter_mut().enumerate() {
         idct8x8(blk);
         let (mb, i) = (b >> 2, b & 3);
-        put_block(blk, band.y, ctx.width, x0 + mb * 16 + (i & 1) * 8, (i >> 1) * 8, band.rows, step, parity, ctx.conv);
+        put_block(blk, band.y, ctx.width, (x0 + mb * 16 + (i & 1) * 8, (i >> 1) * 8), band.rows, il, ctx.conv);
     }
 
     // Chroma
@@ -327,7 +335,7 @@ fn decode_slice(ctx: &Ctx, d: &[u8], mb_x: usize, mbs: usize, band: &mut Band, s
                 let (mb, i) = (b >> 1, b & 1);
                 (mb_x * 8 + mb * 8, i * 8)
             };
-            put_block(blk, plane, ctx.cwidth, bx, by, band.rows, step, parity, ctx.conv);
+            put_block(blk, plane, ctx.cwidth, (bx, by), band.rows, il, ctx.conv);
         }
     }
 
@@ -479,9 +487,9 @@ fn decode_alpha(data: &[u8], ty: AlphaType, out: &mut [u16]) -> std::result::Res
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline]
-fn put_block(f: &[f32; 64], plane: &mut [u16], stride: usize, x0: usize, y0: usize, rows: usize, step: usize, parity: usize, conv: OutConv) {
+fn put_block(f: &[f32; 64], plane: &mut [u16], stride: usize, (x0, y0): (usize, usize), rows: usize, il: Lines, conv: OutConv) {
+    let Lines { step, parity } = il;
     if x0 >= stride {
         return;
     }
