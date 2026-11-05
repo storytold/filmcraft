@@ -151,33 +151,33 @@ pub fn write_auto_save(dir: &Path, name: &str, unix: i64, offset_secs: i32, data
     let base = auto_save_name(name, unix, offset_secs);
     let base_stem = base.trim_end_matches(".fcproj");
     let collision_prefix = format!("{base_stem}-collision-");
-    let mut collision = 1_u64;
+    // Continue after the highest collision already on disk: a lower free number (one rotation has
+    // removed) would sort before the newer saves and be rotated away as the oldest.
+    let highest = fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let file_name = entry.file_name();
+            let digits = file_name.to_str()?.strip_prefix(&collision_prefix)?.strip_suffix(".fcproj")?;
+            let n = digits.parse::<u64>().ok()?;
+            (n.to_string() == digits).then_some(n)
+        })
+        .max();
+    let exhausted = || io::Error::other("auto-save name exhausted");
+    let mut collision = match highest {
+        Some(n) => n.checked_add(1).ok_or_else(exhausted)?,
+        None => 1,
+    };
     let mut path = dir.join(&base);
-    let has_collisions = fs::read_dir(dir)?.filter_map(|entry| entry.ok()).any(|entry| {
-        let file_name = entry.file_name();
-        let Some(file_name) = file_name.to_str() else { return false };
-        let Some(digits) = file_name.strip_prefix(&collision_prefix).and_then(|s| s.strip_suffix(".fcproj")) else {
-            return false;
-        };
-        let Ok(n) = digits.parse::<u64>() else { return false };
-        n.to_string() == digits
-    });
-    if !path.exists() && has_collisions {
-        loop {
-            let candidate = dir.join(format!("{base_stem}-collision-{collision}.fcproj"));
-            if !candidate.exists() {
-                path = candidate;
-                break;
-            }
-            collision = collision.checked_add(1).ok_or_else(|| io::Error::other("auto-save name exhausted"))?;
-        }
+    if highest.is_some() {
+        path = dir.join(format!("{base_stem}-collision-{collision}.fcproj"));
+        collision = collision.checked_add(1).ok_or_else(exhausted)?;
     }
     loop {
         match crate::atomic_write_new(&path, data) {
             Ok(()) => break,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 path = dir.join(format!("{base_stem}-collision-{collision}.fcproj"));
-                collision = collision.checked_add(1).ok_or_else(|| io::Error::other("auto-save name exhausted"))?;
+                collision = collision.checked_add(1).ok_or_else(exhausted)?;
             }
             Err(e) => return Err(e),
         }
@@ -281,6 +281,23 @@ mod tests {
         assert!(second_collision.ends_with(format!("Cut-{}-{unix}-collision-2.fcproj", timestamp(unix, 0))));
         assert!(second_collision.exists());
         assert_eq!(fs::read(&second_collision).unwrap(), b"second collision");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_save_after_rotation_freed_a_lower_collision_is_kept_as_the_newest() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("filmcraft-rotate-freed-collision-{}-{nonce}", std::process::id()));
+        let unix = 1_790_000_000;
+        for data in [&b"base"[..], b"first collision", b"second collision"] {
+            write_auto_save(&d, "Cut", unix, 0, data, 1).unwrap();
+        }
+        // Rotation has removed the base and collision 1; the next save must not reuse number 1,
+        // which would sort before collision 2 and be deleted as the oldest.
+        let fourth = write_auto_save(&d, "Cut", unix, 0, b"third collision", 1).unwrap();
+        assert!(fourth.ends_with(format!("Cut-{}-{unix}-collision-3.fcproj", timestamp(unix, 0))));
+        assert_eq!(fs::read(&fourth).unwrap(), b"third collision");
+        assert_eq!(list_auto_saves(&d, "Cut"), vec![fourth]);
         fs::remove_dir_all(&d).unwrap();
     }
 
