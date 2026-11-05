@@ -318,6 +318,7 @@
 	Source	Источник
 	Source Settings…	Настройки источника…
 	Speed/Duration…	Скорость/Длительность…
+	Maintain Audio Pitch	Сохранять высоту звука
 	Synchronize…	Синхронизировать…
 	System Compatibility Report…	Отчёт о совместимости системы…
 	Tan	Бежевый
@@ -439,7 +440,7 @@
 	Are you sure you want to discard your changes to '{file}'?	Отклонить изменения в «{file}»?
 	Yes	Да
 	No	Нет
-	Add media to your project. Drop files anywhere in the window, or choose a source below.	Добавить медиа в проект. Файлы можно перетащить в любое место окна или выбрать источник ниже.
+	Add media to your project. Drop files or folders anywhere in the window, or choose a source below.	Добавить медиа в проект. Файлы или папки можно перетащить в любое место окна или выбрать источник ниже.
 	Browse files…	Выбрать файлы…
 	Movies, audio and stills from disk	Видео, аудио и изображения с диска
 	Demo footage	Демонстрационный материал
@@ -3723,3 +3724,13 @@
 	{frames} frames ({seconds} s)	{frames} кадров ({seconds} с)
 	{name} already exists, so nothing was exported. To replace it, choose it in the save dialog.	«{name}» уже существует, поэтому ничего не было экспортировано. Чтобы заменить его, выберите этот файл в диалоге сохранения.
 	“{file}” already exists in “{folder}”. Do you want to replace it?	«{file}» уже существует в «{folder}». Заменить его?
+
+# Export: H.264 High 10 and all-intra (#1221).
+	High 10	High 10
+	10-bit color	10-битный цвет
+	All Intra	Только intra
+	Every frame a keyframe (edit-friendly, larger files)	Каждый кадр ключевой (удобно для монтажа, файлы больше)
+	H.264 High 10 Master	H.264 High 10 Master
+	H.264 High 10 Intra	H.264 High 10 Intra
+	H.264 High 10 (10-bit 4:2:0) at the sequence's size, constant quality CRF 16, AAC 320 kbps; a 10-bit master	H.264 High 10 (10 бит 4:2:0) в размере последовательности, постоянное качество CRF 16, AAC 320 кбит/с; 10-битный мастер
+	H.264 High 10 Intra (10-bit 4:2:0, every frame a keyframe), CRF 12, AAC 320 kbps; an edit-friendly intermediate	H.264 High 10 Intra (10 бит 4:2:0, каждый кадр ключевой), CRF 12, AAC 320 кбит/с; промежуточный файл, удобный для монтажа

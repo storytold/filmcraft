@@ -50,6 +50,11 @@ pub struct PicState {
     pub cancel: Option<Arc<AtomicBool>>,
 }
 
+/// Whether `decoded + add` macroblocks fit in a picture of `total`.
+fn mbs_fit(decoded: usize, add: usize, total: usize) -> bool {
+    decoded.checked_add(add).is_some_and(|n| n <= total)
+}
+
 impl PicState {
     pub fn new(frame: FrameRef) -> Self {
         let (mb_w, mb_h) = (frame.mb_w, frame.mb_h());
@@ -87,6 +92,15 @@ impl PicState {
         self.rows_deblocked = 0;
         self.rows_published = 0;
         self.skip_deblock = false;
+    }
+
+    /// Fail when decoding `n` more macroblocks would exceed the picture's own count: a conforming
+    /// picture reconstructs each macroblock once, so overlapping slices (compact skip runs that
+    /// repeat a whole picture of prediction work) are refused before the work is done.
+    #[inline]
+    pub fn reserve_mbs(&self, n: usize) -> Result<()> {
+        ensure!(mbs_fit(self.decoded_mbs, n, self.mb_w * self.mb_h), "slice data overlaps macroblocks already decoded in this picture");
+        Ok(())
     }
 
     /// Record a decoded macroblock and deblock / publish rows that became final. Fails when the
@@ -1498,6 +1512,7 @@ impl<'a> SliceDecoder<'a> {
             if !intra_slice {
                 let run = r.read_ue()? as usize;
                 ensure!(addr + run <= total, "mb_skip_run out of range");
+                self.pic.reserve_mbs(run)?;
                 for _ in 0..run {
                     self.start_mb(addr);
                     self.decode_skip()?;
@@ -1509,6 +1524,7 @@ impl<'a> SliceDecoder<'a> {
                 }
                 ensure!(addr < total, "macroblock address {addr} out of range");
             }
+            self.pic.reserve_mbs(1)?;
             self.start_mb(addr);
             self.decode_mb_cavlc(r)?;
             self.pic.mb_done(addr)?;
@@ -1518,5 +1534,17 @@ impl<'a> SliceDecoder<'a> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod overlap_tests {
+    use super::mbs_fit;
+
+    #[test]
+    fn a_picture_takes_each_macroblock_once() {
+        assert!(mbs_fit(0, 99, 99));
+        assert!(!mbs_fit(1, 99, 99));
+        assert!(!mbs_fit(usize::MAX, 1, 99));
     }
 }
