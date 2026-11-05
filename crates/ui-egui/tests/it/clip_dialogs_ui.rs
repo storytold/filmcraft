@@ -897,3 +897,104 @@ fn a_dropped_project_file_opens_and_asks_about_unsaved_changes() {
     d.click("openProject.dontSave");
     assert!(d.path().is_some_and(|p| p.ends_with("B.FCPROJ")));
 }
+
+/// #3621: File ▸ New ▸ Project (Cmd+Alt+N) on a project with unsaved changes replaced it without a
+/// word, losing a never-saved project. It asks Save / Don't Save / Cancel first, as Open and Close
+/// Project do, and replaces a project with nothing unsaved at once.
+#[test]
+fn new_project_asks_to_save_unsaved_changes() {
+    let mut d = Driver::new();
+    d.edit();
+    let items = d.app().session.project.items.len();
+    // the shortcut asks and replaces nothing before the answer
+    d.ok("ui.key", json!({"key": "Cmd+Alt+N"}));
+    d.frames(3);
+    assert!(d.has("newProject.save") && d.has("newProject.dontSave") && d.has("newProject.cancel"));
+    assert_eq!(d.app().session.project.items.len(), items, "nothing is replaced before the answer");
+    // Cancel keeps the project and its changes
+    d.click("newProject.cancel");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(d.app().session.is_dirty() && d.app().session.project.items.len() == items, "Cancel keeps the project");
+    // the menu asks the same; Don't Save replaces the project
+    assert_eq!(d.menu("file.newProject")["dialog"], "newProject");
+    assert_eq!(d.app().session.project.items.len(), items);
+    d.click("newProject.dontSave");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(d.app().session.project.items.is_empty() && !d.app().session.is_dirty(), "a new, empty project");
+    // nothing unsaved: replaced at once
+    d.exec("file.openDemoProject", json!({}));
+    assert!(!d.app().session.is_dirty());
+    d.menu("file.newProject");
+    assert!(d.app().ui.clip_dialog.is_none(), "no prompt without unsaved changes");
+    assert!(d.app().session.project.items.is_empty());
+    // a script naming the project runs directly, as before
+    let mut d = Driver::new();
+    d.edit();
+    d.exec("file.newProject", json!({"name": "Scripted"}));
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert_eq!(d.app().session.project.name, "Scripted");
+}
+
+/// #3621: Save in the New Project prompt on a never-saved project goes through Save As, and the new
+/// project replaces it only once it is saved; a cancelled Save dialog keeps it and asks again.
+#[test]
+fn new_project_save_on_a_never_saved_project_saves_it_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let saved = tmp.path().join("before-new.fcproj");
+    let picked = saved.to_string_lossy().into_owned();
+    let mut d = Driver::new();
+    d.app().session.path = None;
+    d.edit();
+    let items = d.app().session.project.items.len();
+    let mut answers = vec![None, Some(picked)];
+    d.app().hooks.pick_save = Some(Box::new(move |_| if answers.is_empty() { None } else { answers.remove(0) }));
+    d.menu("file.newProject");
+    // the Save dialog is cancelled: the project stays and the prompt is back
+    d.click("newProject.save");
+    assert!(d.has("newProject.save"), "asked again");
+    assert!(d.app().session.is_dirty() && d.app().session.project.items.len() == items);
+    // saved: the file is written, then the new project replaces it
+    d.click("newProject.save");
+    assert!(saved.exists(), "saved to the chosen file");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(d.app().session.project.items.is_empty() && d.app().session.path.is_none(), "a new, unsaved project");
+}
+
+/// #3621: File ▸ New ▸ Demo Project replaces the project like New Project, so it asks the same.
+#[test]
+fn demo_project_asks_to_save_unsaved_changes() {
+    let mut d = Driver::new();
+    d.exec("file.newProject", json!({"name": "Mine"}));
+    d.exec("file.newSequence", json!({"width": 16, "height": 16}));
+    assert!(d.app().session.is_dirty());
+    assert_eq!(d.menu("file.openDemoProject")["dialog"], "openDemoProject");
+    assert!(d.has("openDemoProject.save") && d.has("openDemoProject.dontSave") && d.has("openDemoProject.cancel"));
+    d.click("openDemoProject.cancel");
+    assert!(d.app().session.is_dirty() && d.app().session.project.name == "Mine", "Cancel keeps the project");
+    d.menu("file.openDemoProject");
+    d.click("openDemoProject.dontSave");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(!d.app().session.is_dirty() && d.app().session.project.name != "Mine", "the demo replaced it");
+    // nothing unsaved: replaced at once
+    d.exec("file.newProject", json!({"name": "Clean"}));
+    d.menu("file.openDemoProject");
+    assert!(d.app().ui.clip_dialog.is_none(), "no prompt without unsaved changes");
+    assert_ne!(d.app().session.project.name, "Clean");
+}
+
+/// #3621: a project replaced over the control channel while New Project's Save / Don't Save /
+/// Cancel prompt is up closes the prompt, so Don't Save can't discard the replacement's edits.
+#[test]
+fn a_save_prompt_closes_when_its_project_is_replaced() {
+    let mut d = Driver::new();
+    d.edit();
+    assert_eq!(d.menu("file.newProject")["dialog"], "newProject");
+    assert!(d.has("newProject.dontSave"));
+    // a script naming the project replaces it directly, and edits the replacement
+    d.exec("file.newProject", json!({"name": "Replacement"}));
+    d.exec("file.newSequence", json!({"width": 16, "height": 16}));
+    d.frames(2);
+    assert!(d.app().ui.clip_dialog.is_none(), "the prompt was about the replaced project");
+    assert!(!d.has("newProject.dontSave"));
+    assert!(d.app().session.is_dirty() && d.app().session.project.name == "Replacement", "the replacement and its edits stay");
+}

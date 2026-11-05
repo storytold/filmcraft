@@ -186,7 +186,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         }
         "help.systemCompatibilityReport" => {
             let report = system_report(app);
-            app.ui.extras.dialog = Some(ClipDialogDraft { command: id.into(), params: json!({}), info: report.clone(), error: String::new() });
+            app.ui.extras.dialog = Some(ClipDialogDraft { command: id.into(), params: json!({}), info: report.clone(), error: String::new(), epoch: None });
             return Some(Ok(json!({"dialog": "systemReport", "report": report})));
         }
         "edit.editOriginal" | "file.reveal" => {
@@ -238,8 +238,13 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 let r = app.session.execute(&id, json!({"path": path})).map_err(|e| e.to_string());
                 if let Ok(v) = &r {
-                    app.ui.extras.dialog =
-                        Some(ClipDialogDraft { command: "file.mediaProperties".into(), params: json!({}), info: json!([v]), error: String::new() });
+                    app.ui.extras.dialog = Some(ClipDialogDraft {
+                        command: "file.mediaProperties".into(),
+                        params: json!({}),
+                        info: json!([v]),
+                        error: String::new(),
+                        epoch: None,
+                    });
                 }
                 r
             }));
@@ -258,7 +263,7 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
         Ok(x) => x,
         Err(e) => return Some(Err(e)),
     };
-    app.ui.extras.dialog = Some(ClipDialogDraft { command: cmd.into(), params, info, error: String::new() });
+    app.ui.extras.dialog = Some(ClipDialogDraft { command: cmd.into(), params, info, error: String::new(), epoch: None });
     Some(Ok(json!({"dialog": meta(cmd).map(|m| m.1)})))
 }
 
